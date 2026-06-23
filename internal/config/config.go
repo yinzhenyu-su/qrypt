@@ -8,11 +8,14 @@ import (
 )
 
 type Config struct {
-	MountPoint string        `toml:"mount_point"`
-	CacheDir   string        `toml:"cache_dir"`
-	Encryption crypt.Config  `toml:"encryption"`
-	Defaults   Defaults      `toml:"defaults"`
-	Mounts     []MountConfig `toml:"mounts"`
+	MountPoint    string        `toml:"mount_point"`
+	CacheDir      string        `toml:"cache_dir"`
+	VolumeName    string        `toml:"volume_name"`
+	NoAppleDouble *bool         `toml:"no_apple_double"`
+	Logging       LoggingConfig `toml:"logging"`
+	Encryption    crypt.Config  `toml:"encryption"`
+	Defaults      Defaults      `toml:"defaults"`
+	Mounts        []MountConfig `toml:"mounts"`
 }
 
 type Defaults struct {
@@ -34,6 +37,11 @@ type MountConfig struct {
 type CacheConfig struct {
 	Dir          string `toml:"dir"`
 	MaxSizeBytes int64  `toml:"max_size_bytes"`
+}
+
+type LoggingConfig struct {
+	FuseTrace     bool   `toml:"fuse_trace"`
+	FuseTraceFile string `toml:"fuse_trace_file"`
 }
 
 type EncryptionOverrides struct {
@@ -115,6 +123,20 @@ func (c *Config) EffectiveMountPoint() string {
 		}
 	}
 	return ""
+}
+
+func (c *Config) EffectiveVolumeName() string {
+	if c == nil || c.VolumeName == "" {
+		return "Qrypt"
+	}
+	return c.VolumeName
+}
+
+func (c *Config) EffectiveNoAppleDouble() bool {
+	if c == nil || c.NoAppleDouble == nil {
+		return true
+	}
+	return *c.NoAppleDouble
 }
 
 func ApplyEncryptionOverrides(cfg crypt.Config, overrides EncryptionOverrides) crypt.Config {
