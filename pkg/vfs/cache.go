@@ -144,7 +144,7 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 
 func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	batch := index / cacheBatchBlocks
-	offset := int64(index%cacheBatchBlocks) * int64(len(data))
+	offset := int64(index%cacheBatchBlocks) * readChunkSize
 	path := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", fid, batch))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
