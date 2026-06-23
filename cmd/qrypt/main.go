@@ -103,10 +103,16 @@ func run(args []string) error {
 				return err
 			}
 		}
-		_, err := mount.NewMounter().Mount(ctx, fs, mount.Options{
+		mountConfig, err := mountConfigFromConfig(*configPath)
+		if err != nil {
+			return err
+		}
+		_, err = mount.NewMounter().Mount(ctx, fs, mount.Options{
 			MountPoint:    expandHome(mountPoint),
-			VolumeName:    "Qrypt",
-			NoAppleDouble: true,
+			VolumeName:    mountConfig.VolumeName,
+			NoAppleDouble: mountConfig.NoAppleDouble,
+			TraceEnabled:  mountConfig.Logging.FuseTrace,
+			TraceFile:     expandHome(mountConfig.Logging.FuseTraceFile),
 			Foreground:    true,
 		})
 		return err
@@ -128,6 +134,42 @@ func mountPointFromConfig(configPath string) (string, error) {
 		return mountPoint, nil
 	}
 	return "", fmt.Errorf("config: no mount_point found")
+}
+
+type cliMountConfig struct {
+	VolumeName    string
+	NoAppleDouble bool
+	Logging       config.LoggingConfig
+}
+
+func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
+	mountConfig := cliMountConfig{
+		VolumeName:    "Qrypt",
+		NoAppleDouble: true,
+	}
+	if configPath == "" {
+		return mountConfig, nil
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return mountConfig, err
+	}
+	mountConfig.VolumeName = cfg.EffectiveVolumeName()
+	mountConfig.NoAppleDouble = cfg.EffectiveNoAppleDouble()
+	mountConfig.Logging = cfg.Logging
+	return mountConfig, nil
+}
+
+func loggingFromConfig(configPath string) (config.LoggingConfig, error) {
+	var logging config.LoggingConfig
+	if configPath == "" {
+		return logging, nil
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return logging, err
+	}
+	return cfg.Logging, nil
 }
 
 func expandHome(path string) string {

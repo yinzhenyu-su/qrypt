@@ -87,6 +87,8 @@ Example:
 ```toml
 mount_point = "~/Qrypt"
 cache_dir = "/tmp/qrypt-cache"
+volume_name = "Qrypt"
+no_apple_double = true
 
 [[mounts]]
 name = "quark"
@@ -132,10 +134,11 @@ Each mount has its own encryption settings. Setting
 `filename_encryption = "off"` only keeps names readable on the raw backend;
 file content is still encrypted when `password` is set.
 
-`mount_point` and `cache_dir` are intentionally top-level: the program creates
-one OS mount point, and each `[[mounts]]` entry appears as a directory under it.
-Each mount stores cache under `cache_dir/<mount-name>` unless
-`[mounts.cache].dir` overrides that mount.
+`mount_point`, `cache_dir`, `volume_name`, and `no_apple_double` are
+intentionally top-level: the program creates one OS mount point, and each
+`[[mounts]]` entry appears as a directory under it. Each mount stores cache
+under `cache_dir/<mount-name>` unless `[mounts.cache].dir` overrides that
+mount.
 
 With that config:
 
@@ -164,7 +167,15 @@ The CLI `-cache` flag is still available as an override:
 go run ./cmd/qrypt -config ./qrypt.toml -cache /tmp/other-qrypt-cache mount
 ```
 
-To debug Finder or macFUSE behavior, enable FUSE tracing:
+To debug Finder or macFUSE behavior, enable FUSE tracing in the config:
+
+```toml
+[logging]
+fuse_trace = true
+fuse_trace_file = "/tmp/qrypt-fuse.log"
+```
+
+The environment variables are still available as temporary overrides:
 
 ```sh
 QRYPT_FUSE_TRACE=1 \
