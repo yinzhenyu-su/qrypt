@@ -106,6 +106,41 @@ func TestNamespaceRejectsCrossMountRename(t *testing.T) {
 	}
 }
 
+func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
+	ctx := context.Background()
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "a", FS: fsA}, {Name: "b", FS: fsB}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spaceA, err := fsA.Space(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaceB, err := fsB.Space(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space, err := ns.Space(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if space.Total != spaceA.Total+spaceB.Total {
+		t.Fatalf("total space = %d, want %d", space.Total, spaceA.Total+spaceB.Total)
+	}
+	if space.Free != spaceA.Free+spaceB.Free {
+		t.Fatalf("free space = %d, want %d", space.Free, spaceA.Free+spaceB.Free)
+	}
+}
+
 func TestNamespaceMarksRootAndMountNamesReadOnly(t *testing.T) {
 	ctx := context.Background()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})

@@ -1,7 +1,11 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
@@ -12,6 +16,8 @@ type Config struct {
 	CacheDir      string        `toml:"cache_dir"`
 	VolumeName    string        `toml:"volume_name"`
 	NoAppleDouble *bool         `toml:"no_apple_double"`
+	TotalSpace    string        `toml:"total_space"`
+	FreeSpace     string        `toml:"free_space"`
 	Logging       LoggingConfig `toml:"logging"`
 	Encryption    crypt.Config  `toml:"encryption"`
 	Defaults      Defaults      `toml:"defaults"`
@@ -137,6 +143,59 @@ func (c *Config) EffectiveNoAppleDouble() bool {
 		return true
 	}
 	return *c.NoAppleDouble
+}
+
+func (c *Config) EffectiveSpaceBytes() (int64, int64, error) {
+	if c == nil {
+		return 0, 0, nil
+	}
+	total, err := ParseSize(c.TotalSpace)
+	if err != nil {
+		return 0, 0, fmt.Errorf("config: invalid total_space: %w", err)
+	}
+	free, err := ParseSize(c.FreeSpace)
+	if err != nil {
+		return 0, 0, fmt.Errorf("config: invalid free_space: %w", err)
+	}
+	return total, free, nil
+}
+
+func ParseSize(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	upper := strings.ToUpper(value)
+	upper = strings.TrimSuffix(upper, "B")
+
+	multiplier := int64(1)
+	switch {
+	case strings.HasSuffix(upper, "K"):
+		multiplier = 1 << 10
+		upper = strings.TrimSuffix(upper, "K")
+	case strings.HasSuffix(upper, "M"):
+		multiplier = 1 << 20
+		upper = strings.TrimSuffix(upper, "M")
+	case strings.HasSuffix(upper, "G"):
+		multiplier = 1 << 30
+		upper = strings.TrimSuffix(upper, "G")
+	case strings.HasSuffix(upper, "T"):
+		multiplier = 1 << 40
+		upper = strings.TrimSuffix(upper, "T")
+	case strings.HasSuffix(upper, "P"):
+		multiplier = 1 << 50
+		upper = strings.TrimSuffix(upper, "P")
+	}
+
+	number, err := strconv.ParseFloat(strings.TrimSpace(upper), 64)
+	if err != nil || number < 0 {
+		return 0, fmt.Errorf("size must be a non-negative number with optional K/M/G/T/P suffix")
+	}
+	bytes := number * float64(multiplier)
+	if bytes > float64(math.MaxInt64) {
+		return 0, fmt.Errorf("size is too large")
+	}
+	return int64(bytes), nil
 }
 
 func ApplyEncryptionOverrides(cfg crypt.Config, overrides EncryptionOverrides) crypt.Config {

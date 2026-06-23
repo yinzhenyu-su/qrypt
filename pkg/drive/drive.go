@@ -43,6 +43,17 @@ type Uploader interface {
 	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)
 }
 
+// Space describes backend capacity in bytes.
+type Space struct {
+	Total int64
+	Free  int64
+}
+
+// SpaceQuerier is implemented by drivers that can report backend capacity.
+type SpaceQuerier interface {
+	Space(ctx context.Context) (Space, error)
+}
+
 // PathResolver lets drivers map a virtual path to their native object ID.
 type PathResolver interface {
 	ResolvePath(ctx context.Context, path string) (string, error)

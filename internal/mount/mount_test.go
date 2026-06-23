@@ -22,7 +22,16 @@ type stubFS struct {
 	readOnly map[string]bool
 }
 
+type stubSpaceFS struct {
+	stubFS
+	space drive.Space
+}
+
 func (stubFS) Start(context.Context) {}
+
+func (s stubSpaceFS) Space(context.Context) (drive.Space, error) {
+	return s.space, nil
+}
 
 func (s stubFS) IsReadOnlyPath(path string) bool {
 	return s.readOnly[path]
@@ -104,10 +113,50 @@ func TestTraceLoggerConfiguredFileRequiresEnable(t *testing.T) {
 	}
 }
 
+func TestAdapterStatfsUsesConfiguredSpace(t *testing.T) {
+	ad := newAdapter(stubSpaceFS{
+		space: drive.Space{Total: 2 << 40, Free: 1 << 40},
+	}, TraceOptions{}, StatfsOptions{
+		TotalSpace: 1 << 40,
+		FreeSpace:  512 << 30,
+	})
+
+	var stat fuse.Statfs_t
+	if errc := ad.Statfs("/", &stat); errc != 0 {
+		t.Fatalf("Statfs err = %d, want 0", errc)
+	}
+	if stat.Bsize != 4096 || stat.Frsize != 4096 {
+		t.Fatalf("Statfs block size = %d/%d, want 4096/4096", stat.Bsize, stat.Frsize)
+	}
+	if stat.Blocks != (1<<40)/4096 {
+		t.Fatalf("Statfs blocks = %d, want %d", stat.Blocks, (1<<40)/4096)
+	}
+	if stat.Bavail != (512<<30)/4096 {
+		t.Fatalf("Statfs available blocks = %d, want %d", stat.Bavail, (512<<30)/4096)
+	}
+}
+
+func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
+	ad := newAdapter(stubSpaceFS{
+		space: drive.Space{Total: 3 << 40, Free: 2 << 40},
+	}, TraceOptions{}, StatfsOptions{})
+
+	var stat fuse.Statfs_t
+	if errc := ad.Statfs("/", &stat); errc != 0 {
+		t.Fatalf("Statfs err = %d, want 0", errc)
+	}
+	if stat.Blocks != (3<<40)/4096 {
+		t.Fatalf("Statfs blocks = %d, want %d", stat.Blocks, (3<<40)/4096)
+	}
+	if stat.Bavail != (2<<40)/4096 {
+		t.Fatalf("Statfs available blocks = %d, want %d", stat.Bavail, (2<<40)/4096)
+	}
+}
+
 func TestAdapterXattrsProvideStableFinderInfo(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true, ModTime: time.Unix(1, 0)},
-	}}, TraceOptions{})
+	}}, TraceOptions{}, StatfsOptions{})
 
 	errc, value := ad.Getxattr("/", "com.apple.FinderInfo")
 	if errc != 0 {
@@ -133,7 +182,7 @@ func TestAdapterXattrsProvideStableFinderInfo(t *testing.T) {
 func TestAdapterXattrsSetListRemove(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
-	}}, TraceOptions{})
+	}}, TraceOptions{}, StatfsOptions{})
 	const name = "com.apple.metadata:_kMDItemUserTags"
 	value := []byte("tags")
 
@@ -170,7 +219,7 @@ func TestAdapterXattrsSetListRemove(t *testing.T) {
 }
 
 func TestAdapterXattrsMissingPath(t *testing.T) {
-	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, TraceOptions{})
+	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, TraceOptions{}, StatfsOptions{})
 	if errc, _ := ad.Getxattr("/missing", "com.apple.FinderInfo"); errc != -fuse.ENOENT {
 		t.Fatalf("Getxattr missing err = %d, want ENOENT", errc)
 	}
@@ -192,7 +241,7 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 			"/": {{ID: "/a", Name: "a", IsDir: true}},
 		},
 		readOnly: map[string]bool{"/": true, "/a": true, "/new": true},
-	}, TraceOptions{})
+	}, TraceOptions{}, StatfsOptions{})
 
 	var stat fuse.Stat_t
 	if errc := ad.Getattr("/a", &stat, ^uint64(0)); errc != 0 {

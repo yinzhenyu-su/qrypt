@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -45,6 +46,18 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error { return nil }
+
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(d.root, &stat); err != nil {
+		return drive.Space{}, fmt.Errorf("localfs: statfs root: %w", err)
+	}
+	blockSize := int64(stat.Bsize)
+	return drive.Space{
+		Total: int64(stat.Blocks) * blockSize,
+		Free:  int64(stat.Bavail) * blockSize,
+	}, nil
+}
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	dir := d.resolve(parentID)
@@ -160,4 +173,5 @@ func (d *Driver) resolve(id string) string {
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
+var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)

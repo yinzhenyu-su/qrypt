@@ -214,6 +214,33 @@ func (n *Namespace) Pending() []PendingFile {
 	return pending
 }
 
+func (n *Namespace) Space(ctx context.Context) (drive.Space, error) {
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	for _, mount := range n.mounts {
+		mounts = append(mounts, mount)
+	}
+	n.mu.RUnlock()
+
+	var total drive.Space
+	var firstErr error
+	for _, mount := range mounts {
+		space, err := mount.Space(ctx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		total.Total += space.Total
+		total.Free += space.Free
+	}
+	if total.Total == 0 && total.Free == 0 && firstErr != nil {
+		return drive.Space{}, firstErr
+	}
+	return total, nil
+}
+
 func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	path = cleanVirtual(path)
 	if path == "/" {

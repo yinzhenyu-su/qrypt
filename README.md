@@ -89,6 +89,8 @@ mount_point = "~/Qrypt"
 cache_dir = "/tmp/qrypt-cache"
 volume_name = "Qrypt"
 no_apple_double = true
+total_space = "1T"
+free_space = "800G"
 
 [[mounts]]
 name = "quark"
@@ -139,6 +141,9 @@ intentionally top-level: the program creates one OS mount point, and each
 `[[mounts]]` entry appears as a directory under it. Each mount stores cache
 under `cache_dir/<mount-name>` unless `[mounts.cache].dir` overrides that
 mount.
+
+`total_space` and `free_space` control the capacity reported by FUSE `Statfs`.
+They accept plain bytes or binary size suffixes such as `512M`, `1G`, and `1T`.
 
 With that config:
 
