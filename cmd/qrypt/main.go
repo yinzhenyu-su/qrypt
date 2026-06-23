@@ -111,6 +111,8 @@ func run(args []string) error {
 			MountPoint:    expandHome(mountPoint),
 			VolumeName:    mountConfig.VolumeName,
 			NoAppleDouble: mountConfig.NoAppleDouble,
+			TotalSpace:    mountConfig.TotalSpace,
+			FreeSpace:     mountConfig.FreeSpace,
 			TraceEnabled:  mountConfig.Logging.FuseTrace,
 			TraceFile:     expandHome(mountConfig.Logging.FuseTraceFile),
 			Foreground:    true,
@@ -139,6 +141,8 @@ func mountPointFromConfig(configPath string) (string, error) {
 type cliMountConfig struct {
 	VolumeName    string
 	NoAppleDouble bool
+	TotalSpace    int64
+	FreeSpace     int64
 	Logging       config.LoggingConfig
 }
 
@@ -156,6 +160,12 @@ func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	}
 	mountConfig.VolumeName = cfg.EffectiveVolumeName()
 	mountConfig.NoAppleDouble = cfg.EffectiveNoAppleDouble()
+	totalSpace, freeSpace, err := cfg.EffectiveSpaceBytes()
+	if err != nil {
+		return mountConfig, err
+	}
+	mountConfig.TotalSpace = totalSpace
+	mountConfig.FreeSpace = freeSpace
 	mountConfig.Logging = cfg.Logging
 	return mountConfig, nil
 }

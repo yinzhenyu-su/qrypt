@@ -25,6 +25,8 @@ type Options struct {
 	AllowOther     bool
 	VolumeName     string
 	NoAppleDouble  bool
+	TotalSpace     int64
+	FreeSpace      int64
 	TraceEnabled   bool
 	TraceFile      string
 	Foreground     bool
@@ -64,7 +66,10 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		return nil, err
 	}
 
-	ad := newAdapter(fs, TraceOptions{Enabled: opts.TraceEnabled, File: opts.TraceFile})
+	ad := newAdapter(fs, TraceOptions{Enabled: opts.TraceEnabled, File: opts.TraceFile}, StatfsOptions{
+		TotalSpace: opts.TotalSpace,
+		FreeSpace:  opts.FreeSpace,
+	})
 	host := fuse.NewFileSystemHost(ad)
 	session := &Session{
 		ID:         opts.MountPoint,
@@ -162,6 +167,7 @@ type adapter struct {
 	nextFH   uint64
 	stopping bool
 	trace    *traceLogger
+	statfs   StatfsOptions
 }
 
 type readOnlyPathChecker interface {
@@ -173,12 +179,31 @@ type TraceOptions struct {
 	File    string
 }
 
-func newAdapter(fs vfs.FileSystem, trace TraceOptions) *adapter {
+type StatfsOptions struct {
+	TotalSpace int64
+	FreeSpace  int64
+}
+
+func (s StatfsOptions) withDefaults() StatfsOptions {
+	if s.TotalSpace <= 0 {
+		s.TotalSpace = 512 << 30
+	}
+	if s.FreeSpace <= 0 {
+		s.FreeSpace = 400 << 30
+	}
+	if s.FreeSpace > s.TotalSpace {
+		s.FreeSpace = s.TotalSpace
+	}
+	return s
+}
+
+func newAdapter(fs vfs.FileSystem, trace TraceOptions, statfs StatfsOptions) *adapter {
 	return &adapter{
 		fs:      fs,
 		handles: map[uint64]string{},
 		xattrs:  map[string]map[string][]byte{},
 		trace:   newTraceLogger(trace),
+		statfs:  statfs,
 	}
 }
 
@@ -484,13 +509,38 @@ func (a *adapter) Statfs(path string, stat *fuse.Statfs_t) int {
 	defer func() {
 		a.trace.log("Statfs", path, "blocks=%d bfree=%d bavail=%d dur=%s", stat.Blocks, stat.Bfree, stat.Bavail, time.Since(start))
 	}()
+	space := a.effectiveStatfs()
 	stat.Bsize = 4096
 	stat.Frsize = 4096
-	stat.Blocks = 128 * 1024 * 1024
-	stat.Bfree = 100 * 1024 * 1024
-	stat.Bavail = 100 * 1024 * 1024
+	stat.Blocks = blocksForBytes(space.TotalSpace, stat.Bsize)
+	stat.Bfree = blocksForBytes(space.FreeSpace, stat.Bsize)
+	stat.Bavail = stat.Bfree
 	stat.Namemax = 255
 	return 0
+}
+
+func (a *adapter) effectiveStatfs() StatfsOptions {
+	space := a.statfs
+	if space.TotalSpace <= 0 || space.FreeSpace <= 0 {
+		if querier, ok := a.fs.(drive.SpaceQuerier); ok {
+			if auto, err := querier.Space(context.Background()); err == nil {
+				if space.TotalSpace <= 0 {
+					space.TotalSpace = auto.Total
+				}
+				if space.FreeSpace <= 0 {
+					space.FreeSpace = auto.Free
+				}
+			}
+		}
+	}
+	return space.withDefaults()
+}
+
+func blocksForBytes(bytes int64, blockSize uint64) uint64 {
+	if bytes <= 0 || blockSize == 0 {
+		return 0
+	}
+	return uint64((bytes + int64(blockSize) - 1) / int64(blockSize))
 }
 
 func (a *adapter) Chmod(path string, mode uint32) int {

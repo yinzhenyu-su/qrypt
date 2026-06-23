@@ -26,6 +26,14 @@ func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
 
 func (d *Driver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }
 
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	querier, ok := d.raw.(drive.SpaceQuerier)
+	if !ok {
+		return drive.Space{}, errors.New("crypt: raw driver does not support space query")
+	}
+	return querier.Space(ctx)
+}
+
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	entries, err := d.raw.List(ctx, parentID)
 	if err != nil {
@@ -134,3 +142,4 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
+var _ drive.SpaceQuerier = (*Driver)(nil)

@@ -67,6 +67,14 @@ func (v *VFS) Resume(ctx context.Context) {
 	}
 }
 
+func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
+	querier, ok := v.driver.(drive.SpaceQuerier)
+	if !ok {
+		return drive.Space{}, fmt.Errorf("vfs: driver does not support space query")
+	}
+	return querier.Space(ctx)
+}
+
 func (v *VFS) Stat(ctx context.Context, path string) (drive.Entry, error) {
 	path = cleanVirtual(path)
 	if pending, err := v.pending(path); err == nil {

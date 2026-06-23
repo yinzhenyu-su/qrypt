@@ -3,6 +3,8 @@ mount_point = "~/Qrypt"
 cache_dir = "/tmp/qrypt-cache"
 volume_name = "Qrypt"
 no_apple_double = true
+total_space = "1T"
+free_space = "800G"
 
 [logging]
 fuse_trace = false

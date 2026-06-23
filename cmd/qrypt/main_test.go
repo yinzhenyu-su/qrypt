@@ -240,6 +240,8 @@ func TestMountConfigFromConfig(t *testing.T) {
 	err := os.WriteFile(configPath, []byte(`
 volume_name = "Qrypt Dev"
 no_apple_double = false
+total_space = "2T"
+free_space = "1.5T"
 
 [logging]
 fuse_trace = true
@@ -258,6 +260,12 @@ fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
 	}
 	if mountConfig.NoAppleDouble {
 		t.Fatal("expected no_apple_double to be disabled")
+	}
+	if mountConfig.TotalSpace != 2<<40 {
+		t.Fatalf("unexpected total space: %d", mountConfig.TotalSpace)
+	}
+	if mountConfig.FreeSpace != 1536<<30 {
+		t.Fatalf("unexpected free space: %d", mountConfig.FreeSpace)
 	}
 	if !mountConfig.Logging.FuseTrace {
 		t.Fatal("expected fuse trace to be enabled")

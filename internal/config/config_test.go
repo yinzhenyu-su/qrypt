@@ -105,6 +105,8 @@ func TestLoadLoggingConfig(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 volume_name = "Qrypt Test"
 no_apple_double = false
+total_space = "1T"
+free_space = "800G"
 
 [logging]
 fuse_trace = true
@@ -130,6 +132,16 @@ fuse_trace_file = "/tmp/qrypt-fuse.log"
 	if cfg.EffectiveNoAppleDouble() {
 		t.Fatal("expected no_apple_double to be disabled")
 	}
+	total, free, err := cfg.EffectiveSpaceBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1<<40 {
+		t.Fatalf("unexpected total_space: %d", total)
+	}
+	if free != 800*(1<<30) {
+		t.Fatalf("unexpected free_space: %d", free)
+	}
 }
 
 func TestMountOptionsDefaults(t *testing.T) {
@@ -139,5 +151,35 @@ func TestMountOptionsDefaults(t *testing.T) {
 	}
 	if !cfg.EffectiveNoAppleDouble() {
 		t.Fatal("expected no_apple_double to default to true")
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	tests := map[string]int64{
+		"":      0,
+		"1024":  1024,
+		"1K":    1 << 10,
+		"1M":    1 << 20,
+		"1G":    1 << 30,
+		"1T":    1 << 40,
+		"1P":    1 << 50,
+		"1GB":   1 << 30,
+		"1.5G":  1536 << 20,
+		" 2 g ": 2 << 30,
+	}
+	for value, want := range tests {
+		got, err := ParseSize(value)
+		if err != nil {
+			t.Fatalf("ParseSize(%q) returned error: %v", value, err)
+		}
+		if got != want {
+			t.Fatalf("ParseSize(%q) = %d, want %d", value, got, want)
+		}
+	}
+}
+
+func TestParseSizeRejectsInvalidValue(t *testing.T) {
+	if _, err := ParseSize("ten G"); err == nil {
+		t.Fatal("expected invalid size to fail")
 	}
 }
