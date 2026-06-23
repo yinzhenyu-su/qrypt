@@ -342,12 +342,22 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		if maxBytes == 0 {
 			maxBytes = 512 << 20
 		}
-		uploadDelay, err := parseUploadDelay(cache.UploadDelay)
+		uploadDelay, err := parseCacheDelay(cache.UploadDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid cache.upload_delay: %w", mountCfg.Name, err)
 		}
-		fs, err := vfs.New(drv, vfs.Options{CacheDir: mountCacheDir, CacheMaxBytes: maxBytes, UploadDelay: uploadDelay})
+		deleteDelay, err := parseCacheDelay(cache.DeleteDelay)
+		if err != nil {
+			dropAll(ctx, drivers)
+			return nil, nil, fmt.Errorf("config: mount %s invalid cache.delete_delay: %w", mountCfg.Name, err)
+		}
+		fs, err := vfs.New(drv, vfs.Options{
+			CacheDir:      mountCacheDir,
+			CacheMaxBytes: maxBytes,
+			UploadDelay:   uploadDelay,
+			DeleteDelay:   deleteDelay,
+		})
 		if err != nil {
 			dropAll(ctx, drivers)
 			return nil, nil, err
@@ -365,7 +375,7 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 	return ns, func() { dropAll(ctx, drivers) }, nil
 }
 
-func parseUploadDelay(value string) (time.Duration, error) {
+func parseCacheDelay(value string) (time.Duration, error) {
 	if strings.TrimSpace(value) == "" {
 		return 0, nil
 	}
