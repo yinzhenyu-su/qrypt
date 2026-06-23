@@ -60,6 +60,7 @@ func (stubFS) WriteAt(context.Context, string, []byte, int64) (int, error) { ret
 func (stubFS) Flush(context.Context, string) error                         { return nil }
 func (stubFS) Mkdir(context.Context, string) (drive.Entry, error)          { return drive.Entry{}, nil }
 func (stubFS) Remove(context.Context, string) error                        { return nil }
+func (stubFS) RemoveDir(context.Context, string) error                     { return nil }
 func (stubFS) Rename(context.Context, string, string) error                { return nil }
 func (stubFS) Truncate(context.Context, string, int64) error               { return nil }
 func (stubFS) Pending() []vfs.PendingFile                                  { return nil }

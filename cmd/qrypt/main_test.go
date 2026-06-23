@@ -27,6 +27,9 @@ func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 
+[defaults.cache]
+upload_delay = "10ms"
+
 [[mounts]]
 name = "quark"
 type = "localfs"
@@ -90,6 +93,9 @@ func TestBuildNamespaceUsesPerMountEncryption(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
+
+[defaults.cache]
+upload_delay = "10ms"
 
 [[mounts]]
 name = "plain"
@@ -169,6 +175,9 @@ func TestBuildNamespaceUsesTopLevelCacheDir(t *testing.T) {
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 cache_dir = "`+cacheDir+`"
+
+[defaults.cache]
+upload_delay = "10ms"
 
 [[mounts]]
 name = "one"

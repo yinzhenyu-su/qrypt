@@ -454,7 +454,19 @@ func (a *adapter) Unlink(path string) int {
 }
 
 func (a *adapter) Rmdir(path string) int {
-	return a.Unlink(path)
+	start := time.Now()
+	errc := 0
+	defer func() { a.trace.log("Rmdir", path, "err=%d dur=%s", errc, time.Since(start)) }()
+	if a.isReadOnlyPath(path) {
+		errc = -fuse.EROFS
+		return errc
+	}
+	if err := a.fs.RemoveDir(context.Background(), path); err != nil {
+		errc = fuseErr(err)
+		return errc
+	}
+	a.removeXattrs(path)
+	return 0
 }
 
 func (a *adapter) Rename(oldPath, newPath string) int {
