@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,10 +74,40 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	}
 }
 
+func TestTraceLoggerUsesConfiguredFile(t *testing.T) {
+	t.Setenv("QRYPT_FUSE_TRACE", "")
+	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
+	path := filepath.Join(t.TempDir(), "fuse.log")
+	logger := newTraceLogger(TraceOptions{Enabled: true, File: path})
+	logger.log("TestOp", "/path", "err=%d", 0)
+	logger.close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `TestOp path="/path" err=0`) {
+		t.Fatalf("trace log missing operation: %q", data)
+	}
+}
+
+func TestTraceLoggerConfiguredFileRequiresEnable(t *testing.T) {
+	t.Setenv("QRYPT_FUSE_TRACE", "")
+	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
+	path := filepath.Join(t.TempDir(), "fuse.log")
+	logger := newTraceLogger(TraceOptions{File: path})
+	logger.log("TestOp", "/path", "err=%d", 0)
+	logger.close()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("trace file should not exist when tracing is disabled: %v", err)
+	}
+}
+
 func TestAdapterXattrsProvideStableFinderInfo(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true, ModTime: time.Unix(1, 0)},
-	}})
+	}}, TraceOptions{})
 
 	errc, value := ad.Getxattr("/", "com.apple.FinderInfo")
 	if errc != 0 {
@@ -100,7 +133,7 @@ func TestAdapterXattrsProvideStableFinderInfo(t *testing.T) {
 func TestAdapterXattrsSetListRemove(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
-	}})
+	}}, TraceOptions{})
 	const name = "com.apple.metadata:_kMDItemUserTags"
 	value := []byte("tags")
 
@@ -137,7 +170,7 @@ func TestAdapterXattrsSetListRemove(t *testing.T) {
 }
 
 func TestAdapterXattrsMissingPath(t *testing.T) {
-	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}})
+	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, TraceOptions{})
 	if errc, _ := ad.Getxattr("/missing", "com.apple.FinderInfo"); errc != -fuse.ENOENT {
 		t.Fatalf("Getxattr missing err = %d, want ENOENT", errc)
 	}
@@ -159,7 +192,7 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 			"/": {{ID: "/a", Name: "a", IsDir: true}},
 		},
 		readOnly: map[string]bool{"/": true, "/a": true, "/new": true},
-	})
+	}, TraceOptions{})
 
 	var stat fuse.Stat_t
 	if errc := ad.Getattr("/a", &stat, ^uint64(0)); errc != 0 {

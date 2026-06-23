@@ -25,6 +25,8 @@ type Options struct {
 	AllowOther     bool
 	VolumeName     string
 	NoAppleDouble  bool
+	TraceEnabled   bool
+	TraceFile      string
 	Foreground     bool
 	ReadyTimeout   time.Duration
 	UnmountOnError bool
@@ -62,7 +64,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		return nil, err
 	}
 
-	ad := newAdapter(fs)
+	ad := newAdapter(fs, TraceOptions{Enabled: opts.TraceEnabled, File: opts.TraceFile})
 	host := fuse.NewFileSystemHost(ad)
 	session := &Session{
 		ID:         opts.MountPoint,
@@ -166,12 +168,17 @@ type readOnlyPathChecker interface {
 	IsReadOnlyPath(path string) bool
 }
 
-func newAdapter(fs vfs.FileSystem) *adapter {
+type TraceOptions struct {
+	Enabled bool
+	File    string
+}
+
+func newAdapter(fs vfs.FileSystem, trace TraceOptions) *adapter {
 	return &adapter{
 		fs:      fs,
 		handles: map[uint64]string{},
 		xattrs:  map[string]map[string][]byte{},
-		trace:   newTraceLogger(),
+		trace:   newTraceLogger(trace),
 	}
 }
 
@@ -713,13 +720,22 @@ type traceLogger struct {
 	file    *os.File
 }
 
-func newTraceLogger() *traceLogger {
-	if os.Getenv("QRYPT_FUSE_TRACE") == "" && os.Getenv("QRYPT_FUSE_TRACE_FILE") == "" {
+func newTraceLogger(opts TraceOptions) *traceLogger {
+	enabled := opts.Enabled
+	path := opts.File
+	if envPath := os.Getenv("QRYPT_FUSE_TRACE_FILE"); envPath != "" {
+		path = envPath
+		enabled = true
+	}
+	if os.Getenv("QRYPT_FUSE_TRACE") != "" {
+		enabled = true
+	}
+	if !enabled {
 		return &traceLogger{}
 	}
 	out := os.Stderr
 	var file *os.File
-	if path := os.Getenv("QRYPT_FUSE_TRACE_FILE"); path != "" {
+	if path != "" {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err == nil {
 			out = f
