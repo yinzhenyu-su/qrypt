@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
+	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
 	"github.com/yinzhenyu/qrypt/internal/mount"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -26,6 +30,18 @@ func main() {
 }
 
 func run(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runWithContext(ctx, args); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func runWithContext(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("qrypt", flag.ContinueOnError)
 	driverName := flags.String("driver", "localfs", "backend driver")
 	root := flags.String("root", "", "backend root")
@@ -44,7 +60,6 @@ func run(args []string) error {
 		return fmt.Errorf("usage: qrypt [flags] list|put|cat|pending ...")
 	}
 
-	ctx := context.Background()
 	fs, cleanup, err := buildFileSystem(ctx, flags, *driverName, *root, *cacheDir, *configPath, *mountName, *password, *salt, *fileNameEncryption, *fileNameEncoding)
 	if err != nil {
 		return err

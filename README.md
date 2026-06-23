@@ -94,10 +94,11 @@ free_space = "800G"
 
 [[mounts]]
 name = "quark"
-type = "localfs"
+type = "quark"
 
 [mounts.params]
-root = "/tmp/qrypt-quark"
+cookie = "your-quark-cookie"
+root_path = "/"
 
 [mounts.encryption]
 password = "quark-password"
