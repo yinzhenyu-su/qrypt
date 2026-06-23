@@ -9,13 +9,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 const readChunkSize = 64 * 1024
+const readPrefetchRadius = 1
+const readPrefetchLimit = 2
+const listCacheTTL = 10 * time.Second
 
 type Options struct {
 	CacheDir      string
@@ -32,7 +37,12 @@ type VFS struct {
 
 	mu      sync.RWMutex
 	entries map[string]drive.Entry
+	lists   map[string]listCacheEntry
 	queue   chan PendingFile
+
+	prefetchMu  sync.Mutex
+	prefetching map[string]struct{}
+	prefetchSem chan struct{}
 }
 
 func New(driver drive.Driver, opts Options) (*VFS, error) {
@@ -44,11 +54,14 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		return nil, err
 	}
 	v := &VFS{
-		driver:  driver,
-		cache:   cache,
-		rootID:  opts.RootID,
-		entries: map[string]drive.Entry{},
-		queue:   make(chan PendingFile, 128),
+		driver:      driver,
+		cache:       cache,
+		rootID:      opts.RootID,
+		entries:     map[string]drive.Entry{},
+		lists:       map[string]listCacheEntry{},
+		queue:       make(chan PendingFile, 128),
+		prefetching: map[string]struct{}{},
+		prefetchSem: make(chan struct{}, readPrefetchLimit),
 	}
 	v.writer, _ = driver.(drive.Writer)
 	v.upload, _ = driver.(drive.Uploader)
@@ -94,15 +107,10 @@ func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := v.driver.List(ctx, entry.ID)
+	entries, err := v.listChildren(ctx, path, entry.ID)
 	if err != nil {
 		return nil, err
 	}
-	v.mu.Lock()
-	for _, child := range entries {
-		v.entries[joinVirtual(path, child.Name)] = child
-	}
-	v.mu.Unlock()
 	entries = v.withPendingChildren(path, entries)
 	return entries, nil
 }
@@ -137,38 +145,137 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 	if entry.IsDir {
 		return nil, fmt.Errorf("vfs: %s is a directory", path)
 	}
+	data, startChunk, endChunk, err := v.readRange(ctx, entry, offset, size)
+	if err != nil {
+		return nil, err
+	}
+	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk)
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (v *VFS) readRange(ctx context.Context, entry drive.Entry, offset, size int64) ([]byte, int64, int64, error) {
+	if offset < 0 || size < 0 {
+		return nil, 0, 0, fmt.Errorf("vfs: read offset and size must be non-negative")
+	}
 	startChunk := offset / readChunkSize
-	if cached, ok, err := v.cache.GetChunk(entry.ID, startChunk); err != nil {
+	endChunk := startChunk
+	var out bytes.Buffer
+	pos := offset
+	end, endKnown := readEnd(offset, size, entry.Size)
+	for {
+		if endKnown && pos >= end {
+			break
+		}
+		chunkIndex := pos / readChunkSize
+		chunk, err := v.readChunk(ctx, entry, chunkIndex)
+		if err != nil {
+			return nil, startChunk, endChunk, err
+		}
+		if len(chunk) == 0 {
+			break
+		}
+		chunkStart := chunkIndex * readChunkSize
+		start := pos - chunkStart
+		if start >= int64(len(chunk)) {
+			break
+		}
+		stop := int64(len(chunk))
+		if endKnown && end-chunkStart < stop {
+			stop = end - chunkStart
+		}
+		if stop > start {
+			out.Write(chunk[start:stop])
+			endChunk = chunkIndex
+		}
+		if len(chunk) < readChunkSize || (endKnown && chunkStart+stop >= end) {
+			break
+		}
+		pos = chunkStart + stop
+	}
+	return out.Bytes(), startChunk, endChunk, nil
+}
+
+func readEnd(offset, size, entrySize int64) (int64, bool) {
+	if size > 0 {
+		end := offset + size
+		if entrySize > 0 && end > entrySize {
+			end = entrySize
+		}
+		return end, true
+	}
+	if entrySize > 0 {
+		return entrySize, true
+	}
+	return 0, false
+}
+
+func (v *VFS) readChunk(ctx context.Context, entry drive.Entry, index int64) ([]byte, error) {
+	if cached, ok, err := v.cache.GetChunk(entry.ID, index); err != nil {
 		return nil, err
 	} else if ok {
-		start := offset % readChunkSize
-		end := int64(len(cached))
-		if size > 0 && start+size < end {
-			end = start + size
-		}
-		return io.NopCloser(bytes.NewReader(cached[start:end])), nil
+		return cached, nil
 	}
-	rc, err := v.driver.Read(ctx, entry, startChunk*readChunkSize, readChunkSize)
+	rc, err := v.driver.Read(ctx, entry, index*readChunkSize, readChunkSize)
 	if err != nil {
 		return nil, err
 	}
 	data, err := io.ReadAll(rc)
-	rc.Close()
+	closeErr := rc.Close()
 	if err != nil {
 		return nil, err
 	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
 	if len(data) > 0 {
-		_ = v.cache.PutChunk(entry.ID, startChunk, data)
+		_ = v.cache.PutChunk(entry.ID, index, data)
 	}
-	start := offset % readChunkSize
-	if start > int64(len(data)) {
-		start = int64(len(data))
+	return data, nil
+}
+
+func (v *VFS) prefetchAdjacentChunks(ctx context.Context, entry drive.Entry, startChunk, endChunk int64) {
+	for distance := int64(1); distance <= readPrefetchRadius; distance++ {
+		v.prefetchChunk(ctx, entry, startChunk-distance)
+		v.prefetchChunk(ctx, entry, endChunk+distance)
 	}
-	end := int64(len(data))
-	if size > 0 && start+size < end {
-		end = start + size
+}
+
+func (v *VFS) prefetchChunk(ctx context.Context, entry drive.Entry, index int64) {
+	if index < 0 {
+		return
 	}
-	return io.NopCloser(bytes.NewReader(data[start:end])), nil
+	if entry.Size > 0 && index*readChunkSize >= entry.Size {
+		return
+	}
+	if _, ok, err := v.cache.GetChunk(entry.ID, index); err != nil || ok {
+		return
+	}
+	key := entry.ID + "\x00" + strconv.FormatInt(index, 10)
+	v.prefetchMu.Lock()
+	if _, ok := v.prefetching[key]; ok {
+		v.prefetchMu.Unlock()
+		return
+	}
+	v.prefetching[key] = struct{}{}
+	v.prefetchMu.Unlock()
+	select {
+	case v.prefetchSem <- struct{}{}:
+	default:
+		v.prefetchMu.Lock()
+		delete(v.prefetching, key)
+		v.prefetchMu.Unlock()
+		return
+	}
+
+	go func() {
+		defer func() {
+			<-v.prefetchSem
+			v.prefetchMu.Lock()
+			delete(v.prefetching, key)
+			v.prefetchMu.Unlock()
+		}()
+		_, _ = v.readChunk(context.WithoutCancel(ctx), entry, index)
+	}()
 }
 
 func (v *VFS) Create(ctx context.Context, path string) error {
@@ -266,6 +373,7 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 	}
 	v.mu.Lock()
 	v.entries[cleanVirtual(path)] = entry
+	v.invalidateListLocked(filepath.Dir(cleanVirtual(path)))
 	v.mu.Unlock()
 	return entry, nil
 }
@@ -284,10 +392,12 @@ func (v *VFS) Remove(ctx context.Context, path string) error {
 	if err := v.writer.Remove(ctx, entry); err != nil {
 		return err
 	}
+	path = cleanVirtual(path)
 	v.mu.Lock()
-	delete(v.entries, cleanVirtual(path))
+	delete(v.entries, path)
+	v.invalidateListLocked(filepath.Dir(path))
 	v.mu.Unlock()
-	return v.cache.RemovePending(cleanVirtual(path))
+	return v.cache.RemovePending(path)
 }
 
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
@@ -339,6 +449,8 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
 	v.mu.Lock()
 	delete(v.entries, oldPath)
 	delete(v.entries, newPath)
+	v.invalidateListLocked(oldParent)
+	v.invalidateListLocked(newParent)
 	v.mu.Unlock()
 	if refreshed, err := v.resolve(ctx, newPath); err == nil {
 		entry = refreshed
@@ -444,6 +556,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	}
 	v.mu.Lock()
 	v.entries[pending.Path] = entry
+	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
 	return v.cache.RemovePending(pending.Path)
 }
@@ -488,7 +601,7 @@ func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	entries, err := v.driver.List(ctx, parent.ID)
+	entries, err := v.listChildren(ctx, parentPath, parent.ID)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -502,6 +615,50 @@ func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 		}
 	}
 	return drive.Entry{}, fmt.Errorf("vfs: not found: %s", path)
+}
+
+type listCacheEntry struct {
+	entries []drive.Entry
+	expires time.Time
+}
+
+func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]drive.Entry, error) {
+	parentPath = cleanVirtual(parentPath)
+	now := time.Now()
+	v.mu.RLock()
+	cached, ok := v.lists[parentPath]
+	if ok && now.Before(cached.expires) {
+		entries := cloneEntries(cached.entries)
+		v.mu.RUnlock()
+		return entries, nil
+	}
+	v.mu.RUnlock()
+
+	entries, err := v.driver.List(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	entries = cloneEntries(entries)
+	v.mu.Lock()
+	for _, child := range entries {
+		v.entries[joinVirtual(parentPath, child.Name)] = child
+	}
+	v.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: now.Add(listCacheTTL)}
+	v.mu.Unlock()
+	return entries, nil
+}
+
+func (v *VFS) invalidateListLocked(path string) {
+	delete(v.lists, cleanVirtual(path))
+}
+
+func cloneEntries(entries []drive.Entry) []drive.Entry {
+	if entries == nil {
+		return nil
+	}
+	cloned := make([]drive.Entry, len(entries))
+	copy(cloned, entries)
+	return cloned
 }
 
 func cleanVirtual(path string) string {

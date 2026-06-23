@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,79 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+const testReadChunkSize = 64 * 1024
+
+type countingReadDriver struct {
+	data []byte
+	mu   sync.Mutex
+	read map[int64]int
+}
+
+type countingListDriver struct {
+	mu    sync.Mutex
+	lists map[string]int
+}
+
+func newCountingReadDriver(data []byte) *countingReadDriver {
+	return &countingReadDriver{data: data, read: map[int64]int{}}
+}
+
+func (d *countingReadDriver) Init(context.Context) error { return nil }
+func (d *countingReadDriver) Drop(context.Context) error { return nil }
+
+func (d *countingReadDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return []drive.Entry{{
+		ID:       "file",
+		ParentID: "0",
+		Name:     "data.bin",
+		Size:     int64(len(d.data)),
+	}}, nil
+}
+
+func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	d.mu.Lock()
+	d.read[offset]++
+	d.mu.Unlock()
+	if offset >= int64(len(d.data)) {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
+	end := offset + size
+	if size <= 0 || end > int64(len(d.data)) {
+		end = int64(len(d.data))
+	}
+	return io.NopCloser(bytes.NewReader(d.data[offset:end])), nil
+}
+
+func (d *countingReadDriver) readCount(offset int64) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.read[offset]
+}
+
+func (d *countingListDriver) Init(context.Context) error { return nil }
+func (d *countingListDriver) Drop(context.Context) error { return nil }
+func (d *countingListDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+
+func (d *countingListDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	d.lists[parentID]++
+	d.mu.Unlock()
+	return []drive.Entry{{
+		ID:       "child",
+		ParentID: parentID,
+		Name:     "child.txt",
+		Size:     1,
+	}}, nil
+}
+
+func (d *countingListDriver) listCount(parentID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lists[parentID]
+}
 
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	ctx := context.Background()
@@ -139,6 +213,78 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 	}
 }
 
+func TestVFSReadSpansChunks(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("a"), testReadChunkSize+10)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("read length = %d, want %d", len(got), len(data))
+	}
+}
+
+func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("b"), 3*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	waitForCondition(t, func() bool {
+		return drv.readCount(testReadChunkSize) == 1
+	})
+	before := drv.readCount(testReadChunkSize)
+
+	rc, err = fs.Read(ctx, "/data.bin", testReadChunkSize, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if got := drv.readCount(testReadChunkSize); got != before {
+		t.Fatalf("prefetched chunk read count = %d, want %d", got, before)
+	}
+}
+
+func TestVFSListCachesChildrenForStat(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingListDriver{lists: map[string]int{}}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.List(ctx, "/"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(ctx, "/child.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := drv.listCount("0"); got != 1 {
+		t.Fatalf("root list count = %d, want 1", got)
+	}
+}
+
 func TestVFSRenameUploadedFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -251,6 +397,18 @@ func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pending uploads did not drain: %+v", fs.Pending())
+}
+
+func waitForCondition(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before deadline")
 }
 
 var _ drive.Driver = (*localfs.Driver)(nil)
