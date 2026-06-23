@@ -1,0 +1,32 @@
+version = "1"
+mount_point = "~/Qrypt"
+cache_dir = "/tmp/qrypt-cache"
+
+[defaults.cache]
+max_size_bytes = 536870912
+
+[[mounts]]
+name = "localfs1"
+type = "localfs"
+
+[mounts.params]
+root = "/tmp/qrypt-localfs-one"
+
+[mounts.encryption]
+password = "localfs-one-password"
+salt = "localfs-one-salt"
+filename_encryption = "off"
+filename_encoding = "base32"
+
+[[mounts]]
+name = "localfs2"
+type = "localfs"
+
+[mounts.params]
+root = "/tmp/qrypt-localfs-two"
+
+[mounts.encryption]
+password = "localfs-two-password"
+salt = "localfs-two-salt"
+filename_encryption = "standard"
+filename_encoding = "base32"
