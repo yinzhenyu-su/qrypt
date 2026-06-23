@@ -99,3 +99,45 @@ func TestEffectiveMountPointFallsBackToLegacyMountField(t *testing.T) {
 		t.Fatalf("expected legacy mount point fallback, got %q", got)
 	}
 }
+
+func TestLoadLoggingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	err := os.WriteFile(path, []byte(`
+volume_name = "Qrypt Test"
+no_apple_double = false
+
+[logging]
+fuse_trace = true
+fuse_trace_file = "/tmp/qrypt-fuse.log"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Logging.FuseTrace {
+		t.Fatal("expected fuse_trace to be enabled")
+	}
+	if cfg.Logging.FuseTraceFile != "/tmp/qrypt-fuse.log" {
+		t.Fatalf("unexpected fuse_trace_file: %q", cfg.Logging.FuseTraceFile)
+	}
+	if cfg.EffectiveVolumeName() != "Qrypt Test" {
+		t.Fatalf("unexpected volume_name: %q", cfg.EffectiveVolumeName())
+	}
+	if cfg.EffectiveNoAppleDouble() {
+		t.Fatal("expected no_apple_double to be disabled")
+	}
+}
+
+func TestMountOptionsDefaults(t *testing.T) {
+	cfg := &Config{}
+	if cfg.EffectiveVolumeName() != "Qrypt" {
+		t.Fatalf("unexpected default volume name: %q", cfg.EffectiveVolumeName())
+	}
+	if !cfg.EffectiveNoAppleDouble() {
+		t.Fatal("expected no_apple_double to default to true")
+	}
+}
