@@ -243,6 +243,37 @@ fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
 	}
 }
 
+func TestBuildNamespaceRejectsInvalidDeleteDelay(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root = "`+remote+`"
+[mounts.cache]
+delete_delay = "soon"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	_, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err == nil || !strings.Contains(err.Error(), "cache.delete_delay") {
+		t.Fatalf("expected cache.delete_delay error, got %v", err)
+	}
+}
+
 func TestMountConfigFromConfig(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "qrypt.toml")

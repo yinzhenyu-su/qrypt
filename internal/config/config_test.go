@@ -144,16 +144,18 @@ fuse_trace_file = "/tmp/qrypt-fuse.log"
 	}
 }
 
-func TestCacheForIncludesUploadDelay(t *testing.T) {
+func TestCacheForIncludesOperationDelays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
 [defaults.cache]
 upload_delay = "5s"
+delete_delay = "2s"
 
 [[mounts]]
 name = "fast"
 [mounts.cache]
 upload_delay = "250ms"
+delete_delay = "500ms"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -166,8 +168,14 @@ upload_delay = "250ms"
 	if got := cfg.CacheFor("slow").UploadDelay; got != "5s" {
 		t.Fatalf("default upload_delay = %q, want 5s", got)
 	}
+	if got := cfg.CacheFor("slow").DeleteDelay; got != "2s" {
+		t.Fatalf("default delete_delay = %q, want 2s", got)
+	}
 	if got := cfg.CacheFor("fast").UploadDelay; got != "250ms" {
 		t.Fatalf("mount upload_delay = %q, want 250ms", got)
+	}
+	if got := cfg.CacheFor("fast").DeleteDelay; got != "500ms" {
+		t.Fatalf("mount delete_delay = %q, want 500ms", got)
 	}
 }
 

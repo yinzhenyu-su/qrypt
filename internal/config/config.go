@@ -44,6 +44,7 @@ type CacheConfig struct {
 	Dir          string `toml:"dir"`
 	MaxSizeBytes int64  `toml:"max_size_bytes"`
 	UploadDelay  string `toml:"upload_delay"`
+	DeleteDelay  string `toml:"delete_delay"`
 }
 
 type LoggingConfig struct {
