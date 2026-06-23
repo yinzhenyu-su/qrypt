@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -80,10 +81,21 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 
 	mountOpts := mountOptions(opts)
 	if opts.Foreground {
-		if ok := host.Mount(opts.MountPoint, mountOpts); !ok {
-			return nil, fmt.Errorf("mount: failed to mount %s", opts.MountPoint)
+		result := make(chan bool, 1)
+		go func() {
+			result <- host.Mount(opts.MountPoint, mountOpts)
+		}()
+		select {
+		case ok := <-result:
+			if !ok {
+				return nil, fmt.Errorf("mount: failed to mount %s", opts.MountPoint)
+			}
+			return session, nil
+		case <-ctx.Done():
+			ad.shutdown()
+			host.Unmount()
+			return nil, ctx.Err()
 		}
-		return session, nil
 	}
 
 	result := make(chan bool, 1)
@@ -93,6 +105,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 
 	select {
 	case <-ctx.Done():
+		ad.shutdown()
 		host.Unmount()
 		return nil, ctx.Err()
 	case ok := <-result:
@@ -773,6 +786,9 @@ type traceLogger struct {
 func newTraceLogger(opts TraceOptions) *traceLogger {
 	enabled := opts.Enabled
 	path := opts.File
+	if path != "" {
+		enabled = true
+	}
 	if envPath := os.Getenv("QRYPT_FUSE_TRACE_FILE"); envPath != "" {
 		path = envPath
 		enabled = true
@@ -786,6 +802,11 @@ func newTraceLogger(opts TraceOptions) *traceLogger {
 	out := os.Stderr
 	var file *os.File
 	if path != "" {
+		if dir := filepath.Dir(path); dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "qrypt: create fuse trace dir %s: %v\n", dir, err)
+			}
+		}
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err == nil {
 			out = f

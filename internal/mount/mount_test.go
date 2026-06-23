@@ -100,7 +100,24 @@ func TestTraceLoggerUsesConfiguredFile(t *testing.T) {
 	}
 }
 
-func TestTraceLoggerConfiguredFileRequiresEnable(t *testing.T) {
+func TestTraceLoggerCreatesConfiguredFileDir(t *testing.T) {
+	t.Setenv("QRYPT_FUSE_TRACE", "")
+	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
+	path := filepath.Join(t.TempDir(), "missing", "qrypt-fuse.log")
+	logger := newTraceLogger(TraceOptions{Enabled: true, File: path})
+	logger.log("TestOp", "/path", "err=%d", 0)
+	logger.close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `TestOp path="/path" err=0`) {
+		t.Fatalf("trace log missing operation: %q", data)
+	}
+}
+
+func TestTraceLoggerConfiguredFileEnablesTrace(t *testing.T) {
 	t.Setenv("QRYPT_FUSE_TRACE", "")
 	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
 	path := filepath.Join(t.TempDir(), "fuse.log")
@@ -108,8 +125,12 @@ func TestTraceLoggerConfiguredFileRequiresEnable(t *testing.T) {
 	logger.log("TestOp", "/path", "err=%d", 0)
 	logger.close()
 
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("trace file should not exist when tracing is disabled: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `TestOp path="/path" err=0`) {
+		t.Fatalf("trace log missing operation: %q", data)
 	}
 }
 
