@@ -210,6 +210,76 @@ root = "`+remoteB+`"
 	}
 }
 
+func TestLoggingFromConfig(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	err := os.WriteFile(configPath, []byte(`
+[logging]
+fuse_trace = true
+fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logging, err := loggingFromConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !logging.FuseTrace {
+		t.Fatal("expected fuse trace to be enabled")
+	}
+	if logging.FuseTraceFile != filepath.Join(tmp, "fuse.log") {
+		t.Fatalf("unexpected fuse trace file: %q", logging.FuseTraceFile)
+	}
+}
+
+func TestMountConfigFromConfig(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	err := os.WriteFile(configPath, []byte(`
+volume_name = "Qrypt Dev"
+no_apple_double = false
+
+[logging]
+fuse_trace = true
+fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mountConfig, err := mountConfigFromConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mountConfig.VolumeName != "Qrypt Dev" {
+		t.Fatalf("unexpected volume name: %q", mountConfig.VolumeName)
+	}
+	if mountConfig.NoAppleDouble {
+		t.Fatal("expected no_apple_double to be disabled")
+	}
+	if !mountConfig.Logging.FuseTrace {
+		t.Fatal("expected fuse trace to be enabled")
+	}
+	if mountConfig.Logging.FuseTraceFile != filepath.Join(tmp, "fuse.log") {
+		t.Fatalf("unexpected fuse trace file: %q", mountConfig.Logging.FuseTraceFile)
+	}
+}
+
+func TestMountConfigFromConfigDefaults(t *testing.T) {
+	mountConfig, err := mountConfigFromConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mountConfig.VolumeName != "Qrypt" {
+		t.Fatalf("unexpected default volume name: %q", mountConfig.VolumeName)
+	}
+	if !mountConfig.NoAppleDouble {
+		t.Fatal("expected no_apple_double to default to true")
+	}
+}
+
 func waitPendingEmpty(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

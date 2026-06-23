@@ -1,6 +1,12 @@
 version = "1"
 mount_point = "~/Qrypt"
 cache_dir = "/tmp/qrypt-cache"
+volume_name = "Qrypt"
+no_apple_double = true
+
+[logging]
+fuse_trace = false
+fuse_trace_file = "/tmp/qrypt-fuse.log"
 
 [defaults.cache]
 max_size_bytes = 536870912
