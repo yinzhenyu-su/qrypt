@@ -298,7 +298,17 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		if mountCfg.Type == "" {
 			return nil, nil, fmt.Errorf("config: mount %s missing type", mountCfg.Name)
 		}
-		raw, err := drive.New(mountCfg.Type, drive.Params(mountCfg.Params))
+		params := drive.Params{}
+		for key, value := range mountCfg.Params {
+			params[key] = value
+		}
+		if cfg.Logging.FuseTrace {
+			params["trace"] = "true"
+		}
+		if cfg.Logging.FuseTraceFile != "" {
+			params["trace_file"] = expandHome(cfg.Logging.FuseTraceFile)
+		}
+		raw, err := drive.New(mountCfg.Type, params)
 		if err != nil {
 			dropAll(ctx, drivers)
 			return nil, nil, err

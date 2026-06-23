@@ -8,7 +8,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +26,7 @@ type Driver struct {
 	cookie   string
 	rootPath string
 	rootID   string
+	trace    *traceLogger
 }
 
 func init() {
@@ -32,19 +36,23 @@ func init() {
 			return nil, fmt.Errorf("quark: missing cookie")
 		}
 		return New(cookie, Options{
-			RootPath: params["root_path"],
-			RootID:   params["root_id"],
-			BaseURL:  params["base_url"],
-			V2URL:    params["v2_url"],
+			RootPath:  params["root_path"],
+			RootID:    params["root_id"],
+			BaseURL:   params["base_url"],
+			V2URL:     params["v2_url"],
+			Trace:     params["trace"] == "true",
+			TraceFile: params["trace_file"],
 		}), nil
 	})
 }
 
 type Options struct {
-	RootPath string
-	RootID   string
-	BaseURL  string
-	V2URL    string
+	RootPath  string
+	RootID    string
+	BaseURL   string
+	V2URL     string
+	Trace     bool
+	TraceFile string
 }
 
 func New(cookie string, opts Options) *Driver {
@@ -57,6 +65,7 @@ func New(cookie string, opts Options) *Driver {
 		cookie:   cookie,
 		rootPath: opts.RootPath,
 		rootID:   rootID,
+		trace:    newTraceLogger(opts.Trace, opts.TraceFile),
 	}
 }
 
@@ -85,6 +94,9 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
+	if d.trace != nil {
+		d.trace.close()
+	}
 	return nil
 }
 
@@ -162,10 +174,13 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	start := time.Now()
 	downloadURL, err := d.downloadURL(entry.ID)
 	if err != nil {
+		d.trace.log("ReadURL", entry.ID, "offset=%d size=%d err=%v dur=%s", offset, size, err, time.Since(start))
 		return nil, err
 	}
+	d.trace.log("ReadURL", entry.ID, "offset=%d size=%d dur=%s", offset, size, time.Since(start))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("quark: read: create request: %w", err)
@@ -173,11 +188,14 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if size > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
 	}
+	httpStart := time.Now()
 	resp, err := d.cl.doDownload(req)
 	if err != nil {
 		d.invalidateURL(entry.ID)
+		d.trace.log("ReadHTTP", entry.ID, "offset=%d size=%d err=%v dur=%s", offset, size, err, time.Since(httpStart))
 		return nil, fmt.Errorf("quark: read: download: %w", err)
 	}
+	d.trace.log("ReadHTTP", entry.ID, "offset=%d size=%d status=%d dur=%s", offset, size, resp.StatusCode, time.Since(httpStart))
 	if resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()
 		d.invalidateURL(entry.ID)
@@ -187,7 +205,14 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		resp.Body.Close()
 		return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
 	}
-	return resp.Body, nil
+	return &traceReadCloser{
+		ReadCloser: resp.Body,
+		trace:      d.trace,
+		fid:        entry.ID,
+		offset:     offset,
+		size:       size,
+		start:      time.Now(),
+	}, nil
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
@@ -585,6 +610,69 @@ func apiError(resp respEnvelope) error {
 		return fmt.Errorf("quark: directory already exists")
 	}
 	return fmt.Errorf("quark: api error: status=%d code=%d msg=%s", resp.Status, resp.Code, resp.Message)
+}
+
+type traceLogger struct {
+	logger *log.Logger
+	file   *os.File
+}
+
+func newTraceLogger(enabled bool, path string) *traceLogger {
+	if path != "" {
+		enabled = true
+	}
+	if !enabled {
+		return &traceLogger{}
+	}
+	out := os.Stderr
+	var file *os.File
+	if path != "" {
+		if dir := filepath.Dir(path); dir != "." {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			out = f
+			file = f
+		}
+	}
+	return &traceLogger{logger: log.New(out, "[quark] ", log.LstdFlags|log.Lmicroseconds), file: file}
+}
+
+func (t *traceLogger) log(op, fid, format string, args ...any) {
+	if t == nil || t.logger == nil {
+		return
+	}
+	t.logger.Printf("%s fid=%q %s", op, fid, fmt.Sprintf(format, args...))
+}
+
+func (t *traceLogger) close() {
+	if t == nil || t.file == nil {
+		return
+	}
+	_ = t.file.Close()
+	t.file = nil
+}
+
+type traceReadCloser struct {
+	io.ReadCloser
+	trace  *traceLogger
+	fid    string
+	offset int64
+	size   int64
+	start  time.Time
+	read   int64
+}
+
+func (r *traceReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
+func (r *traceReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.trace.log("ReadBody", r.fid, "offset=%d size=%d read=%d err=%v dur=%s", r.offset, r.size, r.read, err, time.Since(r.start))
+	return err
 }
 
 var _ drive.Driver = (*Driver)(nil)
