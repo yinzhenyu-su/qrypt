@@ -53,6 +53,7 @@ type VFS struct {
 	deleteMu     sync.Mutex
 	deleteTimers map[string]*time.Timer
 	deleted      map[string]drive.Entry
+	overlayOps   map[string]overlayOp
 
 	prefetchMu  sync.Mutex
 	prefetching map[string]struct{}
@@ -63,6 +64,15 @@ type VFS struct {
 
 	windowLoadMu sync.Mutex
 	windowLoads  map[string]*windowLoad
+}
+
+type overlayOp struct {
+	oldPath string
+	newPath string
+	entryID string
+	isDir   bool
+	oldGone bool
+	newSeen bool
 }
 
 func New(driver drive.Driver, opts Options) (*VFS, error) {
@@ -91,6 +101,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		deleteDelay:  opts.DeleteDelay,
 		deleteTimers: map[string]*time.Timer{},
 		deleted:      map[string]drive.Entry{},
+		overlayOps:   map[string]overlayOp{},
 		prefetching:  map[string]struct{}{},
 		prefetchSem:  make(chan struct{}, readPrefetchLimit),
 		chunkLoads:   map[string]*chunkLoad{},
@@ -664,10 +675,7 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
 		if err := v.writer.Rename(ctx, entry, newName); err != nil {
 			return err
 		}
-		entry, err = v.resolve(ctx, joinVirtual(oldParent, newName))
-		if err != nil {
-			entry.Name = newName
-		}
+		entry.Name = newName
 	}
 	if oldParent != newParent {
 		if err := v.writer.Move(ctx, entry, dstParent.ID); err != nil {
@@ -678,17 +686,14 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
 	v.mu.Lock()
 	delete(v.entries, oldPath)
 	delete(v.entries, newPath)
+	v.rebaseCachedPathsLocked(oldPath, newPath)
 	v.invalidateListLocked(oldParent)
 	v.invalidateListLocked(newParent)
-	v.mu.Unlock()
-	if refreshed, err := v.resolve(ctx, newPath); err == nil {
-		entry = refreshed
-	}
 	entry.Name = newName
 	entry.ParentID = dstParent.ID
-	v.mu.Lock()
 	v.entries[newPath] = entry
 	v.mu.Unlock()
+	v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
 	return nil
 }
 
@@ -791,6 +796,11 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	defer rc.Close()
 	entry, err := v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, rc)
 	if err != nil {
+		if ctx.Err() == nil {
+			if latest, ok := v.cache.PendingByPath(pending.Path); ok {
+				v.enqueue(latest)
+			}
+		}
 		return err
 	}
 	v.mu.Lock()
@@ -852,6 +862,7 @@ func (v *VFS) sendUpload(p PendingFile) {
 func (v *VFS) markDeleted(path string, entry drive.Entry) {
 	v.deleteMu.Lock()
 	v.deleted[path] = entry
+	delete(v.overlayOps, path)
 	v.deleteMu.Unlock()
 
 	v.mu.Lock()
@@ -870,6 +881,21 @@ func (v *VFS) markDeleted(path string, entry drive.Entry) {
 		}
 	}
 	v.mu.Unlock()
+}
+
+func (v *VFS) addOverlay(oldPath, newPath, entryID string, recursive bool) {
+	oldPath = cleanVirtual(oldPath)
+	newPath = cleanVirtual(newPath)
+	v.deleteMu.Lock()
+	v.overlayOps[oldPath] = overlayOp{oldPath: oldPath, newPath: newPath, entryID: entryID, isDir: recursive}
+	if recursive {
+		for key, op := range v.overlayOps {
+			if key != oldPath && isPathUnder(op.oldPath, oldPath) {
+				delete(v.overlayOps, key)
+			}
+		}
+	}
+	v.deleteMu.Unlock()
 }
 
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
@@ -941,6 +967,19 @@ func (v *VFS) pending(path string) (PendingFile, error) {
 	return PendingFile{}, fmt.Errorf("vfs: no pending file for %s", path)
 }
 
+func (v *VFS) rebaseCachedPathsLocked(oldPath, newPath string) {
+	oldPath = cleanVirtual(oldPath)
+	newPath = cleanVirtual(newPath)
+	for path, entry := range v.entries {
+		if !isPathUnder(path, oldPath) {
+			continue
+		}
+		nextPath := joinVirtual(newPath, strings.TrimPrefix(path, oldPath+"/"))
+		delete(v.entries, path)
+		v.entries[nextPath] = entry
+	}
+}
+
 func (v *VFS) parent(ctx context.Context, path string) (drive.Entry, string, error) {
 	path = cleanVirtual(path)
 	name := filepath.Base(path)
@@ -951,7 +990,7 @@ func (v *VFS) parent(ctx context.Context, path string) (drive.Entry, string, err
 
 func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	path = cleanVirtual(path)
-	if v.isDeleted(path) {
+	if v.isUnavailable(path) {
 		return drive.Entry{}, fmt.Errorf("vfs: not found: %s", path)
 	}
 	v.mu.RLock()
@@ -995,7 +1034,7 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 	if ok && now.Before(cached.expires) {
 		entries := cloneEntries(cached.entries)
 		v.mu.RUnlock()
-		return v.filterDeleted(parentPath, entries), nil
+		return v.localChildren(parentPath, v.filterDeleted(parentPath, entries)), nil
 	}
 	v.mu.RUnlock()
 
@@ -1003,6 +1042,7 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 	if err != nil {
 		return nil, err
 	}
+	v.updateOverlay(parentPath, entries)
 	entries = v.filterDeleted(parentPath, entries)
 	v.mu.Lock()
 	for _, child := range entries {
@@ -1010,11 +1050,15 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 	}
 	v.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: now.Add(listCacheTTL)}
 	v.mu.Unlock()
-	return entries, nil
+	return v.localChildren(parentPath, entries), nil
 }
 
 func (v *VFS) invalidateListLocked(path string) {
 	delete(v.lists, cleanVirtual(path))
+}
+
+func (v *VFS) isUnavailable(path string) bool {
+	return v.isDeleted(path) || v.isHidden(path)
 }
 
 func (v *VFS) isDeleted(path string) bool {
@@ -1029,16 +1073,78 @@ func (v *VFS) isDeleted(path string) bool {
 	return false
 }
 
+func (v *VFS) isHidden(path string) bool {
+	path = cleanVirtual(path)
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	for _, op := range v.overlayOps {
+		if path == op.oldPath || (op.isDir && isPathUnder(path, op.oldPath)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *VFS) updateOverlay(parentPath string, entries []drive.Entry) {
+	parentPath = cleanVirtual(parentPath)
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	for key, op := range v.overlayOps {
+		if filepath.Dir(op.oldPath) == parentPath {
+			op.oldGone = !entryListHasPath(entries, filepath.Base(op.oldPath), op.entryID)
+		}
+		if filepath.Dir(op.newPath) == parentPath {
+			op.newSeen = entryListHasPath(entries, filepath.Base(op.newPath), op.entryID)
+		}
+		if op.oldGone && op.newSeen {
+			delete(v.overlayOps, key)
+			continue
+		}
+		v.overlayOps[key] = op
+	}
+}
+
 func (v *VFS) filterDeleted(parentPath string, entries []drive.Entry) []drive.Entry {
 	entries = cloneEntries(entries)
 	filtered := entries[:0]
 	for _, entry := range entries {
-		if v.isDeleted(joinVirtual(parentPath, entry.Name)) {
+		if v.isUnavailable(joinVirtual(parentPath, entry.Name)) {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
 	return filtered
+}
+
+func (v *VFS) localChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+	parentPath = cleanVirtual(parentPath)
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.Name] = true
+	}
+	var local []struct {
+		path  string
+		entry drive.Entry
+	}
+	v.mu.RLock()
+	for path, entry := range v.entries {
+		if path == "/" || filepath.Dir(path) != parentPath || seen[entry.Name] {
+			continue
+		}
+		local = append(local, struct {
+			path  string
+			entry drive.Entry
+		}{path: path, entry: entry})
+	}
+	v.mu.RUnlock()
+	for _, item := range local {
+		if seen[item.entry.Name] || v.isUnavailable(item.path) {
+			continue
+		}
+		entries = append(entries, item.entry)
+		seen[item.entry.Name] = true
+	}
+	return entries
 }
 
 func cloneEntries(entries []drive.Entry) []drive.Entry {
@@ -1070,6 +1176,18 @@ func isPathUnder(path, dir string) bool {
 	path = cleanVirtual(path)
 	dir = cleanVirtual(dir)
 	return dir != "/" && strings.HasPrefix(path, dir+"/")
+}
+
+func entryListHasPath(entries []drive.Entry, name, entryID string) bool {
+	for _, entry := range entries {
+		if entry.Name != name {
+			continue
+		}
+		if entryID == "" || entry.ID == "" || entry.ID == entryID {
+			return true
+		}
+	}
+	return false
 }
 
 func stagingFID(path string) string {

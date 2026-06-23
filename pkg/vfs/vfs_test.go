@@ -3,8 +3,10 @@ package vfs_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +45,21 @@ type countingRemoveDriver struct {
 	mu      sync.Mutex
 	entries map[string]drive.Entry
 	removed []string
+}
+
+type staleMkdirListDriver struct {
+	mu           sync.Mutex
+	failFirstPut bool
+	putAttempts  int
+	lastParent   string
+	lastName     string
+	lastData     []byte
+}
+
+type staleMoveListDriver struct {
+	renamed   []string
+	moved     []string
+	converged bool
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
@@ -229,6 +246,85 @@ func isEntryUnder(entry drive.Entry, parentID string, entries map[string]drive.E
 	}
 	return false
 }
+
+func (d *staleMkdirListDriver) Init(context.Context) error { return nil }
+func (d *staleMkdirListDriver) Drop(context.Context) error { return nil }
+func (d *staleMkdirListDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *staleMkdirListDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, nil
+}
+func (d *staleMkdirListDriver) Mkdir(_ context.Context, parentID, name string) (drive.Entry, error) {
+	return drive.Entry{ID: "dir-id", ParentID: parentID, Name: name, IsDir: true}, nil
+}
+func (d *staleMkdirListDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *staleMkdirListDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *staleMkdirListDriver) Remove(context.Context, drive.Entry) error { return nil }
+func (d *staleMkdirListDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.putAttempts++
+	if d.failFirstPut && d.putAttempts == 1 {
+		return drive.Entry{}, errors.New("parent not ready")
+	}
+	d.lastParent = parentID
+	d.lastName = name
+	d.lastData = append(d.lastData[:0], data...)
+	return drive.Entry{ID: name, ParentID: parentID, Name: name, Size: size}, nil
+}
+func (d *staleMkdirListDriver) lastPut() (attempts int, parent, name, data string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.putAttempts, d.lastParent, d.lastName, string(d.lastData)
+}
+
+func (d *staleMoveListDriver) Init(context.Context) error { return nil }
+func (d *staleMoveListDriver) Drop(context.Context) error { return nil }
+func (d *staleMoveListDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *staleMoveListDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	if d.converged {
+		switch parentID {
+		case "0":
+			return []drive.Entry{{ID: "dir-id", ParentID: "0", Name: "video", IsDir: true}}, nil
+		case "dir-id":
+			return []drive.Entry{{ID: "movie-id", ParentID: "dir-id", Name: "movie.mp4", Size: 10}}, nil
+		default:
+			return nil, nil
+		}
+	}
+	switch parentID {
+	case "0":
+		return []drive.Entry{
+			{ID: "dir-id", ParentID: "0", Name: "新建文件夹", IsDir: true},
+			{ID: "movie-id", ParentID: "0", Name: "movie.mp4", Size: 10},
+		}, nil
+	case "dir-id":
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+func (d *staleMoveListDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+func (d *staleMoveListDriver) Rename(_ context.Context, entry drive.Entry, newName string) error {
+	d.renamed = append(d.renamed, entry.ID+":"+newName)
+	return nil
+}
+func (d *staleMoveListDriver) Move(_ context.Context, entry drive.Entry, dstParentID string) error {
+	d.moved = append(d.moved, entry.ID+":"+dstParentID)
+	return nil
+}
+func (d *staleMoveListDriver) Remove(context.Context, drive.Entry) error { return nil }
 
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	ctx := context.Background()
@@ -600,6 +696,123 @@ func TestVFSListCachesChildrenForStat(t *testing.T) {
 	}
 }
 
+func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
+	ctx := context.Background()
+	fs, err := vfs.New(&staleMkdirListDriver{}, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.Mkdir(ctx, "/new-folder"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "new-folder" || !entries[0].IsDir {
+		t.Fatalf("created directory should remain visible, got %+v", entries)
+	}
+	if _, err := fs.Stat(ctx, "/new-folder"); err != nil {
+		t.Fatalf("created directory should remain stat-able: %v", err)
+	}
+}
+
+func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
+	ctx := context.Background()
+	drv := &staleMkdirListDriver{failFirstPut: true}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.Mkdir(ctx, "/new-folder"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/new-folder/file.txt", []byte("content"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/new-folder/file.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitNoPending(t, fs)
+	attempts, parent, name, data := drv.lastPut()
+	if attempts != 2 {
+		t.Fatalf("put attempts = %d, want 2", attempts)
+	}
+	if parent != "dir-id" || name != "file.txt" || data != "content" {
+		t.Fatalf("unexpected put parent=%q name=%q data=%q", parent, name, data)
+	}
+}
+
+func TestVFSRenameMoveOverlayHidesStaleBackendEntries(t *testing.T) {
+	ctx := context.Background()
+	drv := &staleMoveListDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.Rename(ctx, "/新建文件夹", "/video"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/movie.mp4", "/video/movie.mp4"); err != nil {
+		t.Fatal(err)
+	}
+
+	rootEntries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namesOf(rootEntries) != "video" {
+		t.Fatalf("root entries = %q, want video", namesOf(rootEntries))
+	}
+	videoEntries, err := fs.List(ctx, "/video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namesOf(videoEntries) != "movie.mp4" {
+		t.Fatalf("video entries = %q, want movie.mp4", namesOf(videoEntries))
+	}
+	if _, err := fs.Stat(ctx, "/movie.mp4"); err == nil {
+		t.Fatal("old moved file path should be hidden")
+	}
+}
+
+func TestVFSRenameMoveOverlayConfirmsRemoteConvergence(t *testing.T) {
+	ctx := context.Background()
+	drv := &staleMoveListDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.Rename(ctx, "/新建文件夹", "/video"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/movie.mp4", "/video/movie.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	drv.converged = true
+
+	rootEntries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namesOf(rootEntries) != "video" {
+		t.Fatalf("root entries = %q, want video", namesOf(rootEntries))
+	}
+	videoEntries, err := fs.List(ctx, "/video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namesOf(videoEntries) != "movie.mp4" {
+		t.Fatalf("video entries = %q, want movie.mp4", namesOf(videoEntries))
+	}
+}
+
 func TestVFSRenameUploadedFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -724,6 +937,14 @@ func waitForCondition(t *testing.T, ok func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before deadline")
+}
+
+func namesOf(entries []drive.Entry) string {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name)
+	}
+	return strings.Join(names, ",")
 }
 
 var _ drive.Driver = (*localfs.Driver)(nil)
