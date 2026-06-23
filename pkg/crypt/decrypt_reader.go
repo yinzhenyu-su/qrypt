@@ -22,6 +22,15 @@ func NewDecryptingReader(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte
 	}
 }
 
+func NewDecryptingReaderAt(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte, blockIndex uint64) *DecryptingReader {
+	return &DecryptingReader{
+		enc:        enc,
+		cipher:     cipher,
+		nonce:      nonce,
+		blockIndex: blockIndex,
+	}
+}
+
 func (r *DecryptingReader) Read(p []byte) (int, error) {
 	total := 0
 	for total < len(p) {

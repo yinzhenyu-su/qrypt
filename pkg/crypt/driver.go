@@ -54,6 +54,52 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	if offset < 0 || size < 0 {
+		return nil, errors.New("crypt: read offset and size must be non-negative")
+	}
+	if offset == 0 && size == 0 {
+		return d.readAll(ctx, entry)
+	}
+	nonce, err := d.fileNonce(ctx, entry)
+	if err != nil {
+		return nil, err
+	}
+	blockIndex := offset / BlockDataSize
+	blockOffset := offset % BlockDataSize
+	encOffset := int64(FileHeaderSize) + blockIndex*BlockSize
+	encSize := int64(BlockSize)
+	if size > 0 {
+		plainNeeded := blockOffset + size
+		blocks := (plainNeeded + BlockDataSize - 1) / BlockDataSize
+		encSize = blocks * BlockSize
+	}
+	if entry.Size > 0 {
+		encTotal := d.cp.EncryptedSize(entry.Size)
+		if encOffset >= encTotal {
+			return io.NopCloser(strings.NewReader("")), nil
+		}
+		if encOffset+encSize > encTotal {
+			encSize = encTotal - encOffset
+		}
+	}
+	rc, err := d.raw.Read(ctx, entry, encOffset, encSize)
+	if err != nil {
+		return nil, err
+	}
+	reader := io.Reader(NewDecryptingReaderAt(rc, d.cp, nonce, uint64(blockIndex)))
+	if blockOffset > 0 {
+		reader = &discardPrefixReader{reader: reader, discard: blockOffset, closer: rc}
+	}
+	if size > 0 {
+		reader = io.LimitReader(reader, size)
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{Reader: reader, Closer: rc}, nil
+}
+
+func (d *Driver) readAll(ctx context.Context, entry drive.Entry) (io.ReadCloser, error) {
 	rc, err := d.raw.Read(ctx, entry, 0, 0)
 	if err != nil {
 		return nil, err
@@ -69,20 +115,51 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	}
 	var nonce [FileNonceSize]byte
 	copy(nonce[:], header[FileMagicSize:])
+	d.nonceCache.Store(entry.ID, nonce)
 	reader := io.Reader(NewDecryptingReader(rc, d.cp, nonce))
-	if offset > 0 {
-		if _, err := io.CopyN(io.Discard, reader, offset); err != nil {
-			rc.Close()
-			return nil, err
-		}
-	}
-	if size > 0 {
-		reader = io.LimitReader(reader, size)
-	}
 	return struct {
 		io.Reader
 		io.Closer
 	}{Reader: reader, Closer: rc}, nil
+}
+
+func (d *Driver) fileNonce(ctx context.Context, entry drive.Entry) ([FileNonceSize]byte, error) {
+	if cached, ok := d.nonceCache.Load(entry.ID); ok {
+		return cached.([FileNonceSize]byte), nil
+	}
+	rc, err := d.raw.Read(ctx, entry, 0, int64(FileHeaderSize))
+	if err != nil {
+		return [FileNonceSize]byte{}, err
+	}
+	defer rc.Close()
+	header := make([]byte, FileHeaderSize)
+	if _, err := io.ReadFull(rc, header); err != nil {
+		return [FileNonceSize]byte{}, fmt.Errorf("crypt: read header: %w", err)
+	}
+	if string(header[:FileMagicSize]) != FileMagic {
+		return [FileNonceSize]byte{}, errors.New("crypt: invalid rclone file header")
+	}
+	var nonce [FileNonceSize]byte
+	copy(nonce[:], header[FileMagicSize:])
+	d.nonceCache.Store(entry.ID, nonce)
+	return nonce, nil
+}
+
+type discardPrefixReader struct {
+	reader  io.Reader
+	discard int64
+	closer  io.Closer
+	done    bool
+}
+
+func (r *discardPrefixReader) Read(p []byte) (int, error) {
+	if !r.done {
+		if _, err := io.CopyN(io.Discard, r.reader, r.discard); err != nil {
+			return 0, err
+		}
+		r.done = true
+	}
+	return r.reader.Read(p)
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
