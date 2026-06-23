@@ -27,6 +27,7 @@ type FileSystem interface {
 	Flush(ctx context.Context, path string) error
 	Mkdir(ctx context.Context, path string) (drive.Entry, error)
 	Remove(ctx context.Context, path string) error
+	RemoveDir(ctx context.Context, path string) error
 	Rename(ctx context.Context, oldPath, newPath string) error
 	Truncate(ctx context.Context, path string, size int64) error
 	Pending() []PendingFile
@@ -160,6 +161,17 @@ func (n *Namespace) Remove(ctx context.Context, path string) error {
 		return ErrReadOnly
 	}
 	return mount.Remove(ctx, rest)
+}
+
+func (n *Namespace) RemoveDir(ctx context.Context, path string) error {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root || rest == "/" {
+		return ErrReadOnly
+	}
+	return mount.RemoveDir(ctx, rest)
 }
 
 func (n *Namespace) Rename(ctx context.Context, oldPath, newPath string) error {

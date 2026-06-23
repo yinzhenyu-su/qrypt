@@ -16,6 +16,7 @@ import (
 )
 
 const testReadChunkSize = 512 * 1024
+const testUploadDelay = 10 * time.Millisecond
 
 type countingReadDriver struct {
 	data    []byte
@@ -30,8 +31,31 @@ type countingListDriver struct {
 	lists map[string]int
 }
 
+type countingUploadDriver struct {
+	mu          sync.Mutex
+	uploads     int
+	last        []byte
+	blockReturn chan struct{}
+	entered     chan struct{}
+}
+
+type countingRemoveDriver struct {
+	mu      sync.Mutex
+	entries map[string]drive.Entry
+	removed []string
+}
+
 func newCountingReadDriver(data []byte) *countingReadDriver {
 	return &countingReadDriver{data: data, read: map[int64]int{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
+}
+
+func newCountingRemoveDriver() *countingRemoveDriver {
+	return &countingRemoveDriver{entries: map[string]drive.Entry{
+		"dir": {ID: "dir", ParentID: "0", Name: "dir", IsDir: true},
+		"a":   {ID: "a", ParentID: "dir", Name: "a.txt"},
+		"sub": {ID: "sub", ParentID: "dir", Name: "sub", IsDir: true},
+		"b":   {ID: "b", ParentID: "sub", Name: "b.txt"},
+	}}
 }
 
 func (d *countingReadDriver) Init(context.Context) error { return nil }
@@ -112,6 +136,100 @@ func (d *countingListDriver) listCount(parentID string) int {
 	return d.lists[parentID]
 }
 
+func (d *countingUploadDriver) Init(context.Context) error { return nil }
+func (d *countingUploadDriver) Drop(context.Context) error { return nil }
+func (d *countingUploadDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, nil
+}
+func (d *countingUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *countingUploadDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	d.mu.Lock()
+	d.uploads++
+	d.last = append(d.last[:0], data...)
+	block := d.blockReturn
+	entered := d.entered
+	d.blockReturn = nil
+	d.entered = nil
+	d.mu.Unlock()
+	if entered != nil {
+		close(entered)
+	}
+	if block != nil {
+		<-block
+	}
+	return drive.Entry{ID: name, ParentID: parentID, Name: name, Size: size}, nil
+}
+func (d *countingUploadDriver) uploadCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.uploads
+}
+func (d *countingUploadDriver) lastUpload() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return string(d.last)
+}
+
+func (d *countingRemoveDriver) Init(context.Context) error { return nil }
+func (d *countingRemoveDriver) Drop(context.Context) error { return nil }
+func (d *countingRemoveDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *countingRemoveDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+func (d *countingRemoveDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+func (d *countingRemoveDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *countingRemoveDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *countingRemoveDriver) Remove(_ context.Context, entry drive.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.removed = append(d.removed, entry.ID)
+	for id, candidate := range d.entries {
+		if id == entry.ID || isEntryUnder(candidate, entry.ID, d.entries) {
+			delete(d.entries, id)
+		}
+	}
+	return nil
+}
+func (d *countingRemoveDriver) removedIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.removed...)
+}
+
+func isEntryUnder(entry drive.Entry, parentID string, entries map[string]drive.Entry) bool {
+	for entry.ParentID != "" && entry.ParentID != "0" {
+		if entry.ParentID == parentID {
+			return true
+		}
+		parent, ok := entries[entry.ParentID]
+		if !ok {
+			return false
+		}
+		entry = parent
+	}
+	return false
+}
+
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -121,7 +239,7 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fs, err := vfs.New(raw, vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(raw, vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +267,133 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	}
 }
 
+func TestVFSCoalescesFlushUploads(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("one"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("two"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitNoPending(t, fs)
+	if got := drv.uploadCount(); got != 1 {
+		t.Fatalf("upload count = %d, want 1", got)
+	}
+	if got := drv.lastUpload(); got != "two" {
+		t.Fatalf("last upload = %q, want two", got)
+	}
+}
+
+func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 80 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	for _, data := range []string{"one", "two", "three"} {
+		if _, err := fs.WriteAt(ctx, "/log.txt", []byte(data), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.Flush(ctx, "/log.txt"); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	waitNoPending(t, fs)
+	if got := drv.uploadCount(); got != 1 {
+		t.Fatalf("upload count = %d, want 1", got)
+	}
+	if got := drv.lastUpload(); got != "three" {
+		t.Fatalf("last upload = %q, want three", got)
+	}
+}
+
+func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
+	ctx := context.Background()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	drv := &countingUploadDriver{entered: entered, blockReturn: release}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("one"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upload did not start")
+	}
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("two"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	waitNoPending(t, fs)
+	if got := drv.uploadCount(); got != 2 {
+		t.Fatalf("upload count = %d, want 2", got)
+	}
+	if got := drv.lastUpload(); got != "two" {
+		t.Fatalf("last upload = %q, want two", got)
+	}
+}
+
+func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(ctx, "/dir/sub/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForCondition(t, func() bool { return len(drv.removedIDs()) == 1 })
+	removed := drv.removedIDs()
+	if len(removed) != 1 || removed[0] != "dir" {
+		t.Fatalf("removed ids = %v, want [dir]", removed)
+	}
+	if _, err := fs.Stat(ctx, "/dir"); err == nil {
+		t.Fatal("deleted directory should be hidden from stat")
+	}
+}
+
 func TestVFSRecoversPendingUploads(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -165,7 +410,7 @@ func TestVFSRecoversPendingUploads(t *testing.T) {
 		t.Fatalf("expected one pending file, got %d", len(first.Pending()))
 	}
 
-	second, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	second, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +436,7 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	drv := crypt.NewDriver(raw, cp)
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +603,7 @@ func TestVFSListCachesChildrenForStat(t *testing.T) {
 func TestVFSRenameUploadedFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +634,7 @@ func TestVFSRenameUploadedFile(t *testing.T) {
 func TestVFSRenamePendingFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +661,7 @@ func TestVFSRenamePendingFile(t *testing.T) {
 func TestVFSTruncateUploadedFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,11 +15,11 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	ctx := context.Background()
 	remoteA := t.TempDir()
 	remoteB := t.TempDir()
-	fsA, err := vfs.New(localfs.New(remoteA), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(localfs.New(remoteA), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a"), UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(localfs.New(remoteB), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	fsB, err := vfs.New(localfs.New(remoteB), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b"), UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,11 +22,15 @@ const readPrefetchRadius = 1
 const readPrefetchLimit = 2
 const readPrefetchChunks = 8
 const listCacheTTL = 10 * time.Second
+const uploadDebounceDelay = 5 * time.Second
+const deleteDebounceDelay = 2 * time.Second
 
 type Options struct {
 	CacheDir      string
 	CacheMaxBytes int64
 	RootID        string
+	UploadDelay   time.Duration
+	DeleteDelay   time.Duration
 }
 
 type VFS struct {
@@ -40,6 +44,15 @@ type VFS struct {
 	entries map[string]drive.Entry
 	lists   map[string]listCacheEntry
 	queue   chan PendingFile
+
+	uploadDelay  time.Duration
+	uploadMu     sync.Mutex
+	uploadTimers map[string]*time.Timer
+
+	deleteDelay  time.Duration
+	deleteMu     sync.Mutex
+	deleteTimers map[string]*time.Timer
+	deleted      map[string]drive.Entry
 
 	prefetchMu  sync.Mutex
 	prefetching map[string]struct{}
@@ -56,21 +69,32 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if opts.RootID == "" {
 		opts.RootID = "0"
 	}
+	if opts.UploadDelay == 0 {
+		opts.UploadDelay = uploadDebounceDelay
+	}
+	if opts.DeleteDelay == 0 {
+		opts.DeleteDelay = deleteDebounceDelay
+	}
 	cache, err := NewCache(opts.CacheDir, opts.CacheMaxBytes)
 	if err != nil {
 		return nil, err
 	}
 	v := &VFS{
-		driver:      driver,
-		cache:       cache,
-		rootID:      opts.RootID,
-		entries:     map[string]drive.Entry{},
-		lists:       map[string]listCacheEntry{},
-		queue:       make(chan PendingFile, 128),
-		prefetching: map[string]struct{}{},
-		prefetchSem: make(chan struct{}, readPrefetchLimit),
-		chunkLoads:  map[string]*chunkLoad{},
-		windowLoads: map[string]*windowLoad{},
+		driver:       driver,
+		cache:        cache,
+		rootID:       opts.RootID,
+		entries:      map[string]drive.Entry{},
+		lists:        map[string]listCacheEntry{},
+		queue:        make(chan PendingFile, 128),
+		uploadDelay:  opts.UploadDelay,
+		uploadTimers: map[string]*time.Timer{},
+		deleteDelay:  opts.DeleteDelay,
+		deleteTimers: map[string]*time.Timer{},
+		deleted:      map[string]drive.Entry{},
+		prefetching:  map[string]struct{}{},
+		prefetchSem:  make(chan struct{}, readPrefetchLimit),
+		chunkLoads:   map[string]*chunkLoad{},
+		windowLoads:  map[string]*windowLoad{},
 	}
 	v.writer, _ = driver.(drive.Writer)
 	v.upload, _ = driver.(drive.Uploader)
@@ -536,7 +560,7 @@ func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []dr
 		seen[entry.Name] = true
 	}
 	for _, pending := range v.cache.Pending() {
-		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] {
+		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || v.isDeleted(pending.Path) {
 			continue
 		}
 		entries = append(entries, drive.Entry{
@@ -574,21 +598,35 @@ func (v *VFS) Remove(ctx context.Context, path string) error {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
 	if _, err := v.pending(path); err == nil {
+		v.cancelUpload(cleanVirtual(path))
 		return v.cache.RemovePending(cleanVirtual(path))
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
-	if err := v.writer.Remove(ctx, entry); err != nil {
-		return err
+	path = cleanVirtual(path)
+	v.markDeleted(path, entry)
+	v.scheduleDelete(path, entry)
+	return nil
+}
+
+func (v *VFS) RemoveDir(ctx context.Context, path string) error {
+	if v.writer == nil {
+		return fmt.Errorf("vfs: driver does not support remove")
 	}
 	path = cleanVirtual(path)
-	v.mu.Lock()
-	delete(v.entries, path)
-	v.invalidateListLocked(filepath.Dir(path))
-	v.mu.Unlock()
-	return v.cache.RemovePending(path)
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
+	}
+	if !entry.IsDir {
+		return fmt.Errorf("vfs: %s is not a directory", path)
+	}
+	v.cancelChildDeletes(path)
+	v.markDeleted(path, entry)
+	v.scheduleDelete(path, entry)
+	return nil
 }
 
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
@@ -725,6 +763,8 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			v.stopUploadTimers()
+			v.stopDeleteTimers()
 			return
 		case pending := <-v.queue:
 			_ = v.uploadPending(ctx, pending)
@@ -735,6 +775,14 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	if v.upload == nil {
 		return fmt.Errorf("vfs: driver does not support upload")
+	}
+	latest, ok := v.cache.PendingByPath(pending.Path)
+	if !ok {
+		return nil
+	}
+	if !samePendingFile(latest, pending) {
+		v.enqueue(latest)
+		return nil
 	}
 	rc, err := v.cache.staging.open(pending.LocalPath)
 	if err != nil {
@@ -749,14 +797,137 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.entries[pending.Path] = entry
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
-	return v.cache.RemovePending(pending.Path)
+	removed, err := v.cache.RemovePendingIfUnchanged(pending)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		if latest, ok := v.cache.PendingByPath(pending.Path); ok {
+			v.enqueue(latest)
+		}
+	}
+	return nil
 }
 
 func (v *VFS) enqueue(p PendingFile) {
+	if v.uploadDelay > 0 {
+		v.scheduleUpload(p)
+		return
+	}
+	v.sendUpload(p)
+}
+
+func (v *VFS) scheduleUpload(p PendingFile) {
+	v.uploadMu.Lock()
+	if timer := v.uploadTimers[p.Path]; timer != nil {
+		timer.Stop()
+	}
+	v.uploadTimers[p.Path] = time.AfterFunc(v.uploadDelay, func() {
+		v.uploadMu.Lock()
+		delete(v.uploadTimers, p.Path)
+		v.uploadMu.Unlock()
+		v.sendUpload(p)
+	})
+	v.uploadMu.Unlock()
+}
+
+func (v *VFS) cancelUpload(path string) {
+	path = cleanVirtual(path)
+	v.uploadMu.Lock()
+	if timer := v.uploadTimers[path]; timer != nil {
+		timer.Stop()
+		delete(v.uploadTimers, path)
+	}
+	v.uploadMu.Unlock()
+}
+
+func (v *VFS) sendUpload(p PendingFile) {
 	select {
 	case v.queue <- p:
 	default:
 		go func() { v.queue <- p }()
+	}
+}
+
+func (v *VFS) markDeleted(path string, entry drive.Entry) {
+	v.deleteMu.Lock()
+	v.deleted[path] = entry
+	v.deleteMu.Unlock()
+
+	v.mu.Lock()
+	delete(v.entries, path)
+	v.invalidateListLocked(filepath.Dir(path))
+	if entry.IsDir {
+		for cachedPath := range v.entries {
+			if isPathUnder(cachedPath, path) {
+				delete(v.entries, cachedPath)
+			}
+		}
+		for cachedPath := range v.lists {
+			if cachedPath == path || isPathUnder(cachedPath, path) {
+				delete(v.lists, cachedPath)
+			}
+		}
+	}
+	v.mu.Unlock()
+}
+
+func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
+	if v.deleteDelay <= 0 {
+		v.deleteRemote(context.Background(), path, entry)
+		return
+	}
+	v.deleteMu.Lock()
+	if timer := v.deleteTimers[path]; timer != nil {
+		timer.Stop()
+	}
+	v.deleteTimers[path] = time.AfterFunc(v.deleteDelay, func() {
+		v.deleteMu.Lock()
+		delete(v.deleteTimers, path)
+		v.deleteMu.Unlock()
+		v.deleteRemote(context.Background(), path, entry)
+	})
+	v.deleteMu.Unlock()
+}
+
+func (v *VFS) cancelChildDeletes(dir string) {
+	dir = cleanVirtual(dir)
+	v.deleteMu.Lock()
+	for path, timer := range v.deleteTimers {
+		if isPathUnder(path, dir) {
+			timer.Stop()
+			delete(v.deleteTimers, path)
+			delete(v.deleted, path)
+		}
+	}
+	v.deleteMu.Unlock()
+}
+
+func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) {
+	if err := v.writer.Remove(ctx, entry); err != nil {
+		return
+	}
+	v.deleteMu.Lock()
+	delete(v.deleted, path)
+	v.deleteMu.Unlock()
+	_ = v.cache.RemovePending(path)
+}
+
+func (v *VFS) stopUploadTimers() {
+	v.uploadMu.Lock()
+	defer v.uploadMu.Unlock()
+	for path, timer := range v.uploadTimers {
+		timer.Stop()
+		delete(v.uploadTimers, path)
+	}
+}
+
+func (v *VFS) stopDeleteTimers() {
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	for path, timer := range v.deleteTimers {
+		timer.Stop()
+		delete(v.deleteTimers, path)
 	}
 }
 
@@ -780,6 +951,9 @@ func (v *VFS) parent(ctx context.Context, path string) (drive.Entry, string, err
 
 func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	path = cleanVirtual(path)
+	if v.isDeleted(path) {
+		return drive.Entry{}, fmt.Errorf("vfs: not found: %s", path)
+	}
 	v.mu.RLock()
 	entry, ok := v.entries[path]
 	v.mu.RUnlock()
@@ -821,7 +995,7 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 	if ok && now.Before(cached.expires) {
 		entries := cloneEntries(cached.entries)
 		v.mu.RUnlock()
-		return entries, nil
+		return v.filterDeleted(parentPath, entries), nil
 	}
 	v.mu.RUnlock()
 
@@ -829,7 +1003,7 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 	if err != nil {
 		return nil, err
 	}
-	entries = cloneEntries(entries)
+	entries = v.filterDeleted(parentPath, entries)
 	v.mu.Lock()
 	for _, child := range entries {
 		v.entries[joinVirtual(parentPath, child.Name)] = child
@@ -841,6 +1015,30 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 
 func (v *VFS) invalidateListLocked(path string) {
 	delete(v.lists, cleanVirtual(path))
+}
+
+func (v *VFS) isDeleted(path string) bool {
+	path = cleanVirtual(path)
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	for deletedPath, entry := range v.deleted {
+		if path == deletedPath || (entry.IsDir && isPathUnder(path, deletedPath)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *VFS) filterDeleted(parentPath string, entries []drive.Entry) []drive.Entry {
+	entries = cloneEntries(entries)
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if v.isDeleted(joinVirtual(parentPath, entry.Name)) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func cloneEntries(entries []drive.Entry) []drive.Entry {
@@ -866,6 +1064,12 @@ func joinVirtual(parent, name string) string {
 		return "/" + name
 	}
 	return parent + "/" + name
+}
+
+func isPathUnder(path, dir string) bool {
+	path = cleanVirtual(path)
+	dir = cleanVirtual(dir)
+	return dir != "/" && strings.HasPrefix(path, dir+"/")
 }
 
 func stagingFID(path string) string {
