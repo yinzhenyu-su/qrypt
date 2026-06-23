@@ -82,6 +82,13 @@ func (c *Cache) Pending() []PendingFile {
 	return files
 }
 
+func (c *Cache) PendingByPath(path string) (PendingFile, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	pending, ok := c.pending[path]
+	return pending, ok
+}
+
 func (c *Cache) SavePending(p PendingFile) error {
 	p.UpdatedAt = time.Now().UnixNano()
 	c.mu.Lock()
@@ -102,6 +109,25 @@ func (c *Cache) RemovePending(path string) error {
 		return err
 	}
 	return c.compactJournal()
+}
+
+func (c *Cache) RemovePendingIfUnchanged(p PendingFile) (bool, error) {
+	c.mu.Lock()
+	current, ok := c.pending[p.Path]
+	if ok && samePendingFile(current, p) {
+		delete(c.pending, p.Path)
+	} else {
+		ok = false
+	}
+	c.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	_ = c.staging.remove(p.LocalPath)
+	if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: p.Path}}); err != nil {
+		return false, err
+	}
+	return true, c.compactJournal()
 }
 
 func (c *Cache) RenamePending(oldPath string, next PendingFile) error {
@@ -245,6 +271,16 @@ func (c *Cache) compactJournal() error {
 		return err
 	}
 	return os.Rename(tmp, c.journalPath())
+}
+
+func samePendingFile(a, b PendingFile) bool {
+	return a.Path == b.Path &&
+		a.FID == b.FID &&
+		a.ParentID == b.ParentID &&
+		a.Name == b.Name &&
+		a.LocalPath == b.LocalPath &&
+		a.Size == b.Size &&
+		a.UpdatedAt == b.UpdatedAt
 }
 
 func (c *Cache) evictIfNeeded() error {

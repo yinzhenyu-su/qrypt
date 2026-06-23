@@ -43,6 +43,7 @@ type MountConfig struct {
 type CacheConfig struct {
 	Dir          string `toml:"dir"`
 	MaxSizeBytes int64  `toml:"max_size_bytes"`
+	UploadDelay  string `toml:"upload_delay"`
 }
 
 type LoggingConfig struct {
