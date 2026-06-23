@@ -15,12 +15,14 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-const testReadChunkSize = 64 * 1024
+const testReadChunkSize = 512 * 1024
 
 type countingReadDriver struct {
-	data []byte
-	mu   sync.Mutex
-	read map[int64]int
+	data    []byte
+	mu      sync.Mutex
+	read    map[int64]int
+	block   map[int64]chan struct{}
+	entered map[int64]chan struct{}
 }
 
 type countingListDriver struct {
@@ -29,7 +31,7 @@ type countingListDriver struct {
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
-	return &countingReadDriver{data: data, read: map[int64]int{}}
+	return &countingReadDriver{data: data, read: map[int64]int{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
 }
 
 func (d *countingReadDriver) Init(context.Context) error { return nil }
@@ -47,7 +49,19 @@ func (d *countingReadDriver) List(context.Context, string) ([]drive.Entry, error
 func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	d.mu.Lock()
 	d.read[offset]++
+	entered := d.entered[offset]
+	block := d.block[offset]
 	d.mu.Unlock()
+	if entered != nil {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+	}
+	if block != nil {
+		<-block
+	}
 	if offset >= int64(len(d.data)) {
 		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
@@ -62,6 +76,16 @@ func (d *countingReadDriver) readCount(offset int64) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.read[offset]
+}
+
+func (d *countingReadDriver) blockRead(offset int64) (entered chan struct{}, release func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	block := make(chan struct{})
+	entered = make(chan struct{})
+	d.block[offset] = block
+	d.entered[offset] = entered
+	return entered, func() { close(block) }
 }
 
 func (d *countingListDriver) Init(context.Context) error { return nil }
@@ -263,6 +287,52 @@ func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
 	_ = rc.Close()
 	if got := drv.readCount(testReadChunkSize); got != before {
 		t.Fatalf("prefetched chunk read count = %d, want %d", got, before)
+	}
+}
+
+func TestVFSReadWaitsForInFlightPrefetch(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("c"), 3*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	entered, release := drv.blockRead(testReadChunkSize)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("prefetch did not start")
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		rc, err := fs.Read(ctx, "/data.bin", testReadChunkSize, 16)
+		if err != nil {
+			readDone <- err
+			return
+		}
+		_ = rc.Close()
+		readDone <- nil
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if got := drv.readCount(testReadChunkSize); got != 1 {
+		t.Fatalf("in-flight chunk read count = %d, want 1", got)
+	}
+	release()
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := drv.readCount(testReadChunkSize); got != 1 {
+		t.Fatalf("completed chunk read count = %d, want 1", got)
 	}
 }
 
