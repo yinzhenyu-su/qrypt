@@ -111,6 +111,29 @@ func (c *Cache) RemovePending(path string) error {
 	return c.compactJournal()
 }
 
+func (c *Cache) RemovePendingUnder(dir string) error {
+	dir = cleanVirtual(dir)
+	c.mu.Lock()
+	var removed []PendingFile
+	for path, pending := range c.pending {
+		if path == dir || isPathUnder(path, dir) {
+			delete(c.pending, path)
+			removed = append(removed, pending)
+		}
+	}
+	c.mu.Unlock()
+	if len(removed) == 0 {
+		return nil
+	}
+	for _, pending := range removed {
+		_ = c.staging.remove(pending.LocalPath)
+		if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: pending.Path}}); err != nil {
+			return err
+		}
+	}
+	return c.compactJournal()
+}
+
 func (c *Cache) RemovePendingIfUnchanged(p PendingFile) (bool, error) {
 	c.mu.Lock()
 	current, ok := c.pending[p.Path]
