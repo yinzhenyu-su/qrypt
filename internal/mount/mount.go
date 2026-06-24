@@ -145,8 +145,8 @@ func mountOptions(opts Options) []string {
 	}
 	flags := []string{
 		"-o", mode,
-		"-o", "attr_timeout=10",
-		"-o", "entry_timeout=10",
+		"-o", "attr_timeout=0",
+		"-o", "entry_timeout=0",
 		"-o", "negative_timeout=0",
 		"-o", "use_ino",
 	}
@@ -155,7 +155,6 @@ func mountOptions(opts Options) []string {
 			"-o", "defer_permissions",
 			"-o", "fsname=qrypt",
 			"-o", "subtype=qrypt",
-			"-o", "local",
 			"-o", "iosize=1048576",
 		)
 	}
@@ -176,7 +175,6 @@ type adapter struct {
 	fs       vfs.FileSystem
 	mu       sync.Mutex
 	handles  map[uint64]string
-	xattrs   map[string]map[string][]byte
 	nextFH   uint64
 	stopping bool
 	trace    *traceLogger
@@ -185,6 +183,10 @@ type adapter struct {
 
 type readOnlyPathChecker interface {
 	IsReadOnlyPath(path string) bool
+}
+
+type directoryCopyPreparer interface {
+	PrepareDirectoryCopy(ctx context.Context, path string) error
 }
 
 type TraceOptions struct {
@@ -214,7 +216,6 @@ func newAdapter(fs vfs.FileSystem, trace TraceOptions, statfs StatfsOptions) *ad
 	return &adapter{
 		fs:      fs,
 		handles: map[uint64]string{},
-		xattrs:  map[string]map[string][]byte{},
 		trace:   newTraceLogger(trace),
 		statfs:  statfs,
 	}
@@ -278,7 +279,11 @@ func (a *adapter) Access(path string, mask uint32) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Access", path, "mask=%d err=%d dur=%s", mask, errc, time.Since(start)) }()
-	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+	if mask&fuse.W_OK != 0 && a.isReadOnlyPath(path) {
+		errc = -fuse.EROFS
+		return errc
+	}
+	if !a.pathExists(path) {
 		errc = -fuse.ENOENT
 		return errc
 	}
@@ -326,6 +331,37 @@ func (a *adapter) Open(path string, flags int) (int, uint64) {
 	return 0, fh
 }
 
+func (a *adapter) Mknod(path string, mode uint32, dev uint64) int {
+	start := time.Now()
+	errc := 0
+	defer func() { a.trace.log("Mknod", path, "mode=%o dev=%d err=%d dur=%s", mode, dev, errc, time.Since(start)) }()
+	if a.isStopping() {
+		errc = -fuse.EIO
+		return errc
+	}
+	if a.isReadOnlyPath(path) {
+		errc = -fuse.EROFS
+		return errc
+	}
+	if mode&fuse.S_IFDIR != 0 {
+		errc = a.Mkdir(path, mode)
+		return errc
+	}
+	if mode&fuse.S_IFREG == 0 && mode&fuse.S_IFMT != 0 {
+		errc = -fuse.ENOSYS
+		return errc
+	}
+	if isFinderDirectoryCreate(path) {
+		errc = a.Mkdir(path, mode)
+		return errc
+	}
+	if err := a.fs.Create(context.Background(), path); err != nil {
+		errc = fuseErr(err)
+		return errc
+	}
+	return 0
+}
+
 func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 	start := time.Now()
 	errc := 0
@@ -339,6 +375,10 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
+		return errc, 0
+	}
+	if isFinderDirectoryCreate(path) {
+		errc = a.Mkdir(path, mode)
 		return errc, 0
 	}
 	if err := a.fs.Create(context.Background(), path); err != nil {
@@ -569,50 +609,28 @@ func blocksForBytes(bytes int64, blockSize uint64) uint64 {
 }
 
 func (a *adapter) Chmod(path string, mode uint32) int {
+	errc := 0
+	defer func() { a.trace.log("Chmod", path, "mode=%o err=%d", mode, errc) }()
 	if a.isReadOnlyPath(path) {
-		return -fuse.EROFS
+		errc = -fuse.EROFS
+		return errc
 	}
 	return 0
 }
 
 func (a *adapter) Chown(path string, uid uint32, gid uint32) int {
+	errc := 0
+	defer func() { a.trace.log("Chown", path, "uid=%d gid=%d err=%d", uid, gid, errc) }()
 	if a.isReadOnlyPath(path) {
-		return -fuse.EROFS
+		errc = -fuse.EROFS
+		return errc
 	}
 	return 0
 }
 
-func (a *adapter) Getxattr(path string, name string) (int, []byte) {
+func (a *adapter) Chflags(path string, flags uint32) int {
 	errc := 0
-	var value []byte
-	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, len(value), errc) }()
-	if !a.pathExists(path) {
-		errc = -fuse.ENOENT
-		return errc, nil
-	}
-	if name == "com.apple.ResourceFork" {
-		return 0, nil
-	}
-	a.mu.Lock()
-	if byName := a.xattrs[path]; byName != nil {
-		if stored, ok := byName[name]; ok {
-			value = append([]byte(nil), stored...)
-			a.mu.Unlock()
-			return 0, value
-		}
-	}
-	a.mu.Unlock()
-	if name == "com.apple.FinderInfo" {
-		value = make([]byte, 32)
-		return 0, value
-	}
-	errc = -fuse.ENOATTR
-	return errc, nil
-}
-
-func (a *adapter) Removexattr(path string, name string) int {
-	errc := 0
-	defer func() { a.trace.log("Removexattr", path, "name=%q err=%d", name, errc) }()
+	defer func() { a.trace.log("Chflags", path, "flags=%d err=%d", flags, errc) }()
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -621,50 +639,53 @@ func (a *adapter) Removexattr(path string, name string) int {
 		errc = -fuse.ENOENT
 		return errc
 	}
-	if name == "com.apple.ResourceFork" {
-		return 0
+	return 0
+}
+
+func (a *adapter) Setcrtime(path string, tmsp fuse.Timespec) int {
+	errc := 0
+	defer func() { a.trace.log("Setcrtime", path, "sec=%d nsec=%d err=%d", tmsp.Sec, tmsp.Nsec, errc) }()
+	if a.isReadOnlyPath(path) {
+		errc = -fuse.EROFS
+		return errc
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if byName := a.xattrs[path]; byName != nil {
-		if _, ok := byName[name]; ok {
-			delete(byName, name)
-			if len(byName) == 0 {
-				delete(a.xattrs, path)
-			}
-			return 0
-		}
+	if !a.pathExists(path) {
+		errc = -fuse.ENOENT
+		return errc
 	}
-	if name == "com.apple.FinderInfo" {
-		return 0
+	return 0
+}
+
+func (a *adapter) Setchgtime(path string, tmsp fuse.Timespec) int {
+	errc := 0
+	defer func() { a.trace.log("Setchgtime", path, "sec=%d nsec=%d err=%d", tmsp.Sec, tmsp.Nsec, errc) }()
+	if a.isReadOnlyPath(path) {
+		errc = -fuse.EROFS
+		return errc
 	}
-	errc = -fuse.ENOATTR
-	return errc
+	if !a.pathExists(path) {
+		errc = -fuse.ENOENT
+		return errc
+	}
+	return 0
+}
+
+func (a *adapter) Getxattr(path string, name string) (int, []byte) {
+	errc := 0
+	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, 0, errc) }()
+	// Return empty success for all xattr reads.
+	return 0, nil
+}
+
+func (a *adapter) Removexattr(path string, name string) int {
+	errc := 0
+	defer func() { a.trace.log("Removexattr", path, "name=%q err=%d", name, errc) }()
+	return 0
 }
 
 func (a *adapter) Listxattr(path string, fill func(name string) bool) int {
 	errc := 0
 	defer func() { a.trace.log("Listxattr", path, "err=%d", errc) }()
-	if !a.pathExists(path) {
-		errc = -fuse.ENOENT
-		return errc
-	}
-	names := []string{"com.apple.FinderInfo"}
-	a.mu.Lock()
-	if byName := a.xattrs[path]; byName != nil {
-		for name := range byName {
-			if name != "com.apple.FinderInfo" {
-				names = append(names, name)
-			}
-		}
-	}
-	a.mu.Unlock()
-	for _, name := range names {
-		if !fill(name) {
-			errc = -fuse.ERANGE
-			return errc
-		}
-	}
 	return 0
 }
 
@@ -695,34 +716,15 @@ func fillStat(stat *fuse.Stat_t, entry drive.Entry) {
 func (a *adapter) Setxattr(path string, name string, value []byte, flags int) int {
 	errc := 0
 	defer func() { a.trace.log("Setxattr", path, "name=%q len=%d flags=%d err=%d", name, len(value), flags, errc) }()
-	if a.isReadOnlyPath(path) {
-		errc = -fuse.EROFS
-		return errc
+	if name == "com.apple.finder.copy.source" {
+		if preparer, ok := a.fs.(directoryCopyPreparer); ok {
+			if err := preparer.PrepareDirectoryCopy(context.Background(), path); err != nil {
+				errc = fuseErr(err)
+				return errc
+			}
+			a.trace.log("PrepareDirectoryCopy", path, "xattr=%q err=0", name)
+		}
 	}
-	if !a.pathExists(path) {
-		errc = -fuse.ENOENT
-		return errc
-	}
-	if name == "com.apple.ResourceFork" {
-		return 0
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	byName := a.xattrs[path]
-	_, exists := byName[name]
-	if flags == fuse.XATTR_CREATE && exists {
-		errc = -fuse.EEXIST
-		return errc
-	}
-	if flags == fuse.XATTR_REPLACE && !exists && name != "com.apple.FinderInfo" {
-		errc = -fuse.ENOATTR
-		return errc
-	}
-	if byName == nil {
-		byName = map[string][]byte{}
-		a.xattrs[path] = byName
-	}
-	byName[name] = append([]byte(nil), value...)
 	return 0
 }
 
@@ -746,6 +748,11 @@ func childPath(parent, name string) string {
 	return strings.TrimRight(parent, "/") + "/" + name
 }
 
+func isFinderDirectoryCreate(path string) bool {
+	name := filepath.Base(path)
+	return !strings.Contains(name, ".") && !strings.HasPrefix(name, ".")
+}
+
 func fuseErr(err error) int {
 	if errors.Is(err, vfs.ErrReadOnly) {
 		return -fuse.EROFS
@@ -753,20 +760,9 @@ func fuseErr(err error) int {
 	return -fuse.EIO
 }
 
-func (a *adapter) removeXattrs(path string) {
-	a.mu.Lock()
-	delete(a.xattrs, path)
-	a.mu.Unlock()
-}
+func (a *adapter) removeXattrs(path string) {}
 
-func (a *adapter) renameXattrs(oldPath, newPath string) {
-	a.mu.Lock()
-	if byName := a.xattrs[oldPath]; byName != nil {
-		a.xattrs[newPath] = byName
-		delete(a.xattrs, oldPath)
-	}
-	a.mu.Unlock()
-}
+func (a *adapter) renameXattrs(oldPath, newPath string) {}
 
 func stableInode(entry drive.Entry) uint64 {
 	key := entry.ID
