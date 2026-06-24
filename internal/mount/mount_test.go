@@ -27,6 +27,12 @@ type stubSpaceFS struct {
 	space drive.Space
 }
 
+type createRouteFS struct {
+	stubFS
+	created []string
+	mkdirs  []string
+}
+
 func (stubFS) Start(context.Context) {}
 
 func (s stubSpaceFS) Space(context.Context) (drive.Space, error) {
@@ -65,11 +71,21 @@ func (stubFS) Rename(context.Context, string, string) error                { ret
 func (stubFS) Truncate(context.Context, string, int64) error               { return nil }
 func (stubFS) Pending() []vfs.PendingFile                                  { return nil }
 
+func (s *createRouteFS) Create(_ context.Context, path string) error {
+	s.created = append(s.created, path)
+	return nil
+}
+
+func (s *createRouteFS) Mkdir(_ context.Context, path string) (drive.Entry, error) {
+	s.mkdirs = append(s.mkdirs, path)
+	return drive.Entry{ID: path, Name: filepath.Base(path), IsDir: true}, nil
+}
+
 var errNotFound = errors.New("not found")
 
 func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	opts := mountOptions(Options{})
-	for _, want := range []string{"attr_timeout=10", "entry_timeout=10", "negative_timeout=0", "use_ino"} {
+	for _, want := range []string{"attr_timeout=0", "entry_timeout=0", "negative_timeout=0", "use_ino"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("mount options %v missing %q", opts, want)
 		}
@@ -77,7 +93,7 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	for _, want := range []string{"defer_permissions", "fsname=qrypt", "subtype=qrypt", "local", "iosize=1048576"} {
+	for _, want := range []string{"defer_permissions", "fsname=qrypt", "subtype=qrypt", "iosize=1048576"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}
@@ -175,68 +191,98 @@ func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
 	}
 }
 
-func TestAdapterXattrsProvideStableFinderInfo(t *testing.T) {
+func TestAdapterXattrsNoop(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true, ModTime: time.Unix(1, 0)},
 	}}, TraceOptions{}, StatfsOptions{})
 
-	errc, value := ad.Getxattr("/", "com.apple.FinderInfo")
-	if errc != 0 {
-		t.Fatalf("Getxattr FinderInfo err = %d, want 0", errc)
+	if errc, _ := ad.Getxattr("/", "com.apple.FinderInfo"); errc != 0 {
+		t.Fatalf("Getxattr err = %d, want 0", errc)
 	}
-	if len(value) != 32 {
-		t.Fatalf("FinderInfo len = %d, want 32", len(value))
+	if errc, _ := ad.Getxattr("/", "com.apple.ResourceFork"); errc != 0 {
+		t.Fatalf("Getxattr ResourceFork err = %d, want 0", errc)
 	}
-
-	var names []string
-	errc = ad.Listxattr("/", func(name string) bool {
-		names = append(names, name)
-		return true
-	})
-	if errc != 0 {
+	if errc, _ := ad.Getxattr("/", "user.foo"); errc != 0 {
+		t.Fatalf("Getxattr unknown err = %d, want 0", errc)
+	}
+	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
+		t.Fatalf("Setxattr err = %d, want 0", errc)
+	}
+	if errc := ad.Removexattr("/", "user.foo"); errc != 0 {
+		t.Fatalf("Removexattr err = %d, want 0", errc)
+	}
+	if errc := ad.Listxattr("/", func(name string) bool { return true }); errc != 0 {
 		t.Fatalf("Listxattr err = %d, want 0", errc)
-	}
-	if len(names) != 1 || names[0] != "com.apple.FinderInfo" {
-		t.Fatalf("Listxattr names = %v, want FinderInfo", names)
 	}
 }
 
-func TestAdapterXattrsSetListRemove(t *testing.T) {
+func TestAdapterXattrsAllNoop(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
 	}}, TraceOptions{}, StatfsOptions{})
-	const name = "com.apple.metadata:_kMDItemUserTags"
-	value := []byte("tags")
 
-	if errc := ad.Setxattr("/", name, value, fuse.XATTR_CREATE); errc != 0 {
+	// All xattr operations are no-ops that return success.
+	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), fuse.XATTR_CREATE); errc != 0 {
 		t.Fatalf("Setxattr err = %d, want 0", errc)
 	}
-	value[0] = 'T'
-	errc, got := ad.Getxattr("/", name)
-	if errc != 0 {
-		t.Fatalf("Getxattr err = %d, want 0", errc)
-	}
-	if string(got) != "tags" {
-		t.Fatalf("Getxattr value = %q, want tags", got)
-	}
-
-	names := map[string]bool{}
-	errc = ad.Listxattr("/", func(name string) bool {
-		names[name] = true
-		return true
-	})
-	if errc != 0 {
-		t.Fatalf("Listxattr err = %d, want 0", errc)
-	}
-	if !names["com.apple.FinderInfo"] || !names[name] {
-		t.Fatalf("Listxattr names = %v, want FinderInfo and stored xattr", names)
-	}
-
-	if errc := ad.Removexattr("/", name); errc != 0 {
+	if errc := ad.Removexattr("/", "user.foo"); errc != 0 {
 		t.Fatalf("Removexattr err = %d, want 0", errc)
 	}
-	if errc, _ := ad.Getxattr("/", name); errc != -fuse.ENOATTR {
-		t.Fatalf("Getxattr after remove err = %d, want ENOATTR", errc)
+	if errc := ad.Setxattr("/", "user.foo", nil, fuse.XATTR_REPLACE); errc != 0 {
+		t.Fatalf("Setxattr XATTR_REPLACE err = %d, want 0", errc)
+	}
+	// Getxattr always returns success with empty data.
+	if errc, got := ad.Getxattr("/", "user.foo"); errc != 0 || len(got) != 0 {
+		t.Fatalf("Getxattr err=%d len=%d, want 0/0", errc, len(got))
+	}
+	// Listxattr always returns empty list.
+	names := map[string]bool{}
+	if errc := ad.Listxattr("/", func(name string) bool {
+		names[name] = true
+		return true
+	}); errc != 0 {
+		t.Fatalf("Listxattr err = %d, want 0", errc)
+	}
+	if len(names) != 0 {
+		t.Fatalf("Listxattr names = %v, want empty", names)
+	}
+}
+
+func TestAdapterCreateRoutesFinderDirectoryCreatesToMkdir(t *testing.T) {
+	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/": {ID: "root", Name: "", IsDir: true},
+	}}}
+	ad := newAdapter(fs, TraceOptions{}, StatfsOptions{})
+
+	if errc, fh := ad.Create("/_nuxt", 0, fuse.S_IFREG|0o644); errc != 0 || fh != 0 {
+		t.Fatalf("Create extensionless err=%d fh=%d, want 0/0", errc, fh)
+	}
+	if got := strings.Join(fs.mkdirs, ","); got != "/_nuxt" {
+		t.Fatalf("mkdirs = %q, want /_nuxt", got)
+	}
+	if len(fs.created) != 0 {
+		t.Fatalf("created = %v, want none", fs.created)
+	}
+
+	if errc, fh := ad.Create("/asset.js", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
+		t.Fatalf("Create file err=%d fh=%d, want err 0 and nonzero fh", errc, fh)
+	}
+	if got := strings.Join(fs.created, ","); got != "/asset.js" {
+		t.Fatalf("created = %q, want /asset.js", got)
+	}
+}
+
+func TestAdapterMknodCreatesRegularFile(t *testing.T) {
+	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/": {ID: "root", Name: "", IsDir: true},
+	}}}
+	ad := newAdapter(fs, TraceOptions{}, StatfsOptions{})
+
+	if errc := ad.Mknod("/asset.js", fuse.S_IFREG|0o644, 0); errc != 0 {
+		t.Fatalf("Mknod err = %d, want 0", errc)
+	}
+	if got := strings.Join(fs.created, ","); got != "/asset.js" {
+		t.Fatalf("created = %q, want /asset.js", got)
 	}
 }
 
@@ -263,14 +309,15 @@ func TestAdapterResourceForkIsEmptyNoop(t *testing.T) {
 
 func TestAdapterXattrsMissingPath(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, TraceOptions{}, StatfsOptions{})
-	if errc, _ := ad.Getxattr("/missing", "com.apple.FinderInfo"); errc != -fuse.ENOENT {
-		t.Fatalf("Getxattr missing err = %d, want ENOENT", errc)
+	// xattr operations are no-ops that don't check path existence.
+	if errc, _ := ad.Getxattr("/missing", "x"); errc != 0 {
+		t.Fatalf("Getxattr missing err = %d, want 0", errc)
 	}
-	if errc := ad.Setxattr("/missing", "com.apple.FinderInfo", nil, 0); errc != -fuse.ENOENT {
-		t.Fatalf("Setxattr missing err = %d, want ENOENT", errc)
+	if errc := ad.Setxattr("/missing", "x", nil, 0); errc != 0 {
+		t.Fatalf("Setxattr missing err = %d, want 0", errc)
 	}
-	if errc := ad.Listxattr("/missing", func(string) bool { return true }); errc != -fuse.ENOENT {
-		t.Fatalf("Listxattr missing err = %d, want ENOENT", errc)
+	if errc := ad.Listxattr("/missing", func(string) bool { return true }); errc != 0 {
+		t.Fatalf("Listxattr missing err = %d, want 0", errc)
 	}
 }
 
@@ -310,9 +357,6 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 	}
 	if errc := ad.Rename("/a", "/renamed"); errc != -fuse.EROFS {
 		t.Fatalf("Rename readonly err = %d, want EROFS", errc)
-	}
-	if errc := ad.Setxattr("/a", "com.apple.FinderInfo", nil, 0); errc != -fuse.EROFS {
-		t.Fatalf("Setxattr readonly err = %d, want EROFS", errc)
 	}
 	if errc := ad.Chmod("/a", 0o777); errc != -fuse.EROFS {
 		t.Fatalf("Chmod readonly err = %d, want EROFS", errc)
