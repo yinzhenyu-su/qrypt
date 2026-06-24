@@ -25,6 +25,7 @@ const listCacheTTL = 10 * time.Second
 const uploadDebounceDelay = 5 * time.Second
 const deleteDebounceDelay = 2 * time.Second
 const restoredDirTTL = 60 * time.Second
+const directoryCopyHideTTL = 10 * time.Minute
 
 type Options struct {
 	CacheDir      string
@@ -56,6 +57,7 @@ type VFS struct {
 	deleted      map[string]drive.Entry
 	overlayOps   map[string]overlayOp
 	restoredDirs map[string]time.Time
+	copyHidden   map[string]map[string]time.Time
 
 	prefetchMu  sync.Mutex
 	prefetching map[string]struct{}
@@ -105,6 +107,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		deleted:      map[string]drive.Entry{},
 		overlayOps:   map[string]overlayOp{},
 		restoredDirs: map[string]time.Time{},
+		copyHidden:   map[string]map[string]time.Time{},
 		prefetching:  map[string]struct{}{},
 		prefetchSem:  make(chan struct{}, readPrefetchLimit),
 		chunkLoads:   map[string]*chunkLoad{},
@@ -518,6 +521,7 @@ func (v *VFS) Create(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	v.unhideCopyChild(filepath.Dir(path), name)
 	fid := stagingFID(path)
 	localPath, err := v.cache.staging.create(fid)
 	if err != nil {
@@ -528,6 +532,7 @@ func (v *VFS) Create(ctx context.Context, path string) error {
 }
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (int, error) {
+	path = cleanVirtual(path)
 	pending, err := v.pending(path)
 	if err != nil {
 		if err := v.Create(ctx, path); err != nil {
@@ -551,6 +556,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 }
 
 func (v *VFS) Flush(ctx context.Context, path string) error {
+	path = cleanVirtual(path)
 	pending, err := v.pending(path)
 	if err != nil {
 		return nil
@@ -567,6 +573,43 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 		return err
 	}
 	v.enqueue(pending)
+	return nil
+}
+
+func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
+	path = cleanVirtual(path)
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
+	}
+	if !entry.IsDir {
+		return fmt.Errorf("vfs: %s is not a directory", path)
+	}
+	hideNames := map[string]time.Time{}
+	if entries, err := v.driver.List(ctx, entry.ID); err == nil {
+		expires := time.Now().Add(directoryCopyHideTTL)
+		for _, child := range entries {
+			if !isAppleMetadataName(child.Name) {
+				hideNames[child.Name] = expires
+			}
+		}
+	}
+	v.cancelChildUploads(path)
+	if err := v.cache.RemovePendingUnder(path); err != nil {
+		return err
+	}
+	v.mu.Lock()
+	for cachedPath, cachedEntry := range v.entries {
+		if filepath.Dir(cachedPath) == path {
+			if _, ok := hideNames[cachedEntry.Name]; !ok && !isAppleMetadataName(cachedEntry.Name) {
+				hideNames[cachedEntry.Name] = time.Now().Add(directoryCopyHideTTL)
+			}
+			delete(v.entries, cachedPath)
+		}
+	}
+	v.invalidateListLocked(path)
+	v.mu.Unlock()
+	v.setCopyHidden(path, hideNames)
 	return nil
 }
 
@@ -596,6 +639,12 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 		return drive.Entry{}, fmt.Errorf("vfs: driver does not support mkdir")
 	}
 	path = cleanVirtual(path)
+	if entry, err := v.resolve(ctx, path); err == nil {
+		if entry.IsDir {
+			return entry, nil
+		}
+		return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
+	}
 	if entry, ok := v.restoreDeletedPath(path); ok {
 		return entry, nil
 	}
@@ -611,7 +660,13 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 	}
 	entry, err := v.writer.Mkdir(ctx, parent.ID, name)
 	if err != nil {
-		return drive.Entry{}, err
+		if !isAlreadyExistsError(err) {
+			return drive.Entry{}, err
+		}
+		entry, err = v.findExistingChildDir(ctx, filepath.Dir(path), parent.ID, name)
+		if err != nil {
+			return drive.Entry{}, err
+		}
 	}
 	v.mu.Lock()
 	v.entries[path] = entry
@@ -620,19 +675,37 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 	return entry, nil
 }
 
+func (v *VFS) findExistingChildDir(ctx context.Context, parentPath, parentID, name string) (drive.Entry, error) {
+	entries, err := v.driver.List(ctx, parentID)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	v.mu.Lock()
+	for _, child := range entries {
+		childPath := joinVirtual(parentPath, child.Name)
+		v.entries[childPath] = child
+		if child.Name == name && child.IsDir {
+			v.mu.Unlock()
+			return child, nil
+		}
+	}
+	v.mu.Unlock()
+	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
+}
+
 func (v *VFS) Remove(ctx context.Context, path string) error {
 	if v.writer == nil {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
+	path = cleanVirtual(path)
 	if _, err := v.pending(path); err == nil {
-		v.cancelUpload(cleanVirtual(path))
-		return v.cache.RemovePending(cleanVirtual(path))
+		v.cancelUpload(path)
+		return v.cache.RemovePending(path)
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
-	path = cleanVirtual(path)
 	v.markDeleted(path, entry)
 	v.scheduleDelete(path, entry)
 	return nil
@@ -814,6 +887,9 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return err
 	}
 	defer rc.Close()
+	if err := v.removeExistingFile(ctx, pending.ParentID, pending.Name); err != nil {
+		return err
+	}
 	entry, err := v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, rc)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -840,6 +916,25 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.entries[pending.Path] = entry
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
+	return nil
+}
+
+func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) error {
+	if v.writer == nil {
+		return nil
+	}
+	entries, err := v.driver.List(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name == name && !entry.IsDir {
+			if err := v.writer.Remove(ctx, entry); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -1173,7 +1268,7 @@ func (v *VFS) invalidateListLocked(path string) {
 }
 
 func (v *VFS) isUnavailable(path string) bool {
-	return v.isDeleted(path) || v.isHidden(path)
+	return v.isDeleted(path) || v.isHidden(path) || v.isCopyHidden(path)
 }
 
 func (v *VFS) isDeleted(path string) bool {
@@ -1215,6 +1310,55 @@ func (v *VFS) isUnderRestoredDir(path string) bool {
 		}
 	}
 	return false
+}
+
+func (v *VFS) setCopyHidden(dir string, names map[string]time.Time) {
+	dir = cleanVirtual(dir)
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	if len(names) == 0 {
+		delete(v.copyHidden, dir)
+		return
+	}
+	v.copyHidden[dir] = names
+}
+
+func (v *VFS) unhideCopyChild(parentPath, name string) {
+	parentPath = cleanVirtual(parentPath)
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	if names := v.copyHidden[parentPath]; names != nil {
+		delete(names, name)
+		if len(names) == 0 {
+			delete(v.copyHidden, parentPath)
+		}
+	}
+}
+
+func (v *VFS) isCopyHidden(path string) bool {
+	path = cleanVirtual(path)
+	parentPath := filepath.Dir(path)
+	name := filepath.Base(path)
+	now := time.Now()
+	v.deleteMu.Lock()
+	defer v.deleteMu.Unlock()
+	names := v.copyHidden[parentPath]
+	if len(names) == 0 {
+		delete(v.copyHidden, parentPath)
+		return false
+	}
+	expires, ok := names[name]
+	if !ok {
+		return false
+	}
+	if now.After(expires) {
+		delete(names, name)
+		if len(names) == 0 {
+			delete(v.copyHidden, parentPath)
+		}
+		return false
+	}
+	return true
 }
 
 func (v *VFS) updateOverlay(parentPath string, entries []drive.Entry) {
@@ -1308,6 +1452,25 @@ func isPathUnder(path, dir string) bool {
 	path = cleanVirtual(path)
 	dir = cleanVirtual(dir)
 	return dir != "/" && strings.HasPrefix(path, dir+"/")
+}
+
+func isAppleMetadataFile(path string) bool {
+	return isAppleMetadataName(filepath.Base(cleanVirtual(path)))
+}
+
+func isAppleMetadataName(name string) bool {
+	return name == ".DS_Store" || strings.HasPrefix(name, "._")
+}
+
+func isAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already exists") ||
+		strings.Contains(text, "file exists") ||
+		strings.Contains(text, "同名冲突") ||
+		strings.Contains(text, "已存在")
 }
 
 func entryListHasPath(entries []drive.Entry, name, entryID string) bool {

@@ -203,6 +203,17 @@ func (n *Namespace) Truncate(ctx context.Context, path string, size int64) error
 	return mount.Truncate(ctx, rest, size)
 }
 
+func (n *Namespace) PrepareDirectoryCopy(ctx context.Context, path string) error {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root || rest == "/" {
+		return ErrReadOnly
+	}
+	return mount.PrepareDirectoryCopy(ctx, rest)
+}
+
 func (n *Namespace) IsReadOnlyPath(path string) bool {
 	path = cleanVirtual(path)
 	if path == "/" {

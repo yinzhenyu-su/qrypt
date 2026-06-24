@@ -67,6 +67,11 @@ type staleMoveListDriver struct {
 	converged bool
 }
 
+type existingMkdirDriver struct {
+	mkdirs int
+	lists  int
+}
+
 func newCountingReadDriver(data []byte) *countingReadDriver {
 	return &countingReadDriver{data: data, read: map[int64]int{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
 }
@@ -371,6 +376,31 @@ func (d *staleMoveListDriver) Move(_ context.Context, entry drive.Entry, dstPare
 }
 func (d *staleMoveListDriver) Remove(context.Context, drive.Entry) error { return nil }
 
+func (d *existingMkdirDriver) Init(context.Context) error { return nil }
+func (d *existingMkdirDriver) Drop(context.Context) error { return nil }
+func (d *existingMkdirDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *existingMkdirDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	if parentID != "0" {
+		return nil, nil
+	}
+	d.lists++
+	if d.lists == 1 {
+		return nil, nil
+	}
+	return []drive.Entry{{ID: "existing-dir", ParentID: "0", Name: "dir", IsDir: true}}, nil
+}
+func (d *existingMkdirDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
+	d.mkdirs++
+	return drive.Entry{}, errors.New("already exists")
+}
+func (d *existingMkdirDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *existingMkdirDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *existingMkdirDriver) Remove(context.Context, drive.Entry) error { return nil }
+
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -506,6 +536,69 @@ func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
 	}
 	if removed := drv.removedIDs(); len(removed) != 1 || removed[0] != "draft.txt-1" {
 		t.Fatalf("removed stale uploads = %v, want [draft.txt-1]", removed)
+	}
+}
+
+func TestVFSAppleMetadataWrittenAndUploaded(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if n, err := fs.WriteAt(ctx, "/.DS_Store", []byte("finder"), 0); err != nil || n != len("finder") {
+		t.Fatalf("WriteAt .DS_Store n=%d err=%v", n, err)
+	}
+	if err := fs.Flush(ctx, "/.DS_Store"); err != nil {
+		t.Fatal(err)
+	}
+
+	// After flush, the file is pending and will be uploaded (like any normal file).
+	pending := fs.Pending()
+	if len(pending) != 1 || pending[0].Name != ".DS_Store" {
+		t.Fatalf("pending = %v, want [.DS_Store]", pending)
+	}
+
+	// Stat finds the pending file.
+	info, err := fs.Stat(ctx, "/.DS_Store")
+	if err != nil {
+		t.Fatalf("Stat .DS_Store err=%v", err)
+	}
+	if info.Name != ".DS_Store" || info.Size != 6 {
+		t.Fatalf("Stat .DS_Store = %+v", info)
+	}
+}
+
+func TestVFSRemoteAppleMetadataVisible(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{entries: map[string]drive.Entry{
+		"meta":   {ID: "meta", ParentID: "0", Name: ".DS_Store", Size: 1},
+		"double": {ID: "double", ParentID: "0", Name: "._asset.js", Size: 1},
+		"file":   {ID: "file", ParentID: "0", Name: "asset.js", Size: 1},
+	}}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Apple metadata files are now visible like any other file.
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := namesOf(entries)
+	if got != "._asset.js,.DS_Store,asset.js" && got != ".DS_Store,._asset.js,asset.js" && got != ".DS_Store,asset.js,._asset.js" {
+		t.Fatalf("entries = %q, want all three entries including .DS_Store and ._asset.js", got)
+	}
+
+	info, err := fs.Stat(ctx, "/.DS_Store")
+	if err != nil {
+		t.Fatalf("Stat .DS_Store err=%v", err)
+	}
+	if info.Name != ".DS_Store" || info.Size != 1 {
+		t.Fatalf("Stat .DS_Store = %+v", info)
 	}
 }
 
@@ -844,6 +937,32 @@ func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
 	}
 }
 
+func TestVFSMkdirReusesExistingDirectoryOnConflict(t *testing.T) {
+	ctx := context.Background()
+	drv := &existingMkdirDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := fs.Mkdir(ctx, "/dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "existing-dir" || !entry.IsDir {
+		t.Fatalf("unexpected reused directory: %+v", entry)
+	}
+	if drv.mkdirs != 1 {
+		t.Fatalf("mkdir count = %d, want 1", drv.mkdirs)
+	}
+	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if drv.mkdirs != 1 {
+		t.Fatalf("cached mkdir count = %d, want 1", drv.mkdirs)
+	}
+}
+
 func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
 	ctx := context.Background()
 	drv := &staleMkdirListDriver{failFirstPut: true}
@@ -870,6 +989,97 @@ func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
 	}
 	if parent != "dir-id" || name != "file.txt" || data != "content" {
 		t.Fatalf("unexpected put parent=%q name=%q data=%q", parent, name, data)
+	}
+}
+
+func TestVFSPrepareDirectoryCopyClearsPendingChildren(t *testing.T) {
+	ctx := context.Background()
+	drv := &staleMkdirListDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.Mkdir(ctx, "/_nuxt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/_nuxt/LimitGroup.B_5XwyXE.css", []byte("body"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/_nuxt/LimitGroup.B_5XwyXE.css"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.List(ctx, "/_nuxt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("pending child should be visible before copy prepare, got %+v", entries)
+	}
+
+	if err := fs.PrepareDirectoryCopy(ctx, "/_nuxt"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = fs.List(ctx, "/_nuxt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pending children should be cleared, got %+v", entries)
+	}
+	if pending := fs.Pending(); len(pending) != 0 {
+		t.Fatalf("pending should be empty, got %+v", pending)
+	}
+}
+
+func TestVFSPrepareDirectoryCopyHidesExistingRemoteChildrenUntilRecreated(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.Mkdir(filepath.Join(remote, "_nuxt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "_nuxt", "LimitGroup.B_5XwyXE.css"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := localfs.New(remote)
+	if err := raw.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := fs.List(ctx, "/_nuxt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected existing remote child, got %+v", entries)
+	}
+	if err := fs.PrepareDirectoryCopy(ctx, "/_nuxt"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = fs.List(ctx, "/_nuxt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("existing children should be hidden during copy, got %+v", entries)
+	}
+	if _, err := fs.Stat(ctx, "/_nuxt/LimitGroup.B_5XwyXE.css"); err == nil {
+		t.Fatal("hidden child should not stat before recreate")
+	}
+
+	if _, err := fs.WriteAt(ctx, "/_nuxt/LimitGroup.B_5XwyXE.css", []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = fs.List(ctx, "/_nuxt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "LimitGroup.B_5XwyXE.css" || entries[0].Size != 3 {
+		t.Fatalf("recreated pending child should be visible, got %+v", entries)
 	}
 }
 

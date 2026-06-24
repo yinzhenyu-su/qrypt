@@ -318,6 +318,40 @@ func (a *adapter) Readdir(path string, fill func(name string, stat *fuse.Stat_t,
 	return 0
 }
 
+func (a *adapter) Opendir(path string) (int, uint64) {
+	start := time.Now()
+	errc := 0
+	var fh uint64
+	defer func() { a.trace.log("Opendir", path, "fh=%d err=%d dur=%s", fh, errc, time.Since(start)) }()
+	entry, err := a.fs.Stat(context.Background(), path)
+	if err != nil {
+		errc = -fuse.ENOENT
+		return errc, 0
+	}
+	if !entry.IsDir {
+		errc = -fuse.ENOTDIR
+		return errc, 0
+	}
+	fh = a.nextHandle(path)
+	return 0, fh
+}
+
+func (a *adapter) Releasedir(path string, fh uint64) int {
+	start := time.Now()
+	defer func() { a.trace.log("Releasedir", path, "fh=%d dur=%s", fh, time.Since(start)) }()
+	a.releaseHandle(fh)
+	return 0
+}
+
+func (a *adapter) Fsyncdir(path string, datasync bool, fh uint64) int {
+	errc := 0
+	defer func() { a.trace.log("Fsyncdir", path, "datasync=%t fh=%d err=%d", datasync, fh, errc) }()
+	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+		errc = -fuse.ENOENT
+	}
+	return errc
+}
+
 func (a *adapter) Open(path string, flags int) (int, uint64) {
 	start := time.Now()
 	errc := 0
