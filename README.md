@@ -12,6 +12,16 @@ CLI, and concrete cloud-drive SDKs.
 - Reusable core with read caching, write staging, pending-operation recovery,
   and a desktop FUSE adapter boundary.
 
+- 每一轮迭代都问这 4 个问题：
+
+1. 这次是否让挂载更稳定？
+
+2. 是否降低数据丢失风险？
+
+3. 是否有可复现测试？
+
+4. 是否保持模块边界清晰？
+
 ## Architecture
 
 ```text

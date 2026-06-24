@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +39,8 @@ type countingUploadDriver struct {
 	mu          sync.Mutex
 	uploads     int
 	last        []byte
+	entries     map[string]drive.Entry
+	removed     []string
 	blockReturn chan struct{}
 	entered     chan struct{}
 }
@@ -45,6 +49,7 @@ type countingRemoveDriver struct {
 	mu      sync.Mutex
 	entries map[string]drive.Entry
 	removed []string
+	mkdirs  []string
 }
 
 type staleMkdirListDriver struct {
@@ -155,8 +160,16 @@ func (d *countingListDriver) listCount(parentID string) int {
 
 func (d *countingUploadDriver) Init(context.Context) error { return nil }
 func (d *countingUploadDriver) Drop(context.Context) error { return nil }
-func (d *countingUploadDriver) List(context.Context, string) ([]drive.Entry, error) {
-	return nil, nil
+func (d *countingUploadDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
 }
 func (d *countingUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return nil, io.EOF
@@ -169,6 +182,11 @@ func (d *countingUploadDriver) Put(_ context.Context, parentID, name string, siz
 	d.mu.Lock()
 	d.uploads++
 	d.last = append(d.last[:0], data...)
+	uploadID := name + "-" + strconv.Itoa(d.uploads)
+	if d.entries == nil {
+		d.entries = map[string]drive.Entry{}
+	}
+	d.entries[uploadID] = drive.Entry{ID: uploadID, ParentID: parentID, Name: name, Size: size}
 	block := d.blockReturn
 	entered := d.entered
 	d.blockReturn = nil
@@ -180,7 +198,7 @@ func (d *countingUploadDriver) Put(_ context.Context, parentID, name string, siz
 	if block != nil {
 		<-block
 	}
-	return drive.Entry{ID: name, ParentID: parentID, Name: name, Size: size}, nil
+	return drive.Entry{ID: uploadID, ParentID: parentID, Name: name, Size: size}, nil
 }
 func (d *countingUploadDriver) uploadCount() int {
 	d.mu.Lock()
@@ -191,6 +209,25 @@ func (d *countingUploadDriver) lastUpload() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return string(d.last)
+}
+func (d *countingUploadDriver) removedIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.removed...)
+}
+func (d *countingUploadDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
+	return drive.Entry{}, errors.New("mkdir should not be called")
+}
+func (d *countingUploadDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *countingUploadDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *countingUploadDriver) Remove(_ context.Context, entry drive.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.entries, entry.ID)
+	d.removed = append(d.removed, entry.ID)
+	return nil
 }
 
 func (d *countingRemoveDriver) Init(context.Context) error { return nil }
@@ -210,7 +247,15 @@ func (d *countingRemoveDriver) List(_ context.Context, parentID string) ([]drive
 	return entries, nil
 }
 func (d *countingRemoveDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
-	return drive.Entry{}, nil
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.mkdirs = append(d.mkdirs, "")
+	return drive.Entry{}, errors.New("mkdir should not be called")
+}
+func (d *countingRemoveDriver) mkdirCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.mkdirs)
 }
 func (d *countingRemoveDriver) Move(context.Context, drive.Entry, string) error { return nil }
 func (d *countingRemoveDriver) Rename(context.Context, drive.Entry, string) error {
@@ -459,6 +504,9 @@ func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
 	if got := drv.lastUpload(); got != "two" {
 		t.Fatalf("last upload = %q, want two", got)
 	}
+	if removed := drv.removedIDs(); len(removed) != 1 || removed[0] != "draft.txt-1" {
+		t.Fatalf("removed stale uploads = %v, want [draft.txt-1]", removed)
+	}
 }
 
 func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
@@ -487,6 +535,84 @@ func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
 	}
 	if _, err := fs.Stat(ctx, "/dir"); err == nil {
 		t.Fatal("deleted directory should be hidden from stat")
+	}
+}
+
+func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Mkdir(ctx, "/dir/sub"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+
+	if got := drv.mkdirCount(); got != 0 {
+		t.Fatalf("remote mkdir count = %d, want 0", got)
+	}
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("remote deletes = %v, want none", removed)
+	}
+	if _, err := fs.Stat(ctx, "/dir/sub"); err != nil {
+		t.Fatalf("restored child directory should remain visible: %v", err)
+	}
+}
+
+func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.Mkdir(filepath.Join(remote, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		UploadDelay:   time.Hour,
+		DeleteDelay:   time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.Create(ctx, "/dir/pending.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/dir/pending.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/dir/pending.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(ctx, "/dir/pending.txt"); err == nil {
+		t.Fatal("pending child should not survive directory removal")
+	}
+	entries, err := fs.List(ctx, "/dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name == "pending.txt" {
+			t.Fatalf("pending child leaked into restored directory list: %v", entries)
+		}
+	}
+	if pending := fs.Pending(); len(pending) != 0 {
+		t.Fatalf("pending files = %v, want none", pending)
 	}
 }
 
