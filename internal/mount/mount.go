@@ -591,8 +591,7 @@ func (a *adapter) Getxattr(path string, name string) (int, []byte) {
 		return errc, nil
 	}
 	if name == "com.apple.ResourceFork" {
-		errc = -fuse.ENOTSUP
-		return errc, nil
+		return 0, nil
 	}
 	a.mu.Lock()
 	if byName := a.xattrs[path]; byName != nil {
@@ -623,8 +622,7 @@ func (a *adapter) Removexattr(path string, name string) int {
 		return errc
 	}
 	if name == "com.apple.ResourceFork" {
-		errc = -fuse.ENOTSUP
-		return errc
+		return 0
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -706,8 +704,7 @@ func (a *adapter) Setxattr(path string, name string, value []byte, flags int) in
 		return errc
 	}
 	if name == "com.apple.ResourceFork" {
-		errc = -fuse.ENOTSUP
-		return errc
+		return 0
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

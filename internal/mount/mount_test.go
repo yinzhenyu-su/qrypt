@@ -240,6 +240,27 @@ func TestAdapterXattrsSetListRemove(t *testing.T) {
 	}
 }
 
+func TestAdapterResourceForkIsEmptyNoop(t *testing.T) {
+	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
+		"/": {ID: "root", Name: "", IsDir: true},
+	}}, TraceOptions{}, StatfsOptions{})
+	const name = "com.apple.ResourceFork"
+
+	errc, value := ad.Getxattr("/", name)
+	if errc != 0 {
+		t.Fatalf("Getxattr ResourceFork err = %d, want 0", errc)
+	}
+	if len(value) != 0 {
+		t.Fatalf("Getxattr ResourceFork len = %d, want 0", len(value))
+	}
+	if errc := ad.Setxattr("/", name, []byte("ignored"), 0); errc != 0 {
+		t.Fatalf("Setxattr ResourceFork err = %d, want 0", errc)
+	}
+	if errc := ad.Removexattr("/", name); errc != 0 {
+		t.Fatalf("Removexattr ResourceFork err = %d, want 0", errc)
+	}
+}
+
 func TestAdapterXattrsMissingPath(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, TraceOptions{}, StatfsOptions{})
 	if errc, _ := ad.Getxattr("/missing", "com.apple.FinderInfo"); errc != -fuse.ENOENT {
