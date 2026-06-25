@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -129,7 +130,8 @@ func TestDriverPutInstantUploadFinishes(t *testing.T) {
 }
 
 func TestDriverPutMultipartUpload(t *testing.T) {
-	var parts [][]byte
+	var partsMu sync.Mutex
+	parts := map[string][]byte{}
 	var completed bool
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/obj-1" {
@@ -141,7 +143,9 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			parts = append(parts, data)
+			partsMu.Lock()
+			parts[r.URL.Query().Get("partNumber")] = data
+			partsMu.Unlock()
 			w.Header().Set("Etag", "etag-"+r.URL.Query().Get("partNumber"))
 			w.WriteHeader(http.StatusOK)
 		case http.MethodPost:
@@ -162,6 +166,7 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	}))
 	defer oss.Close()
 
+	var authMu sync.Mutex
 	var authCalls int
 	var hashCalled bool
 	var finishCalled bool
@@ -184,7 +189,9 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 				"metadata": map[string]any{"part_size": 3},
 			})
 		case "/file/upload/auth":
+			authMu.Lock()
 			authCalls++
+			authMu.Unlock()
 			writeJSON(t, w, map[string]any{
 				"status": 200,
 				"code":   0,
@@ -211,7 +218,7 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
-	driver.cl.httpClient = ossRewriteClient(t, oss)
+	driver.cl.ossClient = ossRewriteClient(t, oss)
 
 	entry, err := driver.Put(context.Background(), "parent", "data.bin", 8, strings.NewReader("abcdefgh"))
 	if err != nil {
@@ -223,11 +230,14 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	if got := len(parts); got != 3 {
 		t.Fatalf("part count = %d, want 3", got)
 	}
-	if got := string(bytes.Join(parts, nil)); got != "abcdefgh" {
+	if got := string(parts["1"]) + string(parts["2"]) + string(parts["3"]); got != "abcdefgh" {
 		t.Fatalf("uploaded data = %q, want abcdefgh", got)
 	}
-	if authCalls != 4 {
-		t.Fatalf("auth calls = %d, want 4", authCalls)
+	authMu.Lock()
+	gotAuthCalls := authCalls
+	authMu.Unlock()
+	if gotAuthCalls != 4 {
+		t.Fatalf("auth calls = %d, want 4", gotAuthCalls)
 	}
 	if !hashCalled {
 		t.Fatal("hash update was not called")
@@ -237,6 +247,87 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	}
 	if !finishCalled {
 		t.Fatal("finish was not called")
+	}
+}
+
+func TestDriverPutUsesLargerPartsForDefaultQuarkPartSize(t *testing.T) {
+	var partsMu sync.Mutex
+	var partSizes []int
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			partsMu.Lock()
+			partSizes = append(partSizes, len(data))
+			partsMu.Unlock()
+			w.Header().Set("Etag", "etag-"+r.URL.Query().Get("partNumber"))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected oss method: %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-1",
+					"upload_id":  "upload-1",
+					"obj_key":    "obj-1",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 4 * 1024 * 1024},
+			})
+		case "/file/upload/auth":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"auth_key": "auth-key"},
+			})
+		case "/file/update/hash":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": false},
+			})
+		case "/file/upload/finish":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.ossClient = ossRewriteClient(t, oss)
+
+	if _, err := driver.Put(context.Background(), "parent", "data.bin", 12*1024*1024, strings.NewReader(strings.Repeat("a", 12*1024*1024))); err != nil {
+		t.Fatal(err)
+	}
+	partsMu.Lock()
+	defer partsMu.Unlock()
+	if len(partSizes) != 1 {
+		t.Fatalf("part count = %d, want 1; sizes=%v", len(partSizes), partSizes)
+	}
+	if partSizes[0] != 12*1024*1024 {
+		t.Fatalf("part size = %d, want %d", partSizes[0], 12*1024*1024)
 	}
 }
 

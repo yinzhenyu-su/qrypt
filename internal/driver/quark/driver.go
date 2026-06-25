@@ -27,6 +27,17 @@ type Driver struct {
 	rootID   string
 }
 
+type uploadPartJob struct {
+	number int
+	data   []byte
+}
+
+type uploadPartResult struct {
+	number int
+	etag   string
+	err    error
+}
+
 func init() {
 	drive.Register("quark", func(params drive.Params) (drive.Driver, error) {
 		cookie := params["cookie"]
@@ -206,6 +217,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	parentID = d.resolve(parentID)
+	logging.L.Infof("[QUARK] mkdir start parent=%q name=%q", parentID, name)
 	data := map[string]any{
 		"pdir_fid":      parentID,
 		"file_name":     name,
@@ -214,11 +226,14 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	}
 	var resp createDirResp
 	if err := d.cl.request(http.MethodPost, "/file", nil, data, &resp); err != nil {
+		logging.L.Warnf("[QUARK] mkdir request failed parent=%q name=%q err=%v", parentID, name, err)
 		return drive.Entry{}, fmt.Errorf("quark: mkdir: %w", err)
 	}
 	if err := apiError(resp.respEnvelope); err != nil {
+		logging.L.Warnf("[QUARK] mkdir api error parent=%q name=%q err=%v", parentID, name, err)
 		return drive.Entry{}, err
 	}
+	logging.L.Infof("[QUARK] mkdir complete parent=%q name=%q id=%q", parentID, name, resp.Data.Fid)
 	return drive.Entry{ID: resp.Data.Fid, ParentID: parentID, Name: name, IsDir: true}, nil
 }
 
@@ -264,6 +279,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
 	parentID = d.resolve(parentID)
 	mtime := time.Now()
+	logging.L.Infof("[QUARK] upload start parent=%q name=%q size=%d", parentID, name, size)
 	preData := map[string]any{
 		"ccp_hash_update": true,
 		"file_name":       name,
@@ -275,16 +291,21 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	}
 	var preResp upPreResp
 	if err := d.cl.request(http.MethodPost, "/file/upload/pre", nil, preData, &preResp); err != nil {
+		logging.L.Warnf("[QUARK] upload pre failed parent=%q name=%q size=%d err=%v", parentID, name, size, err)
 		return drive.Entry{}, fmt.Errorf("quark: upload pre: %w", err)
 	}
 	if err := apiError(preResp.respEnvelope); err != nil {
+		logging.L.Warnf("[QUARK] upload pre api error parent=%q name=%q size=%d err=%v", parentID, name, size, err)
 		return drive.Entry{}, err
 	}
+	logging.L.Infof("[QUARK] upload pre ok name=%q task=%q upload_id=%q part_size=%d finish=%t", name, preResp.Data.TaskID, preResp.Data.UploadID, preResp.Metadata.PartSize, preResp.Data.Finish)
 	if preResp.Data.Finish && preResp.Data.Fid != "" {
 		finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
 		if err != nil {
+			logging.L.Warnf("[QUARK] instant upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
 			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 		}
+		logging.L.Infof("[QUARK] instant upload complete name=%q fid=%q size=%d", name, finalFid, size)
 		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size}, nil
 	}
 
@@ -292,23 +313,96 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	if partSize <= 0 {
 		partSize = 4 * 1024 * 1024
 	}
+	if partSize >= 4*1024*1024 && partSize < minUploadPartSize {
+		partSize = minUploadPartSize
+	}
 
 	md5Hash := md5.New()
 	sha1Hash := sha1.New()
 	teeReader := io.TeeReader(body, io.MultiWriter(md5Hash, sha1Hash))
 
 	buf := make([]byte, partSize)
-	var etags []string
+	etagsByPart := map[int]string{}
 	var totalRead int64
+	var submittedParts int
+	var completedParts int
 	partNumber := 1
+	jobs := make(chan uploadPartJob, partUploadWorkers)
+	results := make(chan uploadPartResult, partUploadWorkers)
+	done := make(chan struct{})
+	jobsClosed := false
+	closeJobs := func() {
+		if !jobsClosed {
+			close(jobs)
+			jobsClosed = true
+		}
+	}
+	defer close(done)
+	defer closeJobs()
+
+	var uploadWG sync.WaitGroup
+	for i := 0; i < partUploadWorkers; i++ {
+		uploadWG.Add(1)
+		go func() {
+			defer uploadWG.Done()
+			for {
+				select {
+				case job, ok := <-jobs:
+					if !ok {
+						return
+					}
+					logging.L.Debugf("[QUARK] upload part start name=%q task=%q part=%d bytes=%d", name, preResp.Data.TaskID, job.number, len(job.data))
+					etag, err := d.uploadPart(&preResp, job.number, job.data)
+					if err != nil {
+						logging.L.Warnf("[QUARK] upload part failed name=%q task=%q part=%d bytes=%d err=%v", name, preResp.Data.TaskID, job.number, len(job.data), err)
+					} else {
+						logging.L.Debugf("[QUARK] upload part complete name=%q task=%q part=%d etag=%q", name, preResp.Data.TaskID, job.number, etag)
+					}
+					select {
+					case results <- uploadPartResult{number: job.number, etag: etag, err: err}:
+					case <-done:
+						return
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+	handleResult := func(result uploadPartResult) error {
+		if result.err != nil {
+			return fmt.Errorf("quark: upload part %d: %w", result.number, result.err)
+		}
+		etagsByPart[result.number] = result.etag
+		return nil
+	}
+	receiveResult := func() error {
+		result := <-results
+		completedParts++
+		return handleResult(result)
+	}
+	sendJob := func(job uploadPartJob) error {
+		for {
+			select {
+			case jobs <- job:
+				submittedParts++
+				return nil
+			case result := <-results:
+				completedParts++
+				if err := handleResult(result); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	for {
 		n, readErr := io.ReadFull(teeReader, buf)
 		if n > 0 {
-			etag, err := d.uploadPart(&preResp, partNumber, buf[:n])
-			if err != nil {
-				return drive.Entry{}, fmt.Errorf("quark: upload part %d: %w", partNumber, err)
+			data := append([]byte(nil), buf[:n]...)
+			if err := sendJob(uploadPartJob{number: partNumber, data: data}); err != nil {
+				return drive.Entry{}, err
 			}
-			etags = append(etags, etag)
 			totalRead += int64(n)
 			partNumber++
 		}
@@ -316,12 +410,27 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 			break
 		}
 		if readErr != nil {
+			logging.L.Warnf("[QUARK] upload read body failed name=%q task=%q total_read=%d err=%v", name, preResp.Data.TaskID, totalRead, readErr)
 			return drive.Entry{}, fmt.Errorf("quark: upload: read body: %w", readErr)
 		}
 	}
+	closeJobs()
+	for completedParts < submittedParts {
+		if err := receiveResult(); err != nil {
+			return drive.Entry{}, err
+		}
+	}
+	uploadWG.Wait()
+
+	etags := make([]string, 0, submittedParts)
+	for i := 1; i <= submittedParts; i++ {
+		etags = append(etags, etagsByPart[i])
+	}
 	if totalRead == 0 {
+		logging.L.Debugf("[QUARK] upload empty part start name=%q task=%q", name, preResp.Data.TaskID)
 		etag, err := d.uploadPart(&preResp, 1, []byte{})
 		if err != nil {
+			logging.L.Warnf("[QUARK] upload empty part failed name=%q task=%q err=%v", name, preResp.Data.TaskID, err)
 			return drive.Entry{}, fmt.Errorf("quark: upload part 1: %w", err)
 		}
 		etags = append(etags, etag)
@@ -334,25 +443,32 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	}
 	var hashResp hashResp
 	if err := d.cl.request(http.MethodPost, "/file/update/hash", nil, hashData, &hashResp); err != nil {
+		logging.L.Warnf("[QUARK] upload hash update failed name=%q task=%q total_read=%d err=%v", name, preResp.Data.TaskID, totalRead, err)
 		return drive.Entry{}, fmt.Errorf("quark: upload hash: %w", err)
 	}
+	logging.L.Infof("[QUARK] upload hash update ok name=%q task=%q total_read=%d finish=%t", name, preResp.Data.TaskID, totalRead, hashResp.Data.Finish)
 	if hashResp.Data.Finish {
 		if hashResp.Data.Fid != "" {
 			preResp.Data.Fid = hashResp.Data.Fid
 		}
 		finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
 		if err != nil {
+			logging.L.Warnf("[QUARK] hash-finished upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
 			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 		}
+		logging.L.Infof("[QUARK] hash-finished upload complete name=%q fid=%q size=%d", name, finalFid, totalRead)
 		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead}, nil
 	}
 	if err := d.ossComplete(&preResp, etags); err != nil {
+		logging.L.Warnf("[QUARK] upload complete multipart failed name=%q task=%q parts=%d err=%v", name, preResp.Data.TaskID, len(etags), err)
 		return drive.Entry{}, fmt.Errorf("quark: upload complete: %w", err)
 	}
 	finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
 	if err != nil {
+		logging.L.Warnf("[QUARK] upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
 		return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 	}
+	logging.L.Infof("[QUARK] upload complete name=%q fid=%q size=%d parts=%d", name, finalFid, totalRead, len(etags))
 	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead}, nil
 }
 
@@ -486,9 +602,11 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		}, &authResp)
 		if err != nil {
 			if attempt < ossMaxRetries {
+				logging.L.Warnf("[QUARK] oss complete auth failed; retry task=%q attempt=%d err=%v", pre.Data.TaskID, attempt+1, err)
 				time.Sleep(retryBackoff(attempt))
 				continue
 			}
+			logging.L.Warnf("[QUARK] oss complete auth failed task=%q attempts=%d err=%v", pre.Data.TaskID, attempt+1, err)
 			return err
 		}
 
@@ -504,22 +622,29 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
 		req.Header.Set("Referer", defaultReferer)
 		req.Header.Set("User-Agent", defaultUserAgent)
-		resp, err := d.cl.httpClient.Do(req)
+		d.cl.ossSem <- struct{}{}
+		resp, err := d.cl.ossClient.Do(req)
+		<-d.cl.ossSem
 		if err != nil {
 			if attempt < ossMaxRetries {
+				logging.L.Warnf("[QUARK] oss complete http failed; retry task=%q attempt=%d err=%v", pre.Data.TaskID, attempt+1, err)
 				time.Sleep(retryBackoff(attempt))
 				continue
 			}
+			logging.L.Warnf("[QUARK] oss complete http failed task=%q attempts=%d err=%v", pre.Data.TaskID, attempt+1, err)
 			return fmt.Errorf("oss complete: %w", err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			logging.L.Debugf("[QUARK] oss complete ok task=%q parts=%d attempt=%d", pre.Data.TaskID, len(etags), attempt+1)
 			return nil
 		}
 		if attempt < ossMaxRetries {
+			logging.L.Warnf("[QUARK] oss complete status retry task=%q attempt=%d status=%d", pre.Data.TaskID, attempt+1, resp.StatusCode)
 			time.Sleep(retryBackoff(attempt))
 			continue
 		}
+		logging.L.Warnf("[QUARK] oss complete status failed task=%q attempts=%d status=%d", pre.Data.TaskID, attempt+1, resp.StatusCode)
 		return fmt.Errorf("oss complete status %d", resp.StatusCode)
 	}
 	return nil
@@ -539,9 +664,11 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 		}, &authResp)
 		if err != nil {
 			if attempt < ossMaxRetries {
+				logging.L.Warnf("[QUARK] upload part auth failed; retry task=%q part=%d attempt=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
 				time.Sleep(retryBackoff(attempt))
 				continue
 			}
+			logging.L.Warnf("[QUARK] upload part auth failed task=%q part=%d attempts=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
 			return "", err
 		}
 
@@ -554,12 +681,17 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 		req.Header.Set("x-oss-date", dateStr)
 		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
 		req.Header.Set("Referer", defaultReferer)
-		resp, err := d.cl.httpClient.Do(req)
+		req.Header.Set("User-Agent", defaultUserAgent)
+		d.cl.ossSem <- struct{}{}
+		resp, err := d.cl.ossClient.Do(req)
+		<-d.cl.ossSem
 		if err != nil {
 			if attempt < ossMaxRetries {
+				logging.L.Warnf("[QUARK] upload part http failed; retry task=%q part=%d attempt=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
 				time.Sleep(retryBackoff(attempt))
 				continue
 			}
+			logging.L.Warnf("[QUARK] upload part http failed task=%q part=%d attempts=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
 			return "", fmt.Errorf("upload part %d http: %w", partNumber, err)
 		}
 		etag := resp.Header.Get("Etag")
@@ -568,9 +700,11 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 			return etag, nil
 		}
 		if attempt < ossMaxRetries {
+			logging.L.Warnf("[QUARK] upload part status retry task=%q part=%d attempt=%d status=%d", pre.Data.TaskID, partNumber, attempt+1, resp.StatusCode)
 			time.Sleep(retryBackoff(attempt))
 			continue
 		}
+		logging.L.Warnf("[QUARK] upload part status failed task=%q part=%d attempts=%d status=%d", pre.Data.TaskID, partNumber, attempt+1, resp.StatusCode)
 		return "", fmt.Errorf("upload part %d status %d", partNumber, resp.StatusCode)
 	}
 	return "", nil
