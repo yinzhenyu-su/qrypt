@@ -15,17 +15,21 @@ import (
 )
 
 const (
-	defaultBaseURL   = "https://drive.quark.cn/1/clouddrive"
-	defaultV2URL     = "https://drive.quark.cn/api/v2"
-	defaultReferer   = "https://pan.quark.cn"
-	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
-	httpMaxRetries   = 3
-	ossMaxRetries    = 3
+	defaultBaseURL    = "https://drive.quark.cn/1/clouddrive"
+	defaultV2URL      = "https://drive.quark.cn/api/v2"
+	defaultReferer    = "https://pan.quark.cn"
+	defaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
+	httpMaxRetries    = 3
+	ossMaxRetries     = 3
+	ossMaxConcurrent  = 4
+	partUploadWorkers = 1
+	minUploadPartSize = 16 * 1024 * 1024
 )
 
 type client struct {
 	httpClient     *http.Client
 	downloadClient *http.Client
+	ossClient      *http.Client
 	cookie         string
 	baseURL        string
 	v2URL          string
@@ -33,6 +37,7 @@ type client struct {
 	sem            chan struct{}
 	mgmtSem        chan struct{}
 	metaSem        chan struct{}
+	ossSem         chan struct{}
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -47,12 +52,14 @@ func newClient(cookie string, opts clientOptions) *client {
 	return &client{
 		httpClient:     newHTTPClient(30 * time.Second),
 		downloadClient: newHTTPClient(0),
+		ossClient:      newHTTPClientWithResponseHeaderTimeout(5*time.Minute, 5*time.Minute),
 		cookie:         cookie,
 		baseURL:        baseURL,
 		v2URL:          v2URL,
 		sem:            make(chan struct{}, 200),
 		mgmtSem:        make(chan struct{}, 500),
 		metaSem:        make(chan struct{}, 500),
+		ossSem:         make(chan struct{}, ossMaxConcurrent),
 	}
 }
 
@@ -62,6 +69,10 @@ type clientOptions struct {
 }
 
 func newHTTPClient(timeout time.Duration) *http.Client {
+	return newHTTPClientWithResponseHeaderTimeout(timeout, 30*time.Second)
+}
+
+func newHTTPClientWithResponseHeaderTimeout(timeout, responseHeaderTimeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -74,7 +85,7 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 	}
 	c := &http.Client{Transport: transport}
 	if timeout > 0 {
