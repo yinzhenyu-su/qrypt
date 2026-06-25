@@ -90,6 +90,13 @@ func TestRegisterQuarkDriver(t *testing.T) {
 	}
 }
 
+func TestOSSClientHasNoWholeRequestTimeout(t *testing.T) {
+	client := newOSSClient()
+	if client.Timeout != 0 {
+		t.Fatalf("oss client timeout = %s, want no whole-request timeout", client.Timeout)
+	}
+}
+
 func TestDriverPutInstantUploadFinishes(t *testing.T) {
 	var finishCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +227,7 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
-	routeOSSToTestServer(driver.cl.httpClient, oss)
+	routeOSSToTestServer(driver.cl.ossClient, oss)
 
 	entry, err := driver.Put(context.Background(), "parent", "data.bin", 8, strings.NewReader("abcdefgh"))
 	if err != nil {
@@ -318,7 +325,7 @@ func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
-	routeOSSToTestServer(driver.cl.httpClient, oss)
+	routeOSSToTestServer(driver.cl.ossClient, oss)
 
 	if _, err := driver.Put(context.Background(), "parent", "data.bin", 12*1024*1024, strings.NewReader(strings.Repeat("a", 12*1024*1024))); err != nil {
 		t.Fatal(err)
@@ -357,7 +364,7 @@ func TestDriverUploadPartUsesNativeRateLimiter(t *testing.T) {
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
-	routeOSSToTestServer(driver.cl.httpClient, oss)
+	routeOSSToTestServer(driver.cl.ossClient, oss)
 	driver.InstallRateLimiter(drive.NewRateLimiter(drive.RateLimits{UploadBytesPerSecond: 1}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
