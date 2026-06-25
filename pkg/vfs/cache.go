@@ -7,11 +7,58 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/internal/logging"
+	"golang.org/x/sys/unix"
 )
 
 const cacheBatchBlocks = 16
+
+// reserveFraction and minReserveBytes control how much disk space is kept
+// free when capping cache maxSize by available disk space.
+const (
+	diskReserveFraction = 0.1         // reserve at least 10% of available space
+	diskMinReserveBytes = 1 << 30     // at least 1GB
+	diskCheckInterval   = 10 * time.Second // how often to re-check disk in evict loop
+)
+
+func diskFreeBytes(path string) (int64, error) {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return int64(stat.Bavail) * int64(stat.Bsize), nil
+}
+
+// limitByDiskSpace caps maxSize so that at least diskReserveFraction (and at
+// least diskMinReserveBytes) of the filesystem remains free.  Returns the
+// adjusted size and a human-readable reason if an adjustment was made.
+func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
+	if maxSize <= 0 {
+		return 0, ""
+	}
+	avail, err := diskFreeBytes(dir)
+	if err != nil {
+		return maxSize, ""
+	}
+	reserve := int64(float64(avail) * diskReserveFraction)
+	if reserve < diskMinReserveBytes {
+		reserve = diskMinReserveBytes
+	}
+	ceiling := avail - reserve
+	if ceiling <= 0 {
+		ceiling = avail / 2
+	}
+	if maxSize > ceiling {
+		return ceiling, fmt.Sprintf(
+			"max_size=%d capped by disk: available=%d reserve=%d effective=%d",
+			maxSize, avail, reserve, ceiling)
+	}
+	return maxSize, ""
+}
 
 type PendingFile struct {
 	Path      string `json:"path"`
@@ -45,14 +92,28 @@ type Cache struct {
 	maxSize int64
 	staging *stagingStore
 
-	mu      sync.RWMutex
-	pending map[string]PendingFile
-	chunks  map[string]*fileChunks
+	mu            sync.RWMutex
+	pending       map[string]PendingFile
+	chunks        map[string]*fileChunks
+	lastDiskCheck time.Time
 }
 
 func NewCache(dir string, maxSize int64) (*Cache, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "reading"), 0o755); err != nil {
+	readingDir := filepath.Join(dir, "reading")
+	if err := os.MkdirAll(readingDir, 0o755); err != nil {
 		return nil, err
+	}
+	// Clean up orphaned batch files from previous runs.
+	if entries, err := os.ReadDir(readingDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".batch") {
+				_ = os.Remove(filepath.Join(readingDir, entry.Name()))
+			}
+		}
+	}
+	adjusted, reason := limitByDiskSpace(maxSize, dir)
+	if reason != "" {
+		logging.L.Infof("[CACHE] %s", reason)
 	}
 	staging, err := newStagingStore(filepath.Join(dir, "staging"))
 	if err != nil {
@@ -60,7 +121,7 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 	}
 	c := &Cache{
 		dir:     dir,
-		maxSize: maxSize,
+		maxSize: adjusted,
 		staging: staging,
 		pending: map[string]PendingFile{},
 		chunks:  map[string]*fileChunks{},
@@ -307,9 +368,20 @@ func samePendingFile(a, b PendingFile) bool {
 }
 
 func (c *Cache) evictIfNeeded() error {
-	if c.maxSize <= 0 {
+	maxSize := c.maxSize
+	if maxSize <= 0 {
 		return nil
 	}
+
+	// Periodically re-check disk space.  If the filesystem is getting full
+	// from other processes, tighten the cap so cache doesn't cause disk-full.
+	if time.Since(c.lastDiskCheck) >= diskCheckInterval {
+		c.lastDiskCheck = time.Now()
+		if adjusted, _ := limitByDiskSpace(maxSize, c.dir); adjusted < maxSize {
+			maxSize = adjusted
+		}
+	}
+
 	var total int64
 	var chunks []struct {
 		fid string
@@ -330,20 +402,33 @@ func (c *Cache) evictIfNeeded() error {
 		fc.mu.RUnlock()
 	}
 	c.mu.RUnlock()
-	if total <= c.maxSize {
+	if total <= maxSize {
 		return nil
 	}
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].ch.accessAt.Before(chunks[j].ch.accessAt) })
+	var evicted int
 	for _, item := range chunks {
-		if total <= c.maxSize*7/10 {
+		if total <= maxSize*7/10 {
 			break
 		}
-		_ = os.Remove(item.ch.file)
 		fc := c.fileChunks(item.fid)
 		fc.mu.Lock()
+		// Only remove the batch file if no other chunk still references it.
+		stillReferenced := false
+		for idx, ch := range fc.chunks {
+			if ch.file == item.ch.file && idx != item.idx {
+				stillReferenced = true
+				break
+			}
+		}
+		if !stillReferenced {
+			_ = os.Remove(item.ch.file)
+		}
 		delete(fc.chunks, item.idx)
 		fc.mu.Unlock()
 		total -= item.ch.size
+		evicted++
 	}
+	logging.L.Infof("[CACHE] evicted %d chunks size=%d max_size=%d", evicted, total, maxSize)
 	return nil
 }
