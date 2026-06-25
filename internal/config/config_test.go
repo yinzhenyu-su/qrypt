@@ -109,8 +109,8 @@ total_space = "1T"
 free_space = "800G"
 
 [logging]
-fuse_trace = true
-fuse_trace_file = "/tmp/qrypt-fuse.log"
+log_level = "debug"
+log_file = "/tmp/qrypt.log"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -120,11 +120,11 @@ fuse_trace_file = "/tmp/qrypt-fuse.log"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Logging.FuseTrace {
-		t.Fatal("expected fuse_trace to be enabled")
+	if cfg.Logging.LogLevel != "debug" {
+		t.Fatalf("unexpected log_level: %q", cfg.Logging.LogLevel)
 	}
-	if cfg.Logging.FuseTraceFile != "/tmp/qrypt-fuse.log" {
-		t.Fatalf("unexpected fuse_trace_file: %q", cfg.Logging.FuseTraceFile)
+	if cfg.Logging.LogFile != "/tmp/qrypt.log" {
+		t.Fatalf("unexpected log_file: %q", cfg.Logging.LogFile)
 	}
 	if cfg.EffectiveVolumeName() != "Qrypt Test" {
 		t.Fatalf("unexpected volume_name: %q", cfg.EffectiveVolumeName())

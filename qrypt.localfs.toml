@@ -7,8 +7,8 @@ total_space = "1T"
 free_space = "800G"
 
 [logging]
-fuse_trace = false
-fuse_trace_file = "/tmp/qrypt-fuse.log"
+log_level = "info"
+log_file = "/tmp/qrypt.log"
 
 [defaults.cache]
 max_size_bytes = 536870912
