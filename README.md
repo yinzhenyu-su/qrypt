@@ -155,6 +155,11 @@ intentionally top-level: the program creates one OS mount point, and each
 under `cache_dir/<mount-name>` unless `[mounts.cache].dir` overrides that
 mount.
 
+When `no_apple_double = true`, Finder/macOS metadata writes such as
+`.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, and `.fseventsd` are
+accepted by the FUSE layer but ignored by the backend upload path. Set it to
+`false` to upload those files like regular files.
+
 `total_space` and `free_space` control the capacity reported by FUSE `Statfs`.
 They accept plain bytes or binary size suffixes such as `512M`, `1G`, and `1T`.
 
