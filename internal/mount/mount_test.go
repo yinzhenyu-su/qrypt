@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -28,8 +29,14 @@ type stubSpaceFS struct {
 
 type createRouteFS struct {
 	stubFS
-	created []string
-	mkdirs  []string
+	created  []string
+	mkdirs   []string
+	writes   []string
+	flushes  []string
+	removed  []string
+	rmdirs   []string
+	renames  []string
+	truncate []string
 }
 
 func (stubFS) Start(context.Context) {}
@@ -80,6 +87,36 @@ func (s *createRouteFS) Mkdir(_ context.Context, path string) (drive.Entry, erro
 	return drive.Entry{ID: path, Name: filepath.Base(path), IsDir: true}, nil
 }
 
+func (s *createRouteFS) WriteAt(_ context.Context, path string, data []byte, off int64) (int, error) {
+	s.writes = append(s.writes, path)
+	return len(data), nil
+}
+
+func (s *createRouteFS) Flush(_ context.Context, path string) error {
+	s.flushes = append(s.flushes, path)
+	return nil
+}
+
+func (s *createRouteFS) Remove(_ context.Context, path string) error {
+	s.removed = append(s.removed, path)
+	return nil
+}
+
+func (s *createRouteFS) RemoveDir(_ context.Context, path string) error {
+	s.rmdirs = append(s.rmdirs, path)
+	return nil
+}
+
+func (s *createRouteFS) Rename(_ context.Context, oldPath, newPath string) error {
+	s.renames = append(s.renames, oldPath+"->"+newPath)
+	return nil
+}
+
+func (s *createRouteFS) Truncate(_ context.Context, path string, size int64) error {
+	s.truncate = append(s.truncate, path)
+	return nil
+}
+
 var errNotFound = errors.New("not found")
 
 func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
@@ -96,6 +133,13 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}
+	}
+}
+
+func TestMountOptionsDoNotUseMacFUSENoAppleDouble(t *testing.T) {
+	opts := mountOptions(Options{NoAppleDouble: true})
+	if hasMountOption(opts, "noappledouble") {
+		t.Fatalf("mount options %v should not pass macFUSE noappledouble", opts)
 	}
 }
 
@@ -234,6 +278,125 @@ func TestAdapterMknodCreatesRegularFile(t *testing.T) {
 	}
 }
 
+func TestAdapterNoAppleDoubleIgnoresAppleMetadata(t *testing.T) {
+	fs := &createRouteFS{}
+	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
+
+	if errc, fh := ad.Create("/folder/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
+		t.Fatalf("Create .DS_Store err=%d fh=%d, want success with fh", errc, fh)
+	}
+	if got := ad.Write("/folder/.DS_Store", []byte("finder"), 0, 1); got != len("finder") {
+		t.Fatalf("Write .DS_Store = %d, want %d", got, len("finder"))
+	}
+	if errc := ad.Flush("/folder/.DS_Store", 1); errc != 0 {
+		t.Fatalf("Flush .DS_Store err=%d, want 0", errc)
+	}
+	if errc := ad.Mknod("/folder/._asset.js", fuse.S_IFREG|0o644, 0); errc != 0 {
+		t.Fatalf("Mknod AppleDouble err=%d, want 0", errc)
+	}
+	if errc := ad.Mkdir("/.Spotlight-V100", 0o755); errc != 0 {
+		t.Fatalf("Mkdir Spotlight err=%d, want 0", errc)
+	}
+	if got := ad.Write("/.Spotlight-V100/store", []byte("ignored"), 0, 0); got != len("ignored") {
+		t.Fatalf("Write Spotlight child = %d, want %d", got, len("ignored"))
+	}
+	if errc := ad.Rename("/.DS_Store", "/.DS_Store.tmp"); errc != 0 {
+		t.Fatalf("Rename .DS_Store err=%d, want 0", errc)
+	}
+	if errc := ad.Unlink("/.DS_Store"); errc != 0 {
+		t.Fatalf("Unlink .DS_Store err=%d, want 0", errc)
+	}
+	if errc, fh := ad.Create("/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
+		t.Fatalf("Create second .DS_Store err=%d fh=%d, want success with fh", errc, fh)
+	}
+	if got := ad.Write("/.DS_Store", []byte("finder"), 0, 1); got != len("finder") {
+		t.Fatalf("Write second .DS_Store = %d, want %d", got, len("finder"))
+	}
+	var stat fuse.Stat_t
+	if errc := ad.Getattr("/.DS_Store", &stat, 0); errc != 0 {
+		t.Fatalf("Getattr .DS_Store err=%d, want 0", errc)
+	}
+	if stat.Size != int64(len("finder")) || stat.Mode&fuse.S_IFREG == 0 {
+		t.Fatalf("Getattr .DS_Store stat mode=%o size=%d, want regular file size %d", stat.Mode, stat.Size, len("finder"))
+	}
+	buf := make([]byte, 16)
+	if got := ad.Read("/.DS_Store", buf, 2, 1); got != len("finder")-2 {
+		t.Fatalf("Read .DS_Store = %d, want %d", got, len("finder")-2)
+	}
+	if errc := ad.Truncate("/.DS_Store", 2, 1); errc != 0 {
+		t.Fatalf("Truncate .DS_Store err=%d, want 0", errc)
+	}
+	if errc := ad.Rename("/.DS_Store", "/.DS_Store.tmp"); errc != 0 {
+		t.Fatalf("Rename second .DS_Store err=%d, want 0", errc)
+	}
+	if errc := ad.Getattr("/.DS_Store.tmp", &stat, 0); errc != 0 {
+		t.Fatalf("Getattr renamed .DS_Store err=%d, want 0", errc)
+	}
+	if stat.Size != 2 {
+		t.Fatalf("renamed .DS_Store size=%d, want 2", stat.Size)
+	}
+	if errc := ad.Readdir("/.Spotlight-V100", func(string, *fuse.Stat_t, int64) bool { return true }, 0, 0); errc != 0 {
+		t.Fatalf("Readdir Spotlight err=%d, want 0", errc)
+	}
+
+	if len(fs.created) != 0 || len(fs.mkdirs) != 0 || len(fs.writes) != 0 || len(fs.flushes) != 0 ||
+		len(fs.removed) != 0 || len(fs.rmdirs) != 0 || len(fs.renames) != 0 || len(fs.truncate) != 0 {
+		t.Fatalf("backend calls created=%v mkdirs=%v writes=%v flushes=%v removed=%v rmdirs=%v renames=%v truncate=%v, want none",
+			fs.created, fs.mkdirs, fs.writes, fs.flushes, fs.removed, fs.rmdirs, fs.renames, fs.truncate)
+	}
+}
+
+func TestAdapterNoAppleDoubleBypassesReadOnlyRootMetadata(t *testing.T) {
+	ad := newAdapterWithOptions(stubFS{
+		readOnly: map[string]bool{"/.DS_Store": true},
+	}, adapterOptions{IgnoreAppleMetadata: true})
+
+	if errc := ad.Truncate("/.DS_Store", 0, 1); errc != 0 {
+		t.Fatalf("Truncate read-only .DS_Store err=%d, want 0", errc)
+	}
+	if got := ad.Write("/.DS_Store", []byte("Bud1"), 0, 1); got != 4 {
+		t.Fatalf("Write read-only .DS_Store = %d, want 4", got)
+	}
+	if errc := ad.Unlink("/.DS_Store"); errc != 0 {
+		t.Fatalf("Unlink read-only .DS_Store err=%d, want 0", errc)
+	}
+}
+
+func TestAdapterNoAppleDoubleFalseUploadsAppleMetadata(t *testing.T) {
+	fs := &createRouteFS{}
+	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: false})
+
+	errc, fh := ad.Create("/.DS_Store", 0, fuse.S_IFREG|0o644)
+	if errc != 0 || fh == 0 {
+		t.Fatalf("Create .DS_Store err=%d fh=%d, want success with fh", errc, fh)
+	}
+	if got := ad.Write("/.DS_Store", []byte("finder"), 0, fh); got != len("finder") {
+		t.Fatalf("Write .DS_Store = %d, want %d", got, len("finder"))
+	}
+	if errc := ad.Flush("/.DS_Store", fh); errc != 0 {
+		t.Fatalf("Flush .DS_Store err=%d, want 0", errc)
+	}
+	if errc := ad.Mknod("/._asset.js", fuse.S_IFREG|0o644, 0); errc != 0 {
+		t.Fatalf("Mknod AppleDouble err=%d, want 0", errc)
+	}
+	if errc := ad.Mkdir("/.Spotlight-V100", 0o755); errc != 0 {
+		t.Fatalf("Mkdir Spotlight err=%d, want 0", errc)
+	}
+
+	if got := strings.Join(fs.created, ","); got != "/.DS_Store,/._asset.js" {
+		t.Fatalf("created = %q, want Apple metadata files", got)
+	}
+	if got := strings.Join(fs.writes, ","); got != "/.DS_Store" {
+		t.Fatalf("writes = %q, want .DS_Store", got)
+	}
+	if got := strings.Join(fs.flushes, ","); got != "/.DS_Store" {
+		t.Fatalf("flushes = %q, want .DS_Store", got)
+	}
+	if got := strings.Join(fs.mkdirs, ","); got != "/.Spotlight-V100" {
+		t.Fatalf("mkdirs = %q, want Spotlight", got)
+	}
+}
+
 func TestAdapterResourceForkIsEmptyNoop(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
@@ -308,6 +471,37 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 	}
 	if errc := ad.Chmod("/a", 0o777); errc != -fuse.EROFS {
 		t.Fatalf("Chmod readonly err = %d, want EROFS", errc)
+	}
+}
+
+func TestAdapterWritableMountRootModeAllowsFinderDrop(t *testing.T) {
+	ctx := context.Background()
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "a", FS: fsA}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns.Start(ctx)
+	ad := newAdapter(ns, StatfsOptions{})
+
+	var stat fuse.Stat_t
+	if errc := ad.Getattr("/a", &stat, 0); errc != 0 {
+		t.Fatalf("Getattr mount root err=%d, want 0", errc)
+	}
+	if stat.Mode&0o222 == 0 {
+		t.Fatalf("mount root mode=%o, want write bits visible for Finder", stat.Mode)
+	}
+	if errc := ad.Access("/a", fuse.W_OK); errc != 0 {
+		t.Fatalf("Access W_OK mount root err=%d, want 0", errc)
+	}
+	if errc := ad.Mkdir("/a/copied", 0o755); errc != 0 {
+		t.Fatalf("Mkdir child under mount root err=%d, want 0", errc)
+	}
+	if errc := ad.Mkdir("/a", 0o755); errc != -fuse.EROFS {
+		t.Fatalf("Mkdir mount root itself err=%d, want EROFS", errc)
 	}
 }
 
