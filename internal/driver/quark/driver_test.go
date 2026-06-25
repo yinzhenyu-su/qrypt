@@ -218,7 +218,7 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
-	driver.cl.ossClient = ossRewriteClient(t, oss)
+	routeOSSToTestServer(driver.cl.httpClient, oss)
 
 	entry, err := driver.Put(context.Background(), "parent", "data.bin", 8, strings.NewReader("abcdefgh"))
 	if err != nil {
@@ -250,7 +250,7 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	}
 }
 
-func TestDriverPutUsesLargerPartsForDefaultQuarkPartSize(t *testing.T) {
+func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	var partsMu sync.Mutex
 	var partSizes []int
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -316,7 +316,7 @@ func TestDriverPutUsesLargerPartsForDefaultQuarkPartSize(t *testing.T) {
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
-	driver.cl.ossClient = ossRewriteClient(t, oss)
+	routeOSSToTestServer(driver.cl.httpClient, oss)
 
 	if _, err := driver.Put(context.Background(), "parent", "data.bin", 12*1024*1024, strings.NewReader(strings.Repeat("a", 12*1024*1024))); err != nil {
 		t.Fatal(err)
@@ -324,26 +324,84 @@ func TestDriverPutUsesLargerPartsForDefaultQuarkPartSize(t *testing.T) {
 	partsMu.Lock()
 	defer partsMu.Unlock()
 	if len(partSizes) != 1 {
-		t.Fatalf("part count = %d, want 1; sizes=%v", len(partSizes), partSizes)
+		t.Fatalf("part count = %d, want 1 (bumped to 16MB); sizes=%v", len(partSizes), partSizes)
 	}
 	if partSizes[0] != 12*1024*1024 {
-		t.Fatalf("part size = %d, want %d", partSizes[0], 12*1024*1024)
+		t.Fatalf("part size = %d, want %d (12MB as single part)", partSizes[0], 12*1024*1024)
 	}
 }
 
-func ossRewriteClient(t *testing.T, server *httptest.Server) *http.Client {
-	t.Helper()
+func TestOssURLWithBucketPrefixesHost(t *testing.T) {
+	pre := &upPreResp{}
+	pre.Data.Bucket = "ul-sz"
+	pre.Data.UploadURL = "pds.quark.cn"
+	pre.Data.ObjKey = "path/to/file.bin"
+	got := ossURL(pre)
+	want := "https://ul-sz.pds.quark.cn/path/to/file.bin"
+	if got != want {
+		t.Fatalf("ossURL = %q, want %q", got, want)
+	}
+}
+
+func TestOssURLWithoutBucket(t *testing.T) {
+	pre := &upPreResp{}
+	pre.Data.Bucket = ""
+	pre.Data.UploadURL = "endpoint.quark.cn"
+	pre.Data.ObjKey = "obj"
+	got := ossURL(pre)
+	want := "https://endpoint.quark.cn/obj"
+	if got != want {
+		t.Fatalf("ossURL = %q, want %q", got, want)
+	}
+}
+
+func TestOssURLStripsProtocol(t *testing.T) {
+	pre := &upPreResp{}
+	pre.Data.Bucket = "ul-sz"
+	pre.Data.UploadURL = "http://pds.quark.cn"
+	pre.Data.ObjKey = "obj"
+	got := ossURL(pre)
+	want := "https://ul-sz.pds.quark.cn/obj"
+	if got != want {
+		t.Fatalf("ossURL = %q, want %q", got, want)
+	}
+}
+
+func TestOssURLStripsPathFromUploadURL(t *testing.T) {
+	pre := &upPreResp{}
+	pre.Data.Bucket = "ul-sz"
+	pre.Data.UploadURL = "https://pds.quark.cn/some/path"
+	pre.Data.ObjKey = "obj"
+	got := ossURL(pre)
+	want := "https://ul-sz.pds.quark.cn/obj"
+	if got != want {
+		t.Fatalf("ossURL = %q, want %q", got, want)
+	}
+}
+
+func TestOssURLWithRealWorldExample(t *testing.T) {
+	pre := &upPreResp{}
+	pre.Data.Bucket = "ul-sz"
+	pre.Data.UploadURL = "http://pds.quark.cn"
+	pre.Data.ObjKey = "j0uOasD0/5936150331/e410edbb116847b08f047d6474aa52396a3cefab/6a3cefab53760f59fd5b42be8a069dd70859b8b9"
+	got := ossURL(pre)
+	want := "https://ul-sz.pds.quark.cn/j0uOasD0/5936150331/e410edbb116847b08f047d6474aa52396a3cefab/6a3cefab53760f59fd5b42be8a069dd70859b8b9"
+	if got != want {
+		t.Fatalf("ossURL = %q, want %q", got, want)
+	}
+}
+
+func routeOSSToTestServer(c *http.Client, server *httptest.Server) {
 	targetAddr := strings.TrimPrefix(server.URL, "https://")
-	dialer := &net.Dialer{}
-	return &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if strings.HasSuffix(addr, targetAddr) {
-				addr = targetAddr
-			}
-			return dialer.DialContext(ctx, network, addr)
-		},
-	}}
+	baseTransport := c.Transport.(*http.Transport)
+	baseTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	baseDial := baseTransport.DialContext
+	baseTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if strings.HasSuffix(addr, targetAddr) {
+			addr = targetAddr
+		}
+		return baseDial(ctx, network, addr)
+	}
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
