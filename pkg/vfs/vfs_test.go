@@ -45,6 +45,14 @@ type countingUploadDriver struct {
 	entered     chan struct{}
 }
 
+type blockingUploadDriver struct {
+	mu      sync.Mutex
+	uploads int
+	entries map[string]drive.Entry
+	entered chan struct{}
+	release chan struct{}
+}
+
 type countingRemoveDriver struct {
 	mu      sync.Mutex
 	entries map[string]drive.Entry
@@ -233,6 +241,58 @@ func (d *countingUploadDriver) Remove(_ context.Context, entry drive.Entry) erro
 	delete(d.entries, entry.ID)
 	d.removed = append(d.removed, entry.ID)
 	return nil
+}
+
+func newBlockingUploadDriver() *blockingUploadDriver {
+	return &blockingUploadDriver{
+		entries: map[string]drive.Entry{},
+		entered: make(chan struct{}, 16),
+		release: make(chan struct{}),
+	}
+}
+
+func (d *blockingUploadDriver) Init(context.Context) error { return nil }
+func (d *blockingUploadDriver) Drop(context.Context) error { return nil }
+func (d *blockingUploadDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+func (d *blockingUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *blockingUploadDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
+	return drive.Entry{}, errors.New("mkdir should not be called")
+}
+func (d *blockingUploadDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *blockingUploadDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *blockingUploadDriver) Remove(_ context.Context, entry drive.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.entries, entry.ID)
+	return nil
+}
+func (d *blockingUploadDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		return drive.Entry{}, err
+	}
+	d.mu.Lock()
+	d.uploads++
+	id := name + "-" + strconv.Itoa(d.uploads)
+	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: size}
+	d.entries[id] = entry
+	d.mu.Unlock()
+	d.entered <- struct{}{}
+	<-d.release
+	return entry, nil
 }
 
 func (d *countingRemoveDriver) Init(context.Context) error { return nil }
@@ -495,6 +555,40 @@ func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
 	if got := drv.lastUpload(); got != "three" {
 		t.Fatalf("last upload = %q, want three", got)
 	}
+}
+
+func TestVFSUploadWorkersRunConcurrently(t *testing.T) {
+	ctx := context.Background()
+	drv := newBlockingUploadDriver()
+	fs, err := vfs.New(drv, vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		UploadDelay:   testUploadDelay,
+		UploadWorkers: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	for _, path := range []string{"/one.txt", "/two.txt", "/three.txt"} {
+		if _, err := fs.WriteAt(ctx, path, []byte(path), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.Flush(ctx, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-drv.entered:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("upload worker %d did not start", i+1)
+		}
+	}
+	close(drv.release)
+	waitNoPending(t, fs)
 }
 
 func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
