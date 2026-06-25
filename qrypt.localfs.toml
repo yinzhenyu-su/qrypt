@@ -15,7 +15,7 @@ download = ""
 upload = ""
 
 [defaults.cache]
-max_size_bytes = 536870912
+max_size = "512M"
 
 [[mounts]]
 name = "localfs1"

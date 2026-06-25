@@ -376,7 +376,7 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		if mountCacheDir == "" {
 			mountCacheDir = filepath.Join(cacheDir, mountCfg.Name)
 		}
-		maxBytes := cache.MaxSizeBytes
+		maxBytes := cache.MaxSizeBytes()
 		if maxBytes == 0 {
 			maxBytes = 512 << 20
 		}

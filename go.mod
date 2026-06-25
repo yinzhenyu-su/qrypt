@@ -7,9 +7,6 @@ require (
 	github.com/rfjakob/eme v1.2.0
 	github.com/winfsp/cgofuse v1.6.0
 	golang.org/x/crypto v0.50.0
-)
-
-require (
-	golang.org/x/sys v0.43.0 // indirect
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
+	golang.org/x/sys v0.43.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
