@@ -149,12 +149,14 @@ func TestCacheForIncludesOperationDelays(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 [defaults.cache]
 upload_delay = "5s"
+upload_workers = 2
 delete_delay = "2s"
 
 [[mounts]]
 name = "fast"
 [mounts.cache]
 upload_delay = "250ms"
+upload_workers = 8
 delete_delay = "500ms"
 `), 0o644)
 	if err != nil {
@@ -168,11 +170,17 @@ delete_delay = "500ms"
 	if got := cfg.CacheFor("slow").UploadDelay; got != "5s" {
 		t.Fatalf("default upload_delay = %q, want 5s", got)
 	}
+	if got := cfg.CacheFor("slow").UploadWorkers; got != 2 {
+		t.Fatalf("default upload_workers = %d, want 2", got)
+	}
 	if got := cfg.CacheFor("slow").DeleteDelay; got != "2s" {
 		t.Fatalf("default delete_delay = %q, want 2s", got)
 	}
 	if got := cfg.CacheFor("fast").UploadDelay; got != "250ms" {
 		t.Fatalf("mount upload_delay = %q, want 250ms", got)
+	}
+	if got := cfg.CacheFor("fast").UploadWorkers; got != 8 {
+		t.Fatalf("mount upload_workers = %d, want 8", got)
 	}
 	if got := cfg.CacheFor("fast").DeleteDelay; got != "500ms" {
 		t.Fatalf("mount delete_delay = %q, want 500ms", got)

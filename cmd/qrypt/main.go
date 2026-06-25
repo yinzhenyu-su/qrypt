@@ -363,10 +363,15 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid cache.delete_delay: %w", mountCfg.Name, err)
 		}
+		if cache.UploadWorkers < 0 {
+			dropAll(ctx, drivers)
+			return nil, nil, fmt.Errorf("config: mount %s invalid cache.upload_workers: must be non-negative", mountCfg.Name)
+		}
 		fs, err := vfs.New(drv, vfs.Options{
 			CacheDir:      mountCacheDir,
 			CacheMaxBytes: maxBytes,
 			UploadDelay:   uploadDelay,
+			UploadWorkers: cache.UploadWorkers,
 			DeleteDelay:   deleteDelay,
 		})
 		if err != nil {
