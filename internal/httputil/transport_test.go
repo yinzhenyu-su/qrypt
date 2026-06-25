@@ -1,0 +1,64 @@
+package httputil
+
+import (
+	"net/http"
+	"testing"
+	"time"
+)
+
+func TestDefaultTransport(t *testing.T) {
+	tr := DefaultTransport(15 * time.Second)
+	if tr.ResponseHeaderTimeout != 15*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", tr.ResponseHeaderTimeout, 15*time.Second)
+	}
+	if tr.MaxIdleConns != 100 {
+		t.Errorf("MaxIdleConns = %d, want 100", tr.MaxIdleConns)
+	}
+	if tr.MaxIdleConnsPerHost != 20 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want 20", tr.MaxIdleConnsPerHost)
+	}
+	if tr.IdleConnTimeout != 90*time.Second {
+		t.Errorf("IdleConnTimeout = %v, want %v", tr.IdleConnTimeout, 90*time.Second)
+	}
+	if tr.TLSHandshakeTimeout != 10*time.Second {
+		t.Errorf("TLSHandshakeTimeout = %v, want %v", tr.TLSHandshakeTimeout, 10*time.Second)
+	}
+}
+
+func TestNewClientWithTimeout(t *testing.T) {
+	c := NewClient(5*time.Second, 10*time.Second)
+	if c.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want %v", c.Timeout, 5*time.Second)
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("Transport is not *http.Transport")
+	}
+	if tr.ResponseHeaderTimeout != 10*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", tr.ResponseHeaderTimeout, 10*time.Second)
+	}
+}
+
+func TestNewClientWithoutTimeout(t *testing.T) {
+	c := NewClient(0, 10*time.Second)
+	if c.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (no client-level timeout)", c.Timeout)
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("Transport is not *http.Transport")
+	}
+	if tr.ResponseHeaderTimeout != 10*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", tr.ResponseHeaderTimeout, 10*time.Second)
+	}
+}
+
+func TestNewClientReadsFromDefaultTransport(t *testing.T) {
+	// Two clients created from the same transport factory should NOT share
+	// the same transport instance (each call returns a fresh Transport).
+	c1 := NewClient(0, 30*time.Second)
+	c2 := NewClient(0, 30*time.Second)
+	if c1.Transport == c2.Transport {
+		t.Error("clients share the same transport instance")
+	}
+}

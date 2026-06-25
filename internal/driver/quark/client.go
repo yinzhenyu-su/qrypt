@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 )
 
@@ -70,49 +71,11 @@ type clientOptions struct {
 }
 
 func newHTTPClient(timeout time.Duration) *http.Client {
-	return newHTTPClientWithResponseHeaderTimeout(timeout, 30*time.Second)
-}
-
-func newHTTPClientWithResponseHeaderTimeout(timeout, responseHeaderTimeout time.Duration) *http.Client {
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: responseHeaderTimeout,
-	}
-	c := &http.Client{Transport: transport}
-	if timeout > 0 {
-		c.Timeout = timeout
-	}
-	return c
+	return httputil.NewClient(timeout, 30*time.Second)
 }
 
 func newOSSClient() *http.Client {
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-	}
-	return &http.Client{
-		Transport: transport,
-	}
+	return &http.Client{Transport: httputil.DefaultTransport(30 * time.Second)}
 }
 
 func (c *client) cookieValue() string {

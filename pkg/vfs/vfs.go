@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -181,23 +182,7 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
 			return nil, err
 		}
-		f, err := os.Open(pending.LocalPath)
-		if err != nil {
-			return nil, err
-		}
-		if offset > 0 {
-			if _, err := f.Seek(offset, io.SeekStart); err != nil {
-				f.Close()
-				return nil, err
-			}
-		}
-		if size > 0 {
-			return struct {
-				io.Reader
-				io.Closer
-			}{Reader: io.LimitReader(f, size), Closer: f}, nil
-		}
-		return f, nil
+		return osutil.OpenRead(pending.LocalPath, offset, size)
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
@@ -245,6 +246,22 @@ func ParseSize(value string) (int64, error) {
 		return 0, fmt.Errorf("size is too large")
 	}
 	return int64(bytes), nil
+}
+
+// ParseDuration parses a duration string (e.g. "5s", "10m", "1h").  Returns 0
+// for empty input and an error for negative durations.
+func ParseDuration(s string) (time.Duration, error) {
+	if strings.TrimSpace(s) == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("duration must be non-negative")
+	}
+	return d, nil
 }
 
 func ApplyEncryptionOverrides(cfg crypt.Config, overrides EncryptionOverrides) crypt.Config {
