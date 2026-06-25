@@ -380,12 +380,12 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		if maxBytes == 0 {
 			maxBytes = 512 << 20
 		}
-		uploadDelay, err := parseCacheDelay(cache.UploadDelay)
+		uploadDelay, err := config.ParseDuration(cache.UploadDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid cache.upload_delay: %w", mountCfg.Name, err)
 		}
-		deleteDelay, err := parseCacheDelay(cache.DeleteDelay)
+		deleteDelay, err := config.ParseDuration(cache.DeleteDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid cache.delete_delay: %w", mountCfg.Name, err)
@@ -416,20 +416,6 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		return nil, nil, err
 	}
 	return ns, func() { dropAll(ctx, drivers) }, nil
-}
-
-func parseCacheDelay(value string) (time.Duration, error) {
-	if strings.TrimSpace(value) == "" {
-		return 0, nil
-	}
-	delay, err := time.ParseDuration(value)
-	if err != nil {
-		return 0, err
-	}
-	if delay < 0 {
-		return 0, fmt.Errorf("must be non-negative")
-	}
-	return delay, nil
 }
 
 func dropAll(ctx context.Context, drivers []drive.Driver) {

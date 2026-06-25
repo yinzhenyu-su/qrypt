@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -84,23 +85,11 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	f, err := os.Open(entry.ID)
+	rc, err := osutil.OpenRead(entry.ID, offset, size)
 	if err != nil {
 		return nil, fmt.Errorf("localfs: open %s: %w", entry.ID, err)
 	}
-	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			f.Close()
-			return nil, err
-		}
-	}
-	if size > 0 {
-		return struct {
-			io.Reader
-			io.Closer
-		}{Reader: io.LimitReader(f, size), Closer: f}, nil
-	}
-	return f, nil
+	return rc, nil
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
