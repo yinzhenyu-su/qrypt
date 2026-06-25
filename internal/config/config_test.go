@@ -144,6 +144,40 @@ log_file = "/tmp/qrypt.log"
 	}
 }
 
+func TestEffectiveBandwidthLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	err := os.WriteFile(path, []byte(`
+[bandwidth]
+download = "10M"
+upload = "2.5M"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits, err := cfg.EffectiveBandwidthLimits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.DownloadBytesPerSecond != 10*(1<<20) {
+		t.Fatalf("download limit = %d, want %d", limits.DownloadBytesPerSecond, 10*(1<<20))
+	}
+	if limits.UploadBytesPerSecond != int64(2.5*float64(1<<20)) {
+		t.Fatalf("upload limit = %d, want %d", limits.UploadBytesPerSecond, int64(2.5*float64(1<<20)))
+	}
+}
+
+func TestEffectiveBandwidthLimitsRejectsInvalidValue(t *testing.T) {
+	cfg := &Config{Bandwidth: BandwidthConfig{Download: "fast"}}
+	if _, err := cfg.EffectiveBandwidthLimits(); err == nil {
+		t.Fatal("expected invalid download bandwidth to fail")
+	}
+}
+
 func TestCacheForIncludesOperationDelays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`

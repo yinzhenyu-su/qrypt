@@ -12,16 +12,17 @@ import (
 )
 
 type Config struct {
-	MountPoint    string        `toml:"mount_point"`
-	CacheDir      string        `toml:"cache_dir"`
-	VolumeName    string        `toml:"volume_name"`
-	NoAppleDouble *bool         `toml:"no_apple_double"`
-	TotalSpace    string        `toml:"total_space"`
-	FreeSpace     string        `toml:"free_space"`
-	Logging       LoggingConfig `toml:"logging"`
-	Encryption    crypt.Config  `toml:"encryption"`
-	Defaults      Defaults      `toml:"defaults"`
-	Mounts        []MountConfig `toml:"mounts"`
+	MountPoint    string          `toml:"mount_point"`
+	CacheDir      string          `toml:"cache_dir"`
+	VolumeName    string          `toml:"volume_name"`
+	NoAppleDouble *bool           `toml:"no_apple_double"`
+	TotalSpace    string          `toml:"total_space"`
+	FreeSpace     string          `toml:"free_space"`
+	Logging       LoggingConfig   `toml:"logging"`
+	Bandwidth     BandwidthConfig `toml:"bandwidth"`
+	Encryption    crypt.Config    `toml:"encryption"`
+	Defaults      Defaults        `toml:"defaults"`
+	Mounts        []MountConfig   `toml:"mounts"`
 }
 
 type Defaults struct {
@@ -52,6 +53,16 @@ type LoggingConfig struct {
 	LogLevel  string `toml:"log_level"`
 	LogFile   string `toml:"log_file"`
 	ErrorFile string `toml:"error_file"`
+}
+
+type BandwidthConfig struct {
+	Download string `toml:"download"`
+	Upload   string `toml:"upload"`
+}
+
+type BandwidthLimits struct {
+	DownloadBytesPerSecond int64
+	UploadBytesPerSecond   int64
 }
 
 type EncryptionOverrides struct {
@@ -162,6 +173,24 @@ func (c *Config) EffectiveSpaceBytes() (int64, int64, error) {
 		return 0, 0, fmt.Errorf("config: invalid free_space: %w", err)
 	}
 	return total, free, nil
+}
+
+func (c *Config) EffectiveBandwidthLimits() (BandwidthLimits, error) {
+	if c == nil {
+		return BandwidthLimits{}, nil
+	}
+	download, err := ParseSize(c.Bandwidth.Download)
+	if err != nil {
+		return BandwidthLimits{}, fmt.Errorf("config: invalid bandwidth.download: %w", err)
+	}
+	upload, err := ParseSize(c.Bandwidth.Upload)
+	if err != nil {
+		return BandwidthLimits{}, fmt.Errorf("config: invalid bandwidth.upload: %w", err)
+	}
+	return BandwidthLimits{
+		DownloadBytesPerSecond: download,
+		UploadBytesPerSecond:   upload,
+	}, nil
 }
 
 func ParseSize(value string) (int64, error) {
