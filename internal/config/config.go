@@ -59,33 +59,10 @@ func (c CacheConfig) MaxSizeBytes() int64 {
 }
 
 // ParseMaxSize parses a human-readable size string (e.g. "512M", "1G", "2T")
-// and returns the number of bytes. Supported suffixes: K, M, G, T (case-insensitive).
+// and returns the number of bytes. Returns 0 if empty or unparseable.
 func ParseMaxSize(s string) int64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	s = strings.ToUpper(s)
-	var multiplier int64 = 1
-	switch {
-	case strings.HasSuffix(s, "T"):
-		multiplier = 1 << 40
-		s = strings.TrimSuffix(s, "T")
-	case strings.HasSuffix(s, "G"):
-		multiplier = 1 << 30
-		s = strings.TrimSuffix(s, "G")
-	case strings.HasSuffix(s, "M"):
-		multiplier = 1 << 20
-		s = strings.TrimSuffix(s, "M")
-	case strings.HasSuffix(s, "K"):
-		multiplier = 1 << 10
-		s = strings.TrimSuffix(s, "K")
-	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n * multiplier
+	n, _ := ParseSize(s)
+	return n
 }
 
 type LoggingConfig struct {

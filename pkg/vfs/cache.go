@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
@@ -50,7 +51,17 @@ func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
 	}
 	ceiling := avail - reserve
 	if ceiling <= 0 {
-		ceiling = avail / 2
+		// Disk space is already below the reserve threshold.  Keep
+		// eviction working by setting a small floor instead of 0.
+		floor := int64(64 << 20)
+		if avail/4 < floor {
+			floor = avail / 4
+		}
+		if floor < 1 {
+			floor = 1
+		}
+		return floor, fmt.Sprintf(
+			"disk too full: available=%d reserve=%d floor=%d", avail, reserve, floor)
 	}
 	if maxSize > ceiling {
 		return ceiling, fmt.Sprintf(
@@ -95,7 +106,7 @@ type Cache struct {
 	mu            sync.RWMutex
 	pending       map[string]PendingFile
 	chunks        map[string]*fileChunks
-	lastDiskCheck time.Time
+	lastDiskCheck atomic.Int64 // unix nano
 }
 
 func NewCache(dir string, maxSize int64) (*Cache, error) {
@@ -105,10 +116,15 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 	}
 	// Clean up orphaned batch files from previous runs.
 	if entries, err := os.ReadDir(readingDir); err == nil {
+		var cleaned int
 		for _, entry := range entries {
 			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".batch") {
 				_ = os.Remove(filepath.Join(readingDir, entry.Name()))
+				cleaned++
 			}
+		}
+		if cleaned > 0 {
+			logging.L.Infof("[CACHE] cleaned %d orphaned batch files", cleaned)
 		}
 	}
 	adjusted, reason := limitByDiskSpace(maxSize, dir)
@@ -375,8 +391,9 @@ func (c *Cache) evictIfNeeded() error {
 
 	// Periodically re-check disk space.  If the filesystem is getting full
 	// from other processes, tighten the cap so cache doesn't cause disk-full.
-	if time.Since(c.lastDiskCheck) >= diskCheckInterval {
-		c.lastDiskCheck = time.Now()
+	lastCheck := time.Unix(0, c.lastDiskCheck.Load())
+	if time.Since(lastCheck) >= diskCheckInterval {
+		c.lastDiskCheck.Store(time.Now().UnixNano())
 		if adjusted, _ := limitByDiskSpace(maxSize, c.dir); adjusted < maxSize {
 			maxSize = adjusted
 		}
