@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseLevel(t *testing.T) {
@@ -80,6 +81,50 @@ func TestLoggerLevelFilter(t *testing.T) {
 	}
 	if !strings.Contains(output, "ERROR error msg") {
 		t.Error("error msg should appear")
+	}
+}
+
+func TestLoggerDebugfEverySamplesRepeatedMessages(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{level: LevelDebug, writer: &buf}
+
+	l.DebugfEvery("hot", 20*time.Millisecond, "first")
+	l.DebugfEvery("hot", 20*time.Millisecond, "second")
+	time.Sleep(25 * time.Millisecond)
+	l.DebugfEvery("hot", 20*time.Millisecond, "third")
+
+	output := buf.String()
+	if !strings.Contains(output, "DEBUG first") {
+		t.Fatal("first sampled debug message should appear")
+	}
+	if strings.Contains(output, "DEBUG second") {
+		t.Fatal("second sampled debug message should be suppressed")
+	}
+	if !strings.Contains(output, "DEBUG third (suppressed=1)") {
+		t.Fatalf("third message should include suppressed count, got: %s", output)
+	}
+}
+
+func TestLoggerInfofEveryAndWarnfEverySampleAtTheirLevels(t *testing.T) {
+	var infoBuf bytes.Buffer
+	var warnBuf bytes.Buffer
+	l := &Logger{level: LevelInfo, writer: &infoBuf, errWriter: &warnBuf}
+
+	l.InfofEvery("info-hot", 20*time.Millisecond, "info one")
+	l.InfofEvery("info-hot", 20*time.Millisecond, "info two")
+	l.WarnfEvery("warn-hot", 20*time.Millisecond, "warn one")
+	l.WarnfEvery("warn-hot", 20*time.Millisecond, "warn two")
+	time.Sleep(25 * time.Millisecond)
+	l.InfofEvery("info-hot", 20*time.Millisecond, "info three")
+	l.WarnfEvery("warn-hot", 20*time.Millisecond, "warn three")
+
+	infoOutput := infoBuf.String()
+	if !strings.Contains(infoOutput, "INFO info one") || strings.Contains(infoOutput, "info two") || !strings.Contains(infoOutput, "INFO info three (suppressed=1)") {
+		t.Fatalf("unexpected info sampling output: %s", infoOutput)
+	}
+	warnOutput := warnBuf.String()
+	if !strings.Contains(warnOutput, "WARN warn one") || strings.Contains(warnOutput, "warn two") || !strings.Contains(warnOutput, "WARN warn three (suppressed=1)") {
+		t.Fatalf("unexpected warn sampling output: %s", warnOutput)
 	}
 }
 

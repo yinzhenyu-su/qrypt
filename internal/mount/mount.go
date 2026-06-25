@@ -187,7 +187,7 @@ func (fuseTracer) log(op, path, format string, args ...any) {
 		logging.L.Warnf("%s", msg)
 		return
 	}
-	logging.L.Debugf("%s", msg)
+	logging.L.DebugfEvery("fuse.trace."+op, time.Second, "%s", msg)
 }
 
 var fuseErrorTraceSuppress sync.Map
@@ -1147,10 +1147,10 @@ func logFuseResult(op, path string, start time.Time, errc *int) {
 	}
 	// Log slow operations (>100ms) at WARN so they're visible by default.
 	if elapsed > 100*time.Millisecond {
-		logging.L.Warnf("[FUSE] %s path=%q errc=%d took=%v (slow)", op, path, *errc, elapsed)
+		logging.L.WarnfEvery("fuse.slow."+op, time.Second, "[FUSE] %s path=%q errc=%d took=%v (slow)", op, path, *errc, elapsed)
 		return
 	}
-	logging.L.Debugf("[FUSE] %s path=%q errc=%d took=%v", op, path, *errc, elapsed)
+	logging.L.DebugfEvery("fuse.result."+op, time.Second, "[FUSE] %s path=%q errc=%d took=%v", op, path, *errc, elapsed)
 }
 
 func logFuseError(op, path string, errc int, err error) {
@@ -1158,7 +1158,7 @@ func logFuseError(op, path string, errc int, err error) {
 		return
 	}
 	if errc == -fuse.ENOENT {
-		logging.L.Debugf("[FUSE] %s path=%q errc=%d error=%v", op, path, errc, err)
+		logging.L.DebugfEvery("fuse.enoent."+op, time.Second, "[FUSE] %s path=%q errc=%d error=%v", op, path, errc, err)
 		return
 	}
 	suppressFuseErrorTrace(op, path)
@@ -1166,5 +1166,5 @@ func logFuseError(op, path string, errc int, err error) {
 }
 
 func logFuseAttrResult(path string, stat *fuse.Stat_t, entry drive.Entry) {
-	logging.L.Debugf("[FUSE] GetattrResult path=%q ino=%d mode=%o size=%d dir=%t", path, stat.Ino, stat.Mode, stat.Size, entry.IsDir)
+	logging.L.DebugfEvery("fuse.attr", time.Second, "[FUSE] GetattrResult path=%q ino=%d mode=%o size=%d dir=%t", path, stat.Ino, stat.Mode, stat.Size, entry.IsDir)
 }

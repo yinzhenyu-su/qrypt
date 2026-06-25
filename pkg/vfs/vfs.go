@@ -136,7 +136,7 @@ func (v *VFS) Start(ctx context.Context) {
 
 func (v *VFS) Resume(ctx context.Context) {
 	for _, pending := range v.cache.Pending() {
-		logging.L.Infof("[VFS] resume pending upload path=%q name=%q size=%d local=%q", pending.Path, pending.Name, pending.Size, pending.LocalPath)
+		logging.L.InfofEvery("vfs.resume_pending", time.Second, "[VFS] resume pending upload path=%q name=%q size=%d local=%q", pending.Path, pending.Name, pending.Size, pending.LocalPath)
 		v.enqueue(pending)
 	}
 }
@@ -542,7 +542,7 @@ func (v *VFS) Create(ctx context.Context, path string) error {
 	if err := v.cache.SavePending(pending); err != nil {
 		return err
 	}
-	logging.L.Infof("[VFS] pending created path=%q parent=%q name=%q local=%q", path, parent.ID, name, localPath)
+	logging.L.InfofEvery("vfs.pending_created", time.Second, "[VFS] pending created path=%q parent=%q name=%q local=%q", path, parent.ID, name, localPath)
 	return nil
 }
 
@@ -551,7 +551,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	pending, err := v.pending(path)
 	if err != nil {
 		if entry, resolveErr := v.resolve(ctx, path); resolveErr == nil && !entry.IsDir {
-			logging.L.Infof("[VFS] staging existing file for write path=%q id=%q size=%d", path, entry.ID, entry.Size)
+			logging.L.InfofEvery("vfs.stage_existing_for_write", time.Second, "[VFS] staging existing file for write path=%q id=%q size=%d", path, entry.ID, entry.Size)
 			if err := v.stageExisting(ctx, path); err != nil {
 				return 0, err
 			}
@@ -574,7 +574,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	if err := v.cache.SavePending(pending); err != nil {
 		return n, err
 	}
-	logging.L.Debugf("[VFS] write staged path=%q off=%d len=%d written=%d size=%d local=%q", path, off, len(data), n, pending.Size, pending.LocalPath)
+	logging.L.DebugfEvery("vfs.write_staged", time.Second, "[VFS] write staged path=%q off=%d len=%d written=%d size=%d local=%q", path, off, len(data), n, pending.Size, pending.LocalPath)
 	return n, nil
 }
 
@@ -582,7 +582,7 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 	path = cleanVirtual(path)
 	pending, err := v.pending(path)
 	if err != nil {
-		logging.L.Debugf("[VFS] flush ignored without pending path=%q", path)
+		logging.L.DebugfEvery("vfs.flush_ignored", time.Second, "[VFS] flush ignored without pending path=%q", path)
 		return nil
 	}
 	if err := v.cache.staging.flush(pending.LocalPath); err != nil {
@@ -599,7 +599,7 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 	if latest, ok := v.cache.PendingByPath(path); ok {
 		pending = latest
 	}
-	logging.L.Infof("[VFS] flush queued upload path=%q name=%q size=%d local=%q", pending.Path, pending.Name, pending.Size, pending.LocalPath)
+	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload path=%q name=%q size=%d local=%q", pending.Path, pending.Name, pending.Size, pending.LocalPath)
 	v.enqueue(pending)
 	return nil
 }
@@ -675,13 +675,13 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 		return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
 	}
 	if entry, ok := v.restoreDeletedPath(path); ok {
-		logging.L.Infof("[VFS] mkdir restored deleted directory path=%q id=%q", path, entry.ID)
+		logging.L.InfofEvery("vfs.mkdir_restored_deleted", time.Second, "[VFS] mkdir restored deleted directory path=%q id=%q", path, entry.ID)
 		return entry, nil
 	}
 	v.restoreDeletedAncestor(filepath.Dir(path))
 	if v.isUnderRestoredDir(path) {
 		if entry, err := v.resolve(ctx, path); err == nil && entry.IsDir {
-			logging.L.Infof("[VFS] mkdir reused restored ancestor path=%q id=%q", path, entry.ID)
+			logging.L.InfofEvery("vfs.mkdir_reused_restored", time.Second, "[VFS] mkdir reused restored ancestor path=%q id=%q", path, entry.ID)
 			return entry, nil
 		}
 	}
@@ -690,14 +690,14 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 		logging.L.Warnf("[VFS] mkdir parent resolve failed path=%q err=%v", path, err)
 		return drive.Entry{}, err
 	}
-	logging.L.Infof("[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
+	logging.L.InfofEvery("vfs.mkdir_start", time.Second, "[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
 	entry, err := v.writer.Mkdir(ctx, parent.ID, name)
 	if err != nil {
 		if !isAlreadyExistsError(err) {
 			logging.L.Warnf("[VFS] mkdir failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
 			return drive.Entry{}, err
 		}
-		logging.L.Infof("[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
+		logging.L.InfofEvery("vfs.mkdir_already_exists", time.Second, "[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
 		entry, err = v.findExistingChildDir(ctx, filepath.Dir(path), parent.ID, name)
 		if err != nil {
 			logging.L.Warnf("[VFS] mkdir existing directory resolve failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
@@ -708,7 +708,7 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 	v.entries[path] = entry
 	v.invalidateListLocked(filepath.Dir(path))
 	v.mu.Unlock()
-	logging.L.Infof("[VFS] mkdir complete path=%q id=%q parent=%q", path, entry.ID, entry.ParentID)
+	logging.L.InfofEvery("vfs.mkdir_complete", time.Second, "[VFS] mkdir complete path=%q id=%q parent=%q", path, entry.ID, entry.ParentID)
 	return entry, nil
 }
 
@@ -744,6 +744,7 @@ func (v *VFS) Remove(ctx context.Context, path string) error {
 		return err
 	}
 	v.markDeleted(path, entry)
+	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deleteDelay)
 	v.scheduleDelete(path, entry)
 	return nil
 }
@@ -766,6 +767,7 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) error {
 	}
 	v.cancelChildDeletes(path)
 	v.markDeleted(path, entry)
+	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deleteDelay)
 	v.scheduleDelete(path, entry)
 	return nil
 }
@@ -891,7 +893,7 @@ func (v *VFS) stageExisting(ctx context.Context, path string) error {
 	if err := v.cache.SavePending(pending); err != nil {
 		return err
 	}
-	logging.L.Infof("[VFS] existing file staged path=%q parent=%q name=%q size=%d local=%q", path, parent.ID, name, size, localPath)
+	logging.L.InfofEvery("vfs.existing_file_staged", time.Second, "[VFS] existing file staged path=%q parent=%q name=%q size=%d local=%q", path, parent.ID, name, size, localPath)
 	return nil
 }
 
@@ -918,16 +920,16 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	}
 	latest, ok := v.cache.PendingByPath(pending.Path)
 	if !ok {
-		logging.L.Debugf("[VFS] skip upload; pending already removed path=%q local=%q", pending.Path, pending.LocalPath)
+		logging.L.DebugfEvery("vfs.skip_upload_removed", time.Second, "[VFS] skip upload; pending already removed path=%q local=%q", pending.Path, pending.LocalPath)
 		return nil
 	}
 	if !samePendingFile(latest, pending) {
-		logging.L.Infof("[VFS] upload superseded path=%q old_local=%q new_local=%q old_size=%d new_size=%d", pending.Path, pending.LocalPath, latest.LocalPath, pending.Size, latest.Size)
+		logging.L.InfofEvery("vfs.upload_superseded", time.Second, "[VFS] upload superseded path=%q old_local=%q new_local=%q old_size=%d new_size=%d", pending.Path, pending.LocalPath, latest.LocalPath, pending.Size, latest.Size)
 		v.enqueue(latest)
 		return nil
 	}
 	uploadStart := time.Now()
-	logging.L.Infof("[VFS] upload start path=%q parent=%q name=%q size=%d local=%q", pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath)
+	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start path=%q parent=%q name=%q size=%d local=%q", pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath)
 	rc, err := v.cache.staging.open(pending.LocalPath)
 	if err != nil {
 		logging.L.Warnf("[VFS] upload open staging failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
@@ -942,7 +944,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	if err != nil {
 		if ctx.Err() == nil {
 			if latest, ok := v.cache.PendingByPath(pending.Path); ok {
-				logging.L.Warnf("[VFS] upload failed; requeue path=%q name=%q size=%d err=%v", latest.Path, latest.Name, latest.Size, err)
+				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue path=%q name=%q size=%d err=%v", latest.Path, latest.Name, latest.Size, err)
 				v.enqueue(latest)
 			}
 		}
@@ -954,7 +956,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return err
 	}
 	if !removed {
-		logging.L.Infof("[VFS] upload committed stale version; removing uploaded replacement path=%q uploaded_id=%q", pending.Path, entry.ID)
+		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement path=%q uploaded_id=%q", pending.Path, entry.ID)
 		if v.writer != nil && ctx.Err() == nil {
 			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
 		}
@@ -968,7 +970,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
-	logging.L.Infof("[VFS] upload complete path=%q uploaded_id=%q size=%d dur=%s", pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
+	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete path=%q uploaded_id=%q size=%d dur=%s", pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
 }
 
@@ -982,7 +984,7 @@ func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) err
 	}
 	for _, entry := range entries {
 		if entry.Name == name && !entry.IsDir {
-			logging.L.Infof("[VFS] removing existing file before upload parent=%q name=%q id=%q size=%d", parentID, name, entry.ID, entry.Size)
+			logging.L.InfofEvery("vfs.remove_existing_before_upload", time.Second, "[VFS] removing existing file before upload parent=%q name=%q id=%q size=%d", parentID, name, entry.ID, entry.Size)
 			if err := v.writer.Remove(ctx, entry); err != nil {
 				return err
 			}
@@ -1004,9 +1006,9 @@ func (v *VFS) scheduleUpload(p PendingFile) {
 	v.uploadMu.Lock()
 	if timer := v.uploadTimers[p.Path]; timer != nil {
 		timer.Stop()
-		logging.L.Debugf("[VFS] reschedule upload path=%q delay=%s", p.Path, v.uploadDelay)
+		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload path=%q delay=%s", p.Path, v.uploadDelay)
 	} else {
-		logging.L.Debugf("[VFS] schedule upload path=%q delay=%s", p.Path, v.uploadDelay)
+		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload path=%q delay=%s", p.Path, v.uploadDelay)
 	}
 	v.uploadTimers[p.Path] = time.AfterFunc(v.uploadDelay, func() {
 		v.uploadMu.Lock()
@@ -1042,7 +1044,7 @@ func (v *VFS) cancelChildUploads(dir string) {
 func (v *VFS) sendUpload(p PendingFile) {
 	select {
 	case v.queue <- p:
-		logging.L.Debugf("[VFS] upload enqueued path=%q size=%d", p.Path, p.Size)
+		logging.L.DebugfEvery("vfs.upload_enqueued", time.Second, "[VFS] upload enqueued path=%q size=%d", p.Path, p.Size)
 	default:
 		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background path=%q size=%d", p.Path, p.Size)
 		go func() { v.queue <- p }()
@@ -1085,6 +1087,7 @@ func (v *VFS) restoreDeletedPath(path string) (drive.Entry, bool) {
 	if timer := v.deleteTimers[path]; timer != nil {
 		timer.Stop()
 		delete(v.deleteTimers, path)
+		logging.L.Infof("[VFS] canceled pending delete for restored path=%q id=%q", path, entry.ID)
 	}
 	if entry.IsDir {
 		v.restoredDirs[path] = time.Now().Add(restoredDirTTL)
@@ -1119,6 +1122,7 @@ func (v *VFS) restoreDeletedAncestor(path string) {
 	if timer := v.deleteTimers[restorePath]; timer != nil {
 		timer.Stop()
 		delete(v.deleteTimers, restorePath)
+		logging.L.Infof("[VFS] canceled pending delete for restored ancestor path=%q id=%q requested=%q", restorePath, entry.ID, path)
 	}
 	v.restoredDirs[restorePath] = time.Now().Add(restoredDirTTL)
 	v.deleteMu.Unlock()
@@ -1138,6 +1142,7 @@ func (v *VFS) cancelDeletedFile(path string) {
 		if timer := v.deleteTimers[path]; timer != nil {
 			timer.Stop()
 			delete(v.deleteTimers, path)
+			logging.L.Infof("[VFS] canceled pending delete for recreated file path=%q id=%q", path, entry.ID)
 		}
 	}
 	v.deleteMu.Unlock()
@@ -1160,6 +1165,7 @@ func (v *VFS) addOverlay(oldPath, newPath, entryID string, recursive bool) {
 
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 	if v.deleteDelay <= 0 {
+		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(context.Background(), path, entry)
 		return
 	}
@@ -1171,6 +1177,7 @@ func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 		v.deleteMu.Lock()
 		delete(v.deleteTimers, path)
 		v.deleteMu.Unlock()
+		logging.L.Infof("[VFS] delete timer fired path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(context.Background(), path, entry)
 	})
 	v.deleteMu.Unlock()
@@ -1194,12 +1201,15 @@ func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) 
 	current, ok := v.deleted[path]
 	if !ok || current.ID != entry.ID {
 		v.deleteMu.Unlock()
+		logging.L.Infof("[VFS] delete remote skipped path=%q id=%q current_ok=%t current_id=%q", path, entry.ID, ok, current.ID)
 		return
 	}
 	v.deleteMu.Unlock()
 	if err := v.writer.Remove(ctx, entry); err != nil {
+		logging.L.Warnf("[VFS] delete remote failed path=%q id=%q dir=%t err=%v", path, entry.ID, entry.IsDir, err)
 		return
 	}
+	logging.L.Infof("[VFS] delete remote complete path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 	v.deleteMu.Lock()
 	delete(v.deleted, path)
 	delete(v.restoredDirs, path)
