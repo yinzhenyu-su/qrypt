@@ -45,6 +45,16 @@ func (d *readOnlyRateLimitTestDriver) Read(context.Context, Entry, int64, int64)
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
+type nativeUploadRateLimitTestDriver struct {
+	rateLimitTestDriver
+	installed bool
+}
+
+func (d *nativeUploadRateLimitTestDriver) InstallRateLimiter(*RateLimiter) RateLimitDirection {
+	d.installed = true
+	return RateLimitUpload
+}
+
 func TestNewRateLimitedDriverReturnsRawWhenDisabled(t *testing.T) {
 	raw := &rateLimitTestDriver{}
 	got := NewRateLimitedDriver(raw, RateLimits{})
@@ -61,6 +71,21 @@ func TestRateLimitedDriverPreservesUploaderCapability(t *testing.T) {
 	readOnly := NewRateLimitedDriver(&readOnlyRateLimitTestDriver{}, RateLimits{UploadBytesPerSecond: 1024})
 	if _, ok := readOnly.(Uploader); ok {
 		t.Fatal("wrapped read-only driver should not gain upload support")
+	}
+}
+
+func TestRateLimitedDriverSkipsDirectionHandledByNativeDriver(t *testing.T) {
+	raw := &nativeUploadRateLimitTestDriver{}
+	drv := NewRateLimitedDriver(raw, RateLimits{UploadBytesPerSecond: 1})
+	if !raw.installed {
+		t.Fatal("native driver should receive shared limiter")
+	}
+	uploader := drv.(Uploader)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	if _, err := uploader.Put(ctx, "parent", "file", 4, strings.NewReader("fast")); err != nil {
+		t.Fatalf("upload should not be limited by outer wrapper: %v", err)
 	}
 }
 
@@ -92,5 +117,20 @@ func TestRateLimitedUploadHonorsContext(t *testing.T) {
 	_, err := uploader.Put(ctx, "parent", "file", 4, strings.NewReader("slow"))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("upload error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestByteLimiterCancelDoesNotLeaveDebt(t *testing.T) {
+	limiter := newByteLimiter(1000)
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	if err := limiter.WaitN(cancelCtx, 100); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first wait error = %v, want context deadline exceeded", err)
+	}
+
+	okCtx, okCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer okCancel()
+	if err := limiter.WaitN(okCtx, 100); err != nil {
+		t.Fatalf("second wait should not inherit canceled reservation: %v", err)
 	}
 }

@@ -20,6 +20,22 @@ type RateLimiter struct {
 	upload   *byteLimiter
 }
 
+type RateLimitDirection uint8
+
+const (
+	RateLimitDownload RateLimitDirection = 1 << iota
+	RateLimitUpload
+)
+
+const rateLimitMaxChunk = 64 * 1024
+
+// RateLimitInstaller lets a driver apply the shared limiter closer to its
+// transport layer. The return value declares which directions the driver now
+// handles natively so the outer wrapper does not charge the same bytes twice.
+type RateLimitInstaller interface {
+	InstallRateLimiter(limiter *RateLimiter) RateLimitDirection
+}
+
 func NewRateLimiter(limits RateLimits) *RateLimiter {
 	if limits.DownloadBytesPerSecond <= 0 && limits.UploadBytesPerSecond <= 0 {
 		return nil
@@ -40,9 +56,17 @@ func WrapRateLimitedDriver(raw Driver, limiter *RateLimiter) Driver {
 	if raw == nil || limiter == nil {
 		return raw
 	}
+	handled := RateLimitDirection(0)
+	if installer, ok := raw.(RateLimitInstaller); ok {
+		handled = installer.InstallRateLimiter(limiter)
+	}
+	wrapperLimiter := limiter.without(handled)
+	if wrapperLimiter == nil {
+		return raw
+	}
 	base := &rateLimitedDriver{
 		raw:     raw,
-		limiter: limiter,
+		limiter: wrapperLimiter,
 	}
 	_, hasWriter := raw.(Writer)
 	_, hasUploader := raw.(Uploader)
@@ -56,6 +80,40 @@ func WrapRateLimitedDriver(raw Driver, limiter *RateLimiter) Driver {
 	default:
 		return base
 	}
+}
+
+func (l *RateLimiter) without(handled RateLimitDirection) *RateLimiter {
+	if l == nil {
+		return nil
+	}
+	next := &RateLimiter{
+		download: l.download,
+		upload:   l.upload,
+	}
+	if handled&RateLimitDownload != 0 {
+		next.download = nil
+	}
+	if handled&RateLimitUpload != 0 {
+		next.upload = nil
+	}
+	if next.download == nil && next.upload == nil {
+		return nil
+	}
+	return next
+}
+
+func (l *RateLimiter) LimitDownload(ctx context.Context, rc io.ReadCloser) io.ReadCloser {
+	if l == nil || l.download == nil || rc == nil {
+		return rc
+	}
+	return &limitedReadCloser{ctx: ctx, rc: rc, limiter: l.download}
+}
+
+func (l *RateLimiter) LimitUpload(ctx context.Context, reader io.Reader) io.Reader {
+	if l == nil || l.upload == nil || reader == nil {
+		return reader
+	}
+	return &limitedReader{ctx: ctx, reader: reader, limiter: l.upload}
 }
 
 type rateLimitedDriver struct {
@@ -160,6 +218,9 @@ type limitedReader struct {
 }
 
 func (r *limitedReader) Read(p []byte) (int, error) {
+	if len(p) > rateLimitMaxChunk {
+		p = p[:rateLimitMaxChunk]
+	}
 	n, err := r.reader.Read(p)
 	if n > 0 {
 		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
@@ -176,6 +237,9 @@ type limitedReadCloser struct {
 }
 
 func (r *limitedReadCloser) Read(p []byte) (int, error) {
+	if len(p) > rateLimitMaxChunk {
+		p = p[:rateLimitMaxChunk]
+	}
 	n, err := r.rc.Read(p)
 	if n > 0 {
 		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
@@ -222,14 +286,15 @@ func (l *byteLimiter) WaitN(ctx context.Context, n int) error {
 		return nil
 	}
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	now := l.clock.Now()
 	if l.next.Before(now) {
 		l.next = now
 	}
-	l.next = l.next.Add(durationForBytes(n, l.bytesPerSecond))
-	wait := l.next.Sub(now)
-	l.mu.Unlock()
+	next := l.next.Add(durationForBytes(n, l.bytesPerSecond))
+	wait := next.Sub(now)
 	if wait <= 0 {
+		l.next = next
 		return nil
 	}
 	timer := l.clock.After(wait)
@@ -237,6 +302,7 @@ func (l *byteLimiter) WaitN(ctx context.Context, n int) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timer:
+		l.next = next
 		return nil
 	}
 }
