@@ -224,8 +224,8 @@ func TestLoggingFromConfig(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 [logging]
-fuse_trace = true
-fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
+log_level = "debug"
+log_file = "`+filepath.Join(tmp, "qrypt.log")+`"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -235,11 +235,11 @@ fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !logging.FuseTrace {
-		t.Fatal("expected fuse trace to be enabled")
+	if logging.LogLevel != "debug" {
+		t.Fatalf("unexpected log_level: %q", logging.LogLevel)
 	}
-	if logging.FuseTraceFile != filepath.Join(tmp, "fuse.log") {
-		t.Fatalf("unexpected fuse trace file: %q", logging.FuseTraceFile)
+	if logging.LogFile != filepath.Join(tmp, "qrypt.log") {
+		t.Fatalf("unexpected log_file: %q", logging.LogFile)
 	}
 }
 
@@ -284,8 +284,8 @@ total_space = "2T"
 free_space = "1.5T"
 
 [logging]
-fuse_trace = true
-fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
+log_level = "debug"
+log_file = "`+filepath.Join(tmp, "qrypt.log")+`"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -307,11 +307,11 @@ fuse_trace_file = "`+filepath.Join(tmp, "fuse.log")+`"
 	if mountConfig.FreeSpace != 1536<<30 {
 		t.Fatalf("unexpected free space: %d", mountConfig.FreeSpace)
 	}
-	if !mountConfig.Logging.FuseTrace {
-		t.Fatal("expected fuse trace to be enabled")
+	if mountConfig.Logging.LogLevel != "debug" {
+		t.Fatalf("unexpected log_level: %q", mountConfig.Logging.LogLevel)
 	}
-	if mountConfig.Logging.FuseTraceFile != filepath.Join(tmp, "fuse.log") {
-		t.Fatalf("unexpected fuse trace file: %q", mountConfig.Logging.FuseTraceFile)
+	if mountConfig.Logging.LogFile != filepath.Join(tmp, "qrypt.log") {
+		t.Fatalf("unexpected log_file: %q", mountConfig.Logging.LogFile)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/config"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/mount"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -24,6 +25,7 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		logging.L.Errorf("%v", err)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -59,6 +61,8 @@ func runWithContext(ctx context.Context, args []string) error {
 	if len(rest) == 0 {
 		return fmt.Errorf("usage: qrypt [flags] list|put|cat|pending ...")
 	}
+
+	initLoggerFromConfig(*configPath)
 
 	fs, cleanup, err := buildFileSystem(ctx, flags, *driverName, *root, *cacheDir, *configPath, *mountName, *password, *salt, *fileNameEncryption, *fileNameEncoding)
 	if err != nil {
@@ -122,17 +126,27 @@ func runWithContext(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = mount.NewMounter().Mount(ctx, fs, mount.Options{
-			MountPoint:    expandHome(mountPoint),
+		mountPointExpanded := expandHome(mountPoint)
+		logging.L.Infof("Mounting at %s ...", mountPointExpanded)
+		fmt.Printf("Mounting at %s ...\n", mountPointExpanded)
+		session, err := mount.NewMounter().Mount(ctx, fs, mount.Options{
+			MountPoint:    mountPointExpanded,
 			VolumeName:    mountConfig.VolumeName,
 			NoAppleDouble: mountConfig.NoAppleDouble,
 			TotalSpace:    mountConfig.TotalSpace,
 			FreeSpace:     mountConfig.FreeSpace,
-			TraceEnabled:  mountConfig.Logging.FuseTrace,
-			TraceFile:     expandHome(mountConfig.Logging.FuseTraceFile),
 			Foreground:    true,
 		})
-		return err
+		if err != nil {
+			logging.L.Errorf("Mount failed: %v", err)
+			return err
+		}
+		logging.L.Infof("Mounted at %s. Press Ctrl+C to unmount.", mountPointExpanded)
+		fmt.Printf("Mounted at %s. Press Ctrl+C to unmount.\n", mountPointExpanded)
+		<-ctx.Done()
+		logging.L.Infof("Unmounting %s ...", mountPointExpanded)
+		fmt.Println("Unmounting ...")
+		return mount.NewMounter().Unmount(ctx, session)
 	default:
 		return fmt.Errorf("unknown command: %s", rest[0])
 	}
@@ -302,11 +316,8 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		for key, value := range mountCfg.Params {
 			params[key] = value
 		}
-		if cfg.Logging.FuseTrace {
-			params["trace"] = "true"
-		}
-		if cfg.Logging.FuseTraceFile != "" {
-			params["trace_file"] = expandHome(cfg.Logging.FuseTraceFile)
+		if cfg.Logging.LogLevel == "debug" || cfg.Logging.LogLevel == "" && logging.L != nil {
+			// Pass debug-level logging to drivers
 		}
 		raw, err := drive.New(mountCfg.Type, params)
 		if err != nil {
@@ -496,4 +507,28 @@ func put(ctx context.Context, fs vfs.FileSystem, local, remote string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("upload still pending: %s", remote)
+}
+
+func initLoggerFromConfig(configPath string) {
+	if configPath == "" {
+		return
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return
+	}
+	level := cfg.Logging.LogLevel
+	logFile := expandHome(cfg.Logging.LogFile)
+	errFile := expandHome(cfg.Logging.ErrorFile)
+	if level == "" && logFile == "" && errFile == "" {
+		return
+	}
+	if level == "" {
+		level = "info"
+	}
+	newLogger, err := logging.New(level, logFile, errFile, nil)
+	if err != nil {
+		return
+	}
+	logging.L = newLogger
 }

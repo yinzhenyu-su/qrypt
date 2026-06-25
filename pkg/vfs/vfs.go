@@ -914,6 +914,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	}
 	v.mu.Lock()
 	v.entries[pending.Path] = entry
+	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
 	return nil

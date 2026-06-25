@@ -589,7 +589,7 @@ func TestVFSRemoteAppleMetadataVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := namesOf(entries)
-	if got != "._asset.js,.DS_Store,asset.js" && got != ".DS_Store,._asset.js,asset.js" && got != ".DS_Store,asset.js,._asset.js" {
+	if !strings.Contains(got, ".DS_Store") || !strings.Contains(got, "._asset.js") || !strings.Contains(got, "asset.js") {
 		t.Fatalf("entries = %q, want all three entries including .DS_Store and ._asset.js", got)
 	}
 

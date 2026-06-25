@@ -22,6 +22,8 @@ CLI, and concrete cloud-drive SDKs.
 
 4. 是否保持模块边界清晰？
 
+不满足这几个，就先别加新功能。
+
 ## Architecture
 
 ```text
@@ -187,8 +189,8 @@ To debug Finder or macFUSE behavior, enable FUSE tracing in the config:
 
 ```toml
 [logging]
-fuse_trace = true
-fuse_trace_file = "/tmp/qrypt-fuse.log"
+log_level = "info"
+log_file = "~/.qrypt/qrypt.log"
 ```
 
 The environment variables are still available as temporary overrides:

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -28,8 +28,6 @@ type Options struct {
 	NoAppleDouble  bool
 	TotalSpace     int64
 	FreeSpace      int64
-	TraceEnabled   bool
-	TraceFile      string
 	Foreground     bool
 	ReadyTimeout   time.Duration
 	UnmountOnError bool
@@ -67,7 +65,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		return nil, err
 	}
 
-	ad := newAdapter(fs, TraceOptions{Enabled: opts.TraceEnabled, File: opts.TraceFile}, StatfsOptions{
+	ad := newAdapter(fs, StatfsOptions{
 		TotalSpace: opts.TotalSpace,
 		FreeSpace:  opts.FreeSpace,
 	})
@@ -80,24 +78,6 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 	}
 
 	mountOpts := mountOptions(opts)
-	if opts.Foreground {
-		result := make(chan bool, 1)
-		go func() {
-			result <- host.Mount(opts.MountPoint, mountOpts)
-		}()
-		select {
-		case ok := <-result:
-			if !ok {
-				return nil, fmt.Errorf("mount: failed to mount %s", opts.MountPoint)
-			}
-			return session, nil
-		case <-ctx.Done():
-			ad.shutdown()
-			host.Unmount()
-			return nil, ctx.Err()
-		}
-	}
-
 	result := make(chan bool, 1)
 	go func() {
 		result <- host.Mount(opts.MountPoint, mountOpts)
@@ -128,12 +108,8 @@ func (FuseMounter) Unmount(ctx context.Context, session *Session) error {
 	if session.host != nil {
 		session.host.Unmount()
 	}
-	cmd := unmountCommand(session.MountPoint)
-	if cmd == nil {
-		return nil
-	}
-	if err := cmd.Run(); err != nil {
-		return err
+	if cmd := unmountCommand(session.MountPoint); cmd != nil {
+		_ = cmd.Run()
 	}
 	return nil
 }
@@ -177,8 +153,25 @@ type adapter struct {
 	handles  map[uint64]string
 	nextFH   uint64
 	stopping bool
-	trace    *traceLogger
+	trace    fuseTracer
 	statfs   StatfsOptions
+}
+
+type fuseTracer struct{}
+
+func (fuseTracer) log(op, path, format string, args ...any) {
+	msg := fmt.Sprintf("[FUSE] %s path=%q %s", op, path, fmt.Sprintf(format, args...))
+	// WARN on real errors: negative err/result values, but ENOENT (-2) during
+	// lookup is normal (e.g. .ql_disable*, .hidden checks by QuickLook/Finder).
+	if strings.Contains(msg, "err=") && !strings.Contains(msg, "err=0") && !strings.Contains(msg, "err=-2") {
+		logging.L.Warnf("%s", msg)
+		return
+	}
+	if strings.Contains(msg, " result=-") {
+		logging.L.Warnf("%s", msg)
+		return
+	}
+	logging.L.Debugf("%s", msg)
 }
 
 type readOnlyPathChecker interface {
@@ -187,11 +180,6 @@ type readOnlyPathChecker interface {
 
 type directoryCopyPreparer interface {
 	PrepareDirectoryCopy(ctx context.Context, path string) error
-}
-
-type TraceOptions struct {
-	Enabled bool
-	File    string
 }
 
 type StatfsOptions struct {
@@ -212,11 +200,11 @@ func (s StatfsOptions) withDefaults() StatfsOptions {
 	return s
 }
 
-func newAdapter(fs vfs.FileSystem, trace TraceOptions, statfs StatfsOptions) *adapter {
+func newAdapter(fs vfs.FileSystem, statfs StatfsOptions) *adapter {
 	return &adapter{
 		fs:      fs,
 		handles: map[uint64]string{},
-		trace:   newTraceLogger(trace),
+		trace:   fuseTracer{},
 		statfs:  statfs,
 	}
 }
@@ -228,14 +216,11 @@ func (a *adapter) shutdown() {
 }
 
 func (a *adapter) Init() {
-	a.trace.log("Init", "/", "pid=%d", os.Getpid())
+	logging.L.Infof("[FUSE] Init pid=%d", os.Getpid())
 }
 
 func (a *adapter) Destroy() {
-	a.trace.log("Destroy", "/", "pid=%d", os.Getpid())
-	if a.trace != nil {
-		a.trace.close()
-	}
+	logging.L.Infof("[FUSE] Destroy pid=%d", os.Getpid())
 }
 
 func (a *adapter) isStopping() bool {
@@ -261,7 +246,7 @@ func (a *adapter) releaseHandle(fh uint64) {
 func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 	start := time.Now()
 	errc := 0
-	defer func() { a.trace.log("Getattr", path, "fh=%d err=%d dur=%s", fh, errc, time.Since(start)) }()
+	defer func() { logFuseResult("Getattr", path, start, &errc) }()
 	entry, err := a.fs.Stat(context.Background(), path)
 	if err != nil {
 		errc = -fuse.ENOENT
@@ -271,7 +256,7 @@ func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 	if a.isReadOnlyPath(path) {
 		stat.Mode &^= 0o222
 	}
-	a.trace.log("GetattrResult", path, "ino=%d mode=%o size=%d dir=%t", stat.Ino, stat.Mode, stat.Size, entry.IsDir)
+	logFuseAttrResult(path, stat, entry)
 	return 0
 }
 
@@ -707,8 +692,7 @@ func (a *adapter) Setchgtime(path string, tmsp fuse.Timespec) int {
 func (a *adapter) Getxattr(path string, name string) (int, []byte) {
 	errc := 0
 	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, 0, errc) }()
-	// Return empty success for all xattr reads.
-	return 0, nil
+	return -fuse.ENOATTR, nil
 }
 
 func (a *adapter) Removexattr(path string, name string) int {
@@ -816,63 +800,23 @@ func unmountCommand(mountPoint string) *exec.Cmd {
 	return exec.Command("umount", "-f", mountPoint)
 }
 
-type traceLogger struct {
-	enabled bool
-	logger  *log.Logger
-	file    *os.File
-}
-
-func newTraceLogger(opts TraceOptions) *traceLogger {
-	enabled := opts.Enabled
-	path := opts.File
-	if path != "" {
-		enabled = true
-	}
-	if envPath := os.Getenv("QRYPT_FUSE_TRACE_FILE"); envPath != "" {
-		path = envPath
-		enabled = true
-	}
-	if os.Getenv("QRYPT_FUSE_TRACE") != "" {
-		enabled = true
-	}
-	if !enabled {
-		return &traceLogger{}
-	}
-	out := os.Stderr
-	var file *os.File
-	if path != "" {
-		if dir := filepath.Dir(path); dir != "." {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				fmt.Fprintf(os.Stderr, "qrypt: create fuse trace dir %s: %v\n", dir, err)
-			}
-		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err == nil {
-			out = f
-			file = f
-		} else {
-			fmt.Fprintf(os.Stderr, "qrypt: open fuse trace file %s: %v\n", path, err)
-		}
-	}
-	return &traceLogger{
-		enabled: true,
-		logger:  log.New(out, "[fuse] ", log.LstdFlags|log.Lmicroseconds),
-		file:    file,
-	}
-}
-
-func (t *traceLogger) log(op, path, format string, args ...any) {
-	if t == nil || !t.enabled || t.logger == nil {
+func logFuseResult(op, path string, start time.Time, errc *int) {
+	if errc == nil {
 		return
 	}
-	t.logger.Printf("%s path=%q %s", op, path, fmt.Sprintf(format, args...))
-}
-
-func (t *traceLogger) close() {
-	if t == nil || t.file == nil {
+	elapsed := time.Since(start)
+	if *errc != 0 && *errc != -fuse.ENOENT {
+		logging.L.Warnf("[FUSE] %s path=%q errc=%d took=%v", op, path, *errc, elapsed)
 		return
 	}
-	t.enabled = false
-	_ = t.file.Close()
-	t.file = nil
+	// Log slow operations (>100ms) at WARN so they're visible by default.
+	if elapsed > 100*time.Millisecond {
+		logging.L.Warnf("[FUSE] %s path=%q errc=%d took=%v (slow)", op, path, *errc, elapsed)
+		return
+	}
+	logging.L.Debugf("[FUSE] %s path=%q errc=%d took=%v", op, path, *errc, elapsed)
+}
+
+func logFuseAttrResult(path string, stat *fuse.Stat_t, entry drive.Entry) {
+	logging.L.Debugf("[FUSE] GetattrResult path=%q ino=%d mode=%o size=%d dir=%t", path, stat.Ino, stat.Mode, stat.Size, entry.IsDir)
 }

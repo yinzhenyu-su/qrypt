@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -100,61 +99,10 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	}
 }
 
-func TestTraceLoggerUsesConfiguredFile(t *testing.T) {
-	t.Setenv("QRYPT_FUSE_TRACE", "")
-	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
-	path := filepath.Join(t.TempDir(), "fuse.log")
-	logger := newTraceLogger(TraceOptions{Enabled: true, File: path})
-	logger.log("TestOp", "/path", "err=%d", 0)
-	logger.close()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `TestOp path="/path" err=0`) {
-		t.Fatalf("trace log missing operation: %q", data)
-	}
-}
-
-func TestTraceLoggerCreatesConfiguredFileDir(t *testing.T) {
-	t.Setenv("QRYPT_FUSE_TRACE", "")
-	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
-	path := filepath.Join(t.TempDir(), "missing", "qrypt-fuse.log")
-	logger := newTraceLogger(TraceOptions{Enabled: true, File: path})
-	logger.log("TestOp", "/path", "err=%d", 0)
-	logger.close()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `TestOp path="/path" err=0`) {
-		t.Fatalf("trace log missing operation: %q", data)
-	}
-}
-
-func TestTraceLoggerConfiguredFileEnablesTrace(t *testing.T) {
-	t.Setenv("QRYPT_FUSE_TRACE", "")
-	t.Setenv("QRYPT_FUSE_TRACE_FILE", "")
-	path := filepath.Join(t.TempDir(), "fuse.log")
-	logger := newTraceLogger(TraceOptions{File: path})
-	logger.log("TestOp", "/path", "err=%d", 0)
-	logger.close()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `TestOp path="/path" err=0`) {
-		t.Fatalf("trace log missing operation: %q", data)
-	}
-}
-
 func TestAdapterStatfsUsesConfiguredSpace(t *testing.T) {
 	ad := newAdapter(stubSpaceFS{
 		space: drive.Space{Total: 2 << 40, Free: 1 << 40},
-	}, TraceOptions{}, StatfsOptions{
+	}, StatfsOptions{
 		TotalSpace: 1 << 40,
 		FreeSpace:  512 << 30,
 	})
@@ -177,7 +125,7 @@ func TestAdapterStatfsUsesConfiguredSpace(t *testing.T) {
 func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
 	ad := newAdapter(stubSpaceFS{
 		space: drive.Space{Total: 3 << 40, Free: 2 << 40},
-	}, TraceOptions{}, StatfsOptions{})
+	}, StatfsOptions{})
 
 	var stat fuse.Statfs_t
 	if errc := ad.Statfs("/", &stat); errc != 0 {
@@ -194,16 +142,16 @@ func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
 func TestAdapterXattrsNoop(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true, ModTime: time.Unix(1, 0)},
-	}}, TraceOptions{}, StatfsOptions{})
+	}}, StatfsOptions{})
 
-	if errc, _ := ad.Getxattr("/", "com.apple.FinderInfo"); errc != 0 {
-		t.Fatalf("Getxattr err = %d, want 0", errc)
+	if errc, _ := ad.Getxattr("/", "com.apple.FinderInfo"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr FinderInfo err = %d, want ENOATTR", errc)
 	}
-	if errc, _ := ad.Getxattr("/", "com.apple.ResourceFork"); errc != 0 {
-		t.Fatalf("Getxattr ResourceFork err = %d, want 0", errc)
+	if errc, _ := ad.Getxattr("/", "com.apple.ResourceFork"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr ResourceFork err = %d, want ENOATTR", errc)
 	}
-	if errc, _ := ad.Getxattr("/", "user.foo"); errc != 0 {
-		t.Fatalf("Getxattr unknown err = %d, want 0", errc)
+	if errc, _ := ad.Getxattr("/", "user.foo"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr unknown err = %d, want ENOATTR", errc)
 	}
 	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
 		t.Fatalf("Setxattr err = %d, want 0", errc)
@@ -219,7 +167,7 @@ func TestAdapterXattrsNoop(t *testing.T) {
 func TestAdapterXattrsAllNoop(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
-	}}, TraceOptions{}, StatfsOptions{})
+	}}, StatfsOptions{})
 
 	// All xattr operations are no-ops that return success.
 	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), fuse.XATTR_CREATE); errc != 0 {
@@ -231,9 +179,9 @@ func TestAdapterXattrsAllNoop(t *testing.T) {
 	if errc := ad.Setxattr("/", "user.foo", nil, fuse.XATTR_REPLACE); errc != 0 {
 		t.Fatalf("Setxattr XATTR_REPLACE err = %d, want 0", errc)
 	}
-	// Getxattr always returns success with empty data.
-	if errc, got := ad.Getxattr("/", "user.foo"); errc != 0 || len(got) != 0 {
-		t.Fatalf("Getxattr err=%d len=%d, want 0/0", errc, len(got))
+	// Getxattr always returns ENOATTR.
+	if errc, got := ad.Getxattr("/", "user.foo"); errc != -fuse.ENOATTR || len(got) != 0 {
+		t.Fatalf("Getxattr err=%d len=%d, want ENOATTR/0", errc, len(got))
 	}
 	// Listxattr always returns empty list.
 	names := map[string]bool{}
@@ -252,7 +200,7 @@ func TestAdapterCreateRoutesFinderDirectoryCreatesToMkdir(t *testing.T) {
 	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
 	}}}
-	ad := newAdapter(fs, TraceOptions{}, StatfsOptions{})
+	ad := newAdapter(fs, StatfsOptions{})
 
 	if errc, fh := ad.Create("/_nuxt", 0, fuse.S_IFREG|0o644); errc != 0 || fh != 0 {
 		t.Fatalf("Create extensionless err=%d fh=%d, want 0/0", errc, fh)
@@ -276,7 +224,7 @@ func TestAdapterMknodCreatesRegularFile(t *testing.T) {
 	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
 	}}}
-	ad := newAdapter(fs, TraceOptions{}, StatfsOptions{})
+	ad := newAdapter(fs, StatfsOptions{})
 
 	if errc := ad.Mknod("/asset.js", fuse.S_IFREG|0o644, 0); errc != 0 {
 		t.Fatalf("Mknod err = %d, want 0", errc)
@@ -289,12 +237,12 @@ func TestAdapterMknodCreatesRegularFile(t *testing.T) {
 func TestAdapterResourceForkIsEmptyNoop(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true},
-	}}, TraceOptions{}, StatfsOptions{})
+	}}, StatfsOptions{})
 	const name = "com.apple.ResourceFork"
 
 	errc, value := ad.Getxattr("/", name)
-	if errc != 0 {
-		t.Fatalf("Getxattr ResourceFork err = %d, want 0", errc)
+	if errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr ResourceFork err = %d, want ENOATTR", errc)
 	}
 	if len(value) != 0 {
 		t.Fatalf("Getxattr ResourceFork len = %d, want 0", len(value))
@@ -308,10 +256,10 @@ func TestAdapterResourceForkIsEmptyNoop(t *testing.T) {
 }
 
 func TestAdapterXattrsMissingPath(t *testing.T) {
-	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, TraceOptions{}, StatfsOptions{})
+	ad := newAdapter(stubFS{entries: map[string]drive.Entry{}}, StatfsOptions{})
 	// xattr operations are no-ops that don't check path existence.
-	if errc, _ := ad.Getxattr("/missing", "x"); errc != 0 {
-		t.Fatalf("Getxattr missing err = %d, want 0", errc)
+	if errc, _ := ad.Getxattr("/missing", "x"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr missing err = %d, want ENOATTR", errc)
 	}
 	if errc := ad.Setxattr("/missing", "x", nil, 0); errc != 0 {
 		t.Fatalf("Setxattr missing err = %d, want 0", errc)
@@ -331,7 +279,7 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 			"/": {{ID: "/a", Name: "a", IsDir: true}},
 		},
 		readOnly: map[string]bool{"/": true, "/a": true, "/new": true},
-	}, TraceOptions{}, StatfsOptions{})
+	}, StatfsOptions{})
 
 	var stat fuse.Stat_t
 	if errc := ad.Getattr("/a", &stat, ^uint64(0)); errc != 0 {

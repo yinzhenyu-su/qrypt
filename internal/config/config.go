@@ -48,8 +48,9 @@ type CacheConfig struct {
 }
 
 type LoggingConfig struct {
-	FuseTrace     bool   `toml:"fuse_trace"`
-	FuseTraceFile string `toml:"fuse_trace_file"`
+	LogLevel  string `toml:"log_level"`
+	LogFile   string `toml:"log_file"`
+	ErrorFile string `toml:"error_file"`
 }
 
 type EncryptionOverrides struct {
