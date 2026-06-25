@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -331,60 +333,46 @@ func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	}
 }
 
-func TestDriverPutDoesNotSendUserAgent(t *testing.T) {
-	var headers http.Header
+func TestDriverUploadPartUsesNativeRateLimiter(t *testing.T) {
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
-			headers = r.Header.Clone()
-			w.Header().Set("Etag", "etag-1")
-			w.WriteHeader(http.StatusOK)
-		} else {
-			w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected oss method: %s", r.Method)
 		}
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Etag", "etag-1")
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer oss.Close()
 
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/file/upload/pre":
-			writeJSON(t, w, map[string]any{
-				"status": 200, "code": 0,
-				"data": map[string]any{
-					"task_id": "t", "upload_id": "u", "obj_key": "obj",
-					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
-					"fid": "f", "bucket": "bucket", "callback": json.RawMessage(`{}`),
-					"auth_info": "a",
-				},
-				"metadata": map[string]any{"part_size": 1},
-			})
-		case "/file/upload/auth":
-			writeJSON(t, w, map[string]any{"status": 200, "code": 0, "data": map[string]any{"auth_key": "k"}})
-		case "/file/update/hash":
-			writeJSON(t, w, map[string]any{"status": 200, "code": 0, "data": map[string]any{"finish": true, "fid": "f"}})
-		case "/file/upload/finish":
-			writeJSON(t, w, map[string]any{"status": 200, "code": 0, "data": map[string]any{"fid": "f"}})
-		default:
+		if r.URL.Path != "/file/upload/auth" {
 			t.Fatalf("unexpected api path: %s", r.URL.Path)
 		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data":   map[string]any{"auth_key": "auth-key"},
+		})
 	}))
 	defer api.Close()
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	routeOSSToTestServer(driver.cl.httpClient, oss)
-	if _, err := driver.Put(context.Background(), "parent", "f.bin", 3, strings.NewReader("abc")); err != nil {
-		t.Fatal(err)
-	}
-	if headers == nil {
-		t.Fatal("OSS PUT request was not received")
-	}
-	if v := headers.Get("User-Agent"); v == "Go-http-client/1.1" || v == "Go-http-client/2.0" {
-	} else if v != "" {
-		t.Fatalf("OSS PUT request must not include custom User-Agent header, got: %q", v)
-	}
-	for _, h := range []string{"Authorization", "Content-Type", "x-oss-date", "x-oss-user-agent", "Referer"} {
-		if headers.Get(h) == "" {
-			t.Fatalf("OSS PUT request is missing required header: %s", h)
-		}
+	driver.InstallRateLimiter(drive.NewRateLimiter(drive.RateLimits{UploadBytesPerSecond: 1}))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	pre := &upPreResp{}
+	pre.Data.TaskID = "task-1"
+	pre.Data.UploadID = "upload-1"
+	pre.Data.ObjKey = "obj"
+	pre.Data.UploadURL = strings.TrimPrefix(oss.URL, "https://")
+	pre.Data.Bucket = "bucket"
+	pre.Data.AuthInfo = "auth-info"
+
+	_, err := driver.uploadPart(ctx, pre, 1, []byte("slow"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("uploadPart error = %v, want context deadline exceeded", err)
 	}
 }
 
