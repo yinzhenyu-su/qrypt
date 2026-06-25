@@ -369,7 +369,7 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 				dropAll(ctx, drivers)
 				return nil, nil, err
 			}
-			drv = crypt.NewDriver(raw, cp)
+			drv = crypt.NewDriver(drv, cp)
 		}
 		cache := cfg.CacheFor(mountCfg.Name)
 		mountCacheDir := cache.Dir
