@@ -10,6 +10,10 @@ free_space = "800G"
 log_level = "info"
 log_file = "/tmp/qrypt.log"
 
+[bandwidth]
+download = ""
+upload = ""
+
 [defaults.cache]
 max_size_bytes = 536870912
 
