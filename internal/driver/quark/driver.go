@@ -184,10 +184,10 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	start := time.Now()
 	downloadURL, err := d.downloadURL(entry.ID)
 	if err != nil {
-		logging.L.DebugfEvery("quark.read_url.error", time.Second, "[quark] ReadURL fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(start))
+		logging.L.DebugfEvery("quark.read_url.error", time.Second, "[QUARK] ReadURL fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(start))
 		return nil, err
 	}
-	logging.L.DebugfEvery("quark.read_url", time.Second, "[quark] ReadURL fid=%q offset=%d size=%d dur=%s", entry.ID, offset, size, time.Since(start))
+	logging.L.DebugfEvery("quark.read_url", time.Second, "[QUARK] ReadURL fid=%q offset=%d size=%d dur=%s", entry.ID, offset, size, time.Since(start))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("quark: read: create request: %w", err)
@@ -199,10 +199,10 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	resp, err := d.cl.doDownload(req)
 	if err != nil {
 		d.invalidateURL(entry.ID)
-		logging.L.DebugfEvery("quark.read_http.error", time.Second, "[quark] ReadHTTP fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(httpStart))
+		logging.L.DebugfEvery("quark.read_http.error", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(httpStart))
 		return nil, fmt.Errorf("quark: read: download: %w", err)
 	}
-	logging.L.DebugfEvery("quark.read_http", time.Second, "[quark] ReadHTTP fid=%q offset=%d size=%d status=%d dur=%s", entry.ID, offset, size, resp.StatusCode, time.Since(httpStart))
+	logging.L.DebugfEvery("quark.read_http", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d status=%d dur=%s", entry.ID, offset, size, resp.StatusCode, time.Since(httpStart))
 	if resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()
 		d.invalidateURL(entry.ID)
@@ -798,7 +798,7 @@ func (r *traceReadCloser) Read(p []byte) (int, error) {
 
 func (r *traceReadCloser) Close() error {
 	err := r.ReadCloser.Close()
-	logging.L.DebugfEvery("quark.read_body", time.Second, "[quark] ReadBody fid=%q offset=%d size=%d read=%d err=%v dur=%s", r.fid, r.offset, r.size, r.read, err, time.Since(r.start))
+	logging.L.DebugfEvery("quark.read_body", time.Second, "[QUARK] ReadBody fid=%q offset=%d size=%d read=%d err=%v dur=%s", r.fid, r.offset, r.size, r.read, err, time.Since(r.start))
 	return err
 }
 

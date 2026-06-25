@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/internal/logging"
 )
 
 const (
@@ -217,6 +219,11 @@ func (c *client) request(method, path string, query map[string]string, body, res
 }
 
 func (c *client) doRequest(method, baseURL, path string, query map[string]string, body, result any) error {
+	start := time.Now()
+	defer func() {
+		logging.L.Infof("[QUARK] API %s %s dur=%s", method, path, time.Since(start))
+	}()
+
 	u, err := url.Parse(baseURL + path)
 	if err != nil {
 		return err

@@ -17,15 +17,15 @@ var sensitivePatterns = []struct {
 	pattern *regexp.Regexp
 	replace string
 }{
-	{regexp.MustCompile(`ctoken=[^;]+`),        "ctoken=***"},
-	{regexp.MustCompile(`__puus=[^;]+`),         "__puus=***"},
-	{regexp.MustCompile(`__kp=[^;]+`),           "__kp=***"},
-	{regexp.MustCompile(`__kps=[^;]+`),          "__kps=***"},
+	{regexp.MustCompile(`ctoken=[^;]+`), "ctoken=***"},
+	{regexp.MustCompile(`__puus=[^;]+`), "__puus=***"},
+	{regexp.MustCompile(`__kp=[^;]+`), "__kp=***"},
+	{regexp.MustCompile(`__kps=[^;]+`), "__kps=***"},
 	{regexp.MustCompile(`password="[^"]+"`), `password="***"`},
 	{regexp.MustCompile(`password = "[^"]+"`), `password = "***"`},
-	{regexp.MustCompile(`salt\s*=\s*"[^"]*"`),     `salt=""`},
+	{regexp.MustCompile(`salt\s*=\s*"[^"]*"`), `salt=""`},
 	{regexp.MustCompile(`"cookie"\s*:\s*"[^"]+"`), `"cookie":"***"`},
-	{regexp.MustCompile(`Cookie:\s*[^\r\n]+`),     "Cookie: ***"},
+	{regexp.MustCompile(`Cookie:\s*[^\r\n]+`), "Cookie: ***"},
 }
 
 func sanitize(msg string) string {
@@ -94,12 +94,18 @@ var DefaultRotateConfig = RotateConfig{
 }
 
 type Logger struct {
-	level      Level
-	writer     io.Writer
-	errWriter  io.Writer
-	lj         *lumberjack.Logger
-	errLj      *lumberjack.Logger
-	mu         sync.Mutex
+	level     Level
+	writer    io.Writer
+	errWriter io.Writer
+	lj        *lumberjack.Logger
+	errLj     *lumberjack.Logger
+	mu        sync.Mutex
+	samples   map[string]sampleState
+}
+
+type sampleState struct {
+	last       time.Time
+	suppressed int
 }
 
 func errorLogPath(logFile string) string {
@@ -182,10 +188,58 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 	l.mu.Unlock()
 }
 
+func (l *Logger) logfEvery(level Level, key string, interval time.Duration, format string, v ...interface{}) {
+	if interval <= 0 {
+		l.logf(level, format, v...)
+		return
+	}
+	if level < l.level {
+		return
+	}
+	now := time.Now()
+	msg := sanitize(fmt.Sprintf(format, v...))
+	ts := now.Format("2006-01-02 15:04:05.000")
+
+	l.mu.Lock()
+	if l.samples == nil {
+		l.samples = map[string]sampleState{}
+	}
+	state := l.samples[key]
+	if state.last.IsZero() || now.Sub(state.last) >= interval {
+		if state.suppressed > 0 {
+			msg = fmt.Sprintf("%s (suppressed=%d)", msg, state.suppressed)
+		}
+		l.samples[key] = sampleState{last: now}
+		line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
+		if level >= LevelWarn && l.errWriter != nil {
+			fmt.Fprint(l.errWriter, line)
+		} else if l.writer != nil {
+			fmt.Fprint(l.writer, line)
+		}
+		l.mu.Unlock()
+		return
+	}
+	state.suppressed++
+	l.samples[key] = state
+	l.mu.Unlock()
+}
+
 func (l *Logger) Debugf(format string, v ...interface{}) { l.logf(LevelDebug, format, v...) }
 func (l *Logger) Infof(format string, v ...interface{})  { l.logf(LevelInfo, format, v...) }
 func (l *Logger) Warnf(format string, v ...interface{})  { l.logf(LevelWarn, format, v...) }
 func (l *Logger) Errorf(format string, v ...interface{}) { l.logf(LevelError, format, v...) }
+
+func (l *Logger) DebugfEvery(key string, interval time.Duration, format string, v ...interface{}) {
+	l.logfEvery(LevelDebug, key, interval, format, v...)
+}
+
+func (l *Logger) InfofEvery(key string, interval time.Duration, format string, v ...interface{}) {
+	l.logfEvery(LevelInfo, key, interval, format, v...)
+}
+
+func (l *Logger) WarnfEvery(key string, interval time.Duration, format string, v ...interface{}) {
+	l.logfEvery(LevelWarn, key, interval, format, v...)
+}
 
 func (l *Logger) Debug(args ...interface{}) { l.logf(LevelDebug, "%s", fmt.Sprint(args...)) }
 func (l *Logger) Info(args ...interface{})  { l.logf(LevelInfo, "%s", fmt.Sprint(args...)) }
