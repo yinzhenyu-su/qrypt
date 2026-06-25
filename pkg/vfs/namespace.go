@@ -216,11 +216,7 @@ func (n *Namespace) PrepareDirectoryCopy(ctx context.Context, path string) error
 
 func (n *Namespace) IsReadOnlyPath(path string) bool {
 	path = cleanVirtual(path)
-	if path == "/" {
-		return true
-	}
-	trimmed := strings.TrimPrefix(path, "/")
-	return !strings.Contains(trimmed, "/")
+	return path == "/"
 }
 
 func (n *Namespace) Pending() []PendingFile {

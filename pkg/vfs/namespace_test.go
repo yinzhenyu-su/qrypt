@@ -141,7 +141,7 @@ func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 	}
 }
 
-func TestNamespaceMarksRootAndMountNamesReadOnly(t *testing.T) {
+func TestNamespaceMarksOnlyNamespaceRootReadOnly(t *testing.T) {
 	ctx := context.Background()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
@@ -153,13 +153,13 @@ func TestNamespaceMarksRootAndMountNamesReadOnly(t *testing.T) {
 	}
 	ns.Start(ctx)
 
-	for _, path := range []string{"/", "/a", "/new"} {
-		if !ns.IsReadOnlyPath(path) {
-			t.Fatalf("expected %s to be read-only", path)
-		}
+	if !ns.IsReadOnlyPath("/") {
+		t.Fatal("expected namespace root to be read-only")
 	}
-	if ns.IsReadOnlyPath("/a/file.txt") {
-		t.Fatal("expected mounted content path to remain writable")
+	for _, path := range []string{"/a", "/new", "/a/file.txt"} {
+		if ns.IsReadOnlyPath(path) {
+			t.Fatalf("expected %s to be shown writable to FUSE", path)
+		}
 	}
 	if _, err := ns.Mkdir(ctx, "/a"); err != vfs.ErrReadOnly {
 		t.Fatalf("Mkdir mount root err = %v, want ErrReadOnly", err)
