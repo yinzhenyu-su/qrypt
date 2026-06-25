@@ -1207,6 +1207,35 @@ func TestVFSRenamePendingFile(t *testing.T) {
 	}
 }
 
+func TestVFSWriteAtStagesExistingFile(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "data.txt"), []byte("abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{RootID: remote, CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/data.txt", []byte("XY"), 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/data.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	data, err := os.ReadFile(filepath.Join(remote, "data.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "abXYef" {
+		t.Fatalf("unexpected patched backend data: %q", data)
+	}
+}
+
 func TestVFSTruncateUploadedFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()

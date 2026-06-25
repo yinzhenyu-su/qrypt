@@ -25,6 +25,7 @@ type page struct {
 	fid       string
 	buf       []byte
 	dirty     bool
+	loaded    bool
 	maxOffset int64
 	timer     *time.Timer
 	flush     func(string, []byte) error
@@ -53,7 +54,7 @@ func (s *stagingStore) create(fid string) (string, error) {
 func (s *stagingStore) writeAt(path string, data []byte, off int64) (int, error) {
 	fid := fidFromStagingPath(path)
 	if len(data) < pageMaxSize/4 {
-		return s.getPage(fid).writeAt(data, off)
+		return s.getPage(fid).writeAt(path, data, off)
 	}
 	if err := s.flush(path); err != nil {
 		return 0, err
@@ -148,8 +149,18 @@ func (s *stagingStore) getPage(fid string) *page {
 	return actual.(*page)
 }
 
-func (p *page) writeAt(data []byte, off int64) (int, error) {
+func (p *page) writeAt(path string, data []byte, off int64) (int, error) {
 	p.mu.Lock()
+	if !p.loaded {
+		existing, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.mu.Unlock()
+			return 0, err
+		}
+		p.buf = append(p.buf[:0], existing...)
+		p.maxOffset = int64(len(existing))
+		p.loaded = true
+	}
 	need := off + int64(len(data))
 	if need > int64(len(p.buf)) {
 		newSize := roundUpPow2(need)

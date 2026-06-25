@@ -1,10 +1,15 @@
 package quark
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -80,6 +85,174 @@ func TestRegisterQuarkDriver(t *testing.T) {
 	if _, ok := driver.(*Driver); !ok {
 		t.Fatalf("driver type = %T, want *quark.Driver", driver)
 	}
+}
+
+func TestDriverPutInstantUploadFinishes(t *testing.T) {
+	var finishCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id": "task-1",
+					"obj_key": "obj-1",
+					"fid":     "pre-fid",
+					"finish":  true,
+				},
+			})
+		case "/file/upload/finish":
+			finishCalled = true
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	driver := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
+	entry, err := driver.Put(context.Background(), "parent", "same.bin", 6, strings.NewReader("unused"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finishCalled {
+		t.Fatal("finish was not called")
+	}
+	if entry.ID != "final-fid" || entry.ParentID != "parent" || entry.Name != "same.bin" || entry.Size != 6 {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+}
+
+func TestDriverPutMultipartUpload(t *testing.T) {
+	var parts [][]byte
+	var completed bool
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/obj-1" {
+			t.Fatalf("unexpected oss path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodPut:
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts = append(parts, data)
+			w.Header().Set("Etag", "etag-"+r.URL.Query().Get("partNumber"))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"etag-1", "etag-2", "etag-3"} {
+				if !bytes.Contains(data, []byte(want)) {
+					t.Fatalf("complete body missing %s: %s", want, data)
+				}
+			}
+			completed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected oss method: %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	var authCalls int
+	var hashCalled bool
+	var finishCalled bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-1",
+					"upload_id":  "upload-1",
+					"obj_key":    "obj-1",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 3},
+			})
+		case "/file/upload/auth":
+			authCalls++
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"auth_key": "auth-key"},
+			})
+		case "/file/update/hash":
+			hashCalled = true
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": false},
+			})
+		case "/file/upload/finish":
+			finishCalled = true
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.httpClient = ossRewriteClient(t, oss)
+
+	entry, err := driver.Put(context.Background(), "parent", "data.bin", 8, strings.NewReader("abcdefgh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "final-fid" || entry.ParentID != "parent" || entry.Name != "data.bin" || entry.Size != 8 {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if got := len(parts); got != 3 {
+		t.Fatalf("part count = %d, want 3", got)
+	}
+	if got := string(bytes.Join(parts, nil)); got != "abcdefgh" {
+		t.Fatalf("uploaded data = %q, want abcdefgh", got)
+	}
+	if authCalls != 4 {
+		t.Fatalf("auth calls = %d, want 4", authCalls)
+	}
+	if !hashCalled {
+		t.Fatal("hash update was not called")
+	}
+	if !completed {
+		t.Fatal("oss complete was not called")
+	}
+	if !finishCalled {
+		t.Fatal("finish was not called")
+	}
+}
+
+func ossRewriteClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	targetAddr := strings.TrimPrefix(server.URL, "https://")
+	dialer := &net.Dialer{}
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if strings.HasSuffix(addr, targetAddr) {
+				addr = targetAddr
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}}
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {

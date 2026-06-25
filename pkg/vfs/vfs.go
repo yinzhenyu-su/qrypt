@@ -535,8 +535,14 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	path = cleanVirtual(path)
 	pending, err := v.pending(path)
 	if err != nil {
-		if err := v.Create(ctx, path); err != nil {
-			return 0, err
+		if entry, resolveErr := v.resolve(ctx, path); resolveErr == nil && !entry.IsDir {
+			if err := v.stageExisting(ctx, path); err != nil {
+				return 0, err
+			}
+		} else {
+			if err := v.Create(ctx, path); err != nil {
+				return 0, err
+			}
 		}
 		pending, err = v.pending(path)
 		if err != nil {
