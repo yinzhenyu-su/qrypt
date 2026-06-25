@@ -159,6 +159,58 @@ filename_encoding = "base32"
 	}
 }
 
+func TestBuildNamespaceAppliesBandwidthToEncryptedMount(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	err := os.WriteFile(configPath, []byte(`
+[bandwidth]
+upload = "1"
+
+[defaults.cache]
+upload_delay = "10ms"
+
+[[mounts]]
+name = "encrypted"
+type = "localfs"
+[mounts.params]
+root = "`+remote+`"
+[mounts.encryption]
+password = "encrypted-pass"
+salt = "encrypted-salt"
+filename_encryption = "standard"
+filename_encoding = "base32"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/encrypted/slow.txt", []byte("slow upload"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/encrypted/slow.txt"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(fs.Pending()) == 0 {
+		t.Fatal("expected encrypted upload to remain pending under 1 B/s upload limit")
+	}
+}
+
 func TestBuildNamespaceUsesTopLevelCacheDir(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
