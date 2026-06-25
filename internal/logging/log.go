@@ -170,7 +170,7 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 		return
 	}
 	msg := sanitize(fmt.Sprintf(format, v...))
-	ts := time.Now().Format("2006-01-02 15:04:05")
+	ts := time.Now().Format("2006-01-02 15:04:05.000")
 	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 
 	l.mu.Lock()
