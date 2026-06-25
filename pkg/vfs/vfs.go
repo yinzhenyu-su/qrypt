@@ -926,6 +926,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		v.enqueue(latest)
 		return nil
 	}
+	uploadStart := time.Now()
 	logging.L.Infof("[VFS] upload start path=%q parent=%q name=%q size=%d local=%q", pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath)
 	rc, err := v.cache.staging.open(pending.LocalPath)
 	if err != nil {
@@ -967,7 +968,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
-	logging.L.Infof("[VFS] upload complete path=%q uploaded_id=%q size=%d", pending.Path, entry.ID, entry.Size)
+	logging.L.Infof("[VFS] upload complete path=%q uploaded_id=%q size=%d dur=%s", pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
 }
 
@@ -1057,7 +1058,6 @@ func (v *VFS) markDeleted(path string, entry drive.Entry) {
 
 	v.mu.Lock()
 	delete(v.entries, path)
-	v.invalidateListLocked(filepath.Dir(path))
 	if entry.IsDir {
 		for cachedPath := range v.entries {
 			if isPathUnder(cachedPath, path) {
@@ -1204,6 +1204,11 @@ func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) 
 	delete(v.deleted, path)
 	delete(v.restoredDirs, path)
 	v.deleteMu.Unlock()
+
+	v.mu.Lock()
+	v.invalidateListLocked(filepath.Dir(path))
+	v.mu.Unlock()
+
 	_ = v.cache.RemovePending(path)
 }
 
