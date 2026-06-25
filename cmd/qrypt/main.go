@@ -232,8 +232,12 @@ func buildFileSystem(ctx context.Context, flags *flag.FlagSet, driverName, root,
 			return nil, nil, err
 		}
 		cacheDir = effectiveCacheDir(flags, cacheDir, cfg)
+		limits, err := cfg.EffectiveBandwidthLimits()
+		if err != nil {
+			return nil, nil, err
+		}
 		if len(cfg.Mounts) > 0 {
-			return buildNamespace(ctx, flags, cfg, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding)
+			return buildNamespace(ctx, flags, cfg, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding, bandwidthLimiter(limits))
 		}
 	}
 	if cacheDir == "" {
@@ -250,6 +254,7 @@ func buildFileSystem(ctx context.Context, flags *flag.FlagSet, driverName, root,
 		return nil, nil, err
 	}
 
+	raw = drive.WrapRateLimitedDriver(raw, bandwidthLimiterFromConfig(configPath))
 	var drv drive.Driver = raw
 	encCfg, encEnabled, err := encryptionConfigFromFlags(flags, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
 	if err != nil {
@@ -270,6 +275,28 @@ func buildFileSystem(ctx context.Context, flags *flag.FlagSet, driverName, root,
 		return nil, nil, err
 	}
 	return fs, func() { _ = raw.Drop(ctx) }, nil
+}
+
+func bandwidthLimiterFromConfig(configPath string) *drive.RateLimiter {
+	if configPath == "" {
+		return nil
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil
+	}
+	limits, err := cfg.EffectiveBandwidthLimits()
+	if err != nil {
+		return nil
+	}
+	return bandwidthLimiter(limits)
+}
+
+func bandwidthLimiter(limits config.BandwidthLimits) *drive.RateLimiter {
+	return drive.NewRateLimiter(drive.RateLimits{
+		DownloadBytesPerSecond: limits.DownloadBytesPerSecond,
+		UploadBytesPerSecond:   limits.UploadBytesPerSecond,
+	})
 }
 
 func effectiveCacheDir(flags *flag.FlagSet, cacheDir string, cfg *config.Config) string {
@@ -299,7 +326,7 @@ func flagVisited(flags *flag.FlagSet, name string) bool {
 	return visited
 }
 
-func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding string) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding string, limiter *drive.RateLimiter) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {
@@ -329,7 +356,7 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 			return nil, nil, err
 		}
 		drivers = append(drivers, raw)
-		var drv drive.Driver = raw
+		var drv drive.Driver = drive.WrapRateLimitedDriver(raw, limiter)
 		enc := cfg.EncryptionFor(mountCfg.Name)
 		enc, enabled, err := encryptionConfigFromValues(flags, enc, password, salt, fileNameEncryption, fileNameEncoding)
 		if err != nil {
