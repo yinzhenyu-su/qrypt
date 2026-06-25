@@ -110,7 +110,6 @@ func newOSSClient() *http.Client {
 	}
 	return &http.Client{
 		Transport: transport,
-		Timeout:   120 * time.Second,
 	}
 }
 
