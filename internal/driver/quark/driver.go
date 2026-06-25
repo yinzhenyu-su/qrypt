@@ -278,6 +278,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 
 func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
 	parentID = d.resolve(parentID)
+	putStart := time.Now()
 	mtime := time.Now()
 	logging.L.Infof("[QUARK] upload start parent=%q name=%q size=%d", parentID, name, size)
 	preData := map[string]any{
@@ -305,7 +306,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 			logging.L.Warnf("[QUARK] instant upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
 			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 		}
-		logging.L.Infof("[QUARK] instant upload complete name=%q fid=%q size=%d", name, finalFid, size)
+		logging.L.Infof("[QUARK] instant upload complete name=%q fid=%q size=%d dur=%s", name, finalFid, size, time.Since(putStart))
 		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size}, nil
 	}
 
@@ -313,8 +314,8 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	if partSize <= 0 {
 		partSize = 4 * 1024 * 1024
 	}
-	if partSize >= 4*1024*1024 && partSize < minUploadPartSize {
-		partSize = minUploadPartSize
+	if partSize >= 4*1024*1024 && partSize < 16*1024*1024 {
+		partSize = 16 * 1024 * 1024
 	}
 
 	md5Hash := md5.New()
@@ -468,7 +469,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		logging.L.Warnf("[QUARK] upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
 		return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 	}
-	logging.L.Infof("[QUARK] upload complete name=%q fid=%q size=%d parts=%d", name, finalFid, totalRead, len(etags))
+	logging.L.Infof("[QUARK] upload complete name=%q fid=%q size=%d parts=%d dur=%s", name, finalFid, totalRead, len(etags), time.Since(putStart))
 	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead}, nil
 }
 
@@ -592,8 +593,12 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
 		timeStr := time.Now().UTC().Format(http.TimeFormat)
 		callbackB64 := base64.StdEncoding.EncodeToString(pre.Data.Callback)
-		authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?uploadId=%s",
-			contentMd5, timeStr, callbackB64, timeStr, pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadID)
+		ossPath := pre.Data.ObjKey
+		if pre.Data.Bucket != "" {
+			ossPath = pre.Data.Bucket + "/" + ossPath
+		}
+		authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s?uploadId=%s",
+			contentMd5, timeStr, callbackB64, timeStr, ossPath, pre.Data.UploadID)
 		var authResp upAuthResp
 		err := d.cl.request(http.MethodPost, "/file/upload/auth", nil, map[string]any{
 			"auth_info": pre.Data.AuthInfo,
@@ -622,9 +627,7 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
 		req.Header.Set("Referer", defaultReferer)
 		req.Header.Set("User-Agent", defaultUserAgent)
-		d.cl.ossSem <- struct{}{}
-		resp, err := d.cl.ossClient.Do(req)
-		<-d.cl.ossSem
+		resp, err := d.cl.httpClient.Do(req)
 		if err != nil {
 			if attempt < ossMaxRetries {
 				logging.L.Warnf("[QUARK] oss complete http failed; retry task=%q attempt=%d err=%v", pre.Data.TaskID, attempt+1, err)
@@ -636,7 +639,6 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		}
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			logging.L.Debugf("[QUARK] oss complete ok task=%q parts=%d attempt=%d", pre.Data.TaskID, len(etags), attempt+1)
 			return nil
 		}
 		if attempt < ossMaxRetries {
@@ -651,10 +653,16 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 }
 
 func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string, error) {
+	logging.L.Infof("[QUARK] upload part enter task=%q part=%d bytes=%d bucket=%q obj=%q upload_url=%q", pre.Data.TaskID, partNumber, len(data), pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadURL)
 	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
 		dateStr := time.Now().UTC().Format(http.TimeFormat)
-		authMeta := fmt.Sprintf("PUT\n\napplication/octet-stream\n%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s/%s?partNumber=%d&uploadId=%s",
-			dateStr, dateStr, pre.Data.Bucket, pre.Data.ObjKey, partNumber, pre.Data.UploadID)
+		ossPath := pre.Data.ObjKey
+		if pre.Data.Bucket != "" {
+			ossPath = pre.Data.Bucket + "/" + ossPath
+		}
+		authMeta := fmt.Sprintf("PUT\n\napplication/octet-stream\n%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s?partNumber=%d&uploadId=%s",
+			dateStr, dateStr, ossPath, partNumber, pre.Data.UploadID)
+		authStart := time.Now()
 		var authResp upAuthResp
 		err := d.cl.request(http.MethodPost, "/file/upload/auth", nil, map[string]any{
 			"auth_info":   pre.Data.AuthInfo,
@@ -662,6 +670,7 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 			"task_id":     pre.Data.TaskID,
 			"part_number": partNumber,
 		}, &authResp)
+		authDur := time.Since(authStart)
 		if err != nil {
 			if attempt < ossMaxRetries {
 				logging.L.Warnf("[QUARK] upload part auth failed; retry task=%q part=%d attempt=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
@@ -672,7 +681,11 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 			return "", err
 		}
 
-		req, err := http.NewRequest(http.MethodPut, ossURL(pre)+"?partNumber="+strconv.Itoa(partNumber)+"&uploadId="+pre.Data.UploadID, bytes.NewReader(data))
+		logging.L.Infof("[QUARK] upload part auth done task=%q part=%d auth=%s", pre.Data.TaskID, partNumber, authDur)
+		ossURLStr := ossURL(pre) + "?partNumber=" + strconv.Itoa(partNumber) + "&uploadId=" + pre.Data.UploadID
+		logging.L.Infof("[QUARK] upload part oss put start task=%q part=%d url=%q", pre.Data.TaskID, partNumber, ossURLStr)
+		ossStart := time.Now()
+		req, err := http.NewRequest(http.MethodPut, ossURLStr, bytes.NewReader(data))
 		if err != nil {
 			return "", err
 		}
@@ -681,10 +694,8 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 		req.Header.Set("x-oss-date", dateStr)
 		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
 		req.Header.Set("Referer", defaultReferer)
-		req.Header.Set("User-Agent", defaultUserAgent)
-		d.cl.ossSem <- struct{}{}
-		resp, err := d.cl.ossClient.Do(req)
-		<-d.cl.ossSem
+		resp, err := d.cl.httpClient.Do(req)
+		ossDur := time.Since(ossStart)
 		if err != nil {
 			if attempt < ossMaxRetries {
 				logging.L.Warnf("[QUARK] upload part http failed; retry task=%q part=%d attempt=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
@@ -697,6 +708,7 @@ func (d *Driver) uploadPart(pre *upPreResp, partNumber int, data []byte) (string
 		etag := resp.Header.Get("Etag")
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			logging.L.Infof("[QUARK] upload part done task=%q part=%d bytes=%d auth=%s oss=%s", pre.Data.TaskID, partNumber, len(data), authDur, ossDur)
 			return etag, nil
 		}
 		if attempt < ossMaxRetries {
@@ -717,7 +729,10 @@ func ossURL(pre *upPreResp) string {
 	if idx := strings.Index(host, "/"); idx != -1 {
 		host = host[:idx]
 	}
-	return fmt.Sprintf("https://%s.%s/%s", pre.Data.Bucket, host, pre.Data.ObjKey)
+	if pre.Data.Bucket != "" {
+		return fmt.Sprintf("https://%s.%s/%s", pre.Data.Bucket, host, pre.Data.ObjKey)
+	}
+	return fmt.Sprintf("https://%s/%s", host, pre.Data.ObjKey)
 }
 
 func apiError(resp respEnvelope) error {

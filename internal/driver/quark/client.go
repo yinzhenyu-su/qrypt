@@ -23,7 +23,6 @@ const (
 	ossMaxRetries     = 3
 	ossMaxConcurrent  = 4
 	partUploadWorkers = 1
-	minUploadPartSize = 16 * 1024 * 1024
 )
 
 type client struct {
@@ -52,7 +51,7 @@ func newClient(cookie string, opts clientOptions) *client {
 	return &client{
 		httpClient:     newHTTPClient(30 * time.Second),
 		downloadClient: newHTTPClient(0),
-		ossClient:      newHTTPClientWithResponseHeaderTimeout(5*time.Minute, 5*time.Minute),
+		ossClient:      newOSSClient(),
 		cookie:         cookie,
 		baseURL:        baseURL,
 		v2URL:          v2URL,
@@ -92,6 +91,27 @@ func newHTTPClientWithResponseHeaderTimeout(timeout, responseHeaderTimeout time.
 		c.Timeout = timeout
 	}
 	return c
+}
+
+func newOSSClient() *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   120 * time.Second,
+	}
 }
 
 func (c *client) cookieValue() string {
