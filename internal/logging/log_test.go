@@ -161,3 +161,58 @@ func TestSanitizeViaLogger(t *testing.T) {
 		t.Error("__puus value should be sanitized")
 	}
 }
+
+func TestLoggerEventsCaptureWarnAndErrorOnly(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{level: LevelDebug, writer: &buf, errWriter: &buf}
+
+	l.Infof("info msg")
+	l.Warnf("warn Cookie: ctoken=secret123")
+	l.Errorf("error msg")
+
+	events := l.Events(LevelWarn, 10)
+	if len(events) != 2 {
+		t.Fatalf("expected two events, got %+v", events)
+	}
+	if events[0].Level != "WARN" || !strings.Contains(events[0].Message, "Cookie: ***") {
+		t.Fatalf("unexpected warn event: %+v", events[0])
+	}
+	if events[1].Level != "ERROR" || events[1].Message != "error msg" {
+		t.Fatalf("unexpected error event: %+v", events[1])
+	}
+}
+
+func TestLoggerEventsLimitAndLevelFilter(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{level: LevelDebug, writer: &buf, errWriter: &buf}
+
+	l.Warnf("warn one")
+	l.Errorf("error one")
+	l.Errorf("error two")
+
+	events := l.Events(LevelError, 1)
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %+v", events)
+	}
+	if events[0].Message != "error two" {
+		t.Fatalf("expected latest error, got %+v", events[0])
+	}
+}
+
+func TestLoggerSampledEventsIncludeSuppressedCount(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{level: LevelDebug, writer: &buf, errWriter: &buf}
+
+	l.WarnfEvery("hot-event", 20*time.Millisecond, "first")
+	l.WarnfEvery("hot-event", 20*time.Millisecond, "second")
+	time.Sleep(25 * time.Millisecond)
+	l.WarnfEvery("hot-event", 20*time.Millisecond, "third")
+
+	events := l.Events(LevelWarn, 10)
+	if len(events) != 2 {
+		t.Fatalf("expected two sampled events, got %+v", events)
+	}
+	if events[1].Suppressed != 1 || !strings.Contains(events[1].Message, "suppressed=1") {
+		t.Fatalf("expected suppressed count on second emitted event, got %+v", events[1])
+	}
+}

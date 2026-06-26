@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,8 @@ type VFS struct {
 	uploadWorkers int
 	uploadMu      sync.Mutex
 	uploadTimers  map[string]*time.Timer
+	activeUploads map[string]*debugUploadState
+	uploadHistory []DebugUpload
 
 	deleteDelay  time.Duration
 	deleteMu     sync.Mutex
@@ -110,6 +113,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		uploadDelay:   opts.UploadDelay,
 		uploadWorkers: opts.UploadWorkers,
 		uploadTimers:  map[string]*time.Timer{},
+		activeUploads: map[string]*debugUploadState{},
 		deleteDelay:   opts.DeleteDelay,
 		deleteTimers:  map[string]*time.Timer{},
 		deleted:       map[string]drive.Entry{},
@@ -136,7 +140,7 @@ func (v *VFS) Start(ctx context.Context) {
 
 func (v *VFS) Resume(ctx context.Context) {
 	for _, pending := range v.cache.Pending() {
-		logging.L.InfofEvery("vfs.resume_pending", time.Second, "[VFS] resume pending upload path=%q name=%q size=%d local=%q", pending.Path, pending.Name, pending.Size, pending.LocalPath)
+		logging.L.InfofEvery("vfs.resume_pending", time.Second, "[VFS] resume pending upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
 		v.enqueue(pending)
 	}
 }
@@ -173,6 +177,25 @@ func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
 		return nil, err
 	}
 	entries = v.withPendingChildren(path, entries)
+	return entries, nil
+}
+
+func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
+	path = cleanVirtual(path)
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if !entry.IsDir {
+		return nil, fmt.Errorf("vfs: %s is not a directory", path)
+	}
+	entries, err := v.driver.List(ctx, entry.ID)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
 	return entries, nil
 }
 
@@ -542,7 +565,7 @@ func (v *VFS) Create(ctx context.Context, path string) error {
 	if err := v.cache.SavePending(pending); err != nil {
 		return err
 	}
-	logging.L.InfofEvery("vfs.pending_created", time.Second, "[VFS] pending created path=%q parent=%q name=%q local=%q", path, parent.ID, name, localPath)
+	logging.L.InfofEvery("vfs.pending_created", time.Second, "[VFS] pending created op_id=%q path=%q parent=%q name=%q local=%q", pending.FID, path, parent.ID, name, localPath)
 	return nil
 }
 
@@ -574,7 +597,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	if err := v.cache.SavePending(pending); err != nil {
 		return n, err
 	}
-	logging.L.DebugfEvery("vfs.write_staged", time.Second, "[VFS] write staged path=%q off=%d len=%d written=%d size=%d local=%q", path, off, len(data), n, pending.Size, pending.LocalPath)
+	logging.L.DebugfEvery("vfs.write_staged", time.Second, "[VFS] write staged op_id=%q path=%q off=%d len=%d written=%d size=%d local=%q", pending.FID, path, off, len(data), n, pending.Size, pending.LocalPath)
 	return n, nil
 }
 
@@ -599,7 +622,7 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 	if latest, ok := v.cache.PendingByPath(path); ok {
 		pending = latest
 	}
-	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload path=%q name=%q size=%d local=%q", pending.Path, pending.Name, pending.Size, pending.LocalPath)
+	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath)
 	v.enqueue(pending)
 	return nil
 }
@@ -893,7 +916,7 @@ func (v *VFS) stageExisting(ctx context.Context, path string) error {
 	if err := v.cache.SavePending(pending); err != nil {
 		return err
 	}
-	logging.L.InfofEvery("vfs.existing_file_staged", time.Second, "[VFS] existing file staged path=%q parent=%q name=%q size=%d local=%q", path, parent.ID, name, size, localPath)
+	logging.L.InfofEvery("vfs.existing_file_staged", time.Second, "[VFS] existing file staged op_id=%q path=%q parent=%q name=%q size=%d local=%q", pending.FID, path, parent.ID, name, size, localPath)
 	return nil
 }
 
@@ -920,31 +943,47 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	}
 	latest, ok := v.cache.PendingByPath(pending.Path)
 	if !ok {
-		logging.L.DebugfEvery("vfs.skip_upload_removed", time.Second, "[VFS] skip upload; pending already removed path=%q local=%q", pending.Path, pending.LocalPath)
+		logging.L.DebugfEvery("vfs.skip_upload_removed", time.Second, "[VFS] skip upload; pending already removed op_id=%q path=%q local=%q", pending.FID, pending.Path, pending.LocalPath)
 		return nil
 	}
 	if !samePendingFile(latest, pending) {
-		logging.L.InfofEvery("vfs.upload_superseded", time.Second, "[VFS] upload superseded path=%q old_local=%q new_local=%q old_size=%d new_size=%d", pending.Path, pending.LocalPath, latest.LocalPath, pending.Size, latest.Size)
+		logging.L.InfofEvery("vfs.upload_superseded", time.Second, "[VFS] upload superseded op_id=%q path=%q old_local=%q new_local=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.LocalPath, latest.LocalPath, pending.Size, latest.Size)
 		v.enqueue(latest)
 		return nil
 	}
 	uploadStart := time.Now()
-	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start path=%q parent=%q name=%q size=%d local=%q", pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath)
+	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
+	v.startDebugUpload(pending)
+	finishState := "failed"
+	finishErr := ""
+	defer func() { v.finishDebugUpload(pending.Path, finishState, finishErr) }()
+	v.setDebugUploadState(pending.Path, "preparing")
 	rc, err := v.cache.staging.open(pending.LocalPath)
 	if err != nil {
+		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload open staging failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
 		return err
 	}
 	defer rc.Close()
+	v.setDebugUploadState(pending.Path, "removing_existing")
 	if err := v.removeExistingFile(ctx, pending.ParentID, pending.Name); err != nil {
+		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload remove existing failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
 		return err
 	}
-	entry, err := v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, rc)
+	v.setDebugUploadState(pending.Path, "uploading")
+	progressBody := &uploadProgressReader{
+		reader: rc,
+		update: func(n int) { v.updateDebugUpload(pending.Path, n) },
+	}
+	entry, err := v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, progressBody)
 	if err != nil {
+		finishErr = err.Error()
 		if ctx.Err() == nil {
-			if latest, ok := v.cache.PendingByPath(pending.Path); ok {
-				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue path=%q name=%q size=%d err=%v", latest.Path, latest.Name, latest.Size, err)
+			if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.uploadDelay); saveErr != nil {
+				logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+			} else if ok {
+				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
 				v.enqueue(latest)
 			}
 		}
@@ -952,11 +991,13 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	}
 	removed, err := v.cache.RemovePendingIfUnchanged(pending)
 	if err != nil {
-		logging.L.Warnf("[VFS] upload committed but pending cleanup failed path=%q uploaded_id=%q err=%v", pending.Path, entry.ID, err)
+		finishErr = err.Error()
+		logging.L.Warnf("[VFS] upload committed but pending cleanup failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
 		return err
 	}
 	if !removed {
-		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement path=%q uploaded_id=%q", pending.Path, entry.ID)
+		finishState = "superseded"
+		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
 		if v.writer != nil && ctx.Err() == nil {
 			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
 		}
@@ -970,7 +1011,8 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
-	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete path=%q uploaded_id=%q size=%d dur=%s", pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
+	finishState = "completed"
+	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete op_id=%q path=%q uploaded_id=%q size=%d dur=%s", pending.FID, pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
 }
 
@@ -1006,9 +1048,9 @@ func (v *VFS) scheduleUpload(p PendingFile) {
 	v.uploadMu.Lock()
 	if timer := v.uploadTimers[p.Path]; timer != nil {
 		timer.Stop()
-		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload path=%q delay=%s", p.Path, v.uploadDelay)
+		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload op_id=%q path=%q delay=%s", p.FID, p.Path, v.uploadDelay)
 	} else {
-		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload path=%q delay=%s", p.Path, v.uploadDelay)
+		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload op_id=%q path=%q delay=%s", p.FID, p.Path, v.uploadDelay)
 	}
 	v.uploadTimers[p.Path] = time.AfterFunc(v.uploadDelay, func() {
 		v.uploadMu.Lock()
@@ -1044,9 +1086,9 @@ func (v *VFS) cancelChildUploads(dir string) {
 func (v *VFS) sendUpload(p PendingFile) {
 	select {
 	case v.queue <- p:
-		logging.L.DebugfEvery("vfs.upload_enqueued", time.Second, "[VFS] upload enqueued path=%q size=%d", p.Path, p.Size)
+		logging.L.DebugfEvery("vfs.upload_enqueued", time.Second, "[VFS] upload enqueued op_id=%q path=%q size=%d retry=%d", p.FID, p.Path, p.Size, p.RetryCount)
 	default:
-		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background path=%q size=%d", p.Path, p.Size)
+		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background op_id=%q path=%q size=%d", p.FID, p.Path, p.Size)
 		go func() { v.queue <- p }()
 	}
 }
