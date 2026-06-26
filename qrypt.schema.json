@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/yinzhenyu/qrypt/qrypt.schema.json",
+  "title": "Qrypt",
+  "description": "Configuration schema for qrypt — an encrypted virtual filesystem for cloud drives.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "description": "Config format version. Currently only \"1\" is recognised.",
+      "type": "string",
+      "default": "1",
+      "x-taplo": {
+        "hidden": true
+      }
+    },
+    "mount_point": {
+      "description": "FUSE mount point (e.g. ~/Qrypt).",
+      "type": "string",
+      "default": "~/Qrypt"
+    },
+    "cache_dir": {
+      "description": "Directory for read cache and pending upload staging.",
+      "type": "string",
+      "default": "~/.qrypt/qrypt-cache"
+    },
+    "volume_name": {
+      "description": "Volume label shown in the OS file manager.",
+      "type": "string",
+      "default": "Qrypt"
+    },
+    "no_apple_double": {
+      "description": "Skip writing Apple Double (._) metadata files on macOS.",
+      "type": "boolean",
+      "default": true
+    },
+    "total_space": {
+      "description": "Total capacity reported to the OS (e.g. \"1T\", \"500G\").",
+      "type": "string",
+      "default": "1T",
+      "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+    },
+    "free_space": {
+      "description": "Free space reported to the OS (e.g. \"800G\").",
+      "type": "string",
+      "default": "800G",
+      "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+    },
+    "encryption": {
+      "$ref": "#/definitions/encryptionConfig"
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default values inherited by every mount unless overridden.",
+      "properties": {
+        "encryption": {
+          "$ref": "#/definitions/encryptionConfig"
+        },
+        "cache": {
+          "$ref": "#/definitions/cacheConfig"
+        }
+      },
+      "additionalProperties": false
+    },
+    "logging": {
+      "$ref": "#/definitions/loggingConfig"
+    },
+    "bandwidth": {
+      "$ref": "#/definitions/bandwidthConfig"
+    },
+    "mounts": {
+      "description": "List of cloud-drive mounts exposed under the mount point.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/mountConfig"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "encryptionConfig": {
+      "type": "object",
+      "description": "rclone-compatible encryption settings.",
+      "properties": {
+        "password": {
+          "description": "Encryption password.",
+          "type": "string",
+          "minLength": 1
+        },
+        "salt": {
+          "description": "Encryption salt (empty = derive from password).",
+          "type": "string",
+          "default": ""
+        },
+        "filename_encryption": {
+          "description": "File-name encryption mode.",
+          "type": "string",
+          "default": "standard",
+          "enum": ["standard", "off", "obfuscate"]
+        },
+        "filename_encoding": {
+          "description": "Encoding for encrypted file names.",
+          "type": "string",
+          "default": "base32",
+          "enum": ["base32", "base64"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "cacheConfig": {
+      "type": "object",
+      "description": "Per-mount (or default) cache settings.",
+      "properties": {
+        "dir": {
+          "description": "Cache directory for this mount. Falls back to cache_dir/<mount_name>.",
+          "type": "string"
+        },
+        "max_size": {
+          "description": "Maximum read-cache size (e.g. \"512M\", \"2G\", \"1T\").",
+          "type": "string",
+          "default": "512M",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+        },
+        "upload_delay": {
+          "description": "Debounce delay before flushing a new file to the cloud (e.g. \"5s\", \"1m\").",
+          "type": "string",
+          "default": "0s"
+        },
+        "upload_workers": {
+          "description": "Number of concurrent upload workers per mount.",
+          "type": "integer",
+          "default": 4,
+          "minimum": 0
+        },
+        "delete_delay": {
+          "description": "Debounce delay before deleting a file from the cloud (e.g. \"2s\").",
+          "type": "string",
+          "default": "0s"
+        }
+      },
+      "additionalProperties": false
+    },
+    "loggingConfig": {
+      "type": "object",
+      "description": "Logging settings.",
+      "properties": {
+        "log_level": {
+          "description": "Minimum log level to emit.",
+          "type": "string",
+          "default": "info",
+          "enum": ["debug", "info", "warn", "error", "off"]
+        },
+        "log_file": {
+          "description": "Path to the main log file.",
+          "type": "string"
+        },
+        "error_file": {
+          "description": "Path to the error log file (falls back to <log_file>-err.log).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "bandwidthConfig": {
+      "type": "object",
+      "description": "Per-direction bandwidth limits.",
+      "properties": {
+        "download": {
+          "description": "Download speed cap (e.g. \"10Mbps\", \"5MB/s\", empty = unlimited).",
+          "type": "string",
+          "default": ""
+        },
+        "upload": {
+          "description": "Upload speed cap (e.g. \"2Mbps\", empty = unlimited).",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "mountConfig": {
+      "type": "object",
+      "description": "A single cloud-drive mount.",
+      "properties": {
+        "name": {
+          "description": "Mount name — used as the directory name under the mount point.",
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "description": "Backend driver type.",
+          "type": "string",
+          "enum": ["localfs", "quark"]
+        },
+        "mount_point": {
+          "description": "Deprecated. Use the top-level mount_point instead.",
+          "type": "string"
+        },
+        "params": {
+          "description": "Driver-specific key/value parameters (e.g. cookie, root_path, root).",
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "type": "string"
+            }
+          },
+          "minProperties": 1,
+          "additionalProperties": false
+        },
+        "encryption": {
+          "$ref": "#/definitions/encryptionConfig"
+        },
+        "cache": {
+          "$ref": "#/definitions/cacheConfig"
+        }
+      },
+      "required": ["name", "type"],
+      "additionalProperties": false
+    }
+  }
+}
