@@ -34,6 +34,29 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	return querier.Space(ctx)
 }
 
+func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	debugger, ok := d.raw.(drive.Debugger)
+	if !ok {
+		return drive.DebugSnapshot{}, errors.New("crypt: raw driver does not support debug snapshots")
+	}
+	snapshot, err := debugger.DebugSnapshot(ctx)
+	if err != nil {
+		return drive.DebugSnapshot{}, err
+	}
+	if snapshot.Extra == nil {
+		snapshot.Extra = map[string]any{}
+	}
+	snapshot.Extra["crypt"] = true
+	return snapshot, nil
+}
+
+func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
+	return drive.RemoteNameInfo{
+		PlainName:  plainName,
+		RemoteName: d.cp.EncryptSegment(plainName),
+	}, nil
+}
+
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	entries, err := d.raw.List(ctx, parentID)
 	if err != nil {
@@ -220,3 +243,5 @@ var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
+var _ drive.Debugger = (*Driver)(nil)
+var _ drive.RemoteNameResolver = (*Driver)(nil)

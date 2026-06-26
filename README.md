@@ -209,3 +209,7 @@ go run ./cmd/qrypt -config ./qrypt.toml mount
 The trace records callback names, paths, return codes, and durations for
 operations such as `Getattr`, `Statfs`, `Readdir`, `Getxattr`, `Open`, `Read`,
 `Write`, `Rename`, and `Truncate`.
+
+For offline journal checks, live debug socket endpoints, upload progress,
+cache state, filename mapping, and consistency checks, see
+[`docs/debug.md`](docs/debug.md).

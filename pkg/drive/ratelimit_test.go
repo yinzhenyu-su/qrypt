@@ -74,6 +74,21 @@ func TestRateLimitedDriverPreservesUploaderCapability(t *testing.T) {
 	}
 }
 
+func TestRateLimitedDriverRemoteNameFallback(t *testing.T) {
+	drv := NewRateLimitedDriver(&readOnlyRateLimitTestDriver{}, RateLimits{DownloadBytesPerSecond: 1024})
+	resolver, ok := drv.(RemoteNameResolver)
+	if !ok {
+		t.Fatal("rate-limited driver should provide remote-name fallback")
+	}
+	info, err := resolver.ResolveRemoteName(context.Background(), "plain.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.PlainName != "plain.txt" || info.RemoteName != "plain.txt" {
+		t.Fatalf("unexpected remote-name fallback: %+v", info)
+	}
+}
+
 func TestRateLimitedDriverSkipsDirectionHandledByNativeDriver(t *testing.T) {
 	raw := &nativeUploadRateLimitTestDriver{}
 	drv := NewRateLimitedDriver(raw, RateLimits{UploadBytesPerSecond: 1})
