@@ -33,6 +33,26 @@ type FileSystem interface {
 	Pending() []PendingFile
 }
 
+type RemoteLister interface {
+	RemoteList(ctx context.Context, path string) ([]drive.Entry, error)
+}
+
+type DebugResolver interface {
+	DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error)
+}
+
+type DebugTaskLister interface {
+	DebugTasks() []DebugTask
+}
+
+type DebugConsistencyChecker interface {
+	DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error)
+}
+
+type DebugDriverHealthChecker interface {
+	DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus
+}
+
 type Mount struct {
 	Name string
 	FS   *VFS
@@ -95,6 +115,17 @@ func (n *Namespace) List(ctx context.Context, path string) ([]drive.Entry, error
 		return n.rootEntries(), nil
 	}
 	return mount.List(ctx, rest)
+}
+
+func (n *Namespace) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if root {
+		return n.rootEntries(), nil
+	}
+	return mount.RemoteList(ctx, rest)
 }
 
 func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
