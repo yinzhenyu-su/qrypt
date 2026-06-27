@@ -100,7 +100,14 @@ Example:
 mount_point = "~/Qrypt"
 cache_dir = "/tmp/qrypt-cache"
 volume_name = "Qrypt"
+read_only = false
+allow_other = false
+default_permissions = false
 no_apple_double = true
+no_apple_xattr = false
+attr_timeout = "1s"
+entry_timeout = "1s"
+negative_timeout = "0s"
 total_space = "1T"
 free_space = "800G"
 
@@ -149,16 +156,27 @@ Each mount has its own encryption settings. Setting
 `filename_encryption = "off"` only keeps names readable on the raw backend;
 file content is still encrypted when `password` is set.
 
-`mount_point`, `cache_dir`, `volume_name`, and `no_apple_double` are
+`mount_point`, `cache_dir`, `volume_name`, `read_only`, `allow_other`,
+`default_permissions`, `no_apple_double`, and `no_apple_xattr` are
 intentionally top-level: the program creates one OS mount point, and each
 `[[mounts]]` entry appears as a directory under it. Each mount stores cache
 under `cache_dir/<mount-name>` unless `[mounts.cache].dir` overrides that
 mount.
 
+`read_only` mounts the filesystem read-only and rejects write callbacks in the
+FUSE adapter. `allow_other` allows other users to access the mount point, and
+`default_permissions` asks the kernel to enforce mode/uid/gid permissions.
+
+`attr_timeout`, `entry_timeout`, and `negative_timeout` control the FUSE
+metadata cache. They default to `1s`, `1s`, and `0s`, matching rclone's short
+attribute cache while avoiding negative lookup caching by default.
+
 When `no_apple_double = true`, Finder/macOS metadata writes such as
 `.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, and `.fseventsd` are
 accepted by the FUSE layer but ignored by the backend upload path. Set it to
 `false` to upload those files like regular files.
+
+When `no_apple_xattr = true`, `com.apple.*` extended attributes are ignored.
 
 `total_space` and `free_space` control the capacity reported by FUSE `Statfs`.
 They accept plain bytes or binary size suffixes such as `512M`, `1G`, and `1T`.
