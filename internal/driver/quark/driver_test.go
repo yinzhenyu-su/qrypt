@@ -90,6 +90,23 @@ func TestRegisterQuarkDriver(t *testing.T) {
 	}
 }
 
+func TestDriverDebugSnapshot(t *testing.T) {
+	driver := New("k=v", Options{RootID: "root"})
+	snapshot, err := driver.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Driver != "quark" {
+		t.Fatalf("driver = %q, want quark", snapshot.Driver)
+	}
+	if snapshot.Stats["root_id"] != "root" {
+		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+	if snapshot.Extra["uploads"] == nil {
+		t.Fatalf("expected uploads extra, got %+v", snapshot.Extra)
+	}
+}
+
 func TestOSSClientHasNoWholeRequestTimeout(t *testing.T) {
 	client := newOSSClient()
 	if client.Timeout != 0 {

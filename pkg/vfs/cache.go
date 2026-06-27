@@ -21,8 +21,8 @@ const cacheBatchBlocks = 16
 // reserveFraction and minReserveBytes control how much disk space is kept
 // free when capping cache maxSize by available disk space.
 const (
-	diskReserveFraction = 0.1         // reserve at least 10% of available space
-	diskMinReserveBytes = 1 << 30     // at least 1GB
+	diskReserveFraction = 0.1              // reserve at least 10% of available space
+	diskMinReserveBytes = 1 << 30          // at least 1GB
 	diskCheckInterval   = 10 * time.Second // how often to re-check disk in evict loop
 )
 
@@ -72,13 +72,17 @@ func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
 }
 
 type PendingFile struct {
-	Path      string `json:"path"`
-	FID       string `json:"fid"`
-	ParentID  string `json:"parent_id"`
-	Name      string `json:"name"`
-	LocalPath string `json:"local_path"`
-	Size      int64  `json:"size"`
-	UpdatedAt int64  `json:"updated_at"`
+	Path          string `json:"path"`
+	FID           string `json:"fid"`
+	ParentID      string `json:"parent_id"`
+	Name          string `json:"name"`
+	LocalPath     string `json:"local_path"`
+	Size          int64  `json:"size"`
+	UpdatedAt     int64  `json:"updated_at"`
+	RetryCount    int    `json:"retry_count,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	LastAttemptAt int64  `json:"last_attempt_at,omitempty"`
+	NextAttemptAt int64  `json:"next_attempt_at,omitempty"`
 }
 
 type journalEntry struct {
@@ -107,6 +111,14 @@ type Cache struct {
 	pending       map[string]PendingFile
 	chunks        map[string]*fileChunks
 	lastDiskCheck atomic.Int64 // unix nano
+	stats         cacheStats
+}
+
+type cacheStats struct {
+	hits    int64
+	misses  int64
+	puts    int64
+	evicted int64
 }
 
 func NewCache(dir string, maxSize int64) (*Cache, error) {
@@ -172,6 +184,31 @@ func (c *Cache) SavePending(p PendingFile) error {
 	c.pending[p.Path] = p
 	c.mu.Unlock()
 	return c.appendJournal(journalEntry{Op: "dirty", PendingFile: p})
+}
+
+func (c *Cache) RecordPendingFailure(path string, err error, retryDelay time.Duration) (PendingFile, bool, error) {
+	now := time.Now()
+	c.mu.Lock()
+	pending, ok := c.pending[path]
+	if ok {
+		pending.RetryCount++
+		if err != nil {
+			pending.LastError = err.Error()
+		}
+		pending.LastAttemptAt = now.UnixNano()
+		if retryDelay > 0 {
+			pending.NextAttemptAt = now.Add(retryDelay).UnixNano()
+		} else {
+			pending.NextAttemptAt = 0
+		}
+		pending.UpdatedAt = now.UnixNano()
+		c.pending[path] = pending
+	}
+	c.mu.Unlock()
+	if !ok {
+		return PendingFile{}, false, nil
+	}
+	return pending, true, c.appendJournal(journalEntry{Op: "dirty", PendingFile: pending})
 }
 
 func (c *Cache) RemovePending(path string) error {
@@ -250,21 +287,25 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	info, ok := fc.chunks[index]
 	fc.mu.RUnlock()
 	if !ok {
+		c.addMiss()
 		return nil, false, nil
 	}
 	f, err := os.Open(info.file)
 	if err != nil {
+		c.addMiss()
 		return nil, false, err
 	}
 	defer f.Close()
 	data := make([]byte, info.size)
 	if _, err := f.ReadAt(data, info.offset); err != nil {
+		c.addMiss()
 		return nil, false, err
 	}
 	info.accessAt = time.Now()
 	fc.mu.Lock()
 	fc.chunks[index] = info
 	fc.mu.Unlock()
+	c.addHit()
 	return data, true, nil
 }
 
@@ -287,7 +328,26 @@ func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	fc.mu.Lock()
 	fc.chunks[index] = chunkInfo{file: path, offset: offset, size: int64(len(data)), accessAt: time.Now()}
 	fc.mu.Unlock()
+	c.addPut()
 	return c.evictIfNeeded()
+}
+
+func (c *Cache) addHit() {
+	c.mu.Lock()
+	c.stats.hits++
+	c.mu.Unlock()
+}
+
+func (c *Cache) addMiss() {
+	c.mu.Lock()
+	c.stats.misses++
+	c.mu.Unlock()
+}
+
+func (c *Cache) addPut() {
+	c.mu.Lock()
+	c.stats.puts++
+	c.mu.Unlock()
 }
 
 func (c *Cache) fileChunks(fid string) *fileChunks {
@@ -380,7 +440,11 @@ func samePendingFile(a, b PendingFile) bool {
 		a.Name == b.Name &&
 		a.LocalPath == b.LocalPath &&
 		a.Size == b.Size &&
-		a.UpdatedAt == b.UpdatedAt
+		a.UpdatedAt == b.UpdatedAt &&
+		a.RetryCount == b.RetryCount &&
+		a.LastError == b.LastError &&
+		a.LastAttemptAt == b.LastAttemptAt &&
+		a.NextAttemptAt == b.NextAttemptAt
 }
 
 func (c *Cache) evictIfNeeded() error {
@@ -443,6 +507,9 @@ func (c *Cache) evictIfNeeded() error {
 		}
 		delete(fc.chunks, item.idx)
 		fc.mu.Unlock()
+		c.mu.Lock()
+		c.stats.evicted++
+		c.mu.Unlock()
 		total -= item.ch.size
 		evicted++
 	}

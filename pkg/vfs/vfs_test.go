@@ -496,6 +496,104 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	if string(data) != "hello qrypt" {
 		t.Fatalf("unexpected data: %q", data)
 	}
+	snapshot := fs.DebugSnapshot()
+	if len(snapshot.Mounts) != 1 || len(snapshot.Mounts[0].UploadHistory) != 1 {
+		t.Fatalf("expected one upload history item, got %+v", snapshot)
+	}
+	history := snapshot.Mounts[0].UploadHistory[0]
+	if history.Path != "/hello.txt" || history.State != "completed" || history.BytesUploaded != int64(len("hello qrypt")) {
+		t.Fatalf("unexpected upload history: %+v", history)
+	}
+	report, err := fs.DebugConsistency(ctx, "/hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || !report.RemoteFound || !report.SizeMatches {
+		t.Fatalf("unexpected consistency report: %+v", report)
+	}
+}
+
+func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{entries: map[string]drive.Entry{
+		"remote-zero": {ID: "remote-zero", ParentID: "0", Name: "zero.txt", Size: 5},
+	}}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Create(ctx, "/zero.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := fs.DebugConsistency(ctx, "/zero.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "mismatch" || report.ExpectedSize != 0 || report.RemoteSize != 5 || report.SizeMatches {
+		t.Fatalf("expected zero-byte pending mismatch, got %+v", report)
+	}
+}
+
+func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
+	ctx := context.Background()
+	drv := newBlockingUploadDriver()
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/active.txt", []byte("active upload"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/active.txt"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drv.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upload did not start")
+	}
+
+	snapshot := fs.DebugSnapshot()
+	if len(snapshot.Mounts) != 1 || len(snapshot.Mounts[0].Uploads) != 1 {
+		t.Fatalf("expected one active upload, got %+v", snapshot)
+	}
+	upload := snapshot.Mounts[0].Uploads[0]
+	if upload.Path != "/active.txt" || upload.State != "uploading" || upload.BytesUploaded != int64(len("active upload")) {
+		t.Fatalf("unexpected active upload: %+v", upload)
+	}
+	close(drv.release)
+	waitNoPending(t, fs)
+}
+
+func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("cache me")
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	rc, err = fs.Read(ctx, "/data.bin", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	cache := fs.DebugSnapshot().Mounts[0].ReadCache
+	if cache.Misses == 0 || cache.Hits == 0 || cache.Puts == 0 || cache.ChunkCount == 0 {
+		t.Fatalf("expected cache hit/miss/put stats, got %+v", cache)
+	}
+	if len(cache.Files) == 0 {
+		t.Fatalf("expected per-file cache details, got %+v", cache)
+	}
 }
 
 func TestVFSCoalescesFlushUploads(t *testing.T) {

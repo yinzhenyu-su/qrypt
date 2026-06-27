@@ -101,12 +101,28 @@ type Logger struct {
 	errLj     *lumberjack.Logger
 	mu        sync.Mutex
 	samples   map[string]sampleState
+	events    eventRing
 }
 
 type sampleState struct {
 	last       time.Time
 	suppressed int
 }
+
+type Event struct {
+	ID         uint64    `json:"id"`
+	Time       time.Time `json:"time"`
+	Level      string    `json:"level"`
+	Message    string    `json:"message"`
+	Suppressed int       `json:"suppressed,omitempty"`
+}
+
+type eventRing struct {
+	next  uint64
+	items []Event
+}
+
+const defaultEventLimit = 500
 
 func errorLogPath(logFile string) string {
 	if logFile == "" {
@@ -176,10 +192,12 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 		return
 	}
 	msg := sanitize(fmt.Sprintf(format, v...))
-	ts := time.Now().Format("2006-01-02 15:04:05.000")
+	now := time.Now()
+	ts := now.Format("2006-01-02 15:04:05.000")
 	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 
 	l.mu.Lock()
+	l.recordEventLocked(level, now, msg, 0)
 	if level >= LevelWarn && l.errWriter != nil {
 		fmt.Fprint(l.errWriter, line)
 	} else if l.writer != nil {
@@ -206,10 +224,12 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 	}
 	state := l.samples[key]
 	if state.last.IsZero() || now.Sub(state.last) >= interval {
+		suppressed := state.suppressed
 		if state.suppressed > 0 {
 			msg = fmt.Sprintf("%s (suppressed=%d)", msg, state.suppressed)
 		}
 		l.samples[key] = sampleState{last: now}
+		l.recordEventLocked(level, now, msg, suppressed)
 		line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 		if level >= LevelWarn && l.errWriter != nil {
 			fmt.Fprint(l.errWriter, line)
@@ -245,6 +265,46 @@ func (l *Logger) Debug(args ...interface{}) { l.logf(LevelDebug, "%s", fmt.Sprin
 func (l *Logger) Info(args ...interface{})  { l.logf(LevelInfo, "%s", fmt.Sprint(args...)) }
 func (l *Logger) Warn(args ...interface{})  { l.logf(LevelWarn, "%s", fmt.Sprint(args...)) }
 func (l *Logger) Error(args ...interface{}) { l.logf(LevelError, "%s", fmt.Sprint(args...)) }
+
+func (l *Logger) Events(minLevel Level, limit int) []Event {
+	if limit <= 0 || limit > defaultEventLimit {
+		limit = defaultEventLimit
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []Event
+	for i := len(l.events.items) - 1; i >= 0 && len(out) < limit; i-- {
+		event := l.events.items[i]
+		if ParseLevel(event.Level) < minLevel {
+			continue
+		}
+		out = append(out, event)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func (l *Logger) recordEventLocked(level Level, ts time.Time, msg string, suppressed int) {
+	if level < LevelWarn || level >= LevelOff {
+		return
+	}
+	l.events.next++
+	event := Event{
+		ID:         l.events.next,
+		Time:       ts,
+		Level:      level.String(),
+		Message:    msg,
+		Suppressed: suppressed,
+	}
+	if len(l.events.items) < defaultEventLimit {
+		l.events.items = append(l.events.items, event)
+		return
+	}
+	copy(l.events.items, l.events.items[1:])
+	l.events.items[len(l.events.items)-1] = event
+}
 
 func (l *Logger) Rotate() error {
 	l.mu.Lock()

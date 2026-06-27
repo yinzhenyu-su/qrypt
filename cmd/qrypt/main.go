@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/internal/control"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
 	"github.com/yinzhenyu/qrypt/internal/logging"
@@ -54,15 +55,20 @@ func runWithContext(ctx context.Context, args []string) error {
 	salt := flags.String("salt", "", "rclone crypt salt")
 	fileNameEncryption := flags.String("filename-encryption", "", "rclone crypt filename encryption: standard, off, obfuscate")
 	fileNameEncoding := flags.String("filename-encoding", "", "rclone crypt filename encoding: base32, base64")
+	debugSocket := flags.String("debug-socket", "", "local debug control socket")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	rest := flags.Args()
 	if len(rest) == 0 {
-		return fmt.Errorf("usage: qrypt [flags] list|put|cat|pending ...")
+		return fmt.Errorf("usage: qrypt [flags] list|put|cat|pending|debug ...")
 	}
 
 	initLoggerFromConfig(*configPath)
+
+	if rest[0] == "debug" {
+		return runDebugCommand(ctx, flags, rest[1:], *cacheDir, *configPath, *mountName, *debugSocket)
+	}
 
 	fs, cleanup, err := buildFileSystem(ctx, flags, *driverName, *root, *cacheDir, *configPath, *mountName, *password, *salt, *fileNameEncryption, *fileNameEncoding)
 	if err != nil {
@@ -70,6 +76,20 @@ func runWithContext(ctx context.Context, args []string) error {
 	}
 	defer cleanup()
 	fs.Start(ctx)
+	if *debugSocket != "" {
+		snapshotter, ok := fs.(control.Snapshotter)
+		if !ok {
+			return fmt.Errorf("debug socket requires filesystem debug snapshots")
+		}
+		controlServer, err := control.NewServer(*debugSocket, snapshotter)
+		if err != nil {
+			return err
+		}
+		if err := controlServer.Start(ctx); err != nil {
+			return err
+		}
+		defer controlServer.Close(context.Background())
+	}
 
 	switch rest[0] {
 	case "list", "ls":
@@ -105,6 +125,14 @@ func runWithContext(ctx context.Context, args []string) error {
 		_, err = io.Copy(os.Stdout, rc)
 		return err
 	case "pending":
+		verbose, err := parsePendingArgs(rest[1:])
+		if err != nil {
+			return err
+		}
+		if verbose {
+			printPendingVerbose(os.Stdout, fs.Pending())
+			return nil
+		}
 		for _, pending := range fs.Pending() {
 			fmt.Printf("%s %d %s\n", pending.Path, pending.Size, pending.LocalPath)
 		}

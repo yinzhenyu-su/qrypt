@@ -60,6 +60,34 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	}, nil
 }
 
+func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{
+		Driver:      "localfs",
+		Health:      "ok",
+		GeneratedAt: time.Now(),
+		Stats: map[string]any{
+			"root": d.root,
+		},
+	}, nil
+}
+
+func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
+	start := time.Now()
+	status := drive.HealthStatus{Driver: "localfs", CheckedAt: start}
+	if _, err := os.Stat(d.root); err != nil {
+		status.Error = err.Error()
+		status.Latency = time.Since(start).String()
+		return status
+	}
+	status.OK = true
+	status.Latency = time.Since(start).String()
+	return status
+}
+
+func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
+	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
+}
+
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	dir := d.resolve(parentID)
 	items, err := os.ReadDir(dir)
@@ -164,3 +192,6 @@ var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
+var _ drive.Debugger = (*Driver)(nil)
+var _ drive.RemoteNameResolver = (*Driver)(nil)
+var _ drive.HealthChecker = (*Driver)(nil)

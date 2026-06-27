@@ -211,6 +211,30 @@ func (d *rateLimitedDriver) ResolvePath(ctx context.Context, path string) (strin
 	return resolver.ResolvePath(ctx, path)
 }
 
+func (d *rateLimitedDriver) DebugSnapshot(ctx context.Context) (DebugSnapshot, error) {
+	debugger, ok := d.raw.(Debugger)
+	if !ok {
+		return DebugSnapshot{}, errors.New("drive: raw driver does not support debug snapshots")
+	}
+	return debugger.DebugSnapshot(ctx)
+}
+
+func (d *rateLimitedDriver) HealthCheck(ctx context.Context) HealthStatus {
+	checker, ok := d.raw.(HealthChecker)
+	if !ok {
+		return HealthStatus{Driver: "unknown", OK: false, CheckedAt: time.Now(), Error: "drive: raw driver does not support health checks"}
+	}
+	return checker.HealthCheck(ctx)
+}
+
+func (d *rateLimitedDriver) ResolveRemoteName(ctx context.Context, plainName string) (RemoteNameInfo, error) {
+	resolver, ok := d.raw.(RemoteNameResolver)
+	if !ok {
+		return RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
+	}
+	return resolver.ResolveRemoteName(ctx, plainName)
+}
+
 type limitedReader struct {
 	ctx     context.Context
 	reader  io.Reader
