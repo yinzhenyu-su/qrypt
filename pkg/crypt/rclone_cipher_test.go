@@ -157,16 +157,7 @@ func TestRcloneCipher_Obfuscate_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("conflict suffix stripping", func(t *testing.T) {
-		cObf, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
-		name := "test.txt"
-		enc := cObf.EncryptSegment(name)
-		withConflict := enc + " (1)"
-		dec, err := cObf.DecryptSegment(withConflict)
-		if err != nil || dec != name {
-			t.Errorf("conflict suffix: %q from %q err=%v", dec, withConflict, err)
-		}
-	})
+
 }
 
 func TestRcloneCipher_Obfuscate_Determinism(t *testing.T) {

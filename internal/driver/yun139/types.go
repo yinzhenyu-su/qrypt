@@ -1,10 +1,15 @@
 package yun139
 
 import (
+	"regexp"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+// cloudRenameSuffix matches auto-rename suffixes added by 139 cloud drive
+// when a file with the same name already exists: _YYYYMMDD_HHMMSS.
+var cloudRenameSuffix = regexp.MustCompile(`_\d{8}_\d{6}$`)
 
 type baseResp struct {
 	Success bool   `json:"success"`
@@ -44,9 +49,10 @@ func personalParseTime(s string) time.Time {
 }
 
 func toEntry(item personalItem) drive.Entry {
+	name := cloudRenameSuffix.ReplaceAllString(item.Name, "")
 	return drive.Entry{
 		ID:      item.FileId,
-		Name:    item.Name,
+		Name:    name,
 		IsDir:   item.Type == "folder",
 		Size:    item.Size,
 		ModTime: personalParseTime(item.UpdatedAt),
@@ -82,6 +88,7 @@ type personalUploadResp struct {
 	baseResp
 	Data struct {
 		FileId      string             `json:"fileId"`
+		FileName    string             `json:"fileName"`
 		Exist       bool               `json:"exist"`
 		RapidUpload bool               `json:"rapidUpload"`
 		UploadId    string             `json:"uploadId"`
