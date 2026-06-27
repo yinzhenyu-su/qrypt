@@ -1033,7 +1033,6 @@ func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) err
 			if err := v.writer.Remove(ctx, entry); err != nil {
 				return err
 			}
-			return nil
 		}
 	}
 	return nil

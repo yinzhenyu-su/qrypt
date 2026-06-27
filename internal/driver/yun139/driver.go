@@ -337,25 +337,32 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{}, fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)
 	}
 
-	// Handle auto_rename conflict: server renamed our file because a file with
-	// the same name already existed. Since toEntry strips the _YYYYMMDD_HHMMSS
-	// suffix, the renamed file already appears with the correct name in List.
-	// We just need to remove the old duplicate with a different file ID.
+	// Handle auto_rename conflict: server renamed our uploaded file because
+	// a file with the same name already existed in the target directory.
+	// The old file gets removed and our new file is renamed back to original.
 	if createResp.Data.FileName != "" && createResp.Data.FileName != name {
 		logging.L.Infof("[139] upload was renamed by server: %q -> %q (new id=%s)", name, createResp.Data.FileName, createResp.Data.FileId)
+
+		// 1. Remove all stale duplicates with a different file ID
 		entries, err := d.List(ctx, parentID)
 		if err != nil {
 			logging.L.Warnf("[139] failed to list files for conflict resolution: %v", err)
-			return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
-		}
-		for _, e := range entries {
-			if e.Name == name && !e.IsDir && e.ID != createResp.Data.FileId {
-				logging.L.Infof("[139] removing duplicate file: name=%q id=%q (keeping new id=%q)", name, e.ID, createResp.Data.FileId)
-				if err := d.Remove(ctx, e); err != nil {
-					logging.L.Warnf("[139] failed to remove duplicate file id=%s: %v (upload still succeeded)", e.ID, err)
+		} else {
+			for _, e := range entries {
+				if e.Name == name && !e.IsDir && e.ID != createResp.Data.FileId {
+					logging.L.Infof("[139] removing duplicate file: name=%q id=%q (keeping new id=%q)", name, e.ID, createResp.Data.FileId)
+					if err := d.Remove(ctx, e); err != nil {
+						logging.L.Warnf("[139] failed to remove duplicate file id=%s: %v", e.ID, err)
+					}
 				}
-				break
 			}
+		}
+
+		// 2. Rename our new file back to the original name using its stable
+		// file ID (toEntry strips the suffix so the list name is ambiguous).
+		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileId}, name); err != nil {
+			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileId, name, err)
+			return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
 		}
 	}
 
