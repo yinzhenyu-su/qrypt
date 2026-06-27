@@ -17,6 +17,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/control"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
+	_ "github.com/yinzhenyu/qrypt/internal/driver/yun139"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/mount"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
