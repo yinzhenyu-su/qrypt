@@ -70,6 +70,19 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
+func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
+	start := time.Now()
+	status := drive.HealthStatus{Driver: "localfs", CheckedAt: start}
+	if _, err := os.Stat(d.root); err != nil {
+		status.Error = err.Error()
+		status.Latency = time.Since(start).String()
+		return status
+	}
+	status.OK = true
+	status.Latency = time.Since(start).String()
+	return status
+}
+
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
 }
@@ -192,3 +205,4 @@ var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.RemoteNameResolver = (*Driver)(nil)
+var _ drive.HealthChecker = (*Driver)(nil)

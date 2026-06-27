@@ -57,6 +57,9 @@ type VFS struct {
 	uploadTimers  map[string]*time.Timer
 	activeUploads map[string]*debugUploadState
 	uploadHistory []DebugUpload
+	opMu          sync.Mutex
+	nextOpID      uint64
+	ops           []DebugOp
 
 	deleteDelay  time.Duration
 	deleteMu     sync.Mutex
@@ -565,6 +568,7 @@ func (v *VFS) Create(ctx context.Context, path string) error {
 	if err := v.cache.SavePending(pending); err != nil {
 		return err
 	}
+	v.recordOp(DebugOp{Type: "pending", Path: path, OpID: pending.FID, State: "created"})
 	logging.L.InfofEvery("vfs.pending_created", time.Second, "[VFS] pending created op_id=%q path=%q parent=%q name=%q local=%q", pending.FID, path, parent.ID, name, localPath)
 	return nil
 }
@@ -622,6 +626,7 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 	if latest, ok := v.cache.PendingByPath(path); ok {
 		pending = latest
 	}
+	v.recordOp(DebugOp{Type: "upload", Path: pending.Path, OpID: pending.FID, State: "queued"})
 	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath)
 	v.enqueue(pending)
 	return nil
@@ -952,6 +957,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return nil
 	}
 	uploadStart := time.Now()
+	v.recordOp(DebugOp{Type: "upload", Path: pending.Path, OpID: pending.FID, State: "started"})
 	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
 	v.startDebugUpload(pending)
 	finishState := "failed"
@@ -983,6 +989,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.uploadDelay); saveErr != nil {
 				logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 			} else if ok {
+				v.recordOp(DebugOp{Type: "upload", Path: latest.Path, OpID: latest.FID, State: "retry_wait", Message: err.Error()})
 				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
 				v.enqueue(latest)
 			}
@@ -997,6 +1004,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	}
 	if !removed {
 		finishState = "superseded"
+		v.recordOp(DebugOp{Type: "upload", Path: pending.Path, OpID: pending.FID, State: "superseded"})
 		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
 		if v.writer != nil && ctx.Err() == nil {
 			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
@@ -1012,6 +1020,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
 	finishState = "completed"
+	v.recordOp(DebugOp{Type: "upload", Path: pending.Path, OpID: pending.FID, State: "completed", Extra: map[string]any{"uploaded_id": entry.ID, "duration": time.Since(uploadStart).String()}})
 	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete op_id=%q path=%q uploaded_id=%q size=%d dur=%s", pending.FID, pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
 }
@@ -1208,6 +1217,7 @@ func (v *VFS) addOverlay(oldPath, newPath, entryID string, recursive bool) {
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 	if v.deleteDelay <= 0 {
 		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
+		v.recordOp(DebugOp{Type: "delete", Path: path, State: "now", Extra: map[string]any{"id": entry.ID, "is_dir": entry.IsDir}})
 		v.deleteRemote(context.Background(), path, entry)
 		return
 	}
@@ -1223,6 +1233,7 @@ func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 		v.deleteRemote(context.Background(), path, entry)
 	})
 	v.deleteMu.Unlock()
+	v.recordOp(DebugOp{Type: "delete", Path: path, State: "scheduled", Extra: map[string]any{"id": entry.ID, "is_dir": entry.IsDir, "delay": v.deleteDelay.String()}})
 }
 
 func (v *VFS) cancelChildDeletes(dir string) {
@@ -1249,9 +1260,11 @@ func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) 
 	v.deleteMu.Unlock()
 	if err := v.writer.Remove(ctx, entry); err != nil {
 		logging.L.Warnf("[VFS] delete remote failed path=%q id=%q dir=%t err=%v", path, entry.ID, entry.IsDir, err)
+		v.recordOp(DebugOp{Type: "delete", Path: path, State: "failed", Message: err.Error(), Extra: map[string]any{"id": entry.ID, "is_dir": entry.IsDir}})
 		return
 	}
 	logging.L.Infof("[VFS] delete remote complete path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
+	v.recordOp(DebugOp{Type: "delete", Path: path, State: "completed", Extra: map[string]any{"id": entry.ID, "is_dir": entry.IsDir}})
 	v.deleteMu.Lock()
 	delete(v.deleted, path)
 	delete(v.restoredDirs, path)

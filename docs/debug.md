@@ -110,7 +110,6 @@ Returns a structured snapshot of all mounts:
 
 - pending uploads
 - active uploads
-- recent upload history
 - upload queue length
 - upload/delete timers
 - deleted and overlay state
@@ -118,6 +117,9 @@ Returns a structured snapshot of all mounts:
 - copy-hidden entries
 - read cache summary
 - driver debug snapshot, if the driver supports it
+
+Detailed upload history and operation events are exposed by the focused
+`/v1/uploads?history=1` and `/v1/ops` endpoints instead of being inlined here.
 
 ### Pending
 
@@ -180,6 +182,31 @@ GET /v1/events?level=warn&limit=100
 
 Returns recent `WARN` and `ERROR` events from an in-memory ring buffer. The
 maximum retained event count is 500.
+
+### Operation Events
+
+```sh
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live ops
+```
+
+Endpoint:
+
+```text
+GET /v1/ops?limit=100
+```
+
+Returns recent normal filesystem operations, separate from warning/error logs:
+
+- pending created
+- upload queued
+- upload started
+- upload retry wait
+- upload completed
+- delete scheduled
+- delete completed
+
+The operation stream is useful for UI timelines because it records successful
+state transitions that do not belong in the warning/error event stream.
 
 ### Remote List
 
@@ -273,16 +300,21 @@ Returns a UI-friendly task list derived from VFS state:
 
 ```sh
 go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live consistency /quark/a.txt
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live consistency --dir /quark/docs
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live consistency --dir /quark/docs --recursive
 ```
 
 Endpoint:
 
 ```text
 GET /v1/consistency?path=/quark/a.txt
+GET /v1/consistency?dir=/quark/docs
+GET /v1/consistency?dir=/quark/docs&recursive=1
 ```
 
 Checks one path against pending state and a live remote list of the parent
-directory. Possible statuses include:
+directory. Directory mode checks the union of visible remote children and
+pending uploads under the requested directory. Possible statuses include:
 
 - `ok`: no pending upload and matching remote object exists
 - `pending`: pending upload exists but no matching remote object was found
@@ -298,16 +330,70 @@ non-empty remote file as a match.
 
 ```sh
 go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live driver
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live driver-health
 ```
 
 Endpoint:
 
 ```text
 GET /v1/driver
+GET /v1/driver/health
 ```
 
 Returns optional per-driver debug snapshots. Drivers implement
 `drive.Debugger` to expose generic fields plus driver-specific `extra` data.
+
+`/v1/driver/health` runs explicit driver health checks through
+`drive.HealthChecker`. This endpoint may touch the backend, so it is kept
+separate from `/v1/state`.
+
+### Runtime
+
+```sh
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live runtime
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live goroutines
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live goroutines 2
+```
+
+Endpoints:
+
+```text
+GET /v1/runtime
+GET /v1/goroutines?debug=1
+```
+
+`/v1/runtime` reports Go runtime version, OS/arch, goroutine count, CPU count,
+and memory statistics.
+
+`/v1/goroutines` returns a goroutine dump as plain text. Use it when qrypt
+appears stuck, uploads do not return, or reads are blocked.
+
+### Bundle
+
+```sh
+go run ./cmd/qrypt \
+  -debug-socket /tmp/qrypt.sock \
+  debug bundle -out /tmp/qrypt-debug.zip
+```
+
+The bundle command collects a read-only diagnostic zip from the running
+process. It includes:
+
+- health
+- state
+- pending
+- uploads with history
+- warning/error events
+- operation events
+- cache
+- tasks
+- driver debug
+- driver health
+- runtime
+- goroutine dump
+
+Endpoint failures are written into the corresponding file inside the zip so a
+partial bundle can still be useful.
 
 ## Driver Integration
 
@@ -316,6 +402,7 @@ by implementing optional interfaces in `pkg/drive`:
 
 - `drive.Debugger`
 - `drive.RemoteNameResolver`
+- `drive.HealthChecker`
 
 Wrappers such as crypt and bandwidth limiting preserve or provide fallbacks for
 these optional capabilities. A driver that does not support a feature should
@@ -363,11 +450,32 @@ still remain usable through the generic VFS debug endpoints.
    go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live events warn 100
    ```
 
-3. Check offline journal and staging files:
+3. Check recent normal operation transitions:
+
+   ```sh
+   go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live ops
+   ```
+
+4. Check goroutines if the process appears stuck:
+
+   ```sh
+   go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live goroutines
+   ```
+
+5. Check offline journal and staging files:
 
    ```sh
    go run ./cmd/qrypt -config ./qrypt.toml debug journal
    ```
+
+### Preparing a Bug Report
+
+```sh
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug bundle -out /tmp/qrypt-debug.zip
+```
+
+Review the generated bundle before sharing it. qrypt sanitizes known secrets in
+logs and events, but filenames and paths can still be sensitive.
 
 ### Filename Mapping Looks Wrong
 

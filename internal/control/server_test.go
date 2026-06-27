@@ -66,6 +66,17 @@ func (f fakeSnapshotter) DebugConsistency(ctx context.Context, path string) (vfs
 	}, nil
 }
 
+func (f fakeSnapshotter) DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus {
+	return map[string]drive.HealthStatus{
+		"local": {
+			Driver:    "localfs",
+			OK:        true,
+			CheckedAt: time.Unix(6, 0),
+			Latency:   "1ms",
+		},
+	}
+}
+
 func TestServerExposesStateAndPending(t *testing.T) {
 	socketPath := testSocketPath(t)
 	source := fakeSnapshotter{snapshot: vfs.DebugSnapshot{
@@ -96,6 +107,14 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				Health:      "ok",
 				GeneratedAt: time.Unix(3, 0),
 			},
+			Ops: []vfs.DebugOp{{
+				ID:    1,
+				Time:  time.Unix(7, 0),
+				Type:  "upload",
+				Path:  "/file.txt",
+				OpID:  "file",
+				State: "completed",
+			}},
 			Pending: []vfs.PendingFile{{
 				Path:       "/file.txt",
 				FID:        "file",
@@ -145,6 +164,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if state.Kind != "namespace" || len(state.Mounts) != 1 || state.Mounts[0].UploadQueueLength != 2 {
 		t.Fatalf("unexpected state: %+v", state)
 	}
+	if strings.Contains(string(stateBody), `"upload_history"`) || strings.Contains(string(stateBody), `"ops":`) {
+		t.Fatalf("state should not inline upload history or ops: %s", stateBody)
+	}
 
 	pendingBody, err := client.Get(context.Background(), "/v1/pending")
 	if err != nil {
@@ -182,6 +204,22 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if !strings.Contains(string(driverBody), `"driver": "localfs"`) || !strings.Contains(string(driverBody), `"mount": "local"`) {
 		t.Fatalf("unexpected driver response: %s", driverBody)
+	}
+
+	driverHealthBody, err := client.Get(context.Background(), "/v1/driver/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(driverHealthBody), `"ok": true`) || !strings.Contains(string(driverHealthBody), `"latency": "1ms"`) {
+		t.Fatalf("unexpected driver health response: %s", driverHealthBody)
+	}
+
+	opsBody, err := client.Get(context.Background(), "/v1/ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(opsBody), `"/local/file.txt"`) || !strings.Contains(string(opsBody), `"type": "upload"`) {
+		t.Fatalf("unexpected ops response: %s", opsBody)
 	}
 
 	listBody, err := client.Get(context.Background(), "/v1/list?path=/local")
@@ -229,6 +267,30 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if !strings.Contains(string(consistencyBody), `"status": "ok"`) || !strings.Contains(string(consistencyBody), `"size_matches": true`) {
 		t.Fatalf("unexpected consistency response: %s", consistencyBody)
+	}
+
+	consistencyDirBody, err := client.Get(context.Background(), "/v1/consistency?dir=/local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(consistencyDirBody), `"reports"`) || !strings.Contains(string(consistencyDirBody), `"/local/uploaded.txt"`) {
+		t.Fatalf("unexpected dir consistency response: %s", consistencyDirBody)
+	}
+
+	runtimeBody, err := client.Get(context.Background(), "/v1/runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runtimeBody), `"go_version"`) || !strings.Contains(string(runtimeBody), `"num_goroutine"`) {
+		t.Fatalf("unexpected runtime response: %s", runtimeBody)
+	}
+
+	goroutineBody, err := client.Get(context.Background(), "/v1/goroutines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goroutineBody), "goroutine") {
+		t.Fatalf("unexpected goroutine response: %s", goroutineBody)
 	}
 }
 

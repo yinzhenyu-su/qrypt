@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -74,9 +75,68 @@ func runDebugCommand(ctx context.Context, flags *flag.FlagSet, args []string, ca
 		return nil
 	case "live":
 		return runDebugLive(ctx, args[1:], debugSocket)
+	case "bundle":
+		return runDebugBundle(ctx, args[1:], debugSocket)
 	default:
 		return fmt.Errorf("unknown debug command: %s", args[0])
 	}
+}
+
+func runDebugBundle(ctx context.Context, args []string, debugSocket string) error {
+	if debugSocket == "" {
+		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug bundle -out FILE")
+	}
+	flags := flag.NewFlagSet("debug bundle", flag.ContinueOnError)
+	outPath := flags.String("out", "", "debug bundle output zip")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *outPath == "" || len(flags.Args()) != 0 {
+		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug bundle -out FILE")
+	}
+	client, err := control.NewClient(debugSocket)
+	if err != nil {
+		return err
+	}
+	out, err := os.Create(*outPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	zw := zip.NewWriter(out)
+	endpoints := map[string]string{
+		"health.json":        "/v1/health",
+		"state.json":         "/v1/state",
+		"pending.json":       "/v1/pending",
+		"uploads.json":       "/v1/uploads?history=1",
+		"events.json":        "/v1/events?level=warn&limit=500",
+		"ops.json":           "/v1/ops?limit=500",
+		"cache.json":         "/v1/cache",
+		"tasks.json":         "/v1/tasks",
+		"driver.json":        "/v1/driver",
+		"driver-health.json": "/v1/driver/health",
+		"runtime.json":       "/v1/runtime",
+		"goroutines.txt":     "/v1/goroutines?debug=1",
+	}
+	names := make([]string, 0, len(endpoints))
+	for name := range endpoints {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		body, err := client.Get(ctx, endpoints[name])
+		if err != nil {
+			body = []byte(err.Error() + "\n")
+		}
+		w, err := zw.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(body); err != nil {
+			return err
+		}
+	}
+	return zw.Close()
 }
 
 func runDebugLive(ctx context.Context, args []string, debugSocket string) error {
@@ -87,12 +147,15 @@ func runDebugLive(ctx context.Context, args []string, debugSocket string) error 
 		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache|tasks|consistency PATH")
 	}
 	endpoints := map[string]string{
-		"health":  "/v1/health",
-		"state":   "/v1/state",
-		"pending": "/v1/pending",
-		"driver":  "/v1/driver",
-		"cache":   "/v1/cache",
-		"tasks":   "/v1/tasks",
+		"health":        "/v1/health",
+		"state":         "/v1/state",
+		"pending":       "/v1/pending",
+		"driver":        "/v1/driver",
+		"cache":         "/v1/cache",
+		"tasks":         "/v1/tasks",
+		"runtime":       "/v1/runtime",
+		"ops":           "/v1/ops",
+		"driver-health": "/v1/driver/health",
 	}
 	endpoint, ok := endpoints[args[0]]
 	if !ok {
@@ -151,10 +214,36 @@ func runDebugLive(ctx context.Context, args []string, debugSocket string) error 
 			}
 			endpoint = "/v1/resolve?" + values.Encode()
 		case "consistency":
-			if len(args) != 2 {
-				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency PATH")
+			if len(args) < 2 || len(args) > 4 {
+				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency PATH | --dir DIR [--recursive]")
 			}
-			endpoint = "/v1/consistency?path=" + url.QueryEscape(args[1])
+			values := url.Values{}
+			if args[1] == "--dir" {
+				if len(args) < 3 {
+					return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency --dir DIR [--recursive]")
+				}
+				values.Set("dir", args[2])
+				if len(args) == 4 {
+					if args[3] != "--recursive" {
+						return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency --dir DIR [--recursive]")
+					}
+					values.Set("recursive", "1")
+				}
+			} else {
+				if len(args) != 2 {
+					return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency PATH")
+				}
+				values.Set("path", args[1])
+			}
+			endpoint = "/v1/consistency?" + values.Encode()
+		case "goroutines":
+			if len(args) > 2 {
+				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live goroutines [DEBUG_LEVEL]")
+			}
+			endpoint = "/v1/goroutines"
+			if len(args) == 2 {
+				endpoint += "?debug=" + url.QueryEscape(args[1])
+			}
 		default:
 			return fmt.Errorf("unknown debug live command: %s", args[0])
 		}
