@@ -189,7 +189,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark"]
+          "enum": ["localfs", "quark", "139yun"]
         },
         "mount_point": {
           "description": "Deprecated. Use the top-level mount_point instead.",
