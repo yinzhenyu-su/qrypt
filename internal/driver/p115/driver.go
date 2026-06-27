@@ -1,21 +1,34 @@
+// Package p115 implements the 115 cloud drive driver.
+//
+// STATUS: BLOCKED by 115's Alibaba Cloud WAF. The API endpoints
+// (webapi.115.com, aps.115.com) return HTTP 405 for any non-browser
+// request regardless of authentication state. Bypassing the WAF would
+// require a real browser engine (e.g. Chromedp) or a different API
+// approach. The code is kept for reference in case 115 changes their
+// WAF policy or an alternative API endpoint becomes available.
 package p115
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
-	"sync"
+
+	"golang.org/x/time/rate"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-type Driver struct {
-	cl     *driver115.Pan115Client
-	rootID string
+const defaultAppVer = "35.6.0.3"
 
-	debugMu sync.Mutex
+var appVer = defaultAppVer
+
+type Driver struct {
+	cl        *driver115.Pan115Client
+	rootID    string
+	cookies   string
+	limitRate float64
+	limiter   *rate.Limiter
 }
 
 func init() {
@@ -25,30 +38,86 @@ func init() {
 			return nil, fmt.Errorf("115: missing cookie")
 		}
 		return New(Options{
-			Cookie: cookie,
-			RootID: params["root_id"],
+			Cookie:    cookie,
+			RootID:    params["root_id"],
+			LimitRate: 2,
 		}), nil
 	})
 }
 
 type Options struct {
-	Cookie string
-	RootID string
+	Cookie    string
+	RootID    string
+	LimitRate float64
 }
 
 func New(opts Options) *Driver {
-	d := &Driver{rootID: opts.RootID}
-	if opts.Cookie != "" {
-		cl := driver115.New()
-		cred := &driver115.Credential{}
-		if err := cred.FromCookie(opts.Cookie); err == nil {
-			cl.ImportCredential(cred)
-		} else {
-			cl.ImportCookies(cookieMap(opts.Cookie), "115.com")
-		}
-		d.cl = cl
+	return &Driver{
+		rootID:    opts.RootID,
+		cookies:   opts.Cookie,
+		limitRate: opts.LimitRate,
 	}
-	return d
+}
+
+func (d *Driver) Init(ctx context.Context) error {
+	if d.cookies == "" {
+		return fmt.Errorf("115: Init: missing cookie")
+	}
+	if d.limitRate > 0 {
+		d.limiter = rate.NewLimiter(rate.Limit(d.limitRate), 1)
+	}
+	d.cl = driver115.New(
+		driver115.UA(fmt.Sprintf("Mozilla/5.0 115Browser/%s", appVer)),
+	)
+	allCookies := cookieMap(d.cookies)
+	cred := &driver115.Credential{}
+	if err := cred.FromCookie(d.cookies); err == nil {
+		d.cl.ImportCredential(cred)
+	}
+	d.cl.ImportCookies(allCookies)
+	return d.cl.LoginCheck()
+}
+
+func (d *Driver) Drop(context.Context) error {
+	return nil
+}
+
+func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	if err := d.waitLimit(ctx); err != nil {
+		return nil, err
+	}
+	return d.getFiles(parentID)
+}
+
+func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	_ = d.waitLimit(ctx)
+	return nil, fmt.Errorf("115: Read not implemented (WAF blocked)")
+}
+
+func (d *Driver) waitLimit(ctx context.Context) error {
+	if d.limiter != nil {
+		return d.limiter.Wait(ctx)
+	}
+	return nil
+}
+
+func (d *Driver) getFiles(dirID string) ([]drive.Entry, error) {
+	files, err := d.cl.ListWithLimit(dirID, 1000, driver115.WithMultiUrls())
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]drive.Entry, len(*files))
+	for i, f := range *files {
+		entries[i] = drive.Entry{
+			ID:      f.GetID(),
+			Name:    f.GetName(),
+			Size:    f.GetSize(),
+			IsDir:   f.IsDir(),
+			ModTime: f.ModTime(),
+			Extra:   f,
+		}
+	}
+	return entries, nil
 }
 
 func cookieMap(s string) map[string]string {
@@ -95,111 +164,4 @@ func trim(s string) string {
 		r--
 	}
 	return s[l:r]
-}
-
-func (d *Driver) Init(ctx context.Context) error {
-	if d.cl == nil {
-		return fmt.Errorf("115: not initialized")
-	}
-	if err := d.cl.LoginCheck(); err != nil {
-		return fmt.Errorf("115: login check: %w", err)
-	}
-	if d.rootID == "" {
-		d.rootID = "0"
-	}
-	return nil
-}
-
-func (d *Driver) Drop(ctx context.Context) error { return nil }
-
-func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	fileID := parentID
-	if fileID == "" || fileID == "0" || fileID == "/" {
-		fileID = d.rootID
-	}
-	files, err := d.cl.List(fileID)
-	if err != nil {
-		return nil, fmt.Errorf("115: list: %w", err)
-	}
-	entries := make([]drive.Entry, 0, len(*files))
-	for _, f := range *files {
-		entries = append(entries, drive.Entry{
-			ID:       f.FileID,
-			ParentID: fileID,
-			Name:     f.Name,
-			IsDir:    f.IsDir(),
-			Size:     f.Size,
-			ModTime:  f.ModTime(),
-		})
-	}
-	return entries, nil
-}
-
-func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	files, err := d.cl.List(entry.ParentID)
-	if err != nil {
-		return nil, fmt.Errorf("115: read list: %w", err)
-	}
-	var pickCode string
-	for _, f := range *files {
-		if f.FileID == entry.ID {
-			pickCode = f.PickCode
-			break
-		}
-	}
-	if pickCode == "" {
-		return nil, fmt.Errorf("115: read: pick code not found for %s", entry.ID)
-	}
-
-	info, err := d.cl.DownloadWithUA(pickCode, "")
-	if err != nil {
-		return nil, fmt.Errorf("115: read download: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, info.Url.Url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("115: read req: %w", err)
-	}
-	for k, vs := range info.Header {
-		for _, v := range vs {
-			req.Header.Add(k, v)
-		}
-	}
-	if size > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("115: read do: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		resp.Body.Close()
-		return nil, fmt.Errorf("115: read status %d", resp.StatusCode)
-	}
-	return resp.Body, nil
-}
-
-func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
-	fileID := parentID
-	if fileID == "" || fileID == "0" || fileID == "/" {
-		fileID = d.rootID
-	}
-	newID, err := d.cl.Mkdir(fileID, name)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("115: mkdir: %w", err)
-	}
-	return drive.Entry{ID: newID, ParentID: fileID, Name: name, IsDir: true}, nil
-}
-
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	return d.cl.Move(entry.ID, dstParentID)
-}
-
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	return d.cl.Rename(entry.ID, newName)
-}
-
-func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
-	return d.cl.Delete(entry.ID)
 }
