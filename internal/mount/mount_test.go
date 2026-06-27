@@ -39,6 +39,11 @@ type createRouteFS struct {
 	truncate []string
 }
 
+type copyPrepareFS struct {
+	stubFS
+	prepared []string
+}
+
 func (stubFS) Start(context.Context) {}
 
 func (s stubSpaceFS) Space(context.Context) (drive.Space, error) {
@@ -117,11 +122,16 @@ func (s *createRouteFS) Truncate(_ context.Context, path string, size int64) err
 	return nil
 }
 
+func (s *copyPrepareFS) PrepareDirectoryCopy(_ context.Context, path string) error {
+	s.prepared = append(s.prepared, path)
+	return nil
+}
+
 var errNotFound = errors.New("not found")
 
 func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	opts := mountOptions(Options{})
-	for _, want := range []string{"attr_timeout=0", "entry_timeout=0", "negative_timeout=0", "use_ino"} {
+	for _, want := range []string{"attr_timeout=1", "entry_timeout=1", "negative_timeout=0", "use_ino"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("mount options %v missing %q", opts, want)
 		}
@@ -136,10 +146,50 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	}
 }
 
+func TestMountOptionsUseConfiguredMetadataTimeouts(t *testing.T) {
+	opts := mountOptions(Options{
+		AttrTimeout:     1500 * time.Millisecond,
+		AttrTimeoutSet:  true,
+		EntryTimeout:    2 * time.Second,
+		EntryTimeoutSet: true,
+		NegativeTimeout: 250 * time.Millisecond,
+	})
+	for _, want := range []string{"attr_timeout=1.500", "entry_timeout=2", "negative_timeout=0.250"} {
+		if !hasMountOption(opts, want) {
+			t.Fatalf("mount options %v missing %q", opts, want)
+		}
+	}
+}
+
+func TestMountOptionsAllowDisablingMetadataTimeouts(t *testing.T) {
+	opts := mountOptions(Options{AttrTimeoutSet: true, EntryTimeoutSet: true})
+	for _, want := range []string{"attr_timeout=0", "entry_timeout=0"} {
+		if !hasMountOption(opts, want) {
+			t.Fatalf("mount options %v missing %q", opts, want)
+		}
+	}
+}
+
 func TestMountOptionsDoNotUseMacFUSENoAppleDouble(t *testing.T) {
 	opts := mountOptions(Options{NoAppleDouble: true})
 	if hasMountOption(opts, "noappledouble") {
 		t.Fatalf("mount options %v should not pass macFUSE noappledouble", opts)
+	}
+}
+
+func TestMountOptionsUseConfiguredKernelOptions(t *testing.T) {
+	opts := mountOptions(Options{
+		ReadOnly:           true,
+		AllowOther:         true,
+		DefaultPermissions: true,
+	})
+	for _, want := range []string{"ro", "allow_other", "default_permissions"} {
+		if !hasMountOption(opts, want) {
+			t.Fatalf("mount options %v missing %q", opts, want)
+		}
+	}
+	if hasMountOption(opts, "rw") {
+		t.Fatalf("mount options %v should not include rw", opts)
 	}
 }
 
@@ -237,6 +287,35 @@ func TestAdapterXattrsAllNoop(t *testing.T) {
 	}
 	if len(names) != 0 {
 		t.Fatalf("Listxattr names = %v, want empty", names)
+	}
+}
+
+func TestAdapterNoAppleXattrIgnoresAppleXattrs(t *testing.T) {
+	ad := newAdapterWithOptions(stubFS{}, adapterOptions{IgnoreAppleXattr: true})
+
+	if errc := ad.Setxattr("/", "com.apple.FinderInfo", []byte("ignored"), 0); errc != 0 {
+		t.Fatalf("Setxattr FinderInfo err = %d, want 0", errc)
+	}
+	if errc, got := ad.Getxattr("/", "com.apple.ResourceFork"); errc != -fuse.ENOATTR || len(got) != 0 {
+		t.Fatalf("Getxattr ResourceFork err=%d len=%d, want ENOATTR/0", errc, len(got))
+	}
+	if errc := ad.Removexattr("/", "com.apple.quarantine"); errc != 0 {
+		t.Fatalf("Removexattr quarantine err = %d, want 0", errc)
+	}
+	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
+		t.Fatalf("Setxattr user.foo err = %d, want 0", errc)
+	}
+}
+
+func TestAdapterNoAppleXattrStillPreparesFinderDirectoryCopy(t *testing.T) {
+	fs := &copyPrepareFS{}
+	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleXattr: true})
+
+	if errc := ad.Setxattr("/copied", "com.apple.finder.copy.source", []byte("source"), 0); errc != 0 {
+		t.Fatalf("Setxattr copy source err = %d, want 0", errc)
+	}
+	if got := strings.Join(fs.prepared, ","); got != "/copied" {
+		t.Fatalf("prepared = %q, want /copied", got)
 	}
 }
 
@@ -429,6 +508,24 @@ func TestAdapterXattrsMissingPath(t *testing.T) {
 	}
 	if errc := ad.Listxattr("/missing", func(string) bool { return true }); errc != 0 {
 		t.Fatalf("Listxattr missing err = %d, want 0", errc)
+	}
+}
+
+func TestAdapterGlobalReadOnlyModeAndWriteErrors(t *testing.T) {
+	ad := newAdapterWithOptions(stubFS{
+		entries: map[string]drive.Entry{
+			"/": {ID: "root", Name: "", IsDir: true},
+		},
+	}, adapterOptions{ReadOnly: true})
+
+	if errc := ad.Access("/", fuse.W_OK); errc != -fuse.EROFS {
+		t.Fatalf("Access W_OK err = %d, want EROFS", errc)
+	}
+	if errc, fh := ad.Create("/new.txt", 0, fuse.S_IFREG|0o644); errc != -fuse.EROFS || fh != 0 {
+		t.Fatalf("Create read-only err=%d fh=%d, want EROFS/0", errc, fh)
+	}
+	if got := ad.Write("/file.txt", []byte("x"), 0, 0); got != -fuse.EROFS {
+		t.Fatalf("Write read-only = %d, want EROFS", got)
 	}
 }
 

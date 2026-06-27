@@ -104,7 +104,11 @@ func TestLoadLoggingConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
 volume_name = "Qrypt Test"
+read_only = true
+allow_other = true
+default_permissions = true
 no_apple_double = false
+no_apple_xattr = true
 total_space = "1T"
 free_space = "800G"
 
@@ -129,8 +133,20 @@ log_file = "/tmp/qrypt.log"
 	if cfg.EffectiveVolumeName() != "Qrypt Test" {
 		t.Fatalf("unexpected volume_name: %q", cfg.EffectiveVolumeName())
 	}
+	if !cfg.ReadOnly {
+		t.Fatal("expected read_only to be enabled")
+	}
+	if !cfg.AllowOther {
+		t.Fatal("expected allow_other to be enabled")
+	}
+	if !cfg.DefaultPermissions {
+		t.Fatal("expected default_permissions to be enabled")
+	}
 	if cfg.EffectiveNoAppleDouble() {
 		t.Fatal("expected no_apple_double to be disabled")
+	}
+	if !cfg.EffectiveNoAppleXattr() {
+		t.Fatal("expected no_apple_xattr to be enabled")
 	}
 	total, free, err := cfg.EffectiveSpaceBytes()
 	if err != nil {
@@ -228,6 +244,18 @@ func TestMountOptionsDefaults(t *testing.T) {
 	}
 	if !cfg.EffectiveNoAppleDouble() {
 		t.Fatal("expected no_apple_double to default to true")
+	}
+	if cfg.EffectiveNoAppleXattr() {
+		t.Fatal("expected no_apple_xattr to default to false")
+	}
+	if cfg.ReadOnly {
+		t.Fatal("expected read_only to default to false")
+	}
+	if cfg.AllowOther {
+		t.Fatal("expected allow_other to default to false")
+	}
+	if cfg.DefaultPermissions {
+		t.Fatal("expected default_permissions to default to false")
 	}
 }
 

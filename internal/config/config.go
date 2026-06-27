@@ -13,17 +13,24 @@ import (
 )
 
 type Config struct {
-	MountPoint    string          `toml:"mount_point"`
-	CacheDir      string          `toml:"cache_dir"`
-	VolumeName    string          `toml:"volume_name"`
-	NoAppleDouble *bool           `toml:"no_apple_double"`
-	TotalSpace    string          `toml:"total_space"`
-	FreeSpace     string          `toml:"free_space"`
-	Logging       LoggingConfig   `toml:"logging"`
-	Bandwidth     BandwidthConfig `toml:"bandwidth"`
-	Encryption    crypt.Config    `toml:"encryption"`
-	Defaults      Defaults        `toml:"defaults"`
-	Mounts        []MountConfig   `toml:"mounts"`
+	MountPoint         string          `toml:"mount_point"`
+	CacheDir           string          `toml:"cache_dir"`
+	VolumeName         string          `toml:"volume_name"`
+	ReadOnly           bool            `toml:"read_only"`
+	AllowOther         bool            `toml:"allow_other"`
+	DefaultPermissions bool            `toml:"default_permissions"`
+	NoAppleDouble      *bool           `toml:"no_apple_double"`
+	NoAppleXattr       *bool           `toml:"no_apple_xattr"`
+	AttrTimeout        string          `toml:"attr_timeout"`
+	EntryTimeout       string          `toml:"entry_timeout"`
+	NegativeTimeout    string          `toml:"negative_timeout"`
+	TotalSpace         string          `toml:"total_space"`
+	FreeSpace          string          `toml:"free_space"`
+	Logging            LoggingConfig   `toml:"logging"`
+	Bandwidth          BandwidthConfig `toml:"bandwidth"`
+	Encryption         crypt.Config    `toml:"encryption"`
+	Defaults           Defaults        `toml:"defaults"`
+	Mounts             []MountConfig   `toml:"mounts"`
 }
 
 type Defaults struct {
@@ -175,6 +182,13 @@ func (c *Config) EffectiveNoAppleDouble() bool {
 		return true
 	}
 	return *c.NoAppleDouble
+}
+
+func (c *Config) EffectiveNoAppleXattr() bool {
+	if c == nil || c.NoAppleXattr == nil {
+		return false
+	}
+	return *c.NoAppleXattr
 }
 
 func (c *Config) EffectiveSpaceBytes() (int64, int64, error) {
