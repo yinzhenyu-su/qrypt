@@ -337,6 +337,27 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{}, fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)
 	}
 
+	// Handle auto_rename conflict: server renamed our file because a file with
+	// the same name already existed. Since toEntry strips the _YYYYMMDD_HHMMSS
+	// suffix, the renamed file already appears with the correct name in List.
+	// We just need to remove the old duplicate with a different file ID.
+	if createResp.Data.FileName != "" && createResp.Data.FileName != name {
+		logging.L.Debugf("[139] upload was renamed by server: %q -> %q", name, createResp.Data.FileName)
+		entries, err := d.List(ctx, parentID)
+		if err != nil {
+			return drive.Entry{}, fmt.Errorf("139: upload rename conflict list: %w", err)
+		}
+		for _, e := range entries {
+			if e.Name == name && !e.IsDir && e.ID != createResp.Data.FileId {
+				logging.L.Debugf("[139] upload conflict: removing old file id=%s", e.ID)
+				if err := d.Remove(ctx, e); err != nil {
+					return drive.Entry{}, fmt.Errorf("139: upload conflict remove old: %w", err)
+				}
+				break
+			}
+		}
+	}
+
 	return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
 }
 

@@ -13,7 +13,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -37,7 +36,7 @@ var defaultSalt = []byte{0xA8, 0x0D, 0xF4, 0x3A, 0x8F, 0xBD, 0x03, 0x08, 0xA7, 0
 var rcloneBase32 = base32.HexEncoding.WithPadding(base32.NoPadding)
 var rcloneBase64 = base64.URLEncoding.WithPadding(base64.NoPadding)
 
-var conflictSuffixRe = regexp.MustCompile(`^(.*?)\s*\(\d+\)$`)
+
 
 const obfuscQuoteRune = '!'
 
@@ -175,18 +174,9 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 	case "off":
 		return encrypted, nil
 	case "obfuscate":
-		cleaned := stripConflictSuffix(encrypted)
-		return c.deobfuscateSegment(cleaned)
+		return c.deobfuscateSegment(encrypted)
 	default:
-		plain, err := c.decryptSegmentStandard(encrypted)
-		if err == nil {
-			return plain, nil
-		}
-		cleaned := stripConflictSuffix(encrypted)
-		if cleaned != encrypted {
-			return c.decryptSegmentStandard(cleaned)
-		}
-		return "", err
+		return c.decryptSegmentStandard(encrypted)
 	}
 }
 
@@ -196,11 +186,6 @@ func (c *RcloneCipher) decryptSegmentStandard(encrypted string) (string, error) 
 		if err == nil {
 			return plain, nil
 		}
-	}
-
-	cleaned := stripConflictSuffix(encrypted)
-	if cleaned != encrypted {
-		return c.decryptSegmentStandard(cleaned)
 	}
 
 	return "", errors.New("failed to decrypt filename")
@@ -431,14 +416,6 @@ func (c *RcloneCipher) deobfuscateSegment(ciphertext string) (string, error) {
 	return result.String(), nil
 }
 
-func stripConflictSuffix(name string) string {
-	matches := conflictSuffixRe.FindStringSubmatch(name)
-	if len(matches) == 2 {
-		return matches[1]
-	}
-	return name
-}
 
-func HasConflictSuffix(name string) bool {
-	return conflictSuffixRe.MatchString(name)
-}
+
+

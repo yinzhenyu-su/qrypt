@@ -2,10 +2,16 @@ package quark
 
 import (
 	"encoding/json"
+	"regexp"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+// conflictSuffix matches auto-rename suffixes like " (2)", " (10)" etc.
+// appended by cloud drives (including quark) when uploading a file whose
+// name already exists in the target directory.
+var conflictSuffix = regexp.MustCompile(`^(.*?)\s*\(\d+\)$`)
 
 type file struct {
 	Fid       string      `json:"fid"`
@@ -42,10 +48,14 @@ func (f file) modTime() time.Time {
 }
 
 func (f file) entry(parentID string) drive.Entry {
+	name := f.FileName
+	if m := conflictSuffix.FindStringSubmatch(name); len(m) == 2 {
+		name = m[1]
+	}
 	return drive.Entry{
 		ID:       f.Fid,
 		ParentID: parentID,
-		Name:     f.FileName,
+		Name:     name,
 		IsDir:    f.isDir(),
 		Size:     f.int64Size(),
 		ModTime:  f.modTime(),
