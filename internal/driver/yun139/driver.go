@@ -342,16 +342,17 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 	// suffix, the renamed file already appears with the correct name in List.
 	// We just need to remove the old duplicate with a different file ID.
 	if createResp.Data.FileName != "" && createResp.Data.FileName != name {
-		logging.L.Debugf("[139] upload was renamed by server: %q -> %q", name, createResp.Data.FileName)
+		logging.L.Infof("[139] upload was renamed by server: %q -> %q (new id=%s)", name, createResp.Data.FileName, createResp.Data.FileId)
 		entries, err := d.List(ctx, parentID)
 		if err != nil {
-			return drive.Entry{}, fmt.Errorf("139: upload rename conflict list: %w", err)
+			logging.L.Warnf("[139] failed to list files for conflict resolution: %v", err)
+			return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
 		}
 		for _, e := range entries {
 			if e.Name == name && !e.IsDir && e.ID != createResp.Data.FileId {
-				logging.L.Debugf("[139] upload conflict: removing old file id=%s", e.ID)
+				logging.L.Infof("[139] removing duplicate file: name=%q id=%q (keeping new id=%q)", name, e.ID, createResp.Data.FileId)
 				if err := d.Remove(ctx, e); err != nil {
-					return drive.Entry{}, fmt.Errorf("139: upload conflict remove old: %w", err)
+					logging.L.Warnf("[139] failed to remove duplicate file id=%s: %v (upload still succeeded)", e.ID, err)
 				}
 				break
 			}
