@@ -43,6 +43,13 @@ type Uploader interface {
 	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)
 }
 
+// FileUploader is an optional upload fast path for drivers that can benefit
+// from a stable local source file. Implementations must not mutate localPath
+// and must treat the file contents as read-only for the duration of the call.
+type FileUploader interface {
+	PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error)
+}
+
 // Space describes backend capacity in bytes.
 type Space struct {
 	Total int64

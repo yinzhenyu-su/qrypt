@@ -80,6 +80,15 @@ type existingMkdirDriver struct {
 	lists  int
 }
 
+type fileUploadDriver struct {
+	mu           sync.Mutex
+	entries      map[string]drive.Entry
+	putCalls     int
+	putFileCalls int
+	lastPath     string
+	lastData     []byte
+}
+
 func newCountingReadDriver(data []byte) *countingReadDriver {
 	return &countingReadDriver{data: data, read: map[int64]int{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
 }
@@ -461,6 +470,55 @@ func (d *existingMkdirDriver) Rename(context.Context, drive.Entry, string) error
 }
 func (d *existingMkdirDriver) Remove(context.Context, drive.Entry) error { return nil }
 
+func (d *fileUploadDriver) Init(context.Context) error { return nil }
+func (d *fileUploadDriver) Drop(context.Context) error { return nil }
+func (d *fileUploadDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+func (d *fileUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *fileUploadDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.putCalls++
+	d.lastData = append(d.lastData[:0], data...)
+	return d.saveEntryLocked(parentID, name, size), nil
+}
+func (d *fileUploadDriver) PutFile(_ context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.putFileCalls++
+	d.lastPath = localPath
+	d.lastData = append(d.lastData[:0], data...)
+	return d.saveEntryLocked(parentID, name, size), nil
+}
+func (d *fileUploadDriver) saveEntryLocked(parentID, name string, size int64) drive.Entry {
+	if d.entries == nil {
+		d.entries = map[string]drive.Entry{}
+	}
+	id := name + "-" + strconv.Itoa(d.putCalls+d.putFileCalls)
+	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: size}
+	d.entries[id] = entry
+	return entry
+}
+
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -510,6 +568,36 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	}
 	if report.Status != "ok" || !report.RemoteFound || !report.SizeMatches {
 		t.Fatalf("unexpected consistency report: %+v", report)
+	}
+}
+
+func TestVFSUsesFileUploaderForStagingPath(t *testing.T) {
+	ctx := context.Background()
+	drv := &fileUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/fast.txt", []byte("use staging path"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/fast.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if drv.putFileCalls != 1 || drv.putCalls != 0 {
+		t.Fatalf("putFileCalls=%d putCalls=%d, want 1 and 0", drv.putFileCalls, drv.putCalls)
+	}
+	if drv.lastPath == "" {
+		t.Fatal("expected PutFile to receive local staging path")
+	}
+	if string(drv.lastData) != "use staging path" {
+		t.Fatalf("unexpected uploaded data: %q", drv.lastData)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"time"
 )
@@ -70,11 +71,16 @@ func WrapRateLimitedDriver(raw Driver, limiter *RateLimiter) Driver {
 	}
 	_, hasWriter := raw.(Writer)
 	_, hasUploader := raw.(Uploader)
+	_, hasFileUploader := raw.(FileUploader)
 	switch {
+	case hasWriter && hasUploader && hasFileUploader:
+		return &rateLimitedWriterFileUploader{rateLimitedWriterUploader: &rateLimitedWriterUploader{rateLimitedDriver: base}}
 	case hasWriter && hasUploader:
 		return &rateLimitedWriterUploader{rateLimitedDriver: base}
 	case hasWriter:
 		return &rateLimitedWriter{rateLimitedDriver: base}
+	case hasUploader && hasFileUploader:
+		return &rateLimitedFileUploader{rateLimitedUploader: &rateLimitedUploader{rateLimitedDriver: base}}
 	case hasUploader:
 		return &rateLimitedUploader{rateLimitedDriver: base}
 	default:
@@ -168,6 +174,14 @@ func (d *rateLimitedUploader) Put(ctx context.Context, parentID, name string, si
 	return d.raw.(Uploader).Put(ctx, parentID, name, size, body)
 }
 
+type rateLimitedFileUploader struct {
+	*rateLimitedUploader
+}
+
+func (d *rateLimitedFileUploader) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error) {
+	return d.putFile(ctx, parentID, name, size, localPath)
+}
+
 type rateLimitedWriterUploader struct {
 	*rateLimitedDriver
 }
@@ -192,6 +206,27 @@ func (d *rateLimitedWriterUploader) Put(ctx context.Context, parentID, name stri
 	if d.limiter.upload != nil {
 		body = &limitedReader{ctx: ctx, reader: body, limiter: d.limiter.upload}
 	}
+	return d.raw.(Uploader).Put(ctx, parentID, name, size, body)
+}
+
+type rateLimitedWriterFileUploader struct {
+	*rateLimitedWriterUploader
+}
+
+func (d *rateLimitedWriterFileUploader) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error) {
+	return d.putFile(ctx, parentID, name, size, localPath)
+}
+
+func (d *rateLimitedDriver) putFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error) {
+	if d.limiter.upload == nil {
+		return d.raw.(FileUploader).PutFile(ctx, parentID, name, size, localPath)
+	}
+	f, err := os.Open(localPath)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer f.Close()
+	body := &limitedReader{ctx: ctx, reader: f, limiter: d.limiter.upload}
 	return d.raw.(Uploader).Put(ctx, parentID, name, size, body)
 }
 
