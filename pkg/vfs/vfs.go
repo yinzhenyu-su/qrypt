@@ -949,13 +949,6 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	finishErr := ""
 	defer func() { v.finishDebugUpload(pending.Path, finishState, finishErr) }()
 	v.setDebugUploadState(pending.Path, "preparing")
-	rc, err := v.cache.staging.open(pending.LocalPath)
-	if err != nil {
-		finishErr = err.Error()
-		logging.L.Warnf("[VFS] upload open staging failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
-		return err
-	}
-	defer rc.Close()
 	v.setDebugUploadState(pending.Path, "removing_existing")
 	if err := v.removeExistingFile(ctx, pending.ParentID, pending.Name); err != nil {
 		finishErr = err.Error()
@@ -963,11 +956,27 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return err
 	}
 	v.setDebugUploadState(pending.Path, "uploading")
-	progressBody := &uploadProgressReader{
-		reader: rc,
-		update: func(n int) { v.updateDebugUpload(pending.Path, n) },
+	var entry drive.Entry
+	var err error
+	if fileUploader, ok := v.upload.(drive.FileUploader); ok {
+		entry, err = fileUploader.PutFile(ctx, pending.ParentID, pending.Name, pending.Size, pending.LocalPath)
+		if err == nil {
+			v.updateDebugUpload(pending.Path, int(pending.Size))
+		}
+	} else {
+		rc, openErr := v.cache.staging.open(pending.LocalPath)
+		if openErr != nil {
+			finishErr = openErr.Error()
+			logging.L.Warnf("[VFS] upload open staging failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, openErr)
+			return openErr
+		}
+		defer rc.Close()
+		progressBody := &uploadProgressReader{
+			reader: rc,
+			update: func(n int) { v.updateDebugUpload(pending.Path, n) },
+		}
+		entry, err = v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, progressBody)
 	}
-	entry, err := v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, progressBody)
 	if err != nil {
 		finishErr = err.Error()
 		if ctx.Err() == nil {
