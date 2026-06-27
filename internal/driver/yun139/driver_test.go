@@ -311,7 +311,7 @@ func TestPutSmallFile(t *testing.T) {
 					"fileId":   "new-file",
 					"exist":    false,
 					"uploadId": "upload-1",
-					"partInfoList": []map[string]interface{}{
+					"partInfos": []map[string]interface{}{
 						{"partNumber": 1, "uploadUrl": uploadServer.URL},
 					},
 				},
@@ -368,7 +368,7 @@ func TestPutFileUsesLocalFile(t *testing.T) {
 					"fileId":   "new-file",
 					"exist":    false,
 					"uploadId": "upload-1",
-					"partInfoList": []map[string]interface{}{
+					"partInfos": []map[string]interface{}{
 						{"partNumber": 1, "uploadUrl": uploadServer.URL},
 					},
 				},

@@ -85,14 +85,14 @@ type personalUploadResp struct {
 		Exist       bool               `json:"exist"`
 		RapidUpload bool               `json:"rapidUpload"`
 		UploadId    string             `json:"uploadId"`
-		PartInfos   []personalPartInfo `json:"partInfoList"`
+		PartInfos   []personalPartInfo `json:"partInfos"`
 	} `json:"data"`
 }
 
 type personalUploadUrlResp struct {
 	baseResp
 	Data struct {
-		PartInfos []personalPartInfo `json:"partInfoList"`
+		PartInfos []personalPartInfo `json:"partInfos"`
 	} `json:"data"`
 }
 

@@ -16,6 +16,11 @@ import (
 
 const maxUploadSize = 2 << 30
 
+type partMeta struct {
+	PartNumber int64 `json:"partNumber"`
+	PartSize   int64 `json:"partSize"`
+}
+
 const uploadPartConcurrency = 4
 
 type Driver struct {
@@ -269,14 +274,6 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		partCount++
 	}
 
-	// Build part metadata for the create call.
-	type partMeta struct {
-		PartNumber      int64 `json:"partNumber"`
-		PartSize        int64 `json:"partSize"`
-		ParallelHashCtx struct {
-			PartOffset int64 `json:"partOffset"`
-		} `json:"parallelHashCtx"`
-	}
 	partInfos := make([]partMeta, partCount)
 	for i := int64(0); i < partCount; i++ {
 		start := i * partSize
@@ -287,23 +284,15 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		partInfos[i] = partMeta{
 			PartNumber: i + 1,
 			PartSize:   byteSize,
-			ParallelHashCtx: struct {
-				PartOffset int64 `json:"partOffset"`
-			}{PartOffset: start},
 		}
-	}
-
-	firstPartInfos := partInfos
-	if len(firstPartInfos) > 100 {
-		firstPartInfos = firstPartInfos[:100]
 	}
 
 	createData := map[string]interface{}{
 		"contentHash":          sha256Hex,
 		"contentHashAlgorithm": "SHA256",
 		"contentType":          "application/octet-stream",
-		"parallelUpload":       false,
-		"partInfos":            firstPartInfos,
+		"parallelUpload":       true,
+		"partInfos":            partInfos,
 		"size":                 size,
 		"parentFileId":         fileID,
 		"name":                 name,
@@ -318,7 +307,7 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{}, fmt.Errorf("139: upload create failed (code=%s): %s", createResp.Code, createResp.Message)
 	}
 
-	logging.L.Debugf("139 upload create: fileId=%s exist=%v rapid=%v parts=%d uploadId=%s",
+	logging.L.Debugf("[139] upload create: fileId=%s exist=%v rapid=%v parts=%d uploadId=%s",
 		createResp.Data.FileId, createResp.Data.Exist, createResp.Data.RapidUpload,
 		len(createResp.Data.PartInfos), createResp.Data.UploadId)
 
@@ -326,7 +315,32 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
 	}
 
-	// Collect upload URLs.
+	// Server returns upload URLs when it needs multipart upload.
+	if len(createResp.Data.PartInfos) > 0 {
+		if err := d.uploadParts(ctx, createResp, partInfos, partSize, size, localPath); err != nil {
+			return drive.Entry{}, err
+		}
+	}
+
+	completeData := map[string]interface{}{
+		"contentHash":          sha256Hex,
+		"contentHashAlgorithm": "SHA256",
+		"fileId":               createResp.Data.FileId,
+		"uploadId":             createResp.Data.UploadId,
+	}
+	logging.L.Debugf("[139] upload complete: fileId=%s uploadId=%s", createResp.Data.FileId, createResp.Data.UploadId)
+	var completeResp baseResp
+	if err := d.cl.personalPost(ctx, "/file/complete", completeData, &completeResp); err != nil {
+		return drive.Entry{}, fmt.Errorf("139: upload complete: %w", err)
+	}
+	if !completeResp.Success {
+		return drive.Entry{}, fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)
+	}
+
+	return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
+}
+
+func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp, partInfos []partMeta, partSize, size int64, localPath string) error {
 	type uploadPart struct {
 		partNumber int
 		uploadURL  string
@@ -335,8 +349,6 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 	for _, p := range createResp.Data.PartInfos {
 		uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadUrl})
 	}
-
-	// Fetch URLs for parts beyond the first 100.
 	for i := 101; i <= len(partInfos); i += 100 {
 		end := i + 100
 		if end > len(partInfos) {
@@ -344,8 +356,8 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		}
 		batchPartInfos := partInfos[i-1 : end]
 		moreData := map[string]interface{}{
-			"fileId":    createResp.Data.FileId,
-			"uploadId":  createResp.Data.UploadId,
+			"fileId":   createResp.Data.FileId,
+			"uploadId": createResp.Data.UploadId,
 			"partInfos": batchPartInfos,
 			"commonAccountInfo": map[string]interface{}{
 				"account":     d.cl.getAccount(),
@@ -354,17 +366,16 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		}
 		var moreResp personalUploadUrlResp
 		if err := d.cl.personalPost(ctx, "/file/getUploadUrl", moreData, &moreResp); err != nil {
-			return drive.Entry{}, fmt.Errorf("139: upload get urls: %w", err)
+			return fmt.Errorf("139: upload get urls: %w", err)
 		}
 		if !moreResp.Success {
-			return drive.Entry{}, fmt.Errorf("139: upload get urls failed (code=%s): %s", moreResp.Code, moreResp.Message)
+			return fmt.Errorf("139: upload get urls failed (code=%s): %s", moreResp.Code, moreResp.Message)
 		}
 		for _, p := range moreResp.Data.PartInfos {
 			uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadUrl})
 		}
 	}
 
-	// Upload parts concurrently.
 	g, uploadCtx := errgroup.WithContext(ctx)
 	g.SetLimit(uploadPartConcurrency)
 	for _, up := range uploadParts {
@@ -389,7 +400,6 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 			}
 			req.ContentLength = end - start
 			req.Header.Set("Content-Type", "application/octet-stream")
-			req.Header.Set("Content-Length", fmt.Sprint(end-start))
 			req.Header.Set("Origin", defaultBaseURL)
 			req.Header.Set("Referer", defaultBaseURL+"/")
 			resp, err := d.cl.httpClient.Do(req)
@@ -403,26 +413,7 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 			return nil
 		})
 	}
-	if err := g.Wait(); err != nil {
-		return drive.Entry{}, err
-	}
-
-	// Commit.
-	completeData := map[string]interface{}{
-		"contentHash":          sha256Hex,
-		"contentHashAlgorithm": "SHA256",
-		"fileId":               createResp.Data.FileId,
-		"uploadId":             createResp.Data.UploadId,
-	}
-	var completeResp baseResp
-	if err := d.cl.personalPost(ctx, "/file/complete", completeData, &completeResp); err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload complete: %w", err)
-	}
-	if !completeResp.Success {
-		return drive.Entry{}, fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)
-	}
-
-	return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
+	return g.Wait()
 }
 
 func calcPartSize(fileSize int64) int64 {
