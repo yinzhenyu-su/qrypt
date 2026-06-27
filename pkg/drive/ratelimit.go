@@ -219,6 +219,14 @@ func (d *rateLimitedDriver) DebugSnapshot(ctx context.Context) (DebugSnapshot, e
 	return debugger.DebugSnapshot(ctx)
 }
 
+func (d *rateLimitedDriver) HealthCheck(ctx context.Context) HealthStatus {
+	checker, ok := d.raw.(HealthChecker)
+	if !ok {
+		return HealthStatus{Driver: "unknown", OK: false, CheckedAt: time.Now(), Error: "drive: raw driver does not support health checks"}
+	}
+	return checker.HealthCheck(ctx)
+}
+
 func (d *rateLimitedDriver) ResolveRemoteName(ctx context.Context, plainName string) (RemoteNameInfo, error) {
 	resolver, ok := d.raw.(RemoteNameResolver)
 	if !ok {

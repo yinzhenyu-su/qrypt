@@ -14,6 +14,7 @@ import (
 
 const DebugSnapshotSchemaVersion = 1
 const debugUploadHistoryLimit = 100
+const debugOpLimit = 500
 
 type DebugSnapshot struct {
 	SchemaVersion int                  `json:"schema_version"`
@@ -26,7 +27,8 @@ type DebugMountSnapshot struct {
 	Name              string               `json:"name"`
 	Pending           []PendingFile        `json:"pending"`
 	Uploads           []DebugUpload        `json:"uploads"`
-	UploadHistory     []DebugUpload        `json:"upload_history"`
+	UploadHistory     []DebugUpload        `json:"-"`
+	Ops               []DebugOp            `json:"-"`
 	Driver            *drive.DebugSnapshot `json:"driver,omitempty"`
 	UploadQueueLength int                  `json:"upload_queue_length"`
 	UploadQueueCap    int                  `json:"upload_queue_cap"`
@@ -60,6 +62,17 @@ type DebugUpload struct {
 	NextAttemptAt int64          `json:"next_attempt_at,omitempty"`
 	CompletedAt   time.Time      `json:"completed_at,omitempty"`
 	Extra         map[string]any `json:"extra,omitempty"`
+}
+
+type DebugOp struct {
+	ID      uint64         `json:"id"`
+	Time    time.Time      `json:"time"`
+	Type    string         `json:"type"`
+	Path    string         `json:"path"`
+	OpID    string         `json:"op_id,omitempty"`
+	State   string         `json:"state,omitempty"`
+	Message string         `json:"message,omitempty"`
+	Extra   map[string]any `json:"extra,omitempty"`
 }
 
 type debugUploadState struct {
@@ -170,6 +183,7 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 	}
 	snapshot.Uploads = v.debugUploads(snapshot.Pending)
 	snapshot.UploadHistory = v.debugUploadHistory()
+	snapshot.Ops = v.DebugOps()
 	if debugger, ok := v.driver.(drive.Debugger); ok {
 		if driverSnapshot, err := debugger.DebugSnapshot(context.Background()); err == nil {
 			snapshot.Driver = &driverSnapshot
@@ -259,6 +273,32 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 	v.prefetchMu.Unlock()
 
 	return snapshot
+}
+
+func (v *VFS) recordOp(op DebugOp) {
+	op.Time = time.Now()
+	v.opMu.Lock()
+	v.nextOpID++
+	op.ID = v.nextOpID
+	v.ops = append(v.ops, op)
+	if len(v.ops) > debugOpLimit {
+		copy(v.ops, v.ops[len(v.ops)-debugOpLimit:])
+		v.ops = v.ops[:debugOpLimit]
+	}
+	v.opMu.Unlock()
+}
+
+func (v *VFS) DebugOps() []DebugOp {
+	v.opMu.Lock()
+	defer v.opMu.Unlock()
+	return append([]DebugOp(nil), v.ops...)
+}
+
+func (v *VFS) DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus {
+	if checker, ok := v.driver.(drive.HealthChecker); ok {
+		return map[string]drive.HealthStatus{"default": checker.HealthCheck(ctx)}
+	}
+	return nil
 }
 
 func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
@@ -560,6 +600,23 @@ func (n *Namespace) DebugSnapshot() DebugSnapshot {
 	}
 	n.mu.RUnlock()
 	return snapshot
+}
+
+func (n *Namespace) DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus {
+	n.mu.RLock()
+	names := make([]string, 0, len(n.mounts))
+	for name := range n.mounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := map[string]drive.HealthStatus{}
+	for _, name := range names {
+		for _, status := range n.mounts[name].DebugDriverHealth(ctx) {
+			out[name] = status
+		}
+	}
+	n.mu.RUnlock()
+	return out
 }
 
 func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {

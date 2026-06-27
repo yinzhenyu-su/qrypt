@@ -49,6 +49,10 @@ type DebugConsistencyChecker interface {
 	DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error)
 }
 
+type DebugDriverHealthChecker interface {
+	DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus
+}
+
 type Mount struct {
 	Name string
 	FS   *VFS

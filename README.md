@@ -212,4 +212,5 @@ operations such as `Getattr`, `Statfs`, `Readdir`, `Getxattr`, `Open`, `Read`,
 
 For offline journal checks, live debug socket endpoints, upload progress,
 cache state, filename mapping, and consistency checks, see
-[`docs/debug.md`](docs/debug.md).
+[`docs/debug.md`](docs/debug.md). To add a new backend, see
+[`docs/driver-development.md`](docs/driver-development.md).
