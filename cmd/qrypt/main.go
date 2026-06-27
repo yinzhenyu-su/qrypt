@@ -16,8 +16,8 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/internal/control"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/p115"
+	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/yun139"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/mount"
@@ -160,12 +160,21 @@ func runWithContext(ctx context.Context, args []string) error {
 		logging.L.Infof("Mounting at %s ...", mountPointExpanded)
 		fmt.Printf("Mounting at %s ...\n", mountPointExpanded)
 		session, err := mount.NewMounter().Mount(ctx, fs, mount.Options{
-			MountPoint:    mountPointExpanded,
-			VolumeName:    mountConfig.VolumeName,
-			NoAppleDouble: mountConfig.NoAppleDouble,
-			TotalSpace:    mountConfig.TotalSpace,
-			FreeSpace:     mountConfig.FreeSpace,
-			Foreground:    true,
+			MountPoint:         mountPointExpanded,
+			ReadOnly:           mountConfig.ReadOnly,
+			AllowOther:         mountConfig.AllowOther,
+			DefaultPermissions: mountConfig.DefaultPermissions,
+			VolumeName:         mountConfig.VolumeName,
+			NoAppleDouble:      mountConfig.NoAppleDouble,
+			NoAppleXattr:       mountConfig.NoAppleXattr,
+			AttrTimeout:        mountConfig.AttrTimeout,
+			AttrTimeoutSet:     mountConfig.AttrTimeoutSet,
+			EntryTimeout:       mountConfig.EntryTimeout,
+			EntryTimeoutSet:    mountConfig.EntryTimeoutSet,
+			NegativeTimeout:    mountConfig.NegativeTimeout,
+			TotalSpace:         mountConfig.TotalSpace,
+			FreeSpace:          mountConfig.FreeSpace,
+			Foreground:         true,
 		})
 		if err != nil {
 			logging.L.Errorf("Mount failed: %v", err)
@@ -198,17 +207,29 @@ func mountPointFromConfig(configPath string) (string, error) {
 }
 
 type cliMountConfig struct {
-	VolumeName    string
-	NoAppleDouble bool
-	TotalSpace    int64
-	FreeSpace     int64
-	Logging       config.LoggingConfig
+	VolumeName         string
+	ReadOnly           bool
+	AllowOther         bool
+	DefaultPermissions bool
+	NoAppleDouble      bool
+	NoAppleXattr       bool
+	AttrTimeout        time.Duration
+	AttrTimeoutSet     bool
+	EntryTimeout       time.Duration
+	EntryTimeoutSet    bool
+	NegativeTimeout    time.Duration
+	TotalSpace         int64
+	FreeSpace          int64
+	Logging            config.LoggingConfig
 }
 
 func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
-		VolumeName:    "Qrypt",
-		NoAppleDouble: true,
+		VolumeName:      "Qrypt",
+		NoAppleDouble:   true,
+		AttrTimeout:     time.Second,
+		EntryTimeout:    time.Second,
+		NegativeTimeout: 0,
 	}
 	if configPath == "" {
 		return mountConfig, nil
@@ -218,7 +239,32 @@ func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 		return mountConfig, err
 	}
 	mountConfig.VolumeName = cfg.EffectiveVolumeName()
+	mountConfig.ReadOnly = cfg.ReadOnly
+	mountConfig.AllowOther = cfg.AllowOther
+	mountConfig.DefaultPermissions = cfg.DefaultPermissions
 	mountConfig.NoAppleDouble = cfg.EffectiveNoAppleDouble()
+	mountConfig.NoAppleXattr = cfg.EffectiveNoAppleXattr()
+	attrTimeout, err := config.ParseDuration(cfg.AttrTimeout)
+	if err != nil {
+		return mountConfig, fmt.Errorf("config: invalid attr_timeout: %w", err)
+	}
+	if strings.TrimSpace(cfg.AttrTimeout) != "" {
+		mountConfig.AttrTimeout = attrTimeout
+		mountConfig.AttrTimeoutSet = true
+	}
+	entryTimeout, err := config.ParseDuration(cfg.EntryTimeout)
+	if err != nil {
+		return mountConfig, fmt.Errorf("config: invalid entry_timeout: %w", err)
+	}
+	if strings.TrimSpace(cfg.EntryTimeout) != "" {
+		mountConfig.EntryTimeout = entryTimeout
+		mountConfig.EntryTimeoutSet = true
+	}
+	negativeTimeout, err := config.ParseDuration(cfg.NegativeTimeout)
+	if err != nil {
+		return mountConfig, fmt.Errorf("config: invalid negative_timeout: %w", err)
+	}
+	mountConfig.NegativeTimeout = negativeTimeout
 	totalSpace, freeSpace, err := cfg.EffectiveSpaceBytes()
 	if err != nil {
 		return mountConfig, err

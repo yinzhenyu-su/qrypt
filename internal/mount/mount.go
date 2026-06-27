@@ -21,16 +21,23 @@ import (
 )
 
 type Options struct {
-	MountPoint     string
-	ReadOnly       bool
-	AllowOther     bool
-	VolumeName     string
-	NoAppleDouble  bool
-	TotalSpace     int64
-	FreeSpace      int64
-	Foreground     bool
-	ReadyTimeout   time.Duration
-	UnmountOnError bool
+	MountPoint         string
+	ReadOnly           bool
+	AllowOther         bool
+	DefaultPermissions bool
+	VolumeName         string
+	NoAppleDouble      bool
+	NoAppleXattr       bool
+	AttrTimeout        time.Duration
+	AttrTimeoutSet     bool
+	EntryTimeout       time.Duration
+	EntryTimeoutSet    bool
+	NegativeTimeout    time.Duration
+	TotalSpace         int64
+	FreeSpace          int64
+	Foreground         bool
+	ReadyTimeout       time.Duration
+	UnmountOnError     bool
 }
 
 type Session struct {
@@ -70,7 +77,9 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 			TotalSpace: opts.TotalSpace,
 			FreeSpace:  opts.FreeSpace,
 		},
+		ReadOnly:            opts.ReadOnly,
 		IgnoreAppleMetadata: opts.NoAppleDouble,
+		IgnoreAppleXattr:    opts.NoAppleXattr,
 	})
 	host := fuse.NewFileSystemHost(ad)
 	session := &Session{
@@ -122,11 +131,19 @@ func mountOptions(opts Options) []string {
 	if opts.ReadOnly {
 		mode = "ro"
 	}
+	attrTimeout := opts.AttrTimeout
+	if attrTimeout == 0 && !opts.AttrTimeoutSet {
+		attrTimeout = time.Second
+	}
+	entryTimeout := opts.EntryTimeout
+	if entryTimeout == 0 && !opts.EntryTimeoutSet {
+		entryTimeout = time.Second
+	}
 	flags := []string{
 		"-o", mode,
-		"-o", "attr_timeout=0",
-		"-o", "entry_timeout=0",
-		"-o", "negative_timeout=0",
+		"-o", "attr_timeout=" + fuseTimeout(attrTimeout),
+		"-o", "entry_timeout=" + fuseTimeout(entryTimeout),
+		"-o", "negative_timeout=" + fuseTimeout(opts.NegativeTimeout),
 		"-o", "use_ino",
 	}
 	if runtime.GOOS == "darwin" {
@@ -140,10 +157,23 @@ func mountOptions(opts Options) []string {
 	if opts.AllowOther {
 		flags = append(flags, "-o", "allow_other")
 	}
+	if opts.DefaultPermissions {
+		flags = append(flags, "-o", "default_permissions")
+	}
 	if opts.VolumeName != "" {
 		flags = append(flags, "-o", "volname="+opts.VolumeName)
 	}
 	return flags
+}
+
+func fuseTimeout(d time.Duration) string {
+	if d <= 0 {
+		return "0"
+	}
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%d", int64(d/time.Second))
+	}
+	return fmt.Sprintf("%.3f", d.Seconds())
 }
 
 type adapter struct {
@@ -156,7 +186,9 @@ type adapter struct {
 	stopping            bool
 	trace               fuseTracer
 	statfs              StatfsOptions
+	readOnly            bool
 	ignoreAppleMetadata bool
+	ignoreAppleXattr    bool
 }
 
 type ignoredAppleNode struct {
@@ -242,7 +274,9 @@ func newAdapter(fs vfs.FileSystem, statfs StatfsOptions) *adapter {
 
 type adapterOptions struct {
 	Statfs              StatfsOptions
+	ReadOnly            bool
 	IgnoreAppleMetadata bool
+	IgnoreAppleXattr    bool
 }
 
 func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
@@ -252,7 +286,9 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 		ignoredApple:        map[string]ignoredAppleNode{},
 		trace:               fuseTracer{},
 		statfs:              opts.Statfs,
+		readOnly:            opts.ReadOnly,
 		ignoreAppleMetadata: opts.IgnoreAppleMetadata,
+		ignoreAppleXattr:    opts.IgnoreAppleXattr,
 	}
 }
 
@@ -849,12 +885,18 @@ func (a *adapter) Setchgtime(path string, tmsp fuse.Timespec) int {
 func (a *adapter) Getxattr(path string, name string) (int, []byte) {
 	errc := -fuse.ENOATTR
 	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, 0, errc) }()
+	if a.shouldIgnoreAppleXattr(name) {
+		return errc, nil
+	}
 	return errc, nil
 }
 
 func (a *adapter) Removexattr(path string, name string) int {
 	errc := 0
 	defer func() { a.trace.log("Removexattr", path, "name=%q err=%d", name, errc) }()
+	if a.shouldIgnoreAppleXattr(name) {
+		return 0
+	}
 	return 0
 }
 
@@ -901,6 +943,9 @@ func (a *adapter) Setxattr(path string, name string, value []byte, flags int) in
 			a.trace.log("PrepareDirectoryCopy", path, "xattr=%q err=0", name)
 		}
 	}
+	if a.shouldIgnoreAppleXattr(name) {
+		return 0
+	}
 	return 0
 }
 
@@ -913,12 +958,19 @@ func (a *adapter) pathExists(path string) bool {
 }
 
 func (a *adapter) isReadOnlyPath(path string) bool {
+	if a.readOnly {
+		return true
+	}
 	checker, ok := a.fs.(readOnlyPathChecker)
 	return ok && checker.IsReadOnlyPath(path)
 }
 
 func (a *adapter) shouldIgnoreAppleMetadata(path string) bool {
 	return a.ignoreAppleMetadata && (isAppleMetadataPath(path) || a.hasIgnoredApple(path))
+}
+
+func (a *adapter) shouldIgnoreAppleXattr(name string) bool {
+	return a.ignoreAppleXattr && strings.HasPrefix(strings.ToLower(name), "com.apple.")
 }
 
 func (a *adapter) hasIgnoredApple(path string) bool {
