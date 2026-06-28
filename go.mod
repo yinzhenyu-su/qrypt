@@ -5,11 +5,13 @@ go 1.26.2
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/SheltonZhu/115driver v1.3.3
+	github.com/dustinxie/ecc v0.0.0-20210511000915-959544187564
 	github.com/rfjakob/eme v1.2.0
 	github.com/winfsp/cgofuse v1.6.0
 	golang.org/x/crypto v0.50.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.43.0
+	golang.org/x/time v0.8.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
@@ -23,5 +25,4 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/time v0.8.0 // indirect
 )
