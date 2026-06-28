@@ -70,7 +70,42 @@ func init() {
 			BaseURL:  params["base_url"],
 			V2URL:    params["v2_url"],
 		}), nil
-	})
+	},
+		drive.ParamDef{
+			Name:        "cookie",
+			Type:        "string",
+			Required:    true,
+			Secret:      true,
+			Description: "Quark cloud drive authentication cookie",
+			Example:     "k1=v1; k2=v2",
+		},
+		drive.ParamDef{
+			Name:        "root_path",
+			Type:        "string",
+			Description: "Virtual root path on the drive",
+			Default:     "/",
+			Example:     "/qrypt",
+		},
+		drive.ParamDef{
+			Name:        "root_id",
+			Type:        "string",
+			Description: "Root directory ID",
+			Default:     "root",
+			Example:     "root",
+		},
+		drive.ParamDef{
+			Name:        "base_url",
+			Type:        "string",
+			Description: "Custom API base URL",
+			Example:     "https://drive.quark.cn",
+		},
+		drive.ParamDef{
+			Name:        "v2_url",
+			Type:        "string",
+			Description: "Custom API v2 URL",
+			Example:     "https://drive-m.quark.cn",
+		},
+	)
 }
 
 type Options struct {

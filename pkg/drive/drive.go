@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 )
@@ -72,16 +73,32 @@ type Params map[string]string
 // Factory constructs a backend driver from Params.
 type Factory func(Params) (Driver, error)
 
+// ParamDef describes a single configuration parameter for a driver.
+// Each driver should declare its expected params via Register so the CLI
+// can provide meaningful validation, help output, and documentation.
+type ParamDef struct {
+	Name        string
+	Type        string // "string" (default), "int", "bool", "duration"
+	Required    bool
+	Secret      bool // masked in debug output and help
+	Description string
+	Default     string
+	Example     string
+}
+
 var (
-	registryMu sync.RWMutex
-	registry   = map[string]Factory{}
+	registryMu    sync.RWMutex
+	registry      = map[string]Factory{}
+	paramSchemas  = map[string][]ParamDef{}
 )
 
-// Register makes a backend driver available by name.
-func Register(name string, factory Factory) {
+// Register makes a backend driver available by name with optional parameter
+// schema. The schema enables config validation and generated documentation.
+func Register(name string, factory Factory, schema ...ParamDef) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	registry[name] = factory
+	paramSchemas[name] = schema
 }
 
 // New constructs a registered backend driver.
@@ -95,7 +112,14 @@ func New(name string, params Params) (Driver, error) {
 	return factory(params)
 }
 
-// Names returns registered driver names.
+// ParamSchema returns the parameter schema for a registered driver.
+func ParamSchema(name string) []ParamDef {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	return paramSchemas[name]
+}
+
+// Names returns registered driver names in alphabetical order.
 func Names() []string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
@@ -103,5 +127,6 @@ func Names() []string {
 	for name := range registry {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
