@@ -15,6 +15,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/internal/control"
+	_ "github.com/yinzhenyu/qrypt/internal/driver/aliyundrive"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/p115"
 	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
@@ -70,6 +71,10 @@ func runWithContext(ctx context.Context, args []string) error {
 
 	if rest[0] == "debug" {
 		return runDebugCommand(ctx, flags, rest[1:], *cacheDir, *configPath, *mountName, *debugSocket)
+	}
+
+	if rest[0] == "help" {
+		return runHelpCommand(rest[1:])
 	}
 
 	fs, cleanup, err := buildFileSystem(ctx, flags, *driverName, *root, *cacheDir, *configPath, *mountName, *password, *salt, *fileNameEncryption, *fileNameEncoding)
@@ -625,4 +630,67 @@ func initLoggerFromConfig(configPath string) {
 		return
 	}
 	logging.L = newLogger
+}
+
+func runHelpCommand(args []string) error {
+	if len(args) == 0 {
+		fmt.Println("Usage: qrypt [flags] list|put|cat|pending|mount|debug|help")
+		fmt.Println()
+		fmt.Println("Available drivers:")
+		for _, name := range drive.Names() {
+			fmt.Printf("  %s\n", name)
+		}
+		fmt.Println()
+		fmt.Println("Use 'qrypt help driver <name>' for driver parameter details.")
+		return nil
+	}
+
+	if args[0] == "driver" {
+		if len(args) < 2 {
+			fmt.Println("Usage: qrypt help driver <name>")
+			fmt.Println("Available drivers:")
+			for _, name := range drive.Names() {
+				fmt.Printf("  %s\n", name)
+			}
+			return nil
+		}
+		name := args[1]
+		schema := drive.ParamSchema(name)
+		if schema == nil {
+			return fmt.Errorf("unknown driver: %s", name)
+		}
+		fmt.Printf("Driver: %s\n", name)
+		fmt.Println()
+		if len(schema) == 0 {
+			fmt.Println("  No parameters required.")
+			return nil
+		}
+		for _, p := range schema {
+			req := ""
+			if p.Required {
+				req = " (required)"
+			}
+			secret := ""
+			if p.Secret {
+				secret = " [secret]"
+			}
+			fmt.Printf("  %s%s%s\n", p.Name, req, secret)
+			if p.Type != "" {
+				fmt.Printf("    Type: %s\n", p.Type)
+			}
+			if p.Description != "" {
+				fmt.Printf("    %s\n", p.Description)
+			}
+			if p.Default != "" {
+				fmt.Printf("    Default: %s\n", p.Default)
+			}
+			if p.Example != "" {
+				fmt.Printf("    Example: %s\n", p.Example)
+			}
+			fmt.Println()
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unknown help topic: %s", args[0])
 }

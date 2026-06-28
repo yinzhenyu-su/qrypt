@@ -36,7 +36,23 @@ func init() {
 			return nil, fmt.Errorf("139: missing authorization")
 		}
 		return New(auth, params["root_id"]), nil
-	})
+	},
+		drive.ParamDef{
+			Name:        "authorization",
+			Type:        "string",
+			Required:    true,
+			Secret:      true,
+			Description: "139 cloud drive authorization token",
+			Example:     "your-authorization-token",
+		},
+		drive.ParamDef{
+			Name:        "root_id",
+			Type:        "string",
+			Description: "Root directory ID",
+			Default:     "",
+			Example:     "0",
+		},
+	)
 }
 
 func New(authorization, rootID string) *Driver {

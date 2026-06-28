@@ -42,7 +42,23 @@ func init() {
 			RootID:    params["root_id"],
 			LimitRate: 2,
 		}), nil
-	})
+	},
+		drive.ParamDef{
+			Name:        "cookie",
+			Type:        "string",
+			Required:    true,
+			Secret:      true,
+			Description: "115 cloud drive authentication cookie",
+			Example:     "k1=v1; k2=v2",
+		},
+		drive.ParamDef{
+			Name:        "root_id",
+			Type:        "string",
+			Description: "Root directory ID",
+			Default:     "",
+			Example:     "0",
+		},
+	)
 }
 
 type Options struct {

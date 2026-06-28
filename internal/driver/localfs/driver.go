@@ -28,7 +28,21 @@ func init() {
 			return nil, fmt.Errorf("localfs: missing root")
 		}
 		return New(root), nil
-	})
+	},
+		drive.ParamDef{
+			Name:        "root",
+			Type:        "string",
+			Required:    true,
+			Description: "Local filesystem directory path",
+			Example:     "/tmp/qrypt-remote",
+		},
+		drive.ParamDef{
+			Name:        "local_root",
+			Type:        "string",
+			Description: "Alias for root (fallback if root is empty)",
+			Example:     "/tmp/qrypt-remote",
+		},
+	)
 }
 
 func New(root string) *Driver {
