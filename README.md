@@ -83,10 +83,45 @@ For old-style config files, `[defaults.encryption]` and
 `[[mounts]].encryption` are also understood. Use `-mount-name NAME` to select
 a specific mount's encryption section.
 
-## Multiple Drives Under One Mount Point
+## Configuration
 
-When the config contains multiple `[[mounts]]`, qrypt exposes them under one
-namespace. The first path segment is the mount name:
+### Top-level Options
+
+`mount_point`, `cache_dir`, `volume_name`, `read_only`, `allow_other`,
+`default_permissions`, `no_apple_double`, and `no_apple_xattr` are
+top-level fields: the program creates one OS mount point, and each
+`[[mounts]]` entry appears as a directory under it. Each mount stores cache
+under `cache_dir/<mount-name>` unless `[mounts.cache].dir` overrides that
+mount.
+
+| Option | Description | Default |
+|---|---|---|
+| `mount_point` | FUSE mount point path | — |
+| `cache_dir` | Root cache directory | OS temp dir |
+| `volume_name` | FUSE volume name shown in Finder | `"Qrypt"` |
+| `read_only` | Mount read-only, reject write callbacks | `false` |
+| `allow_other` | Allow other users to access the mount | `false` |
+| `default_permissions` | Kernel-enforced mode/uid/gid checks | `false` |
+| `no_apple_double` | Ignore `._*` / `.DS_Store` uploads | `true` |
+| `no_apple_xattr` | Ignore `com.apple.*` extended attributes | `false` |
+| `attr_timeout` | FUSE attribute cache timeout | `"1s"` |
+| `entry_timeout` | FUSE entry cache timeout | `"1s"` |
+| `negative_timeout` | FUSE negative lookup cache timeout | `"0s"` |
+| `total_space` | Reported total capacity (bytes or suffix) | — |
+| `free_space` | Reported free capacity (bytes or suffix) | — |
+
+When `no_apple_double = true`, Finder/macOS metadata writes such as
+`.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, and `.fseventsd` are
+accepted by the FUSE layer but ignored by the backend upload path. Set it to
+`false` to upload those files like regular files.
+
+`total_space` and `free_space` accept plain bytes or binary size suffixes such
+as `512M`, `1G`, and `1T`.
+
+### Mount Entries
+
+Each `[[mounts]]` entry binds a cloud drive backend to a subdirectory of the
+mount point. The first path segment is the mount name:
 
 ```text
 ~/Qrypt/quark
@@ -100,93 +135,53 @@ Example:
 mount_point = "~/Qrypt"
 cache_dir = "/tmp/qrypt-cache"
 volume_name = "Qrypt"
-read_only = false
-allow_other = false
-default_permissions = false
 no_apple_double = true
-no_apple_xattr = false
-attr_timeout = "1s"
-entry_timeout = "1s"
-negative_timeout = "0s"
 total_space = "1T"
 free_space = "800G"
 
 [[mounts]]
-name = "quark"
+name = "mydrive"
 type = "quark"
 
 [mounts.params]
 cookie = "your-quark-cookie"
-root_path = "/"
-
-[mounts.encryption]
-password = "quark-password"
-salt = "quark-salt"
-filename_encryption = "standard"
-filename_encoding = "base32"
-
-[[mounts]]
-name = "quark2"
-type = "localfs"
-
-[mounts.params]
-root = "/tmp/qrypt-quark2"
-
-[mounts.encryption]
-password = "quark2-password"
-salt = "quark2-salt"
-filename_encryption = "obfuscate"
-filename_encoding = "base64"
-
-[[mounts]]
-name = "localfs"
-type = "localfs"
-
-[mounts.params]
-root = "/tmp/qrypt-localfs"
-
-[mounts.encryption]
-password = "localfs-password"
-salt = ""
-filename_encryption = "off"
-filename_encoding = "base32"
 ```
 
-Each mount has its own encryption settings. Setting
-`filename_encryption = "off"` only keeps names readable on the raw backend;
-file content is still encrypted when `password` is set.
+**Driver-specific parameters** (`[mounts.params]`) vary by backend type.
+Use the CLI to list them:
 
-`mount_point`, `cache_dir`, `volume_name`, `read_only`, `allow_other`,
-`default_permissions`, `no_apple_double`, and `no_apple_xattr` are
-intentionally top-level: the program creates one OS mount point, and each
-`[[mounts]]` entry appears as a directory under it. Each mount stores cache
-under `cache_dir/<mount-name>` unless `[mounts.cache].dir` overrides that
-mount.
+```sh
+# List all available drivers
+qrypt help
 
-`read_only` mounts the filesystem read-only and rejects write callbacks in the
-FUSE adapter. `allow_other` allows other users to access the mount point, and
-`default_permissions` asks the kernel to enforce mode/uid/gid permissions.
+# Show parameters for a specific driver
+qrypt help driver quark
+qrypt help driver localfs
+qrypt help driver aliyundrive
+```
 
-`attr_timeout`, `entry_timeout`, and `negative_timeout` control the FUSE
-metadata cache. They default to `1s`, `1s`, and `0s`, matching rclone's short
-attribute cache while avoiding negative lookup caching by default.
+### Per-Mount Encryption
 
-When `no_apple_double = true`, Finder/macOS metadata writes such as
-`.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, and `.fseventsd` are
-accepted by the FUSE layer but ignored by the backend upload path. Set it to
-`false` to upload those files like regular files.
+Each mount can optionally encrypt filenames and content using rclone-compatible
+settings:
 
-When `no_apple_xattr = true`, `com.apple.*` extended attributes are ignored.
+```toml
+[mounts.encryption]
+password = "secret"
+salt = ""
+filename_encryption = "standard"   # standard | off | obfuscate
+filename_encoding = "base32"       # base32 | base64
+```
 
-`total_space` and `free_space` control the capacity reported by FUSE `Statfs`.
-They accept plain bytes or binary size suffixes such as `512M`, `1G`, and `1T`.
+Setting `filename_encryption = "off"` only keeps names readable on the raw
+backend; file content is still encrypted when `password` is set.
 
 With that config:
 
 ```sh
 go run ./cmd/qrypt -config ./qrypt.toml list /
-go run ./cmd/qrypt -config ./qrypt.toml put ./README.md /quark/README.md
-go run ./cmd/qrypt -config ./qrypt.toml cat /localfs/README.md
+go run ./cmd/qrypt -config ./qrypt.toml put ./README.md /mydrive/README.md
+go run ./cmd/qrypt -config ./qrypt.toml cat /mydrive/README.md
 ```
 
 To mount the namespace with FUSE:
@@ -208,23 +203,16 @@ The CLI `-cache` flag is still available as an override:
 go run ./cmd/qrypt -config ./qrypt.toml -cache /tmp/other-qrypt-cache mount
 ```
 
-To debug Finder or macFUSE behavior, enable FUSE tracing in the config:
+To debug Finder or macFUSE behavior, set debug logging in the config:
 
 ```toml
 [logging]
-log_level = "info"
+log_level = "debug"
 log_file = "~/.qrypt/qrypt.log"
+error_file = "~/.qrypt/qrypt-error.log"
 ```
 
-The environment variables are still available as temporary overrides:
-
-```sh
-QRYPT_FUSE_TRACE=1 \
-QRYPT_FUSE_TRACE_FILE=/tmp/qrypt-fuse.log \
-go run ./cmd/qrypt -config ./qrypt.toml mount
-```
-
-The trace records callback names, paths, return codes, and durations for
+The debug log records callback names, paths, return codes, and durations for
 operations such as `Getattr`, `Statfs`, `Readdir`, `Getxattr`, `Open`, `Read`,
 `Write`, `Rename`, and `Truncate`.
 

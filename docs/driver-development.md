@@ -46,8 +46,38 @@ func init() {
 			RootPath: params["root_path"],
 			RootID:   params["root_id"],
 		}), nil
-	})
+	},
+		// Declare the parameter schema so the CLI can show help and validate.
+		drive.ParamDef{
+			Name:        "token",
+			Type:        "string",
+			Required:    true,
+			Secret:      true,
+			Description: "Baidu cloud drive access token",
+			Example:     "your-token",
+		},
+		drive.ParamDef{
+			Name:        "root_path",
+			Type:        "string",
+			Description: "Virtual root path on the drive",
+			Default:     "/",
+			Example:     "/qrypt",
+		},
+		drive.ParamDef{
+			Name:        "root_id",
+			Type:        "string",
+			Description: "Root directory ID",
+			Default:     "root",
+			Example:     "root",
+		},
+	)
 }
+```
+
+Users can then query the schema from the CLI:
+
+```sh
+qrypt help driver baidu
 ```
 
 Then add a blank import in `cmd/qrypt/main.go`:
