@@ -1,14 +1,21 @@
-# Driver Development Guide
+# Driver Development
 
-This guide describes how to add a new cloud-drive backend to qrypt.
+This guide describes how to add a cloud-drive backend to qrypt.
 
-Drivers adapt provider-specific APIs to the small interfaces in `pkg/drive`.
-The VFS, encryption layer, rate limiter, namespace mount, FUSE adapter, and
-debug socket must not depend on provider SDKs or provider-specific types.
+## Boundaries
+
+- `pkg/drive` defines the provider contract.
+- `pkg/vfs` owns filesystem behavior: path resolution, read cache, staged
+  writes, pending journal recovery, and upload scheduling.
+- `pkg/crypt` wraps any driver with rclone-compatible encryption.
+- `internal/mount` translates FUSE callbacks into VFS calls.
+- `internal/driver/<name>` is the only place that should know provider API
+  details.
+
+Drivers must not import FUSE, mount lifecycle code, or qrypt's encryption
+implementation. VFS and mount code must not import provider SDKs.
 
 ## File Layout
-
-Put each driver under `internal/driver/<name>`:
 
 ```text
 internal/driver/<name>/
@@ -18,8 +25,7 @@ internal/driver/<name>/
   driver_test.go
 ```
 
-Use a short stable driver name, for example `quark`, `localfs`, or `baidu`.
-The name is used in config:
+Use a short stable driver name. It becomes the config `type`:
 
 ```toml
 [[mounts]]
@@ -33,7 +39,7 @@ root_path = "/qrypt"
 
 ## Registration
 
-Register the driver from `init`:
+Register the driver from `init` and declare parameter metadata:
 
 ```go
 func init() {
@@ -47,10 +53,8 @@ func init() {
 			RootID:   params["root_id"],
 		}), nil
 	},
-		// Declare the parameter schema so the CLI can show help and validate.
 		drive.ParamDef{
 			Name:        "token",
-			Type:        "string",
 			Required:    true,
 			Secret:      true,
 			Description: "Baidu cloud drive access token",
@@ -58,26 +62,12 @@ func init() {
 		},
 		drive.ParamDef{
 			Name:        "root_path",
-			Type:        "string",
 			Description: "Virtual root path on the drive",
 			Default:     "/",
 			Example:     "/qrypt",
 		},
-		drive.ParamDef{
-			Name:        "root_id",
-			Type:        "string",
-			Description: "Root directory ID",
-			Default:     "root",
-			Example:     "root",
-		},
 	)
 }
-```
-
-Users can then query the schema from the CLI:
-
-```sh
-qrypt help driver baidu
 ```
 
 Then add a blank import in `cmd/qrypt/main.go`:
@@ -86,8 +76,14 @@ Then add a blank import in `cmd/qrypt/main.go`:
 _ "github.com/yinzhenyu/qrypt/internal/driver/baidu"
 ```
 
-Avoid adding provider-specific fields to the top-level config schema. Use
-`[[mounts]].params` unless a setting is genuinely shared by all drivers.
+Users should be able to inspect parameters with:
+
+```sh
+qrypt help driver baidu
+```
+
+Keep provider-specific options in `[[mounts]].params`. Do not add top-level
+config fields unless the setting applies to all drivers.
 
 ## Required Interface
 
@@ -102,20 +98,17 @@ type Driver interface {
 }
 ```
 
-`Init` validates credentials and resolves the configured root. It should fail
-early when the account, token, root ID, or root path is unusable.
+Rules:
 
-`Drop` releases resources. If there is nothing to close, return nil.
-
-`List` returns direct children of one directory. It must not recurse.
-
-`Read` returns file content for a byte range. When `size > 0`, read exactly the
-requested range if the provider supports range requests. When `size == 0`, read
-from `offset` to EOF.
+- `Init` validates credentials and the configured root.
+- `Drop` releases resources; return nil if there is nothing to close.
+- `List` returns direct children only.
+- `Read` respects `offset` and `size`; `size == 0` means read to EOF.
+- All network calls respect `context.Context`.
 
 ## Write Support
 
-Writable drivers should implement `drive.Writer`:
+Writable drivers should implement both `drive.Writer` and `drive.Uploader`:
 
 ```go
 type Writer interface {
@@ -124,28 +117,22 @@ type Writer interface {
 	Rename(ctx context.Context, entry Entry, newName string) error
 	Remove(ctx context.Context, entry Entry) error
 }
-```
 
-And `drive.Uploader`:
-
-```go
 type Uploader interface {
 	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)
 }
 ```
 
-`Put` must return the committed remote object after the provider confirms the
-upload. The returned `Entry.ID`, `Entry.ParentID`, `Entry.Name`, and
-`Entry.Size` should describe the final remote object, not a temporary upload
+`Put` returns the committed remote object after the provider confirms upload.
+The returned `Entry` should describe the final object, not a temporary upload
 session.
 
-If a provider is eventually consistent, prefer returning after the commit API
-succeeds, and expose consistency details through debug fields instead of
-sleeping in the driver.
+If the provider is eventually consistent, return after the commit API succeeds
+and expose follow-up state through debug data. Do not sleep in the driver.
 
 ## Entry Semantics
 
-`drive.Entry` is the only file metadata type the VFS understands:
+`drive.Entry` is the only metadata type VFS understands:
 
 ```go
 type Entry struct {
@@ -159,18 +146,21 @@ type Entry struct {
 }
 ```
 
-Use provider-native IDs for `ID` and `ParentID` when possible. If the provider
-is path-based, use stable normalized paths like `localfs` does.
+Guidelines:
 
-`Name` is the name visible inside this driver before qrypt's encryption wrapper
-is applied. Do not put full paths in `Name`.
-
-`Extra` may hold provider-specific metadata, but VFS behavior must not require
-callers outside the driver to understand it.
+- `ID` and `ParentID` should be stable provider-native IDs.
+- Path-based providers may use stable normalized paths.
+- `Name` is the driver-visible basename, not a full path.
+- `Size` is zero for directories.
+- `ModTime` should come from provider metadata when available. If a create or
+  upload response does not include time fields, use a stable operation-start
+  time rather than leaving it to FUSE fallback.
+- `Extra` may hold provider-specific metadata, but behavior outside the driver
+  must not depend on provider-specific types.
 
 ## Optional Capabilities
 
-Implement optional interfaces when the provider supports them:
+Implement optional interfaces when useful:
 
 ```go
 type SpaceQuerier interface {
@@ -180,21 +170,7 @@ type SpaceQuerier interface {
 type PathResolver interface {
 	ResolvePath(ctx context.Context, path string) (string, error)
 }
-```
 
-`SpaceQuerier` feeds capacity reporting.
-
-`PathResolver` maps a driver-relative path to a native object ID. It is useful
-for debug and for providers where resolving by path can be cheaper than walking
-directories through VFS.
-
-## Debug Capabilities
-
-New cloud drivers should implement `drive.HealthChecker` and `drive.Debugger`.
-Implement `drive.RemoteNameResolver` when the driver can expose a meaningful
-plain-name to remote-name mapping.
-
-```go
 type HealthChecker interface {
 	HealthCheck(ctx context.Context) HealthStatus
 }
@@ -208,137 +184,65 @@ type RemoteNameResolver interface {
 }
 ```
 
-`HealthCheck` powers `/v1/driver/health`. It may touch the backend, so keep it
-bounded and respect `ctx`. Include latency and the latest error, but never
-include credentials.
+Debug and health output must not include tokens, cookies, authorization
+headers, signed URLs, raw request headers, or full provider responses that may
+contain secrets.
 
-`DebugSnapshot` powers `/v1/driver`. It should return stable generic fields:
+## Wrappers
 
-```go
-drive.DebugSnapshot{
-	Driver:      "baidu",
-	Health:      "ok",
-	GeneratedAt: time.Now(),
-	Stats: map[string]any{
-		"root_id": rootID,
-	},
-	Extra: map[string]any{
-		"recent_uploads": uploads,
-	},
-}
-```
-
-Good debug data includes root ID, selected API endpoint, cache sizes, recent
-upload stage, retry count, last non-secret error, and provider task IDs.
-
-Bad debug data includes tokens, cookies, authorization headers, signed URLs,
-raw request headers, and full provider responses that may contain secrets.
-
-## Rate Limiting And Encryption Wrappers
-
-Do not build qrypt encryption into a driver. The `pkg/crypt` wrapper handles
-content and filename encryption around any `drive.Driver`.
+Do not build encryption into a driver. `pkg/crypt` handles content and
+filename encryption around any `drive.Driver`.
 
 Do not build global bandwidth policy into a driver unless the provider upload
-implementation has its own internal concurrency that must be limited at the
-native request level. The generic rate-limit wrapper handles normal reads and
-uploads. If the driver needs native limiter installation, follow the existing
-Quark pattern and keep the public behavior behind `pkg/drive`.
+implementation has internal concurrency that must be limited at the native
+request level. The generic rate-limit wrapper handles normal reads and uploads.
 
-Optional interfaces should keep working through wrappers. When adding a new
-optional interface, update wrappers and tests so `crypt` and rate limiting do
-not accidentally hide or misreport capabilities.
+When adding optional interfaces, update crypt and rate-limit wrappers so they
+preserve or provide safe fallbacks for those capabilities.
 
-## Error Conventions
+## Errors
 
-Prefix driver errors with the driver name:
+Prefix driver errors with the driver name and operation:
 
 ```go
 return nil, fmt.Errorf("baidu: list: %w", err)
 ```
 
-Include operation context such as `list`, `read`, `upload`, `mkdir`, or
-`resolve root_path`. Avoid logging or returning credential values.
+Include useful context such as `list`, `read`, `upload`, `mkdir`, or
+`resolve root_path`. Do not include credential values.
 
-Respect `context.Context` in all network calls. Cancellation should stop new
-requests and unblock long reads or uploads when the provider client supports it.
-
-## Configuration Example
-
-Single mount:
-
-```toml
-mount_point = "~/Qrypt"
-cache_dir = "/tmp/qrypt-cache"
-
-[[mounts]]
-name = "baidu"
-type = "baidu"
-
-[mounts.params]
-token = "..."
-root_path = "/qrypt"
-
-[mounts.cache]
-upload_delay = "2s"
-upload_workers = 2
-
-[mounts.encryption]
-password = "secret"
-salt = ""
-filename_encryption = "standard"
-filename_encoding = "base32"
-```
-
-Multiple accounts of the same provider are just multiple mounts with the same
-`type` and different `name` values.
+When a missing object is part of normal path resolution, prefer returning a
+typed error that the VFS/mount layer can distinguish from backend failures.
 
 ## Minimum Tests
 
-Add tests for the factory:
+Add tests for:
 
-- `drive.New("<name>", params)` returns the concrete driver.
-- Missing required params return a clear error.
+- factory registration and missing required params
+- provider response to `drive.Entry` mapping
+- directory `IsDir`, file size, parent ID, and modification time
+- read offset and size handling
+- provider API failures with driver-prefixed errors
+- `Mkdir`, `Put`, `Rename`, `Move`, and `Remove` when supported
+- debug snapshots and health checks without secrets
+- optional interfaces surviving crypt and rate-limit wrappers when relevant
 
-Add tests for metadata mapping:
+Use fake provider servers or clients. Unit tests should not require real
+accounts.
 
-- Provider file response maps to `drive.Entry`.
-- Directories set `IsDir`.
-- File size and modification time are preserved when available.
-
-Add tests for read behavior:
-
-- Full read.
-- Range read with non-zero offset and size.
-- Provider HTTP/API failures are wrapped with the driver prefix.
-
-Add tests for write behavior when supported:
-
-- `Mkdir` returns the created directory entry.
-- `Put` returns the committed remote object.
-- `Rename`, `Move`, and `Remove` call the expected provider APIs.
-
-Add tests for debug behavior:
-
-- `DebugSnapshot` includes useful state and excludes secrets.
-- `HealthCheck` reports success, failure, and latency.
-- `ResolveRemoteName` returns a deterministic mapping when implemented.
-
-Add integration-style tests with a fake provider client when the real provider
-requires network credentials. Unit tests should not require real accounts.
-
-## PR Checklist
+## Checklist
 
 - Driver lives under `internal/driver/<name>`.
 - Driver is registered with `drive.Register`.
 - `cmd/qrypt/main.go` imports the driver for registration.
-- Required params are validated by the factory.
+- Required params are declared and validated.
 - `Init` validates credentials and root selection.
-- `List` returns only direct children.
-- `Read` handles offset and size correctly.
+- `List` returns direct children only.
+- `Read` handles offset and size.
 - Writable drivers implement both `drive.Writer` and `drive.Uploader`.
-- Debug output does not expose secrets.
+- Returned entries include stable IDs, names, sizes, parent IDs, and mod times.
+- Debug output excludes secrets.
 - `HealthCheck` respects context and has bounded latency.
 - Tests cover success and failure paths.
-- Existing wrappers still preserve optional interfaces.
+- Existing wrappers preserve optional interfaces.
 - `go test ./...` passes.
