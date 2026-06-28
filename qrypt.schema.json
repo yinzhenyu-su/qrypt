@@ -33,6 +33,41 @@
       "type": "boolean",
       "default": true
     },
+    "no_apple_xattr": {
+      "description": "Ignore com.apple.* extended attributes on macOS.",
+      "type": "boolean",
+      "default": false
+    },
+    "read_only": {
+      "description": "Mount the filesystem read-only.",
+      "type": "boolean",
+      "default": false
+    },
+    "allow_other": {
+      "description": "Allow other local users to access the FUSE mount.",
+      "type": "boolean",
+      "default": false
+    },
+    "default_permissions": {
+      "description": "Ask the kernel to enforce mode/uid/gid permissions.",
+      "type": "boolean",
+      "default": false
+    },
+    "attr_timeout": {
+      "description": "FUSE attribute cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+      "type": "string",
+      "default": "1s"
+    },
+    "entry_timeout": {
+      "description": "FUSE entry cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+      "type": "string",
+      "default": "1s"
+    },
+    "negative_timeout": {
+      "description": "FUSE negative lookup cache timeout (e.g. \"0s\", \"1s\").",
+      "type": "string",
+      "default": "0s"
+    },
     "total_space": {
       "description": "Total capacity reported to the OS (e.g. \"1T\", \"500G\").",
       "type": "string",
@@ -189,7 +224,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "139yun", "115"]
+          "enum": ["localfs", "quark", "139yun", "115", "aliyundrive"]
         },
         "mount_point": {
           "description": "Deprecated. Use the top-level mount_point instead.",
@@ -214,6 +249,166 @@
         }
       },
       "required": ["name", "type"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "aliyundrive" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["refresh_token", "drive_id", "root_id"],
+                "properties": {
+                  "refresh_token": {
+                    "description": "Aliyun Drive refresh token.",
+                    "type": "string", "minLength": 1
+                  },
+                  "drive_id": {
+                    "description": "Aliyun Drive drive ID.",
+                    "type": "string", "minLength": 1
+                  },
+                  "root_id": {
+                    "description": "Aliyun Drive root folder file ID for this mount.",
+                    "type": "string", "minLength": 1
+                  },
+                  "root_path": {
+                    "description": "Optional path resolved under root_id during startup.",
+                    "type": "string"
+                  },
+                  "order_by": {
+                    "description": "List ordering field.",
+                    "type": "string",
+                    "enum": ["name", "size", "updated_at", "created_at"]
+                  },
+                  "order_direction": {
+                    "description": "List ordering direction.",
+                    "type": "string",
+                    "enum": ["ASC", "DESC"]
+                  },
+                  "api_base_url": {
+                    "description": "Override Aliyun API base URL for tests.",
+                    "type": "string"
+                  },
+                  "auth_url": {
+                    "description": "Override Aliyun auth URL for tests.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "localfs" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["root"],
+                "properties": {
+                  "root": {
+                    "description": "Local filesystem directory path.",
+                    "type": "string", "minLength": 1
+                  },
+                  "local_root": {
+                    "description": "Alias for root (fallback if root is empty).",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "quark" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["cookie"],
+                "properties": {
+                  "cookie": {
+                    "description": "Quark cloud drive authentication cookie.",
+                    "type": "string", "minLength": 1
+                  },
+                  "root_path": {
+                    "description": "Virtual root path on the drive.",
+                    "type": "string"
+                  },
+                  "root_id": {
+                    "description": "Root directory ID.",
+                    "type": "string"
+                  },
+                  "base_url": {
+                    "description": "Custom API base URL.",
+                    "type": "string"
+                  },
+                  "v2_url": {
+                    "description": "Custom API v2 URL.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "115" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["cookie"],
+                "properties": {
+                  "cookie": {
+                    "description": "115 cloud drive authentication cookie.",
+                    "type": "string", "minLength": 1
+                  },
+                  "root_id": {
+                    "description": "Root directory ID.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "139yun" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["authorization"],
+                "properties": {
+                  "authorization": {
+                    "description": "139 cloud drive authorization token.",
+                    "type": "string", "minLength": 1
+                  },
+                  "root_id": {
+                    "description": "Root directory ID.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     }
   }
