@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -163,5 +164,41 @@ func TestNamespaceMarksOnlyNamespaceRootReadOnly(t *testing.T) {
 	}
 	if _, err := ns.Mkdir(ctx, "/a"); err != vfs.ErrReadOnly {
 		t.Fatalf("Mkdir mount root err = %v, want ErrReadOnly", err)
+	}
+}
+
+func TestNamespaceVirtualDirectoryModTimeIsStable(t *testing.T) {
+	ctx := context.Background()
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "a", FS: fsA}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootA, err := ns.Stat(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountA, err := ns.Stat(ctx, "/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	rootB, err := ns.Stat(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountB, err := ns.Stat(ctx, "/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rootA.ModTime.Equal(rootB.ModTime) {
+		t.Fatalf("namespace root modtime changed from %s to %s", rootA.ModTime, rootB.ModTime)
+	}
+	if !mountA.ModTime.Equal(mountB.ModTime) {
+		t.Fatalf("namespace mount modtime changed from %s to %s", mountA.ModTime, mountB.ModTime)
 	}
 }

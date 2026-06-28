@@ -153,6 +153,9 @@ func TestDriverPutInstantUploadFinishes(t *testing.T) {
 	if entry.ID != "final-fid" || entry.ParentID != "parent" || entry.Name != "same.bin" || entry.Size != 6 {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
+	if entry.ModTime.IsZero() {
+		t.Fatal("instant upload entry modtime is zero")
+	}
 }
 
 func TestDriverPutMultipartUpload(t *testing.T) {
@@ -252,6 +255,9 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	}
 	if entry.ID != "final-fid" || entry.ParentID != "parent" || entry.Name != "data.bin" || entry.Size != 8 {
 		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if entry.ModTime.IsZero() {
+		t.Fatal("multipart upload entry modtime is zero")
 	}
 	if got := len(parts); got != 3 {
 		t.Fatalf("part count = %d, want 3", got)

@@ -319,6 +319,7 @@ func (d *Driver) downloadURL(ctx context.Context, fileID string, refresh bool) (
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	now := time.Now()
 	parentID = d.resolveID(parentID)
 	var resp createResp
 	body := map[string]any{
@@ -333,7 +334,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
-	return drive.Entry{ID: resp.FileID, ParentID: parentID, Name: name, IsDir: true}, nil
+	return drive.Entry{ID: resp.FileID, ParentID: parentID, Name: name, IsDir: true, ModTime: responseModTime(resp.UpdatedAt, resp.CreatedAt, now)}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -386,6 +387,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 }
 
 func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+	now := time.Now()
 	stat, err := os.Stat(localPath)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("aliyundrive: upload stat: %w", err)
@@ -435,7 +437,7 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{}, fmt.Errorf("aliyundrive: upload create: %w", err)
 	}
 	if create.RapidUpload {
-		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size}, nil
+		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(create.UpdatedAt, create.CreatedAt, now)}, nil
 	}
 	if err := d.uploadParts(ctx, localPath, create.PartInfoList); err != nil {
 		return drive.Entry{}, err
@@ -449,7 +451,7 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 	if err := d.cl.request(ctx, http.MethodPost, "/v2/file/complete", completeBody, &complete); err != nil {
 		return drive.Entry{}, fmt.Errorf("aliyundrive: upload complete: %w", err)
 	}
-	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size}
+	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(complete.UpdatedAt, complete.CreatedAt, responseModTime(create.UpdatedAt, create.CreatedAt, now))}
 	if complete.FileID != "" {
 		entry.ID = complete.FileID
 	}
@@ -460,6 +462,16 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 		entry.Size = complete.Size
 	}
 	return entry, nil
+}
+
+func responseModTime(updatedAt, createdAt *time.Time, fallback time.Time) time.Time {
+	if updatedAt != nil {
+		return *updatedAt
+	}
+	if createdAt != nil {
+		return *createdAt
+	}
+	return fallback
 }
 
 func (d *Driver) rapidUploadFields(localPath string, size int64) (map[string]any, error) {

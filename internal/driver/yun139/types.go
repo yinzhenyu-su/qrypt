@@ -26,12 +26,12 @@ type personalListResp struct {
 }
 
 type personalItem struct {
-	FileId    string       `json:"fileId"`
-	Name      string       `json:"name"`
-	Type      string       `json:"type"`
-	Size      int64        `json:"size"`
-	CreatedAt string       `json:"createdAt"`
-	UpdatedAt string       `json:"updatedAt"`
+	FileId     string       `json:"fileId"`
+	Name       string       `json:"name"`
+	Type       string       `json:"type"`
+	Size       int64        `json:"size"`
+	CreatedAt  string       `json:"createdAt"`
+	UpdatedAt  string       `json:"updatedAt"`
 	Thumbnails []thumbEntry `json:"thumbnailUrlList"`
 }
 
@@ -41,21 +41,28 @@ type thumbEntry struct {
 }
 
 func personalParseTime(s string) time.Time {
-	t, err := time.ParseInLocation("2006-01-02T15:04:05.999-07:00", s, time.Local)
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse("2006-01-02T15:04:05.999-07:00", s)
 	if err != nil {
-		return time.Now()
+		return time.Time{}
 	}
 	return t
 }
 
 func toEntry(item personalItem) drive.Entry {
 	name := cloudRenameSuffix.ReplaceAllString(item.Name, "")
+	modTime := personalParseTime(item.UpdatedAt)
+	if modTime.IsZero() {
+		modTime = personalParseTime(item.CreatedAt)
+	}
 	return drive.Entry{
 		ID:      item.FileId,
 		Name:    name,
 		IsDir:   item.Type == "folder",
 		Size:    item.Size,
-		ModTime: personalParseTime(item.UpdatedAt),
+		ModTime: modTime,
 	}
 }
 

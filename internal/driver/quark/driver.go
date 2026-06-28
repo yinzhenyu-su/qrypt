@@ -278,6 +278,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	now := time.Now()
 	parentID = d.resolve(parentID)
 	logging.L.InfofEvery("quark.mkdir_start", time.Second, "[QUARK] mkdir start parent=%q name=%q", parentID, name)
 	data := map[string]any{
@@ -296,7 +297,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		return drive.Entry{}, err
 	}
 	logging.L.InfofEvery("quark.mkdir_complete", time.Second, "[QUARK] mkdir complete parent=%q name=%q id=%q", parentID, name, resp.Data.Fid)
-	return drive.Entry{ID: resp.Data.Fid, ParentID: parentID, Name: name, IsDir: true}, nil
+	return drive.Entry{ID: resp.Data.Fid, ParentID: parentID, Name: name, IsDir: true, ModTime: now}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -387,7 +388,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 		}
 		logging.L.InfofEvery("quark.instant_upload_complete", time.Second, "[QUARK] instant upload complete name=%q fid=%q size=%d dur=%s", name, finalFid, size, time.Since(putStart))
-		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size}, nil
+		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime}, nil
 	}
 
 	partSize := preResp.Metadata.PartSize
@@ -553,7 +554,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 		}
 		logging.L.InfofEvery("quark.hash_finished_upload_complete", time.Second, "[QUARK] hash-finished upload complete name=%q fid=%q size=%d", name, finalFid, totalRead)
-		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead}, nil
+		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime}, nil
 	}
 	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "oss_complete" })
 	if err := d.ossComplete(&preResp, etags); err != nil {
@@ -569,7 +570,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 	}
 	logging.L.InfofEvery("quark.upload_complete", time.Second, "[QUARK] upload complete name=%q fid=%q size=%d parts=%d dur=%s", name, finalFid, totalRead, len(etags), time.Since(putStart))
-	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead}, nil
+	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime}, nil
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {

@@ -44,6 +44,16 @@ type copyPrepareFS struct {
 	prepared []string
 }
 
+type failingStatFS struct {
+	stubFS
+	err error
+}
+
+type failingListFS struct {
+	stubFS
+	err error
+}
+
 func (stubFS) Start(context.Context) {}
 
 func (s stubSpaceFS) Space(context.Context) (drive.Space, error) {
@@ -69,6 +79,15 @@ func (s stubFS) List(_ context.Context, path string) ([]drive.Entry, error) {
 	}
 	return entries, nil
 }
+
+func (s failingStatFS) Stat(context.Context, string) (drive.Entry, error) {
+	return drive.Entry{}, s.err
+}
+
+func (s failingListFS) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, s.err
+}
+
 func (stubFS) Read(context.Context, string, int64, int64) (io.ReadCloser, error) {
 	return nil, errNotFound
 }
@@ -127,7 +146,7 @@ func (s *copyPrepareFS) PrepareDirectoryCopy(_ context.Context, path string) err
 	return nil
 }
 
-var errNotFound = errors.New("not found")
+var errNotFound = vfs.ErrNotFound
 
 func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	opts := mountOptions(Options{})
@@ -568,6 +587,72 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 	}
 	if errc := ad.Chmod("/a", 0o777); errc != -fuse.EROFS {
 		t.Fatalf("Chmod readonly err = %d, want EROFS", errc)
+	}
+}
+
+func TestAdapterGetattrMapsOnlyNotFoundToENOENT(t *testing.T) {
+	ad := newAdapter(failingStatFS{err: errors.New("backend unavailable")}, StatfsOptions{})
+
+	var stat fuse.Stat_t
+	if errc := ad.Getattr("/file.txt", &stat, 0); errc != -fuse.EIO {
+		t.Fatalf("Getattr backend error = %d, want EIO", errc)
+	}
+}
+
+func TestAdapterMetadataCallbacksMapOnlyNotFoundToENOENT(t *testing.T) {
+	statErr := errors.New("stat backend unavailable")
+	listErr := errors.New("list backend unavailable")
+	statAdapter := newAdapter(failingStatFS{err: statErr}, StatfsOptions{})
+	listAdapter := newAdapter(failingListFS{err: listErr}, StatfsOptions{})
+
+	if errc := statAdapter.Access("/file.txt", 0); errc != -fuse.EIO {
+		t.Fatalf("Access backend error = %d, want EIO", errc)
+	}
+	if errc := listAdapter.Readdir("/dir", func(string, *fuse.Stat_t, int64) bool { return true }, 0, 0); errc != -fuse.EIO {
+		t.Fatalf("Readdir backend error = %d, want EIO", errc)
+	}
+	if errc := statAdapter.Fsyncdir("/dir", false, 0); errc != -fuse.EIO {
+		t.Fatalf("Fsyncdir backend error = %d, want EIO", errc)
+	}
+	if errc := statAdapter.Chflags("/file.txt", 0); errc != -fuse.EIO {
+		t.Fatalf("Chflags backend error = %d, want EIO", errc)
+	}
+	if errc := statAdapter.Setcrtime("/file.txt", fuse.NewTimespec(time.Unix(1, 0))); errc != -fuse.EIO {
+		t.Fatalf("Setcrtime backend error = %d, want EIO", errc)
+	}
+	if errc := statAdapter.Setchgtime("/file.txt", fuse.NewTimespec(time.Unix(1, 0))); errc != -fuse.EIO {
+		t.Fatalf("Setchgtime backend error = %d, want EIO", errc)
+	}
+}
+
+func TestAdapterGetattrUsesOpenHandleSnapshotWhenPathDisappears(t *testing.T) {
+	entries := map[string]drive.Entry{
+		"/file.txt": {ID: "file-id", Name: "file.txt", Size: 12},
+	}
+	ad := newAdapter(stubFS{entries: entries}, StatfsOptions{})
+
+	errc, fh := ad.Open("/file.txt", 0)
+	if errc != 0 || fh == 0 {
+		t.Fatalf("Open err=%d fh=%d, want success", errc, fh)
+	}
+	delete(entries, "/file.txt")
+
+	var stat fuse.Stat_t
+	if errc := ad.Getattr("/file.txt", &stat, fh); errc != 0 {
+		t.Fatalf("Getattr with open fh err=%d, want 0", errc)
+	}
+	if stat.Size != 12 || stat.Mode&fuse.S_IFREG == 0 {
+		t.Fatalf("Getattr with open fh mode=%o size=%d, want regular file size 12", stat.Mode, stat.Size)
+	}
+}
+
+func TestStableInodeFallsBackToPathWhenIDEmpty(t *testing.T) {
+	entry := drive.Entry{Name: "same.txt"}
+
+	inoA := stableInode(entry, "/a/same.txt")
+	inoB := stableInode(entry, "/b/same.txt")
+	if inoA == inoB {
+		t.Fatalf("stableInode with empty ID returned same inode %d for different paths", inoA)
 	}
 }
 
