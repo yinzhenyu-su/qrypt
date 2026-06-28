@@ -131,7 +131,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	}
 	v.writer, _ = driver.(drive.Writer)
 	v.upload, _ = driver.(drive.Uploader)
-	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true}
+	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: time.Now()}
 	return v, nil
 }
 
@@ -1322,7 +1322,7 @@ func (v *VFS) parent(ctx context.Context, path string) (drive.Entry, string, err
 func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	path = cleanVirtual(path)
 	if v.isUnavailable(path) {
-		return drive.Entry{}, fmt.Errorf("vfs: not found: %s", path)
+		return drive.Entry{}, fmt.Errorf("%w: %s", ErrNotFound, path)
 	}
 	v.mu.RLock()
 	entry, ok := v.entries[path]
@@ -1349,7 +1349,7 @@ func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 			return child, nil
 		}
 	}
-	return drive.Entry{}, fmt.Errorf("vfs: not found: %s", path)
+	return drive.Entry{}, fmt.Errorf("%w: %s", ErrNotFound, path)
 }
 
 type listCacheEntry struct {

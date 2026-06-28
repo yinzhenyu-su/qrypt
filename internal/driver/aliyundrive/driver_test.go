@@ -370,6 +370,9 @@ func TestPutFileUsesRapidUploadProofAfterPreHashMatched(t *testing.T) {
 	if entry.ID != "rapid-file" || entry.ParentID != "parent" || entry.Name != "rapid.txt" || entry.Size != 26 {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
+	if entry.ModTime.IsZero() {
+		t.Fatal("rapid upload entry modtime is zero")
+	}
 	if createCalls != 2 {
 		t.Fatalf("create calls = %d, want 2", createCalls)
 	}

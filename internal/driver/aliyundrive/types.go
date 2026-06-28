@@ -64,6 +64,8 @@ type createResp struct {
 	Name         string           `json:"name"`
 	Type         string           `json:"type"`
 	Size         int64            `json:"size"`
+	CreatedAt    *time.Time       `json:"created_at"`
+	UpdatedAt    *time.Time       `json:"updated_at"`
 	UploadID     string           `json:"upload_id"`
 	RapidUpload  bool             `json:"rapid_upload"`
 	PartInfoList []uploadPartInfo `json:"part_info_list"`
@@ -79,10 +81,12 @@ type downloadURLResp struct {
 }
 
 type completeResp struct {
-	FileID string `json:"file_id"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Size   int64  `json:"size"`
+	FileID    string     `json:"file_id"`
+	Name      string     `json:"name"`
+	Type      string     `json:"type"`
+	Size      int64      `json:"size"`
+	CreatedAt *time.Time `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 type capacityResp struct {

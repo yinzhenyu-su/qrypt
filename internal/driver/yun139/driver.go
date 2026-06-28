@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -159,6 +160,7 @@ func (d *Driver) getDownloadURL(ctx context.Context, fileID string) (string, err
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	now := time.Now()
 	fileID := d.resolveID(parentID)
 	data := map[string]interface{}{
 		"parentFileId": fileID,
@@ -175,7 +177,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		// Name collision — FUSE layer handles this by looking up existing dir.
 		return drive.Entry{}, fmt.Errorf("139: mkdir failed (code=%s): %s", resp.Code, resp.Message)
 	}
-	return drive.Entry{ID: resp.Data.FileId, Name: resp.Data.Name, IsDir: true}, nil
+	return drive.Entry{ID: resp.Data.FileId, ParentID: fileID, Name: resp.Data.Name, IsDir: true, ModTime: now}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -265,6 +267,7 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 }
 
 func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+	now := time.Now()
 	fileID := d.resolveID(parentID)
 	partSize := calcPartSize(size)
 
@@ -328,7 +331,7 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		len(createResp.Data.PartInfos), createResp.Data.UploadId)
 
 	if createResp.Data.Exist {
-		return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
+		return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 	}
 
 	// Server returns upload URLs when it needs multipart upload.
@@ -378,11 +381,11 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		// file ID (toEntry strips the suffix so the list name is ambiguous).
 		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileId}, name); err != nil {
 			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileId, name, err)
-			return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
+			return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 		}
 	}
 
-	return drive.Entry{ID: createResp.Data.FileId, Name: name, Size: size}, nil
+	return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 }
 
 func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp, partInfos []partMeta, partSize, size int64, localPath string) error {
@@ -401,8 +404,8 @@ func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp,
 		}
 		batchPartInfos := partInfos[i-1 : end]
 		moreData := map[string]interface{}{
-			"fileId":   createResp.Data.FileId,
-			"uploadId": createResp.Data.UploadId,
+			"fileId":    createResp.Data.FileId,
+			"uploadId":  createResp.Data.UploadId,
 			"partInfos": batchPartInfos,
 			"commonAccountInfo": map[string]interface{}{
 				"account":     d.cl.getAccount(),

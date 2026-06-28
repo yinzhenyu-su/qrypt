@@ -14,6 +14,7 @@ import (
 )
 
 var ErrReadOnly = errors.New("vfs: read-only namespace path")
+var ErrNotFound = errors.New("vfs: not found")
 
 // FileSystem is the common API implemented by a single-drive VFS and a
 // multi-drive Namespace.
@@ -61,12 +62,13 @@ type Mount struct {
 // Namespace mounts multiple VFS instances under one virtual root. The first
 // path segment is the mount name: /quark/docs, /quark2/docs, /localfs/docs.
 type Namespace struct {
-	mu     sync.RWMutex
-	mounts map[string]*VFS
+	mu        sync.RWMutex
+	mounts    map[string]*VFS
+	createdAt time.Time
 }
 
 func NewNamespace(mounts []Mount) (*Namespace, error) {
-	ns := &Namespace{mounts: map[string]*VFS{}}
+	ns := &Namespace{mounts: map[string]*VFS{}, createdAt: time.Now()}
 	for _, mount := range mounts {
 		name := cleanMountName(mount.Name)
 		if name == "" {
@@ -97,11 +99,11 @@ func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) 
 		return drive.Entry{}, err
 	}
 	if root {
-		return drive.Entry{ID: "/", Name: "/", IsDir: true, ModTime: time.Now()}, nil
+		return drive.Entry{ID: "/", Name: "/", IsDir: true, ModTime: n.createdAt}, nil
 	}
 	if rest == "/" {
 		name := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
-		return drive.Entry{ID: "/" + name, Name: name, IsDir: true, ModTime: time.Now()}, nil
+		return drive.Entry{ID: "/" + name, Name: name, IsDir: true, ModTime: n.createdAt}, nil
 	}
 	return mount.Stat(ctx, rest)
 }
@@ -303,7 +305,7 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	mount := n.mounts[name]
 	n.mu.RUnlock()
 	if mount == nil {
-		return nil, "", false, fmt.Errorf("vfs: unknown mount %q", name)
+		return nil, "", false, fmt.Errorf("%w: unknown mount %q", ErrNotFound, name)
 	}
 	if rest == "" {
 		return mount, "/", false, nil
@@ -325,7 +327,7 @@ func (n *Namespace) rootEntries() []drive.Entry {
 			ID:      "/" + name,
 			Name:    name,
 			IsDir:   true,
-			ModTime: time.Now(),
+			ModTime: n.createdAt,
 		})
 	}
 	return entries

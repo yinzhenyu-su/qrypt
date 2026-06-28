@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -256,6 +257,9 @@ func TestMkdir(t *testing.T) {
 	if entry.ID != "new-dir" || !entry.IsDir {
 		t.Errorf("unexpected entry: %+v", entry)
 	}
+	if entry.ModTime.IsZero() {
+		t.Fatal("mkdir entry modtime is zero")
+	}
 }
 
 func TestMove(t *testing.T) {
@@ -332,6 +336,9 @@ func TestPutSmallFile(t *testing.T) {
 	}
 	if entry.ID != "new-file" || entry.Name != "test.bin" || entry.Size != 5 {
 		t.Errorf("unexpected entry: %+v", entry)
+	}
+	if entry.ModTime.IsZero() {
+		t.Fatal("put entry modtime is zero")
 	}
 	if !createCalled {
 		t.Error("create not called")
@@ -417,6 +424,9 @@ func TestPutDuplicate(t *testing.T) {
 	if entry.ID != "existing-file" {
 		t.Errorf("expected existing file ID, got %s", entry.ID)
 	}
+	if entry.ModTime.IsZero() {
+		t.Fatal("duplicate put entry modtime is zero")
+	}
 }
 
 func TestResolvePath(t *testing.T) {
@@ -463,6 +473,27 @@ func TestToEntry(t *testing.T) {
 	}
 	if entry.ModTime.IsZero() {
 		t.Error("mod time is zero")
+	}
+	want := time.Date(2024, 1, 15, 10, 30, 0, 0, time.FixedZone("", 8*60*60))
+	if !entry.ModTime.Equal(want) {
+		t.Fatalf("mod time = %s, want %s", entry.ModTime, want)
+	}
+
+	createdOnly := personalItem{
+		FileId:    "f2",
+		Name:      "created.txt",
+		Type:      "file",
+		CreatedAt: "2024-01-14T09:20:00.000+08:00",
+	}
+	createdEntry := toEntry(createdOnly)
+	if createdEntry.ModTime.IsZero() {
+		t.Fatal("created_at fallback modtime is zero")
+	}
+
+	invalid := personalItem{FileId: "bad", Name: "bad.txt", Type: "file", UpdatedAt: "not-a-time"}
+	invalidEntry := toEntry(invalid)
+	if !invalidEntry.ModTime.IsZero() {
+		t.Fatalf("invalid modtime = %s, want zero", invalidEntry.ModTime)
 	}
 
 	folder := personalItem{FileId: "d1", Name: "dir", Type: "folder"}
