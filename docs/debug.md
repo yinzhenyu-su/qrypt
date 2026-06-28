@@ -10,6 +10,15 @@ They are designed for both CLI troubleshooting and future UI integration.
 
 Offline checks read cache files directly and do not need a running mount.
 
+### Mount Drivers With Debug Socket
+
+```sh
+go run ./cmd/qrypt \
+  -config ./qrypt.toml \
+  -debug-socket /tmp/qrypt.sock \
+  mount
+```
+
 ### Pending Uploads
 
 ```sh
