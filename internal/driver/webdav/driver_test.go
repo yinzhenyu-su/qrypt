@@ -26,8 +26,9 @@ type testFile struct {
 }
 
 type testWebDAV struct {
-	mu    sync.RWMutex
-	files map[string]*testFile // key = cleaned path
+	mu        sync.RWMutex
+	files     map[string]*testFile // key = cleaned path
+	lastRange string
 }
 
 func newTestWebDAV() *testWebDAV {
@@ -127,8 +128,8 @@ func (s *testWebDAV) makeResponse(p string, f *testFile) propfindResponse {
 }
 
 func (s *testWebDAV) handleGet(w http.ResponseWriter, r *http.Request, p string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	p = cleanPath(p)
 	file, ok := s.files[p]
@@ -141,10 +142,15 @@ func (s *testWebDAV) handleGet(w http.ResponseWriter, r *http.Request, p string)
 	status := http.StatusOK
 
 	rangeHeader := r.Header.Get("Range")
+	s.lastRange = rangeHeader
 	if rangeHeader != "" {
 		var start, end int64
 		n, _ := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
-		if n >= 1 && start < int64(len(data)) {
+		if n >= 1 && start >= int64(len(data)) {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if n >= 1 {
 			if n == 1 {
 				// Open-ended range: bytes=N- → rest of file
 				end = int64(len(data)) - 1
@@ -674,6 +680,67 @@ func TestWebDAV_ReadOffsetZeroSizeZero(t *testing.T) {
 	want := "entire file content"
 	if string(data) != want {
 		t.Errorf("Read(offset=0, size=0) = %q, want %q", string(data), want)
+	}
+}
+
+func TestWebDAV_ReadRangePastEOFReturnsEmpty(t *testing.T) {
+	drv, ts, _ := setupTest(t)
+	ctx := context.Background()
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.mu.Lock()
+	ts.files["/small.txt"] = &testFile{data: []byte("small"), modTime: time.Now()}
+	ts.mu.Unlock()
+
+	rc, err := drv.Read(ctx, drive.Entry{ID: "/small.txt", Name: "small.txt", Size: 5}, 4096, 1024)
+	if err != nil {
+		t.Fatalf("Read past EOF failed: %v", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("Read past EOF returned %q, want empty", data)
+	}
+}
+
+func TestWebDAV_ReadRangeIsClampedToEntrySize(t *testing.T) {
+	drv, ts, _ := setupTest(t)
+	ctx := context.Background()
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.mu.Lock()
+	ts.files["/small.txt"] = &testFile{data: []byte("small"), modTime: time.Now()}
+	ts.mu.Unlock()
+
+	rc, err := drv.Read(ctx, drive.Entry{ID: "/small.txt", Name: "small.txt", Size: 5}, 0, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if string(data) != "small" {
+		t.Fatalf("Read returned %q, want small", data)
+	}
+
+	ts.mu.RLock()
+	lastRange := ts.lastRange
+	ts.mu.RUnlock()
+	if lastRange != "bytes=0-4" {
+		t.Fatalf("Range = %q, want bytes=0-4", lastRange)
 	}
 }
 

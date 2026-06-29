@@ -16,6 +16,7 @@
 package webdav
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -213,6 +214,12 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 // If size == 0, it reads from offset to EOF — matching the convention
 // used by the VFS layer and localfs/osutil.OpenRead.
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	if entry.Size > 0 && offset >= entry.Size {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
+	if size > 0 && entry.Size > 0 && offset+size > entry.Size {
+		size = entry.Size - offset
+	}
 	urlStr := d.resolveURL(entry.ID)
 	req, err := d.newRequest(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
@@ -228,6 +235,13 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("webdav: read: %w", err)
+	}
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		resp.Body.Close()
+		if entry.Size > 0 && offset >= entry.Size {
+			return io.NopCloser(bytes.NewReader(nil)), nil
+		}
+		return nil, fmt.Errorf("webdav: read: unexpected status %d for %s", resp.StatusCode, entry.ID)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		resp.Body.Close()
