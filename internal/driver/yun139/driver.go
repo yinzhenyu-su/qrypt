@@ -266,6 +266,19 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 	return d.putFile(ctx, parentID, name, size, localPath)
 }
 
+func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
+	start := time.Now()
+	status := drive.HealthStatus{Driver: "139yun", CheckedAt: start}
+	_, err := d.List(ctx, d.rootID)
+	status.Latency = time.Since(start).String()
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	status.OK = true
+	return status
+}
+
 func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
 	now := time.Now()
 	fileID := d.resolveID(parentID)
