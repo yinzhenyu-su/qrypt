@@ -115,6 +115,8 @@ type ResolveResponse struct {
 type CacheResponse struct {
 	SchemaVersion int                     `json:"schema_version"`
 	GeneratedAt   time.Time               `json:"generated_at"`
+	Path          string                  `json:"path,omitempty"`
+	Resolve       *vfs.DebugResolveInfo   `json:"resolve,omitempty"`
 	Mounts        []DebugCacheMountStatus `json:"mounts"`
 }
 
@@ -349,6 +351,36 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.source.DebugSnapshot()
+	path := r.URL.Query().Get("path")
+	if path != "" {
+		resolver, ok := s.source.(vfs.DebugResolver)
+		if !ok {
+			http.Error(w, "resolve unavailable", http.StatusNotImplemented)
+			return
+		}
+		info, err := resolver.DebugResolve(r.Context(), path, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		mountName := cacheMountName(snapshot, info.Path)
+		for _, mount := range snapshot.Mounts {
+			if mount.Name != mountName {
+				continue
+			}
+			cache := filterReadCacheFile(mount.ReadCache, info.RemoteID)
+			writeJSON(w, CacheResponse{
+				SchemaVersion: snapshot.SchemaVersion,
+				GeneratedAt:   snapshot.GeneratedAt,
+				Path:          info.Path,
+				Resolve:       &info,
+				Mounts:        []DebugCacheMountStatus{{Mount: mount.Name, Cache: cache}},
+			})
+			return
+		}
+		http.Error(w, "cache mount not found", http.StatusNotFound)
+		return
+	}
 	var mounts []DebugCacheMountStatus
 	for _, mount := range snapshot.Mounts {
 		mounts = append(mounts, DebugCacheMountStatus{Mount: mount.Name, Cache: mount.ReadCache})
@@ -359,6 +391,36 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   snapshot.GeneratedAt,
 		Mounts:        mounts,
 	})
+}
+
+func cacheMountName(snapshot vfs.DebugSnapshot, path string) string {
+	if snapshot.Kind != "namespace" {
+		if len(snapshot.Mounts) == 1 {
+			return snapshot.Mounts[0].Name
+		}
+		return ""
+	}
+	path = strings.Trim(strings.TrimPrefix(path, "/"), "/")
+	if idx := strings.Index(path, "/"); idx >= 0 {
+		return path[:idx]
+	}
+	return path
+}
+
+func filterReadCacheFile(cache vfs.DebugReadCache, fid string) vfs.DebugReadCache {
+	files := cache.Files
+	cache.Files = nil
+	cache.ChunkCount = 0
+	cache.Bytes = 0
+	for _, file := range files {
+		if file.ID == fid {
+			cache.Files = []vfs.DebugReadCacheFile{file}
+			cache.ChunkCount = file.ChunkCount
+			cache.Bytes = file.Bytes
+			return cache
+		}
+	}
+	return cache
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {

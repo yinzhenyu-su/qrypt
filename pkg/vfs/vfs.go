@@ -231,6 +231,9 @@ func (v *VFS) readRange(ctx context.Context, entry drive.Entry, offset, size int
 	}
 	startChunk := offset / readChunkSize
 	endChunk := startChunk
+	if entry.Size > 0 && offset >= entry.Size {
+		return nil, startChunk, endChunk, nil
+	}
 	var out bytes.Buffer
 	pos := offset
 	end, endKnown := readEnd(offset, size, entry.Size)
@@ -334,7 +337,15 @@ func (v *VFS) loadChunk(ctx context.Context, entry drive.Entry, index int64) ([]
 }
 
 func (v *VFS) fetchChunk(ctx context.Context, entry drive.Entry, index int64) ([]byte, error) {
-	rc, err := v.driver.Read(ctx, entry, index*readChunkSize, readChunkSize)
+	offset := index * readChunkSize
+	if entry.Size > 0 && offset >= entry.Size {
+		return nil, nil
+	}
+	size := int64(readChunkSize)
+	if entry.Size > 0 && offset+size > entry.Size {
+		size = entry.Size - offset
+	}
+	rc, err := v.driver.Read(ctx, entry, offset, size)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +358,9 @@ func (v *VFS) fetchChunk(ctx context.Context, entry drive.Entry, index int64) ([
 		return nil, closeErr
 	}
 	if len(data) > 0 {
-		_ = v.cache.PutChunk(entry.ID, index, data)
+		if err := v.cache.PutChunk(entry.ID, index, data); err != nil {
+			logging.L.Warnf("[CACHE] put chunk failed fid=%q index=%d size=%d err=%v", entry.ID, index, len(data), err)
+		}
 	}
 	return data, nil
 }
@@ -456,7 +469,9 @@ func (v *VFS) fetchChunkWindow(ctx context.Context, entry drive.Entry, startInde
 		chunk := make([]byte, chunkSize)
 		copy(chunk, data[:chunkSize])
 		chunks[index] = chunk
-		_ = v.cache.PutChunk(entry.ID, index, chunk)
+		if err := v.cache.PutChunk(entry.ID, index, chunk); err != nil {
+			logging.L.Warnf("[CACHE] put chunk failed fid=%q index=%d size=%d err=%v", entry.ID, index, len(chunk), err)
+		}
 		data = data[chunkSize:]
 	}
 	return chunks, nil

@@ -141,17 +141,16 @@ func runDebugBundle(ctx context.Context, args []string, debugSocket string) erro
 
 func runDebugLive(ctx context.Context, args []string, debugSocket string) error {
 	if debugSocket == "" {
-		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache|tasks|consistency PATH")
+		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache [PATH]|tasks|consistency PATH")
 	}
 	if len(args) < 1 {
-		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache|tasks|consistency PATH")
+		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache [PATH]|tasks|consistency PATH")
 	}
 	endpoints := map[string]string{
 		"health":        "/v1/health",
 		"state":         "/v1/state",
 		"pending":       "/v1/pending",
 		"driver":        "/v1/driver",
-		"cache":         "/v1/cache",
 		"tasks":         "/v1/tasks",
 		"runtime":       "/v1/runtime",
 		"ops":           "/v1/ops",
@@ -213,6 +212,14 @@ func runDebugLive(ctx context.Context, args []string, debugSocket string) error 
 				values.Set("include_remote_name", "1")
 			}
 			endpoint = "/v1/resolve?" + values.Encode()
+		case "cache":
+			if len(args) > 2 {
+				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live cache [PATH]")
+			}
+			endpoint = "/v1/cache"
+			if len(args) == 2 {
+				endpoint += "?path=" + url.QueryEscape(args[1])
+			}
 		case "consistency":
 			if len(args) < 2 || len(args) > 4 {
 				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency PATH | --dir DIR [--recursive]")
