@@ -42,16 +42,12 @@ type DebugResolver interface {
 	DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error)
 }
 
-type DebugTaskLister interface {
-	DebugTasks() []DebugTask
-}
-
 type DebugConsistencyChecker interface {
 	DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error)
 }
 
-type DebugDriverHealthChecker interface {
-	DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus
+type DebugStagingInspector interface {
+	DebugStaging(ctx context.Context, path string) (DebugStagingReport, error)
 }
 
 type Mount struct {

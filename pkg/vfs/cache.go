@@ -74,17 +74,25 @@ func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
 }
 
 type PendingFile struct {
-	Path          string `json:"path"`
-	FID           string `json:"fid"`
-	ParentID      string `json:"parent_id"`
-	Name          string `json:"name"`
-	LocalPath     string `json:"local_path"`
-	Size          int64  `json:"size"`
-	UpdatedAt     int64  `json:"updated_at"`
-	RetryCount    int    `json:"retry_count,omitempty"`
-	LastError     string `json:"last_error,omitempty"`
-	LastAttemptAt int64  `json:"last_attempt_at,omitempty"`
-	NextAttemptAt int64  `json:"next_attempt_at,omitempty"`
+	Path          string                `json:"path"`
+	FID           string                `json:"fid"`
+	ParentID      string                `json:"parent_id"`
+	Name          string                `json:"name"`
+	LocalPath     string                `json:"local_path"`
+	Size          int64                 `json:"size"`
+	UpdatedAt     int64                 `json:"updated_at"`
+	RetryCount    int                   `json:"retry_count,omitempty"`
+	LastError     string                `json:"last_error,omitempty"`
+	LastAttemptAt int64                 `json:"last_attempt_at,omitempty"`
+	NextAttemptAt int64                 `json:"next_attempt_at,omitempty"`
+	Staging       *PendingStagingStatus `json:"staging,omitempty"`
+}
+
+type PendingStagingStatus struct {
+	Exists      bool   `json:"exists"`
+	Size        int64  `json:"size,omitempty"`
+	SizeMatches bool   `json:"size_matches"`
+	Error       string `json:"error,omitempty"`
 }
 
 type journalEntry struct {
@@ -168,13 +176,29 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 
 func (c *Cache) Pending() []PendingFile {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	files := make([]PendingFile, 0, len(c.pending))
 	for _, pending := range c.pending {
 		files = append(files, pending)
 	}
+	c.mu.RUnlock()
+	for i := range files {
+		files[i].Staging = c.pendingStagingStatus(files[i])
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files
+}
+
+func (c *Cache) pendingStagingStatus(p PendingFile) *PendingStagingStatus {
+	status := &PendingStagingStatus{}
+	info, err := os.Stat(p.LocalPath)
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	status.Exists = true
+	status.Size = info.Size()
+	status.SizeMatches = status.Size == p.Size
+	return status
 }
 
 func (c *Cache) PendingByPath(path string) (PendingFile, bool) {
