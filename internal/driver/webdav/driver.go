@@ -289,6 +289,19 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	return d.move(ctx, srcURL, destURL)
 }
 
+func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
+	start := time.Now()
+	status := drive.HealthStatus{Driver: "webdav", CheckedAt: start}
+	_, err := d.propfind(ctx, d.baseURL, 0)
+	status.Latency = time.Since(start).String()
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	status.OK = true
+	return status
+}
+
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	urlStr := d.resolveURL(entry.ID)
 	req, err := d.newRequest(ctx, http.MethodDelete, urlStr, nil)
