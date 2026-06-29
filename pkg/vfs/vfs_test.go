@@ -24,8 +24,10 @@ const testUploadDelay = 10 * time.Millisecond
 
 type countingReadDriver struct {
 	data    []byte
+	id      string
 	mu      sync.Mutex
 	read    map[int64]int
+	sizes   map[int64]int64
 	block   map[int64]chan struct{}
 	entered map[int64]chan struct{}
 }
@@ -90,7 +92,7 @@ type fileUploadDriver struct {
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
-	return &countingReadDriver{data: data, read: map[int64]int{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
+	return &countingReadDriver{data: data, read: map[int64]int{}, sizes: map[int64]int64{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
 }
 
 func newCountingRemoveDriver() *countingRemoveDriver {
@@ -106,8 +108,12 @@ func (d *countingReadDriver) Init(context.Context) error { return nil }
 func (d *countingReadDriver) Drop(context.Context) error { return nil }
 
 func (d *countingReadDriver) List(context.Context, string) ([]drive.Entry, error) {
+	id := d.id
+	if id == "" {
+		id = "file"
+	}
 	return []drive.Entry{{
-		ID:       "file",
+		ID:       id,
 		ParentID: "0",
 		Name:     "data.bin",
 		Size:     int64(len(d.data)),
@@ -117,6 +123,7 @@ func (d *countingReadDriver) List(context.Context, string) ([]drive.Entry, error
 func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	d.mu.Lock()
 	d.read[offset]++
+	d.sizes[offset] = size
 	entered := d.entered[offset]
 	block := d.block[offset]
 	d.mu.Unlock()
@@ -144,6 +151,12 @@ func (d *countingReadDriver) readCount(offset int64) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.read[offset]
+}
+
+func (d *countingReadDriver) readSize(offset int64) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sizes[offset]
 }
 
 func (d *countingReadDriver) blockRead(offset int64) (entered chan struct{}, release func()) {
@@ -684,6 +697,33 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 	}
 }
 
+func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("cache me")
+	drv := newCountingReadDriver(data)
+	drv.id = "/未命名文件夹/运维必读.txt"
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := fs.DebugSnapshot().Mounts[0].ReadCache
+	if cache.Puts != 1 || cache.ChunkCount != 1 {
+		t.Fatalf("expected one cached chunk for slash ID, got %+v", cache)
+	}
+	if len(cache.Files) != 1 || cache.Files[0].ID != drv.id {
+		t.Fatalf("expected original ID in debug cache details, got %+v", cache.Files)
+	}
+}
+
 func TestVFSCoalescesFlushUploads(t *testing.T) {
 	ctx := context.Background()
 	drv := &countingUploadDriver{}
@@ -1077,6 +1117,72 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	raw := localfs.New(remote)
+	cp, err := crypt.NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drv := crypt.NewDriver(raw, cp)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/secret.txt", []byte("encrypted"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/secret.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+	if err := os.WriteFile(filepath.Join(remote, "plain.txt"), []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := fs.DebugConsistency(ctx, "/secret.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("status = %q, want ok: %+v", report.Status, report)
+	}
+	if len(report.ForeignEntries) != 1 {
+		t.Fatalf("foreign entries = %+v, want one", report.ForeignEntries)
+	}
+	if report.ForeignEntries[0].RemoteName != "plain.txt" || report.ForeignEntries[0].Reason != "filename_decrypt_failed" {
+		t.Fatalf("unexpected foreign entry: %+v", report.ForeignEntries[0])
+	}
+}
+
+func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	raw := localfs.New(remote)
+	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+	if err := os.WriteFile(filepath.Join(remote, "plain.txt"), []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := fs.DebugConsistency(ctx, "/plain.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || !report.RemoteFound {
+		t.Fatalf("unexpected plain consistency report: %+v", report)
+	}
+	if len(report.ForeignEntries) != 0 {
+		t.Fatalf("plain mount reported foreign entries: %+v", report.ForeignEntries)
+	}
+}
+
 func TestVFSReadSpansChunks(t *testing.T) {
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("a"), testReadChunkSize+10)
@@ -1097,6 +1203,61 @@ func TestVFSReadSpansChunks(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatalf("read length = %d, want %d", len(got), len(data))
+	}
+}
+
+func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("small")
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 4096, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("read past EOF returned %q, want empty", got)
+	}
+	if got := drv.readCount(4096); got != 0 {
+		t.Fatalf("driver read count at EOF offset = %d, want 0", got)
+	}
+}
+
+func TestVFSReadClampsDriverReadToEntrySize(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("small")
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if string(got) != "small" {
+		t.Fatalf("read = %q, want small", got)
+	}
+	if got := drv.readSize(0); got != int64(len(data)) {
+		t.Fatalf("driver read size = %d, want %d", got, len(data))
 	}
 }
 

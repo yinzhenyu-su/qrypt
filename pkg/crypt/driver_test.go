@@ -10,8 +10,9 @@ import (
 )
 
 type recordingRawDriver struct {
-	data  []byte
-	reads []rawRead
+	data    []byte
+	reads   []rawRead
+	entries []drive.Entry
 }
 
 type rawRead struct {
@@ -22,7 +23,7 @@ type rawRead struct {
 func (d *recordingRawDriver) Init(context.Context) error { return nil }
 func (d *recordingRawDriver) Drop(context.Context) error { return nil }
 func (d *recordingRawDriver) List(context.Context, string) ([]drive.Entry, error) {
-	return nil, nil
+	return append([]drive.Entry(nil), d.entries...), nil
 }
 
 func (d *recordingRawDriver) Read(_ context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -83,5 +84,29 @@ func TestDriverReadUsesEncryptedRange(t *testing.T) {
 	}
 	if raw.reads[1].size != BlockSize {
 		t.Fatalf("range raw size = %d, want %d", raw.reads[1].size, BlockSize)
+	}
+}
+
+func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
+	ctx := context.Background()
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := &recordingRawDriver{entries: []drive.Entry{
+		{ID: "encrypted", ParentID: "root", Name: cp.EncryptSegment("secret.txt"), Size: 42},
+		{ID: "plain", ParentID: "root", Name: "plain.txt", Size: 7},
+	}}
+	drv := NewDriver(raw, cp)
+
+	foreign, err := drv.ForeignEntries(ctx, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(foreign) != 1 {
+		t.Fatalf("foreign entries = %+v, want one", foreign)
+	}
+	if foreign[0].ID != "plain" || foreign[0].RemoteName != "plain.txt" || foreign[0].Reason != "filename_decrypt_failed" {
+		t.Fatalf("unexpected foreign entry: %+v", foreign[0])
 	}
 }

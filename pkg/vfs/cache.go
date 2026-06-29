@@ -2,6 +2,8 @@ package vfs
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,17 +74,25 @@ func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
 }
 
 type PendingFile struct {
-	Path          string `json:"path"`
-	FID           string `json:"fid"`
-	ParentID      string `json:"parent_id"`
-	Name          string `json:"name"`
-	LocalPath     string `json:"local_path"`
-	Size          int64  `json:"size"`
-	UpdatedAt     int64  `json:"updated_at"`
-	RetryCount    int    `json:"retry_count,omitempty"`
-	LastError     string `json:"last_error,omitempty"`
-	LastAttemptAt int64  `json:"last_attempt_at,omitempty"`
-	NextAttemptAt int64  `json:"next_attempt_at,omitempty"`
+	Path          string                `json:"path"`
+	FID           string                `json:"fid"`
+	ParentID      string                `json:"parent_id"`
+	Name          string                `json:"name"`
+	LocalPath     string                `json:"local_path"`
+	Size          int64                 `json:"size"`
+	UpdatedAt     int64                 `json:"updated_at"`
+	RetryCount    int                   `json:"retry_count,omitempty"`
+	LastError     string                `json:"last_error,omitempty"`
+	LastAttemptAt int64                 `json:"last_attempt_at,omitempty"`
+	NextAttemptAt int64                 `json:"next_attempt_at,omitempty"`
+	Staging       *PendingStagingStatus `json:"staging,omitempty"`
+}
+
+type PendingStagingStatus struct {
+	Exists      bool   `json:"exists"`
+	Size        int64  `json:"size,omitempty"`
+	SizeMatches bool   `json:"size_matches"`
+	Error       string `json:"error,omitempty"`
 }
 
 type journalEntry struct {
@@ -112,6 +122,10 @@ type Cache struct {
 	chunks        map[string]*fileChunks
 	lastDiskCheck atomic.Int64 // unix nano
 	stats         cacheStats
+	lastGetError  string
+	lastGetAt     time.Time
+	lastPutError  string
+	lastPutAt     time.Time
 }
 
 type cacheStats struct {
@@ -162,13 +176,29 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 
 func (c *Cache) Pending() []PendingFile {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	files := make([]PendingFile, 0, len(c.pending))
 	for _, pending := range c.pending {
 		files = append(files, pending)
 	}
+	c.mu.RUnlock()
+	for i := range files {
+		files[i].Staging = c.pendingStagingStatus(files[i])
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files
+}
+
+func (c *Cache) pendingStagingStatus(p PendingFile) *PendingStagingStatus {
+	status := &PendingStagingStatus{}
+	info, err := os.Stat(p.LocalPath)
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	status.Exists = true
+	status.Size = info.Size()
+	status.SizeMatches = status.Size == p.Size
+	return status
 }
 
 func (c *Cache) PendingByPath(path string) (PendingFile, bool) {
@@ -293,12 +323,14 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	f, err := os.Open(info.file)
 	if err != nil {
 		c.addMiss()
+		c.setLastGetError(err)
 		return nil, false, err
 	}
 	defer f.Close()
 	data := make([]byte, info.size)
 	if _, err := f.ReadAt(data, info.offset); err != nil {
 		c.addMiss()
+		c.setLastGetError(err)
 		return nil, false, err
 	}
 	info.accessAt = time.Now()
@@ -312,16 +344,19 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	batch := index / cacheBatchBlocks
 	offset := int64(index%cacheBatchBlocks) * readChunkSize
-	path := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", fid, batch))
+	path := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", cacheFileID(fid), batch))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		c.setLastPutError(err)
 		return err
 	}
 	if _, err := f.WriteAt(data, offset); err != nil {
 		f.Close()
+		c.setLastPutError(err)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		c.setLastPutError(err)
 		return err
 	}
 	fc := c.fileChunks(fid)
@@ -329,7 +364,16 @@ func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	fc.chunks[index] = chunkInfo{file: path, offset: offset, size: int64(len(data)), accessAt: time.Now()}
 	fc.mu.Unlock()
 	c.addPut()
-	return c.evictIfNeeded()
+	if err := c.evictIfNeeded(); err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	return nil
+}
+
+func cacheFileID(fid string) string {
+	sum := sha256.Sum256([]byte(fid))
+	return hex.EncodeToString(sum[:])
 }
 
 func (c *Cache) addHit() {
@@ -347,6 +391,26 @@ func (c *Cache) addMiss() {
 func (c *Cache) addPut() {
 	c.mu.Lock()
 	c.stats.puts++
+	c.mu.Unlock()
+}
+
+func (c *Cache) setLastGetError(err error) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastGetError = err.Error()
+	c.lastGetAt = time.Now()
+	c.mu.Unlock()
+}
+
+func (c *Cache) setLastPutError(err error) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastPutError = err.Error()
+	c.lastPutAt = time.Now()
 	c.mu.Unlock()
 }
 

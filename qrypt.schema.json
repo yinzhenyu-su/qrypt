@@ -224,7 +224,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "139yun", "115", "aliyundrive"]
+          "enum": ["localfs", "quark", "139yun", "115", "aliyundrive", "webdav"]
         },
         "mount_point": {
           "description": "Deprecated. Use the top-level mount_point instead.",
@@ -401,6 +401,39 @@
                   },
                   "root_id": {
                     "description": "Root directory ID.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "webdav" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["url", "username", "password"],
+                "properties": {
+                  "url": {
+                    "description": "WebDAV server base URL.",
+                    "type": "string", "minLength": 1,
+                    "example": "https://nextcloud.example.com/remote.php/dav/files/user"
+                  },
+                  "username": {
+                    "description": "WebDAV authentication username.",
+                    "type": "string", "minLength": 1
+                  },
+                  "password": {
+                    "description": "WebDAV authentication password or app token.",
+                    "type": "string", "minLength": 1
+                  },
+                  "root_path": {
+                    "description": "Optional path under the WebDAV base URL used as this mount root.",
                     "type": "string"
                   }
                 }

@@ -80,7 +80,7 @@ go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live consistency /aliyun/
 ```sh
 go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live uploads --history
 go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live events warn 100
-go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live ops
+go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live staging /aliyun/a.txt
 go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live goroutines
 go run ./cmd/qrypt -config ./qrypt.toml debug journal
 ```
@@ -107,18 +107,16 @@ Review the bundle before sharing it.
 | Command | Purpose |
 |---|---|
 | `debug live health` | process reachability and API version |
-| `debug live state` | all mounts, pending uploads, active uploads, timers, cache summary, driver snapshots |
-| `debug live pending` | flat pending upload list |
+| `debug live state` | process metadata, mount encryption/driver summary, pending uploads, active uploads, timers, cache summary, driver snapshots |
+| `debug live pending` | flat pending upload list with basic staging status |
 | `debug live uploads [path] [--history]` | active and recent upload state |
-| `debug live events [level] [limit]` | recent warning/error events |
-| `debug live ops` | recent normal filesystem operation events |
+| `debug live events [level] [limit] [--path path] [--component name]` | recent warning/error events, optionally filtered by path or component |
 | `debug live list <path>` | live remote list through VFS/driver, bypassing directory cache |
-| `debug live resolve <path> [--remote-name]` | virtual path, object ID, parent ID, and optional encrypted remote name |
-| `debug live cache` | read cache size, files, chunks, hits, misses, evictions |
-| `debug live tasks` | UI-friendly task list derived from VFS state |
+| `debug live resolve <path> [--remote-name]` | virtual path, mount, driver, encryption state, object ID, cache ID, parent ID, and optional encrypted remote name |
+| `debug live cache [path]` | read cache size, files, chunks, hits, misses, evictions |
+| `debug live staging [path]` | staging file counts, pending matches, orphans, and per-file checksum |
 | `debug live consistency <path>` | compare pending state with live remote parent listing |
 | `debug live driver` | optional per-driver debug snapshots |
-| `debug live driver-health` | explicit driver health checks |
 | `debug live runtime` | Go runtime and memory summary |
 | `debug live goroutines [debug]` | goroutine dump |
 | `debug bundle -out <zip>` | collect a diagnostic zip |

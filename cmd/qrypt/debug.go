@@ -105,18 +105,16 @@ func runDebugBundle(ctx context.Context, args []string, debugSocket string) erro
 	defer out.Close()
 	zw := zip.NewWriter(out)
 	endpoints := map[string]string{
-		"health.json":        "/v1/health",
-		"state.json":         "/v1/state",
-		"pending.json":       "/v1/pending",
-		"uploads.json":       "/v1/uploads?history=1",
-		"events.json":        "/v1/events?level=warn&limit=500",
-		"ops.json":           "/v1/ops?limit=500",
-		"cache.json":         "/v1/cache",
-		"tasks.json":         "/v1/tasks",
-		"driver.json":        "/v1/driver",
-		"driver-health.json": "/v1/driver/health",
-		"runtime.json":       "/v1/runtime",
-		"goroutines.txt":     "/v1/goroutines?debug=1",
+		"health.json":    "/v1/health",
+		"state.json":     "/v1/state",
+		"pending.json":   "/v1/pending",
+		"uploads.json":   "/v1/uploads?history=1",
+		"events.json":    "/v1/events?level=warn&limit=500",
+		"cache.json":     "/v1/cache",
+		"staging.json":   "/v1/staging",
+		"driver.json":    "/v1/driver",
+		"runtime.json":   "/v1/runtime",
+		"goroutines.txt": "/v1/goroutines?debug=1",
 	}
 	names := make([]string, 0, len(endpoints))
 	for name := range endpoints {
@@ -141,21 +139,17 @@ func runDebugBundle(ctx context.Context, args []string, debugSocket string) erro
 
 func runDebugLive(ctx context.Context, args []string, debugSocket string) error {
 	if debugSocket == "" {
-		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache|tasks|consistency PATH")
+		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT] [--path PATH] [--component COMPONENT]|list [PATH]|resolve PATH [--remote-name]|cache [PATH]|staging [PATH]|consistency PATH")
 	}
 	if len(args) < 1 {
-		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT]|list [PATH]|resolve PATH [--remote-name]|cache|tasks|consistency PATH")
+		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live health|state|pending|uploads [PATH] [--history]|driver|events [LEVEL] [LIMIT] [--path PATH] [--component COMPONENT]|list [PATH]|resolve PATH [--remote-name]|cache [PATH]|staging [PATH]|consistency PATH")
 	}
 	endpoints := map[string]string{
-		"health":        "/v1/health",
-		"state":         "/v1/state",
-		"pending":       "/v1/pending",
-		"driver":        "/v1/driver",
-		"cache":         "/v1/cache",
-		"tasks":         "/v1/tasks",
-		"runtime":       "/v1/runtime",
-		"ops":           "/v1/ops",
-		"driver-health": "/v1/driver/health",
+		"health":  "/v1/health",
+		"state":   "/v1/state",
+		"pending": "/v1/pending",
+		"driver":  "/v1/driver",
+		"runtime": "/v1/runtime",
 	}
 	endpoint, ok := endpoints[args[0]]
 	if !ok {
@@ -170,15 +164,32 @@ func runDebugLive(ctx context.Context, args []string, debugSocket string) error 
 			}
 			endpoint = "/v1/list?path=" + url.QueryEscape(path)
 		case "events":
-			if len(args) > 3 {
-				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live events [LEVEL] [LIMIT]")
-			}
 			values := url.Values{}
-			if len(args) >= 2 {
-				values.Set("level", args[1])
-			}
-			if len(args) == 3 {
-				values.Set("limit", args[2])
+			positional := 0
+			for i := 1; i < len(args); i++ {
+				switch args[i] {
+				case "--path":
+					if i+1 >= len(args) {
+						return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live events [LEVEL] [LIMIT] [--path PATH] [--component COMPONENT]")
+					}
+					i++
+					values.Set("path", args[i])
+				case "--component":
+					if i+1 >= len(args) {
+						return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live events [LEVEL] [LIMIT] [--path PATH] [--component COMPONENT]")
+					}
+					i++
+					values.Set("component", args[i])
+				default:
+					positional++
+					if positional == 1 {
+						values.Set("level", args[i])
+					} else if positional == 2 {
+						values.Set("limit", args[i])
+					} else {
+						return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live events [LEVEL] [LIMIT] [--path PATH] [--component COMPONENT]")
+					}
+				}
 			}
 			endpoint = "/v1/events"
 			if encoded := values.Encode(); encoded != "" {
@@ -213,6 +224,22 @@ func runDebugLive(ctx context.Context, args []string, debugSocket string) error 
 				values.Set("include_remote_name", "1")
 			}
 			endpoint = "/v1/resolve?" + values.Encode()
+		case "cache":
+			if len(args) > 2 {
+				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live cache [PATH]")
+			}
+			endpoint = "/v1/cache"
+			if len(args) == 2 {
+				endpoint += "?path=" + url.QueryEscape(args[1])
+			}
+		case "staging":
+			if len(args) > 2 {
+				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live staging [PATH]")
+			}
+			endpoint = "/v1/staging"
+			if len(args) == 2 {
+				endpoint += "?path=" + url.QueryEscape(args[1])
+			}
 		case "consistency":
 			if len(args) < 2 || len(args) > 4 {
 				return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug live consistency PATH | --dir DIR [--recursive]")
