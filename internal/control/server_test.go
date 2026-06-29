@@ -38,6 +38,9 @@ func (f fakeSnapshotter) DebugResolve(ctx context.Context, path string, includeR
 		Path:      path,
 		Parent:    "/local",
 		PlainName: "file.txt",
+		Mount:     "local",
+		Driver:    "localfs",
+		CacheID:   "cache-id",
 		RemoteID:  "remote-id",
 		ParentID:  "parent-id",
 		Size:      7,
@@ -46,10 +49,6 @@ func (f fakeSnapshotter) DebugResolve(ctx context.Context, path string, includeR
 		info.RemoteName = "encrypted-name"
 	}
 	return info, nil
-}
-
-func (f fakeSnapshotter) DebugTasks() []vfs.DebugTask {
-	return []vfs.DebugTask{{Type: "upload", Path: "/local/file.txt", State: "uploading", OpID: "file"}}
 }
 
 func (f fakeSnapshotter) DebugConsistency(ctx context.Context, path string) (vfs.ConsistencyReport, error) {
@@ -66,15 +65,26 @@ func (f fakeSnapshotter) DebugConsistency(ctx context.Context, path string) (vfs
 	}, nil
 }
 
-func (f fakeSnapshotter) DebugDriverHealth(ctx context.Context) map[string]drive.HealthStatus {
-	return map[string]drive.HealthStatus{
-		"local": {
-			Driver:    "localfs",
-			OK:        true,
-			CheckedAt: time.Unix(6, 0),
-			Latency:   "1ms",
-		},
-	}
+func (f fakeSnapshotter) DebugStaging(ctx context.Context, path string) (vfs.DebugStagingReport, error) {
+	return vfs.DebugStagingReport{
+		Path: path,
+		Mounts: []vfs.DebugStagingMount{{
+			Mount:        "local",
+			PendingCount: 1,
+			StagingCount: 1,
+			Bytes:        7,
+			Files: []vfs.DebugStagingFile{{
+				Path:        "/local/file.txt",
+				LocalPath:   "/tmp/file.staging",
+				Pending:     true,
+				Exists:      true,
+				PendingSize: 7,
+				StagingSize: 7,
+				SizeMatches: true,
+				SHA256:      "abc123",
+			}},
+		}},
+	}, nil
 }
 
 func TestServerExposesStateAndPending(t *testing.T) {
@@ -83,8 +93,10 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Unix(1, 0),
 		Kind:          "namespace",
+		Process:       vfs.DebugProcess{PID: 1234, StartedAt: time.Unix(8, 0)},
 		Mounts: []vfs.DebugMountSnapshot{{
-			Name: "local",
+			Name:       "local",
+			DriverName: "localfs",
 			Uploads: []vfs.DebugUpload{{
 				OpID:          "file",
 				Path:          "/file.txt",
@@ -107,14 +119,6 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				Health:      "ok",
 				GeneratedAt: time.Unix(3, 0),
 			},
-			Ops: []vfs.DebugOp{{
-				ID:    1,
-				Time:  time.Unix(7, 0),
-				Type:  "upload",
-				Path:  "/file.txt",
-				OpID:  "file",
-				State: "completed",
-			}},
 			Pending: []vfs.PendingFile{{
 				Path:       "/file.txt",
 				FID:        "file",
@@ -164,6 +168,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if state.Kind != "namespace" || len(state.Mounts) != 1 || state.Mounts[0].UploadQueueLength != 2 {
 		t.Fatalf("unexpected state: %+v", state)
 	}
+	if state.Process.PID != 1234 || state.Mounts[0].DriverName != "localfs" {
+		t.Fatalf("missing state metadata: %+v", state)
+	}
 	if strings.Contains(string(stateBody), `"upload_history"`) || strings.Contains(string(stateBody), `"ops":`) {
 		t.Fatalf("state should not inline upload history or ops: %s", stateBody)
 	}
@@ -206,22 +213,6 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected driver response: %s", driverBody)
 	}
 
-	driverHealthBody, err := client.Get(context.Background(), "/v1/driver/health")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(driverHealthBody), `"ok": true`) || !strings.Contains(string(driverHealthBody), `"latency": "1ms"`) {
-		t.Fatalf("unexpected driver health response: %s", driverHealthBody)
-	}
-
-	opsBody, err := client.Get(context.Background(), "/v1/ops")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(opsBody), `"/local/file.txt"`) || !strings.Contains(string(opsBody), `"type": "upload"`) {
-		t.Fatalf("unexpected ops response: %s", opsBody)
-	}
-
 	listBody, err := client.Get(context.Background(), "/v1/list?path=/local")
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +235,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if !strings.Contains(string(resolveBody), `"remote_name": "encrypted-name"`) || !strings.Contains(string(resolveBody), `"remote_id": "remote-id"`) {
 		t.Fatalf("unexpected resolve response: %s", resolveBody)
 	}
+	if !strings.Contains(string(resolveBody), `"mount": "local"`) || !strings.Contains(string(resolveBody), `"cache_id": "cache-id"`) {
+		t.Fatalf("resolve response missing metadata: %s", resolveBody)
+	}
 
 	cacheBody, err := client.Get(context.Background(), "/v1/cache")
 	if err != nil {
@@ -263,12 +257,12 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("path cache response should include only resolved file: %s", cachePathBody)
 	}
 
-	tasksBody, err := client.Get(context.Background(), "/v1/tasks")
+	stagingBody, err := client.Get(context.Background(), "/v1/staging?path=/local/file.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(tasksBody), `"type": "upload"`) || !strings.Contains(string(tasksBody), `"state": "uploading"`) {
-		t.Fatalf("unexpected tasks response: %s", tasksBody)
+	if !strings.Contains(string(stagingBody), `"sha256": "abc123"`) || !strings.Contains(string(stagingBody), `"size_matches": true`) {
+		t.Fatalf("unexpected staging response: %s", stagingBody)
 	}
 
 	consistencyBody, err := client.Get(context.Background(), "/v1/consistency?path=/local/file.txt")
@@ -324,6 +318,8 @@ func TestServerExposesRecentEvents(t *testing.T) {
 	defer server.Close(context.Background())
 
 	logging.L.Warnf("warn Cookie: ctoken=secret123")
+	logging.L.Warnf("[FUSE] Read path=\"/local/file.txt\" errc=-5")
+	logging.L.Warnf("[CACHE] put chunk failed fid=\"other\"")
 	logging.L.Errorf("error msg")
 
 	client, err := NewClient(socketPath)
@@ -339,6 +335,13 @@ func TestServerExposesRecentEvents(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Cookie: ***") || !strings.Contains(string(body), "error msg") {
 		t.Fatalf("unexpected event response: %s", body)
+	}
+	filteredBody, err := client.Get(context.Background(), "/v1/events?level=warn&limit=10&path=/local/file.txt&component=FUSE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(filteredBody), "[FUSE] Read") || strings.Contains(string(filteredBody), "[CACHE]") || strings.Contains(string(filteredBody), "error msg") {
+		t.Fatalf("unexpected filtered event response: %s", filteredBody)
 	}
 }
 

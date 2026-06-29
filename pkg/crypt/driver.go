@@ -23,6 +23,10 @@ func NewDriver(raw drive.Driver, cp Cipher) *Driver {
 	return &Driver{raw: raw, cp: cp}
 }
 
+func (d *Driver) Encrypted() bool {
+	return true
+}
+
 func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
 
 func (d *Driver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }

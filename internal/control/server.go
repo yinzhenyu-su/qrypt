@@ -60,27 +60,10 @@ type DriversResponse struct {
 	Drivers       []DebugDriverSummary `json:"drivers"`
 }
 
-type DriverHealthResponse struct {
-	SchemaVersion int                 `json:"schema_version"`
-	GeneratedAt   time.Time           `json:"generated_at"`
-	Drivers       []DebugDriverHealth `json:"drivers"`
-}
-
-type DebugDriverHealth struct {
-	Mount  string             `json:"mount"`
-	Health drive.HealthStatus `json:"health"`
-}
-
 type EventsResponse struct {
 	SchemaVersion int             `json:"schema_version"`
 	GeneratedAt   time.Time       `json:"generated_at"`
 	Events        []logging.Event `json:"events"`
-}
-
-type OpsResponse struct {
-	SchemaVersion int           `json:"schema_version"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	Ops           []vfs.DebugOp `json:"ops"`
 }
 
 type DebugDriverSummary struct {
@@ -120,15 +103,16 @@ type CacheResponse struct {
 	Mounts        []DebugCacheMountStatus `json:"mounts"`
 }
 
+type StagingResponse struct {
+	SchemaVersion int                     `json:"schema_version"`
+	GeneratedAt   time.Time               `json:"generated_at"`
+	Path          string                  `json:"path,omitempty"`
+	Mounts        []vfs.DebugStagingMount `json:"mounts"`
+}
+
 type DebugCacheMountStatus struct {
 	Mount string             `json:"mount"`
 	Cache vfs.DebugReadCache `json:"cache"`
-}
-
-type TasksResponse struct {
-	SchemaVersion int             `json:"schema_version"`
-	GeneratedAt   time.Time       `json:"generated_at"`
-	Tasks         []vfs.DebugTask `json:"tasks"`
 }
 
 type ConsistencyResponse struct {
@@ -190,13 +174,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/pending", s.handlePending)
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
-	mux.HandleFunc("/v1/driver/health", s.handleDriverHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
-	mux.HandleFunc("/v1/ops", s.handleOps)
 	mux.HandleFunc("/v1/list", s.handleList)
 	mux.HandleFunc("/v1/resolve", s.handleResolve)
 	mux.HandleFunc("/v1/cache", s.handleCache)
-	mux.HandleFunc("/v1/tasks", s.handleTasks)
+	mux.HandleFunc("/v1/staging", s.handleStaging)
 	mux.HandleFunc("/v1/consistency", s.handleConsistency)
 	mux.HandleFunc("/v1/runtime", s.handleRuntime)
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
@@ -212,65 +194,6 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 	logging.L.Infof("[CONTROL] listening socket=%q", s.socketPath)
 	return nil
-}
-
-func (s *Server) handleDriverHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	checker, ok := s.source.(vfs.DebugDriverHealthChecker)
-	if !ok {
-		http.Error(w, "driver health unavailable", http.StatusNotImplemented)
-		return
-	}
-	health := checker.DebugDriverHealth(r.Context())
-	var drivers []DebugDriverHealth
-	for mount, status := range health {
-		drivers = append(drivers, DebugDriverHealth{Mount: mount, Health: status})
-	}
-	sort.Slice(drivers, func(i, j int) bool {
-		return drivers[i].Mount < drivers[j].Mount
-	})
-	writeJSON(w, DriverHealthResponse{
-		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
-		GeneratedAt:   time.Now(),
-		Drivers:       drivers,
-	})
-}
-
-func (s *Server) handleOps(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	limit := 100
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-	snapshot := s.source.DebugSnapshot()
-	var ops []vfs.DebugOp
-	for _, mount := range snapshot.Mounts {
-		for _, op := range mount.Ops {
-			if snapshot.Kind == "namespace" && mount.Name != "" {
-				op.Path = joinVirtual("/"+mount.Name, op.Path)
-			}
-			ops = append(ops, op)
-		}
-	}
-	sort.Slice(ops, func(i, j int) bool {
-		return ops[i].Time.Before(ops[j].Time)
-	})
-	if len(ops) > limit {
-		ops = ops[len(ops)-limit:]
-	}
-	writeJSON(w, OpsResponse{
-		SchemaVersion: snapshot.SchemaVersion,
-		GeneratedAt:   snapshot.GeneratedAt,
-		Ops:           ops,
-	})
 }
 
 func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
@@ -393,6 +316,30 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleStaging(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	inspector, ok := s.source.(vfs.DebugStagingInspector)
+	if !ok {
+		http.Error(w, "staging unavailable", http.StatusNotImplemented)
+		return
+	}
+	report, err := inspector.DebugStaging(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	snapshot := s.source.DebugSnapshot()
+	writeJSON(w, StagingResponse{
+		SchemaVersion: snapshot.SchemaVersion,
+		GeneratedAt:   snapshot.GeneratedAt,
+		Path:          report.Path,
+		Mounts:        report.Mounts,
+	})
+}
+
 func cacheMountName(snapshot vfs.DebugSnapshot, path string) string {
 	if snapshot.Kind != "namespace" {
 		if len(snapshot.Mounts) == 1 {
@@ -421,30 +368,6 @@ func filterReadCacheFile(cache vfs.DebugReadCache, fid string) vfs.DebugReadCach
 		}
 	}
 	return cache
-}
-
-func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	lister, ok := s.source.(vfs.DebugTaskLister)
-	if !ok {
-		http.Error(w, "tasks unavailable", http.StatusNotImplemented)
-		return
-	}
-	tasks := lister.DebugTasks()
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].Type == tasks[j].Type {
-			return tasks[i].Path < tasks[j].Path
-		}
-		return tasks[i].Type < tasks[j].Type
-	})
-	writeJSON(w, TasksResponse{
-		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
-		GeneratedAt:   time.Now(),
-		Tasks:         tasks,
-	})
 }
 
 func (s *Server) handleConsistency(w http.ResponseWriter, r *http.Request) {
@@ -559,11 +482,38 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
+	events := logging.L.Events(level, limit)
+	path := r.URL.Query().Get("path")
+	component := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("component")))
+	if path != "" || component != "" {
+		filtered := events[:0]
+		for _, event := range events {
+			if path != "" && !strings.Contains(event.Message, path) {
+				continue
+			}
+			if component != "" && eventComponent(event.Message) != component {
+				continue
+			}
+			filtered = append(filtered, event)
+		}
+		events = filtered
+	}
 	writeJSON(w, EventsResponse{
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Now(),
-		Events:        logging.L.Events(level, limit),
+		Events:        events,
 	})
+}
+
+func eventComponent(message string) string {
+	if !strings.HasPrefix(message, "[") {
+		return ""
+	}
+	end := strings.Index(message, "]")
+	if end <= 1 {
+		return ""
+	}
+	return strings.ToUpper(message[1:end])
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
