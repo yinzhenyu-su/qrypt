@@ -100,6 +100,10 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if opts.DeleteDelay == 0 {
 		opts.DeleteDelay = deleteDebounceDelay
 	}
+	// CacheDir is scoped to the current mount's driver/encryption mode.
+	// If a mount is switched between plain and crypt, stop qrypt and clear
+	// that mount's cache directory first; pending journal entries, staging
+	// files, and read-cache chunks all carry IDs/names with the old semantics.
 	cache, err := NewCache(opts.CacheDir, opts.CacheMaxBytes)
 	if err != nil {
 		return nil, err
