@@ -143,12 +143,17 @@ func (s *testWebDAV) handleGet(w http.ResponseWriter, r *http.Request, p string)
 	rangeHeader := r.Header.Get("Range")
 	if rangeHeader != "" {
 		var start, end int64
-		if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); err == nil && start < int64(len(data)) {
+		n, _ := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+		if n >= 1 && start < int64(len(data)) {
+			if n == 1 {
+				// Open-ended range: bytes=N- → rest of file
+				end = int64(len(data)) - 1
+			}
 			if end >= int64(len(data)) || end == 0 {
 				end = int64(len(data)) - 1
 			}
 			if start <= end {
-				data = data[start:end+1]
+				data = data[start : end+1]
 				status = http.StatusPartialContent
 				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(file.data)))
 			}
@@ -532,5 +537,165 @@ func TestWebDAV_Rename(t *testing.T) {
 	}
 	if dstEntry != nil && string(dstEntry.data) != "renamed" {
 		t.Errorf("renamed file content = %q, want %q", string(dstEntry.data), "renamed")
+	}
+}
+
+// ─── additional read offset tests ─────────────────────────────────────────
+
+func TestWebDAV_ReadOffsetToEOF(t *testing.T) {
+	drv, ts, _ := setupTest(t)
+	ctx := context.Background()
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.mu.Lock()
+	ts.files["/data.bin"] = &testFile{data: []byte("0123456789ABCDEF"), modTime: time.Now()}
+	ts.mu.Unlock()
+
+	entry := drive.Entry{ID: "/data.bin", Name: "data.bin", Size: 16}
+
+	// offset only, no size — read from offset 5 to EOF.
+	rc, err := drv.Read(ctx, entry, 5, 0)
+	if err != nil {
+		t.Fatalf("Read(offset=5, size=0) failed: %v", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	want := "56789ABCDEF"
+	if string(data) != want {
+		t.Errorf("Read(offset=5, size=0) = %q, want %q", string(data), want)
+	}
+}
+
+func TestWebDAV_ReadOffsetZeroSizeZero(t *testing.T) {
+	drv, ts, _ := setupTest(t)
+	ctx := context.Background()
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.mu.Lock()
+	ts.files["/full.txt"] = &testFile{data: []byte("entire file content"), modTime: time.Now()}
+	ts.mu.Unlock()
+
+	entry := drive.Entry{ID: "/full.txt", Name: "full.txt"}
+
+	// offset=0, size=0 — read the whole file (no Range header).
+	rc, err := drv.Read(ctx, entry, 0, 0)
+	if err != nil {
+		t.Fatalf("Read(offset=0, size=0) failed: %v", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	want := "entire file content"
+	if string(data) != want {
+		t.Errorf("Read(offset=0, size=0) = %q, want %q", string(data), want)
+	}
+}
+
+// ─── special character tests ──────────────────────────────────────────────
+
+func TestWebDAV_SpecialCharsInName(t *testing.T) {
+	drv, _, _ := setupTest(t)
+	ctx := context.Background()
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a directory with a special character
+	_, err := drv.Mkdir(ctx, "/", "sub#dir")
+	if err != nil {
+		t.Fatalf("Mkdir(sub#dir) failed: %v", err)
+	}
+
+	// Verify it appears in listing
+	entries, err := drv.List(ctx, "/")
+	if err != nil {
+		t.Fatalf("List after Mkdir(sub#dir) failed: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name == "sub#dir" && e.IsDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("sub#dir not found in listing")
+	}
+
+	// Upload a file with special characters into the subdirectory
+	content := "special chars test"
+	body := strings.NewReader(content)
+	entry, err := drv.Put(ctx, "/sub#dir", "file?name.txt", int64(len(content)), body)
+	if err != nil {
+		t.Fatalf("Put(file?name.txt) into sub#dir failed: %v", err)
+	}
+	if entry.Name != "file?name.txt" {
+		t.Errorf("Put returned name = %q, want %q", entry.Name, "file?name.txt")
+	}
+
+	// List the sub#dir
+	entries, err = drv.List(ctx, "/sub#dir")
+	if err != nil {
+		t.Fatalf("List sub#dir failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry in sub#dir, got %d", len(entries))
+	}
+	if entries[0].Name != "file?name.txt" {
+		t.Errorf("listed file name = %q, want %q", entries[0].Name, "file?name.txt")
+	}
+
+	// Read the file back
+	rc, err := drv.Read(ctx, drive.Entry{ID: "/sub#dir/file?name.txt"}, 0, 0)
+	if err != nil {
+		t.Fatalf("Read /sub#dir/file?name.txt failed: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("Read back content = %q, want %q", string(data), content)
+	}
+
+	// Remove the file
+	err = drv.Remove(ctx, drive.Entry{ID: "/sub#dir/file?name.txt", Name: "file?name.txt"})
+	if err != nil {
+		t.Fatalf("Remove file?name.txt failed: %v", err)
+	}
+}
+
+func TestWebDAV_EscapePath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"simple.txt", "simple.txt"},
+		{"file#name", "file%23name"},
+		{"file?query", "file%3Fquery"},
+		{"100% done", "100%25%20done"},
+		{"a/b/c", "a/b/c"},
+		{"has space/file.txt", "has%20space/file.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := escapePath(tt.input)
+			if got != tt.want {
+				t.Errorf("escapePath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
