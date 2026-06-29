@@ -68,6 +68,7 @@ type resourceType struct {
 // WebDAV URLs by prepending baseURL.
 type Driver struct {
 	baseURL  string // WebDAV root, always ends with "/"
+	rootPath string
 	username string
 	password string
 	client   *http.Client
@@ -78,6 +79,7 @@ type Options struct {
 	URL      string // e.g. "https://nextcloud.example.com/remote.php/dav/files/user"
 	Username string
 	Password string
+	RootPath string
 }
 
 func init() {
@@ -90,6 +92,7 @@ func init() {
 			URL:      url,
 			Username: params["username"],
 			Password: params["password"],
+			RootPath: params["root_path"],
 		}), nil
 	},
 		drive.ParamDef{
@@ -114,28 +117,45 @@ func init() {
 			Description: "WebDAV authentication password or app token",
 			Example:     "your-password-or-app-token",
 		},
+		drive.ParamDef{
+			Name:        "root_path",
+			Type:        "string",
+			Description: "Optional path under the WebDAV base URL used as this mount root",
+			Default:     "/",
+			Example:     "/qrypt",
+		},
 	)
 }
 
 // New creates a new WebDAV driver.
 func New(opts Options) *Driver {
-	baseURL := opts.URL
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
+	baseURL := webdavBaseURL(opts.URL, opts.RootPath)
 	return &Driver{
 		baseURL:  baseURL,
+		rootPath: opts.RootPath,
 		username: opts.Username,
 		password: opts.Password,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        20,
-				IdleConnTimeout:     30 * time.Second,
-				DisableCompression:  false,
+				MaxIdleConns:       20,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: false,
 			},
 		},
 	}
+}
+
+func webdavBaseURL(rawURL, rootPath string) string {
+	baseURL := rawURL
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
+	}
+	rootPath = strings.Trim(rootPath, "/")
+	if rootPath == "" || rootPath == "." {
+		return baseURL
+	}
+	return baseURL + escapePath(rootPath) + "/"
 }
 
 // ─── drive.Driver interface ──────────────────────────────────────────────
@@ -143,6 +163,9 @@ func New(opts Options) *Driver {
 func (d *Driver) Init(ctx context.Context) error {
 	// Verify the connection by PROPFIND on root.
 	if _, err := d.propfind(ctx, d.baseURL, 0); err != nil {
+		if d.rootPath != "" && d.rootPath != "/" {
+			return fmt.Errorf("webdav: init root_path %q: %w", d.rootPath, err)
+		}
 		return fmt.Errorf("webdav: init: %w", err)
 	}
 	return nil
@@ -365,18 +388,18 @@ func (d *Driver) parentURL(resourceURL string) string {
 
 // toPath converts a PROPFIND href to a qrypt path (e.g. "/folder/file").
 func (d *Driver) toPath(href string) string {
-	// URL-decode the href first.
-	decoded, err := url.PathUnescape(href)
-	if err != nil {
-		decoded = href
-	}
-
 	// Some servers return absolute URLs, some return relative paths.
-	// If it looks absolute, extract just the path component.
-	if strings.HasPrefix(decoded, "http://") || strings.HasPrefix(decoded, "https://") {
-		if u, perr := url.Parse(decoded); perr == nil {
-			decoded = u.Path
+	// Parse absolute URLs before unescaping so encoded '#' and '?' path bytes
+	// do not become URL fragments or queries.
+	pathPart := href
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		if u, err := url.Parse(href); err == nil {
+			pathPart = u.EscapedPath()
 		}
+	}
+	decoded, err := url.PathUnescape(pathPart)
+	if err != nil {
+		decoded = pathPart
 	}
 
 	// Strip the base URL's path prefix.
