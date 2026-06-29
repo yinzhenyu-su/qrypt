@@ -20,14 +20,14 @@ import (
 // ─── in-memory test WebDAV server ─────────────────────────────────────────
 
 type testFile struct {
-	isDir    bool
-	data     []byte
-	modTime  time.Time
+	isDir   bool
+	data    []byte
+	modTime time.Time
 }
 
 type testWebDAV struct {
-	mu     sync.RWMutex
-	files  map[string]*testFile // key = cleaned path
+	mu    sync.RWMutex
+	files map[string]*testFile // key = cleaned path
 }
 
 func newTestWebDAV() *testWebDAV {
@@ -286,6 +286,22 @@ func setupTest(t *testing.T) (*Driver, *testWebDAV, string) {
 	return drv, ts, srv.URL
 }
 
+func setupTestWithOptions(t *testing.T, opts Options) (*Driver, *testWebDAV, string) {
+	t.Helper()
+	ts := newTestWebDAV()
+	srv := httptest.NewServer(ts)
+	t.Cleanup(srv.Close)
+
+	opts.URL = srv.URL + "/"
+	if opts.Username == "" {
+		opts.Username = "test"
+	}
+	if opts.Password == "" {
+		opts.Password = "test"
+	}
+	return New(opts), ts, srv.URL
+}
+
 func TestWebDAV_Init(t *testing.T) {
 	drv, _, _ := setupTest(t)
 	ctx := context.Background()
@@ -540,6 +556,65 @@ func TestWebDAV_Rename(t *testing.T) {
 	}
 }
 
+func TestWebDAV_RootPath(t *testing.T) {
+	drv, ts, _ := setupTestWithOptions(t, Options{RootPath: "/qrypt/sub#root"})
+	ctx := context.Background()
+
+	ts.mu.Lock()
+	ts.files["/qrypt"] = &testFile{isDir: true, modTime: time.Now()}
+	ts.files["/qrypt/sub#root"] = &testFile{isDir: true, modTime: time.Now()}
+	ts.files["/qrypt/sub#root/existing.txt"] = &testFile{data: []byte("existing"), modTime: time.Now()}
+	ts.mu.Unlock()
+
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := drv.List(ctx, "/")
+	if err != nil {
+		t.Fatalf("List root_path failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "existing.txt" || entries[0].ID != "/existing.txt" {
+		t.Fatalf("root_path entries = %+v, want existing.txt at virtual root", entries)
+	}
+
+	content := "new under root"
+	if _, err := drv.Put(ctx, "/", "new?file.txt", int64(len(content)), strings.NewReader(content)); err != nil {
+		t.Fatalf("Put under root_path failed: %v", err)
+	}
+	rc, err := drv.Read(ctx, drive.Entry{ID: "/new?file.txt"}, 0, 0)
+	if err != nil {
+		t.Fatalf("Read under root_path failed: %v", err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	if string(data) != content {
+		t.Fatalf("root_path read = %q, want %q", string(data), content)
+	}
+
+	ts.mu.RLock()
+	_, existsAtRoot := ts.files["/new?file.txt"]
+	_, existsUnderRootPath := ts.files["/qrypt/sub#root/new?file.txt"]
+	ts.mu.RUnlock()
+	if existsAtRoot || !existsUnderRootPath {
+		t.Fatalf("root_path put location root=%t under_root_path=%t", existsAtRoot, existsUnderRootPath)
+	}
+}
+
+func TestWebDAV_RootPathMissingReportsRootPath(t *testing.T) {
+	drv, _, _ := setupTestWithOptions(t, Options{RootPath: "/missing"})
+	err := drv.Init(context.Background())
+	if err == nil {
+		t.Fatal("expected missing root_path to fail")
+	}
+	if !strings.Contains(err.Error(), `root_path "/missing"`) {
+		t.Fatalf("error = %v, want root_path context", err)
+	}
+}
+
 // ─── additional read offset tests ─────────────────────────────────────────
 
 func TestWebDAV_ReadOffsetToEOF(t *testing.T) {
@@ -695,6 +770,76 @@ func TestWebDAV_EscapePath(t *testing.T) {
 			got := escapePath(tt.input)
 			if got != tt.want {
 				t.Errorf("escapePath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWebDAV_BaseURLWithRootPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawURL   string
+		rootPath string
+		want     string
+	}{
+		{
+			name:     "empty root",
+			rawURL:   "https://example.com/dav",
+			rootPath: "",
+			want:     "https://example.com/dav/",
+		},
+		{
+			name:     "normal root",
+			rawURL:   "https://example.com/dav/",
+			rootPath: "/qrypt/docs",
+			want:     "https://example.com/dav/qrypt/docs/",
+		},
+		{
+			name:     "special chars",
+			rawURL:   "https://example.com/dav",
+			rootPath: "/qrypt/sub#root/100% done",
+			want:     "https://example.com/dav/qrypt/sub%23root/100%25%20done/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := webdavBaseURL(tt.rawURL, tt.rootPath)
+			if got != tt.want {
+				t.Fatalf("webdavBaseURL(%q, %q) = %q, want %q", tt.rawURL, tt.rootPath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWebDAV_ToPathAbsoluteEncodedHref(t *testing.T) {
+	drv := New(Options{URL: "https://example.com/remote.php/dav/files/user"})
+
+	tests := []struct {
+		name string
+		href string
+		want string
+	}{
+		{
+			name: "hash and query bytes",
+			href: "https://example.com/remote.php/dav/files/user/sub%23dir/file%3Fname.txt",
+			want: "/sub#dir/file?name.txt",
+		},
+		{
+			name: "percent and space bytes",
+			href: "https://example.com/remote.php/dav/files/user/100%25%20done.txt",
+			want: "/100% done.txt",
+		},
+		{
+			name: "base directory",
+			href: "https://example.com/remote.php/dav/files/user/",
+			want: "/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := drv.toPath(tt.href)
+			if got != tt.want {
+				t.Fatalf("toPath(%q) = %q, want %q", tt.href, got, tt.want)
 			}
 		})
 	}

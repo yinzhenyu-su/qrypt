@@ -104,11 +104,13 @@ Use `qrypt help driver <name>` for the exact parameter schema.
 | `quark` | `cookie` | Quark cloud drive backend |
 | `139yun` | `authorization` | 139 cloud drive backend |
 | `115` | `cookie` | 115 backend; read support is limited by provider behavior |
+| `webdav` | `url`, `username`, `password` | Standard WebDAV backend; optional `root_path` |
 
 ```sh
 go run ./cmd/qrypt help
 go run ./cmd/qrypt help driver aliyundrive
 go run ./cmd/qrypt help driver quark
+go run ./cmd/qrypt help driver webdav
 ```
 
 ## Encryption

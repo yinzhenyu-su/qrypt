@@ -431,6 +431,10 @@
                   "password": {
                     "description": "WebDAV authentication password or app token.",
                     "type": "string", "minLength": 1
+                  },
+                  "root_path": {
+                    "description": "Optional path under the WebDAV base URL used as this mount root.",
+                    "type": "string"
                   }
                 }
               }
