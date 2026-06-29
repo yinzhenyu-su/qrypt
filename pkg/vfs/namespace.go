@@ -50,6 +50,35 @@ type DebugStagingInspector interface {
 	DebugStaging(ctx context.Context, path string) (DebugStagingReport, error)
 }
 
+// DriverHealth describes the live health-check result for one mount.
+type DriverHealth struct {
+	Mount     string    `json:"mount"`
+	Driver    string    `json:"driver,omitempty"`
+	OK        bool      `json:"ok"`
+	Error     string    `json:"error,omitempty"`
+	Latency   string    `json:"latency,omitempty"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+// DriverHealthChecker is implemented by VFS and Namespace to expose
+// per-driver live health checks through the debug socket.
+type DriverHealthChecker interface {
+	DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error)
+}
+
+// NamedDriver pairs a mount name with its underlying drive.Driver.
+// Used by the debug socket to expose driver-level operations.
+type NamedDriver struct {
+	Name   string
+	Driver drive.Driver
+}
+
+// DriverProvider is implemented by VFS and Namespace to expose the
+// underlying driver references for driver-level debugging.
+type DriverProvider interface {
+	Drivers() []NamedDriver
+}
+
 type Mount struct {
 	Name string
 	FS   *VFS
