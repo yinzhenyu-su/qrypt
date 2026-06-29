@@ -23,6 +23,10 @@ func NewDriver(raw drive.Driver, cp Cipher) *Driver {
 	return &Driver{raw: raw, cp: cp}
 }
 
+func (d *Driver) Encrypted() bool {
+	return true
+}
+
 func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
 
 func (d *Driver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }
@@ -69,6 +73,27 @@ func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive
 		PlainName:  plainName,
 		RemoteName: d.cp.EncryptSegment(plainName),
 	}, nil
+}
+
+func (d *Driver) ForeignEntries(ctx context.Context, parentID string) ([]drive.ForeignEntry, error) {
+	entries, err := d.raw.List(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	foreign := make([]drive.ForeignEntry, 0)
+	for _, entry := range entries {
+		if _, err := d.cp.DecryptSegment(entry.Name); err != nil {
+			foreign = append(foreign, drive.ForeignEntry{
+				ID:         entry.ID,
+				ParentID:   entry.ParentID,
+				RemoteName: entry.Name,
+				IsDir:      entry.IsDir,
+				Size:       entry.Size,
+				Reason:     "filename_decrypt_failed",
+			})
+		}
+	}
+	return foreign, nil
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -260,3 +285,4 @@ var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.RemoteNameResolver = (*Driver)(nil)
 var _ drive.HealthChecker = (*Driver)(nil)
+var _ drive.ForeignEntryLister = (*Driver)(nil)
