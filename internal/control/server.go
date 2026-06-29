@@ -60,6 +60,12 @@ type DriversResponse struct {
 	Drivers       []DebugDriverSummary `json:"drivers"`
 }
 
+type DriverHealthResponse struct {
+	SchemaVersion int                  `json:"schema_version"`
+	GeneratedAt   time.Time            `json:"generated_at"`
+	Drivers       []vfs.DriverHealth   `json:"drivers"`
+}
+
 type EventsResponse struct {
 	SchemaVersion int             `json:"schema_version"`
 	GeneratedAt   time.Time       `json:"generated_at"`
@@ -90,9 +96,10 @@ type ListEntry struct {
 }
 
 type ResolveResponse struct {
-	SchemaVersion int                  `json:"schema_version"`
-	GeneratedAt   time.Time            `json:"generated_at"`
-	Resolve       vfs.DebugResolveInfo `json:"resolve"`
+	SchemaVersion int                    `json:"schema_version"`
+	GeneratedAt   time.Time              `json:"generated_at"`
+	Resolve       *vfs.DebugResolveInfo  `json:"resolve,omitempty"`
+	Resolves      []vfs.DebugResolveInfo `json:"resolves,omitempty"`
 }
 
 type CacheResponse struct {
@@ -174,6 +181,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/pending", s.handlePending)
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
+	mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/list", s.handleList)
 	mux.HandleFunc("/v1/resolve", s.handleResolve)
@@ -252,19 +260,45 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "resolve unavailable", http.StatusNotImplemented)
 		return
 	}
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/"
-	}
-	info, err := resolver.DebugResolve(r.Context(), path, parseBoolQuery(r.URL.Query().Get("include_remote_name")))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+
+	// Reverse resolve by remote ID.
+	if remoteID := r.URL.Query().Get("remote_id"); remoteID != "" {
+		if ns, ok := s.source.(interface {
+			DebugResolveByRemoteID(ctx context.Context, remoteID string) (*vfs.DebugResolveInfo, string, error)
+		}); ok {
+			info, _, err := ns.DebugResolveByRemoteID(r.Context(), remoteID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			writeJSON(w, ResolveResponse{
+				SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+				GeneratedAt:   time.Now(),
+				Resolves:      []vfs.DebugResolveInfo{*info},
+			})
+			return
+		}
+		http.Error(w, "reverse resolve not available", http.StatusNotImplemented)
 		return
+	}
+
+	includeRemote := parseBoolQuery(r.URL.Query().Get("include_remote_name"))
+	paths := r.URL.Query()["path"]
+	if len(paths) == 0 {
+		paths = []string{"/"}
+	}
+	var results []vfs.DebugResolveInfo
+	for _, p := range paths {
+		info, err := resolver.DebugResolve(r.Context(), p, includeRemote)
+		if err != nil {
+			info = vfs.DebugResolveInfo{Path: p, PlainName: "-"}
+		}
+		results = append(results, info)
 	}
 	writeJSON(w, ResolveResponse{
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Now(),
-		Resolve:       info,
+		Resolves:      results,
 	})
 }
 
@@ -687,6 +721,25 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if parseBoolQuery(r.URL.Query().Get("health")) {
+		checker, ok := s.source.(vfs.DriverHealthChecker)
+		if !ok {
+			http.Error(w, "driver health not available", http.StatusNotImplemented)
+			return
+		}
+		mountName := r.URL.Query().Get("mount")
+		results, err := checker.DriverHealth(r.Context(), mountName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, DriverHealthResponse{
+			SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+			GeneratedAt:   time.Now(),
+			Drivers:       results,
+		})
+		return
+	}
 	snapshot := s.source.DebugSnapshot()
 	var drivers []DebugDriverSummary
 	for _, mount := range snapshot.Mounts {
@@ -703,6 +756,37 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   snapshot.GeneratedAt,
 		Drivers:       drivers,
 	})
+}
+
+func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provider, ok := s.source.(vfs.DriverProvider)
+	if !ok {
+		http.Error(w, "driver test not available", http.StatusNotImplemented)
+		return
+	}
+	drivers := provider.Drivers()
+	mountFilter := r.URL.Query().Get("mount")
+	testType := r.URL.Query().Get("test")
+
+	var results []drive.CRUDTestResult
+	for _, nd := range drivers {
+		if mountFilter != "" && nd.Name != mountFilter {
+			continue
+		}
+		switch testType {
+		case "crud":
+			result := drive.RunCRUDTest(r.Context(), nd.Name, nd.Driver)
+			results = append(results, *result)
+		default:
+			http.Error(w, fmt.Sprintf("unknown test type: %s", testType), http.StatusBadRequest)
+			return
+		}
+	}
+	writeJSON(w, results)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
