@@ -131,7 +131,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				Bytes:      512,
 				Hits:       2,
 				Misses:     1,
-				Files:      []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}},
+				Files:      []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "remote-id", ChunkCount: 1, Bytes: 7}},
 			},
 		}},
 	}}
@@ -251,6 +251,16 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if !strings.Contains(string(cacheBody), `"hits": 2`) || !strings.Contains(string(cacheBody), `"id": "fid"`) {
 		t.Fatalf("unexpected cache response: %s", cacheBody)
+	}
+	cachePathBody, err := client.Get(context.Background(), "/v1/cache?path=/local/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cachePathBody), `"path": "/local/file.txt"`) || !strings.Contains(string(cachePathBody), `"remote_id": "remote-id"`) {
+		t.Fatalf("unexpected path cache response: %s", cachePathBody)
+	}
+	if !strings.Contains(string(cachePathBody), `"id": "remote-id"`) || strings.Contains(string(cachePathBody), `"id": "fid"`) {
+		t.Fatalf("path cache response should include only resolved file: %s", cachePathBody)
 	}
 
 	tasksBody, err := client.Get(context.Background(), "/v1/tasks")

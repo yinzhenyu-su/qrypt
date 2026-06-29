@@ -107,15 +107,19 @@ type DebugCopyHidden struct {
 }
 
 type DebugReadCache struct {
-	MaxBytes   int64                `json:"max_bytes"`
-	ChunkCount int                  `json:"chunk_count"`
-	Bytes      int64                `json:"bytes"`
-	FileCount  int                  `json:"file_count"`
-	Hits       int64                `json:"hits"`
-	Misses     int64                `json:"misses"`
-	Puts       int64                `json:"puts"`
-	Evicted    int64                `json:"evicted"`
-	Files      []DebugReadCacheFile `json:"files,omitempty"`
+	MaxBytes       int64                `json:"max_bytes"`
+	ChunkCount     int                  `json:"chunk_count"`
+	Bytes          int64                `json:"bytes"`
+	FileCount      int                  `json:"file_count"`
+	Hits           int64                `json:"hits"`
+	Misses         int64                `json:"misses"`
+	Puts           int64                `json:"puts"`
+	Evicted        int64                `json:"evicted"`
+	LastGetError   string               `json:"last_get_error,omitempty"`
+	LastGetErrorAt *time.Time           `json:"last_get_error_at,omitempty"`
+	LastPutError   string               `json:"last_put_error,omitempty"`
+	LastPutErrorAt *time.Time           `json:"last_put_error_at,omitempty"`
+	Files          []DebugReadCacheFile `json:"files,omitempty"`
 }
 
 type DebugReadCacheFile struct {
@@ -147,18 +151,19 @@ type DebugTask struct {
 }
 
 type ConsistencyReport struct {
-	Path             string `json:"path"`
-	Parent           string `json:"parent"`
-	Name             string `json:"name"`
-	Pending          bool   `json:"pending"`
-	RemoteFound      bool   `json:"remote_found"`
-	RemoteID         string `json:"remote_id,omitempty"`
-	RemoteSize       int64  `json:"remote_size,omitempty"`
-	ExpectedSize     int64  `json:"expected_size,omitempty"`
-	SizeMatches      bool   `json:"size_matches"`
-	UploadInProgress bool   `json:"upload_in_progress"`
-	Status           string `json:"status"`
-	Issue            string `json:"issue,omitempty"`
+	Path             string               `json:"path"`
+	Parent           string               `json:"parent"`
+	Name             string               `json:"name"`
+	Pending          bool                 `json:"pending"`
+	RemoteFound      bool                 `json:"remote_found"`
+	RemoteID         string               `json:"remote_id,omitempty"`
+	RemoteSize       int64                `json:"remote_size,omitempty"`
+	ExpectedSize     int64                `json:"expected_size,omitempty"`
+	SizeMatches      bool                 `json:"size_matches"`
+	UploadInProgress bool                 `json:"upload_in_progress"`
+	Status           string               `json:"status"`
+	Issue            string               `json:"issue,omitempty"`
+	ForeignEntries   []drive.ForeignEntry `json:"foreign_entries,omitempty"`
 }
 
 func (v *VFS) DebugSnapshot() DebugSnapshot {
@@ -441,6 +446,16 @@ func (c *Cache) debugReadCache() DebugReadCache {
 	snapshot.Misses = c.stats.misses
 	snapshot.Puts = c.stats.puts
 	snapshot.Evicted = c.stats.evicted
+	snapshot.LastGetError = c.lastGetError
+	if !c.lastGetAt.IsZero() {
+		at := c.lastGetAt
+		snapshot.LastGetErrorAt = &at
+	}
+	snapshot.LastPutError = c.lastPutError
+	if !c.lastPutAt.IsZero() {
+		at := c.lastPutAt
+		snapshot.LastPutErrorAt = &at
+	}
 	for fid, fc := range c.chunks {
 		fc.mu.RLock()
 		file := DebugReadCacheFile{ID: fid}
@@ -546,6 +561,13 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 	entries, err := v.driver.List(ctx, parent.ID)
 	if err != nil {
 		return ConsistencyReport{}, err
+	}
+	if lister, ok := v.driver.(drive.ForeignEntryLister); ok {
+		foreign, err := lister.ForeignEntries(ctx, parent.ID)
+		if err != nil {
+			return ConsistencyReport{}, err
+		}
+		report.ForeignEntries = foreign
 	}
 	for _, entry := range entries {
 		if entry.Name == report.Name {

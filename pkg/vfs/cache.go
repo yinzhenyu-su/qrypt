@@ -2,6 +2,8 @@ package vfs
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -112,6 +114,10 @@ type Cache struct {
 	chunks        map[string]*fileChunks
 	lastDiskCheck atomic.Int64 // unix nano
 	stats         cacheStats
+	lastGetError  string
+	lastGetAt     time.Time
+	lastPutError  string
+	lastPutAt     time.Time
 }
 
 type cacheStats struct {
@@ -293,12 +299,14 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	f, err := os.Open(info.file)
 	if err != nil {
 		c.addMiss()
+		c.setLastGetError(err)
 		return nil, false, err
 	}
 	defer f.Close()
 	data := make([]byte, info.size)
 	if _, err := f.ReadAt(data, info.offset); err != nil {
 		c.addMiss()
+		c.setLastGetError(err)
 		return nil, false, err
 	}
 	info.accessAt = time.Now()
@@ -312,16 +320,19 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	batch := index / cacheBatchBlocks
 	offset := int64(index%cacheBatchBlocks) * readChunkSize
-	path := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", fid, batch))
+	path := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", cacheFileID(fid), batch))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		c.setLastPutError(err)
 		return err
 	}
 	if _, err := f.WriteAt(data, offset); err != nil {
 		f.Close()
+		c.setLastPutError(err)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		c.setLastPutError(err)
 		return err
 	}
 	fc := c.fileChunks(fid)
@@ -329,7 +340,16 @@ func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	fc.chunks[index] = chunkInfo{file: path, offset: offset, size: int64(len(data)), accessAt: time.Now()}
 	fc.mu.Unlock()
 	c.addPut()
-	return c.evictIfNeeded()
+	if err := c.evictIfNeeded(); err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	return nil
+}
+
+func cacheFileID(fid string) string {
+	sum := sha256.Sum256([]byte(fid))
+	return hex.EncodeToString(sum[:])
 }
 
 func (c *Cache) addHit() {
@@ -347,6 +367,26 @@ func (c *Cache) addMiss() {
 func (c *Cache) addPut() {
 	c.mu.Lock()
 	c.stats.puts++
+	c.mu.Unlock()
+}
+
+func (c *Cache) setLastGetError(err error) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastGetError = err.Error()
+	c.lastGetAt = time.Now()
+	c.mu.Unlock()
+}
+
+func (c *Cache) setLastPutError(err error) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastPutError = err.Error()
+	c.lastPutAt = time.Now()
 	c.mu.Unlock()
 }
 
