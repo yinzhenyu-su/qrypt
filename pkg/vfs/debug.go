@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -510,6 +511,25 @@ func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport
 	return report, nil
 }
 
+func (v *VFS) DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error) {
+	h := DriverHealth{Mount: mountName, CheckedAt: time.Now()}
+	if checker, ok := v.driver.(drive.HealthChecker); ok {
+		result := checker.HealthCheck(ctx)
+		h.Driver = result.Driver
+		h.OK = result.OK
+		h.Error = result.Error
+		h.Latency = result.Latency
+		h.CheckedAt = result.CheckedAt
+	} else {
+		h.Error = "health check not supported"
+	}
+	return []DriverHealth{h}, nil
+}
+
+func (v *VFS) Drivers() []NamedDriver {
+	return []NamedDriver{{Name: "default", Driver: v.driver}}
+}
+
 func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {
 	pending := v.cache.Pending()
 	pendingByLocal := map[string]PendingFile{}
@@ -663,8 +683,6 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		info.ParentID = entry.ParentID
 		info.IsDir = entry.IsDir
 		info.Size = entry.Size
-	} else if !info.Pending {
-		return DebugResolveInfo{}, err
 	}
 	if info.RemoteID != "" {
 		info.CacheID = cacheFileID(info.RemoteID)
@@ -681,15 +699,32 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 	if includeRemoteName {
 		if resolver, ok := v.driver.(drive.RemoteNameResolver); ok {
 			nameInfo, err := resolver.ResolveRemoteName(ctx, info.PlainName)
-			if err != nil {
-				return DebugResolveInfo{}, err
+			if err == nil {
+				info.RemoteName = nameInfo.RemoteName
 			}
-			info.RemoteName = nameInfo.RemoteName
 		} else {
 			info.RemoteName = info.PlainName
 		}
 	}
 	return info, nil
+}
+
+func (v *VFS) DebugResolveByRemoteID(ctx context.Context, remoteID string) (DebugResolveInfo, error) {
+	// Search pending files for matching remote ID.
+	for _, p := range v.cache.Pending() {
+		if p.FID == remoteID {
+			return v.DebugResolve(ctx, p.Path, false)
+		}
+	}
+	// Search cached entries for matching remote ID.
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	for path, entry := range v.entries {
+		if entry.ID == remoteID {
+			return v.DebugResolve(ctx, path, false)
+		}
+	}
+	return DebugResolveInfo{}, fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
 }
 
 func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
@@ -796,6 +831,21 @@ func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemote
 	return info, nil
 }
 
+func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string) (*DebugResolveInfo, string, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for name, vfs := range n.mounts {
+		info, err := vfs.DebugResolveByRemoteID(ctx, remoteID)
+		if err == nil {
+			info.Mount = name
+			info.Path = joinVirtual("/"+name, strings.TrimPrefix(info.Path, "/"))
+			info.Parent = filepath.Dir(info.Path)
+			return &info, name, nil
+		}
+	}
+	return nil, "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
+}
+
 func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStagingReport, error) {
 	path = cleanVirtual(path)
 	report := DebugStagingReport{}
@@ -831,6 +881,44 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStaging
 	}
 	n.mu.RUnlock()
 	return report, nil
+}
+
+func (n *Namespace) Drivers() []NamedDriver {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	var result []NamedDriver
+	names := make([]string, 0, len(n.mounts))
+	for name := range n.mounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		result = append(result, NamedDriver{Name: name, Driver: n.mounts[name].driver})
+	}
+	return result
+}
+
+func (n *Namespace) DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if mountName != "" {
+		vfs, ok := n.mounts[cleanMountName(mountName)]
+		if !ok {
+			return nil, fmt.Errorf("vfs: mount %q not found", mountName)
+		}
+		return vfs.DriverHealth(ctx, mountName)
+	}
+	var results []DriverHealth
+	names := make([]string, 0, len(n.mounts))
+	for name := range n.mounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		health, _ := n.mounts[name].DriverHealth(ctx, name)
+		results = append(results, health...)
+	}
+	return results, nil
 }
 
 func prefixStagingMountPaths(mount *DebugStagingMount, mountName string) {
