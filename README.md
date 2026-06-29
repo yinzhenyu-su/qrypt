@@ -101,6 +101,7 @@ Use `qrypt help driver <name>` for the exact parameter schema.
 |---|---|---|
 | `localfs` | `root` | Local directory backend, useful for testing |
 | `aliyundrive` | `refresh_token`, `drive_id`, `root_id` | Aliyun Drive backend |
+| `baidu_netdisk` | `refresh_token` | Baidu Netdisk backend; read and metadata write support |
 | `quark` | `cookie` | Quark cloud drive backend |
 | `139yun` | `authorization` | 139 cloud drive backend |
 | `115` | `cookie` | 115 backend; read support is limited by provider behavior |
@@ -109,6 +110,7 @@ Use `qrypt help driver <name>` for the exact parameter schema.
 ```sh
 go run ./cmd/qrypt help
 go run ./cmd/qrypt help driver aliyundrive
+go run ./cmd/qrypt help driver baidu_netdisk
 go run ./cmd/qrypt help driver quark
 go run ./cmd/qrypt help driver webdav
 ```
