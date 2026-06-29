@@ -101,7 +101,7 @@ Use `qrypt help driver <name>` for the exact parameter schema.
 |---|---|---|
 | `localfs` | `root` | Local directory backend, useful for testing |
 | `aliyundrive` | `refresh_token`, `drive_id`, `root_id` | Aliyun Drive backend |
-| `baidu_netdisk` | `refresh_token` | Baidu Netdisk backend; read and metadata write support |
+| `baidu_netdisk` | `refresh_token` | Baidu Netdisk backend; list, read, upload, metadata write, and space support |
 | `quark` | `cookie` | Quark cloud drive backend |
 | `139yun` | `authorization` | 139 cloud drive backend |
 | `115` | `cookie` | 115 backend; read support is limited by provider behavior |
@@ -114,6 +114,12 @@ go run ./cmd/qrypt help driver baidu_netdisk
 go run ./cmd/qrypt help driver quark
 go run ./cmd/qrypt help driver webdav
 ```
+
+For `baidu_netdisk`, `use_online_api` defaults to `true` and uses the
+OpenList-compatible online refresh API. If your token is a normal Baidu OAuth
+refresh token, set `use_online_api = false` and provide `client_id` and
+`client_secret`. `client_id` is the Baidu app API Key, and `client_secret` is
+the app Secret Key; no sign key is required.
 
 ## Encryption
 
