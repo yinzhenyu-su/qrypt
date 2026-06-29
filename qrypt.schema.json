@@ -335,8 +335,8 @@
                   },
                   "use_online_api": {
                     "description": "Use OpenList-compatible online token refresh API.",
-                    "type": "string",
-                    "enum": ["true", "false"]
+                    "type": "boolean",
+                    "default": true
                   },
                   "online_api": {
                     "description": "Online token refresh API URL.",
@@ -347,11 +347,11 @@
                     "type": "string"
                   },
                   "client_id": {
-                    "description": "Baidu OAuth client ID when use_online_api=false.",
+                    "description": "Baidu app API Key used as OAuth client_id when use_online_api=false.",
                     "type": "string"
                   },
                   "client_secret": {
-                    "description": "Baidu OAuth client secret when use_online_api=false.",
+                    "description": "Baidu app Secret Key used as OAuth client_secret when use_online_api=false.",
                     "type": "string"
                   },
                   "api_base_url": {
