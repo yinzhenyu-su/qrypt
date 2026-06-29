@@ -185,14 +185,22 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 }
 
 // Read reads a portion of a file.
+//
+// If size > 0, it reads exactly size bytes starting at offset.
+// If size == 0, it reads from offset to EOF — matching the convention
+// used by the VFS layer and localfs/osutil.OpenRead.
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	urlStr := d.resolveURL(entry.ID)
 	req, err := d.newRequest(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, err
 	}
-	if size > 0 {
+	switch {
+	case size > 0:
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
+	case offset > 0:
+		// size == 0 && offset > 0 — rest-of-file from offset.
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -240,7 +248,7 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
 	srcURL := d.resolveURL(entry.ID)
-	destURL := d.parentURL(srcURL) + newName
+	destURL := d.parentURL(srcURL) + url.PathEscape(newName)
 	return d.move(ctx, srcURL, destURL)
 }
 
@@ -293,21 +301,38 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 // ─── internal helpers ────────────────────────────────────────────────────
 
 // childURL returns the full URL for a child resource in a parent directory.
+// Both parentID and name are unescaped qrypt paths; name gets URL-escaped
+// to handle special characters (#, ?, %, etc.).
 func (d *Driver) childURL(parentID, name string) string {
 	parent := d.resolveURL(parentID)
 	if !strings.HasSuffix(parent, "/") {
 		parent += "/"
 	}
-	return parent + name
+	return parent + url.PathEscape(name)
 }
 
 // resolveURL converts a qrypt path ID to a full WebDAV URL.
+// Each path segment is URL-escaped to handle reserved characters.
 func (d *Driver) resolveURL(id string) string {
 	if id == "" || id == "/" || id == "0" {
 		return d.baseURL
 	}
 	clean := strings.TrimPrefix(id, "/")
-	return d.baseURL + clean
+	return d.baseURL + escapePath(clean)
+}
+
+// escapePath URL-escapes each segment of a slash-separated path.
+func escapePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		if part != "" {
+			parts[i] = url.PathEscape(part)
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // relativePath normalises a qrypt path ID for internal use.
