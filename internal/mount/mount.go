@@ -59,8 +59,10 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 	if opts.ReadyTimeout <= 0 {
 		opts.ReadyTimeout = 5 * time.Second
 	}
-	if err := os.MkdirAll(opts.MountPoint, 0o755); err != nil {
-		return nil, err
+	if !isDriveLetter(opts.MountPoint) {
+		if err := os.MkdirAll(opts.MountPoint, 0o755); err != nil {
+			return nil, err
+		}
 	}
 
 	ad := newAdapterWithOptions(fs, adapterOptions{
@@ -161,6 +163,29 @@ func mountOptions(opts Options) []string {
 		flags = append(flags, "-o", "volname="+opts.VolumeName)
 	}
 	return flags
+}
+
+// isDriveLetter returns true when the mount point is a Windows drive letter
+// (e.g. "X:" or "X:\\"). In that case MkdirAll must be skipped because
+// drive letters cannot be created as directories.
+func isDriveLetter(mountPoint string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	if len(mountPoint) < 2 || len(mountPoint) > 3 {
+		return false
+	}
+	c := mountPoint[0]
+	if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') {
+		return false
+	}
+	if mountPoint[1] != ':' {
+		return false
+	}
+	if len(mountPoint) == 3 && mountPoint[2] != '\\' && mountPoint[2] != '/' {
+		return false
+	}
+	return true
 }
 
 func fuseTimeout(d time.Duration) string {
