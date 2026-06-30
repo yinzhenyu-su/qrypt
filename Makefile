@@ -7,6 +7,7 @@
 #   make darwin/amd64             # native, macOS Intel
 #   make darwin/arm64             # native, macOS Apple Silicon
 #   make windows/amd64            # Docker + mingw, Windows amd64
+#   make windows/arm64            # pure Go cross-compile (nocgo)
 #
 # All platforms:
 #   make dist
@@ -22,7 +23,7 @@ DOCKER_BUILDX_CACHE_TO   ?=
 build:
 	$(GO) build -ldflags="-s -w" -o qrypt ./cmd/qrypt/
 
-dist: mkdist linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64
+dist: mkdist linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 	@echo "--- all platforms ---"
 	ls -lh $(DIST_DIR)/
 
@@ -52,6 +53,12 @@ windows/amd64: mkdist
 	docker create --name qrypt-win --entrypoint /qrypt-windows-amd64.exe $(IMAGE):windows
 	docker cp qrypt-win:/qrypt-windows-amd64.exe $(DIST_DIR)/qrypt-windows-amd64.exe
 	docker rm qrypt-win
+
+# ── Windows arm64 (nocgo, pure Go cross-compile) ────────────────────
+
+windows/arm64: mkdist
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="-s -w" \
+		-o $(DIST_DIR)/qrypt-windows-arm64.exe ./cmd/qrypt/
 
 # ── macOS (native) ──────────────────────────────────────────────────
 
