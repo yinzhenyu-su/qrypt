@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/*]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  # ── Check: vet + test (no FUSE needed) ───────────────────────────
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Vet
+        run: |
+          go vet ./pkg/... \
+                ./internal/config/... \
+                ./internal/control/... \
+                ./internal/driver/... \
+                ./internal/httputil/... \
+                ./internal/logging/...
+
+      - name: Test
+        run: |
+          go test -count=1 ./pkg/... \
+                         ./internal/config/... \
+                         ./internal/control/... \
+                         ./internal/driver/... \
+                         ./internal/httputil/... \
+                         ./internal/logging/...
+
+  # ── Dist: cross-compile all platforms via Docker ─────────────────
+  dist:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - run: mkdir -p dist
+
+      - name: Build linux/amd64
+        run: |
+          docker buildx build --platform linux/amd64 --load -t qrypt:amd64 .
+          docker create --name qrypt-linux-amd64 qrypt:amd64
+          docker cp qrypt-linux-amd64:/usr/local/bin/qrypt dist/qrypt-linux-amd64
+          docker rm qrypt-linux-amd64
+
+      - name: Build linux/arm64
+        run: |
+          docker buildx build --platform linux/arm64 --load -t qrypt:arm64 .
+          docker create --name qrypt-linux-arm64 qrypt:arm64
+          docker cp qrypt-linux-arm64:/usr/local/bin/qrypt dist/qrypt-linux-arm64
+          docker rm qrypt-linux-arm64
+
+      - name: Build windows/amd64
+        run: |
+          docker build -f Dockerfile.windows -t qrypt:windows .
+          docker create --name qrypt-win --entrypoint /qrypt-windows-amd64.exe qrypt:windows
+          docker cp qrypt-win:/qrypt-windows-amd64.exe dist/qrypt-windows-amd64.exe
+          docker rm qrypt-win
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrypt-${{ github.ref_name }}
+          path: dist/*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
