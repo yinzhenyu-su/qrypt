@@ -120,6 +120,9 @@ OpenList-compatible online refresh API. If your token is a normal Baidu OAuth
 refresh token, set `use_online_api = false` and provide `client_id` and
 `client_secret`. `client_id` is the Baidu app API Key, and `client_secret` is
 the app Secret Key; no sign key is required.
+Rotated Baidu and Aliyun tokens, refreshed 139Yun authorization, plus refreshed
+Quark cookies, are stored under `cache_dir/<mount-name>/driver/` with 0600
+permissions and are reused on restart.
 
 ## Encryption
 

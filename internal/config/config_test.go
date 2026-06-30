@@ -160,6 +160,39 @@ log_file = "/tmp/qrypt.log"
 	}
 }
 
+func TestLoadMountParamsSupportsScalarValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	err := os.WriteFile(path, []byte(`
+[[mounts]]
+name = "baiduyun"
+type = "baidu_netdisk"
+
+[mounts.params]
+refresh_token = "token"
+use_online_api = false
+upload_timeout = 60
+custom_upload_part_size = 4194304
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := cfg.Mounts[0].Params
+	if got := params["use_online_api"]; got != "false" {
+		t.Fatalf("use_online_api = %q, want false", got)
+	}
+	if got := params["upload_timeout"]; got != "60" {
+		t.Fatalf("upload_timeout = %q, want 60", got)
+	}
+	if got := params["custom_upload_part_size"]; got != "4194304" {
+		t.Fatalf("custom_upload_part_size = %q, want 4194304", got)
+	}
+}
+
 func TestEffectiveBandwidthLimits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
