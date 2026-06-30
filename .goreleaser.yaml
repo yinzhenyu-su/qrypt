@@ -7,34 +7,17 @@ builds:
   - id: prebuilt
     skip: true
 
-archives:
-  - id: linux-amd64
-    files: [dist/qrypt-linux-amd64]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_linux_amd64"
-    formats: [tar.gz]
-  - id: linux-arm64
-    files: [dist/qrypt-linux-arm64]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_linux_arm64"
-    formats: [tar.gz]
-  - id: darwin-amd64
-    files: [dist/qrypt-darwin-amd64]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_darwin_amd64"
-    formats: [tar.gz]
-  - id: darwin-arm64
-    files: [dist/qrypt-darwin-arm64]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_darwin_arm64"
-    formats: [tar.gz]
-  - id: windows-amd64
-    files: [dist/qrypt-windows-amd64.exe]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_windows_amd64"
-    formats: [zip]
-  - id: windows-arm64
-    files: [dist/qrypt-windows-arm64.exe]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_windows_arm64"
-    formats: [zip]
+release:
+  replace_existing_artifacts: true
+  extra_files:
+    - glob: dist/qrypt_*.tar.gz
+    - glob: dist/qrypt_*.zip
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  extra_files:
+    - glob: dist/qrypt_*.tar.gz
+    - glob: dist/qrypt_*.zip
 
 changelog:
   sort: asc

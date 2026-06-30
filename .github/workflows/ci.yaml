@@ -55,20 +55,32 @@ jobs:
             runner: ubuntu-latest
             platform: linux/amd64
             output: qrypt-linux-amd64
+            goos: linux
+            goarch: amd64
+            archive_format: tar.gz
             kind: linux-docker
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             platform: linux/arm64
             output: qrypt-linux-arm64
+            goos: linux
+            goarch: arm64
+            archive_format: tar.gz
             kind: linux-docker
           - target: windows-amd64
             runner: ubuntu-latest
             platform: linux/amd64
             output: qrypt-windows-amd64.exe
+            goos: windows
+            goarch: amd64
+            archive_format: zip
             kind: windows-docker
           - target: windows-arm64
             runner: ubuntu-latest
             output: qrypt-windows-arm64.exe
+            goos: windows
+            goarch: arm64
+            archive_format: zip
             kind: windows-go
     steps:
       - uses: actions/checkout@v7
@@ -118,10 +130,22 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="-s -w" \
             -o dist/qrypt-windows-arm64.exe ./cmd/qrypt/
 
+      - name: Package ${{ matrix.target }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="qrypt_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          if [ "${{ matrix.archive_format }}" = "zip" ]; then
+            (cd dist && zip "${asset}.zip" "${{ matrix.output }}")
+          else
+            tar -C dist -czf "dist/${asset}.tar.gz" "${{ matrix.output }}"
+          fi
+
       - uses: actions/upload-artifact@v7
         with:
           name: qrypt-${{ matrix.target }}-${{ github.ref_name }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
 
   dist-darwin:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -151,10 +175,16 @@ jobs:
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="-s -w" \
             -o dist/qrypt-darwin-arm64 ./cmd/qrypt/
 
+      - name: Package darwin binaries
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tar -C dist -czf "dist/qrypt_${version}_darwin_amd64.tar.gz" qrypt-darwin-amd64
+          tar -C dist -czf "dist/qrypt_${version}_darwin_arm64.tar.gz" qrypt-darwin-arm64
+
       - uses: actions/upload-artifact@v7
         with:
           name: qrypt-darwin-${{ github.ref_name }}
-          path: dist/*
+          path: dist/*.tar.gz
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
