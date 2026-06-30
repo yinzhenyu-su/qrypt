@@ -69,12 +69,11 @@ jobs:
             kind: linux-docker
           - target: windows-amd64
             runner: ubuntu-latest
-            platform: linux/amd64
             output: qrypt-windows-amd64.exe
             goos: windows
             goarch: amd64
             archive_format: zip
-            kind: windows-docker
+            kind: windows-go
           - target: windows-arm64
             runner: ubuntu-latest
             output: qrypt-windows-arm64.exe
@@ -93,7 +92,7 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-        if: matrix.kind != 'windows-go'
+        if: matrix.kind == 'linux-docker'
 
       - run: mkdir -p dist
 
@@ -110,25 +109,11 @@ jobs:
           docker cp qrypt-${{ matrix.target }}:/usr/local/bin/qrypt dist/${{ matrix.output }}
           docker rm qrypt-${{ matrix.target }}
 
-      - name: Build ${{ matrix.target }} with Docker
-        if: matrix.kind == 'windows-docker'
-        run: |
-          docker buildx build \
-            --platform ${{ matrix.platform }} \
-            --cache-from type=gha,scope=qrypt-${{ matrix.target }} \
-            --cache-to type=gha,mode=max,scope=qrypt-${{ matrix.target }} \
-            --load \
-            -f Dockerfile.windows \
-            -t qrypt:${{ matrix.target }} .
-          docker create --name qrypt-${{ matrix.target }} --entrypoint /qrypt-windows-amd64.exe qrypt:${{ matrix.target }}
-          docker cp qrypt-${{ matrix.target }}:/qrypt-windows-amd64.exe dist/${{ matrix.output }}
-          docker rm qrypt-${{ matrix.target }}
-
-      - name: Build windows/arm64
+      - name: Build ${{ matrix.target }}
         if: matrix.kind == 'windows-go'
         run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="-s -w" \
-            -o dist/qrypt-windows-arm64.exe ./cmd/qrypt/
+          CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.goarch }} go build -tags nocgo -ldflags="-s -w" \
+            -o dist/${{ matrix.output }} ./cmd/qrypt/
 
       - name: Package ${{ matrix.target }}
         run: |
