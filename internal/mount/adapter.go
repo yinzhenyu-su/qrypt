@@ -94,6 +94,10 @@ type directoryCopyPreparer interface {
 	PrepareDirectoryCopy(ctx context.Context, path string) error
 }
 
+type modTimeSetter interface {
+	SetModTime(ctx context.Context, path string, modTime time.Time) error
+}
+
 type StatfsOptions struct {
 	TotalSpace int64
 	FreeSpace  int64
