@@ -11,11 +11,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: "1.26"
           cache: true
 
       - name: Vet
@@ -41,11 +41,11 @@ jobs:
     needs: [check]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: "1.26"
           cache: true
 
       - name: Set up Docker Buildx
@@ -89,16 +89,18 @@ jobs:
     needs: [check]
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: "1.26"
           cache: true
 
       - name: Install macFUSE
         run: |
           brew install --cask macfuse
+
+      - run: mkdir -p dist
 
       - name: Build darwin/amd64
         run: |
@@ -110,7 +112,7 @@ jobs:
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="-s -w" \
             -o dist/qrypt-darwin-arm64 ./cmd/qrypt/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: qrypt-darwin-${{ github.ref_name }}
           path: dist/*
@@ -120,18 +122,18 @@ jobs:
     needs: [dist-linux-windows, dist-darwin]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: qrypt-*
           merge-multiple: true
           path: dist/
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
-          args: release --clean
+          args: release --clean --skip=build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
