@@ -333,6 +333,7 @@ func buildFileSystem(ctx context.Context, flags *flag.FlagSet, driverName, root,
 	if err != nil {
 		return nil, nil, err
 	}
+	installDriverStateStore(raw, cacheDir)
 	if err := raw.Init(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -429,11 +430,17 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		if cfg.Logging.LogLevel == "debug" || cfg.Logging.LogLevel == "" && logging.L != nil {
 			// Pass debug-level logging to drivers
 		}
+		cache := cfg.CacheFor(mountCfg.Name)
+		mountCacheDir := cache.Dir
+		if mountCacheDir == "" {
+			mountCacheDir = filepath.Join(cacheDir, mountCfg.Name)
+		}
 		raw, err := drive.New(mountCfg.Type, params)
 		if err != nil {
 			dropAll(ctx, drivers)
 			return nil, nil, err
 		}
+		installDriverStateStore(raw, mountCacheDir)
 		if err := raw.Init(ctx); err != nil {
 			dropAll(ctx, append(drivers, raw))
 			return nil, nil, err
@@ -453,11 +460,6 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 				return nil, nil, err
 			}
 			drv = crypt.NewDriver(drv, cp)
-		}
-		cache := cfg.CacheFor(mountCfg.Name)
-		mountCacheDir := cache.Dir
-		if mountCacheDir == "" {
-			mountCacheDir = filepath.Join(cacheDir, mountCfg.Name)
 		}
 		maxBytes := cache.MaxSizeBytes()
 		if maxBytes == 0 {
@@ -499,6 +501,12 @@ func buildNamespace(ctx context.Context, flags *flag.FlagSet, cfg *config.Config
 		return nil, nil, err
 	}
 	return ns, func() { dropAll(ctx, drivers) }, nil
+}
+
+func installDriverStateStore(driver drive.Driver, cacheDir string) {
+	if installer, ok := driver.(drive.StateStoreInstaller); ok {
+		installer.InstallStateStore(drive.NewFileStateStore(filepath.Join(cacheDir, "driver")))
+	}
 }
 
 func dropAll(ctx context.Context, drivers []drive.Driver) {

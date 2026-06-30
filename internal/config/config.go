@@ -43,10 +43,38 @@ type MountConfig struct {
 	Type string `toml:"type"`
 	// MountPoint is deprecated. Use Config.MountPoint because qrypt has one
 	// OS mount point whose root contains all named driver directories.
-	MountPoint string            `toml:"mount_point"`
-	Params     map[string]string `toml:"params"`
-	Encryption *crypt.Config     `toml:"encryption"`
-	Cache      *CacheConfig      `toml:"cache"`
+	MountPoint string        `toml:"mount_point"`
+	Params     ParamMap      `toml:"params"`
+	Encryption *crypt.Config `toml:"encryption"`
+	Cache      *CacheConfig  `toml:"cache"`
+}
+
+type ParamMap map[string]string
+
+func (p *ParamMap) UnmarshalTOML(data any) error {
+	values, ok := data.(map[string]any)
+	if !ok {
+		return fmt.Errorf("params must be a table")
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		switch typed := value.(type) {
+		case string:
+			out[key] = typed
+		case bool:
+			out[key] = strconv.FormatBool(typed)
+		case int64:
+			out[key] = strconv.FormatInt(typed, 10)
+		case int:
+			out[key] = strconv.Itoa(typed)
+		case float64:
+			out[key] = strconv.FormatFloat(typed, 'f', -1, 64)
+		default:
+			return fmt.Errorf("params.%s must be string, bool, int, or float", key)
+		}
+	}
+	*p = out
+	return nil
 }
 
 type CacheConfig struct {
