@@ -13,11 +13,10 @@ description: Manage qrypt version releases: cut tags, trigger CI builds, inspect
    git tag v0.1.0
    git push origin v0.1.0
    ```
-3. **CI triggers automatically** — GitHub Actions runs `dist` job on `macos-14`:
-   - Installs Docker via colima
-   - Runs `make -j6 dist` (6 platform binaries)
-   - goreleaser packages archives + checksums + changelog
-   - Publishes to GitHub Releases
+3. **CI triggers automatically** — 3 parallel jobs:
+   - `dist-linux-windows` (ubuntu-latest, Docker native): linux/amd64, linux/arm64, windows/amd64 (Docker), windows/arm64 (nocgo)
+   - `dist-darwin` (macos-14, macfuse + native go build): darwin/amd64, darwin/arm64
+   - `release` (after both dist jobs): goreleaser packages archives + checksums + changelog, publishes to GitHub Releases
 
 ## Build Matrix
 
