@@ -13,21 +13,47 @@ description: Manage qrypt version releases: cut tags, trigger CI builds, inspect
    git tag v0.1.0
    git push origin v0.1.0
    ```
-3. **CI triggers automatically** — 3 parallel jobs:
-   - `dist-linux-windows` (ubuntu-latest, Docker native): linux/amd64, linux/arm64, windows/amd64 (Docker), windows/arm64 (nocgo)
-   - `dist-darwin` (macos-14, macfuse + native go build): darwin/amd64, darwin/arm64
-   - `release` (after both dist jobs): goreleaser packages archives + checksums + changelog, publishes to GitHub Releases
+3. **CI triggers automatically**:
+   - `check`: runs vet and tests before release builds.
+   - `dist-linux-windows`: builds Linux binaries with Docker and Windows binaries with nocgo cross-compilation, then packages release archives.
+   - `dist-darwin`: builds macOS binaries on macOS with macFUSE installed, then packages release archives.
+   - `release`: downloads packaged archives, then GoReleaser publishes GitHub Release assets, checksums, and changelog.
+
+Release assets are packaged before GoReleaser runs. `.goreleaser.yaml` uses `builds.skip: true` and `release.extra_files`, so GoReleaser is only responsible for publishing prebuilt archives, generating checksums, and generating release notes.
 
 ## Build Matrix
 
 | Target | Method | Deps |
 |---|---|---|
 | `linux/amd64` | Docker + fuse-dev | Docker |
-| `linux/arm64` | Docker + fuse-dev + QEMU | Docker |
-| `windows/amd64` | Docker + mingw + WinFSP headers | Docker |
-| `windows/arm64` | nocgo cross-compile (pure Go) | none |
+| `linux/arm64` | Docker + fuse-dev on `ubuntu-24.04-arm` | Docker |
+| `windows/amd64` | nocgo cross-compile | Go only |
+| `windows/arm64` | nocgo cross-compile | Go only |
 | `darwin/amd64` | native go build + FUSE | macOS |
 | `darwin/arm64` | native go build + FUSE | macOS |
+
+Windows builds use `CGO_ENABLED=0 -tags nocgo`. They still require users to install WinFSP at runtime for mount support; nocgo only removes the CI dependency on mingw and WinFSP headers.
+
+## Release Assets
+
+Expected GitHub Release assets:
+
+- `qrypt_<version>_linux_amd64.tar.gz`
+- `qrypt_<version>_linux_arm64.tar.gz`
+- `qrypt_<version>_darwin_amd64.tar.gz`
+- `qrypt_<version>_darwin_arm64.tar.gz`
+- `qrypt_<version>_windows_amd64.zip`
+- `qrypt_<version>_windows_arm64.zip`
+- `qrypt_<version>_checksums.txt`
+
+If a release only contains GitHub's default source archives, check that:
+
+- CI uploaded packaged artifacts from `dist/*.tar.gz` and `dist/*.zip`.
+- The release job downloaded artifacts into `dist/`.
+- `.goreleaser.yaml` has matching `release.extra_files` and `checksum.extra_files` globs.
+- The release job passes `GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}` and has `contents: write` permission.
+
+The release config uses `replace_existing_artifacts: true`, so rerunning the same tag can replace uploaded assets.
 
 ## Inspect CI
 
