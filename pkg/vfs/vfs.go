@@ -1575,8 +1575,7 @@ func (v *VFS) rebaseCachedPathsLocked(oldPath, newPath string) {
 
 func (v *VFS) parent(ctx context.Context, path string) (drive.Entry, string, error) {
 	path = cleanVirtual(path)
-	name := filepath.Base(path)
-	parentPath := filepath.Dir(path)
+	name, parentPath := splitVirtual(path)
 	parent, err := v.resolve(ctx, parentPath)
 	return parent, name, err
 }
@@ -1592,8 +1591,7 @@ func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	if ok {
 		return entry, nil
 	}
-	parentPath := filepath.Dir(path)
-	name := filepath.Base(path)
+	name, parentPath := splitVirtual(path)
 	parent, err := v.resolve(ctx, parentPath)
 	if err != nil {
 		return drive.Entry{}, err
@@ -1848,6 +1846,20 @@ func cleanVirtual(path string) string {
 		return "/"
 	}
 	return path
+}
+
+// splitVirtual splits a cleaned virtual path into the last component (name)
+// and its parent directory. Unlike filepath.Dir/Base, this uses forward-slash
+// semantics regardless of the host OS, which is required for virtual FUSE paths.
+func splitVirtual(p string) (name, parent string) {
+	if p == "/" {
+		return "/", "/"
+	}
+	idx := strings.LastIndexByte(p, '/')
+	if idx <= 0 {
+		return p[1:], "/"
+	}
+	return p[idx+1:], p[:idx]
 }
 
 func joinVirtual(parent, name string) string {
