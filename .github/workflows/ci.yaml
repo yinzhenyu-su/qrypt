@@ -43,24 +43,28 @@ jobs:
   dist-linux-windows:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: linux-amd64
+            runner: ubuntu-latest
             platform: linux/amd64
             output: qrypt-linux-amd64
             kind: linux-docker
           - target: linux-arm64
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
             output: qrypt-linux-arm64
             kind: linux-docker
           - target: windows-amd64
+            runner: ubuntu-latest
             platform: linux/amd64
             output: qrypt-windows-amd64.exe
             kind: windows-docker
           - target: windows-arm64
+            runner: ubuntu-latest
             output: qrypt-windows-arm64.exe
             kind: windows-go
     steps:
