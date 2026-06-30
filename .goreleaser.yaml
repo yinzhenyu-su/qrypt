@@ -3,10 +3,6 @@ version: 2
 project_name: qrypt
 dist: release
 
-before:
-  hooks:
-    - make -j6 dist
-
 builds: []
 
 archives:
