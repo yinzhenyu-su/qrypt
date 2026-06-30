@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+# Cross-compile qrypt for Windows.
+# Build: docker build -f Dockerfile.windows -t qrypt:windows .
+# Extract: docker create --name qrypt-win qrypt:windows && docker cp qrypt-win:/qrypt-windows-amd64.exe ./dist/ && docker rm qrypt-win
+
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-mingw-w64-x86-64 git ca-certificates
+
+# Install WinFSP headers for the cross-compiler.
+# cgofuse on Windows expects -I/usr/local/include/winfsp (see host_cgo.go).
+RUN git clone --depth 1 --branch v2.0 https://github.com/winfsp/winfsp.git /tmp/winfsp && \
+    mkdir -p /usr/local/include/winfsp && \
+    cp /tmp/winfsp/inc/fuse/*.h /usr/local/include/winfsp/ && \
+    rm -rf /tmp/winfsp
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG TARGETOS=windows TARGETARCH=amd64
+RUN CC=x86_64-w64-mingw32-gcc GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=1 \
+    go build -ldflags="-s -w" -o /qrypt-windows-amd64.exe ./cmd/qrypt/
+
+FROM scratch
+COPY --from=build /qrypt-windows-amd64.exe /qrypt-windows-amd64.exe
