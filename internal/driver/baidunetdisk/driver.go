@@ -53,6 +53,9 @@ type Driver struct {
 	useOnlineAPI  bool
 	downloadUA    string
 	limiter       *drive.RateLimiter
+	stateStore    drive.StateStore
+	tokenSource   string
+	tokenUpdated  time.Time
 	tokenMu       sync.Mutex
 	tokenExpires  time.Time
 	downloadCache sync.Map
@@ -79,6 +82,13 @@ type Options struct {
 type cachedDownloadURL struct {
 	URL       string
 	ExpiresAt time.Time
+}
+
+type tokenState struct {
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
 func init() {
@@ -127,8 +137,8 @@ func init() {
 		drive.ParamDef{Name: "use_online_api", Type: "bool", Description: "Use OpenList-compatible online token refresh API", Default: "true"},
 		drive.ParamDef{Name: "online_api", Type: "string", Description: "Online token refresh API URL", Default: defaultOnlineAPI},
 		drive.ParamDef{Name: "upload_api", Type: "string", Description: "Baidu PCS upload API base URL", Default: defaultUploadAPI},
-		drive.ParamDef{Name: "client_id", Type: "string", Secret: true, Description: "Baidu OAuth client ID when use_online_api=false"},
-		drive.ParamDef{Name: "client_secret", Type: "string", Secret: true, Description: "Baidu OAuth client secret when use_online_api=false"},
+		drive.ParamDef{Name: "client_id", Type: "string", Secret: true, Description: "Baidu app API Key used as OAuth client_id when use_online_api=false"},
+		drive.ParamDef{Name: "client_secret", Type: "string", Secret: true, Description: "Baidu app Secret Key used as OAuth client_secret when use_online_api=false"},
 		drive.ParamDef{Name: "api_base_url", Type: "string", Description: "Custom Baidu REST API base URL", Default: defaultAPIBaseURL},
 		drive.ParamDef{Name: "oauth_url", Type: "string", Description: "Custom Baidu OAuth token URL", Default: defaultOAuthURL},
 		drive.ParamDef{Name: "download_user_agent", Type: "string", Description: "User-Agent used for Baidu download requests", Default: defaultDownloadUA},
@@ -175,6 +185,7 @@ func New(opts Options) *Driver {
 		uploadAPI:    uploadAPI,
 		useOnlineAPI: opts.UseOnlineAPI,
 		downloadUA:   downloadUA,
+		tokenSource:  "config",
 	}
 }
 
@@ -182,12 +193,15 @@ func (d *Driver) Init(ctx context.Context) error {
 	if d.refreshToken == "" {
 		return fmt.Errorf("baidu_netdisk: refresh_token is required")
 	}
+	d.loadTokenState()
 	if !d.useOnlineAPI && (d.clientID == "" || d.clientSecret == "") {
 		return fmt.Errorf("baidu_netdisk: client_id and client_secret are required when use_online_api=false")
 	}
-	if err := d.refresh(ctx); err != nil {
-		d.setLastError(err)
-		return err
+	if d.accessToken == "" || d.tokenExpires.IsZero() || time.Now().After(d.tokenExpires.Add(-defaultTokenSkew)) {
+		if err := d.refresh(ctx); err != nil {
+			d.setLastError(err)
+			return err
+		}
 	}
 	if d.rootPath != "/" {
 		if _, err := d.statRoot(ctx); err != nil {
@@ -199,6 +213,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error { return nil }
+
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
+}
 
 func (d *Driver) InstallRateLimiter(limiter *drive.RateLimiter) drive.RateLimitDirection {
 	d.limiter = limiter
@@ -449,8 +467,9 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"order_desc":     d.orderDesc,
 			"use_online_api": d.useOnlineAPI,
 			"upload_api":     d.uploadAPI,
+			"token_source":   d.tokenSource,
 		},
-		Extra: map[string]any{"last_error": lastError},
+		Extra: map[string]any{"last_error": lastError, "token_updated_at": d.tokenUpdated},
 	}, nil
 }
 
@@ -786,7 +805,7 @@ func (d *Driver) refresh(ctx context.Context) error {
 		query.Set("driver_txt", "baiduyun_go")
 		u.RawQuery = query.Encode()
 		if err := d.requestToken(ctx, http.MethodGet, u.String(), nil, &resp); err != nil {
-			return fmt.Errorf("baidu_netdisk: refresh token: %w", err)
+			return fmt.Errorf("baidu_netdisk: refresh token via online_api: %w; if this is a normal Baidu OAuth refresh token, set use_online_api=false and configure client_id/client_secret", err)
 		}
 	} else {
 		form := url.Values{}
@@ -799,10 +818,16 @@ func (d *Driver) refresh(ctx context.Context) error {
 		}
 	}
 	if resp.Error != "" {
+		if resp.Error == "invalid_client" {
+			return fmt.Errorf("baidu_netdisk: refresh token: %s: %s; client_id must be the Baidu app API Key and client_secret must be the app Secret Key", resp.Error, resp.ErrorDesc)
+		}
 		return fmt.Errorf("baidu_netdisk: refresh token: %s: %s", resp.Error, resp.ErrorDesc)
 	}
 	if resp.AccessToken == "" || resp.RefreshToken == "" {
 		if resp.ErrorMessage != "" {
+			if d.useOnlineAPI {
+				return fmt.Errorf("baidu_netdisk: refresh token via online_api: %s; if this is a normal Baidu OAuth refresh token, set use_online_api=false and configure client_id/client_secret", resp.ErrorMessage)
+			}
 			return fmt.Errorf("baidu_netdisk: refresh token: %s", resp.ErrorMessage)
 		}
 		return fmt.Errorf("baidu_netdisk: refresh token returned empty token")
@@ -814,7 +839,49 @@ func (d *Driver) refresh(ctx context.Context) error {
 	} else {
 		d.tokenExpires = time.Now().Add(time.Hour)
 	}
+	d.tokenSource = "refresh"
+	d.tokenUpdated = time.Now()
+	if err := d.saveTokenState(); err != nil {
+		return fmt.Errorf("baidu_netdisk: save token state: %w", err)
+	}
 	return nil
+}
+
+func (d *Driver) loadTokenState() {
+	if d.stateStore == nil {
+		return
+	}
+	var state tokenState
+	err := d.stateStore.LoadJSON("baidu_netdisk_token.json", &state)
+	if err != nil {
+		if !drive.IsStateNotExist(err) {
+			d.setLastError(fmt.Errorf("baidu_netdisk: load token state: %w", err))
+		}
+		return
+	}
+	if state.RefreshToken != "" {
+		d.refreshToken = state.RefreshToken
+		d.tokenSource = "state"
+	}
+	if state.AccessToken != "" {
+		d.accessToken = state.AccessToken
+	}
+	if !state.ExpiresAt.IsZero() {
+		d.tokenExpires = state.ExpiresAt
+	}
+	d.tokenUpdated = state.UpdatedAt
+}
+
+func (d *Driver) saveTokenState() error {
+	if d.stateStore == nil {
+		return nil
+	}
+	return d.stateStore.SaveJSON("baidu_netdisk_token.json", tokenState{
+		AccessToken:  d.accessToken,
+		RefreshToken: d.refreshToken,
+		ExpiresAt:    d.tokenExpires,
+		UpdatedAt:    d.tokenUpdated,
+	})
 }
 
 func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body io.Reader, out any) error {

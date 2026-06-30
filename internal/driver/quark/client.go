@@ -40,6 +40,7 @@ type client struct {
 	mgmtSem        chan struct{}
 	metaSem        chan struct{}
 	ossSem         chan struct{}
+	onCookieUpdate func(cookie string)
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -86,17 +87,36 @@ func (c *client) cookieValue() string {
 
 func (c *client) updateCookie(key, value string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	parts := strings.Split(c.cookie, "; ")
 	for i, part := range parts {
 		if strings.HasPrefix(part, key+"=") {
 			parts[i] = key + "=" + value
 			c.cookie = strings.Join(parts, "; ")
+			updated := c.cookie
+			c.mu.Unlock()
+			c.notifyCookieUpdate(updated)
 			return
 		}
 	}
 	parts = append(parts, key+"="+value)
 	c.cookie = strings.Join(parts, "; ")
+	updated := c.cookie
+	c.mu.Unlock()
+	c.notifyCookieUpdate(updated)
+}
+
+func (c *client) setCookie(cookie string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cookie != "" {
+		c.cookie = cookie
+	}
+}
+
+func (c *client) notifyCookieUpdate(cookie string) {
+	if c.onCookieUpdate != nil {
+		c.onCookieUpdate(cookie)
+	}
 }
 
 func isMgmtPath(path string) bool {

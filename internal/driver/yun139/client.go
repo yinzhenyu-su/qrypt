@@ -5,12 +5,14 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,19 +24,20 @@ const (
 	defaultBaseURL = "https://yun.139.com"
 	letterBytes    = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-	mcloudChannel   = "1000101"
-	mcloudClient    = "10701"
-	mcloudRoute     = "001"
-	mcloudVersion   = "7.14.0"
-	xYunAPIVersion  = "v1"
-	xYunAppChannel   = "10000034"
-	xYunChSource     = "10000034"
-	xYunClientInfo   = "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||"
-	xYunModuleType   = "100"
-	xYunSvcType      = "1"
+	mcloudChannel  = "1000101"
+	mcloudClient   = "10701"
+	mcloudRoute    = "001"
+	mcloudVersion  = "7.14.0"
+	xYunAPIVersion = "v1"
+	xYunAppChannel = "10000034"
+	xYunChSource   = "10000034"
+	xYunClientInfo = "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||"
+	xYunModuleType = "100"
+	xYunSvcType    = "1"
 
 	httpMaxRetries    = 3
 	personalRetryWait = 500 * time.Millisecond
+	authRefreshSkew   = 15 * 24 * time.Hour
 )
 
 func randomString(n int) string {
@@ -73,18 +76,21 @@ func calSign(bodyJSON, ts, randStr string) string {
 }
 
 type client struct {
-	httpClient       *http.Client
-	authorization    string
-	account          string
-	personalCloudHost string
-	mu               sync.RWMutex
-	tokenExpiry      time.Time
+	httpClient            *http.Client
+	authorization         string
+	account               string
+	personalCloudHost     string
+	authRefreshURL        string
+	onAuthorizationUpdate func(authorization string)
+	mu                    sync.RWMutex
+	tokenExpiry           time.Time
 }
 
 func newClient(authorization string) *client {
 	return &client{
-		httpClient:    httputil.NewClient(60*time.Second, 30*time.Second),
-		authorization: authorization,
+		httpClient:     httputil.NewClient(60*time.Second, 30*time.Second),
+		authorization:  authorization,
+		authRefreshURL: "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do",
 	}
 }
 
@@ -107,17 +113,48 @@ func (c *client) setAuthorization(auth string) {
 }
 
 func (c *client) decodeAuth() (account, token string, err error) {
+	account, token, _, err = c.decodeAuthWithExpiry()
+	return account, token, err
+}
+
+func (c *client) decodeAuthWithExpiry() (account, token string, expiry time.Time, err error) {
 	raw := c.getAuthorization()
 	decoded, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("decode auth: %w", err)
+		return "", "", time.Time{}, fmt.Errorf("decode auth: %w", err)
 	}
 	parts := strings.Split(string(decoded), ":")
 	if len(parts) < 3 {
-		return "", "", fmt.Errorf("invalid auth format")
+		return "", "", time.Time{}, fmt.Errorf("invalid auth format")
 	}
 	c.account = parts[1]
-	return parts[1], parts[2], nil
+	tokenParts := strings.Split(parts[2], "|")
+	if len(tokenParts) >= 4 {
+		expiryMS, parseErr := strconv.ParseInt(tokenParts[3], 10, 64)
+		if parseErr == nil && expiryMS > 0 {
+			expiry = time.UnixMilli(expiryMS)
+			c.tokenExpiry = expiry
+		}
+	}
+	return parts[1], parts[2], expiry, nil
+}
+
+func (c *client) refreshTokenIfNeeded(ctx context.Context) error {
+	_, _, expiry, err := c.decodeAuthWithExpiry()
+	if err != nil {
+		return err
+	}
+	if expiry.IsZero() {
+		return nil
+	}
+	remaining := time.Until(expiry)
+	if remaining < 0 {
+		return fmt.Errorf("authorization has expired")
+	}
+	if remaining > authRefreshSkew {
+		return nil
+	}
+	return c.refreshToken(ctx)
 }
 
 func (c *client) refreshToken(ctx context.Context) error {
@@ -127,7 +164,7 @@ func (c *client) refreshToken(ctx context.Context) error {
 	}
 
 	body := fmt.Sprintf("<root><token>%s</token><account>%s</account><clienttype>656</clienttype></root>", token, account)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.authRefreshURL, strings.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -144,7 +181,7 @@ func (c *client) refreshToken(ctx context.Context) error {
 		Desc   string `xml:"desc"`
 		Token  string `xml:"token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&refreshResp); err != nil {
+	if err := xml.NewDecoder(resp.Body).Decode(&refreshResp); err != nil {
 		return fmt.Errorf("token refresh: %w", err)
 	}
 	if refreshResp.Return != "0" {
@@ -162,6 +199,9 @@ func (c *client) refreshToken(ctx context.Context) error {
 	}
 	newAuth := base64.StdEncoding.EncodeToString([]byte(strings.Join(parts, ":")))
 	c.setAuthorization(newAuth)
+	if c.onAuthorizationUpdate != nil {
+		c.onAuthorizationUpdate(newAuth)
+	}
 	return nil
 }
 
@@ -241,12 +281,38 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 			time.Sleep(personalRetryWait << uint(attempt))
 		}
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
+			if isAuthExpiredError(err) {
+				if refreshErr := c.refreshToken(ctx); refreshErr != nil {
+					lastErr = fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
+					continue
+				}
+				if retryErr := c.personalPostOnce(ctx, path, bodyData, result); retryErr == nil {
+					return nil
+				} else {
+					lastErr = retryErr
+					continue
+				}
+			}
 			lastErr = err
 			continue
 		}
 		return nil
 	}
 	return lastErr
+}
+
+func isAuthExpiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isAuthExpiredMessage(err.Error())
+}
+
+func isAuthExpiredMessage(message string) bool {
+	msg := strings.ToLower(message)
+	return strings.Contains(msg, "auth expired") ||
+		strings.Contains(msg, "authorization") && strings.Contains(msg, "expired") ||
+		strings.Contains(msg, "token") && strings.Contains(msg, "expired")
 }
 
 func (c *client) personalPostOnce(ctx context.Context, path string, bodyData interface{}, result interface{}) error {
@@ -300,6 +366,13 @@ func (c *client) personalPostOnce(ctx context.Context, path string, bodyData int
 	}
 	if len(respBody) > 0 && respBody[0] == '<' {
 		return fmt.Errorf("personal API returned non-JSON: %s", string(respBody))
+	}
+	var base baseResp
+	if err := json.Unmarshal(respBody, &base); err == nil && !base.Success && isAuthExpiredMessage(base.Message) {
+		return fmt.Errorf("%s", base.Message)
+	}
+	if result == nil {
+		return nil
 	}
 	if err := json.Unmarshal(respBody, result); err != nil {
 		return fmt.Errorf("personal API: %w", err)

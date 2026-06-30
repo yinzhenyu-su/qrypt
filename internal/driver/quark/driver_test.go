@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -104,6 +105,42 @@ func TestDriverDebugSnapshot(t *testing.T) {
 	}
 	if snapshot.Extra["uploads"] == nil {
 		t.Fatalf("expected uploads extra, got %+v", snapshot.Extra)
+	}
+}
+
+func TestCookieUpdatePersistsState(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := New("k=v", Options{})
+	driver.InstallStateStore(store)
+	driver.cl.updateCookie("__puus", "new")
+	var state cookieState
+	if err := store.LoadJSON("quark_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Cookie, "__puus=new") {
+		t.Fatalf("cookie state = %q, want __puus=new", state.Cookie)
+	}
+	if driver.cookieSource != "response" {
+		t.Fatalf("cookieSource = %q, want response", driver.cookieSource)
+	}
+}
+
+func TestLoadCookieStateOverridesConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("quark_cookie.json", cookieState{
+		Cookie:    "stored=1; __puus=stored",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New("config=1", Options{})
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	if got := driver.cl.cookieValue(); got != "stored=1; __puus=stored" {
+		t.Fatalf("cookie = %q, want stored cookie", got)
+	}
+	if driver.cookieSource != "state" {
+		t.Fatalf("cookieSource = %q, want state", driver.cookieSource)
 	}
 }
 

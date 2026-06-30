@@ -34,6 +34,7 @@ type client struct {
 	userID       string
 	deviceID     string
 	signature    string
+	onRefresh    func(accessToken, refreshToken string)
 }
 
 type clientOptions struct {
@@ -89,7 +90,21 @@ func (c *client) refresh(ctx context.Context) error {
 	c.accessToken = resp.AccessToken
 	c.refreshToken = resp.RefreshToken
 	c.mu.Unlock()
+	if c.onRefresh != nil {
+		c.onRefresh(resp.AccessToken, resp.RefreshToken)
+	}
 	return nil
+}
+
+func (c *client) setTokens(accessToken, refreshToken string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if accessToken != "" {
+		c.accessToken = accessToken
+	}
+	if refreshToken != "" {
+		c.refreshToken = refreshToken
+	}
 }
 
 func (c *client) request(ctx context.Context, method, path string, body, result any) error {
