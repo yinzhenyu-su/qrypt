@@ -93,6 +93,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		return nil, ctx.Err()
 	case ok := <-result:
 		if !ok {
+			host.Unmount()
 			return nil, fmt.Errorf("mount: failed to mount %s", opts.MountPoint)
 		}
 		return session, nil

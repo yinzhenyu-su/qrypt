@@ -1,3 +1,4 @@
 qrypt.toml
 .sisyphus
 dist/
+.DS_Store
