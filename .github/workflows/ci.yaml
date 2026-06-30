@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -40,48 +44,76 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            platform: linux/amd64
+            output: qrypt-linux-amd64
+            kind: linux-docker
+          - target: linux-arm64
+            platform: linux/arm64
+            output: qrypt-linux-arm64
+            kind: linux-docker
+          - target: windows-amd64
+            platform: linux/amd64
+            output: qrypt-windows-amd64.exe
+            kind: windows-docker
+          - target: windows-arm64
+            output: qrypt-windows-arm64.exe
+            kind: windows-go
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
+        if: matrix.kind == 'windows-go'
         with:
           go-version: "1.26"
           cache: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
+        if: matrix.kind != 'windows-go'
 
       - run: mkdir -p dist
 
-      - name: Build linux/amd64
+      - name: Build ${{ matrix.target }} with Docker
+        if: matrix.kind == 'linux-docker'
         run: |
-          docker buildx build --platform linux/amd64 --load -t qrypt:amd64 .
-          docker create --name qrypt-linux-amd64 qrypt:amd64
-          docker cp qrypt-linux-amd64:/usr/local/bin/qrypt dist/qrypt-linux-amd64
-          docker rm qrypt-linux-amd64
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --cache-from type=gha,scope=qrypt-${{ matrix.target }} \
+            --cache-to type=gha,mode=max,scope=qrypt-${{ matrix.target }} \
+            --load \
+            -t qrypt:${{ matrix.target }} .
+          docker create --name qrypt-${{ matrix.target }} qrypt:${{ matrix.target }}
+          docker cp qrypt-${{ matrix.target }}:/usr/local/bin/qrypt dist/${{ matrix.output }}
+          docker rm qrypt-${{ matrix.target }}
 
-      - name: Build linux/arm64
+      - name: Build ${{ matrix.target }} with Docker
+        if: matrix.kind == 'windows-docker'
         run: |
-          docker buildx build --platform linux/arm64 --load -t qrypt:arm64 .
-          docker create --name qrypt-linux-arm64 qrypt:arm64
-          docker cp qrypt-linux-arm64:/usr/local/bin/qrypt dist/qrypt-linux-arm64
-          docker rm qrypt-linux-arm64
-
-      - name: Build windows/amd64
-        run: |
-          docker build -f Dockerfile.windows -t qrypt:windows .
-          docker create --name qrypt-win --entrypoint /qrypt-windows-amd64.exe qrypt:windows
-          docker cp qrypt-win:/qrypt-windows-amd64.exe dist/qrypt-windows-amd64.exe
-          docker rm qrypt-win
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --cache-from type=gha,scope=qrypt-${{ matrix.target }} \
+            --cache-to type=gha,mode=max,scope=qrypt-${{ matrix.target }} \
+            --load \
+            -f Dockerfile.windows \
+            -t qrypt:${{ matrix.target }} .
+          docker create --name qrypt-${{ matrix.target }} --entrypoint /qrypt-windows-amd64.exe qrypt:${{ matrix.target }}
+          docker cp qrypt-${{ matrix.target }}:/qrypt-windows-amd64.exe dist/${{ matrix.output }}
+          docker rm qrypt-${{ matrix.target }}
 
       - name: Build windows/arm64
+        if: matrix.kind == 'windows-go'
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="-s -w" \
             -o dist/qrypt-windows-arm64.exe ./cmd/qrypt/
 
       - uses: actions/upload-artifact@v7
         with:
-          name: qrypt-${{ github.ref_name }}
+          name: qrypt-${{ matrix.target }}-${{ github.ref_name }}
           path: dist/*
 
   dist-darwin:
@@ -136,4 +168,4 @@ jobs:
         with:
           args: release --clean
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
