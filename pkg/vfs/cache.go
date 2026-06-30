@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"golang.org/x/sys/unix"
 )
 
 const cacheBatchBlocks = 16
@@ -28,14 +27,6 @@ const (
 	diskMinReserveBytes = 1 << 30          // at least 1GB
 	diskCheckInterval   = 10 * time.Second // how often to re-check disk in evict loop
 )
-
-func diskFreeBytes(path string) (int64, error) {
-	var stat unix.Statfs_t
-	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
-}
 
 // limitByDiskSpace caps maxSize so that at least diskReserveFraction (and at
 // least diskMinReserveBytes) of the filesystem remains free.  Returns the
