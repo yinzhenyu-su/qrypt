@@ -5,8 +5,7 @@ before:
   hooks:
     - make -j5 dist
 
-builds:
-  - # compiled via Docker in Makefile
+builds: []
 
 archives:
   - id: linux-amd64
