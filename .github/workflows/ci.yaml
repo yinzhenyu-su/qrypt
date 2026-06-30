@@ -79,7 +79,7 @@ jobs:
           CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="-s -w" \
             -o dist/qrypt-windows-arm64.exe ./cmd/qrypt/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: qrypt-${{ github.ref_name }}
           path: dist/*
@@ -123,17 +123,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - uses: actions/download-artifact@v7
         with:
           pattern: qrypt-*
           merge-multiple: true
-          path: dist/
+          path: raw/
 
-      - uses: goreleaser/goreleaser-action@v7
+      - name: Package archives
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p dist/archives
+          for f in raw/qrypt-*; do
+            base=$(basename "$f")
+            name="${base#qrypt-}"
+            case "$base" in
+              *.exe)
+                archive="qrypt_${VERSION}_${name%.exe}.zip"
+                cp "$f" "dist/archives/$base"
+                (cd dist/archives && zip "../$archive" "$base")
+                ;;
+              *)
+                archive="qrypt_${VERSION}_${name}.tar.gz"
+                cp "$f" "dist/archives/$base"
+                tar czf "dist/$archive" -C dist/archives "$base"
+                ;;
+            esac
+          done
+          rm -rf dist/archives
+          cd dist
+          sha256sum qrypt_* > "qrypt_${VERSION}_checksums.txt"
+
+      - uses: softprops/action-gh-release@v2
         with:
-          args: release --clean --skip=build
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*
+          generate_release_notes: true
