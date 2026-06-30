@@ -1,0 +1,4 @@
+interface:
+  display_name: "Driver Migrate"
+  short_description: "Migrate OpenList drivers into qrypt"
+  default_prompt: "Use $driver-migrate to migrate an OpenList storage driver into qrypt."
