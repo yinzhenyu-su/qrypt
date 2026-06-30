@@ -5,11 +5,8 @@ on:
     branches: [main, feat/*]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
 
 jobs:
-  # ── Check: vet + test (ubuntu, no FUSE headers) ──────────────────
   check:
     runs-on: ubuntu-latest
     steps:
@@ -38,25 +35,17 @@ jobs:
                          ./internal/httputil/... \
                          ./internal/logging/...
 
-  # ── Dist: cross-compile all platforms (macOS + Docker) ───────────
   dist:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build all
-        run: make -j5 dist
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
         with:
-          name: qrypt-${{ github.ref_name }}
-          path: dist/*
+          fetch-depth: 0
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: goreleaser/goreleaser-action@v6
         with:
-          files: dist/*
-          generate_release_notes: true
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
