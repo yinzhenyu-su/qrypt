@@ -123,38 +123,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v7
         with:
           pattern: qrypt-*
           merge-multiple: true
-          path: raw/
+          path: dist/
 
-      - name: Package archives
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          mkdir -p dist/archives
-          for f in raw/qrypt-*; do
-            base=$(basename "$f")
-            name="${base#qrypt-}"
-            case "$base" in
-              *.exe)
-                archive="qrypt_${VERSION}_${name%.exe}.zip"
-                cp "$f" "dist/archives/$base"
-                (cd dist/archives && zip "../$archive" "$base")
-                ;;
-              *)
-                archive="qrypt_${VERSION}_${name}.tar.gz"
-                cp "$f" "dist/archives/$base"
-                tar czf "dist/$archive" -C dist/archives "$base"
-                ;;
-            esac
-          done
-          rm -rf dist/archives
-          cd dist
-          sha256sum qrypt_* > "qrypt_${VERSION}_checksums.txt"
-
-      - uses: softprops/action-gh-release@v2
+      - uses: goreleaser/goreleaser-action@v7
         with:
-          files: dist/*
-          generate_release_notes: true
+          args: release --clean
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
