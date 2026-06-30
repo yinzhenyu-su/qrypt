@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
@@ -38,7 +37,7 @@ func main() {
 }
 
 func run(args []string) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 	if err := runWithContext(ctx, args); err != nil {
 		if errors.Is(err, context.Canceled) {

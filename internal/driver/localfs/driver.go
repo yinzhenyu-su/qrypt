@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/osutil"
@@ -61,18 +60,6 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error { return nil }
-
-func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(d.root, &stat); err != nil {
-		return drive.Space{}, fmt.Errorf("localfs: statfs root: %w", err)
-	}
-	blockSize := int64(stat.Bsize)
-	return drive.Space{
-		Total: int64(stat.Blocks) * blockSize,
-		Free:  int64(stat.Bavail) * blockSize,
-	}, nil
-}
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	return drive.DebugSnapshot{

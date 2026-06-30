@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"time"
 
@@ -146,6 +145,11 @@ func mountOptions(opts Options) []string {
 			"-o", "iosize=1048576",
 		)
 	}
+	if runtime.GOOS == "windows" {
+		flags = append(flags,
+			"-o", "fsname=qrypt",
+		)
+	}
 	if opts.AllowOther {
 		flags = append(flags, "-o", "allow_other")
 	}
@@ -168,6 +172,4 @@ func fuseTimeout(d time.Duration) string {
 	return fmt.Sprintf("%.3f", d.Seconds())
 }
 
-func unmountCommand(mountPoint string) *exec.Cmd {
-	return exec.Command("umount", "-f", mountPoint)
-}
+
