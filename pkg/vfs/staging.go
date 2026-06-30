@@ -72,7 +72,7 @@ func (s *stagingStore) readAt(path string, buf []byte, off int64) (int, error) {
 		pg := p.(*page)
 		pg.mu.Lock()
 		if off < pg.maxOffset {
-			n := copy(buf, pg.buf[off:minInt64(pg.maxOffset, off+int64(len(buf)))])
+			n := copy(buf, pg.buf[off:min(pg.maxOffset, off+int64(len(buf)))])
 			pg.mu.Unlock()
 			return n, nil
 		}
@@ -230,9 +230,3 @@ func roundUpPow2(v int64) int64 {
 	return v + 1
 }
 
-func minInt64(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
