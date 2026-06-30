@@ -3,7 +3,9 @@ version: 2
 project_name: qrypt
 dist: release
 
-builds: []
+builds:
+  - id: prebuilt
+    skip: true
 
 archives:
   - id: linux-amd64
