@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
 const readChunkSize = 512 * 1024
@@ -170,14 +170,15 @@ func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
 func (v *VFS) Stat(ctx context.Context, path string) (drive.Entry, error) {
 	path = cleanVirtual(path)
 	if pending, err := v.pending(path); err == nil {
-		return drive.Entry{
+		entry := drive.Entry{
 			ID:       pending.FID,
 			ParentID: pending.ParentID,
 			Name:     pending.Name,
 			IsDir:    false,
 			Size:     pending.Size,
 			ModTime:  pendingModTime(pending),
-		}, nil
+		}
+		return v.applyLocalModTime(path, entry), nil
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
@@ -720,6 +721,7 @@ func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []dr
 			ParentID: pending.ParentID,
 			Name:     pending.Name,
 			Size:     pending.Size,
+			ModTime:  pendingModTime(pending),
 		})
 		seen[pending.Name] = true
 	}
@@ -1098,7 +1100,9 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		}
 		return nil
 	}
-	if modTime := pendingModTime(pending); !modTime.IsZero() {
+	if modTime := v.localModTimeFor(pending.Path); !modTime.IsZero() {
+		entry.ModTime = modTime
+	} else if modTime := pendingModTime(pending); !modTime.IsZero() {
 		entry.ModTime = modTime
 		v.setLocalModTime(pending.Path, modTime)
 	}
@@ -1479,11 +1483,7 @@ func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) er
 	}
 	unlock := v.lockPath(path)
 	defer unlock()
-	if pending, err := v.pending(path); err == nil {
-		pending.ModTime = modTime.UnixNano()
-		if err := v.cache.SavePending(pending); err != nil {
-			return err
-		}
+	if _, err := v.pending(path); err == nil {
 		v.setLocalModTime(path, modTime)
 		return nil
 	}
@@ -1506,11 +1506,27 @@ func (v *VFS) applyLocalModTime(path string, entry drive.Entry) drive.Entry {
 	return v.applyLocalModTimeLocked(path, entry)
 }
 
+func (v *VFS) applyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry {
+	parentPath = cleanVirtual(parentPath)
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	for i, entry := range entries {
+		entries[i] = v.applyLocalModTimeLocked(joinVirtual(parentPath, entry.Name), entry)
+	}
+	return entries
+}
+
 func (v *VFS) applyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry {
 	if modTime, ok := v.localModTime[cleanVirtual(path)]; ok && !modTime.IsZero() {
 		entry.ModTime = modTime
 	}
 	return entry
+}
+
+func (v *VFS) localModTimeFor(path string) time.Time {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.localModTime[cleanVirtual(path)]
 }
 
 func (v *VFS) setLocalModTime(path string, modTime time.Time) {
@@ -1649,6 +1665,7 @@ func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]
 	if ok && now.Before(cached.expires) {
 		entries := cloneEntries(cached.entries)
 		v.mu.RUnlock()
+		entries = v.applyLocalModTimes(parentPath, entries)
 		return v.localChildren(parentPath, v.filterDeleted(parentPath, entries)), nil
 	}
 	v.mu.RUnlock()
