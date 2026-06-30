@@ -9,9 +9,9 @@ on:
     types: [published]
 
 jobs:
-  # ── Check: vet + test ────────────────────────────────────────────
+  # ── Check: vet + test (ubuntu, no FUSE headers) ──────────────────
   check:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -27,8 +27,7 @@ jobs:
                 ./internal/control/... \
                 ./internal/driver/... \
                 ./internal/httputil/... \
-                ./internal/logging/... \
-                ./internal/mount/...
+                ./internal/logging/...
 
       - name: Test
         run: |
