@@ -45,7 +45,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: docker/setup-docker-action@v1
+      - name: Setup Docker (colima)
+        run: |
+          brew install colima docker docker-buildx
+          colima start --vm-type=vz --cpu 4 --memory 4
 
       - uses: actions/setup-go@v5
         with:
