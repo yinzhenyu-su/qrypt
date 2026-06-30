@@ -261,6 +261,17 @@ func (n *Namespace) Truncate(ctx context.Context, path string, size int64) error
 	return mount.Truncate(ctx, rest, size)
 }
 
+func (n *Namespace) SetModTime(ctx context.Context, path string, modTime time.Time) error {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root || rest == "/" {
+		return ErrReadOnly
+	}
+	return mount.SetModTime(ctx, rest, modTime)
+}
+
 func (n *Namespace) PrepareDirectoryCopy(ctx context.Context, path string) error {
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {

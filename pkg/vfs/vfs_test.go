@@ -64,6 +64,7 @@ type countingRemoveDriver struct {
 
 type staleMkdirListDriver struct {
 	mu           sync.Mutex
+	listCalls    map[string]int
 	failFirstPut bool
 	putAttempts  int
 	lastParent   string
@@ -87,8 +88,12 @@ type fileUploadDriver struct {
 	entries      map[string]drive.Entry
 	putCalls     int
 	putFileCalls int
+	putFileStart int
 	lastPath     string
 	lastData     []byte
+	allData      [][]byte
+	blockFirst   chan struct{}
+	firstEntered chan struct{}
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
@@ -384,7 +389,12 @@ func (d *staleMkdirListDriver) Drop(context.Context) error { return nil }
 func (d *staleMkdirListDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return nil, io.EOF
 }
-func (d *staleMkdirListDriver) List(context.Context, string) ([]drive.Entry, error) {
+func (d *staleMkdirListDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	if d.listCalls != nil {
+		d.listCalls[parentID]++
+	}
+	d.mu.Unlock()
 	return nil, nil
 }
 func (d *staleMkdirListDriver) Mkdir(_ context.Context, parentID, name string) (drive.Entry, error) {
@@ -415,6 +425,12 @@ func (d *staleMkdirListDriver) lastPut() (attempts int, parent, name, data strin
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.putAttempts, d.lastParent, d.lastName, string(d.lastData)
+}
+
+func (d *staleMkdirListDriver) listCount(parentID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.listCalls[parentID]
 }
 
 func (d *staleMoveListDriver) Init(context.Context) error { return nil }
@@ -511,6 +527,18 @@ func (d *fileUploadDriver) Put(_ context.Context, parentID, name string, size in
 	return d.saveEntryLocked(parentID, name, size), nil
 }
 func (d *fileUploadDriver) PutFile(_ context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+	d.mu.Lock()
+	d.putFileStart++
+	call := d.putFileStart
+	entered := d.firstEntered
+	block := d.blockFirst
+	d.mu.Unlock()
+	if call == 1 && entered != nil {
+		close(entered)
+	}
+	if call == 1 && block != nil {
+		<-block
+	}
 	data, err := os.ReadFile(localPath)
 	if err != nil {
 		return drive.Entry{}, err
@@ -520,6 +548,7 @@ func (d *fileUploadDriver) PutFile(_ context.Context, parentID, name string, siz
 	d.putFileCalls++
 	d.lastPath = localPath
 	d.lastData = append(d.lastData[:0], data...)
+	d.allData = append(d.allData, append([]byte(nil), data...))
 	return d.saveEntryLocked(parentID, name, size), nil
 }
 func (d *fileUploadDriver) saveEntryLocked(parentID, name string, size int64) drive.Entry {
@@ -587,7 +616,7 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 func TestVFSUsesFileUploaderForStagingPath(t *testing.T) {
 	ctx := context.Background()
 	drv := &fileUploadDriver{}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,6 +640,51 @@ func TestVFSUsesFileUploaderForStagingPath(t *testing.T) {
 	}
 	if string(drv.lastData) != "use staging path" {
 		t.Fatalf("unexpected uploaded data: %q", drv.lastData)
+	}
+}
+
+func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
+	ctx := context.Background()
+	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/fast.txt", []byte("first version"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/fast.txt"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drv.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first upload did not start")
+	}
+	if err := fs.Truncate(ctx, "/fast.txt", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/fast.txt", []byte("second"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/fast.txt"); err != nil {
+		t.Fatal(err)
+	}
+	close(drv.blockFirst)
+	waitNoPending(t, fs)
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if len(drv.allData) < 2 {
+		t.Fatalf("uploads = %q, want superseded upload and latest upload", drv.allData)
+	}
+	if string(drv.allData[0]) != "first version" {
+		t.Fatalf("first upload data = %q, want stable snapshot", drv.allData[0])
+	}
+	if string(drv.lastData) != "second" {
+		t.Fatalf("last upload data = %q, want second", drv.lastData)
 	}
 }
 
@@ -721,6 +795,107 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 	}
 	if len(cache.Files) != 1 || cache.Files[0].ID != drv.id {
 		t.Fatalf("expected original ID in debug cache details, got %+v", cache.Files)
+	}
+}
+
+func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "index.html"), []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := localfs.New(remote)
+	if err := raw.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	rc, err := fs.Read(ctx, "/index.html", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldData, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(oldData) != "old content" {
+		t.Fatalf("old read = %q", oldData)
+	}
+	if cache := fs.DebugSnapshot().Mounts[0].ReadCache; cache.ChunkCount == 0 {
+		t.Fatalf("expected old content to be cached, got %+v", cache)
+	}
+
+	if err := fs.Truncate(ctx, "/index.html", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/index.html", []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/index.html"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	rc, err = fs.Read(ctx, "/index.html", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newData, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(newData) != "new" {
+		t.Fatalf("read after overwrite = %q, want new", newData)
+	}
+}
+
+func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "index.html"), []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := localfs.New(remote)
+	if err := raw.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/index.html", []byte("new content"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/index.html"); err != nil {
+		t.Fatal(err)
+	}
+	want := time.Unix(1234, 5678)
+	if err := fs.SetModTime(ctx, "/index.html", want); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	entry, err := fs.Stat(ctx, "/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entry.ModTime.Equal(want) {
+		t.Fatalf("stat modtime = %s, want %s", entry.ModTime, want)
+	}
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !entries[0].ModTime.Equal(want) {
+		t.Fatalf("list entries = %+v, want modtime %s", entries, want)
 	}
 }
 
@@ -1430,6 +1605,28 @@ func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
 	}
 	if parent != "dir-id" || name != "file.txt" || data != "content" {
 		t.Fatalf("unexpected put parent=%q name=%q data=%q", parent, name, data)
+	}
+}
+
+func TestVFSStatMissingChildrenInNewLocalDirectoryDoesNotRelistRemote(t *testing.T) {
+	ctx := context.Background()
+	drv := &staleMkdirListDriver{listCalls: map[string]int{}}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.Mkdir(ctx, "/admin"); err != nil {
+		t.Fatal(err)
+	}
+	before := drv.listCount("dir-id")
+	for _, path := range []string{"/admin/index.html", "/admin/content", "/admin/system"} {
+		if _, err := fs.Stat(ctx, path); err == nil {
+			t.Fatalf("Stat(%q) unexpectedly succeeded", path)
+		}
+	}
+	if got := drv.listCount("dir-id"); got != before {
+		t.Fatalf("new local directory child stat listed remote %d times, want %d", got, before)
 	}
 }
 
