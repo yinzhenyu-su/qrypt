@@ -455,6 +455,15 @@ func (a *adapter) Utimens(path string, tmsp []fuse.Timespec) int {
 		a.ensureIgnoredApple(path, false)
 		errc = 0
 	}
+	if errc == 0 && len(tmsp) >= 2 {
+		if setter, ok := a.fs.(modTimeSetter); ok {
+			modTime := time.Unix(tmsp[1].Sec, tmsp[1].Nsec)
+			if err := setter.SetModTime(context.Background(), path, modTime); err != nil {
+				errc = fuseErr(err)
+				logFuseError("Utimens", path, errc, err)
+			}
+		}
+	}
 	a.trace.log("Utimens", path, "count=%d err=%d", len(tmsp), errc)
 	return errc
 }
