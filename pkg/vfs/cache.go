@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,6 +81,7 @@ type PendingFile struct {
 	Name          string                `json:"name"`
 	LocalPath     string                `json:"local_path"`
 	Size          int64                 `json:"size"`
+	ModTime       int64                 `json:"mod_time,omitempty"`
 	UpdatedAt     int64                 `json:"updated_at"`
 	RetryCount    int                   `json:"retry_count,omitempty"`
 	LastError     string                `json:"last_error,omitempty"`
@@ -290,7 +292,6 @@ func (c *Cache) RemovePendingIfUnchanged(p PendingFile) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	_ = c.staging.remove(p.LocalPath)
 	if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: p.Path}}); err != nil {
 		return false, err
 	}
@@ -369,6 +370,143 @@ func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+func (c *Cache) PutFile(fid, localPath string) error {
+	if fid == "" {
+		return nil
+	}
+	f, err := os.Open(localPath)
+	if err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	defer f.Close()
+
+	now := time.Now()
+	cacheID := cacheFileID(fid)
+	generation := now.UnixNano()
+	newChunks := map[int64]chunkInfo{}
+	tempFiles := map[string]string{}
+	buf := make([]byte, readChunkSize)
+	for index := int64(0); ; index++ {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			batch := index / cacheBatchBlocks
+			offset := int64(index%cacheBatchBlocks) * readChunkSize
+			finalPath := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d_%d.batch", cacheID, batch, generation))
+			tmpPath := tempFiles[finalPath]
+			if tmpPath == "" {
+				tmpPath = filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d_%d.seed", cacheID, batch, generation))
+				tempFiles[finalPath] = tmpPath
+			}
+			out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY, 0o644)
+			if err != nil {
+				c.cleanupSeedFiles(tempFiles)
+				c.setLastPutError(err)
+				return err
+			}
+			if _, err := out.WriteAt(buf[:n], offset); err != nil {
+				out.Close()
+				c.cleanupSeedFiles(tempFiles)
+				c.setLastPutError(err)
+				return err
+			}
+			if err := out.Close(); err != nil {
+				c.cleanupSeedFiles(tempFiles)
+				c.setLastPutError(err)
+				return err
+			}
+			newChunks[index] = chunkInfo{file: finalPath, offset: offset, size: int64(n), accessAt: now}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			c.cleanupSeedFiles(tempFiles)
+			c.setLastPutError(readErr)
+			return readErr
+		}
+	}
+
+	renamedFiles := map[string]struct{}{}
+	for finalPath, tmpPath := range tempFiles {
+		if err := os.Rename(tmpPath, finalPath); err != nil {
+			c.cleanupSeedFiles(tempFiles)
+			for file := range renamedFiles {
+				_ = os.Remove(file)
+			}
+			c.setLastPutError(err)
+			return err
+		}
+		renamedFiles[finalPath] = struct{}{}
+	}
+	oldFiles := c.replaceFileChunks(fid, newChunks)
+	for range tempFiles {
+		c.addPut()
+	}
+	for file := range oldFiles {
+		if err := os.Remove(file); err == nil {
+			c.mu.Lock()
+			c.stats.evicted++
+			c.mu.Unlock()
+		}
+	}
+	if err := c.evictIfNeeded(); err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	return nil
+}
+
+func (c *Cache) cleanupSeedFiles(files map[string]string) {
+	for _, tmpPath := range files {
+		_ = os.Remove(tmpPath)
+	}
+}
+
+func (c *Cache) replaceFileChunks(fid string, chunks map[int64]chunkInfo) map[string]struct{} {
+	c.mu.Lock()
+	old := c.chunks[fid]
+	c.chunks[fid] = &fileChunks{chunks: chunks}
+	c.mu.Unlock()
+	files := map[string]struct{}{}
+	if old == nil {
+		return files
+	}
+	old.mu.Lock()
+	defer old.mu.Unlock()
+	for _, chunk := range old.chunks {
+		files[chunk.file] = struct{}{}
+	}
+	old.chunks = map[int64]chunkInfo{}
+	return files
+}
+
+func (c *Cache) InvalidateFile(fid string) {
+	c.mu.Lock()
+	fc := c.chunks[fid]
+	delete(c.chunks, fid)
+	c.mu.Unlock()
+	if fc == nil {
+		return
+	}
+
+	files := map[string]struct{}{}
+	fc.mu.Lock()
+	for _, chunk := range fc.chunks {
+		files[chunk.file] = struct{}{}
+	}
+	fc.chunks = map[int64]chunkInfo{}
+	fc.mu.Unlock()
+
+	for file := range files {
+		if err := os.Remove(file); err == nil {
+			c.mu.Lock()
+			c.stats.evicted++
+			c.mu.Unlock()
+		}
+	}
 }
 
 func cacheFileID(fid string) string {
@@ -504,6 +642,7 @@ func samePendingFile(a, b PendingFile) bool {
 		a.Name == b.Name &&
 		a.LocalPath == b.LocalPath &&
 		a.Size == b.Size &&
+		a.ModTime == b.ModTime &&
 		a.UpdatedAt == b.UpdatedAt &&
 		a.RetryCount == b.RetryCount &&
 		a.LastError == b.LastError &&
