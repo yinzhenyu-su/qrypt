@@ -25,9 +25,17 @@ type partMeta struct {
 const uploadPartConcurrency = 4
 
 type Driver struct {
-	cl      *client
-	rootID  string
-	debugMu sync.Mutex
+	cl          *client
+	rootID      string
+	stateStore  drive.StateStore
+	authSource  string
+	authUpdated time.Time
+	debugMu     sync.Mutex
+}
+
+type authState struct {
+	Authorization string    `json:"authorization,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
 
 func init() {
@@ -57,15 +65,22 @@ func init() {
 }
 
 func New(authorization, rootID string) *Driver {
-	return &Driver{
-		cl:     newClient(authorization),
-		rootID: rootID,
+	d := &Driver{
+		cl:         newClient(authorization),
+		rootID:     rootID,
+		authSource: "config",
 	}
+	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
+	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	d.loadAuthState()
 	if _, _, err := d.cl.decodeAuth(); err != nil {
 		return fmt.Errorf("139: invalid authorization: %w", err)
+	}
+	if err := d.cl.refreshTokenIfNeeded(ctx); err != nil {
+		return fmt.Errorf("139: refresh authorization: %w", err)
 	}
 	if d.rootID == "" {
 		d.rootID = "/"
@@ -78,11 +93,46 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(ctx context.Context) error { return nil }
 
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
+}
+
 func (d *Driver) resolveID(fileID string) string {
 	if fileID == "" || fileID == "0" || fileID == "/" {
 		return d.rootID
 	}
 	return fileID
+}
+
+func (d *Driver) loadAuthState() {
+	if d.stateStore == nil {
+		return
+	}
+	var state authState
+	err := d.stateStore.LoadJSON("yun139_auth.json", &state)
+	if err != nil {
+		return
+	}
+	if state.Authorization != "" {
+		d.cl.setAuthorization(state.Authorization)
+		d.authSource = "state"
+	}
+	d.authUpdated = state.UpdatedAt
+}
+
+func (d *Driver) saveUpdatedAuthorization(authorization string) {
+	if authorization == "" {
+		return
+	}
+	d.authSource = "refresh"
+	d.authUpdated = time.Now()
+	if d.stateStore == nil {
+		return
+	}
+	_ = d.stateStore.SaveJSON("yun139_auth.json", authState{
+		Authorization: authorization,
+		UpdatedAt:     d.authUpdated,
+	})
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -277,6 +327,21 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	}
 	status.OK = true
 	return status
+}
+
+func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{
+		Driver:      "139yun",
+		Health:      "unknown",
+		GeneratedAt: time.Now(),
+		Stats: map[string]any{
+			"root_id":     d.rootID,
+			"auth_source": d.authSource,
+		},
+		Extra: map[string]any{
+			"auth_updated_at": d.authUpdated,
+		},
+	}, nil
 }
 
 func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {

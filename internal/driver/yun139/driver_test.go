@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,11 @@ import (
 // testAuth encodes an authorization string like base64(":account:token").
 func testAuth(account, token string) string {
 	return base64.StdEncoding.EncodeToString([]byte(":" + account + ":" + token))
+}
+
+func testAuthExpiring(account string, expiry time.Time) string {
+	token := fmt.Sprintf("token|a|b|%d", expiry.UnixMilli())
+	return testAuth(account, token)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v interface{}) {
@@ -169,6 +176,11 @@ func TestListPaginated(t *testing.T) {
 
 func TestListFailed(t *testing.T) {
 	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/refresh" {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<root><return>1</return><desc>refresh failed</desc></root>`))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		writeJSON(t, w, map[string]interface{}{
 			"success": false,
@@ -176,10 +188,107 @@ func TestListFailed(t *testing.T) {
 		})
 	})
 	defer server.Close()
+	drv.cl.authRefreshURL = server.URL + "/refresh"
 
 	_, err := drv.List(context.Background(), "/")
 	if err == nil || !strings.Contains(err.Error(), "auth expired") {
 		t.Fatalf("expected auth expired error, got %v", err)
+	}
+}
+
+func TestInitRefreshesExpiringAuthorizationAndPersistsState(t *testing.T) {
+	refreshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<root><return>0</return><token>new-token|a|b|` + fmt.Sprintf("%d", time.Now().Add(30*24*time.Hour).UnixMilli()) + `</token></root>`))
+	}))
+	defer refreshServer.Close()
+
+	drv := New(testAuthExpiring("test", time.Now().Add(time.Hour)), "/")
+	drv.cl.authRefreshURL = refreshServer.URL
+	drv.cl.personalCloudHost = "https://personal.example.com"
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	drv.InstallStateStore(store)
+
+	if err := drv.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var state authState
+	if err := store.LoadJSON("yun139_auth.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Authorization == "" || state.Authorization == testAuthExpiring("test", time.Now().Add(time.Hour)) {
+		t.Fatalf("authorization state was not updated: %+v", state)
+	}
+	if drv.authSource != "refresh" {
+		t.Fatalf("authSource = %q, want refresh", drv.authSource)
+	}
+}
+
+func TestLoadAuthStateOverridesConfigAuthorization(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	stored := testAuth("stored", "stored-token")
+	if err := store.SaveJSON("yun139_auth.json", authState{
+		Authorization: stored,
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drv := New(testAuth("config", "config-token"), "/")
+	drv.InstallStateStore(store)
+	drv.loadAuthState()
+	if got := drv.cl.getAuthorization(); got != stored {
+		t.Fatalf("authorization = %q, want stored", got)
+	}
+	if drv.authSource != "state" {
+		t.Fatalf("authSource = %q, want state", drv.authSource)
+	}
+}
+
+func TestPersonalPostRefreshesAndRetriesOnAuthExpired(t *testing.T) {
+	var listCalls int
+	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/refresh":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<root><return>0</return><token>fresh-token|a|b|` + fmt.Sprintf("%d", time.Now().Add(30*24*time.Hour).UnixMilli()) + `</token></root>`))
+		case "/file/list":
+			listCalls++
+			if listCalls == 1 {
+				writeJSON(t, w, map[string]interface{}{"success": false, "message": "auth expired"})
+				return
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"nextPageCursor": "",
+					"items":          []map[string]interface{}{},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+	drv.cl.authRefreshURL = server.URL + "/refresh"
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	drv.InstallStateStore(store)
+
+	entries, err := drv.List(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %d, want 0", len(entries))
+	}
+	if listCalls != 2 {
+		t.Fatalf("listCalls = %d, want 2", listCalls)
+	}
+	var state authState
+	if err := store.LoadJSON("yun139_auth.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Authorization == "" {
+		t.Fatal("expected refreshed authorization in state")
 	}
 }
 

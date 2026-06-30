@@ -20,14 +20,22 @@ import (
 )
 
 type Driver struct {
-	cl           *client
-	urlCache     sync.Map
-	cookie       string
-	rootPath     string
-	rootID       string
-	limiter      *drive.RateLimiter
-	debugMu      sync.Mutex
-	debugUploads map[string]quarkUploadDebug
+	cl            *client
+	urlCache      sync.Map
+	cookie        string
+	rootPath      string
+	rootID        string
+	limiter       *drive.RateLimiter
+	stateStore    drive.StateStore
+	cookieSource  string
+	cookieUpdated time.Time
+	debugMu       sync.Mutex
+	debugUploads  map[string]quarkUploadDebug
+}
+
+type cookieState struct {
+	Cookie    string    `json:"cookie,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 type quarkUploadDebug struct {
@@ -120,16 +128,20 @@ func New(cookie string, opts Options) *Driver {
 	if rootID == "" {
 		rootID = "0"
 	}
-	return &Driver{
+	d := &Driver{
 		cl:           newClient(cookie, clientOptions{BaseURL: opts.BaseURL, V2URL: opts.V2URL}),
 		cookie:       cookie,
 		rootPath:     opts.RootPath,
 		rootID:       rootID,
+		cookieSource: "config",
 		debugUploads: map[string]quarkUploadDebug{},
 	}
+	d.cl.onCookieUpdate = d.saveUpdatedCookie
+	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	d.loadCookieState()
 	if d.cookie == "" {
 		return fmt.Errorf("quark: cookie is required")
 	}
@@ -155,6 +167,10 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(ctx context.Context) error {
 	return nil
+}
+
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
 }
 
 func (d *Driver) InstallRateLimiter(limiter *drive.RateLimiter) drive.RateLimitDirection {
@@ -592,9 +608,11 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"active_uploads":  len(activeUploads),
 			"url_cache_count": urlCacheCount,
 			"root_id":         d.rootID,
+			"cookie_source":   d.cookieSource,
 		},
 		Extra: map[string]any{
-			"uploads": activeUploads,
+			"uploads":           activeUploads,
+			"cookie_updated_at": d.cookieUpdated,
 		},
 	}, nil
 }
@@ -610,6 +628,39 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	}
 	status.OK = true
 	return status
+}
+
+func (d *Driver) loadCookieState() {
+	if d.stateStore == nil {
+		return
+	}
+	var state cookieState
+	err := d.stateStore.LoadJSON("quark_cookie.json", &state)
+	if err != nil {
+		return
+	}
+	if state.Cookie != "" {
+		d.cookie = state.Cookie
+		d.cl.setCookie(state.Cookie)
+		d.cookieSource = "state"
+	}
+	d.cookieUpdated = state.UpdatedAt
+}
+
+func (d *Driver) saveUpdatedCookie(cookie string) {
+	if cookie == "" {
+		return
+	}
+	d.cookie = cookie
+	d.cookieSource = "response"
+	d.cookieUpdated = time.Now()
+	if d.stateStore == nil {
+		return
+	}
+	_ = d.stateStore.SaveJSON("quark_cookie.json", cookieState{
+		Cookie:    cookie,
+		UpdatedAt: d.cookieUpdated,
+	})
 }
 
 func (d *Driver) setUploadDebug(taskID string, item quarkUploadDebug) {

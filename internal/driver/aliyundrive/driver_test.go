@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,51 @@ func TestInitValidatesConfiguredDriveAndRoot(t *testing.T) {
 	}
 	if d.driveID != "configured-drive" {
 		t.Fatalf("driveID = %q, want configured-drive", d.driveID)
+	}
+}
+
+func TestRefreshPersistsTokenState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(tokenResp{AccessToken: "new-access", RefreshToken: "new-refresh"})
+	}))
+	defer server.Close()
+
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{RefreshToken: "old-refresh", AuthURL: server.URL + "/token"})
+	d.InstallStateStore(store)
+	if err := d.cl.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var state tokenState
+	if err := store.LoadJSON("aliyundrive_token.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.AccessToken != "new-access" || state.RefreshToken != "new-refresh" {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+}
+
+func TestLoadTokenStateOverridesConfigToken(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("aliyundrive_token.json", tokenState{
+		AccessToken:  "stored-access",
+		RefreshToken: "stored-refresh",
+		UpdatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(Options{RefreshToken: "config-refresh"})
+	d.InstallStateStore(store)
+	d.loadTokenState()
+	access, refresh := d.cl.tokens()
+	if access != "stored-access" || refresh != "stored-refresh" {
+		t.Fatalf("tokens = access:%q refresh:%q", access, refresh)
+	}
+	if d.tokenSource != "state" {
+		t.Fatalf("tokenSource = %q, want state", d.tokenSource)
 	}
 }
 

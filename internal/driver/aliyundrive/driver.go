@@ -37,6 +37,9 @@ type Driver struct {
 	orderDirection string
 	partSize       int64
 	limiter        *drive.RateLimiter
+	stateStore     drive.StateStore
+	tokenSource    string
+	tokenUpdated   time.Time
 	debugMu        sync.Mutex
 	lastError      string
 }
@@ -44,6 +47,12 @@ type Driver struct {
 type cachedDownloadURL struct {
 	URL       string
 	ExpiresAt time.Time
+}
+
+type tokenState struct {
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
 func init() {
@@ -151,7 +160,7 @@ func New(opts Options) *Driver {
 	if orderDirection == "" {
 		orderDirection = "DESC"
 	}
-	return &Driver{
+	d := &Driver{
 		cl:             newClient(opts.RefreshToken, clientOptions{APIBaseURL: opts.APIBaseURL, AuthURL: opts.AuthURL}),
 		driveID:        opts.DriveID,
 		rootID:         rootID,
@@ -159,10 +168,14 @@ func New(opts Options) *Driver {
 		orderBy:        orderBy,
 		orderDirection: orderDirection,
 		partSize:       defaultUploadPartSize,
+		tokenSource:    "config",
 	}
+	d.cl.onRefresh = d.saveRefreshedToken
+	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	d.loadTokenState()
 	if err := d.cl.refresh(ctx); err != nil {
 		return err
 	}
@@ -190,6 +203,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error { return nil }
+
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
+}
 
 func (d *Driver) InstallRateLimiter(limiter *drive.RateLimiter) drive.RateLimitDirection {
 	d.limiter = limiter
@@ -679,9 +696,11 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"user_id":         d.userID,
 			"order_by":        d.orderBy,
 			"order_direction": d.orderDirection,
+			"token_source":    d.tokenSource,
 		},
 		Extra: map[string]any{
-			"last_error": d.getLastError(),
+			"last_error":       d.getLastError(),
+			"token_updated_at": d.tokenUpdated,
 		},
 	}, nil
 }
@@ -720,4 +739,38 @@ func (d *Driver) getLastError() string {
 	d.debugMu.Lock()
 	defer d.debugMu.Unlock()
 	return d.lastError
+}
+
+func (d *Driver) loadTokenState() {
+	if d.stateStore == nil {
+		return
+	}
+	var state tokenState
+	err := d.stateStore.LoadJSON("aliyundrive_token.json", &state)
+	if err != nil {
+		if !drive.IsStateNotExist(err) {
+			d.setLastError(fmt.Errorf("aliyundrive: load token state: %w", err))
+		}
+		return
+	}
+	if state.AccessToken != "" || state.RefreshToken != "" {
+		d.cl.setTokens(state.AccessToken, state.RefreshToken)
+		d.tokenSource = "state"
+	}
+	d.tokenUpdated = state.UpdatedAt
+}
+
+func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
+	d.tokenSource = "refresh"
+	d.tokenUpdated = time.Now()
+	if d.stateStore == nil {
+		return
+	}
+	if err := d.stateStore.SaveJSON("aliyundrive_token.json", tokenState{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		UpdatedAt:    d.tokenUpdated,
+	}); err != nil {
+		d.setLastError(fmt.Errorf("aliyundrive: save token state: %w", err))
+	}
 }

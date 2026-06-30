@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -252,6 +253,79 @@ func TestPutFileRejectsEmptyFile(t *testing.T) {
 	_, err := d.PutFile(context.Background(), "", "empty.txt", 0, "missing")
 	if err == nil || !strings.Contains(err.Error(), "empty files") {
 		t.Fatalf("err = %v, want empty files error", err)
+	}
+}
+
+func TestInitPersistsRotatedTokenState(t *testing.T) {
+	ctx := context.Background()
+	var gotRefresh string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			gotRefresh = r.URL.Query().Get("refresh_token")
+			writeJSON(t, w, tokenResp{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 3600})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{
+		RefreshToken: "old-refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		OAuthURL:     srv.URL + "/token",
+		UseOnlineAPI: false,
+	})
+	d.InstallStateStore(store)
+	if err := d.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if gotRefresh != "old-refresh" {
+		t.Fatalf("refresh_token = %q, want old-refresh", gotRefresh)
+	}
+	var state tokenState
+	if err := store.LoadJSON("baidu_netdisk_token.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.RefreshToken != "new-refresh" || state.AccessToken != "new-access" {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+}
+
+func TestInitUsesStoredTokenStateBeforeConfigToken(t *testing.T) {
+	ctx := context.Background()
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("baidu_netdisk_token.json", tokenState{
+		AccessToken:  "stored-access",
+		RefreshToken: "stored-refresh",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		UpdatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("token endpoint should not be called when stored access token is still valid")
+	}))
+	defer srv.Close()
+
+	d := New(Options{
+		RefreshToken: "old-refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		OAuthURL:     srv.URL + "/token",
+		UseOnlineAPI: false,
+	})
+	d.InstallStateStore(store)
+	if err := d.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d.refreshToken != "stored-refresh" || d.accessToken != "stored-access" {
+		t.Fatalf("driver tokens = refresh:%q access:%q", d.refreshToken, d.accessToken)
+	}
+	if d.tokenSource != "state" {
+		t.Fatalf("tokenSource = %q, want state", d.tokenSource)
 	}
 }
 
