@@ -14,6 +14,8 @@
 GO ?= go
 DIST_DIR ?= dist
 IMAGE ?= qrypt
+DOCKER_BUILDX_CACHE_FROM ?=
+DOCKER_BUILDX_CACHE_TO   ?=
 
 .PHONY: build dist mkdist clean
 
@@ -30,13 +32,15 @@ mkdist:
 # ── Linux (Docker) ──────────────────────────────────────────────────
 
 linux/amd64: mkdist
-	docker buildx build --platform linux/amd64 --load -t $(IMAGE):amd64 .
+	docker buildx build $(DOCKER_BUILDX_CACHE_FROM) $(DOCKER_BUILDX_CACHE_TO) \
+		--platform linux/amd64 --load -t $(IMAGE):amd64 .
 	docker create --name qrypt-linux-amd64 $(IMAGE):amd64
 	docker cp qrypt-linux-amd64:/usr/local/bin/qrypt $(DIST_DIR)/qrypt-linux-amd64
 	docker rm qrypt-linux-amd64
 
 linux/arm64: mkdist
-	docker buildx build --platform linux/arm64 --load -t $(IMAGE):arm64 .
+	docker buildx build $(DOCKER_BUILDX_CACHE_FROM) $(DOCKER_BUILDX_CACHE_TO) \
+		--platform linux/arm64 --load -t $(IMAGE):arm64 .
 	docker create --name qrypt-linux-arm64 $(IMAGE):arm64
 	docker cp qrypt-linux-arm64:/usr/local/bin/qrypt $(DIST_DIR)/qrypt-linux-arm64
 	docker rm qrypt-linux-arm64
@@ -60,7 +64,8 @@ darwin/arm64: mkdist
 # ── Container registry ──────────────────────────────────────────────
 
 docker-push:
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(IMAGE):latest --push .
+	docker buildx build $(DOCKER_BUILDX_CACHE_FROM) \
+		--platform linux/amd64,linux/arm64 -t $(IMAGE):latest --push .
 
 # ── Clean ───────────────────────────────────────────────────────────
 
