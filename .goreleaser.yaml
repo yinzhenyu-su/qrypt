@@ -3,7 +3,7 @@ dist: release
 
 before:
   hooks:
-    - make -j5 dist
+    - make -j6 dist
 
 builds: []
 
@@ -27,6 +27,10 @@ archives:
   - id: windows-amd64
     files: [dist/qrypt-windows-amd64.exe]
     name_template: "{{ .ProjectName }}_{{ .Version }}_windows_amd64"
+    format: zip
+  - id: windows-arm64
+    files: [dist/qrypt-windows-arm64.exe]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_windows_arm64"
     format: zip
 
 checksum:
