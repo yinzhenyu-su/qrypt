@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -48,8 +48,9 @@ root = "`+remoteB+`"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +125,9 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +209,9 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,8 +268,9 @@ root = "`+plainRemote+`"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,8 +326,9 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,8 +383,9 @@ root = "`+remoteB+`"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	fs, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", "", configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", "", configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,8 +453,9 @@ delete_delay = "soon"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	_, cleanup, err := buildFileSystem(ctx, flags, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	_, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -473,8 +480,9 @@ download = "fast"
 		t.Fatal(err)
 	}
 
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	_, cleanup, err := buildFileSystem(ctx, flags, "localfs", remote, filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	cmd := &cobra.Command{Use: "test"}
+	addSingleDriveFlags(cmd)
+	_, cleanup, err := buildFileSystem(ctx, cmd, "localfs", remote, filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if cleanup != nil {
 		defer cleanup()
 	}

@@ -79,7 +79,7 @@ _ "github.com/yinzhenyu/qrypt/internal/driver/baidu"
 Users should be able to inspect parameters with:
 
 ```sh
-qrypt help driver baidu
+qrypt driver schema baidu
 ```
 
 Keep provider-specific options in `[[mounts]].params`. Do not add top-level

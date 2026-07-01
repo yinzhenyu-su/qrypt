@@ -5,15 +5,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"text/tabwriter"
-	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -51,124 +49,116 @@ type debugJournalEntry struct {
 	vfs.PendingFile
 }
 
-func runDebugCommand(ctx context.Context, flags *flag.FlagSet, args []string, cacheDir, configPath, mountName, debugSocket string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: qrypt [flags] debug journal|live ...")
+func newDebugCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "debug",
+		Short: "Inspect live runtime and cache state",
+		Long:  `Inspect live qrypt runtime state, cache state, and journal files.`,
 	}
-	switch args[0] {
-	case "journal":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: qrypt [flags] debug journal")
-		}
-		targets, err := debugCacheTargets(flags, cacheDir, configPath, mountName)
-		if err != nil {
-			return err
-		}
-		for i, target := range targets {
-			if i > 0 {
-				fmt.Println()
+	cmd.PersistentFlags().StringVar(&debugSocket, "debug-socket", "", "local debug control socket")
+	addMountNameFlag(cmd)
+
+	cmd.AddCommand(newDebugJournalCmd())
+	cmd.AddCommand(newDebugBundleCmd())
+	cmd.AddCommand(debugHealth())
+	cmd.AddCommand(debugState())
+	cmd.AddCommand(debugRuntime())
+	cmd.AddCommand(debugDriverCmd())
+	cmd.AddCommand(debugList())
+	cmd.AddCommand(debugEvents())
+	cmd.AddCommand(debugUploads())
+	cmd.AddCommand(debugResolve())
+	cmd.AddCommand(debugCache())
+	cmd.AddCommand(debugStaging())
+	cmd.AddCommand(debugConsistency())
+	cmd.AddCommand(debugGoroutines())
+	cmd.AddCommand(debugDoctor())
+
+	return cmd
+}
+
+func newDebugJournalCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "journal",
+		Short: "Inspect the local upload journal (pending.jsonl)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			targets, err := debugCacheTargets(cmd, cacheDir, configPath, mountName)
+			if err != nil {
+				return err
 			}
-			report := inspectJournalCache(target)
-			printJournalReport(os.Stdout, report)
-		}
-		return nil
-	case "live":
-		return runDebugLive(ctx, args[1:], debugSocket)
-	case "bundle":
-		return runDebugBundle(ctx, args[1:], debugSocket)
-	default:
-		return fmt.Errorf("unknown debug command: %s", args[0])
+			for i, target := range targets {
+				if i > 0 {
+					fmt.Println()
+				}
+				report := inspectJournalCache(target)
+				printJournalReport(os.Stdout, report)
+			}
+			return nil
+		},
 	}
 }
 
-func runDebugBundle(ctx context.Context, args []string, debugSocket string) error {
-	if debugSocket == "" {
-		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug bundle -out FILE")
+func newDebugBundleCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "bundle",
+		Short: "Collect debug data into a zip bundle",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if debugSocket == "" {
+				return fmt.Errorf("usage: qrypt debug bundle --out FILE (requires --debug-socket)")
+			}
+			outPath, _ := cmd.Flags().GetString("out")
+			if outPath == "" {
+				return fmt.Errorf("usage: qrypt debug bundle --out FILE")
+			}
+			ctx := context.Background()
+			client, err := control.NewClient(debugSocket)
+			if err != nil {
+				return err
+			}
+			out, err := os.Create(outPath)
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+			zw := zip.NewWriter(out)
+			endpoints := map[string]string{
+				"health.json":    "/v1/health",
+				"state.json":     "/v1/state",
+				"uploads.json":   "/v1/uploads?history=1",
+				"events.json":    "/v1/events?level=warn&limit=500",
+				"cache.json":     "/v1/cache",
+				"staging.json":   "/v1/staging",
+				"driver.json":    "/v1/driver",
+				"runtime.json":   "/v1/runtime",
+				"goroutines.txt": "/v1/goroutines?debug=1",
+			}
+			names := make([]string, 0, len(endpoints))
+			for name := range endpoints {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				body, err := client.Get(ctx, endpoints[name])
+				if err != nil {
+					body = []byte(err.Error() + "\n")
+				}
+				w, err := zw.Create(name)
+				if err != nil {
+					return err
+				}
+				if _, err := w.Write(body); err != nil {
+					return err
+				}
+			}
+			return zw.Close()
+		},
 	}
-	flags := flag.NewFlagSet("debug bundle", flag.ContinueOnError)
-	outPath := flags.String("out", "", "debug bundle output zip")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if *outPath == "" || len(flags.Args()) != 0 {
-		return fmt.Errorf("usage: qrypt -debug-socket SOCKET debug bundle -out FILE")
-	}
-	client, err := control.NewClient(debugSocket)
-	if err != nil {
-		return err
-	}
-	out, err := os.Create(*outPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	zw := zip.NewWriter(out)
-	endpoints := map[string]string{
-		"health.json":    "/v1/health",
-		"state.json":     "/v1/state",
-		"pending.json":   "/v1/pending",
-		"uploads.json":   "/v1/uploads?history=1",
-		"events.json":    "/v1/events?level=warn&limit=500",
-		"cache.json":     "/v1/cache",
-		"staging.json":   "/v1/staging",
-		"driver.json":    "/v1/driver",
-		"runtime.json":   "/v1/runtime",
-		"goroutines.txt": "/v1/goroutines?debug=1",
-	}
-	names := make([]string, 0, len(endpoints))
-	for name := range endpoints {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		body, err := client.Get(ctx, endpoints[name])
-		if err != nil {
-			body = []byte(err.Error() + "\n")
-		}
-		w, err := zw.Create(name)
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(body); err != nil {
-			return err
-		}
-	}
-	return zw.Close()
+	cmd.Flags().String("out", "", "debug bundle output zip")
+	return cmd
 }
 
-func parsePendingArgs(args []string) (bool, error) {
-	verbose := false
-	for _, arg := range args {
-		switch arg {
-		case "-v", "--verbose":
-			verbose = true
-		default:
-			return false, fmt.Errorf("usage: qrypt [flags] pending [-v|--verbose]")
-		}
-	}
-	return verbose, nil
-}
-
-func printPendingVerbose(w io.Writer, pending []vfs.PendingFile) {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PATH\tSIZE\tLOCAL\tSTAGING\tRETRY\tLAST_ATTEMPT\tNEXT_ATTEMPT\tLAST_ERROR")
-	for _, item := range pending {
-		status, size := stagingStatus(item)
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			item.Path,
-			item.Size,
-			item.LocalPath,
-			formatStagingStatus(status, size),
-			item.RetryCount,
-			formatUnixNano(item.LastAttemptAt),
-			formatUnixNano(item.NextAttemptAt),
-			item.LastError,
-		)
-	}
-	_ = tw.Flush()
-}
-
-func debugCacheTargets(flags *flag.FlagSet, cacheDir, configPath, mountName string) ([]debugCacheTarget, error) {
+func debugCacheTargets(cmd *cobra.Command, cacheDir, configPath, mountName string) ([]debugCacheTarget, error) {
 	if configPath == "" {
 		if cacheDir == "" {
 			cacheDir = defaultCacheDir()
@@ -179,7 +169,7 @@ func debugCacheTargets(flags *flag.FlagSet, cacheDir, configPath, mountName stri
 	if err != nil {
 		return nil, err
 	}
-	baseCacheDir := effectiveCacheDir(flags, cacheDir, cfg)
+	baseCacheDir := effectiveCacheDir(cmd, cacheDir, cfg)
 	if len(cfg.Mounts) == 0 {
 		return []debugCacheTarget{{Name: "default", Dir: baseCacheDir}}, nil
 	}
@@ -304,35 +294,4 @@ func printJournalReport(w io.Writer, report journalDebugReport) {
 	for _, orphan := range report.OrphanStaging {
 		fmt.Fprintf(w, "orphan_staging local=%s\n", orphan)
 	}
-}
-
-func stagingStatus(item vfs.PendingFile) (string, int64) {
-	if item.LocalPath == "" {
-		return "missing", 0
-	}
-	info, err := os.Stat(item.LocalPath)
-	if err != nil {
-		return "missing", 0
-	}
-	if info.Size() != item.Size {
-		return "size-mismatch", info.Size()
-	}
-	return "ok", info.Size()
-}
-
-func formatStagingStatus(status string, size int64) string {
-	if status == "ok" {
-		return "ok"
-	}
-	if status == "size-mismatch" {
-		return fmt.Sprintf("size-mismatch(%d)", size)
-	}
-	return status
-}
-
-func formatUnixNano(value int64) string {
-	if value == 0 {
-		return "-"
-	}
-	return time.Unix(0, value).Format(time.RFC3339)
 }
