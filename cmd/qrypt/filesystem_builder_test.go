@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -21,6 +23,21 @@ func testCommand() *cobra.Command {
 	cmd.PersistentFlags().String("filename-encryption", "", "")
 	cmd.PersistentFlags().String("filename-encoding", "", "")
 	return cmd
+}
+
+func withCLIConfig(t *testing.T, path string) {
+	t.Helper()
+	oldConfigPath := configPath
+	oldMountName := mountName
+	oldJournalCacheDir := journalCacheDir
+	configPath = path
+	mountName = ""
+	journalCacheDir = ""
+	t.Cleanup(func() {
+		configPath = oldConfigPath
+		mountName = oldMountName
+		journalCacheDir = oldJournalCacheDir
+	})
 }
 
 func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
@@ -85,6 +102,82 @@ root = "`+remoteB+`"
 	}
 	if string(data) != "two" {
 		t.Fatalf("unexpected remote data: %q", data)
+	}
+}
+
+func TestFSCommandsCreateMoveAndRemoveLocalFS(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = "`+filepath.Join(tmp, "mnt")+`"
+
+[defaults.cache]
+delete_delay = "10ms"
+
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withCLIConfig(t, configPath)
+
+	if err := runMkdir(testCommand(), []string{"/local/dir"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "dir")); err != nil {
+		t.Fatalf("mkdir did not create remote dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "dir", "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	downloadPath := filepath.Join(tmp, "download.txt")
+	if err := runGet(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err != nil {
+		t.Fatal(err)
+	}
+	downloaded, err := os.ReadFile(downloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(downloaded) != "data" {
+		t.Fatalf("unexpected downloaded content: %q", downloaded)
+	}
+	if err := runMv(testCommand(), []string{"/local/dir/file.txt", "/local/dir/renamed.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "dir", "renamed.txt")); err != nil {
+		t.Fatalf("mv did not rename remote file: %v", err)
+	}
+	if err := runRm(testCommand(), []string{"/local/dir/renamed.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	waitPathMissing(t, filepath.Join(remote, "dir", "renamed.txt"))
+	if err := runRm(testCommand(), []string{"/local/dir"}); err != nil {
+		t.Fatal(err)
+	}
+	waitPathMissing(t, filepath.Join(remote, "dir"))
+}
+
+func TestPrintEntryStat(t *testing.T) {
+	var out bytes.Buffer
+	printEntryStat(&out, drive.Entry{
+		ID:       "id",
+		ParentID: "parent",
+		Name:     "file.txt",
+		Size:     12,
+		ModTime:  time.Unix(123, 0).UTC(),
+	})
+	text := out.String()
+	for _, want := range []string{"type: file", "name: file.txt", "id: id", "parent_id: parent", "size: 12", "mod_time: 1970-01-01T00:02:03Z"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stat output missing %q:\n%s", want, text)
+		}
 	}
 }
 
@@ -719,4 +812,18 @@ func waitPendingEmpty(t *testing.T, fs vfs.FileSystem) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pending uploads did not drain: %+v", fs.Pending())
+}
+
+func waitPathMissing(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		_, lastErr = os.Stat(path)
+		if os.IsNotExist(lastErr) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("path still exists: %s err=%v", path, lastErr)
 }

@@ -128,7 +128,7 @@ func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) 
 	}
 	if rest == "/" {
 		name := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
-		return drive.Entry{ID: "/" + name, Name: name, IsDir: true, ModTime: n.createdAt}, nil
+		return drive.Entry{ID: "/" + name, ParentID: "/", Name: name, IsDir: true, ModTime: n.createdAt}, nil
 	}
 	return mount.Stat(ctx, rest)
 }
@@ -360,10 +360,11 @@ func (n *Namespace) rootEntries() []drive.Entry {
 	entries := make([]drive.Entry, 0, len(names))
 	for _, name := range names {
 		entries = append(entries, drive.Entry{
-			ID:      "/" + name,
-			Name:    name,
-			IsDir:   true,
-			ModTime: n.createdAt,
+			ID:       "/" + name,
+			ParentID: "/",
+			Name:     name,
+			IsDir:    true,
+			ModTime:  n.createdAt,
 		})
 	}
 	return entries

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ const uploadPartConcurrency = 4
 type Driver struct {
 	cl          *client
 	rootID      string
+	rootPath    string
 	stateStore  drive.StateStore
 	authSource  string
 	authUpdated time.Time
@@ -44,7 +46,7 @@ func init() {
 		if auth == "" {
 			return nil, fmt.Errorf("139: missing authorization")
 		}
-		return New(auth, params["root_id"]), nil
+		return New(auth, params["root_path"]), nil
 	},
 		drive.ParamDef{
 			Name:        "authorization",
@@ -55,19 +57,19 @@ func init() {
 			Example:     "your-authorization-token",
 		},
 		drive.ParamDef{
-			Name:        "root_id",
+			Name:        "root_path",
 			Type:        "string",
-			Description: "Root directory ID",
-			Default:     "",
-			Example:     "0",
+			Description: "Virtual root path, resolved to the provider folder ID at startup",
+			Default:     "/",
+			Example:     "/qrypt",
 		},
 	)
 }
 
-func New(authorization, rootID string) *Driver {
+func New(authorization, rootPath string) *Driver {
 	d := &Driver{
 		cl:         newClient(authorization),
-		rootID:     rootID,
+		rootPath:   rootPath,
 		authSource: "config",
 	}
 	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
@@ -82,11 +84,16 @@ func (d *Driver) Init(ctx context.Context) error {
 	if err := d.cl.refreshTokenIfNeeded(ctx); err != nil {
 		return fmt.Errorf("139: refresh authorization: %w", err)
 	}
-	if d.rootID == "" {
-		d.rootID = "/"
-	}
 	if err := d.cl.ensurePersonalCloudHost(); err != nil {
 		return fmt.Errorf("139: resolve host: %w", err)
+	}
+	d.rootID = "/"
+	if d.rootPath != "" && d.rootPath != "/" {
+		rootID, err := d.resolvePathFrom(ctx, d.rootID, d.rootPath)
+		if err != nil {
+			return fmt.Errorf("139: resolve root_path %q: %w", d.rootPath, err)
+		}
+		d.rootID = rootID
 	}
 	return nil
 }
@@ -336,6 +343,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
 			"root_id":     d.rootID,
+			"root_path":   d.rootPath,
 			"auth_source": d.authSource,
 		},
 		Extra: map[string]any{
@@ -558,8 +566,31 @@ func calcPartSize(fileSize int64) int64 {
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
-	if path == "" || path == "/" {
-		return d.rootID, nil
+	return d.resolvePathFrom(ctx, d.rootID, path)
+}
+
+func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string, error) {
+	currentID := d.resolveID(rootID)
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return currentID, nil
 	}
-	return d.rootID, nil
+	for _, segment := range strings.Split(p, "/") {
+		entries, err := d.List(ctx, currentID)
+		if err != nil {
+			return "", err
+		}
+		found := false
+		for _, entry := range entries {
+			if entry.IsDir && entry.Name == segment {
+				currentID = entry.ID
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("directory %q not found under %q", segment, p)
+		}
+	}
+	return currentID, nil
 }

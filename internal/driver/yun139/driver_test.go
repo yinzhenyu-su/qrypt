@@ -539,7 +539,7 @@ func TestPutDuplicate(t *testing.T) {
 }
 
 func TestResolvePath(t *testing.T) {
-	d := New("auth", "/root-id")
+	d := &Driver{rootID: "/root-id"}
 	path, err := d.ResolvePath(context.Background(), "/")
 	if err != nil {
 		t.Fatal(err)

@@ -29,21 +29,11 @@ func TestFactoryRequiresDriveID(t *testing.T) {
 	}
 }
 
-func TestFactoryRequiresRootID(t *testing.T) {
-	_, err := drive.New("aliyundrive", drive.Params{
-		"refresh_token": "token",
-		"drive_id":      "drive-id",
-	})
-	if err == nil || !strings.Contains(err.Error(), "root_id") {
-		t.Fatalf("expected root_id error, got %v", err)
-	}
-}
-
 func TestFactoryCreatesDriver(t *testing.T) {
 	raw, err := drive.New("aliyundrive", drive.Params{
 		"refresh_token":   "token",
 		"drive_id":        "drive-id",
-		"root_id":         "root-id",
+		"root_path":       "/",
 		"order_by":        "name",
 		"order_direction": "ASC",
 	})
@@ -54,7 +44,7 @@ func TestFactoryCreatesDriver(t *testing.T) {
 	if !ok {
 		t.Fatalf("driver type = %T, want *Driver", raw)
 	}
-	if d.driveID != "drive-id" || d.rootID != "root-id" || d.orderBy != "name" || d.orderDirection != "ASC" {
+	if d.driveID != "drive-id" || d.rootID != "root" || d.rootPath != "/" || d.orderBy != "name" || d.orderDirection != "ASC" {
 		t.Fatalf("unexpected driver config drive=%q root=%q order=%q/%q", d.driveID, d.rootID, d.orderBy, d.orderDirection)
 	}
 }
