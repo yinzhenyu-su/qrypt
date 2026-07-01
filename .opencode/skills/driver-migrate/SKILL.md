@@ -35,7 +35,7 @@ description: Migrate storage drivers from OpenList/OpenListTeam implementations 
 
 6. Validate behavior with targeted tests before broad tests.
    - Unit test config validation, list parsing, read range behavior, path escaping, root path/root ID handling, time parsing, and upload/write operations.
-   - For live debugging, prefer `debug live state`, `resolve`, `list`, `consistency`, `events`, `cache`, and `staging`.
+   - For live debugging, prefer `debug state`, `resolve`, `list`, `consistency`, `events`, `cache`, and `staging`.
    - Run the narrow package tests, then `go test ./...`.
 
 ## Driver Discovery
@@ -76,13 +76,13 @@ If `gh` is unavailable or unauthenticated, use the next available repository acc
 
 Use live debug to separate layers:
 
-- `debug live state`: confirm mount exists, driver name, encrypted flag, pending/upload/cache summary.
-- `debug live resolve <path>`: confirm mount, driver, encryption state, remote ID, parent ID, and cache ID.
-- `debug live list <dir>`: bypass directory cache and inspect live remote entries.
-- `debug live consistency <path>`: compare VFS state with live remote listing.
-- `debug live events warn 100 --path <path>`: inspect recent failures for one path.
-- `debug live cache [path]`: inspect read cache hits, puts, and errors.
-- `debug live staging [path]`: inspect pending staging file existence, size match, orphan files, and checksum.
+- `debug state`: confirm mount exists, driver name, encrypted flag, pending/upload/cache summary.
+- `debug resolve <path>`: confirm mount, driver, encryption state, remote ID, parent ID, and cache ID.
+- `debug list <dir>`: bypass directory cache and inspect live remote entries.
+- `debug consistency --path <path>`: compare VFS state with live remote listing.
+- `debug events --level warn --limit 100 --path <path>`: inspect recent failures for one path.
+- `debug cache [path]`: inspect read cache hits, puts, and errors.
+- `debug staging [path]`: inspect pending staging file existence, size match, orphan files, and checksum.
 
 ## References
 

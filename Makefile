@@ -20,8 +20,8 @@ DOCKER_BUILDX_CACHE_TO   ?=
 
 .PHONY: build dist mkdist clean
 
-build:
-	$(GO) build -ldflags="-s -w" -o qrypt ./cmd/qrypt/
+build: mkdist
+	$(GO) build -ldflags="-s -w" -o $(DIST_DIR)/qrypt ./cmd/qrypt/
 
 dist: mkdist linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 	@echo "--- all platforms ---"

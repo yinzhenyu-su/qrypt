@@ -39,15 +39,15 @@ root = "/tmp/qrypt-remote"
 Verify the config before mounting:
 
 ```sh
-go run ./cmd/qrypt -config ./qrypt.toml list /
-go run ./cmd/qrypt -config ./qrypt.toml put ./README.md /local/README.md
-go run ./cmd/qrypt -config ./qrypt.toml cat /local/README.md
+go run ./cmd/qrypt --config ./qrypt.toml fs list /
+go run ./cmd/qrypt --config ./qrypt.toml fs put ./README.md /local/README.md
+go run ./cmd/qrypt --config ./qrypt.toml fs cat /local/README.md
 ```
 
 Mount it:
 
 ```sh
-go run ./cmd/qrypt -config ./qrypt.toml mount
+go run ./cmd/qrypt --config ./qrypt.toml mount
 ```
 
 The mount point contains one directory per `[[mounts]]` entry:
@@ -95,7 +95,7 @@ filename_encoding = "base32"
 
 ## Drivers
 
-Use `qrypt help driver <name>` for the exact parameter schema.
+Use `qrypt driver schema <name>` for the exact parameter schema.
 
 | Driver | Required params | Notes |
 |---|---|---|
@@ -103,16 +103,16 @@ Use `qrypt help driver <name>` for the exact parameter schema.
 | `aliyundrive` | `refresh_token`, `drive_id`, `root_id` | Aliyun Drive backend |
 | `baidu_netdisk` | `refresh_token` | Baidu Netdisk backend; list, read, upload, metadata write, and space support |
 | `quark` | `cookie` | Quark cloud drive backend |
-| `139yun` | `authorization` | 139 cloud drive backend |
+| `yun139` | `authorization` | 139 cloud drive backend |
 | `115` | `cookie` | 115 backend; read support is limited by provider behavior |
 | `webdav` | `url`, `username`, `password` | Standard WebDAV backend; optional `root_path` |
 
 ```sh
-go run ./cmd/qrypt help
-go run ./cmd/qrypt help driver aliyundrive
-go run ./cmd/qrypt help driver baidu_netdisk
-go run ./cmd/qrypt help driver quark
-go run ./cmd/qrypt help driver webdav
+go run ./cmd/qrypt driver list
+go run ./cmd/qrypt driver schema aliyundrive
+go run ./cmd/qrypt driver schema baidu_netdisk
+go run ./cmd/qrypt driver schema quark
+go run ./cmd/qrypt driver schema webdav
 ```
 
 For `baidu_netdisk`, `use_online_api` defaults to `true` and uses the
@@ -173,17 +173,16 @@ For live runtime state, start qrypt with a debug socket:
 
 ```sh
 go run ./cmd/qrypt \
-  -config ./qrypt.toml \
-  -debug-socket /tmp/qrypt.sock \
+  --config ./qrypt.toml \
+  --debug-socket /tmp/qrypt.sock \
   mount
 ```
 
 Then query it from another shell:
 
 ```sh
-go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live health
-go run ./cmd/qrypt -debug-socket /tmp/qrypt.sock debug live state
-go run ./cmd/qrypt -config ./qrypt.toml pending --verbose
+go run ./cmd/qrypt --debug-socket /tmp/qrypt.sock debug doctor
+go run ./cmd/qrypt --config ./qrypt.toml fs pending --verbose
 ```
 
 See [`docs/debug.md`](docs/debug.md) for live endpoints, pending upload
@@ -192,12 +191,22 @@ inspection, cache checks, and consistency tools.
 ## Development
 
 ```text
-cmd/qrypt                  CLI adapter
-internal/mount             FUSE adapter
-internal/driver/*          concrete backend drivers
-pkg/vfs                    platform-independent virtual filesystem
-pkg/crypt                  rclone-compatible crypt wrapper
-pkg/drive                  backend driver contracts and registry
+cmd/qrypt/main.go                  process entry point
+cmd/qrypt/command_root.go          root command and global flags
+cmd/qrypt/command_mount.go         mount command
+cmd/qrypt/command_config.go        config init/show
+cmd/qrypt/command_driver.go        driver list/schema
+cmd/qrypt/command_fs.go            fs list/cat/put/pending
+cmd/qrypt/command_debug.go         debug root and bundle
+cmd/qrypt/command_journal.go       offline journal inspection
+cmd/qrypt/command_debug_socket.go  live debug socket commands
+cmd/qrypt/command_debug_doctor.go  debug doctor aggregate
+cmd/qrypt/filesystem_builder.go    CLI config to VFS construction
+internal/mount                 FUSE adapter
+internal/driver/*              concrete backend drivers
+pkg/vfs                        platform-independent virtual filesystem
+pkg/crypt                      rclone-compatible crypt wrapper
+pkg/drive                      backend driver contracts and registry
 ```
 
 Run tests:
