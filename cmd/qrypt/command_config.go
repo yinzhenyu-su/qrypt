@@ -35,7 +35,7 @@ func newConfigInitCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
-			outPath, _ := cmd.Flags().GetString("path")
+			outPath, _ := cmd.Flags().GetString("out")
 
 			if outPath == "" {
 				outPath = configPath
@@ -65,7 +65,7 @@ func newConfigInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().Bool("force", false, "overwrite existing file")
-	cmd.Flags().String("path", "", "output path (default: -config value or ./qrypt.toml)")
+	cmd.Flags().String("out", "", "output path (default: --config value or ./qrypt.toml)")
 	return cmd
 }
 

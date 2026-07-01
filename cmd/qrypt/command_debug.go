@@ -26,19 +26,21 @@ func newDebugCmd() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.PersistentFlags().StringVar(&debugSocket, "socket", "", "debug socket path")
-	cmd.PersistentFlags().StringVar(&debugSocket, "debug-socket", "", "debug socket path")
-	_ = cmd.PersistentFlags().MarkHidden("debug-socket")
-	cmd.AddCommand(newDebugBundleCmd())
-	cmd.AddCommand(newDebugCollectCmd())
-	cmd.AddCommand(newDebugInspectCmd())
-	cmd.AddCommand(newDebugWatchCmd())
-	cmd.AddCommand(newJournalCmdWithUse("journal", false))
-	cmd.AddCommand(newDebugRawCmd())
+	cmd.AddCommand(withDebugSocketFlag(newDebugBundleCmd()))
+	cmd.AddCommand(withDebugSocketFlag(newDebugCollectCmd()))
+	cmd.AddCommand(withDebugSocketFlag(newDebugInspectCmd()))
+	cmd.AddCommand(withDebugSocketFlag(newDebugWatchCmd()))
+	cmd.AddCommand(newJournalCmdWithUse("journal"))
+	cmd.AddCommand(withDebugSocketFlag(newDebugRawCmd()))
 	return cmd
 }
 
 type debugSocketClient struct{}
+
+func withDebugSocketFlag(cmd *cobra.Command) *cobra.Command {
+	cmd.Flags().StringVar(&debugSocket, "socket", "", "debug socket path")
+	return cmd
+}
 
 func (d debugSocketClient) get(endpoint string) ([]byte, error) {
 	if debugSocket == "" {
@@ -63,8 +65,8 @@ func newDebugRawCmd() *cobra.Command {
 				return fmt.Errorf("endpoint required")
 			case strings.HasPrefix(endpoint, "/v1/"):
 			case endpoint[0] == '/':
-				return fmt.Errorf("debug raw expects a /v1 endpoint, got virtual path %q; use 'qrypt debug --socket %s inspect %s' or 'qrypt debug --socket %s raw /v1/resolve?path=%s'",
-					endpoint, debugSocket, endpoint, debugSocket, url.QueryEscape(endpoint))
+				return fmt.Errorf("debug raw expects a /v1 endpoint, got virtual path %q; use 'qrypt debug inspect %s --socket %s' or 'qrypt debug raw /v1/resolve?path=%s --socket %s'",
+					endpoint, endpoint, debugSocket, url.QueryEscape(endpoint), debugSocket)
 			case len(endpoint) >= 3 && endpoint[:3] == "v1/":
 				endpoint = "/" + endpoint
 			default:

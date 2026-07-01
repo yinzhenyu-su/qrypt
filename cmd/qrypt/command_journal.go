@@ -47,22 +47,18 @@ type debugJournalEntry struct {
 	vfs.PendingFile
 }
 
-func newJournalCmd() *cobra.Command {
-	cmd := newJournalCmdWithUse("journal", true)
-	cmd.Hidden = true
-	return cmd
-}
-
-func newJournalCmdWithUse(use string, legacy bool) *cobra.Command {
+func newJournalCmdWithUse(use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "Inspect offline upload journal",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if configPath == "" && journalCacheDir == "" {
-				return fmt.Errorf("missing --config or --cache")
+			cacheDir, _ := cmd.Flags().GetString("cache-dir")
+			mountName, _ := cmd.Flags().GetString("mount")
+			if configPath == "" && cacheDir == "" {
+				return fmt.Errorf("missing --config or --cache-dir")
 			}
-			targets, err := debugCacheTargets(journalCacheDir, configPath)
+			targets, err := debugCacheTargets(cacheDir, configPath, mountName)
 			if err != nil {
 				return err
 			}
@@ -85,12 +81,9 @@ func newJournalCmdWithUse(use string, legacy bool) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&mountName, "mount", "", "mount name")
-	cmd.Flags().StringVar(&journalCacheDir, "cache", "", "cache directory")
+	cmd.Flags().String("mount", "", "mount name")
+	cmd.Flags().String("cache-dir", "", "cache directory")
 	cmd.Flags().Bool("json", false, "write JSON output")
-	if legacy {
-		cmd.Deprecated = "use 'qrypt debug journal' instead"
-	}
 	return cmd
 }
 
@@ -109,7 +102,7 @@ func writeJournalReportsJSON(w io.Writer, reports []journalDebugReport) error {
 	})
 }
 
-func debugCacheTargets(cacheDir, configPath string) ([]debugCacheTarget, error) {
+func debugCacheTargets(cacheDir, configPath, mountName string) ([]debugCacheTarget, error) {
 	if configPath == "" {
 		if cacheDir == "" {
 			cacheDir = defaultCacheDir()

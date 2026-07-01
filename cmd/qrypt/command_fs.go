@@ -306,7 +306,7 @@ func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func()
 		return nil, nil, nil, err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, driverName, root, "", configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		stop()
 		return nil, nil, nil, err

@@ -17,26 +17,15 @@ import (
 )
 
 func testCommand() *cobra.Command {
-	cmd := &cobra.Command{Use: "test"}
-	cmd.PersistentFlags().String("password", "", "")
-	cmd.PersistentFlags().String("salt", "", "")
-	cmd.PersistentFlags().String("filename-encryption", "", "")
-	cmd.PersistentFlags().String("filename-encoding", "", "")
-	return cmd
+	return &cobra.Command{Use: "test"}
 }
 
 func withCLIConfig(t *testing.T, path string) {
 	t.Helper()
 	oldConfigPath := configPath
-	oldMountName := mountName
-	oldJournalCacheDir := journalCacheDir
 	configPath = path
-	mountName = ""
-	journalCacheDir = ""
 	t.Cleanup(func() {
 		configPath = oldConfigPath
-		mountName = oldMountName
-		journalCacheDir = oldJournalCacheDir
 	})
 }
 
@@ -54,6 +43,7 @@ func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
 
 [defaults.cache]
 upload_delay = "10ms"
@@ -73,7 +63,7 @@ root = "`+remoteB+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +104,7 @@ func TestFSCommandsCreateMoveAndRemoveLocalFS(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
 
 [defaults.cache]
 delete_delay = "10ms"
@@ -196,6 +187,7 @@ func TestBuildNamespaceUsesPerMountEncryption(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
 
 [defaults.cache]
 upload_delay = "10ms"
@@ -225,7 +217,7 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +268,7 @@ func TestBuildNamespaceAppliesGlobalEncryptionToMountWithoutEncryption(t *testin
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
 
 [encryption]
 password = "global-pass"
@@ -307,7 +300,7 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +343,7 @@ func TestBuildNamespaceReadsPlainFilesWhenNoEncryptionConfigured(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
 
 [defaults.cache]
 upload_delay = "10ms"
@@ -364,7 +358,7 @@ root = "`+plainRemote+`"
 		t.Fatal(err)
 	}
 
-	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +393,8 @@ func TestBuildNamespaceAppliesBandwidthToEncryptedMount(t *testing.T) {
 
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
+
 [bandwidth]
 upload = "1"
 
@@ -420,7 +416,7 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +471,7 @@ root = "`+remoteB+`"
 		t.Fatal(err)
 	}
 
-	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", "", configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,6 +527,8 @@ func TestBuildNamespaceRejectsInvalidDeleteDelay(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
+
 [[mounts]]
 name = "local"
 type = "localfs"
@@ -543,7 +541,7 @@ delete_delay = "soon"
 		t.Fatal(err)
 	}
 
-	_, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	_, cleanup, err := buildFileSystem(ctx, configPath)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -568,7 +566,7 @@ download = "fast"
 		t.Fatal(err)
 	}
 
-	_, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", remote, filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	_, cleanup, err := buildFileSystem(ctx, configPath)
 	if cleanup != nil {
 		defer cleanup()
 	}
