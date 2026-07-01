@@ -259,7 +259,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["refresh_token", "drive_id", "root_id"],
+                "required": ["refresh_token", "drive_id"],
                 "properties": {
                   "refresh_token": {
                     "description": "Aliyun Drive refresh token.",
@@ -269,12 +269,8 @@
                     "description": "Aliyun Drive drive ID.",
                     "type": "string", "minLength": 1
                   },
-                  "root_id": {
-                    "description": "Aliyun Drive root folder file ID for this mount.",
-                    "type": "string", "minLength": 1
-                  },
                   "root_path": {
-                    "description": "Optional path resolved under root_id during startup.",
+                    "description": "Aliyun Drive path used as this mount root.",
                     "type": "string"
                   },
                   "order_by": {
@@ -414,10 +410,6 @@
                     "description": "Virtual root path on the drive.",
                     "type": "string"
                   },
-                  "root_id": {
-                    "description": "Root directory ID.",
-                    "type": "string"
-                  },
                   "base_url": {
                     "description": "Custom API base URL.",
                     "type": "string"
@@ -446,8 +438,8 @@
                     "description": "115 cloud drive authentication cookie.",
                     "type": "string", "minLength": 1
                   },
-                  "root_id": {
-                    "description": "Root directory ID.",
+                  "root_path": {
+                    "description": "115 path used as this mount root.",
                     "type": "string"
                   }
                 }
@@ -470,8 +462,8 @@
                     "description": "139 cloud drive authorization token.",
                     "type": "string", "minLength": 1
                   },
-                  "root_id": {
-                    "description": "Root directory ID.",
+                  "root_path": {
+                    "description": "139 cloud path used as this mount root.",
                     "type": "string"
                   }
                 }

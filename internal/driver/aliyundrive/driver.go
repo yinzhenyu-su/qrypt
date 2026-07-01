@@ -65,14 +65,9 @@ func init() {
 		if driveID == "" {
 			return nil, fmt.Errorf("aliyundrive: missing drive_id")
 		}
-		rootID := params["root_id"]
-		if rootID == "" {
-			return nil, fmt.Errorf("aliyundrive: missing root_id")
-		}
 		return New(Options{
 			RefreshToken:   refreshToken,
 			DriveID:        driveID,
-			RootID:         rootID,
 			RootPath:       params["root_path"],
 			APIBaseURL:     params["api_base_url"],
 			AuthURL:        params["auth_url"],
@@ -96,17 +91,10 @@ func init() {
 			Example:     "your-drive-id",
 		},
 		drive.ParamDef{
-			Name:        "root_id",
-			Type:        "string",
-			Required:    true,
-			Description: "Root folder ID",
-			Default:     "root",
-			Example:     "root",
-		},
-		drive.ParamDef{
 			Name:        "root_path",
 			Type:        "string",
-			Description: "Virtual root path, resolved at startup if set",
+			Description: "Virtual root path, resolved to the provider folder ID at startup",
+			Default:     "/",
 			Example:     "/qrypt",
 		},
 		drive.ParamDef{
@@ -677,10 +665,10 @@ func (d *Driver) validateRoot(ctx context.Context) error {
 		return fmt.Errorf("aliyundrive: drive_id is required")
 	}
 	if d.rootID == "" {
-		return fmt.Errorf("aliyundrive: root_id is required")
+		return fmt.Errorf("aliyundrive: root_path resolved to empty folder ID")
 	}
 	if _, err := d.List(ctx, d.rootID); err != nil {
-		return fmt.Errorf("aliyundrive: validate root drive_id=%q root_id=%q: %w", d.driveID, d.rootID, err)
+		return fmt.Errorf("aliyundrive: validate root drive_id=%q root_path=%q resolved_id=%q: %w", d.driveID, d.rootPath, d.rootID, err)
 	}
 	return nil
 }
@@ -693,6 +681,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Stats: map[string]any{
 			"drive_id":        d.driveID,
 			"root_id":         d.rootID,
+			"root_path":       d.rootPath,
 			"user_id":         d.userID,
 			"order_by":        d.orderBy,
 			"order_direction": d.orderDirection,
@@ -711,8 +700,9 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 		Driver:    "aliyundrive",
 		CheckedAt: start,
 		Extra: map[string]any{
-			"drive_id": d.driveID,
-			"root_id":  d.rootID,
+			"drive_id":  d.driveID,
+			"root_id":   d.rootID,
+			"root_path": d.rootPath,
 		},
 	}
 	err := d.validateRoot(ctx)

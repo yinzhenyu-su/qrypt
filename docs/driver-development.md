@@ -50,7 +50,6 @@ func init() {
 		}
 		return New(token, Options{
 			RootPath: params["root_path"],
-			RootID:   params["root_id"],
 		}), nil
 	},
 		drive.ParamDef{

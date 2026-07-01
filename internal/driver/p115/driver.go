@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -27,6 +28,7 @@ var appVer = defaultAppVer
 type Driver struct {
 	cl        *driver115.Pan115Client
 	rootID    string
+	rootPath  string
 	cookies   string
 	limitRate float64
 	limiter   *rate.Limiter
@@ -40,7 +42,7 @@ func init() {
 		}
 		return New(Options{
 			Cookie:    cookie,
-			RootID:    params["root_id"],
+			RootPath:  params["root_path"],
 			LimitRate: 2,
 		}), nil
 	},
@@ -53,11 +55,11 @@ func init() {
 			Example:     "k1=v1; k2=v2",
 		},
 		drive.ParamDef{
-			Name:        "root_id",
+			Name:        "root_path",
 			Type:        "string",
-			Description: "Root directory ID",
-			Default:     "",
-			Example:     "0",
+			Description: "Virtual root path, resolved to the provider folder ID at startup",
+			Default:     "/",
+			Example:     "/qrypt",
 		},
 	)
 }
@@ -65,12 +67,14 @@ func init() {
 type Options struct {
 	Cookie    string
 	RootID    string
+	RootPath  string
 	LimitRate float64
 }
 
 func New(opts Options) *Driver {
 	return &Driver{
 		rootID:    opts.RootID,
+		rootPath:  opts.RootPath,
 		cookies:   opts.Cookie,
 		limitRate: opts.LimitRate,
 	}
@@ -92,7 +96,20 @@ func (d *Driver) Init(ctx context.Context) error {
 		d.cl.ImportCredential(cred)
 	}
 	d.cl.ImportCookies(allCookies)
-	return d.cl.LoginCheck()
+	if err := d.cl.LoginCheck(); err != nil {
+		return err
+	}
+	if d.rootID == "" {
+		d.rootID = "0"
+	}
+	if d.rootPath != "" && d.rootPath != "/" {
+		rootID, err := d.resolvePathFrom(ctx, d.rootID, d.rootPath)
+		if err != nil {
+			return fmt.Errorf("115: resolve root_path %q: %w", d.rootPath, err)
+		}
+		d.rootID = rootID
+	}
+	return nil
 }
 
 func (d *Driver) Drop(context.Context) error {
@@ -103,7 +120,7 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 	if err := d.waitLimit(ctx); err != nil {
 		return nil, err
 	}
-	return d.getFiles(parentID)
+	return d.getFiles(d.resolveID(parentID))
 }
 
 func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
@@ -153,6 +170,39 @@ func (d *Driver) getFiles(dirID string) ([]drive.Entry, error) {
 		}
 	}
 	return entries, nil
+}
+
+func (d *Driver) resolveID(fileID string) string {
+	if fileID == "" || fileID == "0" || fileID == "/" {
+		return d.rootID
+	}
+	return fileID
+}
+
+func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string, error) {
+	currentID := d.resolveID(rootID)
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return currentID, nil
+	}
+	for _, segment := range strings.Split(p, "/") {
+		entries, err := d.List(ctx, currentID)
+		if err != nil {
+			return "", err
+		}
+		found := false
+		for _, entry := range entries {
+			if entry.IsDir && entry.Name == segment {
+				currentID = entry.ID
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("directory %q not found under %q", segment, p)
+		}
+	}
+	return currentID, nil
 }
 
 func cookieMap(s string) map[string]string {

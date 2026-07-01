@@ -42,6 +42,7 @@ Verify the config before mounting:
 go run ./cmd/qrypt --config ./qrypt.toml fs list /
 go run ./cmd/qrypt --config ./qrypt.toml fs put ./README.md /local/README.md
 go run ./cmd/qrypt --config ./qrypt.toml fs cat /local/README.md
+go run ./cmd/qrypt --config ./qrypt.toml fs get /local/README.md ./README.downloaded.md
 ```
 
 Mount it:
@@ -81,7 +82,7 @@ type = "aliyundrive"
 [mounts.params]
 refresh_token = "your-refresh-token"
 drive_id = "your-drive-id"
-root_id = "your-root-folder-id"
+root_path = "/qrypt"
 
 [mounts.encryption]
 password = "secret"
@@ -100,11 +101,11 @@ Use `qrypt driver schema <name>` for the exact parameter schema.
 | Driver | Required params | Notes |
 |---|---|---|
 | `localfs` | `root` | Local directory backend, useful for testing |
-| `aliyundrive` | `refresh_token`, `drive_id`, `root_id` | Aliyun Drive backend |
+| `aliyundrive` | `refresh_token`, `drive_id` | Aliyun Drive backend; optional `root_path` |
 | `baidu_netdisk` | `refresh_token` | Baidu Netdisk backend; list, read, upload, metadata write, and space support |
-| `quark` | `cookie` | Quark cloud drive backend |
-| `yun139` | `authorization` | 139 cloud drive backend |
-| `115` | `cookie` | 115 backend; read support is limited by provider behavior |
+| `quark` | `cookie` | Quark cloud drive backend; optional `root_path` |
+| `yun139` | `authorization` | 139 cloud drive backend; optional `root_path` |
+| `115` | `cookie` | 115 backend; optional `root_path`; read support is limited by provider behavior |
 | `webdav` | `url`, `username`, `password` | Standard WebDAV backend; optional `root_path` |
 
 ```sh
@@ -196,7 +197,7 @@ cmd/qrypt/command_root.go          root command and global flags
 cmd/qrypt/command_mount.go         mount command
 cmd/qrypt/command_config.go        config init/show
 cmd/qrypt/command_driver.go        driver list/schema
-cmd/qrypt/command_fs.go            fs list/cat/put/pending
+cmd/qrypt/command_fs.go            fs list/cat/get/put/pending/stat/mkdir/rm/mv
 cmd/qrypt/command_debug.go         debug root and bundle
 cmd/qrypt/command_journal.go       offline journal inspection
 cmd/qrypt/command_debug_socket.go  live debug socket commands

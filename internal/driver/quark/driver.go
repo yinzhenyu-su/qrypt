@@ -74,7 +74,6 @@ func init() {
 		}
 		return New(cookie, Options{
 			RootPath: params["root_path"],
-			RootID:   params["root_id"],
 			BaseURL:  params["base_url"],
 			V2URL:    params["v2_url"],
 		}), nil
@@ -93,13 +92,6 @@ func init() {
 			Description: "Virtual root path on the drive",
 			Default:     "/",
 			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "root_id",
-			Type:        "string",
-			Description: "Root directory ID",
-			Default:     "root",
-			Example:     "root",
 		},
 		drive.ParamDef{
 			Name:        "base_url",
@@ -608,6 +600,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"active_uploads":  len(activeUploads),
 			"url_cache_count": urlCacheCount,
 			"root_id":         d.rootID,
+			"root_path":       d.rootPath,
 			"cookie_source":   d.cookieSource,
 		},
 		Extra: map[string]any{

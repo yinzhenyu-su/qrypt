@@ -92,7 +92,7 @@ func TestRegisterQuarkDriver(t *testing.T) {
 }
 
 func TestDriverDebugSnapshot(t *testing.T) {
-	driver := New("k=v", Options{RootID: "root"})
+	driver := New("k=v", Options{RootID: "root", RootPath: "/Docs"})
 	snapshot, err := driver.DebugSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +101,9 @@ func TestDriverDebugSnapshot(t *testing.T) {
 		t.Fatalf("driver = %q, want quark", snapshot.Driver)
 	}
 	if snapshot.Stats["root_id"] != "root" {
+		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+	if snapshot.Stats["root_path"] != "/Docs" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
 	if snapshot.Extra["uploads"] == nil {

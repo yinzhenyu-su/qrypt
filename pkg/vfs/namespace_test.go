@@ -40,6 +40,11 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	if len(entries) != 2 || entries[0].Name != "localfs" || entries[1].Name != "quark" {
 		t.Fatalf("unexpected namespace root entries: %+v", entries)
 	}
+	for _, entry := range entries {
+		if entry.ParentID != "/" {
+			t.Fatalf("namespace mount parent id = %q, want / for %+v", entry.ParentID, entry)
+		}
+	}
 
 	if _, err := ns.WriteAt(ctx, "/quark/a.txt", []byte("from quark"), 0); err != nil {
 		t.Fatal(err)
@@ -200,5 +205,8 @@ func TestNamespaceVirtualDirectoryModTimeIsStable(t *testing.T) {
 	}
 	if !mountA.ModTime.Equal(mountB.ModTime) {
 		t.Fatalf("namespace mount modtime changed from %s to %s", mountA.ModTime, mountB.ModTime)
+	}
+	if mountA.ParentID != "/" {
+		t.Fatalf("namespace mount parent id = %q, want /", mountA.ParentID)
 	}
 }

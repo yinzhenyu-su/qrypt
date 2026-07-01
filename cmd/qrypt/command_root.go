@@ -33,7 +33,7 @@ Each drive appears as a directory under the mount point, with optional
 rclone-compatible content and filename encryption.
 
 Use --config to point to a TOML config file, then mount to start the
-filesystem, or use fs list/cat/put for one-shot operations.`,
+filesystem, or use fs list/cat/get/put for one-shot operations.`,
 		PersistentPreRunE: func(c *cobra.Command, args []string) error {
 			initLoggerFromConfig(configPath)
 			return nil
