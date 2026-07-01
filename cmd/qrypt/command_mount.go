@@ -15,14 +15,38 @@ func newMountCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mount [MOUNTPOINT]",
 		Short: "Mount configured drives with FUSE",
-		Long: `Mount configured drives as a local FUSE filesystem.
-
-The mount point can be provided as an argument or read from the config file.
-Press Ctrl+C to unmount.`,
-		Args: cobra.MaximumNArgs(1),
+		Long:  "Mount all configured drives as one local FUSE filesystem. Uses mount_point from config, or accepts a path argument.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireConfig(); err != nil {
+				return err
+			}
 			ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 			defer stop()
+
+			debugSocket, _ := cmd.Flags().GetString("debug-socket")
+
+			fs, cleanup, err := buildFileSystem(ctx, cmd, driverName, root, "", configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			fs.Start(ctx)
+
+			if debugSocket != "" {
+				snapshotter, ok := fs.(control.Snapshotter)
+				if !ok {
+					return fmt.Errorf("debug socket requires filesystem debug snapshots")
+				}
+				controlServer, err := control.NewServer(debugSocket, snapshotter)
+				if err != nil {
+					return err
+				}
+				if err := controlServer.Start(ctx); err != nil {
+					return err
+				}
+				defer controlServer.Close(context.Background())
+			}
 
 			mountPoint := ""
 			if len(args) == 1 {
@@ -35,33 +59,11 @@ Press Ctrl+C to unmount.`,
 				}
 			}
 
-			fs, cleanup, err := buildFileSystem(ctx, cmd, driverName, root, cacheDir, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
-			if err != nil {
-				return err
-			}
-			defer cleanup()
-			fs.Start(ctx)
-
-			debugSocketLocal, _ := cmd.Flags().GetString("debug-socket")
-			if debugSocketLocal != "" {
-				snapshotter, ok := fs.(control.Snapshotter)
-				if !ok {
-					return fmt.Errorf("debug socket requires filesystem debug snapshots")
-				}
-				controlServer, err := control.NewServer(debugSocketLocal, snapshotter)
-				if err != nil {
-					return err
-				}
-				if err := controlServer.Start(ctx); err != nil {
-					return err
-				}
-				defer controlServer.Close(context.Background())
-			}
-
 			mountCfg, err := mountConfigFromConfig(configPath)
 			if err != nil {
 				return err
 			}
+
 			mountPointExpanded := expandHome(mountPoint)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
 			fmt.Printf("Mounting at %s ...\n", mountPointExpanded)
@@ -94,10 +96,6 @@ Press Ctrl+C to unmount.`,
 			return mount.NewMounter().Unmount(ctx, session)
 		},
 	}
-
-	cmd.Flags().String("debug-socket", "", "local debug control socket")
-	addSingleDriveFlags(cmd)
-	addMountNameFlag(cmd)
-
+	cmd.Flags().String("debug-socket", "", "local debug control socket (start a debug server)")
 	return cmd
 }

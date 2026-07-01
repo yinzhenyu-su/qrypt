@@ -11,7 +11,10 @@ func newDriverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "driver",
 		Short: "List drivers and show parameter schemas",
-		Long:  `Inspect available storage drivers and their parameter schemas.`,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
 	}
 	cmd.AddCommand(newDriverListCmd())
 	cmd.AddCommand(newDriverSchemaCmd())
@@ -21,8 +24,8 @@ func newDriverCmd() *cobra.Command {
 func newDriverListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List registered storage drivers",
 		Args:  cobra.NoArgs,
+		Short: "List available drivers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, name := range drive.Names() {
 				fmt.Println(name)
@@ -35,20 +38,20 @@ func newDriverListCmd() *cobra.Command {
 func newDriverSchemaCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "schema <name>",
-		Short: "Show parameter schema for a driver",
 		Args:  cobra.ExactArgs(1),
+		Short: "Show driver parameters",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			schema := drive.ParamSchema(name)
 			if schema == nil {
 				return fmt.Errorf("unknown driver: %s", name)
 			}
-			fmt.Printf("Driver: %s\n", name)
-			fmt.Println()
 			if len(schema) == 0 {
-				fmt.Println("  No parameters required.")
+				fmt.Printf("Driver: %s (no parameters required)\n", name)
 				return nil
 			}
+			fmt.Printf("Driver: %s\n", name)
+			fmt.Println()
 			for _, p := range schema {
 				req := ""
 				if p.Required {

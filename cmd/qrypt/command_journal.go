@@ -1,19 +1,17 @@
 package main
 
 import (
-	"archive/zip"
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
-	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -49,41 +47,16 @@ type debugJournalEntry struct {
 	vfs.PendingFile
 }
 
-func newDebugCmd() *cobra.Command {
+func newJournalCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "debug",
-		Short: "Inspect live runtime and cache state",
-		Long:  `Inspect live qrypt runtime state, cache state, and journal files.`,
-	}
-	cmd.PersistentFlags().StringVar(&debugSocket, "debug-socket", "", "local debug control socket")
-	addMountNameFlag(cmd)
-
-	cmd.AddCommand(newDebugJournalCmd())
-	cmd.AddCommand(newDebugBundleCmd())
-	cmd.AddCommand(debugHealth())
-	cmd.AddCommand(debugState())
-	cmd.AddCommand(debugRuntime())
-	cmd.AddCommand(debugDriverCmd())
-	cmd.AddCommand(debugList())
-	cmd.AddCommand(debugEvents())
-	cmd.AddCommand(debugUploads())
-	cmd.AddCommand(debugResolve())
-	cmd.AddCommand(debugCache())
-	cmd.AddCommand(debugStaging())
-	cmd.AddCommand(debugConsistency())
-	cmd.AddCommand(debugGoroutines())
-	cmd.AddCommand(debugDoctor())
-
-	return cmd
-}
-
-func newDebugJournalCmd() *cobra.Command {
-	return &cobra.Command{
 		Use:   "journal",
-		Short: "Inspect the local upload journal (pending.jsonl)",
+		Short: "Inspect offline upload journal",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			targets, err := debugCacheTargets(cmd, cacheDir, configPath, mountName)
+			if configPath == "" && journalCacheDir == "" {
+				return fmt.Errorf("missing --config or --cache")
+			}
+			targets, err := debugCacheTargets(journalCacheDir, configPath)
 			if err != nil {
 				return err
 			}
@@ -97,68 +70,12 @@ func newDebugJournalCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func newDebugBundleCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "bundle",
-		Short: "Collect debug data into a zip bundle",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if debugSocket == "" {
-				return fmt.Errorf("usage: qrypt debug bundle --out FILE (requires --debug-socket)")
-			}
-			outPath, _ := cmd.Flags().GetString("out")
-			if outPath == "" {
-				return fmt.Errorf("usage: qrypt debug bundle --out FILE")
-			}
-			ctx := context.Background()
-			client, err := control.NewClient(debugSocket)
-			if err != nil {
-				return err
-			}
-			out, err := os.Create(outPath)
-			if err != nil {
-				return err
-			}
-			defer out.Close()
-			zw := zip.NewWriter(out)
-			endpoints := map[string]string{
-				"health.json":    "/v1/health",
-				"state.json":     "/v1/state",
-				"uploads.json":   "/v1/uploads?history=1",
-				"events.json":    "/v1/events?level=warn&limit=500",
-				"cache.json":     "/v1/cache",
-				"staging.json":   "/v1/staging",
-				"driver.json":    "/v1/driver",
-				"runtime.json":   "/v1/runtime",
-				"goroutines.txt": "/v1/goroutines?debug=1",
-			}
-			names := make([]string, 0, len(endpoints))
-			for name := range endpoints {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				body, err := client.Get(ctx, endpoints[name])
-				if err != nil {
-					body = []byte(err.Error() + "\n")
-				}
-				w, err := zw.Create(name)
-				if err != nil {
-					return err
-				}
-				if _, err := w.Write(body); err != nil {
-					return err
-				}
-			}
-			return zw.Close()
-		},
-	}
-	cmd.Flags().String("out", "", "debug bundle output zip")
+	cmd.Flags().StringVar(&mountName, "mount", "", "mount name")
+	cmd.Flags().StringVar(&journalCacheDir, "cache", "", "cache directory")
 	return cmd
 }
 
-func debugCacheTargets(cmd *cobra.Command, cacheDir, configPath, mountName string) ([]debugCacheTarget, error) {
+func debugCacheTargets(cacheDir, configPath string) ([]debugCacheTarget, error) {
 	if configPath == "" {
 		if cacheDir == "" {
 			cacheDir = defaultCacheDir()
@@ -169,7 +86,15 @@ func debugCacheTargets(cmd *cobra.Command, cacheDir, configPath, mountName strin
 	if err != nil {
 		return nil, err
 	}
-	baseCacheDir := effectiveCacheDir(cmd, cacheDir, cfg)
+	baseCacheDir := cfg.CacheDir
+	if cacheDir != "" {
+		baseCacheDir = cacheDir
+	}
+	if baseCacheDir == "" {
+		baseCacheDir = defaultCacheDir()
+	} else {
+		baseCacheDir = expandHome(baseCacheDir)
+	}
 	if len(cfg.Mounts) == 0 {
 		return []debugCacheTarget{{Name: "default", Dir: baseCacheDir}}, nil
 	}
@@ -268,30 +193,53 @@ func orphanStagingFiles(cacheDir string, pending []journalPendingDebug) []string
 func printJournalReport(w io.Writer, report journalDebugReport) {
 	fmt.Fprintf(w, "cache %s %s\n", report.Target.Name, report.Target.Dir)
 	fmt.Fprintf(w, "journal entries=%d dirty=%d clean=%d invalid=%d pending=%d orphan_staging=%d\n",
-		report.Entries,
-		report.DirtyEntries,
-		report.CleanEntries,
-		len(report.InvalidEntries),
-		len(report.Pending),
-		len(report.OrphanStaging),
-	)
-	for _, invalid := range report.InvalidEntries {
-		fmt.Fprintf(w, "invalid line=%d err=%s\n", invalid.Line, invalid.Err)
+		report.Entries, report.DirtyEntries, report.CleanEntries,
+		len(report.InvalidEntries), len(report.Pending), len(report.OrphanStaging))
+	for _, inv := range report.InvalidEntries {
+		fmt.Fprintf(w, "  invalid line %d: %s\n", inv.Line, inv.Err)
 	}
-	for _, item := range report.Pending {
-		status, size := stagingStatus(item.PendingFile)
-		fmt.Fprintf(w, "pending path=%s size=%d local=%s staging=%s retry=%d last_attempt=%s next_attempt=%s last_error=%q\n",
-			item.Path,
-			item.Size,
-			item.LocalPath,
-			formatStagingStatus(status, size),
-			item.RetryCount,
-			formatUnixNano(item.LastAttemptAt),
-			formatUnixNano(item.NextAttemptAt),
-			item.LastError,
-		)
+	if len(report.Pending) > 0 {
+		fmt.Fprintln(w, "pending:")
+		for _, item := range report.Pending {
+			fmt.Fprintf(w, "  %s size=%d staging_exists=%v staging_size=%d staging_error=%q\n",
+				item.Path, item.Size, item.StagingExists, item.StagingSize, item.StagingError)
+		}
 	}
-	for _, orphan := range report.OrphanStaging {
-		fmt.Fprintf(w, "orphan_staging local=%s\n", orphan)
+	if len(report.OrphanStaging) > 0 {
+		fmt.Fprintln(w, "orphan staging files:")
+		for _, name := range report.OrphanStaging {
+			fmt.Fprintf(w, "  %s\n", name)
+		}
 	}
+}
+
+func stagingStatus(item vfs.PendingFile) (string, int64) {
+	fi, err := os.Stat(item.LocalPath)
+	if err != nil {
+		return "missing", 0
+	}
+	if fi.Size() != item.Size {
+		return "size-mismatch", fi.Size()
+	}
+	return "ok", fi.Size()
+}
+
+func formatStagingStatus(status string, size int64) string {
+	switch status {
+	case "ok":
+		return "ok"
+	case "missing":
+		return "missing"
+	case "size-mismatch":
+		return fmt.Sprintf("size-mismatch(%d)", size)
+	default:
+		return status
+	}
+}
+
+func formatUnixNano(ns int64) string {
+	if ns == 0 {
+		return "-"
+	}
+	return time.Unix(0, ns).Format(time.RFC3339)
 }

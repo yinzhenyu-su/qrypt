@@ -14,6 +14,15 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+func testCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.PersistentFlags().String("password", "", "")
+	cmd.PersistentFlags().String("salt", "", "")
+	cmd.PersistentFlags().String("filename-encryption", "", "")
+	cmd.PersistentFlags().String("filename-encoding", "", "")
+	return cmd
+}
+
 func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -47,10 +56,7 @@ root = "`+remoteB+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +65,7 @@ root = "`+remoteB+`"
 
 	entries, err := fs.List(ctx, "/")
 	if err != nil {
+
 		t.Fatal(err)
 	}
 	if len(entries) != 2 || entries[0].Name != "quark" || entries[1].Name != "quark2" {
@@ -125,9 +132,7 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,9 +214,7 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,9 +271,7 @@ root = "`+plainRemote+`"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,9 +327,7 @@ filename_encoding = "base32"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,9 +382,7 @@ root = "`+remoteB+`"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	fs, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", "", configPath, "", "", "", "", "")
+	fs, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", "", configPath, "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,9 +450,7 @@ delete_delay = "soon"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	_, cleanup, err := buildFileSystem(ctx, cmd, "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	_, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", "", filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -480,9 +475,7 @@ download = "fast"
 		t.Fatal(err)
 	}
 
-	cmd := &cobra.Command{Use: "test"}
-	addSingleDriveFlags(cmd)
-	_, cleanup, err := buildFileSystem(ctx, cmd, "localfs", remote, filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
+	_, cleanup, err := buildFileSystem(ctx, testCommand(), "localfs", remote, filepath.Join(tmp, "cache"), configPath, "", "", "", "", "")
 	if cleanup != nil {
 		defer cleanup()
 	}

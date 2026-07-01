@@ -224,7 +224,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "139yun", "115", "aliyundrive", "baidu_netdisk", "webdav"]
+          "enum": ["localfs", "quark", "yun139", "115", "aliyundrive", "baidu_netdisk", "webdav"]
         },
         "mount_point": {
           "description": "Deprecated. Use the top-level mount_point instead.",
@@ -457,7 +457,7 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "139yun" } },
+            "properties": { "type": { "const": "yun139" } },
             "required": ["type"]
           },
           "then": {

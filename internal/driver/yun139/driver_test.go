@@ -36,7 +36,7 @@ func writeJSON(t *testing.T, w http.ResponseWriter, v interface{}) {
 }
 
 func TestRegister(t *testing.T) {
-	drv, err := drive.New("139yun", drive.Params{
+	drv, err := drive.New("yun139", drive.Params{
 		"authorization": testAuth("test", "token"),
 	})
 	if err != nil {
@@ -49,7 +49,7 @@ func TestRegister(t *testing.T) {
 }
 
 func TestRegisterMissingAuth(t *testing.T) {
-	_, err := drive.New("139yun", drive.Params{})
+	_, err := drive.New("yun139", drive.Params{})
 	if err == nil {
 		t.Fatal("expected error for missing authorization")
 	}
