@@ -39,7 +39,7 @@ type authState struct {
 }
 
 func init() {
-	drive.Register("139yun", func(params drive.Params) (drive.Driver, error) {
+	drive.Register("yun139", func(params drive.Params) (drive.Driver, error) {
 		auth := params["authorization"]
 		if auth == "" {
 			return nil, fmt.Errorf("139: missing authorization")
@@ -318,7 +318,7 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 
 func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	start := time.Now()
-	status := drive.HealthStatus{Driver: "139yun", CheckedAt: start}
+	status := drive.HealthStatus{Driver: "yun139", CheckedAt: start}
 	_, err := d.List(ctx, d.rootID)
 	status.Latency = time.Since(start).String()
 	if err != nil {
@@ -331,7 +331,7 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	return drive.DebugSnapshot{
-		Driver:      "139yun",
+		Driver:      "yun139",
 		Health:      "unknown",
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{

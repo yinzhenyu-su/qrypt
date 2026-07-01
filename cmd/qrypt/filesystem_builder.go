@@ -7,11 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
@@ -19,42 +17,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-// cliMountConfig holds parsed FUSE mount options from config.
-type cliMountConfig struct {
-	VolumeName         string
-	ReadOnly           bool
-	AllowOther         bool
-	DefaultPermissions bool
-	NoAppleDouble      bool
-	NoAppleXattr       bool
-	AttrTimeout        time.Duration
-	AttrTimeoutSet     bool
-	EntryTimeout       time.Duration
-	EntryTimeoutSet    bool
-	NegativeTimeout    time.Duration
-	TotalSpace         int64
-	FreeSpace          int64
-	Logging            config.LoggingConfig
-}
-
-// addSingleDriveFlags registers --driver, --root, --password, --salt,
-// --filename-encryption, and --filename-encoding as persistent flags.
-func addSingleDriveFlags(cmd *cobra.Command) {
-	cmd.PersistentFlags().StringVar(&driverName, "driver", "localfs", "backend driver")
-	cmd.PersistentFlags().StringVar(&root, "root", "", "backend root")
-	cmd.PersistentFlags().StringVar(&password, "password", "", "rclone crypt password")
-	cmd.PersistentFlags().StringVar(&salt, "salt", "", "rclone crypt salt")
-	cmd.PersistentFlags().StringVar(&fileNameEncryption, "filename-encryption", "", "rclone crypt filename encryption: standard, off, obfuscate")
-	cmd.PersistentFlags().StringVar(&fileNameEncoding, "filename-encoding", "", "rclone crypt filename encoding: base32, base64")
-}
-
-// addMountNameFlag registers --mount-name as a persistent flag.
-func addMountNameFlag(cmd *cobra.Command) {
-	cmd.PersistentFlags().StringVar(&mountName, "mount-name", "", "mount name used when reading config encryption")
-}
-
-// initLoggerFromConfig loads logging configuration from the TOML config file
-// and initializes the global logger. This is called once at startup.
 func initLoggerFromConfig(configPath string) {
 	if configPath == "" {
 		return
@@ -79,7 +41,6 @@ func initLoggerFromConfig(configPath string) {
 	logging.L = newLogger
 }
 
-// mountPointFromConfig returns the effective mount point from the config.
 func mountPointFromConfig(configPath string) (string, error) {
 	if configPath == "" {
 		return "", fmt.Errorf("usage: qrypt [flags] mount MOUNTPOINT")
@@ -94,7 +55,23 @@ func mountPointFromConfig(configPath string) (string, error) {
 	return "", fmt.Errorf("config: no mount_point found")
 }
 
-// mountConfigFromConfig reads FUSE mount options from the config file.
+type cliMountConfig struct {
+	VolumeName         string
+	ReadOnly           bool
+	AllowOther         bool
+	DefaultPermissions bool
+	NoAppleDouble      bool
+	NoAppleXattr       bool
+	AttrTimeout        time.Duration
+	AttrTimeoutSet     bool
+	EntryTimeout       time.Duration
+	EntryTimeoutSet    bool
+	NegativeTimeout    time.Duration
+	TotalSpace         int64
+	FreeSpace          int64
+	Logging            config.LoggingConfig
+}
+
 func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
 		VolumeName:      "Qrypt",
@@ -147,7 +124,6 @@ func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	return mountConfig, nil
 }
 
-// loggingFromConfig returns the logging config block from the TOML file.
 func loggingFromConfig(configPath string) (config.LoggingConfig, error) {
 	var logging config.LoggingConfig
 	if configPath == "" {
@@ -160,7 +136,6 @@ func loggingFromConfig(configPath string) (config.LoggingConfig, error) {
 	return cfg.Logging, nil
 }
 
-// expandHome replaces a leading ~/ with the user's home directory.
 func expandHome(path string) string {
 	if path == "~" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -175,9 +150,6 @@ func expandHome(path string) string {
 	return path
 }
 
-// buildFileSystem constructs a vfs.FileSystem from the provided flags and
-// configuration. When a config file with multiple mounts is given, a
-// Namespace is created. Otherwise a single-drive VFS is returned.
 func buildFileSystem(ctx context.Context, cmd *cobra.Command, driverName, root, cacheDir, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding string) (vfs.FileSystem, func(), error) {
 	if configPath != "" {
 		cfg, err := config.Load(configPath)
@@ -197,7 +169,7 @@ func buildFileSystem(ctx context.Context, cmd *cobra.Command, driverName, root, 
 		cacheDir = defaultCacheDir()
 	}
 	if root == "" {
-		return nil, nil, fmt.Errorf("missing -root or config")
+		return nil, nil, fmt.Errorf("missing -root")
 	}
 	raw, err := drive.New(driverName, drive.Params{"root": root})
 	if err != nil {
@@ -231,7 +203,6 @@ func buildFileSystem(ctx context.Context, cmd *cobra.Command, driverName, root, 
 	return fs, func() { _ = raw.Drop(ctx) }, nil
 }
 
-// bandwidthLimiterFromConfig reads bandwidth limits from the config file.
 func bandwidthLimiterFromConfig(configPath string) *drive.RateLimiter {
 	if configPath == "" {
 		return nil
@@ -247,7 +218,6 @@ func bandwidthLimiterFromConfig(configPath string) *drive.RateLimiter {
 	return bandwidthLimiter(limits)
 }
 
-// bandwidthLimiter creates a RateLimiter from the given limits.
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.RateLimiter {
 	return drive.NewRateLimiter(drive.RateLimits{
 		DownloadBytesPerSecond: limits.DownloadBytesPerSecond,
@@ -255,28 +225,27 @@ func bandwidthLimiter(limits config.BandwidthLimits) *drive.RateLimiter {
 	})
 }
 
-// effectiveCacheDir resolves the best cache directory, preferring the
-// --cache flag override, then the config value, then the default.
 func effectiveCacheDir(cmd *cobra.Command, cacheDir string, cfg *config.Config) string {
-	if cmd.Flags().Changed("cache") {
-		return expandHome(cacheDir)
-	}
 	if cfg != nil && cfg.CacheDir != "" {
 		return expandHome(cfg.CacheDir)
 	}
 	if cacheDir != "" {
-		return expandHome(cacheDir)
+		return cacheDir
 	}
 	return defaultCacheDir()
 }
 
-// defaultCacheDir returns the default temporary cache directory.
 func defaultCacheDir() string {
 	return filepath.Join(os.TempDir(), "qrypt-cache")
 }
 
-// buildNamespace constructs a multi-mount Namespace from config, applying
-// per-mount encryption, caching, and bandwidth limits.
+func requireConfig() error {
+	if configPath == "" {
+		return fmt.Errorf("missing --config")
+	}
+	return nil
+}
+
 func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding string, limiter *drive.RateLimiter) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
@@ -293,6 +262,8 @@ func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config,
 		params := drive.Params{}
 		for key, value := range mountCfg.Params {
 			params[key] = value
+		}
+		if cfg.Logging.LogLevel == "debug" || cfg.Logging.LogLevel == "" && logging.L != nil {
 		}
 		cache := cfg.CacheFor(mountCfg.Name)
 		mountCacheDir := cache.Dir
@@ -367,28 +338,20 @@ func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config,
 	return ns, func() { dropAll(ctx, drivers) }, nil
 }
 
-// installDriverStateStore installs a file-based state store on the driver
-// if the driver implements StateStoreInstaller.
 func installDriverStateStore(driver drive.Driver, cacheDir string) {
 	if installer, ok := driver.(drive.StateStoreInstaller); ok {
 		installer.InstallStateStore(drive.NewFileStateStore(filepath.Join(cacheDir, "driver")))
 	}
 }
 
-// dropAll calls Drop on every driver in the slice, ignoring errors.
 func dropAll(ctx context.Context, drivers []drive.Driver) {
 	for _, drv := range drivers {
 		_ = drv.Drop(ctx)
 	}
 }
 
-// encryptionConfigFromFlags builds the encryption configuration from flags
-// combined with any config file values.
 func encryptionConfigFromFlags(cmd *cobra.Command, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding string) (crypt.Config, bool, error) {
-	changed := map[string]bool{}
-	cmd.Flags().Visit(func(f *pflag.Flag) {
-		changed[f.Name] = true
-	})
+	changed := func(name string) bool { return cmd.PersistentFlags().Changed(name) }
 
 	var enc crypt.Config
 	if configPath != "" {
@@ -400,63 +363,58 @@ func encryptionConfigFromFlags(cmd *cobra.Command, configPath, mountName, passwo
 	}
 
 	overrides := config.EncryptionOverrides{}
-	if changed["password"] {
+	if changed("password") {
 		overrides.Password = &password
 	}
-	if changed["salt"] {
+	if changed("salt") {
 		overrides.Salt = &salt
 	}
-	if changed["filename-encryption"] {
+	if changed("filename-encryption") {
 		overrides.FileNameEncryption = &fileNameEncryption
 	}
-	if changed["filename-encoding"] {
+	if changed("filename-encoding") {
 		overrides.FileNameEncoding = &fileNameEncoding
 	}
 	enc = config.ApplyEncryptionOverrides(enc, overrides)
 
-	enabled := enc.Password != "" || changed["password"] || changed["salt"] || changed["filename-encryption"] || changed["filename-encoding"]
+	enabled := enc.Password != "" || changed("password") || changed("salt") || changed("filename-encryption") || changed("filename-encoding")
 	if !enabled {
 		return enc, false, nil
 	}
 	return enc, true, enc.Validate()
 }
 
-// encryptionConfigFromValues applies CLI flag overrides to an existing
-// encryption config (e.g. from the config file).
 func encryptionConfigFromValues(cmd *cobra.Command, base crypt.Config, password, salt, fileNameEncryption, fileNameEncoding string) (crypt.Config, bool, error) {
-	changed := map[string]bool{}
-	cmd.Flags().Visit(func(f *pflag.Flag) {
-		changed[f.Name] = true
-	})
+	changed := func(name string) bool { return cmd.PersistentFlags().Changed(name) }
+
 	overrides := config.EncryptionOverrides{}
-	if changed["password"] {
+	if changed("password") {
 		overrides.Password = &password
 	}
-	if changed["salt"] {
+	if changed("salt") {
 		overrides.Salt = &salt
 	}
-	if changed["filename-encryption"] {
+	if changed("filename-encryption") {
 		overrides.FileNameEncryption = &fileNameEncryption
 	}
-	if changed["filename-encoding"] {
+	if changed("filename-encoding") {
 		overrides.FileNameEncoding = &fileNameEncoding
 	}
 	enc := config.ApplyEncryptionOverrides(base, overrides)
-	enabled := enc.Password != "" || changed["password"] || changed["salt"] || changed["filename-encryption"] || changed["filename-encoding"]
+	enabled := enc.Password != "" || changed("password") || changed("salt") || changed("filename-encryption") || changed("filename-encoding")
 	if !enabled {
 		return enc, false, nil
 	}
 	return enc, true, enc.Validate()
 }
 
-// put uploads a local file to the remote filesystem, waiting for completion.
-func put(ctx context.Context, fs vfs.FileSystem, local, remote string) error {
-	f, err := os.Open(local)
+func put(ctx context.Context, fs vfs.FileSystem, localPath, remotePath string) error {
+	f, err := os.Open(localPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := fs.Create(ctx, remote); err != nil {
+	if err := fs.Create(ctx, remotePath); err != nil {
 		return err
 	}
 	buf := make([]byte, 256*1024)
@@ -464,7 +422,7 @@ func put(ctx context.Context, fs vfs.FileSystem, local, remote string) error {
 	for {
 		n, readErr := f.Read(buf)
 		if n > 0 {
-			written, err := fs.WriteAt(ctx, remote, buf[:n], off)
+			written, err := fs.WriteAt(ctx, remotePath, buf[:n], off)
 			if err != nil {
 				return err
 			}
@@ -477,65 +435,8 @@ func put(ctx context.Context, fs vfs.FileSystem, local, remote string) error {
 			return readErr
 		}
 	}
-	if err := fs.Flush(ctx, remote); err != nil {
+	if err := fs.Flush(ctx, remotePath); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(fs.Pending()) == 0 {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return fmt.Errorf("upload still pending: %s", remote)
-}
-
-func printPendingVerbose(w io.Writer, pending []vfs.PendingFile) {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PATH\tSIZE\tLOCAL\tSTAGING\tRETRY\tLAST_ATTEMPT\tNEXT_ATTEMPT\tLAST_ERROR")
-	for _, item := range pending {
-		status, size := stagingStatus(item)
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			item.Path,
-			item.Size,
-			item.LocalPath,
-			formatStagingStatus(status, size),
-			item.RetryCount,
-			formatUnixNano(item.LastAttemptAt),
-			formatUnixNano(item.NextAttemptAt),
-			item.LastError,
-		)
-	}
-	_ = tw.Flush()
-}
-
-func stagingStatus(item vfs.PendingFile) (string, int64) {
-	if item.LocalPath == "" {
-		return "missing", 0
-	}
-	info, err := os.Stat(item.LocalPath)
-	if err != nil {
-		return "missing", 0
-	}
-	if info.Size() != item.Size {
-		return "size-mismatch", info.Size()
-	}
-	return "ok", info.Size()
-}
-
-func formatStagingStatus(status string, size int64) string {
-	if status == "ok" {
-		return "ok"
-	}
-	if status == "size-mismatch" {
-		return fmt.Sprintf("size-mismatch(%d)", size)
-	}
-	return status
-}
-
-func formatUnixNano(value int64) string {
-	if value == 0 {
-		return "-"
-	}
-	return time.Unix(0, value).Format(time.RFC3339)
+	return nil
 }
