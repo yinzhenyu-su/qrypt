@@ -38,27 +38,27 @@ live socket and removes stale socket files during startup.
 Use `collect` when you want a complete snapshot:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect
+go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock
 ```
 
 Use `inspect` when a specific file or directory is involved:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock inspect /baiduyun/path/file.html
+go run ./cmd/qrypt debug inspect /baiduyun/path/file.html --socket /tmp/qrypt.sock
 ```
 
 `collect --path PATH` combines the global snapshot with a path-focused
 inspection:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect --path /baiduyun/path/file.html
+go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --path /baiduyun/path/file.html
 ```
 
 Use `watch` while reproducing timing-sensitive problems such as repeated
 saves, upload retries, stale reads, or `file changed while writing`:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock watch --path /baiduyun/path/file.html --duration 30s --interval 2s
+go run ./cmd/qrypt debug watch --socket /tmp/qrypt.sock --path /baiduyun/path/file.html --duration 30s --interval 2s
 ```
 
 The JSON reports include:
@@ -75,7 +75,7 @@ Run live driver health checks only when needed because they may call provider
 APIs:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect --driver-health
+go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --driver-health
 ```
 
 ## Bug Report Bundle
@@ -85,9 +85,9 @@ It includes `collect.json`, `diagnostics.json`, raw endpoint outputs, and
 `inspect.json` when a path is provided:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock bundle --out /tmp/qrypt-debug.zip
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock bundle --path /baiduyun/path/file.html --out /tmp/qrypt-debug.zip
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock bundle --path /baiduyun/path/file.html --watch 30s --out /tmp/qrypt-debug.zip
+go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --out /tmp/qrypt-debug.zip
+go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --path /baiduyun/path/file.html --out /tmp/qrypt-debug.zip
+go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --path /baiduyun/path/file.html --watch 30s --out /tmp/qrypt-debug.zip
 ```
 
 Review the bundle before sharing it.
@@ -118,9 +118,9 @@ missing staging files, size mismatches, and orphan staging files.
 Use `debug raw` when you need one socket endpoint directly:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock raw health
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock raw /v1/state
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock raw '/v1/uploads?history=1'
+go run ./cmd/qrypt debug raw health --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw /v1/state --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/uploads?history=1' --socket /tmp/qrypt.sock
 ```
 
 The raw endpoints live under `/v1/...`. Endpoint-specific debug commands have

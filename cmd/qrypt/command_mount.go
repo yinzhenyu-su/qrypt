@@ -26,7 +26,7 @@ func newMountCmd() *cobra.Command {
 
 			debugSocket, _ := cmd.Flags().GetString("debug-socket")
 
-			fs, cleanup, err := buildFileSystem(ctx, cmd, driverName, root, "", configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
+			fs, cleanup, err := buildFileSystem(ctx, configPath)
 			if err != nil {
 				return err
 			}

@@ -12,15 +12,7 @@ import (
 )
 
 var (
-	configPath         string
-	driverName         string
-	root               string
-	mountName          string
-	password           string
-	salt               string
-	fileNameEncryption string
-	fileNameEncoding   string
-	journalCacheDir    string
+	configPath string
 )
 
 func newRootCmd() *cobra.Command {
@@ -51,7 +43,6 @@ filesystem, or use fs list/cat/get/put for one-shot operations.`,
 	cmd.AddCommand(newConfigCmd())
 	cmd.AddCommand(newDriverCmd())
 	cmd.AddCommand(newFsCmd())
-	cmd.AddCommand(newJournalCmd())
 	cmd.AddCommand(newDebugCmd())
 
 	return cmd

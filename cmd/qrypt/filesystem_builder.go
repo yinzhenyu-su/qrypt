@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
@@ -150,72 +149,22 @@ func expandHome(path string) string {
 	return path
 }
 
-func buildFileSystem(ctx context.Context, cmd *cobra.Command, driverName, root, cacheDir, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding string) (vfs.FileSystem, func(), error) {
-	if configPath != "" {
-		cfg, err := config.Load(configPath)
-		if err != nil {
-			return nil, nil, err
-		}
-		cacheDir = effectiveCacheDir(cmd, cacheDir, cfg)
-		limits, err := cfg.EffectiveBandwidthLimits()
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(cfg.Mounts) > 0 {
-			return buildNamespace(ctx, cmd, cfg, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding, bandwidthLimiter(limits))
-		}
-	}
-	if cacheDir == "" {
-		cacheDir = defaultCacheDir()
-	}
-	if root == "" {
-		return nil, nil, fmt.Errorf("missing -root")
-	}
-	raw, err := drive.New(driverName, drive.Params{"root": root})
-	if err != nil {
-		return nil, nil, err
-	}
-	installDriverStateStore(raw, cacheDir)
-	if err := raw.Init(ctx); err != nil {
-		return nil, nil, err
-	}
-
-	raw = drive.WrapBandwidthLimitedDriver(raw, bandwidthLimiterFromConfig(configPath))
-	var drv drive.Driver = raw
-	encCfg, encEnabled, err := encryptionConfigFromFlags(cmd, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
-	if err != nil {
-		raw.Drop(ctx)
-		return nil, nil, err
-	}
-	if encEnabled {
-		cp, err := crypt.NewRcloneCipherFromConfig(encCfg)
-		if err != nil {
-			raw.Drop(ctx)
-			return nil, nil, err
-		}
-		drv = crypt.NewDriver(raw, cp)
-	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 512 << 20})
-	if err != nil {
-		raw.Drop(ctx)
-		return nil, nil, err
-	}
-	return fs, func() { _ = raw.Drop(ctx) }, nil
-}
-
-func bandwidthLimiterFromConfig(configPath string) *drive.BandwidthLimiter {
+func buildFileSystem(ctx context.Context, configPath string) (vfs.FileSystem, func(), error) {
 	if configPath == "" {
-		return nil
+		return nil, nil, fmt.Errorf("missing --config")
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil
+		return nil, nil, err
 	}
 	limits, err := cfg.EffectiveBandwidthLimits()
 	if err != nil {
-		return nil
+		return nil, nil, err
 	}
-	return bandwidthLimiter(limits)
+	if len(cfg.Mounts) == 0 {
+		return nil, nil, fmt.Errorf("config: at least one [[mounts]] entry is required")
+	}
+	return buildNamespace(ctx, cfg, effectiveCacheDir(cfg), bandwidthLimiter(limits))
 }
 
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
@@ -225,12 +174,9 @@ func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
 	})
 }
 
-func effectiveCacheDir(cmd *cobra.Command, cacheDir string, cfg *config.Config) string {
+func effectiveCacheDir(cfg *config.Config) string {
 	if cfg != nil && cfg.CacheDir != "" {
 		return expandHome(cfg.CacheDir)
-	}
-	if cacheDir != "" {
-		return cacheDir
 	}
 	return defaultCacheDir()
 }
@@ -246,13 +192,10 @@ func requireConfig() error {
 	return nil
 }
 
-func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding string, limiter *drive.BandwidthLimiter) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {
-		if mountName != "" && mountCfg.Name != mountName {
-			continue
-		}
 		if mountCfg.Name == "" {
 			return nil, nil, fmt.Errorf("config: mount name required")
 		}
@@ -283,12 +226,12 @@ func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config,
 		drivers = append(drivers, raw)
 		var drv drive.Driver = drive.WrapBandwidthLimitedDriver(raw, limiter)
 		enc := cfg.EncryptionFor(mountCfg.Name)
-		enc, enabled, err := encryptionConfigFromValues(cmd, enc, password, salt, fileNameEncryption, fileNameEncoding)
-		if err != nil {
-			dropAll(ctx, drivers)
-			return nil, nil, err
-		}
+		enabled := enc.Password != ""
 		if enabled {
+			if err := enc.Validate(); err != nil {
+				dropAll(ctx, drivers)
+				return nil, nil, err
+			}
 			cp, err := crypt.NewRcloneCipherFromConfig(enc)
 			if err != nil {
 				dropAll(ctx, drivers)
@@ -348,64 +291,6 @@ func dropAll(ctx context.Context, drivers []drive.Driver) {
 	for _, drv := range drivers {
 		_ = drv.Drop(ctx)
 	}
-}
-
-func encryptionConfigFromFlags(cmd *cobra.Command, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding string) (crypt.Config, bool, error) {
-	changed := func(name string) bool { return cmd.PersistentFlags().Changed(name) }
-
-	var enc crypt.Config
-	if configPath != "" {
-		cfg, err := config.Load(configPath)
-		if err != nil {
-			return crypt.Config{}, false, err
-		}
-		enc = cfg.EncryptionFor(mountName)
-	}
-
-	overrides := config.EncryptionOverrides{}
-	if changed("password") {
-		overrides.Password = &password
-	}
-	if changed("salt") {
-		overrides.Salt = &salt
-	}
-	if changed("filename-encryption") {
-		overrides.FileNameEncryption = &fileNameEncryption
-	}
-	if changed("filename-encoding") {
-		overrides.FileNameEncoding = &fileNameEncoding
-	}
-	enc = config.ApplyEncryptionOverrides(enc, overrides)
-
-	enabled := enc.Password != "" || changed("password") || changed("salt") || changed("filename-encryption") || changed("filename-encoding")
-	if !enabled {
-		return enc, false, nil
-	}
-	return enc, true, enc.Validate()
-}
-
-func encryptionConfigFromValues(cmd *cobra.Command, base crypt.Config, password, salt, fileNameEncryption, fileNameEncoding string) (crypt.Config, bool, error) {
-	changed := func(name string) bool { return cmd.PersistentFlags().Changed(name) }
-
-	overrides := config.EncryptionOverrides{}
-	if changed("password") {
-		overrides.Password = &password
-	}
-	if changed("salt") {
-		overrides.Salt = &salt
-	}
-	if changed("filename-encryption") {
-		overrides.FileNameEncryption = &fileNameEncryption
-	}
-	if changed("filename-encoding") {
-		overrides.FileNameEncoding = &fileNameEncoding
-	}
-	enc := config.ApplyEncryptionOverrides(base, overrides)
-	enabled := enc.Password != "" || changed("password") || changed("salt") || changed("filename-encryption") || changed("filename-encoding")
-	if !enabled {
-		return enc, false, nil
-	}
-	return enc, true, enc.Validate()
 }
 
 func put(ctx context.Context, fs vfs.FileSystem, localPath, remotePath string) error {

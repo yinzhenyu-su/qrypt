@@ -192,10 +192,10 @@ go run ./cmd/qrypt \
 Then query it from another shell:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock inspect /local/README.md
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock watch --path /local/README.md --duration 30s
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock bundle --path /local/README.md --out /tmp/qrypt-debug.zip
+go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug inspect /local/README.md --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug watch --socket /tmp/qrypt.sock --path /local/README.md --duration 30s
+go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --path /local/README.md --out /tmp/qrypt-debug.zip
 go run ./cmd/qrypt --config ./qrypt.toml fs pending --verbose
 ```
 
@@ -233,7 +233,7 @@ To add a backend, see [`docs/driver-development.md`](docs/driver-development.md)
 Debug:
 
 ```sh
-go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect
+go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock
 ```
 
 see [`docs/debug.md`](docs/debug.md)
