@@ -186,19 +186,21 @@ For live runtime state, start qrypt with a debug socket:
 ```sh
 go run ./cmd/qrypt \
   --config ./qrypt.toml \
-  --debug-socket /tmp/qrypt.sock \
-  mount
+  mount --debug-socket /tmp/qrypt.sock
 ```
 
 Then query it from another shell:
 
 ```sh
-go run ./cmd/qrypt --debug-socket /tmp/qrypt.sock debug doctor
+go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect
+go run ./cmd/qrypt debug --socket /tmp/qrypt.sock inspect /local/README.md
+go run ./cmd/qrypt debug --socket /tmp/qrypt.sock watch --path /local/README.md --duration 30s
+go run ./cmd/qrypt debug --socket /tmp/qrypt.sock bundle --path /local/README.md --out /tmp/qrypt-debug.zip
 go run ./cmd/qrypt --config ./qrypt.toml fs pending --verbose
 ```
 
-See [`docs/debug.md`](docs/debug.md) for live endpoints, pending upload
-inspection, cache checks, and consistency tools.
+See [`docs/debug.md`](docs/debug.md) for AI-oriented diagnostic reports, live
+endpoints, pending upload inspection, cache checks, and consistency tools.
 
 ## Development
 
@@ -210,9 +212,8 @@ cmd/qrypt/command_config.go        config init/show
 cmd/qrypt/command_driver.go        driver list/schema
 cmd/qrypt/command_fs.go            fs list/cat/get/put/pending/stat/mkdir/rm/mv
 cmd/qrypt/command_debug.go         debug root and bundle
-cmd/qrypt/command_journal.go       offline journal inspection
-cmd/qrypt/command_debug_socket.go  live debug socket commands
-cmd/qrypt/command_debug_doctor.go  debug doctor aggregate
+cmd/qrypt/command_debug_ai.go      AI-oriented debug collect/inspect/watch
+cmd/qrypt/command_journal.go       offline debug journal inspection
 cmd/qrypt/filesystem_builder.go    CLI config to VFS construction
 internal/mount                 FUSE adapter
 internal/driver/*              concrete backend drivers
@@ -232,7 +233,7 @@ To add a backend, see [`docs/driver-development.md`](docs/driver-development.md)
 Debug:
 
 ```sh
-go run ./cmd/qrypt --debug-socket /tmp/qrypt.sock debug
+go run ./cmd/qrypt debug --socket /tmp/qrypt.sock collect
 ```
 
 see [`docs/debug.md`](docs/debug.md)

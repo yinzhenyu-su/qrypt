@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -185,6 +186,25 @@ func runPending(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s %d %s\n", pending.Path, pending.Size, pending.LocalPath)
 	}
 	return nil
+}
+
+func printPendingVerbose(w io.Writer, pending []vfs.PendingFile) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PATH\tSIZE\tLOCAL\tSTAGING\tRETRY\tLAST_ATTEMPT\tNEXT_ATTEMPT\tLAST_ERROR")
+	for _, item := range pending {
+		status, size := stagingStatus(item)
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			item.Path,
+			item.Size,
+			item.LocalPath,
+			formatStagingStatus(status, size),
+			item.RetryCount,
+			formatUnixNano(item.LastAttemptAt),
+			formatUnixNano(item.NextAttemptAt),
+			item.LastError,
+		)
+	}
+	_ = tw.Flush()
 }
 
 func newFsStatCmd() *cobra.Command {
