@@ -16,30 +16,30 @@ import (
 )
 
 type debugCacheTarget struct {
-	Name string
-	Dir  string
+	Name string `json:"name"`
+	Dir  string `json:"dir"`
 }
 
 type journalDebugReport struct {
-	Target         debugCacheTarget
-	Entries        int
-	DirtyEntries   int
-	CleanEntries   int
-	InvalidEntries []journalInvalidEntry
-	Pending        []journalPendingDebug
-	OrphanStaging  []string
+	Target         debugCacheTarget      `json:"target"`
+	Entries        int                   `json:"entries"`
+	DirtyEntries   int                   `json:"dirty_entries"`
+	CleanEntries   int                   `json:"clean_entries"`
+	InvalidEntries []journalInvalidEntry `json:"invalid_entries"`
+	Pending        []journalPendingDebug `json:"pending"`
+	OrphanStaging  []string              `json:"orphan_staging"`
 }
 
 type journalInvalidEntry struct {
-	Line int
-	Err  string
+	Line int    `json:"line"`
+	Err  string `json:"err"`
 }
 
 type journalPendingDebug struct {
 	vfs.PendingFile
-	StagingExists bool
-	StagingSize   int64
-	StagingError  string
+	StagingExists bool   `json:"staging_exists"`
+	StagingSize   int64  `json:"staging_size"`
+	StagingError  string `json:"staging_error,omitempty"`
 }
 
 type debugJournalEntry struct {
@@ -48,8 +48,14 @@ type debugJournalEntry struct {
 }
 
 func newJournalCmd() *cobra.Command {
+	cmd := newJournalCmdWithUse("journal", true)
+	cmd.Hidden = true
+	return cmd
+}
+
+func newJournalCmdWithUse(use string, legacy bool) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "journal",
+		Use:   use,
 		Short: "Inspect offline upload journal",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -60,19 +66,47 @@ func newJournalCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			var reports []journalDebugReport
 			for i, target := range targets {
-				if i > 0 {
+				if !asJSON && i > 0 {
 					fmt.Println()
 				}
 				report := inspectJournalCache(target)
-				printJournalReport(os.Stdout, report)
+				if asJSON {
+					reports = append(reports, report)
+				} else {
+					printJournalReport(os.Stdout, report)
+				}
+			}
+			if asJSON {
+				return writeJournalReportsJSON(os.Stdout, reports)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&mountName, "mount", "", "mount name")
 	cmd.Flags().StringVar(&journalCacheDir, "cache", "", "cache directory")
+	cmd.Flags().Bool("json", false, "write JSON output")
+	if legacy {
+		cmd.Deprecated = "use 'qrypt debug journal' instead"
+	}
 	return cmd
+}
+
+func writeJournalReportsJSON(w io.Writer, reports []journalDebugReport) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	return enc.Encode(struct {
+		SchemaVersion int                  `json:"schema_version"`
+		GeneratedAt   time.Time            `json:"generated_at"`
+		Reports       []journalDebugReport `json:"reports"`
+	}{
+		SchemaVersion: debugAIReportSchemaVersion,
+		GeneratedAt:   time.Now(),
+		Reports:       reports,
+	})
 }
 
 func debugCacheTargets(cacheDir, configPath string) ([]debugCacheTarget, error) {
@@ -119,7 +153,12 @@ func debugCacheTargets(cacheDir, configPath string) ([]debugCacheTarget, error) 
 }
 
 func inspectJournalCache(target debugCacheTarget) journalDebugReport {
-	report := journalDebugReport{Target: target}
+	report := journalDebugReport{
+		Target:         target,
+		InvalidEntries: []journalInvalidEntry{},
+		Pending:        []journalPendingDebug{},
+		OrphanStaging:  []string{},
+	}
 	journalPath := filepath.Join(target.Dir, "pending.jsonl")
 	file, err := os.Open(journalPath)
 	if err == nil {
@@ -166,6 +205,9 @@ func inspectJournalCache(target debugCacheTarget) journalDebugReport {
 		return report.Pending[i].Path < report.Pending[j].Path
 	})
 	report.OrphanStaging = orphanStagingFiles(target.Dir, report.Pending)
+	if report.OrphanStaging == nil {
+		report.OrphanStaging = []string{}
+	}
 	return report
 }
 
