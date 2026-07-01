@@ -316,6 +316,20 @@ func TestWebDAV_Init(t *testing.T) {
 	}
 }
 
+func TestWebDAV_DebugSnapshotReportsDriverName(t *testing.T) {
+	drv, _, _ := setupTestWithOptions(t, Options{RootPath: "/qrypt"})
+	snapshot, err := drv.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Driver != "webdav" {
+		t.Fatalf("driver = %q, want webdav", snapshot.Driver)
+	}
+	if snapshot.Stats["root_path"] != "/qrypt" {
+		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+}
+
 func TestWebDAV_ListRoot(t *testing.T) {
 	drv, ts, _ := setupTest(t)
 	ctx := context.Background()

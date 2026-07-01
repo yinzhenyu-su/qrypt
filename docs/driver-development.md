@@ -194,9 +194,10 @@ filename encryption around any `drive.Driver`.
 
 Do not build global bandwidth policy into a driver unless the provider upload
 implementation has internal concurrency that must be limited at the native
-request level. The generic rate-limit wrapper handles normal reads and uploads.
+request level. The generic bandwidth wrapper handles normal reads and uploads.
+Provider request-rate throttling is a separate driver concern.
 
-When adding optional interfaces, update crypt and rate-limit wrappers so they
+When adding optional interfaces, update crypt and bandwidth wrappers so they
 preserve or provide safe fallbacks for those capabilities.
 
 ## Errors
@@ -224,7 +225,7 @@ Add tests for:
 - provider API failures with driver-prefixed errors
 - `Mkdir`, `Put`, `Rename`, `Move`, and `Remove` when supported
 - debug snapshots and health checks without secrets
-- optional interfaces surviving crypt and rate-limit wrappers when relevant
+- optional interfaces surviving crypt and bandwidth wrappers when relevant
 
 Use fake provider servers or clients. Unit tests should not require real
 accounts.

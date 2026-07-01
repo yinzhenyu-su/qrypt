@@ -403,7 +403,7 @@ func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	}
 }
 
-func TestDriverUploadPartUsesNativeRateLimiter(t *testing.T) {
+func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			t.Fatalf("unexpected oss method: %s", r.Method)
@@ -428,7 +428,7 @@ func TestDriverUploadPartUsesNativeRateLimiter(t *testing.T) {
 
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	routeOSSToTestServer(driver.cl.ossClient, oss)
-	driver.InstallRateLimiter(drive.NewRateLimiter(drive.RateLimits{UploadBytesPerSecond: 1}))
+	driver.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 

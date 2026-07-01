@@ -126,6 +126,16 @@
           "type": "string",
           "default": ""
         },
+        "password_obscured": {
+          "description": "Set true when password is copied from rclone's obscured config value.",
+          "type": "boolean",
+          "default": false
+        },
+        "salt_obscured": {
+          "description": "Set true when salt is copied from rclone's obscured password2 config value.",
+          "type": "boolean",
+          "default": false
+        },
         "filename_encryption": {
           "description": "File-name encryption mode.",
           "type": "string",

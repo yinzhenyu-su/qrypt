@@ -15,6 +15,8 @@ const (
 type Config struct {
 	Password           string `toml:"password"`
 	Salt               string `toml:"salt"`
+	PasswordObscured   bool   `toml:"password_obscured"`
+	SaltObscured       bool   `toml:"salt_obscured"`
 	FileNameEncryption string `toml:"filename_encryption"`
 	FileNameEncoding   string `toml:"filename_encoding"`
 }
@@ -51,6 +53,19 @@ func NewRcloneCipherFromConfig(cfg Config) (*RcloneCipher, error) {
 	cfg = cfg.WithDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	var err error
+	if cfg.PasswordObscured {
+		cfg.Password, err = RevealRcloneConfigValue(cfg.Password)
+		if err != nil {
+			return nil, fmt.Errorf("crypt: reveal password: %w", err)
+		}
+	}
+	if cfg.SaltObscured && cfg.Salt != "" {
+		cfg.Salt, err = RevealRcloneConfigValue(cfg.Salt)
+		if err != nil {
+			return nil, fmt.Errorf("crypt: reveal salt: %w", err)
+		}
 	}
 	return NewRcloneCipher(cfg.Password, cfg.Salt, cfg.FileNameEncoding, cfg.FileNameEncryption)
 }
