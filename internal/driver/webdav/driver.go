@@ -302,6 +302,17 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	return status
 }
 
+func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{
+		Driver:      "webdav",
+		Health:      "unknown",
+		GeneratedAt: time.Now(),
+		Stats: map[string]any{
+			"root_path": d.rootPath,
+		},
+	}, nil
+}
+
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	urlStr := d.resolveURL(entry.ID)
 	req, err := d.newRequest(ctx, http.MethodDelete, urlStr, nil)

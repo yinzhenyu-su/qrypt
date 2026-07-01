@@ -9,21 +9,21 @@ import (
 	"time"
 )
 
-type rateLimitTestDriver struct {
+type bandwidthLimitTestDriver struct {
 	data string
 }
 
-func (d *rateLimitTestDriver) Init(context.Context) error { return nil }
+func (d *bandwidthLimitTestDriver) Init(context.Context) error { return nil }
 
-func (d *rateLimitTestDriver) Drop(context.Context) error { return nil }
+func (d *bandwidthLimitTestDriver) Drop(context.Context) error { return nil }
 
-func (d *rateLimitTestDriver) List(context.Context, string) ([]Entry, error) { return nil, nil }
+func (d *bandwidthLimitTestDriver) List(context.Context, string) ([]Entry, error) { return nil, nil }
 
-func (d *rateLimitTestDriver) Read(context.Context, Entry, int64, int64) (io.ReadCloser, error) {
+func (d *bandwidthLimitTestDriver) Read(context.Context, Entry, int64, int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(d.data)), nil
 }
 
-func (d *rateLimitTestDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error) {
+func (d *bandwidthLimitTestDriver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return Entry{}, err
@@ -31,54 +31,54 @@ func (d *rateLimitTestDriver) Put(ctx context.Context, parentID, name string, si
 	return Entry{ID: name, ParentID: parentID, Name: name, Size: int64(len(data))}, nil
 }
 
-type readOnlyRateLimitTestDriver struct{}
+type readOnlyBandwidthLimitTestDriver struct{}
 
-func (d *readOnlyRateLimitTestDriver) Init(context.Context) error { return nil }
+func (d *readOnlyBandwidthLimitTestDriver) Init(context.Context) error { return nil }
 
-func (d *readOnlyRateLimitTestDriver) Drop(context.Context) error { return nil }
+func (d *readOnlyBandwidthLimitTestDriver) Drop(context.Context) error { return nil }
 
-func (d *readOnlyRateLimitTestDriver) List(context.Context, string) ([]Entry, error) {
+func (d *readOnlyBandwidthLimitTestDriver) List(context.Context, string) ([]Entry, error) {
 	return nil, nil
 }
 
-func (d *readOnlyRateLimitTestDriver) Read(context.Context, Entry, int64, int64) (io.ReadCloser, error) {
+func (d *readOnlyBandwidthLimitTestDriver) Read(context.Context, Entry, int64, int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
-type nativeUploadRateLimitTestDriver struct {
-	rateLimitTestDriver
+type nativeUploadBandwidthLimitTestDriver struct {
+	bandwidthLimitTestDriver
 	installed bool
 }
 
-func (d *nativeUploadRateLimitTestDriver) InstallRateLimiter(*RateLimiter) RateLimitDirection {
+func (d *nativeUploadBandwidthLimitTestDriver) InstallBandwidthLimiter(*BandwidthLimiter) BandwidthLimitDirection {
 	d.installed = true
-	return RateLimitUpload
+	return BandwidthLimitUpload
 }
 
-func TestNewRateLimitedDriverReturnsRawWhenDisabled(t *testing.T) {
-	raw := &rateLimitTestDriver{}
-	got := NewRateLimitedDriver(raw, RateLimits{})
+func TestNewBandwidthLimitedDriverReturnsRawWhenDisabled(t *testing.T) {
+	raw := &bandwidthLimitTestDriver{}
+	got := NewBandwidthLimitedDriver(raw, BandwidthLimits{})
 	if got != raw {
-		t.Fatalf("disabled rate limit should return raw driver")
+		t.Fatalf("disabled bandwidth limit should return raw driver")
 	}
 }
 
-func TestRateLimitedDriverPreservesUploaderCapability(t *testing.T) {
-	writable := NewRateLimitedDriver(&rateLimitTestDriver{}, RateLimits{UploadBytesPerSecond: 1024})
+func TestBandwidthLimitedDriverPreservesUploaderCapability(t *testing.T) {
+	writable := NewBandwidthLimitedDriver(&bandwidthLimitTestDriver{}, BandwidthLimits{UploadBytesPerSecond: 1024})
 	if _, ok := writable.(Uploader); !ok {
 		t.Fatal("wrapped writable driver should still support upload")
 	}
-	readOnly := NewRateLimitedDriver(&readOnlyRateLimitTestDriver{}, RateLimits{UploadBytesPerSecond: 1024})
+	readOnly := NewBandwidthLimitedDriver(&readOnlyBandwidthLimitTestDriver{}, BandwidthLimits{UploadBytesPerSecond: 1024})
 	if _, ok := readOnly.(Uploader); ok {
 		t.Fatal("wrapped read-only driver should not gain upload support")
 	}
 }
 
-func TestRateLimitedDriverRemoteNameFallback(t *testing.T) {
-	drv := NewRateLimitedDriver(&readOnlyRateLimitTestDriver{}, RateLimits{DownloadBytesPerSecond: 1024})
+func TestBandwidthLimitedDriverRemoteNameFallback(t *testing.T) {
+	drv := NewBandwidthLimitedDriver(&readOnlyBandwidthLimitTestDriver{}, BandwidthLimits{DownloadBytesPerSecond: 1024})
 	resolver, ok := drv.(RemoteNameResolver)
 	if !ok {
-		t.Fatal("rate-limited driver should provide remote-name fallback")
+		t.Fatal("bandwidth-limited driver should provide remote-name fallback")
 	}
 	info, err := resolver.ResolveRemoteName(context.Background(), "plain.txt")
 	if err != nil {
@@ -89,9 +89,9 @@ func TestRateLimitedDriverRemoteNameFallback(t *testing.T) {
 	}
 }
 
-func TestRateLimitedDriverSkipsDirectionHandledByNativeDriver(t *testing.T) {
-	raw := &nativeUploadRateLimitTestDriver{}
-	drv := NewRateLimitedDriver(raw, RateLimits{UploadBytesPerSecond: 1})
+func TestBandwidthLimitedDriverSkipsDirectionHandledByNativeDriver(t *testing.T) {
+	raw := &nativeUploadBandwidthLimitTestDriver{}
+	drv := NewBandwidthLimitedDriver(raw, BandwidthLimits{UploadBytesPerSecond: 1})
 	if !raw.installed {
 		t.Fatal("native driver should receive shared limiter")
 	}
@@ -104,9 +104,9 @@ func TestRateLimitedDriverSkipsDirectionHandledByNativeDriver(t *testing.T) {
 	}
 }
 
-func TestRateLimitedReadHonorsContext(t *testing.T) {
-	raw := &rateLimitTestDriver{data: "slow"}
-	drv := NewRateLimitedDriver(raw, RateLimits{DownloadBytesPerSecond: 1})
+func TestBandwidthLimitedReadHonorsContext(t *testing.T) {
+	raw := &bandwidthLimitTestDriver{data: "slow"}
+	drv := NewBandwidthLimitedDriver(raw, BandwidthLimits{DownloadBytesPerSecond: 1})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
@@ -122,9 +122,9 @@ func TestRateLimitedReadHonorsContext(t *testing.T) {
 	}
 }
 
-func TestRateLimitedUploadHonorsContext(t *testing.T) {
-	raw := &rateLimitTestDriver{}
-	drv := NewRateLimitedDriver(raw, RateLimits{UploadBytesPerSecond: 1})
+func TestBandwidthLimitedUploadHonorsContext(t *testing.T) {
+	raw := &bandwidthLimitTestDriver{}
+	drv := NewBandwidthLimitedDriver(raw, BandwidthLimits{UploadBytesPerSecond: 1})
 	uploader := drv.(Uploader)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

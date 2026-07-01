@@ -36,7 +36,7 @@ type Driver struct {
 	orderBy        string
 	orderDirection string
 	partSize       int64
-	limiter        *drive.RateLimiter
+	limiter        *drive.BandwidthLimiter
 	stateStore     drive.StateStore
 	tokenSource    string
 	tokenUpdated   time.Time
@@ -196,9 +196,9 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
 }
 
-func (d *Driver) InstallRateLimiter(limiter *drive.RateLimiter) drive.RateLimitDirection {
+func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
-	return drive.RateLimitDownload | drive.RateLimitUpload
+	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
 func (d *Driver) resolveID(fileID string) string {

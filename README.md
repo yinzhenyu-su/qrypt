@@ -98,15 +98,15 @@ filename_encoding = "base32"
 
 Use `qrypt driver schema <name>` for the exact parameter schema.
 
-| Driver | Required params | Notes |
-|---|---|---|
-| `localfs` | `root` | Local directory backend, useful for testing |
-| `aliyundrive` | `refresh_token`, `drive_id` | Aliyun Drive backend; optional `root_path` |
-| `baidu_netdisk` | `refresh_token` | Baidu Netdisk backend; list, read, upload, metadata write, and space support |
-| `quark` | `cookie` | Quark cloud drive backend; optional `root_path` |
-| `yun139` | `authorization` | 139 cloud drive backend; optional `root_path` |
-| `115` | `cookie` | 115 backend; optional `root_path`; read support is limited by provider behavior |
-| `webdav` | `url`, `username`, `password` | Standard WebDAV backend; optional `root_path` |
+| Driver          | Required params               | Notes                                                                           |
+| --------------- | ----------------------------- | ------------------------------------------------------------------------------- |
+| `localfs`       | `root`                        | Local directory backend, useful for testing                                     |
+| `aliyundrive`   | `refresh_token`, `drive_id`   | Aliyun Drive backend; optional `root_path`                                      |
+| `baidu_netdisk` | `refresh_token`               | Baidu Netdisk backend; list, read, upload, metadata write, and space support    |
+| `quark`         | `cookie`                      | Quark cloud drive backend; optional `root_path`                                 |
+| `yun139`        | `authorization`               | 139 cloud drive backend; optional `root_path`                                   |
+| `115`           | `cookie`                      | 115 backend; optional `root_path`; read support is limited by provider behavior |
+| `webdav`        | `url`, `username`, `password` | Standard WebDAV backend; optional `root_path`                                   |
 
 ```sh
 go run ./cmd/qrypt driver list
@@ -139,22 +139,33 @@ filename_encoding = "base32"     # base32 | base64
 
 When `password` is set, file content is encrypted. Setting
 `filename_encryption = "off"` only keeps remote filenames readable.
+If you copy values from an existing rclone config, rclone's `password` and
+`password2` values are obscured. Put `password2` in `salt` and enable the
+matching flags:
+
+```toml
+[mounts.encryption]
+password = "rclone-obscured-password"
+password_obscured = true
+salt = "rclone-obscured-password2"
+salt_obscured = true
+```
 
 ## Mount Options
 
 Common top-level options:
 
-| Option | Default | Description |
-|---|---:|---|
-| `mount_point` | required | FUSE mount point |
-| `cache_dir` | OS temp dir | root cache directory |
-| `volume_name` | `Qrypt` | Finder volume name |
-| `read_only` | `false` | reject write callbacks |
-| `no_apple_double` | `true` | ignore `.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, `.fseventsd` |
-| `no_apple_xattr` | `false` | ignore `com.apple.*` extended attributes |
-| `attr_timeout` | `1s` | FUSE attribute cache timeout |
-| `entry_timeout` | `1s` | FUSE entry cache timeout |
-| `negative_timeout` | `0s` | FUSE negative lookup cache timeout |
+| Option             |     Default | Description                                                            |
+| ------------------ | ----------: | ---------------------------------------------------------------------- |
+| `mount_point`      |    required | FUSE mount point                                                       |
+| `cache_dir`        | OS temp dir | root cache directory                                                   |
+| `volume_name`      |     `Qrypt` | Finder volume name                                                     |
+| `read_only`        |     `false` | reject write callbacks                                                 |
+| `no_apple_double`  |      `true` | ignore `.DS_Store`, `._*`, `.Spotlight-V100`, `.Trashes`, `.fseventsd` |
+| `no_apple_xattr`   |     `false` | ignore `com.apple.*` extended attributes                               |
+| `attr_timeout`     |        `1s` | FUSE attribute cache timeout                                           |
+| `entry_timeout`    |        `1s` | FUSE entry cache timeout                                               |
+| `negative_timeout` |        `0s` | FUSE negative lookup cache timeout                                     |
 
 Advanced options include `allow_other`, `default_permissions`, `total_space`,
 and `free_space`.
@@ -217,3 +228,11 @@ go test ./...
 ```
 
 To add a backend, see [`docs/driver-development.md`](docs/driver-development.md).
+
+Debug:
+
+```sh
+go run ./cmd/qrypt --debug-socket /tmp/qrypt.sock debug
+```
+
+see [`docs/debug.md`](docs/debug.md)

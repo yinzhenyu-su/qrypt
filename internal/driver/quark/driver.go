@@ -25,7 +25,7 @@ type Driver struct {
 	cookie        string
 	rootPath      string
 	rootID        string
-	limiter       *drive.RateLimiter
+	limiter       *drive.BandwidthLimiter
 	stateStore    drive.StateStore
 	cookieSource  string
 	cookieUpdated time.Time
@@ -165,9 +165,9 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
 }
 
-func (d *Driver) InstallRateLimiter(limiter *drive.RateLimiter) drive.RateLimitDirection {
+func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
-	return drive.RateLimitDownload | drive.RateLimitUpload
+	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -1028,6 +1028,6 @@ var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
-var _ drive.RateLimitInstaller = (*Driver)(nil)
+var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.HealthChecker = (*Driver)(nil)

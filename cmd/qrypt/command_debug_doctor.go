@@ -60,7 +60,11 @@ func debugDoctor() *cobra.Command {
 						if m.Encrypted {
 							fmt.Print(" [encrypted]")
 						}
-						fmt.Printf(" (driver: %s)\n", m.DriverName)
+						driverName := m.DriverName
+						if driverName == "" {
+							driverName = "unknown"
+						}
+						fmt.Printf(" (driver: %s)\n", driverName)
 					}
 				} else {
 					os.Stdout.Write(body)

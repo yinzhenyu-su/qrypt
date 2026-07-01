@@ -180,7 +180,7 @@ func buildFileSystem(ctx context.Context, cmd *cobra.Command, driverName, root, 
 		return nil, nil, err
 	}
 
-	raw = drive.WrapRateLimitedDriver(raw, bandwidthLimiterFromConfig(configPath))
+	raw = drive.WrapBandwidthLimitedDriver(raw, bandwidthLimiterFromConfig(configPath))
 	var drv drive.Driver = raw
 	encCfg, encEnabled, err := encryptionConfigFromFlags(cmd, configPath, mountName, password, salt, fileNameEncryption, fileNameEncoding)
 	if err != nil {
@@ -203,7 +203,7 @@ func buildFileSystem(ctx context.Context, cmd *cobra.Command, driverName, root, 
 	return fs, func() { _ = raw.Drop(ctx) }, nil
 }
 
-func bandwidthLimiterFromConfig(configPath string) *drive.RateLimiter {
+func bandwidthLimiterFromConfig(configPath string) *drive.BandwidthLimiter {
 	if configPath == "" {
 		return nil
 	}
@@ -218,8 +218,8 @@ func bandwidthLimiterFromConfig(configPath string) *drive.RateLimiter {
 	return bandwidthLimiter(limits)
 }
 
-func bandwidthLimiter(limits config.BandwidthLimits) *drive.RateLimiter {
-	return drive.NewRateLimiter(drive.RateLimits{
+func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
+	return drive.NewBandwidthLimiter(drive.BandwidthLimits{
 		DownloadBytesPerSecond: limits.DownloadBytesPerSecond,
 		UploadBytesPerSecond:   limits.UploadBytesPerSecond,
 	})
@@ -246,7 +246,7 @@ func requireConfig() error {
 	return nil
 }
 
-func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding string, limiter *drive.RateLimiter) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config, cacheDir, mountName, password, salt, fileNameEncryption, fileNameEncoding string, limiter *drive.BandwidthLimiter) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {
@@ -281,7 +281,7 @@ func buildNamespace(ctx context.Context, cmd *cobra.Command, cfg *config.Config,
 			return nil, nil, err
 		}
 		drivers = append(drivers, raw)
-		var drv drive.Driver = drive.WrapRateLimitedDriver(raw, limiter)
+		var drv drive.Driver = drive.WrapBandwidthLimitedDriver(raw, limiter)
 		enc := cfg.EncryptionFor(mountCfg.Name)
 		enc, enabled, err := encryptionConfigFromValues(cmd, enc, password, salt, fileNameEncryption, fileNameEncoding)
 		if err != nil {
