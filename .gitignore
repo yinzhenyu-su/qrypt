@@ -3,3 +3,4 @@ qrypt.toml
 dist/
 .DS_Store
 /qrypt
+draft
