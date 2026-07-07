@@ -106,6 +106,44 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	}
 }
 
+func TestNamespaceStartDirectoryPrefetchWarmsAllMounts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drvA := &treeListDriver{
+		lists: map[string]int{},
+		entries: map[string][]drive.Entry{
+			"0":     {{ID: "a-dir", ParentID: "0", Name: "warm", IsDir: true}},
+			"a-dir": {{ID: "a-file", ParentID: "a-dir", Name: "a.txt"}},
+		},
+	}
+	drvB := &treeListDriver{
+		lists: map[string]int{},
+		entries: map[string][]drive.Entry{
+			"0":     {{ID: "b-dir", ParentID: "0", Name: "warm", IsDir: true}},
+			"b-dir": {{ID: "b-file", ParentID: "b-dir", Name: "b.txt"}},
+		},
+	}
+	fsA, err := vfs.New(drvA, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsB, err := vfs.New(drvB, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "a", FS: fsA}, {Name: "b", FS: fsB}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ns.StartDirectoryPrefetch(ctx)
+
+	waitForCondition(t, func() bool {
+		return drvA.listCount("0") == 1 && drvA.listCount("a-dir") == 1 &&
+			drvB.listCount("0") == 1 && drvB.listCount("b-dir") == 1
+	})
+}
+
 func TestNamespaceRejectsCrossMountRename(t *testing.T) {
 	ctx := context.Background()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})

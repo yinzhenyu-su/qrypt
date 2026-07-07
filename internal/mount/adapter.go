@@ -20,9 +20,13 @@ type adapter struct {
 	fuse.FileSystemBase
 	fs                  vfs.FileSystem
 	mu                  sync.Mutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
 	handles             map[uint64]fuseHandle
 	ignoredApple        map[string]ignoredAppleNode
+	activeOps           map[uint64]activeFuseOp
 	nextFH              uint64
+	nextOp              uint64
 	stopping            bool
 	trace               fuseTracer
 	statfs              StatfsOptions
@@ -41,6 +45,12 @@ type fuseHandle struct {
 	path     string
 	entry    drive.Entry
 	hasEntry bool
+}
+
+type activeFuseOp struct {
+	Op    string
+	Path  string
+	Start time.Time
 }
 
 type fuseTracer struct{}
@@ -128,10 +138,14 @@ type adapterOptions struct {
 }
 
 func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &adapter{
 		fs:                  fs,
+		ctx:                 ctx,
+		cancel:              cancel,
 		handles:             map[uint64]fuseHandle{},
 		ignoredApple:        map[string]ignoredAppleNode{},
+		activeOps:           map[uint64]activeFuseOp{},
 		trace:               fuseTracer{},
 		statfs:              opts.Statfs,
 		readOnly:            opts.ReadOnly,
@@ -142,8 +156,19 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 
 func (a *adapter) shutdown() {
 	a.mu.Lock()
+	if a.stopping {
+		a.mu.Unlock()
+		return
+	}
 	a.stopping = true
+	if a.cancel != nil {
+		a.cancel()
+	}
+	active := a.activeOpsSnapshotLocked()
 	a.mu.Unlock()
+	if len(active) > 0 {
+		logging.L.Infof("[FUSE] shutdown requested with active operations count=%d ops=%s", len(active), formatActiveFuseOps(active))
+	}
 }
 
 func (a *adapter) Init() {
@@ -158,6 +183,50 @@ func (a *adapter) isStopping() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.stopping
+}
+
+func (a *adapter) beginOp(op, path string) (context.Context, func(), bool) {
+	a.mu.Lock()
+	if a.stopping {
+		a.mu.Unlock()
+		return context.Background(), func() {}, false
+	}
+	a.nextOp++
+	id := a.nextOp
+	a.activeOps[id] = activeFuseOp{Op: op, Path: path, Start: time.Now()}
+	ctx := a.ctx
+	a.mu.Unlock()
+	return ctx, func() {
+		a.mu.Lock()
+		delete(a.activeOps, id)
+		a.mu.Unlock()
+	}, true
+}
+
+func (a *adapter) activeOpsSnapshot() []activeFuseOp {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.activeOpsSnapshotLocked()
+}
+
+func (a *adapter) activeOpsSnapshotLocked() []activeFuseOp {
+	ops := make([]activeFuseOp, 0, len(a.activeOps))
+	for _, op := range a.activeOps {
+		ops = append(ops, op)
+	}
+	return ops
+}
+
+func formatActiveFuseOps(ops []activeFuseOp) string {
+	if len(ops) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(ops))
+	now := time.Now()
+	for _, op := range ops {
+		parts = append(parts, fmt.Sprintf("%s:%s:%s", op.Op, op.Path, now.Sub(op.Start).Round(time.Millisecond)))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func (a *adapter) nextHandle(path string, entries ...drive.Entry) uint64 {

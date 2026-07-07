@@ -54,6 +54,11 @@ type failingListFS struct {
 	err error
 }
 
+type blockingReadFS struct {
+	stubFS
+	entered chan struct{}
+}
+
 func (stubFS) Start(context.Context) {}
 
 func (s stubSpaceFS) Space(context.Context) (drive.Space, error) {
@@ -86,6 +91,12 @@ func (s failingStatFS) Stat(context.Context, string) (drive.Entry, error) {
 
 func (s failingListFS) List(context.Context, string) ([]drive.Entry, error) {
 	return nil, s.err
+}
+
+func (s blockingReadFS) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
+	close(s.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (stubFS) Read(context.Context, string, int64, int64) (io.ReadCloser, error) {
@@ -249,6 +260,55 @@ func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
 	}
 	if stat.Bavail != (2<<40)/4096 {
 		t.Fatalf("Statfs available blocks = %d, want %d", stat.Bavail, (2<<40)/4096)
+	}
+}
+
+func TestAdapterShutdownCancelsActiveRead(t *testing.T) {
+	fs := blockingReadFS{
+		stubFS: stubFS{entries: map[string]drive.Entry{
+			"/file.txt": {ID: "file-id", Name: "file.txt", Size: 8},
+		}},
+		entered: make(chan struct{}),
+	}
+	ad := newAdapter(fs, StatfsOptions{})
+	result := make(chan int, 1)
+	go func() {
+		result <- ad.Read("/file.txt", make([]byte, 8), 0, 1)
+	}()
+
+	select {
+	case <-fs.entered:
+	case <-time.After(time.Second):
+		t.Fatal("read did not enter filesystem")
+	}
+	if active := ad.activeOpsSnapshot(); len(active) != 1 || active[0].Op != "Read" {
+		t.Fatalf("active ops = %#v, want one Read", active)
+	}
+
+	ad.shutdown()
+
+	select {
+	case got := <-result:
+		if got != -fuse.EIO {
+			t.Fatalf("Read after shutdown returned %d, want %d", got, -fuse.EIO)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read did not unblock after shutdown")
+	}
+	if active := ad.activeOpsSnapshot(); len(active) != 0 {
+		t.Fatalf("active ops after read returned = %#v, want empty", active)
+	}
+}
+
+func TestAdapterRejectsNewWriteAfterShutdown(t *testing.T) {
+	ad := newAdapter(&createRouteFS{}, StatfsOptions{})
+	ad.shutdown()
+
+	if got := ad.Write("/file.txt", []byte("data"), 0, 1); got != -fuse.EIO {
+		t.Fatalf("Write after shutdown returned %d, want %d", got, -fuse.EIO)
+	}
+	if active := ad.activeOpsSnapshot(); len(active) != 0 {
+		t.Fatalf("active ops = %#v, want empty", active)
 	}
 }
 
