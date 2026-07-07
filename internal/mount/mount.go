@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -108,15 +109,27 @@ func (FuseMounter) Unmount(ctx context.Context, session *Session) error {
 	if session == nil {
 		return nil
 	}
+	start := time.Now()
+	logging.L.Infof("[FUSE] unmount start mount=%q", session.MountPoint)
 	if session.adapter != nil {
+		stepStart := time.Now()
 		session.adapter.shutdown()
+		logging.L.Infof("[FUSE] adapter shutdown complete mount=%q dur=%s", session.MountPoint, time.Since(stepStart))
 	}
 	if session.host != nil {
+		stepStart := time.Now()
 		session.host.Unmount()
+		logging.L.Infof("[FUSE] host unmount complete mount=%q dur=%s", session.MountPoint, time.Since(stepStart))
 	}
 	if cmd := unmountCommand(session.MountPoint); cmd != nil {
-		_ = cmd.Run()
+		stepStart := time.Now()
+		if err := cmd.Run(); err != nil {
+			logging.L.Warnf("[FUSE] system unmount returned mount=%q dur=%s err=%v", session.MountPoint, time.Since(stepStart), err)
+		} else {
+			logging.L.Infof("[FUSE] system unmount complete mount=%q dur=%s", session.MountPoint, time.Since(stepStart))
+		}
 	}
+	logging.L.Infof("[FUSE] unmount complete mount=%q dur=%s", session.MountPoint, time.Since(start))
 	return nil
 }
 
@@ -197,5 +210,3 @@ func fuseTimeout(d time.Duration) string {
 	}
 	return fmt.Sprintf("%.3f", d.Seconds())
 }
-
-

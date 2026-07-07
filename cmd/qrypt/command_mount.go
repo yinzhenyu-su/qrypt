@@ -90,6 +90,9 @@ func newMountCmd() *cobra.Command {
 			}
 			logging.L.Infof("Mounted at %s. Press Ctrl+C to unmount.", mountPointExpanded)
 			fmt.Printf("Mounted at %s. Press Ctrl+C to unmount.\n", mountPointExpanded)
+			if prefetcher, ok := fs.(interface{ StartDirectoryPrefetch(context.Context) }); ok {
+				prefetcher.StartDirectoryPrefetch(ctx)
+			}
 			<-ctx.Done()
 			logging.L.Infof("Unmounting %s ...", mountPointExpanded)
 			fmt.Println("Unmounting ...")

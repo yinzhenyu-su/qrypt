@@ -118,6 +118,14 @@ func (n *Namespace) Start(ctx context.Context) {
 	}
 }
 
+func (n *Namespace) StartDirectoryPrefetch(ctx context.Context) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, fs := range n.mounts {
+		fs.StartDirectoryPrefetch(ctx)
+	}
+}
+
 func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) {
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {

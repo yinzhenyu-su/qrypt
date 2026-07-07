@@ -1,7 +1,6 @@
 package mount
 
 import (
-	"context"
 	"io"
 	"path/filepath"
 	"strings"
@@ -15,11 +14,17 @@ func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 	start := time.Now()
 	errc := 0
 	defer func() { logFuseResult("Getattr", path, start, &errc) }()
+	ctx, done, ok := a.beginOp("Getattr", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		fillStat(stat, a.ignoredAppleEntry(path), path)
 		return 0
 	}
-	entry, err := a.fs.Stat(context.Background(), path)
+	entry, err := a.fs.Stat(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
 		if errc == -fuse.ENOENT && fh != 0 {
@@ -44,6 +49,12 @@ func (a *adapter) Access(path string, mask uint32) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Access", path, "mask=%d err=%d dur=%s", mask, errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Access", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, true)
 		return 0
@@ -52,7 +63,7 @@ func (a *adapter) Access(path string, mask uint32) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+	if _, err := a.fs.Stat(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Access", path, errc, err)
 		return errc
@@ -67,12 +78,18 @@ func (a *adapter) Readdir(path string, fill func(name string, stat *fuse.Stat_t,
 	defer func() {
 		a.trace.log("Readdir", path, "fh=%d ofst=%d count=%d err=%d dur=%s", fh, ofst, count, errc, time.Since(start))
 	}()
+	ctx, done, ok := a.beginOp("Readdir", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	fill(".", nil, 0)
 	fill("..", nil, 0)
 	if a.shouldIgnoreAppleMetadata(path) {
 		return 0
 	}
-	entries, err := a.fs.List(context.Background(), path)
+	entries, err := a.fs.List(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
 		logFuseError("Readdir", path, errc, err)
@@ -97,12 +114,18 @@ func (a *adapter) Opendir(path string) (int, uint64) {
 	errc := 0
 	var fh uint64
 	defer func() { a.trace.log("Opendir", path, "fh=%d err=%d dur=%s", fh, errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Opendir", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc, 0
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, true)
 		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
 		return 0, fh
 	}
-	entry, err := a.fs.Stat(context.Background(), path)
+	entry, err := a.fs.Stat(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
 		logFuseError("Opendir", path, errc, err)
@@ -126,11 +149,17 @@ func (a *adapter) Releasedir(path string, fh uint64) int {
 func (a *adapter) Fsyncdir(path string, datasync bool, fh uint64) int {
 	errc := 0
 	defer func() { a.trace.log("Fsyncdir", path, "datasync=%t fh=%d err=%d", datasync, fh, errc) }()
+	ctx, done, ok := a.beginOp("Fsyncdir", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, true)
 		return 0
 	}
-	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+	if _, err := a.fs.Stat(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Fsyncdir", path, errc, err)
 	}
@@ -142,12 +171,18 @@ func (a *adapter) Open(path string, flags int) (int, uint64) {
 	errc := 0
 	var fh uint64
 	defer func() { a.trace.log("Open", path, "flags=%d fh=%d err=%d dur=%s", flags, fh, errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Open", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc, 0
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
 		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
 		return 0, fh
 	}
-	entry, err := a.fs.Stat(context.Background(), path)
+	entry, err := a.fs.Stat(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
 		logFuseError("Open", path, errc, err)
@@ -161,10 +196,12 @@ func (a *adapter) Mknod(path string, mode uint32, dev uint64) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Mknod", path, "mode=%o dev=%d err=%d dur=%s", mode, dev, errc, time.Since(start)) }()
-	if a.isStopping() {
+	ctx, done, ok := a.beginOp("Mknod", path)
+	if !ok {
 		errc = -fuse.EIO
 		return errc
 	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, mode&fuse.S_IFDIR != 0)
 		return 0
@@ -185,7 +222,7 @@ func (a *adapter) Mknod(path string, mode uint32, dev uint64) int {
 		errc = a.Mkdir(path, mode)
 		return errc
 	}
-	if err := a.fs.Create(context.Background(), path); err != nil {
+	if err := a.fs.Create(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Mknod", path, errc, err)
 		return errc
@@ -200,10 +237,12 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 	defer func() {
 		a.trace.log("Create", path, "flags=%d mode=%o fh=%d err=%d dur=%s", flags, mode, fh, errc, time.Since(start))
 	}()
-	if a.isStopping() {
+	ctx, done, ok := a.beginOp("Create", path)
+	if !ok {
 		errc = -fuse.EIO
 		return errc, 0
 	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
 		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
@@ -217,12 +256,12 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 		errc = a.Mkdir(path, mode)
 		return errc, 0
 	}
-	if err := a.fs.Create(context.Background(), path); err != nil {
+	if err := a.fs.Create(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Create", path, errc, err)
 		return errc, 0
 	}
-	if entry, err := a.fs.Stat(context.Background(), path); err == nil {
+	if entry, err := a.fs.Stat(ctx, path); err == nil {
 		fh = a.nextHandle(path, entry)
 	} else {
 		fh = a.nextHandle(path)
@@ -236,11 +275,17 @@ func (a *adapter) Read(path string, buff []byte, ofst int64, fh uint64) int {
 	defer func() {
 		a.trace.log("Read", path, "fh=%d ofst=%d len=%d result=%d dur=%s", fh, ofst, len(buff), result, time.Since(start))
 	}()
+	ctx, done, ok := a.beginOp("Read", path)
+	if !ok {
+		result = -fuse.EIO
+		return result
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		result = a.readIgnoredApple(path, buff, ofst)
 		return result
 	}
-	rc, err := a.fs.Read(context.Background(), path, ofst, int64(len(buff)))
+	rc, err := a.fs.Read(ctx, path, ofst, int64(len(buff)))
 	if err != nil {
 		result = -fuse.EIO
 		logFuseError("Read", path, result, err)
@@ -270,10 +315,12 @@ func (a *adapter) Write(path string, buff []byte, ofst int64, fh uint64) int {
 	defer func() {
 		a.trace.log("Write", path, "fh=%d ofst=%d len=%d result=%d dur=%s", fh, ofst, len(buff), result, time.Since(start))
 	}()
-	if a.isStopping() {
+	ctx, done, ok := a.beginOp("Write", path)
+	if !ok {
 		result = -fuse.EIO
 		return result
 	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.writeIgnoredApple(path, int64(len(buff)), ofst)
 		result = len(buff)
@@ -283,7 +330,7 @@ func (a *adapter) Write(path string, buff []byte, ofst int64, fh uint64) int {
 		result = -fuse.EROFS
 		return result
 	}
-	n, err := a.fs.WriteAt(context.Background(), path, buff, ofst)
+	n, err := a.fs.WriteAt(ctx, path, buff, ofst)
 	if err != nil {
 		result = fuseErr(err)
 		logFuseError("Write", path, result, err)
@@ -297,11 +344,17 @@ func (a *adapter) Flush(path string, fh uint64) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Flush", path, "fh=%d err=%d dur=%s", fh, errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Flush", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
 		return 0
 	}
-	if err := a.fs.Flush(context.Background(), path); err != nil {
+	if err := a.fs.Flush(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Flush", path, errc, err)
 		return errc
@@ -324,6 +377,12 @@ func (a *adapter) Mkdir(path string, mode uint32) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Mkdir", path, "mode=%o err=%d dur=%s", mode, errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Mkdir", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, true)
 		return 0
@@ -332,7 +391,7 @@ func (a *adapter) Mkdir(path string, mode uint32) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if _, err := a.fs.Mkdir(context.Background(), path); err != nil {
+	if _, err := a.fs.Mkdir(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Mkdir", path, errc, err)
 		return errc
@@ -344,6 +403,12 @@ func (a *adapter) Unlink(path string) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Unlink", path, "err=%d dur=%s", errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Unlink", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.removeIgnoredApple(path)
 		a.removeXattrs(path)
@@ -353,7 +418,7 @@ func (a *adapter) Unlink(path string) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if err := a.fs.Remove(context.Background(), path); err != nil {
+	if err := a.fs.Remove(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Unlink", path, errc, err)
 		return errc
@@ -366,6 +431,12 @@ func (a *adapter) Rmdir(path string) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Rmdir", path, "err=%d dur=%s", errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Rmdir", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.removeIgnoredApple(path)
 		a.removeXattrs(path)
@@ -375,7 +446,7 @@ func (a *adapter) Rmdir(path string) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if err := a.fs.RemoveDir(context.Background(), path); err != nil {
+	if err := a.fs.RemoveDir(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Rmdir", path, errc, err)
 		return errc
@@ -388,6 +459,12 @@ func (a *adapter) Rename(oldPath, newPath string) int {
 	start := time.Now()
 	errc := 0
 	defer func() { a.trace.log("Rename", oldPath, "new=%q err=%d dur=%s", newPath, errc, time.Since(start)) }()
+	ctx, done, ok := a.beginOp("Rename", oldPath)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(oldPath) || a.shouldIgnoreAppleMetadata(newPath) {
 		a.renameIgnoredApple(oldPath, newPath)
 		a.renameXattrs(oldPath, newPath)
@@ -397,7 +474,7 @@ func (a *adapter) Rename(oldPath, newPath string) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if err := a.fs.Rename(context.Background(), oldPath, newPath); err != nil {
+	if err := a.fs.Rename(ctx, oldPath, newPath); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Rename", oldPath, errc, err)
 		return errc
@@ -412,6 +489,12 @@ func (a *adapter) Truncate(path string, size int64, fh uint64) int {
 	defer func() {
 		a.trace.log("Truncate", path, "fh=%d size=%d err=%d dur=%s", fh, size, errc, time.Since(start))
 	}()
+	ctx, done, ok := a.beginOp("Truncate", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.truncateIgnoredApple(path, size)
 		return 0
@@ -420,7 +503,7 @@ func (a *adapter) Truncate(path string, size int64, fh uint64) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if err := a.fs.Truncate(context.Background(), path, size); err != nil {
+	if err := a.fs.Truncate(ctx, path, size); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Truncate", path, errc, err)
 		return errc
@@ -448,6 +531,13 @@ func (a *adapter) Rename3(oldPath, newPath string, flags uint32) int {
 
 func (a *adapter) Utimens(path string, tmsp []fuse.Timespec) int {
 	errc := 0
+	ctx, done, ok := a.beginOp("Utimens", path)
+	if !ok {
+		errc = -fuse.EIO
+		a.trace.log("Utimens", path, "count=%d err=%d", len(tmsp), errc)
+		return errc
+	}
+	defer done()
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 	}
@@ -458,7 +548,7 @@ func (a *adapter) Utimens(path string, tmsp []fuse.Timespec) int {
 	if errc == 0 && len(tmsp) >= 2 {
 		if setter, ok := a.fs.(modTimeSetter); ok {
 			modTime := time.Unix(tmsp[1].Sec, tmsp[1].Nsec)
-			if err := setter.SetModTime(context.Background(), path, modTime); err != nil {
+			if err := setter.SetModTime(ctx, path, modTime); err != nil {
 				errc = fuseErr(err)
 				logFuseError("Utimens", path, errc, err)
 			}
@@ -513,6 +603,12 @@ func (a *adapter) Chown(path string, uid uint32, gid uint32) int {
 func (a *adapter) Chflags(path string, flags uint32) int {
 	errc := 0
 	defer func() { a.trace.log("Chflags", path, "flags=%d err=%d", flags, errc) }()
+	ctx, done, ok := a.beginOp("Chflags", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
 		return 0
@@ -521,7 +617,7 @@ func (a *adapter) Chflags(path string, flags uint32) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+	if _, err := a.fs.Stat(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Chflags", path, errc, err)
 		return errc
@@ -532,6 +628,12 @@ func (a *adapter) Chflags(path string, flags uint32) int {
 func (a *adapter) Setcrtime(path string, tmsp fuse.Timespec) int {
 	errc := 0
 	defer func() { a.trace.log("Setcrtime", path, "sec=%d nsec=%d err=%d", tmsp.Sec, tmsp.Nsec, errc) }()
+	ctx, done, ok := a.beginOp("Setcrtime", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
 		return 0
@@ -540,7 +642,7 @@ func (a *adapter) Setcrtime(path string, tmsp fuse.Timespec) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+	if _, err := a.fs.Stat(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Setcrtime", path, errc, err)
 		return errc
@@ -551,6 +653,12 @@ func (a *adapter) Setcrtime(path string, tmsp fuse.Timespec) int {
 func (a *adapter) Setchgtime(path string, tmsp fuse.Timespec) int {
 	errc := 0
 	defer func() { a.trace.log("Setchgtime", path, "sec=%d nsec=%d err=%d", tmsp.Sec, tmsp.Nsec, errc) }()
+	ctx, done, ok := a.beginOp("Setchgtime", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
 		return 0
@@ -559,7 +667,7 @@ func (a *adapter) Setchgtime(path string, tmsp fuse.Timespec) int {
 		errc = -fuse.EROFS
 		return errc
 	}
-	if _, err := a.fs.Stat(context.Background(), path); err != nil {
+	if _, err := a.fs.Stat(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Setchgtime", path, errc, err)
 		return errc
@@ -593,9 +701,15 @@ func (a *adapter) Listxattr(path string, fill func(name string) bool) int {
 func (a *adapter) Setxattr(path string, name string, value []byte, flags int) int {
 	errc := 0
 	defer func() { a.trace.log("Setxattr", path, "name=%q len=%d flags=%d err=%d", name, len(value), flags, errc) }()
+	ctx, done, ok := a.beginOp("Setxattr", path)
+	if !ok {
+		errc = -fuse.EIO
+		return errc
+	}
+	defer done()
 	if name == "com.apple.finder.copy.source" {
 		if preparer, ok := a.fs.(directoryCopyPreparer); ok {
-			if err := preparer.PrepareDirectoryCopy(context.Background(), path); err != nil {
+			if err := preparer.PrepareDirectoryCopy(ctx, path); err != nil {
 				errc = fuseErr(err)
 				logFuseError("PrepareDirectoryCopy", path, errc, err)
 				return errc
