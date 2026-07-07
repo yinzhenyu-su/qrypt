@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -192,7 +193,7 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 		return
 	}
 	msg := sanitize(fmt.Sprintf(format, v...))
-	now := time.Now()
+	now := timeutil.Now()
 	ts := now.Format("2006-01-02 15:04:05.000")
 	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 
@@ -214,7 +215,8 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 	if level < l.level {
 		return
 	}
-	now := time.Now()
+	sampleNow := time.Now()
+	now := timeutil.Now()
 	msg := sanitize(fmt.Sprintf(format, v...))
 	ts := now.Format("2006-01-02 15:04:05.000")
 
@@ -223,12 +225,12 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 		l.samples = map[string]sampleState{}
 	}
 	state := l.samples[key]
-	if state.last.IsZero() || now.Sub(state.last) >= interval {
+	if state.last.IsZero() || sampleNow.Sub(state.last) >= interval {
 		suppressed := state.suppressed
 		if state.suppressed > 0 {
 			msg = fmt.Sprintf("%s (suppressed=%d)", msg, state.suppressed)
 		}
-		l.samples[key] = sampleState{last: now}
+		l.samples[key] = sampleState{last: sampleNow}
 		l.recordEventLocked(level, now, msg, suppressed)
 		line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 		if level >= LevelWarn && l.errWriter != nil {

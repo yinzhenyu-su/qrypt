@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
 type Driver struct {
@@ -172,6 +172,7 @@ func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
 			return clean, nil
 		}
+		return "", fmt.Errorf("localfs: path escapes root: %s", path)
 	}
 	target := filepath.Join(d.root, clean)
 	rel, err := filepath.Rel(d.root, target)

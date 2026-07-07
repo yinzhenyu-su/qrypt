@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -197,7 +198,7 @@ type ConsistencyReport struct {
 func (v *VFS) DebugSnapshot() DebugSnapshot {
 	return DebugSnapshot{
 		SchemaVersion: DebugSnapshotSchemaVersion,
-		GeneratedAt:   time.Now(),
+		GeneratedAt:   timeutil.Now(),
 		Kind:          "vfs",
 		Process:       debugProcess(),
 		Mounts:        []DebugMountSnapshot{v.debugMountSnapshot("default")},
@@ -353,7 +354,7 @@ func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
 		state := "queued"
 		if timerPaths[item.Path] {
 			state = "scheduled"
-			if item.LastError != "" && item.NextAttemptAt > time.Now().UnixNano() {
+			if item.LastError != "" && item.NextAttemptAt > timeutil.Now().UnixNano() {
 				state = "retry_wait"
 			}
 		}
@@ -395,7 +396,7 @@ func (v *VFS) debugUploadHistory() []DebugUpload {
 }
 
 func (v *VFS) startDebugUpload(p PendingFile) {
-	now := time.Now()
+	now := timeutil.Now()
 	v.uploadMu.Lock()
 	v.activeUploads[p.Path] = &debugUploadState{upload: DebugUpload{
 		OpID:          p.FID,
@@ -417,7 +418,7 @@ func (v *VFS) setDebugUploadState(path, state string) {
 	v.uploadMu.Lock()
 	if upload := v.activeUploads[path]; upload != nil {
 		upload.upload.State = state
-		upload.upload.UpdatedAt = time.Now()
+		upload.upload.UpdatedAt = timeutil.Now()
 	}
 	v.uploadMu.Unlock()
 }
@@ -427,7 +428,7 @@ func (v *VFS) finishDebugUpload(path, state, lastError string) {
 	if upload := v.activeUploads[path]; upload != nil {
 		upload.upload.State = state
 		upload.upload.LastError = lastError
-		upload.upload.UpdatedAt = time.Now()
+		upload.upload.UpdatedAt = timeutil.Now()
 		upload.upload.CompletedAt = upload.upload.UpdatedAt
 		v.uploadHistory = append(v.uploadHistory, upload.upload)
 		if len(v.uploadHistory) > debugUploadHistoryLimit {
@@ -446,7 +447,7 @@ func (v *VFS) updateDebugUpload(path string, n int) {
 	v.uploadMu.Lock()
 	if state := v.activeUploads[path]; state != nil {
 		state.upload.BytesUploaded += int64(n)
-		state.upload.UpdatedAt = time.Now()
+		state.upload.UpdatedAt = timeutil.Now()
 	}
 	v.uploadMu.Unlock()
 }
@@ -512,7 +513,7 @@ func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport
 }
 
 func (v *VFS) DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error) {
-	h := DriverHealth{Mount: mountName, CheckedAt: time.Now()}
+	h := DriverHealth{Mount: mountName, CheckedAt: timeutil.Now()}
 	if checker, ok := v.driver.(drive.HealthChecker); ok {
 		result := checker.HealthCheck(ctx)
 		h.Driver = result.Driver
@@ -792,7 +793,7 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 func (n *Namespace) DebugSnapshot() DebugSnapshot {
 	snapshot := DebugSnapshot{
 		SchemaVersion: DebugSnapshotSchemaVersion,
-		GeneratedAt:   time.Now(),
+		GeneratedAt:   timeutil.Now(),
 		Kind:          "namespace",
 		Process:       debugProcess(),
 	}

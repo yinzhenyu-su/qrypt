@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 )
@@ -160,6 +161,37 @@ log_file = "/tmp/qrypt.log"
 	}
 }
 
+func TestLoadTimeConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	err := os.WriteFile(path, []byte(`
+[time]
+ntp_enabled = false
+ntp_servers = ["127.0.0.1:123", "time.example.com:123"]
+ntp_timeout = "500ms"
+ntp_poll_interval = "10m"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Time.EffectiveNTPEnabled() {
+		t.Fatal("expected ntp_enabled=false")
+	}
+	if len(cfg.Time.NTPServers) != 2 || cfg.Time.NTPServers[0] != "127.0.0.1:123" {
+		t.Fatalf("unexpected ntp servers: %#v", cfg.Time.NTPServers)
+	}
+	if cfg.Time.NTPTimeout != "500ms" {
+		t.Fatalf("unexpected ntp_timeout: %q", cfg.Time.NTPTimeout)
+	}
+	if cfg.Time.NTPPollInterval != "10m" {
+		t.Fatalf("unexpected ntp_poll_interval: %q", cfg.Time.NTPPollInterval)
+	}
+}
+
 func TestLoadMountParamsSupportsScalarValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
@@ -224,6 +256,63 @@ func TestEffectiveBandwidthLimitsRejectsInvalidValue(t *testing.T) {
 	cfg := &Config{Bandwidth: BandwidthConfig{Download: "fast"}}
 	if _, err := cfg.EffectiveBandwidthLimits(); err == nil {
 		t.Fatal("expected invalid download bandwidth to fail")
+	}
+}
+
+func TestParseSizeRejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"fast", "-1", "1E", "9223372036854775808P"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := ParseSize(value); err == nil {
+				t.Fatalf("expected ParseSize(%q) to fail", value)
+			}
+		})
+	}
+}
+
+func TestCacheConfigMaxSizeBytes(t *testing.T) {
+	if got := (CacheConfig{}).MaxSizeBytes(); got != 0 {
+		t.Fatalf("empty max size = %d, want 0", got)
+	}
+	if got := (CacheConfig{MaxSize: "512M"}).MaxSizeBytes(); got != 512*(1<<20) {
+		t.Fatalf("max size = %d, want %d", got, 512*(1<<20))
+	}
+	if got := ParseMaxSize("invalid"); got != 0 {
+		t.Fatalf("invalid max size = %d, want 0", got)
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	got, err := ParseDuration("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("empty duration = %s, want 0", got)
+	}
+
+	got, err = ParseDuration("1500ms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 1500*time.Millisecond {
+		t.Fatalf("duration = %s, want 1500ms", got)
+	}
+
+	for _, value := range []string{"soon", "-1s"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := ParseDuration(value); err == nil {
+				t.Fatalf("expected ParseDuration(%q) to fail", value)
+			}
+		})
+	}
+}
+
+func TestEffectiveSpaceBytesRejectsInvalidValues(t *testing.T) {
+	if _, _, err := (&Config{TotalSpace: "huge"}).EffectiveSpaceBytes(); err == nil {
+		t.Fatal("expected invalid total_space to fail")
+	}
+	if _, _, err := (&Config{FreeSpace: "huge"}).EffectiveSpaceBytes(); err == nil {
+		t.Fatal("expected invalid free_space to fail")
 	}
 }
 

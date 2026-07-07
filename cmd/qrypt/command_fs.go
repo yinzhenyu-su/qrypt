@@ -336,7 +336,7 @@ func printEntryStat(w io.Writer, entry drive.Entry) {
 func waitFileSystemIdle(fs vfs.FileSystem) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if len(fs.Pending()) == 0 && debugDeleteTimers(fs) == 0 {
+		if len(fs.Pending()) == 0 && debugActiveUploads(fs) == 0 && debugDeleteTimers(fs) == 0 {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -344,6 +344,20 @@ func waitFileSystemIdle(fs vfs.FileSystem) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func debugActiveUploads(fs vfs.FileSystem) int {
+	snapshotter, ok := fs.(interface {
+		DebugSnapshot() vfs.DebugSnapshot
+	})
+	if !ok {
+		return 0
+	}
+	count := 0
+	for _, mount := range snapshotter.DebugSnapshot().Mounts {
+		count += len(mount.Uploads)
+	}
+	return count
 }
 
 func debugDeleteTimers(fs vfs.FileSystem) int {

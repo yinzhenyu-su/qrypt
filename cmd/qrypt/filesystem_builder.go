@@ -11,6 +11,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -38,6 +39,24 @@ func initLoggerFromConfig(configPath string) {
 		return
 	}
 	logging.L = newLogger
+}
+
+func initTimeFromConfig(ctx context.Context, configPath string) {
+	cfg := timeutil.NTPConfig{Enabled: true}
+	if configPath != "" {
+		loaded, err := config.Load(configPath)
+		if err == nil {
+			cfg.Enabled = loaded.Time.EffectiveNTPEnabled()
+			cfg.Servers = loaded.Time.NTPServers
+			if timeout, err := config.ParseDuration(loaded.Time.NTPTimeout); err == nil {
+				cfg.Timeout = timeout
+			}
+			if poll, err := config.ParseDuration(loaded.Time.NTPPollInterval); err == nil {
+				cfg.PollInterval = poll
+			}
+		}
+	}
+	timeutil.StartNTP(ctx, cfg)
 }
 
 func mountPointFromConfig(configPath string) (string, error) {

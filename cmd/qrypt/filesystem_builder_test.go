@@ -804,12 +804,26 @@ func waitPendingEmpty(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(fs.Pending()) == 0 {
+		if len(fs.Pending()) == 0 && activeUploadCount(fs) == 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pending uploads did not drain: %+v", fs.Pending())
+}
+
+func activeUploadCount(fs vfs.FileSystem) int {
+	snapshotter, ok := fs.(interface {
+		DebugSnapshot() vfs.DebugSnapshot
+	})
+	if !ok {
+		return 0
+	}
+	count := 0
+	for _, mount := range snapshotter.DebugSnapshot().Mounts {
+		count += len(mount.Uploads)
+	}
+	return count
 }
 
 func waitPathMissing(t *testing.T, path string) {

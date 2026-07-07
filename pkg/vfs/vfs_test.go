@@ -1236,6 +1236,71 @@ func TestVFSRecoversPendingUploads(t *testing.T) {
 	}
 }
 
+func TestVFSDropsPendingWhenStagingMissingOnRecovery(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	cache := t.TempDir()
+
+	first, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.WriteAt(ctx, "/lost.txt", []byte("lost data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	pending := first.Pending()
+	if len(pending) != 1 {
+		t.Fatalf("pending count = %d, want 1", len(pending))
+	}
+	if err := os.Remove(pending[0].LocalPath); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := second.Pending(); len(pending) != 0 {
+		t.Fatalf("pending with missing staging should not recover: %+v", pending)
+	}
+}
+
+func TestVFSDebugStagingReportsSizeMismatch(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	cache := t.TempDir()
+
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/mismatch.txt", []byte("expected"), 0); err != nil {
+		t.Fatal(err)
+	}
+	pending := fs.Pending()
+	if len(pending) != 1 {
+		t.Fatalf("pending count = %d, want 1", len(pending))
+	}
+	if err := os.WriteFile(pending[0].LocalPath, []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := fs.DebugStaging(ctx, "/mismatch.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Mounts) != 1 || len(report.Mounts[0].Files) != 1 {
+		t.Fatalf("unexpected staging report: %+v", report)
+	}
+	file := report.Mounts[0].Files[0]
+	if file.SizeMatches {
+		t.Fatalf("expected size mismatch, got %+v", file)
+	}
+	if file.PendingSize != int64(len("expected")) || file.StagingSize != int64(len("bad")) {
+		t.Fatalf("unexpected sizes in report: %+v", file)
+	}
+}
+
 func TestEncryptedDriverRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
@@ -1499,7 +1564,9 @@ func TestVFSReadWaitsForInFlightPrefetch(t *testing.T) {
 		readDone <- nil
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	waitForCondition(t, func() bool {
+		return drv.readCount(testReadChunkSize) == 1
+	})
 	if got := drv.readCount(testReadChunkSize); got != 1 {
 		t.Fatalf("in-flight chunk read count = %d, want 1", got)
 	}
@@ -1922,12 +1989,26 @@ func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(fs.Pending()) == 0 {
+		if len(fs.Pending()) == 0 && activeUploadCount(fs) == 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pending uploads did not drain: %+v", fs.Pending())
+}
+
+func activeUploadCount(fs vfs.FileSystem) int {
+	snapshotter, ok := fs.(interface {
+		DebugSnapshot() vfs.DebugSnapshot
+	})
+	if !ok {
+		return 0
+	}
+	count := 0
+	for _, mount := range snapshotter.DebugSnapshot().Mounts {
+		count += len(mount.Uploads)
+	}
+	return count
 }
 
 func waitForCondition(t *testing.T, ok func() bool) {

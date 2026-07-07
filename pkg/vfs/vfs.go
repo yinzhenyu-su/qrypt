@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
@@ -141,7 +142,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	}
 	v.writer, _ = driver.(drive.Writer)
 	v.upload, _ = driver.(drive.Uploader)
-	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: time.Now()}
+	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: timeutil.Now()}
 	return v, nil
 }
 
@@ -587,7 +588,7 @@ func (v *VFS) createLocked(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now()
+	now := timeutil.Now()
 	pending := PendingFile{Path: path, FID: fid, ParentID: parent.ID, Name: name, LocalPath: localPath, ModTime: now.UnixNano()}
 	if err := v.cache.SavePending(pending); err != nil {
 		return err
@@ -625,7 +626,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	}
 	size, _ := v.cache.staging.size(pending.LocalPath)
 	pending.Size = size
-	now := time.Now()
+	now := timeutil.Now()
 	pending.ModTime = now.UnixNano()
 	if err := v.cache.SavePending(pending); err != nil {
 		return n, err
@@ -647,13 +648,16 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 	if err := v.cache.staging.flush(pending.LocalPath); err != nil {
 		return err
 	}
+	if err := v.cache.staging.sync(pending.LocalPath); err != nil {
+		return err
+	}
 	size, err := v.cache.staging.size(pending.LocalPath)
 	if err != nil {
 		return err
 	}
 	pending.Size = size
 	if pending.ModTime == 0 {
-		now := time.Now()
+		now := timeutil.Now()
 		pending.ModTime = now.UnixNano()
 		v.setLocalModTime(path, now)
 	}
@@ -930,7 +934,7 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) error {
 		return err
 	}
 	pending.Size = size
-	now := time.Now()
+	now := timeutil.Now()
 	pending.ModTime = now.UnixNano()
 	v.setLocalModTime(path, now)
 	if entry, err := v.resolve(ctx, path); err == nil && !entry.IsDir {
@@ -970,7 +974,7 @@ func (v *VFS) stageExisting(ctx context.Context, path string) error {
 		}
 	}
 	size, _ := v.cache.staging.size(localPath)
-	modTime := time.Now()
+	modTime := timeutil.Now()
 	if entry, err := v.resolve(ctx, path); err == nil && !entry.ModTime.IsZero() {
 		modTime = entry.ModTime
 	}
@@ -1083,19 +1087,13 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		}
 		return err
 	}
-	removed, err := v.cache.RemovePendingIfUnchanged(pending)
-	if err != nil {
-		finishErr = err.Error()
-		logging.L.Warnf("[VFS] upload committed but pending cleanup failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
-		return err
-	}
-	if !removed {
+	if latest, ok := v.cache.PendingByPath(pending.Path); !ok || !samePendingFile(latest, pending) {
 		finishState = "superseded"
 		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
 		if v.writer != nil && ctx.Err() == nil {
 			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
 		}
-		if latest, ok := v.cache.PendingByPath(pending.Path); ok {
+		if ok {
 			v.enqueue(latest)
 		}
 		return nil
@@ -1107,12 +1105,29 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		v.setLocalModTime(pending.Path, modTime)
 	}
 	v.seedReadCacheFromStaging(entry, snapshotPath)
-	_ = v.cache.staging.remove(pending.LocalPath)
 	v.mu.Lock()
 	v.entries[pending.Path] = entry
 	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
+	removed, err := v.cache.RemovePendingIfUnchanged(pending)
+	if err != nil {
+		finishErr = err.Error()
+		logging.L.Warnf("[VFS] upload committed but pending cleanup failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
+		return err
+	}
+	if !removed {
+		finishState = "superseded"
+		logging.L.InfofEvery("vfs.upload_stale_committed_after_update", time.Second, "[VFS] upload committed stale version after local update; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
+		if v.writer != nil && ctx.Err() == nil {
+			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
+		}
+		if latest, ok := v.cache.PendingByPath(pending.Path); ok {
+			v.enqueue(latest)
+		}
+		return nil
+	}
+	_ = v.cache.staging.remove(pending.LocalPath)
 	finishState = "completed"
 	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete op_id=%q path=%q uploaded_id=%q size=%d dur=%s", pending.FID, pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
@@ -1121,7 +1136,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 func (v *VFS) snapshotPending(pending PendingFile) (string, error) {
 	unlock := v.lockPath(pending.Path)
 	defer unlock()
-	if err := v.cache.staging.flush(pending.LocalPath); err != nil {
+	if err := v.cache.staging.sync(pending.LocalPath); err != nil {
 		return "", err
 	}
 	info, err := os.Stat(pending.LocalPath)
@@ -1149,6 +1164,10 @@ func (v *VFS) snapshotPending(pending PendingFile) (string, error) {
 	}()
 	written, err := io.Copy(tmp, src)
 	if err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return "", err
 	}

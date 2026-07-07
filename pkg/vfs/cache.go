@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 )
 
 const cacheBatchBlocks = 16
@@ -111,6 +112,7 @@ type Cache struct {
 	staging *stagingStore
 
 	mu            sync.RWMutex
+	journalMu     sync.Mutex
 	pending       map[string]PendingFile
 	chunks        map[string]*fileChunks
 	lastDiskCheck atomic.Int64 // unix nano
@@ -202,7 +204,7 @@ func (c *Cache) PendingByPath(path string) (PendingFile, bool) {
 }
 
 func (c *Cache) SavePending(p PendingFile) error {
-	p.UpdatedAt = time.Now().UnixNano()
+	p.UpdatedAt = timeutil.Now().UnixNano()
 	c.mu.Lock()
 	c.pending[p.Path] = p
 	c.mu.Unlock()
@@ -210,7 +212,7 @@ func (c *Cache) SavePending(p PendingFile) error {
 }
 
 func (c *Cache) RecordPendingFailure(path string, err error, retryDelay time.Duration) (PendingFile, bool, error) {
-	now := time.Now()
+	now := timeutil.Now()
 	c.mu.Lock()
 	pending, ok := c.pending[path]
 	if ok {
@@ -242,10 +244,12 @@ func (c *Cache) RemovePending(path string) error {
 	if ok {
 		_ = c.staging.remove(pending.LocalPath)
 	}
-	if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: path}}); err != nil {
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
+	if err := c.appendJournalLocked(journalEntry{Op: "clean", PendingFile: PendingFile{Path: path}}); err != nil {
 		return err
 	}
-	return c.compactJournal()
+	return c.compactJournalLocked()
 }
 
 func (c *Cache) RemovePendingUnder(dir string) error {
@@ -262,13 +266,15 @@ func (c *Cache) RemovePendingUnder(dir string) error {
 	if len(removed) == 0 {
 		return nil
 	}
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
 	for _, pending := range removed {
 		_ = c.staging.remove(pending.LocalPath)
-		if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: pending.Path}}); err != nil {
+		if err := c.appendJournalLocked(journalEntry{Op: "clean", PendingFile: PendingFile{Path: pending.Path}}); err != nil {
 			return err
 		}
 	}
-	return c.compactJournal()
+	return c.compactJournalLocked()
 }
 
 func (c *Cache) RemovePendingIfUnchanged(p PendingFile) (bool, error) {
@@ -283,10 +289,12 @@ func (c *Cache) RemovePendingIfUnchanged(p PendingFile) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: p.Path}}); err != nil {
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
+	if err := c.appendJournalLocked(journalEntry{Op: "clean", PendingFile: PendingFile{Path: p.Path}}); err != nil {
 		return false, err
 	}
-	return true, c.compactJournal()
+	return true, c.compactJournalLocked()
 }
 
 func (c *Cache) RenamePending(oldPath string, next PendingFile) error {
@@ -294,13 +302,15 @@ func (c *Cache) RenamePending(oldPath string, next PendingFile) error {
 	delete(c.pending, oldPath)
 	c.pending[next.Path] = next
 	c.mu.Unlock()
-	if err := c.appendJournal(journalEntry{Op: "clean", PendingFile: PendingFile{Path: oldPath}}); err != nil {
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
+	if err := c.appendJournalLocked(journalEntry{Op: "clean", PendingFile: PendingFile{Path: oldPath}}); err != nil {
 		return err
 	}
-	if err := c.appendJournal(journalEntry{Op: "dirty", PendingFile: next}); err != nil {
+	if err := c.appendJournalLocked(journalEntry{Op: "dirty", PendingFile: next}); err != nil {
 		return err
 	}
-	return c.compactJournal()
+	return c.compactJournalLocked()
 }
 
 func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
@@ -529,7 +539,7 @@ func (c *Cache) setLastGetError(err error) {
 	}
 	c.mu.Lock()
 	c.lastGetError = err.Error()
-	c.lastGetAt = time.Now()
+	c.lastGetAt = timeutil.Now()
 	c.mu.Unlock()
 }
 
@@ -539,7 +549,7 @@ func (c *Cache) setLastPutError(err error) {
 	}
 	c.mu.Lock()
 	c.lastPutError = err.Error()
-	c.lastPutAt = time.Now()
+	c.lastPutAt = timeutil.Now()
 	c.mu.Unlock()
 }
 
@@ -559,6 +569,12 @@ func (c *Cache) journalPath() string {
 }
 
 func (c *Cache) appendJournal(entry journalEntry) error {
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
+	return c.appendJournalLocked(entry)
+}
+
+func (c *Cache) appendJournalLocked(entry journalEntry) error {
 	f, err := os.OpenFile(c.journalPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -568,8 +584,10 @@ func (c *Cache) appendJournal(entry journalEntry) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(data, '\n'))
-	return err
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func (c *Cache) loadJournal() error {
@@ -600,6 +618,12 @@ func (c *Cache) loadJournal() error {
 }
 
 func (c *Cache) compactJournal() error {
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
+	return c.compactJournalLocked()
+}
+
+func (c *Cache) compactJournalLocked() error {
 	tmp := c.journalPath() + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -620,10 +644,43 @@ func (c *Cache) compactJournal() error {
 		}
 	}
 	c.mu.RUnlock()
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.journalPath())
+	if err := os.Rename(tmp, c.journalPath()); err != nil {
+		return err
+	}
+	_ = syncParentDir(c.journalPath())
+	return nil
+}
+
+func writeFileSync(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func syncParentDir(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func samePendingFile(a, b PendingFile) bool {
