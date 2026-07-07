@@ -222,6 +222,13 @@ log_level = "info"
 # log_file  = "~/.qrypt/qrypt.log"
 # error_file = "~/.qrypt/qrypt-error.log"
 
+# ── Time source (NTP first, system clock fallback) ────────────────
+[time]
+ntp_enabled = true
+# ntp_servers = ["ntp1.aliyun.com:123", "ntp2.aliyun.com:123", "ntp1.tencent.com:123", "ntp2.tencent.com:123", "ntp1.ntsc.ac.cn:123", "ntp2.ntsc.ac.cn:123", "ntp1.cstnet.cn:123", "0.cn.pool.ntp.org:123", "time.cloudflare.com:123", "time.google.com:123"]
+ntp_timeout = "1500ms"
+ntp_poll_interval = "30m"
+
 # ── Default cache settings (applied to all mounts) ────────────────
 [defaults.cache]
 max_size       = "2G"

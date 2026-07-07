@@ -26,22 +26,26 @@ jobs:
           cache: true
 
       - name: Vet
-        run: |
-          go vet ./pkg/... \
-                ./internal/config/... \
-                ./internal/control/... \
-                ./internal/driver/... \
-                ./internal/httputil/... \
-                ./internal/logging/...
+        run: go vet ./...
 
       - name: Test
-        run: |
-          go test -count=1 ./pkg/... \
-                         ./internal/config/... \
-                         ./internal/control/... \
-                         ./internal/driver/... \
-                         ./internal/httputil/... \
-                         ./internal/logging/...
+        run: go test -count=1 ./...
+
+      - name: Localfs Smoke
+        run: scripts/smoke-localfs.sh
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Race Test
+        run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./internal/control ./internal/logging ./cmd/qrypt
 
   dist-linux-windows:
     if: startsWith(github.ref, 'refs/tags/v')

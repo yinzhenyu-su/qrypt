@@ -28,6 +28,7 @@ Use --config to point to a TOML config file, then mount to start the
 filesystem, or use fs list/cat/get/put for one-shot operations.`,
 		PersistentPreRunE: func(c *cobra.Command, args []string) error {
 			initLoggerFromConfig(configPath)
+			initTimeFromConfig(c.Context(), configPath)
 			return nil
 		},
 		RunE: func(c *cobra.Command, args []string) error {

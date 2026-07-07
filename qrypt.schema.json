@@ -99,6 +99,9 @@
     "logging": {
       "$ref": "#/definitions/loggingConfig"
     },
+    "time": {
+      "$ref": "#/definitions/timeConfig"
+    },
     "bandwidth": {
       "$ref": "#/definitions/bandwidthConfig"
     },
@@ -201,6 +204,36 @@
         "error_file": {
           "description": "Path to the error log file (falls back to <log_file>-err.log).",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "timeConfig": {
+      "type": "object",
+      "description": "Time source settings. qrypt uses NTP timestamps when available and falls back to the system clock.",
+      "properties": {
+        "ntp_enabled": {
+          "description": "Enable background NTP clock sync for operation timestamps.",
+          "type": "boolean",
+          "default": true
+        },
+        "ntp_servers": {
+          "description": "NTP servers, including port.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["ntp1.aliyun.com:123", "ntp2.aliyun.com:123", "ntp1.tencent.com:123", "ntp2.tencent.com:123", "ntp1.ntsc.ac.cn:123", "ntp2.ntsc.ac.cn:123", "ntp1.cstnet.cn:123", "0.cn.pool.ntp.org:123", "time.cloudflare.com:123", "time.google.com:123"]
+        },
+        "ntp_timeout": {
+          "description": "Per-server NTP timeout.",
+          "type": "string",
+          "default": "1500ms"
+        },
+        "ntp_poll_interval": {
+          "description": "Background NTP refresh interval.",
+          "type": "string",
+          "default": "30m"
         }
       },
       "additionalProperties": false

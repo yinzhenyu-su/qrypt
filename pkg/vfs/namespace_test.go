@@ -9,8 +9,25 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+type fixedSpaceDriver struct {
+	space drive.Space
+}
+
+func (d fixedSpaceDriver) Init(context.Context) error { return nil }
+func (d fixedSpaceDriver) Drop(context.Context) error { return nil }
+func (d fixedSpaceDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, nil
+}
+func (d fixedSpaceDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d fixedSpaceDriver) Space(context.Context) (drive.Space, error) {
+	return d.space, nil
+}
 
 func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	ctx := context.Background()
@@ -114,11 +131,13 @@ func TestNamespaceRejectsCrossMountRename(t *testing.T) {
 
 func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 	ctx := context.Background()
-	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	spaceA := drive.Space{Total: 1000, Free: 700}
+	spaceB := drive.Space{Total: 2000, Free: 300}
+	fsA, err := vfs.New(fixedSpaceDriver{space: spaceA}, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	fsB, err := vfs.New(fixedSpaceDriver{space: spaceB}, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,14 +146,6 @@ func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spaceA, err := fsA.Space(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spaceB, err := fsB.Space(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	space, err := ns.Space(ctx)
 	if err != nil {
 		t.Fatal(err)

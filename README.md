@@ -28,6 +28,12 @@ log_level = "info"
 log_file = "~/.qrypt/qrypt.log"
 error_file = "~/.qrypt/qrypt-error.log"
 
+[time]
+ntp_enabled = true
+# ntp_servers = ["ntp1.aliyun.com:123", "ntp2.aliyun.com:123", "ntp1.tencent.com:123", "ntp2.tencent.com:123", "ntp1.ntsc.ac.cn:123", "ntp2.ntsc.ac.cn:123", "ntp1.cstnet.cn:123", "0.cn.pool.ntp.org:123", "time.cloudflare.com:123", "time.google.com:123"]
+ntp_timeout = "1500ms"
+ntp_poll_interval = "30m"
+
 [[mounts]]
 name = "local"
 type = "localfs"
@@ -124,6 +130,11 @@ the app Secret Key; no sign key is required.
 Rotated Baidu and Aliyun tokens, refreshed 139Yun authorization, plus refreshed
 Quark cookies, are stored under `cache_dir/<mount-name>/driver/` with 0600
 permissions and are reused on restart.
+
+Operation timestamps use a background NTP-synchronized clock when available
+and fall back to the system clock if NTP is unavailable. Defaults prefer
+domestic NTP servers with global fallbacks. Configure it with `[time]
+ntp_enabled`, `ntp_servers`, `ntp_timeout`, and `ntp_poll_interval`.
 
 ## Encryption
 
@@ -237,3 +248,7 @@ go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock
 ```
 
 see [`docs/debug.md`](docs/debug.md)
+
+GitHub
+
+Prioritize Github-related operations with gh cli

@@ -27,6 +27,7 @@ type Config struct {
 	TotalSpace         string          `toml:"total_space"`
 	FreeSpace          string          `toml:"free_space"`
 	Logging            LoggingConfig   `toml:"logging"`
+	Time               TimeConfig      `toml:"time"`
 	Bandwidth          BandwidthConfig `toml:"bandwidth"`
 	Encryption         crypt.Config    `toml:"encryption"`
 	Defaults           Defaults        `toml:"defaults"`
@@ -105,6 +106,20 @@ type LoggingConfig struct {
 	LogLevel  string `toml:"log_level"`
 	LogFile   string `toml:"log_file"`
 	ErrorFile string `toml:"error_file"`
+}
+
+type TimeConfig struct {
+	NTPEnabled      *bool    `toml:"ntp_enabled"`
+	NTPServers      []string `toml:"ntp_servers"`
+	NTPTimeout      string   `toml:"ntp_timeout"`
+	NTPPollInterval string   `toml:"ntp_poll_interval"`
+}
+
+func (c TimeConfig) EffectiveNTPEnabled() bool {
+	if c.NTPEnabled == nil {
+		return true
+	}
+	return *c.NTPEnabled
 }
 
 type BandwidthConfig struct {

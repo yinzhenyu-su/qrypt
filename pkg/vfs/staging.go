@@ -48,6 +48,10 @@ func (s *stagingStore) create(fid string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", err
+	}
 	return path, f.Close()
 }
 
@@ -116,7 +120,10 @@ func (s *stagingStore) truncate(path string, size int64) error {
 	} else if err != nil {
 		return err
 	}
-	return os.Truncate(path, size)
+	if err := os.Truncate(path, size); err != nil {
+		return err
+	}
+	return s.sync(path)
 }
 
 func (s *stagingStore) remove(path string) error {
@@ -134,6 +141,18 @@ func (s *stagingStore) flush(path string) error {
 	return nil
 }
 
+func (s *stagingStore) sync(path string) error {
+	if err := s.flush(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
 func (s *stagingStore) getPage(fid string) *page {
 	if p, ok := s.pages.Load(fid); ok {
 		return p.(*page)
@@ -142,7 +161,7 @@ func (s *stagingStore) getPage(fid string) *page {
 		fid: fid,
 		buf: make([]byte, 0, pageInitialBufSize),
 		flush: func(fid string, data []byte) error {
-			return os.WriteFile(s.path(fid), data, 0o644)
+			return writeFileSync(s.path(fid), data, 0o644)
 		},
 	}
 	actual, _ := s.pages.LoadOrStore(fid, p)
@@ -229,4 +248,3 @@ func roundUpPow2(v int64) int64 {
 	}
 	return v + 1
 }
-
