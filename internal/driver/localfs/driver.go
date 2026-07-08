@@ -67,7 +67,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      "ok",
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"root": d.root,
+			"root_path": d.root,
 		},
 	}, nil
 }

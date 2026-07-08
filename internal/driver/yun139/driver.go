@@ -34,6 +34,7 @@ type Driver struct {
 	authSource  string
 	authUpdated time.Time
 	debugMu     sync.Mutex
+	lastError   string
 }
 
 type authState struct {
@@ -146,6 +147,21 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 		Authorization: authorization,
 		UpdatedAt:     d.authUpdated,
 	})
+}
+
+func (d *Driver) setLastError(err error) {
+	if err == nil {
+		return
+	}
+	d.debugMu.Lock()
+	d.lastError = err.Error()
+	d.debugMu.Unlock()
+}
+
+func (d *Driver) getLastError() string {
+	d.debugMu.Lock()
+	defer d.debugMu.Unlock()
+	return d.lastError
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -336,6 +352,7 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	status.Latency = time.Since(start).String()
 	if err != nil {
 		status.Error = err.Error()
+		d.setLastError(err)
 		return status
 	}
 	status.OK = true
@@ -343,17 +360,22 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	health := "ok"
+	if d.getLastError() != "" {
+		health = "degraded"
+	}
 	return drive.DebugSnapshot{
 		Driver:      "yun139",
-		Health:      "unknown",
+		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"root_id":     d.rootID,
-			"root_path":   d.rootPath,
-			"auth_source": d.authSource,
+			"root_id":   d.rootID,
+			"root_path": d.rootPath,
 		},
 		Extra: map[string]any{
-			"auth_updated_at": d.authUpdated,
+			"credential_source":  d.authSource,
+			"credential_updated": d.authUpdated,
+			"last_error":         d.getLastError(),
 		},
 	}, nil
 }
