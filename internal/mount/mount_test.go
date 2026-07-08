@@ -24,7 +24,8 @@ type stubFS struct {
 
 type stubSpaceFS struct {
 	stubFS
-	space drive.Space
+	space      drive.Space
+	spaceCalls int
 }
 
 type createRouteFS struct {
@@ -61,7 +62,8 @@ type blockingReadFS struct {
 
 func (stubFS) Start(context.Context) {}
 
-func (s stubSpaceFS) Space(context.Context) (drive.Space, error) {
+func (s *stubSpaceFS) Space(context.Context) (drive.Space, error) {
+	s.spaceCalls++
 	return s.space, nil
 }
 
@@ -224,7 +226,7 @@ func TestMountOptionsUseConfiguredKernelOptions(t *testing.T) {
 }
 
 func TestAdapterStatfsUsesConfiguredSpace(t *testing.T) {
-	ad := newAdapter(stubSpaceFS{
+	ad := newAdapter(&stubSpaceFS{
 		space: drive.Space{Total: 2 << 40, Free: 1 << 40},
 	}, StatfsOptions{
 		TotalSpace: 1 << 40,
@@ -247,9 +249,10 @@ func TestAdapterStatfsUsesConfiguredSpace(t *testing.T) {
 }
 
 func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
-	ad := newAdapter(stubSpaceFS{
+	fs := &stubSpaceFS{
 		space: drive.Space{Total: 3 << 40, Free: 2 << 40},
-	}, StatfsOptions{})
+	}
+	ad := newAdapter(fs, StatfsOptions{})
 
 	var stat fuse.Statfs_t
 	if errc := ad.Statfs("/", &stat); errc != 0 {
@@ -260,6 +263,12 @@ func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
 	}
 	if stat.Bavail != (2<<40)/4096 {
 		t.Fatalf("Statfs available blocks = %d, want %d", stat.Bavail, (2<<40)/4096)
+	}
+	if errc := ad.Statfs("/", &stat); errc != 0 {
+		t.Fatalf("second Statfs err = %d, want 0", errc)
+	}
+	if fs.spaceCalls != 1 {
+		t.Fatalf("Space calls = %d, want cached single call", fs.spaceCalls)
 	}
 }
 
