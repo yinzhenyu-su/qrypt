@@ -38,11 +38,12 @@ type Options struct {
 }
 
 type VFS struct {
-	driver drive.Driver
-	writer drive.Writer
-	upload drive.Uploader
-	cache  *Cache
-	rootID string
+	driver        drive.Driver
+	writer        drive.Writer
+	upload        drive.Uploader
+	healthTracker *drive.HealthTracker
+	cache         *Cache
+	rootID        string
 
 	mu      sync.RWMutex
 	entries map[string]drive.Entry
@@ -122,6 +123,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	}
 	v := &VFS{
 		driver:         driver,
+		healthTracker:  drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
 		cache:          cache,
 		rootID:         opts.RootID,
 		entries:        map[string]drive.Entry{},
@@ -202,7 +204,12 @@ func (v *VFS) Resume(ctx context.Context) {
 	}
 }
 
-func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
+func (v *VFS) recordHealthResult(op string, err error) {
+	v.healthTracker.RecordResult(op, err)
+}
+
+func (v *VFS) Space(ctx context.Context) (space drive.Space, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpSpace, err) }()
 	if !drive.HasCapability(v.driver, drive.CapabilitySpace) {
 		return drive.Space{}, fmt.Errorf("vfs: driver does not support space query")
 	}
@@ -210,7 +217,8 @@ func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
 	return querier.Space(ctx)
 }
 
-func (v *VFS) Stat(ctx context.Context, path string) (drive.Entry, error) {
+func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpStat, err) }()
 	path = cleanVirtual(path)
 	if pending, err := v.pending(path); err == nil {
 		entry := drive.Entry{
@@ -223,7 +231,7 @@ func (v *VFS) Stat(ctx context.Context, path string) (drive.Entry, error) {
 		}
 		return v.applyLocalModTime(path, entry), nil
 	}
-	entry, err := v.resolve(ctx, path)
+	entry, err = v.resolve(ctx, path)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -232,6 +240,7 @@ func (v *VFS) Stat(ctx context.Context, path string) (drive.Entry, error) {
 
 func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
 	entries, err := v.listNoPrefetch(ctx, path)
+	v.healthTracker.RecordResult(drive.HealthOpList, err)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +280,8 @@ func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error
 	return entries, nil
 }
 
-func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
+func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpRead, err) }()
 	if pending, err := v.pending(path); err == nil {
 		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
 			return nil, err
@@ -293,7 +303,8 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-func (v *VFS) Create(ctx context.Context, path string) error {
+func (v *VFS) Create(ctx context.Context, path string) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
 	if v.upload == nil {
 		return fmt.Errorf("vfs: driver does not support upload")
 	}
@@ -327,7 +338,8 @@ func (v *VFS) createLocked(ctx context.Context, path string) error {
 	return nil
 }
 
-func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (int, error) {
+func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = cleanVirtual(path)
 	unlock := v.lockPath(path)
 	defer unlock()
@@ -349,7 +361,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 			return 0, err
 		}
 	}
-	n, err := v.cache.staging.writeAt(pending.LocalPath, data, off)
+	n, err = v.cache.staging.writeAt(pending.LocalPath, data, off)
 	if err != nil {
 		return n, err
 	}
@@ -365,7 +377,8 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	return n, nil
 }
 
-func (v *VFS) Flush(ctx context.Context, path string) error {
+func (v *VFS) Flush(ctx context.Context, path string) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = cleanVirtual(path)
 	unlock := v.lockPath(path)
 	defer unlock()
@@ -465,7 +478,8 @@ func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []dr
 	return entries
 }
 
-func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
+func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
 	if v.writer == nil {
 		return drive.Entry{}, fmt.Errorf("vfs: driver does not support mkdir")
 	}
@@ -494,7 +508,7 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 		return drive.Entry{}, err
 	}
 	logging.L.InfofEvery("vfs.mkdir_start", time.Second, "[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
-	entry, err := v.writer.Mkdir(ctx, parent.ID, name)
+	entry, err = v.writer.Mkdir(ctx, parent.ID, name)
 	if err != nil {
 		if !isAlreadyExistsError(err) {
 			logging.L.Warnf("[VFS] mkdir failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
@@ -534,7 +548,8 @@ func (v *VFS) findExistingChildDir(ctx context.Context, parentPath, parentID, na
 	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
 }
 
-func (v *VFS) Remove(ctx context.Context, path string) error {
+func (v *VFS) Remove(ctx context.Context, path string) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if v.writer == nil {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
@@ -558,7 +573,8 @@ func (v *VFS) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
-func (v *VFS) RemoveDir(ctx context.Context, path string) error {
+func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if v.writer == nil {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
@@ -583,7 +599,8 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) error {
 	return nil
 }
 
-func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
+func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
 	if v.writer == nil {
 		return fmt.Errorf("vfs: driver does not support rename")
 	}
@@ -646,7 +663,8 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) error {
 	return nil
 }
 
-func (v *VFS) Truncate(ctx context.Context, path string, size int64) error {
+func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	if size < 0 {
 		return fmt.Errorf("vfs: truncate size must be non-negative")
 	}
@@ -767,7 +785,8 @@ func pendingModTime(p PendingFile) time.Time {
 	return time.Unix(0, p.ModTime)
 }
 
-func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) error {
+func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = cleanVirtual(path)
 	if modTime.IsZero() {
 		return nil

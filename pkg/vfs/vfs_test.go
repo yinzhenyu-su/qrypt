@@ -723,7 +723,6 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 		drive.CapabilityUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityPathResolver,
-		drive.CapabilityHealth,
 	} {
 		if !caps[capability] {
 			t.Fatalf("debug capabilities = %+v, missing %s", snapshot.Mounts[0].Capabilities, capability)
@@ -2383,6 +2382,94 @@ func TestVFSTruncateUploadedFile(t *testing.T) {
 	}
 }
 
+func TestVFSMountHealthTracksUserOperations(t *testing.T) {
+	ctx := context.Background()
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		UploadDelay:   time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.List(ctx, "/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Create(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("hello"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/draft.txt", "/final.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(ctx, "/final.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(ctx, "/missing.txt"); err == nil {
+		t.Fatal("stat of missing file should fail")
+	}
+	if rc, err := fs.Read(ctx, "/missing.txt", 0, 1); err == nil {
+		_ = rc.Close()
+		t.Fatal("read of missing file should fail")
+	}
+
+	health := singleMountHealth(t, fs)
+	if health.OK {
+		t.Fatalf("health should be degraded after operation failures: %+v", health)
+	}
+	if health.Level != drive.HealthLevelDegraded {
+		t.Fatalf("level = %q, want %q", health.Level, drive.HealthLevelDegraded)
+	}
+	assertHealthOp(t, health, drive.HealthOpList, 1, 0)
+	assertHealthOp(t, health, drive.HealthOpCreate, 1, 0)
+	assertHealthOp(t, health, drive.HealthOpRename, 1, 0)
+	assertHealthOp(t, health, drive.HealthOpDelete, 1, 0)
+	if got := health.Ops[drive.HealthOpWrite]; got.Success < 2 || got.Errors != 0 {
+		t.Fatalf("write health = %+v, want at least 2 successes and 0 errors", got)
+	}
+	if got := health.Ops[drive.HealthOpStat]; got.Errors != 1 || got.LastError == "" || got.LastErrorAt.IsZero() {
+		t.Fatalf("stat health = %+v, want one recorded error", got)
+	}
+	if got := health.Ops[drive.HealthOpRead]; got.Errors != 1 || got.LastError == "" || got.LastErrorAt.IsZero() {
+		t.Fatalf("read health = %+v, want one recorded error", got)
+	}
+}
+
+func TestVFSRemoteDeleteUpdatesMountHealth(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "data.txt"), []byte("delete me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		DeleteDelay:   10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.Remove(ctx, "/data.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool {
+		_, err := os.Stat(filepath.Join(remote, "data.txt"))
+		return os.IsNotExist(err)
+	})
+
+	health := singleMountHealth(t, fs)
+	if got := health.Ops[drive.HealthOpDelete]; got.Success < 2 || got.Errors != 0 {
+		t.Fatalf("delete health = %+v, want queued and remote delete successes", got)
+	}
+}
+
 func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -2419,6 +2506,29 @@ func waitForCondition(t *testing.T, ok func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before deadline")
+}
+
+func singleMountHealth(t *testing.T, fs *vfs.VFS) vfs.MountHealth {
+	t.Helper()
+	health, err := fs.MountHealth(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(health) != 1 {
+		t.Fatalf("mount health count = %d, want 1: %+v", len(health), health)
+	}
+	return health[0]
+}
+
+func assertHealthOp(t *testing.T, health vfs.MountHealth, op string, success, failures int) {
+	t.Helper()
+	got, ok := health.Ops[op]
+	if !ok {
+		t.Fatalf("missing health op %q in %+v", op, health.Ops)
+	}
+	if got.Success != success || got.Errors != failures {
+		t.Fatalf("%s health = %+v, want success=%d errors=%d", op, got, success, failures)
+	}
 }
 
 func namesOf(entries []drive.Entry) string {
