@@ -254,14 +254,6 @@ func (d *bandwidthLimitedDriver) DebugSnapshot(ctx context.Context) (DebugSnapsh
 	return debugger.DebugSnapshot(ctx)
 }
 
-func (d *bandwidthLimitedDriver) HealthCheck(ctx context.Context) HealthStatus {
-	checker, ok := d.raw.(HealthChecker)
-	if !ok {
-		return HealthStatus{Driver: "unknown", OK: false, CheckedAt: time.Now(), Error: "drive: raw driver does not support health checks"}
-	}
-	return checker.HealthCheck(ctx)
-}
-
 func (d *bandwidthLimitedDriver) ResolveRemoteName(ctx context.Context, plainName string) (RemoteNameInfo, error) {
 	resolver, ok := d.raw.(RemoteNameResolver)
 	if !ok {
@@ -381,5 +373,4 @@ var _ Uploader = (*bandwidthLimitedWriterUploader)(nil)
 var _ SpaceQuerier = (*bandwidthLimitedDriver)(nil)
 var _ PathResolver = (*bandwidthLimitedDriver)(nil)
 var _ Debugger = (*bandwidthLimitedDriver)(nil)
-var _ HealthChecker = (*bandwidthLimitedDriver)(nil)
 var _ RemoteNameResolver = (*bandwidthLimitedDriver)(nil)

@@ -17,18 +17,11 @@ type Debugger interface {
 	DebugSnapshot(ctx context.Context) (DebugSnapshot, error)
 }
 
-type HealthStatus struct {
-	Driver    string         `json:"driver"`
-	OK        bool           `json:"ok"`
-	CheckedAt time.Time      `json:"checked_at"`
-	Latency   string         `json:"latency,omitempty"`
-	Error     string         `json:"error,omitempty"`
-	Extra     map[string]any `json:"extra,omitempty"`
-}
-
-type HealthChecker interface {
-	HealthCheck(ctx context.Context) HealthStatus
-}
+const (
+	HealthLevelOK        = "ok"
+	HealthLevelDegraded  = "degraded"
+	HealthLevelUnhealthy = "unhealthy"
+)
 
 type RemoteNameInfo struct {
 	PlainName  string `json:"plain_name"`
