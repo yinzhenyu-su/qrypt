@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -80,11 +81,13 @@ type DebugDriverSummary struct {
 }
 
 type DebugSpaceSummary struct {
-	BytesTotal int64  `json:"bytes_total"`
-	BytesFree  int64  `json:"bytes_free"`
-	Total      string `json:"total"`
-	Free       string `json:"free"`
-	Error      string `json:"error,omitempty"`
+	BytesTotal  int64  `json:"bytes_total"`
+	BytesFree   int64  `json:"bytes_free"`
+	Total       string `json:"total"`
+	Free        string `json:"free"`
+	Unsupported bool   `json:"unsupported,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type ListResponse struct {
@@ -790,7 +793,10 @@ func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary
 		}
 		space, err := querier.Space(ctx)
 		summary := &DebugSpaceSummary{}
-		if err != nil {
+		if errors.Is(err, drive.ErrSpaceUnsupported) {
+			summary.Unsupported = true
+			summary.Reason = err.Error()
+		} else if err != nil {
 			summary.Error = err.Error()
 		} else {
 			summary.BytesTotal = space.Total

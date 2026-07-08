@@ -3,6 +3,7 @@ package webdav
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -726,6 +727,29 @@ func TestWebDAV_SpaceRetriesTemporaryPropfindStatus(t *testing.T) {
 	}
 	if space.Total != 300 || space.Free != 200 {
 		t.Fatalf("space = %+v, want total=300 free=200", space)
+	}
+}
+
+func TestWebDAV_SpaceUnsupportedWhenQuotaPropertiesMissing(t *testing.T) {
+	withoutWebDAVRetryWait(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			t.Fatalf("method = %s, want PROPFIND", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		w.WriteHeader(http.StatusMultiStatus)
+		if err := xml.NewEncoder(w).Encode(multistatus{Responses: []propfindResponse{
+			{Href: "/", Propstat: []propstat{{Status: "HTTP/1.1 404 Not Found", Prop: prop{}}}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	drv := New(Options{URL: srv.URL + "/", Username: "test", Password: "test"})
+	_, err := drv.Space(context.Background())
+	if !errors.Is(err, drive.ErrSpaceUnsupported) {
+		t.Fatalf("Space error = %v, want ErrSpaceUnsupported", err)
 	}
 }
 
