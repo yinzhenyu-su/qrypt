@@ -239,6 +239,7 @@ Run tests:
 go test ./...
 ```
 
+For the package/layer layout, see [`docs/architecture.md`](docs/architecture.md).
 To add a backend, see [`docs/driver-development.md`](docs/driver-development.md).
 
 Debug:

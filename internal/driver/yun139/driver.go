@@ -594,3 +594,12 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string,
 	}
 	return currentID, nil
 }
+
+var _ drive.Driver = (*Driver)(nil)
+var _ drive.Writer = (*Driver)(nil)
+var _ drive.Uploader = (*Driver)(nil)
+var _ drive.FileUploader = (*Driver)(nil)
+var _ drive.PathResolver = (*Driver)(nil)
+var _ drive.Debugger = (*Driver)(nil)
+var _ drive.HealthChecker = (*Driver)(nil)
+var _ drive.StateStoreInstaller = (*Driver)(nil)

@@ -20,12 +20,12 @@ type CRUDTestStep struct {
 
 // CRUDTestResult aggregates the full CRUD test outcome for one driver.
 type CRUDTestResult struct {
-	Mount    string           `json:"mount"`
-	Driver   string           `json:"driver,omitempty"`
-	Pass     bool             `json:"pass"`
-	Steps    []CRUDTestStep   `json:"steps"`
-	Started  time.Time        `json:"started_at"`
-	Finished time.Time        `json:"finished_at"`
+	Mount    string         `json:"mount"`
+	Driver   string         `json:"driver,omitempty"`
+	Pass     bool           `json:"pass"`
+	Steps    []CRUDTestStep `json:"steps"`
+	Started  time.Time      `json:"started_at"`
+	Finished time.Time      `json:"finished_at"`
 }
 
 type crudTestCtx struct {
@@ -79,8 +79,7 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	}
 
 	// Determine writer / uploader support.
-	w, ok := d.(Writer)
-	if !ok {
+	if !HasCapability(d, CapabilityWriter) {
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation: "crud",
 			OK:        false,
@@ -91,8 +90,12 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 		result.Finished = time.Now()
 		return result
 	}
+	w := d.(Writer)
 	tc.writer = w
-	uploader, _ := d.(Uploader)
+	var uploader Uploader
+	if HasCapability(d, CapabilityUploader) {
+		uploader = d.(Uploader)
+	}
 
 	// Generate a unique test directory name.
 	testSuffix := make([]byte, 6)

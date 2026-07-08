@@ -41,6 +41,7 @@ type encryptedMarker interface {
 type DebugMountSnapshot struct {
 	Name              string               `json:"name"`
 	DriverName        string               `json:"driver_name,omitempty"`
+	Capabilities      []drive.Capability   `json:"capabilities,omitempty"`
 	Encrypted         bool                 `json:"encrypted"`
 	Pending           []PendingFile        `json:"pending"`
 	Uploads           []DebugUpload        `json:"uploads"`
@@ -208,6 +209,7 @@ func (v *VFS) DebugSnapshot() DebugSnapshot {
 func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 	snapshot := DebugMountSnapshot{
 		Name:              name,
+		Capabilities:      drive.Capabilities(v.driver),
 		Encrypted:         debugEncrypted(v.driver),
 		Pending:           v.cache.Pending(),
 		UploadQueueLength: len(v.queue),
@@ -219,7 +221,8 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 	}
 	snapshot.Uploads = v.debugUploads(snapshot.Pending)
 	snapshot.UploadHistory = v.debugUploadHistory()
-	if debugger, ok := v.driver.(drive.Debugger); ok {
+	if drive.HasCapability(v.driver, drive.CapabilityDebugger) {
+		debugger := v.driver.(drive.Debugger)
 		if driverSnapshot, err := debugger.DebugSnapshot(context.Background()); err == nil {
 			snapshot.Driver = &driverSnapshot
 			snapshot.DriverName = driverSnapshot.Driver
@@ -514,7 +517,8 @@ func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport
 
 func (v *VFS) DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error) {
 	h := DriverHealth{Mount: mountName, CheckedAt: timeutil.Now()}
-	if checker, ok := v.driver.(drive.HealthChecker); ok {
+	if drive.HasCapability(v.driver, drive.CapabilityHealth) {
+		checker := v.driver.(drive.HealthChecker)
 		result := checker.HealthCheck(ctx)
 		h.Driver = result.Driver
 		h.OK = result.OK
@@ -689,7 +693,8 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		info.CacheID = cacheFileID(info.RemoteID)
 	}
 	info.Encrypted = debugEncrypted(v.driver)
-	if debugger, ok := v.driver.(drive.Debugger); ok {
+	if drive.HasCapability(v.driver, drive.CapabilityDebugger) {
+		debugger := v.driver.(drive.Debugger)
 		if driverSnapshot, err := debugger.DebugSnapshot(ctx); err == nil {
 			info.Driver = driverSnapshot.Driver
 			if debugDriverEncrypted(driverSnapshot) {
@@ -698,7 +703,8 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		}
 	}
 	if includeRemoteName {
-		if resolver, ok := v.driver.(drive.RemoteNameResolver); ok {
+		if drive.HasCapability(v.driver, drive.CapabilityRemoteNameResolver) {
+			resolver := v.driver.(drive.RemoteNameResolver)
 			nameInfo, err := resolver.ResolveRemoteName(ctx, info.PlainName)
 			if err == nil {
 				info.RemoteName = nameInfo.RemoteName
@@ -747,7 +753,8 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 	if err != nil {
 		return ConsistencyReport{}, err
 	}
-	if lister, ok := v.driver.(drive.ForeignEntryLister); ok {
+	if drive.HasCapability(v.driver, drive.CapabilityForeignEntries) {
+		lister := v.driver.(drive.ForeignEntryLister)
 		foreign, err := lister.ForeignEntries(ctx, parent.ID)
 		if err != nil {
 			return ConsistencyReport{}, err
