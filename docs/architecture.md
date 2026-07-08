@@ -60,7 +60,6 @@ reported through `drive.Capabilities(driver)` and small focused interfaces:
 - `SpaceQuerier`
 - `PathResolver`
 - `Debugger`
-- `HealthChecker`
 - `RemoteNameResolver`
 - `ForeignEntryLister`
 
@@ -131,4 +130,3 @@ git diff --check
 For driver changes, also verify `docs/driver-development.md` and add capability
 or CRUD contract coverage when the driver supports writes, uploads, health, or
 debug snapshots.
-

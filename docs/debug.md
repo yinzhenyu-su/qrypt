@@ -65,17 +65,17 @@ The JSON reports include:
 
 - process, runtime, and debug socket health
 - mount, driver, encryption, upload, read-cache, and staging state
+- runtime mount health based on recent VFS operations
 - recent warning/error events
 - path resolution, cache, staging, upload history, and consistency checks for
   inspected paths
 - normalized diagnostics with `severity`, `code`, `component`, `path`,
   `message`, and supporting `evidence`
 
-Run live driver health checks only when needed because they may call provider
-APIs:
+Include runtime mount health when you need recent operation health state:
 
 ```sh
-go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --driver-health
+go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --mount-health
 ```
 
 ## Bug Report Bundle
