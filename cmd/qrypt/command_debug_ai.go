@@ -19,23 +19,23 @@ import (
 const debugAIReportSchemaVersion = 1
 
 type debugAIReport struct {
-	SchemaVersion int                           `json:"schema_version"`
-	GeneratedAt   time.Time                     `json:"generated_at"`
-	Command       string                        `json:"command"`
-	Socket        string                        `json:"socket,omitempty"`
-	Path          string                        `json:"path,omitempty"`
-	Health        *control.HealthResponse       `json:"health,omitempty"`
-	Runtime       *control.RuntimeResponse      `json:"runtime,omitempty"`
-	State         *vfs.DebugSnapshot            `json:"state,omitempty"`
-	Drivers       *control.DriversResponse      `json:"drivers,omitempty"`
-	DriverHealth  *control.DriverHealthResponse `json:"driver_health,omitempty"`
-	Events        *control.EventsResponse       `json:"events,omitempty"`
-	Uploads       *control.UploadsResponse      `json:"uploads,omitempty"`
-	Cache         *control.CacheResponse        `json:"cache,omitempty"`
-	Staging       *control.StagingResponse      `json:"staging,omitempty"`
-	Inspect       *debugAIInspect               `json:"inspect,omitempty"`
-	Diagnostics   []debugAIDiagnostic           `json:"diagnostics"`
-	Errors        []debugAIError                `json:"errors,omitempty"`
+	SchemaVersion int                          `json:"schema_version"`
+	GeneratedAt   time.Time                    `json:"generated_at"`
+	Command       string                       `json:"command"`
+	Socket        string                       `json:"socket,omitempty"`
+	Path          string                       `json:"path,omitempty"`
+	Health        *control.HealthResponse      `json:"health,omitempty"`
+	Runtime       *control.RuntimeResponse     `json:"runtime,omitempty"`
+	State         *vfs.DebugSnapshot           `json:"state,omitempty"`
+	Drivers       *control.DriversResponse     `json:"drivers,omitempty"`
+	MountHealth   *control.MountHealthResponse `json:"mount_health,omitempty"`
+	Events        *control.EventsResponse      `json:"events,omitempty"`
+	Uploads       *control.UploadsResponse     `json:"uploads,omitempty"`
+	Cache         *control.CacheResponse       `json:"cache,omitempty"`
+	Staging       *control.StagingResponse     `json:"staging,omitempty"`
+	Inspect       *debugAIInspect              `json:"inspect,omitempty"`
+	Diagnostics   []debugAIDiagnostic          `json:"diagnostics"`
+	Errors        []debugAIError               `json:"errors,omitempty"`
 }
 
 type debugAIInspect struct {
@@ -125,14 +125,14 @@ func newDebugCollectCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, _ := cmd.Flags().GetString("path")
 			eventLimit, _ := cmd.Flags().GetInt("events-limit")
-			includeDriverHealth, _ := cmd.Flags().GetBool("driver-health")
-			report := collectDebugAIReport(context.Background(), "collect", cleanDebugPath(path), eventLimit, includeDriverHealth)
+			includeMountHealth, _ := cmd.Flags().GetBool("mount-health")
+			report := collectDebugAIReport(context.Background(), "collect", cleanDebugPath(path), eventLimit, includeMountHealth)
 			return writeDebugAIReport(report)
 		},
 	}
 	cmd.Flags().String("path", "", "optional path to inspect in the same report")
 	cmd.Flags().Int("events-limit", 200, "maximum recent warn/error events")
-	cmd.Flags().Bool("driver-health", false, "run live driver health checks")
+	cmd.Flags().Bool("mount-health", false, "include runtime mount health")
 	return cmd
 }
 
@@ -182,14 +182,14 @@ func newDebugWatchCmd() *cobra.Command {
 	return cmd
 }
 
-func collectDebugAIReport(ctx context.Context, command, path string, eventLimit int, includeDriverHealth bool) debugAIReport {
+func collectDebugAIReport(ctx context.Context, command, path string, eventLimit int, includeMountHealth bool) debugAIReport {
 	report := newDebugAIReport(command, path)
 	debugGetJSON(ctx, "/v1/health", &report.Health, &report.Errors)
 	debugGetJSON(ctx, "/v1/runtime", &report.Runtime, &report.Errors)
 	debugGetJSON(ctx, "/v1/state", &report.State, &report.Errors)
 	debugGetJSON(ctx, "/v1/driver", &report.Drivers, &report.Errors)
-	if includeDriverHealth {
-		debugGetJSON(ctx, "/v1/driver?health=true", &report.DriverHealth, &report.Errors)
+	if includeMountHealth {
+		debugGetJSON(ctx, "/v1/mounts/health", &report.MountHealth, &report.Errors)
 	}
 	debugGetJSON(ctx, "/v1/events?level=warn&limit="+url.QueryEscape(fmt.Sprintf("%d", eventLimit)), &report.Events, &report.Errors)
 	debugGetJSON(ctx, "/v1/uploads?history=1", &report.Uploads, &report.Errors)
@@ -545,18 +545,18 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 			}
 		}
 	}
-	if report.DriverHealth != nil {
-		for _, h := range report.DriverHealth.Drivers {
+	if report.MountHealth != nil {
+		for _, h := range report.MountHealth.Mounts {
 			if h.OK {
 				continue
 			}
 			*out = append(*out, debugAIDiagnostic{
 				Severity:  "error",
-				Code:      "driver_health_failed",
-				Component: "driver",
+				Code:      "mount_health_failed",
+				Component: "mount",
 				Mount:     h.Mount,
-				Message:   firstNonEmpty(h.Error, "driver health check failed"),
-				Evidence:  map[string]any{"driver": h.Driver, "latency": h.Latency},
+				Message:   firstNonEmpty(h.Error, "mount health check failed"),
+				Evidence:  map[string]any{"level": h.Level, "errors": h.Errors},
 			})
 		}
 	}

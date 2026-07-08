@@ -94,7 +94,7 @@ func newDebugBundleCmd() *cobra.Command {
 			outPath, _ := cmd.Flags().GetString("out")
 			path, _ := cmd.Flags().GetString("path")
 			eventLimit, _ := cmd.Flags().GetInt("events-limit")
-			includeDriverHealth, _ := cmd.Flags().GetBool("driver-health")
+			includeMountHealth, _ := cmd.Flags().GetBool("mount-health")
 			watchDuration, _ := cmd.Flags().GetDuration("watch")
 			watchInterval, _ := cmd.Flags().GetDuration("watch-interval")
 			if debugSocket == "" {
@@ -117,14 +117,14 @@ func newDebugBundleCmd() *cobra.Command {
 			defer zw.Close()
 
 			cleanPath := cleanDebugPath(path)
-			collect := collectDebugAIReport(ctx, "bundle", cleanPath, eventLimit, includeDriverHealth)
+			collect := collectDebugAIReport(ctx, "bundle", cleanPath, eventLimit, includeMountHealth)
 			diagnostics := collect.Diagnostics
 			if err := writeZipJSON(zw, "manifest.json", debugBundleManifest{
 				SchemaVersion: debugAIReportSchemaVersion,
 				GeneratedAt:   time.Now(),
 				Socket:        debugSocket,
 				Path:          cleanPath,
-				Files:         debugBundleFiles(cleanPath, includeDriverHealth, watchDuration > 0),
+				Files:         debugBundleFiles(cleanPath, includeMountHealth, watchDuration > 0),
 			}); err != nil {
 				return err
 			}
@@ -161,8 +161,8 @@ func newDebugBundleCmd() *cobra.Command {
 				"raw/runtime.json":   "/v1/runtime",
 				"raw/goroutines.txt": "/v1/goroutines?debug=1",
 			}
-			if includeDriverHealth {
-				endpoints["raw/driver-health.json"] = "/v1/driver?health=true"
+			if includeMountHealth {
+				endpoints["raw/mount-health.json"] = "/v1/mounts/health"
 			}
 			if cleanPath != "" {
 				escapedPath := url.QueryEscape(cleanPath)
@@ -195,7 +195,7 @@ func newDebugBundleCmd() *cobra.Command {
 	cmd.Flags().String("out", "", "debug bundle output zip")
 	cmd.Flags().String("path", "", "optional path to inspect")
 	cmd.Flags().Int("events-limit", 200, "maximum recent warn/error events in collect.json")
-	cmd.Flags().Bool("driver-health", false, "run live driver health checks")
+	cmd.Flags().Bool("mount-health", false, "include runtime mount health")
 	cmd.Flags().Duration("watch", 0, "optional watch duration to include watch.json")
 	cmd.Flags().Duration("watch-interval", 2*time.Second, "watch sampling interval")
 	return cmd
@@ -209,7 +209,7 @@ type debugBundleManifest struct {
 	Files         []string  `json:"files"`
 }
 
-func debugBundleFiles(path string, includeDriverHealth, includeWatch bool) []string {
+func debugBundleFiles(path string, includeMountHealth, includeWatch bool) []string {
 	files := []string{
 		"manifest.json",
 		"collect.json",
@@ -238,8 +238,8 @@ func debugBundleFiles(path string, includeDriverHealth, includeWatch bool) []str
 			files = append(files, "raw/cache-path.json")
 		}
 	}
-	if includeDriverHealth {
-		files = append(files, "raw/driver-health.json")
+	if includeMountHealth {
+		files = append(files, "raw/mount-health.json")
 	}
 	if includeWatch {
 		files = append(files, "watch.json")
