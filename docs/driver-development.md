@@ -170,10 +170,6 @@ type PathResolver interface {
 	ResolvePath(ctx context.Context, path string) (string, error)
 }
 
-type HealthChecker interface {
-	HealthCheck(ctx context.Context) HealthStatus
-}
-
 type Debugger interface {
 	DebugSnapshot(ctx context.Context) (DebugSnapshot, error)
 }
