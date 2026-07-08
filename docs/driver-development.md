@@ -183,6 +183,11 @@ type RemoteNameResolver interface {
 }
 ```
 
+Use `drive.Capabilities(driver)` in tests and diagnostics when you need a
+stable list of runtime capabilities. It is the canonical capability inventory
+for VFS-facing behavior. Construction-time hooks such as state-store injection
+and bandwidth limiter installation are intentionally not reported there.
+
 Debug and health output must not include tokens, cookies, authorization
 headers, signed URLs, raw request headers, or full provider responses that may
 contain secrets.
@@ -199,6 +204,10 @@ Provider request-rate throttling is a separate driver concern.
 
 When adding optional interfaces, update crypt and bandwidth wrappers so they
 preserve or provide safe fallbacks for those capabilities.
+If a wrapper has fallback methods whose concrete method set is wider than the
+raw driver's real support, implement `drive.CapabilityReporter` so VFS and
+debug tooling see the intended runtime capabilities instead of raw type
+assertions.
 
 ## Errors
 
@@ -226,6 +235,7 @@ Add tests for:
 - `Mkdir`, `Put`, `Rename`, `Move`, and `Remove` when supported
 - debug snapshots and health checks without secrets
 - optional interfaces surviving crypt and bandwidth wrappers when relevant
+- `drive.Capabilities(driver)` reporting the intended runtime interfaces
 
 Use fake provider servers or clients. Unit tests should not require real
 accounts.

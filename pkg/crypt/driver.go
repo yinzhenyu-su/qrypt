@@ -27,6 +27,29 @@ func (d *Driver) Encrypted() bool {
 	return true
 }
 
+func (d *Driver) Capabilities() []drive.Capability {
+	caps := []drive.Capability{
+		drive.CapabilityForeignEntries,
+		drive.CapabilityRemoteNameResolver,
+	}
+	if drive.HasCapability(d.raw, drive.CapabilityWriter) {
+		caps = append(caps, drive.CapabilityWriter)
+	}
+	if drive.HasCapability(d.raw, drive.CapabilityUploader) {
+		caps = append(caps, drive.CapabilityUploader)
+	}
+	if drive.HasCapability(d.raw, drive.CapabilitySpace) {
+		caps = append(caps, drive.CapabilitySpace)
+	}
+	if drive.HasCapability(d.raw, drive.CapabilityDebugger) {
+		caps = append(caps, drive.CapabilityDebugger)
+	}
+	if drive.HasCapability(d.raw, drive.CapabilityHealth) {
+		caps = append(caps, drive.CapabilityHealth)
+	}
+	return caps
+}
+
 func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
 
 func (d *Driver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }

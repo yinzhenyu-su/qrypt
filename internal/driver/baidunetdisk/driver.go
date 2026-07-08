@@ -1037,3 +1037,14 @@ func baseName(p string) string {
 	}
 	return path.Base(p)
 }
+
+var _ drive.Driver = (*Driver)(nil)
+var _ drive.Writer = (*Driver)(nil)
+var _ drive.Uploader = (*Driver)(nil)
+var _ drive.FileUploader = (*Driver)(nil)
+var _ drive.SpaceQuerier = (*Driver)(nil)
+var _ drive.PathResolver = (*Driver)(nil)
+var _ drive.Debugger = (*Driver)(nil)
+var _ drive.HealthChecker = (*Driver)(nil)
+var _ drive.StateStoreInstaller = (*Driver)(nil)
+var _ drive.BandwidthLimitInstaller = (*Driver)(nil)

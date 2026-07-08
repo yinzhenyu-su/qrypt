@@ -566,3 +566,5 @@ func parseWebDAVTime(s string) time.Time {
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
+var _ drive.Debugger = (*Driver)(nil)
+var _ drive.HealthChecker = (*Driver)(nil)

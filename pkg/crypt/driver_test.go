@@ -38,6 +38,50 @@ func (d *recordingRawDriver) Read(_ context.Context, _ drive.Entry, offset, size
 	return io.NopCloser(bytes.NewReader(d.data[offset:end])), nil
 }
 
+type writableRawDriver struct {
+	recordingRawDriver
+}
+
+func (d *writableRawDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+func (d *writableRawDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *writableRawDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *writableRawDriver) Remove(context.Context, drive.Entry) error { return nil }
+func (d *writableRawDriver) Put(context.Context, string, string, int64, io.Reader) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+
+func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly := NewDriver(&recordingRawDriver{}, cp)
+	if drive.HasCapability(readOnly, drive.CapabilityWriter) {
+		t.Fatal("crypt wrapper over read-only raw should not report writer capability")
+	}
+	if drive.HasCapability(readOnly, drive.CapabilityUploader) {
+		t.Fatal("crypt wrapper over read-only raw should not report uploader capability")
+	}
+	if !drive.HasCapability(readOnly, drive.CapabilityRemoteNameResolver) {
+		t.Fatal("crypt wrapper should report remote-name resolution")
+	}
+	if !drive.HasCapability(readOnly, drive.CapabilityForeignEntries) {
+		t.Fatal("crypt wrapper should report foreign-entry listing")
+	}
+
+	writable := NewDriver(&writableRawDriver{}, cp)
+	if !drive.HasCapability(writable, drive.CapabilityWriter) {
+		t.Fatal("crypt wrapper over writable raw should report writer capability")
+	}
+	if !drive.HasCapability(writable, drive.CapabilityUploader) {
+		t.Fatal("crypt wrapper over uploader raw should report uploader capability")
+	}
+}
+
 func TestDriverReadUsesEncryptedRange(t *testing.T) {
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")

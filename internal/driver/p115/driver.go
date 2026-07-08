@@ -250,3 +250,6 @@ func trim(s string) string {
 	}
 	return s[l:r]
 }
+
+var _ drive.Driver = (*Driver)(nil)
+var _ drive.HealthChecker = (*Driver)(nil)

@@ -1,4 +1,3 @@
-// Package drive defines the minimal backend contract used by qrypt.
 package drive
 
 import (
@@ -87,9 +86,9 @@ type ParamDef struct {
 }
 
 var (
-	registryMu    sync.RWMutex
-	registry      = map[string]Factory{}
-	paramSchemas  = map[string][]ParamDef{}
+	registryMu   sync.RWMutex
+	registry     = map[string]Factory{}
+	paramSchemas = map[string][]ParamDef{}
 )
 
 // Register makes a backend driver available by name with optional parameter

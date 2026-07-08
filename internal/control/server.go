@@ -61,9 +61,9 @@ type DriversResponse struct {
 }
 
 type DriverHealthResponse struct {
-	SchemaVersion int                  `json:"schema_version"`
-	GeneratedAt   time.Time            `json:"generated_at"`
-	Drivers       []vfs.DriverHealth   `json:"drivers"`
+	SchemaVersion int                `json:"schema_version"`
+	GeneratedAt   time.Time          `json:"generated_at"`
+	Drivers       []vfs.DriverHealth `json:"drivers"`
 }
 
 type EventsResponse struct {
@@ -73,8 +73,9 @@ type EventsResponse struct {
 }
 
 type DebugDriverSummary struct {
-	Mount  string              `json:"mount"`
-	Driver drive.DebugSnapshot `json:"driver"`
+	Mount        string              `json:"mount"`
+	Capabilities []drive.Capability  `json:"capabilities,omitempty"`
+	Driver       drive.DebugSnapshot `json:"driver"`
 }
 
 type ListResponse struct {
@@ -746,7 +747,7 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		if mount.Driver == nil {
 			continue
 		}
-		drivers = append(drivers, DebugDriverSummary{Mount: mount.Name, Driver: *mount.Driver})
+		drivers = append(drivers, DebugDriverSummary{Mount: mount.Name, Capabilities: mount.Capabilities, Driver: *mount.Driver})
 	}
 	sort.Slice(drivers, func(i, j int) bool {
 		return drivers[i].Mount < drivers[j].Mount

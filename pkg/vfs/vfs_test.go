@@ -696,6 +696,38 @@ func TestVFSUsesFileUploaderForStagingPath(t *testing.T) {
 	}
 }
 
+func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
+	ctx := context.Background()
+	drv := localfs.New(t.TempDir())
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := fs.DebugSnapshot()
+	if len(snapshot.Mounts) != 1 {
+		t.Fatalf("mount count = %d, want 1", len(snapshot.Mounts))
+	}
+	caps := map[drive.Capability]bool{}
+	for _, capability := range snapshot.Mounts[0].Capabilities {
+		caps[capability] = true
+	}
+	for _, capability := range []drive.Capability{
+		drive.CapabilityWriter,
+		drive.CapabilityUploader,
+		drive.CapabilitySpace,
+		drive.CapabilityPathResolver,
+		drive.CapabilityHealth,
+	} {
+		if !caps[capability] {
+			t.Fatalf("debug capabilities = %+v, missing %s", snapshot.Mounts[0].Capabilities, capability)
+		}
+	}
+}
+
 func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
 	ctx := context.Background()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
