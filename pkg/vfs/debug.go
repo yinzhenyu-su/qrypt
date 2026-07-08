@@ -535,20 +535,27 @@ func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport
 	return report, nil
 }
 
-func (v *VFS) DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error) {
-	h := DriverHealth{Mount: mountName, CheckedAt: timeutil.Now()}
-	if drive.HasCapability(v.driver, drive.CapabilityHealth) {
-		checker := v.driver.(drive.HealthChecker)
-		result := checker.HealthCheck(ctx)
-		h.Driver = result.Driver
-		h.OK = result.OK
-		h.Error = result.Error
-		h.Latency = result.Latency
-		h.CheckedAt = result.CheckedAt
-	} else {
-		h.Error = "health check not supported"
+func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
+	h := MountHealth{Mount: mountName, CheckedAt: timeutil.Now()}
+	result := v.healthTracker.Status()
+	h.OK = result.OK
+	h.Level = result.Level
+	h.Error = result.Error
+	h.CheckedAt = result.CheckedAt
+	h.Success = result.Success
+	h.Errors = result.Errors
+	if len(result.Ops) > 0 {
+		h.Ops = map[string]MountHealthOp{}
+		for op, status := range result.Ops {
+			h.Ops[op] = MountHealthOp{
+				Success:     status.Success,
+				Errors:      status.Errors,
+				LastError:   status.LastError,
+				LastErrorAt: status.LastErrorAt,
+			}
+		}
 	}
-	return []DriverHealth{h}, nil
+	return []MountHealth{h}, nil
 }
 
 func (v *VFS) Drivers() []NamedDriver {
@@ -926,7 +933,7 @@ func (n *Namespace) Drivers() []NamedDriver {
 	return result
 }
 
-func (n *Namespace) DriverHealth(ctx context.Context, mountName string) ([]DriverHealth, error) {
+func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	if mountName != "" {
@@ -934,16 +941,16 @@ func (n *Namespace) DriverHealth(ctx context.Context, mountName string) ([]Drive
 		if !ok {
 			return nil, fmt.Errorf("vfs: mount %q not found", mountName)
 		}
-		return vfs.DriverHealth(ctx, mountName)
+		return vfs.MountHealth(ctx, mountName)
 	}
-	var results []DriverHealth
+	var results []MountHealth
 	names := make([]string, 0, len(n.mounts))
 	for name := range n.mounts {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		health, _ := n.mounts[name].DriverHealth(ctx, name)
+		health, _ := n.mounts[name].MountHealth(ctx, name)
 		results = append(results, health...)
 	}
 	return results, nil

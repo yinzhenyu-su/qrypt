@@ -93,6 +93,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		}
 		entry, err = v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, progressBody)
 	}
+	v.healthTracker.RecordResult(drive.HealthOpUpload, err)
 	if err != nil {
 		finishErr = err.Error()
 		if ctx.Err() == nil {
