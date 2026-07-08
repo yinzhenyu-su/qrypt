@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"golang.org/x/time/rate"
 
@@ -121,24 +120,6 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 		return nil, err
 	}
 	return d.getFiles(d.resolveID(parentID))
-}
-
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	start := time.Now()
-	status := drive.HealthStatus{Driver: "115", CheckedAt: start}
-	if d.cl == nil || d.cookies == "" {
-		status.Error = "not initialized"
-		status.Latency = time.Since(start).String()
-		return status
-	}
-	_, err := d.getFiles(d.rootID)
-	status.Latency = time.Since(start).String()
-	if err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	status.OK = true
-	return status
 }
 
 func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -252,4 +233,3 @@ func trim(s string) string {
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.HealthChecker = (*Driver)(nil)

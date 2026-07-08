@@ -27,7 +27,7 @@ import (
 )
 
 // Driver implements drive.Driver (plus Writer, Uploader, Debugger, and
-// HealthChecker) for S3-compatible object storage.
+// optional qrypt driver interfaces for S3-compatible object storage.
 //
 // Entry IDs are S3 key paths:
 //   - Root: "/"
@@ -37,23 +37,23 @@ import (
 // ParentID is the directory prefix. List(parentID) returns the immediate
 // children by querying the prefix with delimiter "/".
 type Driver struct {
-	bucket       string
-	endpoint     string
-	region       string
-	customHost   string
-	forcePath    bool
-	listVersion  string
-	placeholder  string
-	rootPrefix   string
+	bucket      string
+	endpoint    string
+	region      string
+	customHost  string
+	forcePath   bool
+	listVersion string
+	placeholder string
+	rootPrefix  string
 
 	accessKey    string
 	secretKey    string
 	sessionToken string
 
-	signExpire   time.Duration
+	signExpire time.Duration
 
-	client       *s3.Client
-	limiter      *drive.BandwidthLimiter
+	client  *s3.Client
+	limiter *drive.BandwidthLimiter
 }
 
 // Options configures a new S3 driver.
@@ -391,29 +391,6 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-// ─── drive.HealthChecker interface ──────────────────────────────────────────
-
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	start := time.Now()
-	status := drive.HealthStatus{Driver: "s3", CheckedAt: start}
-	if d.client == nil {
-		status.Error = "client not initialized"
-		status.Latency = time.Since(start).String()
-		return status
-	}
-	_, err := d.client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: aws.String(d.bucket),
-	})
-	if err != nil {
-		status.Error = err.Error()
-		status.Latency = time.Since(start).String()
-		return status
-	}
-	status.OK = true
-	status.Latency = time.Since(start).String()
-	return status
-}
-
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
 }
@@ -424,7 +401,6 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityUploader,
 		drive.CapabilityFileUploader,
 		drive.CapabilityDebugger,
-		drive.CapabilityHealth,
 		drive.CapabilityRemoteNameResolver,
 	}
 }
@@ -568,12 +544,11 @@ func isS3NotFound(err error) bool {
 
 // Compile-time interface checks.
 var (
-	_ drive.Driver               = (*Driver)(nil)
-	_ drive.Writer               = (*Driver)(nil)
-	_ drive.Uploader             = (*Driver)(nil)
-	_ drive.FileUploader         = (*Driver)(nil)
-	_ drive.Debugger             = (*Driver)(nil)
-	_ drive.HealthChecker        = (*Driver)(nil)
-	_ drive.RemoteNameResolver   = (*Driver)(nil)
-	_ drive.CapabilityReporter   = (*Driver)(nil)
+	_ drive.Driver             = (*Driver)(nil)
+	_ drive.Writer             = (*Driver)(nil)
+	_ drive.Uploader           = (*Driver)(nil)
+	_ drive.FileUploader       = (*Driver)(nil)
+	_ drive.Debugger           = (*Driver)(nil)
+	_ drive.RemoteNameResolver = (*Driver)(nil)
+	_ drive.CapabilityReporter = (*Driver)(nil)
 )

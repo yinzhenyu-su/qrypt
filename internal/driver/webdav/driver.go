@@ -310,19 +310,6 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	return d.move(ctx, srcURL, destURL)
 }
 
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	start := time.Now()
-	status := drive.HealthStatus{Driver: "webdav", CheckedAt: start}
-	_, err := d.propfind(ctx, d.baseURL, 0)
-	status.Latency = time.Since(start).String()
-	if err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	status.OK = true
-	return status
-}
-
 // ─── drive.SpaceQuerier interface ───────────────────────────────────────────
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
@@ -696,5 +683,4 @@ var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
-var _ drive.HealthChecker = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)

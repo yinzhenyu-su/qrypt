@@ -698,28 +698,6 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	start := time.Now()
-	status := drive.HealthStatus{
-		Driver:    "aliyundrive",
-		CheckedAt: start,
-		Extra: map[string]any{
-			"drive_id":  d.driveID,
-			"root_id":   d.rootID,
-			"root_path": d.rootPath,
-		},
-	}
-	err := d.validateRoot(ctx)
-	status.Latency = time.Since(start).String()
-	if err != nil {
-		status.Error = err.Error()
-		d.setLastError(err)
-		return status
-	}
-	status.OK = true
-	return status
-}
-
 func (d *Driver) setLastError(err error) {
 	if err == nil {
 		return
@@ -776,6 +754,5 @@ var _ drive.FileUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
-var _ drive.HealthChecker = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)

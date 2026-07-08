@@ -650,20 +650,6 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	}, nil
 }
 
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	start := time.Now()
-	status := drive.HealthStatus{Driver: "quark", CheckedAt: start}
-	_, err := d.List(ctx, d.rootID)
-	status.Latency = time.Since(start).String()
-	if err != nil {
-		status.Error = err.Error()
-		d.setLastError(err)
-		return status
-	}
-	status.OK = true
-	return status
-}
-
 func (d *Driver) loadCookieState() {
 	if d.stateStore == nil {
 		return
@@ -1073,4 +1059,3 @@ var _ drive.Uploader = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
-var _ drive.HealthChecker = (*Driver)(nil)

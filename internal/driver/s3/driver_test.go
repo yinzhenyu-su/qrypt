@@ -27,9 +27,9 @@ import (
 // ─── in-memory mock S3 server ─────────────────────────────────────────────
 
 type s3Object struct {
-	key      string
-	data     []byte
-	modTime  time.Time
+	key     string
+	data    []byte
+	modTime time.Time
 }
 
 type mockS3 struct {
@@ -89,27 +89,27 @@ func (m *mockS3) list(prefix, delimiter string) ([]s3Object, []string) {
 
 // S3 XML response types
 type listBucketResult struct {
-	XMLName   xml.Name          `xml:"ListBucketResult"`
-	XMLNS     string            `xml:"xmlns,attr"`
-	Name      string            `xml:"Name"`
-	Prefix    string            `xml:"Prefix"`
-	Marker    string            `xml:"Marker,omitempty"`
-	MaxKeys   int               `xml:"MaxKeys"`
-	IsTruncated bool            `xml:"IsTruncated"`
-	Contents  []s3ObjXML        `xml:"Contents,omitempty"`
-	Prefixes  []s3PrefixXML     `xml:"CommonPrefixes,omitempty"`
+	XMLName     xml.Name      `xml:"ListBucketResult"`
+	XMLNS       string        `xml:"xmlns,attr"`
+	Name        string        `xml:"Name"`
+	Prefix      string        `xml:"Prefix"`
+	Marker      string        `xml:"Marker,omitempty"`
+	MaxKeys     int           `xml:"MaxKeys"`
+	IsTruncated bool          `xml:"IsTruncated"`
+	Contents    []s3ObjXML    `xml:"Contents,omitempty"`
+	Prefixes    []s3PrefixXML `xml:"CommonPrefixes,omitempty"`
 }
 
 type listBucketResultV2 struct {
-	XMLName   xml.Name          `xml:"ListBucketResult"`
-	XMLNS     string            `xml:"xmlns,attr"`
-	Name      string            `xml:"Name"`
-	Prefix    string            `xml:"Prefix"`
-	KeyCount  int               `xml:"KeyCount"`
-	MaxKeys   int               `xml:"MaxKeys"`
-	IsTruncated bool            `xml:"IsTruncated"`
-	Contents  []s3ObjXML        `xml:"Contents,omitempty"`
-	Prefixes  []s3PrefixXML     `xml:"CommonPrefixes,omitempty"`
+	XMLName     xml.Name      `xml:"ListBucketResult"`
+	XMLNS       string        `xml:"xmlns,attr"`
+	Name        string        `xml:"Name"`
+	Prefix      string        `xml:"Prefix"`
+	KeyCount    int           `xml:"KeyCount"`
+	MaxKeys     int           `xml:"MaxKeys"`
+	IsTruncated bool          `xml:"IsTruncated"`
+	Contents    []s3ObjXML    `xml:"Contents,omitempty"`
+	Prefixes    []s3PrefixXML `xml:"CommonPrefixes,omitempty"`
 }
 
 type s3ObjXML struct {
@@ -132,9 +132,9 @@ type copyObjectResult struct {
 }
 
 type deleteResponse struct {
-	XMLName xml.Name       `xml:"DeleteResult"`
-	Deleted []deletedObj   `xml:"Deleted,omitempty"`
-	Errors  []deleteError  `xml:"Error,omitempty"`
+	XMLName xml.Name      `xml:"DeleteResult"`
+	Deleted []deletedObj  `xml:"Deleted,omitempty"`
+	Errors  []deleteError `xml:"Error,omitempty"`
 }
 
 type deletedObj struct {
@@ -207,11 +207,11 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			isV2 := r.URL.Query().Get("list-type") == "2"
 			if isV2 {
 				resp := listBucketResultV2{
-					XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
-					Name:     bucket,
-					Prefix:   prefix,
-					KeyCount: len(contents) + len(prefixes),
-					MaxKeys:  1000,
+					XMLNS:       "http://s3.amazonaws.com/doc/2006-03-01/",
+					Name:        bucket,
+					Prefix:      prefix,
+					KeyCount:    len(contents) + len(prefixes),
+					MaxKeys:     1000,
 					IsTruncated: false,
 				}
 				for _, obj := range contents {
@@ -232,11 +232,11 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			resp := listBucketResult{
-				XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
-				Name:     bucket,
-				Prefix:   prefix,
-				Marker:   r.URL.Query().Get("marker"),
-				MaxKeys:  1000,
+				XMLNS:       "http://s3.amazonaws.com/doc/2006-03-01/",
+				Name:        bucket,
+				Prefix:      prefix,
+				Marker:      r.URL.Query().Get("marker"),
+				MaxKeys:     1000,
 				IsTruncated: false,
 			}
 			for _, obj := range contents {
@@ -358,12 +358,12 @@ func setupTest(t *testing.T) (*Driver, *mockS3, string) {
 	t.Cleanup(srv.Close)
 
 	d := New(Options{
-		Bucket:         "test-bucket",
-		Endpoint:       srv.URL,
-		Region:         "us-east-1",
-		AccessKeyID:    "test",
+		Bucket:          "test-bucket",
+		Endpoint:        srv.URL,
+		Region:          "us-east-1",
+		AccessKeyID:     "test",
 		SecretAccessKey: "test",
-		Placeholder:    ".qrypt",
+		Placeholder:     ".qrypt",
 	})
 	d.client = newTestS3Client(t, srv.URL)
 	return d, mock, srv.URL
@@ -628,17 +628,6 @@ func TestPutFile(t *testing.T) {
 	}
 	if !bytes.Equal(obj.data, content) {
 		t.Fatalf("data mismatch")
-	}
-}
-
-// ─── HealthCheck test ─────────────────────────────────────────────────────
-
-func TestHealthCheck(t *testing.T) {
-	ctx := context.Background()
-	d, _, _ := setupTest(t)
-	status := d.HealthCheck(ctx)
-	if !status.OK {
-		t.Fatalf("health = %+v, want OK", status)
 	}
 }
 

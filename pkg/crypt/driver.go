@@ -7,7 +7,6 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -44,9 +43,6 @@ func (d *Driver) Capabilities() []drive.Capability {
 	if drive.HasCapability(d.raw, drive.CapabilityDebugger) {
 		caps = append(caps, drive.CapabilityDebugger)
 	}
-	if drive.HasCapability(d.raw, drive.CapabilityHealth) {
-		caps = append(caps, drive.CapabilityHealth)
-	}
 	return caps
 }
 
@@ -76,19 +72,6 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}
 	snapshot.Extra["crypt"] = true
 	return snapshot, nil
-}
-
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	checker, ok := d.raw.(drive.HealthChecker)
-	if !ok {
-		return drive.HealthStatus{Driver: "crypt", OK: false, CheckedAt: time.Now(), Error: "crypt: raw driver does not support health checks"}
-	}
-	status := checker.HealthCheck(ctx)
-	if status.Extra == nil {
-		status.Extra = map[string]any{}
-	}
-	status.Extra["crypt"] = true
-	return status
 }
 
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
@@ -307,5 +290,4 @@ var _ drive.Uploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.RemoteNameResolver = (*Driver)(nil)
-var _ drive.HealthChecker = (*Driver)(nil)
 var _ drive.ForeignEntryLister = (*Driver)(nil)

@@ -481,19 +481,6 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
-	start := time.Now()
-	status := drive.HealthStatus{Driver: "baidu_netdisk", CheckedAt: start}
-	_, err := d.Space(ctx)
-	status.Latency = time.Since(start).String()
-	if err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	status.OK = true
-	return status
-}
-
 func (d *Driver) statRoot(ctx context.Context) (drive.Entry, error) {
 	parent := path.Dir(d.rootPath)
 	name := path.Base(d.rootPath)
@@ -1057,6 +1044,5 @@ var _ drive.FileUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
-var _ drive.HealthChecker = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
