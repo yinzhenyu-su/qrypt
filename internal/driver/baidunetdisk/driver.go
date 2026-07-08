@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -589,7 +590,7 @@ func (d *Driver) postForm(ctx context.Context, pathname string, params, form map
 
 func (d *Driver) request(ctx context.Context, method, rawURL string, params, form map[string]string, out any) error {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if err := d.ensureToken(ctx); err != nil {
 			return err
 		}
@@ -603,7 +604,11 @@ func (d *Driver) request(ctx context.Context, method, rawURL string, params, for
 		}
 		if err != nil {
 			lastErr = err
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			if attempt < 2 {
+				if waitErr := retry.Wait(ctx, attempt); waitErr != nil {
+					return waitErr
+				}
+			}
 			continue
 		}
 		return nil

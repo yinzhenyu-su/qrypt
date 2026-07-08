@@ -8,20 +8,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/httputil"
+	"github.com/yinzhenyu/qrypt/internal/retry"
 )
 
 const (
-	defaultAPIBaseURL = "https://api.alipan.com"
-	defaultAuthURL    = "https://auth.alipan.com/v2/account/token"
-	defaultReferer    = "https://alipan.com/"
-	defaultOrigin     = "https://www.alipan.com"
+	defaultAPIBaseURL  = "https://api.alipan.com"
+	defaultAuthURL     = "https://auth.alipan.com/v2/account/token"
+	defaultReferer     = "https://alipan.com/"
+	defaultOrigin      = "https://www.alipan.com"
+	rawJSONMaxAttempts = 3
 )
+
+var aliyunRetryWait = retry.Wait
 
 type client struct {
 	httpClient *http.Client
@@ -169,6 +174,47 @@ func (e *apiStatusError) Error() string {
 }
 
 func (c *client) rawJSON(ctx context.Context, method, url, accessToken string, body, result any) error {
+	var lastErr error
+	for attempt := 0; attempt < rawJSONMaxAttempts; attempt++ {
+		err := c.rawJSONOnce(ctx, method, url, accessToken, body, result)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryableRawJSONError(ctx, err) || attempt == rawJSONMaxAttempts-1 {
+			return err
+		}
+		if waitErr := aliyunRetryWait(ctx, attempt); waitErr != nil {
+			return waitErr
+		}
+	}
+	return lastErr
+}
+
+func retryableRawJSONError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var apiErr *apiStatusError
+	if errors.As(err, &apiErr) {
+		return apiErr.status == http.StatusTooManyRequests || apiErr.status >= 500
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tls handshake") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "connection refused")
+}
+
+func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken string, body, result any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)

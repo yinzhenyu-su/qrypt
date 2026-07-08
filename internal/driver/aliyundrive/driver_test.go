@@ -257,6 +257,40 @@ func TestRequestCreatesDeviceSessionOnSignatureInvalid(t *testing.T) {
 	}
 }
 
+func TestRequestRetriesTemporaryStatus(t *testing.T) {
+	withoutAliyunRetryWait(t)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/file/list" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		if calls == 1 {
+			http.Error(w, "temporary unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(listResp{})
+	}))
+	defer server.Close()
+
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
+	d.cl.setTokens("access", "refresh")
+	if _, err := d.List(context.Background(), "root"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("list calls = %d, want 2", calls)
+	}
+}
+
+func withoutAliyunRetryWait(t *testing.T) {
+	t.Helper()
+	original := aliyunRetryWait
+	aliyunRetryWait = func(context.Context, int) error { return nil }
+	t.Cleanup(func() { aliyunRetryWait = original })
+}
+
 func TestReadCachesDownloadURL(t *testing.T) {
 	var downloadURLCalls int
 	var downloadCalls int
