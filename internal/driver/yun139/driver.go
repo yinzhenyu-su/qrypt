@@ -322,7 +322,7 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	}
 
 	var resp quotaDetailResp
-	if err := d.cl.personalPost(ctx, "/user/disk/quota/detail", data, &resp); err != nil {
+	if err := d.cl.userPost(ctx, "/user/disk/quota/detail", data, &resp); err != nil {
 		err = fmt.Errorf("139: space: %w", err)
 		d.setLastError(err)
 		return drive.Space{}, err

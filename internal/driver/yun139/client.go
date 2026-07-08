@@ -40,6 +40,8 @@ const (
 	authRefreshSkew   = 15 * 24 * time.Hour
 )
 
+var userAPIBaseURL = "https://user-njs.yun.139.com"
+
 func randomString(n int) string {
 	b := make([]byte, n)
 	for i := range b {
@@ -236,7 +238,7 @@ func (c *client) ensurePersonalCloudHost() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	routeURL := "https://user-njs.yun.139.com/user/route/qryRoutePolicy"
+	routeURL := userAPIBaseURL + "/user/route/qryRoutePolicy"
 	routeData := map[string]interface{}{
 		"userInfo": map[string]interface{}{
 			"userType":    1,
@@ -316,6 +318,33 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 	return lastErr
 }
 
+func (c *client) userPost(ctx context.Context, path string, bodyData interface{}, result interface{}) error {
+	var lastErr error
+	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(personalRetryWait << uint(attempt))
+		}
+		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
+			if isAuthExpiredError(err) {
+				if refreshErr := c.refreshToken(ctx); refreshErr != nil {
+					lastErr = fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
+					continue
+				}
+				if retryErr := c.userPostOnce(ctx, path, bodyData, result); retryErr == nil {
+					return nil
+				} else {
+					lastErr = retryErr
+					continue
+				}
+			}
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 func isAuthExpiredError(err error) bool {
 	if err == nil {
 		return false
@@ -334,7 +363,19 @@ func (c *client) personalPostOnce(ctx context.Context, path string, bodyData int
 	if err := c.ensurePersonalCloudHost(); err != nil {
 		return err
 	}
+	return c.postOnce(ctx, c.personalCloudHost, path, bodyData, result)
+}
 
+func (c *client) userPostOnce(ctx context.Context, path string, bodyData interface{}, result interface{}) error {
+	if c.account == "" {
+		if _, _, err := c.decodeAuth(); err != nil {
+			return err
+		}
+	}
+	return c.postOnce(ctx, userAPIBaseURL, path, bodyData, result)
+}
+
+func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData interface{}, result interface{}) error {
 	bodyStr := ""
 	if bodyData != nil {
 		data, _ := json.Marshal(bodyData)
@@ -349,7 +390,7 @@ func (c *client) personalPostOnce(ctx context.Context, path string, bodyData int
 	if bodyStr != "" {
 		bodyReader = strings.NewReader(bodyStr)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.personalCloudHost+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+path, bodyReader)
 	if err != nil {
 		return err
 	}
@@ -380,7 +421,7 @@ func (c *client) personalPostOnce(ctx context.Context, path string, bodyData int
 		return err
 	}
 	if len(respBody) > 0 && respBody[0] == '<' {
-		return fmt.Errorf("personal API returned non-JSON: %s", string(respBody))
+		return fmt.Errorf("API returned non-JSON: %s", string(respBody))
 	}
 	var base baseResp
 	if err := json.Unmarshal(respBody, &base); err == nil && !base.Success && isAuthExpiredMessage(base.Message) {

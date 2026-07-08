@@ -91,6 +91,15 @@ func fakePersonalServer(t *testing.T, handler func(w http.ResponseWriter, r *htt
 	return server, drv
 }
 
+func useUserAPIServer(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	old := userAPIBaseURL
+	userAPIBaseURL = server.URL
+	t.Cleanup(func() {
+		userAPIBaseURL = old
+	})
+}
+
 func TestList(t *testing.T) {
 	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/file/list" {
@@ -434,6 +443,7 @@ func TestSpace(t *testing.T) {
 		})
 	})
 	defer server.Close()
+	useUserAPIServer(t, server)
 	if _, _, err := drv.cl.decodeAuth(); err != nil {
 		t.Fatal(err)
 	}
@@ -465,6 +475,7 @@ func TestSpaceFailedSetsLastError(t *testing.T) {
 		})
 	})
 	defer server.Close()
+	useUserAPIServer(t, server)
 
 	_, err := drv.Space(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "quota failed") {
