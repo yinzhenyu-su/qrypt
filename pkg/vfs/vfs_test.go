@@ -657,6 +657,9 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	if history.Path != "/hello.txt" || history.State != "completed" || history.BytesUploaded != int64(len("hello qrypt")) {
 		t.Fatalf("unexpected upload history: %+v", history)
 	}
+	if history.StageDurations["uploading"] == "" {
+		t.Fatalf("upload history missing upload stage duration: %+v", history)
+	}
 	report, err := fs.DebugConsistency(ctx, "/hello.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -1012,6 +1015,41 @@ func TestVFSCoalescesFlushUploads(t *testing.T) {
 	}
 	if got := drv.lastUpload(); got != "two" {
 		t.Fatalf("last upload = %q, want two", got)
+	}
+}
+
+func TestVFSZeroByteFlushWaitsForFollowUpWrite(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Create(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if got := drv.uploadCount(); got != 0 {
+		t.Fatalf("zero-byte flush uploaded too early: count=%d", got)
+	}
+
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("final"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+	if got := drv.uploadCount(); got != 1 {
+		t.Fatalf("upload count = %d, want 1", got)
+	}
+	if got := drv.lastUpload(); got != "final" {
+		t.Fatalf("last upload = %q, want final", got)
 	}
 }
 

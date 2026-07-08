@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -565,6 +566,34 @@ func TestCalcPartSize(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("calcPartSize(%d) = %d, want %d", tt.size, got, tt.want)
 		}
+	}
+}
+
+func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected upload method: %s", r.Method)
+		}
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer uploadServer.Close()
+
+	localPath := filepath.Join(t.TempDir(), "slow.bin")
+	if err := os.WriteFile(localPath, []byte("slow"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	drv := New(testAuth("test", "token"), "/")
+	drv.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1}))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	var uploadResp personalUploadResp
+	uploadResp.Data.PartInfos = []personalPartInfo{{PartNumber: 1, UploadUrl: uploadServer.URL}}
+	err := drv.uploadParts(ctx, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4, localPath)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("uploadParts error = %v, want context deadline exceeded", err)
 	}
 }
 
