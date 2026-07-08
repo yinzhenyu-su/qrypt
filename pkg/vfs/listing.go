@@ -160,7 +160,9 @@ func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []
 			v.finishDirPrefetch(childPath)
 			return
 		}
-		v.prefetchOneDir(ctx, childPath, dir.ID)
+		if v.prefetchOneDir(ctx, childPath, dir.ID) {
+			v.markDirPrefetchComplete(childPath)
+		}
 		<-v.dirPrefetchSem
 	}
 	if scheduled > 0 {
@@ -168,7 +170,7 @@ func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []
 	}
 }
 
-func (v *VFS) prefetchOneDir(ctx context.Context, path, parentID string) {
+func (v *VFS) prefetchOneDir(ctx context.Context, path, parentID string) bool {
 	defer v.finishDirPrefetch(path)
 	start := time.Now()
 	opCtx, cancel := context.WithTimeout(ctx, dirPrefetchTimeout)
@@ -178,9 +180,10 @@ func (v *VFS) prefetchOneDir(ctx context.Context, path, parentID string) {
 		if ctx.Err() == nil {
 			logging.L.DebugfEvery("vfs.dir_prefetch_failed", time.Second, "[PREFETCH] list failed path=%q dur=%s err=%v", path, time.Since(start), err)
 		}
-		return
+		return false
 	}
 	logging.L.DebugfEvery("vfs.dir_prefetch_complete", time.Second, "[PREFETCH] list complete path=%q entries=%d dur=%s", path, len(entries), time.Since(start))
+	return true
 }
 
 func (v *VFS) markDirPrefetch(path string) bool {
@@ -198,8 +201,14 @@ func (v *VFS) markDirPrefetch(path string) bool {
 		return false
 	}
 	v.dirPrefetching[path] = struct{}{}
-	v.dirPrefetched[path] = now
 	return true
+}
+
+func (v *VFS) markDirPrefetchComplete(path string) {
+	path = cleanVirtual(path)
+	v.dirPrefetchMu.Lock()
+	v.dirPrefetched[path] = time.Now()
+	v.dirPrefetchMu.Unlock()
 }
 
 func (v *VFS) finishDirPrefetch(path string) {
@@ -222,7 +231,7 @@ func (v *VFS) dirPrefetchCtx(fallback context.Context) context.Context {
 	v.dirPrefetchMu.Lock()
 	ctx := v.dirPrefetchContext
 	v.dirPrefetchMu.Unlock()
-	if ctx != nil {
+	if ctx != nil && ctx.Err() == nil {
 		return ctx
 	}
 	return fallback
