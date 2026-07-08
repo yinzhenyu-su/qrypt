@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -185,6 +186,16 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 
+	parentForVerify := testDir.ParentID
+	if parentForVerify == "" {
+		parentForVerify = rootID
+	}
+	s = stepOp("verify_list", parentForVerify)
+	start = time.Now()
+	err = verifyCleanList(ctx, d, parentForVerify, testName)
+	s.finish(start, err)
+	result.Steps = append(result.Steps, s)
+
 	// Determine pass/fail.
 	result.Pass = true
 	for _, step := range result.Steps {
@@ -199,4 +210,40 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 
 func cleanup(ctx context.Context, w Writer, dir Entry) {
 	_ = w.Remove(ctx, dir)
+}
+
+func verifyCleanList(ctx context.Context, d Driver, parentID string, testPrefix string) error {
+	const maxAttempts = 3
+	delay := 1 * time.Second
+
+	var lastEntries []Entry
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			time.Sleep(delay)
+			delay *= 2
+		}
+
+		entries, err := d.List(ctx, parentID)
+		if err != nil {
+			return fmt.Errorf("verify list: %w", err)
+		}
+		lastEntries = entries
+
+		found := false
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name, testPrefix) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+
+	names := make([]string, len(lastEntries))
+	for i, e := range lastEntries {
+		names[i] = e.Name
+	}
+	return fmt.Errorf("stale entries after %d list attempts: %v", maxAttempts, names)
 }
