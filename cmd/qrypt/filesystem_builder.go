@@ -14,6 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -26,8 +27,8 @@ func initLoggerFromConfig(configPath string) {
 		return
 	}
 	level := cfg.Logging.LogLevel
-	logFile := expandHome(cfg.Logging.LogFile)
-	errFile := expandHome(cfg.Logging.ErrorFile)
+	logFile := osutil.ExpandHome(cfg.Logging.LogFile)
+	errFile := osutil.ExpandHome(cfg.Logging.ErrorFile)
 	if level == "" && logFile == "" && errFile == "" {
 		return
 	}
@@ -154,20 +155,6 @@ func loggingFromConfig(configPath string) (config.LoggingConfig, error) {
 	return cfg.Logging, nil
 }
 
-func expandHome(path string) string {
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
-		}
-	}
-	return path
-}
-
 func buildFileSystem(ctx context.Context, configPath string) (vfs.FileSystem, func(), error) {
 	if configPath == "" {
 		return nil, nil, fmt.Errorf("missing --config")
@@ -195,7 +182,7 @@ func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
 
 func effectiveCacheDir(cfg *config.Config) string {
 	if cfg != nil && cfg.CacheDir != "" {
-		return expandHome(cfg.CacheDir)
+		return osutil.ExpandHome(cfg.CacheDir)
 	}
 	return defaultCacheDir()
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -169,7 +170,7 @@ func NewServer(socketPath string, source Snapshotter) (*Server, error) {
 	if source == nil {
 		return nil, fmt.Errorf("control: snapshot source required")
 	}
-	return &Server{socketPath: expandHome(socketPath), source: source}, nil
+	return &Server{socketPath: osutil.ExpandHome(socketPath), source: source}, nil
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -847,20 +848,6 @@ func writeJSON(w http.ResponseWriter, value any) {
 	if err := enc.Encode(value); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
-}
-
-func expandHome(path string) string {
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	}
-	if len(path) >= 2 && path[:2] == "~/" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
 }
 
 func joinVirtual(parent, child string) string {
