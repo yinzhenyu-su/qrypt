@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
 var debugSocket string
@@ -102,6 +103,7 @@ func newDebugBundleCmd() *cobra.Command {
 			if outPath == "" {
 				return fmt.Errorf("usage: qrypt debug bundle --out FILE (requires --socket)")
 			}
+			outPath = osutil.ExpandHome(outPath)
 			client, err := control.NewClient(debugSocket)
 			if err != nil {
 				return err

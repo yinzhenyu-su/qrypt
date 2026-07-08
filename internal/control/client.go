@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
 type Client struct {
@@ -17,7 +19,7 @@ func NewClient(socketPath string) (*Client, error) {
 	if socketPath == "" {
 		return nil, fmt.Errorf("control: socket path required")
 	}
-	socketPath = expandHome(socketPath)
+	socketPath = osutil.ExpandHome(socketPath)
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			var dialer net.Dialer

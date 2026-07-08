@@ -13,6 +13,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -45,6 +46,8 @@ func newConfigInitCmd() *cobra.Command {
 			if outPath == "" {
 				outPath = "./qrypt.toml"
 			}
+
+			outPath = osutil.ExpandHome(outPath)
 
 			if _, err := os.Stat(outPath); err == nil && !force {
 				return fmt.Errorf("%s already exists (use --force to overwrite)", outPath)

@@ -9,6 +9,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/mount"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
 func newMountCmd() *cobra.Command {
@@ -64,7 +65,7 @@ func newMountCmd() *cobra.Command {
 				return err
 			}
 
-			mountPointExpanded := expandHome(mountPoint)
+			mountPointExpanded := osutil.ExpandHome(mountPoint)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
 			fmt.Printf("Mounting at %s ...\n", mountPointExpanded)
 			session, err := mount.NewMounter().Mount(ctx, fs, mount.Options{
