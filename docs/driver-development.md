@@ -229,7 +229,8 @@ Add tests for:
 - read offset and size handling
 - provider API failures with driver-prefixed errors
 - `Mkdir`, `Put`, `Rename`, `Move`, and `Remove` when supported
-- debug snapshots and health checks without secrets
+- debug snapshots without secrets
+- CRUD tests for active driver probing when writes are supported
 - optional interfaces surviving crypt and bandwidth wrappers when relevant
 - `drive.Capabilities(driver)` reporting the intended runtime interfaces
 
@@ -248,7 +249,7 @@ accounts.
 - Writable drivers implement both `drive.Writer` and `drive.Uploader`.
 - Returned entries include stable IDs, names, sizes, parent IDs, and mod times.
 - Debug output excludes secrets.
-- `HealthCheck` respects context and has bounded latency.
+- Active driver probing uses CRUD tests instead of a separate active health interface.
 - Tests cover success and failure paths.
 - Existing wrappers preserve optional interfaces.
 - `go test ./...` passes.

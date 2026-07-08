@@ -128,5 +128,6 @@ git diff --check
 ```
 
 For driver changes, also verify `docs/driver-development.md` and add capability
-or CRUD contract coverage when the driver supports writes, uploads, health, or
-debug snapshots.
+or CRUD contract coverage when the driver supports writes, uploads, or debug
+snapshots. Use CRUD tests for explicit active driver probing; runtime mount
+health is derived from recent VFS operations.
