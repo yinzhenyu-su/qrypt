@@ -691,10 +691,12 @@ func (d *Driver) saveUpdatedCookie(cookie string) {
 	if d.stateStore == nil {
 		return
 	}
-	_ = d.stateStore.SaveJSON("quark_cookie.json", cookieState{
+	if err := d.stateStore.SaveJSON("quark_cookie.json", cookieState{
 		Cookie:    cookie,
 		UpdatedAt: d.cookieUpdated,
-	})
+	}); err != nil {
+		logging.L.Warnf("[QUARK] save updated cookie state failed: %v", err)
+	}
 }
 
 func (d *Driver) setUploadDebug(taskID string, item quarkUploadDebug) {
