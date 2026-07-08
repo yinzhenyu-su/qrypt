@@ -267,7 +267,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "yun139", "115", "aliyundrive", "baidu_netdisk", "webdav"]
+          "enum": ["localfs", "quark", "yun139", "115", "aliyundrive", "baidu_netdisk", "webdav", "s3"]
         },
         "mount_point": {
           "description": "Deprecated. Use the top-level mount_point instead.",
@@ -541,6 +541,79 @@
                   "root_path": {
                     "description": "Optional path under the WebDAV base URL used as this mount root.",
                     "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "s3" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "required": ["bucket", "endpoint", "access_key_id", "secret_access_key"],
+                "properties": {
+                  "bucket": {
+                    "description": "S3 bucket name.",
+                    "type": "string", "minLength": 1
+                  },
+                  "endpoint": {
+                    "description": "S3 endpoint URL.",
+                    "type": "string", "minLength": 1,
+                    "example": "https://s3.us-east-1.amazonaws.com"
+                  },
+                  "region": {
+                    "description": "AWS region.",
+                    "type": "string",
+                    "default": "us-east-1"
+                  },
+                  "access_key_id": {
+                    "description": "S3 access key ID.",
+                    "type": "string", "minLength": 1
+                  },
+                  "secret_access_key": {
+                    "description": "S3 secret access key.",
+                    "type": "string", "minLength": 1
+                  },
+                  "session_token": {
+                    "description": "S3 session token (temporary credentials).",
+                    "type": "string"
+                  },
+                  "custom_host": {
+                    "description": "Custom host for download URLs (e.g. CDN domain).",
+                    "type": "string",
+                    "example": "cdn.example.com"
+                  },
+                  "force_path_style": {
+                    "description": "Force path-style addressing (required for MinIO).",
+                    "type": "string",
+                    "default": "false"
+                  },
+                  "list_object_version": {
+                    "description": "S3 list API version: v1 or v2.",
+                    "type": "string",
+                    "default": "v1",
+                    "enum": ["v1", "v2"]
+                  },
+                  "placeholder": {
+                    "description": "Placeholder filename for empty directories.",
+                    "type": "string",
+                    "default": ".qrypt"
+                  },
+                  "root_path": {
+                    "description": "Root path prefix within the bucket.",
+                    "type": "string",
+                    "default": "/"
+                  },
+                  "sign_url_expire": {
+                    "description": "Presigned URL expiration duration.",
+                    "type": "string",
+                    "default": "4h"
                   }
                 }
               }
