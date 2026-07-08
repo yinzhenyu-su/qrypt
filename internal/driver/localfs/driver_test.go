@@ -178,16 +178,6 @@ func TestDriverDebugAndHealth(t *testing.T) {
 		t.Fatalf("snapshot root = %#v, want %q", snapshot.Stats["root_path"], root)
 	}
 
-	health := driver.HealthCheck(ctx)
-	if !health.OK || health.Error != "" {
-		t.Fatalf("unexpected health: %#v", health)
-	}
-
-	missing := New(filepath.Join(root, "missing"))
-	health = missing.HealthCheck(ctx)
-	if health.OK || health.Error == "" {
-		t.Fatalf("expected missing root health failure, got %#v", health)
-	}
 }
 
 func TestDriverResolveRemoteNameIsIdentity(t *testing.T) {

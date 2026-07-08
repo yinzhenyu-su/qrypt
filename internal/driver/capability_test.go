@@ -26,7 +26,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  localfs.New(t.TempDir()),
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
-				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilitySpace,
@@ -40,7 +39,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
 				drive.CapabilityFileUploader,
-				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySpace,
 				drive.CapabilityUploader,
@@ -53,7 +51,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
 				drive.CapabilityFileUploader,
-				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySpace,
 				drive.CapabilityUploader,
@@ -65,7 +62,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  quark.New("cookie", quark.Options{}),
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
-				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySpace,
 				drive.CapabilityUploader,
@@ -78,7 +74,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
 				drive.CapabilityFileUploader,
-				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySpace,
 				drive.CapabilityUploader,
@@ -90,7 +85,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  webdav.New(webdav.Options{URL: "http://example.invalid/"}),
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
-				drive.CapabilityHealth,
 				drive.CapabilitySpace,
 				drive.CapabilityUploader,
 				drive.CapabilityWriter,
@@ -99,9 +93,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 		{
 			name: "115",
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
-			want: []drive.Capability{
-				drive.CapabilityHealth,
-			},
+			want: nil,
 		},
 		{
 			name: "s3",
@@ -109,7 +101,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
 				drive.CapabilityFileUploader,
-				drive.CapabilityHealth,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityUploader,
 				drive.CapabilityWriter,
