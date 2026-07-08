@@ -25,6 +25,9 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      - name: Install FUSE headers
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
+
       - name: Vet
         run: go vet ./...
 
@@ -43,6 +46,9 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+
+      - name: Install FUSE headers
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
 
       - name: Race Test
         run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./internal/control ./internal/logging ./cmd/qrypt
