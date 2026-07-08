@@ -350,3 +350,29 @@ func driveEntry(id string, size, fsID int64) drive.Entry {
 		},
 	}
 }
+
+func TestBaiduDebugSnapshot(t *testing.T) {
+	d := New(Options{
+		RefreshToken: "token",
+		RootPath:     "/",
+	})
+	snapshot, err := d.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Driver != "baidu_netdisk" {
+		t.Fatalf("driver = %q, want baidu_netdisk", snapshot.Driver)
+	}
+	if snapshot.Health != "ok" {
+		t.Fatalf("health = %q, want ok", snapshot.Health)
+	}
+	if snapshot.Stats["root_path"] != "/" {
+		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+	if snapshot.Extra["credential_source"] == nil {
+		t.Fatalf("expected credential_source in extra, got %+v", snapshot.Extra)
+	}
+	if _, ok := snapshot.Extra["last_error"]; !ok {
+		t.Fatalf("expected last_error in extra")
+	}
+}

@@ -316,7 +316,7 @@ func TestWebDAV_Init(t *testing.T) {
 	}
 }
 
-func TestWebDAV_DebugSnapshotReportsDriverName(t *testing.T) {
+func TestWebDAV_DebugSnapshot(t *testing.T) {
 	drv, _, _ := setupTestWithOptions(t, Options{RootPath: "/qrypt"})
 	snapshot, err := drv.DebugSnapshot(context.Background())
 	if err != nil {
@@ -325,8 +325,17 @@ func TestWebDAV_DebugSnapshotReportsDriverName(t *testing.T) {
 	if snapshot.Driver != "webdav" {
 		t.Fatalf("driver = %q, want webdav", snapshot.Driver)
 	}
+	if snapshot.Health != "ok" {
+		t.Fatalf("health = %q, want ok", snapshot.Health)
+	}
 	if snapshot.Stats["root_path"] != "/qrypt" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+	if snapshot.Stats["username"] != "test" {
+		t.Fatalf("unexpected username: %+v", snapshot.Stats)
+	}
+	if snapshot.Extra["credential_source"] != "config" {
+		t.Fatalf("credential_source = %v, want config", snapshot.Extra["credential_source"])
 	}
 }
 
