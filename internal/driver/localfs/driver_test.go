@@ -174,8 +174,8 @@ func TestDriverDebugAndHealth(t *testing.T) {
 	if snapshot.Driver != "localfs" || snapshot.Health != "ok" {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
 	}
-	if snapshot.Stats["root"] != root {
-		t.Fatalf("snapshot root = %#v, want %q", snapshot.Stats["root"], root)
+	if snapshot.Stats["root_path"] != root {
+		t.Fatalf("snapshot root = %#v, want %q", snapshot.Stats["root_path"], root)
 	}
 
 	health := driver.HealthCheck(ctx)

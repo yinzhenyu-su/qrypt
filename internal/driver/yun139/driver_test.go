@@ -640,3 +640,42 @@ func TestToEntry(t *testing.T) {
 		t.Error("expected IsDir")
 	}
 }
+
+func TestYun139DebugSnapshot(t *testing.T) {
+	d := New("auth", "/Docs")
+	d.rootID = "root-id"
+	snapshot, err := d.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Driver != "yun139" {
+		t.Fatalf("driver = %q, want yun139", snapshot.Driver)
+	}
+	if snapshot.Health != "ok" {
+		t.Fatalf("health = %q, want ok", snapshot.Health)
+	}
+	if snapshot.Stats["root_path"] != "/Docs" {
+		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+	if snapshot.Stats["root_id"] != "root-id" {
+		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
+	}
+	if snapshot.Extra["credential_source"] != "config" {
+		t.Fatalf("credential_source = %v, want config", snapshot.Extra["credential_source"])
+	}
+}
+
+func TestYun139DebugSnapshotDegraded(t *testing.T) {
+	d := New("auth", "/Docs")
+	d.setLastError(fmt.Errorf("simulated API error"))
+	snapshot, err := d.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Health != "degraded" {
+		t.Fatalf("health = %q, want degraded", snapshot.Health)
+	}
+	if snapshot.Extra["last_error"] != "simulated API error" {
+		t.Fatalf("last_error = %v, want simulated API error", snapshot.Extra["last_error"])
+	}
+}

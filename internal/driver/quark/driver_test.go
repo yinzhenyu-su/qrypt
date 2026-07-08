@@ -106,8 +106,8 @@ func TestDriverDebugSnapshot(t *testing.T) {
 	if snapshot.Stats["root_path"] != "/Docs" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Extra["uploads"] == nil {
-		t.Fatalf("expected uploads extra, got %+v", snapshot.Extra)
+	if snapshot.Extra["credential_source"] == nil {
+		t.Fatalf("expected credential_source extra, got %+v", snapshot.Extra)
 	}
 }
 
