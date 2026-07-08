@@ -80,6 +80,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityFileUploader,
 				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
+				drive.CapabilitySpace,
 				drive.CapabilityUploader,
 				drive.CapabilityWriter,
 			},
