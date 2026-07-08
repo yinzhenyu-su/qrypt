@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,10 +18,32 @@ import (
 
 type fakeSnapshotter struct {
 	snapshot vfs.DebugSnapshot
+	drivers  []vfs.NamedDriver
 }
 
 func (f fakeSnapshotter) DebugSnapshot() vfs.DebugSnapshot {
 	return f.snapshot
+}
+
+func (f fakeSnapshotter) Drivers() []vfs.NamedDriver {
+	return f.drivers
+}
+
+type fakeSpaceDriver struct {
+	space drive.Space
+	err   error
+}
+
+func (f fakeSpaceDriver) Init(context.Context) error { return nil }
+func (f fakeSpaceDriver) Drop(context.Context) error { return nil }
+func (f fakeSpaceDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, nil
+}
+func (f fakeSpaceDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, nil
+}
+func (f fakeSpaceDriver) Space(context.Context) (drive.Space, error) {
+	return f.space, f.err
 }
 
 func (f fakeSnapshotter) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
@@ -138,7 +161,10 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				Files:      []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "remote-id", ChunkCount: 1, Bytes: 7}},
 			},
 		}},
-	}}
+	}, drivers: []vfs.NamedDriver{{
+		Name:   "local",
+		Driver: fakeSpaceDriver{space: drive.Space{Total: 2 * drive.GiB, Free: 1536 * drive.MiB}},
+	}}}
 	server, err := NewServer(socketPath, source)
 	if err != nil {
 		t.Fatal(err)
@@ -211,6 +237,19 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if !strings.Contains(string(driverBody), `"driver": "localfs"`) || !strings.Contains(string(driverBody), `"mount": "local"`) {
 		t.Fatalf("unexpected driver response: %s", driverBody)
+	}
+	if strings.Contains(string(driverBody), `"space"`) {
+		t.Fatalf("driver response should not query space by default: %s", driverBody)
+	}
+
+	driverSpaceBody, err := client.Get(context.Background(), "/v1/driver?space=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(driverSpaceBody), `"bytes_total": 2147483648`) ||
+		!strings.Contains(string(driverSpaceBody), `"total": "2.00 GiB"`) ||
+		!strings.Contains(string(driverSpaceBody), `"free": "1.50 GiB"`) {
+		t.Fatalf("unexpected driver space response: %s", driverSpaceBody)
 	}
 
 	listBody, err := client.Get(context.Background(), "/v1/list?path=/local")

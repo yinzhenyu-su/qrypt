@@ -76,6 +76,15 @@ type DebugDriverSummary struct {
 	Mount        string              `json:"mount"`
 	Capabilities []drive.Capability  `json:"capabilities,omitempty"`
 	Driver       drive.DebugSnapshot `json:"driver"`
+	Space        *DebugSpaceSummary  `json:"space,omitempty"`
+}
+
+type DebugSpaceSummary struct {
+	BytesTotal int64  `json:"bytes_total"`
+	BytesFree  int64  `json:"bytes_free"`
+	Total      string `json:"total"`
+	Free       string `json:"free"`
+	Error      string `json:"error,omitempty"`
 }
 
 type ListResponse struct {
@@ -742,12 +751,21 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.source.DebugSnapshot()
+	var spaceByMount map[string]*DebugSpaceSummary
+	if parseBoolQuery(r.URL.Query().Get("space")) {
+		spaceByMount = s.driverSpaces(r.Context())
+	}
 	var drivers []DebugDriverSummary
 	for _, mount := range snapshot.Mounts {
 		if mount.Driver == nil {
 			continue
 		}
-		drivers = append(drivers, DebugDriverSummary{Mount: mount.Name, Capabilities: mount.Capabilities, Driver: *mount.Driver})
+		drivers = append(drivers, DebugDriverSummary{
+			Mount:        mount.Name,
+			Capabilities: mount.Capabilities,
+			Driver:       *mount.Driver,
+			Space:        spaceByMount[mount.Name],
+		})
 	}
 	sort.Slice(drivers, func(i, j int) bool {
 		return drivers[i].Mount < drivers[j].Mount
@@ -757,6 +775,32 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   snapshot.GeneratedAt,
 		Drivers:       drivers,
 	})
+}
+
+func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary {
+	provider, ok := s.source.(vfs.DriverProvider)
+	if !ok {
+		return nil
+	}
+	spaces := map[string]*DebugSpaceSummary{}
+	for _, item := range provider.Drivers() {
+		querier, ok := item.Driver.(drive.SpaceQuerier)
+		if !ok {
+			continue
+		}
+		space, err := querier.Space(ctx)
+		summary := &DebugSpaceSummary{}
+		if err != nil {
+			summary.Error = err.Error()
+		} else {
+			summary.BytesTotal = space.Total
+			summary.BytesFree = space.Free
+			summary.Total = drive.FormatBytes(space.Total)
+			summary.Free = drive.FormatBytes(space.Free)
+		}
+		spaces[item.Name] = summary
+	}
+	return spaces
 }
 
 func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
