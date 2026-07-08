@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	stdpath "path"
 	"strings"
 	"time"
@@ -52,6 +53,7 @@ type Driver struct {
 	signExpire   time.Duration
 
 	client       *s3.Client
+	limiter      *drive.BandwidthLimiter
 }
 
 // Options configures a new S3 driver.
@@ -234,6 +236,11 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(ctx context.Context) error { return nil }
 
+func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
+	d.limiter = limiter
+	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
+}
+
 // List returns the immediate children of the directory identified by parentID.
 // parentID is a key prefix like "/" (root) or "photos/".
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -276,7 +283,11 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		}
 		return nil, fmt.Errorf("s3: get %q: %w", entry.ID, err)
 	}
-	return output.Body, nil
+	rc := output.Body
+	if d.limiter != nil {
+		rc = d.limiter.LimitDownload(ctx, rc)
+	}
+	return rc, nil
 }
 
 // ─── drive.Writer interface ─────────────────────────────────────────────────
@@ -331,6 +342,9 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 
 func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
 	key := d.toS3Key(d.joinPath(parentID, name))
+	if d.limiter != nil {
+		body = d.limiter.LimitUpload(ctx, body)
+	}
 	_, err := d.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(key),
@@ -346,6 +360,15 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		Size:     size,
 		ModTime:  time.Now(),
 	}, nil
+}
+
+func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("s3: putfile open %q: %w", localPath, err)
+	}
+	defer f.Close()
+	return d.Put(ctx, parentID, name, size, f)
 }
 
 // ─── drive.Debugger interface ───────────────────────────────────────────────
@@ -386,6 +409,21 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	status.OK = true
 	status.Latency = time.Since(start).String()
 	return status
+}
+
+func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
+	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
+}
+
+func (d *Driver) Capabilities() []drive.Capability {
+	return []drive.Capability{
+		drive.CapabilityWriter,
+		drive.CapabilityUploader,
+		drive.CapabilityFileUploader,
+		drive.CapabilityDebugger,
+		drive.CapabilityHealth,
+		drive.CapabilityRemoteNameResolver,
+	}
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
@@ -527,9 +565,12 @@ func isS3NotFound(err error) bool {
 
 // Compile-time interface checks.
 var (
-	_ drive.Driver         = (*Driver)(nil)
-	_ drive.Writer         = (*Driver)(nil)
-	_ drive.Uploader       = (*Driver)(nil)
-	_ drive.Debugger       = (*Driver)(nil)
-	_ drive.HealthChecker  = (*Driver)(nil)
+	_ drive.Driver               = (*Driver)(nil)
+	_ drive.Writer               = (*Driver)(nil)
+	_ drive.Uploader             = (*Driver)(nil)
+	_ drive.FileUploader         = (*Driver)(nil)
+	_ drive.Debugger             = (*Driver)(nil)
+	_ drive.HealthChecker        = (*Driver)(nil)
+	_ drive.RemoteNameResolver   = (*Driver)(nil)
+	_ drive.CapabilityReporter   = (*Driver)(nil)
 )
