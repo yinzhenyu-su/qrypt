@@ -21,6 +21,7 @@ import (
 )
 
 const uploadDebounceDelay = 5 * time.Second
+const zeroByteUploadDebounceDelay = 10 * time.Second
 const defaultUploadWorkers = 4
 const deleteDebounceDelay = 2 * time.Second
 const restoredDirTTL = 60 * time.Second
@@ -395,8 +396,12 @@ func (v *VFS) Flush(ctx context.Context, path string) error {
 	if latest, ok := v.cache.PendingByPath(path); ok {
 		pending = latest
 	}
-	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath)
-	v.enqueue(pending)
+	delay := v.uploadDelay
+	if pending.Size == 0 && delay < zeroByteUploadDebounceDelay {
+		delay = zeroByteUploadDebounceDelay
+	}
+	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q delay=%s", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, delay)
+	v.enqueueAfter(pending, delay)
 	return nil
 }
 

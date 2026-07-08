@@ -65,24 +65,26 @@ type DebugMountSnapshot struct {
 }
 
 type DebugUpload struct {
-	OpID          string         `json:"op_id"`
-	Path          string         `json:"path"`
-	Name          string         `json:"name"`
-	State         string         `json:"state"`
-	BytesTotal    int64          `json:"bytes_total"`
-	BytesUploaded int64          `json:"bytes_uploaded"`
-	StartedAt     time.Time      `json:"started_at,omitempty"`
-	UpdatedAt     time.Time      `json:"updated_at,omitempty"`
-	RetryCount    int            `json:"retry_count"`
-	LastError     string         `json:"last_error,omitempty"`
-	LastAttemptAt int64          `json:"last_attempt_at,omitempty"`
-	NextAttemptAt int64          `json:"next_attempt_at,omitempty"`
-	CompletedAt   time.Time      `json:"completed_at,omitempty"`
-	Extra         map[string]any `json:"extra,omitempty"`
+	OpID           string            `json:"op_id"`
+	Path           string            `json:"path"`
+	Name           string            `json:"name"`
+	State          string            `json:"state"`
+	BytesTotal     int64             `json:"bytes_total"`
+	BytesUploaded  int64             `json:"bytes_uploaded"`
+	StartedAt      time.Time         `json:"started_at,omitempty"`
+	UpdatedAt      time.Time         `json:"updated_at,omitempty"`
+	RetryCount     int               `json:"retry_count"`
+	LastError      string            `json:"last_error,omitempty"`
+	LastAttemptAt  int64             `json:"last_attempt_at,omitempty"`
+	NextAttemptAt  int64             `json:"next_attempt_at,omitempty"`
+	CompletedAt    time.Time         `json:"completed_at,omitempty"`
+	StageDurations map[string]string `json:"stage_durations,omitempty"`
+	Extra          map[string]any    `json:"extra,omitempty"`
 }
 
 type debugUploadState struct {
-	upload DebugUpload
+	upload         DebugUpload
+	stageStartedAt time.Time
 }
 
 type DebugTimer struct {
@@ -401,27 +403,31 @@ func (v *VFS) debugUploadHistory() []DebugUpload {
 func (v *VFS) startDebugUpload(p PendingFile) {
 	now := timeutil.Now()
 	v.uploadMu.Lock()
-	v.activeUploads[p.Path] = &debugUploadState{upload: DebugUpload{
-		OpID:          p.FID,
-		Path:          p.Path,
-		Name:          p.Name,
-		State:         "uploading",
-		BytesTotal:    p.Size,
-		StartedAt:     now,
-		UpdatedAt:     now,
-		RetryCount:    p.RetryCount,
-		LastError:     p.LastError,
-		LastAttemptAt: p.LastAttemptAt,
-		NextAttemptAt: p.NextAttemptAt,
-	}}
+	v.activeUploads[p.Path] = &debugUploadState{
+		stageStartedAt: now,
+		upload: DebugUpload{
+			OpID:          p.FID,
+			Path:          p.Path,
+			Name:          p.Name,
+			State:         "starting",
+			BytesTotal:    p.Size,
+			StartedAt:     now,
+			UpdatedAt:     now,
+			RetryCount:    p.RetryCount,
+			LastError:     p.LastError,
+			LastAttemptAt: p.LastAttemptAt,
+			NextAttemptAt: p.NextAttemptAt,
+		},
+	}
 	v.uploadMu.Unlock()
 }
 
 func (v *VFS) setDebugUploadState(path, state string) {
 	v.uploadMu.Lock()
 	if upload := v.activeUploads[path]; upload != nil {
+		upload.recordStageDuration(timeutil.Now())
 		upload.upload.State = state
-		upload.upload.UpdatedAt = timeutil.Now()
+		upload.upload.UpdatedAt = upload.stageStartedAt
 	}
 	v.uploadMu.Unlock()
 }
@@ -429,9 +435,11 @@ func (v *VFS) setDebugUploadState(path, state string) {
 func (v *VFS) finishDebugUpload(path, state, lastError string) {
 	v.uploadMu.Lock()
 	if upload := v.activeUploads[path]; upload != nil {
+		now := timeutil.Now()
+		upload.recordStageDuration(now)
 		upload.upload.State = state
 		upload.upload.LastError = lastError
-		upload.upload.UpdatedAt = timeutil.Now()
+		upload.upload.UpdatedAt = now
 		upload.upload.CompletedAt = upload.upload.UpdatedAt
 		v.uploadHistory = append(v.uploadHistory, upload.upload)
 		if len(v.uploadHistory) > debugUploadHistoryLimit {
@@ -441,6 +449,18 @@ func (v *VFS) finishDebugUpload(path, state, lastError string) {
 		delete(v.activeUploads, path)
 	}
 	v.uploadMu.Unlock()
+}
+
+func (s *debugUploadState) recordStageDuration(now time.Time) {
+	if s.stageStartedAt.IsZero() || s.upload.State == "" {
+		s.stageStartedAt = now
+		return
+	}
+	if s.upload.StageDurations == nil {
+		s.upload.StageDurations = map[string]string{}
+	}
+	s.upload.StageDurations[s.upload.State] = now.Sub(s.stageStartedAt).String()
+	s.stageStartedAt = now
 }
 
 func (v *VFS) updateDebugUpload(path string, n int) {

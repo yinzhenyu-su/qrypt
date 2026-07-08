@@ -228,22 +228,26 @@ func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) err
 }
 
 func (v *VFS) enqueue(p PendingFile) {
-	if v.uploadDelay > 0 {
-		v.scheduleUpload(p)
+	v.enqueueAfter(p, v.uploadDelay)
+}
+
+func (v *VFS) enqueueAfter(p PendingFile, delay time.Duration) {
+	if delay > 0 {
+		v.scheduleUpload(p, delay)
 		return
 	}
 	v.sendUpload(p)
 }
 
-func (v *VFS) scheduleUpload(p PendingFile) {
+func (v *VFS) scheduleUpload(p PendingFile, delay time.Duration) {
 	v.uploadMu.Lock()
 	if timer := v.uploadTimers[p.Path]; timer != nil {
 		timer.Stop()
-		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload op_id=%q path=%q delay=%s", p.FID, p.Path, v.uploadDelay)
+		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload op_id=%q path=%q size=%d delay=%s", p.FID, p.Path, p.Size, delay)
 	} else {
-		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload op_id=%q path=%q delay=%s", p.FID, p.Path, v.uploadDelay)
+		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload op_id=%q path=%q size=%d delay=%s", p.FID, p.Path, p.Size, delay)
 	}
-	v.uploadTimers[p.Path] = time.AfterFunc(v.uploadDelay, func() {
+	v.uploadTimers[p.Path] = time.AfterFunc(delay, func() {
 		v.uploadMu.Lock()
 		delete(v.uploadTimers, p.Path)
 		v.uploadMu.Unlock()

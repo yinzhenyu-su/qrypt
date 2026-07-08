@@ -29,6 +29,7 @@ type Driver struct {
 	cl          *client
 	rootID      string
 	rootPath    string
+	limiter     *drive.BandwidthLimiter
 	stateStore  drive.StateStore
 	authSource  string
 	authUpdated time.Time
@@ -102,6 +103,11 @@ func (d *Driver) Drop(ctx context.Context) error { return nil }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+}
+
+func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
+	d.limiter = limiter
+	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
 func (d *Driver) resolveID(fileID string) string {
@@ -197,7 +203,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		resp.Body.Close()
 		return nil, fmt.Errorf("139: read status %d", resp.StatusCode)
 	}
-	return resp.Body, nil
+	return d.limiter.LimitDownload(ctx, resp.Body), nil
 }
 
 func (d *Driver) getDownloadURL(ctx context.Context, fileID string) (string, error) {
@@ -528,7 +534,8 @@ func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp,
 			if _, err := f.Seek(start, io.SeekStart); err != nil {
 				return fmt.Errorf("139: upload part %d seek: %w", up.partNumber, err)
 			}
-			req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, up.uploadURL, io.LimitReader(f, end-start))
+			body := d.limiter.LimitUpload(uploadCtx, io.LimitReader(f, end-start))
+			req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, up.uploadURL, body)
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
@@ -603,3 +610,4 @@ var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.HealthChecker = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
+var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
