@@ -1917,6 +1917,39 @@ func TestVFSForegroundListRetriesCanceledDirectoryPrefetch(t *testing.T) {
 	}
 }
 
+func TestVFSDirectoryPrefetchFallsBackAfterSessionContextCanceled(t *testing.T) {
+	prefetchCtx, cancel := context.WithCancel(context.Background())
+	drv := &treeListDriver{
+		lists: map[string]int{},
+		entries: map[string][]drive.Entry{
+			"0": {
+				{ID: "dir-a", ParentID: "0", Name: "a", IsDir: true},
+			},
+			"dir-a": {
+				{ID: "dir-b", ParentID: "dir-a", Name: "b", IsDir: true},
+			},
+			"dir-b": {
+				{ID: "leaf", ParentID: "dir-b", Name: "leaf.txt"},
+			},
+		},
+	}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.StartDirectoryPrefetch(prefetchCtx)
+	if _, err := fs.List(prefetchCtx, "/"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool { return drv.listCount("dir-a") == 1 })
+	cancel()
+
+	if _, err := fs.List(context.Background(), "/a"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool { return drv.listCount("dir-b") == 1 })
+}
+
 func TestVFSDirectoryPrefetchDiscardsStalePathAfterRename(t *testing.T) {
 	ctx := context.Background()
 	entered := make(chan struct{})
