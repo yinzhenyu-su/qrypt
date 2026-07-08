@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -50,18 +51,32 @@ type propstat struct {
 }
 
 type prop struct {
-	ResourceType       *resourceType `xml:"resourcetype"`
-	GetContentLen      string        `xml:"getcontentlength"`
-	GetLastMod         string        `xml:"getlastmodified"`
-	DisplayName        string        `xml:"displayname"`
-	GetETag            string        `xml:"getetag"`
-	QuotaAvailableBytes string       `xml:"quota-available-bytes"`
-	QuotaUsedBytes     string        `xml:"quota-used-bytes"`
+	ResourceType        *resourceType `xml:"resourcetype"`
+	GetContentLen       string        `xml:"getcontentlength"`
+	GetLastMod          string        `xml:"getlastmodified"`
+	DisplayName         string        `xml:"displayname"`
+	GetETag             string        `xml:"getetag"`
+	QuotaAvailableBytes string        `xml:"quota-available-bytes"`
+	QuotaUsedBytes      string        `xml:"quota-used-bytes"`
 }
 
 type resourceType struct {
 	Collection *struct{} `xml:"collection"`
 }
+
+type webdavStatusError struct {
+	op     string
+	status int
+	url    string
+}
+
+func (e webdavStatusError) Error() string {
+	return fmt.Sprintf("webdav: %s: unexpected status %d for %s", e.op, e.status, e.url)
+}
+
+const webdavRequestMaxAttempts = 3
+
+var webdavRetryWait = retry.Wait
 
 // ─── Driver ──────────────────────────────────────────────────────────────
 
@@ -167,6 +182,9 @@ func webdavBaseURL(rawURL, rootPath string) string {
 func (d *Driver) Init(ctx context.Context) error {
 	// Verify the connection by PROPFIND on root.
 	if _, err := d.propfind(ctx, d.baseURL, 0); err != nil {
+		if isTemporaryWebDAVStatus(err) {
+			return nil
+		}
 		if d.rootPath != "" && d.rootPath != "/" {
 			return fmt.Errorf("webdav: init root_path %q: %w", d.rootPath, err)
 		}
@@ -308,6 +326,24 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 // ─── drive.SpaceQuerier interface ───────────────────────────────────────────
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	var lastErr error
+	for attempt := 1; attempt <= webdavRequestMaxAttempts; attempt++ {
+		space, err := d.spaceOnce(ctx)
+		if err == nil {
+			return space, nil
+		}
+		lastErr = err
+		if !isTemporaryWebDAVStatus(err) || attempt == webdavRequestMaxAttempts {
+			return drive.Space{}, err
+		}
+		if err := webdavRetryWait(ctx, attempt-1); err != nil {
+			return drive.Space{}, err
+		}
+	}
+	return drive.Space{}, lastErr
+}
+
+func (d *Driver) spaceOnce(ctx context.Context) (drive.Space, error) {
 	body := `<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
   <D:prop>
@@ -329,7 +365,7 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusMultiStatus && resp.StatusCode != http.StatusOK {
-		return drive.Space{}, fmt.Errorf("webdav: space: unexpected status %d", resp.StatusCode)
+		return drive.Space{}, webdavStatusError{op: "space", status: resp.StatusCode, url: d.baseURL}
 	}
 
 	var ms multistatus
@@ -530,6 +566,24 @@ func (d *Driver) baseURLPath() string {
 
 // propfind sends a PROPFIND request at the given depth.
 func (d *Driver) propfind(ctx context.Context, urlStr string, depth int) ([]propfindResponse, error) {
+	var lastErr error
+	for attempt := 1; attempt <= webdavRequestMaxAttempts; attempt++ {
+		responses, err := d.propfindOnce(ctx, urlStr, depth)
+		if err == nil {
+			return responses, nil
+		}
+		lastErr = err
+		if !isTemporaryWebDAVStatus(err) || attempt == webdavRequestMaxAttempts {
+			return nil, err
+		}
+		if err := webdavRetryWait(ctx, attempt-1); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (d *Driver) propfindOnce(ctx context.Context, urlStr string, depth int) ([]propfindResponse, error) {
 	req, err := d.newRequest(ctx, "PROPFIND", urlStr, nil)
 	if err != nil {
 		return nil, err
@@ -544,7 +598,7 @@ func (d *Driver) propfind(ctx context.Context, urlStr string, depth int) ([]prop
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusMultiStatus && resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("webdav: propfind: unexpected status %d for %s", resp.StatusCode, urlStr)
+		return nil, webdavStatusError{op: "propfind", status: resp.StatusCode, url: urlStr}
 	}
 
 	var ms multistatus
@@ -552,6 +606,19 @@ func (d *Driver) propfind(ctx context.Context, urlStr string, depth int) ([]prop
 		return nil, fmt.Errorf("webdav: propfind: decode: %w", err)
 	}
 	return ms.Responses, nil
+}
+
+func isTemporaryWebDAVStatus(err error) bool {
+	statusErr, ok := err.(webdavStatusError)
+	if !ok {
+		return false
+	}
+	switch statusErr.status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseProps extracts isDir, size, and modTime from a propstat slice.

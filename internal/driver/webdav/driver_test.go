@@ -644,6 +644,98 @@ func TestWebDAV_RootPathMissingReportsRootPath(t *testing.T) {
 	}
 }
 
+func TestWebDAV_InitAllowsTemporaryPropfindStatus(t *testing.T) {
+	withoutWebDAVRetryWait(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			t.Fatalf("method = %s, want PROPFIND", r.Method)
+		}
+		http.Error(w, "temporary unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	drv := New(Options{URL: srv.URL + "/", Username: "test", Password: "test", RootPath: "/temporarily-blocked"})
+	if err := drv.Init(context.Background()); err != nil {
+		t.Fatalf("Init should allow temporary status, got %v", err)
+	}
+}
+
+func TestWebDAV_InitRetriesTemporaryPropfindStatus(t *testing.T) {
+	withoutWebDAVRetryWait(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			t.Fatalf("method = %s, want PROPFIND", r.Method)
+		}
+		calls++
+		if calls == 1 {
+			http.Error(w, "temporary unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		w.WriteHeader(http.StatusMultiStatus)
+		if err := xml.NewEncoder(w).Encode(multistatus{Responses: []propfindResponse{
+			{Href: "/", Propstat: []propstat{{Status: "HTTP/1.1 200 OK", Prop: prop{ResourceType: &resourceType{Collection: &struct{}{}}}}}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	drv := New(Options{URL: srv.URL + "/", Username: "test", Password: "test"})
+	if err := drv.Init(context.Background()); err != nil {
+		t.Fatalf("Init failed after temporary status: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("PROPFIND calls = %d, want 2", calls)
+	}
+}
+
+func TestWebDAV_SpaceRetriesTemporaryPropfindStatus(t *testing.T) {
+	withoutWebDAVRetryWait(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			t.Fatalf("method = %s, want PROPFIND", r.Method)
+		}
+		calls++
+		if calls == 1 {
+			http.Error(w, "temporary unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		w.WriteHeader(http.StatusMultiStatus)
+		if err := xml.NewEncoder(w).Encode(multistatus{Responses: []propfindResponse{
+			{Href: "/", Propstat: []propstat{{Status: "HTTP/1.1 200 OK", Prop: prop{
+				QuotaAvailableBytes: "200",
+				QuotaUsedBytes:      "100",
+			}}}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer srv.Close()
+
+	drv := New(Options{URL: srv.URL + "/", Username: "test", Password: "test"})
+	space, err := drv.Space(context.Background())
+	if err != nil {
+		t.Fatalf("Space failed after temporary status: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("PROPFIND calls = %d, want 2", calls)
+	}
+	if space.Total != 300 || space.Free != 200 {
+		t.Fatalf("space = %+v, want total=300 free=200", space)
+	}
+}
+
+func withoutWebDAVRetryWait(t *testing.T) {
+	t.Helper()
+	original := webdavRetryWait
+	webdavRetryWait = func(context.Context, int) error { return nil }
+	t.Cleanup(func() { webdavRetryWait = original })
+}
+
 // ─── additional read offset tests ─────────────────────────────────────────
 
 func TestWebDAV_ReadOffsetToEOF(t *testing.T) {
