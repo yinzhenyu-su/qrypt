@@ -31,6 +31,7 @@ type Driver struct {
 	cookieUpdated time.Time
 	debugMu       sync.Mutex
 	debugUploads  map[string]quarkUploadDebug
+	lastError     string
 }
 
 type cookieState struct {
@@ -592,21 +593,60 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		urlCacheCount++
 		return true
 	})
+	health := "ok"
+	if d.getLastError() != "" {
+		health = "degraded"
+	}
 	return drive.DebugSnapshot{
 		Driver:      "quark",
-		Health:      "unknown",
+		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
 			"active_uploads":  len(activeUploads),
 			"url_cache_count": urlCacheCount,
 			"root_id":         d.rootID,
 			"root_path":       d.rootPath,
-			"cookie_source":   d.cookieSource,
 		},
 		Extra: map[string]any{
-			"uploads":           activeUploads,
-			"cookie_updated_at": d.cookieUpdated,
+			"credential_source":  d.cookieSource,
+			"credential_updated": d.cookieUpdated,
+			"last_error":         d.getLastError(),
 		},
+	}, nil
+}
+
+func (d *Driver) setLastError(err error) {
+	if err == nil {
+		return
+	}
+	d.debugMu.Lock()
+	d.lastError = err.Error()
+	d.debugMu.Unlock()
+}
+
+func (d *Driver) getLastError() string {
+	d.debugMu.Lock()
+	defer d.debugMu.Unlock()
+	return d.lastError
+}
+
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	var resp struct {
+		Total int64 `json:"total_capacity"`
+		Used  int64 `json:"use_capacity"`
+	}
+	err := d.cl.request(http.MethodGet, "/member", map[string]string{
+		"uc_param_str":    "",
+		"fetch_subscribe": "true",
+		"_ch":             "home",
+		"fetch_identity":  "true",
+	}, nil, &resp)
+	if err != nil {
+		return drive.Space{}, fmt.Errorf("quark: space: %w", err)
+	}
+	return drive.Space{
+		Total: resp.Total,
+		Free:  resp.Total - resp.Used,
 	}, nil
 }
 
@@ -617,6 +657,7 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	status.Latency = time.Since(start).String()
 	if err != nil {
 		status.Error = err.Error()
+		d.setLastError(err)
 		return status
 	}
 	status.OK = true

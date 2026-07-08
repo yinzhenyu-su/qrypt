@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,11 +50,13 @@ type propstat struct {
 }
 
 type prop struct {
-	ResourceType  *resourceType `xml:"resourcetype"`
-	GetContentLen string        `xml:"getcontentlength"`
-	GetLastMod    string        `xml:"getlastmodified"`
-	DisplayName   string        `xml:"displayname"`
-	GetETag       string        `xml:"getetag"`
+	ResourceType       *resourceType `xml:"resourcetype"`
+	GetContentLen      string        `xml:"getcontentlength"`
+	GetLastMod         string        `xml:"getlastmodified"`
+	DisplayName        string        `xml:"displayname"`
+	GetETag            string        `xml:"getetag"`
+	QuotaAvailableBytes string       `xml:"quota-available-bytes"`
+	QuotaUsedBytes     string        `xml:"quota-used-bytes"`
 }
 
 type resourceType struct {
@@ -302,13 +305,72 @@ func (d *Driver) HealthCheck(ctx context.Context) drive.HealthStatus {
 	return status
 }
 
+// ─── drive.SpaceQuerier interface ───────────────────────────────────────────
+
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	body := `<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:quota-available-bytes/>
+    <D:quota-used-bytes/>
+  </D:prop>
+</D:propfind>`
+	req, err := d.newRequest(ctx, "PROPFIND", d.baseURL, strings.NewReader(body))
+	if err != nil {
+		return drive.Space{}, fmt.Errorf("webdav: space: %w", err)
+	}
+	req.Header.Set("Depth", "0")
+	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return drive.Space{}, fmt.Errorf("webdav: space: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMultiStatus && resp.StatusCode != http.StatusOK {
+		return drive.Space{}, fmt.Errorf("webdav: space: unexpected status %d", resp.StatusCode)
+	}
+
+	var ms multistatus
+	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
+		return drive.Space{}, fmt.Errorf("webdav: space: decode: %w", err)
+	}
+
+	for _, r := range ms.Responses {
+		for _, ps := range r.Propstat {
+			avail := ps.Prop.QuotaAvailableBytes
+			used := ps.Prop.QuotaUsedBytes
+			if avail == "" && used == "" {
+				continue
+			}
+			var free int64
+			if avail != "" {
+				free, _ = strconv.ParseInt(avail, 10, 64)
+			}
+			var total int64
+			if used != "" {
+				usedBytes, _ := strconv.ParseInt(used, 10, 64)
+				total = usedBytes + free
+			}
+			return drive.Space{Total: total, Free: free}, nil
+		}
+	}
+
+	return drive.Space{}, fmt.Errorf("webdav: space: server did not report quota properties")
+}
+
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	return drive.DebugSnapshot{
 		Driver:      "webdav",
-		Health:      "unknown",
+		Health:      "ok",
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
 			"root_path": d.rootPath,
+			"username":  d.username,
+		},
+		Extra: map[string]any{
+			"credential_source": "config",
 		},
 	}, nil
 }
@@ -568,3 +630,4 @@ var _ drive.Writer = (*Driver)(nil)
 var _ drive.Uploader = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.HealthChecker = (*Driver)(nil)
+var _ drive.SpaceQuerier = (*Driver)(nil)

@@ -9,6 +9,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
 	"github.com/yinzhenyu/qrypt/internal/driver/p115"
 	"github.com/yinzhenyu/qrypt/internal/driver/quark"
+	"github.com/yinzhenyu/qrypt/internal/driver/s3"
 	"github.com/yinzhenyu/qrypt/internal/driver/webdav"
 	"github.com/yinzhenyu/qrypt/internal/driver/yun139"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -66,6 +67,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityDebugger,
 				drive.CapabilityHealth,
 				drive.CapabilityPathResolver,
+				drive.CapabilitySpace,
 				drive.CapabilityUploader,
 				drive.CapabilityWriter,
 			},
@@ -88,6 +90,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
 				drive.CapabilityHealth,
+				drive.CapabilitySpace,
 				drive.CapabilityUploader,
 				drive.CapabilityWriter,
 			},
@@ -97,6 +100,18 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
 			want: []drive.Capability{
 				drive.CapabilityHealth,
+			},
+		},
+		{
+			name: "s3",
+			drv:  s3.New(s3.Options{Bucket: "b", Endpoint: "https://example.com"}),
+			want: []drive.Capability{
+				drive.CapabilityDebugger,
+				drive.CapabilityFileUploader,
+				drive.CapabilityHealth,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityUploader,
+				drive.CapabilityWriter,
 			},
 		},
 	}

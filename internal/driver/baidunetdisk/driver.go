@@ -457,9 +457,13 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	d.lastErrorMu.Lock()
 	lastError := d.lastError
 	d.lastErrorMu.Unlock()
+	health := "ok"
+	if lastError != "" {
+		health = "degraded"
+	}
 	return drive.DebugSnapshot{
 		Driver:      "baidu_netdisk",
-		Health:      "unknown",
+		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
 			"root_path":      d.rootPath,
@@ -467,9 +471,12 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"order_desc":     d.orderDesc,
 			"use_online_api": d.useOnlineAPI,
 			"upload_api":     d.uploadAPI,
-			"token_source":   d.tokenSource,
 		},
-		Extra: map[string]any{"last_error": lastError, "token_updated_at": d.tokenUpdated},
+		Extra: map[string]any{
+			"credential_source":  d.tokenSource,
+			"credential_updated": d.tokenUpdated,
+			"last_error":         lastError,
+		},
 	}, nil
 }
 

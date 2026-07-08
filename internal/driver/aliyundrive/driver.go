@@ -674,9 +674,13 @@ func (d *Driver) validateRoot(ctx context.Context) error {
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	health := "ok"
+	if d.getLastError() != "" {
+		health = "degraded"
+	}
 	return drive.DebugSnapshot{
 		Driver:      "aliyundrive",
-		Health:      "unknown",
+		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
 			"drive_id":        d.driveID,
@@ -685,11 +689,11 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"user_id":         d.userID,
 			"order_by":        d.orderBy,
 			"order_direction": d.orderDirection,
-			"token_source":    d.tokenSource,
 		},
 		Extra: map[string]any{
-			"last_error":       d.getLastError(),
-			"token_updated_at": d.tokenUpdated,
+			"credential_source":  d.tokenSource,
+			"credential_updated": d.tokenUpdated,
+			"last_error":         d.getLastError(),
 		},
 	}, nil
 }
