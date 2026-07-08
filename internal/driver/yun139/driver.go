@@ -23,7 +23,10 @@ type partMeta struct {
 	PartSize   int64 `json:"partSize"`
 }
 
-const uploadPartConcurrency = 4
+const (
+	uploadPartConcurrency = 4
+	quotaSizeUnit         = drive.MiB
+)
 
 type Driver struct {
 	cl          *client
@@ -305,6 +308,34 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 		return fmt.Errorf("139: remove failed (code=%s): %s", resp.Code, resp.Message)
 	}
 	return nil
+}
+
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	data := map[string]interface{}{
+		"commonAccountInfo": map[string]interface{}{
+			"account":     d.cl.getAccount(),
+			"accountType": 1,
+		},
+	}
+	if userDomainID := d.cl.getUserDomainID(); userDomainID != "" {
+		data["userDomainId"] = userDomainID
+	}
+
+	var resp quotaDetailResp
+	if err := d.cl.personalPost(ctx, "/user/disk/quota/detail", data, &resp); err != nil {
+		err = fmt.Errorf("139: space: %w", err)
+		d.setLastError(err)
+		return drive.Space{}, err
+	}
+	if !resp.Success {
+		err := fmt.Errorf("139: space failed (code=%s): %s", resp.Code, resp.Message)
+		d.setLastError(err)
+		return drive.Space{}, err
+	}
+	return drive.Space{
+		Total: resp.Data.DiskSize * quotaSizeUnit,
+		Free:  resp.Data.FreeDiskSize * quotaSizeUnit,
+	}, nil
 }
 
 func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {

@@ -79,6 +79,7 @@ type client struct {
 	httpClient            *http.Client
 	authorization         string
 	account               string
+	userDomainID          string
 	personalCloudHost     string
 	authRefreshURL        string
 	onAuthorizationUpdate func(authorization string)
@@ -104,6 +105,12 @@ func (c *client) getAccount() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.account
+}
+
+func (c *client) getUserDomainID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.userDomainID
 }
 
 func (c *client) setAuthorization(auth string) {
@@ -255,16 +262,24 @@ func (c *client) ensurePersonalCloudHost() error {
 
 	var routeResp struct {
 		Data struct {
+			UserDomainID    string `json:"userDomainId"`
 			RoutePolicyList []struct {
-				ModName  string `json:"modName"`
-				HttpsUrl string `json:"httpsUrl"`
+				ModName      string `json:"modName"`
+				HttpsUrl     string `json:"httpsUrl"`
+				UserDomainID string `json:"userDomainId"`
 			} `json:"routePolicyList"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &routeResp); err != nil {
 		return fmt.Errorf("route policy: %w", err)
 	}
+	if routeResp.Data.UserDomainID != "" {
+		c.userDomainID = routeResp.Data.UserDomainID
+	}
 	for _, item := range routeResp.Data.RoutePolicyList {
+		if item.UserDomainID != "" {
+			c.userDomainID = item.UserDomainID
+		}
 		if item.ModName == "personal" && item.HttpsUrl != "" {
 			c.personalCloudHost = strings.TrimRight(item.HttpsUrl, "/")
 			return nil

@@ -114,3 +114,11 @@ type personalPartInfo struct {
 	PartNumber int    `json:"partNumber"`
 	UploadUrl  string `json:"uploadUrl"`
 }
+
+type quotaDetailResp struct {
+	baseResp
+	Data struct {
+		FreeDiskSize int64 `json:"freeDiskSize"`
+		DiskSize     int64 `json:"diskSize"`
+	} `json:"data"`
+}

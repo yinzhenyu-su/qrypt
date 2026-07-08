@@ -408,6 +408,73 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+func TestSpace(t *testing.T) {
+	var gotBody struct {
+		UserDomainID      string `json:"userDomainId"`
+		CommonAccountInfo struct {
+			Account     string `json:"account"`
+			AccountType int    `json:"accountType"`
+		} `json:"commonAccountInfo"`
+	}
+	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user/disk/quota/detail" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"success": true,
+			"code":    "0000",
+			"message": "请求成功",
+			"data": map[string]interface{}{
+				"freeDiskSize": 39984,
+				"diskSize":     40960,
+			},
+		})
+	})
+	defer server.Close()
+	if _, _, err := drv.cl.decodeAuth(); err != nil {
+		t.Fatal(err)
+	}
+	drv.cl.mu.Lock()
+	drv.cl.userDomainID = "domain-1"
+	drv.cl.mu.Unlock()
+
+	space, err := drv.Space(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if space.Total != 40*drive.GiB || space.Free != 39984*drive.MiB {
+		t.Fatalf("space = %+v, want total=%d free=%d", space, 40*drive.GiB, 39984*drive.MiB)
+	}
+	if gotBody.UserDomainID != "domain-1" {
+		t.Fatalf("userDomainId = %q, want domain-1", gotBody.UserDomainID)
+	}
+	if gotBody.CommonAccountInfo.Account != "test" || gotBody.CommonAccountInfo.AccountType != 1 {
+		t.Fatalf("commonAccountInfo = %+v", gotBody.CommonAccountInfo)
+	}
+}
+
+func TestSpaceFailedSetsLastError(t *testing.T) {
+	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"success": false,
+			"code":    "500",
+			"message": "quota failed",
+		})
+	})
+	defer server.Close()
+
+	_, err := drv.Space(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "quota failed") {
+		t.Fatalf("expected quota failed error, got %v", err)
+	}
+	if !strings.Contains(drv.getLastError(), "quota failed") {
+		t.Fatalf("lastError = %q, want quota failed", drv.getLastError())
+	}
+}
+
 func TestPutSmallFile(t *testing.T) {
 	var createCalled, completeCalled bool
 	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
