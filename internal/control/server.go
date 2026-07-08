@@ -62,10 +62,10 @@ type DriversResponse struct {
 	Drivers       []DebugDriverSummary `json:"drivers"`
 }
 
-type DriverHealthResponse struct {
-	SchemaVersion int                `json:"schema_version"`
-	GeneratedAt   time.Time          `json:"generated_at"`
-	Drivers       []vfs.DriverHealth `json:"drivers"`
+type MountHealthResponse struct {
+	SchemaVersion int               `json:"schema_version"`
+	GeneratedAt   time.Time         `json:"generated_at"`
+	Mounts        []vfs.MountHealth `json:"mounts"`
 }
 
 type EventsResponse struct {
@@ -196,6 +196,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
 	mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
+	mux.HandleFunc("/v1/mounts/health", s.handleMountHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/list", s.handleList)
 	mux.HandleFunc("/v1/resolve", s.handleResolve)
@@ -735,25 +736,6 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if parseBoolQuery(r.URL.Query().Get("health")) {
-		checker, ok := s.source.(vfs.DriverHealthChecker)
-		if !ok {
-			http.Error(w, "driver health not available", http.StatusNotImplemented)
-			return
-		}
-		mountName := r.URL.Query().Get("mount")
-		results, err := checker.DriverHealth(r.Context(), mountName)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		writeJSON(w, DriverHealthResponse{
-			SchemaVersion: vfs.DebugSnapshotSchemaVersion,
-			GeneratedAt:   time.Now(),
-			Drivers:       results,
-		})
-		return
-	}
 	snapshot := s.source.DebugSnapshot()
 	var spaceByMount map[string]*DebugSpaceSummary
 	if parseBoolQuery(r.URL.Query().Get("space")) {
@@ -778,6 +760,28 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		SchemaVersion: snapshot.SchemaVersion,
 		GeneratedAt:   snapshot.GeneratedAt,
 		Drivers:       drivers,
+	})
+}
+
+func (s *Server) handleMountHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	checker, ok := s.source.(vfs.MountHealthChecker)
+	if !ok {
+		http.Error(w, "mount health not available", http.StatusNotImplemented)
+		return
+	}
+	results, err := checker.MountHealth(r.Context(), r.URL.Query().Get("mount"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, MountHealthResponse{
+		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+		GeneratedAt:   time.Now(),
+		Mounts:        results,
 	})
 }
 

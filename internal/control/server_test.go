@@ -29,6 +29,23 @@ func (f fakeSnapshotter) Drivers() []vfs.NamedDriver {
 	return f.drivers
 }
 
+func (f fakeSnapshotter) MountHealth(ctx context.Context, mountName string) ([]vfs.MountHealth, error) {
+	mount := mountName
+	if mount == "" {
+		mount = "local"
+	}
+	return []vfs.MountHealth{{
+		Mount:     mount,
+		OK:        true,
+		Level:     drive.HealthLevelOK,
+		CheckedAt: time.Unix(9, 0),
+		Success:   2,
+		Ops: map[string]vfs.MountHealthOp{
+			drive.HealthOpList: {Success: 2},
+		},
+	}}, nil
+}
+
 type fakeSpaceDriver struct {
 	space drive.Space
 	err   error
@@ -250,6 +267,17 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(driverSpaceBody), `"total": "2.00 GiB"`) ||
 		!strings.Contains(string(driverSpaceBody), `"free": "1.50 GiB"`) {
 		t.Fatalf("unexpected driver space response: %s", driverSpaceBody)
+	}
+
+	mountHealthBody, err := client.Get(context.Background(), "/v1/mounts/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mountHealthBody), `"mount": "local"`) ||
+		!strings.Contains(string(mountHealthBody), `"level": "ok"`) ||
+		!strings.Contains(string(mountHealthBody), `"success": 2`) ||
+		!strings.Contains(string(mountHealthBody), `"list"`) {
+		t.Fatalf("unexpected mount health response: %s", mountHealthBody)
 	}
 
 	listBody, err := client.Get(context.Background(), "/v1/list?path=/local")
