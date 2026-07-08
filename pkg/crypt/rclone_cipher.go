@@ -65,13 +65,9 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 		saltBytes = []byte(salt)
 	}
 
-	key, err := scrypt.Key([]byte(password), saltBytes, 16384, 8, 1, 80)
-	if err != nil {
-		return nil, err
-	}
-
 	encoding := "base32"
 	encryption := "standard"
+	passwordHash := ""
 	for i, opt := range opts {
 		switch i {
 		case 0:
@@ -82,7 +78,20 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 			if opt != "" {
 				encryption = opt
 			}
+		case 2:
+			if opt != "" {
+				passwordHash = opt
+			}
 		}
+	}
+
+	if passwordHash == PasswordHashArgon2id {
+		password = argon2idStretch(password, salt)
+	}
+
+	key, err := scrypt.Key([]byte(password), saltBytes, 16384, 8, 1, 80)
+	if err != nil {
+		return nil, err
 	}
 
 	c := &RcloneCipher{}
