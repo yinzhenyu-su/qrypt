@@ -2,6 +2,7 @@ package drive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -55,6 +56,8 @@ type Space struct {
 	Total int64
 	Free  int64
 }
+
+var ErrSpaceUnsupported = errors.New("drive: space query unsupported")
 
 // SpaceQuerier is implemented by drivers that can report backend capacity.
 type SpaceQuerier interface {
