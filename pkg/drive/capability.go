@@ -14,7 +14,6 @@ const (
 	CapabilitySpace              Capability = "space"
 	CapabilityPathResolver       Capability = "path_resolver"
 	CapabilityDebugger           Capability = "debugger"
-	CapabilityHealth             Capability = "health"
 	CapabilityRemoteNameResolver Capability = "remote_name_resolver"
 	CapabilityForeignEntries     Capability = "foreign_entries"
 )
@@ -53,9 +52,6 @@ func Capabilities(d Driver) []Capability {
 	}
 	if _, ok := d.(Debugger); ok {
 		caps = append(caps, CapabilityDebugger)
-	}
-	if _, ok := d.(HealthChecker); ok {
-		caps = append(caps, CapabilityHealth)
 	}
 	if _, ok := d.(RemoteNameResolver); ok {
 		caps = append(caps, CapabilityRemoteNameResolver)

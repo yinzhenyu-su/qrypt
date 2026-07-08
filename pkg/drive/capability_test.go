@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 type capabilityReadOnlyDriver struct{}
@@ -45,9 +44,6 @@ func (d *capabilityFullDriver) ResolvePath(context.Context, string) (string, err
 func (d *capabilityFullDriver) DebugSnapshot(context.Context) (DebugSnapshot, error) {
 	return DebugSnapshot{}, nil
 }
-func (d *capabilityFullDriver) HealthCheck(context.Context) HealthStatus {
-	return HealthStatus{CheckedAt: time.Now()}
-}
 func (d *capabilityFullDriver) ResolveRemoteName(context.Context, string) (RemoteNameInfo, error) {
 	return RemoteNameInfo{}, nil
 }
@@ -76,7 +72,6 @@ func TestCapabilitiesFullDriver(t *testing.T) {
 		CapabilityDebugger,
 		CapabilityFileUploader,
 		CapabilityForeignEntries,
-		CapabilityHealth,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
 		CapabilitySpace,
@@ -100,7 +95,6 @@ func TestCapabilitiesBandwidthWrapperPreservesRuntimeCapabilities(t *testing.T) 
 	want := []Capability{
 		CapabilityDebugger,
 		CapabilityFileUploader,
-		CapabilityHealth,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
 		CapabilitySpace,
