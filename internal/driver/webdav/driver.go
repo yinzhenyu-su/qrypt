@@ -393,7 +393,7 @@ func (d *Driver) spaceOnce(ctx context.Context) (drive.Space, error) {
 		}
 	}
 
-	return drive.Space{}, fmt.Errorf("webdav: space: server did not report quota properties")
+	return drive.Space{}, fmt.Errorf("%w: webdav server did not report quota properties", drive.ErrSpaceUnsupported)
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {

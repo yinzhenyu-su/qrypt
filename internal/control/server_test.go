@@ -337,6 +337,29 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 }
 
+func TestDriverSpaceMarksUnsupportedWithoutError(t *testing.T) {
+	source := fakeSnapshotter{drivers: []vfs.NamedDriver{{
+		Name:   "webdav",
+		Driver: fakeSpaceDriver{err: drive.ErrSpaceUnsupported},
+	}}}
+	server := &Server{source: source}
+
+	spaces := server.driverSpaces(context.Background())
+	space := spaces["webdav"]
+	if space == nil {
+		t.Fatal("missing webdav space summary")
+	}
+	if !space.Unsupported {
+		t.Fatalf("unsupported = false, want true: %+v", space)
+	}
+	if space.Error != "" {
+		t.Fatalf("error = %q, want empty", space.Error)
+	}
+	if space.Reason == "" {
+		t.Fatalf("reason is empty: %+v", space)
+	}
+}
+
 func TestServerExposesRecentEvents(t *testing.T) {
 	oldLogger := logging.L
 	testLogger, err := logging.New("debug", "", "", nil)
