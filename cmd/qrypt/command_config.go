@@ -11,6 +11,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -25,6 +26,7 @@ func newConfigCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newConfigInitCmd())
 	cmd.AddCommand(newConfigShowCmd())
+	cmd.AddCommand(newConfigExportRclonePasswordCmd())
 	return cmd
 }
 
@@ -67,6 +69,74 @@ func newConfigInitCmd() *cobra.Command {
 	cmd.Flags().Bool("force", false, "overwrite existing file")
 	cmd.Flags().String("out", "", "output path (default: --config value or ./qrypt.toml)")
 	return cmd
+}
+
+func newConfigExportRclonePasswordCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export-rclone-password [mount-name]",
+		Short: "Print the rclone-compatible password for a mount",
+		Long: `Print the password rclone needs to decrypt files encrypted by this config.
+
+If password_hash is "argon2id", the Argon2id-derived key is printed as a hex string.
+Otherwise, the raw password is printed unchanged.
+
+Use with a config file (reads encryption settings from the named mount):
+  rclone config update myremote password=$(qrypt config export-rclone-password mymount)
+
+Or compute directly from raw inputs (no config file needed):
+  qrypt config export-rclone-password --password "my-pass" --salt "mysalt"`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rawPassword, _ := cmd.Flags().GetString("password")
+			rawSalt, _ := cmd.Flags().GetString("salt")
+			passwordHash, _ := cmd.Flags().GetString("password-hash")
+
+			if rawPassword != "" {
+				return runExportDirect(rawPassword, rawSalt, passwordHash)
+			}
+
+			if configPath == "" {
+				return fmt.Errorf("no config file specified (use --config or --password)")
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			mountName := ""
+			if len(args) > 0 {
+				mountName = args[0]
+			}
+			enc := cfg.EncryptionFor(mountName)
+			pw, err := crypt.ExportRclonePassword(enc)
+			if err != nil {
+				return err
+			}
+			fmt.Println(pw)
+			return nil
+		},
+	}
+	cmd.Flags().String("password", "", "raw password (overrides config)")
+	cmd.Flags().String("salt", "", "salt for key derivation (used with --password)")
+	cmd.Flags().String("password-hash", crypt.PasswordHashArgon2id, "password hash mode: \"argon2id\" or \"\"")
+	return cmd
+}
+
+func runExportDirect(password, salt, passwordHash string) error {
+	cfg := crypt.Config{
+		Password:     password,
+		Salt:         salt,
+		PasswordHash: passwordHash,
+	}
+	cfg = cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	pw, err := crypt.ExportRclonePassword(cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Println(pw)
+	return nil
 }
 
 func newConfigShowCmd() *cobra.Command {
@@ -148,6 +218,11 @@ func generateConfigTemplate() ([]byte, error) {
 		drivers = append(drivers, de)
 	}
 
+	encryptionSalt, err := crypt.GenerateSalt()
+	if err != nil {
+		return nil, fmt.Errorf("generate salt: %w", err)
+	}
+
 	tmpl, err := template.New("config").Parse(configTemplate)
 	if err != nil {
 		return nil, err
@@ -155,7 +230,8 @@ func generateConfigTemplate() ([]byte, error) {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, map[string]any{
-		"Drivers": drivers,
+		"Drivers":        drivers,
+		"EncryptionSalt": encryptionSalt,
 	}); err != nil {
 		return nil, err
 	}
@@ -240,6 +316,14 @@ delete_delay   = "2s"
 [bandwidth]
 download = ""
 upload   = ""
+
+# ── Encryption (uncomment to enable) ────────────────────────────
+# [encryption]
+# password = "your-password"
+# salt = "{{.EncryptionSalt}}"
+# password_hash = "argon2id"
+# filename_encryption = "standard"
+# filename_encoding = "base32"
 
 {{range .Drivers}}
 # ── {{.Name}} ──────────────────────────────────────────────────────
