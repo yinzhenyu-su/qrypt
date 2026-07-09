@@ -19,10 +19,10 @@
 
 ## 系统要求
 
-| 依赖 | macOS | Linux | Windows |
-|---|---|---|---|
-| FUSE | [macFUSE](https://macfuse.io/) | libfuse（通常已预装） | [WinFsp](https://winfsp.dev/) |
-| Go（源码构建） | 1.26+ | 1.26+ | 1.26+ |
+| 依赖           | macOS                          | Linux                 | Windows                       |
+| -------------- | ------------------------------ | --------------------- | ----------------------------- |
+| FUSE           | [macFUSE](https://macfuse.io/) | libfuse（通常已预装） | [WinFsp](https://winfsp.dev/) |
+| Go（源码构建） | 1.26+                          | 1.26+                 | 1.26+                         |
 
 `fs` 命令（list、cat、get、put）不需要 FUSE，只有 `mount` 需要。
 配置文件会自动查找，配置文件放在标准路径时可以省略 `--config` 参数（见[命令行参考](docs/for-user/cli.md)）。
@@ -36,19 +36,53 @@
 mount_point = "~/Qrypt"
 
 [[mounts]]
+# 挂载点名称
 name = "local"
 type = "localfs"
 
 [mounts.params]
 root_path = "/tmp/qrypt-data"
+
+[mounts.encryption]
+password = "my-password"
+filename_encryption = "standard"
+filename_encoding = "base32"
 ```
 
-3. 运行：
+3.1 没有挂载时上传文件并检查加密结果：
 
-```
+```bash
+mkdir -p /tmp/qrypt-data
 ./qrypt fs list /
+echo "hello qrypt" > /tmp/hello.txt
+./qrypt fs put /tmp/hello.txt /local/hello.txt
+./qrypt fs cat /local/hello.txt
 ```
 
+查看后端实际存储的文件——文件名已被加密为乱码：
+
+```bash
+ls /tmp/qrypt-data
+```
+
+输出类似：
+
+```
+b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
+```
+
+原始文件名和文件内容都已被加密。
+
+3.2 挂载后操作
+
+```bash
+./qrypt mount
+```
+
+打开文件管理器进入 `~/Qrypt`，可以像操作普通文件夹一样拖入和打开文件。
+所有操作的文件在后端存储时都会被加密。
+
+文件在后端存储时是加密的——后端目录里看到的是混淆过的文件名和二进制乱码。
 详细上手教程（含加密效果演示和 Windows 注意事项）→
 [docs/for-user/quickstart.md](docs/for-user/quickstart.md)
 
