@@ -15,7 +15,7 @@ import (
 func TestDriverInitRequiresExistingDirectory(t *testing.T) {
 	ctx := context.Background()
 	if err := New(filepath.Join(t.TempDir(), "missing")).Init(ctx); err == nil {
-		t.Fatal("expected missing root to fail")
+		t.Fatal("expected missing root_path to fail")
 	}
 
 	root := filepath.Join(t.TempDir(), "file")
