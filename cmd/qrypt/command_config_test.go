@@ -27,8 +27,8 @@ func TestDirectPasswordFromStdin(t *testing.T) {
 
 func TestValidateConfigRejectsDuplicateMountNames(t *testing.T) {
 	cfg := &config.Config{Mounts: []config.MountConfig{
-		{Name: "local", Type: "localfs", Params: config.ParamMap{"root": t.TempDir()}},
-		{Name: "local", Type: "localfs", Params: config.ParamMap{"root": t.TempDir()}},
+		{Name: "local", Type: "localfs", Params: config.ParamMap{"root_path": t.TempDir()}},
+		{Name: "local", Type: "localfs", Params: config.ParamMap{"root_path": t.TempDir()}},
 	}}
 	if err := validateConfig(cfg); err == nil || !strings.Contains(err.Error(), "duplicate mount") {
 		t.Fatalf("expected duplicate mount error, got %v", err)
@@ -39,8 +39,8 @@ func TestValidateConfigRejectsMissingDriverParameters(t *testing.T) {
 	cfg := &config.Config{Mounts: []config.MountConfig{
 		{Name: "local", Type: "localfs"},
 	}}
-	if err := validateConfig(cfg); err == nil || !strings.Contains(err.Error(), "root") {
-		t.Fatalf("expected missing root error, got %v", err)
+	if err := validateConfig(cfg); err == nil || !strings.Contains(err.Error(), "root_path") {
+		t.Fatalf("expected missing root_path error, got %v", err)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestConfigInitCreatesValidStarter(t *testing.T) {
 	if err := validateConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	root := cfg.Mounts[0].Params["root"]
+	root := cfg.Mounts[0].Params["root_path"]
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		t.Fatalf("starter root was not created: %q, %v", root, err)
 	}

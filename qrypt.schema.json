@@ -271,7 +271,7 @@
           "enum": ["localfs", "quark", "yun139", "115", "aliyundrive", "baidu_netdisk", "webdav", "s3"]
         },
         "params": {
-          "description": "Driver-specific key/value parameters (e.g. cookie, root_path, root).",
+          "description": "Driver-specific key/value parameters (e.g. cookie and root_path).",
           "type": "object",
           "patternProperties": {
             "^.*$": {
@@ -407,10 +407,10 @@
     },
     "localfsParams": {
       "type": "object",
-      "required": ["root"],
+      "required": ["root_path"],
       "properties": {
-        "root": {
-          "description": "Local filesystem directory path.",
+        "root_path": {
+          "description": "Local filesystem root directory path.",
           "type": "string", "minLength": 1,
           "x-example": "/tmp/qrypt-remote"
         }
