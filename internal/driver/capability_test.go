@@ -70,7 +70,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 		},
 		{
 			name: "yun139",
-			drv:  yun139.New("authorization", ""),
+			drv:  yun139.New("authorization", "", ""),
 			want: []drive.Capability{
 				drive.CapabilityDebugger,
 				drive.CapabilityFileUploader,

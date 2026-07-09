@@ -71,7 +71,7 @@ func TestInit(t *testing.T) {
 
 	// Override route URL by making the client point to our server.
 	// We can't easily mock, so just test that New + Drop works.
-	drv := New(testAuth("test", "token"), "/")
+	drv := New(testAuth("test", "token"), "/", "")
 	_ = drv.Drop(context.Background())
 }
 
@@ -83,7 +83,7 @@ func fakePersonalServer(t *testing.T, handler func(w http.ResponseWriter, r *htt
 		handler(w, r)
 	}))
 
-	drv := New(testAuth("test", "token"), "/")
+	drv := New(testAuth("test", "token"), "/", "")
 	// Bypass route discovery by setting the host directly.
 	drv.cl.mu.Lock()
 	drv.cl.personalCloudHost = server.URL
@@ -213,7 +213,7 @@ func TestInitRefreshesExpiringAuthorizationAndPersistsState(t *testing.T) {
 	}))
 	defer refreshServer.Close()
 
-	drv := New(testAuthExpiring("test", time.Now().Add(time.Hour)), "/")
+	drv := New(testAuthExpiring("test", time.Now().Add(time.Hour)), "/", "")
 	drv.cl.authRefreshURL = refreshServer.URL
 	drv.cl.personalCloudHost = "https://personal.example.com"
 	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
@@ -243,7 +243,7 @@ func TestLoadAuthStateOverridesConfigAuthorization(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	drv := New(testAuth("config", "config-token"), "/")
+	drv := New(testAuth("config", "config-token"), "/", "")
 	drv.InstallStateStore(store)
 	drv.loadAuthState()
 	if got := drv.cl.getAuthorization(); got != stored {
@@ -662,7 +662,7 @@ func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	drv := New(testAuth("test", "token"), "/")
+	drv := New(testAuth("test", "token"), "/", "")
 	drv.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -720,7 +720,7 @@ func TestToEntry(t *testing.T) {
 }
 
 func TestYun139DebugSnapshot(t *testing.T) {
-	d := New("auth", "/Docs")
+	d := New("auth", "/Docs", "")
 	d.rootID = "root-id"
 	snapshot, err := d.DebugSnapshot(context.Background())
 	if err != nil {
@@ -744,7 +744,7 @@ func TestYun139DebugSnapshot(t *testing.T) {
 }
 
 func TestYun139DebugSnapshotDegraded(t *testing.T) {
-	d := New("auth", "/Docs")
+	d := New("auth", "/Docs", "")
 	d.setLastError(fmt.Errorf("simulated API error"))
 	snapshot, err := d.DebugSnapshot(context.Background())
 	if err != nil {

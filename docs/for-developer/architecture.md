@@ -9,6 +9,9 @@ semantics stay in `pkg/vfs`, and platform mount details stay in
 
 ```text
 cmd/qrypt
+  minimal executable entry point
+
+internal/cli
   configuration, commands, runtime assembly
 
 internal/control
@@ -36,7 +39,7 @@ concrete provider packages.
 
 ## Runtime Assembly
 
-`cmd/qrypt/filesystem_builder.go` is the composition root:
+`internal/cli/filesystem_builder.go` is the composition root:
 
 1. Load config.
 2. Build each concrete `drive.Driver` from `internal/driver/*`.
@@ -127,7 +130,7 @@ go test ./...
 git diff --check
 ```
 
-For driver changes, also verify `docs/driver-development.md` and add capability
-or CRUD contract coverage when the driver supports writes, uploads, or debug
-snapshots. Use CRUD tests for explicit active driver probing; runtime mount
-health is derived from recent VFS operations.
+For driver changes, also verify `docs/for-developer/driver-development.md` and
+add capability or CRUD contract coverage when the driver supports writes,
+uploads, or debug snapshots. Use CRUD tests for explicit active driver probing;
+runtime mount health is derived from recent VFS operations.

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"fmt"
@@ -53,7 +53,7 @@ func newVersionCmd(info buildInfo) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {
-				return writeJSON(cmd.OutOrStdout(), info)
+				return writePrettyJSON(cmd.OutOrStdout(), info)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "qrypt %s\n", info.Version)
 			if info.Commit != "" {

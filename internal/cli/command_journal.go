@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -56,17 +56,17 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cacheDir, _ := cmd.Flags().GetString("cache-dir")
 			mountName, _ := cmd.Flags().GetString("mount")
-			configPath, err := commandConfigPath(cmd)
+			state, err := commandConfig(cmd)
 			if err != nil {
 				return err
 			}
-			if configPath == "" && cacheDir == "" {
+			if state.cfg == nil && cacheDir == "" {
 				return fmt.Errorf("%w; alternatively use --cache-dir", configNotFoundError())
 			}
-			if configPath == "" && mountName != "" {
+			if state.cfg == nil && mountName != "" {
 				return fmt.Errorf("--mount requires a config file")
 			}
-			targets, err := debugCacheTargets(cacheDir, configPath, mountName)
+			targets, err := debugCacheTargets(cacheDir, state.cfg, mountName)
 			if err != nil {
 				return err
 			}
@@ -96,10 +96,7 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 }
 
 func writeJournalReportsJSON(w io.Writer, reports []journalDebugReport) error {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	return enc.Encode(struct {
+	return writePrettyJSON(w, struct {
 		SchemaVersion int                  `json:"schema_version"`
 		GeneratedAt   time.Time            `json:"generated_at"`
 		Reports       []journalDebugReport `json:"reports"`
@@ -110,16 +107,12 @@ func writeJournalReportsJSON(w io.Writer, reports []journalDebugReport) error {
 	})
 }
 
-func debugCacheTargets(cacheDir, configPath, mountName string) ([]debugCacheTarget, error) {
-	if configPath == "" {
+func debugCacheTargets(cacheDir string, cfg *config.Config, mountName string) ([]debugCacheTarget, error) {
+	if cfg == nil {
 		if cacheDir == "" {
 			cacheDir = defaultCacheDir()
 		}
 		return []debugCacheTarget{{Name: "default", Dir: osutil.ExpandHome(cacheDir)}}, nil
-	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return nil, err
 	}
 	baseCacheDir := cfg.CacheDir
 	if cacheDir != "" {
@@ -254,35 +247,4 @@ func printJournalReport(w io.Writer, report journalDebugReport) {
 			fmt.Fprintf(w, "  %s\n", name)
 		}
 	}
-}
-
-func stagingStatus(item vfs.PendingFile) (string, int64) {
-	fi, err := os.Stat(item.LocalPath)
-	if err != nil {
-		return "missing", 0
-	}
-	if fi.Size() != item.Size {
-		return "size-mismatch", fi.Size()
-	}
-	return "ok", fi.Size()
-}
-
-func formatStagingStatus(status string, size int64) string {
-	switch status {
-	case "ok":
-		return "ok"
-	case "missing":
-		return "missing"
-	case "size-mismatch":
-		return fmt.Sprintf("size-mismatch(%d)", size)
-	default:
-		return status
-	}
-}
-
-func formatUnixNano(ns int64) string {
-	if ns == 0 {
-		return "-"
-	}
-	return time.Unix(0, ns).Format(time.RFC3339)
 }

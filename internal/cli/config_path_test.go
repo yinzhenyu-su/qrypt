@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 )
 
 func TestConfigFlagScope(t *testing.T) {
-	root := newRootCmd()
+	root := NewRootCommand()
 	if root.Flags().Lookup("config") != nil || root.PersistentFlags().Lookup("config") != nil {
 		t.Fatal("root command must not define --config")
 	}
@@ -65,7 +65,7 @@ func TestFSConfigFlagPlacement(t *testing.T) {
 		{"fs", "--config", "/tmp/qrypt.toml", "list", "--help"},
 		{"fs", "list", "--config", "/tmp/qrypt.toml", "--help"},
 	} {
-		root := newRootCmd()
+		root := NewRootCommand()
 		root.SetOut(&bytes.Buffer{})
 		root.SetErr(&bytes.Buffer{})
 		root.SetArgs(args)

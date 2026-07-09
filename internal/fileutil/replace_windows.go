@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package fileutil
 
 import "golang.org/x/sys/windows"
 

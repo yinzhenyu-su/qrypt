@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -12,6 +12,13 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
+
+type commandConfigState struct {
+	path string
+	cfg  *config.Config
+}
+
+type commandConfigContextKey struct{}
 
 func withConfigFlag(cmd *cobra.Command) *cobra.Command {
 	cmd.Flags().StringP("config", "c", "", "config file path (auto-discovered when omitted)")
@@ -53,6 +60,18 @@ func prepareConfig(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	var cfg *config.Config
+	if configPath != "" {
+		loaded, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("load config %q: %w", configPath, err)
+		}
+		cfg = loaded
+	}
+	cmd.SetContext(context.WithValue(commandContext(cmd), commandConfigContextKey{}, commandConfigState{
+		path: configPath,
+		cfg:  cfg,
+	}))
 	return nil
 }
 
@@ -60,26 +79,25 @@ func prepareRuntimeConfig(cmd *cobra.Command, args []string) error {
 	if err := prepareConfig(cmd, args); err != nil {
 		return err
 	}
-	configPath, err := commandConfigPath(cmd)
+	state, err := commandConfig(cmd)
 	if err != nil {
 		return err
 	}
-	if configPath != "" {
-		cfg, err := config.Load(configPath)
-		if err != nil {
-			return err
-		}
-		if err := validateConfig(cfg); err != nil {
+	if state.cfg != nil {
+		if err := validateConfig(state.cfg); err != nil {
 			return err
 		}
 	}
-	if err := initLoggerFromConfig(configPath); err != nil {
+	if err := initLogger(state.cfg); err != nil {
 		return err
 	}
-	return initTimeFromConfig(commandContext(cmd), configPath)
+	return initTime(commandContext(cmd), state.cfg)
 }
 
 func commandConfigPath(cmd *cobra.Command) (string, error) {
+	if state, ok := commandContext(cmd).Value(commandConfigContextKey{}).(commandConfigState); ok {
+		return state.path, nil
+	}
 	if cmd.Flag("config") == nil {
 		return findConfigPath(), nil
 	}
@@ -87,7 +105,26 @@ func commandConfigPath(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return osutil.ExpandHome(configPath), nil
+	configPath = osutil.ExpandHome(configPath)
+	if configPath == "" {
+		configPath = findConfigPath()
+	}
+	return configPath, nil
+}
+
+func commandConfig(cmd *cobra.Command) (commandConfigState, error) {
+	if state, ok := commandContext(cmd).Value(commandConfigContextKey{}).(commandConfigState); ok {
+		return state, nil
+	}
+	configPath, err := commandConfigPath(cmd)
+	if err != nil {
+		return commandConfigState{}, err
+	}
+	if configPath == "" {
+		return commandConfigState{}, nil
+	}
+	cfg, err := config.Load(configPath)
+	return commandConfigState{path: configPath, cfg: cfg}, err
 }
 
 func configNotFoundError() error {

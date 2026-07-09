@@ -1,18 +1,12 @@
-package main
+package cli
 
 import (
 	"github.com/spf13/cobra"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/aliyundrive"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/baidunetdisk"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/localfs"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/p115"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/quark"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/s3"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/webdav"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/yun139"
+	_ "github.com/yinzhenyu/qrypt/internal/driver/all"
 )
 
-func newRootCmd() *cobra.Command {
+// NewRootCommand builds the qrypt command tree.
+func NewRootCommand() *cobra.Command {
 	build := currentBuildInfo()
 	cmd := &cobra.Command{
 		Use:          "qrypt",
