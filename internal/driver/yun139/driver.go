@@ -13,6 +13,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,7 +26,7 @@ type partMeta struct {
 
 const (
 	uploadPartConcurrency = 4
-	quotaSizeUnit         = drive.MiB
+	quotaSizeUnit         = osutil.MiB
 )
 
 type Driver struct {

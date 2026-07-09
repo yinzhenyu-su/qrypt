@@ -13,6 +13,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -180,7 +181,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		}},
 	}, drivers: []vfs.NamedDriver{{
 		Name:   "local",
-		Driver: fakeSpaceDriver{space: drive.Space{Total: 2 * drive.GiB, Free: 1536 * drive.MiB}},
+		Driver: fakeSpaceDriver{space: drive.Space{Total: 2 * osutil.GiB, Free: 1536 * osutil.MiB}},
 	}}}
 	server, err := NewServer(socketPath, source)
 	if err != nil {

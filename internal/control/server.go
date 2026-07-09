@@ -806,8 +806,8 @@ func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary
 		} else {
 			summary.BytesTotal = space.Total
 			summary.BytesFree = space.Free
-			summary.Total = drive.FormatBytes(space.Total)
-			summary.Free = drive.FormatBytes(space.Free)
+			summary.Total = osutil.FormatBytes(space.Total)
+			summary.Free = osutil.FormatBytes(space.Free)
 		}
 		spaces[item.Name] = summary
 	}

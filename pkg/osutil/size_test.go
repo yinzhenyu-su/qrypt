@@ -1,4 +1,4 @@
-package drive
+package osutil
 
 import "testing"
 
