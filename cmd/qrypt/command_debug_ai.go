@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -119,18 +119,24 @@ type controlEventSummary struct {
 
 func newDebugCollectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "collect",
+		Use:   "collect [REMOTE]",
 		Short: "Collect AI-oriented diagnostic JSON",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, _ := cmd.Flags().GetString("path")
+			path := ""
+			if len(args) == 1 {
+				path = args[0]
+			}
 			eventLimit, _ := cmd.Flags().GetInt("events-limit")
 			includeMountHealth, _ := cmd.Flags().GetBool("mount-health")
-			report := collectDebugAIReport(context.Background(), "collect", cleanDebugPath(path), eventLimit, includeMountHealth)
-			return writeDebugAIReport(report)
+			if eventLimit < 0 {
+				return fmt.Errorf("--events-limit must not be negative")
+			}
+			report := collectDebugAIReport(cmd.Context(), "collect", cleanDebugPath(path), eventLimit, includeMountHealth)
+			return writeDebugAIReport(cmd.OutOrStdout(), report)
 		},
+		ValidArgsFunction: noFileCompletions,
 	}
-	cmd.Flags().String("path", "", "optional path to inspect in the same report")
 	cmd.Flags().Int("events-limit", 200, "maximum recent warn/error events")
 	cmd.Flags().Bool("mount-health", false, "include runtime mount health")
 	return cmd
@@ -138,16 +144,20 @@ func newDebugCollectCmd() *cobra.Command {
 
 func newDebugInspectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "inspect PATH",
-		Short: "Collect AI-oriented diagnostics for one path",
-		Args:  cobra.ExactArgs(1),
+		Use:               "inspect REMOTE",
+		Short:             "Collect AI-oriented diagnostics for one path",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: noFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			eventLimit, _ := cmd.Flags().GetInt("events-limit")
 			remoteName, _ := cmd.Flags().GetBool("remote-name")
-			report := newDebugAIReport("inspect", cleanDebugPath(args[0]))
-			report.Inspect = debugAIInspectPath(context.Background(), report.Path, eventLimit, remoteName, &report.Errors)
+			if eventLimit < 0 {
+				return fmt.Errorf("--events-limit must not be negative")
+			}
+			report := newDebugAIReport(cmd.Context(), "inspect", cleanDebugPath(args[0]))
+			report.Inspect = debugAIInspectPath(cmd.Context(), report.Path, eventLimit, remoteName, &report.Errors)
 			addInspectDiagnostics(&report.Diagnostics, report.Inspect)
-			return writeDebugAIReport(report)
+			return writeDebugAIReport(cmd.OutOrStdout(), report)
 		},
 	}
 	cmd.Flags().Int("events-limit", 100, "maximum recent warn/error events for the path")
@@ -157,11 +167,14 @@ func newDebugInspectCmd() *cobra.Command {
 
 func newDebugWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "watch",
+		Use:   "watch [REMOTE]",
 		Short: "Sample debug state during a reproduction window",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, _ := cmd.Flags().GetString("path")
+			path := ""
+			if len(args) == 1 {
+				path = args[0]
+			}
 			duration, _ := cmd.Flags().GetDuration("duration")
 			interval, _ := cmd.Flags().GetDuration("interval")
 			eventLimit, _ := cmd.Flags().GetInt("events-limit")
@@ -171,11 +184,17 @@ func newDebugWatchCmd() *cobra.Command {
 			if interval <= 0 {
 				return fmt.Errorf("--interval must be greater than 0")
 			}
-			report := watchDebugAI(context.Background(), cleanDebugPath(path), duration, interval, eventLimit)
-			return writeDebugAIWatchReport(report)
+			if interval > duration {
+				return fmt.Errorf("--interval must not exceed --duration")
+			}
+			if eventLimit < 0 {
+				return fmt.Errorf("--events-limit must not be negative")
+			}
+			report := watchDebugAI(cmd.Context(), cleanDebugPath(path), duration, interval, eventLimit)
+			return writeDebugAIWatchReport(cmd.OutOrStdout(), report)
 		},
+		ValidArgsFunction: noFileCompletions,
 	}
-	cmd.Flags().String("path", "", "optional path to inspect in each sample")
 	cmd.Flags().Duration("duration", 30*time.Second, "sampling window")
 	cmd.Flags().Duration("interval", 2*time.Second, "sampling interval")
 	cmd.Flags().Int("events-limit", 100, "maximum recent warn/error events per sample")
@@ -183,7 +202,7 @@ func newDebugWatchCmd() *cobra.Command {
 }
 
 func collectDebugAIReport(ctx context.Context, command, path string, eventLimit int, includeMountHealth bool) debugAIReport {
-	report := newDebugAIReport(command, path)
+	report := newDebugAIReport(ctx, command, path)
 	debugGetJSON(ctx, "/v1/health", &report.Health, &report.Errors)
 	debugGetJSON(ctx, "/v1/runtime", &report.Runtime, &report.Errors)
 	debugGetJSON(ctx, "/v1/state", &report.State, &report.Errors)
@@ -211,7 +230,7 @@ func watchDebugAI(ctx context.Context, path string, duration, interval time.Dura
 		SchemaVersion: debugAIReportSchemaVersion,
 		GeneratedAt:   startedAt,
 		Command:       "watch",
-		Socket:        debugSocket,
+		Socket:        debugSocketFromContext(ctx),
 		Path:          path,
 		StartedAt:     startedAt,
 		Duration:      duration.String(),
@@ -465,12 +484,12 @@ func addWatchTransitionDiagnostics(out *[]debugAIDiagnostic, report debugAIWatch
 	}
 }
 
-func newDebugAIReport(command, path string) debugAIReport {
+func newDebugAIReport(ctx context.Context, command, path string) debugAIReport {
 	return debugAIReport{
 		SchemaVersion: debugAIReportSchemaVersion,
 		GeneratedAt:   time.Now(),
 		Command:       command,
-		Socket:        debugSocket,
+		Socket:        debugSocketFromContext(ctx),
 		Path:          path,
 		Diagnostics:   []debugAIDiagnostic{},
 	}
@@ -494,8 +513,7 @@ func debugAIInspectPath(ctx context.Context, path string, eventLimit int, remote
 }
 
 func debugGetJSON[T any](ctx context.Context, endpoint string, target **T, errors *[]debugAIError) {
-	c := debugSocketClient{}
-	body, err := c.get(endpoint)
+	body, err := debugSocketGet(ctx, endpoint)
 	if err != nil {
 		*errors = append(*errors, debugAIError{Endpoint: endpoint, Message: err.Error()})
 		return
@@ -694,15 +712,15 @@ func addCacheDiagnostics(out *[]debugAIDiagnostic, cache *control.CacheResponse)
 	}
 }
 
-func writeDebugAIReport(report debugAIReport) error {
-	enc := json.NewEncoder(os.Stdout)
+func writeDebugAIReport(w io.Writer, report debugAIReport) error {
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)
 }
 
-func writeDebugAIWatchReport(report debugAIWatchReport) error {
-	enc := json.NewEncoder(os.Stdout)
+func writeDebugAIWatchReport(w io.Writer, report debugAIWatchReport) error {
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)

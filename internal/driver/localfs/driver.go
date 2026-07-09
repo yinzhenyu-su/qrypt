@@ -21,9 +21,6 @@ func init() {
 	drive.Register("localfs", func(params drive.Params) (drive.Driver, error) {
 		root := params["root"]
 		if root == "" {
-			root = params["local_root"]
-		}
-		if root == "" {
 			return nil, fmt.Errorf("localfs: missing root")
 		}
 		return New(root), nil
@@ -33,12 +30,6 @@ func init() {
 			Type:        "string",
 			Required:    true,
 			Description: "Local filesystem directory path",
-			Example:     "/tmp/qrypt-remote",
-		},
-		drive.ParamDef{
-			Name:        "local_root",
-			Type:        "string",
-			Description: "Alias for root (fallback if root is empty)",
 			Example:     "/tmp/qrypt-remote",
 		},
 	)

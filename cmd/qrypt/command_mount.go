@@ -19,13 +19,20 @@ func newMountCmd() *cobra.Command {
 		Long:  "Mount all configured drives as one local FUSE filesystem. Uses mount_point from config, or accepts a path argument.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireConfig(); err != nil {
+			configPath, err := commandConfigPath(cmd)
+			if err != nil {
 				return err
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
+			if configPath == "" {
+				return configNotFoundError()
+			}
+			if err := requireConfig(configPath); err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(commandContext(cmd), shutdownSignals()...)
 			defer stop()
 
-			debugSocket, _ := cmd.Flags().GetString("debug-socket")
+			socket, _ := cmd.Flags().GetString("socket")
 
 			fs, cleanup, err := buildFileSystem(ctx, configPath)
 			if err != nil {
@@ -34,12 +41,12 @@ func newMountCmd() *cobra.Command {
 			defer cleanup()
 			fs.Start(ctx)
 
-			if debugSocket != "" {
+			if socket != "" {
 				snapshotter, ok := fs.(control.Snapshotter)
 				if !ok {
 					return fmt.Errorf("debug socket requires filesystem debug snapshots")
 				}
-				controlServer, err := control.NewServer(debugSocket, snapshotter)
+				controlServer, err := control.NewServer(socket, snapshotter)
 				if err != nil {
 					return err
 				}
@@ -67,7 +74,7 @@ func newMountCmd() *cobra.Command {
 
 			mountPointExpanded := osutil.ExpandHome(mountPoint)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
-			fmt.Printf("Mounting at %s ...\n", mountPointExpanded)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Mounting at %s ...\n", mountPointExpanded)
 			session, err := mount.NewMounter().Mount(ctx, fs, mount.Options{
 				MountPoint:         mountPointExpanded,
 				ReadOnly:           mountCfg.ReadOnly,
@@ -90,16 +97,17 @@ func newMountCmd() *cobra.Command {
 				return err
 			}
 			logging.L.Infof("Mounted at %s. Press Ctrl+C to unmount.", mountPointExpanded)
-			fmt.Printf("Mounted at %s. Press Ctrl+C to unmount.\n", mountPointExpanded)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Mounted at %s. Press Ctrl+C to unmount.\n", mountPointExpanded)
 			if prefetcher, ok := fs.(interface{ StartDirectoryPrefetch(context.Context) }); ok {
 				prefetcher.StartDirectoryPrefetch(ctx)
 			}
 			<-ctx.Done()
 			logging.L.Infof("Unmounting %s ...", mountPointExpanded)
-			fmt.Println("Unmounting ...")
+			fmt.Fprintln(cmd.ErrOrStderr(), "Unmounting ...")
 			return mount.NewMounter().Unmount(ctx, session)
 		},
 	}
-	cmd.Flags().String("debug-socket", "", "local debug control socket (start a debug server)")
+	withRuntimeConfigFlag(cmd)
+	cmd.Flags().StringP("socket", "s", "", "local debug control socket (start a debug server)")
 	return cmd
 }

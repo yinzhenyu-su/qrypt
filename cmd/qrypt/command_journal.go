@@ -56,8 +56,15 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cacheDir, _ := cmd.Flags().GetString("cache-dir")
 			mountName, _ := cmd.Flags().GetString("mount")
+			configPath, err := commandConfigPath(cmd)
+			if err != nil {
+				return err
+			}
 			if configPath == "" && cacheDir == "" {
-				return fmt.Errorf("missing --config or --cache-dir")
+				return fmt.Errorf("%w; alternatively use --cache-dir", configNotFoundError())
+			}
+			if configPath == "" && mountName != "" {
+				return fmt.Errorf("--mount requires a config file")
 			}
 			targets, err := debugCacheTargets(cacheDir, configPath, mountName)
 			if err != nil {
@@ -67,17 +74,17 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 			var reports []journalDebugReport
 			for i, target := range targets {
 				if !asJSON && i > 0 {
-					fmt.Println()
+					fmt.Fprintln(cmd.OutOrStdout())
 				}
 				report := inspectJournalCache(target)
 				if asJSON {
 					reports = append(reports, report)
 				} else {
-					printJournalReport(os.Stdout, report)
+					printJournalReport(cmd.OutOrStdout(), report)
 				}
 			}
 			if asJSON {
-				return writeJournalReportsJSON(os.Stdout, reports)
+				return writeJournalReportsJSON(cmd.OutOrStdout(), reports)
 			}
 			return nil
 		},

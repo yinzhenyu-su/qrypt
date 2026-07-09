@@ -12,40 +12,35 @@ import (
 	_ "github.com/yinzhenyu/qrypt/internal/driver/yun139"
 )
 
-var (
-	configPath string
-)
-
 func newRootCmd() *cobra.Command {
+	build := currentBuildInfo()
 	cmd := &cobra.Command{
-		Use:   "qrypt",
-		Short: "Mounts encrypted cloud drives as a local filesystem",
+		Use:          "qrypt",
+		Short:        "Mounts encrypted cloud drives as a local filesystem",
+		SilenceUsage: true,
+		Version:      build.Version,
 		Long: `qrypt exposes configured cloud drives as one local FUSE mount point.
 
 Each drive appears as a directory under the mount point, with optional
 rclone-compatible content and filename encryption.
 
-Use --config to point to a TOML config file, then mount to start the
-filesystem, or use fs list/cat/get/put for one-shot operations.`,
-		PersistentPreRunE: func(c *cobra.Command, args []string) error {
-			initLoggerFromConfig(configPath)
-			initTimeFromConfig(c.Context(), configPath)
-			return nil
-		},
+Use a command's --config flag to point to a TOML config file, then mount to
+start the filesystem, or use fs list/cat/get/put for one-shot operations.
+When --config is omitted, qrypt searches ./qrypt.toml, ~/.qrypt/qrypt.toml,
+then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
+(default: ~/.config/qrypt/qrypt.toml) on Unix, or
+%AppData%\qrypt\qrypt.toml on Windows.`,
 		RunE: func(c *cobra.Command, args []string) error {
 			return c.Help()
 		},
 	}
-
-	cmd.CompletionOptions.HiddenDefaultCmd = true
-
-	cmd.PersistentFlags().StringVar(&configPath, "config", "", "config file path")
 
 	cmd.AddCommand(newMountCmd())
 	cmd.AddCommand(newConfigCmd())
 	cmd.AddCommand(newDriverCmd())
 	cmd.AddCommand(newFsCmd())
 	cmd.AddCommand(newDebugCmd())
+	cmd.AddCommand(newVersionCmd(build))
 
 	return cmd
 }

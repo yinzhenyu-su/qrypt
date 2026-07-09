@@ -3,11 +3,23 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 )
+
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	if err := os.WriteFile(path, []byte("mount_piont = \"/tmp/qrypt\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "mount_piont") {
+		t.Fatalf("expected unknown key error, got %v", err)
+	}
+}
 
 func TestEncryptionForSupportsLegacyShapes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
@@ -81,23 +93,9 @@ func TestApplyEncryptionOverrides(t *testing.T) {
 func TestEffectiveMountPointPrefersTopLevel(t *testing.T) {
 	cfg := &Config{
 		MountPoint: "~/Qrypt",
-		Mounts: []MountConfig{
-			{Name: "legacy", MountPoint: "~/Legacy"},
-		},
 	}
 	if got := cfg.EffectiveMountPoint(); got != "~/Qrypt" {
 		t.Fatalf("expected top-level mount point, got %q", got)
-	}
-}
-
-func TestEffectiveMountPointFallsBackToLegacyMountField(t *testing.T) {
-	cfg := &Config{
-		Mounts: []MountConfig{
-			{Name: "legacy", MountPoint: "~/Legacy"},
-		},
-	}
-	if got := cfg.EffectiveMountPoint(); got != "~/Legacy" {
-		t.Fatalf("expected legacy mount point fallback, got %q", got)
 	}
 }
 

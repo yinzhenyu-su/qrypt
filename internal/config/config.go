@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	Version            string          `toml:"version"`
 	MountPoint         string          `toml:"mount_point"`
 	CacheDir           string          `toml:"cache_dir"`
 	VolumeName         string          `toml:"volume_name"`
@@ -40,11 +41,8 @@ type Defaults struct {
 }
 
 type MountConfig struct {
-	Name string `toml:"name"`
-	Type string `toml:"type"`
-	// MountPoint is deprecated. Use Config.MountPoint because qrypt has one
-	// OS mount point whose root contains all named driver directories.
-	MountPoint string        `toml:"mount_point"`
+	Name       string        `toml:"name"`
+	Type       string        `toml:"type"`
 	Params     ParamMap      `toml:"params"`
 	Encryption *crypt.Config `toml:"encryption"`
 	Cache      *CacheConfig  `toml:"cache"`
@@ -145,8 +143,16 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var cfg Config
-	if _, err := toml.Decode(string(data), &cfg); err != nil {
+	metadata, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return nil, err
+	}
+	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, 0, len(undecoded))
+		for _, key := range undecoded {
+			keys = append(keys, key.String())
+		}
+		return nil, fmt.Errorf("unknown configuration keys: %s", strings.Join(keys, ", "))
 	}
 	return &cfg, nil
 }
@@ -204,11 +210,6 @@ func (c *Config) EffectiveMountPoint() string {
 	}
 	if c.MountPoint != "" {
 		return c.MountPoint
-	}
-	for _, mount := range c.Mounts {
-		if mount.MountPoint != "" {
-			return mount.MountPoint
-		}
 	}
 	return ""
 }
