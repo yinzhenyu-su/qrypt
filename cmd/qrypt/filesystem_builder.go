@@ -18,51 +18,58 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func initLoggerFromConfig(configPath string) {
+func initLoggerFromConfig(configPath string) error {
 	if configPath == "" {
-		return
+		return nil
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return
+		return err
 	}
 	level := cfg.Logging.LogLevel
 	logFile := osutil.ExpandHome(cfg.Logging.LogFile)
 	errFile := osutil.ExpandHome(cfg.Logging.ErrorFile)
 	if level == "" && logFile == "" && errFile == "" {
-		return
+		return nil
 	}
 	if level == "" {
 		level = "info"
 	}
 	newLogger, err := logging.New(level, logFile, errFile, nil)
 	if err != nil {
-		return
+		return fmt.Errorf("initialize logging: %w", err)
 	}
 	logging.L = newLogger
+	return nil
 }
 
-func initTimeFromConfig(ctx context.Context, configPath string) {
+func initTimeFromConfig(ctx context.Context, configPath string) error {
 	cfg := timeutil.NTPConfig{Enabled: true}
 	if configPath != "" {
 		loaded, err := config.Load(configPath)
-		if err == nil {
-			cfg.Enabled = loaded.Time.EffectiveNTPEnabled()
-			cfg.Servers = loaded.Time.NTPServers
-			if timeout, err := config.ParseDuration(loaded.Time.NTPTimeout); err == nil {
-				cfg.Timeout = timeout
-			}
-			if poll, err := config.ParseDuration(loaded.Time.NTPPollInterval); err == nil {
-				cfg.PollInterval = poll
-			}
+		if err != nil {
+			return err
 		}
+		cfg.Enabled = loaded.Time.EffectiveNTPEnabled()
+		cfg.Servers = loaded.Time.NTPServers
+		timeout, err := config.ParseDuration(loaded.Time.NTPTimeout)
+		if err != nil {
+			return fmt.Errorf("config: invalid time.ntp_timeout: %w", err)
+		}
+		cfg.Timeout = timeout
+		poll, err := config.ParseDuration(loaded.Time.NTPPollInterval)
+		if err != nil {
+			return fmt.Errorf("config: invalid time.ntp_poll_interval: %w", err)
+		}
+		cfg.PollInterval = poll
 	}
 	timeutil.StartNTP(ctx, cfg)
+	return nil
 }
 
 func mountPointFromConfig(configPath string) (string, error) {
 	if configPath == "" {
-		return "", fmt.Errorf("usage: qrypt [flags] mount MOUNTPOINT")
+		return "", configNotFoundError()
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -71,7 +78,7 @@ func mountPointFromConfig(configPath string) (string, error) {
 	if mountPoint := cfg.EffectiveMountPoint(); mountPoint != "" {
 		return mountPoint, nil
 	}
-	return "", fmt.Errorf("config: no mount_point found")
+	return "", fmt.Errorf("mount point not specified (set mount_point in the config or pass MOUNTPOINT)")
 }
 
 type cliMountConfig struct {
@@ -157,20 +164,122 @@ func loggingFromConfig(configPath string) (config.LoggingConfig, error) {
 
 func buildFileSystem(ctx context.Context, configPath string) (vfs.FileSystem, func(), error) {
 	if configPath == "" {
-		return nil, nil, fmt.Errorf("missing --config")
+		return nil, nil, configNotFoundError()
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateConfig(cfg); err != nil {
 		return nil, nil, err
 	}
 	limits, err := cfg.EffectiveBandwidthLimits()
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(cfg.Mounts) == 0 {
-		return nil, nil, fmt.Errorf("config: at least one [[mounts]] entry is required")
-	}
 	return buildNamespace(ctx, cfg, effectiveCacheDir(cfg), bandwidthLimiter(limits))
+}
+
+func validateConfig(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config: configuration is empty")
+	}
+	if cfg.Version != "" && cfg.Version != "1" {
+		return fmt.Errorf("config: unsupported version %q", cfg.Version)
+	}
+	if _, err := cfg.EffectiveBandwidthLimits(); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{
+		"attr_timeout":     cfg.AttrTimeout,
+		"entry_timeout":    cfg.EntryTimeout,
+		"negative_timeout": cfg.NegativeTimeout,
+	} {
+		if _, err := config.ParseDuration(value); err != nil {
+			return fmt.Errorf("config: invalid %s: %w", name, err)
+		}
+	}
+	if _, _, err := cfg.EffectiveSpaceBytes(); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Logging.LogLevel)) {
+	case "", "debug", "info", "warn", "warning", "error", "off", "none":
+	default:
+		return fmt.Errorf("config: invalid logging.log_level %q", cfg.Logging.LogLevel)
+	}
+	for name, value := range map[string]string{
+		"time.ntp_timeout":       cfg.Time.NTPTimeout,
+		"time.ntp_poll_interval": cfg.Time.NTPPollInterval,
+	} {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		duration, err := config.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("config: invalid %s: %w", name, err)
+		}
+		if duration <= 0 {
+			return fmt.Errorf("config: %s must be greater than 0", name)
+		}
+	}
+	if len(cfg.Mounts) == 0 {
+		return fmt.Errorf("config: at least one [[mounts]] entry is required")
+	}
+	knownDrivers := make(map[string]bool)
+	for _, name := range drive.Names() {
+		knownDrivers[name] = true
+	}
+	seenMounts := make(map[string]bool)
+	for index, mountCfg := range cfg.Mounts {
+		label := fmt.Sprintf("mounts[%d]", index)
+		if mountCfg.Name == "" {
+			return fmt.Errorf("config: %s.name is required", label)
+		}
+		if mountCfg.Name == "." || mountCfg.Name == ".." || strings.ContainsAny(mountCfg.Name, `/\`) {
+			return fmt.Errorf("config: %s.name %q must be a single path component", label, mountCfg.Name)
+		}
+		if seenMounts[mountCfg.Name] {
+			return fmt.Errorf("config: duplicate mount name %q", mountCfg.Name)
+		}
+		seenMounts[mountCfg.Name] = true
+		if !knownDrivers[mountCfg.Type] {
+			return fmt.Errorf("config: mount %q has unknown driver %q", mountCfg.Name, mountCfg.Type)
+		}
+		for _, param := range drive.ParamSchema(mountCfg.Type) {
+			if param.Required && strings.TrimSpace(mountCfg.Params[param.Name]) == "" {
+				return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, param.Name)
+			}
+		}
+		params := drive.Params{}
+		for key, value := range mountCfg.Params {
+			params[key] = value
+		}
+		if _, err := drive.New(mountCfg.Type, params); err != nil {
+			return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
+		}
+		enc := cfg.EncryptionFor(mountCfg.Name)
+		if enc.Password != "" {
+			if err := enc.Validate(); err != nil {
+				return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
+			}
+		}
+		cache := cfg.CacheFor(mountCfg.Name)
+		if cache.MaxSize != "" {
+			if _, err := config.ParseSize(cache.MaxSize); err != nil {
+				return fmt.Errorf("config: mount %q invalid cache.max_size: %w", mountCfg.Name, err)
+			}
+		}
+		if _, err := config.ParseDuration(cache.UploadDelay); err != nil {
+			return fmt.Errorf("config: mount %q invalid cache.upload_delay: %w", mountCfg.Name, err)
+		}
+		if _, err := config.ParseDuration(cache.DeleteDelay); err != nil {
+			return fmt.Errorf("config: mount %q invalid cache.delete_delay: %w", mountCfg.Name, err)
+		}
+		if cache.UploadWorkers < 0 {
+			return fmt.Errorf("config: mount %q invalid cache.upload_workers: must be non-negative", mountCfg.Name)
+		}
+	}
+	return nil
 }
 
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
@@ -191,9 +300,9 @@ func defaultCacheDir() string {
 	return filepath.Join(os.TempDir(), "qrypt-cache")
 }
 
-func requireConfig() error {
+func requireConfig(configPath string) error {
 	if configPath == "" {
-		return fmt.Errorf("missing --config")
+		return configNotFoundError()
 	}
 	return nil
 }
@@ -305,13 +414,17 @@ func put(ctx context.Context, fs vfs.FileSystem, localPath, remotePath string) e
 		return err
 	}
 	defer f.Close()
+	return putReader(ctx, fs, f, remotePath)
+}
+
+func putReader(ctx context.Context, fs vfs.FileSystem, reader io.Reader, remotePath string) error {
 	if err := fs.Create(ctx, remotePath); err != nil {
 		return err
 	}
 	buf := make([]byte, 256*1024)
 	var off int64
 	for {
-		n, readErr := f.Read(buf)
+		n, readErr := reader.Read(buf)
 		if n > 0 {
 			written, err := fs.WriteAt(ctx, remotePath, buf[:n], off)
 			if err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,8 +16,6 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
-
-var debugSocket string
 
 func newDebugCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -31,35 +30,55 @@ func newDebugCmd() *cobra.Command {
 	cmd.AddCommand(withDebugSocketFlag(newDebugCollectCmd()))
 	cmd.AddCommand(withDebugSocketFlag(newDebugInspectCmd()))
 	cmd.AddCommand(withDebugSocketFlag(newDebugWatchCmd()))
-	cmd.AddCommand(newJournalCmdWithUse("journal"))
+	cmd.AddCommand(withConfigFlag(newJournalCmdWithUse("journal")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugRawCmd()))
 	return cmd
 }
 
-type debugSocketClient struct{}
+type debugSocketContextKey struct{}
 
 func withDebugSocketFlag(cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().StringVar(&debugSocket, "socket", "", "debug socket path")
+	cmd.Flags().StringP("socket", "s", "", "debug socket path (required)")
+	if err := cmd.MarkFlagRequired("socket"); err != nil {
+		panic(err)
+	}
+	run := cmd.RunE
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		socket, err := cmd.Flags().GetString("socket")
+		if err != nil {
+			return err
+		}
+		cmd.SetContext(context.WithValue(commandContext(cmd), debugSocketContextKey{}, socket))
+		return run(cmd, args)
+	}
 	return cmd
 }
 
-func (d debugSocketClient) get(endpoint string) ([]byte, error) {
-	if debugSocket == "" {
+func debugSocketFromContext(ctx context.Context) string {
+	socket, _ := ctx.Value(debugSocketContextKey{}).(string)
+	return socket
+}
+
+func debugSocketGet(ctx context.Context, endpoint string) ([]byte, error) {
+	socket := debugSocketFromContext(ctx)
+	if socket == "" {
 		return nil, fmt.Errorf("this command requires --socket")
 	}
-	client, err := control.NewClient(debugSocket)
+	client, err := control.NewClient(socket)
 	if err != nil {
 		return nil, err
 	}
-	return client.Get(context.Background(), endpoint)
+	return client.Get(ctx, endpoint)
 }
 
 func newDebugRawCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "raw ENDPOINT",
-		Short: "Fetch a raw debug socket endpoint",
-		Args:  cobra.ExactArgs(1),
+		Use:               "raw ENDPOINT",
+		Short:             "Fetch a raw debug socket endpoint",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: noFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			socket := debugSocketFromContext(cmd.Context())
 			endpoint := args[0]
 			switch {
 			case endpoint == "":
@@ -67,18 +86,17 @@ func newDebugRawCmd() *cobra.Command {
 			case strings.HasPrefix(endpoint, "/v1/"):
 			case endpoint[0] == '/':
 				return fmt.Errorf("debug raw expects a /v1 endpoint, got virtual path %q; use 'qrypt debug inspect %s --socket %s' or 'qrypt debug raw /v1/resolve?path=%s --socket %s'",
-					endpoint, endpoint, debugSocket, url.QueryEscape(endpoint), debugSocket)
+					endpoint, endpoint, socket, url.QueryEscape(endpoint), socket)
 			case len(endpoint) >= 3 && endpoint[:3] == "v1/":
 				endpoint = "/" + endpoint
 			default:
 				endpoint = "/v1/" + endpoint
 			}
-			c := debugSocketClient{}
-			body, err := c.get(endpoint)
+			body, err := debugSocketGet(cmd.Context(), endpoint)
 			if err != nil {
 				return err
 			}
-			_, err = os.Stdout.Write(body)
+			_, err = cmd.OutOrStdout().Write(body)
 			return err
 		},
 	}
@@ -86,35 +104,69 @@ func newDebugRawCmd() *cobra.Command {
 
 func newDebugBundleCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "bundle",
+		Use:   "bundle [REMOTE]",
 		Short: "Write an AI-oriented debug bundle zip",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
+			socket := debugSocketFromContext(ctx)
 			outPath, _ := cmd.Flags().GetString("out")
-			path, _ := cmd.Flags().GetString("path")
+			path := ""
+			if len(args) == 1 {
+				path = args[0]
+			}
 			eventLimit, _ := cmd.Flags().GetInt("events-limit")
 			includeMountHealth, _ := cmd.Flags().GetBool("mount-health")
 			watchDuration, _ := cmd.Flags().GetDuration("watch")
 			watchInterval, _ := cmd.Flags().GetDuration("watch-interval")
-			if debugSocket == "" {
+			force, _ := cmd.Flags().GetBool("force")
+			if eventLimit < 0 {
+				return fmt.Errorf("--events-limit must not be negative")
+			}
+			if socket == "" {
 				return fmt.Errorf("this command requires --socket")
 			}
 			if outPath == "" {
 				return fmt.Errorf("usage: qrypt debug bundle --out FILE (requires --socket)")
 			}
+			if watchDuration < 0 {
+				return fmt.Errorf("--watch must not be negative")
+			}
+			if watchDuration == 0 && cmd.Flags().Changed("watch-interval") {
+				return fmt.Errorf("--watch-interval requires --watch")
+			}
+			if watchDuration > 0 && watchInterval <= 0 {
+				return fmt.Errorf("--watch-interval must be greater than 0")
+			}
+			if watchDuration > 0 && watchInterval > watchDuration {
+				return fmt.Errorf("--watch-interval must not exceed --watch")
+			}
 			outPath = osutil.ExpandHome(outPath)
-			client, err := control.NewClient(debugSocket)
+			if info, err := os.Stat(outPath); err == nil {
+				if info.IsDir() {
+					return fmt.Errorf("output %q is a directory", outPath)
+				}
+				if !force {
+					return fmt.Errorf("output %q already exists (use --force to overwrite)", outPath)
+				}
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+				return err
+			}
+			client, err := control.NewClient(socket)
 			if err != nil {
 				return err
 			}
-			out, err := os.Create(outPath)
+			out, err := os.CreateTemp(filepath.Dir(outPath), ".qrypt-debug-*.zip")
 			if err != nil {
 				return err
 			}
+			tmpPath := out.Name()
+			defer os.Remove(tmpPath)
 			defer out.Close()
 			zw := zip.NewWriter(out)
-			defer zw.Close()
 
 			cleanPath := cleanDebugPath(path)
 			collect := collectDebugAIReport(ctx, "bundle", cleanPath, eventLimit, includeMountHealth)
@@ -122,7 +174,7 @@ func newDebugBundleCmd() *cobra.Command {
 			if err := writeZipJSON(zw, "manifest.json", debugBundleManifest{
 				SchemaVersion: debugAIReportSchemaVersion,
 				GeneratedAt:   time.Now(),
-				Socket:        debugSocket,
+				Socket:        socket,
 				Path:          cleanPath,
 				Files:         debugBundleFiles(cleanPath, includeMountHealth, watchDuration > 0),
 			}); err != nil {
@@ -140,9 +192,6 @@ func newDebugBundleCmd() *cobra.Command {
 				return err
 			}
 			if watchDuration > 0 {
-				if watchInterval <= 0 {
-					return fmt.Errorf("--watch-interval must be greater than 0")
-				}
 				watch := watchDebugAI(ctx, cleanPath, watchDuration, watchInterval, eventLimit)
 				if err := writeZipJSON(zw, "watch.json", watch); err != nil {
 					return err
@@ -189,15 +238,33 @@ func newDebugBundleCmd() *cobra.Command {
 					return err
 				}
 			}
+			if err := zw.Close(); err != nil {
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+			if force {
+				if err := replaceLocalFile(tmpPath, outPath); err != nil {
+					return err
+				}
+			} else if err := os.Rename(tmpPath, outPath); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "Wrote debug bundle to %s\n", outPath)
 			return nil
 		},
+		ValidArgsFunction: noFileCompletions,
 	}
-	cmd.Flags().String("out", "", "debug bundle output zip")
-	cmd.Flags().String("path", "", "optional path to inspect")
+	cmd.Flags().StringP("out", "o", "", "debug bundle output zip (required)")
 	cmd.Flags().Int("events-limit", 200, "maximum recent warn/error events in collect.json")
 	cmd.Flags().Bool("mount-health", false, "include runtime mount health")
+	cmd.Flags().BoolP("force", "f", false, "overwrite an existing output file")
 	cmd.Flags().Duration("watch", 0, "optional watch duration to include watch.json")
 	cmd.Flags().Duration("watch-interval", 2*time.Second, "watch sampling interval")
+	if err := cmd.MarkFlagRequired("out"); err != nil {
+		panic(err)
+	}
 	return cmd
 }
 

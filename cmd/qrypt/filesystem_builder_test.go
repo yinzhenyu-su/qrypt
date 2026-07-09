@@ -20,15 +20,6 @@ func testCommand() *cobra.Command {
 	return &cobra.Command{Use: "test"}
 }
 
-func withCLIConfig(t *testing.T, path string) {
-	t.Helper()
-	oldConfigPath := configPath
-	configPath = path
-	t.Cleanup(func() {
-		configPath = oldConfigPath
-	})
-}
-
 func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -117,7 +108,7 @@ root = "`+remote+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withCLIConfig(t, configPath)
+	t.Chdir(tmp)
 
 	if err := runMkdir(testCommand(), []string{"/local/dir"}); err != nil {
 		t.Fatal(err)
@@ -139,6 +130,26 @@ root = "`+remote+`"
 	if string(downloaded) != "data" {
 		t.Fatalf("unexpected downloaded content: %q", downloaded)
 	}
+	if err := runGet(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err == nil {
+		t.Fatal("expected get to reject an existing local destination")
+	}
+	forceGet := testCommand()
+	forceGet.Flags().Bool("force", true, "")
+	if err := runGet(forceGet, []string{"/local/dir/file.txt", downloadPath}); err != nil {
+		t.Fatalf("forced get: %v", err)
+	}
+	stdinPut := testCommand()
+	stdinPut.SetIn(strings.NewReader("from stdin"))
+	if err := runPut(stdinPut, []string{"-", "/local/dir/stdin.txt"}); err != nil {
+		t.Fatalf("stdin put: %v", err)
+	}
+	stdinData, err := os.ReadFile(filepath.Join(remote, "dir", "stdin.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdinData) != "from stdin" {
+		t.Fatalf("unexpected stdin upload: %q", stdinData)
+	}
 	if err := runMv(testCommand(), []string{"/local/dir/file.txt", "/local/dir/renamed.txt"}); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +157,9 @@ root = "`+remote+`"
 		t.Fatalf("mv did not rename remote file: %v", err)
 	}
 	if err := runRm(testCommand(), []string{"/local/dir/renamed.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRm(testCommand(), []string{"/local/dir/stdin.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	waitPathMissing(t, filepath.Join(remote, "dir", "renamed.txt"))

@@ -12,13 +12,13 @@ import (
 
 // Entry describes one object on a backend.
 type Entry struct {
-	ID       string
-	ParentID string
-	Name     string
-	IsDir    bool
-	Size     int64
-	ModTime  time.Time
-	Extra    any
+	ID       string    `json:"id"`
+	ParentID string    `json:"parent_id,omitempty"`
+	Name     string    `json:"name"`
+	IsDir    bool      `json:"is_dir"`
+	Size     int64     `json:"size"`
+	ModTime  time.Time `json:"mod_time,omitempty"`
+	Extra    any       `json:"-"`
 }
 
 // Driver is the read-only portion every cloud drive adapter must implement.
@@ -79,13 +79,13 @@ type Factory func(Params) (Driver, error)
 // Each driver should declare its expected params via Register so the CLI
 // can provide meaningful validation, help output, and documentation.
 type ParamDef struct {
-	Name        string
-	Type        string // "string" (default), "int", "bool", "duration"
-	Required    bool
-	Secret      bool // masked in debug output and help
-	Description string
-	Default     string
-	Example     string
+	Name        string `json:"name"`
+	Type        string `json:"type,omitempty"` // "string" (default), "int", "bool", "duration"
+	Required    bool   `json:"required,omitempty"`
+	Secret      bool   `json:"secret,omitempty"` // masked in debug output and help
+	Description string `json:"description,omitempty"`
+	Default     string `json:"default,omitempty"`
+	Example     string `json:"example,omitempty"`
 }
 
 var (
@@ -119,6 +119,13 @@ func ParamSchema(name string) []ParamDef {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	return paramSchemas[name]
+}
+
+// Registered reports whether name identifies an available driver.
+func Registered(name string) bool {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	return registry[name] != nil
 }
 
 // Names returns registered driver names in alphabetical order.

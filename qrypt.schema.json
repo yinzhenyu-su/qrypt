@@ -8,6 +8,7 @@
     "version": {
       "description": "Config format version. Currently only \"1\" is recognised.",
       "type": "string",
+      "enum": ["1"],
       "default": "1",
       "x-taplo": {
         "hidden": true
@@ -269,10 +270,6 @@
           "type": "string",
           "enum": ["localfs", "quark", "yun139", "115", "aliyundrive", "baidu_netdisk", "webdav", "s3"]
         },
-        "mount_point": {
-          "description": "Deprecated. Use the top-level mount_point instead.",
-          "type": "string"
-        },
         "params": {
           "description": "Driver-specific key/value parameters (e.g. cookie, root_path, root).",
           "type": "object",
@@ -302,39 +299,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["refresh_token", "drive_id"],
-                "properties": {
-                  "refresh_token": {
-                    "description": "Aliyun Drive refresh token.",
-                    "type": "string", "minLength": 1
-                  },
-                  "drive_id": {
-                    "description": "Aliyun Drive drive ID.",
-                    "type": "string", "minLength": 1
-                  },
-                  "root_path": {
-                    "description": "Aliyun Drive path used as this mount root.",
-                    "type": "string"
-                  },
-                  "order_by": {
-                    "description": "List ordering field.",
-                    "type": "string",
-                    "enum": ["name", "size", "updated_at", "created_at"]
-                  },
-                  "order_direction": {
-                    "description": "List ordering direction.",
-                    "type": "string",
-                    "enum": ["ASC", "DESC"]
-                  },
-                  "api_base_url": {
-                    "description": "Override Aliyun API base URL for tests.",
-                    "type": "string"
-                  },
-                  "auth_url": {
-                    "description": "Override Aliyun auth URL for tests.",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/aliyundriveParams"
               }
             }
           }
@@ -348,64 +313,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["refresh_token"],
-                "properties": {
-                  "refresh_token": {
-                    "description": "Baidu Netdisk refresh token.",
-                    "type": "string", "minLength": 1
-                  },
-                  "access_token": {
-                    "description": "Optional initial Baidu Netdisk access token.",
-                    "type": "string"
-                  },
-                  "root_path": {
-                    "description": "Baidu Netdisk path used as this mount root.",
-                    "type": "string"
-                  },
-                  "order_by": {
-                    "description": "List ordering field.",
-                    "type": "string",
-                    "enum": ["name", "time", "size"]
-                  },
-                  "order_direction": {
-                    "description": "List ordering direction.",
-                    "type": "string",
-                    "enum": ["asc", "desc"]
-                  },
-                  "use_online_api": {
-                    "description": "Use OpenList-compatible online token refresh API.",
-                    "type": "boolean",
-                    "default": true
-                  },
-                  "online_api": {
-                    "description": "Online token refresh API URL.",
-                    "type": "string"
-                  },
-                  "upload_api": {
-                    "description": "Baidu PCS upload API base URL.",
-                    "type": "string"
-                  },
-                  "client_id": {
-                    "description": "Baidu app API Key used as OAuth client_id when use_online_api=false.",
-                    "type": "string"
-                  },
-                  "client_secret": {
-                    "description": "Baidu app Secret Key used as OAuth client_secret when use_online_api=false.",
-                    "type": "string"
-                  },
-                  "api_base_url": {
-                    "description": "Override Baidu REST API base URL for tests.",
-                    "type": "string"
-                  },
-                  "oauth_url": {
-                    "description": "Override Baidu OAuth token URL for tests.",
-                    "type": "string"
-                  },
-                  "download_user_agent": {
-                    "description": "User-Agent used for Baidu download requests.",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/baiduNetdiskParams"
               }
             }
           }
@@ -419,17 +327,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["root"],
-                "properties": {
-                  "root": {
-                    "description": "Local filesystem directory path.",
-                    "type": "string", "minLength": 1
-                  },
-                  "local_root": {
-                    "description": "Alias for root (fallback if root is empty).",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/localfsParams"
               }
             }
           }
@@ -443,25 +341,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["cookie"],
-                "properties": {
-                  "cookie": {
-                    "description": "Quark cloud drive authentication cookie.",
-                    "type": "string", "minLength": 1
-                  },
-                  "root_path": {
-                    "description": "Virtual root path on the drive.",
-                    "type": "string"
-                  },
-                  "base_url": {
-                    "description": "Custom API base URL.",
-                    "type": "string"
-                  },
-                  "v2_url": {
-                    "description": "Custom API v2 URL.",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/quarkParams"
               }
             }
           }
@@ -475,17 +355,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["cookie"],
-                "properties": {
-                  "cookie": {
-                    "description": "115 cloud drive authentication cookie.",
-                    "type": "string", "minLength": 1
-                  },
-                  "root_path": {
-                    "description": "115 path used as this mount root.",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/p115Params"
               }
             }
           }
@@ -499,17 +369,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["authorization"],
-                "properties": {
-                  "authorization": {
-                    "description": "139 cloud drive authorization token.",
-                    "type": "string", "minLength": 1
-                  },
-                  "root_path": {
-                    "description": "139 cloud path used as this mount root.",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/yun139Params"
               }
             }
           }
@@ -523,26 +383,7 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["url", "username", "password"],
-                "properties": {
-                  "url": {
-                    "description": "WebDAV server base URL.",
-                    "type": "string", "minLength": 1,
-                    "example": "https://nextcloud.example.com/remote.php/dav/files/user"
-                  },
-                  "username": {
-                    "description": "WebDAV authentication username.",
-                    "type": "string", "minLength": 1
-                  },
-                  "password": {
-                    "description": "WebDAV authentication password or app token.",
-                    "type": "string", "minLength": 1
-                  },
-                  "root_path": {
-                    "description": "Optional path under the WebDAV base URL used as this mount root.",
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/definitions/webdavParams"
               }
             }
           }
@@ -556,71 +397,317 @@
             "required": ["params"],
             "properties": {
               "params": {
-                "required": ["bucket", "endpoint", "access_key_id", "secret_access_key"],
-                "properties": {
-                  "bucket": {
-                    "description": "S3 bucket name.",
-                    "type": "string", "minLength": 1
-                  },
-                  "endpoint": {
-                    "description": "S3 endpoint URL.",
-                    "type": "string", "minLength": 1,
-                    "example": "https://s3.us-east-1.amazonaws.com"
-                  },
-                  "region": {
-                    "description": "AWS region.",
-                    "type": "string",
-                    "default": "us-east-1"
-                  },
-                  "access_key_id": {
-                    "description": "S3 access key ID.",
-                    "type": "string", "minLength": 1
-                  },
-                  "secret_access_key": {
-                    "description": "S3 secret access key.",
-                    "type": "string", "minLength": 1
-                  },
-                  "session_token": {
-                    "description": "S3 session token (temporary credentials).",
-                    "type": "string"
-                  },
-                  "custom_host": {
-                    "description": "Custom host for download URLs (e.g. CDN domain).",
-                    "type": "string",
-                    "example": "cdn.example.com"
-                  },
-                  "force_path_style": {
-                    "description": "Force path-style addressing (required for MinIO).",
-                    "type": "string",
-                    "default": "false"
-                  },
-                  "list_object_version": {
-                    "description": "S3 list API version: v1 or v2.",
-                    "type": "string",
-                    "default": "v1",
-                    "enum": ["v1", "v2"]
-                  },
-                  "placeholder": {
-                    "description": "Placeholder filename for empty directories.",
-                    "type": "string",
-                    "default": ".qrypt"
-                  },
-                  "root_path": {
-                    "description": "Root path prefix within the bucket.",
-                    "type": "string",
-                    "default": "/"
-                  },
-                  "sign_url_expire": {
-                    "description": "Presigned URL expiration duration.",
-                    "type": "string",
-                    "default": "4h"
-                  }
-                }
+                "$ref": "#/definitions/s3Params"
               }
             }
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "localfsParams": {
+      "type": "object",
+      "required": ["root"],
+      "properties": {
+        "root": {
+          "description": "Local filesystem directory path.",
+          "type": "string", "minLength": 1,
+          "x-example": "/tmp/qrypt-remote"
+        }
+      },
+      "additionalProperties": false
+    },
+    "aliyundriveParams": {
+      "type": "object",
+      "required": ["refresh_token", "drive_id"],
+      "properties": {
+        "refresh_token": {
+          "description": "Aliyun Drive refresh token for OAuth authentication.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-refresh-token"
+        },
+        "drive_id": {
+          "description": "Aliyun Drive drive ID.",
+          "type": "string", "minLength": 1,
+          "x-example": "your-drive-id"
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "order_by": {
+          "description": "File listing sort field.",
+          "type": "string",
+          "enum": ["name", "size", "updated_at", "created_at"],
+          "x-example": "name"
+        },
+        "order_direction": {
+          "description": "Sort direction (ASC or DESC).",
+          "type": "string",
+          "enum": ["ASC", "DESC"],
+          "x-example": "ASC"
+        },
+        "api_base_url": {
+          "description": "Custom API base URL.",
+          "type": "string",
+          "x-example": "https://openapi.alipan.com"
+        },
+        "auth_url": {
+          "description": "Custom OAuth token URL.",
+          "type": "string",
+          "x-example": "https://openapi.alipan.com/oauth/authorize"
+        }
+      },
+      "additionalProperties": false
+    },
+    "baiduNetdiskParams": {
+      "type": "object",
+      "required": ["refresh_token"],
+      "properties": {
+        "refresh_token": {
+          "description": "Baidu Netdisk refresh token.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-refresh-token"
+        },
+        "access_token": {
+          "description": "Optional initial Baidu Netdisk access token; refreshed automatically when needed.",
+          "type": "string",
+          "x-secret": true
+        },
+        "root_path": {
+          "description": "Baidu Netdisk path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "order_by": {
+          "description": "List ordering field: name, time, or size.",
+          "type": "string",
+          "default": "name",
+          "enum": ["name", "time", "size"]
+        },
+        "order_direction": {
+          "description": "List ordering direction: asc or desc.",
+          "type": "string",
+          "default": "asc",
+          "enum": ["asc", "desc"]
+        },
+        "use_online_api": {
+          "description": "Use OpenList-compatible online token refresh API.",
+          "type": "boolean",
+          "default": true
+        },
+        "online_api": {
+          "description": "Online token refresh API URL.",
+          "type": "string",
+          "x-example": "https://api.oplist.org/baiduyun/renewapi"
+        },
+        "upload_api": {
+          "description": "Baidu PCS upload API base URL.",
+          "type": "string",
+          "x-example": "https://d.pcs.baidu.com"
+        },
+        "client_id": {
+          "description": "Baidu app API Key used as OAuth client_id when use_online_api=false.",
+          "type": "string",
+          "x-secret": true
+        },
+        "client_secret": {
+          "description": "Baidu app Secret Key used as OAuth client_secret when use_online_api=false.",
+          "type": "string",
+          "x-secret": true
+        },
+        "api_base_url": {
+          "description": "Custom Baidu REST API base URL.",
+          "type": "string",
+          "x-example": "https://pan.baidu.com/rest/2.0"
+        },
+        "oauth_url": {
+          "description": "Custom Baidu OAuth token URL.",
+          "type": "string",
+          "x-example": "https://openapi.baidu.com/oauth/2.0/token"
+        },
+        "download_user_agent": {
+          "description": "User-Agent used for Baidu download requests.",
+          "type": "string",
+          "default": "pan.baidu.com"
+        }
+      },
+      "additionalProperties": false
+    },
+    "quarkParams": {
+      "type": "object",
+      "required": ["cookie"],
+      "properties": {
+        "cookie": {
+          "description": "Quark cloud drive authentication cookie.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "k1=v1; k2=v2"
+        },
+        "root_path": {
+          "description": "Virtual root path on the drive.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "base_url": {
+          "description": "Custom API base URL.",
+          "type": "string",
+          "x-example": "https://drive.quark.cn"
+        },
+        "v2_url": {
+          "description": "Custom API v2 URL.",
+          "type": "string",
+          "x-example": "https://drive-m.quark.cn"
+        }
+      },
+      "additionalProperties": false
+    },
+    "yun139Params": {
+      "type": "object",
+      "required": ["authorization"],
+      "properties": {
+        "authorization": {
+          "description": "139 cloud drive authorization token.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-authorization-token"
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "p115Params": {
+      "type": "object",
+      "required": ["cookie"],
+      "properties": {
+        "cookie": {
+          "description": "115 cloud drive authentication cookie.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "k1=v1; k2=v2"
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "webdavParams": {
+      "type": "object",
+      "required": ["url", "username", "password"],
+      "properties": {
+        "url": {
+          "description": "WebDAV server base URL.",
+          "type": "string", "minLength": 1,
+          "example": "https://nextcloud.example.com/remote.php/dav/files/user"
+        },
+        "username": {
+          "description": "WebDAV authentication username.",
+          "type": "string", "minLength": 1,
+          "x-example": "user"
+        },
+        "password": {
+          "description": "WebDAV authentication password or app token.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-password-or-app-token"
+        },
+        "root_path": {
+          "description": "Optional path under the WebDAV base URL used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "s3Params": {
+      "type": "object",
+      "required": ["bucket", "endpoint", "access_key_id", "secret_access_key"],
+      "properties": {
+        "bucket": {
+          "description": "S3 bucket name.",
+          "type": "string", "minLength": 1,
+          "x-example": "my-bucket"
+        },
+        "endpoint": {
+          "description": "S3 endpoint URL.",
+          "type": "string", "minLength": 1,
+          "example": "https://s3.us-east-1.amazonaws.com"
+        },
+        "region": {
+          "description": "AWS region.",
+          "type": "string",
+          "default": "us-east-1",
+          "x-example": "us-east-1"
+        },
+        "access_key_id": {
+          "description": "S3 access key ID.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "AKIA..."
+        },
+        "secret_access_key": {
+          "description": "S3 secret access key.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "..."
+        },
+        "session_token": {
+          "description": "S3 session token (for temporary credentials).",
+          "type": "string",
+          "x-secret": true
+        },
+        "custom_host": {
+          "description": "Custom host for download URLs (e.g. CDN domain).",
+          "type": "string",
+          "example": "cdn.example.com"
+        },
+        "force_path_style": {
+          "description": "Force path-style addressing (required for MinIO and most non-AWS S3).",
+          "type": "boolean",
+          "default": false,
+          "x-example": true
+        },
+        "list_object_version": {
+          "description": "S3 list API version: v1 or v2.",
+          "type": "string",
+          "default": "v1",
+          "enum": ["v1", "v2"]
+        },
+        "placeholder": {
+          "description": "Placeholder filename for empty directories.",
+          "type": "string",
+          "default": ".qrypt",
+          "x-example": ".qrypt"
+        },
+        "root_path": {
+          "description": "Root path prefix within the bucket.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/my-mount"
+        },
+        "sign_url_expire": {
+          "description": "Presigned URL expiration duration.",
+          "type": "string",
+          "default": "4h",
+          "x-example": "1h"
+        }
+      },
       "additionalProperties": false
     }
   }

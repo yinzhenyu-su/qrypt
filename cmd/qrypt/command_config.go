@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,33 +28,63 @@ func newConfigCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newConfigInitCmd())
 	cmd.AddCommand(newConfigShowCmd())
+	cmd.AddCommand(newConfigValidateCmd())
 	cmd.AddCommand(newConfigExportRclonePasswordCmd())
+	return cmd
+}
+
+func newConfigValidateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate configuration without connecting to remote drives",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, err := commandConfigPath(cmd)
+			if err != nil {
+				return err
+			}
+			if configPath == "" {
+				return configNotFoundError()
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("load config %q: %w", configPath, err)
+			}
+			if err := validateConfig(cfg); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Config valid: %s\n", configPath)
+			return nil
+		},
+	}
+	withConfigFlag(cmd)
 	return cmd
 }
 
 func newConfigInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "init",
+		Use:   "init [PATH]",
 		Short: "Write a starter config",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
-			outPath, _ := cmd.Flags().GetString("out")
-
-			if outPath == "" {
-				outPath = configPath
-			}
-			if outPath == "" {
-				outPath = "./qrypt.toml"
+			outPath := "./qrypt.toml"
+			if len(args) == 1 {
+				outPath = args[0]
 			}
 
 			outPath = osutil.ExpandHome(outPath)
+			absoluteOutPath, err := filepath.Abs(outPath)
+			if err != nil {
+				return err
+			}
+			starterRoot := filepath.Join(filepath.Dir(absoluteOutPath), "qrypt-data")
 
 			if _, err := os.Stat(outPath); err == nil && !force {
 				return fmt.Errorf("%s already exists (use --force to overwrite)", outPath)
 			}
 
-			content, err := generateConfigTemplate()
+			content, err := generateConfigTemplate(starterRoot)
 			if err != nil {
 				return err
 			}
@@ -61,22 +92,49 @@ func newConfigInitCmd() *cobra.Command {
 			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 				return err
 			}
-			if err := os.WriteFile(outPath, content, 0o644); err != nil {
+			if err := os.MkdirAll(starterRoot, 0o755); err != nil {
+				return err
+			}
+			if err := writeConfigFile(outPath, content, force); err != nil {
 				return err
 			}
 
-			fmt.Printf("Wrote config to %s\n", outPath)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Wrote config to %s\n", outPath)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Created local storage at %s\n", starterRoot)
 			return nil
 		},
 	}
-	cmd.Flags().Bool("force", false, "overwrite existing file")
-	cmd.Flags().String("out", "", "output path (default: --config value or ./qrypt.toml)")
+	cmd.Flags().BoolP("force", "f", false, "overwrite existing file")
 	return cmd
+}
+
+func writeConfigFile(path string, content []byte, force bool) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".qrypt-config-*.toml")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if force {
+		return replaceLocalFile(tmpPath, path)
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func newConfigExportRclonePasswordCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "export-rclone-password [mount-name]",
+		Use:   "export-rclone-password [MOUNT_NAME]",
 		Short: "Print the rclone-compatible password for a mount",
 		Long: `Print the password rclone needs to decrypt files encrypted by this config.
 
@@ -87,44 +145,126 @@ Use with a config file (reads encryption settings from the named mount):
   rclone config update myremote password=$(qrypt config export-rclone-password mymount)
 
 Or compute directly from raw inputs (no config file needed):
-  qrypt config export-rclone-password --password "my-pass" --salt "mysalt"`,
+  qrypt config export-rclone-password --password-file ./password.txt --salt "mysalt"`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rawPassword, _ := cmd.Flags().GetString("password")
+			rawPassword, direct, err := directPasswordFromFlags(cmd)
+			if err != nil {
+				return err
+			}
 			rawSalt, _ := cmd.Flags().GetString("salt")
 			passwordHash, _ := cmd.Flags().GetString("password-hash")
 
-			if rawPassword != "" {
-				return runExportDirect(rawPassword, rawSalt, passwordHash)
+			if direct {
+				if len(args) != 0 {
+					return fmt.Errorf("MOUNT_NAME cannot be used with a direct password source")
+				}
+				if cmd.Flags().Changed("config") {
+					return fmt.Errorf("--config cannot be used with a direct password source")
+				}
+				switch passwordHash {
+				case "argon2id":
+				case "none":
+					passwordHash = ""
+				default:
+					return fmt.Errorf("--password-hash must be argon2id or none")
+				}
+				pw, err := exportDirect(rawPassword, rawSalt, passwordHash)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), pw)
+				return nil
 			}
 
+			configPath, err := commandConfigPath(cmd)
+			if err != nil {
+				return err
+			}
 			if configPath == "" {
-				return fmt.Errorf("no config file specified (use --config or --password)")
+				return fmt.Errorf("%w; alternatively use --password-file or --password-stdin", configNotFoundError())
 			}
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return err
 			}
+			if len(args) == 0 && len(cfg.Mounts) > 1 {
+				return fmt.Errorf("MOUNT_NAME is required when the config contains multiple mounts")
+			}
 			mountName := ""
-			if len(args) > 0 {
+			if len(args) == 1 {
 				mountName = args[0]
+				found := false
+				for _, mount := range cfg.Mounts {
+					if mount.Name == mountName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("mount %q not found in config", mountName)
+				}
 			}
 			enc := cfg.EncryptionFor(mountName)
 			pw, err := crypt.ExportRclonePassword(enc)
 			if err != nil {
 				return err
 			}
-			fmt.Println(pw)
+			fmt.Fprintln(cmd.OutOrStdout(), pw)
 			return nil
 		},
 	}
-	cmd.Flags().String("password", "", "raw password (overrides config)")
-	cmd.Flags().String("salt", "", "salt for key derivation (used with --password)")
-	cmd.Flags().String("password-hash", crypt.PasswordHashArgon2id, "password hash mode: \"argon2id\" or \"\"")
+	withConfigFlag(cmd)
+	cmd.Flags().String("password", "", "raw password (visible in shell history; overrides config)")
+	cmd.Flags().String("password-file", "", "read raw password from a file")
+	cmd.Flags().Bool("password-stdin", false, "read raw password from standard input")
+	cmd.Flags().String("salt", "", "salt for key derivation (used with a direct password source)")
+	cmd.Flags().String("password-hash", crypt.PasswordHashArgon2id, "password hash mode: argon2id or none")
 	return cmd
 }
 
-func runExportDirect(password, salt, passwordHash string) error {
+func directPasswordFromFlags(cmd *cobra.Command) (string, bool, error) {
+	password, _ := cmd.Flags().GetString("password")
+	passwordFile, _ := cmd.Flags().GetString("password-file")
+	passwordStdin, _ := cmd.Flags().GetBool("password-stdin")
+
+	sources := 0
+	for _, name := range []string{"password", "password-file", "password-stdin"} {
+		if cmd.Flags().Changed(name) {
+			sources++
+		}
+	}
+	if sources > 1 {
+		return "", false, fmt.Errorf("use only one of --password, --password-file, or --password-stdin")
+	}
+	if sources == 0 {
+		if cmd.Flags().Changed("salt") || cmd.Flags().Changed("password-hash") {
+			return "", false, fmt.Errorf("--salt and --password-hash require a direct password source")
+		}
+		return "", false, nil
+	}
+	if passwordFile != "" {
+		raw, err := os.ReadFile(osutil.ExpandHome(passwordFile))
+		if err != nil {
+			return "", false, fmt.Errorf("read password file: %w", err)
+		}
+		password = trimPasswordLine(raw)
+	}
+	if passwordStdin {
+		raw, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return "", false, fmt.Errorf("read password from stdin: %w", err)
+		}
+		password = trimPasswordLine(raw)
+	}
+	return password, true, nil
+}
+
+func trimPasswordLine(raw []byte) string {
+	return strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
+}
+
+func exportDirect(password, salt, passwordHash string) (string, error) {
 	cfg := crypt.Config{
 		Password:     password,
 		Salt:         salt,
@@ -132,24 +272,27 @@ func runExportDirect(password, salt, passwordHash string) error {
 	}
 	cfg = cfg.WithDefaults()
 	if err := cfg.Validate(); err != nil {
-		return err
+		return "", err
 	}
 	pw, err := crypt.ExportRclonePassword(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
-	fmt.Println(pw)
-	return nil
+	return pw, nil
 }
 
 func newConfigShowCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show config with secrets masked",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, err := commandConfigPath(cmd)
+			if err != nil {
+				return err
+			}
 			if configPath == "" {
-				return fmt.Errorf("no config file specified (use -config)")
+				return configNotFoundError()
 			}
 			raw, err := os.ReadFile(configPath)
 			if err != nil {
@@ -176,10 +319,12 @@ func newConfigShowCmd() *cobra.Command {
 				masked = append(masked, maskLine(line, knownSecrets))
 			}
 
-			fmt.Println(strings.Join(masked, "\n"))
+			fmt.Fprintln(cmd.OutOrStdout(), strings.Join(masked, "\n"))
 			return nil
 		},
 	}
+	withConfigFlag(cmd)
+	return cmd
 }
 
 func maskLine(line string, secrets map[string]bool) string {
@@ -207,7 +352,7 @@ func mask(s string) string {
 	return s[:2] + strings.Repeat("*", len(s)-4) + s[len(s)-2:]
 }
 
-func generateConfigTemplate() ([]byte, error) {
+func generateConfigTemplate(starterRoot string) ([]byte, error) {
 	type driverExample struct {
 		Name    string
 		Params  []drive.ParamDef
@@ -235,6 +380,8 @@ func generateConfigTemplate() ([]byte, error) {
 	if err := tmpl.Execute(&buf, map[string]any{
 		"Drivers":        drivers,
 		"EncryptionSalt": encryptionSalt,
+		"StarterRoot":    starterRoot,
+		"StarterCache":   filepath.Join(filepath.Dir(starterRoot), "qrypt-cache"),
 	}); err != nil {
 		return nil, err
 	}
@@ -281,7 +428,7 @@ version = "1"
 mount_point = "~/Qrypt"
 
 # Global cache directory
-cache_dir = "~/.qrypt/qrypt-cache"
+cache_dir = {{printf "%q" .StarterCache}}
 
 # Volume name shown in the OS file manager
 volume_name = "Qrypt"
@@ -319,6 +466,14 @@ delete_delay   = "2s"
 [bandwidth]
 download = ""
 upload   = ""
+
+# ── Starter local filesystem mount ───────────────────────────────
+[[mounts]]
+name = "local"
+type = "localfs"
+
+[mounts.params]
+root = {{printf "%q" .StarterRoot}}
 
 # ── Encryption (uncomment to enable) ────────────────────────────
 # [encryption]

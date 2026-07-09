@@ -26,12 +26,37 @@ Start qrypt with a local control socket:
 
 ```sh
 go run ./cmd/qrypt \
-  --config ./qrypt.toml \
-  mount --debug-socket /tmp/qrypt.sock
+  mount --config ./qrypt.toml \
+  --socket /tmp/qrypt.sock
 ```
 
 The socket file is created with `0600` permissions. qrypt refuses to replace a
 live socket and removes stale socket files during startup.
+
+### Windows
+
+On Windows, qrypt uses an AF_UNIX socket. In PowerShell, choose a socket path
+under the current user's temporary directory:
+
+```powershell
+$socket = "$env:TEMP\qrypt.sock"
+qrypt.exe mount --config .\qrypt.toml --socket $socket
+```
+
+Keep the mount process running, then use the same path in a second PowerShell
+window:
+
+```powershell
+$socket = "$env:TEMP\qrypt.sock"
+qrypt.exe debug collect --socket $socket
+qrypt.exe debug inspect /local/example.txt --socket $socket
+qrypt.exe debug raw health --socket $socket
+```
+
+This requires a Windows version with AF_UNIX support. The `--socket` value is
+a filesystem path, not a Windows named pipe, so paths such as
+`\\.\pipe\qrypt` are not supported. The flag can be omitted when runtime debug
+access is not needed.
 
 ## AI-First Commands
 
@@ -47,18 +72,18 @@ Use `inspect` when a specific file or directory is involved:
 go run ./cmd/qrypt debug inspect /baiduyun/path/file.html --socket /tmp/qrypt.sock
 ```
 
-`collect --path PATH` combines the global snapshot with a path-focused
+`collect [REMOTE]` combines the global snapshot with a path-focused
 inspection:
 
 ```sh
-go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --path /baiduyun/path/file.html
+go run ./cmd/qrypt debug collect /baiduyun/path/file.html --socket /tmp/qrypt.sock
 ```
 
 Use `watch` while reproducing timing-sensitive problems such as repeated
 saves, upload retries, stale reads, or `file changed while writing`:
 
 ```sh
-go run ./cmd/qrypt debug watch --socket /tmp/qrypt.sock --path /baiduyun/path/file.html --duration 30s --interval 2s
+go run ./cmd/qrypt debug watch /baiduyun/path/file.html --socket /tmp/qrypt.sock --duration 30s --interval 2s
 ```
 
 The JSON reports include:
@@ -86,27 +111,28 @@ It includes `collect.json`, `diagnostics.json`, raw endpoint outputs, and
 
 ```sh
 go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --out /tmp/qrypt-debug.zip
-go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --path /baiduyun/path/file.html --out /tmp/qrypt-debug.zip
-go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --path /baiduyun/path/file.html --watch 30s --out /tmp/qrypt-debug.zip
+go run ./cmd/qrypt debug bundle /baiduyun/path/file.html --socket /tmp/qrypt.sock --out /tmp/qrypt-path-debug.zip
+go run ./cmd/qrypt debug bundle /baiduyun/path/file.html --socket /tmp/qrypt.sock --watch 30s --out /tmp/qrypt-watch-debug.zip
 ```
 
-Review the bundle before sharing it.
+Existing output files are not overwritten unless `--force` is provided. Review
+the bundle before sharing it.
 
 ## Offline Checks
 
 Offline checks read cache files and do not require a running mount:
 
 ```sh
-go run ./cmd/qrypt --config ./qrypt.toml fs pending
-go run ./cmd/qrypt --config ./qrypt.toml fs pending --verbose
-go run ./cmd/qrypt --config ./qrypt.toml debug journal
-go run ./cmd/qrypt --config ./qrypt.toml debug journal --json
+go run ./cmd/qrypt fs pending --config ./qrypt.toml
+go run ./cmd/qrypt fs pending --config ./qrypt.toml --verbose
+go run ./cmd/qrypt debug journal --config ./qrypt.toml
+go run ./cmd/qrypt debug journal --config ./qrypt.toml --json
 ```
 
 Use `--mount NAME` to inspect one configured mount:
 
 ```sh
-go run ./cmd/qrypt --config ./qrypt.toml debug journal --mount aliyun
+go run ./cmd/qrypt debug journal --config ./qrypt.toml --mount aliyun
 ```
 
 `fs pending --verbose` shows virtual path, expected size, staging file path,

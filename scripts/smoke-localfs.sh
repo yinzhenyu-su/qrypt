@@ -40,7 +40,7 @@ printf 'qrypt smoke %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LOCAL"
 (cd "$ROOT" && go build -o "$BINARY" ./cmd/qrypt)
 
 qrypt() {
-  "$BINARY" --config "$CONFIG" "$@"
+  "$BINARY" "$@" --config "$CONFIG"
 }
 
 sha256_file() {
@@ -62,7 +62,7 @@ qrypt fs mv /local/docs/hello.txt /local/docs/renamed.txt
 qrypt fs cat /local/docs/renamed.txt | cmp -s "$LOCAL" -
 printf 'qrypt smoke overwrite %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LOCAL"
 qrypt fs put "$LOCAL" /local/docs/renamed.txt
-qrypt fs get /local/docs/renamed.txt "$DOWNLOADED"
+qrypt fs get /local/docs/renamed.txt "$DOWNLOADED" --force
 cmp -s "$LOCAL" "$DOWNLOADED"
 
 dd if=/dev/urandom of="$LARGE" bs=1M count=8 2>/dev/null
