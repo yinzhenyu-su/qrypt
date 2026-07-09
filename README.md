@@ -44,10 +44,10 @@ Extended walkthrough (encryption demo, Windows notes) →
 
 ## User Documentation
 
-- [快速上手](docs/for-user/quickstart.md) — 最小配置，5 分钟跑通，含加密效果演示
-- [命令行参考](docs/for-user/cli.md) — 命令、参数、输入输出和配置查找规则
-- [完整配置参考](docs/for-user/full-config.md) — 全部配置项说明
-- [支持的驱动](docs/for-user/support-drivers.md) — 各云盘驱动的参数列表
+- [Quickstart](docs/for-user/quickstart.md) — minimal config, encryption demo, Windows notes
+- [CLI Reference](docs/for-user/cli.md) — commands, arguments, config discovery paths
+- [Full Config Reference](docs/for-user/full-config.md) — all configuration options
+- [Supported Drivers](docs/for-user/support-drivers.md) — driver parameters and examples
 
 ## Developer Documentation
 
