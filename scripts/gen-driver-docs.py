@@ -14,12 +14,12 @@ DRIVER_META = {
     "quark":         {"name": "夸克网盘",                "type": "quark"},
     "yun139":        {"name": "天翼云盘",                "type": "yun139"},
     "p115":          {"name": "115 云盘",                "type": "115"},
+    "p189":          {"name": "天翼云盘 189",            "type": "189"},
     "webdav":        {"name": "WebDAV",                  "type": "webdav"},
     "s3":            {"name": "Amazon S3 / 兼容 S3",     "type": "s3"},
 }
 
-# Order for output
-DRIVER_ORDER = ["localfs", "aliyundrive", "baiduNetdisk", "quark", "yun139", "p115", "webdav", "s3"]
+DRIVER_ORDER = ["localfs", "aliyundrive", "baiduNetdisk", "quark", "yun139", "p115", "p189", "webdav", "s3"]
 
 
 def load_schema():

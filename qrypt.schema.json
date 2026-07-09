@@ -268,7 +268,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "yun139", "115", "aliyundrive", "baidu_netdisk", "webdav", "s3"]
+          "enum": ["localfs", "quark", "yun139", "115", "189", "aliyundrive", "baidu_netdisk", "webdav", "s3"]
         },
         "params": {
           "description": "Driver-specific key/value parameters (e.g. cookie and root_path).",
@@ -384,6 +384,20 @@
             "properties": {
               "params": {
                 "$ref": "#/definitions/webdavParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "189" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/p189Params"
               }
             }
           }
@@ -607,6 +621,30 @@
           "type": "string",
           "default": "/",
           "x-example": "/qrypt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "p189Params": {
+      "type": "object",
+      "required": ["cookie"],
+      "properties": {
+        "cookie": {
+          "description": "189 cloud drive authentication cookie.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "k1=v1; k2=v2"
+        },
+        "root_path": {
+          "description": "Virtual root path on the drive.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID (skips root_path resolution).",
+          "type": "string",
+          "x-example": "-11"
         }
       },
       "additionalProperties": false
