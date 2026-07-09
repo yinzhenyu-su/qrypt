@@ -583,6 +583,11 @@
           "type": "string",
           "default": "/",
           "x-example": "/qrypt"
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID (skips root_path resolution).",
+          "type": "string",
+          "x-example": "FtozqWiFB1yWOWUGc9oNCf6M0h5fRwcQl"
         }
       },
       "additionalProperties": false

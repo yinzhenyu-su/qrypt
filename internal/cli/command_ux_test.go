@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestRootSuppressesUsageForRuntimeErrors(t *testing.T) {
-	if !newRootCmd().SilenceUsage {
+	if !NewRootCommand().SilenceUsage {
 		t.Fatal("root command must suppress usage for runtime errors")
 	}
 }
@@ -32,13 +32,13 @@ func TestDriverListJSON(t *testing.T) {
 }
 
 func TestDebugRequiredFlags(t *testing.T) {
-	root := newRootCmd()
+	root := NewRootCommand()
 	root.SetArgs([]string{"debug", "collect"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected debug collect without --socket to fail")
 	}
 
-	root = newRootCmd()
+	root = NewRootCommand()
 	root.SetArgs([]string{"debug", "bundle", "--socket", "/tmp/qrypt.sock"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected debug bundle without --out to fail")

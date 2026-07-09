@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -41,6 +41,18 @@ func TestValidateConfigRejectsMissingDriverParameters(t *testing.T) {
 	}}
 	if err := validateConfig(cfg); err == nil || !strings.Contains(err.Error(), "root_path") {
 		t.Fatalf("expected missing root_path error, got %v", err)
+	}
+}
+
+func TestLocalFSRejectsLegacyRootParameter(t *testing.T) {
+	cfg := &config.Config{Mounts: []config.MountConfig{{
+		Name:   "local",
+		Type:   "localfs",
+		Params: config.ParamMap{"root": t.TempDir()},
+	}}}
+	err := validateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "root_path") {
+		t.Fatalf("expected root_path validation error, got %v", err)
 	}
 }
 

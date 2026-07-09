@@ -1,9 +1,7 @@
-package main
+package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -31,7 +29,7 @@ func newDriverListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {
-				return writeJSON(cmd.OutOrStdout(), drive.Names())
+				return writePrettyJSON(cmd.OutOrStdout(), drive.Names())
 			}
 			for _, name := range drive.Names() {
 				fmt.Fprintln(cmd.OutOrStdout(), name)
@@ -63,7 +61,7 @@ func newDriverSchemaCmd() *cobra.Command {
 				if schema == nil {
 					schema = []drive.ParamDef{}
 				}
-				return writeJSON(cmd.OutOrStdout(), struct {
+				return writePrettyJSON(cmd.OutOrStdout(), struct {
 					Name       string           `json:"name"`
 					Parameters []drive.ParamDef `json:"parameters"`
 				}{Name: name, Parameters: schema})
@@ -102,11 +100,4 @@ func newDriverSchemaCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("json", false, "write JSON output")
 	return cmd
-}
-
-func writeJSON(w io.Writer, value any) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
 }

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -19,22 +19,19 @@ func newMountCmd() *cobra.Command {
 		Long:  "Mount all configured drives as one local FUSE filesystem. Uses mount_point from config, or accepts a path argument.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			configPath, err := commandConfigPath(cmd)
+			state, err := commandConfig(cmd)
 			if err != nil {
 				return err
 			}
-			if configPath == "" {
+			if state.cfg == nil {
 				return configNotFoundError()
-			}
-			if err := requireConfig(configPath); err != nil {
-				return err
 			}
 			ctx, stop := signal.NotifyContext(commandContext(cmd), shutdownSignals()...)
 			defer stop()
 
 			socket, _ := cmd.Flags().GetString("socket")
 
-			fs, cleanup, err := buildFileSystem(ctx, configPath)
+			fs, cleanup, err := buildFileSystemFromConfig(ctx, state.cfg)
 			if err != nil {
 				return err
 			}
@@ -61,13 +58,13 @@ func newMountCmd() *cobra.Command {
 				mountPoint = args[0]
 			} else {
 				var err error
-				mountPoint, err = mountPointFromConfig(configPath)
+				mountPoint, err = mountPointFromLoadedConfig(state.cfg)
 				if err != nil {
 					return err
 				}
 			}
 
-			mountCfg, err := mountConfigFromConfig(configPath)
+			mountCfg, err := mountConfigFromLoadedConfig(state.cfg)
 			if err != nil {
 				return err
 			}

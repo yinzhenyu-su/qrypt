@@ -51,7 +51,7 @@ func init() {
 		if auth == "" {
 			return nil, fmt.Errorf("139: missing authorization")
 		}
-		return New(auth, params["root_path"]), nil
+		return New(auth, params["root_path"], params["root_id"]), nil
 	},
 		drive.ParamDef{
 			Name:        "authorization",
@@ -68,13 +68,20 @@ func init() {
 			Default:     "/",
 			Example:     "/qrypt",
 		},
+		drive.ParamDef{
+			Name:        "root_id",
+			Type:        "string",
+			Description: "Pre-resolved folder ID (skips root_path resolution)",
+			Example:     "FtozqWiFB1yWOWUGc9oNCf6M0h5fRwcQl",
+		},
 	)
 }
 
-func New(authorization, rootPath string) *Driver {
+func New(authorization, rootPath, rootID string) *Driver {
 	d := &Driver{
 		cl:         newClient(authorization),
 		rootPath:   rootPath,
+		rootID:     rootID,
 		authSource: "config",
 	}
 	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
@@ -92,13 +99,15 @@ func (d *Driver) Init(ctx context.Context) error {
 	if err := d.cl.ensurePersonalCloudHost(); err != nil {
 		return fmt.Errorf("139: resolve host: %w", err)
 	}
-	d.rootID = "/"
-	if d.rootPath != "" && d.rootPath != "/" {
-		rootID, err := d.resolvePathFrom(ctx, d.rootID, d.rootPath)
-		if err != nil {
-			return fmt.Errorf("139: resolve root_path %q: %w", d.rootPath, err)
+	if d.rootID == "" {
+		d.rootID = "/"
+		if d.rootPath != "" && d.rootPath != "/" {
+			rootID, err := d.resolvePathFrom(ctx, d.rootID, d.rootPath)
+			if err != nil {
+				return fmt.Errorf("139: resolve root_path %q: %w", d.rootPath, err)
+			}
+			d.rootID = rootID
 		}
-		d.rootID = rootID
 	}
 	return nil
 }

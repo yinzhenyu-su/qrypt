@@ -69,7 +69,8 @@ func init() {
 }
 ```
 
-Then add a blank import in `cmd/qrypt/main.go`:
+Then add a blank import to the bundled-driver registry in
+`internal/driver/all/all.go`:
 
 ```go
 _ "github.com/yinzhenyu/qrypt/internal/driver/baidu"
@@ -241,7 +242,7 @@ accounts.
 
 - Driver lives under `internal/driver/<name>`.
 - Driver is registered with `drive.Register`.
-- `cmd/qrypt/main.go` imports the driver for registration.
+- `internal/driver/all/all.go` imports the driver for registration.
 - Required params are declared and validated.
 - `Init` validates credentials and root selection.
 - `List` returns direct children only.
