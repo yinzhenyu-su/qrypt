@@ -42,15 +42,47 @@ type = "localfs"
 
 [mounts.params]
 root_path = "/tmp/qrypt-data"
+
+[mounts.encryption]
+password = "my-password"
+filename_encryption = "standard"
+filename_encoding = "base32"
 ```
 
-3. Run:
+3.1 Run without mounting:
 
-```
+```bash
+mkdir -p /tmp/qrypt-data
 ./qrypt fs list /
+echo "hello qrypt" > /tmp/hello.txt
+./qrypt fs put /tmp/hello.txt /local/hello.txt
+./qrypt fs cat /local/hello.txt
 ```
 
-Extended walkthrough (encryption demo, Windows notes) →
+Check the backend storage — filenames are obfuscated:
+
+```bash
+ls /tmp/qrypt-data
+```
+
+Output similar to:
+
+```
+b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
+```
+
+Both the original filename and content are encrypted.
+
+3.2 Mount and use like a local folder:
+
+```bash
+./qrypt mount
+```
+
+Open `~/Qrypt` in your file manager — drag, drop, open files as if they were
+local. Everything is encrypted on the backend.
+
+Extended walkthrough →
 [docs/for-user/quickstart.md](docs/for-user/quickstart.md).
 
 ## User Documentation
