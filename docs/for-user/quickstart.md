@@ -47,7 +47,7 @@ name = "local"
 type = "localfs"
 
 [mounts.params]
-root = "/tmp/qrypt-data"
+root_path = "/tmp/qrypt-data"
 
 [mounts.encryption]
 password = "my-password"
@@ -57,10 +57,10 @@ filename_encoding = "base32"
 
 这个配置文件定义了一个云盘，指向本机的 `/tmp/qrypt-data` 目录，并开启了加密。
 
-> **Windows**：将 `root` 改为本地的一个目录，例如：
+> **Windows**：将 `root_path` 改为本地的一个目录，例如：
 >
 > ```toml
-> root = "C:\\qrypt-data"
+> root_path = "C:\\qrypt-data"
 > ```
 
 每个配置项的含义：
@@ -69,7 +69,7 @@ filename_encoding = "base32"
 - `[[mounts]]` —— 每条 mounts 配置对应一个云盘服务，可以写多条
 - `name` —— 这个云盘在挂载点下的子目录名称
 - `type` —— 云盘类型，这里是 `localfs`（本地目录）
-- `root` —— 该云盘后端存储的实际路径
+- `root_path` —— 该云盘后端存储的实际路径
 - `[mounts.encryption]` —— 该云盘的加密配置，开启后文件名和文件内容会被加密
 
 ## 准备演示目录

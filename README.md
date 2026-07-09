@@ -41,7 +41,7 @@ name = "local"
 type = "localfs"
 
 [mounts.params]
-root = "/tmp/qrypt-data"
+root_path = "/tmp/qrypt-data"
 ```
 
 3. Run:

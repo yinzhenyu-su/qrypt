@@ -8,7 +8,7 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 
 | 驱动类型 | 名称 | 必填参数 |
 |---|---|---|
-| `localfs` | 本地目录 | `root` |
+| `localfs` | 本地目录 | `root_path` |
 | `aliyundrive` | 阿里云盘 | `refresh_token`, `drive_id` |
 | `baidu_netdisk` | 百度网盘 | `refresh_token` |
 | `quark` | 夸克网盘 | `cookie` |
@@ -24,12 +24,12 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 
 ```toml
 [mounts.params]
-root = "/tmp/qrypt-remote"
+root_path = "/tmp/qrypt-remote"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `root` | string | 是 | Local filesystem directory path |
+| `root_path` | string | 是 | Local filesystem root directory path |
 
 ---
 
