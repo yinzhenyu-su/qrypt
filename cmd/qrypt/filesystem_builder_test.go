@@ -43,13 +43,13 @@ upload_delay = "10ms"
 name = "quark"
 type = "localfs"
 [mounts.params]
-root = "`+remoteA+`"
+root_path = "`+remoteA+`"
 
 [[mounts]]
 name = "quark2"
 type = "localfs"
 [mounts.params]
-root = "`+remoteB+`"
+root_path = "`+remoteB+`"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ delete_delay = "10ms"
 name = "local"
 type = "localfs"
 [mounts.params]
-root = "`+remote+`"
+root_path = "`+remote+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ upload_delay = "10ms"
 name = "plain"
 type = "localfs"
 [mounts.params]
-root = "`+plainRemote+`"
+root_path = "`+plainRemote+`"
 [mounts.encryption]
 password = "plain-pass"
 salt = "plain-salt"
@@ -220,7 +220,7 @@ filename_encryption = "off"
 name = "encrypted"
 type = "localfs"
 [mounts.params]
-root = "`+encryptedRemote+`"
+root_path = "`+encryptedRemote+`"
 [mounts.encryption]
 password = "encrypted-pass"
 salt = "encrypted-salt"
@@ -297,13 +297,13 @@ upload_delay = "10ms"
 name = "global"
 type = "localfs"
 [mounts.params]
-root = "`+globalRemote+`"
+root_path = "`+globalRemote+`"
 
 [[mounts]]
 name = "encrypted"
 type = "localfs"
 [mounts.params]
-root = "`+encryptedRemote+`"
+root_path = "`+encryptedRemote+`"
 [mounts.encryption]
 password = "encrypted-pass"
 salt = "encrypted-salt"
@@ -366,7 +366,7 @@ upload_delay = "10ms"
 name = "plain"
 type = "localfs"
 [mounts.params]
-root = "`+plainRemote+`"
+root_path = "`+plainRemote+`"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -419,7 +419,7 @@ upload_delay = "10ms"
 name = "encrypted"
 type = "localfs"
 [mounts.params]
-root = "`+remote+`"
+root_path = "`+remote+`"
 [mounts.encryption]
 password = "encrypted-pass"
 salt = "encrypted-salt"
@@ -473,13 +473,13 @@ upload_delay = "10ms"
 name = "one"
 type = "localfs"
 [mounts.params]
-root = "`+remoteA+`"
+root_path = "`+remoteA+`"
 
 [[mounts]]
 name = "two"
 type = "localfs"
 [mounts.params]
-root = "`+remoteB+`"
+root_path = "`+remoteB+`"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -547,7 +547,7 @@ cache_dir = "`+filepath.Join(tmp, "cache")+`"
 name = "local"
 type = "localfs"
 [mounts.params]
-root = "`+remote+`"
+root_path = "`+remote+`"
 [mounts.cache]
 delete_delay = "soon"
 `), 0o644)

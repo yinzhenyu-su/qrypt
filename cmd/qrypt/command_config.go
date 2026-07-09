@@ -473,7 +473,7 @@ name = "local"
 type = "localfs"
 
 [mounts.params]
-root = {{printf "%q" .StarterRoot}}
+root_path = {{printf "%q" .StarterRoot}}
 
 # ── Encryption (uncomment to enable) ────────────────────────────
 # [encryption]

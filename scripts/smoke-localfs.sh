@@ -32,7 +32,7 @@ name = "local"
 type = "localfs"
 
 [mounts.params]
-root = "$REMOTE"
+root_path = "$REMOTE"
 EOF
 
 printf 'qrypt smoke %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LOCAL"
