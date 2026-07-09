@@ -20,6 +20,7 @@ func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func()
 	if state.cfg == nil {
 		return nil, nil, nil, configNotFoundError()
 	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
 	ctx, stop := signal.NotifyContext(commandContext(cmd), shutdownSignals()...)
 	fs, cleanup, err := buildFileSystemFromConfig(ctx, state.cfg)
 	if err != nil {

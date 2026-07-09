@@ -89,7 +89,12 @@ func newFsGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get REMOTE LOCAL",
 		Short: "Download a remote file or directory",
-		Args:  cobra.ExactArgs(2),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("requires REMOTE path to download and LOCAL path to save to")
+			}
+			return nil
+		},
 		RunE:  runGet,
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 0 {
