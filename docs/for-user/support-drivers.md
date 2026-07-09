@@ -14,6 +14,7 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `quark` | 夸克网盘 | `cookie` |
 | `yun139` | 天翼云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
+| `189` | 天翼云盘 189 | `cookie` |
 | `webdav` | WebDAV | `url`, `username`, `password` |
 | `s3` | Amazon S3 / 兼容 S3 | `bucket`, `endpoint`, `access_key_id`, `secret_access_key` |
 
@@ -125,12 +126,14 @@ cookie = "k1=v1; k2=v2"
 [mounts.params]
 authorization = "your-authorization-token"
 # root_path = "/qrypt"
+# root_id = "FtozqWiFB1yWOWUGc9oNCf6M0h5fRwcQl"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `authorization` | string (secret) | 是 | 139 cloud drive authorization token |
 | `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
+| `root_id` | string | 否 | Pre-resolved folder ID (skips root_path resolution) |
 
 ---
 
@@ -148,6 +151,25 @@ cookie = "k1=v1; k2=v2"
 |---|---|---|---|
 | `cookie` | string (secret) | 是 | 115 cloud drive authentication cookie |
 | `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
+
+---
+
+## 189
+
+天翼云盘 189。
+
+```toml
+[mounts.params]
+cookie = "k1=v1; k2=v2"
+# root_path = "/qrypt"
+# root_id = "-11"
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `cookie` | string (secret) | 是 | 189 cloud drive authentication cookie |
+| `root_path` | string | 否 | Virtual root path on the drive，默认 `/` |
+| `root_id` | string | 否 | Pre-resolved folder ID (skips root_path resolution) |
 
 ---
 
