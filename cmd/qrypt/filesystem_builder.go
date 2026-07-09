@@ -245,9 +245,16 @@ func validateConfig(cfg *config.Config) error {
 		if !knownDrivers[mountCfg.Type] {
 			return fmt.Errorf("config: mount %q has unknown driver %q", mountCfg.Name, mountCfg.Type)
 		}
+		allowedParams := make(map[string]bool)
 		for _, param := range drive.ParamSchema(mountCfg.Type) {
+			allowedParams[param.Name] = true
 			if param.Required && strings.TrimSpace(mountCfg.Params[param.Name]) == "" {
 				return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, param.Name)
+			}
+		}
+		for name := range mountCfg.Params {
+			if !allowedParams[name] {
+				return fmt.Errorf("config: mount %q has unknown parameter %q for driver %q", mountCfg.Name, name, mountCfg.Type)
 			}
 		}
 		params := drive.Params{}
