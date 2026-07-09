@@ -1,3 +1,5 @@
+[English](README.md)
+
 # qrypt
 
 把你的云盘变成一个加密本地文件夹 —— 挂载、打开、像普通硬盘一样用。
@@ -14,6 +16,16 @@
 - **诊断工具** — debug 调试接口，结构化 JSON 报告，挂载健康监控，一致性检查和 staging 审查
 - **带宽控制** — 分别限制上传和下载速度
 - **配置自动发现** — 依次查找 `./qrypt.toml`、`~/.qrypt/qrypt.toml`，然后在 Unix 查找 `$XDG_CONFIG_HOME/qrypt/qrypt.toml`，或在 Windows 查找 `%AppData%\qrypt\qrypt.toml`
+
+## 系统要求
+
+| 依赖 | macOS | Linux | Windows |
+|---|---|---|---|
+| FUSE | [macFUSE](https://macfuse.io/) | libfuse（通常已预装） | [WinFsp](https://winfsp.dev/) |
+| Go（源码构建） | 1.26+ | 1.26+ | 1.26+ |
+
+`fs` 命令（list、cat、get、put）不需要 FUSE，只有 `mount` 需要。
+配置文件会自动查找，配置文件放在标准路径时可以省略 `--config` 参数（见[命令行参考](docs/for-user/cli.md)）。
 
 ## 快速开始
 

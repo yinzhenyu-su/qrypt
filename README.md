@@ -17,6 +17,17 @@ qrypt turns your cloud drives into one encrypted local folder — mount it, open
 - **Bandwidth control** — per-direction download and upload rate limiting
 - **Config auto-discovery** — searches `./qrypt.toml`, `~/.qrypt/qrypt.toml`, then `$XDG_CONFIG_HOME/qrypt/qrypt.toml` on Unix or `%AppData%\qrypt\qrypt.toml` on Windows
 
+## Requirements
+
+| Dependency | macOS | Linux | Windows |
+|---|---|---|---|
+| FUSE | [macFUSE](https://macfuse.io/) | libfuse (usually pre-installed) | [WinFsp](https://winfsp.dev/) |
+| Go (source build only) | 1.26+ | 1.26+ | 1.26+ |
+
+The `fs` commands (list, cat, get, put) do not require FUSE — only `mount` does.
+Config files are discovered automatically; you can skip `--config` when the file
+is at one of the standard paths (see [CLI Reference](docs/for-user/cli.md)).
+
 ## Quick Start
 
 1. Download the [latest release](https://github.com/yinzhenyu-su/qrypt/releases) for your platform.
