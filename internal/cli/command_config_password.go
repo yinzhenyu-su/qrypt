@@ -63,6 +63,7 @@ Or compute directly from raw inputs (no config file needed):
 			if state.cfg == nil {
 				return fmt.Errorf("%w; alternatively use --password-file or --password-stdin", configNotFoundError())
 			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
 			if len(args) == 0 && len(state.cfg.Mounts) > 1 {
 				return fmt.Errorf("MOUNT_NAME is required when the config contains multiple mounts")
 			}

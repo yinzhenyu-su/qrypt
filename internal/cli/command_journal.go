@@ -60,6 +60,9 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if state.cfg != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
+			}
 			if state.cfg == nil && cacheDir == "" {
 				return fmt.Errorf("%w; alternatively use --cache-dir", configNotFoundError())
 			}
