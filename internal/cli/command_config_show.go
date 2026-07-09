@@ -46,6 +46,13 @@ func newConfigShowCmd() *cobra.Command {
 			lines := strings.Split(string(raw), "\n")
 			masked := make([]string, 0, len(lines))
 			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				if isSectionHeader(trimmed) && len(masked) > 0 && masked[len(masked)-1] != "" {
+					masked = append(masked, "")
+				}
 				masked = append(masked, maskLine(line, knownSecrets))
 			}
 
@@ -76,8 +83,9 @@ func maskLine(line string, secrets map[string]bool) string {
 }
 
 func mask(s string) string {
-	if len(s) <= 4 {
-		return strings.Repeat("*", len(s))
-	}
-	return s[:2] + strings.Repeat("*", len(s)-4) + s[len(s)-2:]
+	return "******"
+}
+
+func isSectionHeader(line string) bool {
+	return strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]")
 }

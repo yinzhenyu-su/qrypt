@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
@@ -54,7 +53,7 @@ func effectiveCacheDir(cfg *config.Config) string {
 }
 
 func defaultCacheDir() string {
-	return filepath.Join(os.TempDir(), "qrypt-cache")
+	return osutil.ExpandHome("~/.qrypt/qrypt-cache")
 }
 
 func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter) (vfs.FileSystem, func(), error) {
