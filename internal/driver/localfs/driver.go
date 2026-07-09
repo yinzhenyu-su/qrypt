@@ -19,17 +19,17 @@ type Driver struct {
 
 func init() {
 	drive.Register("localfs", func(params drive.Params) (drive.Driver, error) {
-		root := params["root"]
+		root := params["root_path"]
 		if root == "" {
-			return nil, fmt.Errorf("localfs: missing root")
+			return nil, fmt.Errorf("localfs: missing root_path")
 		}
 		return New(root), nil
 	},
 		drive.ParamDef{
-			Name:        "root",
+			Name:        "root_path",
 			Type:        "string",
 			Required:    true,
-			Description: "Local filesystem directory path",
+			Description: "Local filesystem root directory path",
 			Example:     "/tmp/qrypt-remote",
 		},
 	)
