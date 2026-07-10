@@ -29,8 +29,8 @@ type XferTestMetrics struct {
 	UploadDestTime   string `json:"upload_dest_time,omitempty"`
 }
 
-// XferTraceEvent records a measured sub-phase inside a transfer test.
-type XferTraceEvent struct {
+// TransferTraceEvent records a measured sub-phase inside a transfer test.
+type TransferTraceEvent struct {
 	Phase      string         `json:"phase"`
 	Mount      string         `json:"mount,omitempty"`
 	Driver     string         `json:"driver,omitempty"`
@@ -43,8 +43,8 @@ type XferTraceEvent struct {
 	Extra      map[string]any `json:"extra,omitempty"`
 }
 
-// XferTestStep records one phase of a transfer test.
-type XferTestStep struct {
+// TransferStep records one phase of a transfer test.
+type TransferStep struct {
 	Phase    string `json:"phase"`
 	OK       bool   `json:"ok"`
 	Error    string `json:"error,omitempty"`
@@ -54,24 +54,24 @@ type XferTestStep struct {
 
 // XferTestResult aggregates the full transfer test outcome.
 type XferTestResult struct {
-	SourceMount string           `json:"source_mount"`
-	DestMount   string           `json:"dest_mount"`
-	SourceType  string           `json:"source_type,omitempty"`
-	DestType    string           `json:"dest_type,omitempty"`
-	VFS         bool             `json:"vfs"`
-	Pass        bool             `json:"pass"`
-	Steps       []XferTestStep   `json:"steps"`
-	Started     time.Time        `json:"started_at"`
-	Finished    time.Time        `json:"finished_at"`
-	Metrics     XferTestMetrics  `json:"metrics"`
-	Timeline    []XferTraceEvent `json:"timeline,omitempty"`
+	SourceMount string               `json:"source_mount"`
+	DestMount   string               `json:"dest_mount"`
+	SourceType  string               `json:"source_type,omitempty"`
+	DestType    string               `json:"dest_type,omitempty"`
+	VFS         bool                 `json:"vfs"`
+	Pass        bool                 `json:"pass"`
+	Steps       []TransferStep       `json:"steps"`
+	Started     time.Time            `json:"started_at"`
+	Finished    time.Time            `json:"finished_at"`
+	Metrics     XferTestMetrics      `json:"metrics"`
+	Timeline    []TransferTraceEvent `json:"timeline,omitempty"`
 }
 
-func xferStepOp(phase string) XferTestStep {
-	return XferTestStep{Phase: phase, Duration: "0s"}
+func xferStepOp(phase string) TransferStep {
+	return TransferStep{Phase: phase, Duration: "0s"}
 }
 
-func (s *XferTestStep) done(err error) {
+func (s *TransferStep) done(err error) {
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
@@ -80,13 +80,13 @@ func (s *XferTestStep) done(err error) {
 	}
 }
 
-func (s *XferTestStep) finish(start time.Time, err error) {
+func (s *TransferStep) finish(start time.Time, err error) {
 	s.Duration = time.Since(start).String()
 	s.done(err)
 }
 
-// finishXferStep records the duration and error on a step.
-func finishXferStep(s *XferTestStep, start time.Time, err error) {
+// finishTransferStep records the duration and error on a step.
+func finishTransferStep(s *TransferStep, start time.Time, err error) {
 	s.Duration = time.Since(start).String()
 	if err != nil {
 		s.OK = false
@@ -113,7 +113,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 		DestMount:   dstMount,
 		VFS:         false,
 		Started:     time.Now(),
-		Steps:       make([]XferTestStep, 0, 8),
+		Steps:       make([]TransferStep, 0, 8),
 	}
 	size = xferTestSize(size)
 
@@ -136,7 +136,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	dstWriter, dstIsWriter := dstDriver.(drive.Writer)
 
 	if !srcIsWriter || !srcHasUploader {
-		result.Steps = append(result.Steps, XferTestStep{
+		result.Steps = append(result.Steps, TransferStep{
 			Phase: "capability_check", OK: false,
 			Error: "source driver does not implement Writer and SourceUploader", Duration: "0s",
 		})
@@ -145,7 +145,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 		return result
 	}
 	if !dstIsWriter || !dstHasUploader {
-		result.Steps = append(result.Steps, XferTestStep{
+		result.Steps = append(result.Steps, TransferStep{
 			Phase: "capability_check", OK: false,
 			Error: "dest driver does not implement Writer and SourceUploader", Duration: "0s",
 		})
@@ -157,7 +157,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	// Unique test directory name.
 	testSuffix := make([]byte, 6)
 	if _, err := rand.Read(testSuffix); err != nil {
-		result.Steps = append(result.Steps, XferTestStep{
+		result.Steps = append(result.Steps, TransferStep{
 			Phase: "generate_name", OK: false, Error: err.Error(), Duration: "0s",
 		})
 		result.Pass = false
@@ -185,7 +185,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	// ---------- mkdir on source ----------
 	step = xferStepOp("mkdir_source")
 	t0 = time.Now()
-	srcRootID := xferRootID(ctx, srcDriver)
+	srcRootID := driverProbeRootID(ctx, srcDriver)
 	srcDir, err := srcWriter.Mkdir(ctx, srcRootID, testName)
 	step.finish(t0, err)
 	result.Steps = append(result.Steps, step)
@@ -207,7 +207,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step.Bytes = size
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupXfer(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, srcWriter, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -247,7 +247,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step.Bytes = readBytes
 	result.Steps = append(result.Steps, step)
 	if readErr != nil {
-		cleanupXfer(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, srcWriter, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -256,12 +256,12 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	// ---------- mkdir on dest ----------
 	step = xferStepOp("mkdir_dest")
 	t0 = time.Now()
-	dstRootID := xferRootID(ctx, dstDriver)
+	dstRootID := driverProbeRootID(ctx, dstDriver)
 	dstDir, err := dstWriter.Mkdir(ctx, dstRootID, testName)
 	step.finish(t0, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupXfer(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, srcWriter, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -279,8 +279,8 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step.Bytes = size
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupXfer(ctx, srcWriter, srcDir)
-		cleanupXfer(ctx, dstWriter, dstDir)
+		cleanupProbeDir(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, dstWriter, dstDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -319,8 +319,8 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	result.Steps = append(result.Steps, step)
 
 	// ---------- cleanup ----------
-	cleanupXfer(ctx, srcWriter, srcDir)
-	cleanupXfer(ctx, dstWriter, dstDir)
+	cleanupProbeDir(ctx, srcWriter, srcDir)
+	cleanupProbeDir(ctx, dstWriter, dstDir)
 
 	// Compute metrics from step durations.
 	for _, s := range result.Steps {
@@ -354,18 +354,4 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	}
 	result.Finished = time.Now()
 	return result
-}
-
-func xferRootID(ctx context.Context, d drive.Driver) string {
-	entries, err := d.List(ctx, "")
-	if err == nil && len(entries) > 0 {
-		if entries[0].ParentID != "" {
-			return entries[0].ParentID
-		}
-	}
-	return "root"
-}
-
-func cleanupXfer(ctx context.Context, w drive.Writer, dir drive.Entry) {
-	_ = w.Remove(ctx, dir)
 }

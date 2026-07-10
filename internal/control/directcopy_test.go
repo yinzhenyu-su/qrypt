@@ -212,11 +212,11 @@ func hasCopyTrace(result *DriverCopyResult, phase string) bool {
 	return findCopyTrace(result, phase).Phase != ""
 }
 
-func findCopyTrace(result *DriverCopyResult, phase string) XferTraceEvent {
+func findCopyTrace(result *DriverCopyResult, phase string) TransferTraceEvent {
 	for _, event := range result.Timeline {
 		if event.Phase == phase {
 			return event
 		}
 	}
-	return XferTraceEvent{}
+	return TransferTraceEvent{}
 }
