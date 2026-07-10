@@ -23,5 +23,6 @@ func newFsCmd() *cobra.Command {
 	cmd.AddCommand(newFsMkdirCmd())
 	cmd.AddCommand(newFsRmCmd())
 	cmd.AddCommand(newFsMvCmd())
+	cmd.AddCommand(newFsCopyCmd())
 	return cmd
 }

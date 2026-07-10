@@ -196,6 +196,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
 	mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
+	mux.HandleFunc("/v1/driver/copy", s.handleDriverCopy)
 	mux.HandleFunc("/v1/mounts/health", s.handleMountHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/list", s.handleList)
@@ -936,4 +937,31 @@ func parseBoolQuery(value string) bool {
 	default:
 		return false
 	}
+}
+
+// parseXferSize parses the size query param for xfer tests.
+// Accepts plain bytes, or binary suffixes: k/K (*1024), m/M (*1048576), g/G (*1073741824).
+func parseXferSize(value string) int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	var multiplier int64 = 1
+	last := value[len(value)-1]
+	switch {
+	case last == 'k' || last == 'K':
+		multiplier = 1 << 10
+		value = value[:len(value)-1]
+	case last == 'm' || last == 'M':
+		multiplier = 1 << 20
+		value = value[:len(value)-1]
+	case last == 'g' || last == 'G':
+		multiplier = 1 << 30
+		value = value[:len(value)-1]
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n * multiplier
 }
