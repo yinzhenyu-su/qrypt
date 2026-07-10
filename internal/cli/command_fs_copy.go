@@ -234,16 +234,9 @@ func (r *fsCopyDirResult) err() error {
 }
 
 func cleanRemotePath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return pathpkg.Clean(path)
+	return vfs.CleanVirtualPath(strings.TrimSpace(path))
 }
 
 func isRemoteNotFound(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "not found")
+	return vfs.IsNotFound(err)
 }
