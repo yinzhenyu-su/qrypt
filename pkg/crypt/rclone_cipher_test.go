@@ -2,6 +2,7 @@ package crypt
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"strings"
 	"testing"
 
@@ -156,7 +157,6 @@ func TestRcloneCipher_Obfuscate_EdgeCases(t *testing.T) {
 			t.Errorf("long name: decryption failed err=%v", err)
 		}
 	})
-
 
 }
 
@@ -324,6 +324,37 @@ func TestRcloneCipher_BlockEncryption(t *testing.T) {
 
 	if !bytes.Equal(plaintext, gotPlaintext) {
 		t.Errorf("Plaintext mismatch! Expected: %s, Got: %s", string(plaintext), string(gotPlaintext))
+	}
+}
+
+func TestRcloneCipherContentDedupNonce(t *testing.T) {
+	c, _ := NewRcloneCipher("password", "salt")
+	sum := sha256.Sum256([]byte("same content"))
+	nonceA, err := c.ContentDedupNonce(sum, int64(len("same content")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceB, err := c.ContentDedupNonce(sum, int64(len("same content")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonceA != nonceB {
+		t.Fatal("content dedup nonce should be stable for same content hash and size")
+	}
+	otherSum := sha256.Sum256([]byte("other content"))
+	nonceC, err := c.ContentDedupNonce(otherSum, int64(len("other content")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonceA == nonceC {
+		t.Fatal("content dedup nonce should change when content hash changes")
+	}
+	nonceD, err := c.ContentDedupNonce(sum, int64(len("same content"))+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonceA == nonceD {
+		t.Fatal("content dedup nonce should change when size changes")
 	}
 }
 

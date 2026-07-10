@@ -23,7 +23,7 @@ name = "localfs1"
 type = "localfs"
 
 [mounts.params]
-root = "/tmp/qrypt-localfs-one"
+root_path = "/tmp/qrypt-localfs-one"
 
 [mounts.encryption]
 password = "localfs-one-password"
@@ -36,7 +36,7 @@ name = "localfs2"
 type = "localfs"
 
 [mounts.params]
-root = "/tmp/qrypt-localfs-two"
+root_path = "/tmp/qrypt-localfs-two"
 
 [mounts.encryption]
 password = "localfs-two-password"

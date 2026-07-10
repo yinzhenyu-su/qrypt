@@ -25,6 +25,10 @@ func buildFileSystem(ctx context.Context, configPath string) (vfs.FileSystem, fu
 }
 
 func buildFileSystemFromConfig(ctx context.Context, cfg *config.Config) (vfs.FileSystem, func(), error) {
+	return buildFileSystemFromConfigMount(ctx, cfg, "")
+}
+
+func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mountName string) (vfs.FileSystem, func(), error) {
 	if cfg == nil {
 		return nil, nil, configNotFoundError()
 	}
@@ -35,7 +39,7 @@ func buildFileSystemFromConfig(ctx context.Context, cfg *config.Config) (vfs.Fil
 	if err != nil {
 		return nil, nil, err
 	}
-	return buildNamespace(ctx, cfg, effectiveCacheDir(cfg), bandwidthLimiter(limits))
+	return buildNamespace(ctx, cfg, effectiveCacheDir(cfg), bandwidthLimiter(limits), mountName)
 }
 
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
@@ -56,12 +60,15 @@ func defaultCacheDir() string {
 	return osutil.ExpandHome("~/.qrypt/qrypt-cache")
 }
 
-func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter, selectedMount string) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {
 		if mountCfg.Name == "" {
 			return nil, nil, fmt.Errorf("config: mount name required")
+		}
+		if selectedMount != "" && mountCfg.Name != selectedMount {
+			continue
 		}
 		if mountCfg.Type == "" {
 			return nil, nil, fmt.Errorf("config: mount %s missing type", mountCfg.Name)
@@ -101,7 +108,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 				dropAll(ctx, drivers)
 				return nil, nil, err
 			}
-			drv = crypt.NewDriver(drv, cp)
+			drv = crypt.NewDriver(drv, cp, crypt.DriverOptions{ContentDedup: enc.ContentDedup})
 		}
 		maxBytes := cache.MaxSizeBytes()
 		if maxBytes == 0 {
@@ -122,6 +129,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 			return nil, nil, fmt.Errorf("config: mount %s invalid cache.upload_workers: must be non-negative", mountCfg.Name)
 		}
 		fs, err := vfs.New(drv, vfs.Options{
+			Name:          mountCfg.Name,
 			CacheDir:      mountCacheDir,
 			CacheMaxBytes: maxBytes,
 			UploadDelay:   uploadDelay,
@@ -135,7 +143,13 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 		mounts = append(mounts, vfs.Mount{Name: mountCfg.Name, FS: fs})
 	}
 	if len(mounts) == 0 {
+		if selectedMount != "" {
+			return nil, nil, fmt.Errorf("config: mount %q not found", selectedMount)
+		}
 		return nil, nil, fmt.Errorf("config: no mounts selected")
+	}
+	if selectedMount != "" {
+		return mounts[0].FS, func() { dropAll(ctx, drivers) }, nil
 	}
 	ns, err := vfs.NewNamespace(mounts)
 	if err != nil {

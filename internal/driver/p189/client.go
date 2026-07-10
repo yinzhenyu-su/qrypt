@@ -272,10 +272,10 @@ func (c *client) getResKey(ctx context.Context) (string, string, error) {
 	if trimmed[0] == '<' {
 		var xmlResp struct {
 			XMLName xml.Name `xml:"keyPair"`
-			Result  int    `xml:"result"`
-			PubKey  string `xml:"pubKey"`
-			PkID    string `xml:"pkId"`
-			Expire  int64  `xml:"expire"`
+			Result  int      `xml:"result"`
+			PubKey  string   `xml:"pubKey"`
+			PkID    string   `xml:"pkId"`
+			Expire  int64    `xml:"expire"`
 		}
 		if err := xml.Unmarshal(trimmed, &xmlResp); err != nil {
 			return "", "", fmt.Errorf("189: res key xml decode: %w", err)
@@ -539,17 +539,17 @@ func (c *client) listFiles(ctx context.Context, folderID int64) (folders []Folde
 			folders = make([]Folder, 0, len(xmlResp.FileList.Folders))
 			for _, f := range xmlResp.FileList.Folders {
 				folders = append(folders, Folder{
-					ID:   f.ID,
-					Name: f.Name,
+					ID:         f.ID,
+					Name:       f.Name,
 					LastOpTime: f.CreateDate,
 				})
 			}
 			files = make([]File, 0, len(xmlResp.FileList.Files))
 			for _, f := range xmlResp.FileList.Files {
 				files = append(files, File{
-					ID:   f.ID,
-					Name: f.Name,
-					Size: f.Size,
+					ID:         f.ID,
+					Name:       f.Name,
+					Size:       f.Size,
 					LastOpTime: f.LastOpTime,
 				})
 			}
@@ -589,8 +589,6 @@ func (c *client) getDownloadURL(ctx context.Context, fileID int64) (downloadURL 
 	})
 	return
 }
-
-
 
 func (c *client) createFolder(ctx context.Context, parentID int64, name string) (id int64, err error) {
 	err = c.retryOnAuthError(ctx, func(ctx context.Context) error {

@@ -12,7 +12,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -62,6 +61,7 @@ type Driver struct {
 	downloadCache sync.Map
 	lastErrorMu   sync.Mutex
 	lastError     string
+	rapidCount    int64
 }
 
 type Options struct {
@@ -361,41 +361,16 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return err
 }
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	tmpFile, err := os.CreateTemp("", "baidu-netdisk-upload-*")
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload temp: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-	written, err := io.Copy(tmpFile, body)
-	if err != nil {
-		tmpFile.Close()
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload temp write: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return drive.Entry{}, err
-	}
-	if written != size {
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload size mismatch: wrote %d, expected %d", written, size)
-	}
-	return d.PutFile(ctx, parentID, name, size, tmpPath)
-}
-
-func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	size := source.Size()
 	if size < 1 {
 		return drive.Entry{}, fmt.Errorf("baidu_netdisk: empty files are not allowed by baidu netdisk")
 	}
-	stat, err := os.Stat(localPath)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload stat: %w", err)
-	}
-	if stat.Size() != size {
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload size mismatch: file has %d, expected %d", stat.Size(), size)
-	}
 	parentPath := d.resolvePath(parentID)
 	remotePath := path.Join(parentPath, name)
-	blockList, contentMD5, sliceMD5, err := uploadHashes(localPath, size)
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
+	blockList, contentMD5, sliceMD5, err := uploadHashes(ctx, source, size)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -410,15 +385,20 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{}, err
 	}
 	if pre.ReturnType == 2 {
+		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
+		d.lastErrorMu.Lock()
+		d.rapidCount++
+		d.lastErrorMu.Unlock()
 		return pre.File.entry(parentPath), nil
 	}
 	if pre.UploadID == "" {
 		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload precreate returned empty uploadid")
 	}
-	if err := d.uploadParts(ctx, localPath, remotePath, name, size, pre.UploadID, pre.BlockList); err != nil {
+	if err := d.uploadParts(ctx, source, req.Progress, remotePath, name, size, pre.UploadID, pre.BlockList); err != nil {
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	var created createResp
 	if err := d.createFile(ctx, remotePath, size, pre.UploadID, string(blockListJSON), &created); err != nil {
 		err = fmt.Errorf("baidu_netdisk: upload create: %w", err)
@@ -457,6 +437,7 @@ func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	d.lastErrorMu.Lock()
 	lastError := d.lastError
+	rapidCount := d.rapidCount
 	d.lastErrorMu.Unlock()
 	health := "ok"
 	if lastError != "" {
@@ -477,6 +458,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"credential_source":  d.tokenSource,
 			"credential_updated": d.tokenUpdated,
 			"last_error":         lastError,
+			"rapid_upload_count": rapidCount,
 		},
 	}, nil
 }
@@ -685,8 +667,8 @@ func (d *Driver) precreate(ctx context.Context, p string, size int64, blockList,
 	}, out)
 }
 
-func (d *Driver) uploadParts(ctx context.Context, localPath, remotePath, name string, size int64, uploadID string, blockList []int) error {
-	file, err := os.Open(localPath)
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, remotePath, name string, size int64, uploadID string, blockList []int) error {
+	file, err := source.Open(ctx)
 	if err != nil {
 		return fmt.Errorf("baidu_netdisk: upload open: %w", err)
 	}
@@ -705,21 +687,22 @@ func (d *Driver) uploadParts(ctx context.Context, localPath, remotePath, name st
 			length = 0
 		}
 		section := io.NewSectionReader(file, offset, length)
-		if err := d.uploadSlice(ctx, remotePath, name, uploadID, partSeq, section); err != nil {
+		if err := d.uploadSlice(ctx, progress, remotePath, name, uploadID, partSeq, section); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (d *Driver) uploadSlice(ctx context.Context, remotePath, name, uploadID string, partSeq int, section *io.SectionReader) error {
+func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress, remotePath, name, uploadID string, partSeq int, section *io.SectionReader) error {
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
 	part, err := mw.CreateFormFile("file", name)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(part, d.limiter.LimitUpload(ctx, section)); err != nil {
+	uploadReader := drive.NewUploadProgressReader(progress, section)
+	if _, err := io.Copy(part, d.limiter.LimitUpload(ctx, uploadReader)); err != nil {
 		return err
 	}
 	if err := mw.Close(); err != nil {
@@ -960,8 +943,8 @@ func entryFSID(entry drive.Entry) string {
 	return ""
 }
 
-func uploadHashes(localPath string, size int64) ([]string, string, string, error) {
-	file, err := os.Open(localPath)
+func uploadHashes(ctx context.Context, source drive.ReadOnlyFileSource, size int64) ([]string, string, string, error) {
+	file, err := source.Open(ctx)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("baidu_netdisk: upload hash open: %w", err)
 	}
@@ -1039,8 +1022,7 @@ func baseName(p string) string {
 
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
-var _ drive.FileUploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)

@@ -161,7 +161,7 @@ func TestMkdirReturnsCreatedFsID(t *testing.T) {
 	}
 }
 
-func TestPutFileUploadsAndCreatesFile(t *testing.T) {
+func TestPutSourceUploadsAndCreatesFile(t *testing.T) {
 	ctx := context.Background()
 	tmp := filepath.Join(t.TempDir(), "upload.txt")
 	if err := os.WriteFile(tmp, []byte("hello world"), 0o600); err != nil {
@@ -236,7 +236,11 @@ func TestPutFileUploadsAndCreatesFile(t *testing.T) {
 		UploadAPI:    srv.URL,
 		UseOnlineAPI: false,
 	})
-	entry, err := d.PutFile(ctx, "", "upload.txt", int64(len("hello world")), tmp)
+	entry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "upload.txt",
+		Source:   drive.NewLocalReadOnlyFileSource(tmp, int64(len("hello world"))),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,11 +252,69 @@ func TestPutFileUploadsAndCreatesFile(t *testing.T) {
 	}
 }
 
-func TestPutFileRejectsEmptyFile(t *testing.T) {
+func TestPutSourceRejectsEmptyFile(t *testing.T) {
 	d := New(Options{RefreshToken: "refresh", UseOnlineAPI: true})
-	_, err := d.PutFile(context.Background(), "", "empty.txt", 0, "missing")
+	_, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "",
+		Name:     "empty.txt",
+		Source:   drive.NewLocalReadOnlyFileSource("missing", 0),
+	})
 	if err == nil || !strings.Contains(err.Error(), "empty files") {
 		t.Fatalf("err = %v, want empty files error", err)
+	}
+}
+
+func TestPutSourceRapidUploadIncrementsDebugCounter(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			writeJSON(t, w, tokenResp{AccessToken: "access", RefreshToken: "refresh", ExpiresIn: 3600})
+		case "/rest/2.0/xpan/file":
+			if r.URL.Query().Get("method") != "precreate" {
+				t.Fatalf("unexpected method %q", r.URL.Query().Get("method"))
+			}
+			writeJSON(t, w, precreateResp{
+				ReturnType: 2,
+				File: file{
+					FsID:           456,
+					Path:           "/Qrypt/instant.txt",
+					ServerFilename: "instant.txt",
+					Size:           4,
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	d := New(Options{
+		RefreshToken: "refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RootPath:     "/Qrypt",
+		OAuthURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL + "/rest/2.0",
+		UseOnlineAPI: false,
+	})
+	entry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "instant.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("same")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "/Qrypt/instant.txt" {
+		t.Fatalf("entry = %+v", entry)
+	}
+	snapshot, err := d.DebugSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Extra["rapid_upload_count"] != int64(1) {
+		t.Fatalf("rapid_upload_count = %v, want 1", snapshot.Extra["rapid_upload_count"])
 	}
 }
 

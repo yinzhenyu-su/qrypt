@@ -507,7 +507,11 @@ func TestS3CRUD(t *testing.T) {
 
 	// Put
 	data := "hello world"
-	entry, err := d.Put(ctx, docs.ID, "note.txt", int64(len(data)), strings.NewReader(data))
+	entry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: docs.ID,
+		Name:     "note.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte(data)),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,11 +606,12 @@ func TestS3ReadNotFound(t *testing.T) {
 	}
 }
 
-// ─── PutFile test ─────────────────────────────────────────────────────────
+// ─── PutSource test ───────────────────────────────────────────────────────
 
-func TestPutFile(t *testing.T) {
+func TestPutSource(t *testing.T) {
 	ctx := context.Background()
 	d, mock, _ := setupTest(t)
+	d.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1 << 30}))
 
 	tmpDir := t.TempDir()
 	localPath := filepath.Join(tmpDir, "upload.txt")
@@ -615,7 +620,13 @@ func TestPutFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entry, err := d.PutFile(ctx, "0", "uploaded.txt", int64(len(content)), localPath)
+	progress := &recordingUploadProgress{}
+	entry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "uploaded.txt",
+		Source:   drive.NewLocalReadOnlyFileSource(localPath, int64(len(content))),
+		Progress: progress,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,6 +640,25 @@ func TestPutFile(t *testing.T) {
 	if !bytes.Equal(obj.data, content) {
 		t.Fatalf("data mismatch")
 	}
+	if progress.bytes < int64(len(content)) {
+		t.Fatalf("uploaded bytes = %d, want at least %d", progress.bytes, len(content))
+	}
+	if !slices.Contains(progress.phases, drive.UploadPhaseUploading) {
+		t.Fatalf("upload phases = %v, want uploading", progress.phases)
+	}
+}
+
+type recordingUploadProgress struct {
+	phases []drive.UploadPhase
+	bytes  int64
+}
+
+func (p *recordingUploadProgress) Phase(phase drive.UploadPhase) {
+	p.phases = append(p.phases, phase)
+}
+
+func (p *recordingUploadProgress) Uploaded(n int64) {
+	p.bytes += n
 }
 
 // ─── DebugSnapshot test (keep existing) ───────────────────────────────────

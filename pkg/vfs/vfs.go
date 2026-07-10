@@ -29,6 +29,7 @@ const directoryCopyHideTTL = 10 * time.Minute
 const localCreateLookupTTL = 2 * time.Minute
 
 type Options struct {
+	Name          string
 	CacheDir      string
 	CacheMaxBytes int64
 	RootID        string
@@ -40,7 +41,8 @@ type Options struct {
 type VFS struct {
 	driver        drive.Driver
 	writer        drive.Writer
-	upload        drive.Uploader
+	sourceUpload  drive.SourceUploader
+	name          string
 	healthTracker *drive.HealthTracker
 	cache         *Cache
 	rootID        string
@@ -101,6 +103,9 @@ type overlayOp struct {
 }
 
 func New(driver drive.Driver, opts Options) (*VFS, error) {
+	if opts.Name == "" {
+		opts.Name = "default"
+	}
 	if opts.RootID == "" {
 		opts.RootID = "0"
 	}
@@ -123,6 +128,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	}
 	v := &VFS{
 		driver:         driver,
+		name:           opts.Name,
 		healthTracker:  drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
 		cache:          cache,
 		rootID:         opts.RootID,
@@ -154,8 +160,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if drive.HasCapability(driver, drive.CapabilityWriter) {
 		v.writer, _ = driver.(drive.Writer)
 	}
-	if drive.HasCapability(driver, drive.CapabilityUploader) {
-		v.upload, _ = driver.(drive.Uploader)
+	if drive.HasCapability(driver, drive.CapabilitySourceUploader) {
+		v.sourceUpload, _ = driver.(drive.SourceUploader)
 	}
 	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: timeutil.Now()}
 	return v, nil
@@ -305,7 +311,7 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 
 func (v *VFS) Create(ctx context.Context, path string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
-	if v.upload == nil {
+	if v.sourceUpload == nil {
 		return fmt.Errorf("vfs: driver does not support upload")
 	}
 	path = cleanVirtual(path)

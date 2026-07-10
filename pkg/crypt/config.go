@@ -26,6 +26,7 @@ type Config struct {
 	PasswordHash       string `toml:"password_hash"`
 	FileNameEncryption string `toml:"filename_encryption"`
 	FileNameEncoding   string `toml:"filename_encoding"`
+	ContentDedup       bool   `toml:"content_dedup"`
 }
 
 func (c Config) WithDefaults() Config {

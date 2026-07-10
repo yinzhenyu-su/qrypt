@@ -2,8 +2,13 @@ package crypt
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"strings"
 	"sync"
@@ -13,13 +18,19 @@ import (
 
 // Driver wraps a raw backend with rclone-compatible name and content crypto.
 type Driver struct {
-	raw        drive.Driver
-	cp         Cipher
-	nonceCache sync.Map
+	raw          drive.Driver
+	cp           Cipher
+	contentDedup bool
+	nonceCache   sync.Map
+	hashCache    sync.Map
 }
 
-func NewDriver(raw drive.Driver, cp Cipher) *Driver {
-	return &Driver{raw: raw, cp: cp}
+type DriverOptions struct {
+	ContentDedup bool
+}
+
+func NewDriver(raw drive.Driver, cp Cipher, opts DriverOptions) *Driver {
+	return &Driver{raw: raw, cp: cp, contentDedup: opts.ContentDedup}
 }
 
 func (d *Driver) Encrypted() bool {
@@ -34,8 +45,8 @@ func (d *Driver) Capabilities() []drive.Capability {
 	if drive.HasCapability(d.raw, drive.CapabilityWriter) {
 		caps = append(caps, drive.CapabilityWriter)
 	}
-	if drive.HasCapability(d.raw, drive.CapabilityUploader) {
-		caps = append(caps, drive.CapabilityUploader)
+	if drive.HasCapability(d.raw, drive.CapabilitySourceUploader) {
+		caps = append(caps, drive.CapabilitySourceUploader)
 	}
 	if drive.HasCapability(d.raw, drive.CapabilitySpace) {
 		caps = append(caps, drive.CapabilitySpace)
@@ -71,6 +82,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		snapshot.Extra = map[string]any{}
 	}
 	snapshot.Extra["crypt"] = true
+	snapshot.Extra["content_dedup"] = d.contentDedup
 	return snapshot, nil
 }
 
@@ -266,27 +278,176 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return writer.Remove(ctx, entry)
 }
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	uploader, ok := d.raw.(drive.Uploader)
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	sourceUploader, ok := d.raw.(drive.SourceUploader)
 	if !ok {
 		return drive.Entry{}, errors.New("crypt: raw driver does not support upload")
 	}
-	nonce, err := d.cp.GenerateRandomNonce()
+	source := req.Source
+	nonce, err := d.nonceForSource(source)
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("crypt: generate nonce: %w", err)
+		return drive.Entry{}, err
 	}
-	entry, err := uploader.Put(ctx, parentID, d.cp.EncryptSegment(name), d.cp.EncryptedSize(size), NewEncryptingReader(body, d.cp, nonce, size))
+	encName := d.cp.EncryptSegment(req.Name)
+	encSource := newEncryptedReadOnlyFileSource(source, d.cp, nonce, nil)
+	if d.contentDedup {
+		if requirements, ok := d.raw.(drive.UploadHashRequirements); ok {
+			requiredHashes := requirements.RequiredUploadHashes()
+			hashes, ok := d.cachedUploadHashes(source, requiredHashes)
+			if !ok {
+				var err error
+				hashes, err = readSourceHashes(ctx, encSource, requiredHashes)
+				if err != nil {
+					return drive.Entry{}, err
+				}
+				d.storeUploadHashes(source, hashes)
+			}
+			encSource = newEncryptedReadOnlyFileSource(source, d.cp, nonce, hashes)
+		}
+	}
+	rawReq := req
+	rawReq.Name = encName
+	rawReq.Source = encSource
+	entry, err := sourceUploader.PutSource(ctx, rawReq)
 	if err == nil {
 		d.nonceCache.Store(entry.ID, nonce)
-		entry.Name = name
-		entry.Size = size
+		entry.Name = req.Name
+		entry.Size = source.Size()
 	}
 	return entry, err
 }
 
+func (d *Driver) cachedUploadHashes(source drive.ReadOnlyFileSource, algorithms []drive.HashAlgorithm) (drive.SourceHashes, bool) {
+	key, ok := contentDedupHashCacheKey(source)
+	if !ok {
+		return nil, false
+	}
+	value, ok := d.hashCache.Load(key)
+	if !ok {
+		return nil, false
+	}
+	hashes := value.(drive.SourceHashes)
+	if !hasAllHashes(hashes, algorithms) {
+		return nil, false
+	}
+	return cloneHashes(hashes), true
+}
+
+func (d *Driver) storeUploadHashes(source drive.ReadOnlyFileSource, hashes drive.SourceHashes) {
+	if len(hashes) == 0 {
+		return
+	}
+	key, ok := contentDedupHashCacheKey(source)
+	if !ok {
+		return
+	}
+	d.hashCache.Store(key, cloneHashes(hashes))
+}
+
+func contentDedupHashCacheKey(source drive.ReadOnlyFileSource) (string, bool) {
+	sum, ok := drive.SourceHash(source, drive.HashSHA256)
+	if !ok || len(sum) != sha256.Size {
+		return "", false
+	}
+	return fmt.Sprintf("%d:%s", source.Size(), hex.EncodeToString(sum)), true
+}
+
+func hasAllHashes(hashes drive.SourceHashes, algorithms []drive.HashAlgorithm) bool {
+	for _, algorithm := range algorithms {
+		if _, ok := hashes[algorithm]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneHashes(hashes drive.SourceHashes) drive.SourceHashes {
+	if len(hashes) == 0 {
+		return nil
+	}
+	cloned := make(drive.SourceHashes, len(hashes))
+	for algorithm, sum := range hashes {
+		cloned[algorithm] = append([]byte(nil), sum...)
+	}
+	return cloned
+}
+
+func readSourceHashes(ctx context.Context, source drive.ReadOnlyFileSource, algorithms []drive.HashAlgorithm) (drive.SourceHashes, error) {
+	if len(algorithms) == 0 {
+		return nil, nil
+	}
+	hashes := make(drive.SourceHashes, len(algorithms))
+	writers := make([]io.Writer, 0, len(algorithms))
+	byAlgorithm := map[drive.HashAlgorithm]hash.Hash{}
+	for _, algorithm := range algorithms {
+		if _, ok := byAlgorithm[algorithm]; ok {
+			continue
+		}
+		var h hash.Hash
+		switch algorithm {
+		case drive.HashMD5:
+			h = md5.New()
+		case drive.HashSHA1:
+			h = sha1.New()
+		case drive.HashSHA256:
+			h = sha256.New()
+		default:
+			return nil, fmt.Errorf("crypt: unsupported upload hash algorithm %q", algorithm)
+		}
+		byAlgorithm[algorithm] = h
+		writers = append(writers, h)
+	}
+	if len(writers) == 0 {
+		return nil, nil
+	}
+	file, err := source.Open(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("crypt: upload hash source open: %w", err)
+	}
+	written, copyErr := io.Copy(io.MultiWriter(writers...), file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return nil, fmt.Errorf("crypt: upload hash source read: %w", copyErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("crypt: upload hash source close: %w", closeErr)
+	}
+	if written != source.Size() {
+		return nil, fmt.Errorf("crypt: upload hash source size mismatch: read %d, expected %d", written, source.Size())
+	}
+	for algorithm, h := range byAlgorithm {
+		hashes[algorithm] = h.Sum(nil)
+	}
+	return hashes, nil
+}
+
+func (d *Driver) nonceForSource(source drive.ReadOnlyFileSource) ([FileNonceSize]byte, error) {
+	if !d.contentDedup {
+		nonce, err := d.cp.GenerateRandomNonce()
+		if err != nil {
+			return [FileNonceSize]byte{}, fmt.Errorf("crypt: generate nonce: %w", err)
+		}
+		return nonce, nil
+	}
+	sumBytes, ok := drive.SourceHash(source, drive.HashSHA256)
+	if !ok {
+		return [FileNonceSize]byte{}, errors.New("crypt: content_dedup requires source SHA-256 metadata")
+	}
+	if len(sumBytes) != sha256.Size {
+		return [FileNonceSize]byte{}, fmt.Errorf("crypt: source SHA-256 metadata has %d bytes, want %d", len(sumBytes), sha256.Size)
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], sumBytes)
+	nonce, err := d.cp.ContentDedupNonce(sum, source.Size())
+	if err != nil {
+		return [FileNonceSize]byte{}, fmt.Errorf("crypt: derive content_dedup nonce: %w", err)
+	}
+	return nonce, nil
+}
+
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.RemoteNameResolver = (*Driver)(nil)

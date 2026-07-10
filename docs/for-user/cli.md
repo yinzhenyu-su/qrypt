@@ -51,10 +51,10 @@ printf '%s' "$PASSWORD" | qrypt config export-rclone-password --password-stdin
 ## 挂载
 
 ```sh
-qrypt mount [MOUNTPOINT] [--config PATH] [--socket PATH]
+qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH] [--socket PATH]
 ```
 
-省略 `MOUNTPOINT` 时读取配置中的 `mount_point`。`--socket` 启动本机调试接口。
+省略 `MOUNT_NAME` 时挂载配置中的全部云盘；指定 `MOUNT_NAME` 时只挂载该云盘，根目录就是该云盘内容。省略 `--mount-point` 时读取配置中的 `mount_point`。`--socket` 启动本机调试接口。
 
 ## 文件系统操作
 

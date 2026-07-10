@@ -1,9 +1,9 @@
 package p189
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,11 +16,13 @@ import (
 )
 
 const timeFormat = "2006-01-02 15:04:05"
+const sliceMD5Size = 1 << 20
 
 type Driver struct {
 	cl       *client
 	rootID   int64
 	rootPath string
+	limiter  *drive.BandwidthLimiter
 }
 
 func init() {
@@ -106,6 +108,11 @@ func (d *Driver) Drop(ctx context.Context) error {
 	return nil
 }
 
+func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
+	d.limiter = limiter
+	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
+}
+
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	id, err := strconv.ParseInt(parentID, 10, 64)
 	if err != nil {
@@ -167,7 +174,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		return nil, fmt.Errorf("189: read: %w", err)
 	}
 	if resp.StatusCode == http.StatusPartialContent || resp.StatusCode == http.StatusOK {
-		return resp.Body, nil
+		return d.limiter.LimitDownload(ctx, resp.Body), nil
 	}
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && offset >= entry.Size {
 		resp.Body.Close()
@@ -204,24 +211,23 @@ func (d *Driver) resolvePath(ctx context.Context, parentID int64, p string) (int
 	return currentID, nil
 }
 
-func (d *Driver) Put(ctx context.Context, parentID string, name string, size int64, body io.Reader) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
 	parent, err := strconv.ParseInt(parentID, 10, 64)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("189: invalid parent id: %w", err)
 	}
-	data, err := io.ReadAll(body)
+	size := source.Size()
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
+	fileMD5, err := sourceMD5Hex(ctx, source, size)
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("189: read body: %w", err)
+		return drive.Entry{}, err
 	}
-	actualSize := int64(len(data))
-	fileMd5 := md5.Sum(data)
-	sliceLen := actualSize
-	if sliceLen > 1048576 {
-		sliceLen = 1048576
+	sliceMD5, err := sourceSliceMD5Hex(ctx, source, size)
+	if err != nil {
+		return drive.Entry{}, err
 	}
-	sliceMd5 := md5.Sum(data[:sliceLen])
-	uploadFileID, _, err := d.cl.initUpload(ctx, parent, name, actualSize,
-		fmt.Sprintf("%X", fileMd5), fmt.Sprintf("%X", sliceMd5))
+	uploadFileID, _, err := d.cl.initUpload(ctx, parent, name, size, fileMD5, sliceMD5)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -232,18 +238,32 @@ func (d *Driver) Put(ctx context.Context, parentID string, name string, size int
 	}
 	var partErr error
 	for _, p := range urls {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.RequestURL, bytes.NewReader(data))
+		body, err := source.Open(ctx)
 		if err != nil {
+			partErr = fmt.Errorf("189: upload source open: %w", err)
+			break
+		}
+		uploadBody := drive.NewUploadProgressReader(req.Progress, io.LimitReader(body, size))
+		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.RequestURL, uploadBody)
+		if err != nil {
+			body.Close()
 			partErr = err
 			break
 		}
+		req.ContentLength = size
 		req.Header.Set("Content-Type", "application/octet-stream")
-		resp, err := (&http.Client{}).Do(req)
+		resp, err := d.cl.hc.Do(req)
+		closeErr := body.Close()
 		if err != nil {
 			partErr = err
 			break
 		}
 		resp.Body.Close()
+		if closeErr != nil {
+			partErr = closeErr
+			break
+		}
 		if resp.StatusCode != http.StatusOK {
 			partErr = fmt.Errorf("189: upload part: %s", resp.Status)
 			break
@@ -252,6 +272,7 @@ func (d *Driver) Put(ctx context.Context, parentID string, name string, size int
 	if partErr != nil {
 		return drive.Entry{}, partErr
 	}
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	fileID, err := d.cl.commitUpload(ctx, uploadFileID)
 	if err != nil {
 		return drive.Entry{}, err
@@ -260,8 +281,61 @@ func (d *Driver) Put(ctx context.Context, parentID string, name string, size int
 		ID:       strconv.FormatInt(fileID, 10),
 		ParentID: parentID,
 		Name:     name,
-		Size:     actualSize,
+		Size:     size,
 	}, nil
+}
+
+func sourceMD5Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
+	if sum, ok := drive.SourceHash(source, drive.HashMD5); ok {
+		if len(sum) != md5.Size {
+			return "", fmt.Errorf("189: source MD5 metadata has %d bytes, want %d", len(sum), md5.Size)
+		}
+		return strings.ToUpper(hex.EncodeToString(sum)), nil
+	}
+	body, err := source.Open(ctx)
+	if err != nil {
+		return "", fmt.Errorf("189: hash source open: %w", err)
+	}
+	defer body.Close()
+	hash := md5.New()
+	written, err := io.Copy(hash, body)
+	if err != nil {
+		return "", fmt.Errorf("189: hash source read: %w", err)
+	}
+	if written != size {
+		return "", fmt.Errorf("189: hash source size mismatch: read %d, expected %d", written, size)
+	}
+	return strings.ToUpper(hex.EncodeToString(hash.Sum(nil))), nil
+}
+
+func sourceSliceMD5Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
+	if size <= sliceMD5Size {
+		if sum, ok := drive.SourceHash(source, drive.HashMD5); ok {
+			if len(sum) != md5.Size {
+				return "", fmt.Errorf("189: source MD5 metadata has %d bytes, want %d", len(sum), md5.Size)
+			}
+			return strings.ToUpper(hex.EncodeToString(sum)), nil
+		}
+	}
+	sliceLen := size
+	if sliceLen > sliceMD5Size {
+		sliceLen = sliceMD5Size
+	}
+	body, err := source.Open(ctx)
+	if err != nil {
+		return "", fmt.Errorf("189: slice hash source open: %w", err)
+	}
+	defer body.Close()
+	buf := make([]byte, sliceLen)
+	n, err := body.ReadAt(buf, 0)
+	if err != nil && !(err == io.EOF && int64(n) == sliceLen) {
+		return "", fmt.Errorf("189: slice hash source read: %w", err)
+	}
+	if int64(n) != sliceLen {
+		return "", fmt.Errorf("189: slice hash source size mismatch: read %d, expected %d", n, sliceLen)
+	}
+	sum := md5.Sum(buf)
+	return fmt.Sprintf("%X", sum), nil
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID string, name string) (drive.Entry, error) {
@@ -313,6 +387,14 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	}
 	taskInfos := fmt.Sprintf(`[{"fileId":%d,"fileName":"","isFolder":%d}]`, id, isFolder)
 	return d.cl.batchTask(ctx, "MOVE", taskInfos, dstParentID)
+}
+
+func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
+	id, err := d.resolvePath(ctx, d.rootID, p)
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(id, 10), nil
 }
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {

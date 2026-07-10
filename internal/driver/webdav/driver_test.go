@@ -340,6 +340,57 @@ func TestWebDAV_DebugSnapshot(t *testing.T) {
 	}
 }
 
+func TestWebDAVInstallBandwidthLimiter(t *testing.T) {
+	drv, _, _ := setupTest(t)
+	handled := drv.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{
+		DownloadBytesPerSecond: 1,
+		UploadBytesPerSecond:   1,
+	}))
+	if handled != drive.BandwidthLimitDownload|drive.BandwidthLimitUpload {
+		t.Fatalf("handled directions = %v, want download|upload", handled)
+	}
+	if drv.limiter == nil {
+		t.Fatal("limiter was not installed")
+	}
+}
+
+func TestWebDAVReadUsesBandwidthLimiter(t *testing.T) {
+	drv, ts, _ := setupTest(t)
+	ts.mu.Lock()
+	ts.files["/slow.txt"] = &testFile{data: []byte("slow"), modTime: time.Now()}
+	ts.mu.Unlock()
+	drv.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 1}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	rc, err := drv.Read(ctx, drive.Entry{ID: "/slow.txt", Size: 4}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	_, err = io.ReadAll(rc)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("read error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestWebDAVPutSourceUsesBandwidthLimiter(t *testing.T) {
+	drv, _, _ := setupTest(t)
+	drv.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := drv.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     "slow.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("slow")),
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("put error = %v, want context deadline exceeded", err)
+	}
+}
+
 func TestWebDAV_ListRoot(t *testing.T) {
 	drv, ts, _ := setupTest(t)
 	ctx := context.Background()
@@ -469,10 +520,13 @@ func TestWebDAV_Put(t *testing.T) {
 	}
 
 	content := "uploaded content"
-	body := strings.NewReader(content)
-	entry, err := drv.Put(ctx, "/", "uploaded.txt", int64(len(content)), body)
+	entry, err := drv.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     "uploaded.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte(content)),
+	})
 	if err != nil {
-		t.Fatalf("Put failed: %v", err)
+		t.Fatalf("PutSource failed: %v", err)
 	}
 	if entry.Name != "uploaded.txt" {
 		t.Errorf("Put name = %q, want %q", entry.Name, "uploaded.txt")
@@ -609,8 +663,12 @@ func TestWebDAV_RootPath(t *testing.T) {
 	}
 
 	content := "new under root"
-	if _, err := drv.Put(ctx, "/", "new?file.txt", int64(len(content)), strings.NewReader(content)); err != nil {
-		t.Fatalf("Put under root_path failed: %v", err)
+	if _, err := drv.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     "new?file.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte(content)),
+	}); err != nil {
+		t.Fatalf("PutSource under root_path failed: %v", err)
 	}
 	rc, err := drv.Read(ctx, drive.Entry{ID: "/new?file.txt"}, 0, 0)
 	if err != nil {
@@ -916,10 +974,13 @@ func TestWebDAV_SpecialCharsInName(t *testing.T) {
 
 	// Upload a file with special characters into the subdirectory
 	content := "special chars test"
-	body := strings.NewReader(content)
-	entry, err := drv.Put(ctx, "/sub#dir", "file?name.txt", int64(len(content)), body)
+	entry, err := drv.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/sub#dir",
+		Name:     "file?name.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte(content)),
+	})
 	if err != nil {
-		t.Fatalf("Put(file?name.txt) into sub#dir failed: %v", err)
+		t.Fatalf("PutSource(file?name.txt) into sub#dir failed: %v", err)
 	}
 	if entry.Name != "file?name.txt" {
 		t.Errorf("Put returned name = %q, want %q", entry.Name, "file?name.txt")

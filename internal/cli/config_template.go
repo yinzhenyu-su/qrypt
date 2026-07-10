@@ -141,6 +141,7 @@ root_path = {{printf "%q" .StarterRoot}}
 # password_hash = "argon2id"
 # filename_encryption = "standard"
 # filename_encoding = "base32"
+# content_dedup = false  # true enables deterministic encrypted content for rapid upload/dedup; leaks content equality
 
 {{range .Drivers}}
 # ── {{.Name}} ──────────────────────────────────────────────────────

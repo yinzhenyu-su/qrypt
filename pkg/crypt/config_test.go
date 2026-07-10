@@ -65,9 +65,9 @@ func TestGenerateSalt(t *testing.T) {
 
 func TestNewRcloneCipherFromConfigBackwardCompat(t *testing.T) {
 	cp, err := NewRcloneCipherFromConfig(Config{
-		Password:         "pass",
-		Salt:             "salt",
-		PasswordHash:     "",
+		Password:     "pass",
+		Salt:         "salt",
+		PasswordHash: "",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,9 +81,9 @@ func TestNewRcloneCipherFromConfigBackwardCompat(t *testing.T) {
 
 func TestNewRcloneCipherFromConfigArgon2id(t *testing.T) {
 	cp, err := NewRcloneCipherFromConfig(Config{
-		Password:         "pass",
-		Salt:             "salt",
-		PasswordHash:     PasswordHashArgon2id,
+		Password:     "pass",
+		Salt:         "salt",
+		PasswordHash: PasswordHashArgon2id,
 	})
 	if err != nil {
 		t.Fatal(err)

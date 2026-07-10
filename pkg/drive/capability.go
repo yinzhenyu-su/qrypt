@@ -9,8 +9,7 @@ type Capability string
 
 const (
 	CapabilityWriter             Capability = "writer"
-	CapabilityUploader           Capability = "uploader"
-	CapabilityFileUploader       Capability = "file_uploader"
+	CapabilitySourceUploader     Capability = "source_uploader"
 	CapabilitySpace              Capability = "space"
 	CapabilityPathResolver       Capability = "path_resolver"
 	CapabilityDebugger           Capability = "debugger"
@@ -38,11 +37,8 @@ func Capabilities(d Driver) []Capability {
 	if _, ok := d.(Writer); ok {
 		caps = append(caps, CapabilityWriter)
 	}
-	if _, ok := d.(Uploader); ok {
-		caps = append(caps, CapabilityUploader)
-	}
-	if _, ok := d.(FileUploader); ok {
-		caps = append(caps, CapabilityFileUploader)
+	if _, ok := d.(SourceUploader); ok {
+		caps = append(caps, CapabilitySourceUploader)
 	}
 	if _, ok := d.(SpaceQuerier); ok {
 		caps = append(caps, CapabilitySpace)

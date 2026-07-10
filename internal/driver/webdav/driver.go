@@ -80,7 +80,7 @@ var webdavRetryWait = retry.Wait
 
 // ─── Driver ──────────────────────────────────────────────────────────────
 
-// Driver implements drive.Driver (plus Writer and Uploader) for WebDAV.
+// Driver implements drive.Driver (plus Writer and SourceUploader) for WebDAV.
 //
 // It uses URL-path-based IDs: the root is "/", a subdirectory "/photos",
 // a file "/photos/vacation.jpg".  Internally these are mapped to full
@@ -91,6 +91,7 @@ type Driver struct {
 	username string
 	password string
 	client   *http.Client
+	limiter  *drive.BandwidthLimiter
 }
 
 // Options for creating a new WebDAV driver.
@@ -144,6 +145,11 @@ func init() {
 			Example:     "/qrypt",
 		},
 	)
+}
+
+func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
+	d.limiter = limiter
+	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
 // New creates a new WebDAV driver.
@@ -268,7 +274,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		resp.Body.Close()
 		return nil, fmt.Errorf("webdav: read: unexpected status %d for %s", resp.StatusCode, entry.ID)
 	}
-	return resp.Body, nil
+	return d.limiter.LimitDownload(ctx, resp.Body), nil
 }
 
 // ─── drive.Writer interface ──────────────────────────────────────────────
@@ -415,16 +421,24 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-// ─── drive.Uploader interface ────────────────────────────────────────────
+// ─── drive.SourceUploader interface ──────────────────────────────────────
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := uploadReq.ParentID, uploadReq.Name, uploadReq.Source
+	body, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("webdav: put source open: %w", err)
+	}
+	defer body.Close()
+
 	destURL := d.childURL(parentID, name)
-	req, err := d.newRequest(ctx, http.MethodPut, destURL, body)
+	uploadBody := d.limiter.LimitUpload(ctx, drive.NewUploadProgressReader(uploadReq.Progress, body))
+	req, err := d.newRequest(ctx, http.MethodPut, destURL, uploadBody)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	if size > 0 {
-		req.ContentLength = size
+	if source.Size() > 0 {
+		req.ContentLength = source.Size()
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -439,7 +453,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		ID:       childPath,
 		ParentID: d.relativePath(parentID),
 		Name:     name,
-		Size:     size,
+		Size:     source.Size(),
 		ModTime:  time.Now(),
 	}, nil
 }
@@ -681,6 +695,6 @@ func parseWebDAVTime(s string) time.Time {
 
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)

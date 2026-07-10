@@ -12,7 +12,6 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,21 +26,22 @@ const (
 )
 
 type Driver struct {
-	cl             *client
-	urlCache       sync.Map
-	rootID         string
-	rootPath       string
-	driveID        string
-	userID         string
-	orderBy        string
-	orderDirection string
-	partSize       int64
-	limiter        *drive.BandwidthLimiter
-	stateStore     drive.StateStore
-	tokenSource    string
-	tokenUpdated   time.Time
-	debugMu        sync.Mutex
-	lastError      string
+	cl               *client
+	urlCache         sync.Map
+	rootID           string
+	rootPath         string
+	driveID          string
+	userID           string
+	orderBy          string
+	orderDirection   string
+	partSize         int64
+	limiter          *drive.BandwidthLimiter
+	stateStore       drive.StateStore
+	tokenSource      string
+	tokenUpdated     time.Time
+	debugMu          sync.Mutex
+	lastError        string
+	rapidUploadCount int64
 }
 
 type cachedDownloadURL struct {
@@ -199,6 +199,18 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
+}
+
+func (d *Driver) RequiredUploadHashes() []drive.HashAlgorithm {
+	return []drive.HashAlgorithm{drive.HashSHA1}
+}
+
+func (d *Driver) sourceSHA1(source drive.ReadOnlyFileSource) (string, bool) {
+	sum, ok := drive.SourceHash(source, drive.HashSHA1)
+	if !ok || len(sum) != sha1.Size {
+		return "", false
+	}
+	return hex.EncodeToString(sum), true
 }
 
 func (d *Driver) resolveID(fileID string) string {
@@ -370,36 +382,10 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	tmpFile, err := os.CreateTemp("", "aliyundrive-upload-*")
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload temp: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-	written, err := io.Copy(tmpFile, body)
-	if err != nil {
-		tmpFile.Close()
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload temp write: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return drive.Entry{}, err
-	}
-	if written != size {
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload size mismatch: wrote %d, expected %d", written, size)
-	}
-	return d.PutFile(ctx, parentID, name, size, tmpPath)
-}
-
-func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
 	now := time.Now()
-	stat, err := os.Stat(localPath)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload stat: %w", err)
-	}
-	if stat.Size() != size {
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload size mismatch: file has %d, expected %d", stat.Size(), size)
-	}
+	size := source.Size()
 	parentID = d.resolveID(parentID)
 	partCount := int(math.Ceil(float64(size) / float64(d.partSize)))
 	if partCount == 0 {
@@ -419,17 +405,32 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 		"size":            size,
 		"type":            "file",
 	}
-	if preHash, err := fileHeadSHA1(localPath, 1024); err == nil {
-		body["pre_hash"] = preHash
-	} else {
-		body["content_hash_name"] = "none"
+	// When source provides SHA1 (e.g. from crypt ContentDedupCrypt),
+	// skip two-phase pre_hash negotiation: saves one API round trip
+	// and avoids re-encrypting the full source on every Open().
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
+	if sha1sum, ok := d.sourceSHA1(source); ok {
+		body["content_hash"] = sha1sum
+		body["content_hash_name"] = "sha1"
 		body["proof_version"] = "v1"
+		proofCode, err := d.proofCode(ctx, source, size)
+		if err != nil {
+			return drive.Entry{}, err
+		}
+		body["proof_code"] = proofCode
+	} else {
+		if preHash, err := fileHeadSHA1(ctx, source, 1024); err == nil {
+			body["pre_hash"] = preHash
+		} else {
+			body["content_hash_name"] = "none"
+			body["proof_version"] = "v1"
+		}
 	}
-	err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
+	err := d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
 	var apiErr *apiStatusError
 	if errors.As(err, &apiErr) && apiErr.code == "PreHashMatched" {
 		delete(body, "pre_hash")
-		rapidFields, rapidErr := d.rapidUploadFields(localPath, size)
+		rapidFields, rapidErr := d.rapidUploadFields(ctx, source, size)
 		if rapidErr != nil {
 			return drive.Entry{}, rapidErr
 		}
@@ -442,11 +443,16 @@ func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64,
 		return drive.Entry{}, fmt.Errorf("aliyundrive: upload create: %w", err)
 	}
 	if create.RapidUpload {
+		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
+		d.debugMu.Lock()
+		d.rapidUploadCount++
+		d.debugMu.Unlock()
 		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(create.UpdatedAt, create.CreatedAt, now)}, nil
 	}
-	if err := d.uploadParts(ctx, localPath, create.PartInfoList); err != nil {
+	if err := d.uploadParts(ctx, source, req.Progress, create.PartInfoList); err != nil {
 		return drive.Entry{}, err
 	}
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	var complete completeResp
 	completeBody := map[string]any{
 		"drive_id":  d.driveID,
@@ -479,12 +485,12 @@ func responseModTime(updatedAt, createdAt *time.Time, fallback time.Time) time.T
 	return fallback
 }
 
-func (d *Driver) rapidUploadFields(localPath string, size int64) (map[string]any, error) {
-	contentHash, err := fileSHA1(localPath)
+func (d *Driver) rapidUploadFields(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (map[string]any, error) {
+	contentHash, err := fileSHA1(ctx, source)
 	if err != nil {
 		return nil, err
 	}
-	proofCode, err := d.proofCode(localPath, size)
+	proofCode, err := d.proofCode(ctx, source, size)
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +502,7 @@ func (d *Driver) rapidUploadFields(localPath string, size int64) (map[string]any
 	}, nil
 }
 
-func (d *Driver) proofCode(localPath string, size int64) (string, error) {
+func (d *Driver) proofCode(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
 	if size <= 0 {
 		return "", nil
 	}
@@ -507,7 +513,7 @@ func (d *Driver) proofCode(localPath string, size int64) (string, error) {
 		return "", fmt.Errorf("aliyundrive: calculate proof offset")
 	}
 	offset := new(big.Int).Mod(offsetSeed, big.NewInt(size)).Int64()
-	file, err := os.Open(localPath)
+	file, err := source.Open(ctx)
 	if err != nil {
 		return "", fmt.Errorf("aliyundrive: proof open: %w", err)
 	}
@@ -520,8 +526,8 @@ func (d *Driver) proofCode(localPath string, size int64) (string, error) {
 	return base64.StdEncoding.EncodeToString(buf[:n]), nil
 }
 
-func fileHeadSHA1(localPath string, limit int64) (string, error) {
-	file, err := os.Open(localPath)
+func fileHeadSHA1(ctx context.Context, source drive.ReadOnlyFileSource, limit int64) (string, error) {
+	file, err := source.Open(ctx)
 	if err != nil {
 		return "", fmt.Errorf("aliyundrive: pre hash open: %w", err)
 	}
@@ -533,8 +539,14 @@ func fileHeadSHA1(localPath string, limit int64) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func fileSHA1(localPath string) (string, error) {
-	file, err := os.Open(localPath)
+func fileSHA1(ctx context.Context, source drive.ReadOnlyFileSource) (string, error) {
+	if sum, ok := drive.SourceHash(source, drive.HashSHA1); ok {
+		if len(sum) != sha1.Size {
+			return "", fmt.Errorf("aliyundrive: source SHA-1 metadata has %d bytes, want %d", len(sum), sha1.Size)
+		}
+		return hex.EncodeToString(sum), nil
+	}
+	file, err := source.Open(ctx)
 	if err != nil {
 		return "", fmt.Errorf("aliyundrive: content hash open: %w", err)
 	}
@@ -546,29 +558,26 @@ func fileSHA1(localPath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (d *Driver) uploadParts(ctx context.Context, localPath string, parts []uploadPartInfo) error {
-	file, err := os.Open(localPath)
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, parts []uploadPartInfo) error {
+	file, err := source.Open(ctx)
 	if err != nil {
 		return fmt.Errorf("aliyundrive: upload open: %w", err)
 	}
 	defer file.Close()
-	stat, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("aliyundrive: upload stat: %w", err)
-	}
+	size := source.Size()
 	for _, part := range parts {
 		if part.UploadURL == "" {
 			return fmt.Errorf("aliyundrive: upload part %d has empty url", part.PartNumber)
 		}
 		offset := int64(part.PartNumber-1) * d.partSize
 		length := d.partSize
-		if remaining := stat.Size() - offset; remaining < length {
+		if remaining := size - offset; remaining < length {
 			length = remaining
 		}
 		if length < 0 {
 			length = 0
 		}
-		reader := io.NewSectionReader(file, offset, length)
+		reader := drive.NewUploadProgressReader(progress, io.NewSectionReader(file, offset, length))
 		body := d.limiter.LimitUpload(ctx, reader)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPut, part.UploadURL, body)
 		if err != nil {
@@ -694,6 +703,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"credential_source":  d.tokenSource,
 			"credential_updated": d.tokenUpdated,
 			"last_error":         d.getLastError(),
+			"rapid_upload_count": d.rapidUploadCount,
 		},
 	}, nil
 }
@@ -749,8 +759,7 @@ func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
 
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
-var _ drive.FileUploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)

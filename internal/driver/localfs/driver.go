@@ -122,7 +122,14 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return os.Remove(entry.ID)
 }
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	body, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("localfs: open source: %w", err)
+	}
+	defer body.Close()
+
 	parent := d.resolve(parentID)
 	path := filepath.Join(parent, name)
 	f, err := os.Create(path)
@@ -130,12 +137,12 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		return drive.Entry{}, err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, body); err != nil {
+	if _, err := io.Copy(f, drive.NewUploadProgressReader(req.Progress, body)); err != nil {
 		return drive.Entry{}, err
 	}
 	info, err := f.Stat()
 	if err != nil {
-		return drive.Entry{ID: path, ParentID: parent, Name: name}, nil
+		return drive.Entry{ID: path, ParentID: parent, Name: name, Size: source.Size()}, nil
 	}
 	return drive.Entry{ID: path, ParentID: parent, Name: name, Size: info.Size(), ModTime: info.ModTime()}, nil
 }
@@ -169,7 +176,7 @@ func (d *Driver) resolve(id string) string {
 
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)

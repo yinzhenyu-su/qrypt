@@ -60,7 +60,7 @@ func mountPointFromLoadedConfig(cfg *config.Config) (string, error) {
 	if mountPoint := cfg.EffectiveMountPoint(); mountPoint != "" {
 		return mountPoint, nil
 	}
-	return "", fmt.Errorf("mount point not specified (set mount_point in the config or pass MOUNTPOINT)")
+	return "", fmt.Errorf("mount point not specified (set mount_point in the config or pass --mount-point)")
 }
 
 type cliMountConfig struct {

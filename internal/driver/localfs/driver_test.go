@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -39,7 +38,11 @@ func TestDriverFileOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := driver.Put(ctx, docs.ID, "note.txt", int64(len("hello world")), strings.NewReader("hello world"))
+	entry, err := driver.PutSource(ctx, drive.UploadRequest{
+		ParentID: docs.ID,
+		Name:     "note.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("hello world")),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +106,18 @@ func TestDriverPutOverwritesExistingFile(t *testing.T) {
 	ctx := context.Background()
 	driver := New(t.TempDir())
 
-	if _, err := driver.Put(ctx, "", "same.txt", 3, strings.NewReader("one")); err != nil {
+	if _, err := driver.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "same.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("one")),
+	}); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := driver.Put(ctx, "", "same.txt", 3, strings.NewReader("two"))
+	entry, err := driver.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "same.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("two")),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

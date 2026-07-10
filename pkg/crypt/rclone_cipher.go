@@ -8,9 +8,12 @@ package crypt
 import (
 	"bytes"
 	"crypto/aes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"io"
 	"strconv"
@@ -36,8 +39,6 @@ var defaultSalt = []byte{0xA8, 0x0D, 0xF4, 0x3A, 0x8F, 0xBD, 0x03, 0x08, 0xA7, 0
 var rcloneBase32 = base32.HexEncoding.WithPadding(base32.NoPadding)
 var rcloneBase64 = base64.URLEncoding.WithPadding(base64.NoPadding)
 
-
-
 const obfuscQuoteRune = '!'
 
 type RcloneCipher struct {
@@ -57,6 +58,7 @@ type Cipher interface {
 	EncryptedSize(plainSize int64) int64
 	DecryptedSize(cipherSize int64) (int64, error)
 	GenerateRandomNonce() ([FileNonceSize]byte, error)
+	ContentDedupNonce(plainSHA256 [32]byte, plainSize int64) ([FileNonceSize]byte, error)
 }
 
 func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, error) {
@@ -139,6 +141,24 @@ func (c *RcloneCipher) GenerateRandomNonce() ([FileNonceSize]byte, error) {
 	var nonce [FileNonceSize]byte
 	_, err := io.ReadFull(rand.Reader, nonce[:])
 	return nonce, err
+}
+
+func (c *RcloneCipher) ContentDedupNonce(plainSHA256 [32]byte, plainSize int64) ([FileNonceSize]byte, error) {
+	keyMAC := hmac.New(sha256.New, c.dataKey[:])
+	keyMAC.Write([]byte("qrypt content dedup key v1"))
+	key := keyMAC.Sum(nil)
+
+	nonceMAC := hmac.New(sha256.New, key)
+	nonceMAC.Write([]byte("qrypt content dedup nonce v1"))
+	var sizeBuf [8]byte
+	binary.BigEndian.PutUint64(sizeBuf[:], uint64(plainSize))
+	nonceMAC.Write(sizeBuf[:])
+	nonceMAC.Write(plainSHA256[:])
+	sum := nonceMAC.Sum(nil)
+
+	var nonce [FileNonceSize]byte
+	copy(nonce[:], sum[:FileNonceSize])
+	return nonce, nil
 }
 
 func (c *RcloneCipher) EncryptSegment(plaintext string) string {
@@ -424,7 +444,3 @@ func (c *RcloneCipher) deobfuscateSegment(ciphertext string) (string, error) {
 	}
 	return result.String(), nil
 }
-
-
-
-
