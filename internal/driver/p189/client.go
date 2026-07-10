@@ -659,7 +659,7 @@ func (c *client) initUpload(ctx context.Context, parentID int64, name string, si
 	return result.Data.UploadFileID, result.Data.FileData, nil
 }
 
-func (c *client) uploadData(ctx context.Context, uploadFileID string, partCount int) (map[string]Part, error) {
+func (c *client) uploadData(ctx context.Context, uploadFileID string, partCount int) (map[string]uploadPart, error) {
 	raw, err := c.uploadRequest(ctx, "/person/uploadData", map[string]string{
 		"uploadFileId": uploadFileID,
 		"partCount":    strconv.Itoa(partCount),
