@@ -982,11 +982,7 @@ func cloneEntries(entries []drive.Entry) []drive.Entry {
 }
 
 func cleanVirtual(path string) string {
-	path = filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(path, "/")))
-	if path == "." {
-		return "/"
-	}
-	return path
+	return CleanVirtualPath(path)
 }
 
 // splitVirtual splits a cleaned virtual path into the last component (name)
