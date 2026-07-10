@@ -104,15 +104,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	rand.Read(testSuffix)
 	testName := fmt.Sprintf("__qrypt_test_%x", testSuffix)
 
-	// Determine root parent ID. Try common sentinel values.
-	rootID := ""
-	entries, err := d.List(ctx, "")
-	if err == nil && len(entries) > 0 {
-		rootID = entries[0].ParentID
-	}
-	if rootID == "" {
-		rootID = "root"
-	}
+	rootID := driverProbeRootID(ctx, d)
 
 	// 1. Mkdir test directory.
 	s := stepOp("mkdir", testName)
@@ -147,7 +139,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanup(ctx, w, testDir)
+		cleanupProbeDir(ctx, w, testDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -211,10 +203,6 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	}
 	result.Finished = time.Now()
 	return result
-}
-
-func cleanup(ctx context.Context, w drive.Writer, dir drive.Entry) {
-	_ = w.Remove(ctx, dir)
 }
 
 func verifyCleanList(ctx context.Context, d drive.Driver, parentID string, testPrefix string) error {

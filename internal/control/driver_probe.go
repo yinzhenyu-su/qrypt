@@ -1,0 +1,24 @@
+package control
+
+import (
+	"context"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+)
+
+func driverProbeRootID(ctx context.Context, d drive.Driver) string {
+	if resolver, ok := d.(drive.PathResolver); ok {
+		if rootID, err := resolver.ResolvePath(ctx, "/"); err == nil && rootID != "" {
+			return rootID
+		}
+	}
+	entries, err := d.List(ctx, "")
+	if err == nil && len(entries) > 0 && entries[0].ParentID != "" {
+		return entries[0].ParentID
+	}
+	return "root"
+}
+
+func cleanupProbeDir(ctx context.Context, w drive.Writer, dir drive.Entry) {
+	_ = w.Remove(ctx, dir)
+}

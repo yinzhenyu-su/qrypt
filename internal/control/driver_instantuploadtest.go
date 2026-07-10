@@ -93,7 +93,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	}
 	testName := fmt.Sprintf("__qrypt_instant_upload_test_%x", testSuffix)
 
-	rootID := testRootID(ctx, d)
+	rootID := driverProbeRootID(ctx, d)
 
 	// 1. Mkdir test directory.
 	s := stepOp("mkdir", testName)
@@ -116,7 +116,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanup(ctx, writer, testDir)
+		cleanupProbeDir(ctx, writer, testDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -132,7 +132,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 				canVerify = true
 			}
 		} else {
-			cleanup(ctx, writer, testDir)
+			cleanupProbeDir(ctx, writer, testDir)
 			result.Steps = append(result.Steps, CRUDTestStep{
 				Operation: "verify_instant",
 				OK:        false,
@@ -153,7 +153,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanup(ctx, writer, testDir)
+		cleanupProbeDir(ctx, writer, testDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -185,7 +185,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	// 6. Remove the test directory.
 	s = stepOp("rmdir", testName)
 	start = time.Now()
-	_ = writer.Remove(ctx, testDir)
+	cleanupProbeDir(ctx, writer, testDir)
 	s.finish(start, nil) // best-effort
 	result.Steps = append(result.Steps, s)
 
@@ -198,17 +198,4 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	}
 	result.Finished = time.Now()
 	return result
-}
-
-func testRootID(ctx context.Context, d drive.Driver) string {
-	if resolver, ok := d.(drive.PathResolver); ok {
-		if rootID, err := resolver.ResolvePath(ctx, "/"); err == nil && rootID != "" {
-			return rootID
-		}
-	}
-	entries, err := d.List(ctx, "")
-	if err == nil && len(entries) > 0 && entries[0].ParentID != "" {
-		return entries[0].ParentID
-	}
-	return "root"
 }
