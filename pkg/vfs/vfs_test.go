@@ -744,10 +744,10 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 		t.Fatalf("expected one upload history item, got %+v", snapshot)
 	}
 	history := snapshot.Mounts[0].UploadHistory[0]
-	if history.Path != "/hello.txt" || history.State != "completed" || history.BytesUploaded != int64(len("hello qrypt")) {
+	if history.Path != "/hello.txt" || history.State != string(drive.UploadPhaseCompleted) || history.BytesUploaded != int64(len("hello qrypt")) {
 		t.Fatalf("unexpected upload history: %+v", history)
 	}
-	if history.StageDurations["uploading"] == "" {
+	if history.StageDurations[string(drive.UploadPhaseUploading)] == "" {
 		t.Fatalf("upload history missing upload stage duration: %+v", history)
 	}
 	report, err := fs.DebugConsistency(ctx, "/hello.txt")
@@ -947,7 +947,7 @@ func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
 		t.Fatalf("expected one active upload, got %+v", snapshot)
 	}
 	upload := snapshot.Mounts[0].Uploads[0]
-	if upload.Path != "/active.txt" || upload.State != "committing" || upload.BytesTotal != int64(len("active upload")) || upload.BytesUploaded != int64(len("active upload")) {
+	if upload.Path != "/active.txt" || upload.State != string(drive.UploadPhaseCommitting) || upload.BytesTotal != int64(len("active upload")) || upload.BytesUploaded != int64(len("active upload")) {
 		t.Fatalf("unexpected active upload: %+v", upload)
 	}
 	close(drv.release)

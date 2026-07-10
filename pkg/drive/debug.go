@@ -23,6 +23,19 @@ const (
 	HealthLevelUnhealthy = "unhealthy"
 )
 
+const (
+	DebugExtraInstantUploadCount     = "instant_upload_count"
+	DebugExtraLegacyRapidUploadCount = "rapid_upload_count"
+	DebugExtraCredentialSource       = "credential_source"
+	DebugExtraCredentialUpdated      = "credential_updated"
+	DebugExtraLastError              = "last_error"
+)
+
+const (
+	DebugStatRootID   = "root_id"
+	DebugStatRootPath = "root_path"
+)
+
 type RemoteNameInfo struct {
 	PlainName  string `json:"plain_name"`
 	RemoteName string `json:"remote_name"`

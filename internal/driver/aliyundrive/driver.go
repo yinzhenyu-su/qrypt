@@ -26,22 +26,22 @@ const (
 )
 
 type Driver struct {
-	cl               *client
-	urlCache         sync.Map
-	rootID           string
-	rootPath         string
-	driveID          string
-	userID           string
-	orderBy          string
-	orderDirection   string
-	partSize         int64
-	limiter          *drive.BandwidthLimiter
-	stateStore       drive.StateStore
-	tokenSource      string
-	tokenUpdated     time.Time
-	debugMu          sync.Mutex
-	lastError        string
-	rapidUploadCount int64
+	cl                 *client
+	urlCache           sync.Map
+	rootID             string
+	rootPath           string
+	driveID            string
+	userID             string
+	orderBy            string
+	orderDirection     string
+	partSize           int64
+	limiter            *drive.BandwidthLimiter
+	stateStore         drive.StateStore
+	tokenSource        string
+	tokenUpdated       time.Time
+	debugMu            sync.Mutex
+	lastError          string
+	instantUploadCount int64
 }
 
 type cachedDownloadURL struct {
@@ -430,11 +430,11 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	var apiErr *apiStatusError
 	if errors.As(err, &apiErr) && apiErr.code == "PreHashMatched" {
 		delete(body, "pre_hash")
-		rapidFields, rapidErr := d.rapidUploadFields(ctx, source, size)
-		if rapidErr != nil {
-			return drive.Entry{}, rapidErr
+		instantFields, instantErr := d.instantUploadFields(ctx, source, size)
+		if instantErr != nil {
+			return drive.Entry{}, instantErr
 		}
-		for key, value := range rapidFields {
+		for key, value := range instantFields {
 			body[key] = value
 		}
 		err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
@@ -442,10 +442,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("aliyundrive: upload create: %w", err)
 	}
-	if create.RapidUpload {
+	if create.InstantUpload {
 		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
 		d.debugMu.Lock()
-		d.rapidUploadCount++
+		d.instantUploadCount++
 		d.debugMu.Unlock()
 		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(create.UpdatedAt, create.CreatedAt, now)}, nil
 	}
@@ -485,7 +485,7 @@ func responseModTime(updatedAt, createdAt *time.Time, fallback time.Time) time.T
 	return fallback
 }
 
-func (d *Driver) rapidUploadFields(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (map[string]any, error) {
+func (d *Driver) instantUploadFields(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (map[string]any, error) {
 	contentHash, err := fileSHA1(ctx, source)
 	if err != nil {
 		return nil, err
@@ -692,18 +692,18 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"drive_id":        d.driveID,
-			"root_id":         d.rootID,
-			"root_path":       d.rootPath,
-			"user_id":         d.userID,
-			"order_by":        d.orderBy,
-			"order_direction": d.orderDirection,
+			"drive_id":              d.driveID,
+			drive.DebugStatRootID:   d.rootID,
+			drive.DebugStatRootPath: d.rootPath,
+			"user_id":               d.userID,
+			"order_by":              d.orderBy,
+			"order_direction":       d.orderDirection,
 		},
 		Extra: map[string]any{
-			"credential_source":  d.tokenSource,
-			"credential_updated": d.tokenUpdated,
-			"last_error":         d.getLastError(),
-			"rapid_upload_count": d.rapidUploadCount,
+			drive.DebugExtraCredentialSource:   d.tokenSource,
+			drive.DebugExtraCredentialUpdated:  d.tokenUpdated,
+			drive.DebugExtraLastError:          d.getLastError(),
+			drive.DebugExtraInstantUploadCount: d.instantUploadCount,
 		},
 	}, nil
 }

@@ -377,14 +377,14 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      "ok",
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"bucket":       d.bucket,
-			"endpoint":     d.endpoint,
-			"region":       d.region,
-			"root_path":    d.rootPrefix,
-			"list_version": d.listVersion,
+			"bucket":                d.bucket,
+			"endpoint":              d.endpoint,
+			"region":                d.region,
+			drive.DebugStatRootPath: d.rootPrefix,
+			"list_version":          d.listVersion,
 		},
 		Extra: map[string]any{
-			"credential_source": "config",
+			drive.DebugExtraCredentialSource: "config",
 		},
 	}, nil
 }

@@ -49,10 +49,10 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	uploadStart := time.Now()
 	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
 	v.startDebugUpload(pending)
-	finishState := "failed"
+	finishState := debugUploadStateFailed
 	finishErr := ""
 	defer func() { v.finishDebugUpload(pending.Path, finishState, finishErr) }()
-	v.setDebugUploadState(pending.Path, "preparing")
+	v.setDebugUploadState(pending.Path, debugUploadStatePreparing)
 	snapshot, err := v.snapshotPending(pending)
 	if err != nil {
 		finishErr = err.Error()
@@ -64,7 +64,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		logging.L.DebugfEvery("vfs.skip_upload_removed_after_snapshot", time.Second, "[VFS] skip upload after snapshot; pending removed op_id=%q path=%q", pending.FID, pending.Path)
 		return nil
 	} else if !samePendingFile(latest, pending) {
-		finishState = "superseded"
+		finishState = debugUploadStateSuperseded
 		logging.L.InfofEvery("vfs.upload_superseded_after_snapshot", time.Second, "[VFS] upload superseded after snapshot op_id=%q path=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.Size, latest.Size)
 		v.enqueue(latest)
 		return nil
@@ -75,7 +75,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		logging.L.Warnf("[VFS] upload remove existing failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
 		return err
 	}
-	v.setDebugUploadState(pending.Path, "uploading")
+	v.setDebugUploadState(pending.Path, debugUploadStateUploading)
 	source := drive.NewLocalReadOnlyFileSourceWithHashes(snapshot.Path, pending.Size, snapshot.Hashes)
 	progress := debugUploadProgress{
 		v:    v,
@@ -104,7 +104,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return err
 	}
 	if latest, ok := v.cache.PendingByPath(pending.Path); !ok || !samePendingFile(latest, pending) {
-		finishState = "superseded"
+		finishState = debugUploadStateSuperseded
 		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
 		if v.writer != nil && ctx.Err() == nil {
 			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
@@ -133,7 +133,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return err
 	}
 	if !removed {
-		finishState = "superseded"
+		finishState = debugUploadStateSuperseded
 		logging.L.InfofEvery("vfs.upload_stale_committed_after_update", time.Second, "[VFS] upload committed stale version after local update; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
 		if v.writer != nil && ctx.Err() == nil {
 			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
@@ -144,7 +144,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return nil
 	}
 	_ = v.cache.staging.remove(pending.LocalPath)
-	finishState = "completed"
+	finishState = debugUploadStateCompleted
 	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete op_id=%q path=%q uploaded_id=%q size=%d dur=%s", pending.FID, pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
 }

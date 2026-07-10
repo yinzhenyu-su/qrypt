@@ -395,11 +395,11 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      "ok",
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"root_path": d.rootPath,
-			"username":  d.username,
+			drive.DebugStatRootPath: d.rootPath,
+			"username":              d.username,
 		},
 		Extra: map[string]any{
-			"credential_source": "config",
+			drive.DebugExtraCredentialSource: "config",
 		},
 	}, nil
 }

@@ -7,12 +7,13 @@ import (
 	"time"
 )
 
-// secUploadCountKeys is the set of Extra keys that drivers use to report
-// rapid/instant upload statistics through their DebugSnapshot.
-var secUploadCountKeys = []string{"rapid_upload_count", "instant_upload_count"}
+// instantUploadCountKeys lists the DebugSnapshot Extra keys accepted for
+// service-side uploads. New drivers should report DebugExtraInstantUploadCount;
+// the legacy rapid key is accepted so older snapshots remain readable.
+var instantUploadCountKeys = []string{DebugExtraInstantUploadCount, DebugExtraLegacyRapidUploadCount}
 
-func readSecUploadCount(snap *DebugSnapshot) (int64, bool) {
-	for _, key := range secUploadCountKeys {
+func readInstantUploadCount(snap *DebugSnapshot) (int64, bool) {
+	for _, key := range instantUploadCountKeys {
 		v, ok := snap.Extra[key]
 		if !ok {
 			continue
@@ -27,14 +28,14 @@ func readSecUploadCount(snap *DebugSnapshot) (int64, bool) {
 	return 0, false
 }
 
-// RunRapidUploadTest uploads identical content twice and verifies that the
-// second upload triggers the driver's rapid/instant upload path (zero data
+// RunInstantUploadTest uploads identical content twice and verifies that the
+// second upload triggers the driver's service-side upload path (zero data
 // transfer) by checking the driver's DebugSnapshot counter.
 //
 // Only drivers that implement SourceUploader, Writer, and Debugger can be
 // fully verified. Drivers missing the Debugger interface are checked for
 // basic upload success only (the counter cannot be inspected).
-func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
+func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	result := &CRUDTestResult{
 		Mount:   mount,
 		Started: time.Now(),
@@ -44,7 +45,7 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 	_, isUploader := d.(SourceUploader)
 	if !isUploader {
 		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation: "rapid_upload",
+			Operation: "instant_upload",
 			OK:        false,
 			Error:     "driver does not implement SourceUploader",
 			Duration:  "0s",
@@ -58,7 +59,7 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 	writer, ok := d.(Writer)
 	if !ok {
 		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation: "rapid_upload",
+			Operation: "instant_upload",
 			OK:        false,
 			Error:     "driver does not implement Writer",
 			Duration:  "0s",
@@ -79,7 +80,7 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 	testSuffix := make([]byte, 6)
 	if _, err := rand.Read(testSuffix); err != nil {
 		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation: "rapid_upload",
+			Operation: "instant_upload",
 			OK:        false,
 			Error:     fmt.Sprintf("rand read: %v", err),
 			Duration:  "0s",
@@ -88,7 +89,7 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 		result.Finished = time.Now()
 		return result
 	}
-	testName := fmt.Sprintf("__qrypt_rapid_test_%x", testSuffix)
+	testName := fmt.Sprintf("__qrypt_instant_upload_test_%x", testSuffix)
 
 	rootID := testRootID(ctx, d)
 
@@ -105,7 +106,7 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 	}
 
 	// 2. First upload — creates the file on the backend.
-	const testContent = "qrypt-rapid-upload-test-content-2024"
+	const testContent = "qrypt-instant-upload-test-content-2024"
 	s = stepOp("put", "original.bin")
 	start = time.Now()
 	firstSource := NewBytesReadOnlyFileSource([]byte(testContent))
@@ -119,19 +120,19 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 		return result
 	}
 
-	// 3. Snapshot the rapid-upload counter before the second upload.
+	// 3. Snapshot the instant-upload counter before the second upload.
 	var countBefore int64
 	var canVerify bool
 	if hasDebug {
 		if snap, snapErr := debugger.DebugSnapshot(ctx); snapErr == nil {
-			if c, ok := readSecUploadCount(&snap); ok {
+			if c, ok := readInstantUploadCount(&snap); ok {
 				countBefore = c
 				canVerify = true
 			}
 		} else {
 			cleanup(ctx, writer, testDir)
 			result.Steps = append(result.Steps, CRUDTestStep{
-				Operation: "verify_rapid",
+				Operation: "verify_instant",
 				OK:        false,
 				Error:     fmt.Sprintf("debug snapshot before duplicate upload: %v", snapErr),
 				Duration:  "0s",
@@ -142,7 +143,7 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 		}
 	}
 
-	// 4. Second upload of identical content — should trigger rapid/instant upload.
+	// 4. Second upload of identical content should trigger service-side upload.
 	s = stepOp("put_dup", "duplicate.bin")
 	start = time.Now()
 	secondSource := NewBytesReadOnlyFileSource([]byte(testContent))
@@ -156,19 +157,19 @@ func RunRapidUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestRe
 		return result
 	}
 
-	// 5. Verify that the rapid-upload counter increased.
-	s = stepOp("verify_rapid", "")
+	// 5. Verify that the instant-upload counter increased.
+	s = stepOp("verify_instant", "")
 	start = time.Now()
 	if hasDebug && !canVerify {
-		err = fmt.Errorf("rapid upload counter not reported by DebugSnapshot")
+		err = fmt.Errorf("instant upload counter not reported by DebugSnapshot")
 	} else if canVerify {
 		if snap, snapErr := debugger.DebugSnapshot(ctx); snapErr == nil {
-			if countAfter, ok := readSecUploadCount(&snap); ok {
+			if countAfter, ok := readInstantUploadCount(&snap); ok {
 				if countAfter <= countBefore {
-					err = fmt.Errorf("rapid upload count did not increase: before=%d after=%d", countBefore, countAfter)
+					err = fmt.Errorf("instant upload count did not increase: before=%d after=%d", countBefore, countAfter)
 				}
 			} else {
-				err = fmt.Errorf("rapid upload counter disappeared from Extra after being present")
+				err = fmt.Errorf("instant upload counter disappeared from Extra after being present")
 			}
 		} else {
 			err = fmt.Errorf("debug snapshot: %w", snapErr)

@@ -26,7 +26,7 @@ type personalListResp struct {
 }
 
 type personalItem struct {
-	FileId     string       `json:"fileId"`
+	FileID     string       `json:"fileId"`
 	Name       string       `json:"name"`
 	Type       string       `json:"type"`
 	Size       int64        `json:"size"`
@@ -58,7 +58,7 @@ func toEntry(item personalItem) drive.Entry {
 		modTime = personalParseTime(item.CreatedAt)
 	}
 	return drive.Entry{
-		ID:      item.FileId,
+		ID:      item.FileID,
 		Name:    name,
 		IsDir:   item.Type == "folder",
 		Size:    item.Size,
@@ -77,7 +77,7 @@ func toEntries(items []personalItem) []drive.Entry {
 type createResp struct {
 	baseResp
 	Data struct {
-		FileId string `json:"fileId"`
+		FileID string `json:"fileId"`
 		Name   string `json:"name"`
 		Type   string `json:"type"`
 	} `json:"data"`
@@ -87,23 +87,23 @@ type downloadResp struct {
 	baseResp
 	Data struct {
 		Url    string `json:"url"`
-		CdnUrl string `json:"cdnUrl"`
+		CDNURL string `json:"cdnUrl"`
 	} `json:"data"`
 }
 
 type personalUploadResp struct {
 	baseResp
 	Data struct {
-		FileId      string             `json:"fileId"`
-		FileName    string             `json:"fileName"`
-		Exist       bool               `json:"exist"`
-		RapidUpload bool               `json:"rapidUpload"`
-		UploadId    string             `json:"uploadId"`
-		PartInfos   []personalPartInfo `json:"partInfos"`
+		FileID        string             `json:"fileId"`
+		FileName      string             `json:"fileName"`
+		Exist         bool               `json:"exist"`
+		InstantUpload bool               `json:"rapidUpload"`
+		UploadID      string             `json:"uploadId"`
+		PartInfos     []personalPartInfo `json:"partInfos"`
 	} `json:"data"`
 }
 
-type personalUploadUrlResp struct {
+type personalUploadURLResp struct {
 	baseResp
 	Data struct {
 		PartInfos []personalPartInfo `json:"partInfos"`
@@ -112,7 +112,7 @@ type personalUploadUrlResp struct {
 
 type personalPartInfo struct {
 	PartNumber int    `json:"partNumber"`
-	UploadUrl  string `json:"uploadUrl"`
+	UploadURL  string `json:"uploadUrl"`
 }
 
 type quotaDetailResp struct {

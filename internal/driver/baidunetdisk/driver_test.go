@@ -264,7 +264,7 @@ func TestPutSourceRejectsEmptyFile(t *testing.T) {
 	}
 }
 
-func TestPutSourceRapidUploadIncrementsDebugCounter(t *testing.T) {
+func TestPutSourceInstantUploadIncrementsDebugCounter(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -313,8 +313,8 @@ func TestPutSourceRapidUploadIncrementsDebugCounter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Extra["rapid_upload_count"] != int64(1) {
-		t.Fatalf("rapid_upload_count = %v, want 1", snapshot.Extra["rapid_upload_count"])
+	if snapshot.Extra[drive.DebugExtraInstantUploadCount] != int64(1) {
+		t.Fatalf("%s = %v, want 1", drive.DebugExtraInstantUploadCount, snapshot.Extra[drive.DebugExtraInstantUploadCount])
 	}
 }
 
@@ -428,13 +428,13 @@ func TestBaiduDebugSnapshot(t *testing.T) {
 	if snapshot.Health != "ok" {
 		t.Fatalf("health = %q, want ok", snapshot.Health)
 	}
-	if snapshot.Stats["root_path"] != "/" {
+	if snapshot.Stats[drive.DebugStatRootPath] != "/" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Extra["credential_source"] == nil {
+	if snapshot.Extra[drive.DebugExtraCredentialSource] == nil {
 		t.Fatalf("expected credential_source in extra, got %+v", snapshot.Extra)
 	}
-	if _, ok := snapshot.Extra["last_error"]; !ok {
+	if _, ok := snapshot.Extra[drive.DebugExtraLastError]; !ok {
 		t.Fatalf("expected last_error in extra")
 	}
 }

@@ -160,11 +160,11 @@ Run a CRUD test to verify basic read/write operations:
 go run ./cmd/qrypt debug raw "/v1/driver/test?test=crud" --socket /tmp/qrypt.sock
 ```
 
-Run a rapid upload test to verify content deduplication. Requires
+Run an instant upload test to verify content deduplication. Requires
 `content_dedup = true` when encryption is enabled:
 
 ```sh
-go run ./cmd/qrypt debug raw "/v1/driver/test?test=rapidupload" --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw "/v1/driver/test?test=instantupload" --socket /tmp/qrypt.sock
 ```
 
 Filter by mount name:
