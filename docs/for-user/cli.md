@@ -64,6 +64,7 @@ qrypt fs stat REMOTE [--json]
 qrypt fs cat REMOTE
 qrypt fs get REMOTE LOCAL [--force]
 qrypt fs put LOCAL REMOTE [--wait-timeout DURATION]
+qrypt fs copy SOURCE DESTINATION [--recursive] [--force] [--json]
 qrypt fs mkdir REMOTE
 qrypt fs mv SOURCE DESTINATION
 qrypt fs rm REMOTE [--wait-timeout DURATION]
@@ -77,7 +78,7 @@ qrypt fs --config PATH list /
 qrypt fs list / --config PATH
 ```
 
-`get` 默认拒绝覆盖本机文件；明确覆盖时使用 `--force`。`put` 和 `rm` 会等待异步远端操作完成，可通过 `--wait-timeout` 调整最长等待时间。
+`get` 和 `copy` 默认拒绝覆盖文件；明确覆盖时使用 `--force`。`copy` 直接通过驱动在远端路径之间复制文件；复制目录时使用 `--recursive`，目标路径会作为父目录并追加源目录名，目录会自动创建，已有文件默认跳过。`put` 和 `rm` 会等待异步远端操作完成，可通过 `--wait-timeout` 调整最长等待时间。
 
 ## 驱动信息
 
