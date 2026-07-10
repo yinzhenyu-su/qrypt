@@ -2,6 +2,7 @@ package yun139
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,27 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
+
+type countingHashSource struct {
+	sum   [sha256.Size]byte
+	opens int
+}
+
+func (s *countingHashSource) Size() int64 {
+	return 4
+}
+
+func (s *countingHashSource) Open(context.Context) (drive.ReadOnlyFile, error) {
+	s.opens++
+	return nil, errors.New("unexpected open")
+}
+
+func (s *countingHashSource) Hash(algorithm drive.HashAlgorithm) ([]byte, bool) {
+	if algorithm != drive.HashSHA256 {
+		return nil, false
+	}
+	return s.sum[:], true
+}
 
 // testAuth encodes an authorization string like base64(":account:token").
 func testAuth(account, token string) string {
@@ -54,6 +76,20 @@ func TestRegisterMissingAuth(t *testing.T) {
 	_, err := drive.New("yun139", drive.Params{})
 	if err == nil {
 		t.Fatal("expected error for missing authorization")
+	}
+}
+
+func TestSourceSHA256HexUsesSourceMetadata(t *testing.T) {
+	source := &countingHashSource{sum: sha256.Sum256([]byte("data"))}
+	got, err := sourceSHA256Hex(context.Background(), source, source.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.opens != 0 {
+		t.Fatalf("source opened %d times, want 0", source.opens)
+	}
+	if want := "3A6EB0790F39AC87C94F3856B2DD2C5D110E6811602261A9A923D3BB23ADC8B7"; got != want {
+		t.Fatalf("sha256 = %s, want %s", got, want)
 	}
 }
 
@@ -519,7 +555,15 @@ func TestPutSmallFile(t *testing.T) {
 	})
 	defer server.Close()
 
-	entry, err := drv.Put(context.Background(), "/", "test.bin", 5, strings.NewReader("hello"))
+	localPath := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(localPath, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := drv.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "test.bin",
+		Source:   drive.NewLocalReadOnlyFileSource(localPath, 5),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +581,7 @@ func TestPutSmallFile(t *testing.T) {
 	}
 }
 
-func TestPutFileUsesLocalFile(t *testing.T) {
+func TestPutSourceUsesReadOnlySource(t *testing.T) {
 	var uploaded string
 	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength != int64(len("hello from staging")) {
@@ -582,7 +626,11 @@ func TestPutFileUsesLocalFile(t *testing.T) {
 	if err := os.WriteFile(localPath, []byte("hello from staging"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := drv.PutFile(context.Background(), "/", "test.bin", int64(len("hello from staging")), localPath)
+	entry, err := drv.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "test.bin",
+		Source:   drive.NewLocalReadOnlyFileSource(localPath, int64(len("hello from staging"))),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +654,15 @@ func TestPutDuplicate(t *testing.T) {
 	})
 	defer server.Close()
 
-	entry, err := drv.Put(context.Background(), "/", "dup.txt", 3, strings.NewReader("abc"))
+	localPath := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(localPath, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := drv.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "dup.txt",
+		Source:   drive.NewLocalReadOnlyFileSource(localPath, 3),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,6 +671,45 @@ func TestPutDuplicate(t *testing.T) {
 	}
 	if entry.ModTime.IsZero() {
 		t.Fatal("duplicate put entry modtime is zero")
+	}
+	snapshot, err := drv.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Extra["rapid_upload_count"] != int64(1) {
+		t.Fatalf("rapid_upload_count = %v, want 1", snapshot.Extra["rapid_upload_count"])
+	}
+}
+
+func TestPutRapidUploadIncrementsDebugCounter(t *testing.T) {
+	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"success": true,
+			"data": map[string]interface{}{
+				"fileId":      "rapid-file",
+				"rapidUpload": true,
+			},
+		})
+	})
+	defer server.Close()
+
+	entry, err := drv.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "rapid.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("abc")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "rapid-file" {
+		t.Errorf("expected rapid file ID, got %s", entry.ID)
+	}
+	snapshot, err := drv.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Extra["rapid_upload_count"] != int64(1) {
+		t.Fatalf("rapid_upload_count = %v, want 1", snapshot.Extra["rapid_upload_count"])
 	}
 }
 
@@ -670,7 +765,8 @@ func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
 
 	var uploadResp personalUploadResp
 	uploadResp.Data.PartInfos = []personalPartInfo{{PartNumber: 1, UploadUrl: uploadServer.URL}}
-	err := drv.uploadParts(ctx, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4, localPath)
+	source := drive.NewLocalReadOnlyFileSource(localPath, 4)
+	err := drv.uploadParts(ctx, source, nil, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("uploadParts error = %v, want context deadline exceeded", err)
 	}

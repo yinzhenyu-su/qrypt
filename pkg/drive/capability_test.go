@@ -31,10 +31,7 @@ func (d *capabilityFullDriver) Rename(context.Context, Entry, string) error {
 	return nil
 }
 func (d *capabilityFullDriver) Remove(context.Context, Entry) error { return nil }
-func (d *capabilityFullDriver) Put(context.Context, string, string, int64, io.Reader) (Entry, error) {
-	return Entry{}, nil
-}
-func (d *capabilityFullDriver) PutFile(context.Context, string, string, int64, string) (Entry, error) {
+func (d *capabilityFullDriver) PutSource(context.Context, UploadRequest) (Entry, error) {
 	return Entry{}, nil
 }
 func (d *capabilityFullDriver) Space(context.Context) (Space, error) { return Space{}, nil }
@@ -70,19 +67,18 @@ func TestCapabilitiesFullDriver(t *testing.T) {
 	got := Capabilities(&capabilityFullDriver{})
 	want := []Capability{
 		CapabilityDebugger,
-		CapabilityFileUploader,
 		CapabilityForeignEntries,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
+		CapabilitySourceUploader,
 		CapabilitySpace,
-		CapabilityUploader,
 		CapabilityWriter,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("capabilities = %+v, want %+v", got, want)
 	}
-	if !HasCapability(&capabilityFullDriver{}, CapabilityUploader) {
-		t.Fatal("full driver should report uploader capability")
+	if !HasCapability(&capabilityFullDriver{}, CapabilitySourceUploader) {
+		t.Fatal("full driver should report source uploader capability")
 	}
 }
 
@@ -94,11 +90,11 @@ func TestCapabilitiesBandwidthWrapperPreservesRuntimeCapabilities(t *testing.T) 
 	got := Capabilities(wrapped)
 	want := []Capability{
 		CapabilityDebugger,
-		CapabilityFileUploader,
+		CapabilityForeignEntries,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
+		CapabilitySourceUploader,
 		CapabilitySpace,
-		CapabilityUploader,
 		CapabilityWriter,
 	}
 	if !reflect.DeepEqual(got, want) {

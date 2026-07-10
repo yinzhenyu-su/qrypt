@@ -39,16 +39,86 @@ type Writer interface {
 	Remove(ctx context.Context, entry Entry) error
 }
 
-// Uploader adds streaming upload support.
-type Uploader interface {
-	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)
+// ReadOnlyFile is a stable, seekable, read-only file handle.
+type ReadOnlyFile interface {
+	io.Reader
+	io.ReaderAt
+	io.Seeker
+	io.Closer
 }
 
-// FileUploader is an optional upload fast path for drivers that can benefit
-// from a stable local source file. Implementations must not mutate localPath
-// and must treat the file contents as read-only for the duration of the call.
-type FileUploader interface {
-	PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error)
+// ReadOnlyFileSource opens stable, read-only handles over one upload source.
+// Implementations may return a fresh handle on each Open call. Callers must
+// close every opened handle.
+type ReadOnlyFileSource interface {
+	Size() int64
+	Open(ctx context.Context) (ReadOnlyFile, error)
+}
+
+type HashAlgorithm string
+
+const (
+	HashMD5    HashAlgorithm = "md5"
+	HashSHA1   HashAlgorithm = "sha1"
+	HashSHA256 HashAlgorithm = "sha256"
+)
+
+type SourceHashes map[HashAlgorithm][]byte
+
+// HashProvider is an optional source metadata interface for callers that
+// already computed content hashes while preparing the source.
+type HashProvider interface {
+	Hash(algorithm HashAlgorithm) ([]byte, bool)
+}
+
+// UploadHashRequirements lets a driver request source hashes that should be
+// available before PutSource starts streaming upload data.
+type UploadHashRequirements interface {
+	RequiredUploadHashes() []HashAlgorithm
+}
+
+type UploadPhase string
+
+const (
+	UploadPhasePreparing  UploadPhase = "preparing"
+	UploadPhaseHashing    UploadPhase = "hashing"
+	UploadPhaseUploading  UploadPhase = "uploading"
+	UploadPhaseInstant    UploadPhase = "instant"
+	UploadPhaseCommitting UploadPhase = "committing"
+	UploadPhaseCompleted  UploadPhase = "completed"
+)
+
+// UploadProgress receives progress for the logical upload represented by an
+// UploadRequest. Implementations must be safe to call repeatedly with small
+// positive byte deltas.
+type UploadProgress interface {
+	Phase(UploadPhase)
+	Uploaded(n int64)
+}
+
+type UploadRequest struct {
+	ParentID string
+	Name     string
+	Source   ReadOnlyFileSource
+	Progress UploadProgress
+}
+
+func SourceHash(source ReadOnlyFileSource, algorithm HashAlgorithm) ([]byte, bool) {
+	provider, ok := source.(HashProvider)
+	if !ok {
+		return nil, false
+	}
+	sum, ok := provider.Hash(algorithm)
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), sum...), true
+}
+
+// SourceUploader is an optional upload fast path for drivers that can benefit
+// from a stable source that supports repeated reads, seeking, and ReadAt.
+type SourceUploader interface {
+	PutSource(ctx context.Context, req UploadRequest) (Entry, error)
 }
 
 // Space describes backend capacity in bytes.

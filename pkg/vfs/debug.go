@@ -85,6 +85,7 @@ type DebugUpload struct {
 type debugUploadState struct {
 	upload         DebugUpload
 	stageStartedAt time.Time
+	stageDurations map[string]time.Duration
 }
 
 type DebugTimer struct {
@@ -459,7 +460,11 @@ func (s *debugUploadState) recordStageDuration(now time.Time) {
 	if s.upload.StageDurations == nil {
 		s.upload.StageDurations = map[string]string{}
 	}
-	s.upload.StageDurations[s.upload.State] = now.Sub(s.stageStartedAt).String()
+	if s.stageDurations == nil {
+		s.stageDurations = map[string]time.Duration{}
+	}
+	s.stageDurations[s.upload.State] += now.Sub(s.stageStartedAt)
+	s.upload.StageDurations[s.upload.State] = s.stageDurations[s.upload.State].String()
 	s.stageStartedAt = now
 }
 
@@ -470,20 +475,12 @@ func (v *VFS) updateDebugUpload(path string, n int) {
 	v.uploadMu.Lock()
 	if state := v.activeUploads[path]; state != nil {
 		state.upload.BytesUploaded += int64(n)
+		if state.upload.BytesTotal >= 0 && state.upload.BytesUploaded > state.upload.BytesTotal {
+			state.upload.BytesUploaded = state.upload.BytesTotal
+		}
 		state.upload.UpdatedAt = timeutil.Now()
 	}
 	v.uploadMu.Unlock()
-}
-
-type uploadProgressReader struct {
-	reader io.Reader
-	update func(int)
-}
-
-func (r *uploadProgressReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-	r.update(n)
-	return n, err
 }
 
 func (c *Cache) debugReadCache() DebugReadCache {
@@ -559,7 +556,7 @@ func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]MountHealth,
 }
 
 func (v *VFS) Drivers() []NamedDriver {
-	return []NamedDriver{{Name: "default", Driver: v.driver}}
+	return []NamedDriver{{Name: v.name, Driver: v.driver}}
 }
 
 func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {

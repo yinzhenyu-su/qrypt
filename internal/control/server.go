@@ -837,6 +837,9 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		case "crud":
 			result := drive.RunCRUDTest(r.Context(), nd.Name, nd.Driver)
 			results = append(results, *result)
+		case "rapidupload":
+			result := drive.RunRapidUploadTest(r.Context(), nd.Name, nd.Driver)
+			results = append(results, *result)
 		default:
 			http.Error(w, fmt.Sprintf("unknown test type: %s", testType), http.StatusBadRequest)
 			return

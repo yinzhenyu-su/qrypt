@@ -108,7 +108,7 @@ Rules:
 
 ## Write Support
 
-Writable drivers should implement both `drive.Writer` and `drive.Uploader`:
+Writable drivers should implement both `drive.Writer` and `drive.SourceUploader`:
 
 ```go
 type Writer interface {
@@ -118,14 +118,28 @@ type Writer interface {
 	Remove(ctx context.Context, entry Entry) error
 }
 
-type Uploader interface {
-	Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error)
+type SourceUploader interface {
+	PutSource(ctx context.Context, parentID, name string, source ReadOnlyFileSource) (Entry, error)
 }
 ```
 
-`Put` returns the committed remote object after the provider confirms upload.
+`PutSource` returns the committed remote object after the provider confirms upload.
 The returned `Entry` should describe the final object, not a temporary upload
 session.
+
+`ReadOnlyFileSource` provides a stable upload source with `Size()` and `Open()`.
+Each opened file supports `Read`, `ReadAt`, `Seek`, and `Close`, so drivers can
+stream the body, retry reads, or perform multipart uploads without requiring VFS
+to expose a local path.
+
+Sources may also implement `drive.HashProvider`. Drivers that need full-file
+hashes for rapid upload or provider APIs should call `drive.SourceHash` first
+and only scan the source when the required hash metadata is unavailable.
+
+Drivers that can skip network upload when hashes are available before streaming
+should implement `drive.UploadHashRequirements`. The crypt wrapper uses this to
+precompute encrypted-content hashes only when `content_dedup` is enabled and the
+raw driver asks for them.
 
 If the provider is eventually consistent, return after the commit API succeeds
 and expose follow-up state through debug data. Do not sleep in the driver.
@@ -247,7 +261,7 @@ accounts.
 - `Init` validates credentials and root selection.
 - `List` returns direct children only.
 - `Read` handles offset and size.
-- Writable drivers implement both `drive.Writer` and `drive.Uploader`.
+- Writable drivers implement both `drive.Writer` and `drive.SourceUploader`.
 - Returned entries include stable IDs, names, sizes, parent IDs, and mod times.
 - Debug output excludes secrets.
 - Active driver probing uses CRUD tests instead of a separate active health interface.

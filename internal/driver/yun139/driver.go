@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +38,7 @@ type Driver struct {
 	authUpdated time.Time
 	debugMu     sync.Mutex
 	lastError   string
+	rapidCount  int64
 }
 
 type authState struct {
@@ -348,47 +348,22 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	}, nil
 }
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	size := source.Size()
 	if size > maxUploadSize {
 		return drive.Entry{}, fmt.Errorf("139: upload %s (%d bytes) exceeds max size (%d)", name, size, maxUploadSize)
 	}
-	tmpFile, err := os.CreateTemp("", "139-upload-*")
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload temp: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	written, err := io.Copy(tmpFile, body)
-	if err != nil {
-		tmpFile.Close()
-		return drive.Entry{}, fmt.Errorf("139: upload write: %w", err)
-	}
-	tmpFile.Close()
-	if written != size {
-		return drive.Entry{}, fmt.Errorf("139: upload size mismatch: wrote %d, expected %d", written, size)
-	}
-
-	return d.PutFile(ctx, parentID, name, size, tmpPath)
-}
-
-func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
-	if size > maxUploadSize {
-		return drive.Entry{}, fmt.Errorf("139: upload %s (%d bytes) exceeds max size (%d)", name, size, maxUploadSize)
-	}
-	stat, err := os.Stat(localPath)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload stat: %w", err)
-	}
-	if stat.Size() != size {
-		return drive.Entry{}, fmt.Errorf("139: upload size mismatch: file has %d, expected %d", stat.Size(), size)
-	}
-	return d.putFile(ctx, parentID, name, size, localPath)
+	return d.putSource(ctx, parentID, name, source, req.Progress)
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	health := "ok"
-	if d.getLastError() != "" {
+	d.debugMu.Lock()
+	lastError := d.lastError
+	rapidCount := d.rapidCount
+	d.debugMu.Unlock()
+	if lastError != "" {
 		health = "degraded"
 	}
 	return drive.DebugSnapshot{
@@ -402,33 +377,23 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Extra: map[string]any{
 			"credential_source":  d.authSource,
 			"credential_updated": d.authUpdated,
-			"last_error":         d.getLastError(),
+			"last_error":         lastError,
+			"rapid_upload_count": rapidCount,
 		},
 	}, nil
 }
 
-func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
+func (d *Driver) putSource(ctx context.Context, parentID, name string, source drive.ReadOnlyFileSource, progress drive.UploadProgress) (drive.Entry, error) {
+	size := source.Size()
 	now := time.Now()
 	fileID := d.resolveID(parentID)
 	partSize := calcPartSize(size)
 
-	hashFile, err := os.Open(localPath)
+	drive.ReportUploadPhase(progress, drive.UploadPhaseHashing)
+	sha256Hex, err := sourceSHA256Hex(ctx, source, size)
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload hash open: %w", err)
+		return drive.Entry{}, err
 	}
-	hasher := sha256.New()
-	hashed, err := io.Copy(hasher, hashFile)
-	closeErr := hashFile.Close()
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload hash: %w", err)
-	}
-	if closeErr != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload hash close: %w", closeErr)
-	}
-	if hashed != size {
-		return drive.Entry{}, fmt.Errorf("139: upload size mismatch: hashed %d, expected %d", hashed, size)
-	}
-	sha256Hex := fmt.Sprintf("%X", hasher.Sum(nil))
 	partCount := size / partSize
 	if size%partSize > 0 {
 		partCount++
@@ -471,17 +436,22 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 		createResp.Data.FileId, createResp.Data.Exist, createResp.Data.RapidUpload,
 		len(createResp.Data.PartInfos), createResp.Data.UploadId)
 
-	if createResp.Data.Exist {
+	if createResp.Data.Exist || createResp.Data.RapidUpload {
+		drive.ReportUploadPhase(progress, drive.UploadPhaseInstant)
+		d.debugMu.Lock()
+		d.rapidCount++
+		d.debugMu.Unlock()
 		return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 	}
 
 	// Server returns upload URLs when it needs multipart upload.
 	if len(createResp.Data.PartInfos) > 0 {
-		if err := d.uploadParts(ctx, createResp, partInfos, partSize, size, localPath); err != nil {
+		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size); err != nil {
 			return drive.Entry{}, err
 		}
 	}
 
+	drive.ReportUploadPhase(progress, drive.UploadPhaseCommitting)
 	completeData := map[string]interface{}{
 		"contentHash":          sha256Hex,
 		"contentHashAlgorithm": "SHA256",
@@ -529,7 +499,33 @@ func (d *Driver) putFile(ctx context.Context, parentID, name string, size int64,
 	return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 }
 
-func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp, partInfos []partMeta, partSize, size int64, localPath string) error {
+func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
+	if sum, ok := drive.SourceHash(source, drive.HashSHA256); ok {
+		if len(sum) != sha256.Size {
+			return "", fmt.Errorf("139: source SHA-256 metadata has %d bytes, want %d", len(sum), sha256.Size)
+		}
+		return fmt.Sprintf("%X", sum), nil
+	}
+	hashFile, err := source.Open(ctx)
+	if err != nil {
+		return "", fmt.Errorf("139: upload hash open: %w", err)
+	}
+	hasher := sha256.New()
+	hashed, err := io.Copy(hasher, hashFile)
+	closeErr := hashFile.Close()
+	if err != nil {
+		return "", fmt.Errorf("139: upload hash: %w", err)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("139: upload hash close: %w", closeErr)
+	}
+	if hashed != size {
+		return "", fmt.Errorf("139: upload size mismatch: hashed %d, expected %d", hashed, size)
+	}
+	return fmt.Sprintf("%X", hasher.Sum(nil)), nil
+}
+
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize, size int64) error {
 	type uploadPart struct {
 		partNumber int
 		uploadURL  string
@@ -575,7 +571,7 @@ func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp,
 			if end > size {
 				end = size
 			}
-			f, err := os.Open(localPath)
+			f, err := source.Open(uploadCtx)
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
@@ -583,7 +579,8 @@ func (d *Driver) uploadParts(ctx context.Context, createResp personalUploadResp,
 			if _, err := f.Seek(start, io.SeekStart); err != nil {
 				return fmt.Errorf("139: upload part %d seek: %w", up.partNumber, err)
 			}
-			body := d.limiter.LimitUpload(uploadCtx, io.LimitReader(f, end-start))
+			body := drive.NewUploadProgressReader(progress, io.LimitReader(f, end-start))
+			body = d.limiter.LimitUpload(uploadCtx, body)
 			req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, up.uploadURL, body)
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
@@ -653,8 +650,7 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string,
 
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
-var _ drive.FileUploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)

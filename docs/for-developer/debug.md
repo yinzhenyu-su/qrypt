@@ -151,3 +151,24 @@ go run ./cmd/qrypt debug raw '/v1/uploads?history=1' --socket /tmp/qrypt.sock
 
 The raw endpoints live under `/v1/...`. Endpoint-specific debug commands have
 been removed from the CLI; use `debug raw` for direct socket access.
+
+### Driver Test Suite
+
+Run a CRUD test to verify basic read/write operations:
+
+```sh
+go run ./cmd/qrypt debug raw "/v1/driver/test?test=crud" --socket /tmp/qrypt.sock
+```
+
+Run a rapid upload test to verify content deduplication. Requires
+`content_dedup = true` when encryption is enabled:
+
+```sh
+go run ./cmd/qrypt debug raw "/v1/driver/test?test=rapidupload" --socket /tmp/qrypt.sock
+```
+
+Filter by mount name:
+
+```sh
+go run ./cmd/qrypt debug raw "/v1/driver/test?test=crud&mount=default" --socket /tmp/qrypt.sock
+```

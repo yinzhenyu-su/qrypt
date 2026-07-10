@@ -373,7 +373,7 @@ func (c *Cache) PutChunk(fid string, index int64, data []byte) error {
 	return nil
 }
 
-func (c *Cache) PutFile(fid, localPath string) error {
+func (c *Cache) PutLocalFile(fid, localPath string) error {
 	if fid == "" {
 		return nil
 	}

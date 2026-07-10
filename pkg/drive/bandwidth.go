@@ -2,9 +2,7 @@ package drive
 
 import (
 	"context"
-	"errors"
 	"io"
-	"os"
 	"sync"
 	"time"
 )
@@ -47,45 +45,24 @@ func NewBandwidthLimiter(limits BandwidthLimits) *BandwidthLimiter {
 	}
 }
 
-// NewBandwidthLimitedDriver wraps a driver with download and upload limits.
+// NewBandwidthLimitedDriver installs download and upload limits into drivers
+// that support BandwidthLimitInstaller.
 func NewBandwidthLimitedDriver(raw Driver, limits BandwidthLimits) Driver {
 	return WrapBandwidthLimitedDriver(raw, NewBandwidthLimiter(limits))
 }
 
-// WrapBandwidthLimitedDriver wraps a driver with a shared limiter.
+// WrapBandwidthLimitedDriver installs a shared limiter into the concrete driver.
+// It intentionally does not wrap Read or PutSource at this layer: bandwidth
+// limiting belongs in driver network upload/download code, not in local staging
+// file reads.
 func WrapBandwidthLimitedDriver(raw Driver, limiter *BandwidthLimiter) Driver {
 	if raw == nil || limiter == nil {
 		return raw
 	}
-	handled := BandwidthLimitDirection(0)
 	if installer, ok := raw.(BandwidthLimitInstaller); ok {
-		handled = installer.InstallBandwidthLimiter(limiter)
+		installer.InstallBandwidthLimiter(limiter)
 	}
-	wrapperLimiter := limiter.without(handled)
-	if wrapperLimiter == nil {
-		return raw
-	}
-	base := &bandwidthLimitedDriver{
-		raw:     raw,
-		limiter: wrapperLimiter,
-	}
-	_, hasWriter := raw.(Writer)
-	_, hasUploader := raw.(Uploader)
-	_, hasFileUploader := raw.(FileUploader)
-	switch {
-	case hasWriter && hasUploader && hasFileUploader:
-		return &bandwidthLimitedWriterFileUploader{bandwidthLimitedWriterUploader: &bandwidthLimitedWriterUploader{bandwidthLimitedDriver: base}}
-	case hasWriter && hasUploader:
-		return &bandwidthLimitedWriterUploader{bandwidthLimitedDriver: base}
-	case hasWriter:
-		return &bandwidthLimitedWriter{bandwidthLimitedDriver: base}
-	case hasUploader && hasFileUploader:
-		return &bandwidthLimitedFileUploader{bandwidthLimitedUploader: &bandwidthLimitedUploader{bandwidthLimitedDriver: base}}
-	case hasUploader:
-		return &bandwidthLimitedUploader{bandwidthLimitedDriver: base}
-	default:
-		return base
-	}
+	return raw
 }
 
 func (l *BandwidthLimiter) without(handled BandwidthLimitDirection) *BandwidthLimiter {
@@ -119,147 +96,10 @@ func (l *BandwidthLimiter) LimitUpload(ctx context.Context, reader io.Reader) io
 	if l == nil || l.upload == nil || reader == nil {
 		return reader
 	}
+	if seeker, ok := reader.(io.ReadSeeker); ok {
+		return &limitedReadSeeker{ctx: ctx, reader: seeker, limiter: l.upload}
+	}
 	return &limitedReader{ctx: ctx, reader: reader, limiter: l.upload}
-}
-
-type bandwidthLimitedDriver struct {
-	raw     Driver
-	limiter *BandwidthLimiter
-}
-
-func (d *bandwidthLimitedDriver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
-
-func (d *bandwidthLimitedDriver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }
-
-func (d *bandwidthLimitedDriver) List(ctx context.Context, parentID string) ([]Entry, error) {
-	return d.raw.List(ctx, parentID)
-}
-
-func (d *bandwidthLimitedDriver) Read(ctx context.Context, entry Entry, offset, size int64) (io.ReadCloser, error) {
-	rc, err := d.raw.Read(ctx, entry, offset, size)
-	if err != nil || d.limiter.download == nil {
-		return rc, err
-	}
-	return &limitedReadCloser{ctx: ctx, rc: rc, limiter: d.limiter.download}, nil
-}
-
-type bandwidthLimitedWriter struct {
-	*bandwidthLimitedDriver
-}
-
-func (d *bandwidthLimitedWriter) Mkdir(ctx context.Context, parentID, name string) (Entry, error) {
-	return d.raw.(Writer).Mkdir(ctx, parentID, name)
-}
-
-func (d *bandwidthLimitedWriter) Move(ctx context.Context, entry Entry, dstParentID string) error {
-	return d.raw.(Writer).Move(ctx, entry, dstParentID)
-}
-
-func (d *bandwidthLimitedWriter) Rename(ctx context.Context, entry Entry, newName string) error {
-	return d.raw.(Writer).Rename(ctx, entry, newName)
-}
-
-func (d *bandwidthLimitedWriter) Remove(ctx context.Context, entry Entry) error {
-	return d.raw.(Writer).Remove(ctx, entry)
-}
-
-type bandwidthLimitedUploader struct {
-	*bandwidthLimitedDriver
-}
-
-func (d *bandwidthLimitedUploader) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error) {
-	if d.limiter.upload != nil {
-		body = &limitedReader{ctx: ctx, reader: body, limiter: d.limiter.upload}
-	}
-	return d.raw.(Uploader).Put(ctx, parentID, name, size, body)
-}
-
-type bandwidthLimitedFileUploader struct {
-	*bandwidthLimitedUploader
-}
-
-func (d *bandwidthLimitedFileUploader) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error) {
-	return d.putFile(ctx, parentID, name, size, localPath)
-}
-
-type bandwidthLimitedWriterUploader struct {
-	*bandwidthLimitedDriver
-}
-
-func (d *bandwidthLimitedWriterUploader) Mkdir(ctx context.Context, parentID, name string) (Entry, error) {
-	return d.raw.(Writer).Mkdir(ctx, parentID, name)
-}
-
-func (d *bandwidthLimitedWriterUploader) Move(ctx context.Context, entry Entry, dstParentID string) error {
-	return d.raw.(Writer).Move(ctx, entry, dstParentID)
-}
-
-func (d *bandwidthLimitedWriterUploader) Rename(ctx context.Context, entry Entry, newName string) error {
-	return d.raw.(Writer).Rename(ctx, entry, newName)
-}
-
-func (d *bandwidthLimitedWriterUploader) Remove(ctx context.Context, entry Entry) error {
-	return d.raw.(Writer).Remove(ctx, entry)
-}
-
-func (d *bandwidthLimitedWriterUploader) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (Entry, error) {
-	if d.limiter.upload != nil {
-		body = &limitedReader{ctx: ctx, reader: body, limiter: d.limiter.upload}
-	}
-	return d.raw.(Uploader).Put(ctx, parentID, name, size, body)
-}
-
-type bandwidthLimitedWriterFileUploader struct {
-	*bandwidthLimitedWriterUploader
-}
-
-func (d *bandwidthLimitedWriterFileUploader) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error) {
-	return d.putFile(ctx, parentID, name, size, localPath)
-}
-
-func (d *bandwidthLimitedDriver) putFile(ctx context.Context, parentID, name string, size int64, localPath string) (Entry, error) {
-	if d.limiter.upload == nil {
-		return d.raw.(FileUploader).PutFile(ctx, parentID, name, size, localPath)
-	}
-	f, err := os.Open(localPath)
-	if err != nil {
-		return Entry{}, err
-	}
-	defer f.Close()
-	body := &limitedReader{ctx: ctx, reader: f, limiter: d.limiter.upload}
-	return d.raw.(Uploader).Put(ctx, parentID, name, size, body)
-}
-
-func (d *bandwidthLimitedDriver) Space(ctx context.Context) (Space, error) {
-	querier, ok := d.raw.(SpaceQuerier)
-	if !ok {
-		return Space{}, errors.New("drive: raw driver does not support space query")
-	}
-	return querier.Space(ctx)
-}
-
-func (d *bandwidthLimitedDriver) ResolvePath(ctx context.Context, path string) (string, error) {
-	resolver, ok := d.raw.(PathResolver)
-	if !ok {
-		return "", errors.New("drive: raw driver does not support path resolution")
-	}
-	return resolver.ResolvePath(ctx, path)
-}
-
-func (d *bandwidthLimitedDriver) DebugSnapshot(ctx context.Context) (DebugSnapshot, error) {
-	debugger, ok := d.raw.(Debugger)
-	if !ok {
-		return DebugSnapshot{}, errors.New("drive: raw driver does not support debug snapshots")
-	}
-	return debugger.DebugSnapshot(ctx)
-}
-
-func (d *bandwidthLimitedDriver) ResolveRemoteName(ctx context.Context, plainName string) (RemoteNameInfo, error) {
-	resolver, ok := d.raw.(RemoteNameResolver)
-	if !ok {
-		return RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
-	}
-	return resolver.ResolveRemoteName(ctx, plainName)
 }
 
 type limitedReader struct {
@@ -279,6 +119,29 @@ func (r *limitedReader) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+type limitedReadSeeker struct {
+	ctx     context.Context
+	reader  io.ReadSeeker
+	limiter *byteLimiter
+}
+
+func (r *limitedReadSeeker) Read(p []byte) (int, error) {
+	if len(p) > bandwidthLimitMaxChunk {
+		p = p[:bandwidthLimitMaxChunk]
+	}
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
+			return n, waitErr
+		}
+	}
+	return n, err
+}
+
+func (r *limitedReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	return r.reader.Seek(offset, whence)
 }
 
 type limitedReadCloser struct {
@@ -364,13 +227,3 @@ func durationForBytes(n int, bytesPerSecond int64) time.Duration {
 	}
 	return time.Duration(float64(n) * float64(time.Second) / float64(bytesPerSecond))
 }
-
-var _ Driver = (*bandwidthLimitedDriver)(nil)
-var _ Writer = (*bandwidthLimitedWriter)(nil)
-var _ Uploader = (*bandwidthLimitedUploader)(nil)
-var _ Writer = (*bandwidthLimitedWriterUploader)(nil)
-var _ Uploader = (*bandwidthLimitedWriterUploader)(nil)
-var _ SpaceQuerier = (*bandwidthLimitedDriver)(nil)
-var _ PathResolver = (*bandwidthLimitedDriver)(nil)
-var _ Debugger = (*bandwidthLimitedDriver)(nil)
-var _ RemoteNameResolver = (*bandwidthLimitedDriver)(nil)

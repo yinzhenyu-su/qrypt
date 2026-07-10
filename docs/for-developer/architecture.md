@@ -44,7 +44,7 @@ concrete provider packages.
 1. Load config.
 2. Build each concrete `drive.Driver` from `internal/driver/*`.
 3. Install driver state stores where supported.
-4. Wrap with bandwidth limiting and optional `pkg/crypt`.
+4. Install bandwidth limiting into drivers that support it, then optionally wrap with `pkg/crypt`.
 5. Build one `pkg/vfs.VFS` per configured mount.
 6. Combine mounts into `pkg/vfs.Namespace`.
 7. Pass the resulting `vfs.FileSystem` to `internal/mount` or CLI commands.
@@ -58,8 +58,7 @@ mount layer.
 reported through `drive.Capabilities(driver)` and small focused interfaces:
 
 - `Writer`
-- `Uploader`
-- `FileUploader`
+- `SourceUploader`
 - `SpaceQuerier`
 - `PathResolver`
 - `Debugger`
@@ -69,6 +68,11 @@ reported through `drive.Capabilities(driver)` and small focused interfaces:
 Use `drive.HasCapability` before enabling optional behavior in higher layers.
 Wrappers whose concrete method set is wider than their real runtime support
 must implement `drive.CapabilityReporter`.
+
+Upload sources may expose precomputed hashes through `drive.HashProvider`; this
+is source metadata, not a driver capability.
+Drivers that benefit from hashes before upload can declare the needed algorithms
+with `drive.UploadHashRequirements`.
 
 Construction-time hooks such as state-store installation and native bandwidth
 limiter installation are not runtime capabilities. They are used only during

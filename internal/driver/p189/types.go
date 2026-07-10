@@ -41,7 +41,7 @@ type DownResp struct {
 
 // UploadUrlsResp contains pre-signed upload URLs.
 type UploadUrlsResp struct {
-	Code       string         `json:"code"`
+	Code       string          `json:"code"`
 	UploadUrls map[string]Part `json:"uploadUrls"`
 }
 
@@ -64,8 +64,8 @@ type MkdirResp struct {
 }
 
 type CapacityResp struct {
-	ResCode    int    `json:"res_code"`
-	ResMessage string `json:"res_message"`
+	ResCode           int    `json:"res_code"`
+	ResMessage        string `json:"res_message"`
 	CloudCapacityInfo struct {
 		TotalSize int64 `json:"totalSize"`
 		FreeSize  int64 `json:"freeSize"`
@@ -74,8 +74,8 @@ type CapacityResp struct {
 }
 
 type xmlCapacity struct {
-	XMLName  xml.Name `xml:"capacityInfoVO"`
-	Account  string   `xml:"account"`
+	XMLName           xml.Name `xml:"capacityInfoVO"`
+	Account           string   `xml:"account"`
 	CloudCapacityInfo struct {
 		TotalSize int64 `xml:"totalSize"`
 		FreeSize  int64 `xml:"freeSize"`

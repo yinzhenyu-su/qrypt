@@ -5,10 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-func TestBuildNamespaceAppliesBandwidthToEncryptedMount(t *testing.T) {
+func TestBuildNamespaceDoesNotLimitLocalStagingUpload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -55,10 +54,7 @@ filename_encoding = "base32"
 	if err := fs.Flush(ctx, "/encrypted/slow.txt"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if len(fs.Pending()) == 0 {
-		t.Fatal("expected encrypted upload to remain pending under 1 B/s upload limit")
-	}
+	waitPendingEmpty(t, fs)
 }
 
 func TestBuildNamespaceUsesTopLevelCacheDir(t *testing.T) {

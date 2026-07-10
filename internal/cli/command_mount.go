@@ -14,9 +14,9 @@ import (
 
 func newMountCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "mount [MOUNTPOINT]",
+		Use:   "mount [MOUNT_NAME]",
 		Short: "Mount configured drives with FUSE",
-		Long:  "Mount all configured drives as one local FUSE filesystem. Uses mount_point from config, or accepts a path argument.",
+		Long:  "Mount all configured drives as one local FUSE filesystem, or mount one configured drive by name. Uses mount_point from config unless --mount-point is set.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := commandConfig(cmd)
@@ -30,8 +30,13 @@ func newMountCmd() *cobra.Command {
 			defer stop()
 
 			socket, _ := cmd.Flags().GetString("socket")
+			mountPointFlag, _ := cmd.Flags().GetString("mount-point")
+			selectedMount := ""
+			if len(args) == 1 {
+				selectedMount = args[0]
+			}
 
-			fs, cleanup, err := buildFileSystemFromConfig(ctx, state.cfg)
+			fs, cleanup, err := buildFileSystemFromConfigMount(ctx, state.cfg, selectedMount)
 			if err != nil {
 				return err
 			}
@@ -54,8 +59,8 @@ func newMountCmd() *cobra.Command {
 			}
 
 			mountPoint := ""
-			if len(args) == 1 {
-				mountPoint = args[0]
+			if mountPointFlag != "" {
+				mountPoint = mountPointFlag
 			} else {
 				var err error
 				mountPoint, err = mountPointFromLoadedConfig(state.cfg)
@@ -106,6 +111,7 @@ func newMountCmd() *cobra.Command {
 		},
 	}
 	withRuntimeConfigFlag(cmd)
+	cmd.Flags().String("mount-point", "", "local FUSE mount point (defaults to config mount_point)")
 	cmd.Flags().StringP("socket", "s", "", "local debug control socket (start a debug server)")
 	return cmd
 }

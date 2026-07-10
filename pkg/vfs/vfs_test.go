@@ -3,7 +3,9 @@ package vfs_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -92,16 +94,25 @@ type existingMkdirDriver struct {
 }
 
 type fileUploadDriver struct {
-	mu           sync.Mutex
-	entries      map[string]drive.Entry
-	putCalls     int
-	putFileCalls int
-	putFileStart int
-	lastPath     string
-	lastData     []byte
-	allData      [][]byte
-	blockFirst   chan struct{}
-	firstEntered chan struct{}
+	mu             sync.Mutex
+	entries        map[string]drive.Entry
+	putCalls       int
+	putSourceCalls int
+	putSourceStart int
+	sourceOpens    int
+	lastData       []byte
+	lastSHA256     []byte
+	lastHasSHA256  bool
+	allData        [][]byte
+	blockFirst     chan struct{}
+	firstEntered   chan struct{}
+}
+
+type sourceOnlyUploadDriver struct {
+	mu       sync.Mutex
+	entries  map[string]drive.Entry
+	calls    int
+	lastData []byte
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
@@ -267,8 +278,14 @@ func (d *countingUploadDriver) List(_ context.Context, parentID string) ([]drive
 func (d *countingUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return nil, io.EOF
 }
-func (d *countingUploadDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	data, err := io.ReadAll(body)
+func (d *countingUploadDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	f, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -279,6 +296,7 @@ func (d *countingUploadDriver) Put(_ context.Context, parentID, name string, siz
 	if d.entries == nil {
 		d.entries = map[string]drive.Entry{}
 	}
+	size := source.Size()
 	d.entries[uploadID] = drive.Entry{ID: uploadID, ParentID: parentID, Name: name, Size: size}
 	block := d.blockReturn
 	entered := d.entered
@@ -360,14 +378,22 @@ func (d *blockingUploadDriver) Remove(_ context.Context, entry drive.Entry) erro
 	delete(d.entries, entry.ID)
 	return nil
 }
-func (d *blockingUploadDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	if _, err := io.Copy(io.Discard, body); err != nil {
+func (d *blockingUploadDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
+	f, err := source.Open(ctx)
+	if err != nil {
 		return drive.Entry{}, err
 	}
+	defer f.Close()
+	if _, err := io.Copy(io.Discard, drive.NewUploadProgressReader(req.Progress, f)); err != nil {
+		return drive.Entry{}, err
+	}
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	d.mu.Lock()
 	d.uploads++
 	id := name + "-" + strconv.Itoa(d.uploads)
-	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: size}
+	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: source.Size()}
 	d.entries[id] = entry
 	d.mu.Unlock()
 	d.entered <- struct{}{}
@@ -458,8 +484,14 @@ func (d *staleMkdirListDriver) Rename(context.Context, drive.Entry, string) erro
 	return nil
 }
 func (d *staleMkdirListDriver) Remove(context.Context, drive.Entry) error { return nil }
-func (d *staleMkdirListDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	data, err := io.ReadAll(body)
+func (d *staleMkdirListDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	f, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -472,7 +504,7 @@ func (d *staleMkdirListDriver) Put(_ context.Context, parentID, name string, siz
 	d.lastParent = parentID
 	d.lastName = name
 	d.lastData = append(d.lastData[:0], data...)
-	return drive.Entry{ID: name, ParentID: parentID, Name: name, Size: size}, nil
+	return drive.Entry{ID: name, ParentID: parentID, Name: name, Size: source.Size()}, nil
 }
 func (d *staleMkdirListDriver) lastPut() (attempts int, parent, name, data string) {
 	d.mu.Lock()
@@ -568,21 +600,11 @@ func (d *fileUploadDriver) List(_ context.Context, parentID string) ([]drive.Ent
 func (d *fileUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return nil, io.EOF
 }
-func (d *fileUploadDriver) Put(_ context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return drive.Entry{}, err
-	}
+func (d *fileUploadDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.putCalls++
-	d.lastData = append(d.lastData[:0], data...)
-	return d.saveEntryLocked(parentID, name, size), nil
-}
-func (d *fileUploadDriver) PutFile(_ context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
-	d.mu.Lock()
-	d.putFileStart++
-	call := d.putFileStart
+	d.putSourceStart++
+	call := d.putSourceStart
 	entered := d.firstEntered
 	block := d.blockFirst
 	d.mu.Unlock()
@@ -592,26 +614,94 @@ func (d *fileUploadDriver) PutFile(_ context.Context, parentID, name string, siz
 	if call == 1 && block != nil {
 		<-block
 	}
-	data, err := os.ReadFile(localPath)
+	sourceSize := source.Size()
+	sourceSHA256, hasSHA256 := drive.SourceHash(source, drive.HashSHA256)
+	f, err := source.Open(ctx)
 	if err != nil {
 		return drive.Entry{}, err
 	}
+	data, err := io.ReadAll(f)
+	if err == nil {
+		_, err = f.Seek(0, io.SeekStart)
+	}
+	if err == nil && len(data) > 0 {
+		buf := make([]byte, 1)
+		_, err = f.ReadAt(buf, int64(len(data)-1))
+		if err == nil && buf[0] != data[len(data)-1] {
+			err = fmt.Errorf("ReadAt last byte=%q, want %q", buf[0], data[len(data)-1])
+		}
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	if sourceSize != int64(len(data)) {
+		return drive.Entry{}, fmt.Errorf("source size=%d, read %d", sourceSize, len(data))
+	}
+	if closeErr != nil {
+		return drive.Entry{}, closeErr
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.putFileCalls++
-	d.lastPath = localPath
+	d.putSourceCalls++
+	d.sourceOpens++
 	d.lastData = append(d.lastData[:0], data...)
+	d.lastSHA256 = append(d.lastSHA256[:0], sourceSHA256...)
+	d.lastHasSHA256 = hasSHA256
 	d.allData = append(d.allData, append([]byte(nil), data...))
-	return d.saveEntryLocked(parentID, name, size), nil
+	return d.saveEntryLocked(parentID, name, source.Size()), nil
 }
 func (d *fileUploadDriver) saveEntryLocked(parentID, name string, size int64) drive.Entry {
 	if d.entries == nil {
 		d.entries = map[string]drive.Entry{}
 	}
-	id := name + "-" + strconv.Itoa(d.putCalls+d.putFileCalls)
+	id := name + "-" + strconv.Itoa(d.putCalls+d.putSourceCalls)
 	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: size}
 	d.entries[id] = entry
 	return entry
+}
+
+func (d *sourceOnlyUploadDriver) Init(context.Context) error { return nil }
+func (d *sourceOnlyUploadDriver) Drop(context.Context) error { return nil }
+func (d *sourceOnlyUploadDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+func (d *sourceOnlyUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *sourceOnlyUploadDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	f, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	data, err := io.ReadAll(f)
+	closeErr := f.Close()
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	if closeErr != nil {
+		return drive.Entry{}, closeErr
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	d.lastData = append(d.lastData[:0], data...)
+	if d.entries == nil {
+		d.entries = map[string]drive.Entry{}
+	}
+	id := name + "-" + strconv.Itoa(d.calls)
+	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: source.Size()}
+	d.entries[id] = entry
+	return entry, nil
 }
 
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
@@ -669,7 +759,7 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	}
 }
 
-func TestVFSUsesFileUploaderForStagingPath(t *testing.T) {
+func TestVFSUsesSourceUploaderForStagingSnapshot(t *testing.T) {
 	ctx := context.Background()
 	drv := &fileUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
@@ -688,13 +778,47 @@ func TestVFSUsesFileUploaderForStagingPath(t *testing.T) {
 
 	drv.mu.Lock()
 	defer drv.mu.Unlock()
-	if drv.putFileCalls != 1 || drv.putCalls != 0 {
-		t.Fatalf("putFileCalls=%d putCalls=%d, want 1 and 0", drv.putFileCalls, drv.putCalls)
+	if drv.putSourceCalls != 1 || drv.putCalls != 0 {
+		t.Fatalf("putSourceCalls=%d putCalls=%d, want 1 and 0", drv.putSourceCalls, drv.putCalls)
 	}
-	if drv.lastPath == "" {
-		t.Fatal("expected PutFile to receive local staging path")
+	if drv.sourceOpens != 1 {
+		t.Fatalf("sourceOpens=%d, want 1", drv.sourceOpens)
 	}
 	if string(drv.lastData) != "use staging path" {
+		t.Fatalf("unexpected uploaded data: %q", drv.lastData)
+	}
+	if !drv.lastHasSHA256 {
+		t.Fatal("source did not provide SHA-256 metadata")
+	}
+	want := sha256.Sum256([]byte("use staging path"))
+	if !bytes.Equal(drv.lastSHA256, want[:]) {
+		t.Fatalf("source SHA-256 = %x, want %x", drv.lastSHA256, want)
+	}
+}
+
+func TestVFSUploadsWithSourceOnlyDriver(t *testing.T) {
+	ctx := context.Background()
+	drv := &sourceOnlyUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/source-only.txt", []byte("source only"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/source-only.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if drv.calls != 1 {
+		t.Fatalf("source-only calls = %d, want 1", drv.calls)
+	}
+	if string(drv.lastData) != "source only" {
 		t.Fatalf("unexpected uploaded data: %q", drv.lastData)
 	}
 }
@@ -720,7 +844,7 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 	}
 	for _, capability := range []drive.Capability{
 		drive.CapabilityWriter,
-		drive.CapabilityUploader,
+		drive.CapabilitySourceUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityPathResolver,
 	} {
@@ -823,7 +947,7 @@ func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
 		t.Fatalf("expected one active upload, got %+v", snapshot)
 	}
 	upload := snapshot.Mounts[0].Uploads[0]
-	if upload.Path != "/active.txt" || upload.State != "uploading" || upload.BytesUploaded != int64(len("active upload")) {
+	if upload.Path != "/active.txt" || upload.State != "committing" || upload.BytesTotal != int64(len("active upload")) || upload.BytesUploaded != int64(len("active upload")) {
 		t.Fatalf("unexpected active upload: %+v", upload)
 	}
 	close(drv.release)
@@ -1432,7 +1556,7 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drv := crypt.NewDriver(raw, cp)
+	drv := crypt.NewDriver(raw, cp, crypt.DriverOptions{})
 	fs, err := vfs.New(drv, vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
@@ -1487,7 +1611,7 @@ func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drv := crypt.NewDriver(raw, cp)
+	drv := crypt.NewDriver(raw, cp, crypt.DriverOptions{})
 	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)

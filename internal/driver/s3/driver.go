@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	stdpath "path"
 	"strings"
 	"time"
@@ -26,7 +25,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// Driver implements drive.Driver (plus Writer, Uploader, Debugger, and
+// Driver implements drive.Driver (plus Writer, SourceUploader, Debugger, and
 // optional qrypt driver interfaces for S3-compatible object storage.
 //
 // Entry IDs are S3 key paths:
@@ -338,17 +337,25 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-// ─── drive.Uploader interface ───────────────────────────────────────────────
+// ─── drive.SourceUploader interface ─────────────────────────────────────────
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
-	key := d.toS3Key(d.joinPath(parentID, name))
-	if d.limiter != nil {
-		body = d.limiter.LimitUpload(ctx, body)
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	body, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("s3: put source open: %w", err)
 	}
-	_, err := d.client.PutObject(ctx, &s3.PutObjectInput{
+	defer body.Close()
+
+	key := d.toS3Key(d.joinPath(parentID, name))
+	var uploadBody io.Reader = drive.NewUploadProgressReader(req.Progress, body)
+	if d.limiter != nil {
+		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
+	}
+	_, err = d.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(key),
-		Body:   body,
+		Body:   uploadBody,
 	})
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("s3: put %q: %w", key, err)
@@ -357,18 +364,9 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		ID:       d.joinPath(parentID, name),
 		ParentID: d.normParent(parentID),
 		Name:     name,
-		Size:     size,
+		Size:     source.Size(),
 		ModTime:  time.Now(),
 	}, nil
-}
-
-func (d *Driver) PutFile(ctx context.Context, parentID, name string, size int64, localPath string) (drive.Entry, error) {
-	f, err := os.Open(localPath)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("s3: putfile open %q: %w", localPath, err)
-	}
-	defer f.Close()
-	return d.Put(ctx, parentID, name, size, f)
 }
 
 // ─── drive.Debugger interface ───────────────────────────────────────────────
@@ -398,8 +396,7 @@ func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive
 func (d *Driver) Capabilities() []drive.Capability {
 	return []drive.Capability{
 		drive.CapabilityWriter,
-		drive.CapabilityUploader,
-		drive.CapabilityFileUploader,
+		drive.CapabilitySourceUploader,
 		drive.CapabilityDebugger,
 		drive.CapabilityRemoteNameResolver,
 	}
@@ -546,8 +543,7 @@ func isS3NotFound(err error) bool {
 var (
 	_ drive.Driver             = (*Driver)(nil)
 	_ drive.Writer             = (*Driver)(nil)
-	_ drive.Uploader           = (*Driver)(nil)
-	_ drive.FileUploader       = (*Driver)(nil)
+	_ drive.SourceUploader     = (*Driver)(nil)
 	_ drive.Debugger           = (*Driver)(nil)
 	_ drive.RemoteNameResolver = (*Driver)(nil)
 	_ drive.CapabilityReporter = (*Driver)(nil)

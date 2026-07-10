@@ -3,19 +3,25 @@ package quark
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	cryptpkg "github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -183,7 +189,15 @@ func TestDriverPutInstantUploadFinishes(t *testing.T) {
 	defer server.Close()
 
 	driver := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
-	entry, err := driver.Put(context.Background(), "parent", "same.bin", 6, strings.NewReader("unused"))
+	localPath := filepath.Join(t.TempDir(), "same.bin")
+	if err := os.WriteFile(localPath, []byte("unused"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := driver.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "same.bin",
+		Source:   drive.NewLocalReadOnlyFileSource(localPath, 6),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +253,11 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	var authCalls int
 	var hashCalled bool
 	var finishCalled bool
+	content := []byte("abcdefgh")
+	contentMD5 := md5.Sum(content)
+	contentSHA1 := sha1.Sum(content)
+	wantMD5 := fmt.Sprintf("%X", contentMD5[:])
+	wantSHA1 := fmt.Sprintf("%X", contentSHA1[:])
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/file/upload/pre":
@@ -268,6 +287,13 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 			})
 		case "/file/update/hash":
 			hashCalled = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["md5"] != wantMD5 || body["sha1"] != wantSHA1 {
+				t.Fatalf("unexpected hash body: %+v, want md5=%s sha1=%s", body, wantMD5, wantSHA1)
+			}
 			writeJSON(t, w, map[string]any{
 				"status": 200,
 				"code":   0,
@@ -289,7 +315,15 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	routeOSSToTestServer(driver.cl.ossClient, oss)
 
-	entry, err := driver.Put(context.Background(), "parent", "data.bin", 8, strings.NewReader("abcdefgh"))
+	tmp := filepath.Join(t.TempDir(), "source.bin")
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := driver.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "data.bin",
+		Source:   drive.NewLocalReadOnlyFileSource(tmp, int64(len(content))),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,6 +354,250 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	if !finishCalled {
 		t.Fatal("finish was not called")
 	}
+}
+
+func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
+	var uploadedCipher []byte
+	var completed bool
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			uploadedCipher = append(uploadedCipher[:0], data...)
+			w.Header().Set("Etag", "etag-1")
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(data, []byte("etag-1")) {
+				t.Fatalf("complete body missing etag-1: %s", data)
+			}
+			completed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected oss method: %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	plain := []byte("plain payload")
+	plainMD5 := md5.Sum(plain)
+	plainSHA1 := sha1.Sum(plain)
+	plainMD5Hex := fmt.Sprintf("%X", plainMD5[:])
+	plainSHA1Hex := fmt.Sprintf("%X", plainSHA1[:])
+	var hashCalled bool
+	var finishCalled bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-crypt",
+					"upload_id":  "upload-crypt",
+					"obj_key":    "obj-crypt",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 64},
+			})
+		case "/file/upload/auth":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"auth_key": "auth-key"},
+			})
+		case "/file/update/hash":
+			hashCalled = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			cipherMD5 := md5.Sum(uploadedCipher)
+			cipherSHA1 := sha1.Sum(uploadedCipher)
+			wantMD5 := fmt.Sprintf("%X", cipherMD5[:])
+			wantSHA1 := fmt.Sprintf("%X", cipherSHA1[:])
+			if body["md5"] != wantMD5 || body["sha1"] != wantSHA1 {
+				t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", body, wantMD5, wantSHA1)
+			}
+			if body["md5"] == plainMD5Hex || body["sha1"] == plainSHA1Hex {
+				t.Fatalf("hash body used plaintext hash: %+v", body)
+			}
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": false},
+			})
+		case "/file/upload/finish":
+			finishCalled = true
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	routeOSSToTestServer(driver.cl.ossClient, oss)
+	cp, err := cryptpkg.NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cryptDriver := cryptpkg.NewDriver(driver, cp, cryptpkg.DriverOptions{})
+	tmp := filepath.Join(t.TempDir(), "plain.bin")
+	if err := os.WriteFile(tmp, plain, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := cryptDriver.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "secret.bin",
+		Source:   drive.NewLocalReadOnlyFileSource(tmp, int64(len(plain))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "final-fid" || entry.ParentID != "parent" || entry.Name != "secret.bin" || entry.Size != int64(len(plain)) {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if bytes.Contains(uploadedCipher, plain) {
+		t.Fatal("uploaded body contains plaintext")
+	}
+	if !hashCalled {
+		t.Fatal("hash update was not called")
+	}
+	if !completed {
+		t.Fatal("oss complete was not called")
+	}
+	if !finishCalled {
+		t.Fatal("finish was not called")
+	}
+}
+
+func TestDriverPutSourceUnderContentDedupCryptInstantUploadsByEncryptedHash(t *testing.T) {
+	ossCalled := false
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ossCalled = true
+		t.Fatalf("oss should not be called for hash-finished upload: %s %s", r.Method, r.URL)
+	}))
+	defer oss.Close()
+
+	plain := []byte("same plaintext should instant upload when encrypted content hash already exists")
+	cp, err := cryptpkg.NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted := encryptForTest(t, cp, plain)
+	encryptedMD5 := md5.Sum(encrypted)
+	encryptedSHA1 := sha1.Sum(encrypted)
+	wantMD5 := fmt.Sprintf("%X", encryptedMD5[:])
+	wantSHA1 := fmt.Sprintf("%X", encryptedSHA1[:])
+	var hashCalled bool
+	var finishCalled bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-dedup",
+					"upload_id":  "upload-dedup",
+					"obj_key":    "obj-dedup",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 64},
+			})
+		case "/file/update/hash":
+			hashCalled = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["md5"] != wantMD5 || body["sha1"] != wantSHA1 {
+				t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", body, wantMD5, wantSHA1)
+			}
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": true, "fid": "existing-fid"},
+			})
+		case "/file/upload/finish":
+			finishCalled = true
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-existing-fid"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	routeOSSToTestServer(driver.cl.ossClient, oss)
+	cryptDriver := cryptpkg.NewDriver(driver, cp, cryptpkg.DriverOptions{ContentDedup: true})
+	entry, err := cryptDriver.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "secret.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(plain),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "final-existing-fid" || entry.ParentID != "parent" || entry.Name != "secret.bin" || entry.Size != int64(len(plain)) {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if !hashCalled {
+		t.Fatal("hash update was not called")
+	}
+	if !finishCalled {
+		t.Fatal("finish was not called")
+	}
+	if ossCalled {
+		t.Fatal("oss was called")
+	}
+}
+
+func encryptForTest(t *testing.T, cp cryptpkg.Cipher, plain []byte) []byte {
+	t.Helper()
+	plainSHA256 := sha256.Sum256(plain)
+	nonce, err := cp.ContentDedupNonce(plainSHA256, int64(len(plain)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted := make([]byte, 0, cp.EncryptedSize(int64(len(plain))))
+	encrypted = append(encrypted, []byte(cryptpkg.FileMagic)...)
+	encrypted = append(encrypted, nonce[:]...)
+	for blockIndex, offset := uint64(0), 0; offset < len(plain); blockIndex, offset = blockIndex+1, offset+cryptpkg.BlockDataSize {
+		end := offset + cryptpkg.BlockDataSize
+		if end > len(plain) {
+			end = len(plain)
+		}
+		block, err := cp.EncryptBlock(plain[offset:end], blockIndex, nonce)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encrypted = append(encrypted, block...)
+	}
+	return encrypted
 }
 
 func TestDriverPutRespectsServerPartSize(t *testing.T) {
@@ -390,7 +668,15 @@ func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	routeOSSToTestServer(driver.cl.ossClient, oss)
 
-	if _, err := driver.Put(context.Background(), "parent", "data.bin", 12*1024*1024, strings.NewReader(strings.Repeat("a", 12*1024*1024))); err != nil {
+	localPath := filepath.Join(t.TempDir(), "data.bin")
+	if err := os.WriteFile(localPath, []byte(strings.Repeat("a", 12*1024*1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "data.bin",
+		Source:   drive.NewLocalReadOnlyFileSource(localPath, 12*1024*1024),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	partsMu.Lock()

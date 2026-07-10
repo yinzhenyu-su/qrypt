@@ -2,6 +2,9 @@ package vfs
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -30,7 +33,7 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 }
 
 func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
-	if v.upload == nil {
+	if v.sourceUpload == nil {
 		return fmt.Errorf("vfs: driver does not support upload")
 	}
 	latest, ok := v.cache.PendingByPath(pending.Path)
@@ -50,13 +53,13 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	finishErr := ""
 	defer func() { v.finishDebugUpload(pending.Path, finishState, finishErr) }()
 	v.setDebugUploadState(pending.Path, "preparing")
-	snapshotPath, err := v.snapshotPending(pending)
+	snapshot, err := v.snapshotPending(pending)
 	if err != nil {
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload snapshot failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
 		return err
 	}
-	defer os.Remove(snapshotPath)
+	defer os.Remove(snapshot.Path)
 	if latest, ok := v.cache.PendingByPath(pending.Path); !ok {
 		logging.L.DebugfEvery("vfs.skip_upload_removed_after_snapshot", time.Second, "[VFS] skip upload after snapshot; pending removed op_id=%q path=%q", pending.FID, pending.Path)
 		return nil
@@ -73,26 +76,20 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return err
 	}
 	v.setDebugUploadState(pending.Path, "uploading")
-	var entry drive.Entry
-	if fileUploader, ok := v.upload.(drive.FileUploader); ok {
-		entry, err = fileUploader.PutFile(ctx, pending.ParentID, pending.Name, pending.Size, snapshotPath)
-		if err == nil {
-			v.updateDebugUpload(pending.Path, int(pending.Size))
-		}
-	} else {
-		rc, openErr := os.Open(snapshotPath)
-		if openErr != nil {
-			finishErr = openErr.Error()
-			logging.L.Warnf("[VFS] upload open snapshot failed path=%q local=%q err=%v", pending.Path, snapshotPath, openErr)
-			return openErr
-		}
-		defer rc.Close()
-		progressBody := &uploadProgressReader{
-			reader: rc,
-			update: func(n int) { v.updateDebugUpload(pending.Path, n) },
-		}
-		entry, err = v.upload.Put(ctx, pending.ParentID, pending.Name, pending.Size, progressBody)
+	source := drive.NewLocalReadOnlyFileSourceWithHashes(snapshot.Path, pending.Size, snapshot.Hashes)
+	progress := debugUploadProgress{
+		v:    v,
+		path: pending.Path,
+		update: func(n int64) {
+			v.updateDebugUpload(pending.Path, int(n))
+		},
 	}
+	entry, err := v.sourceUpload.PutSource(ctx, drive.UploadRequest{
+		ParentID: pending.ParentID,
+		Name:     pending.Name,
+		Source:   source,
+		Progress: progress,
+	})
 	v.healthTracker.RecordResult(drive.HealthOpUpload, err)
 	if err != nil {
 		finishErr = err.Error()
@@ -123,7 +120,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		entry.ModTime = modTime
 		v.setLocalModTime(pending.Path, modTime)
 	}
-	v.seedReadCacheFromStaging(entry, snapshotPath)
+	v.seedReadCacheFromStaging(entry, snapshot.Path)
 	v.mu.Lock()
 	v.entries[pending.Path] = entry
 	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
@@ -152,27 +149,32 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	return nil
 }
 
-func (v *VFS) snapshotPending(pending PendingFile) (string, error) {
+type uploadSnapshot struct {
+	Path   string
+	Hashes drive.SourceHashes
+}
+
+func (v *VFS) snapshotPending(pending PendingFile) (uploadSnapshot, error) {
 	unlock := v.lockPath(pending.Path)
 	defer unlock()
 	if err := v.cache.staging.sync(pending.LocalPath); err != nil {
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	info, err := os.Stat(pending.LocalPath)
 	if err != nil {
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	if info.Size() != pending.Size {
-		return "", fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
+		return uploadSnapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	src, err := os.Open(pending.LocalPath)
 	if err != nil {
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	defer src.Close()
 	tmp, err := os.CreateTemp(filepath.Dir(pending.LocalPath), filepath.Base(pending.LocalPath)+".upload-*")
 	if err != nil {
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	tmpPath := tmp.Name()
 	cleanup := true
@@ -181,30 +183,40 @@ func (v *VFS) snapshotPending(pending PendingFile) (string, error) {
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	written, err := io.Copy(tmp, src)
+	md5Hash := md5.New()
+	sha1Hash := sha1.New()
+	sha256Hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(tmp, md5Hash, sha1Hash, sha256Hash), src)
 	if err != nil {
 		tmp.Close()
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	if err := tmp.Close(); err != nil {
-		return "", err
+		return uploadSnapshot{}, err
 	}
 	if written != pending.Size {
-		return "", fmt.Errorf("vfs: upload snapshot size mismatch: wrote %d, expected %d", written, pending.Size)
+		return uploadSnapshot{}, fmt.Errorf("vfs: upload snapshot size mismatch: wrote %d, expected %d", written, pending.Size)
 	}
 	cleanup = false
-	return tmpPath, nil
+	return uploadSnapshot{
+		Path: tmpPath,
+		Hashes: drive.SourceHashes{
+			drive.HashMD5:    md5Hash.Sum(nil),
+			drive.HashSHA1:   sha1Hash.Sum(nil),
+			drive.HashSHA256: sha256Hash.Sum(nil),
+		},
+	}, nil
 }
 
 func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 	if entry.ID == "" || localPath == "" {
 		return
 	}
-	if err := v.cache.PutFile(entry.ID, localPath); err != nil {
+	if err := v.cache.PutLocalFile(entry.ID, localPath); err != nil {
 		logging.L.Warnf("[VFS] read cache seed failed id=%q local=%q err=%v", entry.ID, localPath, err)
 	}
 }
@@ -230,6 +242,24 @@ func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) err
 
 func (v *VFS) enqueue(p PendingFile) {
 	v.enqueueAfter(p, v.uploadDelay)
+}
+
+type debugUploadProgress struct {
+	v      *VFS
+	path   string
+	update func(int64)
+}
+
+func (p debugUploadProgress) Phase(phase drive.UploadPhase) {
+	if p.v != nil && p.path != "" && phase != "" {
+		p.v.setDebugUploadState(p.path, string(phase))
+	}
+}
+
+func (p debugUploadProgress) Uploaded(n int64) {
+	if p.update != nil {
+		p.update(n)
+	}
 }
 
 func (v *VFS) enqueueAfter(p PendingFile, delay time.Duration) {

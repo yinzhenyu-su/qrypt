@@ -20,18 +20,19 @@ import (
 )
 
 type Driver struct {
-	cl            *client
-	urlCache      sync.Map
-	cookie        string
-	rootPath      string
-	rootID        string
-	limiter       *drive.BandwidthLimiter
-	stateStore    drive.StateStore
-	cookieSource  string
-	cookieUpdated time.Time
-	debugMu       sync.Mutex
-	debugUploads  map[string]quarkUploadDebug
-	lastError     string
+	cl                 *client
+	urlCache           sync.Map
+	cookie             string
+	rootPath           string
+	rootID             string
+	limiter            *drive.BandwidthLimiter
+	stateStore         drive.StateStore
+	cookieSource       string
+	cookieUpdated      time.Time
+	debugMu            sync.Mutex
+	debugUploads       map[string]quarkUploadDebug
+	lastError          string
+	instantUploadCount int64
 }
 
 type cookieState struct {
@@ -348,7 +349,9 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return apiError(resp)
 }
 
-func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, body io.Reader) (drive.Entry, error) {
+func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	parentID, name, source := req.ParentID, req.Name, req.Source
+	size := source.Size()
 	parentID = d.resolve(parentID)
 	putStart := time.Now()
 	mtime := time.Now()
@@ -386,6 +389,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	})
 	defer d.finishUploadDebug(preResp.Data.TaskID)
 	if preResp.Data.Finish && preResp.Data.Fid != "" {
+		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
 		d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) {
 			item.Stage = "instant_finish"
 			item.BytesRead = size
@@ -397,6 +401,9 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 		}
 		logging.L.InfofEvery("quark.instant_upload_complete", time.Second, "[QUARK] instant upload complete name=%q fid=%q size=%d dur=%s", name, finalFid, size, time.Since(putStart))
+		d.debugMu.Lock()
+		d.instantUploadCount++
+		d.debugMu.Unlock()
 		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime}, nil
 	}
 
@@ -408,9 +415,35 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		partSize = 16 * 1024 * 1024
 	}
 
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
+	hashData, hasSourceHashes, err := quarkSourceHashes(source)
+	if err != nil {
+		d.setUploadDebugError(preResp.Data.TaskID, err)
+		return drive.Entry{}, err
+	}
+	if hasSourceHashes {
+		finished, finalFid, err := d.updateUploadHash(preResp.Data.TaskID, preResp.Data.Fid, preResp.Data.ObjKey, hashData, name, size, putStart)
+		if err != nil {
+			return drive.Entry{}, err
+		}
+		if finished {
+			drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
+			return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime}, nil
+		}
+	}
+
 	md5Hash := md5.New()
 	sha1Hash := sha1.New()
-	teeReader := io.TeeReader(body, io.MultiWriter(md5Hash, sha1Hash))
+	sourceFile, err := source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("quark: upload source open: %w", err)
+	}
+	defer sourceFile.Close()
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
+	reader := io.Reader(sourceFile)
+	if !hasSourceHashes {
+		reader = io.TeeReader(sourceFile, io.MultiWriter(md5Hash, sha1Hash))
+	}
 
 	buf := make([]byte, partSize)
 	etagsByPart := map[int]string{}
@@ -447,6 +480,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 					if err != nil {
 						logging.L.Warnf("[QUARK] upload part failed name=%q task=%q part=%d bytes=%d err=%v", name, preResp.Data.TaskID, job.number, len(job.data), err)
 					} else {
+						drive.ReportUploadProgress(req.Progress, int64(len(job.data)))
 						logging.L.Debugf("[QUARK] upload part complete name=%q task=%q part=%d etag=%q", name, preResp.Data.TaskID, job.number, etag)
 					}
 					select {
@@ -488,7 +522,7 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	}
 
 	for {
-		n, readErr := io.ReadFull(teeReader, buf)
+		n, readErr := io.ReadFull(reader, buf)
 		if n > 0 {
 			data := append([]byte(nil), buf[:n]...)
 			if err := sendJob(uploadPartJob{number: partNumber, data: data}); err != nil {
@@ -539,33 +573,22 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 		etags = append(etags, etag)
 	}
 
-	hashData := map[string]any{
-		"md5":     fmt.Sprintf("%X", md5Hash.Sum(nil)),
-		"sha1":    fmt.Sprintf("%X", sha1Hash.Sum(nil)),
-		"task_id": preResp.Data.TaskID,
-	}
-	var hashResp hashResp
-	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "hash_update" })
-	if err := d.cl.request(http.MethodPost, "/file/update/hash", nil, hashData, &hashResp); err != nil {
-		d.setUploadDebugError(preResp.Data.TaskID, err)
-		logging.L.Warnf("[QUARK] upload hash update failed name=%q task=%q total_read=%d err=%v", name, preResp.Data.TaskID, totalRead, err)
-		return drive.Entry{}, fmt.Errorf("quark: upload hash: %w", err)
-	}
-	logging.L.InfofEvery("quark.upload_hash_ok", time.Second, "[QUARK] upload hash update ok name=%q task=%q total_read=%d finish=%t", name, preResp.Data.TaskID, totalRead, hashResp.Data.Finish)
-	if hashResp.Data.Finish {
-		if hashResp.Data.Fid != "" {
-			preResp.Data.Fid = hashResp.Data.Fid
+	if !hasSourceHashes {
+		hashData = map[string]any{
+			"md5":  fmt.Sprintf("%X", md5Hash.Sum(nil)),
+			"sha1": fmt.Sprintf("%X", sha1Hash.Sum(nil)),
 		}
-		finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
+		finished, finalFid, err := d.updateUploadHash(preResp.Data.TaskID, preResp.Data.Fid, preResp.Data.ObjKey, hashData, name, totalRead, putStart)
 		if err != nil {
-			d.setUploadDebugError(preResp.Data.TaskID, err)
-			logging.L.Warnf("[QUARK] hash-finished upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
-			return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
+			return drive.Entry{}, err
 		}
-		logging.L.InfofEvery("quark.hash_finished_upload_complete", time.Second, "[QUARK] hash-finished upload complete name=%q fid=%q size=%d", name, finalFid, totalRead)
-		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime}, nil
+		if finished {
+			drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
+			return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime}, nil
+		}
 	}
 	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "oss_complete" })
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	if err := d.ossComplete(&preResp, etags); err != nil {
 		d.setUploadDebugError(preResp.Data.TaskID, err)
 		logging.L.Warnf("[QUARK] upload complete multipart failed name=%q task=%q parts=%d err=%v", name, preResp.Data.TaskID, len(etags), err)
@@ -580,6 +603,60 @@ func (d *Driver) Put(ctx context.Context, parentID, name string, size int64, bod
 	}
 	logging.L.InfofEvery("quark.upload_complete", time.Second, "[QUARK] upload complete name=%q fid=%q size=%d parts=%d dur=%s", name, finalFid, totalRead, len(etags), time.Since(putStart))
 	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime}, nil
+}
+
+func quarkSourceHashes(source drive.ReadOnlyFileSource) (map[string]any, bool, error) {
+	md5Sum, ok := drive.SourceHash(source, drive.HashMD5)
+	if !ok {
+		return nil, false, nil
+	}
+	sha1Sum, ok := drive.SourceHash(source, drive.HashSHA1)
+	if !ok {
+		return nil, false, nil
+	}
+	if len(md5Sum) != md5.Size {
+		return nil, false, fmt.Errorf("quark: source MD5 metadata has %d bytes, want %d", len(md5Sum), md5.Size)
+	}
+	if len(sha1Sum) != sha1.Size {
+		return nil, false, fmt.Errorf("quark: source SHA-1 metadata has %d bytes, want %d", len(sha1Sum), sha1.Size)
+	}
+	return map[string]any{
+		"md5":  fmt.Sprintf("%X", md5Sum),
+		"sha1": fmt.Sprintf("%X", sha1Sum),
+	}, true, nil
+}
+
+func (d *Driver) updateUploadHash(taskID, fid, objKey string, hashData map[string]any, name string, size int64, startedAt time.Time) (bool, string, error) {
+	hashData["task_id"] = taskID
+	var hashResp hashResp
+	d.updateUploadDebug(taskID, func(item *quarkUploadDebug) { item.Stage = "hash_update" })
+	if err := d.cl.request(http.MethodPost, "/file/update/hash", nil, hashData, &hashResp); err != nil {
+		d.setUploadDebugError(taskID, err)
+		logging.L.Warnf("[QUARK] upload hash update failed name=%q task=%q size=%d err=%v", name, taskID, size, err)
+		return false, "", fmt.Errorf("quark: upload hash: %w", err)
+	}
+	logging.L.InfofEvery("quark.upload_hash_ok", time.Second, "[QUARK] upload hash update ok name=%q task=%q size=%d finish=%t", name, taskID, size, hashResp.Data.Finish)
+	if !hashResp.Data.Finish {
+		return false, "", nil
+	}
+	if hashResp.Data.Fid != "" {
+		fid = hashResp.Data.Fid
+	}
+	finalFid, err := d.uploadFinish(fid, objKey, taskID)
+	if err != nil {
+		d.setUploadDebugError(taskID, err)
+		logging.L.Warnf("[QUARK] hash-finished upload finish failed name=%q task=%q fid=%q err=%v", name, taskID, fid, err)
+		return false, "", fmt.Errorf("quark: upload finish: %w", err)
+	}
+	logging.L.InfofEvery("quark.hash_finished_upload_complete", time.Second, "[QUARK] hash-finished upload complete name=%q fid=%q size=%d dur=%s", name, finalFid, size, time.Since(startedAt))
+	d.debugMu.Lock()
+	d.instantUploadCount++
+	d.debugMu.Unlock()
+	return true, finalFid, nil
+}
+
+func (d *Driver) RequiredUploadHashes() []drive.HashAlgorithm {
+	return []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1}
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
@@ -608,9 +685,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"root_path":       d.rootPath,
 		},
 		Extra: map[string]any{
-			"credential_source":  d.cookieSource,
-			"credential_updated": d.cookieUpdated,
-			"last_error":         d.getLastError(),
+			"credential_source":    d.cookieSource,
+			"credential_updated":   d.cookieUpdated,
+			"last_error":           d.getLastError(),
+			"instant_upload_count": d.instantUploadCount,
 		},
 	}, nil
 }
@@ -1055,7 +1133,7 @@ func (r *traceReadCloser) Close() error {
 
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
-var _ drive.Uploader = (*Driver)(nil)
+var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)

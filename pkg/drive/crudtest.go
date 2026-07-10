@@ -1,7 +1,6 @@
 package drive
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -93,9 +92,9 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	}
 	w := d.(Writer)
 	tc.writer = w
-	var uploader Uploader
-	if HasCapability(d, CapabilityUploader) {
-		uploader = d.(Uploader)
+	var uploader SourceUploader
+	if HasCapability(d, CapabilitySourceUploader) {
+		uploader = d.(SourceUploader)
 	}
 
 	// Generate a unique test directory name.
@@ -132,9 +131,13 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	start = time.Now()
 	var fileEntry Entry
 	if uploader != nil {
-		fileEntry, err = uploader.Put(ctx, testDir.ID, "test.txt", int64(len(testContent)), bytes.NewReader([]byte(testContent)))
+		fileEntry, err = uploader.PutSource(ctx, UploadRequest{
+			ParentID: testDir.ID,
+			Name:     "test.txt",
+			Source:   NewBytesReadOnlyFileSource([]byte(testContent)),
+		})
 	} else {
-		// Fallback: use WriteAt on the Writer if Uploader not available.
+		// Fallback: use WriteAt on the Writer if SourceUploader not available.
 		fileEntry, err = w.Mkdir(ctx, testDir.ID, "test.txt")
 		// Most drivers won't support Mkdir for files. Report unsupported.
 		err = fmt.Errorf("uploader not implemented")
