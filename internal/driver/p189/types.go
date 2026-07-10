@@ -42,11 +42,11 @@ type DownResp struct {
 // UploadUrlsResp contains pre-signed upload URLs.
 type UploadUrlsResp struct {
 	Code       string          `json:"code"`
-	UploadUrls map[string]Part `json:"uploadUrls"`
+	UploadUrls map[string]uploadPart `json:"uploadUrls"`
 }
 
-// Part describes one upload part URL.
-type Part struct {
+// uploadPart describes one upload part URL.
+type uploadPart struct {
 	RequestURL    string `json:"requestURL"`
 	RequestHeader string `json:"requestHeader"`
 }
