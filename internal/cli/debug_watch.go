@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -107,7 +108,7 @@ func watchMountSummaries(state *vfs.DebugSnapshot, staging *control.StagingRespo
 	for _, mount := range state.Mounts {
 		activeUploads := 0
 		for _, upload := range mount.Uploads {
-			if upload.State == "uploading" {
+			if upload.State == string(drive.UploadPhaseUploading) {
 				activeUploads++
 			}
 		}

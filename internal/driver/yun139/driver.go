@@ -29,16 +29,16 @@ const (
 )
 
 type Driver struct {
-	cl          *client
-	rootID      string
-	rootPath    string
-	limiter     *drive.BandwidthLimiter
-	stateStore  drive.StateStore
-	authSource  string
-	authUpdated time.Time
-	debugMu     sync.Mutex
-	lastError   string
-	rapidCount  int64
+	cl                 *client
+	rootID             string
+	rootPath           string
+	limiter            *drive.BandwidthLimiter
+	stateStore         drive.StateStore
+	authSource         string
+	authUpdated        time.Time
+	debugMu            sync.Mutex
+	lastError          string
+	instantUploadCount int64
 }
 
 type authState struct {
@@ -245,8 +245,8 @@ func (d *Driver) getDownloadURL(ctx context.Context, fileID string) (string, err
 	if !resp.Success {
 		return "", fmt.Errorf("139: download url failed (code=%s): %s", resp.Code, resp.Message)
 	}
-	if resp.Data.CdnUrl != "" {
-		return resp.Data.CdnUrl, nil
+	if resp.Data.CDNURL != "" {
+		return resp.Data.CDNURL, nil
 	}
 	return resp.Data.Url, nil
 }
@@ -269,7 +269,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		// Name collision — FUSE layer handles this by looking up existing dir.
 		return drive.Entry{}, fmt.Errorf("139: mkdir failed (code=%s): %s", resp.Code, resp.Message)
 	}
-	return drive.Entry{ID: resp.Data.FileId, ParentID: fileID, Name: resp.Data.Name, IsDir: true, ModTime: now}, nil
+	return drive.Entry{ID: resp.Data.FileID, ParentID: fileID, Name: resp.Data.Name, IsDir: true, ModTime: now}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -361,7 +361,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	health := "ok"
 	d.debugMu.Lock()
 	lastError := d.lastError
-	rapidCount := d.rapidCount
+	instantUploadCount := d.instantUploadCount
 	d.debugMu.Unlock()
 	if lastError != "" {
 		health = "degraded"
@@ -371,14 +371,14 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"root_id":   d.rootID,
-			"root_path": d.rootPath,
+			drive.DebugStatRootID:   d.rootID,
+			drive.DebugStatRootPath: d.rootPath,
 		},
 		Extra: map[string]any{
-			"credential_source":  d.authSource,
-			"credential_updated": d.authUpdated,
-			"last_error":         lastError,
-			"rapid_upload_count": rapidCount,
+			drive.DebugExtraCredentialSource:   d.authSource,
+			drive.DebugExtraCredentialUpdated:  d.authUpdated,
+			drive.DebugExtraLastError:          lastError,
+			drive.DebugExtraInstantUploadCount: instantUploadCount,
 		},
 	}, nil
 }
@@ -432,16 +432,16 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		return drive.Entry{}, fmt.Errorf("139: upload create failed (code=%s): %s", createResp.Code, createResp.Message)
 	}
 
-	logging.L.Debugf("[139] upload create: fileId=%s exist=%v rapid=%v parts=%d uploadId=%s",
-		createResp.Data.FileId, createResp.Data.Exist, createResp.Data.RapidUpload,
-		len(createResp.Data.PartInfos), createResp.Data.UploadId)
+	logging.L.Debugf("[139] upload create: fileId=%s exist=%v instant=%v parts=%d uploadId=%s",
+		createResp.Data.FileID, createResp.Data.Exist, createResp.Data.InstantUpload,
+		len(createResp.Data.PartInfos), createResp.Data.UploadID)
 
-	if createResp.Data.Exist || createResp.Data.RapidUpload {
+	if createResp.Data.Exist || createResp.Data.InstantUpload {
 		drive.ReportUploadPhase(progress, drive.UploadPhaseInstant)
 		d.debugMu.Lock()
-		d.rapidCount++
+		d.instantUploadCount++
 		d.debugMu.Unlock()
-		return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+		return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 	}
 
 	// Server returns upload URLs when it needs multipart upload.
@@ -455,10 +455,10 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	completeData := map[string]interface{}{
 		"contentHash":          sha256Hex,
 		"contentHashAlgorithm": "SHA256",
-		"fileId":               createResp.Data.FileId,
-		"uploadId":             createResp.Data.UploadId,
+		"fileId":               createResp.Data.FileID,
+		"uploadId":             createResp.Data.UploadID,
 	}
-	logging.L.Debugf("[139] upload complete: fileId=%s uploadId=%s", createResp.Data.FileId, createResp.Data.UploadId)
+	logging.L.Debugf("[139] upload complete: fileId=%s uploadId=%s", createResp.Data.FileID, createResp.Data.UploadID)
 	var completeResp baseResp
 	if err := d.cl.personalPost(ctx, "/file/complete", completeData, &completeResp); err != nil {
 		return drive.Entry{}, fmt.Errorf("139: upload complete: %w", err)
@@ -471,7 +471,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	// a file with the same name already existed in the target directory.
 	// The old file gets removed and our new file is renamed back to original.
 	if createResp.Data.FileName != "" && createResp.Data.FileName != name {
-		logging.L.Infof("[139] upload was renamed by server: %q -> %q (new id=%s)", name, createResp.Data.FileName, createResp.Data.FileId)
+		logging.L.Infof("[139] upload was renamed by server: %q -> %q (new id=%s)", name, createResp.Data.FileName, createResp.Data.FileID)
 
 		// 1. Remove all stale duplicates with a different file ID
 		entries, err := d.List(ctx, parentID)
@@ -479,8 +479,8 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 			logging.L.Warnf("[139] failed to list files for conflict resolution: %v", err)
 		} else {
 			for _, e := range entries {
-				if e.Name == name && !e.IsDir && e.ID != createResp.Data.FileId {
-					logging.L.Infof("[139] removing duplicate file: name=%q id=%q (keeping new id=%q)", name, e.ID, createResp.Data.FileId)
+				if e.Name == name && !e.IsDir && e.ID != createResp.Data.FileID {
+					logging.L.Infof("[139] removing duplicate file: name=%q id=%q (keeping new id=%q)", name, e.ID, createResp.Data.FileID)
 					if err := d.Remove(ctx, e); err != nil {
 						logging.L.Warnf("[139] failed to remove duplicate file id=%s: %v", e.ID, err)
 					}
@@ -490,13 +490,13 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 
 		// 2. Rename our new file back to the original name using its stable
 		// file ID (toEntry strips the suffix so the list name is ambiguous).
-		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileId}, name); err != nil {
-			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileId, name, err)
-			return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileID}, name); err != nil {
+			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileID, name, err)
+			return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 		}
 	}
 
-	return drive.Entry{ID: createResp.Data.FileId, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+	return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 }
 
 func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
@@ -532,7 +532,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 	}
 	var uploadParts []uploadPart
 	for _, p := range createResp.Data.PartInfos {
-		uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadUrl})
+		uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadURL})
 	}
 	for i := 101; i <= len(partInfos); i += 100 {
 		end := i + 100
@@ -541,15 +541,15 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 		}
 		batchPartInfos := partInfos[i-1 : end]
 		moreData := map[string]interface{}{
-			"fileId":    createResp.Data.FileId,
-			"uploadId":  createResp.Data.UploadId,
+			"fileId":    createResp.Data.FileID,
+			"uploadId":  createResp.Data.UploadID,
 			"partInfos": batchPartInfos,
 			"commonAccountInfo": map[string]interface{}{
 				"account":     d.cl.getAccount(),
 				"accountType": 1,
 			},
 		}
-		var moreResp personalUploadUrlResp
+		var moreResp personalUploadURLResp
 		if err := d.cl.personalPost(ctx, "/file/getUploadUrl", moreData, &moreResp); err != nil {
 			return fmt.Errorf("139: upload get urls: %w", err)
 		}
@@ -557,7 +557,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			return fmt.Errorf("139: upload get urls failed (code=%s): %s", moreResp.Code, moreResp.Message)
 		}
 		for _, p := range moreResp.Data.PartInfos {
-			uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadUrl})
+			uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadURL})
 		}
 	}
 

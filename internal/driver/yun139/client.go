@@ -267,7 +267,7 @@ func (c *client) ensurePersonalCloudHost() error {
 			UserDomainID    string `json:"userDomainId"`
 			RoutePolicyList []struct {
 				ModName      string `json:"modName"`
-				HttpsUrl     string `json:"httpsUrl"`
+				HTTPSURL     string `json:"httpsUrl"`
 				UserDomainID string `json:"userDomainId"`
 			} `json:"routePolicyList"`
 		} `json:"data"`
@@ -282,8 +282,8 @@ func (c *client) ensurePersonalCloudHost() error {
 		if item.UserDomainID != "" {
 			c.userDomainID = item.UserDomainID
 		}
-		if item.ModName == "personal" && item.HttpsUrl != "" {
-			c.personalCloudHost = strings.TrimRight(item.HttpsUrl, "/")
+		if item.ModName == "personal" && item.HTTPSURL != "" {
+			c.personalCloudHost = strings.TrimRight(item.HTTPSURL, "/")
 			return nil
 		}
 	}

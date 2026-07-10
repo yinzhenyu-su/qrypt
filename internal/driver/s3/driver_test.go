@@ -680,13 +680,13 @@ func TestDebugSnapshot(t *testing.T) {
 	if snapshot.Health != "ok" {
 		t.Fatalf("health = %q, want ok", snapshot.Health)
 	}
-	if snapshot.Stats["root_path"] != "data" {
+	if snapshot.Stats[drive.DebugStatRootPath] != "data" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
 	if snapshot.Stats["bucket"] != "my-bucket" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Extra["credential_source"] != "config" {
-		t.Fatalf("credential_source = %v, want config", snapshot.Extra["credential_source"])
+	if snapshot.Extra[drive.DebugExtraCredentialSource] != "config" {
+		t.Fatalf("credential_source = %v, want config", snapshot.Extra[drive.DebugExtraCredentialSource])
 	}
 }

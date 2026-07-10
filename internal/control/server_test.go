@@ -141,7 +141,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			Uploads: []vfs.DebugUpload{{
 				OpID:          "file",
 				Path:          "/file.txt",
-				State:         "uploading",
+				State:         string(drive.UploadPhaseUploading),
 				BytesTotal:    10,
 				BytesUploaded: 4,
 				UpdatedAt:     time.Unix(4, 0),
@@ -149,7 +149,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			UploadHistory: []vfs.DebugUpload{{
 				OpID:          "old",
 				Path:          "/old.txt",
-				State:         "completed",
+				State:         string(drive.UploadPhaseCompleted),
 				BytesTotal:    5,
 				BytesUploaded: 5,
 				UpdatedAt:     time.Unix(5, 0),
@@ -242,7 +242,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(uploadHistoryBody), `"/local/old.txt"`) || !strings.Contains(string(uploadHistoryBody), `"state": "completed"`) {
+	if !strings.Contains(string(uploadHistoryBody), `"/local/old.txt"`) || !strings.Contains(string(uploadHistoryBody), `"state": "`+string(drive.UploadPhaseCompleted)+`"`) {
 		t.Fatalf("expected filtered upload history, got %s", uploadHistoryBody)
 	}
 	if strings.Contains(string(uploadHistoryBody), "/local/file.txt") {

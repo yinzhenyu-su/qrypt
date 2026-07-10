@@ -414,8 +414,8 @@ func TestReadRefreshesDownloadURLOnForbidden(t *testing.T) {
 	}
 }
 
-func TestPutSourceUsesRapidUploadProofAfterPreHashMatched(t *testing.T) {
-	tmp, err := os.CreateTemp("", "aliyundrive-rapid-*")
+func TestPutSourceUsesInstantUploadProofAfterPreHashMatched(t *testing.T) {
+	tmp, err := os.CreateTemp("", "aliyundrive-instant-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestPutSourceUsesRapidUploadProofAfterPreHashMatched(t *testing.T) {
 			if body["proof_code"] == "" {
 				t.Fatal("missing proof_code")
 			}
-			_ = json.NewEncoder(w).Encode(createResp{FileID: "rapid-file", Name: "rapid.txt", RapidUpload: true})
+			_ = json.NewEncoder(w).Encode(createResp{FileID: "instant-file", Name: "instant.txt", InstantUpload: true})
 		default:
 			t.Fatalf("unexpected create call %d", createCalls)
 		}
@@ -471,17 +471,17 @@ func TestPutSourceUsesRapidUploadProofAfterPreHashMatched(t *testing.T) {
 	d.cl.mu.Unlock()
 	entry, err := d.PutSource(context.Background(), drive.UploadRequest{
 		ParentID: "parent",
-		Name:     "rapid.txt",
+		Name:     "instant.txt",
 		Source:   drive.NewLocalReadOnlyFileSource(tmpPath, 26),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.ID != "rapid-file" || entry.ParentID != "parent" || entry.Name != "rapid.txt" || entry.Size != 26 {
+	if entry.ID != "instant-file" || entry.ParentID != "parent" || entry.Name != "instant.txt" || entry.Size != 26 {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
 	if entry.ModTime.IsZero() {
-		t.Fatal("rapid upload entry modtime is zero")
+		t.Fatal("instant upload entry modtime is zero")
 	}
 	if createCalls != 2 {
 		t.Fatalf("create calls = %d, want 2", createCalls)
@@ -527,13 +527,13 @@ func TestAliyunDebugSnapshot(t *testing.T) {
 	if snapshot.Health != "ok" {
 		t.Fatalf("health = %q, want ok", snapshot.Health)
 	}
-	if snapshot.Stats["root_path"] != "/" {
+	if snapshot.Stats[drive.DebugStatRootPath] != "/" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Extra["credential_source"] == nil {
+	if snapshot.Extra[drive.DebugExtraCredentialSource] == nil {
 		t.Fatalf("expected credential_source in extra, got %+v", snapshot.Extra)
 	}
-	if _, ok := snapshot.Extra["last_error"]; !ok {
+	if _, ok := snapshot.Extra[drive.DebugExtraLastError]; !ok {
 		t.Fatalf("expected last_error in extra")
 	}
 }
@@ -568,7 +568,7 @@ func TestPutSourceWithPrecomputedSHA1SkipsPreHash(t *testing.T) {
 		if body["proof_version"] != "v1" {
 			t.Fatalf("proof_version = %v, want v1", body["proof_version"])
 		}
-		_ = json.NewEncoder(w).Encode(createResp{FileID: "rapid-file", Name: "test.bin", RapidUpload: true})
+		_ = json.NewEncoder(w).Encode(createResp{FileID: "instant-file", Name: "test.bin", InstantUpload: true})
 	}))
 	defer server.Close()
 
@@ -578,7 +578,7 @@ func TestPutSourceWithPrecomputedSHA1SkipsPreHash(t *testing.T) {
 	d.cl.mu.Unlock()
 
 	// NewBytesReadOnlyFileSource auto-computes SHA1 and attaches it via HashProvider.
-	source := drive.NewBytesReadOnlyFileSource([]byte("hello world this is test data for rapid upload"))
+	source := drive.NewBytesReadOnlyFileSource([]byte("hello world this is test data for instant upload"))
 	entry, err := d.PutSource(context.Background(), drive.UploadRequest{
 		ParentID: "parent",
 		Name:     "test.bin",
@@ -587,11 +587,11 @@ func TestPutSourceWithPrecomputedSHA1SkipsPreHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.ID != "rapid-file" || entry.ParentID != "parent" || entry.Name != "test.bin" || entry.Size != int64(len("hello world this is test data for rapid upload")) {
+	if entry.ID != "instant-file" || entry.ParentID != "parent" || entry.Name != "test.bin" || entry.Size != int64(len("hello world this is test data for instant upload")) {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
 	if entry.ModTime.IsZero() {
-		t.Fatal("rapid upload entry modtime is zero")
+		t.Fatal("instant upload entry modtime is zero")
 	}
 	if createCalls != 1 {
 		t.Fatalf("create calls = %d, want 1 (sha1 fast path should not need retry)", createCalls)

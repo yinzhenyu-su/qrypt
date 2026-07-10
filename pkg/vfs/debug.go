@@ -21,6 +21,15 @@ const debugUploadHistoryLimit = 100
 
 var debugStartedAt = time.Now()
 
+const (
+	debugUploadStatePreparing  = string(drive.UploadPhasePreparing)
+	debugUploadStateUploading  = string(drive.UploadPhaseUploading)
+	debugUploadStateCommitting = string(drive.UploadPhaseCommitting)
+	debugUploadStateCompleted  = string(drive.UploadPhaseCompleted)
+	debugUploadStateFailed     = "failed"
+	debugUploadStateSuperseded = "superseded"
+)
+
 type DebugSnapshot struct {
 	SchemaVersion int                  `json:"schema_version"`
 	GeneratedAt   time.Time            `json:"generated_at"`
@@ -572,7 +581,7 @@ func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {
 	}
 	uploading := map[string]bool{}
 	for _, upload := range v.debugUploads(pending) {
-		if upload.State == "uploading" {
+		if upload.State == debugUploadStateUploading {
 			uploading[upload.Path] = true
 		}
 	}
@@ -798,7 +807,7 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 		}
 	}
 	for _, upload := range v.debugUploads(v.cache.Pending()) {
-		if upload.Path == path && upload.State == "uploading" {
+		if upload.Path == path && upload.State == debugUploadStateUploading {
 			report.UploadInProgress = true
 			break
 		}

@@ -60,15 +60,15 @@ func (f file) entry(parentID string) drive.Entry {
 }
 
 type createResp struct {
-	FileID       string           `json:"file_id"`
-	Name         string           `json:"name"`
-	Type         string           `json:"type"`
-	Size         int64            `json:"size"`
-	CreatedAt    *time.Time       `json:"created_at"`
-	UpdatedAt    *time.Time       `json:"updated_at"`
-	UploadID     string           `json:"upload_id"`
-	RapidUpload  bool             `json:"rapid_upload"`
-	PartInfoList []uploadPartInfo `json:"part_info_list"`
+	FileID        string           `json:"file_id"`
+	Name          string           `json:"name"`
+	Type          string           `json:"type"`
+	Size          int64            `json:"size"`
+	CreatedAt     *time.Time       `json:"created_at"`
+	UpdatedAt     *time.Time       `json:"updated_at"`
+	UploadID      string           `json:"upload_id"`
+	InstantUpload bool             `json:"rapid_upload"`
+	PartInfoList  []uploadPartInfo `json:"part_info_list"`
 }
 
 type uploadPartInfo struct {

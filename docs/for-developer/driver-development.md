@@ -133,7 +133,7 @@ stream the body, retry reads, or perform multipart uploads without requiring VFS
 to expose a local path.
 
 Sources may also implement `drive.HashProvider`. Drivers that need full-file
-hashes for rapid upload or provider APIs should call `drive.SourceHash` first
+hashes for instant upload or provider APIs should call `drive.SourceHash` first
 and only scan the source when the required hash metadata is unavailable.
 
 Drivers that can skip network upload when hashes are available before streaming

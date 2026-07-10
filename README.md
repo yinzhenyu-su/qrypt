@@ -47,7 +47,7 @@ root_path = "/tmp/qrypt-data"
 password = "my-password"
 filename_encryption = "standard"
 filename_encoding = "base32"
-# content_dedup = false  # true improves rapid upload/dedup but leaks content equality
+# content_dedup = false  # true improves instant upload/dedup but leaks content equality
 ```
 
 3.1 Run without mounting:

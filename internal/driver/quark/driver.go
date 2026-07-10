@@ -679,16 +679,16 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"active_uploads":  len(activeUploads),
-			"url_cache_count": urlCacheCount,
-			"root_id":         d.rootID,
-			"root_path":       d.rootPath,
+			"active_uploads":        len(activeUploads),
+			"url_cache_count":       urlCacheCount,
+			drive.DebugStatRootID:   d.rootID,
+			drive.DebugStatRootPath: d.rootPath,
 		},
 		Extra: map[string]any{
-			"credential_source":    d.cookieSource,
-			"credential_updated":   d.cookieUpdated,
-			"last_error":           d.getLastError(),
-			"instant_upload_count": d.instantUploadCount,
+			drive.DebugExtraCredentialSource:   d.cookieSource,
+			drive.DebugExtraCredentialUpdated:  d.cookieUpdated,
+			drive.DebugExtraLastError:          d.getLastError(),
+			drive.DebugExtraInstantUploadCount: d.instantUploadCount,
 		},
 	}, nil
 }

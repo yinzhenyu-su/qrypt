@@ -106,13 +106,13 @@ func TestDriverDebugSnapshot(t *testing.T) {
 	if snapshot.Driver != "quark" {
 		t.Fatalf("driver = %q, want quark", snapshot.Driver)
 	}
-	if snapshot.Stats["root_id"] != "root" {
+	if snapshot.Stats[drive.DebugStatRootID] != "root" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Stats["root_path"] != "/Docs" {
+	if snapshot.Stats[drive.DebugStatRootPath] != "/Docs" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Extra["credential_source"] == nil {
+	if snapshot.Extra[drive.DebugExtraCredentialSource] == nil {
 		t.Fatalf("expected credential_source extra, got %+v", snapshot.Extra)
 	}
 }

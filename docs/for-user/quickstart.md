@@ -53,7 +53,7 @@ root_path = "/tmp/qrypt-data"
 password = "my-password"
 filename_encryption = "standard"
 filename_encoding = "base32"
-# content_dedup = false  # true improves rapid upload/dedup but leaks content equality
+# content_dedup = false  # true improves instant upload/dedup but leaks content equality
 ```
 
 这个配置文件定义了一个云盘，指向本机的 `/tmp/qrypt-data` 目录，并开启了加密。

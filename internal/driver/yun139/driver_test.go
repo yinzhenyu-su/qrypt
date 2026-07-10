@@ -676,17 +676,17 @@ func TestPutDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Extra["rapid_upload_count"] != int64(1) {
-		t.Fatalf("rapid_upload_count = %v, want 1", snapshot.Extra["rapid_upload_count"])
+	if snapshot.Extra[drive.DebugExtraInstantUploadCount] != int64(1) {
+		t.Fatalf("%s = %v, want 1", drive.DebugExtraInstantUploadCount, snapshot.Extra[drive.DebugExtraInstantUploadCount])
 	}
 }
 
-func TestPutRapidUploadIncrementsDebugCounter(t *testing.T) {
+func TestPutInstantUploadIncrementsDebugCounter(t *testing.T) {
 	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
 			"success": true,
 			"data": map[string]interface{}{
-				"fileId":      "rapid-file",
+				"fileId":      "instant-file",
 				"rapidUpload": true,
 			},
 		})
@@ -695,21 +695,21 @@ func TestPutRapidUploadIncrementsDebugCounter(t *testing.T) {
 
 	entry, err := drv.PutSource(context.Background(), drive.UploadRequest{
 		ParentID: "/",
-		Name:     "rapid.txt",
+		Name:     "instant.txt",
 		Source:   drive.NewBytesReadOnlyFileSource([]byte("abc")),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.ID != "rapid-file" {
-		t.Errorf("expected rapid file ID, got %s", entry.ID)
+	if entry.ID != "instant-file" {
+		t.Errorf("expected instant file ID, got %s", entry.ID)
 	}
 	snapshot, err := drv.DebugSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Extra["rapid_upload_count"] != int64(1) {
-		t.Fatalf("rapid_upload_count = %v, want 1", snapshot.Extra["rapid_upload_count"])
+	if snapshot.Extra[drive.DebugExtraInstantUploadCount] != int64(1) {
+		t.Fatalf("%s = %v, want 1", drive.DebugExtraInstantUploadCount, snapshot.Extra[drive.DebugExtraInstantUploadCount])
 	}
 }
 
@@ -764,7 +764,7 @@ func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
 	defer cancel()
 
 	var uploadResp personalUploadResp
-	uploadResp.Data.PartInfos = []personalPartInfo{{PartNumber: 1, UploadUrl: uploadServer.URL}}
+	uploadResp.Data.PartInfos = []personalPartInfo{{PartNumber: 1, UploadURL: uploadServer.URL}}
 	source := drive.NewLocalReadOnlyFileSource(localPath, 4)
 	err := drv.uploadParts(ctx, source, nil, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4)
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -774,7 +774,7 @@ func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
 
 func TestToEntry(t *testing.T) {
 	item := personalItem{
-		FileId:    "f1",
+		FileID:    "f1",
 		Name:      "file.txt",
 		Type:      "file",
 		Size:      100,
@@ -793,7 +793,7 @@ func TestToEntry(t *testing.T) {
 	}
 
 	createdOnly := personalItem{
-		FileId:    "f2",
+		FileID:    "f2",
 		Name:      "created.txt",
 		Type:      "file",
 		CreatedAt: "2024-01-14T09:20:00.000+08:00",
@@ -803,13 +803,13 @@ func TestToEntry(t *testing.T) {
 		t.Fatal("created_at fallback modtime is zero")
 	}
 
-	invalid := personalItem{FileId: "bad", Name: "bad.txt", Type: "file", UpdatedAt: "not-a-time"}
+	invalid := personalItem{FileID: "bad", Name: "bad.txt", Type: "file", UpdatedAt: "not-a-time"}
 	invalidEntry := toEntry(invalid)
 	if !invalidEntry.ModTime.IsZero() {
 		t.Fatalf("invalid modtime = %s, want zero", invalidEntry.ModTime)
 	}
 
-	folder := personalItem{FileId: "d1", Name: "dir", Type: "folder"}
+	folder := personalItem{FileID: "d1", Name: "dir", Type: "folder"}
 	dirEntry := toEntry(folder)
 	if !dirEntry.IsDir {
 		t.Error("expected IsDir")
@@ -829,14 +829,14 @@ func TestYun139DebugSnapshot(t *testing.T) {
 	if snapshot.Health != "ok" {
 		t.Fatalf("health = %q, want ok", snapshot.Health)
 	}
-	if snapshot.Stats["root_path"] != "/Docs" {
+	if snapshot.Stats[drive.DebugStatRootPath] != "/Docs" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Stats["root_id"] != "root-id" {
+	if snapshot.Stats[drive.DebugStatRootID] != "root-id" {
 		t.Fatalf("unexpected stats: %+v", snapshot.Stats)
 	}
-	if snapshot.Extra["credential_source"] != "config" {
-		t.Fatalf("credential_source = %v, want config", snapshot.Extra["credential_source"])
+	if snapshot.Extra[drive.DebugExtraCredentialSource] != "config" {
+		t.Fatalf("credential_source = %v, want config", snapshot.Extra[drive.DebugExtraCredentialSource])
 	}
 }
 
@@ -850,7 +850,7 @@ func TestYun139DebugSnapshotDegraded(t *testing.T) {
 	if snapshot.Health != "degraded" {
 		t.Fatalf("health = %q, want degraded", snapshot.Health)
 	}
-	if snapshot.Extra["last_error"] != "simulated API error" {
-		t.Fatalf("last_error = %v, want simulated API error", snapshot.Extra["last_error"])
+	if snapshot.Extra[drive.DebugExtraLastError] != "simulated API error" {
+		t.Fatalf("last_error = %v, want simulated API error", snapshot.Extra[drive.DebugExtraLastError])
 	}
 }

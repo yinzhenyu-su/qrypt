@@ -38,30 +38,30 @@ const (
 )
 
 type Driver struct {
-	httpClient    *http.Client
-	refreshToken  string
-	accessToken   string
-	clientID      string
-	clientSecret  string
-	rootPath      string
-	orderBy       string
-	orderDesc     bool
-	apiBaseURL    string
-	oauthURL      string
-	onlineAPI     string
-	uploadAPI     string
-	useOnlineAPI  bool
-	downloadUA    string
-	limiter       *drive.BandwidthLimiter
-	stateStore    drive.StateStore
-	tokenSource   string
-	tokenUpdated  time.Time
-	tokenMu       sync.Mutex
-	tokenExpires  time.Time
-	downloadCache sync.Map
-	lastErrorMu   sync.Mutex
-	lastError     string
-	rapidCount    int64
+	httpClient         *http.Client
+	refreshToken       string
+	accessToken        string
+	clientID           string
+	clientSecret       string
+	rootPath           string
+	orderBy            string
+	orderDesc          bool
+	apiBaseURL         string
+	oauthURL           string
+	onlineAPI          string
+	uploadAPI          string
+	useOnlineAPI       bool
+	downloadUA         string
+	limiter            *drive.BandwidthLimiter
+	stateStore         drive.StateStore
+	tokenSource        string
+	tokenUpdated       time.Time
+	tokenMu            sync.Mutex
+	tokenExpires       time.Time
+	downloadCache      sync.Map
+	lastErrorMu        sync.Mutex
+	lastError          string
+	instantUploadCount int64
 }
 
 type Options struct {
@@ -387,7 +387,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if pre.ReturnType == 2 {
 		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
 		d.lastErrorMu.Lock()
-		d.rapidCount++
+		d.instantUploadCount++
 		d.lastErrorMu.Unlock()
 		return pre.File.entry(parentPath), nil
 	}
@@ -437,7 +437,7 @@ func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	d.lastErrorMu.Lock()
 	lastError := d.lastError
-	rapidCount := d.rapidCount
+	instantUploadCount := d.instantUploadCount
 	d.lastErrorMu.Unlock()
 	health := "ok"
 	if lastError != "" {
@@ -448,17 +448,17 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"root_path":      d.rootPath,
-			"order_by":       d.orderBy,
-			"order_desc":     d.orderDesc,
-			"use_online_api": d.useOnlineAPI,
-			"upload_api":     d.uploadAPI,
+			drive.DebugStatRootPath: d.rootPath,
+			"order_by":              d.orderBy,
+			"order_desc":            d.orderDesc,
+			"use_online_api":        d.useOnlineAPI,
+			"upload_api":            d.uploadAPI,
 		},
 		Extra: map[string]any{
-			"credential_source":  d.tokenSource,
-			"credential_updated": d.tokenUpdated,
-			"last_error":         lastError,
-			"rapid_upload_count": rapidCount,
+			drive.DebugExtraCredentialSource:   d.tokenSource,
+			drive.DebugExtraCredentialUpdated:  d.tokenUpdated,
+			drive.DebugExtraLastError:          lastError,
+			drive.DebugExtraInstantUploadCount: instantUploadCount,
 		},
 	}, nil
 }
