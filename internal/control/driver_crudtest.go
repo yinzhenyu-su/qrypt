@@ -1,4 +1,4 @@
-package drive
+package control
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // CRUDTestStep records one step of a CRUD test.
@@ -31,10 +33,10 @@ type CRUDTestResult struct {
 type crudTestCtx struct {
 	mount  string
 	ctx    context.Context
-	driver Driver
+	driver drive.Driver
 	result *CRUDTestResult
 	parent string
-	writer Writer
+	writer drive.Writer
 }
 
 func stepOp(op, name string) CRUDTestStep {
@@ -55,11 +57,11 @@ func (s *CRUDTestStep) finish(start time.Time, err error) {
 	s.done(err)
 }
 
-// RunCRUDTest executes a standard CRUD test sequence on the given driver.
+// RunDriverCRUDTest executes a standard CRUD test sequence on the given driver.
 // It creates a temporary directory, creates a file, reads it back, renames it,
 // and cleans up. Each operation is evaluated by its own return value — no
 // List-based verification is used.
-func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
+func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDTestResult {
 	result := &CRUDTestResult{
 		Mount:   mount,
 		Started: time.Now(),
@@ -72,14 +74,14 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 		driver: d,
 		result: result,
 	}
-	if debugger, ok := d.(Debugger); ok {
+	if debugger, ok := d.(drive.Debugger); ok {
 		if snap, err := debugger.DebugSnapshot(ctx); err == nil {
 			result.Driver = snap.Driver
 		}
 	}
 
 	// Determine writer / uploader support.
-	if !HasCapability(d, CapabilityWriter) {
+	if !drive.HasCapability(d, drive.CapabilityWriter) {
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation: "crud",
 			OK:        false,
@@ -90,11 +92,11 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 		result.Finished = time.Now()
 		return result
 	}
-	w := d.(Writer)
+	w := d.(drive.Writer)
 	tc.writer = w
-	var uploader SourceUploader
-	if HasCapability(d, CapabilitySourceUploader) {
-		uploader = d.(SourceUploader)
+	var uploader drive.SourceUploader
+	if drive.HasCapability(d, drive.CapabilitySourceUploader) {
+		uploader = d.(drive.SourceUploader)
 	}
 
 	// Generate a unique test directory name.
@@ -129,12 +131,12 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	const testContent = "qrypt-crud-test-content-42"
 	s = stepOp("put", "test.txt")
 	start = time.Now()
-	var fileEntry Entry
+	var fileEntry drive.Entry
 	if uploader != nil {
-		fileEntry, err = uploader.PutSource(ctx, UploadRequest{
+		fileEntry, err = uploader.PutSource(ctx, drive.UploadRequest{
 			ParentID: testDir.ID,
 			Name:     "test.txt",
-			Source:   NewBytesReadOnlyFileSource([]byte(testContent)),
+			Source:   drive.NewBytesReadOnlyFileSource([]byte(testContent)),
 		})
 	} else {
 		// Fallback: use WriteAt on the Writer if SourceUploader not available.
@@ -211,15 +213,15 @@ func RunCRUDTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
 	return result
 }
 
-func cleanup(ctx context.Context, w Writer, dir Entry) {
+func cleanup(ctx context.Context, w drive.Writer, dir drive.Entry) {
 	_ = w.Remove(ctx, dir)
 }
 
-func verifyCleanList(ctx context.Context, d Driver, parentID string, testPrefix string) error {
+func verifyCleanList(ctx context.Context, d drive.Driver, parentID string, testPrefix string) error {
 	const maxAttempts = 3
 	delay := 1 * time.Second
 
-	var lastEntries []Entry
+	var lastEntries []drive.Entry
 	for attempt := range maxAttempts {
 		if attempt > 0 {
 			time.Sleep(delay)
