@@ -828,24 +828,72 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	mountFilter := r.URL.Query().Get("mount")
 	testType := r.URL.Query().Get("test")
 
-	var results []drive.CRUDTestResult
-	for _, nd := range drivers {
-		if mountFilter != "" && nd.Name != mountFilter {
-			continue
+	switch testType {
+	case "crud", "instantupload":
+		var results []CRUDTestResult
+		for _, nd := range drivers {
+			if mountFilter != "" && nd.Name != mountFilter {
+				continue
+			}
+			switch testType {
+			case "crud":
+				result := RunDriverCRUDTest(r.Context(), nd.Name, nd.Driver)
+				results = append(results, *result)
+			case "instantupload":
+				result := RunDriverInstantUploadTest(r.Context(), nd.Name, nd.Driver)
+				results = append(results, *result)
+			}
 		}
-		switch testType {
-		case "crud":
-			result := drive.RunCRUDTest(r.Context(), nd.Name, nd.Driver)
-			results = append(results, *result)
-		case "instantupload":
-			result := drive.RunInstantUploadTest(r.Context(), nd.Name, nd.Driver)
-			results = append(results, *result)
-		default:
-			http.Error(w, fmt.Sprintf("unknown test type: %s", testType), http.StatusBadRequest)
+		writeJSON(w, results)
+
+	case "xfer":
+		srcMount := r.URL.Query().Get("source")
+		dstMount := r.URL.Query().Get("dest")
+		if srcMount == "" || dstMount == "" {
+			http.Error(w, "xfer test requires source and dest query params", http.StatusBadRequest)
 			return
 		}
+		if srcMount == dstMount {
+			http.Error(w, "source and dest must be different mounts", http.StatusBadRequest)
+			return
+		}
+		size := parseXferSize(r.URL.Query().Get("size"))
+
+		useVFS := parseBoolQuery(r.URL.Query().Get("vfs"))
+		if useVFS {
+			filesys, ok := s.source.(vfs.FileSystem)
+			if !ok {
+				http.Error(w, "VFS xfer test not available: source does not implement FileSystem", http.StatusNotImplemented)
+				return
+			}
+			result := RunVFSXferTest(r.Context(), filesys, srcMount, dstMount, size)
+			writeJSON(w, result)
+		} else {
+			var srcDriver, dstDriver drive.Driver
+			for _, nd := range drivers {
+				if nd.Name == srcMount {
+					srcDriver = nd.Driver
+				}
+				if nd.Name == dstMount {
+					dstDriver = nd.Driver
+				}
+			}
+			if srcDriver == nil {
+				http.Error(w, fmt.Sprintf("source mount %q not found", srcMount), http.StatusNotFound)
+				return
+			}
+			if dstDriver == nil {
+				http.Error(w, fmt.Sprintf("dest mount %q not found", dstMount), http.StatusNotFound)
+				return
+			}
+			result := RunDriverXferTest(r.Context(), srcMount, srcDriver, dstMount, dstDriver, size)
+			writeJSON(w, result)
+		}
+
+	default:
+		http.Error(w, fmt.Sprintf("unknown test type: %s", testType), http.StatusBadRequest)
+		return
 	}
-	writeJSON(w, results)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {

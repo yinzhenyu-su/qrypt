@@ -1,18 +1,20 @@
-package drive
+package control
 
 import (
 	"context"
 	"crypto/rand"
 	"fmt"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // instantUploadCountKeys lists the DebugSnapshot Extra keys accepted for
 // service-side uploads. New drivers should report DebugExtraInstantUploadCount;
 // the legacy rapid key is accepted so older snapshots remain readable.
-var instantUploadCountKeys = []string{DebugExtraInstantUploadCount, DebugExtraLegacyRapidUploadCount}
+var instantUploadCountKeys = []string{drive.DebugExtraInstantUploadCount, drive.DebugExtraLegacyRapidUploadCount}
 
-func readInstantUploadCount(snap *DebugSnapshot) (int64, bool) {
+func readInstantUploadCount(snap *drive.DebugSnapshot) (int64, bool) {
 	for _, key := range instantUploadCountKeys {
 		v, ok := snap.Extra[key]
 		if !ok {
@@ -28,21 +30,21 @@ func readInstantUploadCount(snap *DebugSnapshot) (int64, bool) {
 	return 0, false
 }
 
-// RunInstantUploadTest uploads identical content twice and verifies that the
+// RunDriverInstantUploadTest uploads identical content twice and verifies that the
 // second upload triggers the driver's service-side upload path (zero data
 // transfer) by checking the driver's DebugSnapshot counter.
 //
 // Only drivers that implement SourceUploader, Writer, and Debugger can be
 // fully verified. Drivers missing the Debugger interface are checked for
 // basic upload success only (the counter cannot be inspected).
-func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTestResult {
+func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Driver) *CRUDTestResult {
 	result := &CRUDTestResult{
 		Mount:   mount,
 		Started: time.Now(),
 		Steps:   make([]CRUDTestStep, 0, 6),
 	}
 
-	_, isUploader := d.(SourceUploader)
+	_, isUploader := d.(drive.SourceUploader)
 	if !isUploader {
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation: "instant_upload",
@@ -54,9 +56,9 @@ func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTest
 		result.Finished = time.Now()
 		return result
 	}
-	uploader := d.(SourceUploader)
+	uploader := d.(drive.SourceUploader)
 
-	writer, ok := d.(Writer)
+	writer, ok := d.(drive.Writer)
 	if !ok {
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation: "instant_upload",
@@ -69,7 +71,7 @@ func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTest
 		return result
 	}
 
-	debugger, hasDebug := d.(Debugger)
+	debugger, hasDebug := d.(drive.Debugger)
 	if hasDebug {
 		if snap, err := debugger.DebugSnapshot(ctx); err == nil {
 			result.Driver = snap.Driver
@@ -109,8 +111,8 @@ func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTest
 	const testContent = "qrypt-instant-upload-test-content-2024"
 	s = stepOp("put", "original.bin")
 	start = time.Now()
-	firstSource := NewBytesReadOnlyFileSource([]byte(testContent))
-	_, err = uploader.PutSource(ctx, UploadRequest{ParentID: testDir.ID, Name: "original.bin", Source: firstSource})
+	firstSource := drive.NewBytesReadOnlyFileSource([]byte(testContent))
+	_, err = uploader.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "original.bin", Source: firstSource})
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
@@ -146,8 +148,8 @@ func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTest
 	// 4. Second upload of identical content should trigger service-side upload.
 	s = stepOp("put_dup", "duplicate.bin")
 	start = time.Now()
-	secondSource := NewBytesReadOnlyFileSource([]byte(testContent))
-	_, err = uploader.PutSource(ctx, UploadRequest{ParentID: testDir.ID, Name: "duplicate.bin", Source: secondSource})
+	secondSource := drive.NewBytesReadOnlyFileSource([]byte(testContent))
+	_, err = uploader.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "duplicate.bin", Source: secondSource})
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
@@ -198,8 +200,8 @@ func RunInstantUploadTest(ctx context.Context, mount string, d Driver) *CRUDTest
 	return result
 }
 
-func testRootID(ctx context.Context, d Driver) string {
-	if resolver, ok := d.(PathResolver); ok {
+func testRootID(ctx context.Context, d drive.Driver) string {
+	if resolver, ok := d.(drive.PathResolver); ok {
 		if rootID, err := resolver.ResolvePath(ctx, "/"); err == nil && rootID != "" {
 			return rootID
 		}
