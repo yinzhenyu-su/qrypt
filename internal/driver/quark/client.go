@@ -15,6 +15,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/retry"
 )
 
 const (
@@ -157,12 +158,6 @@ func retryableHTTPStatus(code int) bool {
 	return code == http.StatusTooManyRequests || code >= 500
 }
 
-func retryBackoff(attempt int) time.Duration {
-	base := time.Duration(500<<uint(attempt)) * time.Millisecond
-	jitter := float64(75+(attempt*7)%50) / 100.0
-	return time.Duration(float64(base) * jitter)
-}
-
 func shouldRetryWithAltBase(err error) bool {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
@@ -251,7 +246,7 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			if attempt < httpMaxRetries && retryableHTTPError(err) {
-				time.Sleep(retryBackoff(attempt))
+				time.Sleep(retry.ExponentialBackoff(attempt))
 				continue
 			}
 			return fmt.Errorf("request failed: %w", err)
@@ -268,7 +263,7 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 			}
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt < httpMaxRetries {
-			time.Sleep(retryBackoff(attempt))
+			time.Sleep(retry.ExponentialBackoff(attempt))
 			continue
 		}
 		if result != nil {
