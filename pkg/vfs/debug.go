@@ -88,7 +88,18 @@ type DebugUpload struct {
 	NextAttemptAt  int64             `json:"next_attempt_at,omitempty"`
 	CompletedAt    time.Time         `json:"completed_at,omitempty"`
 	StageDurations map[string]string `json:"stage_durations,omitempty"`
+	Trace          []DebugTraceEvent `json:"trace,omitempty"`
 	Extra          map[string]any    `json:"extra,omitempty"`
+}
+
+type DebugTraceEvent struct {
+	Phase      string         `json:"phase"`
+	Bytes      int64          `json:"bytes,omitempty"`
+	Duration   string         `json:"duration,omitempty"`
+	Throughput int64          `json:"throughput,omitempty"`
+	StartedAt  time.Time      `json:"started_at,omitempty"`
+	FinishedAt time.Time      `json:"finished_at,omitempty"`
+	Extra      map[string]any `json:"extra,omitempty"`
 }
 
 type debugUploadState struct {
@@ -487,6 +498,45 @@ func (v *VFS) updateDebugUpload(path string, n int) {
 		if state.upload.BytesTotal >= 0 && state.upload.BytesUploaded > state.upload.BytesTotal {
 			state.upload.BytesUploaded = state.upload.BytesTotal
 		}
+		state.upload.UpdatedAt = timeutil.Now()
+	}
+	v.uploadMu.Unlock()
+}
+
+func (v *VFS) recordDebugUploadTrace(path, phase string, start time.Time, bytes int64, extra map[string]any) {
+	if phase == "" || start.IsZero() {
+		return
+	}
+	finished := timeutil.Now()
+	duration := finished.Sub(start)
+	event := DebugTraceEvent{
+		Phase:      phase,
+		Bytes:      bytes,
+		Duration:   duration.String(),
+		StartedAt:  start,
+		FinishedAt: finished,
+		Extra:      extra,
+	}
+	if bytes > 0 && duration > 0 {
+		event.Throughput = int64(float64(bytes) / duration.Seconds())
+	}
+	v.uploadMu.Lock()
+	if state := v.activeUploads[path]; state != nil {
+		state.upload.Trace = append(state.upload.Trace, event)
+	}
+	v.uploadMu.Unlock()
+}
+
+func (v *VFS) setDebugUploadExtra(path string, key string, value any) {
+	if key == "" {
+		return
+	}
+	v.uploadMu.Lock()
+	if state := v.activeUploads[path]; state != nil {
+		if state.upload.Extra == nil {
+			state.upload.Extra = map[string]any{}
+		}
+		state.upload.Extra[key] = value
 		state.upload.UpdatedAt = timeutil.Now()
 	}
 	v.uploadMu.Unlock()
