@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -46,14 +47,30 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		v.enqueue(latest)
 		return nil
 	}
-	uploadStart := time.Now()
+	uploadStart := timeutil.Now()
 	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
 	v.startDebugUpload(pending)
+	if pending.UpdatedAt > 0 {
+		queuedAt := time.Unix(0, pending.UpdatedAt)
+		if uploadStart.After(queuedAt) {
+			v.recordDebugUploadTrace(pending.Path, "queue_wait", queuedAt, 0, nil)
+		}
+	}
+	v.setDebugUploadExtra(pending.Path, "local_path", pending.LocalPath)
+	v.setDebugUploadExtra(pending.Path, "parent_id", pending.ParentID)
 	finishState := debugUploadStateFailed
 	finishErr := ""
 	defer func() { v.finishDebugUpload(pending.Path, finishState, finishErr) }()
 	v.setDebugUploadState(pending.Path, debugUploadStatePreparing)
+	phaseStart := timeutil.Now()
 	snapshot, err := v.snapshotPending(pending)
+	snapshotExtra := map[string]any{
+		"hashes": []string{string(drive.HashMD5), string(drive.HashSHA1), string(drive.HashSHA256)},
+	}
+	if err != nil {
+		snapshotExtra["error"] = err.Error()
+	}
+	v.recordDebugUploadTrace(pending.Path, "snapshot_hash", phaseStart, pending.Size, snapshotExtra)
 	if err != nil {
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload snapshot failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
@@ -70,11 +87,14 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		return nil
 	}
 	v.setDebugUploadState(pending.Path, "removing_existing")
+	phaseStart = timeutil.Now()
 	if err := v.removeExistingFile(ctx, pending.ParentID, pending.Name); err != nil {
+		v.recordDebugUploadTrace(pending.Path, "remove_existing", phaseStart, 0, map[string]any{"error": err.Error()})
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload remove existing failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
 		return err
 	}
+	v.recordDebugUploadTrace(pending.Path, "remove_existing", phaseStart, 0, nil)
 	v.setDebugUploadState(pending.Path, debugUploadStateUploading)
 	source := drive.NewLocalReadOnlyFileSourceWithHashes(snapshot.Path, pending.Size, snapshot.Hashes)
 	progress := debugUploadProgress{
@@ -84,12 +104,18 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			v.updateDebugUpload(pending.Path, int(n))
 		},
 	}
+	phaseStart = timeutil.Now()
 	entry, err := v.sourceUpload.PutSource(ctx, drive.UploadRequest{
 		ParentID: pending.ParentID,
 		Name:     pending.Name,
 		Source:   source,
 		Progress: progress,
 	})
+	traceExtra := map[string]any{"entry_id": entry.ID}
+	if err != nil {
+		traceExtra["error"] = err.Error()
+	}
+	v.recordDebugUploadTrace(pending.Path, "driver_put_source", phaseStart, pending.Size, traceExtra)
 	v.healthTracker.RecordResult(drive.HealthOpUpload, err)
 	if err != nil {
 		finishErr = err.Error()
@@ -120,13 +146,21 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		entry.ModTime = modTime
 		v.setLocalModTime(pending.Path, modTime)
 	}
+	phaseStart = timeutil.Now()
 	v.seedReadCacheFromStaging(entry, snapshot.Path)
+	v.recordDebugUploadTrace(pending.Path, "cache_seed", phaseStart, pending.Size, map[string]any{"entry_id": entry.ID})
+	phaseStart = timeutil.Now()
 	v.mu.Lock()
 	v.entries[pending.Path] = entry
 	v.unhideCopyChild(filepath.Dir(pending.Path), pending.Name)
 	v.invalidateListLocked(filepath.Dir(pending.Path))
 	v.mu.Unlock()
 	removed, err := v.cache.RemovePendingIfUnchanged(pending)
+	pendingCleanupExtra := map[string]any{"removed": removed}
+	if err != nil {
+		pendingCleanupExtra["error"] = err.Error()
+	}
+	v.recordDebugUploadTrace(pending.Path, "pending_cleanup", phaseStart, 0, pendingCleanupExtra)
 	if err != nil {
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload committed but pending cleanup failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
@@ -143,7 +177,13 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		}
 		return nil
 	}
-	_ = v.cache.staging.remove(pending.LocalPath)
+	phaseStart = timeutil.Now()
+	stagingErr := v.cache.staging.remove(pending.LocalPath)
+	stagingExtra := map[string]any{}
+	if stagingErr != nil {
+		stagingExtra["error"] = stagingErr.Error()
+	}
+	v.recordDebugUploadTrace(pending.Path, "staging_cleanup", phaseStart, 0, stagingExtra)
 	finishState = debugUploadStateCompleted
 	logging.L.InfofEvery("vfs.upload_complete", time.Second, "[VFS] upload complete op_id=%q path=%q uploaded_id=%q size=%d dur=%s", pending.FID, pending.Path, entry.ID, entry.Size, time.Since(uploadStart))
 	return nil
