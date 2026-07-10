@@ -22,7 +22,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 		DestMount:   dstMount,
 		VFS:         true,
 		Started:     time.Now(),
-		Steps:       make([]XferTestStep, 0, 10),
+		Steps:       make([]TransferStep, 0, 10),
 	}
 	if size <= 0 {
 		size = 1 << 20
@@ -30,7 +30,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 
 	testSuffix := make([]byte, 6)
 	if _, err := rand.Read(testSuffix); err != nil {
-		result.Steps = append(result.Steps, XferTestStep{
+		result.Steps = append(result.Steps, TransferStep{
 			Phase: "generate_name", OK: false, Error: err.Error(), Duration: "0s",
 		})
 		result.Pass = false
@@ -48,24 +48,24 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 
 	// generate test data
 	data := make([]byte, size)
-	s := XferTestStep{Phase: "generate_data"}
+	s := TransferStep{Phase: "generate_data"}
 	t0 := time.Now()
 	if _, err := rand.Read(data); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	s.Bytes = size
 	result.Steps = append(result.Steps, s)
 
 	// mkdir on source
-	s = XferTestStep{Phase: "mkdir_source"}
+	s = TransferStep{Phase: "mkdir_source"}
 	t0 = time.Now()
 	_, err := fs.Mkdir(ctx, srcDir)
-	finishXferStep(&s, t0, err)
+	finishTransferStep(&s, t0, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
 		result.Pass = false
@@ -74,10 +74,10 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	}
 
 	// staging write to source
-	s = XferTestStep{Phase: "staging_write_source"}
+	s = TransferStep{Phase: "staging_write_source"}
 	t0 = time.Now()
 	if err := fs.Create(ctx, srcPath); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		result.Pass = false
@@ -92,7 +92,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 			end = size
 		}
 		if _, err := fs.WriteAt(ctx, srcPath, data[off:end], off); err != nil {
-			finishXferStep(&s, t0, err)
+			finishTransferStep(&s, t0, err)
 			result.Steps = append(result.Steps, s)
 			cleanupPaths(ctx, fs, srcDir)
 			result.Pass = false
@@ -101,48 +101,48 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 		}
 		writeChunks++
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	s.Bytes = size
 	result.Steps = append(result.Steps, s)
 	result.Metrics.StagingWriteTime = s.Duration
 
 	// flush source (enqueue upload)
-	s = XferTestStep{Phase: "flush_source"}
+	s = TransferStep{Phase: "flush_source"}
 	t0 = time.Now()
 	if err := fs.Flush(ctx, srcPath); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 	result.Metrics.FlushTime = s.Duration
 
 	// wait for source upload
-	s = XferTestStep{Phase: "wait_upload_source"}
+	s = TransferStep{Phase: "wait_upload_source"}
 	t0 = time.Now()
 	if err := waitVFSIdle(ctx, fs, 5*time.Minute); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 	result.Metrics.UploadSourceTime = s.Duration
 	appendVFSUploadTimeline(result, fs, srcPath, "source")
 
 	// read from source
-	s = XferTestStep{Phase: "read_source"}
+	s = TransferStep{Phase: "read_source"}
 	t0 = time.Now()
 	rc, err := fs.Read(ctx, srcPath, 0, 0)
 	if err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		result.Pass = false
@@ -161,7 +161,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	if readErr == nil && !bytes.Equal(data, sourceData) {
 		readErr = fmt.Errorf("source content mismatch: got %d bytes, want %d", len(sourceData), len(data))
 	}
-	finishXferStep(&s, t0, readErr)
+	finishTransferStep(&s, t0, readErr)
 	s.Bytes = readBytes
 	result.Steps = append(result.Steps, s)
 	result.Metrics.ReadTime = s.Duration
@@ -178,10 +178,10 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	}
 
 	// mkdir on dest
-	s = XferTestStep{Phase: "mkdir_dest"}
+	s = TransferStep{Phase: "mkdir_dest"}
 	t0 = time.Now()
 	_, err = fs.Mkdir(ctx, dstDir)
-	finishXferStep(&s, t0, err)
+	finishTransferStep(&s, t0, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
 		cleanupPaths(ctx, fs, srcDir)
@@ -191,10 +191,10 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	}
 
 	// staging write to dest
-	s = XferTestStep{Phase: "staging_write_dest"}
+	s = TransferStep{Phase: "staging_write_dest"}
 	t0 = time.Now()
 	if err := fs.Create(ctx, dstPath); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		cleanupPaths(ctx, fs, dstDir)
@@ -208,7 +208,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 			end = size
 		}
 		if _, err := fs.WriteAt(ctx, dstPath, sourceData[off:end], off); err != nil {
-			finishXferStep(&s, t0, err)
+			finishTransferStep(&s, t0, err)
 			result.Steps = append(result.Steps, s)
 			cleanupPaths(ctx, fs, srcDir)
 			cleanupPaths(ctx, fs, dstDir)
@@ -217,15 +217,15 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 			return result
 		}
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	s.Bytes = size
 	result.Steps = append(result.Steps, s)
 
 	// flush dest (enqueue upload)
-	s = XferTestStep{Phase: "flush_dest"}
+	s = TransferStep{Phase: "flush_dest"}
 	t0 = time.Now()
 	if err := fs.Flush(ctx, dstPath); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		cleanupPaths(ctx, fs, dstDir)
@@ -233,14 +233,14 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 		result.Finished = time.Now()
 		return result
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 
 	// wait for dest upload
-	s = XferTestStep{Phase: "wait_upload_dest"}
+	s = TransferStep{Phase: "wait_upload_dest"}
 	t0 = time.Now()
 	if err := waitVFSIdle(ctx, fs, 5*time.Minute); err != nil {
-		finishXferStep(&s, t0, err)
+		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
 		cleanupPaths(ctx, fs, srcDir)
 		cleanupPaths(ctx, fs, dstDir)
@@ -248,13 +248,13 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 		result.Finished = time.Now()
 		return result
 	}
-	finishXferStep(&s, t0, nil)
+	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 	result.Metrics.UploadDestTime = s.Duration
 	appendVFSUploadTimeline(result, fs, dstPath, "dest")
 
 	// verify content
-	s = XferTestStep{Phase: "verify_data"}
+	s = TransferStep{Phase: "verify_data"}
 	t0 = time.Now()
 	verifyErr := error(nil)
 	rc, err = fs.Read(ctx, dstPath, 0, 0)
@@ -269,7 +269,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 			verifyErr = fmt.Errorf("content mismatch: got %d bytes, want %d", len(dstData), len(data))
 		}
 	}
-	finishXferStep(&s, t0, verifyErr)
+	finishTransferStep(&s, t0, verifyErr)
 	s.Bytes = size
 	result.Steps = append(result.Steps, s)
 
@@ -337,7 +337,7 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 	}
 	if !upload.StartedAt.IsZero() && !upload.CompletedAt.IsZero() {
 		duration := upload.CompletedAt.Sub(upload.StartedAt)
-		event := XferTraceEvent{
+		event := TransferTraceEvent{
 			Phase:      "upload_total",
 			Mount:      mountName,
 			Driver:     driverName,
@@ -359,7 +359,7 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 		result.Timeline = append(result.Timeline, event)
 	}
 	for _, trace := range upload.Trace {
-		event := XferTraceEvent{
+		event := TransferTraceEvent{
 			Phase:      trace.Phase,
 			Mount:      mountName,
 			Driver:     driverName,

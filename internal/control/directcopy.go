@@ -11,7 +11,6 @@ import (
 	"os"
 	pathpkg "path"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
@@ -20,20 +19,20 @@ import (
 )
 
 type DriverCopyResult struct {
-	SourcePath  string           `json:"source_path"`
-	DestPath    string           `json:"dest_path"`
-	SourceMount string           `json:"source_mount"`
-	DestMount   string           `json:"dest_mount"`
-	SourceType  string           `json:"source_type,omitempty"`
-	DestType    string           `json:"dest_type,omitempty"`
-	Pass        bool             `json:"pass"`
-	Bytes       int64            `json:"bytes"`
-	Started     time.Time        `json:"started_at"`
-	Finished    time.Time        `json:"finished_at"`
-	Duration    string           `json:"duration"`
-	Steps       []XferTestStep   `json:"steps"`
-	Timeline    []XferTraceEvent `json:"timeline,omitempty"`
-	DestEntry   *drive.Entry     `json:"dest_entry,omitempty"`
+	SourcePath  string               `json:"source_path"`
+	DestPath    string               `json:"dest_path"`
+	SourceMount string               `json:"source_mount"`
+	DestMount   string               `json:"dest_mount"`
+	SourceType  string               `json:"source_type,omitempty"`
+	DestType    string               `json:"dest_type,omitempty"`
+	Pass        bool                 `json:"pass"`
+	Bytes       int64                `json:"bytes"`
+	Started     time.Time            `json:"started_at"`
+	Finished    time.Time            `json:"finished_at"`
+	Duration    string               `json:"duration"`
+	Steps       []TransferStep       `json:"steps"`
+	Timeline    []TransferTraceEvent `json:"timeline,omitempty"`
+	DestEntry   *drive.Entry         `json:"dest_entry,omitempty"`
 }
 
 type DriverCopySource interface {
@@ -84,7 +83,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 		SourcePath: cleanVirtual(srcPath),
 		DestPath:   cleanVirtual(dstPath),
 		Started:    timeutil.Now(),
-		Steps:      make([]XferTestStep, 0, 8),
+		Steps:      make([]TransferStep, 0, 8),
 	}
 	defer func() {
 		result.Finished = timeutil.Now()
@@ -171,7 +170,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 		if err != nil {
 			return result
 		}
-	} else if err != nil && !strings.Contains(err.Error(), "not found") {
+	} else if err != nil && !vfs.IsNotFound(err) {
 		appendCopyStep(result, "check_dest_exists", 0, start, err)
 		return result
 	} else {
@@ -322,7 +321,7 @@ func splitDestPath(path string) (string, string) {
 }
 
 func appendCopyStep(result *DriverCopyResult, phase string, bytes int64, start time.Time, err error) {
-	step := XferTestStep{Phase: phase}
+	step := TransferStep{Phase: phase}
 	step.Duration = timeutil.Now().Sub(start).String()
 	if err != nil {
 		step.OK = false
@@ -340,7 +339,7 @@ func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string
 	}
 	finished := timeutil.Now()
 	duration := finished.Sub(start)
-	event := XferTraceEvent{
+	event := TransferTraceEvent{
 		Phase:      phase,
 		Mount:      mount,
 		Driver:     driver,
