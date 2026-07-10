@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/retry"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -944,7 +945,7 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		if err != nil {
 			if attempt < ossMaxRetries {
 				logging.L.WarnfEvery("quark.oss_complete_auth_retry", time.Second, "[QUARK] oss complete auth failed; retry task=%q attempt=%d err=%v", pre.Data.TaskID, attempt+1, err)
-				time.Sleep(retryBackoff(attempt))
+				time.Sleep(retry.ExponentialBackoff(attempt))
 				continue
 			}
 			logging.L.Warnf("[QUARK] oss complete auth failed task=%q attempts=%d err=%v", pre.Data.TaskID, attempt+1, err)
@@ -967,7 +968,7 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		if err != nil {
 			if attempt < ossMaxRetries {
 				logging.L.WarnfEvery("quark.oss_complete_http_retry", time.Second, "[QUARK] oss complete http failed; retry task=%q attempt=%d err=%v", pre.Data.TaskID, attempt+1, err)
-				time.Sleep(retryBackoff(attempt))
+				time.Sleep(retry.ExponentialBackoff(attempt))
 				continue
 			}
 			logging.L.Warnf("[QUARK] oss complete http failed task=%q attempts=%d err=%v", pre.Data.TaskID, attempt+1, err)
@@ -979,7 +980,7 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		}
 		if attempt < ossMaxRetries {
 			logging.L.WarnfEvery("quark.oss_complete_status_retry", time.Second, "[QUARK] oss complete status retry task=%q attempt=%d status=%d", pre.Data.TaskID, attempt+1, resp.StatusCode)
-			time.Sleep(retryBackoff(attempt))
+			time.Sleep(retry.ExponentialBackoff(attempt))
 			continue
 		}
 		logging.L.Warnf("[QUARK] oss complete status failed task=%q attempts=%d status=%d", pre.Data.TaskID, attempt+1, resp.StatusCode)
@@ -1013,7 +1014,7 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 			}
 			if attempt < ossMaxRetries {
 				logging.L.WarnfEvery("quark.upload_part_auth_retry", time.Second, "[QUARK] upload part auth failed; retry task=%q part=%d attempt=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
-				if err := sleepContext(ctx, retryBackoff(attempt)); err != nil {
+				if err := sleepContext(ctx, retry.ExponentialBackoff(attempt)); err != nil {
 					return "", err
 				}
 				continue
@@ -1044,7 +1045,7 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 			}
 			if attempt < ossMaxRetries {
 				logging.L.WarnfEvery("quark.upload_part_http_retry", time.Second, "[QUARK] upload part http failed; retry task=%q part=%d attempt=%d err=%v", pre.Data.TaskID, partNumber, attempt+1, err)
-				if err := sleepContext(ctx, retryBackoff(attempt)); err != nil {
+				if err := sleepContext(ctx, retry.ExponentialBackoff(attempt)); err != nil {
 					return "", err
 				}
 				continue
@@ -1060,7 +1061,7 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 		}
 		if attempt < ossMaxRetries {
 			logging.L.WarnfEvery("quark.upload_part_status_retry", time.Second, "[QUARK] upload part status retry task=%q part=%d attempt=%d status=%d", pre.Data.TaskID, partNumber, attempt+1, resp.StatusCode)
-			if err := sleepContext(ctx, retryBackoff(attempt)); err != nil {
+			if err := sleepContext(ctx, retry.ExponentialBackoff(attempt)); err != nil {
 				return "", err
 			}
 			continue
