@@ -41,7 +41,7 @@
 | `salt_obscured` | boolean | false | Set true when salt is copied from rclone's obscured password2 config value. |
 | `filename_encryption` | string | standard | File-name encryption mode. |
 | `filename_encoding` | string | base32 | Encoding for encrypted file names. |
-| `content_dedup` | boolean | false | Make identical plaintext files produce identical encrypted content to improve rapid upload/dedup. This leaks content equality to the backend. |
+| `content_dedup` | boolean | false | When true, enables deterministic encryption so identical plaintext produces identical ciphertext, allowing the backend to deduplicate content (instant upload). May leak content equality to the storage provider. |
 
 ## 缓存配置
 
