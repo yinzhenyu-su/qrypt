@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,6 +209,76 @@ func TestFsCopyDirRecursiveSkipsExistingFiles(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("summary missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestFsCopyDirJSONIncludesPerEntryManifest(t *testing.T) {
+	tmp := t.TempDir()
+	srcRemote := filepath.Join(tmp, "src")
+	dstRemote := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(filepath.Join(srcRemote, "parent", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dstRemote, "parent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "parent", "a.txt"), []byte("file-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "parent", "sub", "b.txt"), []byte("file-b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstRemote, "parent", "a.txt"), []byte("existing-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeFsCopyConfig(t, tmp, srcRemote, dstRemote)
+
+	var out bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "copy", "--recursive", "/src/parent", "/dst", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs copy --recursive --json failed: %v", err)
+	}
+	var result struct {
+		OpID    string `json:"op_id"`
+		Pass    bool   `json:"pass"`
+		Copied  int    `json:"copied"`
+		Skipped int    `json:"skipped"`
+		Failed  int    `json:"failed"`
+		Entries []struct {
+			OpID       string `json:"op_id"`
+			Kind       string `json:"kind"`
+			State      string `json:"state"`
+			SourcePath string `json:"source_path"`
+			DestPath   string `json:"dest_path"`
+			Bytes      int64  `json:"bytes"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal copy dir json: %v\n%s", err, out.String())
+	}
+	if result.OpID == "" || !result.Pass || result.Copied != 1 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result summary: %+v", result)
+	}
+	want := map[string]string{
+		"directory:/src/parent":      "ready",
+		"file:/src/parent/a.txt":     "skipped",
+		"directory:/src/parent/sub":  "ready",
+		"file:/src/parent/sub/b.txt": "copied",
+	}
+	for _, entry := range result.Entries {
+		key := entry.Kind + ":" + entry.SourcePath
+		if want[key] == entry.State {
+			delete(want, key)
+		}
+		if entry.State == "copied" && entry.OpID == "" {
+			t.Fatalf("copied entry missing op_id: %+v", entry)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing manifest entries: %#v in %+v", want, result.Entries)
 	}
 }
 

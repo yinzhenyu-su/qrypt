@@ -1,15 +1,10 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	pathpkg "path"
-	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/control"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func newFsCopyCmd() *cobra.Command {
@@ -50,20 +45,20 @@ func runFsCopy(cmd *cobra.Command, args []string) error {
 		if !recursive {
 			return fmt.Errorf("source %q is a directory (use --recursive to copy directories)", args[0])
 		}
-		result := runFsCopyDir(ctx, fs, source, args[0], args[1], force)
+		result := control.RunDirectDriverCopyDir(ctx, fs, source, args[0], args[1], force)
 		asJSON, _ := cmd.Flags().GetBool("json")
 		if asJSON {
 			if err := writePrettyJSON(cmd.OutOrStdout(), result); err != nil {
 				return err
 			}
 			if !result.Pass {
-				return result.err()
+				return fsCopyDirError(result)
 			}
 			return nil
 		}
 		if !result.Pass {
 			printFsCopyDirSummary(cmd.ErrOrStderr(), result)
-			return result.err()
+			return fsCopyDirError(result)
 		}
 		printFsCopyDirSummary(cmd.OutOrStdout(), result)
 		return nil
@@ -114,111 +109,16 @@ func printFsCopySummary(w interface {
 }
 
 func fsCopyError(result *control.DriverCopyResult) error {
-	for _, step := range result.Steps {
-		if !step.OK && step.Error != "" {
-			return fmt.Errorf("%s: %s", step.Phase, step.Error)
-		}
-	}
-	return fmt.Errorf("copy failed")
-}
-
-type fsCopyDirResult struct {
-	SourcePath string    `json:"source_path"`
-	DestPath   string    `json:"dest_path"`
-	Pass       bool      `json:"pass"`
-	Copied     int       `json:"copied"`
-	Skipped    int       `json:"skipped"`
-	Bytes      int64     `json:"bytes"`
-	Started    time.Time `json:"started_at"`
-	Finished   time.Time `json:"finished_at"`
-	Duration   string    `json:"duration"`
-	Error      string    `json:"error,omitempty"`
-}
-
-func runFsCopyDir(ctx context.Context, fs vfs.FileSystem, source control.DriverCopySource, srcPath, dstParentPath string, overwrite bool) *fsCopyDirResult {
-	started := time.Now()
-	result := &fsCopyDirResult{
-		SourcePath: cleanRemotePath(srcPath),
-		DestPath:   pathpkg.Join(cleanRemotePath(dstParentPath), pathpkg.Base(cleanRemotePath(srcPath))),
-		Started:    started,
-	}
-	defer func() {
-		result.Finished = time.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
-		result.Pass = result.Error == ""
-	}()
-	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
-		result.Error = err.Error()
-	}
-	return result
-}
-
-func copyDirRecursive(ctx context.Context, fs vfs.FileSystem, source control.DriverCopySource, srcPath, dstPath string, overwrite bool, result *fsCopyDirResult) error {
-	if err := mkdirAllRemote(ctx, fs, dstPath); err != nil {
-		return err
-	}
-	entries, err := fs.List(ctx, srcPath)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		childSrc := pathpkg.Join(srcPath, entry.Name)
-		childDst := pathpkg.Join(dstPath, entry.Name)
-		if entry.IsDir {
-			if err := copyDirRecursive(ctx, fs, source, childSrc, childDst, overwrite, result); err != nil {
-				return err
-			}
-			continue
-		}
-		if !overwrite {
-			if _, err := fs.Stat(ctx, childDst); err == nil {
-				result.Skipped++
-				continue
-			} else if !isRemoteNotFound(err) {
-				return err
-			}
-		}
-		copyResult := control.RunDirectDriverCopy(ctx, source, childSrc, childDst, overwrite)
-		if !copyResult.Pass {
-			return fsCopyError(copyResult)
-		}
-		result.Copied++
-		result.Bytes += copyResult.Bytes
-	}
-	return nil
-}
-
-func mkdirAllRemote(ctx context.Context, fs vfs.FileSystem, dir string) error {
-	dir = cleanRemotePath(dir)
-	if dir == "/" {
-		return nil
-	}
-	current := "/"
-	for _, part := range strings.Split(strings.Trim(dir, "/"), "/") {
-		current = pathpkg.Join(current, part)
-		entry, err := fs.Stat(ctx, current)
-		if err == nil {
-			if !entry.IsDir {
-				return fmt.Errorf("remote destination %q exists and is not a directory", current)
-			}
-			continue
-		}
-		if !isRemoteNotFound(err) {
-			return err
-		}
-		if _, err := fs.Mkdir(ctx, current); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fmt.Errorf("%s", control.DriverCopyError(result))
 }
 
 func printFsCopyDirSummary(w interface {
 	Write([]byte) (int, error)
-}, result *fsCopyDirResult) {
+}, result *control.DriverCopyDirResult) {
 	fmt.Fprintf(w, "copied directory %s -> %s\n", result.SourcePath, result.DestPath)
 	fmt.Fprintf(w, "files copied: %d\n", result.Copied)
 	fmt.Fprintf(w, "files skipped: %d\n", result.Skipped)
+	fmt.Fprintf(w, "files failed: %d\n", result.Failed)
 	fmt.Fprintf(w, "bytes: %d\n", result.Bytes)
 	fmt.Fprintf(w, "duration: %s\n", result.Duration)
 	if result.Error != "" {
@@ -226,17 +126,9 @@ func printFsCopyDirSummary(w interface {
 	}
 }
 
-func (r *fsCopyDirResult) err() error {
-	if r.Error != "" {
-		return fmt.Errorf("%s", r.Error)
+func fsCopyDirError(result *control.DriverCopyDirResult) error {
+	if result.Error != "" {
+		return fmt.Errorf("%s", result.Error)
 	}
 	return fmt.Errorf("copy failed")
-}
-
-func cleanRemotePath(path string) string {
-	return vfs.CleanVirtualPath(strings.TrimSpace(path))
-}
-
-func isRemoteNotFound(err error) bool {
-	return vfs.IsNotFound(err)
 }
