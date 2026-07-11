@@ -64,12 +64,12 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	v.setDebugUploadState(pending.Path, debugUploadStatePreparing)
 	phaseStart := timeutil.Now()
 	snapshot, err := v.snapshotPending(pending)
-	snapshotExtra := map[string]any{
-		"hashes": []string{string(drive.HashMD5), string(drive.HashSHA1), string(drive.HashSHA256)},
-	}
+	hashNames := []string{string(drive.HashMD5), string(drive.HashSHA1), string(drive.HashSHA256)}
+	snapshotExtra := map[string]any{"hashes": hashNames}
 	if err != nil {
 		snapshotExtra["error"] = err.Error()
 	}
+	v.setDebugUploadMetadata(pending.Path, "", hashNames)
 	v.recordDebugUploadTrace(pending.Path, "snapshot_hash", phaseStart, pending.Size, snapshotExtra)
 	if err != nil {
 		finishErr = err.Error()
@@ -111,6 +111,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		Source:   source,
 		Progress: progress,
 	})
+	v.setDebugUploadMetadata(pending.Path, entry.ID, nil)
 	traceExtra := map[string]any{"entry_id": entry.ID}
 	if err != nil {
 		traceExtra["error"] = err.Error()

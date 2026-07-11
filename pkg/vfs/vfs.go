@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
@@ -58,6 +59,9 @@ type VFS struct {
 	uploadTimers  map[string]*time.Timer
 	activeUploads map[string]*debugUploadState
 	uploadHistory []DebugUpload
+	readHistory   []DebugOperationEvent
+	readSequence  uint64
+	readMu        sync.Mutex
 
 	deleteDelay  time.Duration
 	deleteMu     sync.Mutex
@@ -288,24 +292,46 @@ func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error
 
 func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpRead, err) }()
+	path = cleanVirtual(path)
+	started := timeutil.Now()
+	opID := fmt.Sprintf("read-%d", atomic.AddUint64(&v.readSequence, 1))
 	if pending, err := v.pending(path); err == nil {
 		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
+			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
 			return nil, err
 		}
-		return osutil.OpenRead(pending.LocalPath, offset, size)
+		rc, err := osutil.OpenRead(pending.LocalPath, offset, size)
+		if err != nil {
+			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
+			return nil, err
+		}
+		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
+			v.recordDebugRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, readErr)
+		}}, nil
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
+		v.recordDebugRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, err)
 		return nil, err
 	}
 	if entry.IsDir {
-		return nil, fmt.Errorf("vfs: %s is a directory", path)
+		err := fmt.Errorf("vfs: %s is a directory", path)
+		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, err)
+		return nil, err
 	}
+	hitsBefore, missesBefore := v.debugCacheCounters()
 	data, startChunk, endChunk, err := v.readRange(ctx, entry, offset, size)
+	hitsAfter, missesAfter := v.debugCacheCounters()
 	if err != nil {
+		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, err)
 		return nil, err
 	}
 	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk)
+	var chunks int64
+	if len(data) > 0 {
+		chunks = endChunk - startChunk + 1
+	}
+	v.recordDebugRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, nil)
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
