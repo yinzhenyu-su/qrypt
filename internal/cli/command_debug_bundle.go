@@ -33,10 +33,11 @@ func newDebugBundleCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			includeMountHealth, _ := cmd.Flags().GetBool("mount-health")
+			includeGoroutines, _ := cmd.Flags().GetBool("goroutines")
 			watchDuration, _ := cmd.Flags().GetDuration("watch")
 			watchInterval, _ := cmd.Flags().GetDuration("watch-interval")
 			force, _ := cmd.Flags().GetBool("force")
+			destPath, _ := cmd.Flags().GetString("dest")
 			if socket == "" {
 				return fmt.Errorf("this command requires --socket")
 			}
@@ -76,14 +77,16 @@ func newDebugBundleCmd() *cobra.Command {
 				zw := zip.NewWriter(out)
 
 				cleanPath := cleanDebugPath(path)
-				collect := collectDebugAIReport(ctx, "bundle", cleanPath, eventLimit, includeMountHealth)
+				cleanDestPath := cleanDebugPath(destPath)
+				collect := collectDebugAIReport(ctx, "bundle", cleanPath, cleanDestPath, eventLimit)
 				diagnostics := collect.Diagnostics
 				if err := writeZipJSON(zw, "manifest.json", debugBundleManifest{
-					SchemaVersion: debugAIReportSchemaVersion,
-					GeneratedAt:   time.Now(),
-					Socket:        socket,
-					Path:          cleanPath,
-					Files:         debugBundleFiles(cleanPath, includeMountHealth, watchDuration > 0),
+					SchemaVersion:   debugAIReportSchemaVersion,
+					GeneratedAt:     time.Now(),
+					Socket:          socket,
+					Path:            cleanPath,
+					DestinationPath: cleanDestPath,
+					Files:           debugBundleFiles(cleanPath, cleanDestPath, includeGoroutines, watchDuration > 0),
 				}); err != nil {
 					return err
 				}
@@ -92,6 +95,11 @@ func newDebugBundleCmd() *cobra.Command {
 				}
 				if collect.Inspect != nil {
 					if err := writeZipJSON(zw, "inspect.json", collect.Inspect); err != nil {
+						return err
+					}
+				}
+				if collect.Destination != nil {
+					if err := writeZipJSON(zw, "destination.json", collect.Destination); err != nil {
 						return err
 					}
 				}
@@ -106,19 +114,20 @@ func newDebugBundleCmd() *cobra.Command {
 				}
 
 				endpoints := map[string]string{
-					"raw/health.json":    "/v1/health",
-					"raw/state.json":     "/v1/state",
-					"raw/pending.json":   "/v1/pending",
-					"raw/uploads.json":   "/v1/uploads?history=1",
-					"raw/events.json":    "/v1/events?level=warn&limit=500",
-					"raw/cache.json":     "/v1/cache",
-					"raw/staging.json":   "/v1/staging",
-					"raw/driver.json":    "/v1/driver",
-					"raw/runtime.json":   "/v1/runtime",
-					"raw/goroutines.txt": "/v1/goroutines?debug=1",
+					"raw/health.json":       "/v1/health",
+					"raw/state.json":        "/v1/state",
+					"raw/pending.json":      "/v1/pending",
+					"raw/uploads.json":      "/v1/uploads?history=1",
+					"raw/reads.json":        "/v1/reads",
+					"raw/events.json":       "/v1/events?level=warn&limit=500",
+					"raw/cache.json":        "/v1/cache",
+					"raw/staging.json":      "/v1/staging",
+					"raw/driver.json":       "/v1/driver",
+					"raw/runtime.json":      "/v1/runtime",
+					"raw/mount-health.json": "/v1/mounts/health",
 				}
-				if includeMountHealth {
-					endpoints["raw/mount-health.json"] = "/v1/mounts/health"
+				if includeGoroutines {
+					endpoints["raw/goroutines.txt"] = "/v1/goroutines?debug=1"
 				}
 				if cleanPath != "" {
 					escapedPath := url.QueryEscape(cleanPath)
@@ -128,8 +137,24 @@ func newDebugBundleCmd() *cobra.Command {
 					}
 					endpoints["raw/staging-path.json"] = "/v1/staging?path=" + escapedPath
 					endpoints["raw/uploads-path.json"] = "/v1/uploads?history=1&path=" + escapedPath
+					endpoints["raw/reads-path.json"] = "/v1/reads?path=" + escapedPath
 					endpoints["raw/consistency-path.json"] = "/v1/consistency?path=" + escapedPath
 					endpoints["raw/events-path.json"] = "/v1/events?level=warn&limit=500&path=" + escapedPath
+				}
+				if cleanDestPath != "" {
+					escapedDest := url.QueryEscape(cleanDestPath)
+					endpoints["raw/resolve-destination.json"] = "/v1/resolve?path=" + escapedDest + "&include_remote_name=1"
+					endpoints["raw/staging-destination.json"] = "/v1/staging?path=" + escapedDest
+					endpoints["raw/uploads-destination.json"] = "/v1/uploads?history=1&path=" + escapedDest
+					endpoints["raw/reads-destination.json"] = "/v1/reads?path=" + escapedDest
+					endpoints["raw/consistency-destination.json"] = "/v1/consistency?path=" + escapedDest
+					endpoints["raw/events-destination.json"] = "/v1/events?level=warn&limit=500&path=" + escapedDest
+					if cleanDestPath != "/" {
+						endpoints["raw/cache-destination.json"] = "/v1/cache?path=" + escapedDest
+					}
+					if cleanPath != "" {
+						endpoints["raw/transfer-context.json"] = transferContextEndpoint(cleanPath, cleanDestPath)
+					}
 				}
 				names := make([]string, 0, len(endpoints))
 				for name := range endpoints {
@@ -157,10 +182,11 @@ func newDebugBundleCmd() *cobra.Command {
 	}
 	cmd.Flags().StringP("out", "o", "", "debug bundle output zip (required)")
 	cmd.Flags().Int("events-limit", 200, "maximum recent warn/error events in collect.json")
-	cmd.Flags().Bool("mount-health", false, "include runtime mount health")
+	cmd.Flags().Bool("goroutines", false, "include goroutine dump")
 	cmd.Flags().BoolP("force", "f", false, "overwrite an existing output file")
 	cmd.Flags().Duration("watch", 0, "optional watch duration to include watch.json")
 	cmd.Flags().Duration("watch-interval", 2*time.Second, "watch sampling interval")
+	cmd.Flags().String("dest", "", "optional destination path for transfer diagnostics")
 	if err := cmd.MarkFlagRequired("out"); err != nil {
 		panic(err)
 	}
@@ -168,14 +194,15 @@ func newDebugBundleCmd() *cobra.Command {
 }
 
 type debugBundleManifest struct {
-	SchemaVersion int       `json:"schema_version"`
-	GeneratedAt   time.Time `json:"generated_at"`
-	Socket        string    `json:"socket,omitempty"`
-	Path          string    `json:"path,omitempty"`
-	Files         []string  `json:"files"`
+	SchemaVersion   int       `json:"schema_version"`
+	GeneratedAt     time.Time `json:"generated_at"`
+	Socket          string    `json:"socket,omitempty"`
+	Path            string    `json:"path,omitempty"`
+	DestinationPath string    `json:"destination_path,omitempty"`
+	Files           []string  `json:"files"`
 }
 
-func debugBundleFiles(path string, includeMountHealth, includeWatch bool) []string {
+func debugBundleFiles(path, destinationPath string, includeGoroutines, includeWatch bool) []string {
 	files := []string{
 		"manifest.json",
 		"collect.json",
@@ -184,12 +211,13 @@ func debugBundleFiles(path string, includeMountHealth, includeWatch bool) []stri
 		"raw/state.json",
 		"raw/pending.json",
 		"raw/uploads.json",
+		"raw/reads.json",
 		"raw/events.json",
 		"raw/cache.json",
 		"raw/staging.json",
 		"raw/driver.json",
 		"raw/runtime.json",
-		"raw/goroutines.txt",
+		"raw/mount-health.json",
 	}
 	if path != "" {
 		files = append(files,
@@ -197,6 +225,7 @@ func debugBundleFiles(path string, includeMountHealth, includeWatch bool) []stri
 			"raw/resolve-path.json",
 			"raw/staging-path.json",
 			"raw/uploads-path.json",
+			"raw/reads-path.json",
 			"raw/consistency-path.json",
 			"raw/events-path.json",
 		)
@@ -204,8 +233,25 @@ func debugBundleFiles(path string, includeMountHealth, includeWatch bool) []stri
 			files = append(files, "raw/cache-path.json")
 		}
 	}
-	if includeMountHealth {
-		files = append(files, "raw/mount-health.json")
+	if destinationPath != "" {
+		files = append(files,
+			"destination.json",
+			"raw/resolve-destination.json",
+			"raw/staging-destination.json",
+			"raw/uploads-destination.json",
+			"raw/reads-destination.json",
+			"raw/consistency-destination.json",
+			"raw/events-destination.json",
+		)
+		if destinationPath != "/" {
+			files = append(files, "raw/cache-destination.json")
+		}
+		if path != "" {
+			files = append(files, "raw/transfer-context.json")
+		}
+	}
+	if includeGoroutines {
+		files = append(files, "raw/goroutines.txt")
 	}
 	if includeWatch {
 		files = append(files, "watch.json")

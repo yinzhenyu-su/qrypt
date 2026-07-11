@@ -23,7 +23,7 @@ func newDebugCmd() *cobra.Command {
 	cmd.AddCommand(withDebugSocketFlag(newDebugCollectCmd()))
 	cmd.AddCommand(withDebugSocketFlag(newDebugInspectCmd()))
 	cmd.AddCommand(withDebugSocketFlag(newDebugWatchCmd()))
-	cmd.AddCommand(withConfigFlag(newJournalCmdWithUse("journal")))
+	cmd.AddCommand(newDebugTestCmd())
 	cmd.AddCommand(withDebugSocketFlag(newDebugRawCmd()))
 	return cmd
 }
@@ -62,6 +62,18 @@ func debugSocketGet(ctx context.Context, endpoint string) ([]byte, error) {
 		return nil, err
 	}
 	return client.Get(ctx, endpoint)
+}
+
+func debugSocketPostJSON(ctx context.Context, endpoint string, value any) ([]byte, error) {
+	socket := debugSocketFromContext(ctx)
+	if socket == "" {
+		return nil, fmt.Errorf("this command requires --socket")
+	}
+	client, err := control.NewClient(socket)
+	if err != nil {
+		return nil, err
+	}
+	return client.PostJSON(ctx, endpoint, value)
 }
 
 func newDebugRawCmd() *cobra.Command {

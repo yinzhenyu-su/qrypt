@@ -72,6 +72,15 @@ Use `inspect` when a specific file or directory is involved:
 go run ./cmd/qrypt debug inspect /baiduyun/path/file.html --socket /tmp/qrypt.sock
 ```
 
+For a transfer or cross-mount copy problem, provide both endpoints. The report
+keeps source and destination diagnostics separate and includes mount-pair
+capabilities:
+
+```sh
+go run ./cmd/qrypt debug inspect /local/source.bin --dest /quark/archive/source.bin --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug collect /local/source.bin --dest /quark/archive/source.bin --socket /tmp/qrypt.sock
+```
+
 `collect [REMOTE]` combines the global snapshot with a path-focused
 inspection:
 
@@ -89,19 +98,15 @@ go run ./cmd/qrypt debug watch /baiduyun/path/file.html --socket /tmp/qrypt.sock
 The JSON reports include:
 
 - process, runtime, and debug socket health
-- mount, driver, encryption, upload, read-cache, and staging state
+- mount, driver, encryption, upload, read history, read-cache, and staging state
 - runtime mount health based on recent VFS operations
 - recent warning/error events
 - path resolution, cache, staging, upload history, and consistency checks for
   inspected paths
+- transfer context containing source and destination resolution, destination
+  parent state, driver capabilities, encryption mode, and compatibility warnings
 - normalized diagnostics with `severity`, `code`, `component`, `path`,
   `message`, and supporting `evidence`
-
-Include runtime mount health when you need recent operation health state:
-
-```sh
-go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --mount-health
-```
 
 ## Bug Report Bundle
 
@@ -112,7 +117,9 @@ It includes `collect.json`, `diagnostics.json`, raw endpoint outputs, and
 ```sh
 go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --out /tmp/qrypt-debug.zip
 go run ./cmd/qrypt debug bundle /baiduyun/path/file.html --socket /tmp/qrypt.sock --out /tmp/qrypt-path-debug.zip
+go run ./cmd/qrypt debug bundle /local/source.bin --dest /quark/archive/source.bin --socket /tmp/qrypt.sock --out /tmp/qrypt-transfer-debug.zip
 go run ./cmd/qrypt debug bundle /baiduyun/path/file.html --socket /tmp/qrypt.sock --watch 30s --out /tmp/qrypt-watch-debug.zip
+go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --goroutines --out /tmp/qrypt-deep-debug.zip
 ```
 
 Existing output files are not overwritten unless `--force` is provided. Review
@@ -125,14 +132,14 @@ Offline checks read cache files and do not require a running mount:
 ```sh
 go run ./cmd/qrypt fs pending --config ./qrypt.toml
 go run ./cmd/qrypt fs pending --config ./qrypt.toml --verbose
-go run ./cmd/qrypt debug journal --config ./qrypt.toml
-go run ./cmd/qrypt debug journal --config ./qrypt.toml --json
+go run ./cmd/qrypt fs journal --config ./qrypt.toml
+go run ./cmd/qrypt fs journal --config ./qrypt.toml --json
 ```
 
 Use `--mount NAME` to inspect one configured mount:
 
 ```sh
-go run ./cmd/qrypt debug journal --config ./qrypt.toml --mount aliyun
+go run ./cmd/qrypt fs journal --config ./qrypt.toml --mount aliyun
 ```
 
 `fs pending --verbose` shows virtual path, expected size, staging file path,
@@ -147,28 +154,45 @@ Use `debug raw` when you need one socket endpoint directly:
 go run ./cmd/qrypt debug raw health --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw /v1/state --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw '/v1/uploads?history=1' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/reads?path=/local/source.bin' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/transfer/context?source=/local/source.bin&dest=/quark/archive/source.bin' --socket /tmp/qrypt.sock
 ```
 
 The raw endpoints live under `/v1/...`. Endpoint-specific debug commands have
 been removed from the CLI; use `debug raw` for direct socket access.
 
-### Driver Test Suite
+Read and upload records use the versioned operation-event schema. VFS records
+only observable operations such as read and upload; it does not infer whether
+the caller is performing a copy. Transfer and future copy executors can attach
+their own `op_id` and correlate these facts explicitly.
+
+## Explicit Write Probes
 
 Run a CRUD test to verify basic read/write operations:
 
 ```sh
-go run ./cmd/qrypt debug raw "/v1/driver/test?test=crud" --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug test crud --socket /tmp/qrypt.sock
 ```
 
 Run an instant upload test to verify content deduplication. Requires
 `content_dedup = true` when encryption is enabled:
 
 ```sh
-go run ./cmd/qrypt debug raw "/v1/driver/test?test=instantupload" --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug test instantupload --socket /tmp/qrypt.sock
 ```
 
 Filter by mount name:
 
 ```sh
-go run ./cmd/qrypt debug raw "/v1/driver/test?test=crud&mount=default" --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug test crud --mount default --socket /tmp/qrypt.sock
 ```
+
+Run a transfer test between two mounts:
+
+```sh
+go run ./cmd/qrypt debug test xfer --source local --dest quark --size 16m --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug test xfer --source local --dest quark --vfs --socket /tmp/qrypt.sock
+```
+
+Test commands create temporary remote objects and clean them up best-effort.
+Use them only when write access to the selected mount is acceptable.

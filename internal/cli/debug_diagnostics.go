@@ -118,6 +118,18 @@ func addInspectDiagnostics(out *[]debugAIDiagnostic, inspect *debugAIInspect) {
 			})
 		}
 	}
+	if inspect.Reads != nil {
+		for _, read := range inspect.Reads.Reads {
+			if read.Error == "" {
+				continue
+			}
+			*out = append(*out, debugAIDiagnostic{
+				Severity: "error", Code: "path_read_error", Component: "vfs",
+				Path: read.Path, Mount: read.Mount, Message: read.Error,
+				Evidence: map[string]any{"op_id": read.OpID, "error_category": read.ErrorCategory, "bytes": read.Bytes},
+			})
+		}
+	}
 	addStagingDiagnostics(out, inspect.Staging)
 	addCacheDiagnostics(out, inspect.Cache)
 }
