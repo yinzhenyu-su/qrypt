@@ -6,10 +6,47 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"sync"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+type debugReadCloser struct {
+	io.ReadCloser
+	mu     sync.Mutex
+	bytes  int64
+	err    error
+	once   sync.Once
+	finish func(int64, error)
+}
+
+func (r *debugReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.mu.Lock()
+	r.bytes += int64(n)
+	if err != nil && err != io.EOF && r.err == nil {
+		r.err = err
+	}
+	r.mu.Unlock()
+	return n, err
+}
+
+func (r *debugReadCloser) Close() error {
+	closeErr := r.ReadCloser.Close()
+	r.mu.Lock()
+	if closeErr != nil && r.err == nil {
+		r.err = closeErr
+	}
+	bytes, err := r.bytes, r.err
+	r.mu.Unlock()
+	r.once.Do(func() {
+		if r.finish != nil {
+			r.finish(bytes, err)
+		}
+	})
+	return closeErr
+}
 
 const readChunkSize = 512 * 1024
 const readPrefetchRadius = 1

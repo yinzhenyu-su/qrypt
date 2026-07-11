@@ -750,6 +750,19 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	if history.StageDurations[string(drive.UploadPhaseUploading)] == "" {
 		t.Fatalf("upload history missing upload stage duration: %+v", history)
 	}
+	if history.ParentRemoteID == "" || history.ResultRemoteID == "" || len(history.Hashes) != 3 {
+		t.Fatalf("upload history missing transfer metadata: %+v", history)
+	}
+	if history.Mount != "default" || history.Driver != "localfs" {
+		t.Fatalf("upload history missing mount metadata: %+v", history)
+	}
+	if len(snapshot.Mounts[0].ReadHistory) != 1 {
+		t.Fatalf("read history count = %d, want 1: %+v", len(snapshot.Mounts[0].ReadHistory), snapshot.Mounts[0].ReadHistory)
+	}
+	read := snapshot.Mounts[0].ReadHistory[0]
+	if read.Kind != "read" || read.Path != "/hello.txt" || read.RemoteID == "" || read.Bytes != int64(len("hello qrypt")) || read.State != "completed" {
+		t.Fatalf("unexpected read history: %+v", read)
+	}
 	report, err := fs.DebugConsistency(ctx, "/hello.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -851,6 +864,28 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 		if !caps[capability] {
 			t.Fatalf("debug capabilities = %+v, missing %s", snapshot.Mounts[0].Capabilities, capability)
 		}
+	}
+}
+
+func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
+	ctx := context.Background()
+	drv := localfs.New(t.TempDir())
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 105; i++ {
+		_, _ = fs.Read(ctx, fmt.Sprintf("/missing-%d", i), 0, 0)
+	}
+	reads := fs.DebugSnapshot().Mounts[0].ReadHistory
+	if len(reads) != 100 {
+		t.Fatalf("read history count = %d, want 100", len(reads))
+	}
+	if reads[0].State != "failed" || reads[0].ErrorCategory == "" {
+		t.Fatalf("bounded history missing structured failure: %+v", reads[0])
 	}
 }
 
@@ -1690,6 +1725,10 @@ func TestVFSReadSpansChunks(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatalf("read length = %d, want %d", len(got), len(data))
 	}
+	reads := fs.DebugSnapshot().Mounts[0].ReadHistory
+	if len(reads) != 1 || reads[0].Chunks != 2 {
+		t.Fatalf("read chunks = %+v, want one read spanning 2 chunks", reads)
+	}
 }
 
 func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
@@ -1715,6 +1754,10 @@ func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
 	}
 	if got := drv.readCount(4096); got != 0 {
 		t.Fatalf("driver read count at EOF offset = %d, want 0", got)
+	}
+	reads := fs.DebugSnapshot().Mounts[0].ReadHistory
+	if len(reads) != 1 || reads[0].Chunks != 0 {
+		t.Fatalf("read chunks = %+v, want one empty read with 0 chunks", reads)
 	}
 }
 
