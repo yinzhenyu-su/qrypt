@@ -178,6 +178,147 @@ func TestRunDirectDriverCopyRequiresOverwriteForExistingDest(t *testing.T) {
 	}
 }
 
+func TestRunDirectDriverCopyDirReportsEntries(t *testing.T) {
+	srcDriver := &directCopyTestDriver{driverName: "src-test", files: map[string][]byte{"src-file": []byte("payload")}}
+	dstDriver := &directCopyTestDriver{driverName: "dst-test", files: map[string][]byte{"existing": []byte("old")}}
+	fs := &directCopyDirFS{
+		entries: map[string]drive.Entry{
+			"/src/parent":          {Name: "parent", IsDir: true},
+			"/src/parent/a.txt":    {Name: "a.txt", Size: int64(len("payload"))},
+			"/src/parent/skip.txt": {Name: "skip.txt", Size: int64(len("old"))},
+			"/dst":                 {Name: "dst", IsDir: true},
+			"/dst/parent":          {Name: "parent", IsDir: true},
+			"/dst/parent/skip.txt": {Name: "skip.txt", Size: int64(len("old"))},
+		},
+		lists: map[string][]drive.Entry{
+			"/src/parent": {
+				{Name: "a.txt", Size: int64(len("payload"))},
+				{Name: "skip.txt", Size: int64(len("old"))},
+			},
+		},
+	}
+	source := directCopyTestSource{
+		drivers: []vfs.NamedDriver{
+			{Name: "src", Driver: srcDriver},
+			{Name: "dst", Driver: dstDriver},
+		},
+		resolves: map[string]vfs.DebugResolveInfo{
+			"/src/parent/a.txt": {
+				Mount: "src", Driver: "src-test", RemoteID: "src-file", ParentID: "src-parent", PlainName: "a.txt", Size: int64(len("payload")),
+			},
+			"/src/parent/skip.txt": {
+				Mount: "src", Driver: "src-test", RemoteID: "src-skip", ParentID: "src-parent", PlainName: "skip.txt", Size: int64(len("old")),
+			},
+			"/dst": {
+				Mount: "dst", Driver: "dst-test", RemoteID: "dst-root", PlainName: "dst", IsDir: true,
+			},
+			"/dst/parent": {
+				Mount: "dst", Driver: "dst-test", RemoteID: "dst-parent", ParentID: "dst-root", PlainName: "parent", IsDir: true,
+			},
+			"/dst/parent/skip.txt": {
+				Mount: "dst", Driver: "dst-test", RemoteID: "existing", ParentID: "dst-parent", PlainName: "skip.txt", Size: int64(len("old")),
+			},
+		},
+	}
+
+	result := RunDirectDriverCopyDir(context.Background(), fs, source, "/src/parent", "/dst", false)
+	if !result.Pass || result.OpID == "" || result.Copied != 1 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected copy dir result: %+v", result)
+	}
+	if got := string(dstDriver.files["dst-parent/a.txt"]); got != "payload" {
+		t.Fatalf("copied payload = %q, want payload", got)
+	}
+	seen := map[string]string{}
+	for _, entry := range result.Entries {
+		seen[entry.Kind+":"+entry.SourcePath] = entry.State
+	}
+	for key, want := range map[string]string{
+		"directory:/src/parent":     "ready",
+		"file:/src/parent/a.txt":    "copied",
+		"file:/src/parent/skip.txt": "skipped",
+	} {
+		if seen[key] != want {
+			t.Fatalf("entry %s state = %q, want %q; entries=%+v", key, seen[key], want, result.Entries)
+		}
+	}
+}
+
+func TestRunDirectDriverCopyDirReportsFailedEntry(t *testing.T) {
+	srcDriver := &directCopyTestDriver{driverName: "src-test", files: map[string][]byte{}}
+	dstDriver := &directCopyTestDriver{driverName: "dst-test", files: map[string][]byte{}}
+	fs := &directCopyDirFS{
+		entries: map[string]drive.Entry{
+			"/src/parent": {Name: "parent", IsDir: true},
+			"/dst":        {Name: "dst", IsDir: true},
+		},
+		lists: map[string][]drive.Entry{
+			"/src/parent": {{Name: "missing.txt", Size: 7}},
+		},
+	}
+	source := directCopyTestSource{
+		drivers: []vfs.NamedDriver{
+			{Name: "src", Driver: srcDriver},
+			{Name: "dst", Driver: dstDriver},
+		},
+		resolves: map[string]vfs.DebugResolveInfo{
+			"/src/parent/missing.txt": {
+				Mount: "src", Driver: "src-test", ParentID: "src-parent", PlainName: "missing.txt",
+			},
+			"/dst": {
+				Mount: "dst", Driver: "dst-test", RemoteID: "dst-root", PlainName: "dst", IsDir: true,
+			},
+			"/dst/parent": {
+				Mount: "dst", Driver: "dst-test", RemoteID: "dst-parent", ParentID: "dst-root", PlainName: "parent", IsDir: true,
+			},
+		},
+	}
+
+	result := RunDirectDriverCopyDir(context.Background(), fs, source, "/src/parent", "/dst", false)
+	if result.Pass || result.Failed != 1 || result.Error == "" {
+		t.Fatalf("unexpected failed copy dir result: %+v", result)
+	}
+	var failed DriverCopyEntryResult
+	for _, entry := range result.Entries {
+		if entry.State == "failed" {
+			failed = entry
+			break
+		}
+	}
+	if failed.SourcePath != "/src/parent/missing.txt" || !strings.Contains(failed.Error, "source not found") {
+		t.Fatalf("failed entry = %+v, want source not found for missing file", failed)
+	}
+}
+
+type directCopyDirFS struct {
+	entries map[string]drive.Entry
+	lists   map[string][]drive.Entry
+	mkdirs  []string
+}
+
+func (f *directCopyDirFS) Stat(_ context.Context, path string) (drive.Entry, error) {
+	path = cleanVirtual(path)
+	if entry, ok := f.entries[path]; ok {
+		return entry, nil
+	}
+	return drive.Entry{}, vfs.ErrNotFound
+}
+
+func (f *directCopyDirFS) List(_ context.Context, path string) ([]drive.Entry, error) {
+	path = cleanVirtual(path)
+	if entries, ok := f.lists[path]; ok {
+		return entries, nil
+	}
+	return nil, vfs.ErrNotFound
+}
+
+func (f *directCopyDirFS) Mkdir(_ context.Context, path string) (drive.Entry, error) {
+	path = cleanVirtual(path)
+	f.mkdirs = append(f.mkdirs, path)
+	entry := drive.Entry{Name: pathpkg.Base(path), IsDir: true}
+	f.entries[path] = entry
+	return entry, nil
+}
+
 func directCopyFixture(srcDriver, dstDriver *directCopyTestDriver, existingDest *vfs.DebugResolveInfo) directCopyTestSource {
 	resolves := map[string]vfs.DebugResolveInfo{
 		"/src/file.bin": {

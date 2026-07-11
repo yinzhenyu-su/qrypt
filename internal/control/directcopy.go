@@ -10,6 +10,7 @@ import (
 	"os"
 	pathpkg "path"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
@@ -35,6 +36,35 @@ type DriverCopyResult struct {
 	DestEntry   *drive.Entry         `json:"dest_entry,omitempty"`
 }
 
+type DriverCopyDirResult struct {
+	OpID       string                  `json:"op_id"`
+	SourcePath string                  `json:"source_path"`
+	DestPath   string                  `json:"dest_path"`
+	Pass       bool                    `json:"pass"`
+	Copied     int                     `json:"copied"`
+	Skipped    int                     `json:"skipped"`
+	Failed     int                     `json:"failed"`
+	Bytes      int64                   `json:"bytes"`
+	Started    time.Time               `json:"started_at"`
+	Finished   time.Time               `json:"finished_at"`
+	Duration   string                  `json:"duration"`
+	Error      string                  `json:"error,omitempty"`
+	Entries    []DriverCopyEntryResult `json:"entries,omitempty"`
+}
+
+type DriverCopyEntryResult struct {
+	OpID       string    `json:"op_id,omitempty"`
+	Kind       string    `json:"kind"`
+	State      string    `json:"state"`
+	SourcePath string    `json:"source_path"`
+	DestPath   string    `json:"dest_path"`
+	Bytes      int64     `json:"bytes,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Started    time.Time `json:"started_at,omitempty"`
+	Finished   time.Time `json:"finished_at,omitempty"`
+	Duration   string    `json:"duration,omitempty"`
+}
+
 type DriverCopySource interface {
 	vfs.DriverProvider
 	vfs.DebugResolver
@@ -56,6 +86,12 @@ type directCopyProgress struct {
 	currentStarted time.Time
 	stageDurations map[string]time.Duration
 	bytesUploaded  int64
+}
+
+type CopyFileSystem interface {
+	Stat(ctx context.Context, path string) (drive.Entry, error)
+	List(ctx context.Context, path string) ([]drive.Entry, error)
+	Mkdir(ctx context.Context, path string) (drive.Entry, error)
 }
 
 func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyResult {
@@ -195,6 +231,143 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 	result.DestEntry = &destEntry
 	result.Pass = true
 	return result
+}
+
+func RunDirectDriverCopyDir(ctx context.Context, fs CopyFileSystem, source DriverCopySource, srcPath, dstParentPath string, overwrite bool) *DriverCopyDirResult {
+	started := timeutil.Now()
+	result := &DriverCopyDirResult{
+		OpID:       newDebugOperationID("copydir"),
+		SourcePath: cleanVirtual(srcPath),
+		DestPath:   pathpkg.Join(cleanVirtual(dstParentPath), pathpkg.Base(cleanVirtual(srcPath))),
+		Started:    started,
+		Entries:    []DriverCopyEntryResult{},
+	}
+	defer func() {
+		result.Finished = timeutil.Now()
+		result.Duration = result.Finished.Sub(result.Started).String()
+		result.Pass = result.Error == "" && result.Failed == 0
+	}()
+	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopySource, srcPath, dstPath string, overwrite bool, result *DriverCopyDirResult) error {
+	if err := mkdirAllRemote(ctx, fs, dstPath); err != nil {
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error()})
+		return err
+	}
+	result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "ready", SourcePath: srcPath, DestPath: dstPath})
+	entries, err := fs.List(ctx, srcPath)
+	if err != nil {
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error()})
+		return err
+	}
+	for _, entry := range entries {
+		childSrc := pathpkg.Join(srcPath, entry.Name)
+		childDst := pathpkg.Join(dstPath, entry.Name)
+		if entry.IsDir {
+			if err := copyDirRecursive(ctx, fs, source, childSrc, childDst, overwrite, result); err != nil {
+				return err
+			}
+			continue
+		}
+		if !overwrite {
+			if _, err := fs.Stat(ctx, childDst); err == nil {
+				result.Skipped++
+				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "skipped", SourcePath: childSrc, DestPath: childDst})
+				continue
+			} else if !vfs.IsNotFound(err) {
+				result.Failed++
+				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error()})
+				return err
+			}
+		}
+		copyResult := RunDirectDriverCopy(ctx, source, childSrc, childDst, overwrite)
+		entryResult := DriverCopyEntryResult{
+			OpID:       copyResult.OpID,
+			Kind:       "file",
+			SourcePath: childSrc,
+			DestPath:   childDst,
+			Bytes:      copyResult.Bytes,
+			Started:    copyResult.Started,
+			Finished:   copyResult.Finished,
+			Duration:   copyResult.Duration,
+		}
+		if !copyResult.Pass {
+			result.Failed++
+			entryResult.State = "failed"
+			entryResult.Error = firstCopyError(copyResult)
+			result.recordEntry(entryResult)
+			return fmt.Errorf("%s", entryResult.Error)
+		}
+		result.Copied++
+		result.Bytes += copyResult.Bytes
+		entryResult.State = "copied"
+		result.recordEntry(entryResult)
+	}
+	return nil
+}
+
+func mkdirAllRemote(ctx context.Context, fs CopyFileSystem, dir string) error {
+	dir = cleanVirtual(dir)
+	if dir == "/" {
+		return nil
+	}
+	current := "/"
+	for _, part := range splitCleanPath(dir) {
+		current = pathpkg.Join(current, part)
+		entry, err := fs.Stat(ctx, current)
+		if err == nil {
+			if !entry.IsDir {
+				return fmt.Errorf("remote destination %q exists and is not a directory", current)
+			}
+			continue
+		}
+		if !vfs.IsNotFound(err) {
+			return err
+		}
+		if _, err := fs.Mkdir(ctx, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func splitCleanPath(path string) []string {
+	path = strings.Trim(cleanVirtual(path), "/")
+	if path == "" {
+		return nil
+	}
+	return strings.Split(path, "/")
+}
+
+func (r *DriverCopyDirResult) recordEntry(entry DriverCopyEntryResult) {
+	now := timeutil.Now()
+	if entry.Started.IsZero() {
+		entry.Started = now
+	}
+	if entry.Finished.IsZero() {
+		entry.Finished = now
+	}
+	if entry.Duration == "" {
+		entry.Duration = entry.Finished.Sub(entry.Started).String()
+	}
+	r.Entries = append(r.Entries, entry)
+}
+
+func firstCopyError(result *DriverCopyResult) string {
+	for _, step := range result.Steps {
+		if !step.OK && step.Error != "" {
+			return step.Phase + ": " + step.Error
+		}
+	}
+	return "copy failed"
+}
+
+func DriverCopyError(result *DriverCopyResult) string {
+	return firstCopyError(result)
 }
 
 type tempCopy struct {
