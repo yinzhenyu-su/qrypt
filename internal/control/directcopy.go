@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	pathpkg "path"
 	"sort"
@@ -19,6 +18,7 @@ import (
 )
 
 type DriverCopyResult struct {
+	OpID        string               `json:"op_id"`
 	SourcePath  string               `json:"source_path"`
 	DestPath    string               `json:"dest_path"`
 	SourceMount string               `json:"source_mount"`
@@ -58,28 +58,9 @@ type directCopyProgress struct {
 	bytesUploaded  int64
 }
 
-func (s *Server) handleDriverCopy(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	source, ok := s.source.(DriverCopySource)
-	if !ok {
-		http.Error(w, "driver copy not available", http.StatusNotImplemented)
-		return
-	}
-	srcPath := r.URL.Query().Get("source")
-	dstPath := r.URL.Query().Get("dest")
-	if srcPath == "" || dstPath == "" {
-		http.Error(w, "driver copy requires source and dest query params", http.StatusBadRequest)
-		return
-	}
-	result := RunDirectDriverCopy(r.Context(), source, srcPath, dstPath, parseBoolQuery(r.URL.Query().Get("overwrite")))
-	writeJSON(w, result)
-}
-
 func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyResult {
 	result := &DriverCopyResult{
+		OpID:       newDebugOperationID("copy"),
 		SourcePath: cleanVirtual(srcPath),
 		DestPath:   cleanVirtual(dstPath),
 		Started:    timeutil.Now(),
@@ -340,7 +321,10 @@ func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string
 	finished := timeutil.Now()
 	duration := finished.Sub(start)
 	event := TransferTraceEvent{
+		OpID:       result.OpID,
+		Kind:       "transfer",
 		Phase:      phase,
+		State:      "completed",
 		Mount:      mount,
 		Driver:     driver,
 		Path:       path,
@@ -349,6 +333,11 @@ func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string
 		StartedAt:  start,
 		FinishedAt: finished,
 		Extra:      extra,
+	}
+	if errValue, ok := extra["error"].(string); ok && errValue != "" {
+		event.State = "failed"
+		event.Error = errValue
+		event.ErrorCategory = "io"
 	}
 	if bytes > 0 && duration > 0 {
 		event.Throughput = int64(float64(bytes) / duration.Seconds())

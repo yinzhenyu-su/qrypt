@@ -55,6 +55,13 @@ type UploadsResponse struct {
 	Uploads       []vfs.DebugUpload `json:"uploads"`
 }
 
+type ReadsResponse struct {
+	SchemaVersion int                       `json:"schema_version"`
+	GeneratedAt   time.Time                 `json:"generated_at"`
+	Path          string                    `json:"path,omitempty"`
+	Reads         []vfs.DebugOperationEvent `json:"reads"`
+}
+
 type DriversResponse struct {
 	SchemaVersion int                  `json:"schema_version"`
 	GeneratedAt   time.Time            `json:"generated_at"`
@@ -113,6 +120,25 @@ type ResolveResponse struct {
 	GeneratedAt   time.Time              `json:"generated_at"`
 	Resolve       *vfs.DebugResolveInfo  `json:"resolve,omitempty"`
 	Resolves      []vfs.DebugResolveInfo `json:"resolves,omitempty"`
+}
+
+type TransferMountContext struct {
+	Name         string             `json:"name"`
+	Driver       string             `json:"driver,omitempty"`
+	Capabilities []drive.Capability `json:"capabilities,omitempty"`
+	Encrypted    bool               `json:"encrypted"`
+}
+
+type TransferContextResponse struct {
+	SchemaVersion     int                  `json:"schema_version"`
+	GeneratedAt       time.Time            `json:"generated_at"`
+	Source            vfs.DebugResolveInfo `json:"source"`
+	Destination       vfs.DebugResolveInfo `json:"destination"`
+	DestinationParent vfs.DebugResolveInfo `json:"destination_parent"`
+	SourceMount       TransferMountContext `json:"source_mount"`
+	DestinationMount  TransferMountContext `json:"destination_mount"`
+	Compatible        bool                 `json:"compatible"`
+	Warnings          []string             `json:"warnings"`
 }
 
 type CacheResponse struct {
@@ -193,13 +219,15 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/state", s.handleState)
 	mux.HandleFunc("/v1/pending", s.handlePending)
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
+	mux.HandleFunc("/v1/reads", s.handleReads)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
 	mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
-	mux.HandleFunc("/v1/driver/copy", s.handleDriverCopy)
+	mux.HandleFunc("/v1/probe/driver", s.handleDriverTest)
 	mux.HandleFunc("/v1/mounts/health", s.handleMountHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/list", s.handleList)
 	mux.HandleFunc("/v1/resolve", s.handleResolve)
+	mux.HandleFunc("/v1/transfer/context", s.handleTransferContext)
 	mux.HandleFunc("/v1/cache", s.handleCache)
 	mux.HandleFunc("/v1/staging", s.handleStaging)
 	mux.HandleFunc("/v1/consistency", s.handleConsistency)
@@ -315,6 +343,82 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   time.Now(),
 		Resolves:      results,
 	})
+}
+
+func (s *Server) handleTransferContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sourcePath := r.URL.Query().Get("source")
+	destPath := r.URL.Query().Get("dest")
+	if sourcePath == "" || destPath == "" {
+		http.Error(w, "source and dest are required", http.StatusBadRequest)
+		return
+	}
+	resolver, ok := s.source.(vfs.DebugResolver)
+	if !ok {
+		http.Error(w, "resolve unavailable", http.StatusNotImplemented)
+		return
+	}
+	source, err := resolver.DebugResolve(r.Context(), sourcePath, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	destination, err := resolver.DebugResolve(r.Context(), destPath, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	destinationParent, err := resolver.DebugResolve(r.Context(), filepath.Dir(cleanVirtual(destPath)), true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	snapshot := s.source.DebugSnapshot()
+	resp := TransferContextResponse{
+		SchemaVersion: snapshot.SchemaVersion, GeneratedAt: snapshot.GeneratedAt,
+		Source: source, Destination: destination, DestinationParent: destinationParent,
+		Warnings: []string{},
+	}
+	resp.SourceMount = transferMountContext(snapshot, source.Mount)
+	resp.DestinationMount = transferMountContext(snapshot, destinationParent.Mount)
+	if source.RemoteID == "" {
+		resp.Warnings = append(resp.Warnings, "source does not resolve to a remote entry")
+	}
+	if source.IsDir {
+		resp.Warnings = append(resp.Warnings, "source is a directory; recursive traversal is required")
+	}
+	if destinationParent.RemoteID == "" || !destinationParent.IsDir {
+		resp.Warnings = append(resp.Warnings, "destination parent does not resolve to a remote directory")
+	}
+	if !hasCapability(resp.DestinationMount.Capabilities, drive.CapabilitySourceUploader) {
+		resp.Warnings = append(resp.Warnings, "destination driver does not support source upload")
+	}
+	resp.Compatible = source.RemoteID != "" &&
+		destinationParent.RemoteID != "" &&
+		destinationParent.IsDir &&
+		hasCapability(resp.DestinationMount.Capabilities, drive.CapabilitySourceUploader)
+	writeJSON(w, resp)
+}
+
+func transferMountContext(snapshot vfs.DebugSnapshot, mountName string) TransferMountContext {
+	for _, mount := range snapshot.Mounts {
+		if mount.Name == mountName || (mountName == "" && len(snapshot.Mounts) == 1) {
+			return TransferMountContext{Name: mount.Name, Driver: mount.DriverName, Capabilities: mount.Capabilities, Encrypted: mount.Encrypted}
+		}
+	}
+	return TransferMountContext{Name: mountName}
+}
+
+func hasCapability(capabilities []drive.Capability, target drive.Capability) bool {
+	for _, capability := range capabilities {
+		if capability == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
@@ -694,7 +798,7 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 	for _, mount := range snapshot.Mounts {
 		for _, item := range mount.Uploads {
 			if snapshot.Kind == "namespace" && mount.Name != "" {
-				item.Path = joinVirtual("/"+mount.Name, item.Path)
+				prefixDebugUploadPath(&item, mount.Name)
 			}
 			if hasFilter && cleanVirtual(item.Path) != filterPath {
 				continue
@@ -704,7 +808,7 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 		if includeHistory {
 			for _, item := range mount.UploadHistory {
 				if snapshot.Kind == "namespace" && mount.Name != "" {
-					item.Path = joinVirtual("/"+mount.Name, item.Path)
+					prefixDebugUploadPath(&item, mount.Name)
 				}
 				if hasFilter && cleanVirtual(item.Path) != filterPath {
 					continue
@@ -725,6 +829,50 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 		History:       includeHistory,
 		Uploads:       uploads,
 	}
+	if hasFilter {
+		resp.Path = filterPath
+	}
+	writeJSON(w, resp)
+}
+
+func prefixDebugUploadPath(upload *vfs.DebugUpload, mountName string) {
+	prefix := "/" + mountName
+	upload.Path = joinVirtual(prefix, upload.Path)
+	for i := range upload.Trace {
+		if upload.Trace[i].Path != "" {
+			upload.Trace[i].Path = joinVirtual(prefix, upload.Trace[i].Path)
+		}
+	}
+}
+
+func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	snapshot := s.source.DebugSnapshot()
+	filterPath := cleanVirtual(r.URL.Query().Get("path"))
+	hasFilter := r.URL.Query().Get("path") != ""
+	var reads []vfs.DebugOperationEvent
+	for _, mount := range snapshot.Mounts {
+		for _, event := range mount.ReadHistory {
+			if event.Mount == "" {
+				event.Mount = mount.Name
+			}
+			if event.Driver == "" {
+				event.Driver = mount.DriverName
+			}
+			if snapshot.Kind == "namespace" && mount.Name != "" {
+				event.Path = joinVirtual("/"+mount.Name, event.Path)
+			}
+			if hasFilter && cleanVirtual(event.Path) != filterPath {
+				continue
+			}
+			reads = append(reads, event)
+		}
+	}
+	sort.Slice(reads, func(i, j int) bool { return reads[i].StartedAt.Before(reads[j].StartedAt) })
+	resp := ReadsResponse{SchemaVersion: snapshot.SchemaVersion, GeneratedAt: snapshot.GeneratedAt, Reads: reads}
 	if hasFilter {
 		resp.Path = filterPath
 	}

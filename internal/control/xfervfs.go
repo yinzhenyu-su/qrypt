@@ -18,6 +18,7 @@ import (
 // VFS staging, waits for the dest upload, and returns quantified metrics.
 func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount string, size int64) *XferTestResult {
 	result := &XferTestResult{
+		OpID:        newDebugOperationID("xfer"),
 		SourceMount: srcMount,
 		DestMount:   dstMount,
 		VFS:         true,
@@ -140,10 +141,12 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	// read from source
 	s = TransferStep{Phase: "read_source"}
 	t0 = time.Now()
+	readStarted := t0
 	rc, err := fs.Read(ctx, srcPath, 0, 0)
 	if err != nil {
 		finishTransferStep(&s, t0, err)
 		result.Steps = append(result.Steps, s)
+		appendVFSReadTimeline(result, fs, srcMount, srcPath, 0, readStarted, s)
 		cleanupPaths(ctx, fs, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
@@ -169,6 +172,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 		result.Metrics.ReadThroughput = int64(float64(readBytes) / d.Seconds())
 	}
 	result.Metrics.ReadChunks = 1
+	appendVFSReadTimeline(result, fs, srcMount, srcPath, readBytes, readStarted, s)
 
 	if readErr != nil {
 		cleanupPaths(ctx, fs, srcDir)
@@ -325,6 +329,56 @@ type vfsDebugSnapshotter interface {
 	DebugSnapshot() vfs.DebugSnapshot
 }
 
+func appendVFSReadTimeline(result *XferTestResult, fs vfs.FileSystem, mountName, path string, bytes int64, started time.Time, step TransferStep) {
+	if started.IsZero() {
+		return
+	}
+	finished := time.Now()
+	state := "completed"
+	if !step.OK {
+		state = "failed"
+	}
+	event := TransferTraceEvent{
+		OpID:       result.OpID,
+		Kind:       "read",
+		Phase:      step.Phase,
+		State:      state,
+		Mount:      mountName,
+		Driver:     vfsDriverName(fs, mountName),
+		Path:       path,
+		Bytes:      bytes,
+		Chunks:     int64(result.Metrics.ReadChunks),
+		Duration:   step.Duration,
+		StartedAt:  started,
+		FinishedAt: finished,
+		Extra:      map[string]any{"role": "source"},
+	}
+	if step.Error != "" {
+		event.Error = step.Error
+		event.ErrorCategory = "io"
+	}
+	if bytes > 0 {
+		if duration, err := time.ParseDuration(step.Duration); err == nil && duration > 0 {
+			event.Throughput = int64(float64(bytes) / duration.Seconds())
+		}
+	}
+	result.Timeline = append(result.Timeline, event)
+}
+
+func vfsDriverName(fs vfs.FileSystem, mountName string) string {
+	snapshotter, ok := fs.(vfsDebugSnapshotter)
+	if !ok {
+		return ""
+	}
+	snapshot := snapshotter.DebugSnapshot()
+	for _, mount := range snapshot.Mounts {
+		if mount.Name == mountName || (mountName == "" && len(snapshot.Mounts) == 1) {
+			return mount.DriverName
+		}
+	}
+	return ""
+}
+
 func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, role string) {
 	snapshotter, ok := fs.(vfsDebugSnapshotter)
 	if !ok {
@@ -338,7 +392,10 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 	if !upload.StartedAt.IsZero() && !upload.CompletedAt.IsZero() {
 		duration := upload.CompletedAt.Sub(upload.StartedAt)
 		event := TransferTraceEvent{
+			OpID:       result.OpID,
+			Kind:       "upload",
 			Phase:      "upload_total",
+			State:      upload.State,
 			Mount:      mountName,
 			Driver:     driverName,
 			Path:       path,
@@ -346,12 +403,15 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 			Duration:   duration.String(),
 			StartedAt:  upload.StartedAt,
 			FinishedAt: upload.CompletedAt,
+			Error:      upload.LastError,
 			Extra: map[string]any{
 				"role":            role,
-				"state":           upload.State,
 				"bytes_uploaded":  upload.BytesUploaded,
 				"stage_durations": upload.StageDurations,
 			},
+		}
+		if upload.LastError != "" {
+			event.ErrorCategory = upload.ErrorCategory
 		}
 		if upload.BytesTotal > 0 && duration > 0 {
 			event.Throughput = int64(float64(upload.BytesTotal) / duration.Seconds())
@@ -360,16 +420,22 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 	}
 	for _, trace := range upload.Trace {
 		event := TransferTraceEvent{
-			Phase:      trace.Phase,
-			Mount:      mountName,
-			Driver:     driverName,
-			Path:       path,
-			Bytes:      trace.Bytes,
-			Duration:   trace.Duration,
-			Throughput: trace.Throughput,
-			StartedAt:  trace.StartedAt,
-			FinishedAt: trace.FinishedAt,
-			Extra:      cloneTraceExtra(trace.Extra),
+			OpID:          result.OpID,
+			Kind:          "upload",
+			Phase:         trace.Phase,
+			State:         trace.State,
+			Mount:         mountName,
+			Driver:        driverName,
+			Path:          path,
+			Bytes:         trace.Bytes,
+			Chunks:        trace.Chunks,
+			Duration:      trace.Duration,
+			Throughput:    trace.Throughput,
+			StartedAt:     trace.StartedAt,
+			FinishedAt:    trace.FinishedAt,
+			Error:         trace.Error,
+			ErrorCategory: trace.ErrorCategory,
+			Extra:         cloneTraceExtra(trace.Extra),
 		}
 		if event.Extra == nil {
 			event.Extra = map[string]any{}

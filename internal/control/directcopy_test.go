@@ -116,6 +116,9 @@ func TestRunDirectDriverCopyCopiesViaDrivers(t *testing.T) {
 	if !result.Pass {
 		t.Fatalf("copy pass = false, steps=%#v", result.Steps)
 	}
+	if result.OpID == "" {
+		t.Fatal("copy result missing op_id")
+	}
 	for _, step := range result.Steps {
 		if strings.HasPrefix(step.Duration, "-") {
 			t.Fatalf("step %s duration = %q, want non-negative", step.Phase, step.Duration)
@@ -131,6 +134,9 @@ func TestRunDirectDriverCopyCopiesViaDrivers(t *testing.T) {
 		t.Fatalf("timeline missing expected phases: %#v", result.Timeline)
 	}
 	driverTrace := findCopyTrace(result, "driver_put_source")
+	if driverTrace.OpID != result.OpID || driverTrace.Kind != "transfer" {
+		t.Fatalf("driver trace missing unified operation metadata: %#v", driverTrace)
+	}
 	if driverTrace.Extra["bytes_uploaded"] != int64(len("payload")) {
 		t.Fatalf("bytes_uploaded = %#v, want %d", driverTrace.Extra["bytes_uploaded"], len("payload"))
 	}

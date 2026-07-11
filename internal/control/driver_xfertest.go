@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // XferTestMetrics contains the quantitative metrics for a transfer test.
@@ -29,19 +31,8 @@ type XferTestMetrics struct {
 	UploadDestTime   string `json:"upload_dest_time,omitempty"`
 }
 
-// TransferTraceEvent records a measured sub-phase inside a transfer test.
-type TransferTraceEvent struct {
-	Phase      string         `json:"phase"`
-	Mount      string         `json:"mount,omitempty"`
-	Driver     string         `json:"driver,omitempty"`
-	Path       string         `json:"path,omitempty"`
-	Bytes      int64          `json:"bytes,omitempty"`
-	Duration   string         `json:"duration,omitempty"`
-	Throughput int64          `json:"throughput,omitempty"` // bytes/sec
-	StartedAt  time.Time      `json:"started_at,omitempty"`
-	FinishedAt time.Time      `json:"finished_at,omitempty"`
-	Extra      map[string]any `json:"extra,omitempty"`
-}
+// TransferTraceEvent uses the same schema as runtime VFS operation events.
+type TransferTraceEvent = vfs.DebugOperationEvent
 
 // TransferStep records one phase of a transfer test.
 type TransferStep struct {
@@ -54,6 +45,7 @@ type TransferStep struct {
 
 // XferTestResult aggregates the full transfer test outcome.
 type XferTestResult struct {
+	OpID        string               `json:"op_id"`
 	SourceMount string               `json:"source_mount"`
 	DestMount   string               `json:"dest_mount"`
 	SourceType  string               `json:"source_type,omitempty"`
@@ -65,6 +57,12 @@ type XferTestResult struct {
 	Finished    time.Time            `json:"finished_at"`
 	Metrics     XferTestMetrics      `json:"metrics"`
 	Timeline    []TransferTraceEvent `json:"timeline,omitempty"`
+}
+
+var debugOperationSequence atomic.Uint64
+
+func newDebugOperationID(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), debugOperationSequence.Add(1))
 }
 
 func xferStepOp(phase string) TransferStep {
@@ -109,6 +107,7 @@ func xferTestSize(size int64) int64 {
 // with chunked reads, and writes to the destination driver.
 func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Driver, dstMount string, dstDriver drive.Driver, size int64) *XferTestResult {
 	result := &XferTestResult{
+		OpID:        newDebugOperationID("xfer"),
 		SourceMount: srcMount,
 		DestMount:   dstMount,
 		VFS:         false,

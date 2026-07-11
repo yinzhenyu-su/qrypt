@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,17 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+type DriverTestRequest struct {
+	Test   string `json:"test"`
+	Mount  string `json:"mount,omitempty"`
+	Source string `json:"source,omitempty"`
+	Dest   string `json:"dest,omitempty"`
+	Size   string `json:"size,omitempty"`
+	VFS    bool   `json:"vfs,omitempty"`
+}
+
+type DriverProbeRequest = DriverTestRequest
 
 func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -99,7 +111,7 @@ func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary
 }
 
 func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -108,17 +120,23 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "driver test not available", http.StatusNotImplemented)
 		return
 	}
+	var req DriverTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	drivers := provider.Drivers()
-	mountFilter := r.URL.Query().Get("mount")
-	testType := r.URL.Query().Get("test")
+	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
 	case "crud", "instantupload":
 		var results []CRUDTestResult
+		matched := false
 		for _, nd := range drivers {
-			if mountFilter != "" && nd.Name != mountFilter {
+			if req.Mount != "" && nd.Name != req.Mount {
 				continue
 			}
+			matched = true
 			switch testType {
 			case "crud":
 				result := RunDriverCRUDTest(r.Context(), nd.Name, nd.Driver)
@@ -128,23 +146,26 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				results = append(results, *result)
 			}
 		}
+		if req.Mount != "" && !matched {
+			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
 		writeJSON(w, results)
 
 	case "xfer":
-		srcMount := r.URL.Query().Get("source")
-		dstMount := r.URL.Query().Get("dest")
+		srcMount := req.Source
+		dstMount := req.Dest
 		if srcMount == "" || dstMount == "" {
-			http.Error(w, "xfer test requires source and dest query params", http.StatusBadRequest)
+			http.Error(w, "xfer test requires source and dest", http.StatusBadRequest)
 			return
 		}
 		if srcMount == dstMount {
 			http.Error(w, "source and dest must be different mounts", http.StatusBadRequest)
 			return
 		}
-		size := parseXferSize(r.URL.Query().Get("size"))
+		size := parseXferSize(req.Size)
 
-		useVFS := parseBoolQuery(r.URL.Query().Get("vfs"))
-		if useVFS {
+		if req.VFS {
 			filesys, ok := s.source.(vfs.FileSystem)
 			if !ok {
 				http.Error(w, "VFS xfer test not available: source does not implement FileSystem", http.StatusNotImplemented)
@@ -175,7 +196,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
-		http.Error(w, fmt.Sprintf("unknown test type: %s", testType), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("unknown driver test: %s", req.Test), http.StatusBadRequest)
 		return
 	}
 }

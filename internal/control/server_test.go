@@ -86,6 +86,10 @@ func (f fakeSnapshotter) DebugResolve(ctx context.Context, path string, includeR
 		ParentID:  "parent-id",
 		Size:      7,
 	}
+	if path == "/local/out" {
+		info.IsDir = true
+		info.PlainName = "out"
+	}
 	if includeRemoteName {
 		info.RemoteName = "encrypted-name"
 	}
@@ -136,8 +140,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		Kind:          "namespace",
 		Process:       vfs.DebugProcess{PID: 1234, StartedAt: time.Unix(8, 0)},
 		Mounts: []vfs.DebugMountSnapshot{{
-			Name:       "local",
-			DriverName: "localfs",
+			Name:         "local",
+			DriverName:   "localfs",
+			Capabilities: []drive.Capability{drive.CapabilitySourceUploader},
 			Uploads: []vfs.DebugUpload{{
 				OpID:          "file",
 				Path:          "/file.txt",
@@ -154,6 +159,13 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				BytesUploaded: 5,
 				UpdatedAt:     time.Unix(5, 0),
 				CompletedAt:   time.Unix(5, 0),
+				Trace: []vfs.DebugTraceEvent{{
+					OpID: "old", Kind: "upload", Phase: "uploading", State: "completed", Path: "/old.txt",
+				}},
+			}},
+			ReadHistory: []vfs.DebugOperationEvent{{
+				OpID: "read-1", Kind: "read", Phase: "read", State: "completed",
+				Path: "/old.txt", RemoteID: "old", Bytes: 5, StartedAt: time.Unix(6, 0),
 			}},
 			Driver: &drive.DebugSnapshot{
 				Driver:      "localfs",
@@ -245,8 +257,31 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if !strings.Contains(string(uploadHistoryBody), `"/local/old.txt"`) || !strings.Contains(string(uploadHistoryBody), `"state": "`+string(drive.UploadPhaseCompleted)+`"`) {
 		t.Fatalf("expected filtered upload history, got %s", uploadHistoryBody)
 	}
+	if !strings.Contains(string(uploadHistoryBody), `"path": "/local/old.txt"`) {
+		t.Fatalf("expected namespace-prefixed upload trace path, got %s", uploadHistoryBody)
+	}
 	if strings.Contains(string(uploadHistoryBody), "/local/file.txt") {
 		t.Fatalf("filtered upload history should not include other paths: %s", uploadHistoryBody)
+	}
+
+	readsBody, err := client.Get(context.Background(), "/v1/reads?path=/local/old.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transferBody, err := client.Get(context.Background(), "/v1/transfer/context?source=/local/file.txt&dest=/local/out/copied.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(transferBody), `"compatible": true`) ||
+		!strings.Contains(string(transferBody), `"destination_parent"`) ||
+		!strings.Contains(string(transferBody), `"source_uploader"`) {
+		t.Fatalf("unexpected transfer context response: %s", transferBody)
+	}
+	if !strings.Contains(string(readsBody), `"op_id": "read-1"`) ||
+		!strings.Contains(string(readsBody), `"mount": "local"`) ||
+		!strings.Contains(string(readsBody), `"path": "/local/old.txt"`) {
+		t.Fatalf("unexpected reads response: %s", readsBody)
 	}
 
 	driverBody, err := client.Get(context.Background(), "/v1/driver")
@@ -268,6 +303,22 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(driverSpaceBody), `"total": "2.00 GiB"`) ||
 		!strings.Contains(string(driverSpaceBody), `"free": "1.50 GiB"`) {
 		t.Fatalf("unexpected driver space response: %s", driverSpaceBody)
+	}
+
+	testBody, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(testBody), `"mount": "local"`) ||
+		!strings.Contains(string(testBody), "driver does not implement Writer") {
+		t.Fatalf("unexpected driver test response: %s", testBody)
+	}
+	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "missing" not found`) {
+		t.Fatalf("expected missing mount error, got %v", err)
+	}
+	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
+		t.Fatal("expected old driver test endpoint to be unavailable")
 	}
 
 	mountHealthBody, err := client.Get(context.Background(), "/v1/mounts/health")
