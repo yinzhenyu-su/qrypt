@@ -11,26 +11,30 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-const debugAIReportSchemaVersion = 1
+const debugAIReportSchemaVersion = 2
 
 type debugAIReport struct {
-	SchemaVersion int                          `json:"schema_version"`
-	GeneratedAt   time.Time                    `json:"generated_at"`
-	Command       string                       `json:"command"`
-	Socket        string                       `json:"socket,omitempty"`
-	Path          string                       `json:"path,omitempty"`
-	Health        *control.HealthResponse      `json:"health,omitempty"`
-	Runtime       *control.RuntimeResponse     `json:"runtime,omitempty"`
-	State         *vfs.DebugSnapshot           `json:"state,omitempty"`
-	Drivers       *control.DriversResponse     `json:"drivers,omitempty"`
-	MountHealth   *control.MountHealthResponse `json:"mount_health,omitempty"`
-	Events        *control.EventsResponse      `json:"events,omitempty"`
-	Uploads       *control.UploadsResponse     `json:"uploads,omitempty"`
-	Cache         *control.CacheResponse       `json:"cache,omitempty"`
-	Staging       *control.StagingResponse     `json:"staging,omitempty"`
-	Inspect       *debugAIInspect              `json:"inspect,omitempty"`
-	Diagnostics   []debugAIDiagnostic          `json:"diagnostics"`
-	Errors        []debugAIError               `json:"errors,omitempty"`
+	SchemaVersion   int                              `json:"schema_version"`
+	GeneratedAt     time.Time                        `json:"generated_at"`
+	Command         string                           `json:"command"`
+	Socket          string                           `json:"socket,omitempty"`
+	Path            string                           `json:"path,omitempty"`
+	DestinationPath string                           `json:"destination_path,omitempty"`
+	Health          *control.HealthResponse          `json:"health,omitempty"`
+	Runtime         *control.RuntimeResponse         `json:"runtime,omitempty"`
+	State           *vfs.DebugSnapshot               `json:"state,omitempty"`
+	Drivers         *control.DriversResponse         `json:"drivers,omitempty"`
+	MountHealth     *control.MountHealthResponse     `json:"mount_health,omitempty"`
+	Events          *control.EventsResponse          `json:"events,omitempty"`
+	Uploads         *control.UploadsResponse         `json:"uploads,omitempty"`
+	Reads           *control.ReadsResponse           `json:"reads,omitempty"`
+	Cache           *control.CacheResponse           `json:"cache,omitempty"`
+	Staging         *control.StagingResponse         `json:"staging,omitempty"`
+	Inspect         *debugAIInspect                  `json:"inspect,omitempty"`
+	Destination     *debugAIInspect                  `json:"destination,omitempty"`
+	TransferContext *control.TransferContextResponse `json:"transfer_context,omitempty"`
+	Diagnostics     []debugAIDiagnostic              `json:"diagnostics"`
+	Errors          []debugAIError                   `json:"errors,omitempty"`
 }
 
 type debugAIInspect struct {
@@ -39,6 +43,7 @@ type debugAIInspect struct {
 	Cache       *control.CacheResponse       `json:"cache,omitempty"`
 	Staging     *control.StagingResponse     `json:"staging,omitempty"`
 	Uploads     *control.UploadsResponse     `json:"uploads,omitempty"`
+	Reads       *control.ReadsResponse       `json:"reads,omitempty"`
 	Consistency *control.ConsistencyResponse `json:"consistency,omitempty"`
 	Events      *control.EventsResponse      `json:"events,omitempty"`
 }
@@ -126,14 +131,14 @@ func newDebugCollectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			includeMountHealth, _ := cmd.Flags().GetBool("mount-health")
-			report := collectDebugAIReport(cmd.Context(), "collect", cleanDebugPath(path), eventLimit, includeMountHealth)
+			dest, _ := cmd.Flags().GetString("dest")
+			report := collectDebugAIReport(cmd.Context(), "collect", cleanDebugPath(path), cleanDebugPath(dest), eventLimit)
 			return writePrettyJSON(cmd.OutOrStdout(), report)
 		},
 		ValidArgsFunction: noFileCompletions,
 	}
 	cmd.Flags().Int("events-limit", 200, "maximum recent warn/error events")
-	cmd.Flags().Bool("mount-health", false, "include runtime mount health")
+	cmd.Flags().String("dest", "", "optional destination path for transfer diagnostics")
 	return cmd
 }
 
@@ -148,15 +153,21 @@ func newDebugInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			remoteName, _ := cmd.Flags().GetBool("remote-name")
 			report := newDebugAIReport(cmd.Context(), "inspect", cleanDebugPath(args[0]))
-			report.Inspect = debugAIInspectPath(cmd.Context(), report.Path, eventLimit, remoteName, &report.Errors)
+			dest, _ := cmd.Flags().GetString("dest")
+			report.DestinationPath = cleanDebugPath(dest)
+			report.Inspect = debugAIInspectPath(cmd.Context(), report.Path, eventLimit, &report.Errors)
 			addInspectDiagnostics(&report.Diagnostics, report.Inspect)
+			if report.DestinationPath != "" {
+				report.Destination = debugAIInspectPath(cmd.Context(), report.DestinationPath, eventLimit, &report.Errors)
+				addInspectDiagnostics(&report.Diagnostics, report.Destination)
+				debugGetJSON(cmd.Context(), transferContextEndpoint(report.Path, report.DestinationPath), &report.TransferContext, &report.Errors)
+			}
 			return writePrettyJSON(cmd.OutOrStdout(), report)
 		},
 	}
 	cmd.Flags().Int("events-limit", 100, "maximum recent warn/error events for the path")
-	cmd.Flags().Bool("remote-name", false, "include encrypted/remote name when supported")
+	cmd.Flags().String("dest", "", "optional destination path for transfer diagnostics")
 	return cmd
 }
 
@@ -190,25 +201,38 @@ func newDebugWatchCmd() *cobra.Command {
 	return cmd
 }
 
-func collectDebugAIReport(ctx context.Context, command, path string, eventLimit int, includeMountHealth bool) debugAIReport {
+func collectDebugAIReport(ctx context.Context, command, path, destinationPath string, eventLimit int) debugAIReport {
 	report := newDebugAIReport(ctx, command, path)
+	report.DestinationPath = destinationPath
 	debugGetJSON(ctx, "/v1/health", &report.Health, &report.Errors)
 	debugGetJSON(ctx, "/v1/runtime", &report.Runtime, &report.Errors)
 	debugGetJSON(ctx, "/v1/state", &report.State, &report.Errors)
 	debugGetJSON(ctx, "/v1/driver", &report.Drivers, &report.Errors)
-	if includeMountHealth {
-		debugGetJSON(ctx, "/v1/mounts/health", &report.MountHealth, &report.Errors)
-	}
+	debugGetJSON(ctx, "/v1/mounts/health", &report.MountHealth, &report.Errors)
 	debugGetJSON(ctx, "/v1/events?level=warn&limit="+url.QueryEscape(fmt.Sprintf("%d", eventLimit)), &report.Events, &report.Errors)
 	debugGetJSON(ctx, "/v1/uploads?history=1", &report.Uploads, &report.Errors)
+	debugGetJSON(ctx, "/v1/reads", &report.Reads, &report.Errors)
 	debugGetJSON(ctx, "/v1/cache", &report.Cache, &report.Errors)
 	debugGetJSON(ctx, "/v1/staging", &report.Staging, &report.Errors)
 	if path != "" {
-		report.Inspect = debugAIInspectPath(ctx, path, eventLimit, true, &report.Errors)
+		report.Inspect = debugAIInspectPath(ctx, path, eventLimit, &report.Errors)
+	}
+	if destinationPath != "" {
+		report.Destination = debugAIInspectPath(ctx, destinationPath, eventLimit, &report.Errors)
+	}
+	if path != "" && destinationPath != "" {
+		debugGetJSON(ctx, transferContextEndpoint(path, destinationPath), &report.TransferContext, &report.Errors)
 	}
 	addCollectDiagnostics(&report.Diagnostics, report)
 	if report.Inspect != nil {
 		addInspectDiagnostics(&report.Diagnostics, report.Inspect)
 	}
+	if report.Destination != nil {
+		addInspectDiagnostics(&report.Diagnostics, report.Destination)
+	}
 	return report
+}
+
+func transferContextEndpoint(source, dest string) string {
+	return "/v1/transfer/context?source=" + url.QueryEscape(source) + "&dest=" + url.QueryEscape(dest)
 }

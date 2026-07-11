@@ -24,5 +24,6 @@ func newFsCmd() *cobra.Command {
 	cmd.AddCommand(newFsRmCmd())
 	cmd.AddCommand(newFsMvCmd())
 	cmd.AddCommand(newFsCopyCmd())
+	cmd.AddCommand(newJournalCmdWithUse("journal"))
 	return cmd
 }

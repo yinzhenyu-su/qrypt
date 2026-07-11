@@ -27,9 +27,9 @@ func TestConfigFlagScope(t *testing.T) {
 	for _, args := range [][]string{
 		{"mount"},
 		{"fs", "list"},
+		{"fs", "journal"},
 		{"config", "show"},
 		{"config", "export-rclone-password"},
-		{"debug", "journal"},
 	} {
 		cmd, _, err := root.Find(args)
 		if err != nil {

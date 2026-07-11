@@ -2,13 +2,82 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func TestRootSuppressesUsageForRuntimeErrors(t *testing.T) {
 	if !NewRootCommand().SilenceUsage {
 		t.Fatal("root command must suppress usage for runtime errors")
+	}
+}
+
+func TestDebugBundleFilesIncludeTransferEvidence(t *testing.T) {
+	files := debugBundleFiles("/src/file.bin", "/dst/file.bin", false, false)
+	for _, name := range []string{
+		"destination.json",
+		"raw/reads.json",
+		"raw/reads-path.json",
+		"raw/reads-destination.json",
+		"raw/transfer-context.json",
+	} {
+		if !slices.Contains(files, name) {
+			t.Fatalf("bundle files missing %q: %#v", name, files)
+		}
+	}
+}
+
+func TestDebugBundleFilesOmitTransferContextWithoutSource(t *testing.T) {
+	files := debugBundleFiles("", "/dst/file.bin", false, false)
+	if slices.Contains(files, "raw/transfer-context.json") {
+		t.Fatalf("bundle files should omit transfer context without source: %#v", files)
+	}
+}
+
+type debugReportTestSource struct{}
+
+func (debugReportTestSource) DebugSnapshot() vfs.DebugSnapshot {
+	return vfs.DebugSnapshot{
+		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+		GeneratedAt:   time.Unix(1, 0),
+		Kind:          "vfs",
+		Mounts:        []vfs.DebugMountSnapshot{{Name: "default"}},
+	}
+}
+
+func TestDebugCollectOmitsTransferContextWithoutSource(t *testing.T) {
+	socketPath := filepath.Join(os.TempDir(), "qrypt-test-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".sock")
+	defer os.Remove(socketPath)
+	server, err := control.NewServer(socketPath, debugReportTestSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+
+	reportCtx := context.WithValue(context.Background(), debugSocketContextKey{}, socketPath)
+	report := collectDebugAIReport(reportCtx, "collect", "", "/dst/file.bin", 100)
+	if report.TransferContext != nil {
+		t.Fatalf("transfer context should be omitted without source: %+v", report.TransferContext)
+	}
+	for _, item := range report.Errors {
+		if strings.HasPrefix(item.Endpoint, "/v1/transfer/context") {
+			t.Fatalf("unexpected transfer context request without source: %+v", report.Errors)
+		}
 	}
 }
 
@@ -42,5 +111,25 @@ func TestDebugRequiredFlags(t *testing.T) {
 	root.SetArgs([]string{"debug", "bundle", "--socket", "/tmp/qrypt.sock"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected debug bundle without --out to fail")
+	}
+
+	root = NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"debug", "test"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("expected debug test without subcommand to show help: %v", err)
+	}
+
+	root = NewRootCommand()
+	root.SetArgs([]string{"debug", "test", "crud"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected debug test without --socket to fail")
+	}
+
+	root = NewRootCommand()
+	root.SetArgs([]string{"debug", "test", "xfer", "--socket", "/tmp/qrypt.sock"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected xfer test without source/dest to fail")
 	}
 }
