@@ -175,7 +175,7 @@ func New(level string, logFile string, errorFile string, rotate *RotateConfig) (
 			l.errWriter = l.writer
 		}
 	} else {
-		l.writer = os.Stdout
+		l.writer = os.Stderr
 		l.errWriter = os.Stderr
 	}
 

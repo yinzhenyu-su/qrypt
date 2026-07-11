@@ -50,13 +50,13 @@ func TestLevelString(t *testing.T) {
 	}
 }
 
-func TestLoggerStdout(t *testing.T) {
+func TestLoggerDefaultStderr(t *testing.T) {
 	l, err := New("info", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := l.writer.(*bytes.Buffer); ok {
-		t.Errorf("expected stdout writer")
+	if l.writer != l.errWriter {
+		t.Errorf("expected default writer and error writer to share stderr")
 	}
 }
 
