@@ -202,16 +202,26 @@ func TestRunVFSXferTestIncludesUploadTimeline(t *testing.T) {
 	if !result.Pass {
 		t.Fatalf("RunVFSXferTest pass = false, steps=%#v", result.Steps)
 	}
+	if result.OpID == "" {
+		t.Fatal("transfer result missing op_id")
+	}
 
 	seen := map[string]bool{}
 	for _, event := range result.Timeline {
+		if event.OpID != result.OpID || event.Kind == "" {
+			t.Fatalf("timeline event missing unified operation metadata: %#v", event)
+		}
 		role, _ := event.Extra["role"].(string)
 		seen[role+"."+event.Phase] = true
 		if event.Phase == "driver_put_source" && event.Mount == "" {
 			t.Fatalf("timeline event missing mount: %#v", event)
 		}
+		if event.Phase == "read_source" && (event.Kind != "read" || event.Mount != "src" || event.Bytes != 32) {
+			t.Fatalf("read timeline event mismatch: %#v", event)
+		}
 	}
 	for _, key := range []string{
+		"source.read_source",
 		"source.upload_total",
 		"source.driver_put_source",
 		"dest.upload_total",
