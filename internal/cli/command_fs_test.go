@@ -197,6 +197,56 @@ root_path = "`+remote+`"
 	}
 }
 
+func TestFSMountFlagInitializesOnlySelectedMount(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "ok.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
+
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+
+[[mounts]]
+name = "broken"
+type = "localfs"
+[mounts.params]
+root_path = "`+filepath.Join(tmp, "missing")+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "--mount", "local", "list", "/local"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs --mount local list: %v", err)
+	}
+	if !strings.Contains(out.String(), "ok.txt") {
+		t.Fatalf("expected selected mount listing, got %q", out.String())
+	}
+
+	root = NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "list", "/"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected full namespace build to fail on broken mount")
+	}
+}
+
 func TestPrintEntryStat(t *testing.T) {
 	var out bytes.Buffer
 	printEntryStat(&out, drive.Entry{

@@ -15,7 +15,9 @@ func newDebugTestCmd() *cobra.Command {
 		Args:  commandGroupArgs(nil),
 		RunE:  showHelp,
 	}
+	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("auth", "Run a read-only auth driver test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("crud", "Run a CRUD driver test")))
+	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("fs", "Run a VFS filesystem smoke test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("instantupload", "Run an instant-upload driver test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("xfer", "Run a transfer driver test")))
 	return cmd
@@ -36,8 +38,11 @@ func newDebugTestCaseCmd(test, short string) *cobra.Command {
 }
 
 func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
-	if test == "" || test == "crud" || test == "instantupload" {
-		cmd.Flags().String("mount", "", "mount name for crud or instantupload tests")
+	if test == "" || test == "auth" || test == "crud" || test == "fs" || test == "instantupload" {
+		cmd.Flags().String("mount", "", "mount name for auth, crud, fs, or instantupload tests")
+	}
+	if test == "fs" {
+		cmd.Flags().String("size", "", "fs test size in bytes, or k/m/g suffix")
 	}
 	if test == "" || test == "xfer" {
 		cmd.Flags().String("source", "", "source mount for xfer test")
@@ -80,9 +85,16 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 
 func validateDriverTestRequest(req control.DriverTestRequest) error {
 	switch req.Test {
-	case "crud", "instantupload":
+	case "auth", "crud", "instantupload":
 		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {
 			return fmt.Errorf("%s test only supports --mount", req.Test)
+		}
+	case "fs":
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			return fmt.Errorf("fs test only supports --mount and --size")
+		}
+		if req.Mount == "" {
+			return fmt.Errorf("fs test requires --mount\n\nExample:\n  qrypt debug test fs --mount cloud --socket /tmp/qrypt.sock")
 		}
 	case "xfer":
 		if req.Mount != "" {

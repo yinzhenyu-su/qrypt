@@ -22,7 +22,14 @@ func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func()
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
 	ctx, stop := signal.NotifyContext(commandContext(cmd), shutdownSignals()...)
-	fs, cleanup, err := buildFileSystemFromConfig(ctx, state.cfg)
+	selectedMount := commandFSMount(cmd)
+	var fs vfs.FileSystem
+	var cleanup func()
+	if selectedMount != "" {
+		fs, cleanup, err = buildFileSystemFromConfigMountNamespace(ctx, state.cfg, selectedMount)
+	} else {
+		fs, cleanup, err = buildFileSystemFromConfig(ctx, state.cfg)
+	}
 	if err != nil {
 		stop()
 		return nil, nil, nil, err
@@ -32,6 +39,21 @@ func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func()
 		cleanup()
 		stop()
 	}, nil
+}
+
+func commandFSMount(cmd *cobra.Command) string {
+	if cmd == nil {
+		return ""
+	}
+	if flag := cmd.Flags().Lookup("mount"); flag != nil {
+		value, _ := cmd.Flags().GetString("mount")
+		return value
+	}
+	if flag := cmd.InheritedFlags().Lookup("mount"); flag != nil {
+		value, _ := cmd.InheritedFlags().GetString("mount")
+		return value
+	}
+	return ""
 }
 
 func printEntryStat(w io.Writer, entry drive.Entry) {
