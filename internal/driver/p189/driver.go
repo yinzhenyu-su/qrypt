@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -23,10 +24,20 @@ const sliceMD5Size = 1 << 20
 const uploadPartSize = 10 * 1024 * 1024
 
 type Driver struct {
-	cl       *client
-	rootID   int64
-	rootPath string
-	limiter  *drive.BandwidthLimiter
+	cl            *client
+	rootID        int64
+	rootPath      string
+	limiter       *drive.BandwidthLimiter
+	stateStore    drive.StateStore
+	cookieSource  string
+	cookieUpdated time.Time
+}
+
+type cookieState struct {
+	Cookie                  string    `json:"cookie,omitempty"`
+	UpdatedAt               time.Time `json:"updated_at,omitempty"`
+	PasswordReloginFailedAt time.Time `json:"password_relogin_failed_at,omitempty"`
+	PasswordReloginError    string    `json:"password_relogin_error,omitempty"`
 }
 
 func init() {
@@ -38,9 +49,12 @@ func init() {
 			return nil, fmt.Errorf("189: missing cookie, or username and password")
 		}
 		d := &Driver{
-			cl:       newClient(cookie, username, password),
-			rootPath: params["root_path"],
+			cl:           newClient(cookie, username, password),
+			rootPath:     params["root_path"],
+			cookieSource: "config",
 		}
+		d.cl.onCookieUpdate = d.saveUpdatedCookie
+		d.cl.onPasswordReloginState = d.savePasswordReloginState
 		if rid := params["root_id"]; rid != "" {
 			if id, err := strconv.ParseInt(rid, 10, 64); err == nil {
 				d.rootID = id
@@ -85,6 +99,7 @@ func init() {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	d.loadCookieState()
 	if err := d.cl.loginInit(ctx); err != nil {
 		return fmt.Errorf("189: login init: %w", err)
 	}
@@ -116,6 +131,10 @@ func (d *Driver) Drop(ctx context.Context) error {
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
+}
+
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -584,8 +603,11 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	credentialSource := "none"
 	switch {
-	case d.cl.cookie != "":
-		credentialSource = "cookie"
+	case d.cl.cookieValue() != "":
+		credentialSource = d.cookieSource
+		if credentialSource == "" {
+			credentialSource = "cookie"
+		}
 	case d.cl.username != "":
 		credentialSource = "username_password"
 	}
@@ -598,13 +620,70 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			drive.DebugStatRootPath: d.rootPath,
 		},
 		Extra: map[string]any{
-			drive.DebugExtraCredentialSource: credentialSource,
+			drive.DebugExtraCredentialSource:  credentialSource,
+			drive.DebugExtraCredentialUpdated: d.cookieUpdated,
 		},
 	}, nil
 }
 
 func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
 	return d.cl.debugTrace(since), nil
+}
+
+func (d *Driver) loadCookieState() {
+	if d.stateStore == nil {
+		return
+	}
+	var state cookieState
+	err := d.stateStore.LoadJSON("189_cookie.json", &state)
+	if err != nil {
+		return
+	}
+	if state.Cookie != "" {
+		d.cl.mergeCookieHeader(state.Cookie)
+		d.cookieSource = "state"
+	}
+	d.cookieUpdated = state.UpdatedAt
+	d.cl.setPasswordReloginFailure(state.PasswordReloginFailedAt, state.PasswordReloginError)
+}
+
+func (d *Driver) saveUpdatedCookie(cookie string) {
+	if cookie == "" {
+		return
+	}
+	d.cookieSource = "response"
+	d.cookieUpdated = time.Now()
+	if d.stateStore == nil {
+		return
+	}
+	if err := d.saveState(); err != nil {
+		logging.L.Warnf("[189] save updated cookie state failed: %v", err)
+	}
+}
+
+func (d *Driver) savePasswordReloginState(failedAt time.Time, lastError string) {
+	if d.stateStore == nil {
+		return
+	}
+	if err := d.saveState(); err != nil {
+		logging.L.Warnf("[189] save password relogin state failed: %v", err)
+	}
+}
+
+func (d *Driver) saveState() error {
+	if d.stateStore == nil {
+		return nil
+	}
+	d.cl.authMu.Lock()
+	failedAt := d.cl.passwordReloginFailedAt
+	lastError := d.cl.passwordReloginError
+	d.cl.authMu.Unlock()
+	return d.stateStore.SaveJSON("189_cookie.json", cookieState{
+		Cookie:                  d.cl.cookieValue(),
+		UpdatedAt:               d.cookieUpdated,
+		PasswordReloginFailedAt: failedAt,
+		PasswordReloginError:    lastError,
+	})
 }
 
 func parseTime(s string) time.Time {
@@ -614,3 +693,5 @@ func parseTime(s string) time.Time {
 	}
 	return t
 }
+
+var _ drive.StateStoreInstaller = (*Driver)(nil)

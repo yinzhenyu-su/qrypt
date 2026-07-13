@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"fmt"
 	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -81,6 +86,164 @@ func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
 	}
 	if got != "-11" {
 		t.Fatalf("root id = %q, want -11", got)
+	}
+}
+
+func TestRetryOnAuthErrorSkipsPasswordReloginDuringCooldown(t *testing.T) {
+	cl := &client{
+		username:                "user",
+		password:                "pass",
+		passwordReloginFailedAt: time.Now(),
+		passwordReloginError:    "login limited",
+	}
+	calls := 0
+	err := cl.retryOnAuthError(context.Background(), func(context.Context) error {
+		calls++
+		return fmt.Errorf("189: GET https://example.invalid: 400 Bad Request")
+	})
+	if err == nil {
+		t.Fatal("expected cooldown error")
+	}
+	if calls != 1 {
+		t.Fatalf("fn calls = %d, want 1", calls)
+	}
+	if !strings.Contains(err.Error(), "password re-login skipped") || !strings.Contains(err.Error(), "login limited") {
+		t.Fatalf("error = %v, want cooldown context", err)
+	}
+}
+
+func TestCookieUpdatePersistsState(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := &Driver{
+		cl:           newClient("old=1", "", ""),
+		cookieSource: "config",
+	}
+	driver.cl.onCookieUpdate = driver.saveUpdatedCookie
+	driver.InstallStateStore(store)
+	driver.cl.captureCookies(&http.Response{
+		Header: http.Header{"Set-Cookie": []string{"COOKIE_LOGIN_USER=new; Path=/"}},
+	})
+
+	var state cookieState
+	if err := store.LoadJSON("189_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Cookie, "COOKIE_LOGIN_USER=new") {
+		t.Fatalf("cookie state = %q, want COOKIE_LOGIN_USER=new", state.Cookie)
+	}
+	if driver.cookieSource != "response" {
+		t.Fatalf("cookieSource = %q, want response", driver.cookieSource)
+	}
+}
+
+func TestCookieUpdatePreservesExistingCookieKeys(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := &Driver{
+		cl:           newClient("apm_key=old; JSESSIONID=old; COOKIE_LOGIN_USER=old-user", "", ""),
+		cookieSource: "config",
+	}
+	driver.cl.onCookieUpdate = driver.saveUpdatedCookie
+	driver.InstallStateStore(store)
+	driver.cl.captureCookies(&http.Response{
+		Header: http.Header{"Set-Cookie": []string{"JSESSIONID=new; Path=/"}},
+	})
+
+	var state cookieState
+	if err := store.LoadJSON("189_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Cookie, "apm_key=old") || !strings.Contains(state.Cookie, "COOKIE_LOGIN_USER=old-user") || !strings.Contains(state.Cookie, "JSESSIONID=new") {
+		t.Fatalf("cookie state = %q, want updated JSESSIONID with existing keys preserved", state.Cookie)
+	}
+}
+
+func TestLoadCookieStateMergesWithConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("189_cookie.json", cookieState{
+		Cookie:    "JSESSIONID=stored",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := &Driver{
+		cl:           newClient("config=1; JSESSIONID=config; COOKIE_LOGIN_USER=config-user", "", ""),
+		cookieSource: "config",
+	}
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	got := driver.cl.cookieValue()
+	if !strings.Contains(got, "config=1") || !strings.Contains(got, "COOKIE_LOGIN_USER=config-user") || !strings.Contains(got, "JSESSIONID=stored") {
+		t.Fatalf("cookie = %q, want merged config and state cookie", got)
+	}
+	if driver.cookieSource != "state" {
+		t.Fatalf("cookieSource = %q, want state", driver.cookieSource)
+	}
+}
+
+func TestPasswordReloginCooldownPersistsState(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := &Driver{
+		cl:           newClient("old=1", "user", "pass"),
+		cookieSource: "config",
+	}
+	driver.cl.onPasswordReloginState = driver.savePasswordReloginState
+	driver.InstallStateStore(store)
+	driver.cl.rememberPasswordReloginFailure(fmt.Errorf("login limited"))
+
+	var state cookieState
+	if err := store.LoadJSON("189_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.PasswordReloginFailedAt.IsZero() {
+		t.Fatal("expected persisted password relogin failure time")
+	}
+	if state.PasswordReloginError != "login limited" {
+		t.Fatalf("password relogin error = %q, want login limited", state.PasswordReloginError)
+	}
+
+	reloaded := &Driver{
+		cl:           newClient("old=1", "user", "pass"),
+		cookieSource: "config",
+	}
+	reloaded.InstallStateStore(store)
+	reloaded.loadCookieState()
+	calls := 0
+	err := reloaded.cl.retryOnAuthError(context.Background(), func(context.Context) error {
+		calls++
+		return fmt.Errorf("189: GET https://example.invalid: 400 Bad Request")
+	})
+	if err == nil {
+		t.Fatal("expected cooldown error")
+	}
+	if calls != 1 {
+		t.Fatalf("fn calls = %d, want 1", calls)
+	}
+	if !strings.Contains(err.Error(), "password re-login skipped") || !strings.Contains(err.Error(), "login limited") {
+		t.Fatalf("error = %v, want persisted cooldown context", err)
+	}
+}
+
+func TestPasswordReloginFailureRestoresPreviousCookieBeforePersist(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := &Driver{
+		cl:           newClient("apm_key=old; JSESSIONID=old; COOKIE_LOGIN_USER=old-user", "user", "pass"),
+		cookieSource: "config",
+	}
+	driver.cl.onPasswordReloginState = driver.savePasswordReloginState
+	driver.InstallStateStore(store)
+
+	previous := driver.cl.cookieValue()
+	driver.cl.clearCookie()
+	driver.cl.mergeCookieHeader("JSESSIONID=partial")
+	driver.cl.restoreCookieAfterReloginFailure(previous)
+	driver.cl.rememberPasswordReloginFailure(fmt.Errorf("login limited"))
+
+	var state cookieState
+	if err := store.LoadJSON("189_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Cookie, "apm_key=old") || !strings.Contains(state.Cookie, "COOKIE_LOGIN_USER=old-user") || !strings.Contains(state.Cookie, "JSESSIONID=old") {
+		t.Fatalf("cookie state = %q, want previous full cookie preserved", state.Cookie)
 	}
 }
 
