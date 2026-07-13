@@ -109,6 +109,7 @@ func (v *VFS) cancelDeletedFile(path string) {
 func (v *VFS) addOverlay(oldPath, newPath, entryID string, recursive bool) {
 	oldPath = cleanVirtual(oldPath)
 	newPath = cleanVirtual(newPath)
+	v.suppressDirPrefetch(oldPath)
 	v.deleteMu.Lock()
 	v.overlayOps[oldPath] = overlayOp{oldPath: oldPath, newPath: newPath, entryID: entryID, isDir: recursive}
 	if recursive {
