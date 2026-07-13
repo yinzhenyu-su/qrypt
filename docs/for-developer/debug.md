@@ -161,11 +161,44 @@ their own `op_id` and correlate these facts explicitly.
 
 ## Explicit Write Probes
 
+Run an auth test to verify that a driver can perform the minimum read-only
+remote access with the current credentials:
+
+```sh
+go run ./cmd/qrypt debug test auth --mount default --socket /tmp/qrypt.sock
+```
+
+The auth result does not create remote objects. It reports capabilities,
+debug snapshot data when available, root resolution, root listing, optional
+space query status, `auth_ok`, and an `auth_status` classification.
+
 Run a CRUD test to verify basic read/write operations:
 
 ```sh
 go run ./cmd/qrypt debug test crud --socket /tmp/qrypt.sock
 ```
+
+The CRUD result includes a contract-oriented `steps[]` report with per-step
+input, expected values, actual values, duration, and error. It also reports
+`created[]`, `cleanup[]`, `residual[]`, `residual_timeline[]`, `trace[]`, and a
+retry command. The matrix covers directory creation/listing, nested directories,
+ordinary files, empty files, one-byte files, spaces, Unicode names,
+rename/list verification, reads, deletes, and cleanup verification.
+
+`residual_timeline[]` records each cleanup verification list attempt, elapsed
+time, residual count, and residual names. Use it to distinguish a real cleanup
+failure from a backend that deletes successfully but remains briefly visible in
+list results.
+
+`trace[]` is populated by drivers that implement `drive.DebugTraceProvider`.
+Trace events are correlated with CRUD steps through `op_id`, `step`, and
+`name`. HTTP trace events must keep secrets masked: include method, sanitized
+URL without query parameters, status, duration, request field names, response
+size, and short masked error snippets only. Do not include cookies, session
+keys, signed upload URLs, encrypted request blobs, or full response bodies.
+The crypt wrapper forwards trace data from the raw driver, so encrypted mounts
+can still expose raw driver request flow while keeping the logical CRUD step
+context.
 
 Run an instant upload test to verify content deduplication. Requires
 `content_dedup = true` when encryption is enabled:

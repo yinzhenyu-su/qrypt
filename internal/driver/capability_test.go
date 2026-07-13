@@ -90,7 +90,13 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 		{
 			name: "115",
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
-			want: nil,
+			want: []drive.Capability{
+				drive.CapabilityDebugger,
+				drive.CapabilityPathResolver,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
 		},
 		{
 			name: "s3",

@@ -104,7 +104,7 @@ qrypt debug bundle [REMOTE] [--dest DESTINATION] --socket PATH --out FILE [--for
 
 跨挂载传输问题应同时提供源路径和 `--dest`；报告会分别收集两端路径状态、读取/上传历史和挂载能力。
 
-写入型 driver 测试通过 `debug test` 显式执行，`TEST` 可为 `crud`、`instantupload` 或 `xfer`。
+driver 测试通过 `debug test` 显式执行，`TEST` 可为 `auth`、`crud`、`instantupload` 或 `xfer`。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`crud` 的 JSON 会包含步骤、清理可见性时间线，以及支持该能力的驱动 HTTP trace。
 
 离线 journal 检查使用 `fs journal`，可传配置文件或明确的缓存目录。
 
