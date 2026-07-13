@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -295,7 +296,17 @@ func (d *Driver) readWithDownloadURL(ctx context.Context, entry drive.Entry, off
 	if size > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
 	}
+	start := time.Now()
 	httpResp, err := d.cl.httpClient.Do(req)
+	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "download",
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    responseStatus(httpResp),
+		Duration:  time.Since(start).String(),
+		Request:   map[string]any{"range": req.Header.Get("Range")},
+		Error:     errorString(err),
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("aliyundrive: read: %w", err)
 	}
@@ -584,7 +595,17 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			return err
 		}
 		req.ContentLength = length
+		start := time.Now()
 		resp, err := d.cl.httpClient.Do(req)
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "upload_part",
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Status:    responseStatus(resp),
+			Duration:  time.Since(start).String(),
+			Request:   map[string]any{"part_number": part.PartNumber, "bytes": length},
+			Error:     errorString(err),
+		})
 		if err != nil {
 			return fmt.Errorf("aliyundrive: upload part %d: %w", part.PartNumber, err)
 		}
@@ -708,6 +729,24 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.cl.debugTrace(since), nil
+}
+
+func responseStatus(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func (d *Driver) setLastError(err error) {
 	if err == nil {
 		return
@@ -763,5 +802,6 @@ var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
+var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)

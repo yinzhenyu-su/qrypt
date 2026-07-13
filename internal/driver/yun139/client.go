@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 const (
@@ -87,6 +89,7 @@ type client struct {
 	onAuthorizationUpdate func(authorization string)
 	mu                    sync.RWMutex
 	tokenExpiry           time.Time
+	trace                 *traceutil.Buffer
 }
 
 func newClient(authorization string) *client {
@@ -94,6 +97,7 @@ func newClient(authorization string) *client {
 		httpClient:     httputil.NewClient(60*time.Second, 30*time.Second),
 		authorization:  authorization,
 		authRefreshURL: "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do",
+		trace:          traceutil.NewBuffer(500),
 	}
 }
 
@@ -179,7 +183,16 @@ func (c *client) refreshToken(ctx context.Context) error {
 	}
 	req.Header.Set("Content-Type", "application/xml")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "token_refresh",
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    responseStatus(resp),
+		Duration:  time.Since(start).String(),
+		Error:     errorString(err),
+	})
 	if err != nil {
 		return err
 	}
@@ -255,7 +268,17 @@ func (c *client) ensurePersonalCloudHost() error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Basic "+c.authorization)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    responseStatus(resp),
+		Duration:  time.Since(start).String(),
+		Request:   traceutil.BodyFields(routeData),
+		Error:     errorString(err),
+	})
 	if err != nil {
 		return err
 	}
@@ -411,7 +434,17 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	req.Header.Set("X-Yun-Module-Type", xYunModuleType)
 	req.Header.Set("X-Yun-Svc-Type", xYunSvcType)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: path,
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    responseStatus(resp),
+		Duration:  time.Since(start).String(),
+		Request:   traceutil.BodyFields(bodyData),
+		Error:     errorString(err),
+	})
 	if err != nil {
 		return err
 	}
@@ -421,6 +454,13 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 		return err
 	}
 	if len(respBody) > 0 && respBody[0] == '<' {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: path,
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Status:    resp.StatusCode,
+			Response:  map[string]any{"body_snippet": traceutil.Snippet(respBody)},
+		})
 		return fmt.Errorf("API returned non-JSON: %s", string(respBody))
 	}
 	var base baseResp
@@ -434,4 +474,26 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 		return fmt.Errorf("personal API: %w", err)
 	}
 	return nil
+}
+
+func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
+	c.trace.Record(ctx, event)
+}
+
+func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
+	return c.trace.Events(since)
+}
+
+func responseStatus(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

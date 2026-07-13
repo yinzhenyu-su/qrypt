@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
@@ -224,7 +225,17 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
 	}
 
+	start := time.Now()
 	resp, err := d.cl.httpClient.Do(req)
+	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "download",
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    responseStatus(resp),
+		Duration:  time.Since(start).String(),
+		Request:   map[string]any{"range": req.Header.Get("Range")},
+		Error:     errorString(err),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("139: read download: %w", err)
 	}
@@ -381,6 +392,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			drive.DebugExtraInstantUploadCount: instantUploadCount,
 		},
 	}, nil
+}
+
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.cl.debugTrace(since), nil
 }
 
 func (d *Driver) putSource(ctx context.Context, parentID, name string, source drive.ReadOnlyFileSource, progress drive.UploadProgress) (drive.Entry, error) {
@@ -589,7 +604,17 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			req.Header.Set("Content-Type", "application/octet-stream")
 			req.Header.Set("Origin", defaultBaseURL)
 			req.Header.Set("Referer", defaultBaseURL+"/")
+			httpStart := time.Now()
 			resp, err := d.cl.httpClient.Do(req)
+			d.cl.recordTrace(uploadCtx, drive.DebugTraceEvent{
+				Operation: "upload_part",
+				Method:    req.Method,
+				URL:       traceutil.URL(req.URL),
+				Status:    responseStatus(resp),
+				Duration:  time.Since(httpStart).String(),
+				Request:   map[string]any{"part_number": up.partNumber, "bytes": req.ContentLength},
+				Error:     errorString(err),
+			})
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
@@ -653,5 +678,6 @@ var _ drive.Writer = (*Driver)(nil)
 var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
+var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
