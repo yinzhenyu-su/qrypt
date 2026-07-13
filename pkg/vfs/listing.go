@@ -80,12 +80,8 @@ func (v *VFS) loadRemoteChildren(ctx context.Context, parentPath, parentID strin
 		return nil, err
 	}
 	if prefetch {
-		current, err := v.resolve(ctx, parentPath)
-		if err != nil {
-			return nil, err
-		}
-		if !current.IsDir || current.ID != parentID {
-			return nil, fmt.Errorf("vfs: discard stale directory prefetch path=%q id=%q current_id=%q", parentPath, parentID, current.ID)
+		if !v.isCurrentPrefetchDir(parentPath, parentID) {
+			return nil, fmt.Errorf("vfs: discard stale directory prefetch path=%q id=%q", parentPath, parentID)
 		}
 	}
 	v.updateOverlay(parentPath, entries)
@@ -150,6 +146,9 @@ func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []
 			return
 		}
 		childPath := joinVirtual(parentPath, dir.Name)
+		if !v.isCurrentPrefetchDir(childPath, dir.ID) {
+			continue
+		}
 		if !v.markDirPrefetch(childPath) {
 			continue
 		}
@@ -159,6 +158,11 @@ func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []
 		case <-ctx.Done():
 			v.finishDirPrefetch(childPath)
 			return
+		}
+		if !v.isCurrentPrefetchDir(childPath, dir.ID) {
+			v.finishDirPrefetch(childPath)
+			<-v.dirPrefetchSem
+			continue
 		}
 		if v.prefetchOneDir(ctx, childPath, dir.ID) {
 			v.markDirPrefetchComplete(childPath)
@@ -211,6 +215,13 @@ func (v *VFS) markDirPrefetchComplete(path string) {
 	v.dirPrefetchMu.Unlock()
 }
 
+func (v *VFS) suppressDirPrefetch(path string) {
+	path = cleanVirtual(path)
+	v.dirPrefetchMu.Lock()
+	v.dirPrefetched[path] = time.Now()
+	v.dirPrefetchMu.Unlock()
+}
+
 func (v *VFS) finishDirPrefetch(path string) {
 	path = cleanVirtual(path)
 	v.dirPrefetchMu.Lock()
@@ -225,6 +236,17 @@ func (v *VFS) hasFreshListCache(path string) bool {
 	cached, ok := v.lists[path]
 	v.mu.RUnlock()
 	return ok && now.Before(cached.expires)
+}
+
+func (v *VFS) isCurrentPrefetchDir(path, id string) bool {
+	path = cleanVirtual(path)
+	if v.isUnavailable(path) {
+		return false
+	}
+	v.mu.RLock()
+	entry, ok := v.entries[path]
+	v.mu.RUnlock()
+	return ok && entry.IsDir && entry.ID == id
 }
 
 func (v *VFS) dirPrefetchCtx(fallback context.Context) context.Context {
