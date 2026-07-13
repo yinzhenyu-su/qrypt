@@ -276,6 +276,64 @@ func TestSourceSliceMD5HexSmallFileUsesSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestUploadSliceMD5UsesFileMD5ThroughTenMB(t *testing.T) {
+	fileMD5 := "0123456789ABCDEF0123456789ABCDEF"
+	if got := uploadSliceMD5(fileMD5, "different", int64(uploadPartSize)); got != fileMD5 {
+		t.Fatalf("slice md5 = %s, want file md5 for <=10MB", got)
+	}
+	if got := uploadSliceMD5(fileMD5, "different", int64(uploadPartSize)+1); got != "different" {
+		t.Fatalf("slice md5 = %s, want computed slice md5 above 10MB", got)
+	}
+}
+
+func TestNonRetryableUploadError(t *testing.T) {
+	if !nonRetryableUploadError(http.StatusForbidden, []byte(`{"code":"SliceMd5DoesNotMatch"}`)) {
+		t.Fatal("SliceMd5DoesNotMatch should be non-retryable")
+	}
+	if !nonRetryableUploadError(http.StatusForbidden, []byte(`{"code":"InvalidPartSize"}`)) {
+		t.Fatal("InvalidPartSize should be non-retryable")
+	}
+	if nonRetryableUploadError(http.StatusServiceUnavailable, []byte(`{"code":"SliceMd5DoesNotMatch"}`)) {
+		t.Fatal("5xx should remain retryable")
+	}
+}
+
+func TestBatchTaskInfosIncludesEscapedFileName(t *testing.T) {
+	got, err := batchTaskInfos(batchTaskInfo{
+		FileID:   123,
+		FileName: `未命名 "文件夹"`,
+		IsFolder: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"fileId":123,"fileName":"未命名 \"文件夹\"","isFolder":1}]`
+	if got != want {
+		t.Fatalf("taskInfos = %s, want %s", got, want)
+	}
+}
+
+func TestBatchTaskResponseError(t *testing.T) {
+	if err := batchTaskResponseError("DELETE", BatchTaskResp{ResCode: 0}); err != nil {
+		t.Fatalf("success response returned error: %v", err)
+	}
+	err := batchTaskResponseError("DELETE", BatchTaskResp{ResCode: 123, ResMessage: "删除失败"})
+	if err == nil || !strings.Contains(err.Error(), "删除失败") {
+		t.Fatalf("error = %v, want response message", err)
+	}
+}
+
+func TestBatchTaskTraceResponse(t *testing.T) {
+	got := batchTaskTraceResponse("DELETE", BatchTaskResp{
+		ResCode:    123,
+		ResMessage: "删除失败",
+		TaskID:     "task-1",
+	})
+	if got["task_type"] != "DELETE" || got["res_code"] != 123 || got["res_message"] != "删除失败" || got["task_id"] != "task-1" {
+		t.Fatalf("trace response = %#v", got)
+	}
+}
+
 func TestSourceMD5HexFallbackStreamsSource(t *testing.T) {
 	source := plainReadOnlySource{data: []byte("fallback")}
 	got, err := sourceMD5Hex(context.Background(), source, source.Size())

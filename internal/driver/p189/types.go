@@ -41,7 +41,7 @@ type DownResp struct {
 
 // UploadUrlsResp contains pre-signed upload URLs.
 type UploadUrlsResp struct {
-	Code       string          `json:"code"`
+	Code       string                `json:"code"`
 	UploadUrls map[string]uploadPart `json:"uploadUrls"`
 }
 
@@ -61,6 +61,12 @@ type UploadCommitResp struct {
 type MkdirResp struct {
 	XMLName xml.Name `json:"-" xml:"folder"`
 	ID      int64    `json:"id" xml:"id"`
+}
+
+type BatchTaskResp struct {
+	ResCode    int    `json:"res_code" xml:"res_code"`
+	ResMessage string `json:"res_message" xml:"res_message"`
+	TaskID     string `json:"taskId" xml:"taskId"`
 }
 
 type CapacityResp struct {
