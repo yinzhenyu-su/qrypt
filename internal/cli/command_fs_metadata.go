@@ -11,7 +11,7 @@ func newFsStatCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "stat REMOTE",
 		Short:             "Show path metadata",
-		Args:              cobra.ExactArgs(1),
+		Args:              exactNamedArgs("REMOTE"),
 		RunE:              runStat,
 		ValidArgsFunction: noFileCompletions,
 	}
@@ -42,7 +42,7 @@ func newFsMkdirCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:               "mkdir REMOTE",
 		Short:             "Create a directory",
-		Args:              cobra.ExactArgs(1),
+		Args:              exactNamedArgs("REMOTE"),
 		RunE:              runMkdir,
 		ValidArgsFunction: noFileCompletions,
 	}
@@ -63,7 +63,7 @@ func newFsRmCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "rm REMOTE",
 		Short:             "Remove a file or empty directory",
-		Args:              cobra.ExactArgs(1),
+		Args:              exactNamedArgs("REMOTE"),
 		RunE:              runRm,
 		ValidArgsFunction: noFileCompletions,
 	}
@@ -102,7 +102,7 @@ func newFsMvCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:               "mv SOURCE DESTINATION",
 		Short:             "Rename or move a path",
-		Args:              cobra.ExactArgs(2),
+		Args:              exactNamedArgs("SOURCE", "DESTINATION"),
 		RunE:              runMv,
 		ValidArgsFunction: noFileCompletions,
 	}

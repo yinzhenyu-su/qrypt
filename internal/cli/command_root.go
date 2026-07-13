@@ -24,6 +24,7 @@ When --config is omitted, qrypt searches ./qrypt.toml, ~/.qrypt/qrypt.toml,
 then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 (default: ~/.config/qrypt/qrypt.toml) on Unix, or
 %AppData%\qrypt\qrypt.toml on Windows.`,
+		Args: commandGroupArgs(nil),
 		RunE: func(c *cobra.Command, args []string) error {
 			return c.Help()
 		},
@@ -35,6 +36,7 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(newFsCmd())
 	cmd.AddCommand(newDebugCmd())
 	cmd.AddCommand(newVersionCmd(build))
+	installFlagErrorHelp(cmd)
 
 	return cmd
 }

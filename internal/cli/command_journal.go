@@ -52,7 +52,7 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "Inspect offline upload journal",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cacheDir, _ := cmd.Flags().GetString("cache-dir")
 			mountName, _ := cmd.Flags().GetString("mount")

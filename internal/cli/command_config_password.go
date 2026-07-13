@@ -25,7 +25,7 @@ Use with a config file (reads encryption settings from the named mount):
 
 Or compute directly from raw inputs (no config file needed):
   qrypt config export-rclone-password --password-file ./password.txt --salt "mysalt"`,
-		Args: cobra.MaximumNArgs(1),
+		Args: maxArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rawPassword, direct, err := directPasswordFromFlags(cmd)
 			if err != nil {

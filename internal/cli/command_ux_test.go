@@ -133,3 +133,67 @@ func TestDebugRequiredFlags(t *testing.T) {
 		t.Fatal("expected xfer test without source/dest to fail")
 	}
 }
+
+func TestReadableCommandErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "removed inspect",
+			args: []string{"debug", "inspect"},
+			want: "debug inspect was removed; use 'qrypt debug collect REMOTE --socket PATH'",
+		},
+		{
+			name: "missing debug socket",
+			args: []string{"debug", "collect"},
+			want: "--socket PATH is required for runtime debug commands",
+		},
+		{
+			name: "missing fs copy args",
+			args: []string{"fs", "copy"},
+			want: "missing SOURCE and DESTINATION",
+		},
+		{
+			name: "missing fs copy destination",
+			args: []string{"fs", "copy", "/src"},
+			want: "missing DESTINATION",
+		},
+		{
+			name: "missing bundle output",
+			args: []string{"debug", "bundle", "--socket", "/tmp/qrypt.sock"},
+			want: "missing --out FILE",
+		},
+		{
+			name: "unknown fs subcommand",
+			args: []string{"fs", "copie"},
+			want: `unknown command "copie" for "qrypt fs"`,
+		},
+		{
+			name: "removed debug driver",
+			args: []string{"debug", "driver"},
+			want: "debug driver was removed",
+		},
+		{
+			name: "unknown flag",
+			args: []string{"fs", "list", "--bad"},
+			want: "Run 'qrypt fs list --help' for valid flags.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := NewRootCommand()
+			root.SetOut(&bytes.Buffer{})
+			root.SetErr(&bytes.Buffer{})
+			root.SetArgs(tt.args)
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("expected error for args %#v", tt.args)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want to contain %q", err.Error(), tt.want)
+			}
+		})
+	}
+}

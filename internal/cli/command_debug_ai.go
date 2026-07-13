@@ -121,7 +121,7 @@ func newDebugCollectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect [REMOTE]",
 		Short: "Collect AI-oriented diagnostic JSON",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  maxArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) == 1 {
@@ -142,40 +142,11 @@ func newDebugCollectCmd() *cobra.Command {
 	return cmd
 }
 
-func newDebugInspectCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:               "inspect REMOTE",
-		Short:             "Collect AI-oriented diagnostics for one path",
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: noFileCompletions,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			eventLimit, err := nonNegativeIntFlag(cmd, "events-limit")
-			if err != nil {
-				return err
-			}
-			report := newDebugAIReport(cmd.Context(), "inspect", cleanDebugPath(args[0]))
-			dest, _ := cmd.Flags().GetString("dest")
-			report.DestinationPath = cleanDebugPath(dest)
-			report.Inspect = debugAIInspectPath(cmd.Context(), report.Path, eventLimit, &report.Errors)
-			addInspectDiagnostics(&report.Diagnostics, report.Inspect)
-			if report.DestinationPath != "" {
-				report.Destination = debugAIInspectPath(cmd.Context(), report.DestinationPath, eventLimit, &report.Errors)
-				addInspectDiagnostics(&report.Diagnostics, report.Destination)
-				debugGetJSON(cmd.Context(), transferContextEndpoint(report.Path, report.DestinationPath), &report.TransferContext, &report.Errors)
-			}
-			return writePrettyJSON(cmd.OutOrStdout(), report)
-		},
-	}
-	cmd.Flags().Int("events-limit", 100, "maximum recent warn/error events for the path")
-	cmd.Flags().String("dest", "", "optional destination path for transfer diagnostics")
-	return cmd
-}
-
 func newDebugWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch [REMOTE]",
 		Short: "Sample debug state during a reproduction window",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  maxArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) == 1 {

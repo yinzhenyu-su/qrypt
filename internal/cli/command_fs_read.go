@@ -19,7 +19,7 @@ func newFsListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "list [REMOTE]",
 		Short:             "List a directory",
-		Args:              cobra.MaximumNArgs(1),
+		Args:              maxArgs(1),
 		RunE:              runList,
 		ValidArgsFunction: noFileCompletions,
 	}
@@ -63,7 +63,7 @@ func newFsCatCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:               "cat REMOTE",
 		Short:             "Write a remote file to stdout",
-		Args:              cobra.ExactArgs(1),
+		Args:              exactNamedArgs("REMOTE"),
 		RunE:              runCat,
 		ValidArgsFunction: noFileCompletions,
 	}
@@ -89,12 +89,7 @@ func newFsGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get REMOTE LOCAL",
 		Short: "Download a remote file or directory",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 2 {
-				return fmt.Errorf("requires REMOTE path to download and LOCAL path to save to")
-			}
-			return nil
-		},
+		Args:  exactNamedArgs("REMOTE", "LOCAL"),
 		RunE:  runGet,
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 0 {
@@ -321,5 +316,3 @@ func (p *progressBar) done(dirName string) {
 	}
 	fmt.Fprintf(os.Stderr, "\r  [%s] %d/%d  %s\n", strings.Repeat("#", 20), p.completed, p.total, summary)
 }
-
-

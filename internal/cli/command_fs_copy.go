@@ -12,7 +12,7 @@ func newFsCopyCmd() *cobra.Command {
 		Use:               "copy SOURCE DESTINATION",
 		Aliases:           []string{"cp"},
 		Short:             "Copy a remote file directly between mounted backends",
-		Args:              cobra.ExactArgs(2),
+		Args:              exactNamedArgs("SOURCE", "DESTINATION"),
 		RunE:              runFsCopy,
 		ValidArgsFunction: noFileCompletions,
 	}

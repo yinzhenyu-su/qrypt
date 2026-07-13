@@ -49,7 +49,7 @@ window:
 ```powershell
 $socket = "$env:TEMP\qrypt.sock"
 qrypt.exe debug collect --socket $socket
-qrypt.exe debug inspect /local/example.txt --socket $socket
+qrypt.exe debug collect /local/example.txt --socket $socket
 qrypt.exe debug raw health --socket $socket
 ```
 
@@ -66,10 +66,11 @@ Use `collect` when you want a complete snapshot:
 go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock
 ```
 
-Use `inspect` when a specific file or directory is involved:
+Pass a path to `collect` when a specific file or directory is involved. The
+report combines the global snapshot with path-focused diagnostics:
 
 ```sh
-go run ./cmd/qrypt debug inspect /baiduyun/path/file.html --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug collect /baiduyun/path/file.html --socket /tmp/qrypt.sock
 ```
 
 For a transfer or cross-mount copy problem, provide both endpoints. The report
@@ -77,15 +78,7 @@ keeps source and destination diagnostics separate and includes mount-pair
 capabilities:
 
 ```sh
-go run ./cmd/qrypt debug inspect /local/source.bin --dest /quark/archive/source.bin --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug collect /local/source.bin --dest /quark/archive/source.bin --socket /tmp/qrypt.sock
-```
-
-`collect [REMOTE]` combines the global snapshot with a path-focused
-inspection:
-
-```sh
-go run ./cmd/qrypt debug collect /baiduyun/path/file.html --socket /tmp/qrypt.sock
 ```
 
 Use `watch` while reproducing timing-sensitive problems such as repeated
@@ -112,7 +105,7 @@ The JSON reports include:
 
 `bundle` is the preferred artifact to share with an AI assistant or developer.
 It includes `collect.json`, `diagnostics.json`, raw endpoint outputs, and
-`inspect.json` when a path is provided:
+path diagnostics when a path is provided:
 
 ```sh
 go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --out /tmp/qrypt-debug.zip

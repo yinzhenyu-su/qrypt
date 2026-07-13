@@ -8,10 +8,8 @@ func newFsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fs",
 		Short: "Run one-shot filesystem operations",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
-		},
+		Args:  commandGroupArgs(nil),
+		RunE:  showHelp,
 	}
 	withPersistentRuntimeConfigFlag(cmd)
 	cmd.AddCommand(newFsListCmd())
