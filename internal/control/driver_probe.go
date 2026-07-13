@@ -12,9 +12,18 @@ func driverProbeRootID(ctx context.Context, d drive.Driver) string {
 			return rootID
 		}
 	}
-	entries, err := d.List(ctx, "")
-	if err == nil && len(entries) > 0 && entries[0].ParentID != "" {
-		return entries[0].ParentID
+	for _, candidate := range []string{"", "root", "-11", "0"} {
+		entries, err := d.List(ctx, candidate)
+		if err != nil {
+			continue
+		}
+		if candidate != "" {
+			return candidate
+		}
+		if len(entries) > 0 && entries[0].ParentID != "" {
+			return entries[0].ParentID
+		}
+		return ""
 	}
 	return "root"
 }
