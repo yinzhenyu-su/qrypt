@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -62,6 +63,7 @@ type Driver struct {
 	lastErrorMu        sync.Mutex
 	lastError          string
 	instantUploadCount int64
+	trace              *traceutil.Buffer
 }
 
 type Options struct {
@@ -187,6 +189,7 @@ func New(opts Options) *Driver {
 		useOnlineAPI: opts.UseOnlineAPI,
 		downloadUA:   downloadUA,
 		tokenSource:  "config",
+		trace:        traceutil.NewBuffer(500),
 	}
 }
 
@@ -291,7 +294,9 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		}
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%s", offset, end))
 	}
+	start := time.Now()
 	resp, err := d.httpClient.Do(req)
+	d.recordHTTP(ctx, "download", req, resp, start, map[string]any{"range": req.Header.Get("Range")}, err)
 	if err != nil {
 		d.downloadCache.Delete(entry.ID)
 		err = fmt.Errorf("baidu_netdisk: read: %w", err)
@@ -463,6 +468,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.trace.Events(since), nil
+}
+
 func (d *Driver) statRoot(ctx context.Context) (drive.Entry, error) {
 	parent := path.Dir(d.rootPath)
 	name := path.Base(d.rootPath)
@@ -531,7 +540,9 @@ func (d *Driver) resolveDownloadRedirect(ctx context.Context, u string) (string,
 		return "", err
 	}
 	req.Header.Set("User-Agent", d.downloadUA)
+	start := time.Now()
 	resp, err := client.Do(req)
+	d.recordHTTP(ctx, "resolve_download_redirect", req, resp, start, nil, err)
 	if err != nil {
 		return "", fmt.Errorf("baidu_netdisk: download redirect: %w", err)
 	}
@@ -611,7 +622,10 @@ func (d *Driver) doRequest(ctx context.Context, method, rawURL string, params, f
 	if len(form) > 0 {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
+	start := time.Now()
 	resp, err := d.httpClient.Do(req)
+	request := traceutil.MergeRequest(traceutil.RequestFields(params), traceutil.RequestFields(form))
+	d.recordHTTP(ctx, u.Path, req, resp, start, request, err)
 	if err != nil {
 		return err
 	}
@@ -726,7 +740,9 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.ContentLength = int64(body.Len())
+	start := time.Now()
 	resp, err := d.httpClient.Do(req)
+	d.recordHTTP(ctx, "upload_part", req, resp, start, map[string]any{"part_seq": partSeq, "bytes": req.ContentLength}, err)
 	if err != nil {
 		return fmt.Errorf("baidu_netdisk: upload part %d: %w", partSeq, err)
 	}
@@ -871,7 +887,9 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 	if err != nil {
 		return err
 	}
+	start := time.Now()
 	resp, err := d.httpClient.Do(req)
+	d.recordHTTP(ctx, "token", req, resp, start, nil, err)
 	if err != nil {
 		return err
 	}
@@ -884,6 +902,23 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 		return fmt.Errorf("http status %d: %s", resp.StatusCode, string(data))
 	}
 	return json.Unmarshal(data, out)
+}
+
+func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Request, resp *http.Response, start time.Time, request map[string]any, err error) {
+	event := drive.DebugTraceEvent{
+		Operation: operation,
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Duration:  time.Since(start).String(),
+		Request:   request,
+	}
+	if resp != nil {
+		event.Status = resp.StatusCode
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	d.trace.Record(ctx, event)
 }
 
 func (d *Driver) setLastError(err error) {
@@ -1026,5 +1061,6 @@ var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
+var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)

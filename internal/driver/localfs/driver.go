@@ -63,6 +63,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return nil, nil
+}
+
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
 }
@@ -180,4 +184,5 @@ var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
+var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.RemoteNameResolver = (*Driver)(nil)

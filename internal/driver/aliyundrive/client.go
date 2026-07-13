@@ -14,8 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/retry"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 const (
@@ -40,6 +42,7 @@ type client struct {
 	deviceID     string
 	signature    string
 	onRefresh    func(accessToken, refreshToken string)
+	trace        *traceutil.Buffer
 }
 
 type clientOptions struct {
@@ -66,6 +69,7 @@ func newClient(refreshToken string, opts clientOptions) *client {
 		apiBaseURL:   apiBaseURL,
 		authURL:      authURL,
 		refreshToken: refreshToken,
+		trace:        traceutil.NewBuffer(500),
 	}
 }
 
@@ -242,20 +246,50 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	if accessToken != "" {
 		req.Header.Set("Authorization", "Bearer\t"+accessToken)
 	}
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   traceutil.BodyFields(body),
+			Error:     err.Error(),
+		})
 		return err
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceutil.BodyFields(body),
+			Error:     err.Error(),
+		})
 		return err
+	}
+	event := drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   traceutil.BodyFields(body),
+		Response:  map[string]any{"bytes": len(respBody)},
 	}
 	var apiErr apiError
 	_ = json.Unmarshal(respBody, &apiErr)
 	if resp.StatusCode >= 400 || apiErr.Code != "" {
+		event.Response = map[string]any{"bytes": len(respBody), "body_snippet": traceutil.Snippet(respBody)}
+		c.recordTrace(ctx, event)
 		return &apiStatusError{status: resp.StatusCode, code: apiErr.Code, message: apiErr.Message}
 	}
+	c.recordTrace(ctx, event)
 	if result == nil || len(respBody) == 0 {
 		return nil
 	}
@@ -263,6 +297,14 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 		return fmt.Errorf("aliyundrive: decode response: %w", err)
 	}
 	return nil
+}
+
+func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
+	c.trace.Record(ctx, event)
+}
+
+func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
+	return c.trace.Events(since)
 }
 
 func requestID() string {

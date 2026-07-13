@@ -3,11 +3,14 @@ package p189
 import (
 	"context"
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +20,7 @@ import (
 
 const timeFormat = "2006-01-02 15:04:05"
 const sliceMD5Size = 1 << 20
+const uploadPartSize = 10 * 1024 * 1024
 
 type Driver struct {
 	cl       *client
@@ -85,9 +89,10 @@ func (d *Driver) Init(ctx context.Context) error {
 		return fmt.Errorf("189: login init: %w", err)
 	}
 	if d.cl.username != "" {
-		if err := d.cl.getSessionKey(ctx); err != nil {
-			return fmt.Errorf("189: get session key: %w", err)
-		}
+		// SessionKey is required by upload APIs, but OpenList-compatible
+		// read/list flows do not require it. Treat it as best-effort during
+		// Init so read-only auth/list checks can still validate credentials.
+		_ = d.cl.getSessionKey(ctx)
 	}
 	if d.rootID == 0 {
 		rootID := int64(-11)
@@ -156,32 +161,112 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if err != nil {
 		return nil, err
 	}
+	rawURL, err = d.resolveDownloadURL(ctx, normalizeDownloadURL(rawURL))
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	if size > 0 {
 		end := offset + size - 1
-		if entry.Size > 0 && end >= entry.Size {
-			end = entry.Size - 1
-		}
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
 	} else if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "download",
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  "0s",
+			Request:   map[string]any{"offset": offset, "size": size, "range": req.Header.Get("Range")},
+			Error:     err.Error(),
+		})
 		return nil, fmt.Errorf("189: read: %w", err)
 	}
 	if resp.StatusCode == http.StatusPartialContent || resp.StatusCode == http.StatusOK {
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "download",
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Request:   map[string]any{"offset": offset, "size": size, "range": req.Header.Get("Range")},
+		})
 		return d.limiter.LimitDownload(ctx, resp.Body), nil
 	}
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && offset >= entry.Size {
 		resp.Body.Close()
 		return io.NopCloser(strings.NewReader("")), nil
 	}
+	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	return nil, fmt.Errorf("189: read: %s", resp.Status)
+	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "download",
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Request:   map[string]any{"offset": offset, "size": size, "range": req.Header.Get("Range")},
+		Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+	})
+	return nil, fmt.Errorf("189: read: %s body=%q", resp.Status, responseSnippet(raw))
+}
+
+func (d *Driver) resolveDownloadURL(ctx context.Context, rawURL string) (string, error) {
+	client := &http.Client{
+		Jar: d.cl.hc.Jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "resolve_download_url",
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  "0s",
+			Error:     err.Error(),
+		})
+		return "", fmt.Errorf("189: resolve download url: %w", err)
+	}
+	defer resp.Body.Close()
+	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "resolve_download_url",
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Response:  map[string]any{"location": normalizeDownloadURL(resp.Header.Get("Location"))},
+	})
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusTemporaryRedirect {
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return "", fmt.Errorf("189: resolve download url: redirect without location")
+		}
+		return normalizeDownloadURL(loc), nil
+	}
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
+		return rawURL, nil
+	}
+	return "", fmt.Errorf("189: resolve download url: %s", resp.Status)
+}
+
+func normalizeDownloadURL(rawURL string) string {
+	if strings.HasPrefix(rawURL, "//") {
+		return "https:" + rawURL
+	}
+	if strings.HasPrefix(rawURL, "http://") {
+		return "https://" + strings.TrimPrefix(rawURL, "http://")
+	}
+	return rawURL
 }
 
 func (d *Driver) resolvePath(ctx context.Context, parentID int64, p string) (int64, error) {
@@ -227,62 +312,150 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	uploadFileID, _, err := d.cl.initUpload(ctx, parent, name, size, fileMD5, sliceMD5)
+	uploadFileID, fileDataExists, err := d.cl.initUpload(ctx, parent, name, size, fileMD5, sliceMD5)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	partCount := 1
-	urls, err := d.cl.uploadData(ctx, uploadFileID, partCount)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	var partErr error
-	for _, p := range urls {
+	if !fileDataExists {
+		partInfo, err := uploadPartInfo(fileMD5)
+		if err != nil {
+			return drive.Entry{}, err
+		}
+		urls, err := d.cl.uploadData(ctx, uploadFileID, partInfo)
+		if err != nil {
+			return drive.Entry{}, err
+		}
+		part := urls["partNumber_1"]
+		if part.RequestURL == "" {
+			return drive.Entry{}, fmt.Errorf("189: upload urls missing partNumber_1")
+		}
 		body, err := source.Open(ctx)
 		if err != nil {
-			partErr = fmt.Errorf("189: upload source open: %w", err)
-			break
+			return drive.Entry{}, fmt.Errorf("189: upload source open: %w", err)
 		}
 		uploadBody := drive.NewUploadProgressReader(req.Progress, io.LimitReader(body, size))
 		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.RequestURL, uploadBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, part.RequestURL, uploadBody)
 		if err != nil {
 			body.Close()
-			partErr = err
-			break
+			return drive.Entry{}, err
 		}
 		req.ContentLength = size
-		req.Header.Set("Content-Type", "application/octet-stream")
+		applyUploadHeaders(req, part.RequestHeader)
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/octet-stream")
+		}
 		resp, err := d.cl.hc.Do(req)
 		closeErr := body.Close()
 		if err != nil {
-			partErr = err
-			break
+			d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+				Operation: "upload_part",
+				Method:    req.Method,
+				URL:       traceURL(req.URL),
+				Request:   map[string]any{"bytes": size, "headers": headerKeys(req.Header)},
+				Error:     err.Error(),
+			})
+			return drive.Entry{}, err
 		}
-		resp.Body.Close()
 		if closeErr != nil {
-			partErr = closeErr
-			break
+			resp.Body.Close()
+			return drive.Entry{}, closeErr
 		}
 		if resp.StatusCode != http.StatusOK {
-			partErr = fmt.Errorf("189: upload part: %s", resp.Status)
-			break
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+				Operation: "upload_part",
+				Method:    req.Method,
+				URL:       traceURL(req.URL),
+				Status:    resp.StatusCode,
+				Request:   map[string]any{"bytes": size, "headers": headerKeys(req.Header)},
+				Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			})
+			return drive.Entry{}, fmt.Errorf("189: upload part: %s body=%q", resp.Status, responseSnippet(raw))
 		}
-	}
-	if partErr != nil {
-		return drive.Entry{}, partErr
+		resp.Body.Close()
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "upload_part",
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Request:   map[string]any{"bytes": size, "headers": headerKeys(req.Header)},
+		})
 	}
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
-	fileID, err := d.cl.commitUpload(ctx, uploadFileID)
+	if err := d.cl.commitUpload(ctx, uploadFileID, fileMD5, sliceMD5); err != nil {
+		return drive.Entry{}, err
+	}
+	fileEntry, err := d.waitUploadedFile(ctx, parent, name)
 	if err != nil {
 		return drive.Entry{}, err
 	}
 	return drive.Entry{
-		ID:       strconv.FormatInt(fileID, 10),
+		ID:       strconv.FormatInt(fileEntry.ID, 10),
 		ParentID: parentID,
-		Name:     name,
-		Size:     size,
+		Name:     fileEntry.Name,
+		Size:     fileEntry.Size,
+		ModTime:  parseTime(fileEntry.LastOpTime),
 	}, nil
+}
+
+func uploadPartInfo(fileMD5 string) (string, error) {
+	sum, err := hex.DecodeString(fileMD5)
+	if err != nil {
+		return "", fmt.Errorf("189: decode file md5: %w", err)
+	}
+	return "1-" + base64.StdEncoding.EncodeToString(sum), nil
+}
+
+func applyUploadHeaders(req *http.Request, raw string) {
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		decoded = raw
+	}
+	for _, item := range strings.Split(decoded, "&") {
+		if item == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || key == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
+}
+
+func headerKeys(headers http.Header) []string {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (d *Driver) waitUploadedFile(ctx context.Context, parentID int64, name string) (File, error) {
+	var last []File
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		_, files, err := d.cl.listFiles(ctx, parentID)
+		if err != nil {
+			return File{}, err
+		}
+		last = files
+		for _, file := range files {
+			if file.Name == name {
+				return file, nil
+			}
+		}
+	}
+	names := make([]string, len(last))
+	for i, file := range last {
+		names[i] = file.Name
+	}
+	return File{}, fmt.Errorf("189: uploaded file %q not visible after commit; files=%v", name, names)
 }
 
 func sourceMD5Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
@@ -406,6 +579,32 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 		Total: cap.CloudCapacityInfo.TotalSize,
 		Free:  cap.CloudCapacityInfo.FreeSize,
 	}, nil
+}
+
+func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
+	credentialSource := "none"
+	switch {
+	case d.cl.cookie != "":
+		credentialSource = "cookie"
+	case d.cl.username != "":
+		credentialSource = "username_password"
+	}
+	return drive.DebugSnapshot{
+		Driver:      "189",
+		Health:      drive.HealthLevelOK,
+		GeneratedAt: time.Now(),
+		Stats: map[string]any{
+			drive.DebugStatRootID:   strconv.FormatInt(d.rootID, 10),
+			drive.DebugStatRootPath: d.rootPath,
+		},
+		Extra: map[string]any{
+			drive.DebugExtraCredentialSource: credentialSource,
+		},
+	}, nil
+}
+
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.cl.debugTrace(since), nil
 }
 
 func parseTime(s string) time.Time {

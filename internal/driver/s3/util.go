@@ -4,6 +4,7 @@ import (
 	"context"
 	stdpath "path"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -43,7 +44,9 @@ func (d *Driver) listV1(ctx context.Context, parentID string) ([]drive.Entry, er
 			Marker:    aws.String(marker),
 			Delimiter: aws.String("/"),
 		}
+		start := time.Now()
 		output, err := d.client.ListObjects(ctx, input)
+		d.recordSDK(ctx, "ListObjects", start, map[string]any{"bucket": d.bucket, "prefix": prefix, "delimiter": "/", "marker": marker}, err)
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +110,9 @@ func (d *Driver) listV2(ctx context.Context, parentID string) ([]drive.Entry, er
 			Delimiter:         aws.String("/"),
 			ContinuationToken: continuationToken,
 		}
+		start := time.Now()
 		output, err := d.client.ListObjectsV2(ctx, input)
+		d.recordSDK(ctx, "ListObjectsV2", start, map[string]any{"bucket": d.bucket, "prefix": prefix, "delimiter": "/", "continuation": continuationToken != nil}, err)
 		if err != nil {
 			return nil, err
 		}

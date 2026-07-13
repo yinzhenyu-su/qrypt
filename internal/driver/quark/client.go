@@ -2,6 +2,7 @@ package quark
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 const (
@@ -42,6 +45,7 @@ type client struct {
 	metaSem        chan struct{}
 	ossSem         chan struct{}
 	onCookieUpdate func(cookie string)
+	trace          *traceutil.Buffer
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -64,6 +68,7 @@ func newClient(cookie string, opts clientOptions) *client {
 		mgmtSem:        make(chan struct{}, 500),
 		metaSem:        make(chan struct{}, 500),
 		ossSem:         make(chan struct{}, ossMaxConcurrent),
+		trace:          traceutil.NewBuffer(500),
 	}
 }
 
@@ -175,7 +180,7 @@ func tryNextMgmtBase(err error) bool {
 	return strings.Contains(msg, "(Status 404)") || strings.Contains(msg, "(Status 405)")
 }
 
-func (c *client) request(method, path string, query map[string]string, body, result any) error {
+func (c *client) request(ctx context.Context, method, path string, query map[string]string, body, result any) error {
 	bases := []string{c.baseURL}
 	if isMgmtPath(path) && c.v2URL != c.baseURL {
 		bases = append(bases, c.v2URL)
@@ -183,7 +188,7 @@ func (c *client) request(method, path string, query map[string]string, body, res
 
 	var lastErr error
 	for _, base := range bases {
-		err := c.doRequest(method, base, path, query, body, result)
+		err := c.doRequest(ctx, method, base, path, query, body, result)
 		if err == nil {
 			return nil
 		}
@@ -196,7 +201,7 @@ func (c *client) request(method, path string, query map[string]string, body, res
 	return lastErr
 }
 
-func (c *client) doRequest(method, baseURL, path string, query map[string]string, body, result any) error {
+func (c *client) doRequest(ctx context.Context, method, baseURL, path string, query map[string]string, body, result any) error {
 	start := time.Now()
 	defer func() {
 		logging.L.Infof("[QUARK] API %s %s dur=%s", method, path, time.Since(start))
@@ -230,7 +235,7 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 			bodyReader = bytes.NewReader(jsonBody)
 		}
 
-		req, err := http.NewRequest(method, u.String(), bodyReader)
+		req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
 		if err != nil {
 			return fmt.Errorf("create request failed: %w", err)
 		}
@@ -243,8 +248,19 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 			req.Header.Set("Content-Type", "application/json")
 		}
 
+		httpStart := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			c.recordTrace(ctx, drive.DebugTraceEvent{
+				Operation: path,
+				Method:    req.Method,
+				URL:       traceutil.URL(req.URL),
+				Duration:  time.Since(httpStart).String(),
+				Attempt:   attempt + 1,
+				Retry:     attempt > 0,
+				Request:   traceutil.MergeRequest(traceutil.RequestFields(query), traceutil.BodyFields(body)),
+				Error:     err.Error(),
+			})
 			if attempt < httpMaxRetries && retryableHTTPError(err) {
 				time.Sleep(retry.ExponentialBackoff(attempt))
 				continue
@@ -255,7 +271,29 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
+			c.recordTrace(ctx, drive.DebugTraceEvent{
+				Operation: path,
+				Method:    req.Method,
+				URL:       traceutil.URL(req.URL),
+				Status:    resp.StatusCode,
+				Duration:  time.Since(httpStart).String(),
+				Attempt:   attempt + 1,
+				Retry:     attempt > 0,
+				Request:   traceutil.MergeRequest(traceutil.RequestFields(query), traceutil.BodyFields(body)),
+				Error:     readErr.Error(),
+			})
 			return fmt.Errorf("read response failed: %w", readErr)
+		}
+		event := drive.DebugTraceEvent{
+			Operation: path,
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(httpStart).String(),
+			Attempt:   attempt + 1,
+			Retry:     attempt > 0,
+			Request:   traceutil.MergeRequest(traceutil.RequestFields(query), traceutil.BodyFields(body)),
+			Response:  map[string]any{"bytes": len(bodyBytes)},
 		}
 		for _, cookie := range resp.Cookies() {
 			if cookie.Name == "__puus" || cookie.Name == "__pus" {
@@ -263,17 +301,24 @@ func (c *client) doRequest(method, baseURL, path string, query map[string]string
 			}
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt < httpMaxRetries {
+			c.recordTrace(ctx, event)
 			time.Sleep(retry.ExponentialBackoff(attempt))
 			continue
 		}
 		if result != nil {
 			if err := json.Unmarshal(bodyBytes, result); err != nil {
+				event.Error = err.Error()
+				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": traceutil.Snippet(bodyBytes)}
+				c.recordTrace(ctx, event)
 				return fmt.Errorf("parse response failed: %w", err)
 			}
 		}
 		if resp.StatusCode >= 400 {
+			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": traceutil.Snippet(bodyBytes)}
+			c.recordTrace(ctx, event)
 			return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
 		}
+		c.recordTrace(ctx, event)
 		return nil
 	}
 	return fmt.Errorf("max retries exceeded")
@@ -284,4 +329,12 @@ func (c *client) doDownload(req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", defaultUserAgent)
 	req.Header.Set("Referer", defaultReferer)
 	return c.downloadClient.Do(req)
+}
+
+func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
+	c.trace.Record(ctx, event)
+}
+
+func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
+	return c.trace.Events(since)
 }

@@ -11,9 +11,14 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 const (
@@ -41,6 +46,20 @@ type client struct {
 	pubKey     string
 	pkID       string
 	keyExpire  int64
+	traceMu    sync.Mutex
+	trace      []drive.DebugTraceEvent
+}
+
+type p189TraceRequestFieldsKey struct{}
+
+var sensitiveSnippetPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(sessionKey=)[^,\s"']+`),
+	regexp.MustCompile(`(?i)("sessionKey"\s*:\s*")[^"]+`),
+	regexp.MustCompile(`(?i)("downloadUrl"\s*:\s*")[^"]+`),
+	regexp.MustCompile(`(?i)("fileDownloadUrl"\s*:\s*")[^"]+`),
+	regexp.MustCompile(`(?i)("requestURL"\s*:\s*")[^"]+`),
+	regexp.MustCompile(`(?i)(Cookie:\s*)[^,\s"']+`),
+	regexp.MustCompile(`(?i)(token=)[^&\s"']+`),
 }
 
 func newClient(cookie, username, password string) *client {
@@ -53,6 +72,65 @@ func newClient(cookie, username, password string) *client {
 	}
 }
 
+func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
+	if op, ok := drive.DebugOperationFromContext(ctx); ok {
+		event.OpID = op.OpID
+		event.Step = op.Step
+		event.Name = op.Name
+	}
+	if event.At.IsZero() {
+		event.At = time.Now()
+	}
+	if event.Layer == "" {
+		event.Layer = "driver.http"
+	}
+	event.SensitiveMasked = true
+	c.traceMu.Lock()
+	defer c.traceMu.Unlock()
+	c.trace = append(c.trace, event)
+	if len(c.trace) > 500 {
+		c.trace = append([]drive.DebugTraceEvent(nil), c.trace[len(c.trace)-500:]...)
+	}
+}
+
+func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
+	c.traceMu.Lock()
+	defer c.traceMu.Unlock()
+	events := make([]drive.DebugTraceEvent, 0, len(c.trace))
+	for _, event := range c.trace {
+		if event.At.Before(since) {
+			continue
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func traceRequestFields(fields map[string]string) map[string]any {
+	if len(fields) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return map[string]any{"fields": keys}
+}
+
+func traceURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	out := *u
+	out.RawQuery = ""
+	out.ForceQuery = false
+	out.RawFragment = ""
+	out.Fragment = ""
+	out.User = nil
+	return out.String()
+}
+
 func (c *client) isLoggedIn() bool {
 	if c.cookie != "" {
 		return true
@@ -61,11 +139,11 @@ func (c *client) isLoggedIn() bool {
 }
 
 func (c *client) loginInit(ctx context.Context) error {
-	if c.username != "" {
-		return c.loginWithPassword(ctx)
-	}
 	if c.cookie != "" {
 		return c.loginWithCookie(ctx)
+	}
+	if c.username != "" {
+		return c.loginWithPassword(ctx)
 	}
 	return fmt.Errorf("189: no credentials")
 }
@@ -78,11 +156,26 @@ func (c *client) loginWithCookie(ctx context.Context) error {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
 	req.Header.Set("Cookie", c.cookie)
+	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "login_cookie",
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Error:     err.Error(),
+		})
 		return err
 	}
 	resp.Body.Close()
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "login_cookie",
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+	})
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("189: cookie login: %s", resp.Status)
 	}
@@ -169,6 +262,7 @@ func (c *client) loginWithPassword(ctx context.Context) error {
 	var loginResp struct {
 		Result int    `json:"result"`
 		Msg    string `json:"msg"`
+		ToURL  string `json:"toUrl"`
 	}
 	err = c.doPostWithHeaders(ctx, "https://open.e.189.cn/api/logbox/oauth2/loginSubmit.do", loginHeaders, map[string]string{
 		"version":         "v2.0",
@@ -197,7 +291,11 @@ func (c *client) loginWithPassword(ctx context.Context) error {
 		return fmt.Errorf("189: login failed: %s", loginResp.Msg)
 	}
 
-	mainReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://cloud.189.cn/web/main", nil)
+	nextURL := loginResp.ToURL
+	if nextURL == "" {
+		nextURL = "https://cloud.189.cn/web/main"
+	}
+	mainReq, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
 	if err != nil {
 		return err
 	}
@@ -329,15 +427,48 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: uri,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Error:     err.Error(),
+		})
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("189: upload request %s: %s", uri, resp.Status)
+		raw, _ := io.ReadAll(resp.Body)
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: uri,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+		})
+		return nil, fmt.Errorf("189: upload request %s: %s body=%q", uri, resp.Status, responseSnippet(raw))
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	event := drive.DebugTraceEvent{
+		Operation: uri,
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   traceRequestFields(form),
+		Response:  map[string]any{"bytes": len(raw)},
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	c.recordTrace(ctx, event)
+	return raw, err
 }
 
 func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string) ([]byte, error) {
@@ -355,15 +486,121 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Error:     err.Error(),
+		})
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+		})
+		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	event := drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   traceRequestFields(form),
+		Response:  map[string]any{"bytes": len(raw)},
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	c.recordTrace(ctx, event)
+	return raw, err
+}
+
+func responseSnippet(raw []byte) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) > 300 {
+		raw = raw[:300]
+	}
+	snippet := string(raw)
+	for _, pattern := range sensitiveSnippetPatterns {
+		snippet = pattern.ReplaceAllString(snippet, "${1}<masked>")
+	}
+	return snippet
+}
+
+func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.cookie != "" {
+		req.Header.Set("Cookie", c.cookie)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://cloud.189.cn/")
+	req.Header.Set("Accept", "application/json;charset=UTF-8")
+	q := req.URL.Query()
+	q.Set("noCache", noCache())
+	for k, v := range query {
+		q.Set(k, v)
+	}
+	req.URL.RawQuery = q.Encode()
+	start := time.Now()
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(query),
+			Error:     err.Error(),
+		})
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(query),
+			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+		})
 		return nil, fmt.Errorf("189: %s %s: %s", req.Method, req.URL, resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	event := drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   traceRequestFields(query),
+		Response:  map[string]any{"bytes": len(raw)},
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	c.recordTrace(ctx, event)
+	return raw, err
 }
 
 func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[string]string, form map[string]string, result any) error {
@@ -392,18 +629,55 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 	if origin, ok := headers["origin"]; ok {
 		req.Header.Set("Origin", origin)
 	}
+	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Error:     err.Error(),
+		})
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+		})
 		return fmt.Errorf("189: %s: %s", u, resp.Status)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Error:     err.Error(),
+		})
 		return err
 	}
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   traceRequestFields(form),
+		Response:  map[string]any{"bytes": len(raw)},
+	})
 	if result != nil {
 		if err := json.Unmarshal(raw, result); err != nil {
 			return fmt.Errorf("189: decode: %w", err)
@@ -428,6 +702,7 @@ func (c *client) doGet(ctx context.Context, u string, query map[string]string, r
 		q.Set(k, v)
 	}
 	req.URL.RawQuery = q.Encode()
+	req = req.WithContext(context.WithValue(req.Context(), p189TraceRequestFieldsKey{}, query))
 	return c.doReq(req, result)
 }
 
@@ -449,18 +724,55 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 	q := req.URL.Query()
 	q.Set("noCache", noCache())
 	req.URL.RawQuery = q.Encode()
+	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Error:     err.Error(),
+		})
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+		})
 		return fmt.Errorf("189: %s %s: %s", req.Method, req.URL, resp.Status)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		c.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   traceRequestFields(form),
+			Error:     err.Error(),
+		})
 		return fmt.Errorf("189: read response: %w", err)
 	}
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   traceRequestFields(form),
+		Response:  map[string]any{"bytes": len(raw)},
+	})
 	if len(raw) == 0 || result == nil {
 		return nil
 	}
@@ -472,18 +784,59 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 }
 
 func (c *client) doReq(req *http.Request, result any) error {
+	start := time.Now()
+	var request map[string]any
+	if fields, ok := req.Context().Value(p189TraceRequestFieldsKey{}).(map[string]string); ok {
+		request = traceRequestFields(fields)
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.recordTrace(req.Context(), drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Duration:  time.Since(start).String(),
+			Request:   request,
+			Error:     err.Error(),
+		})
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		c.recordTrace(req.Context(), drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   request,
+			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+		})
 		return fmt.Errorf("189: %s %s: %s", req.Method, req.URL, resp.Status)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		c.recordTrace(req.Context(), drive.DebugTraceEvent{
+			Operation: req.URL.Path,
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   request,
+			Error:     err.Error(),
+		})
 		return fmt.Errorf("189: read response: %w", err)
 	}
+	c.recordTrace(req.Context(), drive.DebugTraceEvent{
+		Operation: req.URL.Path,
+		Method:    req.Method,
+		URL:       traceURL(req.URL),
+		Status:    resp.StatusCode,
+		Duration:  time.Since(start).String(),
+		Request:   request,
+		Response:  map[string]any{"bytes": len(raw)},
+	})
 	if len(raw) == 0 {
 		return nil
 	}
@@ -515,58 +868,76 @@ func isAuthError(err error) bool {
 
 func (c *client) listFiles(ctx context.Context, folderID int64) (folders []Folder, files []File, err error) {
 	err = c.retryOnAuthError(ctx, func(ctx context.Context) error {
-		body, e := c.doPostRaw(ctx, listURL, map[string]string{
-			"pageSize":   "9999",
-			"pageNum":    "1",
-			"mediaType":  "0",
-			"folderId":   strconv.FormatInt(folderID, 10),
-			"iconOption": "5",
-			"orderBy":    "lastOpTime",
-			"descending": "true",
-		})
-		if e != nil {
-			return e
-		}
-		trimmed := bytes.TrimSpace(body)
-		if len(trimmed) == 0 {
-			return nil
-		}
-		if trimmed[0] == '<' {
-			var xmlResp xmlListFiles
-			if e := xml.Unmarshal(trimmed, &xmlResp); e != nil {
-				return fmt.Errorf("189: list xml decode: %w", e)
+		folders = nil
+		files = nil
+		for pageNum := 1; ; pageNum++ {
+			body, e := c.doGetRaw(ctx, listURL, map[string]string{
+				"pageSize":   "60",
+				"pageNum":    strconv.Itoa(pageNum),
+				"mediaType":  "0",
+				"folderId":   strconv.FormatInt(folderID, 10),
+				"iconOption": "5",
+				"orderBy":    "lastOpTime",
+				"descending": "true",
+			})
+			if e != nil {
+				return e
 			}
-			folders = make([]Folder, 0, len(xmlResp.FileList.Folders))
-			for _, f := range xmlResp.FileList.Folders {
-				folders = append(folders, Folder{
-					ID:         f.ID,
-					Name:       f.Name,
-					LastOpTime: f.CreateDate,
-				})
+			pageFolders, pageFiles, count, e := parseListFilesBody(body)
+			if e != nil {
+				return e
 			}
-			files = make([]File, 0, len(xmlResp.FileList.Files))
-			for _, f := range xmlResp.FileList.Files {
-				files = append(files, File{
-					ID:         f.ID,
-					Name:       f.Name,
-					Size:       f.Size,
-					LastOpTime: f.LastOpTime,
-				})
+			if count == 0 && len(pageFolders) == 0 && len(pageFiles) == 0 {
+				break
 			}
-			return nil
+			folders = append(folders, pageFolders...)
+			files = append(files, pageFiles...)
+			if count < 60 {
+				break
+			}
 		}
-		var resp ListResp
-		if e := json.Unmarshal(trimmed, &resp); e != nil {
-			return fmt.Errorf("189: list json decode: %w", e)
-		}
-		if resp.ResCode != 0 {
-			return fmt.Errorf("189: list: %s", resp.ResMessage)
-		}
-		folders = resp.FileListAO.FolderList
-		files = resp.FileListAO.FileList
 		return nil
 	})
 	return
+}
+
+func parseListFilesBody(body []byte) ([]Folder, []File, int, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, nil, 0, nil
+	}
+	if trimmed[0] == '<' {
+		var xmlResp xmlListFiles
+		if err := xml.Unmarshal(trimmed, &xmlResp); err != nil {
+			return nil, nil, 0, fmt.Errorf("189: list xml decode: %w", err)
+		}
+		folders := make([]Folder, 0, len(xmlResp.FileList.Folders))
+		for _, f := range xmlResp.FileList.Folders {
+			folders = append(folders, Folder{
+				ID:         f.ID,
+				Name:       f.Name,
+				LastOpTime: f.CreateDate,
+			})
+		}
+		files := make([]File, 0, len(xmlResp.FileList.Files))
+		for _, f := range xmlResp.FileList.Files {
+			files = append(files, File{
+				ID:         f.ID,
+				Name:       f.Name,
+				Size:       f.Size,
+				LastOpTime: f.LastOpTime,
+			})
+		}
+		return folders, files, len(folders) + len(files), nil
+	}
+	var resp ListResp
+	if err := json.Unmarshal(trimmed, &resp); err != nil {
+		return nil, nil, 0, fmt.Errorf("189: list json decode: %w", err)
+	}
+	if resp.ResCode != 0 {
+		return nil, nil, 0, fmt.Errorf("189: list: %s", resp.ResMessage)
+	}
+	return resp.FileListAO.FolderList, resp.FileListAO.FileList, resp.FileListAO.Count, nil
 }
 
 func (c *client) withRetry(ctx context.Context, fn func(context.Context) error) error {
@@ -608,12 +979,16 @@ func (c *client) createFolder(ctx context.Context, parentID int64, name string) 
 func (c *client) rename(ctx context.Context, fileID int64, name string, isDir bool) error {
 	return c.retryOnAuthError(ctx, func(ctx context.Context) error {
 		u := renameFileURL
+		idKey := "fileId"
+		nameKey := "destFileName"
 		if isDir {
 			u = renameFolderURL
+			idKey = "folderId"
+			nameKey = "destFolderName"
 		}
 		return c.doPost(ctx, u, map[string]string{
-			"fileId":   strconv.FormatInt(fileID, 10),
-			"destName": name,
+			idKey:   strconv.FormatInt(fileID, 10),
+			nameKey: name,
 		}, nil)
 	})
 }
@@ -631,39 +1006,39 @@ func (c *client) batchTask(ctx context.Context, taskType string, taskInfos strin
 	})
 }
 
-func (c *client) initUpload(ctx context.Context, parentID int64, name string, size int64, fileMd5, sliceMd5 string) (string, string, error) {
+func (c *client) initUpload(ctx context.Context, parentID int64, name string, size int64, fileMd5, sliceMd5 string) (string, bool, error) {
 	raw, err := c.uploadRequest(ctx, "/person/initMultiUpload", map[string]string{
 		"parentFolderId": strconv.FormatInt(parentID, 10),
 		"fileName":       name,
 		"fileSize":       strconv.FormatInt(size, 10),
+		"sliceSize":      strconv.FormatInt(uploadPartSize, 10),
 		"fileMd5":        fileMd5,
 		"sliceMd5":       sliceMd5,
 	})
 	if err != nil {
-		return "", "", err
+		return "", false, err
 	}
 	var result struct {
 		Code string `json:"code"`
-		ID   string `json:"id"`
 		Data struct {
-			UploadFileID string `json:"uploadFileId"`
-			FileData     string `json:"fileData"`
+			UploadFileID   string `json:"uploadFileId"`
+			FileDataExists int    `json:"fileDataExists"`
+			FileData       string `json:"fileData"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", "", fmt.Errorf("189: init upload decode: %w", err)
+		return "", false, fmt.Errorf("189: init upload decode: %w", err)
 	}
 	if result.Code != "SUCCESS" {
-		return "", "", fmt.Errorf("189: init upload: %s", result.Code)
+		return "", false, fmt.Errorf("189: init upload: %s", result.Code)
 	}
-	return result.Data.UploadFileID, result.Data.FileData, nil
+	return result.Data.UploadFileID, result.Data.FileDataExists == 1, nil
 }
 
-func (c *client) uploadData(ctx context.Context, uploadFileID string, partCount int) (map[string]uploadPart, error) {
-	raw, err := c.uploadRequest(ctx, "/person/uploadData", map[string]string{
+func (c *client) uploadData(ctx context.Context, uploadFileID string, partInfo string) (map[string]uploadPart, error) {
+	raw, err := c.uploadRequest(ctx, "/person/getMultiUploadUrls", map[string]string{
 		"uploadFileId": uploadFileID,
-		"partCount":    strconv.Itoa(partCount),
-		"partEtag":     "",
+		"partInfo":     partInfo,
 	})
 	if err != nil {
 		return nil, err
@@ -678,21 +1053,15 @@ func (c *client) uploadData(ctx context.Context, uploadFileID string, partCount 
 	return resp.UploadUrls, nil
 }
 
-func (c *client) commitUpload(ctx context.Context, uploadFileID string) (int64, error) {
-	raw, err := c.uploadRequest(ctx, "/person/commitMultiUpload", map[string]string{
+func (c *client) commitUpload(ctx context.Context, uploadFileID string, fileMd5 string, sliceMd5 string) error {
+	_, err := c.uploadRequest(ctx, "/person/commitMultiUploadFile", map[string]string{
 		"uploadFileId": uploadFileID,
+		"fileMd5":      fileMd5,
+		"sliceMd5":     sliceMd5,
+		"lazyCheck":    "1",
+		"opertype":     "3",
 	})
-	if err != nil {
-		return 0, err
-	}
-	var resp UploadCommitResp
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return 0, fmt.Errorf("189: commit upload decode: %w", err)
-	}
-	if resp.ResCode != 0 {
-		return 0, fmt.Errorf("189: commit upload: %s", resp.ResMessage)
-	}
-	return resp.ID, nil
+	return err
 }
 
 func (c *client) getCapacity(ctx context.Context) (*CapacityResp, error) {

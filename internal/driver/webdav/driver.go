@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -92,6 +93,7 @@ type Driver struct {
 	password string
 	client   *http.Client
 	limiter  *drive.BandwidthLimiter
+	trace    *traceutil.Buffer
 }
 
 // Options for creating a new WebDAV driver.
@@ -168,6 +170,7 @@ func New(opts Options) *Driver {
 				DisableCompression: false,
 			},
 		},
+		trace: traceutil.NewBuffer(500),
 	}
 }
 
@@ -259,7 +262,9 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		// size == 0 && offset > 0 — rest-of-file from offset.
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "read", req, resp, start, map[string]any{"range": req.Header.Get("Range")}, err)
 	if err != nil {
 		return nil, fmt.Errorf("webdav: read: %w", err)
 	}
@@ -285,7 +290,9 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	if err != nil {
 		return drive.Entry{}, err
 	}
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "mkdir", req, resp, start, nil, err)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("webdav: mkdir: %w", err)
 	}
@@ -351,7 +358,9 @@ func (d *Driver) spaceOnce(ctx context.Context) (drive.Space, error) {
 	req.Header.Set("Depth", "0")
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "space", req, resp, start, nil, err)
 	if err != nil {
 		return drive.Space{}, fmt.Errorf("webdav: space: %w", err)
 	}
@@ -404,13 +413,19 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.trace.Events(since), nil
+}
+
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	urlStr := d.resolveURL(entry.ID)
 	req, err := d.newRequest(ctx, http.MethodDelete, urlStr, nil)
 	if err != nil {
 		return err
 	}
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "remove", req, resp, start, nil, err)
 	if err != nil {
 		return fmt.Errorf("webdav: remove: %w", err)
 	}
@@ -440,7 +455,9 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 	if source.Size() > 0 {
 		req.ContentLength = source.Size()
 	}
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "put", req, resp, start, map[string]any{"bytes": source.Size()}, err)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("webdav: put: %w", err)
 	}
@@ -592,7 +609,9 @@ func (d *Driver) propfindOnce(ctx context.Context, urlStr string, depth int) ([]
 	req.Header.Set("Depth", fmt.Sprintf("%d", depth))
 	req.Header.Set("Content-Type", "application/xml")
 
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "propfind", req, resp, start, map[string]any{"depth": depth}, err)
 	if err != nil {
 		return nil, err
 	}
@@ -649,7 +668,9 @@ func (d *Driver) move(ctx context.Context, srcURL, destURL string) error {
 	}
 	req.Header.Set("Destination", destURL)
 	req.Header.Set("Overwrite", "F")
+	start := time.Now()
 	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "move", req, resp, start, map[string]any{"headers": traceutil.HeaderKeys(req.Header)}, err)
 	if err != nil {
 		return fmt.Errorf("webdav: move: %w", err)
 	}
@@ -670,6 +691,23 @@ func (d *Driver) newRequest(ctx context.Context, method, urlStr string, body io.
 		req.SetBasicAuth(d.username, d.password)
 	}
 	return req, nil
+}
+
+func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Request, resp *http.Response, start time.Time, request map[string]any, err error) {
+	event := drive.DebugTraceEvent{
+		Operation: operation,
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Duration:  time.Since(start).String(),
+		Request:   request,
+	}
+	if resp != nil {
+		event.Status = resp.StatusCode
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	d.trace.Record(ctx, event)
 }
 
 // ─── time parsing ────────────────────────────────────────────────────────
@@ -697,4 +735,5 @@ var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
+var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.SpaceQuerier = (*Driver)(nil)

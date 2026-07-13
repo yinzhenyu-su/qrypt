@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 
@@ -141,7 +142,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		return fmt.Errorf("quark: cookie is required")
 	}
 	var resp sortResp
-	if err := d.cl.request(http.MethodGet, "/file/sort", map[string]string{
+	if err := d.cl.request(ctx, http.MethodGet, "/file/sort", map[string]string{
 		"pdir_fid": d.rootID,
 		"_size":    "1",
 	}, nil, &resp); err != nil {
@@ -177,7 +178,7 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 	parentID = d.resolve(parentID)
 	pageSize := 100
 	var firstResp sortResp
-	err := d.cl.request(http.MethodGet, "/file/sort", map[string]string{
+	err := d.cl.request(ctx, http.MethodGet, "/file/sort", map[string]string{
 		"pdir_fid":             parentID,
 		"_size":                strconv.Itoa(pageSize),
 		"_page":                "1",
@@ -209,7 +210,7 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 			go func(page int) {
 				defer wg.Done()
 				var resp sortResp
-				err := d.cl.request(http.MethodGet, "/file/sort", map[string]string{
+				err := d.cl.request(ctx, http.MethodGet, "/file/sort", map[string]string{
 					"pdir_fid":             parentID,
 					"_size":                strconv.Itoa(pageSize),
 					"_page":                strconv.Itoa(page),
@@ -248,7 +249,7 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	start := time.Now()
-	downloadURL, err := d.downloadURL(entry.ID)
+	downloadURL, err := d.downloadURL(ctx, entry.ID)
 	if err != nil {
 		logging.L.DebugfEvery("quark.read_url.error", time.Second, "[QUARK] ReadURL fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(start))
 		return nil, err
@@ -263,6 +264,15 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	}
 	httpStart := time.Now()
 	resp, err := d.cl.doDownload(req)
+	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		Operation: "download",
+		Method:    req.Method,
+		URL:       traceutil.URL(req.URL),
+		Status:    responseStatus(resp),
+		Duration:  time.Since(httpStart).String(),
+		Request:   map[string]any{"range": req.Header.Get("Range")},
+		Error:     errorString(err),
+	})
 	if err != nil {
 		d.invalidateURL(entry.ID)
 		logging.L.DebugfEvery("quark.read_http.error", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(httpStart))
@@ -299,7 +309,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		"dir_init_lock": false,
 	}
 	var resp createDirResp
-	if err := d.cl.request(http.MethodPost, "/file", nil, data, &resp); err != nil {
+	if err := d.cl.request(ctx, http.MethodPost, "/file", nil, data, &resp); err != nil {
 		logging.L.Warnf("[QUARK] mkdir request failed parent=%q name=%q err=%v", parentID, name, err)
 		return drive.Entry{}, fmt.Errorf("quark: mkdir: %w", err)
 	}
@@ -319,7 +329,7 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		"exclude_fids": []string{},
 	}
 	var resp respEnvelope
-	if err := d.cl.request(http.MethodPost, "/file/move", nil, data, &resp); err != nil {
+	if err := d.cl.request(ctx, http.MethodPost, "/file/move", nil, data, &resp); err != nil {
 		return fmt.Errorf("quark: move: %w", err)
 	}
 	return apiError(resp)
@@ -331,7 +341,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 		"file_name": newName,
 	}
 	var resp respEnvelope
-	if err := d.cl.request(http.MethodPost, "/file/rename", nil, data, &resp); err != nil {
+	if err := d.cl.request(ctx, http.MethodPost, "/file/rename", nil, data, &resp); err != nil {
 		return fmt.Errorf("quark: rename: %w", err)
 	}
 	return apiError(resp)
@@ -344,7 +354,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 		"filelist":     []string{entry.ID},
 	}
 	var resp respEnvelope
-	if err := d.cl.request(http.MethodPost, "/file/delete", nil, data, &resp); err != nil {
+	if err := d.cl.request(ctx, http.MethodPost, "/file/delete", nil, data, &resp); err != nil {
 		return fmt.Errorf("quark: delete: %w", err)
 	}
 	return apiError(resp)
@@ -367,7 +377,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		"format_type":     0,
 	}
 	var preResp upPreResp
-	if err := d.cl.request(http.MethodPost, "/file/upload/pre", nil, preData, &preResp); err != nil {
+	if err := d.cl.request(ctx, http.MethodPost, "/file/upload/pre", nil, preData, &preResp); err != nil {
 		logging.L.Warnf("[QUARK] upload pre failed parent=%q name=%q size=%d err=%v", parentID, name, size, err)
 		return drive.Entry{}, fmt.Errorf("quark: upload pre: %w", err)
 	}
@@ -395,7 +405,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			item.Stage = "instant_finish"
 			item.BytesRead = size
 		})
-		finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
+		finalFid, err := d.uploadFinish(ctx, preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
 		if err != nil {
 			d.setUploadDebugError(preResp.Data.TaskID, err)
 			logging.L.Warnf("[QUARK] instant upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
@@ -423,7 +433,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		return drive.Entry{}, err
 	}
 	if hasSourceHashes {
-		finished, finalFid, err := d.updateUploadHash(preResp.Data.TaskID, preResp.Data.Fid, preResp.Data.ObjKey, hashData, name, size, putStart)
+		finished, finalFid, err := d.updateUploadHash(ctx, preResp.Data.TaskID, preResp.Data.Fid, preResp.Data.ObjKey, hashData, name, size, putStart)
 		if err != nil {
 			return drive.Entry{}, err
 		}
@@ -579,7 +589,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			"md5":  fmt.Sprintf("%X", md5Hash.Sum(nil)),
 			"sha1": fmt.Sprintf("%X", sha1Hash.Sum(nil)),
 		}
-		finished, finalFid, err := d.updateUploadHash(preResp.Data.TaskID, preResp.Data.Fid, preResp.Data.ObjKey, hashData, name, totalRead, putStart)
+		finished, finalFid, err := d.updateUploadHash(ctx, preResp.Data.TaskID, preResp.Data.Fid, preResp.Data.ObjKey, hashData, name, totalRead, putStart)
 		if err != nil {
 			return drive.Entry{}, err
 		}
@@ -590,13 +600,13 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "oss_complete" })
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
-	if err := d.ossComplete(&preResp, etags); err != nil {
+	if err := d.ossComplete(ctx, &preResp, etags); err != nil {
 		d.setUploadDebugError(preResp.Data.TaskID, err)
 		logging.L.Warnf("[QUARK] upload complete multipart failed name=%q task=%q parts=%d err=%v", name, preResp.Data.TaskID, len(etags), err)
 		return drive.Entry{}, fmt.Errorf("quark: upload complete: %w", err)
 	}
 	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "finish" })
-	finalFid, err := d.uploadFinish(preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
+	finalFid, err := d.uploadFinish(ctx, preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
 	if err != nil {
 		d.setUploadDebugError(preResp.Data.TaskID, err)
 		logging.L.Warnf("[QUARK] upload finish failed name=%q task=%q fid=%q err=%v", name, preResp.Data.TaskID, preResp.Data.Fid, err)
@@ -627,11 +637,11 @@ func quarkSourceHashes(source drive.ReadOnlyFileSource) (map[string]any, bool, e
 	}, true, nil
 }
 
-func (d *Driver) updateUploadHash(taskID, fid, objKey string, hashData map[string]any, name string, size int64, startedAt time.Time) (bool, string, error) {
+func (d *Driver) updateUploadHash(ctx context.Context, taskID, fid, objKey string, hashData map[string]any, name string, size int64, startedAt time.Time) (bool, string, error) {
 	hashData["task_id"] = taskID
 	var hashResp hashResp
 	d.updateUploadDebug(taskID, func(item *quarkUploadDebug) { item.Stage = "hash_update" })
-	if err := d.cl.request(http.MethodPost, "/file/update/hash", nil, hashData, &hashResp); err != nil {
+	if err := d.cl.request(ctx, http.MethodPost, "/file/update/hash", nil, hashData, &hashResp); err != nil {
 		d.setUploadDebugError(taskID, err)
 		logging.L.Warnf("[QUARK] upload hash update failed name=%q task=%q size=%d err=%v", name, taskID, size, err)
 		return false, "", fmt.Errorf("quark: upload hash: %w", err)
@@ -643,7 +653,7 @@ func (d *Driver) updateUploadHash(taskID, fid, objKey string, hashData map[strin
 	if hashResp.Data.Fid != "" {
 		fid = hashResp.Data.Fid
 	}
-	finalFid, err := d.uploadFinish(fid, objKey, taskID)
+	finalFid, err := d.uploadFinish(ctx, fid, objKey, taskID)
 	if err != nil {
 		d.setUploadDebugError(taskID, err)
 		logging.L.Warnf("[QUARK] hash-finished upload finish failed name=%q task=%q fid=%q err=%v", name, taskID, fid, err)
@@ -694,6 +704,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.cl.debugTrace(since), nil
+}
+
 func (d *Driver) setLastError(err error) {
 	if err == nil {
 		return
@@ -714,7 +728,7 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 		Total int64 `json:"total_capacity"`
 		Used  int64 `json:"use_capacity"`
 	}
-	err := d.cl.request(http.MethodGet, "/member", map[string]string{
+	err := d.cl.request(ctx, http.MethodGet, "/member", map[string]string{
 		"uc_param_str":    "",
 		"fetch_subscribe": "true",
 		"_ch":             "home",
@@ -864,12 +878,12 @@ func (d *Driver) invalidateURL(fid string) {
 	d.urlCache.Delete(fid)
 }
 
-func (d *Driver) downloadURL(fid string) (string, error) {
+func (d *Driver) downloadURL(ctx context.Context, fid string) (string, error) {
 	if url, ok := d.getURL(fid); ok {
 		return url, nil
 	}
 	var resp downResp
-	if err := d.cl.request(http.MethodPost, "/file/download", nil, map[string]any{
+	if err := d.cl.request(ctx, http.MethodPost, "/file/download", nil, map[string]any{
 		"fids": []string{fid},
 	}, &resp); err != nil {
 		return "", fmt.Errorf("quark: get download url: %w", err)
@@ -885,14 +899,14 @@ func (d *Driver) downloadURL(fid string) (string, error) {
 	return url, nil
 }
 
-func (d *Driver) uploadFinish(fid, objKey, taskID string) (string, error) {
+func (d *Driver) uploadFinish(ctx context.Context, fid, objKey, taskID string) (string, error) {
 	var resp struct {
 		respEnvelope
 		Data struct {
 			Fid string `json:"fid"`
 		} `json:"data"`
 	}
-	if err := d.cl.request(http.MethodPost, "/file/upload/finish", nil, map[string]any{
+	if err := d.cl.request(ctx, http.MethodPost, "/file/upload/finish", nil, map[string]any{
 		"obj_key": objKey,
 		"task_id": taskID,
 	}, &resp); err != nil {
@@ -907,7 +921,7 @@ func (d *Driver) uploadFinish(fid, objKey, taskID string) (string, error) {
 	return fid, nil
 }
 
-func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
+func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string) error {
 	if len(etags) == 0 {
 		return nil
 	}
@@ -937,7 +951,7 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		authMeta := fmt.Sprintf("POST\n%s\napplication/xml\n%s\nx-oss-callback:%s\nx-oss-date:%s\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/%s?uploadId=%s",
 			contentMd5, timeStr, callbackB64, timeStr, ossPath, pre.Data.UploadID)
 		var authResp upAuthResp
-		err := d.cl.request(http.MethodPost, "/file/upload/auth", nil, map[string]any{
+		err := d.cl.request(ctx, http.MethodPost, "/file/upload/auth", nil, map[string]any{
 			"auth_info": pre.Data.AuthInfo,
 			"auth_meta": authMeta,
 			"task_id":   pre.Data.TaskID,
@@ -964,7 +978,17 @@ func (d *Driver) ossComplete(pre *upPreResp, etags []string) error {
 		req.Header.Set("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
 		req.Header.Set("Referer", defaultReferer)
 		req.Header.Set("User-Agent", defaultUserAgent)
+		start := time.Now()
 		resp, err := d.cl.ossClient.Do(req)
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "oss_complete",
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Status:    responseStatus(resp),
+			Duration:  time.Since(start).String(),
+			Request:   map[string]any{"headers": traceutil.HeaderKeys(req.Header)},
+			Error:     errorString(err),
+		})
 		if err != nil {
 			if attempt < ossMaxRetries {
 				logging.L.WarnfEvery("quark.oss_complete_http_retry", time.Second, "[QUARK] oss complete http failed; retry task=%q attempt=%d err=%v", pre.Data.TaskID, attempt+1, err)
@@ -1001,7 +1025,7 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 			dateStr, dateStr, ossPath, partNumber, pre.Data.UploadID)
 		authStart := time.Now()
 		var authResp upAuthResp
-		err := d.cl.request(http.MethodPost, "/file/upload/auth", nil, map[string]any{
+		err := d.cl.request(ctx, http.MethodPost, "/file/upload/auth", nil, map[string]any{
 			"auth_info":   pre.Data.AuthInfo,
 			"auth_meta":   authMeta,
 			"task_id":     pre.Data.TaskID,
@@ -1039,6 +1063,15 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 		req.Header.Set("Referer", defaultReferer)
 		resp, err := d.cl.ossClient.Do(req)
 		ossDur := time.Since(ossStart)
+		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			Operation: "oss_upload_part",
+			Method:    req.Method,
+			URL:       traceutil.URL(req.URL),
+			Status:    responseStatus(resp),
+			Duration:  ossDur.String(),
+			Request:   map[string]any{"part_number": partNumber, "bytes": len(data), "headers": traceutil.HeaderKeys(req.Header)},
+			Error:     errorString(err),
+		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -1132,9 +1165,24 @@ func (r *traceReadCloser) Close() error {
 	return err
 }
 
+func responseStatus(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.Writer = (*Driver)(nil)
 var _ drive.SourceUploader = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
+var _ drive.DebugTraceProvider = (*Driver)(nil)

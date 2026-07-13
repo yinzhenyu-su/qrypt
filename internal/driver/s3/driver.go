@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -53,6 +54,7 @@ type Driver struct {
 
 	client  *s3.Client
 	limiter *drive.BandwidthLimiter
+	trace   *traceutil.Buffer
 }
 
 // Options configures a new S3 driver.
@@ -213,6 +215,7 @@ func New(opts Options) *Driver {
 		secretKey:    opts.SecretAccessKey,
 		sessionToken: opts.SessionToken,
 		signExpire:   opts.SignURLExpire,
+		trace:        traceutil.NewBuffer(500),
 	}
 }
 
@@ -224,9 +227,11 @@ func (d *Driver) Init(ctx context.Context) error {
 		o.BaseEndpoint = aws.String(d.endpoint)
 		o.UsePathStyle = d.forcePath
 	})
+	start := time.Now()
 	_, err := d.client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String(d.bucket),
 	})
+	d.recordSDK(ctx, "HeadBucket", start, map[string]any{"bucket": d.bucket}, err)
 	if err != nil {
 		return fmt.Errorf("s3: head bucket %q: %w", d.bucket, err)
 	}
@@ -275,7 +280,9 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		input.Range = aws.String(fmt.Sprintf("bytes=%d-%s", offset, rangeEnd))
 	}
 
+	start := time.Now()
 	output, err := d.client.GetObject(ctx, input)
+	d.recordSDK(ctx, "GetObject", start, map[string]any{"bucket": d.bucket, "key": key, "range": aws.ToString(input.Range)}, err)
 	if err != nil {
 		if isS3NotFound(err) {
 			return nil, fmt.Errorf("s3: not found %q", entry.ID)
@@ -294,11 +301,13 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	dirKey := d.toS3Key(d.joinPath(parentID, name)) + "/"
 	emptyBody := strings.NewReader("")
+	start := time.Now()
 	_, err := d.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(dirKey),
 		Body:   emptyBody,
 	})
+	d.recordSDK(ctx, "PutObject", start, map[string]any{"bucket": d.bucket, "key": dirKey, "kind": "mkdir"}, err)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("s3: mkdir %q: %w", dirKey, err)
 	}
@@ -327,10 +336,12 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 		return d.removeDir(ctx, entry.ID)
 	}
 	key := d.toS3Key(entry.ID)
+	start := time.Now()
 	_, err := d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(key),
 	})
+	d.recordSDK(ctx, "DeleteObject", start, map[string]any{"bucket": d.bucket, "key": key}, err)
 	if err != nil {
 		return fmt.Errorf("s3: remove %q: %w", entry.ID, err)
 	}
@@ -352,11 +363,13 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if d.limiter != nil {
 		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
 	}
+	start := time.Now()
 	_, err = d.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(key),
 		Body:   uploadBody,
 	})
+	d.recordSDK(ctx, "PutObject", start, map[string]any{"bucket": d.bucket, "key": key, "bytes": source.Size()}, err)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("s3: put %q: %w", key, err)
 	}
@@ -387,6 +400,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			drive.DebugExtraCredentialSource: "config",
 		},
 	}, nil
+}
+
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	return d.trace.Events(since), nil
 }
 
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
@@ -447,18 +464,22 @@ func (d *Driver) moveCopy(ctx context.Context, entry drive.Entry, dstParentID, n
 	}
 	srcKey := d.toS3Key(entry.ID)
 	copySource := url.PathEscape(d.bucket + "/" + srcKey)
+	start := time.Now()
 	_, err := d.client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     aws.String(d.bucket),
 		CopySource: aws.String(copySource),
 		Key:        aws.String(dstKey),
 	})
+	d.recordSDK(ctx, "CopyObject", start, map[string]any{"bucket": d.bucket, "src_key": srcKey, "dst_key": dstKey}, err)
 	if err != nil {
 		return fmt.Errorf("s3: copy %q → %q: %w", entry.ID, dstKey, err)
 	}
+	start = time.Now()
 	_, err = d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(srcKey),
 	})
+	d.recordSDK(ctx, "DeleteObject", start, map[string]any{"bucket": d.bucket, "key": srcKey, "after": "copy"}, err)
 	if err != nil {
 		return fmt.Errorf("s3: delete source after copy %q: %w", entry.ID, err)
 	}
@@ -481,12 +502,16 @@ func (d *Driver) copyDir(ctx context.Context, srcID, dstPrefix string) error {
 			srcKey := d.toS3Key(srcChild)
 			dstKey := d.toS3Key(dstChild)
 			copySource := url.PathEscape(d.bucket + "/" + srcKey)
+			start := time.Now()
 			if _, err := d.client.CopyObject(ctx, &s3.CopyObjectInput{
 				Bucket:     aws.String(d.bucket),
 				CopySource: aws.String(copySource),
 				Key:        aws.String(dstKey),
 			}); err != nil {
+				d.recordSDK(ctx, "CopyObject", start, map[string]any{"bucket": d.bucket, "src_key": srcKey, "dst_key": dstKey}, err)
 				return fmt.Errorf("s3: copyDir copy %q → %q: %w", srcChild, dstChild, err)
+			} else {
+				d.recordSDK(ctx, "CopyObject", start, map[string]any{"bucket": d.bucket, "src_key": srcKey, "dst_key": dstKey}, nil)
 			}
 		}
 	}
@@ -506,27 +531,48 @@ func (d *Driver) removeDir(ctx context.Context, dirID string) error {
 			}
 		} else {
 			key := d.toS3Key(stdpath.Join(dirID, entry.Name))
+			start := time.Now()
 			if _, err := d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 				Bucket: aws.String(d.bucket),
 				Key:    aws.String(key),
 			}); err != nil && !isS3NotFound(err) {
+				d.recordSDK(ctx, "DeleteObject", start, map[string]any{"bucket": d.bucket, "key": key}, err)
 				return fmt.Errorf("s3: removeDir delete %q: %w", key, err)
+			} else {
+				d.recordSDK(ctx, "DeleteObject", start, map[string]any{"bucket": d.bucket, "key": key}, nil)
 			}
 		}
 	}
 	placeholderKey := d.toS3Key(stdpath.Join(dirID, d.placeholder))
-	d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+	start := time.Now()
+	_, err = d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(placeholderKey),
 	})
+	d.recordSDK(ctx, "DeleteObject", start, map[string]any{"bucket": d.bucket, "key": placeholderKey, "placeholder": true}, err)
 	dirKey := d.toS3Key(dirID)
 	if dirKey != "" {
-		d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		start = time.Now()
+		_, err = d.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(d.bucket),
 			Key:    aws.String(dirKey + "/"),
 		})
+		d.recordSDK(ctx, "DeleteObject", start, map[string]any{"bucket": d.bucket, "key": dirKey + "/", "dir_marker": true}, err)
 	}
 	return nil
+}
+
+func (d *Driver) recordSDK(ctx context.Context, operation string, start time.Time, request map[string]any, err error) {
+	event := drive.DebugTraceEvent{
+		Layer:     "driver.sdk",
+		Operation: operation,
+		Duration:  time.Since(start).String(),
+		Request:   request,
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	d.trace.Record(ctx, event)
 }
 
 // ─── S3 error helpers ───────────────────────────────────────────────────────
@@ -545,6 +591,7 @@ var (
 	_ drive.Writer             = (*Driver)(nil)
 	_ drive.SourceUploader     = (*Driver)(nil)
 	_ drive.Debugger           = (*Driver)(nil)
+	_ drive.DebugTraceProvider = (*Driver)(nil)
 	_ drive.RemoteNameResolver = (*Driver)(nil)
 	_ drive.CapabilityReporter = (*Driver)(nil)
 )
