@@ -129,6 +129,23 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
+	case "auth":
+		var results []AuthTestResult
+		matched := false
+		for _, nd := range drivers {
+			if req.Mount != "" && nd.Name != req.Mount {
+				continue
+			}
+			matched = true
+			result := RunDriverAuthTest(r.Context(), nd.Name, nd.Driver)
+			results = append(results, *result)
+		}
+		if req.Mount != "" && !matched {
+			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, results)
+
 	case "crud", "instantupload":
 		var results []CRUDTestResult
 		matched := false
@@ -194,6 +211,30 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			result := RunDriverXferTest(r.Context(), srcMount, srcDriver, dstMount, dstDriver, size)
 			writeJSON(w, result)
 		}
+
+	case "fs":
+		if req.Mount == "" {
+			http.Error(w, "fs test requires --mount", http.StatusBadRequest)
+			return
+		}
+		filesys, ok := s.source.(vfs.FileSystem)
+		if !ok {
+			http.Error(w, "VFS fs test not available: source does not implement FileSystem", http.StatusNotImplemented)
+			return
+		}
+		matched := false
+		for _, nd := range drivers {
+			if nd.Name == req.Mount {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
+		result := RunVFSSmokeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
+		writeJSON(w, result)
 
 	default:
 		http.Error(w, fmt.Sprintf("unknown driver test: %s", req.Test), http.StatusBadRequest)
