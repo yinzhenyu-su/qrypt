@@ -39,10 +39,27 @@ func readInstantUploadCount(snap *drive.DebugSnapshot) (int64, bool) {
 // basic upload success only (the counter cannot be inspected).
 func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Driver) *CRUDTestResult {
 	result := &CRUDTestResult{
-		Mount:   mount,
-		Started: time.Now(),
-		Steps:   make([]CRUDTestStep, 0, 6),
+		OpID:         newDebugOperationID("instantupload"),
+		Mount:        mount,
+		Started:      time.Now(),
+		Steps:        make([]CRUDTestStep, 0, 6),
+		RetryCommand: fmt.Sprintf("qrypt debug test instantupload --mount %s --socket PATH", mount),
 	}
+	defer func() {
+		result.Finished = time.Now()
+		result.Duration = result.Finished.Sub(result.Started).String()
+		for i := range result.Steps {
+			if result.Steps[i].OpID == "" {
+				result.Steps[i].OpID = result.OpID
+			}
+			if result.Steps[i].Mount == "" {
+				result.Steps[i].Mount = result.Mount
+			}
+			if result.Steps[i].Driver == "" {
+				result.Steps[i].Driver = result.Driver
+			}
+		}
+	}()
 
 	_, isUploader := d.(drive.SourceUploader)
 	if !isUploader {
