@@ -121,7 +121,13 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	if err != nil {
 		finishErr = err.Error()
 		if ctx.Err() == nil {
-			if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.uploadDelay); saveErr != nil {
+			if drive.IsNonRetryable(err) {
+				if latest, ok, saveErr := v.cache.RecordPendingPermanentFailure(pending.Path, err); saveErr != nil {
+					logging.L.Warnf("[VFS] upload failed permanently and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+				} else if ok {
+					logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, err)
+				}
+			} else if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.uploadDelay); saveErr != nil {
 				logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 			} else if ok {
 				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
@@ -282,6 +288,10 @@ func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) err
 }
 
 func (v *VFS) enqueue(p PendingFile) {
+	if p.PermanentFail {
+		logging.L.WarnfEvery("vfs.enqueue_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q size=%d retry=%d last_error=%q", p.FID, p.Path, p.Size, p.RetryCount, p.LastError)
+		return
+	}
 	v.enqueueAfter(p, v.uploadDelay)
 }
 

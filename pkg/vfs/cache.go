@@ -77,6 +77,7 @@ type PendingFile struct {
 	UpdatedAt     int64                 `json:"updated_at"`
 	RetryCount    int                   `json:"retry_count,omitempty"`
 	LastError     string                `json:"last_error,omitempty"`
+	PermanentFail bool                  `json:"permanent_fail,omitempty"`
 	LastAttemptAt int64                 `json:"last_attempt_at,omitempty"`
 	NextAttemptAt int64                 `json:"next_attempt_at,omitempty"`
 	Staging       *PendingStagingStatus `json:"staging,omitempty"`
@@ -226,6 +227,28 @@ func (c *Cache) RecordPendingFailure(path string, err error, retryDelay time.Dur
 		} else {
 			pending.NextAttemptAt = 0
 		}
+		pending.UpdatedAt = now.UnixNano()
+		c.pending[path] = pending
+	}
+	c.mu.Unlock()
+	if !ok {
+		return PendingFile{}, false, nil
+	}
+	return pending, true, c.appendJournal(journalEntry{Op: "dirty", PendingFile: pending})
+}
+
+func (c *Cache) RecordPendingPermanentFailure(path string, err error) (PendingFile, bool, error) {
+	now := timeutil.Now()
+	c.mu.Lock()
+	pending, ok := c.pending[path]
+	if ok {
+		pending.RetryCount++
+		if err != nil {
+			pending.LastError = err.Error()
+		}
+		pending.PermanentFail = true
+		pending.LastAttemptAt = now.UnixNano()
+		pending.NextAttemptAt = 0
 		pending.UpdatedAt = now.UnixNano()
 		c.pending[path] = pending
 	}
@@ -694,6 +717,7 @@ func samePendingFile(a, b PendingFile) bool {
 		a.UpdatedAt == b.UpdatedAt &&
 		a.RetryCount == b.RetryCount &&
 		a.LastError == b.LastError &&
+		a.PermanentFail == b.PermanentFail &&
 		a.LastAttemptAt == b.LastAttemptAt &&
 		a.NextAttemptAt == b.NextAttemptAt
 }
