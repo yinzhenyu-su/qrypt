@@ -12,6 +12,7 @@ func newFsCmd() *cobra.Command {
 		RunE:  showHelp,
 	}
 	withPersistentRuntimeConfigFlag(cmd)
+	cmd.PersistentFlags().String("mount", "", "only initialize one mount while keeping namespace paths such as /MOUNT/path")
 	cmd.AddCommand(newFsListCmd())
 	cmd.AddCommand(newFsCatCmd())
 	cmd.AddCommand(newFsGetCmd())

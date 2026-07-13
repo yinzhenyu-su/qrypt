@@ -127,6 +127,13 @@ func TestDebugRequiredFlags(t *testing.T) {
 		t.Fatal("expected debug test without --socket to fail")
 	}
 
+	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "auth", Source: "src"}); err == nil {
+		t.Fatal("expected auth test with --source to fail")
+	}
+	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "fs"}); err == nil || !strings.Contains(err.Error(), "fs test requires --mount") {
+		t.Fatalf("expected fs test without mount to fail clearly, got %v", err)
+	}
+
 	root = NewRootCommand()
 	root.SetArgs([]string{"debug", "test", "xfer", "--socket", "/tmp/qrypt.sock"})
 	if err := root.Execute(); err == nil {

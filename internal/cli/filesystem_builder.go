@@ -29,6 +29,14 @@ func buildFileSystemFromConfig(ctx context.Context, cfg *config.Config) (vfs.Fil
 }
 
 func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mountName string) (vfs.FileSystem, func(), error) {
+	return buildFileSystemFromConfigMountMode(ctx, cfg, mountName, false)
+}
+
+func buildFileSystemFromConfigMountNamespace(ctx context.Context, cfg *config.Config, mountName string) (vfs.FileSystem, func(), error) {
+	return buildFileSystemFromConfigMountMode(ctx, cfg, mountName, true)
+}
+
+func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool) (vfs.FileSystem, func(), error) {
 	if cfg == nil {
 		return nil, nil, configNotFoundError()
 	}
@@ -39,7 +47,7 @@ func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mou
 	if err != nil {
 		return nil, nil, err
 	}
-	return buildNamespace(ctx, cfg, effectiveCacheDir(cfg), bandwidthLimiter(limits), mountName)
+	return buildNamespace(ctx, cfg, effectiveCacheDir(cfg), bandwidthLimiter(limits), mountName, forceNamespace)
 }
 
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
@@ -60,7 +68,7 @@ func defaultCacheDir() string {
 	return osutil.ExpandHome("~/.qrypt/qrypt-cache")
 }
 
-func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter, selectedMount string) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter, selectedMount string, forceNamespace bool) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {
@@ -148,7 +156,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 		}
 		return nil, nil, fmt.Errorf("config: no mounts selected")
 	}
-	if selectedMount != "" {
+	if selectedMount != "" && !forceNamespace {
 		return mounts[0].FS, func() { dropAll(ctx, drivers) }, nil
 	}
 	ns, err := vfs.NewNamespace(mounts)
