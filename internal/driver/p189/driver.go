@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,12 @@ import (
 const timeFormat = "2006-01-02 15:04:05"
 const sliceMD5Size = 1 << 20
 const uploadPartSize = 10 * 1024 * 1024
+
+type batchTaskInfo struct {
+	FileID   int64  `json:"fileId"`
+	FileName string `json:"fileName"`
+	IsFolder int    `json:"isFolder"`
+}
 
 type Driver struct {
 	cl            *client
@@ -331,6 +338,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, err
 	}
+	sliceMD5 = uploadSliceMD5(fileMD5, sliceMD5, size)
 	uploadFileID, fileDataExists, err := d.cl.initUpload(ctx, parent, name, size, fileMD5, sliceMD5)
 	if err != nil {
 		return drive.Entry{}, err
@@ -425,6 +433,13 @@ func uploadPartInfo(fileMD5 string) (string, error) {
 		return "", fmt.Errorf("189: decode file md5: %w", err)
 	}
 	return "1-" + base64.StdEncoding.EncodeToString(sum), nil
+}
+
+func uploadSliceMD5(fileMD5, sliceMD5 string, size int64) string {
+	if size <= uploadPartSize {
+		return fileMD5
+	}
+	return sliceMD5
 }
 
 func applyUploadHeaders(req *http.Request, raw string) {
@@ -556,7 +571,10 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	if entry.IsDir {
 		isFolder = 1
 	}
-	taskInfos := fmt.Sprintf(`[{"fileId":%d,"isFolder":%d}]`, id, isFolder)
+	taskInfos, err := batchTaskInfos(batchTaskInfo{FileID: id, FileName: entry.Name, IsFolder: isFolder})
+	if err != nil {
+		return err
+	}
 	return d.cl.batchTask(ctx, "DELETE", taskInfos, "")
 }
 
@@ -577,8 +595,19 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if entry.IsDir {
 		isFolder = 1
 	}
-	taskInfos := fmt.Sprintf(`[{"fileId":%d,"fileName":"","isFolder":%d}]`, id, isFolder)
+	taskInfos, err := batchTaskInfos(batchTaskInfo{FileID: id, FileName: entry.Name, IsFolder: isFolder})
+	if err != nil {
+		return err
+	}
 	return d.cl.batchTask(ctx, "MOVE", taskInfos, dstParentID)
+}
+
+func batchTaskInfos(infos ...batchTaskInfo) (string, error) {
+	raw, err := json.Marshal(infos)
+	if err != nil {
+		return "", fmt.Errorf("189: encode batch task infos: %w", err)
+	}
+	return string(raw), nil
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {

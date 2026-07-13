@@ -581,7 +581,11 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 			Request:   traceRequestFields(form),
 			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
 		})
-		return nil, fmt.Errorf("189: upload request %s: %s body=%q", uri, resp.Status, responseSnippet(raw))
+		err := fmt.Errorf("189: upload request %s: %s body=%q", uri, resp.Status, responseSnippet(raw))
+		if nonRetryableUploadError(resp.StatusCode, raw) {
+			err = drive.NonRetryable(err)
+		}
+		return nil, err
 	}
 	raw, err := io.ReadAll(resp.Body)
 	event := drive.DebugTraceEvent{
@@ -598,6 +602,15 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	}
 	c.recordTrace(ctx, event)
 	return raw, err
+}
+
+func nonRetryableUploadError(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusForbidden {
+		return false
+	}
+	s := string(body)
+	return strings.Contains(s, "SliceMd5DoesNotMatch") ||
+		strings.Contains(s, "InvalidPartSize")
 }
 
 func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string) ([]byte, error) {
@@ -1193,14 +1206,51 @@ func (c *client) rename(ctx context.Context, fileID int64, name string, isDir bo
 func (c *client) batchTask(ctx context.Context, taskType string, taskInfos string, targetFolderID string) error {
 	return c.retryOnAuthError(ctx, func(ctx context.Context) error {
 		form := map[string]string{
-			"type":      taskType,
-			"taskInfos": taskInfos,
+			"type":           taskType,
+			"targetFolderId": targetFolderID,
+			"taskInfos":      taskInfos,
 		}
-		if targetFolderID != "" {
-			form["targetFolderId"] = targetFolderID
+		var resp BatchTaskResp
+		if err := c.doPost(ctx, batchTaskURL, form, &resp); err != nil {
+			return err
 		}
-		return c.doPost(ctx, batchTaskURL, form, nil)
+		c.recordBatchTaskTrace(ctx, taskType, form, resp)
+		return batchTaskResponseError(taskType, resp)
 	})
+}
+
+func (c *client) recordBatchTaskTrace(ctx context.Context, taskType string, form map[string]string, resp BatchTaskResp) {
+	u, _ := url.Parse(batchTaskURL)
+	c.recordTrace(ctx, drive.DebugTraceEvent{
+		Layer:     "driver.api",
+		Operation: "batch_task_result",
+		Method:    http.MethodPost,
+		URL:       traceURL(u),
+		Request:   traceRequestFields(form),
+		Response:  batchTaskTraceResponse(taskType, resp),
+	})
+}
+
+func batchTaskTraceResponse(taskType string, resp BatchTaskResp) map[string]any {
+	out := map[string]any{
+		"task_type":   taskType,
+		"res_code":    resp.ResCode,
+		"res_message": resp.ResMessage,
+	}
+	if resp.TaskID != "" {
+		out["task_id"] = resp.TaskID
+	}
+	return out
+}
+
+func batchTaskResponseError(taskType string, resp BatchTaskResp) error {
+	if resp.ResCode == 0 {
+		return nil
+	}
+	if resp.ResMessage != "" {
+		return fmt.Errorf("189: batch task %s: %s", taskType, resp.ResMessage)
+	}
+	return fmt.Errorf("189: batch task %s failed: res_code=%d", taskType, resp.ResCode)
 }
 
 func (c *client) initUpload(ctx context.Context, parentID int64, name string, size int64, fileMd5, sliceMd5 string) (string, bool, error) {
