@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -84,6 +85,14 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	snapshot.Extra["crypt"] = true
 	snapshot.Extra["content_dedup"] = d.contentDedup
 	return snapshot, nil
+}
+
+func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
+	tracer, ok := d.raw.(drive.DebugTraceProvider)
+	if !ok {
+		return nil, nil
+	}
+	return tracer.DebugTrace(ctx, since)
 }
 
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {

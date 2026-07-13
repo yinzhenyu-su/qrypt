@@ -17,6 +17,46 @@ type Debugger interface {
 	DebugSnapshot(ctx context.Context) (DebugSnapshot, error)
 }
 
+type debugOperationContextKey struct{}
+
+type DebugOperation struct {
+	OpID string `json:"op_id,omitempty"`
+	Step string `json:"step,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+func WithDebugOperation(ctx context.Context, op DebugOperation) context.Context {
+	return context.WithValue(ctx, debugOperationContextKey{}, op)
+}
+
+func DebugOperationFromContext(ctx context.Context) (DebugOperation, bool) {
+	op, ok := ctx.Value(debugOperationContextKey{}).(DebugOperation)
+	return op, ok
+}
+
+type DebugTraceEvent struct {
+	At              time.Time      `json:"at"`
+	OpID            string         `json:"op_id,omitempty"`
+	Step            string         `json:"step,omitempty"`
+	Name            string         `json:"name,omitempty"`
+	Layer           string         `json:"layer,omitempty"`
+	Operation       string         `json:"operation,omitempty"`
+	Method          string         `json:"method,omitempty"`
+	URL             string         `json:"url,omitempty"`
+	Status          int            `json:"status,omitempty"`
+	Duration        string         `json:"duration,omitempty"`
+	Request         map[string]any `json:"request,omitempty"`
+	Response        map[string]any `json:"response,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Attempt         int            `json:"attempt,omitempty"`
+	Retry           bool           `json:"retry,omitempty"`
+	SensitiveMasked bool           `json:"sensitive_masked,omitempty"`
+}
+
+type DebugTraceProvider interface {
+	DebugTrace(ctx context.Context, since time.Time) ([]DebugTraceEvent, error)
+}
+
 const (
 	HealthLevelOK        = "ok"
 	HealthLevelDegraded  = "degraded"
