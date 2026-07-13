@@ -129,6 +129,33 @@ type Space struct {
 
 var ErrSpaceUnsupported = errors.New("drive: space query unsupported")
 
+type nonRetryableError struct {
+	err error
+}
+
+func (e nonRetryableError) Error() string {
+	return e.err.Error()
+}
+
+func (e nonRetryableError) Unwrap() error {
+	return e.err
+}
+
+// NonRetryable marks an error as deterministic for writeback purposes. VFS
+// should keep the pending staging state for inspection but must not keep
+// calling the remote API for the same failing payload.
+func NonRetryable(err error) error {
+	if err == nil || IsNonRetryable(err) {
+		return err
+	}
+	return nonRetryableError{err: err}
+}
+
+func IsNonRetryable(err error) bool {
+	var target nonRetryableError
+	return errors.As(err, &target)
+}
+
 // SpaceQuerier is implemented by drivers that can report backend capacity.
 type SpaceQuerier interface {
 	Space(ctx context.Context) (Space, error)
