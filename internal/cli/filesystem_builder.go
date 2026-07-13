@@ -102,6 +102,11 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 			dropAll(ctx, append(drivers, raw))
 			return nil, nil, err
 		}
+		rootID, err := resolveMountRootID(ctx, raw)
+		if err != nil {
+			dropAll(ctx, append(drivers, raw))
+			return nil, nil, fmt.Errorf("config: mount %s resolve root: %w", mountCfg.Name, err)
+		}
 		drivers = append(drivers, raw)
 		var drv drive.Driver = drive.WrapBandwidthLimitedDriver(raw, limiter)
 		enc := cfg.EncryptionFor(mountCfg.Name)
@@ -140,6 +145,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 			Name:          mountCfg.Name,
 			CacheDir:      mountCacheDir,
 			CacheMaxBytes: maxBytes,
+			RootID:        rootID,
 			UploadDelay:   uploadDelay,
 			UploadWorkers: cache.UploadWorkers,
 			DeleteDelay:   deleteDelay,
@@ -165,6 +171,14 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 		return nil, nil, err
 	}
 	return ns, func() { dropAll(ctx, drivers) }, nil
+}
+
+func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error) {
+	resolver, ok := driver.(drive.PathResolver)
+	if !ok {
+		return "", nil
+	}
+	return resolver.ResolvePath(ctx, "/")
 }
 
 func installDriverStateStore(driver drive.Driver, cacheDir string) {

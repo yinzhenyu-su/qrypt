@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -78,6 +79,39 @@ func TestDebugCollectOmitsTransferContextWithoutSource(t *testing.T) {
 		if strings.HasPrefix(item.Endpoint, "/v1/transfer/context") {
 			t.Fatalf("unexpected transfer context request without source: %+v", report.Errors)
 		}
+	}
+}
+
+func TestDebugCollectDiagnosticsReportsRootIDMismatch(t *testing.T) {
+	report := debugAIReport{
+		Health: &control.HealthResponse{OK: true},
+		State: &vfs.DebugSnapshot{
+			Kind: "vfs",
+			Mounts: []vfs.DebugMountSnapshot{{
+				Name:       "cloud",
+				DriverName: "189",
+				RootID:     "0",
+				Driver: &drive.DebugSnapshot{
+					Driver: "189",
+					Stats: map[string]any{
+						drive.DebugStatRootID: "-11",
+					},
+				},
+			}},
+		},
+	}
+	var diagnostics []debugAIDiagnostic
+	addCollectDiagnostics(&diagnostics, report)
+
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want one root mismatch", diagnostics)
+	}
+	got := diagnostics[0]
+	if got.Code != "root_id_mismatch" || got.Severity != "error" || got.Mount != "cloud" {
+		t.Fatalf("unexpected diagnostic: %+v", got)
+	}
+	if got.Evidence["vfs_root_id"] != "0" || got.Evidence["driver_root_id"] != "-11" {
+		t.Fatalf("unexpected root mismatch evidence: %+v", got.Evidence)
 	}
 }
 
