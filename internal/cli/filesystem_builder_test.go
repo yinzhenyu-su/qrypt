@@ -2,18 +2,88 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func testCommand() *cobra.Command {
 	return &cobra.Command{Use: "test"}
 }
+
+var (
+	builderRootDriverMu   sync.Mutex
+	builderRootTestDriver *builderRootDriver
+)
+
+func init() {
+	drive.Register("cli-rootid-test", func(params drive.Params) (drive.Driver, error) {
+		d := &builderRootDriver{rootID: params["root_id"]}
+		builderRootDriverMu.Lock()
+		builderRootTestDriver = d
+		builderRootDriverMu.Unlock()
+		return d, nil
+	},
+		drive.ParamDef{Name: "root_id", Type: "string", Required: true},
+	)
+}
+
+type builderRootDriver struct {
+	rootID    string
+	putParent string
+}
+
+func (d *builderRootDriver) Init(context.Context) error { return nil }
+
+func (d *builderRootDriver) Drop(context.Context) error { return nil }
+
+func (d *builderRootDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	if parentID != d.rootID {
+		return nil, fmt.Errorf("unexpected parent id %q", parentID)
+	}
+	return nil, nil
+}
+
+func (d *builderRootDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("read not implemented")
+}
+
+func (d *builderRootDriver) ResolvePath(_ context.Context, path string) (string, error) {
+	if path != "/" {
+		return "", fmt.Errorf("unexpected path %q", path)
+	}
+	return d.rootID, nil
+}
+
+func (d *builderRootDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	body, err := req.Source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer body.Close()
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		return drive.Entry{}, err
+	}
+	d.putParent = req.ParentID
+	return drive.Entry{
+		ID:       d.rootID + "/" + req.Name,
+		ParentID: req.ParentID,
+		Name:     req.Name,
+		Size:     req.Source.Size(),
+	}, nil
+}
+
+var _ drive.Driver = (*builderRootDriver)(nil)
+var _ drive.PathResolver = (*builderRootDriver)(nil)
+var _ drive.SourceUploader = (*builderRootDriver)(nil)
 
 func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	ctx := context.Background()
@@ -150,6 +220,48 @@ root_path = "`+remoteB+`"
 	}
 	if _, err := os.Stat(filepath.Join(remoteA, "test.txt")); !os.IsNotExist(err) {
 		t.Fatalf("unselected remote should not receive file, stat err = %v", err)
+	}
+}
+
+func TestBuildFileSystemUsesResolvedRootID(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	cfg := &config.Config{
+		CacheDir: filepath.Join(tmp, "cache"),
+		Defaults: config.Defaults{Cache: config.CacheConfig{
+			UploadDelay: "10ms",
+		}},
+		Mounts: []config.MountConfig{{
+			Name: "rooted",
+			Type: "cli-rootid-test",
+			Params: config.ParamMap{
+				"root_id": "resolved-root",
+			},
+		}},
+	}
+	fs, cleanup, err := buildFileSystemFromConfigMount(ctx, cfg, "rooted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/test.txt", []byte("root"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/test.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitPendingEmpty(t, fs)
+
+	builderRootDriverMu.Lock()
+	driver := builderRootTestDriver
+	builderRootDriverMu.Unlock()
+	if driver == nil {
+		t.Fatal("test driver was not constructed")
+	}
+	if driver.putParent != "resolved-root" {
+		t.Fatalf("upload parent id = %q, want resolved root id", driver.putParent)
 	}
 }
 

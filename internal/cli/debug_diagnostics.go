@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
@@ -17,6 +21,7 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 	}
 	if report.State != nil {
 		for _, mount := range report.State.Mounts {
+			addRootIDDiagnostics(out, mount)
 			if len(mount.Pending) > 0 {
 				*out = append(*out, debugAIDiagnostic{
 					Severity:  "warn",
@@ -75,6 +80,48 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 	}
 	addStagingDiagnostics(out, report.Staging)
 	addCacheDiagnostics(out, report.Cache)
+}
+
+func addRootIDDiagnostics(out *[]debugAIDiagnostic, mount vfs.DebugMountSnapshot) {
+	if mount.RootID == "" || mount.Driver == nil || mount.Driver.Stats == nil {
+		return
+	}
+	driverRootID, ok := debugStringStat(mount.Driver.Stats[drive.DebugStatRootID])
+	if !ok || driverRootID == "" || driverRootID == mount.RootID {
+		return
+	}
+	*out = append(*out, debugAIDiagnostic{
+		Severity:  "error",
+		Code:      "root_id_mismatch",
+		Component: "vfs",
+		Mount:     mount.Name,
+		Message:   "VFS root id does not match the driver resolved root id",
+		Evidence: map[string]any{
+			"vfs_root_id":    mount.RootID,
+			"driver_root_id": driverRootID,
+			"driver":         mount.DriverName,
+		},
+	})
+}
+
+func debugStringStat(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case int:
+		return strconv.Itoa(typed), true
+	case int64:
+		return strconv.FormatInt(typed, 10), true
+	case float64:
+		if typed == float64(int64(typed)) {
+			return strconv.FormatInt(int64(typed), 10), true
+		}
+		return strconv.FormatFloat(typed, 'f', -1, 64), true
+	case fmt.Stringer:
+		return typed.String(), true
+	default:
+		return "", false
+	}
 }
 
 func addInspectDiagnostics(out *[]debugAIDiagnostic, inspect *debugAIInspect) {
