@@ -11,10 +11,8 @@ func newDriverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "driver",
 		Short: "List drivers and show parameter schemas",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
-		},
+		Args:  commandGroupArgs(nil),
+		RunE:  showHelp,
 	}
 	cmd.AddCommand(newDriverListCmd())
 	cmd.AddCommand(newDriverSchemaCmd())
@@ -24,7 +22,7 @@ func newDriverCmd() *cobra.Command {
 func newDriverListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		Short: "List available drivers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
@@ -44,7 +42,7 @@ func newDriverListCmd() *cobra.Command {
 func newDriverSchemaCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "schema NAME",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNamedArgs("NAME"),
 		Short: "Show driver parameters",
 		ValidArgsFunction: cobra.FixedCompletions(
 			drive.Names(),
@@ -54,7 +52,7 @@ func newDriverSchemaCmd() *cobra.Command {
 			name := args[0]
 			schema := drive.ParamSchema(name)
 			if !drive.Registered(name) {
-				return fmt.Errorf("unknown driver %q", name)
+				return fmt.Errorf("unknown driver %q\n\nRun 'qrypt driver list' to see available drivers.", name)
 			}
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {

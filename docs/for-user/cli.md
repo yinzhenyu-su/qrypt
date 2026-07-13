@@ -96,7 +96,6 @@ qrypt driver schema NAME [--json]
 
 ```sh
 qrypt debug collect [REMOTE] [--dest DESTINATION] --socket PATH
-qrypt debug inspect REMOTE [--dest DESTINATION] --socket PATH
 qrypt debug watch [REMOTE] --socket PATH
 qrypt debug test TEST --socket PATH
 qrypt debug raw ENDPOINT --socket PATH

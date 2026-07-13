@@ -49,7 +49,7 @@ func newVersionCmd(info buildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show build version information",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {

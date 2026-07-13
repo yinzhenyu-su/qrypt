@@ -13,7 +13,7 @@ func newFsPendingCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pending",
 		Short: "Show pending uploads",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE:  runPending,
 	}
 	cmd.Flags().Bool("verbose", false, "show detailed output")

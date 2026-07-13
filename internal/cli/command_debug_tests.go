@@ -12,10 +12,8 @@ func newDebugTestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "test",
 		Short: "Run write-capable debug tests",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
-		},
+		Args:  commandGroupArgs(nil),
+		RunE:  showHelp,
 	}
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("crud", "Run a CRUD driver test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("instantupload", "Run an instant-upload driver test")))
@@ -27,7 +25,7 @@ func newDebugTestCaseCmd(test, short string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               test,
 		Short:             short,
-		Args:              cobra.NoArgs,
+		Args:              noArgs,
 		ValidArgsFunction: noFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDebugDriverTest(cmd, test)
@@ -88,10 +86,10 @@ func validateDriverTestRequest(req control.DriverTestRequest) error {
 		}
 	case "xfer":
 		if req.Mount != "" {
-			return fmt.Errorf("xfer test uses --source and --dest, not --mount")
+			return fmt.Errorf("xfer test uses --source and --dest, not --mount\n\nExample:\n  qrypt debug test xfer --source local --dest cloud --socket /tmp/qrypt.sock")
 		}
 		if req.Source == "" || req.Dest == "" {
-			return fmt.Errorf("xfer test requires --source and --dest")
+			return fmt.Errorf("xfer test requires --source and --dest\n\nExample:\n  qrypt debug test xfer --source local --dest cloud --socket /tmp/qrypt.sock")
 		}
 		if req.Source == req.Dest {
 			return fmt.Errorf("xfer test requires different source and dest mounts")

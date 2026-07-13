@@ -20,7 +20,7 @@ func newDebugBundleCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bundle [REMOTE]",
 		Short: "Write an AI-oriented debug bundle zip",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  maxArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			socket := debugSocketFromContext(ctx)
@@ -38,17 +38,14 @@ func newDebugBundleCmd() *cobra.Command {
 			watchInterval, _ := cmd.Flags().GetDuration("watch-interval")
 			force, _ := cmd.Flags().GetBool("force")
 			destPath, _ := cmd.Flags().GetString("dest")
-			if socket == "" {
-				return fmt.Errorf("this command requires --socket")
-			}
 			if outPath == "" {
-				return fmt.Errorf("usage: qrypt debug bundle --out FILE (requires --socket)")
+				return commandUsageError(cmd, "missing --out FILE")
 			}
 			if watchDuration < 0 {
 				return fmt.Errorf("--watch must not be negative")
 			}
 			if watchDuration == 0 && cmd.Flags().Changed("watch-interval") {
-				return fmt.Errorf("--watch-interval requires --watch")
+				return fmt.Errorf("--watch-interval requires --watch\n\nExample:\n  qrypt debug bundle --socket /tmp/qrypt.sock --out /tmp/qrypt-debug.zip --watch 30s --watch-interval 2s")
 			}
 			if watchDuration > 0 {
 				if err := validateSamplingWindow(watchDuration, watchInterval, "watch", "watch-interval"); err != nil {
@@ -187,9 +184,6 @@ func newDebugBundleCmd() *cobra.Command {
 	cmd.Flags().Duration("watch", 0, "optional watch duration to include watch.json")
 	cmd.Flags().Duration("watch-interval", 2*time.Second, "watch sampling interval")
 	cmd.Flags().String("dest", "", "optional destination path for transfer diagnostics")
-	if err := cmd.MarkFlagRequired("out"); err != nil {
-		panic(err)
-	}
 	return cmd
 }
 
