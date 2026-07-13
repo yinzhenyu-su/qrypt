@@ -851,6 +851,9 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 	if len(snapshot.Mounts) != 1 {
 		t.Fatalf("mount count = %d, want 1", len(snapshot.Mounts))
 	}
+	if snapshot.Mounts[0].RootID != "0" {
+		t.Fatalf("root id = %q, want default root id", snapshot.Mounts[0].RootID)
+	}
 	caps := map[drive.Capability]bool{}
 	for _, capability := range snapshot.Mounts[0].Capabilities {
 		caps[capability] = true
@@ -2647,6 +2650,41 @@ func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pending uploads did not drain: %+v", fs.Pending())
+}
+
+func TestCacheRecordPendingPermanentFailure(t *testing.T) {
+	cache, err := vfs.NewCache(t.TempDir(), 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := vfs.PendingFile{
+		Path:      "/video.mp4",
+		FID:       "video.mp4",
+		ParentID:  "root",
+		Name:      "video.mp4",
+		LocalPath: "video.mp4.staging",
+		Size:      10,
+	}
+	if err := cache.SavePending(pending); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := cache.RecordPendingPermanentFailure(pending.Path, errors.New("bad upload parameters"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("pending not found")
+	}
+	if !got.PermanentFail {
+		t.Fatal("PermanentFail is false")
+	}
+	if got.NextAttemptAt != 0 {
+		t.Fatalf("NextAttemptAt = %d, want 0", got.NextAttemptAt)
+	}
+	if got.RetryCount != 1 {
+		t.Fatalf("RetryCount = %d, want 1", got.RetryCount)
+	}
 }
 
 func activeUploadCount(fs vfs.FileSystem) int {

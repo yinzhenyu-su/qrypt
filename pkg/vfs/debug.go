@@ -52,6 +52,7 @@ type encryptedMarker interface {
 type DebugMountSnapshot struct {
 	Name              string                `json:"name"`
 	DriverName        string                `json:"driver_name,omitempty"`
+	RootID            string                `json:"root_id,omitempty"`
 	Capabilities      []drive.Capability    `json:"capabilities,omitempty"`
 	Encrypted         bool                  `json:"encrypted"`
 	Pending           []PendingFile         `json:"pending"`
@@ -262,6 +263,7 @@ func (v *VFS) DebugSnapshot() DebugSnapshot {
 func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 	snapshot := DebugMountSnapshot{
 		Name:              name,
+		RootID:            v.rootID,
 		Capabilities:      drive.Capabilities(v.driver),
 		Encrypted:         debugEncrypted(v.driver),
 		Pending:           v.cache.Pending(),
@@ -429,7 +431,9 @@ func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
 			continue
 		}
 		state := "queued"
-		if timerPaths[item.Path] {
+		if item.PermanentFail {
+			state = "failed"
+		} else if timerPaths[item.Path] {
 			state = "scheduled"
 			if item.LastError != "" && item.NextAttemptAt > timeutil.Now().UnixNano() {
 				state = "retry_wait"

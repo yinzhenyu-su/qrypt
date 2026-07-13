@@ -209,6 +209,10 @@ func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
 
 func (v *VFS) Resume(ctx context.Context) {
 	for _, pending := range v.cache.Pending() {
+		if pending.PermanentFail {
+			logging.L.WarnfEvery("vfs.resume_pending_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
+			continue
+		}
 		logging.L.InfofEvery("vfs.resume_pending", time.Second, "[VFS] resume pending upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
 		v.enqueue(pending)
 	}
