@@ -16,10 +16,12 @@ import (
 	"time"
 
 	cipher "github.com/SheltonZhu/115driver/pkg/crypto/ec115"
+	"github.com/go-resty/resty/v2"
 	"golang.org/x/time/rate"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -38,16 +40,21 @@ type Driver struct {
 	bandwidthLimiter *drive.BandwidthLimiter
 	httpClient       *http.Client
 	trace            *traceutil.Buffer
+	stateStore       drive.StateStore
+	cookieSource     string
+	cookieUpdated    time.Time
 	debugMu          sync.Mutex
 	lastError        string
+}
+
+type cookieState struct {
+	Cookie    string    `json:"cookie,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 func init() {
 	drive.Register("115", func(params drive.Params) (drive.Driver, error) {
 		cookie := params["cookie"]
-		if cookie == "" {
-			return nil, fmt.Errorf("115: missing cookie")
-		}
 		return New(Options{
 			Cookie:    cookie,
 			RootPath:  params["root_path"],
@@ -57,9 +64,8 @@ func init() {
 		drive.ParamDef{
 			Name:        "cookie",
 			Type:        "string",
-			Required:    true,
 			Secret:      true,
-			Description: "115 cloud drive authentication cookie",
+			Description: "115 cloud drive authentication cookie (required on first run; later can be loaded from state)",
 			Example:     "k1=v1; k2=v2",
 		},
 		drive.ParamDef{
@@ -81,15 +87,17 @@ type Options struct {
 
 func New(opts Options) *Driver {
 	return &Driver{
-		rootID:    opts.RootID,
-		rootPath:  opts.RootPath,
-		cookies:   opts.Cookie,
-		limitRate: opts.LimitRate,
-		trace:     traceutil.NewBuffer(500),
+		rootID:       opts.RootID,
+		rootPath:     opts.RootPath,
+		cookies:      opts.Cookie,
+		limitRate:    opts.LimitRate,
+		trace:        traceutil.NewBuffer(500),
+		cookieSource: "config",
 	}
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	d.loadCookieState()
 	if d.cookies == "" {
 		return fmt.Errorf("115: Init: missing cookie")
 	}
@@ -99,6 +107,10 @@ func (d *Driver) Init(ctx context.Context) error {
 	d.cl = driver115.New(
 		driver115.UA(fmt.Sprintf("Mozilla/5.0 115Browser/%s", appVer)),
 	)
+	d.cl.Client.OnAfterResponse(func(_ *resty.Client, _ *resty.Response) error {
+		d.saveCurrentCookiesFromClient()
+		return nil
+	})
 	cred := &driver115.Credential{}
 	if err := cred.FromCookie(d.cookies); err != nil {
 		d.setLastError(fmt.Sprintf("115: parse cookie: %v", err))
@@ -111,6 +123,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		d.setLastError(fmt.Sprintf("115: login check: %v", err))
 		return fmt.Errorf("115: login check: %w", err)
 	}
+	d.saveCookieState(d.currentCookieHeader(), d.cookieSource)
 	d.httpClient = d.cl.Client.GetClient()
 	if d.rootID == "" {
 		d.rootID = "0"
@@ -127,6 +140,10 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(context.Context) error {
 	return nil
+}
+
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
 }
 
 func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
@@ -497,7 +514,10 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	lastError := d.lastError
 	d.debugMu.Unlock()
 	extra := map[string]any{
-		drive.DebugExtraCredentialSource: "cookie",
+		drive.DebugExtraCredentialSource: d.cookieSource,
+	}
+	if !d.cookieUpdated.IsZero() {
+		extra[drive.DebugExtraCredentialUpdated] = d.cookieUpdated
 	}
 	health := drive.HealthLevelOK
 	if lastError != "" {
@@ -708,6 +728,158 @@ func (d *Driver) setLastError(value string) {
 	d.lastError = value
 }
 
+func (d *Driver) loadCookieState() {
+	if d.stateStore == nil {
+		return
+	}
+	var state cookieState
+	err := d.stateStore.LoadJSON("115_cookie.json", &state)
+	if err != nil {
+		return
+	}
+	if state.Cookie != "" {
+		d.cookies = mergeCookieHeaders(d.cookies, state.Cookie)
+		d.cookieSource = "state"
+	}
+	d.cookieUpdated = state.UpdatedAt
+}
+
+func (d *Driver) saveCurrentCookiesFromClient() {
+	cookie := d.currentCookieHeader()
+	if cookie == "" {
+		return
+	}
+	d.saveUpdatedCookie(cookie)
+}
+
+func (d *Driver) currentCookieHeader() string {
+	if d.cl == nil || d.cl.Client == nil {
+		return d.cookies
+	}
+	cookie := d.cookies
+	restyCookies := d.cl.Client.Cookies
+	if len(restyCookies) > 0 {
+		cookie = mergeCookieHeaders(cookie, cookieHeader(restyCookies))
+	}
+	if hc := d.cl.Client.GetClient(); hc != nil && hc.Jar != nil {
+		for _, rawURL := range []string{
+			"https://115.com/",
+			"https://my.115.com/",
+			"https://webapi.115.com/",
+			"https://proapi.115.com/",
+			"https://passportapi.115.com/",
+			"https://uplb.115.com/",
+		} {
+			u, err := url.Parse(rawURL)
+			if err != nil {
+				continue
+			}
+			cookie = mergeCookieHeaders(cookie, cookieHeader(hc.Jar.Cookies(u)))
+		}
+	}
+	return cookie
+}
+
+func (d *Driver) saveUpdatedCookie(cookie string) {
+	if cookie == "" {
+		return
+	}
+	merged := mergeCookieHeaders(d.cookies, cookie)
+	if merged == "" || merged == d.cookies {
+		return
+	}
+	d.cookies = merged
+	d.cookieSource = "response"
+	d.cookieUpdated = time.Now()
+	d.saveCookieState(merged, d.cookieSource)
+}
+
+func (d *Driver) saveCookieState(cookie, source string) {
+	if d.stateStore == nil {
+		return
+	}
+	if cookie == "" {
+		return
+	}
+	if d.cookieUpdated.IsZero() {
+		d.cookieUpdated = time.Now()
+	}
+	d.cookies = cookie
+	d.cookieSource = source
+	if err := d.stateStore.SaveJSON("115_cookie.json", cookieState{
+		Cookie:    cookie,
+		UpdatedAt: d.cookieUpdated,
+	}); err != nil {
+		logging.L.Warnf("[115] save updated cookie state failed: %v", err)
+	}
+}
+
+func mergeCookieHeaders(base, overlay string) string {
+	values := map[string]string{}
+	order := []string{}
+	for _, cookie := range parseCookieHeader(base) {
+		values[cookie.Name] = cookie.Value
+		order = append(order, cookie.Name)
+	}
+	changed := false
+	for _, cookie := range parseCookieHeader(overlay) {
+		if cookie.Name == "" {
+			continue
+		}
+		if _, ok := values[cookie.Name]; !ok {
+			order = append(order, cookie.Name)
+		}
+		if values[cookie.Name] != cookie.Value {
+			values[cookie.Name] = cookie.Value
+			changed = true
+		}
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	if !changed {
+		return base
+	}
+	parts := make([]string, 0, len(order))
+	seen := map[string]struct{}{}
+	for _, name := range order {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		parts = append(parts, name+"="+values[name])
+	}
+	return strings.Join(parts, "; ")
+}
+
+func parseCookieHeader(cookieHeader string) []*http.Cookie {
+	parts := strings.Split(cookieHeader, ";")
+	cookies := make([]*http.Cookie, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || key == "" {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{Name: key, Value: value})
+	}
+	return cookies
+}
+
+func cookieHeader(cookies []*http.Cookie) string {
+	parts := make([]string, 0, len(cookies))
+	for _, cookie := range cookies {
+		if cookie == nil || cookie.Name == "" {
+			continue
+		}
+		parts = append(parts, cookie.Name+"="+cookie.Value)
+	}
+	return strings.Join(parts, "; ")
+}
+
 func (d *Driver) userAgent() string {
 	return fmt.Sprintf("Mozilla/5.0 115Browser/%s", appVer)
 }
@@ -720,3 +892,4 @@ var _ drive.SpaceQuerier = (*Driver)(nil)
 var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.Debugger = (*Driver)(nil)
 var _ drive.DebugTraceProvider = (*Driver)(nil)
+var _ drive.StateStoreInstaller = (*Driver)(nil)
