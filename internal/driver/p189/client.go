@@ -37,17 +37,25 @@ const (
 	spaceURL        = apiBase + "/api/portal/getUserSizeInfo.action"
 )
 
+const passwordReloginCooldown = time.Hour
+
 type client struct {
-	hc         *http.Client
-	cookie     string
-	username   string
-	password   string
-	sessionKey string
-	pubKey     string
-	pkID       string
-	keyExpire  int64
-	traceMu    sync.Mutex
-	trace      []drive.DebugTraceEvent
+	hc                      *http.Client
+	cookieMu                sync.RWMutex
+	cookie                  string
+	username                string
+	password                string
+	sessionKey              string
+	pubKey                  string
+	pkID                    string
+	keyExpire               int64
+	authMu                  sync.Mutex
+	passwordReloginFailedAt time.Time
+	passwordReloginError    string
+	onPasswordReloginState  func(failedAt time.Time, lastError string)
+	onCookieUpdate          func(cookie string)
+	traceMu                 sync.Mutex
+	trace                   []drive.DebugTraceEvent
 }
 
 type p189TraceRequestFieldsKey struct{}
@@ -64,12 +72,128 @@ var sensitiveSnippetPatterns = []*regexp.Regexp{
 
 func newClient(cookie, username, password string) *client {
 	jar, _ := cookiejar.New(nil)
-	return &client{
+	c := &client{
 		hc:       &http.Client{Jar: jar},
 		cookie:   cookie,
 		username: username,
 		password: password,
 	}
+	c.seedCookieJar(cookie)
+	return c
+}
+
+func (c *client) cookieValue() string {
+	c.cookieMu.RLock()
+	defer c.cookieMu.RUnlock()
+	return c.cookie
+}
+
+func (c *client) setCookie(cookie string) {
+	if cookie == "" {
+		return
+	}
+	c.cookieMu.Lock()
+	c.cookie = cookie
+	c.cookieMu.Unlock()
+	c.seedCookieJar(cookie)
+}
+
+func (c *client) mergeCookieHeader(cookieHeader string) string {
+	return c.mergeCookies(parseCookieHeader(cookieHeader))
+}
+
+func (c *client) clearCookie() {
+	c.cookieMu.Lock()
+	c.cookie = ""
+	c.cookieMu.Unlock()
+	jar, _ := cookiejar.New(nil)
+	c.hc.Jar = jar
+}
+
+func (c *client) seedCookieJar(cookieHeader string) {
+	if c.hc == nil || c.hc.Jar == nil || cookieHeader == "" {
+		return
+	}
+	u, _ := url.Parse("https://cloud.189.cn")
+	if u == nil {
+		return
+	}
+	cookies := parseCookieHeader(cookieHeader)
+	if len(cookies) > 0 {
+		c.hc.Jar.SetCookies(u, cookies)
+	}
+}
+
+func parseCookieHeader(cookieHeader string) []*http.Cookie {
+	parts := strings.Split(cookieHeader, ";")
+	cookies := make([]*http.Cookie, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || key == "" {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{Name: key, Value: value})
+	}
+	return cookies
+}
+
+func (c *client) captureCookies(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	cookies := resp.Cookies()
+	if len(cookies) == 0 {
+		return
+	}
+	updated := c.mergeCookies(cookies)
+	if updated != "" && c.onCookieUpdate != nil {
+		c.onCookieUpdate(updated)
+	}
+}
+
+func (c *client) mergeCookies(cookies []*http.Cookie) string {
+	c.cookieMu.Lock()
+	values := map[string]string{}
+	order := []string{}
+	for _, cookie := range parseCookieHeader(c.cookie) {
+		values[cookie.Name] = cookie.Value
+		order = append(order, cookie.Name)
+	}
+	changed := false
+	for _, cookie := range cookies {
+		if cookie == nil || cookie.Name == "" {
+			continue
+		}
+		if _, ok := values[cookie.Name]; !ok {
+			order = append(order, cookie.Name)
+		}
+		if values[cookie.Name] != cookie.Value {
+			values[cookie.Name] = cookie.Value
+			changed = true
+		}
+	}
+	if !changed {
+		c.cookieMu.Unlock()
+		return ""
+	}
+	parts := make([]string, 0, len(order))
+	seen := map[string]bool{}
+	for _, key := range order {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		parts = append(parts, key+"="+values[key])
+	}
+	c.cookie = strings.Join(parts, "; ")
+	updated := c.cookie
+	c.cookieMu.Unlock()
+	c.seedCookieJar(updated)
+	return updated
 }
 
 func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
@@ -132,14 +256,14 @@ func traceURL(u *url.URL) string {
 }
 
 func (c *client) isLoggedIn() bool {
-	if c.cookie != "" {
+	if c.cookieValue() != "" {
 		return true
 	}
 	return c.username != "" && c.password != ""
 }
 
 func (c *client) loginInit(ctx context.Context) error {
-	if c.cookie != "" {
+	if c.cookieValue() != "" {
 		return c.loginWithCookie(ctx)
 	}
 	if c.username != "" {
@@ -155,7 +279,7 @@ func (c *client) loginWithCookie(ctx context.Context) error {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
-	req.Header.Set("Cookie", c.cookie)
+	req.Header.Set("Cookie", c.cookieValue())
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -168,6 +292,7 @@ func (c *client) loginWithCookie(ctx context.Context) error {
 		})
 		return err
 	}
+	c.captureCookies(resp)
 	resp.Body.Close()
 	c.recordTrace(ctx, drive.DebugTraceEvent{
 		Operation: "login_cookie",
@@ -194,6 +319,7 @@ func (c *client) loginWithPassword(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.captureCookies(resp1)
 	resp1.Body.Close()
 	if resp1.StatusCode != http.StatusOK {
 		return fmt.Errorf("189: login page: %s", resp1.Status)
@@ -305,6 +431,7 @@ func (c *client) loginWithPassword(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("189: main page: %w", err)
 	}
+	c.captureCookies(mainResp)
 	mainResp.Body.Close()
 	return nil
 }
@@ -346,8 +473,8 @@ func (c *client) getResKey(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -355,6 +482,7 @@ func (c *client) getResKey(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("189: get res key: %s", resp.Status)
@@ -419,8 +547,8 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	if err != nil {
 		return nil, err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -440,6 +568,7 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 		})
 		return nil, err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -480,8 +609,8 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 	if err != nil {
 		return nil, err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -499,6 +628,7 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 		})
 		return nil, err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -547,8 +677,8 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 	if err != nil {
 		return nil, err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -572,6 +702,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 		})
 		return nil, err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -584,7 +715,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 			Request:   traceRequestFields(query),
 			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
 		})
-		return nil, fmt.Errorf("189: %s %s: %s", req.Method, req.URL, resp.Status)
+		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
 	event := drive.DebugTraceEvent{
@@ -612,8 +743,8 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 	if err != nil {
 		return err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -642,6 +773,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 		})
 		return err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -691,8 +823,8 @@ func (c *client) doGet(ctx context.Context, u string, query map[string]string, r
 	if err != nil {
 		return err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -715,8 +847,8 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 	if err != nil {
 		return err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -737,6 +869,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 		})
 		return err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -749,7 +882,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 			Request:   traceRequestFields(form),
 			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
 		})
-		return fmt.Errorf("189: %s %s: %s", req.Method, req.URL, resp.Status)
+		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -801,6 +934,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 		})
 		return err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -813,7 +947,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 			Request:   request,
 			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
 		})
-		return fmt.Errorf("189: %s %s: %s", req.Method, req.URL, resp.Status)
+		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -851,14 +985,77 @@ func (c *client) doReq(req *http.Request, result any) error {
 func (c *client) retryOnAuthError(ctx context.Context, fn func(context.Context) error) error {
 	err := fn(ctx)
 	if err != nil && c.username != "" && isAuthError(err) {
-		c.cookie = ""
-		if loginErr := c.loginWithPassword(ctx); loginErr == nil {
-			if keyErr := c.getSessionKey(ctx); keyErr == nil {
-				err = fn(ctx)
-			}
+		if cooldownErr := c.passwordReloginCooldownError(err); cooldownErr != nil {
+			return cooldownErr
 		}
+		previousCookie := c.cookieValue()
+		c.clearCookie()
+		loginErr := c.loginWithPassword(ctx)
+		if loginErr != nil {
+			c.restoreCookieAfterReloginFailure(previousCookie)
+			c.rememberPasswordReloginFailure(loginErr)
+			return fmt.Errorf("%w; password re-login failed: %v", err, loginErr)
+		}
+		if keyErr := c.getSessionKey(ctx); keyErr != nil {
+			c.restoreCookieAfterReloginFailure(previousCookie)
+			c.rememberPasswordReloginFailure(keyErr)
+			return fmt.Errorf("%w; password re-login session key failed: %v", err, keyErr)
+		}
+		c.clearPasswordReloginFailure()
+		err = fn(ctx)
 	}
 	return err
+}
+
+func (c *client) restoreCookieAfterReloginFailure(cookie string) {
+	if cookie != "" {
+		c.setCookie(cookie)
+		return
+	}
+	c.clearCookie()
+}
+
+func (c *client) passwordReloginCooldownError(authErr error) error {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	if c.passwordReloginFailedAt.IsZero() {
+		return nil
+	}
+	elapsed := time.Since(c.passwordReloginFailedAt)
+	if elapsed >= passwordReloginCooldown {
+		return nil
+	}
+	return fmt.Errorf("%w; password re-login skipped: previous failure %s ago, cooling down for %s: %s",
+		authErr, elapsed.Round(time.Second), (passwordReloginCooldown - elapsed).Round(time.Second), c.passwordReloginError)
+}
+
+func (c *client) rememberPasswordReloginFailure(err error) {
+	c.authMu.Lock()
+	c.passwordReloginFailedAt = time.Now()
+	c.passwordReloginError = err.Error()
+	failedAt := c.passwordReloginFailedAt
+	lastError := c.passwordReloginError
+	c.authMu.Unlock()
+	if c.onPasswordReloginState != nil {
+		c.onPasswordReloginState(failedAt, lastError)
+	}
+}
+
+func (c *client) clearPasswordReloginFailure() {
+	c.authMu.Lock()
+	c.passwordReloginFailedAt = time.Time{}
+	c.passwordReloginError = ""
+	c.authMu.Unlock()
+	if c.onPasswordReloginState != nil {
+		c.onPasswordReloginState(time.Time{}, "")
+	}
+}
+
+func (c *client) setPasswordReloginFailure(failedAt time.Time, lastError string) {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	c.passwordReloginFailedAt = failedAt
+	c.passwordReloginError = lastError
 }
 
 func isAuthError(err error) bool {
@@ -1069,8 +1266,8 @@ func (c *client) getCapacity(ctx context.Context) (*CapacityResp, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.cookieValue(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://cloud.189.cn/")
@@ -1078,6 +1275,7 @@ func (c *client) getCapacity(ctx context.Context) (*CapacityResp, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.captureCookies(resp)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("189: space: %s", resp.Status)
