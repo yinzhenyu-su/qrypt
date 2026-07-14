@@ -17,26 +17,26 @@ import (
 )
 
 const DebugSnapshotSchemaVersion = 2
-const debugUploadHistoryLimit = 100
+const uploadSnapshotHistoryLimit = 100
 const debugReadHistoryLimit = 100
 
 var debugStartedAt = time.Now()
 
 const (
-	debugUploadStatePreparing  = string(drive.UploadPhasePreparing)
-	debugUploadStateUploading  = string(drive.UploadPhaseUploading)
-	debugUploadStateCommitting = string(drive.UploadPhaseCommitting)
-	debugUploadStateCompleted  = string(drive.UploadPhaseCompleted)
-	debugUploadStateFailed     = "failed"
-	debugUploadStateSuperseded = "superseded"
+	uploadSnapshotStatePreparing  = string(drive.UploadPhasePreparing)
+	uploadSnapshotStateUploading  = string(drive.UploadPhaseUploading)
+	uploadSnapshotStateCommitting = string(drive.UploadPhaseCommitting)
+	uploadSnapshotStateCompleted  = string(drive.UploadPhaseCompleted)
+	uploadSnapshotStateFailed     = "failed"
+	uploadSnapshotStateSuperseded = "superseded"
 )
 
 type DebugSnapshot struct {
-	SchemaVersion int                  `json:"schema_version"`
-	GeneratedAt   time.Time            `json:"generated_at"`
-	Kind          string               `json:"kind"`
-	Process       DebugProcess         `json:"process"`
-	Mounts        []DebugMountSnapshot `json:"mounts"`
+	SchemaVersion int             `json:"schema_version"`
+	GeneratedAt   time.Time       `json:"generated_at"`
+	Kind          string          `json:"kind"`
+	Process       DebugProcess    `json:"process"`
+	Mounts        []MountSnapshot `json:"mounts"`
 }
 
 type DebugProcess struct {
@@ -48,94 +48,87 @@ type encryptedMarker interface {
 	Encrypted() bool
 }
 
-type DebugMountSnapshot struct {
-	Name              string                `json:"name"`
-	DriverName        string                `json:"driver_name,omitempty"`
-	RootID            string                `json:"root_id,omitempty"`
-	Capabilities      []drive.Capability    `json:"capabilities,omitempty"`
-	Encrypted         bool                  `json:"encrypted"`
-	Pending           []PendingFile         `json:"pending"`
-	Uploads           []DebugUpload         `json:"uploads"`
-	UploadHistory     []DebugUpload         `json:"-"`
-	Driver            *drive.DebugSnapshot  `json:"driver,omitempty"`
-	UploadQueueLength int                   `json:"upload_queue_length"`
-	UploadQueueCap    int                   `json:"upload_queue_cap"`
-	UploadWorkers     int                   `json:"upload_workers"`
-	UploadDelay       string                `json:"upload_delay"`
-	DeleteDelay       string                `json:"delete_delay"`
-	UploadTimers      []DebugTimer          `json:"upload_timers"`
-	DeleteTimers      []DebugTimer          `json:"delete_timers"`
-	Deleted           []DebugDeletedEntry   `json:"deleted"`
-	OverlayOps        []DebugOverlayOp      `json:"overlay_ops"`
-	RestoredDirs      []DebugTimer          `json:"restored_dirs"`
-	CopyHidden        []DebugCopyHidden     `json:"copy_hidden"`
-	ReadCache         DebugReadCache        `json:"read_cache"`
-	ReadHistory       []DebugOperationEvent `json:"read_history"`
-	DriverMetrics     []drive.MetricEvent   `json:"driver_metrics,omitempty"`
-	ActiveChunkLoads  int                   `json:"active_chunk_loads"`
-	ActiveWindowLoads int                   `json:"active_window_loads"`
-	ActivePrefetches  int                   `json:"active_prefetches"`
+type MountSnapshot struct {
+	Identity    MountSnapshotIdentity `json:"identity"`
+	Queues      MountSnapshotQueues   `json:"queues"`
+	Overlay     MountSnapshotOverlay  `json:"overlay"`
+	UploadState MountSnapshotUploads  `json:"upload_state"`
+	Cache       DebugReadCache        `json:"cache"`
+	Events      MountSnapshotEvents   `json:"events"`
+	Runtime     MountSnapshotRuntime  `json:"runtime"`
 }
 
-type DebugUpload struct {
-	OpID           string            `json:"op_id"`
-	Mount          string            `json:"mount,omitempty"`
-	Driver         string            `json:"driver,omitempty"`
-	Path           string            `json:"path"`
-	Name           string            `json:"name"`
-	State          string            `json:"state"`
-	BytesTotal     int64             `json:"bytes_total"`
-	BytesUploaded  int64             `json:"bytes_uploaded"`
-	StartedAt      time.Time         `json:"started_at,omitempty"`
-	UpdatedAt      time.Time         `json:"updated_at,omitempty"`
-	RetryCount     int               `json:"retry_count"`
-	LastError      string            `json:"last_error,omitempty"`
-	LastAttemptAt  int64             `json:"last_attempt_at,omitempty"`
-	NextAttemptAt  int64             `json:"next_attempt_at,omitempty"`
-	CompletedAt    time.Time         `json:"completed_at,omitempty"`
-	StageDurations map[string]string `json:"stage_durations,omitempty"`
-	Trace          []DebugTraceEvent `json:"trace,omitempty"`
-	Extra          map[string]any    `json:"extra,omitempty"`
-	ParentRemoteID string            `json:"parent_remote_id,omitempty"`
-	ResultRemoteID string            `json:"result_remote_id,omitempty"`
-	Hashes         []string          `json:"hashes,omitempty"`
-	Instant        bool              `json:"instant,omitempty"`
-	ErrorCategory  string            `json:"error_category,omitempty"`
+type MountSnapshotIdentity struct {
+	Name         string               `json:"name"`
+	DriverName   string               `json:"driver_name,omitempty"`
+	RootID       string               `json:"root_id,omitempty"`
+	Capabilities []drive.Capability   `json:"capabilities,omitempty"`
+	Encrypted    bool                 `json:"encrypted"`
+	Driver       *drive.DebugSnapshot `json:"driver,omitempty"`
 }
 
-// DebugOperationEvent is the common event schema for observable VFS work.
-// Kind identifies the operation while Phase describes a measured sub-step.
-type DebugOperationEvent struct {
-	OpID          string         `json:"op_id,omitempty"`
-	ParentOpID    string         `json:"parent_op_id,omitempty"`
-	Kind          string         `json:"kind"`
-	Phase         string         `json:"phase"`
-	State         string         `json:"state,omitempty"`
-	Mount         string         `json:"mount,omitempty"`
-	Driver        string         `json:"driver,omitempty"`
-	Path          string         `json:"path,omitempty"`
-	RemoteID      string         `json:"remote_id,omitempty"`
-	Offset        int64          `json:"offset,omitempty"`
-	Requested     int64          `json:"requested_bytes,omitempty"`
-	Bytes         int64          `json:"bytes,omitempty"`
-	CacheHits     int64          `json:"cache_hits,omitempty"`
-	CacheMisses   int64          `json:"cache_misses,omitempty"`
-	Chunks        int64          `json:"chunks,omitempty"`
-	RetryCount    int            `json:"retry_count,omitempty"`
-	Duration      string         `json:"duration,omitempty"`
-	DurationMS    int64          `json:"duration_ms,omitempty"`
-	Throughput    int64          `json:"throughput,omitempty"`
-	StartedAt     time.Time      `json:"started_at,omitempty"`
-	FinishedAt    time.Time      `json:"finished_at,omitempty"`
-	Error         string         `json:"error,omitempty"`
-	ErrorCategory string         `json:"error_category,omitempty"`
-	Extra         map[string]any `json:"extra,omitempty"`
+type MountSnapshotQueues struct {
+	UploadLength  int          `json:"upload_length"`
+	UploadCap     int          `json:"upload_cap"`
+	UploadWorkers int          `json:"upload_workers"`
+	UploadDelay   string       `json:"upload_delay"`
+	DeleteDelay   string       `json:"delete_delay"`
+	UploadTimers  []DebugTimer `json:"upload_timers,omitempty"`
+	DeleteTimers  []DebugTimer `json:"delete_timers,omitempty"`
 }
 
-type DebugTraceEvent = DebugOperationEvent
+type MountSnapshotOverlay struct {
+	Pending      []PendingFile       `json:"pending,omitempty"`
+	Deleted      []DebugDeletedEntry `json:"deleted,omitempty"`
+	OverlayOps   []DebugOverlayOp    `json:"overlay_ops,omitempty"`
+	RestoredDirs []DebugTimer        `json:"restored_dirs,omitempty"`
+	CopyHidden   []DebugCopyHidden   `json:"copy_hidden,omitempty"`
+}
 
-type debugUploadState struct {
-	upload         DebugUpload
+type MountSnapshotUploads struct {
+	Active  []UploadSnapshot `json:"active,omitempty"`
+	History []UploadSnapshot `json:"history,omitempty"`
+}
+
+type MountSnapshotEvents struct {
+	Reads  []drive.MetricEvent `json:"reads,omitempty"`
+	Driver []drive.MetricEvent `json:"driver,omitempty"`
+}
+
+type MountSnapshotRuntime struct {
+	ChunkLoads  int `json:"chunk_loads"`
+	WindowLoads int `json:"window_loads"`
+	Prefetches  int `json:"prefetches"`
+}
+
+type UploadSnapshot struct {
+	OpID           string              `json:"op_id"`
+	Mount          string              `json:"mount,omitempty"`
+	Driver         string              `json:"driver,omitempty"`
+	Path           string              `json:"path"`
+	Name           string              `json:"name"`
+	State          string              `json:"state"`
+	BytesTotal     int64               `json:"bytes_total"`
+	BytesUploaded  int64               `json:"bytes_uploaded"`
+	StartedAt      time.Time           `json:"started_at,omitempty"`
+	UpdatedAt      time.Time           `json:"updated_at,omitempty"`
+	RetryCount     int                 `json:"retry_count"`
+	LastError      string              `json:"last_error,omitempty"`
+	LastAttemptAt  int64               `json:"last_attempt_at,omitempty"`
+	NextAttemptAt  int64               `json:"next_attempt_at,omitempty"`
+	CompletedAt    time.Time           `json:"completed_at,omitempty"`
+	StageDurations map[string]string   `json:"stage_durations,omitempty"`
+	Events         []drive.MetricEvent `json:"events,omitempty"`
+	Extra          map[string]any      `json:"extra,omitempty"`
+	ParentRemoteID string              `json:"parent_remote_id,omitempty"`
+	ResultRemoteID string              `json:"result_remote_id,omitempty"`
+	Hashes         []string            `json:"hashes,omitempty"`
+	Instant        bool                `json:"instant,omitempty"`
+	ErrorCategory  string              `json:"error_category,omitempty"`
+}
+
+type uploadSnapshotState struct {
+	upload         UploadSnapshot
 	stageStartedAt time.Time
 	stageDurations map[string]time.Duration
 }
@@ -257,74 +250,82 @@ func (v *VFS) DebugSnapshot() DebugSnapshot {
 		GeneratedAt:   timeutil.Now(),
 		Kind:          "vfs",
 		Process:       debugProcess(),
-		Mounts:        []DebugMountSnapshot{v.debugMountSnapshot("default")},
+		Mounts:        []MountSnapshot{v.debugMountSnapshot("default")},
 	}
 }
 
-func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
-	snapshot := DebugMountSnapshot{
-		Name:              name,
-		RootID:            v.rootID,
-		Capabilities:      drive.Capabilities(v.driver),
-		Encrypted:         debugEncrypted(v.driver),
-		Pending:           v.cache.Pending(),
-		UploadQueueLength: len(v.queue),
-		UploadQueueCap:    cap(v.queue),
-		UploadWorkers:     v.uploadWorkers,
-		UploadDelay:       v.uploadDelay.String(),
-		DeleteDelay:       v.deleteDelay.String(),
-		ReadCache:         v.cache.debugReadCache(),
+func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
+	snapshot := MountSnapshot{
+		Identity: MountSnapshotIdentity{
+			Name:         name,
+			RootID:       v.rootID,
+			Capabilities: drive.Capabilities(v.driver),
+			Encrypted:    debugEncrypted(v.driver),
+		},
+		Queues: MountSnapshotQueues{
+			UploadLength:  len(v.queue),
+			UploadCap:     cap(v.queue),
+			UploadWorkers: v.uploadWorkers,
+			UploadDelay:   v.uploadDelay.String(),
+			DeleteDelay:   v.deleteDelay.String(),
+		},
+		Overlay: MountSnapshotOverlay{
+			Pending: v.cache.Pending(),
+		},
+		Cache: v.cache.debugReadCache(),
+		Events: MountSnapshotEvents{
+			Reads: v.debugReadHistory(),
+		},
 	}
-	snapshot.Uploads = v.debugUploads(snapshot.Pending)
-	snapshot.UploadHistory = v.debugUploadHistory()
-	snapshot.ReadHistory = v.debugReadHistory()
+	snapshot.UploadState.Active = v.uploadSnapshots(snapshot.Overlay.Pending)
+	snapshot.UploadState.History = v.uploadSnapshotHistory()
 	if driverSnapshot, err := v.driver.DebugSnapshot(context.Background()); err == nil {
-		snapshot.Driver = &driverSnapshot
-		snapshot.DriverName = driverSnapshot.Driver
+		snapshot.Identity.Driver = &driverSnapshot
+		snapshot.Identity.DriverName = driverSnapshot.Driver
 		if debugDriverEncrypted(driverSnapshot) {
-			snapshot.Encrypted = true
+			snapshot.Identity.Encrypted = true
 		}
 	}
 	if metrics, err := v.driver.Metrics(context.Background(), debugStartedAt); err == nil {
-		snapshot.DriverMetrics = metrics
+		snapshot.Events.Driver = metrics
 	}
-	for i := range snapshot.ReadHistory {
-		snapshot.ReadHistory[i].Mount = name
-		snapshot.ReadHistory[i].Driver = snapshot.DriverName
+	for i := range snapshot.Events.Reads {
+		snapshot.Events.Reads[i].Mount = name
+		snapshot.Events.Reads[i].Driver = snapshot.Identity.DriverName
 	}
-	decorateUpload := func(upload *DebugUpload) {
+	decorateUpload := func(upload *UploadSnapshot) {
 		upload.Mount = name
-		upload.Driver = snapshot.DriverName
-		for i := range upload.Trace {
-			upload.Trace[i].OpID = upload.OpID
-			upload.Trace[i].Mount = name
-			upload.Trace[i].Driver = snapshot.DriverName
-			upload.Trace[i].Path = upload.Path
+		upload.Driver = snapshot.Identity.DriverName
+		for i := range upload.Events {
+			upload.Events[i].OpID = upload.OpID
+			upload.Events[i].Mount = name
+			upload.Events[i].Driver = snapshot.Identity.DriverName
+			upload.Events[i].Path = upload.Path
 		}
 	}
-	for i := range snapshot.Uploads {
-		decorateUpload(&snapshot.Uploads[i])
+	for i := range snapshot.UploadState.Active {
+		decorateUpload(&snapshot.UploadState.Active[i])
 	}
-	for i := range snapshot.UploadHistory {
-		decorateUpload(&snapshot.UploadHistory[i])
+	for i := range snapshot.UploadState.History {
+		decorateUpload(&snapshot.UploadState.History[i])
 	}
 
 	v.uploadMu.Lock()
 	for path := range v.uploadTimers {
-		snapshot.UploadTimers = append(snapshot.UploadTimers, DebugTimer{Path: path})
+		snapshot.Queues.UploadTimers = append(snapshot.Queues.UploadTimers, DebugTimer{Path: path})
 	}
 	v.uploadMu.Unlock()
-	sort.Slice(snapshot.UploadTimers, func(i, j int) bool {
-		return snapshot.UploadTimers[i].Path < snapshot.UploadTimers[j].Path
+	sort.Slice(snapshot.Queues.UploadTimers, func(i, j int) bool {
+		return snapshot.Queues.UploadTimers[i].Path < snapshot.Queues.UploadTimers[j].Path
 	})
 
 	now := time.Now()
 	v.deleteMu.Lock()
 	for path := range v.deleteTimers {
-		snapshot.DeleteTimers = append(snapshot.DeleteTimers, DebugTimer{Path: path})
+		snapshot.Queues.DeleteTimers = append(snapshot.Queues.DeleteTimers, DebugTimer{Path: path})
 	}
 	for path, entry := range v.deleted {
-		snapshot.Deleted = append(snapshot.Deleted, DebugDeletedEntry{
+		snapshot.Overlay.Deleted = append(snapshot.Overlay.Deleted, DebugDeletedEntry{
 			Path:  path,
 			ID:    entry.ID,
 			Name:  entry.Name,
@@ -333,7 +334,7 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 		})
 	}
 	for _, op := range v.overlayOps {
-		snapshot.OverlayOps = append(snapshot.OverlayOps, DebugOverlayOp{
+		snapshot.Overlay.OverlayOps = append(snapshot.Overlay.OverlayOps, DebugOverlayOp{
 			OldPath: op.oldPath,
 			NewPath: op.newPath,
 			EntryID: op.entryID,
@@ -346,7 +347,7 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 		if now.After(deadline) {
 			continue
 		}
-		snapshot.RestoredDirs = append(snapshot.RestoredDirs, DebugTimer{Path: path, Deadline: deadline})
+		snapshot.Overlay.RestoredDirs = append(snapshot.Overlay.RestoredDirs, DebugTimer{Path: path, Deadline: deadline})
 	}
 	for dir, names := range v.copyHidden {
 		item := DebugCopyHidden{Dir: dir}
@@ -360,38 +361,66 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 			return item.Names[i].Path < item.Names[j].Path
 		})
 		if len(item.Names) > 0 {
-			snapshot.CopyHidden = append(snapshot.CopyHidden, item)
+			snapshot.Overlay.CopyHidden = append(snapshot.Overlay.CopyHidden, item)
 		}
 	}
 	v.deleteMu.Unlock()
 
-	sort.Slice(snapshot.DeleteTimers, func(i, j int) bool {
-		return snapshot.DeleteTimers[i].Path < snapshot.DeleteTimers[j].Path
+	sort.Slice(snapshot.Queues.DeleteTimers, func(i, j int) bool {
+		return snapshot.Queues.DeleteTimers[i].Path < snapshot.Queues.DeleteTimers[j].Path
 	})
-	sort.Slice(snapshot.Deleted, func(i, j int) bool {
-		return snapshot.Deleted[i].Path < snapshot.Deleted[j].Path
+	sort.Slice(snapshot.Overlay.Deleted, func(i, j int) bool {
+		return snapshot.Overlay.Deleted[i].Path < snapshot.Overlay.Deleted[j].Path
 	})
-	sort.Slice(snapshot.OverlayOps, func(i, j int) bool {
-		return snapshot.OverlayOps[i].OldPath < snapshot.OverlayOps[j].OldPath
+	sort.Slice(snapshot.Overlay.OverlayOps, func(i, j int) bool {
+		return snapshot.Overlay.OverlayOps[i].OldPath < snapshot.Overlay.OverlayOps[j].OldPath
 	})
-	sort.Slice(snapshot.RestoredDirs, func(i, j int) bool {
-		return snapshot.RestoredDirs[i].Path < snapshot.RestoredDirs[j].Path
+	sort.Slice(snapshot.Overlay.RestoredDirs, func(i, j int) bool {
+		return snapshot.Overlay.RestoredDirs[i].Path < snapshot.Overlay.RestoredDirs[j].Path
 	})
-	sort.Slice(snapshot.CopyHidden, func(i, j int) bool {
-		return snapshot.CopyHidden[i].Dir < snapshot.CopyHidden[j].Dir
+	sort.Slice(snapshot.Overlay.CopyHidden, func(i, j int) bool {
+		return snapshot.Overlay.CopyHidden[i].Dir < snapshot.Overlay.CopyHidden[j].Dir
 	})
 
 	v.chunkLoadMu.Lock()
-	snapshot.ActiveChunkLoads = len(v.chunkLoads)
+	snapshot.Runtime.ChunkLoads = len(v.chunkLoads)
 	v.chunkLoadMu.Unlock()
 	v.windowLoadMu.Lock()
-	snapshot.ActiveWindowLoads = len(v.windowLoads)
+	snapshot.Runtime.WindowLoads = len(v.windowLoads)
 	v.windowLoadMu.Unlock()
 	v.prefetchMu.Lock()
-	snapshot.ActivePrefetches = len(v.prefetching)
+	snapshot.Runtime.Prefetches = len(v.prefetching)
 	v.prefetchMu.Unlock()
 
 	return snapshot
+}
+
+func (s MountSnapshot) ActiveUploads() []UploadSnapshot {
+	return s.UploadState.Active
+}
+
+func (s MountSnapshot) PendingFiles() []PendingFile {
+	return s.Overlay.Pending
+}
+
+func (s MountSnapshot) ActiveDeleteTimers() []DebugTimer {
+	return s.Queues.DeleteTimers
+}
+
+func (s MountSnapshot) HistoricalUploads() []UploadSnapshot {
+	return s.UploadState.History
+}
+
+func (s MountSnapshot) ReadEvents() []drive.MetricEvent {
+	return s.Events.Reads
+}
+
+func (s MountSnapshot) DriverMetricEvents() []drive.MetricEvent {
+	return s.Events.Driver
+}
+
+func (s MountSnapshot) ReadCacheState() DebugReadCache {
+	return s.Cache
 }
 
 func debugProcess() DebugProcess {
@@ -411,8 +440,8 @@ func debugEncrypted(driver drive.Driver) bool {
 	return ok && marker.Encrypted()
 }
 
-func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
-	active := map[string]DebugUpload{}
+func (v *VFS) uploadSnapshots(pending []PendingFile) []UploadSnapshot {
+	active := map[string]UploadSnapshot{}
 	v.uploadMu.Lock()
 	for path, state := range v.activeUploads {
 		active[path] = state.upload
@@ -423,7 +452,7 @@ func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
 	}
 	v.uploadMu.Unlock()
 
-	uploads := make([]DebugUpload, 0, len(pending)+len(active))
+	uploads := make([]UploadSnapshot, 0, len(pending)+len(active))
 	seen := map[string]bool{}
 	for _, item := range pending {
 		if upload, ok := active[item.Path]; ok {
@@ -440,7 +469,7 @@ func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
 				state = "retry_wait"
 			}
 		}
-		uploads = append(uploads, DebugUpload{
+		uploads = append(uploads, UploadSnapshot{
 			OpID:           item.FID,
 			Path:           item.Path,
 			Name:           item.Name,
@@ -465,10 +494,10 @@ func (v *VFS) debugUploads(pending []PendingFile) []DebugUpload {
 	return uploads
 }
 
-func (v *VFS) debugUploadHistory() []DebugUpload {
+func (v *VFS) uploadSnapshotHistory() []UploadSnapshot {
 	v.uploadMu.Lock()
 	defer v.uploadMu.Unlock()
-	out := append([]DebugUpload(nil), v.uploadHistory...)
+	out := append([]UploadSnapshot(nil), v.uploadHistory...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
 			return out[i].Path < out[j].Path
@@ -478,12 +507,12 @@ func (v *VFS) debugUploadHistory() []DebugUpload {
 	return out
 }
 
-func (v *VFS) startDebugUpload(p PendingFile) {
+func (v *VFS) startUploadSnapshot(p PendingFile) {
 	now := timeutil.Now()
 	v.uploadMu.Lock()
-	v.activeUploads[p.Path] = &debugUploadState{
+	v.activeUploads[p.Path] = &uploadSnapshotState{
 		stageStartedAt: now,
-		upload: DebugUpload{
+		upload: UploadSnapshot{
 			OpID:           p.FID,
 			Path:           p.Path,
 			Name:           p.Name,
@@ -501,7 +530,7 @@ func (v *VFS) startDebugUpload(p PendingFile) {
 	v.uploadMu.Unlock()
 }
 
-func (v *VFS) setDebugUploadState(path, state string) {
+func (v *VFS) setUploadSnapshotState(path, state string) {
 	v.uploadMu.Lock()
 	if upload := v.activeUploads[path]; upload != nil {
 		upload.recordStageDuration(timeutil.Now())
@@ -514,7 +543,7 @@ func (v *VFS) setDebugUploadState(path, state string) {
 	v.uploadMu.Unlock()
 }
 
-func (v *VFS) finishDebugUpload(path, state, lastError string) {
+func (v *VFS) finishUploadSnapshot(path, state, lastError string) {
 	v.uploadMu.Lock()
 	if upload := v.activeUploads[path]; upload != nil {
 		now := timeutil.Now()
@@ -527,16 +556,16 @@ func (v *VFS) finishDebugUpload(path, state, lastError string) {
 		upload.upload.UpdatedAt = now
 		upload.upload.CompletedAt = upload.upload.UpdatedAt
 		v.uploadHistory = append(v.uploadHistory, upload.upload)
-		if len(v.uploadHistory) > debugUploadHistoryLimit {
-			copy(v.uploadHistory, v.uploadHistory[len(v.uploadHistory)-debugUploadHistoryLimit:])
-			v.uploadHistory = v.uploadHistory[:debugUploadHistoryLimit]
+		if len(v.uploadHistory) > uploadSnapshotHistoryLimit {
+			copy(v.uploadHistory, v.uploadHistory[len(v.uploadHistory)-uploadSnapshotHistoryLimit:])
+			v.uploadHistory = v.uploadHistory[:uploadSnapshotHistoryLimit]
 		}
 		delete(v.activeUploads, path)
 	}
 	v.uploadMu.Unlock()
 }
 
-func (v *VFS) setDebugUploadMetadata(path, resultRemoteID string, hashes []string) {
+func (v *VFS) setUploadSnapshotMetadata(path, resultRemoteID string, hashes []string) {
 	v.uploadMu.Lock()
 	if state := v.activeUploads[path]; state != nil {
 		if resultRemoteID != "" {
@@ -550,7 +579,7 @@ func (v *VFS) setDebugUploadMetadata(path, resultRemoteID string, hashes []strin
 	v.uploadMu.Unlock()
 }
 
-func (s *debugUploadState) recordStageDuration(now time.Time) {
+func (s *uploadSnapshotState) recordStageDuration(now time.Time) {
 	if s.stageStartedAt.IsZero() || s.upload.State == "" {
 		s.stageStartedAt = now
 		return
@@ -566,7 +595,7 @@ func (s *debugUploadState) recordStageDuration(now time.Time) {
 	s.stageStartedAt = now
 }
 
-func (v *VFS) updateDebugUpload(path string, n int) {
+func (v *VFS) updateUploadSnapshot(path string, n int) {
 	if n <= 0 {
 		return
 	}
@@ -581,16 +610,19 @@ func (v *VFS) updateDebugUpload(path string, n int) {
 	v.uploadMu.Unlock()
 }
 
-func (v *VFS) recordDebugUploadTrace(path, phase string, start time.Time, bytes int64, extra map[string]any) {
+func (v *VFS) recordUploadEvent(path, phase string, start time.Time, bytes int64, extra map[string]any) {
 	if phase == "" || start.IsZero() {
 		return
 	}
 	finished := timeutil.Now()
 	duration := finished.Sub(start)
-	event := DebugTraceEvent{
-		Kind:       "upload",
+	event := drive.MetricEvent{
+		At:         finished,
+		Kind:       "vfs_upload",
+		Operation:  "upload",
 		Phase:      phase,
 		State:      "completed",
+		OK:         true,
 		Bytes:      bytes,
 		Duration:   duration.String(),
 		DurationMS: durationMillis(duration),
@@ -600,6 +632,7 @@ func (v *VFS) recordDebugUploadTrace(path, phase string, start time.Time, bytes 
 	}
 	if message, ok := extra["error"].(string); ok && message != "" {
 		event.State = "failed"
+		event.OK = false
 		event.Error = message
 		event.ErrorCategory = drive.ErrorCategoryMessage(message)
 	}
@@ -608,7 +641,7 @@ func (v *VFS) recordDebugUploadTrace(path, phase string, start time.Time, bytes 
 	}
 	v.uploadMu.Lock()
 	if state := v.activeUploads[path]; state != nil {
-		state.upload.Trace = append(state.upload.Trace, event)
+		state.upload.Events = append(state.upload.Events, event)
 	}
 	v.uploadMu.Unlock()
 }
@@ -622,8 +655,8 @@ func (v *VFS) debugCacheCounters() (hits, misses int64) {
 
 func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, err error) {
 	finished := timeutil.Now()
-	event := DebugOperationEvent{
-		OpID: opID, Kind: "read", Phase: "read", State: "completed",
+	event := drive.MetricEvent{
+		At: finished, OpID: opID, Kind: "vfs_read", Operation: "read", Phase: "read", State: "completed", OK: true,
 		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
 		Bytes: bytes, CacheHits: cacheHits, CacheMisses: cacheMisses, Chunks: chunks,
 		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
@@ -634,21 +667,22 @@ func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, by
 	}
 	if err != nil {
 		event.State = "failed"
+		event.OK = false
 		event.Error = err.Error()
 		event.ErrorCategory = drive.ErrorCategory(err)
 	}
 	v.readMu.Lock()
 	v.readHistory = append(v.readHistory, event)
 	if len(v.readHistory) > debugReadHistoryLimit {
-		v.readHistory = append([]DebugOperationEvent(nil), v.readHistory[len(v.readHistory)-debugReadHistoryLimit:]...)
+		v.readHistory = append([]drive.MetricEvent(nil), v.readHistory[len(v.readHistory)-debugReadHistoryLimit:]...)
 	}
 	v.readMu.Unlock()
 }
 
-func (v *VFS) debugReadHistory() []DebugOperationEvent {
+func (v *VFS) debugReadHistory() []drive.MetricEvent {
 	v.readMu.Lock()
 	defer v.readMu.Unlock()
-	return append([]DebugOperationEvent(nil), v.readHistory...)
+	return append([]drive.MetricEvent(nil), v.readHistory...)
 }
 
 func durationMillis(d time.Duration) int64 {
@@ -658,7 +692,7 @@ func durationMillis(d time.Duration) int64 {
 	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
-func (v *VFS) setDebugUploadExtra(path string, key string, value any) {
+func (v *VFS) setUploadSnapshotExtra(path string, key string, value any) {
 	if key == "" {
 		return
 	}
@@ -765,8 +799,8 @@ func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {
 		}
 	}
 	uploading := map[string]bool{}
-	for _, upload := range v.debugUploads(pending) {
-		if upload.State == debugUploadStateUploading {
+	for _, upload := range v.uploadSnapshots(pending) {
+		if upload.State == uploadSnapshotStateUploading {
 			uploading[upload.Path] = true
 		}
 	}
@@ -986,8 +1020,8 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 			break
 		}
 	}
-	for _, upload := range v.debugUploads(v.cache.Pending()) {
-		if upload.Path == path && upload.State == debugUploadStateUploading {
+	for _, upload := range v.uploadSnapshots(v.cache.Pending()) {
+		if upload.Path == path && upload.State == uploadSnapshotStateUploading {
 			report.UploadInProgress = true
 			break
 		}

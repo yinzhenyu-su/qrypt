@@ -55,9 +55,9 @@ type VFS struct {
 	uploadWorkers int
 	uploadMu      sync.Mutex
 	uploadTimers  map[string]*time.Timer
-	activeUploads map[string]*debugUploadState
-	uploadHistory []DebugUpload
-	readHistory   []DebugOperationEvent
+	activeUploads map[string]*uploadSnapshotState
+	uploadHistory []UploadSnapshot
+	readHistory   []drive.MetricEvent
 	readSequence  uint64
 	readMu        sync.Mutex
 
@@ -140,7 +140,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		uploadDelay:    opts.UploadDelay,
 		uploadWorkers:  opts.UploadWorkers,
 		uploadTimers:   map[string]*time.Timer{},
-		activeUploads:  map[string]*debugUploadState{},
+		activeUploads:  map[string]*uploadSnapshotState{},
 		deleteDelay:    opts.DeleteDelay,
 		deleteTimers:   map[string]*time.Timer{},
 		deleted:        map[string]drive.Entry{},

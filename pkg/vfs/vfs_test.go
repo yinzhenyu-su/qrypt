@@ -903,10 +903,10 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 		t.Fatalf("unexpected data: %q", data)
 	}
 	snapshot := fs.DebugSnapshot()
-	if len(snapshot.Mounts) != 1 || len(snapshot.Mounts[0].UploadHistory) != 1 {
+	if len(snapshot.Mounts) != 1 || len(snapshot.Mounts[0].HistoricalUploads()) != 1 {
 		t.Fatalf("expected one upload history item, got %+v", snapshot)
 	}
-	history := snapshot.Mounts[0].UploadHistory[0]
+	history := snapshot.Mounts[0].HistoricalUploads()[0]
 	if history.Path != "/hello.txt" || history.State != string(drive.UploadPhaseCompleted) || history.BytesUploaded != int64(len("hello qrypt")) {
 		t.Fatalf("unexpected upload history: %+v", history)
 	}
@@ -919,11 +919,11 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	if history.Mount != "default" || history.Driver != "localfs" {
 		t.Fatalf("upload history missing mount metadata: %+v", history)
 	}
-	if len(snapshot.Mounts[0].ReadHistory) != 1 {
-		t.Fatalf("read history count = %d, want 1: %+v", len(snapshot.Mounts[0].ReadHistory), snapshot.Mounts[0].ReadHistory)
+	if len(snapshot.Mounts[0].ReadEvents()) != 1 {
+		t.Fatalf("read history count = %d, want 1: %+v", len(snapshot.Mounts[0].ReadEvents()), snapshot.Mounts[0].ReadEvents())
 	}
-	read := snapshot.Mounts[0].ReadHistory[0]
-	if read.Kind != "read" || read.Path != "/hello.txt" || read.RemoteID == "" || read.Bytes != int64(len("hello qrypt")) || read.State != "completed" {
+	read := snapshot.Mounts[0].ReadEvents()[0]
+	if read.Kind != "vfs_read" || read.Operation != "read" || !read.OK || read.Path != "/hello.txt" || read.RemoteID == "" || read.Bytes != int64(len("hello qrypt")) || read.State != "completed" {
 		t.Fatalf("unexpected read history: %+v", read)
 	}
 	report, err := fs.DebugConsistency(ctx, "/hello.txt")
@@ -1014,11 +1014,11 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 	if len(snapshot.Mounts) != 1 {
 		t.Fatalf("mount count = %d, want 1", len(snapshot.Mounts))
 	}
-	if snapshot.Mounts[0].RootID != "0" {
-		t.Fatalf("root id = %q, want default root id", snapshot.Mounts[0].RootID)
+	if snapshot.Mounts[0].Identity.RootID != "0" {
+		t.Fatalf("root id = %q, want default root id", snapshot.Mounts[0].Identity.RootID)
 	}
 	caps := map[drive.Capability]bool{}
-	for _, capability := range snapshot.Mounts[0].Capabilities {
+	for _, capability := range snapshot.Mounts[0].Identity.Capabilities {
 		caps[capability] = true
 	}
 	for _, capability := range []drive.Capability{
@@ -1028,7 +1028,7 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 		drive.CapabilityPathResolver,
 	} {
 		if !caps[capability] {
-			t.Fatalf("debug capabilities = %+v, missing %s", snapshot.Mounts[0].Capabilities, capability)
+			t.Fatalf("debug capabilities = %+v, missing %s", snapshot.Mounts[0].Identity.Capabilities, capability)
 		}
 	}
 }
@@ -1046,7 +1046,7 @@ func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 	for i := 0; i < 105; i++ {
 		_, _ = fs.Read(ctx, fmt.Sprintf("/missing-%d", i), 0, 0)
 	}
-	reads := fs.DebugSnapshot().Mounts[0].ReadHistory
+	reads := fs.DebugSnapshot().Mounts[0].ReadEvents()
 	if len(reads) != 100 {
 		t.Fatalf("read history count = %d, want 100", len(reads))
 	}
@@ -1144,10 +1144,10 @@ func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
 	}
 
 	snapshot := fs.DebugSnapshot()
-	if len(snapshot.Mounts) != 1 || len(snapshot.Mounts[0].Uploads) != 1 {
+	if len(snapshot.Mounts) != 1 || len(snapshot.Mounts[0].ActiveUploads()) != 1 {
 		t.Fatalf("expected one active upload, got %+v", snapshot)
 	}
-	upload := snapshot.Mounts[0].Uploads[0]
+	upload := snapshot.Mounts[0].ActiveUploads()[0]
 	if upload.Path != "/active.txt" || upload.State != string(drive.UploadPhaseCommitting) || upload.BytesTotal != int64(len("active upload")) || upload.BytesUploaded != int64(len("active upload")) {
 		t.Fatalf("unexpected active upload: %+v", upload)
 	}
@@ -1174,7 +1174,7 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 		t.Fatal(err)
 	}
 	rc.Close()
-	cache := fs.DebugSnapshot().Mounts[0].ReadCache
+	cache := fs.DebugSnapshot().Mounts[0].ReadCacheState()
 	if cache.Misses == 0 || cache.Hits == 0 || cache.Puts == 0 || cache.ChunkCount == 0 {
 		t.Fatalf("expected cache hit/miss/put stats, got %+v", cache)
 	}
@@ -1201,7 +1201,7 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cache := fs.DebugSnapshot().Mounts[0].ReadCache
+	cache := fs.DebugSnapshot().Mounts[0].ReadCacheState()
 	if cache.Puts != 1 || cache.ChunkCount != 1 {
 		t.Fatalf("expected one cached chunk for slash ID, got %+v", cache)
 	}
@@ -1238,7 +1238,7 @@ func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 	if string(oldData) != "old content" {
 		t.Fatalf("old read = %q", oldData)
 	}
-	if cache := fs.DebugSnapshot().Mounts[0].ReadCache; cache.ChunkCount == 0 {
+	if cache := fs.DebugSnapshot().Mounts[0].ReadCacheState(); cache.ChunkCount == 0 {
 		t.Fatalf("expected old content to be cached, got %+v", cache)
 	}
 
@@ -1891,7 +1891,7 @@ func TestVFSReadSpansChunks(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatalf("read length = %d, want %d", len(got), len(data))
 	}
-	reads := fs.DebugSnapshot().Mounts[0].ReadHistory
+	reads := fs.DebugSnapshot().Mounts[0].ReadEvents()
 	if len(reads) != 1 || reads[0].Chunks != 2 {
 		t.Fatalf("read chunks = %+v, want one read spanning 2 chunks", reads)
 	}
@@ -1921,7 +1921,7 @@ func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
 	if got := drv.readCount(4096); got != 0 {
 		t.Fatalf("driver read count at EOF offset = %d, want 0", got)
 	}
-	reads := fs.DebugSnapshot().Mounts[0].ReadHistory
+	reads := fs.DebugSnapshot().Mounts[0].ReadEvents()
 	if len(reads) != 1 || reads[0].Chunks != 0 {
 		t.Fatalf("read chunks = %+v, want one empty read with 0 chunks", reads)
 	}
@@ -2883,7 +2883,7 @@ func activeUploadCount(fs vfs.FileSystem) int {
 	}
 	count := 0
 	for _, mount := range snapshotter.DebugSnapshot().Mounts {
-		count += len(mount.Uploads)
+		count += len(mount.ActiveUploads())
 	}
 	return count
 }
