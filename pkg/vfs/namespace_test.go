@@ -14,6 +14,7 @@ import (
 )
 
 type fixedSpaceDriver struct {
+	drive.UnsupportedOperations
 	space drive.Space
 }
 
@@ -27,6 +28,15 @@ func (d fixedSpaceDriver) Read(context.Context, drive.Entry, int64, int64) (io.R
 }
 func (d fixedSpaceDriver) Space(context.Context) (drive.Space, error) {
 	return d.space, nil
+}
+func (d fixedSpaceDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySpace}
+}
+func (d fixedSpaceDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{Driver: "fixed-space", Health: drive.HealthLevelOK, GeneratedAt: time.Now()}, nil
+}
+func (d fixedSpaceDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
 }
 
 func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {

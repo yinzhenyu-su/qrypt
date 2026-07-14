@@ -41,8 +41,6 @@ type Options struct {
 
 type VFS struct {
 	driver        drive.Driver
-	writer        drive.Writer
-	sourceUpload  drive.SourceUploader
 	name          string
 	healthTracker *drive.HealthTracker
 	cache         *Cache
@@ -161,12 +159,6 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		windowLoads:    map[string]*windowLoad{},
 		pathLocks:      map[string]*sync.Mutex{},
 	}
-	if drive.HasCapability(driver, drive.CapabilityWriter) {
-		v.writer, _ = driver.(drive.Writer)
-	}
-	if drive.HasCapability(driver, drive.CapabilitySourceUploader) {
-		v.sourceUpload, _ = driver.(drive.SourceUploader)
-	}
 	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: timeutil.Now()}
 	return v, nil
 }
@@ -227,8 +219,7 @@ func (v *VFS) Space(ctx context.Context) (space drive.Space, err error) {
 	if !drive.HasCapability(v.driver, drive.CapabilitySpace) {
 		return drive.Space{}, fmt.Errorf("vfs: driver does not support space query")
 	}
-	querier := v.driver.(drive.SpaceQuerier)
-	return querier.Space(ctx)
+	return v.driver.Space(ctx)
 }
 
 func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err error) {
@@ -341,7 +332,7 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 
 func (v *VFS) Create(ctx context.Context, path string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
-	if v.sourceUpload == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilitySourceUploader) {
 		return fmt.Errorf("vfs: driver does not support upload")
 	}
 	path = cleanVirtual(path)
@@ -516,7 +507,7 @@ func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []dr
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
-	if v.writer == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return drive.Entry{}, fmt.Errorf("vfs: driver does not support mkdir")
 	}
 	path = cleanVirtual(path)
@@ -544,7 +535,7 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err er
 		return drive.Entry{}, err
 	}
 	logging.L.InfofEvery("vfs.mkdir_start", time.Second, "[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
-	entry, err = v.writer.Mkdir(ctx, parent.ID, name)
+	entry, err = v.driver.Mkdir(ctx, parent.ID, name)
 	if err != nil {
 		if !isAlreadyExistsError(err) {
 			logging.L.Warnf("[VFS] mkdir failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
@@ -586,7 +577,7 @@ func (v *VFS) findExistingChildDir(ctx context.Context, parentPath, parentID, na
 
 func (v *VFS) Remove(ctx context.Context, path string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
-	if v.writer == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
 	path = cleanVirtual(path)
@@ -611,7 +602,7 @@ func (v *VFS) Remove(ctx context.Context, path string) (err error) {
 
 func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
-	if v.writer == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
 	path = cleanVirtual(path)
@@ -637,7 +628,7 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
-	if v.writer == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return fmt.Errorf("vfs: driver does not support rename")
 	}
 	oldPath = cleanVirtual(oldPath)
@@ -672,13 +663,13 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
 	oldParent := filepath.Dir(oldPath)
 	newParent := filepath.Dir(newPath)
 	if filepath.Base(oldPath) != newName {
-		if err := v.writer.Rename(ctx, entry, newName); err != nil {
+		if err := v.driver.Rename(ctx, entry, newName); err != nil {
 			return err
 		}
 		entry.Name = newName
 	}
 	if oldParent != newParent {
-		if err := v.writer.Move(ctx, entry, dstParent.ID); err != nil {
+		if err := v.driver.Move(ctx, entry, dstParent.ID); err != nil {
 			return err
 		}
 		entry.ParentID = dstParent.ID

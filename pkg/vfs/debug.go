@@ -71,6 +71,7 @@ type DebugMountSnapshot struct {
 	CopyHidden        []DebugCopyHidden     `json:"copy_hidden"`
 	ReadCache         DebugReadCache        `json:"read_cache"`
 	ReadHistory       []DebugOperationEvent `json:"read_history"`
+	DriverMetrics     []drive.MetricEvent   `json:"driver_metrics,omitempty"`
 	ActiveChunkLoads  int                   `json:"active_chunk_loads"`
 	ActiveWindowLoads int                   `json:"active_window_loads"`
 	ActivePrefetches  int                   `json:"active_prefetches"`
@@ -122,6 +123,7 @@ type DebugOperationEvent struct {
 	Chunks        int64          `json:"chunks,omitempty"`
 	RetryCount    int            `json:"retry_count,omitempty"`
 	Duration      string         `json:"duration,omitempty"`
+	DurationMS    int64          `json:"duration_ms,omitempty"`
 	Throughput    int64          `json:"throughput,omitempty"`
 	StartedAt     time.Time      `json:"started_at,omitempty"`
 	FinishedAt    time.Time      `json:"finished_at,omitempty"`
@@ -276,15 +278,15 @@ func (v *VFS) debugMountSnapshot(name string) DebugMountSnapshot {
 	snapshot.Uploads = v.debugUploads(snapshot.Pending)
 	snapshot.UploadHistory = v.debugUploadHistory()
 	snapshot.ReadHistory = v.debugReadHistory()
-	if drive.HasCapability(v.driver, drive.CapabilityDebugger) {
-		debugger := v.driver.(drive.Debugger)
-		if driverSnapshot, err := debugger.DebugSnapshot(context.Background()); err == nil {
-			snapshot.Driver = &driverSnapshot
-			snapshot.DriverName = driverSnapshot.Driver
-			if debugDriverEncrypted(driverSnapshot) {
-				snapshot.Encrypted = true
-			}
+	if driverSnapshot, err := v.driver.DebugSnapshot(context.Background()); err == nil {
+		snapshot.Driver = &driverSnapshot
+		snapshot.DriverName = driverSnapshot.Driver
+		if debugDriverEncrypted(driverSnapshot) {
+			snapshot.Encrypted = true
 		}
+	}
+	if metrics, err := v.driver.Metrics(context.Background(), debugStartedAt); err == nil {
+		snapshot.DriverMetrics = metrics
 	}
 	for i := range snapshot.ReadHistory {
 		snapshot.ReadHistory[i].Mount = name
@@ -591,6 +593,7 @@ func (v *VFS) recordDebugUploadTrace(path, phase string, start time.Time, bytes 
 		State:      "completed",
 		Bytes:      bytes,
 		Duration:   duration.String(),
+		DurationMS: durationMillis(duration),
 		StartedAt:  start,
 		FinishedAt: finished,
 		Extra:      extra,
@@ -623,7 +626,7 @@ func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, by
 		OpID: opID, Kind: "read", Phase: "read", State: "completed",
 		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
 		Bytes: bytes, CacheHits: cacheHits, CacheMisses: cacheMisses, Chunks: chunks,
-		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(),
+		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
 		Extra: map[string]any{"source": source},
 	}
 	if bytes > 0 && finished.After(started) {
@@ -646,6 +649,13 @@ func (v *VFS) debugReadHistory() []DebugOperationEvent {
 	v.readMu.Lock()
 	defer v.readMu.Unlock()
 	return append([]DebugOperationEvent(nil), v.readHistory...)
+}
+
+func durationMillis(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
 func (v *VFS) setDebugUploadExtra(path string, key string, value any) {
@@ -715,6 +725,10 @@ func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport
 func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
 	h := MountHealth{Mount: mountName, CheckedAt: timeutil.Now()}
 	result := v.healthTracker.Status()
+	if metrics, err := v.driver.Metrics(ctx, timeutil.Now().Add(-drive.DefaultHealthWindow)); err == nil {
+		driverHealth := drive.HealthStatusFromMetrics(metrics, drive.DefaultHealthWindow, drive.DefaultMaxEvents)
+		result = drive.MergeHealthStatus(result, driverHealth)
+	}
 	h.OK = result.OK
 	h.Level = result.Level
 	h.Error = result.Error
@@ -897,19 +911,15 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		info.CacheID = cacheFileID(info.RemoteID)
 	}
 	info.Encrypted = debugEncrypted(v.driver)
-	if drive.HasCapability(v.driver, drive.CapabilityDebugger) {
-		debugger := v.driver.(drive.Debugger)
-		if driverSnapshot, err := debugger.DebugSnapshot(ctx); err == nil {
-			info.Driver = driverSnapshot.Driver
-			if debugDriverEncrypted(driverSnapshot) {
-				info.Encrypted = true
-			}
+	if driverSnapshot, err := v.driver.DebugSnapshot(ctx); err == nil {
+		info.Driver = driverSnapshot.Driver
+		if debugDriverEncrypted(driverSnapshot) {
+			info.Encrypted = true
 		}
 	}
 	if includeRemoteName {
 		if drive.HasCapability(v.driver, drive.CapabilityRemoteNameResolver) {
-			resolver := v.driver.(drive.RemoteNameResolver)
-			nameInfo, err := resolver.ResolveRemoteName(ctx, info.PlainName)
+			nameInfo, err := v.driver.ResolveRemoteName(ctx, info.PlainName)
 			if err == nil {
 				info.RemoteName = nameInfo.RemoteName
 			}
@@ -958,8 +968,7 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 		return ConsistencyReport{}, err
 	}
 	if drive.HasCapability(v.driver, drive.CapabilityForeignEntries) {
-		lister := v.driver.(drive.ForeignEntryLister)
-		foreign, err := lister.ForeignEntries(ctx, parent.ID)
+		foreign, err := v.driver.ForeignEntries(ctx, parent.ID)
 		if err != nil {
 			return ConsistencyReport{}, err
 		}

@@ -34,7 +34,7 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 }
 
 func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
-	if v.sourceUpload == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilitySourceUploader) {
 		return fmt.Errorf("vfs: driver does not support upload")
 	}
 	latest, ok := v.cache.PendingByPath(pending.Path)
@@ -105,7 +105,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		},
 	}
 	phaseStart = timeutil.Now()
-	entry, err := v.sourceUpload.PutSource(ctx, drive.UploadRequest{
+	entry, err := v.driver.PutSource(ctx, drive.UploadRequest{
 		ParentID: pending.ParentID,
 		Name:     pending.Name,
 		Source:   source,
@@ -139,8 +139,8 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	if latest, ok := v.cache.PendingByPath(pending.Path); !ok || !samePendingFile(latest, pending) {
 		finishState = debugUploadStateSuperseded
 		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
-		if v.writer != nil && ctx.Err() == nil {
-			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
+		if drive.HasCapability(v.driver, drive.CapabilityWriter) && ctx.Err() == nil {
+			_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
 		}
 		if ok {
 			v.enqueue(latest)
@@ -176,8 +176,8 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	if !removed {
 		finishState = debugUploadStateSuperseded
 		logging.L.InfofEvery("vfs.upload_stale_committed_after_update", time.Second, "[VFS] upload committed stale version after local update; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
-		if v.writer != nil && ctx.Err() == nil {
-			_ = v.writer.Remove(context.WithoutCancel(ctx), entry)
+		if drive.HasCapability(v.driver, drive.CapabilityWriter) && ctx.Err() == nil {
+			_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
 		}
 		if latest, ok := v.cache.PendingByPath(pending.Path); ok {
 			v.enqueue(latest)
@@ -269,7 +269,7 @@ func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 }
 
 func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) error {
-	if v.writer == nil {
+	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return nil
 	}
 	entries, err := v.driver.List(ctx, parentID)
@@ -279,7 +279,7 @@ func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) err
 	for _, entry := range entries {
 		if entry.Name == name && !entry.IsDir {
 			logging.L.InfofEvery("vfs.remove_existing_before_upload", time.Second, "[VFS] removing existing file before upload parent=%q name=%q id=%q size=%d", parentID, name, entry.ID, entry.Size)
-			if err := v.writer.Remove(ctx, entry); err != nil {
+			if err := v.driver.Remove(ctx, entry); err != nil {
 				return err
 			}
 		}

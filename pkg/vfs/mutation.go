@@ -164,7 +164,7 @@ func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) 
 		return
 	}
 	v.deleteMu.Unlock()
-	err := v.writer.Remove(ctx, entry)
+	err := v.driver.Remove(ctx, entry)
 	v.healthTracker.RecordResult(drive.HealthOpDelete, err)
 	if err != nil {
 		logging.L.Warnf("[VFS] delete remote failed path=%q id=%q dir=%t err=%v", path, entry.ID, entry.IsDir, err)
