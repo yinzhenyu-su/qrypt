@@ -5,11 +5,13 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 type recordingRawDriver struct {
+	drive.UnsupportedOperations
 	data    []byte
 	reads   []rawRead
 	entries []drive.Entry
@@ -38,8 +40,16 @@ func (d *recordingRawDriver) Read(_ context.Context, _ drive.Entry, offset, size
 	return io.NopCloser(bytes.NewReader(d.data[offset:end])), nil
 }
 
+func (d *recordingRawDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+
 func (d *recordingRawDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
 	return drive.DebugSnapshot{Driver: "raw", Health: "ok"}, nil
+}
+func (d *recordingRawDriver) Capabilities() []drive.Capability { return nil }
+func (d *recordingRawDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
 }
 
 type writableRawDriver struct {
@@ -54,6 +64,9 @@ func (d *writableRawDriver) Rename(context.Context, drive.Entry, string) error {
 	return nil
 }
 func (d *writableRawDriver) Remove(context.Context, drive.Entry) error { return nil }
+func (d *writableRawDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityWriter}
+}
 
 type sourceWritableRawDriver struct {
 	writableRawDriver
@@ -89,6 +102,9 @@ func (d *sourceWritableRawDriver) PutSource(ctx context.Context, req drive.Uploa
 	}
 	d.putSourceData = data
 	return drive.Entry{ID: "uploaded", ParentID: parentID, Name: name, Size: source.Size()}, nil
+}
+func (d *sourceWritableRawDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
 }
 
 type hashRequiringRawDriver struct {
@@ -142,7 +158,7 @@ func (s *countingSHA256Source) Open(ctx context.Context) (drive.ReadOnlyFile, er
 }
 
 func (s *countingSHA256Source) Hash(algorithm drive.HashAlgorithm) ([]byte, bool) {
-	return s.source.(drive.HashProvider).Hash(algorithm)
+	return drive.SourceHash(s.source, algorithm)
 }
 
 func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {

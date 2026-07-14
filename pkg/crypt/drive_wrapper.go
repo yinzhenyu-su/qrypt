@@ -52,9 +52,6 @@ func (d *Driver) Capabilities() []drive.Capability {
 	if drive.HasCapability(d.raw, drive.CapabilitySpace) {
 		caps = append(caps, drive.CapabilitySpace)
 	}
-	if drive.HasCapability(d.raw, drive.CapabilityDebugger) {
-		caps = append(caps, drive.CapabilityDebugger)
-	}
 	return caps
 }
 
@@ -63,19 +60,11 @@ func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
 func (d *Driver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
-	querier, ok := d.raw.(drive.SpaceQuerier)
-	if !ok {
-		return drive.Space{}, errors.New("crypt: raw driver does not support space query")
-	}
-	return querier.Space(ctx)
+	return d.raw.Space(ctx)
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
-	debugger, ok := d.raw.(drive.Debugger)
-	if !ok {
-		return drive.DebugSnapshot{}, errors.New("crypt: raw driver does not support debug snapshots")
-	}
-	snapshot, err := debugger.DebugSnapshot(ctx)
+	snapshot, err := d.raw.DebugSnapshot(ctx)
 	if err != nil {
 		return drive.DebugSnapshot{}, err
 	}
@@ -87,12 +76,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	return snapshot, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	tracer, ok := d.raw.(drive.DebugTraceProvider)
-	if !ok {
-		return nil, nil
-	}
-	return tracer.DebugTrace(ctx, since)
+func (d *Driver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.raw.Metrics(ctx, since)
 }
 
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
@@ -252,11 +237,7 @@ func (r *discardPrefixReader) Read(p []byte) (int, error) {
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
-	writer, ok := d.raw.(drive.Writer)
-	if !ok {
-		return drive.Entry{}, errors.New("crypt: raw driver does not support mkdir")
-	}
-	entry, err := writer.Mkdir(ctx, parentID, d.cp.EncryptSegment(name))
+	entry, err := d.raw.Mkdir(ctx, parentID, d.cp.EncryptSegment(name))
 	if err == nil {
 		entry.Name = name
 	}
@@ -264,34 +245,31 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	writer, ok := d.raw.(drive.Writer)
-	if !ok {
-		return errors.New("crypt: raw driver does not support move")
-	}
-	return writer.Move(ctx, entry, dstParentID)
+	return d.raw.Move(ctx, entry, dstParentID)
 }
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	writer, ok := d.raw.(drive.Writer)
-	if !ok {
-		return errors.New("crypt: raw driver does not support rename")
-	}
-	return writer.Rename(ctx, entry, d.cp.EncryptSegment(newName))
+	return d.raw.Rename(ctx, entry, d.cp.EncryptSegment(newName))
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
-	writer, ok := d.raw.(drive.Writer)
-	if !ok {
-		return errors.New("crypt: raw driver does not support remove")
+	return d.raw.Remove(ctx, entry)
+}
+
+func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
+	if path == "" || path == "/" {
+		return d.raw.ResolvePath(ctx, path)
 	}
-	return writer.Remove(ctx, entry)
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i, part := range parts {
+		if part != "" {
+			parts[i] = d.cp.EncryptSegment(part)
+		}
+	}
+	return d.raw.ResolvePath(ctx, "/"+strings.Join(parts, "/"))
 }
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
-	sourceUploader, ok := d.raw.(drive.SourceUploader)
-	if !ok {
-		return drive.Entry{}, errors.New("crypt: raw driver does not support upload")
-	}
 	source := req.Source
 	nonce, err := d.nonceForSource(source)
 	if err != nil {
@@ -300,8 +278,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	encName := d.cp.EncryptSegment(req.Name)
 	encSource := newEncryptedReadOnlyFileSource(source, d.cp, nonce, nil)
 	if d.contentDedup {
-		if requirements, ok := d.raw.(drive.UploadHashRequirements); ok {
-			requiredHashes := requirements.RequiredUploadHashes()
+		if requiredHashes := d.raw.RequiredUploadHashes(); len(requiredHashes) > 0 {
 			hashes, ok := d.cachedUploadHashes(source, requiredHashes)
 			if !ok {
 				var err error
@@ -317,13 +294,20 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	rawReq := req
 	rawReq.Name = encName
 	rawReq.Source = encSource
-	entry, err := sourceUploader.PutSource(ctx, rawReq)
+	entry, err := d.raw.PutSource(ctx, rawReq)
 	if err == nil {
 		d.nonceCache.Store(entry.ID, nonce)
 		entry.Name = req.Name
 		entry.Size = source.Size()
 	}
 	return entry, err
+}
+
+func (d *Driver) RequiredUploadHashes() []drive.HashAlgorithm {
+	if d.contentDedup {
+		return []drive.HashAlgorithm{drive.HashSHA256}
+	}
+	return nil
 }
 
 func (d *Driver) cachedUploadHashes(source drive.ReadOnlyFileSource, algorithms []drive.HashAlgorithm) (drive.SourceHashes, bool) {
@@ -455,9 +439,3 @@ func (d *Driver) nonceForSource(source drive.ReadOnlyFileSource) ([FileNonceSize
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.SpaceQuerier = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.RemoteNameResolver = (*Driver)(nil)
-var _ drive.ForeignEntryLister = (*Driver)(nil)
