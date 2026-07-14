@@ -15,7 +15,7 @@ import (
 
 type Buffer struct {
 	mu     sync.Mutex
-	events []drive.DebugTraceEvent
+	events []drive.MetricEvent
 	limit  int
 }
 
@@ -26,7 +26,7 @@ func NewBuffer(limit int) *Buffer {
 	return &Buffer{limit: limit}
 }
 
-func (b *Buffer) Record(ctx context.Context, event drive.DebugTraceEvent) {
+func (b *Buffer) Record(ctx context.Context, event drive.MetricEvent) {
 	if b == nil {
 		return
 	}
@@ -46,17 +46,17 @@ func (b *Buffer) Record(ctx context.Context, event drive.DebugTraceEvent) {
 	defer b.mu.Unlock()
 	b.events = append(b.events, event)
 	if len(b.events) > b.limit {
-		b.events = append([]drive.DebugTraceEvent(nil), b.events[len(b.events)-b.limit:]...)
+		b.events = append([]drive.MetricEvent(nil), b.events[len(b.events)-b.limit:]...)
 	}
 }
 
-func (b *Buffer) Events(since time.Time) []drive.DebugTraceEvent {
+func (b *Buffer) Events(since time.Time) []drive.MetricEvent {
 	if b == nil {
 		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := make([]drive.DebugTraceEvent, 0, len(b.events))
+	out := make([]drive.MetricEvent, 0, len(b.events))
 	for _, event := range b.events {
 		if event.At.Before(since) {
 			continue

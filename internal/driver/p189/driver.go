@@ -205,7 +205,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	}
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -216,7 +216,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		return nil, fmt.Errorf("189: read: %w", err)
 	}
 	if resp.StatusCode == http.StatusPartialContent || resp.StatusCode == http.StatusOK {
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -231,7 +231,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -256,7 +256,7 @@ func (d *Driver) resolveDownloadURL(ctx context.Context, rawURL string) (string,
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	resp, err := client.Do(req)
 	if err != nil {
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "resolve_download_url",
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -266,7 +266,7 @@ func (d *Driver) resolveDownloadURL(ctx context.Context, rawURL string) (string,
 		return "", fmt.Errorf("189: resolve download url: %w", err)
 	}
 	defer resp.Body.Close()
-	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "resolve_download_url",
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -376,7 +376,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		resp, err := d.cl.hc.Do(req)
 		closeErr := body.Close()
 		if err != nil {
-			d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			d.cl.recordMetric(ctx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
 				URL:       traceURL(req.URL),
@@ -392,7 +392,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		if resp.StatusCode != http.StatusOK {
 			raw, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+			d.cl.recordMetric(ctx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
 				URL:       traceURL(req.URL),
@@ -403,7 +403,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			return drive.Entry{}, fmt.Errorf("189: upload part: %s body=%q", resp.Status, responseSnippet(raw))
 		}
 		resp.Body.Close()
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "upload_part",
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -656,8 +656,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.cl.debugTrace(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.cl.metricEvents(since), nil
 }
 
 func (d *Driver) loadCookieState() {

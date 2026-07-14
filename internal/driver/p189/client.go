@@ -55,7 +55,7 @@ type client struct {
 	onPasswordReloginState  func(failedAt time.Time, lastError string)
 	onCookieUpdate          func(cookie string)
 	traceMu                 sync.Mutex
-	trace                   []drive.DebugTraceEvent
+	metrics                 []drive.MetricEvent
 }
 
 type p189TraceRequestFieldsKey struct{}
@@ -196,7 +196,7 @@ func (c *client) mergeCookies(cookies []*http.Cookie) string {
 	return updated
 }
 
-func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
+func (c *client) recordMetric(ctx context.Context, event drive.MetricEvent) {
 	if op, ok := drive.DebugOperationFromContext(ctx); ok {
 		event.OpID = op.OpID
 		event.Step = op.Step
@@ -211,17 +211,17 @@ func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
 	event.SensitiveMasked = true
 	c.traceMu.Lock()
 	defer c.traceMu.Unlock()
-	c.trace = append(c.trace, event)
-	if len(c.trace) > 500 {
-		c.trace = append([]drive.DebugTraceEvent(nil), c.trace[len(c.trace)-500:]...)
+	c.metrics = append(c.metrics, event)
+	if len(c.metrics) > 500 {
+		c.metrics = append([]drive.MetricEvent(nil), c.metrics[len(c.metrics)-500:]...)
 	}
 }
 
-func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
+func (c *client) metricEvents(since time.Time) []drive.MetricEvent {
 	c.traceMu.Lock()
 	defer c.traceMu.Unlock()
-	events := make([]drive.DebugTraceEvent, 0, len(c.trace))
-	for _, event := range c.trace {
+	events := make([]drive.MetricEvent, 0, len(c.metrics))
+	for _, event := range c.metrics {
 		if event.At.Before(since) {
 			continue
 		}
@@ -283,7 +283,7 @@ func (c *client) loginWithCookie(ctx context.Context) error {
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: "login_cookie",
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -294,7 +294,7 @@ func (c *client) loginWithCookie(ctx context.Context) error {
 	}
 	c.captureCookies(resp)
 	resp.Body.Close()
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: "login_cookie",
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -558,7 +558,7 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: uri,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -572,7 +572,7 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: uri,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -588,7 +588,7 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 		return nil, err
 	}
 	raw, err := io.ReadAll(resp.Body)
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Operation: uri,
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -600,7 +600,7 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	if err != nil {
 		event.Error = err.Error()
 	}
-	c.recordTrace(ctx, event)
+	c.recordMetric(ctx, event)
 	return raw, err
 }
 
@@ -631,7 +631,7 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -645,7 +645,7 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -657,7 +657,7 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -669,7 +669,7 @@ func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string
 	if err != nil {
 		event.Error = err.Error()
 	}
-	c.recordTrace(ctx, event)
+	c.recordMetric(ctx, event)
 	return raw, err
 }
 
@@ -705,7 +705,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -719,7 +719,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -731,7 +731,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -743,7 +743,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 	if err != nil {
 		event.Error = err.Error()
 	}
-	c.recordTrace(ctx, event)
+	c.recordMetric(ctx, event)
 	return raw, err
 }
 
@@ -776,7 +776,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -790,7 +790,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -803,7 +803,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -814,7 +814,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 		})
 		return err
 	}
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -872,7 +872,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 	start := time.Now()
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -886,7 +886,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -899,7 +899,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -910,7 +910,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 		})
 		return fmt.Errorf("189: read response: %w", err)
 	}
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -937,7 +937,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.recordTrace(req.Context(), drive.DebugTraceEvent{
+		c.recordMetric(req.Context(), drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -951,7 +951,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		c.recordTrace(req.Context(), drive.DebugTraceEvent{
+		c.recordMetric(req.Context(), drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -964,7 +964,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.recordTrace(req.Context(), drive.DebugTraceEvent{
+		c.recordMetric(req.Context(), drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceURL(req.URL),
@@ -975,7 +975,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 		})
 		return fmt.Errorf("189: read response: %w", err)
 	}
-	c.recordTrace(req.Context(), drive.DebugTraceEvent{
+	c.recordMetric(req.Context(), drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceURL(req.URL),
@@ -1214,24 +1214,24 @@ func (c *client) batchTask(ctx context.Context, taskType string, taskInfos strin
 		if err := c.doPost(ctx, batchTaskURL, form, &resp); err != nil {
 			return err
 		}
-		c.recordBatchTaskTrace(ctx, taskType, form, resp)
+		c.recordBatchTaskMetric(ctx, taskType, form, resp)
 		return batchTaskResponseError(taskType, resp)
 	})
 }
 
-func (c *client) recordBatchTaskTrace(ctx context.Context, taskType string, form map[string]string, resp BatchTaskResp) {
+func (c *client) recordBatchTaskMetric(ctx context.Context, taskType string, form map[string]string, resp BatchTaskResp) {
 	u, _ := url.Parse(batchTaskURL)
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Layer:     "driver.api",
 		Operation: "batch_task_result",
 		Method:    http.MethodPost,
 		URL:       traceURL(u),
 		Request:   traceRequestFields(form),
-		Response:  batchTaskTraceResponse(taskType, resp),
+		Response:  batchTaskMetricResponse(taskType, resp),
 	})
 }
 
-func batchTaskTraceResponse(taskType string, resp BatchTaskResp) map[string]any {
+func batchTaskMetricResponse(taskType string, resp BatchTaskResp) map[string]any {
 	out := map[string]any{
 		"task_type":   taskType,
 		"res_code":    resp.ResCode,
