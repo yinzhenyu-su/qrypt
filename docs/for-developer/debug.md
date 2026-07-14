@@ -180,7 +180,7 @@ go run ./cmd/qrypt debug test crud --socket /tmp/qrypt.sock
 
 The CRUD result includes a contract-oriented `steps[]` report with per-step
 input, expected values, actual values, duration, and error. It also reports
-`created[]`, `cleanup[]`, `residual[]`, `residual_timeline[]`, `trace[]`, and a
+`created[]`, `cleanup[]`, `residual[]`, `residual_timeline[]`, `events[]`, and a
 retry command. The matrix covers directory creation/listing, nested directories,
 ordinary files, empty files, one-byte files, spaces, Unicode names,
 rename/list verification, reads, deletes, and cleanup verification.
@@ -190,15 +190,32 @@ time, residual count, and residual names. Use it to distinguish a real cleanup
 failure from a backend that deletes successfully but remains briefly visible in
 list results.
 
-`trace[]` is populated by drivers that implement `drive.DebugTraceProvider`.
-Trace events are correlated with CRUD steps through `op_id`, `step`, and
-`name`. HTTP trace events must keep secrets masked: include method, sanitized
-URL without query parameters, status, duration, request field names, response
-size, and short masked error snippets only. Do not include cookies, session
-keys, signed upload URLs, encrypted request blobs, or full response bodies.
-The crypt wrapper forwards trace data from the raw driver, so encrypted mounts
-can still expose raw driver request flow while keeping the logical CRUD step
-context.
+Mount state is reported as `vfs.MountSnapshot`. The snapshot separates stable
+state from event streams:
+
+- `identity`: mount name, driver name, root, capabilities, and encryption state
+- `queues`: upload/delete queue and timer state
+- `overlay`: pending files, delayed deletes, rename overlays, restored
+  directories, and hidden copy entries
+- `upload_state`: active and historical uploads
+- `cache`: read cache state
+- `events`: recent `drive.MetricEvent` streams such as VFS reads and driver
+  metrics
+- `runtime`: chunk, window, and prefetch activity counters
+
+`events[]`, `timeline[]`, `events.reads[]`, and `events.driver[]` use
+`drive.MetricEvent`. Events are correlated through `op_id`, `step`, and `name`.
+`kind` identifies the event family such as `driver`, `vfs_read`, `vfs_upload`,
+or `transfer`; `operation` is the low-cardinality machine-comparable operation;
+`phase` is the measured sub-step. `step` and `name` are correlation labels, not
+metric operation names. `at` is the event timestamp used for filtering and
+ordering; `started_at` and `finished_at` are optional timeline details. HTTP
+events must keep secrets masked: include method, sanitized URL without query
+parameters, status, duration, request field names, response size, and short
+masked error snippets only. Do not include cookies, session keys, signed upload
+URLs, encrypted request blobs, or full response bodies. The crypt wrapper
+forwards metric events from the raw driver, so encrypted mounts can still expose
+raw driver request flow while keeping the logical CRUD step context.
 
 Run an instant upload test to verify content deduplication. Requires
 `content_dedup = true` when encryption is enabled:
