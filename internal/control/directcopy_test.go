@@ -47,9 +47,9 @@ func (s directCopyTestSource) DebugSnapshot() vfs.DebugSnapshot {
 	return vfs.DebugSnapshot{
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		Kind:          "namespace",
-		Mounts: []vfs.DebugMountSnapshot{
-			{Name: "src", DriverName: "src-test"},
-			{Name: "dst", DriverName: "dst-test"},
+		Mounts: []vfs.MountSnapshot{
+			{Identity: vfs.MountSnapshotIdentity{Name: "src", DriverName: "src-test"}},
+			{Identity: vfs.MountSnapshotIdentity{Name: "dst", DriverName: "dst-test"}},
 		},
 	}
 }
@@ -142,18 +142,18 @@ func TestRunDirectDriverCopyCopiesViaDrivers(t *testing.T) {
 	if result.Bytes != int64(len("payload")) {
 		t.Fatalf("bytes = %d, want %d", result.Bytes, len("payload"))
 	}
-	if !hasCopyTrace(result, "read_source_to_temp") || !hasCopyTrace(result, "driver_put_source") {
+	if !hasCopyEvent(result, "read_source_to_temp") || !hasCopyEvent(result, "driver_put_source") {
 		t.Fatalf("timeline missing expected phases: %#v", result.Timeline)
 	}
-	driverTrace := findCopyTrace(result, "driver_put_source")
-	if driverTrace.OpID != result.OpID || driverTrace.Kind != "transfer" {
-		t.Fatalf("driver trace missing unified operation metadata: %#v", driverTrace)
+	driverEvent := findCopyEvent(result, "driver_put_source")
+	if driverEvent.OpID != result.OpID || driverEvent.Kind != "transfer" {
+		t.Fatalf("driver event missing unified operation metadata: %#v", driverEvent)
 	}
-	if driverTrace.Extra["bytes_uploaded"] != int64(len("payload")) {
-		t.Fatalf("bytes_uploaded = %#v, want %d", driverTrace.Extra["bytes_uploaded"], len("payload"))
+	if driverEvent.Extra["bytes_uploaded"] != int64(len("payload")) {
+		t.Fatalf("bytes_uploaded = %#v, want %d", driverEvent.Extra["bytes_uploaded"], len("payload"))
 	}
-	if driverTrace.Extra["stage_durations"] == nil {
-		t.Fatalf("driver_put_source missing stage_durations: %#v", driverTrace)
+	if driverEvent.Extra["stage_durations"] == nil {
+		t.Fatalf("driver_put_source missing stage_durations: %#v", driverEvent)
 	}
 }
 
@@ -367,15 +367,15 @@ func firstPathSegment(path string) string {
 	return name
 }
 
-func hasCopyTrace(result *DriverCopyResult, phase string) bool {
-	return findCopyTrace(result, phase).Phase != ""
+func hasCopyEvent(result *DriverCopyResult, phase string) bool {
+	return findCopyEvent(result, phase).Phase != ""
 }
 
-func findCopyTrace(result *DriverCopyResult, phase string) TransferTraceEvent {
+func findCopyEvent(result *DriverCopyResult, phase string) drive.MetricEvent {
 	for _, event := range result.Timeline {
 		if event.Phase == phase {
 			return event
 		}
 	}
-	return TransferTraceEvent{}
+	return drive.MetricEvent{}
 }
