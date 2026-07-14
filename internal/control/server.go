@@ -88,13 +88,14 @@ type DebugDriverSummary struct {
 }
 
 type DebugSpaceSummary struct {
-	BytesTotal  int64  `json:"bytes_total"`
-	BytesFree   int64  `json:"bytes_free"`
-	Total       string `json:"total"`
-	Free        string `json:"free"`
-	Unsupported bool   `json:"unsupported,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	Error       string `json:"error,omitempty"`
+	BytesTotal    int64  `json:"bytes_total"`
+	BytesFree     int64  `json:"bytes_free"`
+	Total         string `json:"total"`
+	Free          string `json:"free"`
+	Unsupported   bool   `json:"unsupported,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Error         string `json:"error,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
 }
 
 type ListResponse struct {

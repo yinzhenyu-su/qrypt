@@ -97,8 +97,10 @@ func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary
 		if errors.Is(err, drive.ErrSpaceUnsupported) {
 			summary.Unsupported = true
 			summary.Reason = err.Error()
+			summary.ErrorCategory = drive.ErrorCategory(err)
 		} else if err != nil {
 			summary.Error = err.Error()
+			summary.ErrorCategory = drive.ErrorCategory(err)
 		} else {
 			summary.BytesTotal = space.Total
 			summary.BytesFree = space.Free
