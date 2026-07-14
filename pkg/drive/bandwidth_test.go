@@ -10,6 +10,7 @@ import (
 )
 
 type bandwidthLimitTestDriver struct {
+	UnsupportedOperations
 	data string
 }
 
@@ -21,6 +22,38 @@ func (d *bandwidthLimitTestDriver) List(context.Context, string) ([]Entry, error
 
 func (d *bandwidthLimitTestDriver) Read(context.Context, Entry, int64, int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(d.data)), nil
+}
+
+func (d *bandwidthLimitTestDriver) Mkdir(context.Context, string, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
+}
+
+func (d *bandwidthLimitTestDriver) Move(context.Context, Entry, string) error {
+	return ErrUnsupported
+}
+
+func (d *bandwidthLimitTestDriver) Rename(context.Context, Entry, string) error {
+	return ErrUnsupported
+}
+
+func (d *bandwidthLimitTestDriver) Remove(context.Context, Entry) error {
+	return ErrUnsupported
+}
+
+func (d *bandwidthLimitTestDriver) Space(context.Context) (Space, error) {
+	return Space{}, ErrSpaceUnsupported
+}
+
+func (d *bandwidthLimitTestDriver) Capabilities() []Capability {
+	return []Capability{CapabilitySourceUploader}
+}
+
+func (d *bandwidthLimitTestDriver) DebugSnapshot(context.Context) (DebugSnapshot, error) {
+	return DebugSnapshot{Driver: "bandwidth-test", Health: HealthLevelOK}, nil
+}
+
+func (d *bandwidthLimitTestDriver) Metrics(context.Context, time.Time) ([]MetricEvent, error) {
+	return nil, nil
 }
 
 func (d *bandwidthLimitTestDriver) PutSource(ctx context.Context, req UploadRequest) (Entry, error) {
@@ -35,6 +68,10 @@ func (d *bandwidthLimitTestDriver) PutSource(ctx context.Context, req UploadRequ
 		return Entry{}, err
 	}
 	return Entry{ID: name, ParentID: parentID, Name: name, Size: int64(len(data))}, nil
+}
+
+func (d *bandwidthLimitTestDriver) ResolvePath(context.Context, string) (string, error) {
+	return "", ErrUnsupported
 }
 
 type nativeUploadBandwidthLimitTestDriver struct {
@@ -88,11 +125,10 @@ func TestBandwidthLimitedDriverInstallsLimiterAndReturnsRaw(t *testing.T) {
 	if !raw.installed {
 		t.Fatal("native driver should receive shared limiter")
 	}
-	uploader := drv.(SourceUploader)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	if _, err := uploader.PutSource(ctx, UploadRequest{
+	if _, err := drv.PutSource(ctx, UploadRequest{
 		ParentID: "parent",
 		Name:     "file",
 		Source:   newStringReadOnlyFileSource("fast"),

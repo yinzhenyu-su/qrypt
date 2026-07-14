@@ -68,6 +68,46 @@ func (t *HealthTracker) RecordResult(op string, err error) {
 	}
 }
 
+func HealthStatusFromMetrics(metrics []MetricEvent, window time.Duration, maxEvents int) HealthTrackerStatus {
+	tracker := NewHealthTracker(window, maxEvents)
+	for _, metric := range metrics {
+		op := healthMetricOp(metric)
+		ok := metric.OK && metric.Error == ""
+		tracker.recordAt(metric.At, op, ok, metric.Error)
+	}
+	return tracker.Status()
+}
+
+func MergeHealthStatus(a, b HealthTrackerStatus) HealthTrackerStatus {
+	if a.CheckedAt.IsZero() {
+		return b
+	}
+	if b.CheckedAt.IsZero() {
+		return a
+	}
+	merged := HealthTrackerStatus{
+		OK:        true,
+		Level:     HealthLevelOK,
+		CheckedAt: a.CheckedAt,
+		Ops:       map[string]HealthOpStatus{},
+	}
+	if b.CheckedAt.After(merged.CheckedAt) {
+		merged.CheckedAt = b.CheckedAt
+	}
+	mergeHealthOps(merged.Ops, a.Ops)
+	mergeHealthOps(merged.Ops, b.Ops)
+	for _, op := range merged.Ops {
+		merged.Success += op.Success
+		merged.Errors += op.Errors
+	}
+	merged.Level = healthLevel(merged.Errors)
+	merged.OK = merged.Level == HealthLevelOK
+	if !merged.OK {
+		merged.Error = "health degraded by recent operation failures"
+	}
+	return merged
+}
+
 func (t *HealthTracker) Status() HealthTrackerStatus {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -76,12 +116,19 @@ func (t *HealthTracker) Status() HealthTrackerStatus {
 }
 
 func (t *HealthTracker) record(op string, ok bool, message string) {
+	t.recordAt(time.Now(), op, ok, message)
+}
+
+func (t *HealthTracker) recordAt(at time.Time, op string, ok bool, message string) {
 	if op == "" {
 		op = "unknown"
 	}
+	if at.IsZero() {
+		at = time.Now()
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.events = append(t.events, healthEvent{at: time.Now(), op: op, ok: ok, message: message})
+	t.events = append(t.events, healthEvent{at: at, op: op, ok: ok, message: message})
 	t.trim()
 }
 
@@ -123,6 +170,31 @@ func healthLevel(errors int) string {
 		return HealthLevelDegraded
 	default:
 		return HealthLevelUnhealthy
+	}
+}
+
+func healthMetricOp(metric MetricEvent) string {
+	for _, value := range []string{metric.Operation, metric.Step, metric.Phase, metric.Name} {
+		if value != "" {
+			if isHighCardinalityOperation(value) {
+				return "api_request"
+			}
+			return value
+		}
+	}
+	return "unknown"
+}
+
+func mergeHealthOps(dst map[string]HealthOpStatus, src map[string]HealthOpStatus) {
+	for name, status := range src {
+		current := dst[name]
+		current.Success += status.Success
+		current.Errors += status.Errors
+		if status.LastError != "" && (current.LastErrorAt.IsZero() || status.LastErrorAt.After(current.LastErrorAt)) {
+			current.LastError = status.LastError
+			current.LastErrorAt = status.LastErrorAt
+		}
+		dst[name] = current
 	}
 }
 

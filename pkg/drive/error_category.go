@@ -36,7 +36,7 @@ func ErrorCategory(err error) string {
 		return ErrorCategoryCancelled
 	case errors.Is(err, context.DeadlineExceeded):
 		return ErrorCategoryTimeout
-	case errors.Is(err, ErrSpaceUnsupported):
+	case errors.Is(err, ErrUnsupported), errors.Is(err, ErrSpaceUnsupported):
 		return ErrorCategoryUnsupported
 	case isNetTimeout(err):
 		return ErrorCategoryTimeout
