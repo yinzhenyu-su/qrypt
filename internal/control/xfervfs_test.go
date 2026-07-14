@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -139,6 +140,7 @@ func (f *xferFakeFS) DebugSnapshot() vfs.DebugSnapshot {
 					Phase:      "driver_put_source",
 					Bytes:      bytesTotal,
 					Duration:   "10ms",
+					DurationMS: 10,
 					Throughput: bytesTotal * 100,
 					StartedAt:  started,
 					FinishedAt: started.Add(10 * time.Millisecond),
@@ -204,6 +206,16 @@ func TestRunVFSXferTestIncludesUploadTimeline(t *testing.T) {
 	}
 	if result.OpID == "" {
 		t.Fatal("transfer result missing op_id")
+	}
+	if result.Metrics.WallMS <= 0 || result.Metrics.ReadMS <= 0 || result.Metrics.WriteMS <= 0 || result.Metrics.UploadSourceMS <= 0 || result.Metrics.UploadDestMS <= 0 {
+		t.Fatalf("transfer metrics missing machine-comparable durations: %+v", result.Metrics)
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if !bytes.Contains(body, []byte(`"duration_ms"`)) || !bytes.Contains(body, []byte(`"wall_ms"`)) {
+		t.Fatalf("transfer JSON missing machine-comparable duration fields: %s", body)
 	}
 
 	seen := map[string]bool{}

@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -21,6 +22,16 @@ func TestRunDriverCRUDTestReportsContractMatrixAndCleanup(t *testing.T) {
 	if result.OpID == "" || result.RetryCommand == "" || result.Duration == "" {
 		t.Fatalf("result missing diagnostic metadata: %+v", result)
 	}
+	if result.DurationMS <= 0 {
+		t.Fatalf("result duration_ms = %d, want positive", result.DurationMS)
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if !bytes.Contains(body, []byte(`"duration_ms"`)) || !bytes.Contains(body, []byte(`"elapsed_ms"`)) {
+		t.Fatalf("result JSON missing machine-comparable duration fields: %s", body)
+	}
 	if len(result.Created) < 8 {
 		t.Fatalf("created artifacts = %d, want test dir, nested dir, and matrix files: %#v", len(result.Created), result.Created)
 	}
@@ -33,8 +44,8 @@ func TestRunDriverCRUDTestReportsContractMatrixAndCleanup(t *testing.T) {
 	if len(result.ResidualTimeline) == 0 {
 		t.Fatalf("residual timeline is empty")
 	}
-	if len(result.Trace) == 0 {
-		t.Fatalf("trace is empty")
+	if len(result.Metrics) == 0 {
+		t.Fatalf("metrics is empty")
 	}
 	seenOps := map[string]bool{}
 	seenNames := map[string]bool{}
@@ -67,6 +78,7 @@ func TestRunDriverCRUDTestReportsContractMatrixAndCleanup(t *testing.T) {
 }
 
 type crudMemoryDriver struct {
+	drive.UnsupportedOperations
 	entries map[string]drive.Entry
 	data    map[string][]byte
 	child   map[string][]string
@@ -114,6 +126,10 @@ func (d *crudMemoryDriver) Read(_ context.Context, entry drive.Entry, _, _ int64
 		return nil, fmt.Errorf("file %q not found", entry.ID)
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (d *crudMemoryDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
 }
 
 func (d *crudMemoryDriver) Mkdir(_ context.Context, parentID, name string) (drive.Entry, error) {
@@ -196,6 +212,14 @@ func (d *crudMemoryDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, 
 	return drive.DebugSnapshot{Driver: "memory"}, nil
 }
 
+func (d *crudMemoryDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{
+		drive.CapabilityPathResolver,
+		drive.CapabilitySourceUploader,
+		drive.CapabilityWriter,
+	}
+}
+
 func (d *crudMemoryDriver) DebugTrace(_ context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
 	return []drive.DebugTraceEvent{{
 		At:        since.Add(time.Millisecond),
@@ -204,6 +228,14 @@ func (d *crudMemoryDriver) DebugTrace(_ context.Context, since time.Time) ([]dri
 		Layer:     "driver.http",
 		Operation: "memory",
 	}}, nil
+}
+
+func (d *crudMemoryDriver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	trace, err := d.DebugTrace(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	return drive.MetricsFromTrace("memory", trace), nil
 }
 
 func (d *crudMemoryDriver) ResolvePath(_ context.Context, path string) (string, error) {

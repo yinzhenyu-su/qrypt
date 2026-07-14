@@ -55,6 +55,7 @@ func (s directCopyTestSource) DebugSnapshot() vfs.DebugSnapshot {
 }
 
 type directCopyTestDriver struct {
+	drive.UnsupportedOperations
 	driverName string
 	files      map[string][]byte
 	removed    []string
@@ -71,6 +72,9 @@ func (d *directCopyTestDriver) Read(_ context.Context, entry drive.Entry, _, _ i
 		return nil, fmt.Errorf("missing file %s", entry.ID)
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+func (d *directCopyTestDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
 }
 func (d *directCopyTestDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, nil
@@ -105,6 +109,14 @@ func (d *directCopyTestDriver) PutSource(ctx context.Context, req drive.UploadRe
 }
 func (d *directCopyTestDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
 	return drive.DebugSnapshot{Driver: d.driverName}, nil
+}
+
+func (d *directCopyTestDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
+}
+
+func (d *directCopyTestDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
 }
 
 func TestRunDirectDriverCopyCopiesViaDrivers(t *testing.T) {

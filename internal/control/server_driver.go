@@ -46,6 +46,7 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 			Mount:        mount.Name,
 			Capabilities: mount.Capabilities,
 			Driver:       *mount.Driver,
+			Metrics:      mount.DriverMetrics,
 			Space:        spaceByMount[mount.Name],
 		})
 	}
@@ -88,11 +89,7 @@ func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary
 	}
 	spaces := map[string]*DebugSpaceSummary{}
 	for _, item := range provider.Drivers() {
-		querier, ok := item.Driver.(drive.SpaceQuerier)
-		if !ok {
-			continue
-		}
-		space, err := querier.Space(ctx)
+		space, err := item.Driver.Space(ctx)
 		summary := &DebugSpaceSummary{}
 		if errors.Is(err, drive.ErrSpaceUnsupported) {
 			summary.Unsupported = true

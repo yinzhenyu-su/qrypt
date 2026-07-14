@@ -47,7 +47,9 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	}
 	defer func() {
 		result.Finished = time.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
 		for i := range result.Steps {
 			if result.Steps[i].OpID == "" {
 				result.Steps[i].OpID = result.OpID
@@ -61,8 +63,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		}
 	}()
 
-	_, isUploader := d.(drive.SourceUploader)
-	if !isUploader {
+	if !drive.HasCapability(d, drive.CapabilitySourceUploader) {
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation:     "instant_upload",
 			OK:            false,
@@ -74,10 +75,8 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		result.Finished = time.Now()
 		return result
 	}
-	uploader := d.(drive.SourceUploader)
 
-	writer, ok := d.(drive.Writer)
-	if !ok {
+	if !drive.HasCapability(d, drive.CapabilityWriter) {
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation:     "instant_upload",
 			OK:            false,
@@ -90,11 +89,8 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		return result
 	}
 
-	debugger, hasDebug := d.(drive.Debugger)
-	if hasDebug {
-		if snap, err := debugger.DebugSnapshot(ctx); err == nil {
-			result.Driver = snap.Driver
-		}
+	if snap, err := d.DebugSnapshot(ctx); err == nil {
+		result.Driver = snap.Driver
 	}
 
 	// Generate a unique test directory name.
@@ -118,7 +114,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	// 1. Mkdir test directory.
 	s := stepOp("mkdir", testName)
 	start := time.Now()
-	testDir, err := writer.Mkdir(ctx, rootID, testName)
+	testDir, err := d.Mkdir(ctx, rootID, testName)
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
@@ -132,11 +128,11 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	s = stepOp("put", "original.bin")
 	start = time.Now()
 	firstSource := drive.NewBytesReadOnlyFileSource([]byte(testContent))
-	_, err = uploader.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "original.bin", Source: firstSource})
+	_, err = d.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "original.bin", Source: firstSource})
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanupProbeDir(ctx, writer, testDir)
+		cleanupProbeDir(ctx, d, testDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -145,36 +141,34 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	// 3. Snapshot the instant-upload counter before the second upload.
 	var countBefore int64
 	var canVerify bool
-	if hasDebug {
-		if snap, snapErr := debugger.DebugSnapshot(ctx); snapErr == nil {
-			if c, ok := readInstantUploadCount(&snap); ok {
-				countBefore = c
-				canVerify = true
-			}
-		} else {
-			cleanupProbeDir(ctx, writer, testDir)
-			result.Steps = append(result.Steps, CRUDTestStep{
-				Operation:     "verify_instant",
-				OK:            false,
-				Error:         fmt.Sprintf("debug snapshot before duplicate upload: %v", snapErr),
-				ErrorCategory: drive.ErrorCategory(snapErr),
-				Duration:      "0s",
-			})
-			result.Pass = false
-			result.Finished = time.Now()
-			return result
+	if snap, snapErr := d.DebugSnapshot(ctx); snapErr == nil {
+		if c, ok := readInstantUploadCount(&snap); ok {
+			countBefore = c
+			canVerify = true
 		}
+	} else {
+		cleanupProbeDir(ctx, d, testDir)
+		result.Steps = append(result.Steps, CRUDTestStep{
+			Operation:     "verify_instant",
+			OK:            false,
+			Error:         fmt.Sprintf("debug snapshot before duplicate upload: %v", snapErr),
+			ErrorCategory: drive.ErrorCategory(snapErr),
+			Duration:      "0s",
+		})
+		result.Pass = false
+		result.Finished = time.Now()
+		return result
 	}
 
 	// 4. Second upload of identical content should trigger service-side upload.
 	s = stepOp("put_dup", "duplicate.bin")
 	start = time.Now()
 	secondSource := drive.NewBytesReadOnlyFileSource([]byte(testContent))
-	_, err = uploader.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "duplicate.bin", Source: secondSource})
+	_, err = d.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "duplicate.bin", Source: secondSource})
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanupProbeDir(ctx, writer, testDir)
+		cleanupProbeDir(ctx, d, testDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -183,10 +177,10 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	// 5. Verify that the instant-upload counter increased.
 	s = stepOp("verify_instant", "")
 	start = time.Now()
-	if hasDebug && !canVerify {
+	if !canVerify {
 		err = fmt.Errorf("instant upload counter not reported by DebugSnapshot")
 	} else if canVerify {
-		if snap, snapErr := debugger.DebugSnapshot(ctx); snapErr == nil {
+		if snap, snapErr := d.DebugSnapshot(ctx); snapErr == nil {
 			if countAfter, ok := readInstantUploadCount(&snap); ok {
 				if countAfter <= countBefore {
 					err = fmt.Errorf("instant upload count did not increase: before=%d after=%d", countBefore, countAfter)
@@ -198,15 +192,13 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 			err = fmt.Errorf("debug snapshot: %w", snapErr)
 		}
 	}
-	// When the driver has no Debugger, the counter cannot be inspected; both
-	// uploads succeeding is the strongest check this generic test can make.
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 
 	// 6. Remove the test directory.
 	s = stepOp("rmdir", testName)
 	start = time.Now()
-	cleanupProbeDir(ctx, writer, testDir)
+	cleanupProbeDir(ctx, d, testDir)
 	s.finish(start, nil) // best-effort
 	result.Steps = append(result.Steps, s)
 

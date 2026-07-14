@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type AuthTestResult struct {
 	Started      time.Time          `json:"started_at"`
 	Finished     time.Time          `json:"finished_at"`
 	Duration     string             `json:"duration"`
+	DurationMS   int64              `json:"duration_ms"`
 }
 
 type AuthTestStep struct {
@@ -32,6 +34,7 @@ type AuthTestStep struct {
 	Error         string         `json:"error,omitempty"`
 	ErrorCategory string         `json:"error_category,omitempty"`
 	Duration      string         `json:"duration"`
+	DurationMS    int64          `json:"duration_ms"`
 	Input         map[string]any `json:"input,omitempty"`
 	Expected      map[string]any `json:"expected,omitempty"`
 	Actual        map[string]any `json:"actual,omitempty"`
@@ -50,7 +53,9 @@ func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthT
 	}
 	defer func() {
 		result.Finished = time.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
 		result.Pass = true
 		result.AuthOK = true
 		result.AuthStatus = "ok"
@@ -67,37 +72,35 @@ func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthT
 		}
 	}()
 
-	if debugger, ok := d.(drive.Debugger); ok {
-		step := authOptionalStep("debug_snapshot")
-		start := time.Now()
-		snap, err := debugger.DebugSnapshot(ctx)
-		if err == nil {
-			result.Driver = snap.Driver
-			step.Actual = map[string]any{
-				"driver":       snap.Driver,
-				"health":       snap.Health,
-				"generated_at": snap.GeneratedAt,
-				"stats":        snap.Stats,
-				"extra":        sanitizedDebugExtra(snap.Extra),
-			}
+	step := authOptionalStep("debug_snapshot")
+	start := time.Now()
+	snap, err := d.DebugSnapshot(ctx)
+	if err == nil {
+		result.Driver = snap.Driver
+		step.Actual = map[string]any{
+			"driver":       snap.Driver,
+			"health":       snap.Health,
+			"generated_at": snap.GeneratedAt,
+			"stats":        snap.Stats,
+			"extra":        sanitizedDebugExtra(snap.Extra),
 		}
-		step.finish(start, err)
-		result.Steps = append(result.Steps, step)
 	}
+	step.finish(start, err)
+	result.Steps = append(result.Steps, step)
 
-	step := authOptionalStep("capability_check")
+	step = authOptionalStep("capability_check")
 	step.Expected = map[string]any{"write_tested": false}
 	step.Actual = map[string]any{"capabilities": result.Capabilities, "write_tested": false}
 	step.finish(time.Now(), nil)
 	result.Steps = append(result.Steps, step)
 
 	rootID := "root"
-	if resolver, ok := d.(drive.PathResolver); ok {
+	if drive.HasCapability(d, drive.CapabilityPathResolver) {
 		step = authRequiredStep("resolve_root")
 		step.Input = map[string]any{"path": "/"}
 		step.Expected = map[string]any{"root_id": "non-empty"}
 		start := time.Now()
-		resolved, err := resolver.ResolvePath(ctx, "/")
+		resolved, err := d.ResolvePath(ctx, "/")
 		if resolved != "" {
 			rootID = resolved
 		}
@@ -115,7 +118,7 @@ func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthT
 	step = authRequiredStep("list_root")
 	step.Input = map[string]any{"parent_id": rootID}
 	step.Expected = map[string]any{"list_succeeds": true}
-	start := time.Now()
+	start = time.Now()
 	entries, usedRootID, err := listAuthRoot(ctx, d, rootID, !drive.HasCapability(d, drive.CapabilityPathResolver))
 	step.Actual = map[string]any{
 		"parent_id":   usedRootID,
@@ -128,15 +131,17 @@ func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthT
 		return result
 	}
 
-	if space, ok := d.(drive.SpaceQuerier); ok {
-		step = authOptionalStep("space_check")
-		step.Expected = map[string]any{"space_query": "optional"}
-		start = time.Now()
-		value, err := space.Space(ctx)
-		step.Actual = map[string]any{"total": value.Total, "free": value.Free}
-		step.finish(start, err)
-		result.Steps = append(result.Steps, step)
+	step = authOptionalStep("space_check")
+	step.Expected = map[string]any{"space_query": "optional"}
+	start = time.Now()
+	value, err := d.Space(ctx)
+	step.Actual = map[string]any{"total": value.Total, "free": value.Free}
+	if errors.Is(err, drive.ErrSpaceUnsupported) {
+		err = nil
+		step.Actual["unsupported"] = true
 	}
+	step.finish(start, err)
+	result.Steps = append(result.Steps, step)
 	return result
 }
 
@@ -149,7 +154,9 @@ func authOptionalStep(operation string) AuthTestStep {
 }
 
 func (s *AuthTestStep) finish(start time.Time, err error) {
-	s.Duration = time.Since(start).String()
+	duration := time.Since(start)
+	s.Duration = duration.String()
+	s.DurationMS = durationMillis(duration)
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
