@@ -37,32 +37,34 @@ type DriverCopyResult struct {
 }
 
 type DriverCopyDirResult struct {
-	OpID       string                  `json:"op_id"`
-	SourcePath string                  `json:"source_path"`
-	DestPath   string                  `json:"dest_path"`
-	Pass       bool                    `json:"pass"`
-	Copied     int                     `json:"copied"`
-	Skipped    int                     `json:"skipped"`
-	Failed     int                     `json:"failed"`
-	Bytes      int64                   `json:"bytes"`
-	Started    time.Time               `json:"started_at"`
-	Finished   time.Time               `json:"finished_at"`
-	Duration   string                  `json:"duration"`
-	Error      string                  `json:"error,omitempty"`
-	Entries    []DriverCopyEntryResult `json:"entries,omitempty"`
+	OpID          string                  `json:"op_id"`
+	SourcePath    string                  `json:"source_path"`
+	DestPath      string                  `json:"dest_path"`
+	Pass          bool                    `json:"pass"`
+	Copied        int                     `json:"copied"`
+	Skipped       int                     `json:"skipped"`
+	Failed        int                     `json:"failed"`
+	Bytes         int64                   `json:"bytes"`
+	Started       time.Time               `json:"started_at"`
+	Finished      time.Time               `json:"finished_at"`
+	Duration      string                  `json:"duration"`
+	Error         string                  `json:"error,omitempty"`
+	ErrorCategory string                  `json:"error_category,omitempty"`
+	Entries       []DriverCopyEntryResult `json:"entries,omitempty"`
 }
 
 type DriverCopyEntryResult struct {
-	OpID       string    `json:"op_id,omitempty"`
-	Kind       string    `json:"kind"`
-	State      string    `json:"state"`
-	SourcePath string    `json:"source_path"`
-	DestPath   string    `json:"dest_path"`
-	Bytes      int64     `json:"bytes,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Started    time.Time `json:"started_at,omitempty"`
-	Finished   time.Time `json:"finished_at,omitempty"`
-	Duration   string    `json:"duration,omitempty"`
+	OpID          string    `json:"op_id,omitempty"`
+	Kind          string    `json:"kind"`
+	State         string    `json:"state"`
+	SourcePath    string    `json:"source_path"`
+	DestPath      string    `json:"dest_path"`
+	Bytes         int64     `json:"bytes,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	ErrorCategory string    `json:"error_category,omitempty"`
+	Started       time.Time `json:"started_at,omitempty"`
+	Finished      time.Time `json:"finished_at,omitempty"`
+	Duration      string    `json:"duration,omitempty"`
 }
 
 type DriverCopySource interface {
@@ -249,19 +251,20 @@ func RunDirectDriverCopyDir(ctx context.Context, fs CopyFileSystem, source Drive
 	}()
 	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
 		result.Error = err.Error()
+		result.ErrorCategory = drive.ErrorCategory(err)
 	}
 	return result
 }
 
 func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopySource, srcPath, dstPath string, overwrite bool, result *DriverCopyDirResult) error {
 	if err := mkdirAllRemote(ctx, fs, dstPath); err != nil {
-		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error()})
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err)})
 		return err
 	}
 	result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "ready", SourcePath: srcPath, DestPath: dstPath})
 	entries, err := fs.List(ctx, srcPath)
 	if err != nil {
-		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error()})
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err)})
 		return err
 	}
 	for _, entry := range entries {
@@ -280,7 +283,7 @@ func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopyS
 				continue
 			} else if !vfs.IsNotFound(err) {
 				result.Failed++
-				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error()})
+				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err)})
 				return err
 			}
 		}
@@ -299,6 +302,7 @@ func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopyS
 			result.Failed++
 			entryResult.State = "failed"
 			entryResult.Error = firstCopyError(copyResult)
+			entryResult.ErrorCategory = drive.ErrorCategoryMessage(entryResult.Error)
 			result.recordEntry(entryResult)
 			return fmt.Errorf("%s", entryResult.Error)
 		}
@@ -480,6 +484,7 @@ func appendCopyStep(result *DriverCopyResult, phase string, bytes int64, start t
 	if err != nil {
 		step.OK = false
 		step.Error = err.Error()
+		step.ErrorCategory = drive.ErrorCategory(err)
 	} else {
 		step.OK = true
 	}
@@ -510,7 +515,7 @@ func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string
 	if errValue, ok := extra["error"].(string); ok && errValue != "" {
 		event.State = "failed"
 		event.Error = errValue
-		event.ErrorCategory = "io"
+		event.ErrorCategory = drive.ErrorCategoryMessage(errValue)
 	}
 	if bytes > 0 && duration > 0 {
 		event.Throughput = int64(float64(bytes) / duration.Seconds())

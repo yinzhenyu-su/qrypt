@@ -36,11 +36,12 @@ type TransferTraceEvent = vfs.DebugOperationEvent
 
 // TransferStep records one phase of a transfer test.
 type TransferStep struct {
-	Phase    string `json:"phase"`
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
-	Duration string `json:"duration"`
-	Bytes    int64  `json:"bytes,omitempty"`
+	Phase         string `json:"phase"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Duration      string `json:"duration"`
+	Bytes         int64  `json:"bytes,omitempty"`
 }
 
 // XferTestResult aggregates the full transfer test outcome.
@@ -73,6 +74,7 @@ func (s *TransferStep) done(err error) {
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
+		s.ErrorCategory = drive.ErrorCategory(err)
 	} else {
 		s.OK = true
 	}
@@ -89,6 +91,7 @@ func finishTransferStep(s *TransferStep, start time.Time, err error) {
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
+		s.ErrorCategory = drive.ErrorCategory(err)
 	} else {
 		s.OK = true
 	}
@@ -137,7 +140,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	if !srcIsWriter || !srcHasUploader {
 		result.Steps = append(result.Steps, TransferStep{
 			Phase: "capability_check", OK: false,
-			Error: "source driver does not implement Writer and SourceUploader", Duration: "0s",
+			Error: "source driver does not implement Writer and SourceUploader", ErrorCategory: drive.ErrorCategoryUnsupported, Duration: "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
@@ -146,7 +149,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	if !dstIsWriter || !dstHasUploader {
 		result.Steps = append(result.Steps, TransferStep{
 			Phase: "capability_check", OK: false,
-			Error: "dest driver does not implement Writer and SourceUploader", Duration: "0s",
+			Error: "dest driver does not implement Writer and SourceUploader", ErrorCategory: drive.ErrorCategoryUnsupported, Duration: "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
@@ -157,7 +160,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	testSuffix := make([]byte, 6)
 	if _, err := rand.Read(testSuffix); err != nil {
 		result.Steps = append(result.Steps, TransferStep{
-			Phase: "generate_name", OK: false, Error: err.Error(), Duration: "0s",
+			Phase: "generate_name", OK: false, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Duration: "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
