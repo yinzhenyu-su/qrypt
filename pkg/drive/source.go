@@ -10,6 +10,76 @@ import (
 	"os"
 )
 
+// ReadOnlyFile is a stable, seekable, read-only file handle.
+type ReadOnlyFile interface {
+	io.Reader
+	io.ReaderAt
+	io.Seeker
+	io.Closer
+}
+
+// ReadOnlyFileSource opens stable, read-only handles over one upload source.
+// Implementations may return a fresh handle on each Open call. Callers must
+// close every opened handle.
+type ReadOnlyFileSource interface {
+	Size() int64
+	Open(ctx context.Context) (ReadOnlyFile, error)
+}
+
+type HashAlgorithm string
+
+const (
+	HashMD5    HashAlgorithm = "md5"
+	HashSHA1   HashAlgorithm = "sha1"
+	HashSHA256 HashAlgorithm = "sha256"
+)
+
+type SourceHashes map[HashAlgorithm][]byte
+
+// HashProvider is an optional source metadata interface for callers that
+// already computed content hashes while preparing the source.
+type HashProvider interface {
+	Hash(algorithm HashAlgorithm) ([]byte, bool)
+}
+
+type UploadPhase string
+
+const (
+	UploadPhasePreparing  UploadPhase = "preparing"
+	UploadPhaseHashing    UploadPhase = "hashing"
+	UploadPhaseUploading  UploadPhase = "uploading"
+	UploadPhaseInstant    UploadPhase = "instant"
+	UploadPhaseCommitting UploadPhase = "committing"
+	UploadPhaseCompleted  UploadPhase = "completed"
+)
+
+// UploadProgress receives progress for the logical upload represented by an
+// UploadRequest. Implementations must be safe to call repeatedly with small
+// positive byte deltas.
+type UploadProgress interface {
+	Phase(UploadPhase)
+	Uploaded(n int64)
+}
+
+type UploadRequest struct {
+	ParentID string
+	Name     string
+	Source   ReadOnlyFileSource
+	Progress UploadProgress
+}
+
+func SourceHash(source ReadOnlyFileSource, algorithm HashAlgorithm) ([]byte, bool) {
+	provider, ok := source.(HashProvider)
+	if !ok {
+		return nil, false
+	}
+	sum, ok := provider.Hash(algorithm)
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), sum...), true
+}
+
 type localReadOnlyFileSource struct {
 	path   string
 	size   int64
