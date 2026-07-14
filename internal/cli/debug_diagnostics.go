@@ -22,17 +22,18 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 	if report.State != nil {
 		for _, mount := range report.State.Mounts {
 			addRootIDDiagnostics(out, mount)
-			if len(mount.Pending) > 0 {
+			pending := mount.PendingFiles()
+			if len(pending) > 0 {
 				*out = append(*out, debugAIDiagnostic{
 					Severity:  "warn",
 					Code:      "pending_uploads",
 					Component: "vfs",
-					Mount:     mount.Name,
+					Mount:     mount.Identity.Name,
 					Message:   "mount has pending uploads",
-					Evidence:  map[string]any{"count": len(mount.Pending)},
+					Evidence:  map[string]any{"count": len(pending)},
 				})
 			}
-			for _, upload := range mount.Uploads {
+			for _, upload := range mount.ActiveUploads() {
 				if upload.LastError == "" {
 					continue
 				}
@@ -40,8 +41,8 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 					Severity:  "error",
 					Code:      "upload_error",
 					Component: "vfs",
-					Mount:     mount.Name,
-					Path:      prefixDebugMountPath(report.State.Kind, mount.Name, upload.Path),
+					Mount:     mount.Identity.Name,
+					Path:      prefixDebugMountPath(report.State.Kind, mount.Identity.Name, upload.Path),
 					Message:   upload.LastError,
 					Evidence:  map[string]any{"state": upload.State, "retry_count": upload.RetryCount},
 				})
@@ -82,24 +83,24 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 	addCacheDiagnostics(out, report.Cache)
 }
 
-func addRootIDDiagnostics(out *[]debugAIDiagnostic, mount vfs.DebugMountSnapshot) {
-	if mount.RootID == "" || mount.Driver == nil || mount.Driver.Stats == nil {
+func addRootIDDiagnostics(out *[]debugAIDiagnostic, mount vfs.MountSnapshot) {
+	if mount.Identity.RootID == "" || mount.Identity.Driver == nil || mount.Identity.Driver.Stats == nil {
 		return
 	}
-	driverRootID, ok := debugStringStat(mount.Driver.Stats[drive.DebugStatRootID])
-	if !ok || driverRootID == "" || driverRootID == mount.RootID {
+	driverRootID, ok := debugStringStat(mount.Identity.Driver.Stats[drive.DebugStatRootID])
+	if !ok || driverRootID == "" || driverRootID == mount.Identity.RootID {
 		return
 	}
 	*out = append(*out, debugAIDiagnostic{
 		Severity:  "error",
 		Code:      "root_id_mismatch",
 		Component: "vfs",
-		Mount:     mount.Name,
+		Mount:     mount.Identity.Name,
 		Message:   "VFS root id does not match the driver resolved root id",
 		Evidence: map[string]any{
-			"vfs_root_id":    mount.RootID,
+			"vfs_root_id":    mount.Identity.RootID,
 			"driver_root_id": driverRootID,
-			"driver":         mount.DriverName,
+			"driver":         mount.Identity.DriverName,
 		},
 	})
 }

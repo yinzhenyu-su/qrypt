@@ -82,11 +82,11 @@ type debugAIWatchSample struct {
 	At              time.Time               `json:"at"`
 	HealthOK        *bool                   `json:"health_ok,omitempty"`
 	Mounts          []debugAIWatchMount     `json:"mounts,omitempty"`
-	Uploads         []vfs.DebugUpload       `json:"uploads,omitempty"`
+	Uploads         []vfs.UploadSnapshot    `json:"uploads,omitempty"`
 	Events          []controlEventSummary   `json:"events,omitempty"`
 	Path            string                  `json:"path,omitempty"`
 	PathResolve     *vfs.DebugResolveInfo   `json:"path_resolve,omitempty"`
-	PathUploads     []vfs.DebugUpload       `json:"path_uploads,omitempty"`
+	PathUploads     []vfs.UploadSnapshot    `json:"path_uploads,omitempty"`
 	PathStaging     []vfs.DebugStagingMount `json:"path_staging,omitempty"`
 	PathConsistency *vfs.ConsistencyReport  `json:"path_consistency,omitempty"`
 	Errors          []debugAIError          `json:"errors,omitempty"`
