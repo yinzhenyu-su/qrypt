@@ -16,8 +16,11 @@ import (
 type XferTestMetrics struct {
 	TotalBytes      int64  `json:"total_bytes"`
 	WallTime        string `json:"wall_time"`
+	WallMS          int64  `json:"wall_ms"`
 	ReadTime        string `json:"read_time"`
+	ReadMS          int64  `json:"read_ms"`
 	WriteTime       string `json:"write_time"`
+	WriteMS         int64  `json:"write_ms"`
 	ReadChunks      int    `json:"read_chunks"`
 	WriteChunks     int    `json:"write_chunks"`
 	ReadThroughput  int64  `json:"read_throughput"`  // bytes/sec
@@ -25,10 +28,15 @@ type XferTestMetrics struct {
 
 	// VFS-layer metrics (driver-layer omits these)
 	CreateTime       string `json:"create_time,omitempty"`
+	CreateMS         int64  `json:"create_ms,omitempty"`
 	FlushTime        string `json:"flush_time,omitempty"`
+	FlushMS          int64  `json:"flush_ms,omitempty"`
 	StagingWriteTime string `json:"staging_write_time,omitempty"`
+	StagingWriteMS   int64  `json:"staging_write_ms,omitempty"`
 	UploadSourceTime string `json:"upload_source_time,omitempty"`
+	UploadSourceMS   int64  `json:"upload_source_ms,omitempty"`
 	UploadDestTime   string `json:"upload_dest_time,omitempty"`
+	UploadDestMS     int64  `json:"upload_dest_ms,omitempty"`
 }
 
 // TransferTraceEvent uses the same schema as runtime VFS operation events.
@@ -41,6 +49,7 @@ type TransferStep struct {
 	Error         string `json:"error,omitempty"`
 	ErrorCategory string `json:"error_category,omitempty"`
 	Duration      string `json:"duration"`
+	DurationMS    int64  `json:"duration_ms"`
 	Bytes         int64  `json:"bytes,omitempty"`
 }
 
@@ -81,13 +90,17 @@ func (s *TransferStep) done(err error) {
 }
 
 func (s *TransferStep) finish(start time.Time, err error) {
-	s.Duration = time.Since(start).String()
+	duration := time.Since(start)
+	s.Duration = duration.String()
+	s.DurationMS = durationMillis(duration)
 	s.done(err)
 }
 
 // finishTransferStep records the duration and error on a step.
 func finishTransferStep(s *TransferStep, start time.Time, err error) {
-	s.Duration = time.Since(start).String()
+	duration := time.Since(start)
+	s.Duration = duration.String()
+	s.DurationMS = durationMillis(duration)
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
@@ -120,22 +133,18 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	size = xferTestSize(size)
 
 	// Collect driver type info.
-	if debugger, ok := srcDriver.(drive.Debugger); ok {
-		if snap, err := debugger.DebugSnapshot(ctx); err == nil {
-			result.SourceType = snap.Driver
-		}
+	if snap, err := srcDriver.DebugSnapshot(ctx); err == nil {
+		result.SourceType = snap.Driver
 	}
-	if debugger, ok := dstDriver.(drive.Debugger); ok {
-		if snap, err := debugger.DebugSnapshot(ctx); err == nil {
-			result.DestType = snap.Driver
-		}
+	if snap, err := dstDriver.DebugSnapshot(ctx); err == nil {
+		result.DestType = snap.Driver
 	}
 
 	// Check capabilities.
-	srcUploader, srcHasUploader := srcDriver.(drive.SourceUploader)
-	srcWriter, srcIsWriter := srcDriver.(drive.Writer)
-	dstUploader, dstHasUploader := dstDriver.(drive.SourceUploader)
-	dstWriter, dstIsWriter := dstDriver.(drive.Writer)
+	srcHasUploader := drive.HasCapability(srcDriver, drive.CapabilitySourceUploader)
+	srcIsWriter := drive.HasCapability(srcDriver, drive.CapabilityWriter)
+	dstHasUploader := drive.HasCapability(dstDriver, drive.CapabilitySourceUploader)
+	dstIsWriter := drive.HasCapability(dstDriver, drive.CapabilityWriter)
 
 	if !srcIsWriter || !srcHasUploader {
 		result.Steps = append(result.Steps, TransferStep{
@@ -188,7 +197,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step = xferStepOp("mkdir_source")
 	t0 = time.Now()
 	srcRootID := driverProbeRootID(ctx, srcDriver)
-	srcDir, err := srcWriter.Mkdir(ctx, srcRootID, testName)
+	srcDir, err := srcDriver.Mkdir(ctx, srcRootID, testName)
 	step.finish(t0, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
@@ -200,7 +209,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	// ---------- write to source (PutSource) ----------
 	step = xferStepOp("write_source")
 	t0 = time.Now()
-	srcEntry, err := srcUploader.PutSource(ctx, drive.UploadRequest{
+	srcEntry, err := srcDriver.PutSource(ctx, drive.UploadRequest{
 		ParentID: srcDir.ID,
 		Name:     fileName,
 		Source:   drive.NewBytesReadOnlyFileSource(data),
@@ -209,7 +218,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step.Bytes = size
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupProbeDir(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, srcDriver, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -249,7 +258,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step.Bytes = readBytes
 	result.Steps = append(result.Steps, step)
 	if readErr != nil {
-		cleanupProbeDir(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, srcDriver, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -259,11 +268,11 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step = xferStepOp("mkdir_dest")
 	t0 = time.Now()
 	dstRootID := driverProbeRootID(ctx, dstDriver)
-	dstDir, err := dstWriter.Mkdir(ctx, dstRootID, testName)
+	dstDir, err := dstDriver.Mkdir(ctx, dstRootID, testName)
 	step.finish(t0, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupProbeDir(ctx, srcWriter, srcDir)
+		cleanupProbeDir(ctx, srcDriver, srcDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -272,7 +281,7 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	// ---------- write to dest (PutSource) ----------
 	step = xferStepOp("write_dest")
 	t0 = time.Now()
-	dstEntry, err := dstUploader.PutSource(ctx, drive.UploadRequest{
+	dstEntry, err := dstDriver.PutSource(ctx, drive.UploadRequest{
 		ParentID: dstDir.ID,
 		Name:     fileName,
 		Source:   drive.NewBytesReadOnlyFileSource(data),
@@ -281,8 +290,8 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	step.Bytes = size
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupProbeDir(ctx, srcWriter, srcDir)
-		cleanupProbeDir(ctx, dstWriter, dstDir)
+		cleanupProbeDir(ctx, srcDriver, srcDir)
+		cleanupProbeDir(ctx, dstDriver, dstDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -321,20 +330,22 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	result.Steps = append(result.Steps, step)
 
 	// ---------- cleanup ----------
-	cleanupProbeDir(ctx, srcWriter, srcDir)
-	cleanupProbeDir(ctx, dstWriter, dstDir)
+	cleanupProbeDir(ctx, srcDriver, srcDir)
+	cleanupProbeDir(ctx, dstDriver, dstDir)
 
 	// Compute metrics from step durations.
 	for _, s := range result.Steps {
 		switch s.Phase {
 		case "read_source":
 			result.Metrics.ReadTime = s.Duration
+			result.Metrics.ReadMS = s.DurationMS
 			d, _ := time.ParseDuration(s.Duration)
 			if d > 0 {
 				result.Metrics.ReadThroughput = int64(float64(s.Bytes) / d.Seconds())
 			}
 		case "write_source":
 			result.Metrics.WriteTime = s.Duration
+			result.Metrics.WriteMS = s.DurationMS
 			d, _ := time.ParseDuration(s.Duration)
 			if d > 0 {
 				result.Metrics.WriteThroughput = int64(float64(s.Bytes) / d.Seconds())
@@ -344,7 +355,9 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 	result.Metrics.TotalBytes = size
 	result.Metrics.ReadChunks = chunkCount
 	result.Metrics.WriteChunks = 1 // PutSource is single upload
-	result.Metrics.WallTime = time.Since(result.Started).String()
+	wall := time.Since(result.Started)
+	result.Metrics.WallTime = wall.String()
+	result.Metrics.WallMS = durationMillis(wall)
 
 	// Determine pass/fail.
 	result.Pass = true

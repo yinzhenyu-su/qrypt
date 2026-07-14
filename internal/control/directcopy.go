@@ -31,6 +31,7 @@ type DriverCopyResult struct {
 	Started     time.Time            `json:"started_at"`
 	Finished    time.Time            `json:"finished_at"`
 	Duration    string               `json:"duration"`
+	DurationMS  int64                `json:"duration_ms"`
 	Steps       []TransferStep       `json:"steps"`
 	Timeline    []TransferTraceEvent `json:"timeline,omitempty"`
 	DestEntry   *drive.Entry         `json:"dest_entry,omitempty"`
@@ -48,6 +49,7 @@ type DriverCopyDirResult struct {
 	Started       time.Time               `json:"started_at"`
 	Finished      time.Time               `json:"finished_at"`
 	Duration      string                  `json:"duration"`
+	DurationMS    int64                   `json:"duration_ms"`
 	Error         string                  `json:"error,omitempty"`
 	ErrorCategory string                  `json:"error_category,omitempty"`
 	Entries       []DriverCopyEntryResult `json:"entries,omitempty"`
@@ -65,6 +67,7 @@ type DriverCopyEntryResult struct {
 	Started       time.Time `json:"started_at,omitempty"`
 	Finished      time.Time `json:"finished_at,omitempty"`
 	Duration      string    `json:"duration,omitempty"`
+	DurationMS    int64     `json:"duration_ms,omitempty"`
 }
 
 type DriverCopySource interface {
@@ -106,7 +109,9 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 	}
 	defer func() {
 		result.Finished = timeutil.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
 		if !result.Pass {
 			return
 		}
@@ -163,12 +168,11 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 		return result
 	}
 
-	dstUploader, ok := dstParent.Drive.(drive.SourceUploader)
-	if !ok {
+	if !drive.HasCapability(dstParent.Drive, drive.CapabilitySourceUploader) {
 		appendCopyStep(result, "capability_check", 0, timeutil.Now(), fmt.Errorf("dest driver does not implement SourceUploader"))
 		return result
 	}
-	dstWriter, dstHasWriter := dstParent.Drive.(drive.Writer)
+	dstHasWriter := drive.HasCapability(dstParent.Drive, drive.CapabilityWriter)
 
 	start = timeutil.Now()
 	existing, err := resolveCopyPath(ctx, source, drivers, result.DestPath)
@@ -183,7 +187,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 			return result
 		}
 		start := timeutil.Now()
-		err = dstWriter.Remove(ctx, existing.Entry)
+		err = dstParent.Drive.Remove(ctx, existing.Entry)
 		appendCopyStep(result, "remove_existing", 0, start, err)
 		appendCopyTrace(result, "remove_existing", dstParent.Mount, dstParent.Driver, result.DestPath, 0, start, nil)
 		if err != nil {
@@ -207,7 +211,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 
 	progress := &directCopyProgress{}
 	start = timeutil.Now()
-	destEntry, err := dstUploader.PutSource(ctx, drive.UploadRequest{
+	destEntry, err := dstParent.Drive.PutSource(ctx, drive.UploadRequest{
 		ParentID: dstParent.Info.RemoteID,
 		Name:     dstName,
 		Source:   drive.NewLocalReadOnlyFileSourceWithHashes(tmp.path, tmp.bytes, hashes),
@@ -246,7 +250,9 @@ func RunDirectDriverCopyDir(ctx context.Context, fs CopyFileSystem, source Drive
 	}
 	defer func() {
 		result.Finished = timeutil.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
 		result.Pass = result.Error == "" && result.Failed == 0
 	}()
 	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
@@ -297,6 +303,7 @@ func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopyS
 			Started:    copyResult.Started,
 			Finished:   copyResult.Finished,
 			Duration:   copyResult.Duration,
+			DurationMS: copyResult.DurationMS,
 		}
 		if !copyResult.Pass {
 			result.Failed++
@@ -356,7 +363,9 @@ func (r *DriverCopyDirResult) recordEntry(entry DriverCopyEntryResult) {
 		entry.Finished = now
 	}
 	if entry.Duration == "" {
-		entry.Duration = entry.Finished.Sub(entry.Started).String()
+		duration := entry.Finished.Sub(entry.Started)
+		entry.Duration = duration.String()
+		entry.DurationMS = durationMillis(duration)
 	}
 	r.Entries = append(r.Entries, entry)
 }
@@ -442,10 +451,8 @@ func resolveCopyPath(ctx context.Context, source DriverCopySource, drivers []vfs
 		return copyResolvedPath{Path: virtualPath, Mount: mountName, Driver: info.Driver, Info: info, Drive: driver, IsMissing: true}, nil
 	}
 	if info.Driver == "" {
-		if debugger, ok := driver.(drive.Debugger); ok {
-			if snap, err := debugger.DebugSnapshot(ctx); err == nil {
-				info.Driver = snap.Driver
-			}
+		if snap, err := driver.DebugSnapshot(ctx); err == nil {
+			info.Driver = snap.Driver
 		}
 	}
 	return copyResolvedPath{
@@ -480,7 +487,9 @@ func splitDestPath(path string) (string, string) {
 
 func appendCopyStep(result *DriverCopyResult, phase string, bytes int64, start time.Time, err error) {
 	step := TransferStep{Phase: phase}
-	step.Duration = timeutil.Now().Sub(start).String()
+	duration := timeutil.Now().Sub(start)
+	step.Duration = duration.String()
+	step.DurationMS = durationMillis(duration)
 	if err != nil {
 		step.OK = false
 		step.Error = err.Error()
@@ -508,6 +517,7 @@ func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string
 		Path:       path,
 		Bytes:      bytes,
 		Duration:   duration.String(),
+		DurationMS: durationMillis(duration),
 		StartedAt:  start,
 		FinishedAt: finished,
 		Extra:      extra,

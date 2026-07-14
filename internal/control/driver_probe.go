@@ -7,8 +7,8 @@ import (
 )
 
 func driverProbeRootID(ctx context.Context, d drive.Driver) string {
-	if resolver, ok := d.(drive.PathResolver); ok {
-		if rootID, err := resolver.ResolvePath(ctx, "/"); err == nil && rootID != "" {
+	if drive.HasCapability(d, drive.CapabilityPathResolver) {
+		if rootID, err := d.ResolvePath(ctx, "/"); err == nil && rootID != "" {
 			return rootID
 		}
 	}
@@ -28,6 +28,6 @@ func driverProbeRootID(ctx context.Context, d drive.Driver) string {
 	return "root"
 }
 
-func cleanupProbeDir(ctx context.Context, w drive.Writer, dir drive.Entry) {
-	_ = w.Remove(ctx, dir)
+func cleanupProbeDir(ctx context.Context, d drive.Driver, dir drive.Entry) {
+	_ = d.Remove(ctx, dir)
 }

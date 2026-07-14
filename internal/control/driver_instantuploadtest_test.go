@@ -12,6 +12,7 @@ import (
 )
 
 type instantUploadTestDriver struct {
+	drive.UnsupportedOperations
 	rootID        string
 	counter       int64
 	uploads       int
@@ -26,6 +27,9 @@ func (d *instantUploadTestDriver) List(context.Context, string) ([]drive.Entry, 
 }
 func (d *instantUploadTestDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil
+}
+func (d *instantUploadTestDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
 }
 func (d *instantUploadTestDriver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	d.mkdirParentID = parentID
@@ -50,6 +54,16 @@ func (d *instantUploadTestDriver) DebugSnapshot(context.Context) (drive.DebugSna
 		snapshot.Extra = map[string]any{drive.DebugExtraInstantUploadCount: d.counter}
 	}
 	return snapshot, nil
+}
+func (d *instantUploadTestDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{
+		drive.CapabilityPathResolver,
+		drive.CapabilitySourceUploader,
+		drive.CapabilityWriter,
+	}
+}
+func (d *instantUploadTestDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
 }
 func (d *instantUploadTestDriver) ResolvePath(context.Context, string) (string, error) {
 	return d.rootID, nil

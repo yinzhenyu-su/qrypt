@@ -107,6 +107,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	s.Bytes = size
 	result.Steps = append(result.Steps, s)
 	result.Metrics.StagingWriteTime = s.Duration
+	result.Metrics.StagingWriteMS = s.DurationMS
 
 	// flush source (enqueue upload)
 	s = TransferStep{Phase: "flush_source"}
@@ -122,6 +123,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 	result.Metrics.FlushTime = s.Duration
+	result.Metrics.FlushMS = s.DurationMS
 
 	// wait for source upload
 	s = TransferStep{Phase: "wait_upload_source"}
@@ -137,6 +139,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 	result.Metrics.UploadSourceTime = s.Duration
+	result.Metrics.UploadSourceMS = s.DurationMS
 	appendVFSUploadTimeline(result, fs, srcPath, "source")
 
 	// read from source
@@ -169,6 +172,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	s.Bytes = readBytes
 	result.Steps = append(result.Steps, s)
 	result.Metrics.ReadTime = s.Duration
+	result.Metrics.ReadMS = s.DurationMS
 	if d, _ := time.ParseDuration(s.Duration); d > 0 {
 		result.Metrics.ReadThroughput = int64(float64(readBytes) / d.Seconds())
 	}
@@ -256,6 +260,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	finishTransferStep(&s, t0, nil)
 	result.Steps = append(result.Steps, s)
 	result.Metrics.UploadDestTime = s.Duration
+	result.Metrics.UploadDestMS = s.DurationMS
 	appendVFSUploadTimeline(result, fs, dstPath, "dest")
 
 	// verify content
@@ -286,8 +291,12 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	result.Metrics.TotalBytes = size
 	result.Metrics.WriteChunks = writeChunks
 	result.Metrics.WriteTime = result.Metrics.StagingWriteTime
+	result.Metrics.WriteMS = result.Metrics.StagingWriteMS
 	result.Metrics.CreateTime = result.Metrics.StagingWriteTime
-	result.Metrics.WallTime = time.Since(result.Started).String()
+	result.Metrics.CreateMS = result.Metrics.StagingWriteMS
+	wall := time.Since(result.Started)
+	result.Metrics.WallTime = wall.String()
+	result.Metrics.WallMS = durationMillis(wall)
 	if d, _ := time.ParseDuration(result.Metrics.StagingWriteTime); d > 0 {
 		result.Metrics.WriteThroughput = int64(float64(size) / d.Seconds())
 	}
@@ -350,6 +359,7 @@ func appendVFSReadTimeline(result *XferTestResult, fs vfs.FileSystem, mountName,
 		Bytes:      bytes,
 		Chunks:     int64(result.Metrics.ReadChunks),
 		Duration:   step.Duration,
+		DurationMS: step.DurationMS,
 		StartedAt:  started,
 		FinishedAt: finished,
 		Extra:      map[string]any{"role": "source"},
@@ -405,6 +415,7 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 			Path:       path,
 			Bytes:      upload.BytesTotal,
 			Duration:   duration.String(),
+			DurationMS: durationMillis(duration),
 			StartedAt:  upload.StartedAt,
 			FinishedAt: upload.CompletedAt,
 			Error:      upload.LastError,
@@ -434,6 +445,7 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 			Bytes:         trace.Bytes,
 			Chunks:        trace.Chunks,
 			Duration:      trace.Duration,
+			DurationMS:    trace.DurationMS,
 			Throughput:    trace.Throughput,
 			StartedAt:     trace.StartedAt,
 			FinishedAt:    trace.FinishedAt,

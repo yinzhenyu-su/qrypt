@@ -23,6 +23,7 @@ type CRUDTestStep struct {
 	Error         string         `json:"error,omitempty"`
 	ErrorCategory string         `json:"error_category,omitempty"`
 	Duration      string         `json:"duration"`
+	DurationMS    int64          `json:"duration_ms"`
 	Input         map[string]any `json:"input,omitempty"`
 	Expected      map[string]any `json:"expected,omitempty"`
 	Actual        map[string]any `json:"actual,omitempty"`
@@ -30,21 +31,22 @@ type CRUDTestStep struct {
 
 // CRUDTestResult aggregates the full CRUD test outcome for one driver.
 type CRUDTestResult struct {
-	OpID             string                  `json:"op_id"`
-	Mount            string                  `json:"mount"`
-	Driver           string                  `json:"driver,omitempty"`
-	Pass             bool                    `json:"pass"`
-	Steps            []CRUDTestStep          `json:"steps"`
-	Created          []CRUDTestArtifact      `json:"created,omitempty"`
-	Cleanup          []CRUDCleanupResult     `json:"cleanup,omitempty"`
-	Residual         []CRUDTestArtifact      `json:"residual,omitempty"`
-	ResidualTimeline []CRUDVisibilitySample  `json:"residual_timeline,omitempty"`
-	Trace            []drive.DebugTraceEvent `json:"trace,omitempty"`
-	RetryCommand     string                  `json:"retry_command,omitempty"`
-	CleanupGuidance  string                  `json:"cleanup_guidance,omitempty"`
-	Started          time.Time               `json:"started_at"`
-	Finished         time.Time               `json:"finished_at"`
-	Duration         string                  `json:"duration"`
+	OpID             string                 `json:"op_id"`
+	Mount            string                 `json:"mount"`
+	Driver           string                 `json:"driver,omitempty"`
+	Pass             bool                   `json:"pass"`
+	Steps            []CRUDTestStep         `json:"steps"`
+	Created          []CRUDTestArtifact     `json:"created,omitempty"`
+	Cleanup          []CRUDCleanupResult    `json:"cleanup,omitempty"`
+	Residual         []CRUDTestArtifact     `json:"residual,omitempty"`
+	ResidualTimeline []CRUDVisibilitySample `json:"residual_timeline,omitempty"`
+	Metrics          []drive.MetricEvent    `json:"metrics,omitempty"`
+	RetryCommand     string                 `json:"retry_command,omitempty"`
+	CleanupGuidance  string                 `json:"cleanup_guidance,omitempty"`
+	Started          time.Time              `json:"started_at"`
+	Finished         time.Time              `json:"finished_at"`
+	Duration         string                 `json:"duration"`
+	DurationMS       int64                  `json:"duration_ms"`
 }
 
 type CRUDTestArtifact struct {
@@ -66,11 +68,13 @@ type CRUDCleanupResult struct {
 	Error         string `json:"error,omitempty"`
 	ErrorCategory string `json:"error_category,omitempty"`
 	Duration      string `json:"duration"`
+	DurationMS    int64  `json:"duration_ms"`
 }
 
 type CRUDVisibilitySample struct {
 	Attempt       int      `json:"attempt"`
 	Elapsed       string   `json:"elapsed"`
+	ElapsedMS     int64    `json:"elapsed_ms"`
 	ResidualCount int      `json:"residual_count"`
 	ResidualNames []string `json:"residual_names,omitempty"`
 	Error         string   `json:"error,omitempty"`
@@ -91,7 +95,9 @@ func (s *CRUDTestStep) done(err error) {
 }
 
 func (s *CRUDTestStep) finish(start time.Time, err error) {
-	s.Duration = time.Since(start).String()
+	duration := time.Since(start)
+	s.Duration = duration.String()
+	s.DurationMS = durationMillis(duration)
 	s.done(err)
 }
 
@@ -146,11 +152,11 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	}
 	defer func() {
 		result.Finished = time.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
-		if tracer, ok := d.(drive.DebugTraceProvider); ok {
-			if trace, err := tracer.DebugTrace(ctx, result.Started); err == nil {
-				result.Trace = trace
-			}
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
+		if metrics, err := d.Metrics(ctx, result.Started); err == nil {
+			result.Metrics = metrics
 		}
 		result.Pass = true
 		for _, step := range result.Steps {
@@ -165,10 +171,8 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		}
 	}()
 
-	if debugger, ok := d.(drive.Debugger); ok {
-		if snap, err := debugger.DebugSnapshot(ctx); err == nil {
-			result.Driver = snap.Driver
-		}
+	if snap, err := d.DebugSnapshot(ctx); err == nil {
+		result.Driver = snap.Driver
 	}
 
 	// Determine writer / uploader support.
@@ -185,12 +189,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		})
 		return result
 	}
-	w := d.(drive.Writer)
-	var uploader drive.SourceUploader
-	if drive.HasCapability(d, drive.CapabilitySourceUploader) {
-		uploader = d.(drive.SourceUploader)
-	}
-	if uploader == nil {
+	if !drive.HasCapability(d, drive.CapabilitySourceUploader) {
 		result.addStep(CRUDTestStep{
 			Operation:     "capability_check",
 			OpID:          result.OpID,
@@ -229,7 +228,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	s.Input = map[string]any{"parent_id": rootID, "name": testName}
 	s.Expected = map[string]any{"is_dir": true, "name": testName}
 	start := time.Now()
-	testDir, err := w.Mkdir(stepContext(ctx, s), rootID, testName)
+	testDir, err := d.Mkdir(stepContext(ctx, s), rootID, testName)
 	s.Actual = entryActual(testDir)
 	s.finish(start, err)
 	result.addStep(s)
@@ -252,7 +251,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	s.Input = map[string]any{"parent_id": testDir.ID, "name": nestedName}
 	s.Expected = map[string]any{"is_dir": true, "name": nestedName}
 	start = time.Now()
-	nestedDir, err := w.Mkdir(stepContext(ctx, s), testDir.ID, nestedName)
+	nestedDir, err := d.Mkdir(stepContext(ctx, s), testDir.ID, nestedName)
 	s.Actual = entryActual(nestedDir)
 	s.finish(start, err)
 	result.addStep(s)
@@ -273,7 +272,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 
 	var files []drive.Entry
 	for _, tc := range fileCases {
-		entry, ok := runCRUDPutReadCase(ctx, d, uploader, result, tc)
+		entry, ok := runCRUDPutReadCase(ctx, d, result, tc)
 		if ok {
 			files = append(files, entry)
 		}
@@ -288,7 +287,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		s.Input = map[string]any{"id": renamed.ID, "old_name": oldName, "new_name": newName}
 		s.Expected = map[string]any{"old_listed": false, "new_listed": true}
 		start = time.Now()
-		err = w.Rename(stepContext(ctx, s), renamed, newName)
+		err = d.Rename(stepContext(ctx, s), renamed, newName)
 		if err == nil {
 			renamed.Name = newName
 		}
@@ -314,17 +313,17 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 			result.addStep(s)
 		}
 
-		cleanupCRUDEntry(ctx, w, result, "renamed_file", renamed)
+		cleanupCRUDEntry(ctx, d, result, "renamed_file", renamed)
 		files = files[1:]
 	}
 
 	for _, entry := range files {
-		cleanupCRUDEntry(ctx, w, result, "file", entry)
+		cleanupCRUDEntry(ctx, d, result, "file", entry)
 	}
 	if nestedDir.ID != "" {
-		cleanupCRUDEntry(ctx, w, result, "nested_dir", nestedDir)
+		cleanupCRUDEntry(ctx, d, result, "nested_dir", nestedDir)
 	}
-	cleanupCRUDEntry(ctx, w, result, "test_dir", testDir)
+	cleanupCRUDEntry(ctx, d, result, "test_dir", testDir)
 
 	parentForVerify := testDir.ParentID
 	if parentForVerify == "" {
@@ -352,12 +351,12 @@ type crudFileCase struct {
 	Role   string
 }
 
-func runCRUDPutReadCase(ctx context.Context, d drive.Driver, uploader drive.SourceUploader, result *CRUDTestResult, tc crudFileCase) (drive.Entry, bool) {
+func runCRUDPutReadCase(ctx context.Context, d drive.Driver, result *CRUDTestResult, tc crudFileCase) (drive.Entry, bool) {
 	s := result.newStep("put", tc.Name)
 	s.Input = map[string]any{"parent_id": tc.Parent.ID, "name": tc.Name, "bytes": len(tc.Data)}
 	s.Expected = map[string]any{"name": tc.Name, "size": len(tc.Data), "is_dir": false}
 	start := time.Now()
-	entry, err := uploader.PutSource(stepContext(ctx, s), drive.UploadRequest{
+	entry, err := d.PutSource(stepContext(ctx, s), drive.UploadRequest{
 		ParentID: tc.Parent.ID,
 		Name:     tc.Name,
 		Source:   drive.NewBytesReadOnlyFileSource(tc.Data),
@@ -402,17 +401,19 @@ func readDriverEntry(ctx context.Context, d drive.Driver, entry drive.Entry, siz
 	return io.ReadAll(rc)
 }
 
-func cleanupCRUDEntry(ctx context.Context, w drive.Writer, result *CRUDTestResult, role string, entry drive.Entry) {
+func cleanupCRUDEntry(ctx context.Context, d drive.Driver, result *CRUDTestResult, role string, entry drive.Entry) {
 	step := result.newStep("cleanup_remove", entry.Name)
 	start := time.Now()
-	err := w.Remove(stepContext(ctx, step), entry)
+	err := d.Remove(stepContext(ctx, step), entry)
+	duration := time.Since(start)
 	item := CRUDCleanupResult{
-		Operation: "remove",
-		Role:      role,
-		Name:      entry.Name,
-		ID:        entry.ID,
-		OK:        err == nil,
-		Duration:  time.Since(start).String(),
+		Operation:  "remove",
+		Role:       role,
+		Name:       entry.Name,
+		ID:         entry.ID,
+		OK:         err == nil,
+		Duration:   duration.String(),
+		DurationMS: durationMillis(duration),
 	}
 	if err != nil {
 		item.Error = err.Error()
@@ -519,10 +520,12 @@ func residualEntries(ctx context.Context, d drive.Driver, parentID string, testP
 		}
 		entries, err := d.List(ctx, parentID)
 		if err != nil {
+			elapsed := time.Since(started)
 			timeline = append(timeline, CRUDVisibilitySample{
-				Attempt: attempt + 1,
-				Elapsed: time.Since(started).String(),
-				Error:   err.Error(),
+				Attempt:   attempt + 1,
+				Elapsed:   elapsed.String(),
+				ElapsedMS: durationMillis(elapsed),
+				Error:     err.Error(),
 			})
 			return nil, timeline, fmt.Errorf("verify cleanup list: %w", err)
 		}
@@ -532,9 +535,11 @@ func residualEntries(ctx context.Context, d drive.Driver, parentID string, testP
 				residual = append(residual, entry)
 			}
 		}
+		elapsed := time.Since(started)
 		timeline = append(timeline, CRUDVisibilitySample{
 			Attempt:       attempt + 1,
-			Elapsed:       time.Since(started).String(),
+			Elapsed:       elapsed.String(),
+			ElapsedMS:     durationMillis(elapsed),
 			ResidualCount: len(residual),
 			ResidualNames: residualNames(residual),
 		})

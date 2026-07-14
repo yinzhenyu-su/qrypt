@@ -22,6 +22,7 @@ type FSTestResult struct {
 	Started         time.Time         `json:"started_at"`
 	Finished        time.Time         `json:"finished_at"`
 	Duration        string            `json:"duration"`
+	DurationMS      int64             `json:"duration_ms"`
 	RetryCommand    string            `json:"retry_command,omitempty"`
 }
 
@@ -31,6 +32,7 @@ type FSTestStep struct {
 	Error         string         `json:"error,omitempty"`
 	ErrorCategory string         `json:"error_category,omitempty"`
 	Duration      string         `json:"duration"`
+	DurationMS    int64          `json:"duration_ms"`
 	Input         map[string]any `json:"input,omitempty"`
 	Expected      map[string]any `json:"expected,omitempty"`
 	Actual        map[string]any `json:"actual,omitempty"`
@@ -39,6 +41,7 @@ type FSTestStep struct {
 type FSPendingSample struct {
 	Attempt        int        `json:"attempt"`
 	Elapsed        string     `json:"elapsed"`
+	ElapsedMS      int64      `json:"elapsed_ms"`
 	PendingCount   int        `json:"pending_count"`
 	UploadCount    int        `json:"upload_count"`
 	DeleteTimers   int        `json:"delete_timer_count"`
@@ -80,7 +83,9 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	}
 	defer func() {
 		result.Finished = time.Now()
-		result.Duration = result.Finished.Sub(result.Started).String()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
 		result.FinalState = fsMountState(fs, mount)
 		result.Pass = true
 		for _, step := range result.Steps {
@@ -186,7 +191,9 @@ func fsStep(operation string) FSTestStep {
 }
 
 func (s *FSTestStep) finish(start time.Time, err error) {
-	s.Duration = time.Since(start).String()
+	duration := time.Since(start)
+	s.Duration = duration.String()
+	s.DurationMS = durationMillis(duration)
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
@@ -227,6 +234,7 @@ func fsPendingSample(fs vfs.FileSystem, mount string, attempt int, elapsed time.
 	sample := FSPendingSample{
 		Attempt:      attempt,
 		Elapsed:      elapsed.String(),
+		ElapsedMS:    durationMillis(elapsed),
 		PendingCount: state.PendingCount,
 		UploadCount:  state.UploadCount,
 		DeleteTimers: state.DeleteTimers,

@@ -84,6 +84,7 @@ type DebugDriverSummary struct {
 	Mount        string              `json:"mount"`
 	Capabilities []drive.Capability  `json:"capabilities,omitempty"`
 	Driver       drive.DebugSnapshot `json:"driver"`
+	Metrics      []drive.MetricEvent `json:"metrics,omitempty"`
 	Space        *DebugSpaceSummary  `json:"space,omitempty"`
 }
 

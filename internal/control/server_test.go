@@ -48,6 +48,7 @@ func (f fakeSnapshotter) MountHealth(ctx context.Context, mountName string) ([]v
 }
 
 type fakeSpaceDriver struct {
+	drive.UnsupportedOperations
 	space drive.Space
 	err   error
 }
@@ -62,6 +63,15 @@ func (f fakeSpaceDriver) Read(context.Context, drive.Entry, int64, int64) (io.Re
 }
 func (f fakeSpaceDriver) Space(context.Context) (drive.Space, error) {
 	return f.space, f.err
+}
+func (f fakeSpaceDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySpace}
+}
+func (f fakeSpaceDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{Driver: "fake-space", Health: drive.HealthLevelOK, GeneratedAt: time.Now()}, nil
+}
+func (f fakeSpaceDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
 }
 
 func (f fakeSnapshotter) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
