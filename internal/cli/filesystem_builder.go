@@ -174,11 +174,10 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 }
 
 func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error) {
-	resolver, ok := driver.(drive.PathResolver)
-	if !ok {
+	if !drive.HasCapability(driver, drive.CapabilityPathResolver) {
 		return "", nil
 	}
-	return resolver.ResolvePath(ctx, "/")
+	return driver.ResolvePath(ctx, "/")
 }
 
 func installDriverStateStore(driver drive.Driver, cacheDir string) {

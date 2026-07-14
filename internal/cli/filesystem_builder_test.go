@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
@@ -37,6 +38,7 @@ func init() {
 }
 
 type builderRootDriver struct {
+	drive.UnsupportedOperations
 	rootID    string
 	putParent string
 }
@@ -54,6 +56,10 @@ func (d *builderRootDriver) List(_ context.Context, parentID string) ([]drive.En
 
 func (d *builderRootDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("read not implemented")
+}
+
+func (d *builderRootDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
 }
 
 func (d *builderRootDriver) ResolvePath(_ context.Context, path string) (string, error) {
@@ -81,9 +87,19 @@ func (d *builderRootDriver) PutSource(ctx context.Context, req drive.UploadReque
 	}, nil
 }
 
+func (d *builderRootDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityPathResolver, drive.CapabilitySourceUploader}
+}
+
+func (d *builderRootDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{Driver: "cli-rootid-test", Health: drive.HealthLevelOK}, nil
+}
+
+func (d *builderRootDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
 var _ drive.Driver = (*builderRootDriver)(nil)
-var _ drive.PathResolver = (*builderRootDriver)(nil)
-var _ drive.SourceUploader = (*builderRootDriver)(nil)
 
 func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	ctx := context.Background()
