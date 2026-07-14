@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -25,13 +26,14 @@ type FSTestResult struct {
 }
 
 type FSTestStep struct {
-	Operation string         `json:"operation"`
-	OK        bool           `json:"ok"`
-	Error     string         `json:"error,omitempty"`
-	Duration  string         `json:"duration"`
-	Input     map[string]any `json:"input,omitempty"`
-	Expected  map[string]any `json:"expected,omitempty"`
-	Actual    map[string]any `json:"actual,omitempty"`
+	Operation     string         `json:"operation"`
+	OK            bool           `json:"ok"`
+	Error         string         `json:"error,omitempty"`
+	ErrorCategory string         `json:"error_category,omitempty"`
+	Duration      string         `json:"duration"`
+	Input         map[string]any `json:"input,omitempty"`
+	Expected      map[string]any `json:"expected,omitempty"`
+	Actual        map[string]any `json:"actual,omitempty"`
 }
 
 type FSPendingSample struct {
@@ -188,6 +190,7 @@ func (s *FSTestStep) finish(start time.Time, err error) {
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
+		s.ErrorCategory = drive.ErrorCategory(err)
 		return
 	}
 	s.OK = true

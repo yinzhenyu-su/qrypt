@@ -14,17 +14,18 @@ import (
 
 // CRUDTestStep records one step of a CRUD test.
 type CRUDTestStep struct {
-	Operation string         `json:"operation"`
-	Name      string         `json:"name,omitempty"`
-	OpID      string         `json:"op_id,omitempty"`
-	Mount     string         `json:"mount,omitempty"`
-	Driver    string         `json:"driver,omitempty"`
-	OK        bool           `json:"ok"`
-	Error     string         `json:"error,omitempty"`
-	Duration  string         `json:"duration"`
-	Input     map[string]any `json:"input,omitempty"`
-	Expected  map[string]any `json:"expected,omitempty"`
-	Actual    map[string]any `json:"actual,omitempty"`
+	Operation     string         `json:"operation"`
+	Name          string         `json:"name,omitempty"`
+	OpID          string         `json:"op_id,omitempty"`
+	Mount         string         `json:"mount,omitempty"`
+	Driver        string         `json:"driver,omitempty"`
+	OK            bool           `json:"ok"`
+	Error         string         `json:"error,omitempty"`
+	ErrorCategory string         `json:"error_category,omitempty"`
+	Duration      string         `json:"duration"`
+	Input         map[string]any `json:"input,omitempty"`
+	Expected      map[string]any `json:"expected,omitempty"`
+	Actual        map[string]any `json:"actual,omitempty"`
 }
 
 // CRUDTestResult aggregates the full CRUD test outcome for one driver.
@@ -57,13 +58,14 @@ type CRUDTestArtifact struct {
 }
 
 type CRUDCleanupResult struct {
-	Operation string `json:"operation"`
-	Role      string `json:"role,omitempty"`
-	Name      string `json:"name,omitempty"`
-	ID        string `json:"id,omitempty"`
-	OK        bool   `json:"ok"`
-	Error     string `json:"error,omitempty"`
-	Duration  string `json:"duration"`
+	Operation     string `json:"operation"`
+	Role          string `json:"role,omitempty"`
+	Name          string `json:"name,omitempty"`
+	ID            string `json:"id,omitempty"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Duration      string `json:"duration"`
 }
 
 type CRUDVisibilitySample struct {
@@ -82,6 +84,7 @@ func (s *CRUDTestStep) done(err error) {
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
+		s.ErrorCategory = drive.ErrorCategory(err)
 	} else {
 		s.OK = true
 	}
@@ -171,13 +174,14 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	// Determine writer / uploader support.
 	if !drive.HasCapability(d, drive.CapabilityWriter) {
 		result.addStep(CRUDTestStep{
-			Operation: "crud",
-			OpID:      result.OpID,
-			Mount:     result.Mount,
-			Driver:    result.Driver,
-			OK:        false,
-			Error:     "driver does not implement Writer (read-only)",
-			Duration:  "0s",
+			Operation:     "crud",
+			OpID:          result.OpID,
+			Mount:         result.Mount,
+			Driver:        result.Driver,
+			OK:            false,
+			Error:         "driver does not implement Writer (read-only)",
+			ErrorCategory: drive.ErrorCategoryUnsupported,
+			Duration:      "0s",
 		})
 		return result
 	}
@@ -188,15 +192,16 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	}
 	if uploader == nil {
 		result.addStep(CRUDTestStep{
-			Operation: "capability_check",
-			OpID:      result.OpID,
-			Mount:     result.Mount,
-			Driver:    result.Driver,
-			OK:        false,
-			Error:     "driver does not implement SourceUploader",
-			Duration:  "0s",
-			Expected:  map[string]any{"source_uploader": true},
-			Actual:    map[string]any{"source_uploader": false},
+			Operation:     "capability_check",
+			OpID:          result.OpID,
+			Mount:         result.Mount,
+			Driver:        result.Driver,
+			OK:            false,
+			Error:         "driver does not implement SourceUploader",
+			ErrorCategory: drive.ErrorCategoryUnsupported,
+			Duration:      "0s",
+			Expected:      map[string]any{"source_uploader": true},
+			Actual:        map[string]any{"source_uploader": false},
 		})
 		return result
 	}
@@ -411,6 +416,7 @@ func cleanupCRUDEntry(ctx context.Context, w drive.Writer, result *CRUDTestResul
 	}
 	if err != nil {
 		item.Error = err.Error()
+		item.ErrorCategory = drive.ErrorCategory(err)
 		result.Residual = append(result.Residual, artifactFromEntry(role, entry, "cleanup failed: "+err.Error()))
 	}
 	result.Cleanup = append(result.Cleanup, item)

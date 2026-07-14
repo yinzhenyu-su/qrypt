@@ -64,10 +64,11 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	_, isUploader := d.(drive.SourceUploader)
 	if !isUploader {
 		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation: "instant_upload",
-			OK:        false,
-			Error:     "driver does not implement SourceUploader",
-			Duration:  "0s",
+			Operation:     "instant_upload",
+			OK:            false,
+			Error:         "driver does not implement SourceUploader",
+			ErrorCategory: drive.ErrorCategoryUnsupported,
+			Duration:      "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
@@ -78,10 +79,11 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	writer, ok := d.(drive.Writer)
 	if !ok {
 		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation: "instant_upload",
-			OK:        false,
-			Error:     "driver does not implement Writer",
-			Duration:  "0s",
+			Operation:     "instant_upload",
+			OK:            false,
+			Error:         "driver does not implement Writer",
+			ErrorCategory: drive.ErrorCategoryUnsupported,
+			Duration:      "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
@@ -99,10 +101,11 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	testSuffix := make([]byte, 6)
 	if _, err := rand.Read(testSuffix); err != nil {
 		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation: "instant_upload",
-			OK:        false,
-			Error:     fmt.Sprintf("rand read: %v", err),
-			Duration:  "0s",
+			Operation:     "instant_upload",
+			OK:            false,
+			Error:         fmt.Sprintf("rand read: %v", err),
+			ErrorCategory: drive.ErrorCategory(err),
+			Duration:      "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
@@ -151,10 +154,11 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		} else {
 			cleanupProbeDir(ctx, writer, testDir)
 			result.Steps = append(result.Steps, CRUDTestStep{
-				Operation: "verify_instant",
-				OK:        false,
-				Error:     fmt.Sprintf("debug snapshot before duplicate upload: %v", snapErr),
-				Duration:  "0s",
+				Operation:     "verify_instant",
+				OK:            false,
+				Error:         fmt.Sprintf("debug snapshot before duplicate upload: %v", snapErr),
+				ErrorCategory: drive.ErrorCategory(snapErr),
+				Duration:      "0s",
 			})
 			result.Pass = false
 			result.Finished = time.Now()
