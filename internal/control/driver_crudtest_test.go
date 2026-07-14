@@ -220,8 +220,8 @@ func (d *crudMemoryDriver) Capabilities() []drive.Capability {
 	}
 }
 
-func (d *crudMemoryDriver) DebugTrace(_ context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return []drive.DebugTraceEvent{{
+func (d *crudMemoryDriver) metricEvents(_ context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return []drive.MetricEvent{{
 		At:        since.Add(time.Millisecond),
 		OpID:      "crud-test-op",
 		Step:      "put",
@@ -231,11 +231,11 @@ func (d *crudMemoryDriver) DebugTrace(_ context.Context, since time.Time) ([]dri
 }
 
 func (d *crudMemoryDriver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
-	trace, err := d.DebugTrace(ctx, since)
+	metrics, err := d.metricEvents(ctx, since)
 	if err != nil {
 		return nil, err
 	}
-	return drive.MetricsFromTrace("memory", trace), nil
+	return drive.NormalizeMetricEvents("memory", metrics), nil
 }
 
 func (d *crudMemoryDriver) ResolvePath(_ context.Context, path string) (string, error) {

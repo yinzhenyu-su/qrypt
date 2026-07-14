@@ -149,19 +149,25 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		GeneratedAt:   time.Unix(1, 0),
 		Kind:          "namespace",
 		Process:       vfs.DebugProcess{PID: 1234, StartedAt: time.Unix(8, 0)},
-		Mounts: []vfs.DebugMountSnapshot{{
-			Name:         "local",
-			DriverName:   "localfs",
-			Capabilities: []drive.Capability{drive.CapabilitySourceUploader},
-			Uploads: []vfs.DebugUpload{{
+		Mounts: []vfs.MountSnapshot{{
+			Identity: vfs.MountSnapshotIdentity{
+				Name:         "local",
+				DriverName:   "localfs",
+				Capabilities: []drive.Capability{drive.CapabilitySourceUploader},
+				Driver: &drive.DebugSnapshot{
+					Driver:      "localfs",
+					Health:      "ok",
+					GeneratedAt: time.Unix(3, 0),
+				},
+			},
+			UploadState: vfs.MountSnapshotUploads{Active: []vfs.UploadSnapshot{{
 				OpID:          "file",
 				Path:          "/file.txt",
 				State:         string(drive.UploadPhaseUploading),
 				BytesTotal:    10,
 				BytesUploaded: 4,
 				UpdatedAt:     time.Unix(4, 0),
-			}},
-			UploadHistory: []vfs.DebugUpload{{
+			}}, History: []vfs.UploadSnapshot{{
 				OpID:          "old",
 				Path:          "/old.txt",
 				State:         string(drive.UploadPhaseCompleted),
@@ -169,30 +175,24 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				BytesUploaded: 5,
 				UpdatedAt:     time.Unix(5, 0),
 				CompletedAt:   time.Unix(5, 0),
-				Trace: []vfs.DebugTraceEvent{{
-					OpID: "old", Kind: "upload", Phase: "uploading", State: "completed", Path: "/old.txt",
+				Events: []drive.MetricEvent{{
+					OpID: "old", Kind: "vfs_upload", Operation: "upload", Phase: "uploading", State: "completed", OK: true, Path: "/old.txt",
 				}},
-			}},
-			ReadHistory: []vfs.DebugOperationEvent{{
-				OpID: "read-1", Kind: "read", Phase: "read", State: "completed",
+			}}},
+			Events: vfs.MountSnapshotEvents{Reads: []drive.MetricEvent{{
+				OpID: "read-1", Kind: "vfs_read", Operation: "read", Phase: "read", State: "completed", OK: true,
 				Path: "/old.txt", RemoteID: "old", Bytes: 5, StartedAt: time.Unix(6, 0),
-			}},
-			Driver: &drive.DebugSnapshot{
-				Driver:      "localfs",
-				Health:      "ok",
-				GeneratedAt: time.Unix(3, 0),
-			},
-			Pending: []vfs.PendingFile{{
+			}}},
+			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
 				Path:       "/file.txt",
 				FID:        "file",
 				LocalPath:  "/tmp/file.staging",
 				Size:       3,
 				RetryCount: 1,
 				LastError:  "boom",
-			}},
-			UploadQueueLength: 2,
-			UploadQueueCap:    128,
-			ReadCache: vfs.DebugReadCache{
+			}}},
+			Queues: vfs.MountSnapshotQueues{UploadLength: 2, UploadCap: 128},
+			Cache: vfs.DebugReadCache{
 				MaxBytes:   1024,
 				ChunkCount: 1,
 				Bytes:      512,
@@ -231,14 +231,18 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := json.Unmarshal(stateBody, &state); err != nil {
 		t.Fatal(err)
 	}
-	if state.Kind != "namespace" || len(state.Mounts) != 1 || state.Mounts[0].UploadQueueLength != 2 {
+	if state.Kind != "namespace" || len(state.Mounts) != 1 || state.Mounts[0].Queues.UploadLength != 2 {
 		t.Fatalf("unexpected state: %+v", state)
 	}
-	if state.Process.PID != 1234 || state.Mounts[0].DriverName != "localfs" {
+	if state.Process.PID != 1234 || state.Mounts[0].Identity.DriverName != "localfs" {
 		t.Fatalf("missing state metadata: %+v", state)
 	}
-	if strings.Contains(string(stateBody), `"upload_history"`) || strings.Contains(string(stateBody), `"ops":`) {
-		t.Fatalf("state should not inline upload history or ops: %s", stateBody)
+	if strings.Contains(string(stateBody), `"upload_history"`) ||
+		strings.Contains(string(stateBody), `"upload_queue_length"`) ||
+		strings.Contains(string(stateBody), `"driver_metrics"`) ||
+		strings.Contains(string(stateBody), `"read_history"`) ||
+		strings.Contains(string(stateBody), `"ops":`) {
+		t.Fatalf("state should not expose legacy flat fields or ops: %s", stateBody)
 	}
 
 	pendingBody, err := client.Get(context.Background(), "/v1/pending")

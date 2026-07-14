@@ -39,15 +39,15 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 	}
 	var drivers []DebugDriverSummary
 	for _, mount := range snapshot.Mounts {
-		if mount.Driver == nil {
+		if mount.Identity.Driver == nil {
 			continue
 		}
 		drivers = append(drivers, DebugDriverSummary{
-			Mount:        mount.Name,
-			Capabilities: mount.Capabilities,
-			Driver:       *mount.Driver,
-			Metrics:      mount.DriverMetrics,
-			Space:        spaceByMount[mount.Name],
+			Mount:        mount.Identity.Name,
+			Capabilities: mount.Identity.Capabilities,
+			Driver:       *mount.Identity.Driver,
+			Metrics:      mount.DriverMetricEvents(),
+			Space:        spaceByMount[mount.Identity.Name],
 		})
 	}
 	sort.Slice(drivers, func(i, j int) bool {

@@ -48,18 +48,18 @@ type PendingResponse struct {
 }
 
 type UploadsResponse struct {
-	SchemaVersion int               `json:"schema_version"`
-	GeneratedAt   time.Time         `json:"generated_at"`
-	Path          string            `json:"path,omitempty"`
-	History       bool              `json:"history"`
-	Uploads       []vfs.DebugUpload `json:"uploads"`
+	SchemaVersion int                  `json:"schema_version"`
+	GeneratedAt   time.Time            `json:"generated_at"`
+	Path          string               `json:"path,omitempty"`
+	History       bool                 `json:"history"`
+	Uploads       []vfs.UploadSnapshot `json:"uploads"`
 }
 
 type ReadsResponse struct {
-	SchemaVersion int                       `json:"schema_version"`
-	GeneratedAt   time.Time                 `json:"generated_at"`
-	Path          string                    `json:"path,omitempty"`
-	Reads         []vfs.DebugOperationEvent `json:"reads"`
+	SchemaVersion int                 `json:"schema_version"`
+	GeneratedAt   time.Time           `json:"generated_at"`
+	Path          string              `json:"path,omitempty"`
+	Reads         []drive.MetricEvent `json:"reads"`
 }
 
 type DriversResponse struct {
@@ -407,8 +407,13 @@ func (s *Server) handleTransferContext(w http.ResponseWriter, r *http.Request) {
 
 func transferMountContext(snapshot vfs.DebugSnapshot, mountName string) TransferMountContext {
 	for _, mount := range snapshot.Mounts {
-		if mount.Name == mountName || (mountName == "" && len(snapshot.Mounts) == 1) {
-			return TransferMountContext{Name: mount.Name, Driver: mount.DriverName, Capabilities: mount.Capabilities, Encrypted: mount.Encrypted}
+		if mount.Identity.Name == mountName || (mountName == "" && len(snapshot.Mounts) == 1) {
+			return TransferMountContext{
+				Name:         mount.Identity.Name,
+				Driver:       mount.Identity.DriverName,
+				Capabilities: mount.Identity.Capabilities,
+				Encrypted:    mount.Identity.Encrypted,
+			}
 		}
 	}
 	return TransferMountContext{Name: mountName}
@@ -443,16 +448,16 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 		}
 		mountName := cacheMountName(snapshot, info.Path)
 		for _, mount := range snapshot.Mounts {
-			if mount.Name != mountName {
+			if mount.Identity.Name != mountName {
 				continue
 			}
-			cache := filterReadCacheFile(mount.ReadCache, info.RemoteID)
+			cache := filterReadCacheFile(mount.ReadCacheState(), info.RemoteID)
 			writeJSON(w, CacheResponse{
 				SchemaVersion: snapshot.SchemaVersion,
 				GeneratedAt:   snapshot.GeneratedAt,
 				Path:          info.Path,
 				Resolve:       &info,
-				Mounts:        []DebugCacheMountStatus{{Mount: mount.Name, Cache: cache}},
+				Mounts:        []DebugCacheMountStatus{{Mount: mount.Identity.Name, Cache: cache}},
 			})
 			return
 		}
@@ -461,7 +466,7 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 	}
 	var mounts []DebugCacheMountStatus
 	for _, mount := range snapshot.Mounts {
-		mounts = append(mounts, DebugCacheMountStatus{Mount: mount.Name, Cache: mount.ReadCache})
+		mounts = append(mounts, DebugCacheMountStatus{Mount: mount.Identity.Name, Cache: mount.ReadCacheState()})
 	}
 	sort.Slice(mounts, func(i, j int) bool { return mounts[i].Mount < mounts[j].Mount })
 	writeJSON(w, CacheResponse{
@@ -498,7 +503,7 @@ func (s *Server) handleStaging(w http.ResponseWriter, r *http.Request) {
 func cacheMountName(snapshot vfs.DebugSnapshot, path string) string {
 	if snapshot.Kind != "namespace" {
 		if len(snapshot.Mounts) == 1 {
-			return snapshot.Mounts[0].Name
+			return snapshot.Mounts[0].Identity.Name
 		}
 		return ""
 	}
@@ -592,10 +597,10 @@ func (s *Server) consistencyReports(ctx context.Context, checker vfs.DebugConsis
 		paths[path] = true
 	}
 	for _, mount := range s.source.DebugSnapshot().Mounts {
-		for _, pending := range mount.Pending {
+		for _, pending := range mount.PendingFiles() {
 			path := pending.Path
-			if mount.Name != "" {
-				path = joinVirtual("/"+mount.Name, path)
+			if mount.Identity.Name != "" {
+				path = joinVirtual("/"+mount.Identity.Name, path)
 			}
 			path = cleanVirtual(path)
 			if path == dir || strings.HasPrefix(path, strings.TrimRight(dir, "/")+"/") {
@@ -770,9 +775,9 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.source.DebugSnapshot()
 	var pending []vfs.PendingFile
 	for _, mount := range snapshot.Mounts {
-		for _, item := range mount.Pending {
-			if snapshot.Kind == "namespace" && mount.Name != "" {
-				item.Path = joinVirtual("/"+mount.Name, item.Path)
+		for _, item := range mount.PendingFiles() {
+			if snapshot.Kind == "namespace" && mount.Identity.Name != "" {
+				item.Path = joinVirtual("/"+mount.Identity.Name, item.Path)
 			}
 			pending = append(pending, item)
 		}
@@ -796,11 +801,11 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 	filterPath := cleanVirtual(r.URL.Query().Get("path"))
 	hasFilter := r.URL.Query().Get("path") != ""
 	includeHistory := parseBoolQuery(r.URL.Query().Get("history"))
-	var uploads []vfs.DebugUpload
+	var uploads []vfs.UploadSnapshot
 	for _, mount := range snapshot.Mounts {
-		for _, item := range mount.Uploads {
-			if snapshot.Kind == "namespace" && mount.Name != "" {
-				prefixDebugUploadPath(&item, mount.Name)
+		for _, item := range mount.ActiveUploads() {
+			if snapshot.Kind == "namespace" && mount.Identity.Name != "" {
+				prefixUploadSnapshotPath(&item, mount.Identity.Name)
 			}
 			if hasFilter && cleanVirtual(item.Path) != filterPath {
 				continue
@@ -808,9 +813,9 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 			uploads = append(uploads, item)
 		}
 		if includeHistory {
-			for _, item := range mount.UploadHistory {
-				if snapshot.Kind == "namespace" && mount.Name != "" {
-					prefixDebugUploadPath(&item, mount.Name)
+			for _, item := range mount.HistoricalUploads() {
+				if snapshot.Kind == "namespace" && mount.Identity.Name != "" {
+					prefixUploadSnapshotPath(&item, mount.Identity.Name)
 				}
 				if hasFilter && cleanVirtual(item.Path) != filterPath {
 					continue
@@ -837,12 +842,12 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-func prefixDebugUploadPath(upload *vfs.DebugUpload, mountName string) {
+func prefixUploadSnapshotPath(upload *vfs.UploadSnapshot, mountName string) {
 	prefix := "/" + mountName
 	upload.Path = joinVirtual(prefix, upload.Path)
-	for i := range upload.Trace {
-		if upload.Trace[i].Path != "" {
-			upload.Trace[i].Path = joinVirtual(prefix, upload.Trace[i].Path)
+	for i := range upload.Events {
+		if upload.Events[i].Path != "" {
+			upload.Events[i].Path = joinVirtual(prefix, upload.Events[i].Path)
 		}
 	}
 }
@@ -855,17 +860,17 @@ func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.source.DebugSnapshot()
 	filterPath := cleanVirtual(r.URL.Query().Get("path"))
 	hasFilter := r.URL.Query().Get("path") != ""
-	var reads []vfs.DebugOperationEvent
+	var reads []drive.MetricEvent
 	for _, mount := range snapshot.Mounts {
-		for _, event := range mount.ReadHistory {
+		for _, event := range mount.ReadEvents() {
 			if event.Mount == "" {
-				event.Mount = mount.Name
+				event.Mount = mount.Identity.Name
 			}
 			if event.Driver == "" {
-				event.Driver = mount.DriverName
+				event.Driver = mount.Identity.DriverName
 			}
-			if snapshot.Kind == "namespace" && mount.Name != "" {
-				event.Path = joinVirtual("/"+mount.Name, event.Path)
+			if snapshot.Kind == "namespace" && mount.Identity.Name != "" {
+				event.Path = joinVirtual("/"+mount.Identity.Name, event.Path)
 			}
 			if hasFilter && cleanVirtual(event.Path) != filterPath {
 				continue

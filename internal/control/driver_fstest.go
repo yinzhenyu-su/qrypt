@@ -243,10 +243,10 @@ func fsPendingSample(fs vfs.FileSystem, mount string, attempt int, elapsed time.
 	}
 	if snapshotter, ok := fs.(vfsDebugSnapshotter); ok {
 		for _, mountState := range snapshotter.DebugSnapshot().Mounts {
-			if mountState.Name != mount {
+			if mountState.Identity.Name != mount {
 				continue
 			}
-			for _, timer := range mountState.DeleteTimers {
+			for _, timer := range mountState.ActiveDeleteTimers() {
 				sample.DeleteTimerFor = append(sample.DeleteTimerFor, timer.Path)
 			}
 		}
@@ -258,16 +258,16 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 	state := &FSMountState{Mount: mount}
 	if snapshotter, ok := fs.(vfsDebugSnapshotter); ok {
 		for _, mountState := range snapshotter.DebugSnapshot().Mounts {
-			if mountState.Name != mount {
+			if mountState.Identity.Name != mount {
 				continue
 			}
-			state.PendingCount = len(mountState.Pending)
-			state.UploadCount = len(mountState.Uploads)
-			state.DeleteTimers = len(mountState.DeleteTimers)
-			for _, pending := range mountState.Pending {
+			state.PendingCount = len(mountState.PendingFiles())
+			state.UploadCount = len(mountState.ActiveUploads())
+			state.DeleteTimers = len(mountState.ActiveDeleteTimers())
+			for _, pending := range mountState.PendingFiles() {
 				state.Pending = append(state.Pending, pending.Path)
 			}
-			for _, upload := range mountState.Uploads {
+			for _, upload := range mountState.ActiveUploads() {
 				state.Uploads = append(state.Uploads, FSUpload{
 					Path:          upload.Path,
 					State:         upload.State,

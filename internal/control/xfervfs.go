@@ -348,11 +348,14 @@ func appendVFSReadTimeline(result *XferTestResult, fs vfs.FileSystem, mountName,
 	if !step.OK {
 		state = "failed"
 	}
-	event := TransferTraceEvent{
+	event := drive.MetricEvent{
 		OpID:       result.OpID,
-		Kind:       "read",
+		At:         finished,
+		Kind:       "vfs_read",
+		Operation:  "read",
 		Phase:      step.Phase,
 		State:      state,
+		OK:         step.OK,
 		Mount:      mountName,
 		Driver:     vfsDriverName(fs, mountName),
 		Path:       path,
@@ -386,8 +389,8 @@ func vfsDriverName(fs vfs.FileSystem, mountName string) string {
 	}
 	snapshot := snapshotter.DebugSnapshot()
 	for _, mount := range snapshot.Mounts {
-		if mount.Name == mountName || (mountName == "" && len(snapshot.Mounts) == 1) {
-			return mount.DriverName
+		if mount.Identity.Name == mountName || (mountName == "" && len(snapshot.Mounts) == 1) {
+			return mount.Identity.DriverName
 		}
 	}
 	return ""
@@ -405,11 +408,14 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 	}
 	if !upload.StartedAt.IsZero() && !upload.CompletedAt.IsZero() {
 		duration := upload.CompletedAt.Sub(upload.StartedAt)
-		event := TransferTraceEvent{
+		event := drive.MetricEvent{
 			OpID:       result.OpID,
-			Kind:       "upload",
+			At:         upload.CompletedAt,
+			Kind:       "vfs_upload",
+			Operation:  "upload",
 			Phase:      "upload_total",
 			State:      upload.State,
+			OK:         upload.LastError == "",
 			Mount:      mountName,
 			Driver:     driverName,
 			Path:       path,
@@ -433,25 +439,28 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 		}
 		result.Timeline = append(result.Timeline, event)
 	}
-	for _, trace := range upload.Trace {
-		event := TransferTraceEvent{
+	for _, uploadEvent := range upload.Events {
+		event := drive.MetricEvent{
 			OpID:          result.OpID,
-			Kind:          "upload",
-			Phase:         trace.Phase,
-			State:         trace.State,
+			At:            uploadEvent.FinishedAt,
+			Kind:          "vfs_upload",
+			Operation:     "upload",
+			Phase:         uploadEvent.Phase,
+			State:         uploadEvent.State,
+			OK:            uploadEvent.Error == "",
 			Mount:         mountName,
 			Driver:        driverName,
 			Path:          path,
-			Bytes:         trace.Bytes,
-			Chunks:        trace.Chunks,
-			Duration:      trace.Duration,
-			DurationMS:    trace.DurationMS,
-			Throughput:    trace.Throughput,
-			StartedAt:     trace.StartedAt,
-			FinishedAt:    trace.FinishedAt,
-			Error:         trace.Error,
-			ErrorCategory: trace.ErrorCategory,
-			Extra:         cloneTraceExtra(trace.Extra),
+			Bytes:         uploadEvent.Bytes,
+			Chunks:        uploadEvent.Chunks,
+			Duration:      uploadEvent.Duration,
+			DurationMS:    uploadEvent.DurationMS,
+			Throughput:    uploadEvent.Throughput,
+			StartedAt:     uploadEvent.StartedAt,
+			FinishedAt:    uploadEvent.FinishedAt,
+			Error:         uploadEvent.Error,
+			ErrorCategory: uploadEvent.ErrorCategory,
+			Extra:         cloneEventExtra(uploadEvent.Extra),
 		}
 		if event.Extra == nil {
 			event.Extra = map[string]any{}
@@ -461,11 +470,11 @@ func appendVFSUploadTimeline(result *XferTestResult, fs vfs.FileSystem, path, ro
 	}
 }
 
-func findVFSUpload(snapshot vfs.DebugSnapshot, path string) (vfs.DebugUpload, string, string, bool) {
+func findVFSUpload(snapshot vfs.DebugSnapshot, path string) (vfs.UploadSnapshot, string, string, bool) {
 	for _, mount := range snapshot.Mounts {
 		localPath := path
 		if snapshot.Kind == "namespace" {
-			prefix := "/" + mount.Name
+			prefix := "/" + mount.Identity.Name
 			if path != prefix && !strings.HasPrefix(path, prefix+"/") {
 				continue
 			}
@@ -474,26 +483,26 @@ func findVFSUpload(snapshot vfs.DebugSnapshot, path string) (vfs.DebugUpload, st
 				localPath = "/"
 			}
 		}
-		if upload, ok := findDebugUpload(mount.UploadHistory, localPath); ok {
-			return upload, mount.Name, mount.DriverName, true
+		if upload, ok := findUploadSnapshot(mount.HistoricalUploads(), localPath); ok {
+			return upload, mount.Identity.Name, mount.Identity.DriverName, true
 		}
-		if upload, ok := findDebugUpload(mount.Uploads, localPath); ok {
-			return upload, mount.Name, mount.DriverName, true
+		if upload, ok := findUploadSnapshot(mount.ActiveUploads(), localPath); ok {
+			return upload, mount.Identity.Name, mount.Identity.DriverName, true
 		}
 	}
-	return vfs.DebugUpload{}, "", "", false
+	return vfs.UploadSnapshot{}, "", "", false
 }
 
-func findDebugUpload(uploads []vfs.DebugUpload, path string) (vfs.DebugUpload, bool) {
+func findUploadSnapshot(uploads []vfs.UploadSnapshot, path string) (vfs.UploadSnapshot, bool) {
 	for i := len(uploads) - 1; i >= 0; i-- {
 		if cleanVirtual(uploads[i].Path) == cleanVirtual(path) {
 			return uploads[i], true
 		}
 	}
-	return vfs.DebugUpload{}, false
+	return vfs.UploadSnapshot{}, false
 }
 
-func cloneTraceExtra(extra map[string]any) map[string]any {
+func cloneEventExtra(extra map[string]any) map[string]any {
 	if len(extra) == 0 {
 		return nil
 	}

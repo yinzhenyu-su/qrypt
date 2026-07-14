@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // XferTestMetrics contains the quantitative metrics for a transfer test.
@@ -39,9 +38,6 @@ type XferTestMetrics struct {
 	UploadDestMS     int64  `json:"upload_dest_ms,omitempty"`
 }
 
-// TransferTraceEvent uses the same schema as runtime VFS operation events.
-type TransferTraceEvent = vfs.DebugOperationEvent
-
 // TransferStep records one phase of a transfer test.
 type TransferStep struct {
 	Phase         string `json:"phase"`
@@ -55,18 +51,18 @@ type TransferStep struct {
 
 // XferTestResult aggregates the full transfer test outcome.
 type XferTestResult struct {
-	OpID        string               `json:"op_id"`
-	SourceMount string               `json:"source_mount"`
-	DestMount   string               `json:"dest_mount"`
-	SourceType  string               `json:"source_type,omitempty"`
-	DestType    string               `json:"dest_type,omitempty"`
-	VFS         bool                 `json:"vfs"`
-	Pass        bool                 `json:"pass"`
-	Steps       []TransferStep       `json:"steps"`
-	Started     time.Time            `json:"started_at"`
-	Finished    time.Time            `json:"finished_at"`
-	Metrics     XferTestMetrics      `json:"metrics"`
-	Timeline    []TransferTraceEvent `json:"timeline,omitempty"`
+	OpID        string              `json:"op_id"`
+	SourceMount string              `json:"source_mount"`
+	DestMount   string              `json:"dest_mount"`
+	SourceType  string              `json:"source_type,omitempty"`
+	DestType    string              `json:"dest_type,omitempty"`
+	VFS         bool                `json:"vfs"`
+	Pass        bool                `json:"pass"`
+	Steps       []TransferStep      `json:"steps"`
+	Started     time.Time           `json:"started_at"`
+	Finished    time.Time           `json:"finished_at"`
+	Metrics     XferTestMetrics     `json:"metrics"`
+	Timeline    []drive.MetricEvent `json:"timeline,omitempty"`
 }
 
 var debugOperationSequence atomic.Uint64

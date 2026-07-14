@@ -19,22 +19,22 @@ import (
 )
 
 type DriverCopyResult struct {
-	OpID        string               `json:"op_id"`
-	SourcePath  string               `json:"source_path"`
-	DestPath    string               `json:"dest_path"`
-	SourceMount string               `json:"source_mount"`
-	DestMount   string               `json:"dest_mount"`
-	SourceType  string               `json:"source_type,omitempty"`
-	DestType    string               `json:"dest_type,omitempty"`
-	Pass        bool                 `json:"pass"`
-	Bytes       int64                `json:"bytes"`
-	Started     time.Time            `json:"started_at"`
-	Finished    time.Time            `json:"finished_at"`
-	Duration    string               `json:"duration"`
-	DurationMS  int64                `json:"duration_ms"`
-	Steps       []TransferStep       `json:"steps"`
-	Timeline    []TransferTraceEvent `json:"timeline,omitempty"`
-	DestEntry   *drive.Entry         `json:"dest_entry,omitempty"`
+	OpID        string              `json:"op_id"`
+	SourcePath  string              `json:"source_path"`
+	DestPath    string              `json:"dest_path"`
+	SourceMount string              `json:"source_mount"`
+	DestMount   string              `json:"dest_mount"`
+	SourceType  string              `json:"source_type,omitempty"`
+	DestType    string              `json:"dest_type,omitempty"`
+	Pass        bool                `json:"pass"`
+	Bytes       int64               `json:"bytes"`
+	Started     time.Time           `json:"started_at"`
+	Finished    time.Time           `json:"finished_at"`
+	Duration    string              `json:"duration"`
+	DurationMS  int64               `json:"duration_ms"`
+	Steps       []TransferStep      `json:"steps"`
+	Timeline    []drive.MetricEvent `json:"timeline,omitempty"`
+	DestEntry   *drive.Entry        `json:"dest_entry,omitempty"`
 }
 
 type DriverCopyDirResult struct {
@@ -189,7 +189,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 		start := timeutil.Now()
 		err = dstParent.Drive.Remove(ctx, existing.Entry)
 		appendCopyStep(result, "remove_existing", 0, start, err)
-		appendCopyTrace(result, "remove_existing", dstParent.Mount, dstParent.Driver, result.DestPath, 0, start, nil)
+		appendCopyEvent(result, "remove_existing", dstParent.Mount, dstParent.Driver, result.DestPath, 0, start, nil)
 		if err != nil {
 			return result
 		}
@@ -202,7 +202,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 
 	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size)
 	appendCopyStep(result, "read_source_to_temp", tmp.bytes, tmp.started, err)
-	appendCopyTrace(result, "read_source_to_temp", src.Mount, src.Driver, result.SourcePath, tmp.bytes, tmp.started, nil)
+	appendCopyEvent(result, "read_source_to_temp", src.Mount, src.Driver, result.SourcePath, tmp.bytes, tmp.started, nil)
 	defer cleanup()
 	if err != nil {
 		return result
@@ -229,7 +229,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 		extra["error"] = err.Error()
 	}
 	appendCopyStep(result, "driver_put_source", tmp.bytes, start, err)
-	appendCopyTrace(result, "driver_put_source", dstParent.Mount, dstParent.Driver, result.DestPath, tmp.bytes, start, extra)
+	appendCopyEvent(result, "driver_put_source", dstParent.Mount, dstParent.Driver, result.DestPath, tmp.bytes, start, extra)
 	if err != nil {
 		return result
 	}
@@ -501,17 +501,20 @@ func appendCopyStep(result *DriverCopyResult, phase string, bytes int64, start t
 	result.Steps = append(result.Steps, step)
 }
 
-func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string, bytes int64, start time.Time, extra map[string]any) {
+func appendCopyEvent(result *DriverCopyResult, phase, mount, driver, path string, bytes int64, start time.Time, extra map[string]any) {
 	if start.IsZero() {
 		return
 	}
 	finished := timeutil.Now()
 	duration := finished.Sub(start)
-	event := TransferTraceEvent{
+	event := drive.MetricEvent{
 		OpID:       result.OpID,
+		At:         finished,
 		Kind:       "transfer",
+		Operation:  "copy",
 		Phase:      phase,
 		State:      "completed",
+		OK:         true,
 		Mount:      mount,
 		Driver:     driver,
 		Path:       path,
@@ -524,6 +527,7 @@ func appendCopyTrace(result *DriverCopyResult, phase, mount, driver, path string
 	}
 	if errValue, ok := extra["error"].(string); ok && errValue != "" {
 		event.State = "failed"
+		event.OK = false
 		event.Error = errValue
 		event.ErrorCategory = drive.ErrorCategoryMessage(errValue)
 	}

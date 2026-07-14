@@ -107,15 +107,15 @@ func (f *xferFakeFS) DebugSnapshot() vfs.DebugSnapshot {
 	snapshot := vfs.DebugSnapshot{
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		Kind:          "namespace",
-		Mounts: []vfs.DebugMountSnapshot{
-			{Name: "src", DriverName: "source-test"},
-			{Name: "dst", DriverName: "dest-test"},
+		Mounts: []vfs.MountSnapshot{
+			{Identity: vfs.MountSnapshotIdentity{Name: "src", DriverName: "source-test"}},
+			{Identity: vfs.MountSnapshotIdentity{Name: "dst", DriverName: "dest-test"}},
 		},
 	}
 	started := time.Unix(100, 0)
 	for path, data := range f.files {
 		for i := range snapshot.Mounts {
-			mount := snapshot.Mounts[i].Name
+			mount := snapshot.Mounts[i].Identity.Name
 			prefix := "/" + mount
 			if path != prefix && !strings.HasPrefix(path, prefix+"/") {
 				continue
@@ -125,7 +125,7 @@ func (f *xferFakeFS) DebugSnapshot() vfs.DebugSnapshot {
 				localPath = "/"
 			}
 			bytesTotal := int64(len(data))
-			snapshot.Mounts[i].UploadHistory = append(snapshot.Mounts[i].UploadHistory, vfs.DebugUpload{
+			snapshot.Mounts[i].UploadState.History = append(snapshot.Mounts[i].UploadState.History, vfs.UploadSnapshot{
 				Path:          localPath,
 				State:         "completed",
 				BytesTotal:    bytesTotal,
@@ -136,7 +136,7 @@ func (f *xferFakeFS) DebugSnapshot() vfs.DebugSnapshot {
 				StageDurations: map[string]string{
 					"uploading": "10ms",
 				},
-				Trace: []vfs.DebugTraceEvent{{
+				Events: []drive.MetricEvent{{
 					Phase:      "driver_put_source",
 					Bytes:      bytesTotal,
 					Duration:   "10ms",
@@ -228,7 +228,7 @@ func TestRunVFSXferTestIncludesUploadTimeline(t *testing.T) {
 		if event.Phase == "driver_put_source" && event.Mount == "" {
 			t.Fatalf("timeline event missing mount: %#v", event)
 		}
-		if event.Phase == "read_source" && (event.Kind != "read" || event.Mount != "src" || event.Bytes != 32) {
+		if event.Phase == "read_source" && (event.Kind != "vfs_read" || event.Operation != "read" || !event.OK || event.Mount != "src" || event.Bytes != 32) {
 			t.Fatalf("read timeline event mismatch: %#v", event)
 		}
 	}
