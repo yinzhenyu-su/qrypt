@@ -26,14 +26,15 @@ type AuthTestResult struct {
 }
 
 type AuthTestStep struct {
-	Operation string         `json:"operation"`
-	Required  bool           `json:"required,omitempty"`
-	OK        bool           `json:"ok"`
-	Error     string         `json:"error,omitempty"`
-	Duration  string         `json:"duration"`
-	Input     map[string]any `json:"input,omitempty"`
-	Expected  map[string]any `json:"expected,omitempty"`
-	Actual    map[string]any `json:"actual,omitempty"`
+	Operation     string         `json:"operation"`
+	Required      bool           `json:"required,omitempty"`
+	OK            bool           `json:"ok"`
+	Error         string         `json:"error,omitempty"`
+	ErrorCategory string         `json:"error_category,omitempty"`
+	Duration      string         `json:"duration"`
+	Input         map[string]any `json:"input,omitempty"`
+	Expected      map[string]any `json:"expected,omitempty"`
+	Actual        map[string]any `json:"actual,omitempty"`
 }
 
 func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthTestResult {
@@ -152,6 +153,7 @@ func (s *AuthTestStep) finish(start time.Time, err error) {
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
+		s.ErrorCategory = drive.ErrorCategory(err)
 	} else {
 		s.OK = true
 	}
