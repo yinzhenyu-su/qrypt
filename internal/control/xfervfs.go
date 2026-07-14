@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -32,7 +33,7 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	testSuffix := make([]byte, 6)
 	if _, err := rand.Read(testSuffix); err != nil {
 		result.Steps = append(result.Steps, TransferStep{
-			Phase: "generate_name", OK: false, Error: err.Error(), Duration: "0s",
+			Phase: "generate_name", OK: false, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Duration: "0s",
 		})
 		result.Pass = false
 		result.Finished = time.Now()
@@ -355,7 +356,10 @@ func appendVFSReadTimeline(result *XferTestResult, fs vfs.FileSystem, mountName,
 	}
 	if step.Error != "" {
 		event.Error = step.Error
-		event.ErrorCategory = "io"
+		event.ErrorCategory = step.ErrorCategory
+		if event.ErrorCategory == "" {
+			event.ErrorCategory = drive.ErrorCategoryMessage(step.Error)
+		}
 	}
 	if bytes > 0 {
 		if duration, err := time.ParseDuration(step.Duration); err == nil && duration > 0 {
