@@ -107,23 +107,24 @@ func watchMountSummaries(state *vfs.DebugSnapshot, staging *control.StagingRespo
 	out := make([]debugAIWatchMount, 0, len(state.Mounts))
 	for _, mount := range state.Mounts {
 		activeUploads := 0
-		for _, upload := range mount.Uploads {
+		for _, upload := range mount.ActiveUploads() {
 			if upload.State == string(drive.UploadPhaseUploading) {
 				activeUploads++
 			}
 		}
+		pending := mount.PendingFiles()
 		item := debugAIWatchMount{
-			Name:           mount.Name,
-			Driver:         mount.DriverName,
-			Encrypted:      mount.Encrypted,
-			PendingUploads: len(mount.Pending),
+			Name:           mount.Identity.Name,
+			Driver:         mount.Identity.DriverName,
+			Encrypted:      mount.Identity.Encrypted,
+			PendingUploads: len(pending),
 			ActiveUploads:  activeUploads,
 		}
-		if staging, ok := stagingByMount[mount.Name]; ok {
+		if staging, ok := stagingByMount[mount.Identity.Name]; ok {
 			item.StagingFiles = staging.StagingCount
 			item.StagingOrphans = staging.OrphanCount
 		}
-		if cache, ok := cacheByMount[mount.Name]; ok {
+		if cache, ok := cacheByMount[mount.Identity.Name]; ok {
 			item.ReadCacheFiles = cache.FileCount
 			item.ReadCacheBytes = cache.Bytes
 			item.ReadCacheHits = cache.Hits
@@ -249,7 +250,7 @@ func addWatchTransitionDiagnostics(out *[]debugAIDiagnostic, report debugAIWatch
 	}
 	seenUploadStates := map[uploadKey]bool{}
 	for _, sample := range report.Samples {
-		for _, upload := range append(append([]vfs.DebugUpload{}, sample.Uploads...), sample.PathUploads...) {
+		for _, upload := range append(append([]vfs.UploadSnapshot{}, sample.Uploads...), sample.PathUploads...) {
 			if upload.Path == "" || upload.State == "" {
 				continue
 			}

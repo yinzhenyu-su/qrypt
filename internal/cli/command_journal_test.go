@@ -121,7 +121,7 @@ func activeUploadCount(fs vfs.FileSystem) int {
 	}
 	count := 0
 	for _, mount := range snapshotter.DebugSnapshot().Mounts {
-		count += len(mount.Uploads)
+		count += len(mount.ActiveUploads())
 	}
 	return count
 }

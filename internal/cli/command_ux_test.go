@@ -52,7 +52,7 @@ func (debugReportTestSource) DebugSnapshot() vfs.DebugSnapshot {
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Unix(1, 0),
 		Kind:          "vfs",
-		Mounts:        []vfs.DebugMountSnapshot{{Name: "default"}},
+		Mounts:        []vfs.MountSnapshot{{Identity: vfs.MountSnapshotIdentity{Name: "default"}}},
 	}
 }
 
@@ -87,14 +87,16 @@ func TestDebugCollectDiagnosticsReportsRootIDMismatch(t *testing.T) {
 		Health: &control.HealthResponse{OK: true},
 		State: &vfs.DebugSnapshot{
 			Kind: "vfs",
-			Mounts: []vfs.DebugMountSnapshot{{
-				Name:       "cloud",
-				DriverName: "189",
-				RootID:     "0",
-				Driver: &drive.DebugSnapshot{
-					Driver: "189",
-					Stats: map[string]any{
-						drive.DebugStatRootID: "-11",
+			Mounts: []vfs.MountSnapshot{{
+				Identity: vfs.MountSnapshotIdentity{
+					Name:       "cloud",
+					DriverName: "189",
+					RootID:     "0",
+					Driver: &drive.DebugSnapshot{
+						Driver: "189",
+						Stats: map[string]any{
+							drive.DebugStatRootID: "-11",
+						},
 					},
 				},
 			}},

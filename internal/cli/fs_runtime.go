@@ -110,8 +110,8 @@ func fileSystemActivity(fs vfs.FileSystem) (uploads, deleteTimers int) {
 		return 0, 0
 	}
 	for _, mount := range snapshotter.DebugSnapshot().Mounts {
-		uploads += len(mount.Uploads)
-		deleteTimers += len(mount.DeleteTimers)
+		uploads += len(mount.ActiveUploads())
+		deleteTimers += len(mount.ActiveDeleteTimers())
 	}
 	return uploads, deleteTimers
 }
