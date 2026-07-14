@@ -25,6 +25,7 @@ const testReadChunkSize = 512 * 1024
 const testUploadDelay = 10 * time.Millisecond
 
 type countingReadDriver struct {
+	drive.UnsupportedOperations
 	data    []byte
 	id      string
 	mu      sync.Mutex
@@ -35,11 +36,13 @@ type countingReadDriver struct {
 }
 
 type countingListDriver struct {
+	drive.UnsupportedOperations
 	mu    sync.Mutex
 	lists map[string]int
 }
 
 type treeListDriver struct {
+	drive.UnsupportedOperations
 	mu      sync.Mutex
 	lists   map[string]int
 	entries map[string][]drive.Entry
@@ -48,6 +51,7 @@ type treeListDriver struct {
 }
 
 type countingUploadDriver struct {
+	drive.UnsupportedOperations
 	mu          sync.Mutex
 	uploads     int
 	last        []byte
@@ -58,6 +62,7 @@ type countingUploadDriver struct {
 }
 
 type blockingUploadDriver struct {
+	drive.UnsupportedOperations
 	mu      sync.Mutex
 	uploads int
 	entries map[string]drive.Entry
@@ -66,6 +71,7 @@ type blockingUploadDriver struct {
 }
 
 type countingRemoveDriver struct {
+	drive.UnsupportedOperations
 	mu      sync.Mutex
 	entries map[string]drive.Entry
 	removed []string
@@ -73,6 +79,7 @@ type countingRemoveDriver struct {
 }
 
 type staleMkdirListDriver struct {
+	drive.UnsupportedOperations
 	mu           sync.Mutex
 	listCalls    map[string]int
 	failFirstPut bool
@@ -83,17 +90,20 @@ type staleMkdirListDriver struct {
 }
 
 type staleMoveListDriver struct {
+	drive.UnsupportedOperations
 	renamed   []string
 	moved     []string
 	converged bool
 }
 
 type existingMkdirDriver struct {
+	drive.UnsupportedOperations
 	mkdirs int
 	lists  int
 }
 
 type fileUploadDriver struct {
+	drive.UnsupportedOperations
 	mu             sync.Mutex
 	entries        map[string]drive.Entry
 	putCalls       int
@@ -109,10 +119,163 @@ type fileUploadDriver struct {
 }
 
 type sourceOnlyUploadDriver struct {
+	drive.UnsupportedOperations
 	mu       sync.Mutex
 	entries  map[string]drive.Entry
 	calls    int
 	lastData []byte
+}
+
+type metricHealthDriver struct {
+	*countingReadDriver
+	metrics []drive.MetricEvent
+}
+
+func testDriverSnapshot(name string) drive.DebugSnapshot {
+	return drive.DebugSnapshot{Driver: name, Health: drive.HealthLevelOK, GeneratedAt: time.Now()}
+}
+
+func (d *countingReadDriver) Capabilities() []drive.Capability { return nil }
+func (d *countingReadDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *countingReadDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("counting-read"), nil
+}
+func (d *countingReadDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *countingListDriver) Capabilities() []drive.Capability { return nil }
+func (d *countingListDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *countingListDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("counting-list"), nil
+}
+func (d *countingListDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *treeListDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityWriter}
+}
+func (d *treeListDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *treeListDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("tree-list"), nil
+}
+func (d *treeListDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *countingUploadDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
+}
+func (d *countingUploadDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *countingUploadDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("counting-upload"), nil
+}
+func (d *countingUploadDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *blockingUploadDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
+}
+func (d *blockingUploadDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *blockingUploadDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("blocking-upload"), nil
+}
+func (d *blockingUploadDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *countingRemoveDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityWriter}
+}
+func (d *countingRemoveDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *countingRemoveDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("counting-remove"), nil
+}
+func (d *countingRemoveDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *staleMkdirListDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
+}
+func (d *staleMkdirListDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *staleMkdirListDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("stale-mkdir-list"), nil
+}
+func (d *staleMkdirListDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *staleMoveListDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityWriter}
+}
+func (d *staleMoveListDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *staleMoveListDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("stale-move-list"), nil
+}
+func (d *staleMoveListDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *existingMkdirDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityWriter}
+}
+func (d *existingMkdirDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *existingMkdirDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("existing-mkdir"), nil
+}
+func (d *existingMkdirDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *fileUploadDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader}
+}
+func (d *fileUploadDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *fileUploadDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("file-upload"), nil
+}
+func (d *fileUploadDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *sourceOnlyUploadDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader}
+}
+func (d *sourceOnlyUploadDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *sourceOnlyUploadDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("source-only-upload"), nil
+}
+func (d *sourceOnlyUploadDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func (d *metricHealthDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return d.metrics, nil
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
@@ -2608,6 +2771,30 @@ func TestVFSMountHealthTracksUserOperations(t *testing.T) {
 	}
 	if got := health.Ops[drive.HealthOpRead]; got.Errors != 1 || got.LastError == "" || got.LastErrorAt.IsZero() {
 		t.Fatalf("read health = %+v, want one recorded error", got)
+	}
+}
+
+func TestVFSMountHealthIncludesDriverMetrics(t *testing.T) {
+	driver := &metricHealthDriver{
+		countingReadDriver: newCountingReadDriver([]byte("data")),
+		metrics: []drive.MetricEvent{{
+			At:        time.Now(),
+			Operation: "driver_api",
+			OK:        false,
+			Error:     "driver api failed",
+		}},
+	}
+	fs, err := vfs.New(driver, vfs.Options{CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	health := singleMountHealth(t, fs)
+	if health.OK || health.Level != drive.HealthLevelDegraded {
+		t.Fatalf("health = %+v, want degraded from driver metric", health)
+	}
+	if got := health.Ops["driver_api"]; got.Errors != 1 || got.LastError != "driver api failed" {
+		t.Fatalf("driver_api health = %+v, want one driver metric error", got)
 	}
 }
 
