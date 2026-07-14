@@ -37,6 +37,7 @@ import (
 // ParentID is the directory prefix. List(parentID) returns the immediate
 // children by querying the prefix with delimiter "/".
 type Driver struct {
+	drive.UnsupportedOperations
 	bucket      string
 	endpoint    string
 	region      string
@@ -296,7 +297,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	return rc, nil
 }
 
-// ─── drive.Writer interface ─────────────────────────────────────────────────
+// ─── Driver write operations ────────────────────────────────────────────────
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	dirKey := d.toS3Key(d.joinPath(parentID, name)) + "/"
@@ -348,7 +349,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-// ─── drive.SourceUploader interface ─────────────────────────────────────────
+// ─── Driver source upload operation ─────────────────────────────────────────
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
 	parentID, name, source := req.ParentID, req.Name, req.Source
@@ -382,7 +383,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}, nil
 }
 
-// ─── drive.Debugger interface ───────────────────────────────────────────────
+// ─── drive.Driver observability ─────────────────────────────────────────────
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
 	return drive.DebugSnapshot{
@@ -406,15 +407,35 @@ func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.Debug
 	return d.trace.Events(since), nil
 }
 
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+
+func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" || p == "/" {
+		return "0", nil
+	}
+	return strings.Trim(strings.TrimPrefix(p, "/"), "/"), nil
+}
+
+func (d *Driver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	trace, err := d.DebugTrace(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	return drive.MetricsFromTrace("s3", trace), nil
+}
+
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
 }
 
 func (d *Driver) Capabilities() []drive.Capability {
 	return []drive.Capability{
+		drive.CapabilityPathResolver,
 		drive.CapabilityWriter,
 		drive.CapabilitySourceUploader,
-		drive.CapabilityDebugger,
 		drive.CapabilityRemoteNameResolver,
 	}
 }
@@ -587,11 +608,5 @@ func isS3NotFound(err error) bool {
 
 // Compile-time interface checks.
 var (
-	_ drive.Driver             = (*Driver)(nil)
-	_ drive.Writer             = (*Driver)(nil)
-	_ drive.SourceUploader     = (*Driver)(nil)
-	_ drive.Debugger           = (*Driver)(nil)
-	_ drive.DebugTraceProvider = (*Driver)(nil)
-	_ drive.RemoteNameResolver = (*Driver)(nil)
-	_ drive.CapabilityReporter = (*Driver)(nil)
+	_ drive.Driver = (*Driver)(nil)
 )

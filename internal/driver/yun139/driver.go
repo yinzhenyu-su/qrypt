@@ -30,6 +30,7 @@ const (
 )
 
 type Driver struct {
+	drive.UnsupportedOperations
 	cl                 *client
 	rootID             string
 	rootPath           string
@@ -674,10 +675,5 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string,
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.PathResolver = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)

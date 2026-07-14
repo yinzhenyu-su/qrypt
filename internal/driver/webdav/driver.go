@@ -87,6 +87,7 @@ var webdavRetryWait = retry.Wait
 // a file "/photos/vacation.jpg".  Internally these are mapped to full
 // WebDAV URLs by prepending baseURL.
 type Driver struct {
+	drive.UnsupportedOperations
 	baseURL  string // WebDAV root, always ends with "/"
 	rootPath string
 	username string
@@ -282,7 +283,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	return d.limiter.LimitDownload(ctx, resp.Body), nil
 }
 
-// ─── drive.Writer interface ──────────────────────────────────────────────
+// ─── Driver write operations ─────────────────────────────────────────────
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	destURL := d.childURL(parentID, name)
@@ -323,7 +324,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	return d.move(ctx, srcURL, destURL)
 }
 
-// ─── drive.SpaceQuerier interface ───────────────────────────────────────────
+// ─── drive.Driver space query ───────────────────────────────────────────────
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	var lastErr error
@@ -417,6 +418,10 @@ func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.Debug
 	return d.trace.Events(since), nil
 }
 
+func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
+	return d.relativePath(p), nil
+}
+
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	urlStr := d.resolveURL(entry.ID)
 	req, err := d.newRequest(ctx, http.MethodDelete, urlStr, nil)
@@ -436,7 +441,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-// ─── drive.SourceUploader interface ──────────────────────────────────────
+// ─── Driver source upload operation ──────────────────────────────────────
 
 func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (drive.Entry, error) {
 	parentID, name, source := uploadReq.ParentID, uploadReq.Name, uploadReq.Source
@@ -732,8 +737,3 @@ func parseWebDAVTime(s string) time.Time {
 // ─── interface guards ────────────────────────────────────────────────────
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.DebugTraceProvider = (*Driver)(nil)
-var _ drive.SpaceQuerier = (*Driver)(nil)

@@ -12,6 +12,17 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
+func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
+	d := &Driver{rootID: "root-cid"}
+	got, err := d.ResolvePath(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "root-cid" {
+		t.Fatalf("ResolvePath root = %q, want configured root id", got)
+	}
+}
+
 func TestFactoryAllowsCookieFromState(t *testing.T) {
 	drv, err := drive.New("115", drive.Params{})
 	if err != nil {

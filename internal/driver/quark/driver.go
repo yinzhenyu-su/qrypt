@@ -22,6 +22,7 @@ import (
 )
 
 type Driver struct {
+	drive.UnsupportedOperations
 	cl                 *client
 	urlCache           sync.Map
 	cookie             string
@@ -1180,9 +1181,4 @@ func errorString(err error) string {
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.PathResolver = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.DebugTraceProvider = (*Driver)(nil)

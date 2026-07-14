@@ -31,6 +31,7 @@ type batchTaskInfo struct {
 }
 
 type Driver struct {
+	drive.UnsupportedOperations
 	cl            *client
 	rootID        int64
 	rootPath      string

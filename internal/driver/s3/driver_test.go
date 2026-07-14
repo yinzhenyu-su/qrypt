@@ -455,6 +455,27 @@ func TestRelPath(t *testing.T) {
 	}
 }
 
+func TestResolvePathUsesVirtualRootUnderRootPath(t *testing.T) {
+	d := New(Options{RootPath: "/A/B/C"})
+	root, err := d.ResolvePath(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != "0" {
+		t.Fatalf("ResolvePath root = %q, want virtual root id 0", root)
+	}
+	nested, err := d.ResolvePath(context.Background(), "/x/y.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nested != "x/y.txt" {
+		t.Fatalf("ResolvePath nested = %q, want root-relative id", nested)
+	}
+	if key := d.toS3Key(nested); key != "A/B/C/x/y.txt" {
+		t.Fatalf("toS3Key nested = %q, want root_path-prefixed key", key)
+	}
+}
+
 func TestJoinPath(t *testing.T) {
 	tests := []struct {
 		name     string
