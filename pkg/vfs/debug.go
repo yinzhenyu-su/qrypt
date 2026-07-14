@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -521,7 +520,7 @@ func (v *VFS) finishDebugUpload(path, state, lastError string) {
 		upload.upload.State = state
 		upload.upload.LastError = lastError
 		if lastError != "" {
-			upload.upload.ErrorCategory = "io"
+			upload.upload.ErrorCategory = drive.ErrorCategoryMessage(lastError)
 		}
 		upload.upload.UpdatedAt = now
 		upload.upload.CompletedAt = upload.upload.UpdatedAt
@@ -599,7 +598,7 @@ func (v *VFS) recordDebugUploadTrace(path, phase string, start time.Time, bytes 
 	if message, ok := extra["error"].(string); ok && message != "" {
 		event.State = "failed"
 		event.Error = message
-		event.ErrorCategory = "io"
+		event.ErrorCategory = drive.ErrorCategoryMessage(message)
 	}
 	if bytes > 0 && duration > 0 {
 		event.Throughput = int64(float64(bytes) / duration.Seconds())
@@ -633,7 +632,7 @@ func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, by
 	if err != nil {
 		event.State = "failed"
 		event.Error = err.Error()
-		event.ErrorCategory = debugErrorCategory(err)
+		event.ErrorCategory = drive.ErrorCategory(err)
 	}
 	v.readMu.Lock()
 	v.readHistory = append(v.readHistory, event)
@@ -647,21 +646,6 @@ func (v *VFS) debugReadHistory() []DebugOperationEvent {
 	v.readMu.Lock()
 	defer v.readMu.Unlock()
 	return append([]DebugOperationEvent(nil), v.readHistory...)
-}
-
-func debugErrorCategory(err error) string {
-	switch {
-	case err == nil:
-		return ""
-	case errors.Is(err, context.Canceled):
-		return "cancelled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case IsNotFound(err):
-		return "not_found"
-	default:
-		return "io"
-	}
 }
 
 func (v *VFS) setDebugUploadExtra(path string, key string, value any) {
