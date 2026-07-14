@@ -21,104 +21,27 @@ type Entry struct {
 	Extra    any       `json:"-"`
 }
 
-// Driver is the read-only portion every cloud drive adapter must implement.
-// Alist-style providers should be adapted to this interface rather than being
-// referenced directly from the VFS layer.
+// Driver is the complete operation and observability contract every cloud
+// drive adapter must implement. Unsupported operations should return
+// ErrUnsupported and stay absent from Capabilities.
 type Driver interface {
 	Init(ctx context.Context) error
 	Drop(ctx context.Context) error
 	List(ctx context.Context, parentID string) ([]Entry, error)
 	Read(ctx context.Context, entry Entry, offset, size int64) (io.ReadCloser, error)
-}
-
-// Writer adds metadata mutation support.
-type Writer interface {
 	Mkdir(ctx context.Context, parentID, name string) (Entry, error)
 	Move(ctx context.Context, entry Entry, dstParentID string) error
 	Rename(ctx context.Context, entry Entry, newName string) error
 	Remove(ctx context.Context, entry Entry) error
-}
-
-// ReadOnlyFile is a stable, seekable, read-only file handle.
-type ReadOnlyFile interface {
-	io.Reader
-	io.ReaderAt
-	io.Seeker
-	io.Closer
-}
-
-// ReadOnlyFileSource opens stable, read-only handles over one upload source.
-// Implementations may return a fresh handle on each Open call. Callers must
-// close every opened handle.
-type ReadOnlyFileSource interface {
-	Size() int64
-	Open(ctx context.Context) (ReadOnlyFile, error)
-}
-
-type HashAlgorithm string
-
-const (
-	HashMD5    HashAlgorithm = "md5"
-	HashSHA1   HashAlgorithm = "sha1"
-	HashSHA256 HashAlgorithm = "sha256"
-)
-
-type SourceHashes map[HashAlgorithm][]byte
-
-// HashProvider is an optional source metadata interface for callers that
-// already computed content hashes while preparing the source.
-type HashProvider interface {
-	Hash(algorithm HashAlgorithm) ([]byte, bool)
-}
-
-// UploadHashRequirements lets a driver request source hashes that should be
-// available before PutSource starts streaming upload data.
-type UploadHashRequirements interface {
-	RequiredUploadHashes() []HashAlgorithm
-}
-
-type UploadPhase string
-
-const (
-	UploadPhasePreparing  UploadPhase = "preparing"
-	UploadPhaseHashing    UploadPhase = "hashing"
-	UploadPhaseUploading  UploadPhase = "uploading"
-	UploadPhaseInstant    UploadPhase = "instant"
-	UploadPhaseCommitting UploadPhase = "committing"
-	UploadPhaseCompleted  UploadPhase = "completed"
-)
-
-// UploadProgress receives progress for the logical upload represented by an
-// UploadRequest. Implementations must be safe to call repeatedly with small
-// positive byte deltas.
-type UploadProgress interface {
-	Phase(UploadPhase)
-	Uploaded(n int64)
-}
-
-type UploadRequest struct {
-	ParentID string
-	Name     string
-	Source   ReadOnlyFileSource
-	Progress UploadProgress
-}
-
-func SourceHash(source ReadOnlyFileSource, algorithm HashAlgorithm) ([]byte, bool) {
-	provider, ok := source.(HashProvider)
-	if !ok {
-		return nil, false
-	}
-	sum, ok := provider.Hash(algorithm)
-	if !ok {
-		return nil, false
-	}
-	return append([]byte(nil), sum...), true
-}
-
-// SourceUploader is an optional upload fast path for drivers that can benefit
-// from a stable source that supports repeated reads, seeking, and ReadAt.
-type SourceUploader interface {
 	PutSource(ctx context.Context, req UploadRequest) (Entry, error)
+	RequiredUploadHashes() []HashAlgorithm
+	ResolvePath(ctx context.Context, path string) (string, error)
+	ResolveRemoteName(ctx context.Context, plainName string) (RemoteNameInfo, error)
+	ForeignEntries(ctx context.Context, parentID string) ([]ForeignEntry, error)
+	Space(ctx context.Context) (Space, error)
+	Capabilities() []Capability
+	DebugSnapshot(ctx context.Context) (DebugSnapshot, error)
+	Metrics(ctx context.Context, since time.Time) ([]MetricEvent, error)
 }
 
 // Space describes backend capacity in bytes.
@@ -127,7 +50,49 @@ type Space struct {
 	Free  int64
 }
 
+var ErrUnsupported = errors.New("drive: operation unsupported")
 var ErrSpaceUnsupported = errors.New("drive: space query unsupported")
+
+// UnsupportedOperations provides default implementations for Driver methods
+// that a read-only or partial driver intentionally does not advertise in
+// Capabilities.
+type UnsupportedOperations struct{}
+
+func (UnsupportedOperations) Mkdir(context.Context, string, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
+}
+
+func (UnsupportedOperations) Move(context.Context, Entry, string) error {
+	return ErrUnsupported
+}
+
+func (UnsupportedOperations) Rename(context.Context, Entry, string) error {
+	return ErrUnsupported
+}
+
+func (UnsupportedOperations) Remove(context.Context, Entry) error {
+	return ErrUnsupported
+}
+
+func (UnsupportedOperations) PutSource(context.Context, UploadRequest) (Entry, error) {
+	return Entry{}, ErrUnsupported
+}
+
+func (UnsupportedOperations) RequiredUploadHashes() []HashAlgorithm {
+	return nil
+}
+
+func (UnsupportedOperations) ResolvePath(context.Context, string) (string, error) {
+	return "", ErrUnsupported
+}
+
+func (UnsupportedOperations) ResolveRemoteName(context.Context, string) (RemoteNameInfo, error) {
+	return RemoteNameInfo{}, ErrUnsupported
+}
+
+func (UnsupportedOperations) ForeignEntries(context.Context, string) ([]ForeignEntry, error) {
+	return nil, ErrUnsupported
+}
 
 type nonRetryableError struct {
 	err error
@@ -154,16 +119,6 @@ func NonRetryable(err error) error {
 func IsNonRetryable(err error) bool {
 	var target nonRetryableError
 	return errors.As(err, &target)
-}
-
-// SpaceQuerier is implemented by drivers that can report backend capacity.
-type SpaceQuerier interface {
-	Space(ctx context.Context) (Space, error)
-}
-
-// PathResolver lets drivers map a virtual path to their native object ID.
-type PathResolver interface {
-	ResolvePath(ctx context.Context, path string) (string, error)
 }
 
 // Params are driver-specific configuration values.
