@@ -93,3 +93,54 @@ func TestHealthTrackerMaxEvents(t *testing.T) {
 		t.Fatalf("read status = %+v, want last 5 errors", got)
 	}
 }
+
+func TestHealthStatusFromMetrics(t *testing.T) {
+	status := HealthStatusFromMetrics([]MetricEvent{
+		{At: time.Now(), Operation: "api_list", OK: true},
+		{At: time.Now(), Operation: "api_upload", OK: false, Error: "remote failed"},
+	}, time.Minute, 100)
+
+	if status.OK || status.Level != HealthLevelDegraded {
+		t.Fatalf("status = %+v, want degraded", status)
+	}
+	if status.Success != 1 || status.Errors != 1 {
+		t.Fatalf("counts = success %d errors %d, want 1/1", status.Success, status.Errors)
+	}
+	if got := status.Ops["api_upload"]; got.Errors != 1 || got.LastError != "remote failed" {
+		t.Fatalf("api_upload status = %+v, want one metric error", got)
+	}
+}
+
+func TestHealthStatusFromMetricsNormalizesHighCardinalityOperation(t *testing.T) {
+	status := HealthStatusFromMetrics([]MetricEvent{
+		{At: time.Now(), Operation: "/api/file/list?parent=abc", OK: false, Error: "remote failed"},
+	}, time.Minute, 100)
+
+	if got := status.Ops["api_request"]; got.Errors != 1 || got.LastError != "remote failed" {
+		t.Fatalf("api_request status = %+v, want normalized metric error", got)
+	}
+	if _, ok := status.Ops["/api/file/list?parent=abc"]; ok {
+		t.Fatalf("high-cardinality operation leaked into health ops: %+v", status.Ops)
+	}
+}
+
+func TestMergeHealthStatus(t *testing.T) {
+	local := HealthTrackerStatus{
+		OK:        true,
+		Level:     HealthLevelOK,
+		CheckedAt: time.Now(),
+		Ops:       map[string]HealthOpStatus{HealthOpList: {Success: 1}},
+		Success:   1,
+	}
+	driver := HealthStatusFromMetrics([]MetricEvent{
+		{At: time.Now(), Operation: "api_read", OK: false, Error: "read failed"},
+	}, time.Minute, 100)
+
+	merged := MergeHealthStatus(local, driver)
+	if merged.OK || merged.Level != HealthLevelDegraded {
+		t.Fatalf("merged = %+v, want degraded", merged)
+	}
+	if merged.Success != 1 || merged.Errors != 1 {
+		t.Fatalf("merged counts = success %d errors %d, want 1/1", merged.Success, merged.Errors)
+	}
+}
