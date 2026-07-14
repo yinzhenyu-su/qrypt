@@ -14,6 +14,7 @@ import (
 )
 
 type Driver struct {
+	drive.UnsupportedOperations
 	root string
 }
 
@@ -179,10 +180,3 @@ func (d *Driver) resolve(id string) string {
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.SpaceQuerier = (*Driver)(nil)
-var _ drive.PathResolver = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.DebugTraceProvider = (*Driver)(nil)
-var _ drive.RemoteNameResolver = (*Driver)(nil)

@@ -222,5 +222,3 @@ func TestDriverSpace(t *testing.T) {
 		t.Fatalf("free space %d exceeds total space %d", space.Free, space.Total)
 	}
 }
-
-var _ drive.SpaceQuerier = (*Driver)(nil)

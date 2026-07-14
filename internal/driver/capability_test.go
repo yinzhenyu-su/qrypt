@@ -25,7 +25,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "localfs",
 			drv:  localfs.New(t.TempDir()),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilitySourceUploader,
@@ -37,7 +36,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "aliyundrive",
 			drv:  aliyundrive.New(aliyundrive.Options{RefreshToken: "token", DriveID: "drive"}),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
@@ -48,7 +46,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "baidu_netdisk",
 			drv:  baidunetdisk.New(baidunetdisk.Options{RefreshToken: "token"}),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
@@ -59,7 +56,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "quark",
 			drv:  quark.New("cookie", quark.Options{}),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
@@ -70,7 +66,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "yun139",
 			drv:  yun139.New("authorization", "", ""),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
@@ -81,7 +76,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "webdav",
 			drv:  webdav.New(webdav.Options{URL: "http://example.invalid/"}),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
+				drive.CapabilityPathResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -91,7 +86,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "115",
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
 				drive.CapabilityPathResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
@@ -102,7 +96,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "s3",
 			drv:  s3.New(s3.Options{Bucket: "b", Endpoint: "https://example.com"}),
 			want: []drive.Capability{
-				drive.CapabilityDebugger,
+				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilityWriter,
@@ -115,6 +109,9 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			got := drive.Capabilities(tt.drv)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("capabilities = %+v, want %+v", got, tt.want)
+			}
+			if violations := drive.CheckUnsupportedCapabilities(t.Context(), tt.drv); len(violations) != 0 {
+				t.Fatalf("negative capability contract violations = %+v", violations)
 			}
 		})
 	}

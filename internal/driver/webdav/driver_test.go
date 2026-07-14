@@ -653,6 +653,20 @@ func TestWebDAV_RootPath(t *testing.T) {
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
+	rootID, err := drv.ResolvePath(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootID != "/" {
+		t.Fatalf("ResolvePath root = %q, want virtual root /", rootID)
+	}
+	nestedID, err := drv.ResolvePath(ctx, "/new?file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nestedID != "/new?file.txt" {
+		t.Fatalf("ResolvePath nested = %q, want root-relative virtual path", nestedID)
+	}
 
 	entries, err := drv.List(ctx, "/")
 	if err != nil {

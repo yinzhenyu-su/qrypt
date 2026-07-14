@@ -27,6 +27,7 @@ const (
 )
 
 type Driver struct {
+	drive.UnsupportedOperations
 	cl                 *client
 	urlCache           sync.Map
 	rootID             string
@@ -797,11 +798,5 @@ func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.SpaceQuerier = (*Driver)(nil)
-var _ drive.PathResolver = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)

@@ -39,6 +39,7 @@ const (
 )
 
 type Driver struct {
+	drive.UnsupportedOperations
 	httpClient         *http.Client
 	refreshToken       string
 	accessToken        string
@@ -1056,11 +1057,5 @@ func baseName(p string) string {
 }
 
 var _ drive.Driver = (*Driver)(nil)
-var _ drive.Writer = (*Driver)(nil)
-var _ drive.SourceUploader = (*Driver)(nil)
-var _ drive.SpaceQuerier = (*Driver)(nil)
-var _ drive.PathResolver = (*Driver)(nil)
-var _ drive.Debugger = (*Driver)(nil)
-var _ drive.DebugTraceProvider = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
