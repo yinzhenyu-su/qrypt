@@ -299,7 +299,7 @@ func (d *Driver) readWithDownloadURL(ctx context.Context, entry drive.Entry, off
 	}
 	start := time.Now()
 	httpResp, err := d.cl.httpClient.Do(req)
-	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -598,7 +598,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 		req.ContentLength = length
 		start := time.Now()
 		resp, err := d.cl.httpClient.Do(req)
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "upload_part",
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -730,8 +730,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.cl.debugTrace(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.cl.metricEvents(since), nil
 }
 
 func responseStatus(resp *http.Response) int {

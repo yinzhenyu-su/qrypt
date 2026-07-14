@@ -228,7 +228,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 
 	start := time.Now()
 	resp, err := d.cl.httpClient.Do(req)
-	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -395,8 +395,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.cl.debugTrace(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.cl.metricEvents(since), nil
 }
 
 func (d *Driver) putSource(ctx context.Context, parentID, name string, source drive.ReadOnlyFileSource, progress drive.UploadProgress) (drive.Entry, error) {
@@ -607,7 +607,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			req.Header.Set("Referer", defaultBaseURL+"/")
 			httpStart := time.Now()
 			resp, err := d.cl.httpClient.Do(req)
-			d.cl.recordTrace(uploadCtx, drive.DebugTraceEvent{
+			d.cl.recordMetric(uploadCtx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
 				URL:       traceutil.URL(req.URL),

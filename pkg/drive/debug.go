@@ -31,67 +31,91 @@ func DebugOperationFromContext(ctx context.Context) (DebugOperation, bool) {
 	return op, ok
 }
 
-type DebugTraceEvent struct {
-	At              time.Time      `json:"at"`
-	OpID            string         `json:"op_id,omitempty"`
-	Step            string         `json:"step,omitempty"`
-	Name            string         `json:"name,omitempty"`
-	Layer           string         `json:"layer,omitempty"`
-	Operation       string         `json:"operation,omitempty"`
-	Method          string         `json:"method,omitempty"`
-	URL             string         `json:"url,omitempty"`
-	Status          int            `json:"status,omitempty"`
-	Duration        string         `json:"duration,omitempty"`
-	Request         map[string]any `json:"request,omitempty"`
-	Response        map[string]any `json:"response,omitempty"`
-	Error           string         `json:"error,omitempty"`
-	Attempt         int            `json:"attempt,omitempty"`
-	Retry           bool           `json:"retry,omitempty"`
-	SensitiveMasked bool           `json:"sensitive_masked,omitempty"`
-}
-
 type MetricEvent struct {
 	At              time.Time      `json:"at"`
 	OpID            string         `json:"op_id,omitempty"`
+	ParentOpID      string         `json:"parent_op_id,omitempty"`
 	Step            string         `json:"step,omitempty"`
 	Name            string         `json:"name,omitempty"`
+	Kind            string         `json:"kind,omitempty"`
 	Layer           string         `json:"layer,omitempty"`
+	Mount           string         `json:"mount,omitempty"`
 	Driver          string         `json:"driver,omitempty"`
 	Operation       string         `json:"operation,omitempty"`
 	Phase           string         `json:"phase,omitempty"`
+	State           string         `json:"state,omitempty"`
 	OK              bool           `json:"ok"`
+	Method          string         `json:"method,omitempty"`
+	URL             string         `json:"url,omitempty"`
+	Status          int            `json:"status,omitempty"`
+	Path            string         `json:"path,omitempty"`
+	RemoteID        string         `json:"remote_id,omitempty"`
+	Offset          int64          `json:"offset,omitempty"`
+	Requested       int64          `json:"requested_bytes,omitempty"`
 	Duration        string         `json:"duration,omitempty"`
 	DurationMS      int64          `json:"duration_ms,omitempty"`
 	Bytes           int64          `json:"bytes,omitempty"`
 	Throughput      int64          `json:"throughput,omitempty"`
+	Attempt         int            `json:"attempt,omitempty"`
 	Attempts        int            `json:"attempts,omitempty"`
+	RetryCount      int            `json:"retry_count,omitempty"`
+	Retry           bool           `json:"retry,omitempty"`
+	CacheHits       int64          `json:"cache_hits,omitempty"`
+	CacheMisses     int64          `json:"cache_misses,omitempty"`
+	Chunks          int64          `json:"chunks,omitempty"`
+	StartedAt       time.Time      `json:"started_at,omitempty"`
+	FinishedAt      time.Time      `json:"finished_at,omitempty"`
+	Request         map[string]any `json:"request,omitempty"`
+	Response        map[string]any `json:"response,omitempty"`
 	Error           string         `json:"error,omitempty"`
 	ErrorCategory   string         `json:"error_category,omitempty"`
 	SensitiveMasked bool           `json:"sensitive_masked,omitempty"`
 	Extra           map[string]any `json:"extra,omitempty"`
 }
 
-func MetricsFromTrace(driver string, trace []DebugTraceEvent) []MetricEvent {
-	if len(trace) == 0 {
+func NormalizeMetricEvents(driver string, raw []MetricEvent) []MetricEvent {
+	if len(raw) == 0 {
 		return nil
 	}
-	events := make([]MetricEvent, 0, len(trace))
-	for _, event := range trace {
+	events := make([]MetricEvent, 0, len(raw))
+	for _, event := range raw {
 		duration, _ := time.ParseDuration(event.Duration)
 		metric := MetricEvent{
 			At:              event.At,
 			OpID:            event.OpID,
+			ParentOpID:      event.ParentOpID,
 			Step:            event.Step,
 			Name:            event.Name,
+			Kind:            firstNonEmpty(event.Kind, "driver"),
 			Layer:           event.Layer,
+			Mount:           event.Mount,
 			Driver:          driver,
 			Operation:       metricOperation(event),
-			Phase:           event.Method,
+			Phase:           firstNonEmpty(event.Method, event.Phase),
+			State:           event.State,
 			OK:              event.Error == "",
+			Method:          event.Method,
+			URL:             event.URL,
+			Status:          event.Status,
+			Path:            event.Path,
+			RemoteID:        event.RemoteID,
+			Offset:          event.Offset,
+			Requested:       event.Requested,
 			Duration:        event.Duration,
 			DurationMS:      durationMillis(duration),
+			Bytes:           event.Bytes,
+			Throughput:      event.Throughput,
+			RetryCount:      event.RetryCount,
 			Error:           event.Error,
 			ErrorCategory:   ErrorCategoryMessage(event.Error),
+			Retry:           event.Retry,
+			CacheHits:       event.CacheHits,
+			CacheMisses:     event.CacheMisses,
+			Chunks:          event.Chunks,
+			StartedAt:       event.StartedAt,
+			FinishedAt:      event.FinishedAt,
+			Request:         event.Request,
+			Response:        event.Response,
 			SensitiveMasked: event.SensitiveMasked,
 			Extra:           traceMetricExtra(event),
 		}
@@ -103,8 +127,8 @@ func MetricsFromTrace(driver string, trace []DebugTraceEvent) []MetricEvent {
 	return events
 }
 
-func metricOperation(event DebugTraceEvent) string {
-	op := firstNonEmpty(event.Operation, event.Step, event.Name)
+func metricOperation(event MetricEvent) string {
+	op := event.Operation
 	if op == "" {
 		if event.Method != "" {
 			return "api_request"
@@ -131,25 +155,13 @@ func isHighCardinalityOperation(op string) bool {
 	return false
 }
 
-func traceMetricExtra(event DebugTraceEvent) map[string]any {
+func traceMetricExtra(event MetricEvent) map[string]any {
 	extra := map[string]any{}
+	for key, value := range event.Extra {
+		extra[key] = value
+	}
 	if event.Operation != "" && isHighCardinalityOperation(event.Operation) {
 		extra["raw_operation"] = event.Operation
-	}
-	if event.URL != "" {
-		extra["url"] = event.URL
-	}
-	if event.Status != 0 {
-		extra["status"] = event.Status
-	}
-	if event.Retry {
-		extra["retry"] = true
-	}
-	if len(event.Request) > 0 {
-		extra["request"] = event.Request
-	}
-	if len(event.Response) > 0 {
-		extra["response"] = event.Response
 	}
 	if len(extra) == 0 {
 		return nil

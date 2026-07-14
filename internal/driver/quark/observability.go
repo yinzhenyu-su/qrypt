@@ -17,9 +17,9 @@ func (d *Driver) Capabilities() []drive.Capability {
 }
 
 func (d *Driver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
-	trace, err := d.DebugTrace(ctx, since)
+	metrics, err := d.metricEvents(ctx, since)
 	if err != nil {
 		return nil, err
 	}
-	return drive.MetricsFromTrace("quark", trace), nil
+	return drive.NormalizeMetricEvents("quark", metrics), nil
 }

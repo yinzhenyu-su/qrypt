@@ -42,7 +42,7 @@ type client struct {
 	deviceID     string
 	signature    string
 	onRefresh    func(accessToken, refreshToken string)
-	trace        *traceutil.Buffer
+	metrics      *traceutil.Buffer
 }
 
 type clientOptions struct {
@@ -69,7 +69,7 @@ func newClient(refreshToken string, opts clientOptions) *client {
 		apiBaseURL:   apiBaseURL,
 		authURL:      authURL,
 		refreshToken: refreshToken,
-		trace:        traceutil.NewBuffer(500),
+		metrics:      traceutil.NewBuffer(500),
 	}
 }
 
@@ -249,7 +249,7 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -262,7 +262,7 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -273,7 +273,7 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 		})
 		return err
 	}
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -286,10 +286,10 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	_ = json.Unmarshal(respBody, &apiErr)
 	if resp.StatusCode >= 400 || apiErr.Code != "" {
 		event.Response = map[string]any{"bytes": len(respBody), "body_snippet": traceutil.Snippet(respBody)}
-		c.recordTrace(ctx, event)
+		c.recordMetric(ctx, event)
 		return &apiStatusError{status: resp.StatusCode, code: apiErr.Code, message: apiErr.Message}
 	}
-	c.recordTrace(ctx, event)
+	c.recordMetric(ctx, event)
 	if result == nil || len(respBody) == 0 {
 		return nil
 	}
@@ -299,12 +299,12 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	return nil
 }
 
-func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
-	c.trace.Record(ctx, event)
+func (c *client) recordMetric(ctx context.Context, event drive.MetricEvent) {
+	c.metrics.Record(ctx, event)
 }
 
-func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
-	return c.trace.Events(since)
+func (c *client) metricEvents(since time.Time) []drive.MetricEvent {
+	return c.metrics.Events(since)
 }
 
 func requestID() string {

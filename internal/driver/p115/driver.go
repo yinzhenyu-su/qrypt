@@ -40,7 +40,7 @@ type Driver struct {
 	limiter          *rate.Limiter
 	bandwidthLimiter *drive.BandwidthLimiter
 	httpClient       *http.Client
-	trace            *traceutil.Buffer
+	metrics          *traceutil.Buffer
 	stateStore       drive.StateStore
 	cookieSource     string
 	cookieUpdated    time.Time
@@ -92,7 +92,7 @@ func New(opts Options) *Driver {
 		rootPath:     opts.RootPath,
 		cookies:      opts.Cookie,
 		limitRate:    opts.LimitRate,
-		trace:        traceutil.NewBuffer(500),
+		metrics:      traceutil.NewBuffer(500),
 		cookieSource: "config",
 	}
 }
@@ -147,8 +147,8 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.trace.Events(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.metrics.Events(since), nil
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -221,7 +221,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		d.trace.Record(ctx, drive.DebugTraceEvent{
+		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -233,7 +233,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		return nil, fmt.Errorf("115: read: %w", err)
 	}
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
-		d.trace.Record(ctx, drive.DebugTraceEvent{
+		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -249,7 +249,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	d.trace.Record(ctx, drive.DebugTraceEvent{
+	d.metrics.Record(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -710,7 +710,7 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string,
 func (d *Driver) recordSDK(ctx context.Context, operation string, request map[string]any, fn func() error) error {
 	start := time.Now()
 	err := fn()
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Layer:     "driver.sdk",
 		Operation: operation,
 		Duration:  time.Since(start).String(),
@@ -719,7 +719,7 @@ func (d *Driver) recordSDK(ctx context.Context, operation string, request map[st
 	if err != nil {
 		event.Error = err.Error()
 	}
-	d.trace.Record(ctx, event)
+	d.metrics.Record(ctx, event)
 	return err
 }
 

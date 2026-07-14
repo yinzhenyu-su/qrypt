@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-func TestMetricsFromTraceNormalizesHighCardinalityOperation(t *testing.T) {
-	metrics := MetricsFromTrace("driver", []DebugTraceEvent{{
+func TestNormalizeMetricEventsNormalizesHighCardinalityOperation(t *testing.T) {
+	metrics := NormalizeMetricEvents("driver", []MetricEvent{{
 		At:        time.Now(),
 		Operation: "/api/file/list?parent=abc",
 		Method:    "POST",
@@ -19,13 +19,16 @@ func TestMetricsFromTraceNormalizesHighCardinalityOperation(t *testing.T) {
 	if metrics[0].Operation != "api_request" {
 		t.Fatalf("operation = %q, want api_request", metrics[0].Operation)
 	}
+	if metrics[0].Kind != "driver" {
+		t.Fatalf("kind = %q, want driver", metrics[0].Kind)
+	}
 	if metrics[0].Extra["raw_operation"] != "/api/file/list?parent=abc" {
 		t.Fatalf("raw_operation = %+v, want original operation", metrics[0].Extra)
 	}
 }
 
-func TestMetricsFromTracePreservesLowCardinalityOperation(t *testing.T) {
-	metrics := MetricsFromTrace("driver", []DebugTraceEvent{{
+func TestNormalizeMetricEventsPreservesLowCardinalityOperation(t *testing.T) {
+	metrics := NormalizeMetricEvents("driver", []MetricEvent{{
 		At:        time.Now(),
 		Operation: "upload_part",
 		Method:    "PUT",
@@ -36,5 +39,39 @@ func TestMetricsFromTracePreservesLowCardinalityOperation(t *testing.T) {
 	}
 	if metrics[0].Operation != "upload_part" {
 		t.Fatalf("operation = %q, want upload_part", metrics[0].Operation)
+	}
+}
+
+func TestNormalizeMetricEventsDoesNotInferOperationFromDebugLabels(t *testing.T) {
+	metrics := NormalizeMetricEvents("driver", []MetricEvent{{
+		At:   time.Now(),
+		Step: "create uniquely named fixture",
+		Name: "crud creates directory",
+		Kind: "driver",
+	}})
+	if len(metrics) != 1 {
+		t.Fatalf("metrics len = %d, want 1", len(metrics))
+	}
+	if metrics[0].Operation != "" {
+		t.Fatalf("operation = %q, want empty", metrics[0].Operation)
+	}
+}
+
+func TestNormalizeMetricEventsDoesNotDuplicateTopLevelFieldsInExtra(t *testing.T) {
+	metrics := NormalizeMetricEvents("driver", []MetricEvent{{
+		At:        time.Now(),
+		Operation: "api_request",
+		Method:    "GET",
+		URL:       "https://example.invalid/api",
+		Status:    200,
+		Retry:     true,
+		Request:   map[string]any{"headers": []string{"Accept"}},
+		Response:  map[string]any{"bytes": 2},
+	}})
+	if len(metrics) != 1 {
+		t.Fatalf("metrics len = %d, want 1", len(metrics))
+	}
+	if metrics[0].Extra != nil {
+		t.Fatalf("extra = %#v, want nil", metrics[0].Extra)
 	}
 }

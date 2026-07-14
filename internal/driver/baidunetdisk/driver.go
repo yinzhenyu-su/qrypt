@@ -64,7 +64,7 @@ type Driver struct {
 	lastErrorMu        sync.Mutex
 	lastError          string
 	instantUploadCount int64
-	trace              *traceutil.Buffer
+	metrics            *traceutil.Buffer
 }
 
 type Options struct {
@@ -190,7 +190,7 @@ func New(opts Options) *Driver {
 		useOnlineAPI: opts.UseOnlineAPI,
 		downloadUA:   downloadUA,
 		tokenSource:  "config",
-		trace:        traceutil.NewBuffer(500),
+		metrics:      traceutil.NewBuffer(500),
 	}
 }
 
@@ -469,8 +469,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.trace.Events(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.metrics.Events(since), nil
 }
 
 func (d *Driver) statRoot(ctx context.Context) (drive.Entry, error) {
@@ -906,7 +906,7 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 }
 
 func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Request, resp *http.Response, start time.Time, request map[string]any, err error) {
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Operation: operation,
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -919,7 +919,7 @@ func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Req
 	if err != nil {
 		event.Error = err.Error()
 	}
-	d.trace.Record(ctx, event)
+	d.metrics.Record(ctx, event)
 }
 
 func (d *Driver) setLastError(err error) {

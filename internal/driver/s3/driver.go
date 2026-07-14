@@ -55,7 +55,7 @@ type Driver struct {
 
 	client  *s3.Client
 	limiter *drive.BandwidthLimiter
-	trace   *traceutil.Buffer
+	metrics *traceutil.Buffer
 }
 
 // Options configures a new S3 driver.
@@ -216,7 +216,7 @@ func New(opts Options) *Driver {
 		secretKey:    opts.SecretAccessKey,
 		sessionToken: opts.SessionToken,
 		signExpire:   opts.SignURLExpire,
-		trace:        traceutil.NewBuffer(500),
+		metrics:      traceutil.NewBuffer(500),
 	}
 }
 
@@ -403,8 +403,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.trace.Events(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.metrics.Events(since), nil
 }
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
@@ -420,11 +420,11 @@ func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 }
 
 func (d *Driver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
-	trace, err := d.DebugTrace(ctx, since)
+	metrics, err := d.metricEvents(ctx, since)
 	if err != nil {
 		return nil, err
 	}
-	return drive.MetricsFromTrace("s3", trace), nil
+	return drive.NormalizeMetricEvents("s3", metrics), nil
 }
 
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
@@ -584,7 +584,7 @@ func (d *Driver) removeDir(ctx context.Context, dirID string) error {
 }
 
 func (d *Driver) recordSDK(ctx context.Context, operation string, start time.Time, request map[string]any, err error) {
-	event := drive.DebugTraceEvent{
+	event := drive.MetricEvent{
 		Layer:     "driver.sdk",
 		Operation: operation,
 		Duration:  time.Since(start).String(),
@@ -593,7 +593,7 @@ func (d *Driver) recordSDK(ctx context.Context, operation string, start time.Tim
 	if err != nil {
 		event.Error = err.Error()
 	}
-	d.trace.Record(ctx, event)
+	d.metrics.Record(ctx, event)
 }
 
 // ─── S3 error helpers ───────────────────────────────────────────────────────

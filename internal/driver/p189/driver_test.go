@@ -323,8 +323,8 @@ func TestBatchTaskResponseError(t *testing.T) {
 	}
 }
 
-func TestBatchTaskTraceResponse(t *testing.T) {
-	got := batchTaskTraceResponse("DELETE", BatchTaskResp{
+func TestBatchTaskMetricResponse(t *testing.T) {
+	got := batchTaskMetricResponse("DELETE", BatchTaskResp{
 		ResCode:    123,
 		ResMessage: "删除失败",
 		TaskID:     "task-1",

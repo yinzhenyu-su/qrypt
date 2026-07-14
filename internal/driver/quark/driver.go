@@ -265,7 +265,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	}
 	httpStart := time.Now()
 	resp, err := d.cl.doDownload(req)
-	d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -705,8 +705,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) DebugTrace(ctx context.Context, since time.Time) ([]drive.DebugTraceEvent, error) {
-	return d.cl.debugTrace(since), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.cl.metricEvents(since), nil
 }
 
 func (d *Driver) setLastError(err error) {
@@ -981,7 +981,7 @@ func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string
 		req.Header.Set("User-Agent", defaultUserAgent)
 		start := time.Now()
 		resp, err := d.cl.ossClient.Do(req)
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "oss_complete",
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -1064,7 +1064,7 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 		req.Header.Set("Referer", defaultReferer)
 		resp, err := d.cl.ossClient.Do(req)
 		ossDur := time.Since(ossStart)
-		d.cl.recordTrace(ctx, drive.DebugTraceEvent{
+		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "oss_upload_part",
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),

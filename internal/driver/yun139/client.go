@@ -89,7 +89,7 @@ type client struct {
 	onAuthorizationUpdate func(authorization string)
 	mu                    sync.RWMutex
 	tokenExpiry           time.Time
-	trace                 *traceutil.Buffer
+	metrics               *traceutil.Buffer
 }
 
 func newClient(authorization string) *client {
@@ -97,7 +97,7 @@ func newClient(authorization string) *client {
 		httpClient:     httputil.NewClient(60*time.Second, 30*time.Second),
 		authorization:  authorization,
 		authRefreshURL: "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do",
-		trace:          traceutil.NewBuffer(500),
+		metrics:        traceutil.NewBuffer(500),
 	}
 }
 
@@ -185,7 +185,7 @@ func (c *client) refreshToken(ctx context.Context) error {
 
 	start := time.Now()
 	resp, err := c.httpClient.Do(req)
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: "token_refresh",
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -270,7 +270,7 @@ func (c *client) ensurePersonalCloudHost() error {
 
 	start := time.Now()
 	resp, err := c.httpClient.Do(req)
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -436,7 +436,7 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 
 	start := time.Now()
 	resp, err := c.httpClient.Do(req)
-	c.recordTrace(ctx, drive.DebugTraceEvent{
+	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: path,
 		Method:    req.Method,
 		URL:       traceutil.URL(req.URL),
@@ -454,7 +454,7 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 		return err
 	}
 	if len(respBody) > 0 && respBody[0] == '<' {
-		c.recordTrace(ctx, drive.DebugTraceEvent{
+		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: path,
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -476,12 +476,12 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	return nil
 }
 
-func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
-	c.trace.Record(ctx, event)
+func (c *client) recordMetric(ctx context.Context, event drive.MetricEvent) {
+	c.metrics.Record(ctx, event)
 }
 
-func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
-	return c.trace.Events(since)
+func (c *client) metricEvents(since time.Time) []drive.MetricEvent {
+	return c.metrics.Events(since)
 }
 
 func responseStatus(resp *http.Response) int {

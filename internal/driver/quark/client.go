@@ -45,7 +45,7 @@ type client struct {
 	metaSem        chan struct{}
 	ossSem         chan struct{}
 	onCookieUpdate func(cookie string)
-	trace          *traceutil.Buffer
+	metrics        *traceutil.Buffer
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -68,7 +68,7 @@ func newClient(cookie string, opts clientOptions) *client {
 		mgmtSem:        make(chan struct{}, 500),
 		metaSem:        make(chan struct{}, 500),
 		ossSem:         make(chan struct{}, ossMaxConcurrent),
-		trace:          traceutil.NewBuffer(500),
+		metrics:        traceutil.NewBuffer(500),
 	}
 }
 
@@ -251,7 +251,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		httpStart := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			c.recordTrace(ctx, drive.DebugTraceEvent{
+			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
 				Method:    req.Method,
 				URL:       traceutil.URL(req.URL),
@@ -271,7 +271,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
-			c.recordTrace(ctx, drive.DebugTraceEvent{
+			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
 				Method:    req.Method,
 				URL:       traceutil.URL(req.URL),
@@ -284,7 +284,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			})
 			return fmt.Errorf("read response failed: %w", readErr)
 		}
-		event := drive.DebugTraceEvent{
+		event := drive.MetricEvent{
 			Operation: path,
 			Method:    req.Method,
 			URL:       traceutil.URL(req.URL),
@@ -301,7 +301,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			}
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt < httpMaxRetries {
-			c.recordTrace(ctx, event)
+			c.recordMetric(ctx, event)
 			time.Sleep(retry.ExponentialBackoff(attempt))
 			continue
 		}
@@ -309,16 +309,16 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			if err := json.Unmarshal(bodyBytes, result); err != nil {
 				event.Error = err.Error()
 				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": traceutil.Snippet(bodyBytes)}
-				c.recordTrace(ctx, event)
+				c.recordMetric(ctx, event)
 				return fmt.Errorf("parse response failed: %w", err)
 			}
 		}
 		if resp.StatusCode >= 400 {
 			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": traceutil.Snippet(bodyBytes)}
-			c.recordTrace(ctx, event)
+			c.recordMetric(ctx, event)
 			return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
 		}
-		c.recordTrace(ctx, event)
+		c.recordMetric(ctx, event)
 		return nil
 	}
 	return fmt.Errorf("max retries exceeded")
@@ -331,10 +331,10 @@ func (c *client) doDownload(req *http.Request) (*http.Response, error) {
 	return c.downloadClient.Do(req)
 }
 
-func (c *client) recordTrace(ctx context.Context, event drive.DebugTraceEvent) {
-	c.trace.Record(ctx, event)
+func (c *client) recordMetric(ctx context.Context, event drive.MetricEvent) {
+	c.metrics.Record(ctx, event)
 }
 
-func (c *client) debugTrace(since time.Time) []drive.DebugTraceEvent {
-	return c.trace.Events(since)
+func (c *client) metricEvents(since time.Time) []drive.MetricEvent {
+	return c.metrics.Events(since)
 }
