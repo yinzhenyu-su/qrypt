@@ -201,6 +201,16 @@ func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
 
 func (v *VFS) Resume(ctx context.Context) {
 	for _, pending := range v.cache.Pending() {
+		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
+			oldSize := pending.Size
+			pending.Size = info.Size()
+			pending.UpdatedAt = timeutil.Now().UnixNano()
+			if err := v.cache.SavePending(pending); err != nil {
+				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
+			} else {
+				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
+			}
+		}
 		if pending.PermanentFail {
 			logging.L.WarnfEvery("vfs.resume_pending_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
 			continue
@@ -392,13 +402,12 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	if err != nil {
 		return n, err
 	}
-	size, _ := v.cache.staging.size(pending.LocalPath)
-	pending.Size = size
+	if writtenEnd := off + int64(n); writtenEnd > pending.Size {
+		pending.Size = writtenEnd
+	}
 	now := timeutil.Now()
 	pending.ModTime = now.UnixNano()
-	if err := v.cache.SavePending(pending); err != nil {
-		return n, err
-	}
+	v.cache.UpdatePendingTransient(pending)
 	v.setLocalModTime(path, now)
 	logging.L.DebugfEvery("vfs.write_staged", time.Second, "[VFS] write staged op_id=%q path=%q off=%d len=%d written=%d size=%d local=%q", pending.FID, path, off, len(data), n, pending.Size, pending.LocalPath)
 	return n, nil
