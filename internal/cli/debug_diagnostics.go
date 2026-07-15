@@ -227,6 +227,60 @@ func addCacheDiagnostics(out *[]debugAIDiagnostic, cache *control.CacheResponse)
 		return
 	}
 	for _, mount := range cache.Mounts {
+		if mount.Cache.Journal != nil {
+			journal := mount.Cache.Journal
+			if journal.Error != "" {
+				*out = append(*out, debugAIDiagnostic{
+					Severity:  "warn",
+					Code:      "pending_journal_error",
+					Component: "cache",
+					Mount:     mount.Mount,
+					Path:      cache.Path,
+					Message:   journal.Error,
+					Evidence:  map[string]any{"journal_path": journal.Path},
+				})
+			}
+			if journal.CompactRecommended {
+				*out = append(*out, debugAIDiagnostic{
+					Severity:  "warn",
+					Code:      "pending_journal_compaction_recommended",
+					Component: "cache",
+					Mount:     mount.Mount,
+					Path:      cache.Path,
+					Message:   "pending journal has accumulated duplicate entries",
+					Evidence: map[string]any{
+						"journal_path":      journal.Path,
+						"bytes":             journal.Bytes,
+						"entries":           journal.Entries,
+						"pending_count":     journal.PendingCount,
+						"duplicate_entries": journal.DuplicateEntries,
+					},
+				})
+			}
+			for _, item := range journal.LargestPaths {
+				if item.DuplicateEntries == 0 {
+					continue
+				}
+				*out = append(*out, debugAIDiagnostic{
+					Severity:  "warn",
+					Code:      "pending_journal_duplicate_path",
+					Component: "cache",
+					Mount:     mount.Mount,
+					Path:      item.Path,
+					Message:   "pending journal contains repeated entries for one path",
+					Evidence: map[string]any{
+						"entries":           item.Entries,
+						"duplicate_entries": item.DuplicateEntries,
+						"latest_size":       item.LatestSize,
+						"staging_size":      item.StagingSize,
+						"staging_exists":    item.StagingExists,
+						"size_matches":      item.SizeMatches,
+						"last_journal_op":   item.LastJournalOp,
+						"last_journal_line": item.LastJournalLine,
+					},
+				})
+			}
+		}
 		if mount.Cache.LastGetError != "" {
 			*out = append(*out, debugAIDiagnostic{
 				Severity:  "warn",

@@ -19,15 +19,15 @@ func newDebugAIReport(ctx context.Context, command, path string) debugAIReport {
 	}
 }
 
-func debugAIInspectPath(ctx context.Context, path string, eventLimit int, errors *[]debugAIError) *debugAIInspect {
+func debugAIInspectPath(ctx context.Context, path string, eventLimit int, mountNames []string, errors *[]debugAIError) *debugAIInspect {
 	inspect := &debugAIInspect{Path: path}
-	debugGetJSON(ctx, "/v1/resolve?path="+url.QueryEscape(path)+"&include_remote_name=1", &inspect.Resolve, errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/resolve?path="+url.QueryEscape(path)+"&include_remote_name=1", mountNames), &inspect.Resolve, errors)
 	if path != "/" {
-		debugGetJSON(ctx, "/v1/cache?path="+url.QueryEscape(path), &inspect.Cache, errors)
+		debugGetJSON(ctx, debugEndpointWithMounts("/v1/cache?path="+url.QueryEscape(path), mountNames), &inspect.Cache, errors)
 	}
-	debugGetJSON(ctx, "/v1/staging?path="+url.QueryEscape(path), &inspect.Staging, errors)
-	debugGetJSON(ctx, "/v1/uploads?history=1&path="+url.QueryEscape(path), &inspect.Uploads, errors)
-	debugGetJSON(ctx, "/v1/reads?path="+url.QueryEscape(path), &inspect.Reads, errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/staging?path="+url.QueryEscape(path), mountNames), &inspect.Staging, errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/uploads?history=1&path="+url.QueryEscape(path), mountNames), &inspect.Uploads, errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/reads?path="+url.QueryEscape(path), mountNames), &inspect.Reads, errors)
 	debugGetJSON(ctx, "/v1/consistency?path="+url.QueryEscape(path), &inspect.Consistency, errors)
 	debugGetJSON(ctx, "/v1/events?level=warn&limit="+url.QueryEscape(fmt.Sprintf("%d", eventLimit))+"&path="+url.QueryEscape(path), &inspect.Events, errors)
 	return inspect
