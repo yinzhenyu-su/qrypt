@@ -229,6 +229,92 @@ func TestResumedUploadConflictDeletesSessionAndRetriesFromScratch(t *testing.T) 
 	}
 }
 
+func TestUploadSessionPruneOnInstallStateStore(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	now := time.Now()
+	old := quarkUploadSession{
+		Key:       "old",
+		Name:      "old.bin",
+		UploadID:  "upload-old",
+		PartSize:  4 * 1024 * 1024,
+		Etags:     map[int]string{1: "etag-old"},
+		UpdatedAt: now.Add(-quarkUploadSessionMaxAge - time.Minute),
+	}
+	empty := quarkUploadSession{
+		Key:       "empty",
+		Name:      "empty.bin",
+		UploadID:  "upload-empty",
+		PartSize:  4 * 1024 * 1024,
+		UpdatedAt: now,
+	}
+	fresh := quarkUploadSession{
+		Key:       "fresh",
+		Name:      "fresh.bin",
+		UploadID:  "upload-fresh",
+		PartSize:  4 * 1024 * 1024,
+		Etags:     map[int]string{1: "etag-fresh"},
+		UpdatedAt: now,
+	}
+	if err := store.SaveJSON(quarkUploadSessionStateFile, uploadSessionState{
+		Version: 1,
+		Sessions: map[string]quarkUploadSession{
+			old.Key:   old,
+			empty.Key: empty,
+			fresh.Key: fresh,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := New("k=v", Options{})
+	driver.InstallStateStore(store)
+
+	state := uploadSessionState{}
+	if err := store.LoadJSON(quarkUploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Sessions[old.Key]; ok {
+		t.Fatal("expired upload session was not pruned")
+	}
+	if _, ok := state.Sessions[empty.Key]; ok {
+		t.Fatal("empty upload session was not pruned")
+	}
+	if _, ok := state.Sessions[fresh.Key]; !ok {
+		t.Fatal("fresh upload session was pruned")
+	}
+}
+
+func TestUploadSessionPruneCapsOldestEntries(t *testing.T) {
+	driver := New("k=v", Options{})
+	now := time.Now()
+	state := uploadSessionState{Version: 1, Sessions: map[string]quarkUploadSession{}}
+	for i := 0; i < quarkUploadSessionMaxEntries+2; i++ {
+		key := fmt.Sprintf("session-%04d", i)
+		state.Sessions[key] = quarkUploadSession{
+			Key:       key,
+			Name:      key + ".bin",
+			UploadID:  key,
+			PartSize:  4 * 1024 * 1024,
+			Etags:     map[int]string{1: "etag"},
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+	}
+
+	pruned, changed := driver.prunedUploadSessions(state, now)
+	if !changed {
+		t.Fatal("expected cap pruning to report changed")
+	}
+	if got := len(pruned.Sessions); got != quarkUploadSessionMaxEntries {
+		t.Fatalf("session count = %d, want %d", got, quarkUploadSessionMaxEntries)
+	}
+	if _, ok := pruned.Sessions["session-0000"]; ok {
+		t.Fatal("oldest upload session was not pruned")
+	}
+	if _, ok := pruned.Sessions[fmt.Sprintf("session-%04d", quarkUploadSessionMaxEntries+1)]; !ok {
+		t.Fatal("newest upload session was pruned")
+	}
+}
+
 func TestDriverPutInstantUploadFinishes(t *testing.T) {
 	var finishCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
