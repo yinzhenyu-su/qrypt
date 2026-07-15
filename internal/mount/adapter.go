@@ -46,6 +46,7 @@ type ignoredAppleNode struct {
 
 type fuseHandle struct {
 	path     string
+	flags    int
 	entry    drive.Entry
 	hasEntry bool
 }
@@ -242,16 +243,30 @@ func formatActiveFuseOps(ops []activeFuseOp) string {
 }
 
 func (a *adapter) nextHandle(path string, entries ...drive.Entry) uint64 {
+	return a.nextHandleWithFlags(path, 0, entries...)
+}
+
+func (a *adapter) nextHandleWithFlags(path string, flags int, entries ...drive.Entry) uint64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextFH++
-	handle := fuseHandle{path: path}
+	handle := fuseHandle{path: path, flags: flags}
 	if len(entries) > 0 {
 		handle.entry = entries[0]
 		handle.hasEntry = true
 	}
 	a.handles[a.nextFH] = handle
 	return a.nextFH
+}
+
+func (a *adapter) handleWritable(fh uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	handle, ok := a.handles[fh]
+	if !ok {
+		return fh == 0
+	}
+	return handle.flags&3 != 0
 }
 
 func (a *adapter) handleEntry(fh uint64) (drive.Entry, bool) {

@@ -21,7 +21,7 @@ func (a *adapter) Open(path string, flags int) (int, uint64) {
 	}
 	defer done()
 	if a.hasIgnoredAppleMetadata(path) {
-		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
+		fh = a.nextHandleWithFlags(path, flags, a.ignoredAppleEntry(path))
 		return 0, fh
 	}
 	entry, err := a.fs.Stat(ctx, path)
@@ -30,7 +30,7 @@ func (a *adapter) Open(path string, flags int) (int, uint64) {
 		logFuseError("Open", path, errc, err)
 		return errc, 0
 	}
-	fh = a.nextHandle(path, entry)
+	fh = a.nextHandleWithFlags(path, flags, entry)
 	return 0, fh
 }
 
@@ -101,7 +101,7 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 			}
 		}
 		a.ensureIgnoredApple(path, false)
-		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
+		fh = a.nextHandleWithFlags(path, flags|2, a.ignoredAppleEntry(path))
 		return 0, fh
 	}
 	if a.isReadOnlyPath(path) {
@@ -118,9 +118,9 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 		return errc, 0
 	}
 	if entry, err := a.fs.Stat(ctx, path); err == nil {
-		fh = a.nextHandle(path, entry)
+		fh = a.nextHandleWithFlags(path, flags|2, entry)
 	} else {
-		fh = a.nextHandle(path)
+		fh = a.nextHandleWithFlags(path, flags|2)
 	}
 	return 0, fh
 }
@@ -215,6 +215,9 @@ func (a *adapter) Flush(path string, fh uint64) int {
 	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
+		return 0
+	}
+	if !a.handleWritable(fh) {
 		return 0
 	}
 	if err := a.fs.Flush(ctx, path); err != nil {
