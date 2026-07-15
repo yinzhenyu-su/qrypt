@@ -98,6 +98,35 @@ func (v *VFS) readRange(ctx context.Context, entry drive.Entry, offset, size int
 	return out.Bytes(), startChunk, endChunk, nil
 }
 
+func (v *VFS) readDirectRange(ctx context.Context, entry drive.Entry, offset, size int64) ([]byte, error) {
+	if offset < 0 || size < 0 {
+		return nil, fmt.Errorf("vfs: read offset and size must be non-negative")
+	}
+	if entry.Size > 0 && offset >= entry.Size {
+		return nil, nil
+	}
+	readSize := size
+	if end, ok := readEnd(offset, size, entry.Size); ok {
+		readSize = end - offset
+	}
+	if readSize < 0 {
+		readSize = 0
+	}
+	rc, err := v.driver.Read(ctx, entry, offset, readSize)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return data, nil
+}
+
 func readEnd(offset, size, entrySize int64) (int64, bool) {
 	if size > 0 {
 		end := offset + size
@@ -193,9 +222,16 @@ func (v *VFS) fetchChunk(ctx context.Context, entry drive.Entry, index int64) ([
 	return data, nil
 }
 
-func (v *VFS) prefetchAdjacentChunks(ctx context.Context, entry drive.Entry, startChunk, endChunk int64) {
-	v.prefetchChunk(ctx, entry, startChunk-readPrefetchRadius)
-	v.prefetchWindow(ctx, entry, endChunk+1, readPrefetchChunks)
+func (v *VFS) prefetchAdjacentChunks(ctx context.Context, entry drive.Entry, startChunk, endChunk int64, decision PrefetchDecision) {
+	if !decision.Enabled {
+		return
+	}
+	if decision.ChunksBefore > 0 {
+		v.prefetchWindow(ctx, entry, startChunk-int64(decision.ChunksBefore), decision.ChunksBefore)
+	}
+	if decision.ChunksAfter > 0 {
+		v.prefetchWindow(ctx, entry, endChunk+1, decision.ChunksAfter)
+	}
 }
 
 type windowLoad struct {

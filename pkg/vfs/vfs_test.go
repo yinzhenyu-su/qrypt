@@ -2874,6 +2874,389 @@ func TestCacheRecordPendingPermanentFailure(t *testing.T) {
 	}
 }
 
+type testOperationHook struct {
+	mu      sync.Mutex
+	before  []string
+	after   []drive.MetricEvent
+	denyOps map[string]error
+}
+
+type testPathPolicy struct {
+	readOnly map[string]bool
+	ignored  map[string]string
+}
+
+func (p testPathPolicy) IsReadOnlyPath(path string) bool {
+	return p.readOnly[vfs.CleanVirtualPath(path)]
+}
+
+func (p testPathPolicy) IgnorePath(path string) (bool, string) {
+	reason, ok := p.ignored[vfs.CleanVirtualPath(path)]
+	return ok, reason
+}
+
+type testUploadPolicy struct {
+	delay   time.Duration
+	workers int
+	ignored map[string]string
+}
+
+func (p testUploadPolicy) UploadDelay(context.Context, vfs.UploadDecision) time.Duration {
+	return p.delay
+}
+
+func (p testUploadPolicy) UploadWorkers(defaultWorkers int) int {
+	if p.workers > 0 {
+		return p.workers
+	}
+	return defaultWorkers
+}
+
+func (p testUploadPolicy) ShouldIgnoreUpload(_ context.Context, req vfs.UploadDecision) (bool, string) {
+	reason, ok := p.ignored[req.Path]
+	return ok, reason
+}
+
+type testDeletePolicy struct {
+	delay time.Duration
+}
+
+func (p testDeletePolicy) DeleteDelay(context.Context, vfs.DeleteDecision) time.Duration {
+	return p.delay
+}
+
+type testReadPolicy struct {
+	useCache bool
+	prefetch vfs.PrefetchDecision
+}
+
+func (p testReadPolicy) ShouldUseReadCache(context.Context, vfs.ReadDecision) bool {
+	return p.useCache
+}
+
+func (p testReadPolicy) Prefetch(context.Context, vfs.ReadDecision) vfs.PrefetchDecision {
+	return p.prefetch
+}
+
+func (h *testOperationHook) BeforeOperation(ctx context.Context, event drive.MetricEvent) (context.Context, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.before = append(h.before, event.Operation)
+	if h.denyOps != nil {
+		if err := h.denyOps[event.Operation]; err != nil {
+			return ctx, err
+		}
+	}
+	return ctx, nil
+}
+
+func (h *testOperationHook) AfterOperation(_ context.Context, event drive.MetricEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.after = append(h.after, event)
+}
+
+func (h *testOperationHook) afterOperations() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(h.after))
+	for _, event := range h.after {
+		out = append(out, event.Operation)
+	}
+	return out
+}
+
+func (h *testOperationHook) afterEvents() []drive.MetricEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]drive.MetricEvent(nil), h.after...)
+}
+
+func TestVFSOperationHookObservesOperationsAndReadOnce(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "data.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hook := &testOperationHook{}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		Policies:      []vfs.Policy{hook},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := fs.Read(ctx, "/data.txt", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(rc); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readAfter := 0
+	mkdirAfter := 0
+	for _, event := range hook.afterEvents() {
+		switch event.Operation {
+		case "read":
+			readAfter++
+			if event.Kind != "vfs_read" || event.Mount != "default" || event.Path != "/data.txt" {
+				t.Fatalf("unexpected read event: %+v", event)
+			}
+		case "mkdir":
+			mkdirAfter++
+			if event.Kind != "vfs_operation" || event.Mount != "default" || event.Path != "/dir" {
+				t.Fatalf("unexpected mkdir event: %+v", event)
+			}
+		}
+	}
+	if readAfter != 1 {
+		t.Fatalf("read after events = %d, want 1; all=%+v", readAfter, hook.afterEvents())
+	}
+	if mkdirAfter != 1 {
+		t.Fatalf("mkdir after events = %d, want 1; all=%+v", mkdirAfter, hook.afterEvents())
+	}
+}
+
+func TestVFSPolicyDeniedErrorIsNonRetryable(t *testing.T) {
+	hook := &testOperationHook{denyOps: map[string]error{"write": errors.New("blocked by test policy")}}
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		Policies:      []vfs.Policy{hook},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = fs.WriteAt(context.Background(), "/blocked.txt", []byte("data"), 0)
+	if err == nil {
+		t.Fatal("expected policy denial")
+	}
+	if !errors.Is(err, vfs.ErrPolicyDenied) {
+		t.Fatalf("error = %v, want ErrPolicyDenied", err)
+	}
+	if !drive.IsNonRetryable(err) {
+		t.Fatalf("error = %v, want drive.IsNonRetryable", err)
+	}
+	if got := drive.ErrorCategory(err); got != drive.ErrorCategoryInvalidRequest {
+		t.Fatalf("ErrorCategory = %q, want %q", got, drive.ErrorCategoryInvalidRequest)
+	}
+	if len(fs.Pending()) != 0 {
+		t.Fatalf("pending after denied write = %+v, want empty", fs.Pending())
+	}
+	events := hook.afterEvents()
+	if len(events) != 1 || events[0].Operation != "write" || events[0].OK || events[0].ErrorCategory != drive.ErrorCategoryInvalidRequest {
+		t.Fatalf("unexpected denial event: %+v", events)
+	}
+}
+
+func TestVFSOperationHookOrderForDeniedOperation(t *testing.T) {
+	audit := &testOperationHook{}
+	deny := &testOperationHook{denyOps: map[string]error{"mkdir": errors.New("deny mkdir")}}
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		Policies:      []vfs.Policy{audit, deny},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fs.Mkdir(context.Background(), "/denied"); err == nil {
+		t.Fatal("expected mkdir denial")
+	}
+
+	if got := audit.afterOperations(); len(got) != 1 || got[0] != "mkdir" {
+		t.Fatalf("audit after operations = %+v, want mkdir", got)
+	}
+	if got := deny.afterOperations(); len(got) != 1 || got[0] != "mkdir" {
+		t.Fatalf("deny after operations = %+v, want mkdir", got)
+	}
+	if events := audit.afterEvents(); len(events) != 1 || events[0].OK {
+		t.Fatalf("audit should observe failed event: %+v", events)
+	}
+}
+
+func TestVFSPathPolicyReadOnlyDeniesMutation(t *testing.T) {
+	policy := testPathPolicy{readOnly: map[string]bool{"/locked.txt": true}}
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		Policies:      []vfs.Policy{policy},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = fs.WriteAt(context.Background(), "/locked.txt", []byte("data"), 0)
+	if !errors.Is(err, vfs.ErrReadOnly) {
+		t.Fatalf("WriteAt err = %v, want ErrReadOnly", err)
+	}
+	if len(fs.Pending()) != 0 {
+		t.Fatalf("pending after read-only write = %+v, want empty", fs.Pending())
+	}
+	if !fs.IsReadOnlyPath("/locked.txt") {
+		t.Fatal("IsReadOnlyPath returned false for policy read-only path")
+	}
+}
+
+func TestVFSPathPolicyIgnoresPaths(t *testing.T) {
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "visible.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, ".DS_Store"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := testPathPolicy{ignored: map[string]string{"/.DS_Store": "apple_metadata"}}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		Policies:      []vfs.Policy{policy},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name == ".DS_Store" {
+			t.Fatalf("ignored entry was listed: %+v", entries)
+		}
+	}
+	if _, err := fs.Stat(ctx, "/.DS_Store"); !errors.Is(err, vfs.ErrNotFound) {
+		t.Fatalf("Stat ignored path err = %v, want ErrNotFound", err)
+	}
+	if _, err := fs.WriteAt(ctx, "/.DS_Store", []byte("ignored"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/.DS_Store"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fs.Pending()) != 0 {
+		t.Fatalf("pending for ignored path = %+v, want empty", fs.Pending())
+	}
+}
+
+func TestVFSUploadPolicyControlsWorkersDelayAndIgnore(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{entries: map[string]drive.Entry{}}
+	policy := testUploadPolicy{
+		delay:   200 * time.Millisecond,
+		workers: 7,
+		ignored: map[string]string{"/ignored.txt": "temporary"},
+	}
+	fs, err := vfs.New(drv, vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		UploadDelay:   testUploadDelay,
+		Policies:      []vfs.Policy{policy},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fs.DebugSnapshot().Mounts[0].Queues.UploadWorkers; got != 7 {
+		t.Fatalf("UploadWorkers = %d, want 7", got)
+	}
+
+	if _, err := fs.WriteAt(ctx, "/delayed.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/delayed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if timers := fs.DebugSnapshot().Mounts[0].Queues.UploadTimers; len(timers) != 1 || timers[0].Path != "/delayed.txt" {
+		t.Fatalf("upload timers = %+v, want delayed timer", timers)
+	}
+
+	if _, err := fs.WriteAt(ctx, "/ignored.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/ignored.txt"); err != nil {
+		t.Fatal(err)
+	}
+	for _, pending := range fs.Pending() {
+		if pending.Path == "/ignored.txt" {
+			t.Fatalf("ignored upload remained pending: %+v", fs.Pending())
+		}
+	}
+}
+
+func TestVFSDeletePolicyControlsDelay(t *testing.T) {
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		DeleteDelay:   testUploadDelay,
+		Policies:      []vfs.Policy{testDeletePolicy{delay: 200 * time.Millisecond}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := drv.removedIDs(); len(got) != 0 {
+		t.Fatalf("removed immediately = %+v, want delayed", got)
+	}
+	if timers := fs.DebugSnapshot().Mounts[0].ActiveDeleteTimers(); len(timers) != 1 || timers[0].Path != "/dir/a.txt" {
+		t.Fatalf("delete timers = %+v, want /dir/a.txt", timers)
+	}
+}
+
+func TestVFSReadPolicyCanDisableCacheAndPrefetch(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("r"), 3*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{
+		CacheDir:      t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		Policies: []vfs.Policy{testReadPolicy{
+			useCache: false,
+			prefetch: vfs.PrefetchDecision{Enabled: false},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		rc, err := fs.Read(ctx, "/data.bin", 0, 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rc.Close()
+	}
+	if got := drv.readCount(0); got != 2 {
+		t.Fatalf("direct read count = %d, want 2", got)
+	}
+	if got := drv.readCount(testReadChunkSize); got != 0 {
+		t.Fatalf("prefetch read count = %d, want 0", got)
+	}
+	cache := fs.DebugSnapshot().Mounts[0].ReadCacheState()
+	if cache.ChunkCount != 0 || cache.Puts != 0 {
+		t.Fatalf("cache state = %+v, want no cached chunks", cache)
+	}
+	reads := fs.DebugSnapshot().Mounts[0].ReadEvents()
+	if len(reads) != 2 || reads[0].Extra["source"] != "remote_direct" || reads[1].Extra["source"] != "remote_direct" {
+		t.Fatalf("read events = %+v, want remote_direct events", reads)
+	}
+}
+
 func activeUploadCount(fs vfs.FileSystem) int {
 	snapshotter, ok := fs.(interface {
 		DebugSnapshot() vfs.DebugSnapshot

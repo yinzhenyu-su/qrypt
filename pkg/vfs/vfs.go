@@ -37,6 +37,7 @@ type Options struct {
 	UploadDelay   time.Duration
 	UploadWorkers int
 	DeleteDelay   time.Duration
+	Policies      []Policy
 }
 
 type VFS struct {
@@ -45,6 +46,7 @@ type VFS struct {
 	healthTracker *drive.HealthTracker
 	cache         *Cache
 	rootID        string
+	policy        policySet
 
 	mu      sync.RWMutex
 	entries map[string]drive.Entry
@@ -120,6 +122,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if opts.DeleteDelay == 0 {
 		opts.DeleteDelay = deleteDebounceDelay
 	}
+	policies := collectPolicies(opts.Policies)
+	opts.UploadWorkers = policies.uploadWorkers(opts.UploadWorkers)
 	// CacheDir is scoped to the current mount's driver/encryption mode.
 	// If a mount is switched between plain and crypt, stop qrypt and clear
 	// that mount's cache directory first; pending journal entries, staging
@@ -134,6 +138,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		healthTracker:  drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
 		cache:          cache,
 		rootID:         opts.RootID,
+		policy:         policies,
 		entries:        map[string]drive.Entry{},
 		lists:          map[string]listCacheEntry{},
 		queue:          make(chan PendingFile, 128),
@@ -215,7 +220,14 @@ func (v *VFS) recordHealthResult(op string, err error) {
 }
 
 func (v *VFS) Space(ctx context.Context) (space drive.Space, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpSpace, err) }()
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "space", "/", 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "space", "/", started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpSpace, err)
+	}()
+	if hookErr != nil {
+		return drive.Space{}, hookErr
+	}
 	if !drive.HasCapability(v.driver, drive.CapabilitySpace) {
 		return drive.Space{}, fmt.Errorf("vfs: driver does not support space query")
 	}
@@ -223,8 +235,18 @@ func (v *VFS) Space(ctx context.Context) (space drive.Space, err error) {
 }
 
 func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpStat, err) }()
 	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "stat", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "stat", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpStat, err)
+	}()
+	if hookErr != nil {
+		return drive.Entry{}, hookErr
+	}
+	if ignore, _ := v.policy.ignoredPath(path); ignore {
+		return drive.Entry{}, ErrNotFound
+	}
 	if pending, err := v.pending(path); err == nil {
 		entry := drive.Entry{
 			ID:       pending.FID,
@@ -243,9 +265,20 @@ func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err err
 	return v.applyLocalModTime(path, entry), nil
 }
 
-func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
-	entries, err := v.listNoPrefetch(ctx, path)
-	v.healthTracker.RecordResult(drive.HealthOpList, err)
+func (v *VFS) List(ctx context.Context, path string) (entries []drive.Entry, err error) {
+	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "list", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "list", path, started, int64(len(entries)), 0, err)
+		v.healthTracker.RecordResult(drive.HealthOpList, err)
+	}()
+	if hookErr != nil {
+		return nil, hookErr
+	}
+	if ignore, _ := v.policy.ignoredPath(path); ignore {
+		return nil, ErrNotFound
+	}
+	entries, err = v.listNoPrefetch(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +296,7 @@ func (v *VFS) listNoPrefetch(ctx context.Context, path string) ([]drive.Entry, e
 		return nil, err
 	}
 	entries = v.withPendingChildren(path, entries)
-	return entries, nil
+	return v.filterIgnoredEntries(path, entries), nil
 }
 
 func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
@@ -290,52 +323,90 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 	path = cleanVirtual(path)
 	started := timeutil.Now()
 	opID := fmt.Sprintf("read-%d", atomic.AddUint64(&v.readSequence, 1))
+	ctx, _, _, hookErr := v.beginOperation(ctx, "read", path, size, offset)
+	if hookErr != nil {
+		err = hookErr
+		return nil, err
+	}
+	if ignore, _ := v.policy.ignoredPath(path); ignore {
+		err = ErrNotFound
+		v.recordDebugRead(ctx, opID, path, "", offset, size, 0, "ignored", 0, 0, 0, started, err)
+		return nil, err
+	}
 	if pending, err := v.pending(path); err == nil {
 		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
-			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
+			v.recordDebugRead(ctx, opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
 			return nil, err
 		}
 		rc, err := osutil.OpenRead(pending.LocalPath, offset, size)
 		if err != nil {
-			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
+			v.recordDebugRead(ctx, opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
-			v.recordDebugRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, readErr)
+			v.recordDebugRead(ctx, opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, readErr)
 		}}, nil
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
-		v.recordDebugRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, err)
+		v.recordDebugRead(ctx, opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
-		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, err)
+		v.recordDebugRead(ctx, opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, err)
 		return nil, err
+	}
+	readReq := v.readDecision(path, entry, offset, size)
+	if !v.policy.useReadCache(ctx, readReq) {
+		data, err := v.readDirectRange(ctx, entry, offset, size)
+		if err != nil {
+			v.recordDebugRead(ctx, opID, path, entry.ID, offset, size, 0, "remote_direct", 0, 0, 0, started, err)
+			return nil, err
+		}
+		var chunks int64
+		if len(data) > 0 {
+			chunks = int64((len(data) + readChunkSize - 1) / readChunkSize)
+		}
+		v.recordDebugRead(ctx, opID, path, entry.ID, offset, size, int64(len(data)), "remote_direct", 0, 0, chunks, started, nil)
+		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 	hitsBefore, missesBefore := v.debugCacheCounters()
 	data, startChunk, endChunk, err := v.readRange(ctx, entry, offset, size)
 	hitsAfter, missesAfter := v.debugCacheCounters()
 	if err != nil {
-		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, err)
+		v.recordDebugRead(ctx, opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, err)
 		return nil, err
 	}
-	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk)
+	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk, v.policy.prefetch(ctx, readReq, readPrefetchRadius, readPrefetchChunks))
 	var chunks int64
 	if len(data) > 0 {
 		chunks = endChunk - startChunk + 1
 	}
-	v.recordDebugRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, nil)
+	v.recordDebugRead(ctx, opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, nil)
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 func (v *VFS) Create(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
+	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "create", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "create", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpCreate, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		logging.L.DebugfEvery("vfs.create_ignored_by_policy", time.Second, "[VFS] create ignored by policy path=%q reason=%q", path, reason)
+		return nil
+	}
 	if !drive.HasCapability(v.driver, drive.CapabilitySourceUploader) {
 		return fmt.Errorf("vfs: driver does not support upload")
 	}
-	path = cleanVirtual(path)
 	unlock := v.lockPath(path)
 	defer unlock()
 	return v.createLocked(ctx, path)
@@ -366,8 +437,22 @@ func (v *VFS) createLocked(ctx context.Context, path string) error {
 }
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "write", path, int64(len(data)), off)
+	defer func() {
+		v.finishOperation(ctx, hooks, "write", path, started, int64(n), off, err)
+		v.recordHealthResult(drive.HealthOpWrite, err)
+	}()
+	if hookErr != nil {
+		return 0, hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return 0, ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		logging.L.DebugfEvery("vfs.write_ignored_by_policy", time.Second, "[VFS] write ignored by policy path=%q len=%d off=%d reason=%q", path, len(data), off, reason)
+		return len(data), nil
+	}
 	unlock := v.lockPath(path)
 	defer unlock()
 	pending, err := v.pending(path)
@@ -405,10 +490,28 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 }
 
 func (v *VFS) Flush(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "flush", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "flush", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpWrite, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
 	unlock := v.lockPath(path)
 	defer unlock()
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		v.cancelUpload(path)
+		if err := v.cache.RemovePending(path); err != nil {
+			return err
+		}
+		logging.L.DebugfEvery("vfs.flush_ignored_by_policy", time.Second, "[VFS] flush ignored by policy path=%q reason=%q", path, reason)
+		return nil
+	}
 	pending, err := v.pending(path)
 	if err != nil {
 		logging.L.DebugfEvery("vfs.flush_ignored", time.Second, "[VFS] flush ignored without pending path=%q", path)
@@ -440,6 +543,12 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 	if pending.Size == 0 && delay < zeroByteUploadDebounceDelay {
 		delay = zeroByteUploadDebounceDelay
 	}
+	if ignore, reason := v.policy.ignoredUpload(ctx, v.uploadDecision(pending)); ignore {
+		v.cancelUpload(path)
+		logging.L.InfofEvery("vfs.upload_ignored_by_policy", time.Second, "[VFS] upload ignored by policy op_id=%q path=%q reason=%q", pending.FID, pending.Path, reason)
+		return v.cache.RemovePending(path)
+	}
+	delay = v.policy.uploadDelay(ctx, v.uploadDecision(pending), delay)
 	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q delay=%s", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, delay)
 	v.enqueueAfter(pending, delay)
 	return nil
@@ -447,6 +556,13 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 
 func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
 	path = cleanVirtual(path)
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		logging.L.DebugfEvery("vfs.prepare_directory_copy_ignored_by_policy", time.Second, "[VFS] prepare directory copy ignored by policy path=%q reason=%q", path, reason)
+		return nil
+	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
 		return err
@@ -506,11 +622,25 @@ func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []dr
 }
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
+	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "mkdir", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "mkdir", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpMkdir, err)
+	}()
+	if hookErr != nil {
+		return drive.Entry{}, hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return drive.Entry{}, ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		logging.L.DebugfEvery("vfs.mkdir_ignored_by_policy", time.Second, "[VFS] mkdir ignored by policy path=%q reason=%q", path, reason)
+		return drive.Entry{ID: "ignored:" + path, ParentID: filepath.Dir(path), Name: filepath.Base(path), IsDir: true, ModTime: timeutil.Now()}, nil
+	}
 	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return drive.Entry{}, fmt.Errorf("vfs: driver does not support mkdir")
 	}
-	path = cleanVirtual(path)
 	if entry, err := v.resolve(ctx, path); err == nil {
 		if entry.IsDir {
 			logging.L.Debugf("[VFS] mkdir skipped existing directory path=%q id=%q", path, entry.ID)
@@ -576,11 +706,26 @@ func (v *VFS) findExistingChildDir(ctx context.Context, parentPath, parentID, na
 }
 
 func (v *VFS) Remove(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
+	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "remove", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "remove", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpDelete, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		v.cancelUpload(path)
+		logging.L.DebugfEvery("vfs.remove_ignored_by_policy", time.Second, "[VFS] remove ignored by policy path=%q reason=%q", path, reason)
+		return v.cache.RemovePending(path)
+	}
 	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
-	path = cleanVirtual(path)
 	if _, err := v.pending(path); err == nil {
 		unlock := v.lockPath(path)
 		defer unlock()
@@ -595,17 +740,34 @@ func (v *VFS) Remove(ctx context.Context, path string) (err error) {
 	v.invalidateReadCache(entry)
 	v.markDeleted(path, entry)
 	v.clearLocalModTime(path)
-	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deleteDelay)
-	v.scheduleDelete(path, entry)
+	delay := v.policy.deleteDelay(ctx, v.deleteDecision(path, entry), v.deleteDelay)
+	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, delay)
+	v.scheduleDelete(path, entry, delay)
 	return nil
 }
 
 func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
+	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "remove_dir", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "remove_dir", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpDelete, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		v.cancelChildUploads(path)
+		_ = v.cache.RemovePendingUnder(path)
+		logging.L.DebugfEvery("vfs.remove_dir_ignored_by_policy", time.Second, "[VFS] remove dir ignored by policy path=%q reason=%q", path, reason)
+		return nil
+	}
 	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return fmt.Errorf("vfs: driver does not support remove")
 	}
-	path = cleanVirtual(path)
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
 		return err
@@ -621,18 +783,41 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 	v.cancelChildDeletes(path)
 	v.markDeleted(path, entry)
 	v.clearLocalModTime(path)
-	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deleteDelay)
-	v.scheduleDelete(path, entry)
+	delay := v.policy.deleteDelay(ctx, v.deleteDecision(path, entry), v.deleteDelay)
+	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, delay)
+	v.scheduleDelete(path, entry, delay)
 	return nil
 }
 
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
+	oldPath = cleanVirtual(oldPath)
+	newPath = cleanVirtual(newPath)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "rename", oldPath, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "rename", oldPath, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpRename, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(oldPath) || v.isReadOnlyPath(newPath) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(oldPath); ignore {
+		logging.L.DebugfEvery("vfs.rename_old_ignored_by_policy", time.Second, "[VFS] rename old path ignored by policy old_path=%q new_path=%q reason=%q", oldPath, newPath, reason)
+		return nil
+	}
+	if ignore, reason := v.policy.ignoredPath(newPath); ignore {
+		v.cancelUpload(oldPath)
+		if err := v.cache.RemovePending(oldPath); err != nil {
+			return err
+		}
+		logging.L.DebugfEvery("vfs.rename_new_ignored_by_policy", time.Second, "[VFS] rename new path ignored by policy old_path=%q new_path=%q reason=%q", oldPath, newPath, reason)
+		return nil
+	}
 	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
 		return fmt.Errorf("vfs: driver does not support rename")
 	}
-	oldPath = cleanVirtual(oldPath)
-	newPath = cleanVirtual(newPath)
 	if oldPath == "/" || newPath == "/" {
 		return fmt.Errorf("vfs: cannot rename root")
 	}
@@ -691,11 +876,25 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
 }
 
 func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
+	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "truncate", path, size, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "truncate", path, started, size, 0, err)
+		v.recordHealthResult(drive.HealthOpWrite, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		logging.L.DebugfEvery("vfs.truncate_ignored_by_policy", time.Second, "[VFS] truncate ignored by policy path=%q reason=%q", path, reason)
+		return nil
+	}
 	if size < 0 {
 		return fmt.Errorf("vfs: truncate size must be non-negative")
 	}
-	path = cleanVirtual(path)
 	unlock := v.lockPath(path)
 	defer unlock()
 	pending, err := v.pending(path)
@@ -813,8 +1012,22 @@ func pendingModTime(p PendingFile) time.Time {
 }
 
 func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = cleanVirtual(path)
+	ctx, started, hooks, hookErr := v.beginOperation(ctx, "set_mod_time", path, 0, 0)
+	defer func() {
+		v.finishOperation(ctx, hooks, "set_mod_time", path, started, 0, 0, err)
+		v.recordHealthResult(drive.HealthOpWrite, err)
+	}()
+	if hookErr != nil {
+		return hookErr
+	}
+	if v.isReadOnlyPath(path) {
+		return ErrReadOnly
+	}
+	if ignore, reason := v.policy.ignoredPath(path); ignore {
+		logging.L.DebugfEvery("vfs.set_mod_time_ignored_by_policy", time.Second, "[VFS] set mod time ignored by policy path=%q reason=%q", path, reason)
+		return nil
+	}
 	if modTime.IsZero() {
 		return nil
 	}
