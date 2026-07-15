@@ -71,7 +71,7 @@ func TestDebugCollectOmitsTransferContextWithoutSource(t *testing.T) {
 	defer server.Close(context.Background())
 
 	reportCtx := context.WithValue(context.Background(), debugSocketContextKey{}, socketPath)
-	report := collectDebugAIReport(reportCtx, "collect", "", "/dst/file.bin", 100)
+	report := collectDebugAIReport(reportCtx, "collect", "", "/dst/file.bin", 100, []string{"local"}, false)
 	if report.TransferContext != nil {
 		t.Fatalf("transfer context should be omitted without source: %+v", report.TransferContext)
 	}
@@ -117,6 +117,54 @@ func TestDebugCollectDiagnosticsReportsRootIDMismatch(t *testing.T) {
 	}
 }
 
+func TestDebugCollectDiagnosticsPendingJournalDuplicates(t *testing.T) {
+	report := debugAIReport{
+		Health: &control.HealthResponse{OK: true},
+		Cache: &control.CacheResponse{
+			Mounts: []control.DebugCacheMountStatus{{
+				Mount: "cloud",
+				Cache: vfs.DebugReadCache{
+					Journal: &vfs.DebugJournal{
+						Path:               "/tmp/pending.jsonl",
+						Exists:             true,
+						Bytes:              512 << 10,
+						Entries:            1903,
+						PendingCount:       1,
+						DuplicateEntries:   1902,
+						CompactRecommended: true,
+						LargestPaths: []vfs.DebugJournalPath{{
+							Path:             "/qrypt.log",
+							Entries:          1903,
+							DuplicateEntries: 1902,
+							LatestSize:       30588928,
+							StagingSize:      30572544,
+							StagingExists:    true,
+							SizeMatches:      false,
+							LastJournalOp:    "dirty",
+							LastJournalLine:  1903,
+						}},
+					},
+				},
+			}},
+		},
+	}
+	var diagnostics []debugAIDiagnostic
+	addCollectDiagnostics(&diagnostics, report)
+
+	var compact, duplicate bool
+	for _, item := range diagnostics {
+		if item.Code == "pending_journal_compaction_recommended" && item.Mount == "cloud" {
+			compact = true
+		}
+		if item.Code == "pending_journal_duplicate_path" && item.Path == "/qrypt.log" {
+			duplicate = true
+		}
+	}
+	if !compact || !duplicate {
+		t.Fatalf("diagnostics = %+v, want compact and duplicate journal diagnostics", diagnostics)
+	}
+}
+
 func TestDriverListJSON(t *testing.T) {
 	cmd := newDriverListCmd()
 	var out bytes.Buffer
@@ -144,7 +192,13 @@ func TestDebugRequiredFlags(t *testing.T) {
 	}
 
 	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "bundle", "--socket", "/tmp/qrypt.sock"})
+	root.SetArgs([]string{"debug", "collect", "--socket", "/tmp/qrypt.sock"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
+		t.Fatalf("expected debug collect without mount scope to fail clearly, got %v", err)
+	}
+
+	root = NewRootCommand()
+	root.SetArgs([]string{"debug", "bundle", "--socket", "/tmp/qrypt.sock", "--all-mounts"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected debug bundle without --out to fail")
 	}

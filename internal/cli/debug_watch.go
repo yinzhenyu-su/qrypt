@@ -13,13 +13,15 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func watchDebugAI(ctx context.Context, path string, duration, interval time.Duration, eventLimit int) debugAIWatchReport {
+func watchDebugAI(ctx context.Context, path string, duration, interval time.Duration, eventLimit int, mountNames []string, allMounts bool) debugAIWatchReport {
 	startedAt := time.Now()
 	report := debugAIWatchReport{
 		SchemaVersion: debugAIReportSchemaVersion,
 		GeneratedAt:   startedAt,
 		Command:       "watch",
 		Socket:        debugSocketFromContext(ctx),
+		MountNames:    mountNames,
+		AllMounts:     allMounts,
 		Path:          path,
 		StartedAt:     startedAt,
 		Duration:      duration.String(),
@@ -28,7 +30,7 @@ func watchDebugAI(ctx context.Context, path string, duration, interval time.Dura
 	}
 	deadline := startedAt.Add(duration)
 	for {
-		sample := sampleDebugAIWatch(ctx, path, eventLimit)
+		sample := sampleDebugAIWatch(ctx, path, eventLimit, mountNames)
 		report.Samples = append(report.Samples, sample)
 		report.Errors = append(report.Errors, sample.Errors...)
 		if time.Now().Add(interval).After(deadline) {
@@ -48,7 +50,7 @@ func watchDebugAI(ctx context.Context, path string, duration, interval time.Dura
 	return report
 }
 
-func sampleDebugAIWatch(ctx context.Context, path string, eventLimit int) debugAIWatchSample {
+func sampleDebugAIWatch(ctx context.Context, path string, eventLimit int, mountNames []string) debugAIWatchSample {
 	sample := debugAIWatchSample{At: time.Now(), Path: path}
 	var health *control.HealthResponse
 	debugGetJSON(ctx, "/v1/health", &health, &sample.Errors)
@@ -57,9 +59,9 @@ func sampleDebugAIWatch(ctx context.Context, path string, eventLimit int) debugA
 		sample.HealthOK = &ok
 	}
 	var state *vfs.DebugSnapshot
-	debugGetJSON(ctx, "/v1/state", &state, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/state", mountNames), &state, &sample.Errors)
 	var uploads *control.UploadsResponse
-	debugGetJSON(ctx, "/v1/uploads?history=1", &uploads, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/uploads?history=1", mountNames), &uploads, &sample.Errors)
 	if uploads != nil {
 		sample.Uploads = uploads.Uploads
 	}
@@ -78,12 +80,12 @@ func sampleDebugAIWatch(ctx context.Context, path string, eventLimit int) debugA
 		}
 	}
 	var staging *control.StagingResponse
-	debugGetJSON(ctx, "/v1/staging", &staging, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/staging", mountNames), &staging, &sample.Errors)
 	var cache *control.CacheResponse
-	debugGetJSON(ctx, "/v1/cache", &cache, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/cache", mountNames), &cache, &sample.Errors)
 	sample.Mounts = watchMountSummaries(state, staging, cache)
 	if path != "" {
-		addWatchPathSample(ctx, &sample, path, eventLimit)
+		addWatchPathSample(ctx, &sample, path, eventLimit, mountNames)
 	}
 	return sample
 }
@@ -129,6 +131,12 @@ func watchMountSummaries(state *vfs.DebugSnapshot, staging *control.StagingRespo
 			item.ReadCacheBytes = cache.Bytes
 			item.ReadCacheHits = cache.Hits
 			item.ReadCacheMisses = cache.Misses
+			if cache.Journal != nil {
+				item.JournalEntries = cache.Journal.Entries
+				item.JournalBytes = cache.Journal.Bytes
+				item.JournalDuplicateEntries = cache.Journal.DuplicateEntries
+				item.JournalCompactRecommended = cache.Journal.CompactRecommended
+			}
 			item.LastCacheGetErr = cache.LastGetError
 			item.LastCachePutErr = cache.LastPutError
 		}
@@ -138,20 +146,20 @@ func watchMountSummaries(state *vfs.DebugSnapshot, staging *control.StagingRespo
 	return out
 }
 
-func addWatchPathSample(ctx context.Context, sample *debugAIWatchSample, path string, eventLimit int) {
+func addWatchPathSample(ctx context.Context, sample *debugAIWatchSample, path string, eventLimit int, mountNames []string) {
 	var resolve *control.ResolveResponse
-	debugGetJSON(ctx, "/v1/resolve?path="+url.QueryEscape(path)+"&include_remote_name=1", &resolve, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/resolve?path="+url.QueryEscape(path)+"&include_remote_name=1", mountNames), &resolve, &sample.Errors)
 	if resolve != nil && len(resolve.Resolves) > 0 {
 		item := resolve.Resolves[0]
 		sample.PathResolve = &item
 	}
 	var uploads *control.UploadsResponse
-	debugGetJSON(ctx, "/v1/uploads?history=1&path="+url.QueryEscape(path), &uploads, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/uploads?history=1&path="+url.QueryEscape(path), mountNames), &uploads, &sample.Errors)
 	if uploads != nil {
 		sample.PathUploads = uploads.Uploads
 	}
 	var staging *control.StagingResponse
-	debugGetJSON(ctx, "/v1/staging?path="+url.QueryEscape(path), &staging, &sample.Errors)
+	debugGetJSON(ctx, debugEndpointWithMounts("/v1/staging?path="+url.QueryEscape(path), mountNames), &staging, &sample.Errors)
 	if staging != nil {
 		sample.PathStaging = staging.Mounts
 	}
@@ -187,6 +195,7 @@ func addWatchDiagnostics(out *[]debugAIDiagnostic, report debugAIWatchReport) {
 		return
 	}
 	seenEvent := map[uint64]bool{}
+	seenJournalMount := map[string]bool{}
 	for _, sample := range report.Samples {
 		if sample.HealthOK != nil && !*sample.HealthOK {
 			*out = append(*out, debugAIDiagnostic{
@@ -225,6 +234,27 @@ func addWatchDiagnostics(out *[]debugAIDiagnostic, report debugAIWatchReport) {
 				Message:   upload.LastError,
 				Evidence:  map[string]any{"at": sample.At, "state": upload.State, "retry_count": upload.RetryCount},
 			})
+		}
+		for _, mount := range sample.Mounts {
+			if seenJournalMount[mount.Name] {
+				continue
+			}
+			if mount.JournalCompactRecommended {
+				seenJournalMount[mount.Name] = true
+				*out = append(*out, debugAIDiagnostic{
+					Severity:  "warn",
+					Code:      "watch_pending_journal_compaction_recommended",
+					Component: "cache",
+					Mount:     mount.Name,
+					Message:   "pending journal has accumulated duplicate entries during watch",
+					Evidence: map[string]any{
+						"at":                sample.At,
+						"entries":           mount.JournalEntries,
+						"bytes":             mount.JournalBytes,
+						"duplicate_entries": mount.JournalDuplicateEntries,
+					},
+				})
+			}
 		}
 		if sample.PathConsistency != nil {
 			status := sample.PathConsistency.Status
