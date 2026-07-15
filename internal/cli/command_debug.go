@@ -20,6 +20,7 @@ func newDebugCmd() *cobra.Command {
 		}),
 		RunE: showHelp,
 	}
+	cmd.AddCommand(newDebugBenchCmd())
 	cmd.AddCommand(withDebugSocketFlag(newDebugBundleCmd()))
 	cmd.AddCommand(withDebugSocketFlag(newDebugCollectCmd()))
 	cmd.AddCommand(newRemovedDebugInspectCmd())
