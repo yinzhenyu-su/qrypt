@@ -52,12 +52,23 @@ type FSPendingSample struct {
 }
 
 type FSMountState struct {
-	Mount        string     `json:"mount"`
-	PendingCount int        `json:"pending_count"`
-	UploadCount  int        `json:"upload_count"`
-	DeleteTimers int        `json:"delete_timer_count"`
-	Pending      []string   `json:"pending,omitempty"`
-	Uploads      []FSUpload `json:"uploads,omitempty"`
+	Mount                 string     `json:"mount"`
+	PendingCount          int        `json:"pending_count"`
+	UploadCount           int        `json:"upload_count"`
+	DeleteTimers          int        `json:"delete_timer_count"`
+	Pending               []string   `json:"pending,omitempty"`
+	Uploads               []FSUpload `json:"uploads,omitempty"`
+	CacheHits             int64      `json:"cache_hits,omitempty"`
+	CacheMisses           int64      `json:"cache_misses,omitempty"`
+	CacheHitRatio         float64    `json:"cache_hit_ratio,omitempty"`
+	CacheErrors           int        `json:"cache_errors,omitempty"`
+	ReadCacheFiles        int        `json:"read_cache_files,omitempty"`
+	ReadCacheBytes        int64      `json:"read_cache_bytes,omitempty"`
+	StagingOrphans        int        `json:"staging_orphans,omitempty"`
+	StagingSizeMismatches int        `json:"staging_size_mismatches,omitempty"`
+	ChunkLoads            int        `json:"chunk_loads,omitempty"`
+	WindowLoads           int        `json:"window_loads,omitempty"`
+	Prefetches            int        `json:"prefetches,omitempty"`
 }
 
 type FSUpload struct {
@@ -86,7 +97,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 		duration := result.Finished.Sub(result.Started)
 		result.Duration = duration.String()
 		result.DurationMS = durationMillis(duration)
-		result.FinalState = fsMountState(fs, mount)
+		result.FinalState = fsFinalMountState(ctx, fs, mount)
 		result.Pass = true
 		for _, step := range result.Steps {
 			if !step.OK {
@@ -264,6 +275,23 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 			state.PendingCount = len(mountState.PendingFiles())
 			state.UploadCount = len(mountState.ActiveUploads())
 			state.DeleteTimers = len(mountState.ActiveDeleteTimers())
+			cache := mountState.ReadCacheState()
+			state.CacheHits = cache.Hits
+			state.CacheMisses = cache.Misses
+			if total := cache.Hits + cache.Misses; total > 0 {
+				state.CacheHitRatio = float64(cache.Hits) / float64(total)
+			}
+			if cache.LastGetError != "" {
+				state.CacheErrors++
+			}
+			if cache.LastPutError != "" {
+				state.CacheErrors++
+			}
+			state.ReadCacheFiles = cache.FileCount
+			state.ReadCacheBytes = cache.Bytes
+			state.ChunkLoads = mountState.Runtime.ChunkLoads
+			state.WindowLoads = mountState.Runtime.WindowLoads
+			state.Prefetches = mountState.Runtime.Prefetches
 			for _, pending := range mountState.PendingFiles() {
 				state.Pending = append(state.Pending, pending.Path)
 			}
@@ -284,6 +312,36 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 	state.PendingCount = len(fs.Pending())
 	for _, pending := range fs.Pending() {
 		state.Pending = append(state.Pending, pending.Path)
+	}
+	return state
+}
+
+func fsFinalMountState(ctx context.Context, fs vfs.FileSystem, mount string) *FSMountState {
+	state := fsMountState(fs, mount)
+	inspector, ok := fs.(vfs.DebugStagingInspector)
+	if !ok {
+		return state
+	}
+	report, err := inspector.DebugStaging(ctx, "/")
+	if err != nil {
+		return state
+	}
+	for _, mountState := range report.Mounts {
+		if mountState.Mount != mount {
+			continue
+		}
+		state.StagingOrphans = mountState.OrphanCount
+		for _, file := range mountState.Files {
+			if file.Pending && file.Exists && !file.SizeMatches {
+				state.StagingSizeMismatches++
+			}
+		}
+		for _, file := range mountState.Orphans {
+			if file.Pending && file.Exists && !file.SizeMatches {
+				state.StagingSizeMismatches++
+			}
+		}
+		return state
 	}
 	return state
 }
