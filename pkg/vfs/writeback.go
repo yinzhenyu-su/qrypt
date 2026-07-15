@@ -47,6 +47,10 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		v.enqueue(latest)
 		return nil
 	}
+	if ignore, reason := v.policy.ignoredUpload(ctx, v.uploadDecision(pending)); ignore {
+		logging.L.InfofEvery("vfs.upload_ignored_by_policy", time.Second, "[VFS] upload ignored by policy op_id=%q path=%q reason=%q", pending.FID, pending.Path, reason)
+		return v.cache.RemovePending(pending.Path)
+	}
 	uploadStart := timeutil.Now()
 	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
 	v.startUploadSnapshot(pending)
@@ -127,7 +131,7 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 				} else if ok {
 					logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, err)
 				}
-			} else if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.uploadDelay); saveErr != nil {
+			} else if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.policy.uploadDelay(ctx, v.uploadDecision(pending), v.uploadDelay)); saveErr != nil {
 				logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 			} else if ok {
 				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)

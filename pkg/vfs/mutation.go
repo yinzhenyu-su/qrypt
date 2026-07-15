@@ -122,8 +122,8 @@ func (v *VFS) addOverlay(oldPath, newPath, entryID string, recursive bool) {
 	v.deleteMu.Unlock()
 }
 
-func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
-	if v.deleteDelay <= 0 {
+func (v *VFS) scheduleDelete(path string, entry drive.Entry, delay time.Duration) {
+	if delay <= 0 {
 		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(context.Background(), path, entry)
 		return
@@ -132,7 +132,7 @@ func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 	if timer := v.deleteTimers[path]; timer != nil {
 		timer.Stop()
 	}
-	v.deleteTimers[path] = time.AfterFunc(v.deleteDelay, func() {
+	v.deleteTimers[path] = time.AfterFunc(delay, func() {
 		v.deleteMu.Lock()
 		delete(v.deleteTimers, path)
 		v.deleteMu.Unlock()

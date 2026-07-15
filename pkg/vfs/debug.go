@@ -623,6 +623,8 @@ func (v *VFS) recordUploadEvent(path, phase string, start time.Time, bytes int64
 		Phase:      phase,
 		State:      "completed",
 		OK:         true,
+		Mount:      v.name,
+		Path:       path,
 		Bytes:      bytes,
 		Duration:   duration.String(),
 		DurationMS: durationMillis(duration),
@@ -639,6 +641,7 @@ func (v *VFS) recordUploadEvent(path, phase string, start time.Time, bytes int64
 	if bytes > 0 && duration > 0 {
 		event.Throughput = int64(float64(bytes) / duration.Seconds())
 	}
+	v.dispatchMetricEvent(context.Background(), event)
 	v.uploadMu.Lock()
 	if state := v.activeUploads[path]; state != nil {
 		state.upload.Events = append(state.upload.Events, event)
@@ -653,11 +656,11 @@ func (v *VFS) debugCacheCounters() (hits, misses int64) {
 	return hits, misses
 }
 
-func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, err error) {
+func (v *VFS) recordDebugRead(ctx context.Context, opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, err error) {
 	finished := timeutil.Now()
 	event := drive.MetricEvent{
 		At: finished, OpID: opID, Kind: "vfs_read", Operation: "read", Phase: "read", State: "completed", OK: true,
-		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
+		Mount: v.name, Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
 		Bytes: bytes, CacheHits: cacheHits, CacheMisses: cacheMisses, Chunks: chunks,
 		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
 		Extra: map[string]any{"source": source},
@@ -671,6 +674,7 @@ func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, by
 		event.Error = err.Error()
 		event.ErrorCategory = drive.ErrorCategory(err)
 	}
+	v.dispatchMetricEvent(ctx, event)
 	v.readMu.Lock()
 	v.readHistory = append(v.readHistory, event)
 	if len(v.readHistory) > debugReadHistoryLimit {
