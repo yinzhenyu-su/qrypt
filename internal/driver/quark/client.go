@@ -28,6 +28,8 @@ const (
 	defaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
 	httpMaxRetries    = 3
 	ossMaxRetries     = 3
+	ossRequestTimeout = 2 * time.Minute
+	ossRetryBaseDelay = 30 * time.Second
 	ossMaxConcurrent  = 4
 	partUploadWorkers = 1
 )
