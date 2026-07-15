@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -372,7 +373,11 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	})
 	d.recordSDK(ctx, "PutObject", start, map[string]any{"bucket": d.bucket, "key": key, "bytes": source.Size()}, err)
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("s3: put %q: %w", key, err)
+		err = fmt.Errorf("s3: put %q: %w", key, err)
+		if nonRetryableUploadError(err) {
+			err = drive.NonRetryable(err)
+		}
+		return drive.Entry{}, err
 	}
 	return drive.Entry{
 		ID:       d.joinPath(parentID, name),
@@ -381,6 +386,22 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		Size:     source.Size(),
 		ModTime:  time.Now(),
 	}, nil
+}
+
+func nonRetryableUploadError(err error) bool {
+	var responseErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &responseErr) {
+		status := responseErr.HTTPStatusCode()
+		return status >= 400 && status < 500 && status != 408 && status != 429
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NoSuchBucket", "NoSuchKey", "InvalidBucketName", "InvalidObjectState", "AccessDenied", "SignatureDoesNotMatch", "InvalidAccessKeyId", "EntityTooLarge":
+			return true
+		}
+	}
+	return false
 }
 
 // ─── drive.Driver observability ─────────────────────────────────────────────

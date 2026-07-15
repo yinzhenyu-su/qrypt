@@ -280,6 +280,9 @@ func TestPutSourceRejectsEmptyFile(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "empty files") {
 		t.Fatalf("err = %v, want empty files error", err)
 	}
+	if !drive.IsNonRetryable(err) {
+		t.Fatalf("err = %v, want non-retryable", err)
+	}
 }
 
 func TestPutSourceInstantUploadIncrementsDebugCounter(t *testing.T) {
