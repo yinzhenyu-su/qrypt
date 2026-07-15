@@ -4,11 +4,18 @@ import "github.com/winfsp/cgofuse/fuse"
 
 func (a *adapter) Getxattr(path string, name string) (int, []byte) {
 	errc := -fuse.ENOATTR
-	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, 0, errc) }()
+	valueLen := 0
+	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, valueLen, errc) }()
 	if a.shouldIgnoreAppleXattr(name) {
 		return errc, nil
 	}
-	return errc, nil
+	value, ok := a.getXattr(path, name)
+	if !ok {
+		return errc, nil
+	}
+	errc = len(value)
+	valueLen = len(value)
+	return errc, value
 }
 
 func (a *adapter) Removexattr(path string, name string) int {
@@ -17,12 +24,21 @@ func (a *adapter) Removexattr(path string, name string) int {
 	if a.shouldIgnoreAppleXattr(name) {
 		return 0
 	}
+	a.removeXattr(path, name)
 	return 0
 }
 
 func (a *adapter) Listxattr(path string, fill func(name string) bool) int {
 	errc := 0
 	defer func() { a.trace.log("Listxattr", path, "err=%d", errc) }()
+	for _, name := range a.listXattrs(path) {
+		if a.shouldIgnoreAppleXattr(name) {
+			continue
+		}
+		if !fill(name) {
+			break
+		}
+	}
 	return 0
 }
 
@@ -48,5 +64,6 @@ func (a *adapter) Setxattr(path string, name string, value []byte, flags int) in
 	if a.shouldIgnoreAppleXattr(name) {
 		return 0
 	}
-	return 0
+	a.setXattr(path, name, value)
+	return errc
 }

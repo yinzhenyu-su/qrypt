@@ -20,8 +20,7 @@ func (a *adapter) Open(path string, flags int) (int, uint64) {
 		return errc, 0
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
+	if a.hasIgnoredAppleMetadata(path) {
 		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
 		return 0, fh
 	}
@@ -46,6 +45,13 @@ func (a *adapter) Mknod(path string, mode uint32, dev uint64) int {
 	}
 	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
+		if !isAppleMetadataDirPath(path) {
+			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
+				errc = fuseErr(err)
+				logFuseError("Mknod", path, errc, err)
+				return errc
+			}
+		}
 		a.ensureIgnoredApple(path, mode&fuse.S_IFDIR != 0)
 		return 0
 	}
@@ -87,6 +93,13 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 	}
 	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
+		if !isAppleMetadataDirPath(path) {
+			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
+				errc = fuseErr(err)
+				logFuseError("Create", path, errc, err)
+				return errc, 0
+			}
+		}
 		a.ensureIgnoredApple(path, false)
 		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
 		return 0, fh
@@ -165,7 +178,14 @@ func (a *adapter) Write(path string, buff []byte, ofst int64, fh uint64) int {
 	}
 	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
-		a.writeIgnoredApple(path, int64(len(buff)), ofst)
+		if !isAppleMetadataDirPath(path) {
+			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
+				result = fuseErr(err)
+				logFuseError("Write", path, result, err)
+				return result
+			}
+		}
+		a.writeIgnoredApple(path, buff, ofst)
 		result = len(buff)
 		return result
 	}
@@ -229,6 +249,13 @@ func (a *adapter) Truncate(path string, size int64, fh uint64) int {
 	}
 	defer done()
 	if a.shouldIgnoreAppleMetadata(path) {
+		if !isAppleMetadataDirPath(path) {
+			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
+				errc = fuseErr(err)
+				logFuseError("Truncate", path, errc, err)
+				return errc
+			}
+		}
 		a.truncateIgnoredApple(path, size)
 		return 0
 	}
