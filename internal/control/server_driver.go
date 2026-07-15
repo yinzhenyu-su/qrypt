@@ -34,10 +34,10 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	snapshot := s.source.DebugSnapshot()
+	snapshot := s.debugSnapshot(r)
 	var spaceByMount map[string]*DebugSpaceSummary
 	if parseBoolQuery(r.URL.Query().Get("space")) {
-		spaceByMount = s.driverSpaces(r.Context())
+		spaceByMount = s.driverSpaces(r.Context(), debugMountQuery(r))
 	}
 	var drivers []DebugDriverSummary
 	for _, mount := range snapshot.Mounts {
@@ -72,7 +72,21 @@ func (s *Server) handleMountHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mount health not available", http.StatusNotImplemented)
 		return
 	}
-	results, err := checker.MountHealth(r.Context(), r.URL.Query().Get("mount"))
+	mounts := debugMountQuery(r)
+	var results []vfs.MountHealth
+	var err error
+	if len(mounts) == 0 {
+		results, err = checker.MountHealth(r.Context(), "")
+	} else {
+		for _, mount := range mounts {
+			items, itemErr := checker.MountHealth(r.Context(), mount)
+			if itemErr != nil {
+				err = itemErr
+				break
+			}
+			results = append(results, items...)
+		}
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -84,13 +98,16 @@ func (s *Server) handleMountHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) driverSpaces(ctx context.Context) map[string]*DebugSpaceSummary {
+func (s *Server) driverSpaces(ctx context.Context, mountNames []string) map[string]*DebugSpaceSummary {
 	provider, ok := s.source.(vfs.DriverProvider)
 	if !ok {
 		return nil
 	}
 	spaces := map[string]*DebugSpaceSummary{}
 	for _, item := range provider.Drivers() {
+		if !debugMountAllowed(item.Name, mountNames) {
+			continue
+		}
 		space, err := item.Driver.Space(ctx)
 		summary := &DebugSpaceSummary{}
 		if errors.Is(err, drive.ErrSpaceUnsupported) {
