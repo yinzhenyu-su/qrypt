@@ -331,6 +331,40 @@ func TestAdapterRejectsNewWriteAfterShutdown(t *testing.T) {
 	}
 }
 
+func TestAdapterReadOnlyFlushDoesNotTouchBackend(t *testing.T) {
+	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/file.txt": {ID: "file", Name: "file.txt", Size: 5},
+	}}}
+	ad := newAdapter(fs, StatfsOptions{})
+
+	errc, fh := ad.Open("/file.txt", 0)
+	if errc != 0 || fh == 0 {
+		t.Fatalf("Open err=%d fh=%d, want success", errc, fh)
+	}
+	if errc := ad.Flush("/file.txt", fh); errc != 0 {
+		t.Fatalf("Flush read-only err=%d, want 0", errc)
+	}
+	if len(fs.flushes) != 0 {
+		t.Fatalf("backend flushes = %v, want none for read-only handle", fs.flushes)
+	}
+}
+
+func TestAdapterWritableFlushTouchesBackend(t *testing.T) {
+	fs := &createRouteFS{}
+	ad := newAdapter(fs, StatfsOptions{})
+
+	errc, fh := ad.Create("/file.txt", 1, fuse.S_IFREG|0o644)
+	if errc != 0 || fh == 0 {
+		t.Fatalf("Create err=%d fh=%d, want success", errc, fh)
+	}
+	if errc := ad.Flush("/file.txt", fh); errc != 0 {
+		t.Fatalf("Flush writable err=%d, want 0", errc)
+	}
+	if got := strings.Join(fs.flushes, ","); got != "/file.txt" {
+		t.Fatalf("backend flushes = %q, want /file.txt", got)
+	}
+}
+
 func TestAdapterXattrsInMemory(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true, ModTime: time.Unix(1, 0)},
