@@ -57,6 +57,26 @@ func (s *stagingStore) cleanupUploadTemps() int {
 	return cleaned
 }
 
+func (s *stagingStore) cleanupUploadTempsFor(stagingPath, keepPath string) int {
+	pattern := filepath.Base(stagingPath) + ".upload-"
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0
+	}
+	keepBase := filepath.Base(keepPath)
+	var cleaned int
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || name == keepBase || !strings.HasPrefix(name, pattern) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.dir, name)); err == nil {
+			cleaned++
+		}
+	}
+	return cleaned
+}
+
 func (s *stagingStore) path(fid string) string {
 	return filepath.Join(s.dir, fid+".staging")
 }
