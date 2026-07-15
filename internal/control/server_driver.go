@@ -17,12 +17,14 @@ import (
 )
 
 type DriverTestRequest struct {
-	Test   string `json:"test"`
-	Mount  string `json:"mount,omitempty"`
-	Source string `json:"source,omitempty"`
-	Dest   string `json:"dest,omitempty"`
-	Size   string `json:"size,omitempty"`
-	VFS    bool   `json:"vfs,omitempty"`
+	Test           string `json:"test"`
+	Mount          string `json:"mount,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Dest           string `json:"dest,omitempty"`
+	Size           string `json:"size,omitempty"`
+	VFS            bool   `json:"vfs,omitempty"`
+	Samples        int    `json:"samples,omitempty"`
+	SampleInterval string `json:"sample_interval,omitempty"`
 }
 
 type DriverProbeRequest = DriverTestRequest
@@ -239,6 +241,247 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown driver test: %s", req.Test), http.StatusBadRequest)
 		return
 	}
+}
+
+func (s *Server) handleBench(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provider, ok := s.source.(vfs.DriverProvider)
+	if !ok {
+		http.Error(w, "benchmark not available", http.StatusNotImplemented)
+		return
+	}
+	var req DriverTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	testType := strings.ToLower(strings.TrimSpace(req.Test))
+	samples := req.Samples
+	if samples <= 0 {
+		samples = 1
+	}
+	interval, err := parseBenchmarkSampleInterval(req.SampleInterval)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	switch testType {
+	case "crud":
+		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {
+			http.Error(w, "crud benchmark only supports mount", http.StatusBadRequest)
+			return
+		}
+		s.writeCRUDBenchmark(w, r, provider, req, samples, interval)
+	case "fs":
+		if req.Mount == "" {
+			http.Error(w, "fs benchmark requires mount", http.StatusBadRequest)
+			return
+		}
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			http.Error(w, "fs benchmark only supports mount and size", http.StatusBadRequest)
+			return
+		}
+		filesys, ok := s.source.(vfs.FileSystem)
+		if !ok {
+			http.Error(w, "VFS fs benchmark not available: source does not implement FileSystem", http.StatusNotImplemented)
+			return
+		}
+		s.writeFSBenchmark(w, r, provider, filesys, req, samples, interval)
+	case "xfer":
+		if req.Mount != "" {
+			http.Error(w, "xfer benchmark uses source and dest, not mount", http.StatusBadRequest)
+			return
+		}
+		if req.Source == "" || req.Dest == "" {
+			http.Error(w, "xfer benchmark requires source and dest", http.StatusBadRequest)
+			return
+		}
+		if req.Source == req.Dest {
+			http.Error(w, "source and dest must be different mounts", http.StatusBadRequest)
+			return
+		}
+		s.writeXferBenchmark(w, r, provider, req, samples, interval)
+	default:
+		http.Error(w, fmt.Sprintf("unknown benchmark: %s", req.Test), http.StatusBadRequest)
+	}
+}
+
+func (s *Server) writeCRUDBenchmark(w http.ResponseWriter, r *http.Request, provider vfs.DriverProvider, req DriverTestRequest, samples int, interval time.Duration) {
+	var reports []BenchmarkReport
+	matched := false
+	for _, nd := range provider.Drivers() {
+		if req.Mount != "" && nd.Name != req.Mount {
+			continue
+		}
+		matched = true
+		probe := RunBenchmarkNetworkProbe(r.Context(), nd.Driver)
+		results := make([]CRUDTestResult, 0, samples)
+		for i := 0; i < samples; i++ {
+			if i > 0 && interval > 0 {
+				timer := time.NewTimer(interval)
+				select {
+				case <-r.Context().Done():
+					timer.Stop()
+					http.Error(w, r.Context().Err().Error(), http.StatusRequestTimeout)
+					return
+				case <-timer.C:
+				}
+			}
+			result := RunDriverCRUDTest(r.Context(), nd.Name, nd.Driver)
+			results = append(results, *result)
+		}
+		reports = append(reports, NewCRUDBenchmarkReportSamplesWithEnvironment(results, BenchmarkEnvironment{NetworkProbe: &probe}))
+	}
+	if req.Mount != "" && !matched {
+		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, reports)
+}
+
+func (s *Server) writeFSBenchmark(w http.ResponseWriter, r *http.Request, provider vfs.DriverProvider, filesys vfs.FileSystem, req DriverTestRequest, samples int, interval time.Duration) {
+	var driver drive.Driver
+	for _, nd := range provider.Drivers() {
+		if nd.Name == req.Mount {
+			driver = nd.Driver
+			break
+		}
+	}
+	if driver == nil {
+		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+		return
+	}
+	probe := RunBenchmarkNetworkProbe(r.Context(), driver)
+	results := make([]FSTestResult, 0, samples)
+	for i := 0; i < samples; i++ {
+		if i > 0 && interval > 0 {
+			timer := time.NewTimer(interval)
+			select {
+			case <-r.Context().Done():
+				timer.Stop()
+				http.Error(w, r.Context().Err().Error(), http.StatusRequestTimeout)
+				return
+			case <-timer.C:
+			}
+		}
+		result := RunVFSSmokeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
+		results = append(results, *result)
+	}
+	writeJSON(w, []BenchmarkReport{NewFSBenchmarkReportSamplesWithEnvironment(results, BenchmarkEnvironment{NetworkProbe: &probe})})
+}
+
+func (s *Server) writeXferBenchmark(w http.ResponseWriter, r *http.Request, provider vfs.DriverProvider, req DriverTestRequest, samples int, interval time.Duration) {
+	var srcDriver, dstDriver drive.Driver
+	for _, nd := range provider.Drivers() {
+		if nd.Name == req.Source {
+			srcDriver = nd.Driver
+		}
+		if nd.Name == req.Dest {
+			dstDriver = nd.Driver
+		}
+	}
+	if srcDriver == nil {
+		http.Error(w, fmt.Sprintf("source mount %q not found", req.Source), http.StatusNotFound)
+		return
+	}
+	if dstDriver == nil {
+		http.Error(w, fmt.Sprintf("dest mount %q not found", req.Dest), http.StatusNotFound)
+		return
+	}
+
+	probe := mergeBenchmarkNetworkProbes(
+		RunBenchmarkNetworkProbe(r.Context(), srcDriver),
+		RunBenchmarkNetworkProbe(r.Context(), dstDriver),
+	)
+	results := make([]XferTestResult, 0, samples)
+	for i := 0; i < samples; i++ {
+		if i > 0 && interval > 0 {
+			timer := time.NewTimer(interval)
+			select {
+			case <-r.Context().Done():
+				timer.Stop()
+				http.Error(w, r.Context().Err().Error(), http.StatusRequestTimeout)
+				return
+			case <-timer.C:
+			}
+		}
+		if req.VFS {
+			filesys, ok := s.source.(vfs.FileSystem)
+			if !ok {
+				http.Error(w, "VFS xfer benchmark not available: source does not implement FileSystem", http.StatusNotImplemented)
+				return
+			}
+			results = append(results, *RunVFSXferTest(r.Context(), filesys, req.Source, req.Dest, parseXferSize(req.Size)))
+		} else {
+			results = append(results, *RunDriverXferTest(r.Context(), req.Source, srcDriver, req.Dest, dstDriver, parseXferSize(req.Size)))
+		}
+	}
+	writeJSON(w, []BenchmarkReport{NewXferBenchmarkReportSamplesWithEnvironment(results, BenchmarkEnvironment{NetworkProbe: &probe})})
+}
+
+func mergeBenchmarkNetworkProbes(src, dst BenchmarkNetworkProbe) BenchmarkNetworkProbe {
+	probe := BenchmarkNetworkProbe{
+		Status:          "ok",
+		Started:         src.Started,
+		Finished:        dst.Finished,
+		Steps:           append(append([]BenchmarkProbeStep(nil), src.Steps...), dst.Steps...),
+		EventCount:      src.EventCount + dst.EventCount,
+		RetryCount:      src.RetryCount + dst.RetryCount,
+		ErrorCount:      src.ErrorCount + dst.ErrorCount,
+		EventOperations: map[string]int{},
+		Events:          append(append([]drive.MetricEvent(nil), src.Events...), dst.Events...),
+	}
+	if probe.Started.IsZero() || (!dst.Started.IsZero() && dst.Started.Before(probe.Started)) {
+		probe.Started = dst.Started
+	}
+	if src.Finished.After(probe.Finished) {
+		probe.Finished = src.Finished
+	}
+	if probe.Finished.After(probe.Started) {
+		duration := probe.Finished.Sub(probe.Started)
+		probe.Duration = duration.String()
+		probe.DurationMS = durationMillis(duration)
+	}
+	for operation, count := range src.EventOperations {
+		probe.EventOperations[operation] += count
+	}
+	for operation, count := range dst.EventOperations {
+		probe.EventOperations[operation] += count
+	}
+	if len(probe.EventOperations) == 0 {
+		probe.EventOperations = nil
+	}
+	probe.APILatency = benchmarkStats(probeStepDurations(probe.Steps))
+	switch {
+	case src.Status == "degraded" || dst.Status == "degraded":
+		probe.Status = "degraded"
+	case src.Status == "unstable" || dst.Status == "unstable":
+		probe.Status = "unstable"
+	case src.Status == "" || dst.Status == "":
+		probe.Status = ""
+	default:
+		probe.Status = "ok"
+	}
+	return probe
+}
+
+func parseBenchmarkSampleInterval(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid sample_interval %q", value)
+	}
+	if duration < 0 {
+		return 0, fmt.Errorf("sample_interval must not be negative")
+	}
+	return duration, nil
 }
 
 // parseXferSize parses the size query param for xfer tests.
