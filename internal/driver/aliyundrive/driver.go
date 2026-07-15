@@ -452,7 +452,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
 	}
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload create: %w", err)
+		return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload create: %w", err))
 	}
 	if create.InstantUpload {
 		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
@@ -472,7 +472,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		"upload_id": create.UploadID,
 	}
 	if err := d.cl.request(ctx, http.MethodPost, "/v2/file/complete", completeBody, &complete); err != nil {
-		return drive.Entry{}, fmt.Errorf("aliyundrive: upload complete: %w", err)
+		return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload complete: %w", err))
 	}
 	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(complete.UpdatedAt, complete.CreatedAt, responseModTime(create.UpdatedAt, create.CreatedAt, now))}
 	if complete.FileID != "" {
@@ -495,6 +495,17 @@ func responseModTime(updatedAt, createdAt *time.Time, fallback time.Time) time.T
 		return *createdAt
 	}
 	return fallback
+}
+
+func classifyAliyunUploadError(err error) error {
+	if err == nil || drive.IsNonRetryable(err) {
+		return err
+	}
+	var apiErr *apiStatusError
+	if errors.As(err, &apiErr) && apiErr.status >= 400 && apiErr.status < 500 && apiErr.status != http.StatusRequestTimeout && apiErr.status != http.StatusTooManyRequests {
+		return drive.NonRetryable(err)
+	}
+	return err
 }
 
 func (d *Driver) instantUploadFields(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (map[string]any, error) {
@@ -579,7 +590,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 	size := source.Size()
 	for _, part := range parts {
 		if part.UploadURL == "" {
-			return fmt.Errorf("aliyundrive: upload part %d has empty url", part.PartNumber)
+			return drive.NonRetryable(fmt.Errorf("aliyundrive: upload part %d has empty url", part.PartNumber))
 		}
 		offset := int64(part.PartNumber-1) * d.partSize
 		length := d.partSize
@@ -612,7 +623,11 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("aliyundrive: upload part %d status %d", part.PartNumber, resp.StatusCode)
+			err := fmt.Errorf("aliyundrive: upload part %d status %d", part.PartNumber, resp.StatusCode)
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
+				err = drive.NonRetryable(err)
+			}
+			return err
 		}
 	}
 	return nil

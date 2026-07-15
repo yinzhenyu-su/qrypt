@@ -371,7 +371,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	parentID, name, source := req.ParentID, req.Name, req.Source
 	size := source.Size()
 	if size < 1 {
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: empty files are not allowed by baidu netdisk")
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("baidu_netdisk: empty files are not allowed by baidu netdisk"))
 	}
 	parentPath := d.resolvePath(parentID)
 	remotePath := path.Join(parentPath, name)
@@ -398,7 +398,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		return pre.File.entry(parentPath), nil
 	}
 	if pre.UploadID == "" {
-		return drive.Entry{}, fmt.Errorf("baidu_netdisk: upload precreate returned empty uploadid")
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload precreate returned empty uploadid"))
 	}
 	if err := d.uploadParts(ctx, source, req.Progress, remotePath, name, size, pre.UploadID, pre.BlockList); err != nil {
 		d.setLastError(err)
@@ -753,18 +753,26 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("baidu_netdisk: upload part %d status %d: %s", partSeq, resp.StatusCode, string(data))
+		err := fmt.Errorf("baidu_netdisk: upload part %d status %d: %s", partSeq, resp.StatusCode, string(data))
+		if nonRetryableUploadStatus(resp.StatusCode) {
+			err = drive.NonRetryable(err)
+		}
+		return err
 	}
 	var uploadResp uploadSliceResp
 	if err := json.Unmarshal(data, &uploadResp); err == nil {
 		if uploadResp.ErrorCode != 0 {
-			return fmt.Errorf("baidu_netdisk: upload part %d error_code %d: %s", partSeq, uploadResp.ErrorCode, uploadResp.ErrorMsg)
+			return drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload part %d error_code %d: %s", partSeq, uploadResp.ErrorCode, uploadResp.ErrorMsg))
 		}
 		if uploadResp.Errno != 0 {
-			return fmt.Errorf("baidu_netdisk: upload part %d errno %d: %s", partSeq, uploadResp.Errno, uploadResp.Errmsg)
+			return drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload part %d errno %d: %s", partSeq, uploadResp.Errno, uploadResp.Errmsg))
 		}
 	}
 	return nil
+}
+
+func nonRetryableUploadStatus(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }
 
 func (d *Driver) manage(ctx context.Context, op string, filelist any) error {
