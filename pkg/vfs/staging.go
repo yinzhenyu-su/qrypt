@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,6 +39,24 @@ func newStagingStore(dir string) (*stagingStore, error) {
 	return &stagingStore{dir: dir}, nil
 }
 
+func (s *stagingStore) cleanupUploadTemps() int {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0
+	}
+	var cleaned int
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.Contains(name, ".staging.upload-") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.dir, name)); err == nil {
+			cleaned++
+		}
+	}
+	return cleaned
+}
+
 func (s *stagingStore) path(fid string) string {
 	return filepath.Join(s.dir, fid+".staging")
 }
@@ -56,10 +75,6 @@ func (s *stagingStore) create(fid string) (string, error) {
 }
 
 func (s *stagingStore) writeAt(path string, data []byte, off int64) (int, error) {
-	fid := fidFromStagingPath(path)
-	if len(data) < pageMaxSize/4 {
-		return s.getPage(fid).writeAt(path, data, off)
-	}
 	if err := s.flush(path); err != nil {
 		return 0, err
 	}
@@ -194,10 +209,6 @@ func (p *page) writeAt(path string, data []byte, off int64) (int, error) {
 	p.dirty = true
 	if need > p.maxOffset {
 		p.maxOffset = need
-	}
-	if len(p.buf) > pageMaxSize {
-		p.mu.Unlock()
-		return len(data), p.flushNow()
 	}
 	p.resetTimerLocked()
 	p.mu.Unlock()

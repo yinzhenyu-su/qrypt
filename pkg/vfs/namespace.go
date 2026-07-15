@@ -50,6 +50,10 @@ type DebugStagingInspector interface {
 	DebugStaging(ctx context.Context, path string) (DebugStagingReport, error)
 }
 
+type DebugMountSnapshotter interface {
+	DebugSnapshotForMounts(mountNames []string) DebugSnapshot
+}
+
 // MountHealth describes recent runtime health for one mount.
 type MountHealth struct {
 	Mount     string                   `json:"mount"`

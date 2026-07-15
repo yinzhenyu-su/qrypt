@@ -19,7 +19,11 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 )
 
-const cacheBatchBlocks = 16
+const (
+	cacheBatchBlocks         = 16
+	journalCompactMaxBytes   = 512 << 10
+	journalCompactMaxEntries = 1024
+)
 
 // reserveFraction and minReserveBytes control how much disk space is kept
 // free when capping cache maxSize by available disk space.
@@ -165,6 +169,9 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cleaned := staging.cleanupUploadTemps(); cleaned > 0 {
+		logging.L.Infof("[CACHE] cleaned %d orphaned staging upload files", cleaned)
+	}
 	c := &Cache{
 		dir:     dir,
 		maxSize: adjusted,
@@ -172,8 +179,14 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 		pending: map[string]PendingFile{},
 		chunks:  map[string]*fileChunks{},
 	}
-	if err := c.loadJournal(); err != nil {
+	entries, err := c.loadJournal()
+	if err != nil {
 		return nil, err
+	}
+	if c.shouldCompactJournal(entries) {
+		if err := c.compactJournal(); err != nil {
+			logging.L.Warnf("[CACHE] compact pending journal failed: %v", err)
+		}
 	}
 	return c, nil
 }
@@ -218,6 +231,13 @@ func (c *Cache) SavePending(p PendingFile) error {
 	c.pending[p.Path] = p
 	c.mu.Unlock()
 	return c.appendJournal(journalEntry{Op: "dirty", PendingFile: p})
+}
+
+func (c *Cache) UpdatePendingTransient(p PendingFile) {
+	p.UpdatedAt = timeutil.Now().UnixNano()
+	c.mu.Lock()
+	c.pending[p.Path] = p
+	c.mu.Unlock()
 }
 
 func (c *Cache) RecordPendingFailure(path string, err error, retryDelay time.Duration) (PendingFile, bool, error) {
@@ -622,7 +642,13 @@ func (c *Cache) journalPath() string {
 func (c *Cache) appendJournal(entry journalEntry) error {
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()
-	return c.appendJournalLocked(entry)
+	if err := c.appendJournalLocked(entry); err != nil {
+		return err
+	}
+	if c.shouldCompactJournal(0) {
+		return c.compactJournalLocked()
+	}
+	return nil
 }
 
 func (c *Cache) appendJournalLocked(entry journalEntry) error {
@@ -630,28 +656,39 @@ func (c *Cache) appendJournalLocked(entry journalEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	data, err := json.Marshal(entry)
 	if err != nil {
+		f.Close()
 		return err
 	}
 	if _, err := f.Write(append(data, '\n')); err != nil {
+		f.Close()
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (c *Cache) loadJournal() error {
+func (c *Cache) loadJournal() (int, error) {
 	f, err := os.Open(c.journalPath())
 	if os.IsNotExist(err) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var entries int
 	for scanner.Scan() {
+		entries++
 		var entry journalEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
@@ -665,7 +702,42 @@ func (c *Cache) loadJournal() error {
 			delete(c.pending, entry.Path)
 		}
 	}
-	return scanner.Err()
+	return entries, scanner.Err()
+}
+
+func (c *Cache) shouldCompactJournal(entries int) bool {
+	info, err := os.Stat(c.journalPath())
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		return false
+	}
+	if info.Size() >= journalCompactMaxBytes {
+		return true
+	}
+	if entries == 0 {
+		entries = countJournalEntries(c.journalPath())
+	}
+	c.mu.RLock()
+	pendingCount := len(c.pending)
+	c.mu.RUnlock()
+	return entries >= journalCompactMaxEntries && entries > pendingCount+32
+}
+
+func countJournalEntries(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var entries int
+	for scanner.Scan() {
+		entries++
+	}
+	return entries
 }
 
 func (c *Cache) compactJournal() error {
