@@ -627,10 +627,10 @@ func quarkSourceHashes(source drive.ReadOnlyFileSource) (map[string]any, bool, e
 		return nil, false, nil
 	}
 	if len(md5Sum) != md5.Size {
-		return nil, false, fmt.Errorf("quark: source MD5 metadata has %d bytes, want %d", len(md5Sum), md5.Size)
+		return nil, false, drive.NonRetryable(fmt.Errorf("quark: source MD5 metadata has %d bytes, want %d", len(md5Sum), md5.Size))
 	}
 	if len(sha1Sum) != sha1.Size {
-		return nil, false, fmt.Errorf("quark: source SHA-1 metadata has %d bytes, want %d", len(sha1Sum), sha1.Size)
+		return nil, false, drive.NonRetryable(fmt.Errorf("quark: source SHA-1 metadata has %d bytes, want %d", len(sha1Sum), sha1.Size))
 	}
 	return map[string]any{
 		"md5":  fmt.Sprintf("%X", md5Sum),
@@ -1009,7 +1009,11 @@ func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string
 			continue
 		}
 		logging.L.Warnf("[QUARK] oss complete status failed task=%q attempts=%d status=%d", pre.Data.TaskID, attempt+1, resp.StatusCode)
-		return fmt.Errorf("oss complete status %d", resp.StatusCode)
+		statusErr := fmt.Errorf("oss complete status %d", resp.StatusCode)
+		if nonRetryableUploadStatus(resp.StatusCode) {
+			statusErr = drive.NonRetryable(statusErr)
+		}
+		return statusErr
 	}
 	return nil
 }
@@ -1101,9 +1105,17 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 			continue
 		}
 		logging.L.Warnf("[QUARK] upload part status failed task=%q part=%d attempts=%d status=%d", pre.Data.TaskID, partNumber, attempt+1, resp.StatusCode)
-		return "", fmt.Errorf("upload part %d status %d", partNumber, resp.StatusCode)
+		statusErr := fmt.Errorf("upload part %d status %d", partNumber, resp.StatusCode)
+		if nonRetryableUploadStatus(resp.StatusCode) {
+			statusErr = drive.NonRetryable(statusErr)
+		}
+		return "", statusErr
 	}
 	return "", nil
+}
+
+func nonRetryableUploadStatus(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }
 
 func ossURL(pre *upPreResp) string {

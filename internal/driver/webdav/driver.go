@@ -468,7 +468,11 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		return drive.Entry{}, fmt.Errorf("webdav: put: status %d for %s/%s", resp.StatusCode, parentID, name)
+		err := fmt.Errorf("webdav: put: status %d for %s/%s", resp.StatusCode, parentID, name)
+		if nonRetryableUploadStatus(resp.StatusCode) {
+			err = drive.NonRetryable(err)
+		}
+		return drive.Entry{}, err
 	}
 	childPath := d.joinPath(parentID, name)
 	return drive.Entry{
@@ -478,6 +482,10 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 		Size:     source.Size(),
 		ModTime:  time.Now(),
 	}, nil
+}
+
+func nonRetryableUploadStatus(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }
 
 // ─── internal helpers ────────────────────────────────────────────────────
