@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
@@ -17,7 +18,11 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-const maxUploadRetryDelay = 15 * time.Minute
+const (
+	maxUploadRetryDelay       = 15 * time.Minute
+	largeUploadQuietThreshold = 16 << 20
+	largeUploadQuietDelay     = uploadDebounceDelay
+)
 
 func (v *VFS) Pending() []PendingFile {
 	return v.cache.Pending()
@@ -50,6 +55,21 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		v.enqueue(latest)
 		return nil
 	}
+	if delay := v.pendingQuietDelay(pending); delay > 0 {
+		logging.L.DebugfEvery("vfs.upload_wait_for_quiet", time.Second, "[VFS] upload delayed until writes are quiet op_id=%q path=%q size=%d delay=%s", pending.FID, pending.Path, pending.Size, delay)
+		v.enqueueAfter(pending, delay)
+		return nil
+	}
+	if !v.uploadAdmit.tryAcquire(pending, v.uploadWorkers) {
+		delay := v.pendingQuietWindow(pending)
+		if delay <= 0 {
+			delay = v.uploadDelay
+		}
+		logging.L.DebugfEvery("vfs.upload_wait_for_admission", time.Second, "[VFS] upload delayed until admission is available op_id=%q path=%q size=%d delay=%s", pending.FID, pending.Path, pending.Size, delay)
+		v.enqueueAfter(pending, delay)
+		return nil
+	}
+	defer v.uploadAdmit.release(pending)
 	uploadStart := timeutil.Now()
 	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
 	v.startUploadSnapshot(pending)
@@ -321,6 +341,9 @@ func (v *VFS) snapshotPending(pending PendingFile) (uploadSnapshot, error) {
 	if written != pending.Size {
 		return uploadSnapshot{}, fmt.Errorf("vfs: upload snapshot size mismatch: wrote %d, expected %d", written, pending.Size)
 	}
+	if cleaned := v.cache.staging.cleanupUploadTempsFor(pending.LocalPath, tmpPath); cleaned > 0 {
+		logging.L.InfofEvery("vfs.cleanup_old_upload_snapshots", time.Second, "[VFS] cleaned old upload snapshots path=%q local=%q count=%d", pending.Path, pending.LocalPath, cleaned)
+	}
 	cleanup = false
 	return uploadSnapshot{
 		Path: tmpPath,
@@ -543,6 +566,68 @@ func pendingUploadDelay(p PendingFile, fallback time.Duration) time.Duration {
 		return delay
 	}
 	return 0
+}
+
+func (v *VFS) pendingQuietDelay(p PendingFile) time.Duration {
+	quietWindow := v.pendingQuietWindow(p)
+	if quietWindow <= 0 || p.UpdatedAt <= 0 {
+		return 0
+	}
+	quietFor := time.Since(time.Unix(0, p.UpdatedAt))
+	if quietFor >= quietWindow {
+		return 0
+	}
+	return quietWindow - quietFor
+}
+
+func (v *VFS) pendingQuietWindow(p PendingFile) time.Duration {
+	quietWindow := v.uploadDelay
+	if p.Size >= largeUploadQuietThreshold && quietWindow < largeUploadQuietDelay {
+		quietWindow = largeUploadQuietDelay
+	}
+	return quietWindow
+}
+
+type uploadAdmission struct {
+	mu          sync.Mutex
+	activeSmall int
+	activeLarge bool
+}
+
+func (a *uploadAdmission) tryAcquire(p PendingFile, workers int) bool {
+	if workers <= 0 {
+		workers = 1
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if isLargeUpload(p) {
+		if a.activeLarge || a.activeSmall > 0 {
+			return false
+		}
+		a.activeLarge = true
+		return true
+	}
+	if a.activeLarge || a.activeSmall >= workers {
+		return false
+	}
+	a.activeSmall++
+	return true
+}
+
+func (a *uploadAdmission) release(p PendingFile) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if isLargeUpload(p) {
+		a.activeLarge = false
+		return
+	}
+	if a.activeSmall > 0 {
+		a.activeSmall--
+	}
+}
+
+func isLargeUpload(p PendingFile) bool {
+	return p.Size >= largeUploadQuietThreshold
 }
 
 func uploadRetryDelay(retryCount int, minimum time.Duration) time.Duration {
