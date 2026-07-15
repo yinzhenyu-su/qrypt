@@ -435,7 +435,7 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	snapshot := s.source.DebugSnapshot()
+	snapshot := s.debugSnapshot(r)
 	path := r.URL.Query().Get("path")
 	if path != "" {
 		resolver, ok := s.source.(vfs.DebugResolver)
@@ -493,13 +493,30 @@ func (s *Server) handleStaging(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	snapshot := s.source.DebugSnapshot()
+	snapshot := s.debugSnapshot(r)
+	if mounts := debugMountQuery(r); len(mounts) > 0 {
+		report.Mounts = filterDebugStagingMounts(report.Mounts, mounts)
+	}
 	writeJSON(w, StagingResponse{
 		SchemaVersion: snapshot.SchemaVersion,
 		GeneratedAt:   snapshot.GeneratedAt,
 		Path:          report.Path,
 		Mounts:        report.Mounts,
 	})
+}
+
+func filterDebugStagingMounts(mounts []vfs.DebugStagingMount, mountNames []string) []vfs.DebugStagingMount {
+	if len(mountNames) == 0 {
+		return mounts
+	}
+	allowed := debugMountSet(mountNames)
+	filtered := mounts[:0]
+	for _, mount := range mounts {
+		if allowed[mount.Mount] {
+			filtered = append(filtered, mount)
+		}
+	}
+	return filtered
 }
 
 func cacheMountName(snapshot vfs.DebugSnapshot, path string) string {
@@ -766,7 +783,62 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, s.source.DebugSnapshot())
+	writeJSON(w, s.debugSnapshot(r))
+}
+
+func (s *Server) debugSnapshot(r *http.Request) vfs.DebugSnapshot {
+	mounts := debugMountQuery(r)
+	if len(mounts) == 0 {
+		return s.source.DebugSnapshot()
+	}
+	if filtered, ok := s.source.(vfs.DebugMountSnapshotter); ok {
+		return filtered.DebugSnapshotForMounts(mounts)
+	}
+	return filterDebugSnapshotMounts(s.source.DebugSnapshot(), mounts)
+}
+
+func debugMountQuery(r *http.Request) []string {
+	var out []string
+	for _, name := range r.URL.Query()["mount"] {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func filterDebugSnapshotMounts(snapshot vfs.DebugSnapshot, mountNames []string) vfs.DebugSnapshot {
+	if len(mountNames) == 0 {
+		return snapshot
+	}
+	allowed := debugMountSet(mountNames)
+	filtered := snapshot.Mounts[:0]
+	for _, mount := range snapshot.Mounts {
+		if allowed[mount.Identity.Name] {
+			filtered = append(filtered, mount)
+		}
+	}
+	snapshot.Mounts = filtered
+	return snapshot
+}
+
+func debugMountSet(mountNames []string) map[string]bool {
+	set := map[string]bool{}
+	for _, name := range mountNames {
+		name = strings.Trim(strings.TrimSpace(name), "/")
+		if name != "" {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+func debugMountAllowed(mountName string, mountNames []string) bool {
+	if len(mountNames) == 0 {
+		return true
+	}
+	return debugMountSet(mountNames)[mountName]
 }
 
 func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
@@ -774,7 +846,7 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	snapshot := s.source.DebugSnapshot()
+	snapshot := s.debugSnapshot(r)
 	var pending []vfs.PendingFile
 	for _, mount := range snapshot.Mounts {
 		for _, item := range mount.PendingFiles() {
@@ -799,7 +871,7 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	snapshot := s.source.DebugSnapshot()
+	snapshot := s.debugSnapshot(r)
 	filterPath := cleanVirtual(r.URL.Query().Get("path"))
 	hasFilter := r.URL.Query().Get("path") != ""
 	includeHistory := parseBoolQuery(r.URL.Query().Get("history"))
@@ -859,7 +931,7 @@ func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	snapshot := s.source.DebugSnapshot()
+	snapshot := s.debugSnapshot(r)
 	filterPath := cleanVirtual(r.URL.Query().Get("path"))
 	hasFilter := r.URL.Query().Get("path") != ""
 	var reads []drive.MetricEvent

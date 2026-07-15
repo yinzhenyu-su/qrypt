@@ -487,6 +487,74 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 }
 
+func TestServerFiltersDebugEndpointsByMount(t *testing.T) {
+	socketPath := testSocketPath(t)
+	source := fakeSnapshotter{snapshot: vfs.DebugSnapshot{
+		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+		GeneratedAt:   time.Unix(1, 0),
+		Kind:          "namespace",
+		Mounts: []vfs.MountSnapshot{{
+			Identity: vfs.MountSnapshotIdentity{Name: "local", DriverName: "localfs"},
+			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
+				Path: "/local.txt",
+				FID:  "local",
+				Size: 1,
+			}}},
+			UploadState: vfs.MountSnapshotUploads{Active: []vfs.UploadSnapshot{{
+				Path:  "/local-upload.txt",
+				State: string(drive.UploadPhaseUploading),
+			}}},
+		}, {
+			Identity: vfs.MountSnapshotIdentity{Name: "cloud", DriverName: "quark"},
+			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
+				Path: "/cloud.txt",
+				FID:  "cloud",
+				Size: 2,
+			}}},
+			UploadState: vfs.MountSnapshotUploads{Active: []vfs.UploadSnapshot{{
+				Path:  "/cloud-upload.txt",
+				State: string(drive.UploadPhaseUploading),
+			}}},
+		}},
+	}}
+	server, err := NewServer(socketPath, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+
+	client, err := NewClient(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBody, err := client.Get(context.Background(), "/v1/state?mount=cloud")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateBody), `"name": "cloud"`) || strings.Contains(string(stateBody), `"name": "local"`) {
+		t.Fatalf("unexpected filtered state: %s", stateBody)
+	}
+	pendingBody, err := client.Get(context.Background(), "/v1/pending?mount=cloud")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pendingBody), `"/cloud/cloud.txt"`) || strings.Contains(string(pendingBody), `"/local/local.txt"`) {
+		t.Fatalf("unexpected filtered pending: %s", pendingBody)
+	}
+	uploadsBody, err := client.Get(context.Background(), "/v1/uploads?mount=cloud")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(uploadsBody), `"/cloud/cloud-upload.txt"`) || strings.Contains(string(uploadsBody), `"/local/local-upload.txt"`) {
+		t.Fatalf("unexpected filtered uploads: %s", uploadsBody)
+	}
+}
+
 func TestDriverSpaceMarksUnsupportedWithoutError(t *testing.T) {
 	source := fakeSnapshotter{drivers: []vfs.NamedDriver{{
 		Name:   "webdav",
@@ -494,7 +562,7 @@ func TestDriverSpaceMarksUnsupportedWithoutError(t *testing.T) {
 	}}}
 	server := &Server{source: source}
 
-	spaces := server.driverSpaces(context.Background())
+	spaces := server.driverSpaces(context.Background(), nil)
 	space := spaces["webdav"]
 	if space == nil {
 		t.Fatal("missing webdav space summary")
