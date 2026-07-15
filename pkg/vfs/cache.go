@@ -80,7 +80,15 @@ type PendingFile struct {
 	PermanentFail bool                  `json:"permanent_fail,omitempty"`
 	LastAttemptAt int64                 `json:"last_attempt_at,omitempty"`
 	NextAttemptAt int64                 `json:"next_attempt_at,omitempty"`
+	ReplaceUpload *PendingReplaceUpload `json:"replace_upload,omitempty"`
 	Staging       *PendingStagingStatus `json:"staging,omitempty"`
+}
+
+type PendingReplaceUpload struct {
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id,omitempty"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
 }
 
 type PendingStagingStatus struct {
@@ -229,6 +237,26 @@ func (c *Cache) RecordPendingFailure(path string, err error, retryDelay time.Dur
 		}
 		pending.UpdatedAt = now.UnixNano()
 		c.pending[path] = pending
+	}
+	c.mu.Unlock()
+	if !ok {
+		return PendingFile{}, false, nil
+	}
+	return pending, true, c.appendJournal(journalEntry{Op: "dirty", PendingFile: pending})
+}
+
+func (c *Cache) RecordPendingReplaceUploadIfUnchanged(p PendingFile, upload PendingReplaceUpload) (PendingFile, bool, error) {
+	now := timeutil.Now()
+	c.mu.Lock()
+	pending, ok := c.pending[p.Path]
+	if ok && samePendingFile(pending, p) {
+		pending.ReplaceUpload = &upload
+		pending.LastError = ""
+		pending.NextAttemptAt = 0
+		pending.UpdatedAt = now.UnixNano()
+		c.pending[p.Path] = pending
+	} else {
+		ok = false
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -719,7 +747,18 @@ func samePendingFile(a, b PendingFile) bool {
 		a.LastError == b.LastError &&
 		a.PermanentFail == b.PermanentFail &&
 		a.LastAttemptAt == b.LastAttemptAt &&
-		a.NextAttemptAt == b.NextAttemptAt
+		a.NextAttemptAt == b.NextAttemptAt &&
+		samePendingReplaceUpload(a.ReplaceUpload, b.ReplaceUpload)
+}
+
+func samePendingReplaceUpload(a, b *PendingReplaceUpload) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ID == b.ID &&
+		a.ParentID == b.ParentID &&
+		a.Name == b.Name &&
+		a.Size == b.Size
 }
 
 func (c *Cache) evictIfNeeded() error {
