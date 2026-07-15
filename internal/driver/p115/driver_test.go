@@ -2,11 +2,14 @@ package p115
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -20,6 +23,50 @@ func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
 	}
 	if got != "root-cid" {
 		t.Fatalf("ResolvePath root = %q, want configured root id", got)
+	}
+}
+
+func TestLoginCheckWithRetryRetriesEOF(t *testing.T) {
+	oldDelays := loginCheckRetryDelays
+	loginCheckRetryDelays = []time.Duration{0}
+	t.Cleanup(func() { loginCheckRetryDelays = oldDelays })
+
+	driver := New(Options{})
+	calls := 0
+	err := driver.loginCheckWithRetry(context.Background(), func() error {
+		calls++
+		if calls == 1 {
+			return io.EOF
+		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("loginCheckWithRetry error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestLoginCheckWithRetryDoesNotRetryBusinessError(t *testing.T) {
+	oldDelays := loginCheckRetryDelays
+	loginCheckRetryDelays = []time.Duration{0}
+	t.Cleanup(func() { loginCheckRetryDelays = oldDelays })
+
+	driver := New(Options{})
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginCheckWithRetry(context.Background(), func() error {
+		calls++
+		return want
+	})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("loginCheckWithRetry error = %v, want %v", err, want)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
 	}
 }
 

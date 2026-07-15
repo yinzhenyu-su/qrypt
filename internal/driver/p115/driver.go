@@ -6,13 +6,16 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	cipher "github.com/SheltonZhu/115driver/pkg/crypto/ec115"
@@ -29,6 +32,7 @@ const defaultAppVer = "35.6.0.3"
 const md5Salt = "Qclm8MGWUv59TnrR0XPg"
 
 var appVer = defaultAppVer
+var loginCheckRetryDelays = []time.Duration{1 * time.Second, 2 * time.Second}
 
 type Driver struct {
 	drive.UnsupportedOperations
@@ -119,7 +123,7 @@ func (d *Driver) Init(ctx context.Context) error {
 	}
 	d.cl.ImportCredential(cred)
 	if err := d.recordSDK(ctx, "login_check", nil, func() error {
-		return d.cl.LoginCheck()
+		return d.loginCheckWithRetry(ctx, d.cl.LoginCheck)
 	}); err != nil {
 		d.setLastError(fmt.Sprintf("115: login check: %v", err))
 		return fmt.Errorf("115: login check: %w", err)
@@ -721,6 +725,37 @@ func (d *Driver) recordSDK(ctx context.Context, operation string, request map[st
 	}
 	d.metrics.Record(ctx, event)
 	return err
+}
+
+func (d *Driver) loginCheckWithRetry(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = fn()
+		if err == nil || !isRetryableLoginCheckError(err) || attempt >= len(loginCheckRetryDelays) {
+			return err
+		}
+		timer := time.NewTimer(loginCheckRetryDelays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func isRetryableLoginCheckError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func (d *Driver) setLastError(value string) {
