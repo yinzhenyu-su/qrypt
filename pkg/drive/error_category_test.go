@@ -54,6 +54,7 @@ func TestErrorCategoryMessage(t *testing.T) {
 		{message: "gateway timeout from remote 504", want: ErrorCategoryTimeout},
 		{message: "service unavailable 503", want: ErrorCategoryRemote5xx},
 		{message: "invalid parameter parent_id", want: ErrorCategoryInvalidRequest},
+		{message: "write /blocked.txt: vfs: policy denied: blocked by test policy", want: ErrorCategoryInvalidRequest},
 		{message: "driver does not support upload", want: ErrorCategoryUnsupported},
 		{message: "connection reset by peer", want: ErrorCategoryNetwork},
 		{message: "no space left on device", want: ErrorCategoryLocalIO},

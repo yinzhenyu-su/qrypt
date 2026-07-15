@@ -70,7 +70,7 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryNotFound
 	case containsAny(msg, "already exists", "conflict", "409"):
 		return ErrorCategoryConflict
-	case containsAny(msg, "bad request", "invalid parameter", "invalid request", "malformed", "400"):
+	case containsAny(msg, "policy denied", "bad request", "invalid parameter", "invalid request", "malformed", "400"):
 		return ErrorCategoryInvalidRequest
 	case containsAny(msg, "unsupported", "not supported", "does not support", "not implemented"):
 		return ErrorCategoryUnsupported
