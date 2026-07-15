@@ -57,6 +57,9 @@ type countingUploadDriver struct {
 	last        []byte
 	entries     map[string]drive.Entry
 	removed     []string
+	renamed     []string
+	failUploads int
+	failRenames int
 	blockReturn chan struct{}
 	entered     chan struct{}
 }
@@ -453,6 +456,11 @@ func (d *countingUploadDriver) PutSource(ctx context.Context, req drive.UploadRe
 		return drive.Entry{}, err
 	}
 	d.mu.Lock()
+	if d.failUploads > 0 {
+		d.failUploads--
+		d.mu.Unlock()
+		return drive.Entry{}, errors.New("temporary upload failure")
+	}
 	d.uploads++
 	d.last = append(d.last[:0], data...)
 	uploadID := name + "-" + strconv.Itoa(d.uploads)
@@ -489,11 +497,26 @@ func (d *countingUploadDriver) removedIDs() []string {
 	defer d.mu.Unlock()
 	return append([]string(nil), d.removed...)
 }
+func (d *countingUploadDriver) renamedIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.renamed...)
+}
 func (d *countingUploadDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, errors.New("mkdir should not be called")
 }
 func (d *countingUploadDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *countingUploadDriver) Rename(context.Context, drive.Entry, string) error {
+func (d *countingUploadDriver) Rename(_ context.Context, entry drive.Entry, newName string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failRenames > 0 {
+		d.failRenames--
+		return errors.New("temporary rename failure")
+	}
+	existing := d.entries[entry.ID]
+	existing.Name = newName
+	d.entries[entry.ID] = existing
+	d.renamed = append(d.renamed, entry.ID+":"+newName)
 	return nil
 }
 func (d *countingUploadDriver) Remove(_ context.Context, entry drive.Entry) error {
@@ -1339,6 +1362,208 @@ func TestVFSCoalescesFlushUploads(t *testing.T) {
 	}
 	if got := drv.lastUpload(); got != "two" {
 		t.Fatalf("last upload = %q, want two", got)
+	}
+}
+
+func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{
+		entries: map[string]drive.Entry{
+			"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
+		},
+		failUploads: 1,
+	}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Create(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForCondition(t, func() bool {
+		pending := fs.Pending()
+		return len(pending) == 1 && pending[0].RetryCount == 1 && pending[0].LastError != ""
+	})
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("existing file removed after failed temp upload: %v", removed)
+	}
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != "old" || entries[0].Name != "draft.txt" {
+		t.Fatalf("existing remote file was not preserved: %+v", entries)
+	}
+}
+
+func TestVFSReplaceUploadRenamesTemporaryFileAfterSuccess(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{
+		entries: map[string]drive.Entry{
+			"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
+		},
+	}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Create(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	if removed := drv.removedIDs(); len(removed) != 1 || removed[0] != "old" {
+		t.Fatalf("removed existing ids = %v, want [old]", removed)
+	}
+	renamed := drv.renamedIDs()
+	if len(renamed) != 1 || !strings.HasSuffix(renamed[0], ":draft.txt") {
+		t.Fatalf("renamed temp uploads = %v, want one rename to draft.txt", renamed)
+	}
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "draft.txt" || entries[0].Size != 3 || entries[0].ID == "old" {
+		t.Fatalf("unexpected final entries: %+v", entries)
+	}
+}
+
+func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T) {
+	cacheDir := t.TempDir()
+	entries := map[string]drive.Entry{
+		"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDriver := &countingUploadDriver{entries: entries, failRenames: 1}
+	first, err := vfs.New(firstDriver, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Start(firstCtx)
+
+	if err := first.Create(firstCtx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.WriteAt(firstCtx, "/draft.txt", []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Flush(firstCtx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool {
+		pending := first.Pending()
+		return len(pending) == 1 && pending[0].ReplaceUpload != nil && pending[0].RetryCount == 1
+	})
+	if got := firstDriver.uploadCount(); got != 1 {
+		t.Fatalf("first upload count = %d, want 1", got)
+	}
+	if removed := firstDriver.removedIDs(); len(removed) != 1 || removed[0] != "old" {
+		t.Fatalf("first removed ids = %v, want [old]", removed)
+	}
+	cancelFirst()
+
+	secondDriver := &countingUploadDriver{entries: entries}
+	second, err := vfs.New(secondDriver, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Start(context.Background())
+	waitNoPending(t, second)
+
+	if got := secondDriver.uploadCount(); got != 0 {
+		t.Fatalf("resume reuploaded temp file: count=%d", got)
+	}
+	renamed := secondDriver.renamedIDs()
+	if len(renamed) != 1 || !strings.HasSuffix(renamed[0], ":draft.txt") {
+		t.Fatalf("resume renamed temp uploads = %v, want one rename to draft.txt", renamed)
+	}
+	entriesAfter, err := second.List(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entriesAfter) != 1 || entriesAfter[0].Name != "draft.txt" || entriesAfter[0].ID == "old" {
+		t.Fatalf("unexpected final entries: %+v", entriesAfter)
+	}
+}
+
+func TestVFSUploadRetryUsesGrowingBackoff(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{failUploads: 2}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/retry.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/retry.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForCondition(t, func() bool {
+		pending := fs.Pending()
+		return len(pending) == 1 && pending[0].RetryCount == 2
+	})
+	pending := fs.Pending()[0]
+	delay := time.Unix(0, pending.NextAttemptAt).Sub(time.Unix(0, pending.LastAttemptAt))
+	if delay < 700*time.Millisecond {
+		t.Fatalf("retry delay = %s, want exponential backoff after second failure", delay)
+	}
+}
+
+func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
+	cacheDir := t.TempDir()
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDriver := &countingUploadDriver{failUploads: 1}
+	first, err := vfs.New(firstDriver, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Start(firstCtx)
+	if _, err := first.WriteAt(firstCtx, "/resume-retry.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Flush(firstCtx, "/resume-retry.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool {
+		pending := first.Pending()
+		return len(pending) == 1 && pending[0].RetryCount == 1 && pending[0].NextAttemptAt > time.Now().Add(200*time.Millisecond).UnixNano()
+	})
+	cancelFirst()
+
+	secondDriver := &countingUploadDriver{}
+	second, err := vfs.New(secondDriver, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Start(context.Background())
+	time.Sleep(100 * time.Millisecond)
+	if got := secondDriver.uploadCount(); got != 0 {
+		t.Fatalf("resume uploaded before next attempt: count=%d", got)
+	}
+	waitNoPending(t, second)
+	if got := secondDriver.uploadCount(); got != 1 {
+		t.Fatalf("resume upload count = %d, want 1", got)
 	}
 }
 
