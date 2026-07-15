@@ -171,6 +171,64 @@ func TestOSSClientHasNoWholeRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestOSSRetryDelayBacksOffForNetworkOutages(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: -1, want: 30 * time.Second},
+		{attempt: 0, want: 30 * time.Second},
+		{attempt: 1, want: time.Minute},
+		{attempt: 2, want: 2 * time.Minute},
+		{attempt: 3, want: 2 * time.Minute},
+	}
+	for _, tt := range tests {
+		if got := ossRetryDelay(tt.attempt); got != tt.want {
+			t.Fatalf("ossRetryDelay(%d) = %s, want %s", tt.attempt, got, tt.want)
+		}
+	}
+}
+
+func TestQuarkUploadConflictIsRetryable(t *testing.T) {
+	if nonRetryableUploadStatus(http.StatusConflict) {
+		t.Fatal("409 conflict should not be marked non-retryable; OSS upload sessions can be stale")
+	}
+	if !nonRetryableUploadStatus(http.StatusBadRequest) {
+		t.Fatal("400 bad request should remain non-retryable")
+	}
+}
+
+func TestResumedUploadConflictDeletesSessionAndRetriesFromScratch(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := New("k=v", Options{})
+	driver.InstallStateStore(store)
+	session := quarkUploadSession{
+		Key:       "session-key",
+		ParentID:  "parent",
+		Name:      "data.bin",
+		Size:      1,
+		TaskID:    "task-old",
+		UploadID:  "upload-old",
+		ObjKey:    "obj-old",
+		UploadURL: "upload.example",
+		AuthInfo:  "auth",
+		PartSize:  4 * 1024 * 1024,
+		Etags:     map[int]string{},
+	}
+	driver.saveUploadSession(session)
+
+	err := driver.resumedUploadSessionError(true, session.Key, uploadStatusError{op: "upload part 1", status: http.StatusConflict})
+	if err == nil {
+		t.Fatal("expected retryable invalid session error")
+	}
+	if drive.IsNonRetryable(err) {
+		t.Fatalf("invalid resumed session error should be retryable, got %v", err)
+	}
+	if _, ok := driver.loadUploadSession(session.Key); ok {
+		t.Fatal("stale resumed upload session was not deleted")
+	}
+}
+
 func TestDriverPutInstantUploadFinishes(t *testing.T) {
 	var finishCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -364,6 +422,159 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	}
 	if !finishCalled {
 		t.Fatal("finish was not called")
+	}
+}
+
+func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
+	var partsMu sync.Mutex
+	partUploads := map[string]int{}
+	failPart2 := true
+	var completed bool
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/obj-resume" {
+			t.Fatalf("unexpected oss path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodPut:
+			partNumber := r.URL.Query().Get("partNumber")
+			_, _ = io.ReadAll(r.Body)
+			partsMu.Lock()
+			partUploads[partNumber]++
+			partsMu.Unlock()
+			partsMu.Lock()
+			shouldFail := failPart2 && partNumber == "2"
+			partsMu.Unlock()
+			if partNumber == "2" {
+				if shouldFail {
+					<-r.Context().Done()
+					return
+				}
+			}
+			w.Header().Set("Etag", "etag-"+partNumber)
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"etag-1", "etag-2", "etag-3"} {
+				if !bytes.Contains(data, []byte(want)) {
+					t.Fatalf("complete body missing %s: %s", want, data)
+				}
+			}
+			completed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected oss method: %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	var apiMu sync.Mutex
+	var preCalls int
+	var hashCalls int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			apiMu.Lock()
+			preCalls++
+			apiMu.Unlock()
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-resume",
+					"upload_id":  "upload-resume",
+					"obj_key":    "obj-resume",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 3},
+			})
+		case "/file/upload/auth":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"auth_key": "auth-key"},
+			})
+		case "/file/update/hash":
+			apiMu.Lock()
+			hashCalls++
+			apiMu.Unlock()
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": false},
+			})
+		case "/file/upload/finish":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected api path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	content := []byte("abcdefghi")
+	tmp := filepath.Join(t.TempDir(), "resume.bin")
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	md5Sum := md5.Sum(content)
+	sha1Sum := sha1.Sum(content)
+	source := drive.NewLocalReadOnlyFileSourceWithHashes(tmp, int64(len(content)), drive.SourceHashes{
+		drive.HashMD5:  md5Sum[:],
+		drive.HashSHA1: sha1Sum[:],
+	})
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+
+	first := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	first.InstallStateStore(store)
+	routeOSSToTestServer(first.cl.ossClient, oss)
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancelFirst()
+	if _, err := first.PutSource(firstCtx, drive.UploadRequest{ParentID: "parent", Name: "resume.bin", Source: source}); err == nil {
+		t.Fatal("first upload unexpectedly succeeded")
+	}
+
+	partsMu.Lock()
+	failPart2 = false
+	if partUploads["1"] != 1 {
+		t.Fatalf("part 1 uploads after first attempt = %d, want 1", partUploads["1"])
+	}
+	partsMu.Unlock()
+
+	second := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	second.InstallStateStore(store)
+	routeOSSToTestServer(second.cl.ossClient, oss)
+	entry, err := second.PutSource(context.Background(), drive.UploadRequest{ParentID: "parent", Name: "resume.bin", Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "final-fid" || entry.Size != int64(len(content)) {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if !completed {
+		t.Fatal("multipart upload was not completed")
+	}
+	partsMu.Lock()
+	defer partsMu.Unlock()
+	if partUploads["1"] != 1 {
+		t.Fatalf("part 1 was reuploaded: count=%d", partUploads["1"])
+	}
+	if partUploads["2"] < 2 || partUploads["3"] != 1 {
+		t.Fatalf("unexpected resumed upload counts: %+v", partUploads)
+	}
+	apiMu.Lock()
+	defer apiMu.Unlock()
+	if preCalls != 1 || hashCalls != 1 {
+		t.Fatalf("pre/hash calls = %d/%d, want 1/1", preCalls, hashCalls)
 	}
 }
 
@@ -692,11 +903,13 @@ func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	}
 	partsMu.Lock()
 	defer partsMu.Unlock()
-	if len(partSizes) != 1 {
-		t.Fatalf("part count = %d, want 1 (bumped to 16MB); sizes=%v", len(partSizes), partSizes)
+	if len(partSizes) != 3 {
+		t.Fatalf("part count = %d, want 3 (server 4MB part size); sizes=%v", len(partSizes), partSizes)
 	}
-	if partSizes[0] != 12*1024*1024 {
-		t.Fatalf("part size = %d, want %d (12MB as single part)", partSizes[0], 12*1024*1024)
+	for i, got := range partSizes {
+		if got != 4*1024*1024 {
+			t.Fatalf("part %d size = %d, want %d", i+1, got, 4*1024*1024)
+		}
 	}
 }
 
