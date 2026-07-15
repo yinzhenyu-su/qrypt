@@ -331,6 +331,62 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount error, got %v", err)
 	}
+	benchBody, err := client.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(benchBody), `"kind": "driver_crud_benchmark"`) ||
+		!strings.Contains(string(benchBody), `"summary"`) ||
+		!strings.Contains(string(benchBody), `"assessment"`) ||
+		!strings.Contains(string(benchBody), `"network_probe"`) {
+		t.Fatalf("unexpected driver benchmark response: %s", benchBody)
+	}
+	legacyBenchBody, err := client.PostJSON(context.Background(), "/v1/driver/bench", DriverTestRequest{Test: "crud", Mount: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(legacyBenchBody), `"kind": "driver_crud_benchmark"`) {
+		t.Fatalf("unexpected legacy driver benchmark response: %s", legacyBenchBody)
+	}
+	if _, err := client.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "missing" not found`) {
+		t.Fatalf("expected missing mount benchmark error, got %v", err)
+	}
+	xferSource := fakeSnapshotter{drivers: []vfs.NamedDriver{
+		{Name: "local", Driver: newCRUDMemoryDriver()},
+		{Name: "cloud", Driver: newCRUDMemoryDriver()},
+	}}
+	xferSocket := testSocketPath(t)
+	xferServer, err := NewServer(xferSocket, xferSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xferCtx, xferCancel := context.WithCancel(context.Background())
+	defer xferCancel()
+	if err := xferServer.Start(xferCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer xferServer.Close(context.Background())
+	xferClient, err := NewClient(xferSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xferBenchBody, err := xferClient.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{
+		Test:    "xfer",
+		Source:  "local",
+		Dest:    "cloud",
+		Size:    "4k",
+		Samples: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(xferBenchBody), `"kind": "xfer_benchmark"`) ||
+		!strings.Contains(string(xferBenchBody), `"source_mount": "local"`) ||
+		!strings.Contains(string(xferBenchBody), `"dest_mount": "cloud"`) ||
+		!strings.Contains(string(xferBenchBody), `"read_bps"`) {
+		t.Fatalf("unexpected xfer benchmark response: %s", xferBenchBody)
+	}
 	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
 		t.Fatal("expected old driver test endpoint to be unavailable")
 	}
