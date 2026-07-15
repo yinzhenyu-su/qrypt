@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"time"
@@ -10,6 +11,10 @@ import (
 
 func (a *adapter) shouldIgnoreAppleMetadata(path string) bool {
 	return a.ignoreAppleMetadata && (isAppleMetadataPath(path) || a.hasIgnoredApple(path))
+}
+
+func (a *adapter) hasIgnoredAppleMetadata(path string) bool {
+	return a.ignoreAppleMetadata && a.hasIgnoredApple(path)
 }
 
 func (a *adapter) shouldIgnoreAppleXattr(name string) bool {
@@ -47,6 +52,18 @@ func (a *adapter) ensureIgnoredApple(path string, isDir bool) ignoredAppleNode {
 	return node
 }
 
+func (a *adapter) ensureIgnoredAppleParent(ctx context.Context, path string) error {
+	parent := filepath.Dir(cleanMountPath(path))
+	if parent == "." || parent == "/" || isAppleMetadataPath(parent) {
+		return nil
+	}
+	if entry, err := a.fs.Stat(ctx, parent); err == nil && entry.IsDir {
+		return nil
+	}
+	_, err := a.fs.Mkdir(ctx, parent)
+	return err
+}
+
 func (a *adapter) ignoredAppleEntry(path string) drive.Entry {
 	key := cleanMountPath(path)
 	a.mu.Lock()
@@ -64,7 +81,9 @@ func (a *adapter) ignoredAppleEntry(path string) drive.Entry {
 	}
 }
 
-func (a *adapter) writeIgnoredApple(path string, length, off int64) {
+const ignoredAppleMaxInMemoryBytes = 16 << 20
+
+func (a *adapter) writeIgnoredApple(path string, data []byte, off int64) {
 	if off < 0 {
 		off = 0
 	}
@@ -73,8 +92,21 @@ func (a *adapter) writeIgnoredApple(path string, length, off int64) {
 	a.mu.Lock()
 	node := a.ignoredApple[key]
 	node.isDir = false
-	if end := off + length; end > node.size {
+	if end := off + int64(len(data)); end > node.size {
 		node.size = end
+	}
+	if off < ignoredAppleMaxInMemoryBytes {
+		end := off + int64(len(data))
+		storeEnd := end
+		if storeEnd > ignoredAppleMaxInMemoryBytes {
+			storeEnd = ignoredAppleMaxInMemoryBytes
+		}
+		if storeEnd > int64(len(node.data)) {
+			next := make([]byte, storeEnd)
+			copy(next, node.data)
+			node.data = next
+		}
+		copy(node.data[off:storeEnd], data[:storeEnd-off])
 	}
 	node.mtime = now
 	a.ignoredApple[key] = node
@@ -98,6 +130,10 @@ func (a *adapter) readIgnoredApple(path string, buff []byte, off int64) int {
 	}
 	n := int(remaining)
 	clear(buff[:n])
+	if off < int64(len(node.data)) {
+		copied := copy(buff[:n], node.data[off:])
+		clear(buff[copied:n])
+	}
 	return n
 }
 
@@ -111,6 +147,13 @@ func (a *adapter) truncateIgnoredApple(path string, size int64) {
 	node := a.ignoredApple[key]
 	node.isDir = false
 	node.size = size
+	if size <= int64(len(node.data)) {
+		node.data = node.data[:size]
+	} else if size <= ignoredAppleMaxInMemoryBytes {
+		next := make([]byte, size)
+		copy(next, node.data)
+		node.data = next
+	}
 	node.mtime = now
 	a.ignoredApple[key] = node
 	a.mu.Unlock()

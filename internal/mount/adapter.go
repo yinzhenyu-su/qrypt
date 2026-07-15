@@ -24,6 +24,7 @@ type adapter struct {
 	cancel              context.CancelFunc
 	handles             map[uint64]fuseHandle
 	ignoredApple        map[string]ignoredAppleNode
+	xattrs              map[string]map[string][]byte
 	activeOps           map[uint64]activeFuseOp
 	nextFH              uint64
 	nextOp              uint64
@@ -39,6 +40,7 @@ type adapter struct {
 type ignoredAppleNode struct {
 	isDir bool
 	size  int64
+	data  []byte
 	mtime time.Time
 }
 
@@ -153,6 +155,7 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 		cancel:              cancel,
 		handles:             map[uint64]fuseHandle{},
 		ignoredApple:        map[string]ignoredAppleNode{},
+		xattrs:              map[string]map[string][]byte{},
 		activeOps:           map[uint64]activeFuseOp{},
 		trace:               fuseTracer{},
 		statfs:              opts.Statfs,
@@ -363,9 +366,6 @@ func fuseErr(err error) int {
 	}
 	return -fuse.EIO
 }
-
-func (a *adapter) removeXattrs(path string)             {}
-func (a *adapter) renameXattrs(oldPath, newPath string) {}
 
 func stableInode(entry drive.Entry, fallbackPath string) uint64 {
 	h := fnv.New64a()

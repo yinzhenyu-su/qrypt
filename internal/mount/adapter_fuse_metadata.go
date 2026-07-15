@@ -20,7 +20,8 @@ func (a *adapter) Utimens(path string, tmsp []fuse.Timespec) int {
 	}
 	if a.shouldIgnoreAppleMetadata(path) {
 		a.ensureIgnoredApple(path, false)
-		errc = 0
+		a.trace.log("Utimens", path, "count=%d err=%d", len(tmsp), 0)
+		return 0
 	}
 	if errc == 0 && len(tmsp) >= 2 {
 		if setter, ok := a.fs.(modTimeSetter); ok {

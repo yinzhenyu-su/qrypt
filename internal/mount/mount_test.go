@@ -40,6 +40,11 @@ type createRouteFS struct {
 	truncate []string
 }
 
+type metadataRouteFS struct {
+	createRouteFS
+	modTimes []string
+}
+
 type copyPrepareFS struct {
 	stubFS
 	prepared []string
@@ -151,6 +156,11 @@ func (s *createRouteFS) Rename(_ context.Context, oldPath, newPath string) error
 
 func (s *createRouteFS) Truncate(_ context.Context, path string, size int64) error {
 	s.truncate = append(s.truncate, path)
+	return nil
+}
+
+func (s *metadataRouteFS) SetModTime(_ context.Context, path string, modTime time.Time) error {
+	s.modTimes = append(s.modTimes, path)
 	return nil
 }
 
@@ -321,7 +331,7 @@ func TestAdapterRejectsNewWriteAfterShutdown(t *testing.T) {
 	}
 }
 
-func TestAdapterXattrsNoop(t *testing.T) {
+func TestAdapterXattrsInMemory(t *testing.T) {
 	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
 		"/": {ID: "root", Name: "", IsDir: true, ModTime: time.Unix(1, 0)},
 	}}, StatfsOptions{})
@@ -329,43 +339,18 @@ func TestAdapterXattrsNoop(t *testing.T) {
 	if errc, _ := ad.Getxattr("/", "com.apple.FinderInfo"); errc != -fuse.ENOATTR {
 		t.Fatalf("Getxattr FinderInfo err = %d, want ENOATTR", errc)
 	}
-	if errc, _ := ad.Getxattr("/", "com.apple.ResourceFork"); errc != -fuse.ENOATTR {
-		t.Fatalf("Getxattr ResourceFork err = %d, want ENOATTR", errc)
-	}
 	if errc, _ := ad.Getxattr("/", "user.foo"); errc != -fuse.ENOATTR {
 		t.Fatalf("Getxattr unknown err = %d, want ENOATTR", errc)
+	}
+	if errc := ad.Setxattr("/", "com.apple.FinderInfo", []byte("finder"), 0); errc != 0 {
+		t.Fatalf("Setxattr FinderInfo err = %d, want 0", errc)
+	}
+	if errc, got := ad.Getxattr("/", "com.apple.FinderInfo"); errc != len("finder") || string(got) != "finder" {
+		t.Fatalf("Getxattr FinderInfo err=%d value=%q, want len/value", errc, got)
 	}
 	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
 		t.Fatalf("Setxattr err = %d, want 0", errc)
 	}
-	if errc := ad.Removexattr("/", "user.foo"); errc != 0 {
-		t.Fatalf("Removexattr err = %d, want 0", errc)
-	}
-	if errc := ad.Listxattr("/", func(name string) bool { return true }); errc != 0 {
-		t.Fatalf("Listxattr err = %d, want 0", errc)
-	}
-}
-
-func TestAdapterXattrsAllNoop(t *testing.T) {
-	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
-		"/": {ID: "root", Name: "", IsDir: true},
-	}}, StatfsOptions{})
-
-	// All xattr operations are no-ops that return success.
-	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), fuse.XATTR_CREATE); errc != 0 {
-		t.Fatalf("Setxattr err = %d, want 0", errc)
-	}
-	if errc := ad.Removexattr("/", "user.foo"); errc != 0 {
-		t.Fatalf("Removexattr err = %d, want 0", errc)
-	}
-	if errc := ad.Setxattr("/", "user.foo", nil, fuse.XATTR_REPLACE); errc != 0 {
-		t.Fatalf("Setxattr XATTR_REPLACE err = %d, want 0", errc)
-	}
-	// Getxattr always returns ENOATTR.
-	if errc, got := ad.Getxattr("/", "user.foo"); errc != -fuse.ENOATTR || len(got) != 0 {
-		t.Fatalf("Getxattr err=%d len=%d, want ENOATTR/0", errc, len(got))
-	}
-	// Listxattr always returns empty list.
 	names := map[string]bool{}
 	if errc := ad.Listxattr("/", func(name string) bool {
 		names[name] = true
@@ -373,8 +358,35 @@ func TestAdapterXattrsAllNoop(t *testing.T) {
 	}); errc != 0 {
 		t.Fatalf("Listxattr err = %d, want 0", errc)
 	}
-	if len(names) != 0 {
-		t.Fatalf("Listxattr names = %v, want empty", names)
+	if !names["com.apple.FinderInfo"] || !names["user.foo"] {
+		t.Fatalf("Listxattr names = %v, want FinderInfo and user.foo", names)
+	}
+	if errc := ad.Removexattr("/", "user.foo"); errc != 0 {
+		t.Fatalf("Removexattr err = %d, want 0", errc)
+	}
+	if errc, _ := ad.Getxattr("/", "user.foo"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr removed err = %d, want ENOATTR", errc)
+	}
+}
+
+func TestAdapterXattrsRenameAndRemove(t *testing.T) {
+	ad := newAdapter(stubFS{entries: map[string]drive.Entry{
+		"/": {ID: "root", Name: "", IsDir: true},
+	}}, StatfsOptions{})
+
+	if errc := ad.Setxattr("/dir/file", "user.foo", []byte("bar"), fuse.XATTR_CREATE); errc != 0 {
+		t.Fatalf("Setxattr err = %d, want 0", errc)
+	}
+	ad.renameXattrs("/dir", "/renamed")
+	if errc, got := ad.Getxattr("/renamed/file", "user.foo"); errc != len("bar") || string(got) != "bar" {
+		t.Fatalf("Getxattr renamed err=%d value=%q, want len/value", errc, got)
+	}
+	if errc, _ := ad.Getxattr("/dir/file", "user.foo"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr old path err=%d, want ENOATTR", errc)
+	}
+	ad.removeXattrs("/renamed")
+	if errc, _ := ad.Getxattr("/renamed/file", "user.foo"); errc != -fuse.ENOATTR {
+		t.Fatalf("Getxattr removed subtree err=%d, want ENOATTR", errc)
 	}
 }
 
@@ -392,6 +404,9 @@ func TestAdapterNoAppleXattrIgnoresAppleXattrs(t *testing.T) {
 	}
 	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
 		t.Fatalf("Setxattr user.foo err = %d, want 0", errc)
+	}
+	if errc, got := ad.Getxattr("/", "user.foo"); errc != len("bar") || string(got) != "bar" {
+		t.Fatalf("Getxattr user.foo err=%d value=%q, want len/value", errc, got)
 	}
 }
 
@@ -446,7 +461,9 @@ func TestAdapterMknodCreatesRegularFile(t *testing.T) {
 }
 
 func TestAdapterNoAppleDoubleIgnoresAppleMetadata(t *testing.T) {
-	fs := &createRouteFS{}
+	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/folder": {ID: "folder", Name: "folder", IsDir: true},
+	}}}
 	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
 
 	if errc, fh := ad.Create("/folder/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
@@ -490,8 +507,28 @@ func TestAdapterNoAppleDoubleIgnoresAppleMetadata(t *testing.T) {
 	if got := ad.Read("/.DS_Store", buf, 2, 1); got != len("finder")-2 {
 		t.Fatalf("Read .DS_Store = %d, want %d", got, len("finder")-2)
 	}
+	if string(buf[:len("finder")-2]) != "nder" {
+		t.Fatalf("Read .DS_Store content = %q, want %q", string(buf[:len("finder")-2]), "nder")
+	}
+	if got := ad.Write("/.DS_Store", []byte("XY"), 2, 1); got != 2 {
+		t.Fatalf("Write .DS_Store offset = %d, want 2", got)
+	}
+	clear(buf)
+	if got := ad.Read("/.DS_Store", buf, 0, 1); got != len("finder") {
+		t.Fatalf("Read rewritten .DS_Store = %d, want %d", got, len("finder"))
+	}
+	if string(buf[:len("finder")]) != "fiXYer" {
+		t.Fatalf("Read rewritten .DS_Store content = %q, want %q", string(buf[:len("finder")]), "fiXYer")
+	}
 	if errc := ad.Truncate("/.DS_Store", 2, 1); errc != 0 {
 		t.Fatalf("Truncate .DS_Store err=%d, want 0", errc)
+	}
+	clear(buf)
+	if got := ad.Read("/.DS_Store", buf, 0, 1); got != 2 {
+		t.Fatalf("Read truncated .DS_Store = %d, want 2", got)
+	}
+	if string(buf[:2]) != "fi" {
+		t.Fatalf("Read truncated .DS_Store content = %q, want %q", string(buf[:2]), "fi")
 	}
 	if errc := ad.Rename("/.DS_Store", "/.DS_Store.tmp"); errc != 0 {
 		t.Fatalf("Rename second .DS_Store err=%d, want 0", errc)
@@ -513,6 +550,41 @@ func TestAdapterNoAppleDoubleIgnoresAppleMetadata(t *testing.T) {
 	}
 }
 
+func TestAdapterNoAppleDoubleCreatesMissingRealParentForMetadataFile(t *testing.T) {
+	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/_nuxt": {ID: "_nuxt", Name: "_nuxt", IsDir: true},
+	}}}
+	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
+
+	if errc, fh := ad.Create("/_nuxt/builds/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
+		t.Fatalf("Create nested .DS_Store err=%d fh=%d, want success with fh", errc, fh)
+	}
+	if got := strings.Join(fs.mkdirs, ","); got != "/_nuxt/builds" {
+		t.Fatalf("mkdirs = %q, want missing real parent", got)
+	}
+	if len(fs.created) != 0 || len(fs.writes) != 0 || len(fs.flushes) != 0 {
+		t.Fatalf("backend file calls created=%v writes=%v flushes=%v, want none", fs.created, fs.writes, fs.flushes)
+	}
+}
+
+func TestAdapterNoAppleDoubleMissingMetadataLookupReturnsNotFound(t *testing.T) {
+	ad := newAdapterWithOptions(stubFS{entries: map[string]drive.Entry{
+		"/":      {ID: "root", Name: "", IsDir: true},
+		"/_nuxt": {ID: "_nuxt", Name: "_nuxt", IsDir: true},
+	}}, adapterOptions{IgnoreAppleMetadata: true})
+
+	var stat fuse.Stat_t
+	if errc := ad.Getattr("/_nuxt/._entry.js", &stat, 0); errc != -fuse.ENOENT {
+		t.Fatalf("Getattr missing AppleDouble err=%d, want ENOENT", errc)
+	}
+	if errc := ad.Access("/_nuxt/._entry.js", 0); errc != -fuse.ENOENT {
+		t.Fatalf("Access missing AppleDouble err=%d, want ENOENT", errc)
+	}
+	if errc, fh := ad.Open("/_nuxt/._entry.js", 0); errc != -fuse.ENOENT || fh != 0 {
+		t.Fatalf("Open missing AppleDouble err=%d fh=%d, want ENOENT/0", errc, fh)
+	}
+}
+
 func TestAdapterNoAppleDoubleBypassesReadOnlyRootMetadata(t *testing.T) {
 	ad := newAdapterWithOptions(stubFS{
 		readOnly: map[string]bool{"/.DS_Store": true},
@@ -526,6 +598,22 @@ func TestAdapterNoAppleDoubleBypassesReadOnlyRootMetadata(t *testing.T) {
 	}
 	if errc := ad.Unlink("/.DS_Store"); errc != 0 {
 		t.Fatalf("Unlink read-only .DS_Store err=%d, want 0", errc)
+	}
+}
+
+func TestAdapterNoAppleDoubleUtimensDoesNotTouchBackend(t *testing.T) {
+	fs := &metadataRouteFS{}
+	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
+	times := []fuse.Timespec{
+		{Sec: 10, Nsec: 20},
+		{Sec: 30, Nsec: 40},
+	}
+
+	if errc := ad.Utimens("/folder/.DS_Store", times); errc != 0 {
+		t.Fatalf("Utimens .DS_Store err=%d, want 0", errc)
+	}
+	if len(fs.modTimes) != 0 {
+		t.Fatalf("SetModTime calls = %v, want none for ignored Apple metadata", fs.modTimes)
 	}
 }
 
@@ -570,18 +658,18 @@ func TestAdapterResourceForkIsEmptyNoop(t *testing.T) {
 	}}, StatfsOptions{})
 	const name = "com.apple.ResourceFork"
 
-	errc, value := ad.Getxattr("/", name)
-	if errc != -fuse.ENOATTR {
-		t.Fatalf("Getxattr ResourceFork err = %d, want ENOATTR", errc)
-	}
-	if len(value) != 0 {
-		t.Fatalf("Getxattr ResourceFork len = %d, want 0", len(value))
-	}
 	if errc := ad.Setxattr("/", name, []byte("ignored"), 0); errc != 0 {
 		t.Fatalf("Setxattr ResourceFork err = %d, want 0", errc)
 	}
+	errc, value := ad.Getxattr("/", name)
+	if errc != len("ignored") || string(value) != "ignored" {
+		t.Fatalf("Getxattr ResourceFork err=%d value=%q, want len/value", errc, value)
+	}
 	if errc := ad.Removexattr("/", name); errc != 0 {
 		t.Fatalf("Removexattr ResourceFork err = %d, want 0", errc)
+	}
+	if errc, value := ad.Getxattr("/", name); errc != -fuse.ENOATTR || len(value) != 0 {
+		t.Fatalf("Getxattr removed ResourceFork err=%d len=%d, want ENOATTR/0", errc, len(value))
 	}
 }
 
@@ -593,6 +681,9 @@ func TestAdapterXattrsMissingPath(t *testing.T) {
 	}
 	if errc := ad.Setxattr("/missing", "x", nil, 0); errc != 0 {
 		t.Fatalf("Setxattr missing err = %d, want 0", errc)
+	}
+	if errc, got := ad.Getxattr("/missing", "x"); errc != 0 || len(got) != 0 {
+		t.Fatalf("Getxattr missing stored err=%d len=%d, want 0/0", errc, len(got))
 	}
 	if errc := ad.Listxattr("/missing", func(string) bool { return true }); errc != 0 {
 		t.Fatalf("Listxattr missing err = %d, want 0", errc)
