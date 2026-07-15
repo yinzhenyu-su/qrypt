@@ -1,9 +1,11 @@
 package vfs
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -174,12 +176,40 @@ type DebugReadCache struct {
 	LastPutError   string               `json:"last_put_error,omitempty"`
 	LastPutErrorAt *time.Time           `json:"last_put_error_at,omitempty"`
 	Files          []DebugReadCacheFile `json:"files,omitempty"`
+	Journal        *DebugJournal        `json:"journal,omitempty"`
 }
 
 type DebugReadCacheFile struct {
 	ID         string `json:"id"`
 	ChunkCount int    `json:"chunk_count"`
 	Bytes      int64  `json:"bytes"`
+}
+
+type DebugJournal struct {
+	Path               string             `json:"path"`
+	Exists             bool               `json:"exists"`
+	Bytes              int64              `json:"bytes,omitempty"`
+	Entries            int                `json:"entries,omitempty"`
+	InvalidEntries     int                `json:"invalid_entries,omitempty"`
+	PendingCount       int                `json:"pending_count"`
+	UniquePaths        int                `json:"unique_paths,omitempty"`
+	DuplicateEntries   int                `json:"duplicate_entries,omitempty"`
+	CompactRecommended bool               `json:"compact_recommended"`
+	LargestPaths       []DebugJournalPath `json:"largest_paths,omitempty"`
+	Error              string             `json:"error,omitempty"`
+}
+
+type DebugJournalPath struct {
+	Path             string `json:"path"`
+	Entries          int    `json:"entries"`
+	LatestSize       int64  `json:"latest_size,omitempty"`
+	StagingSize      int64  `json:"staging_size,omitempty"`
+	SizeMatches      bool   `json:"size_matches"`
+	StagingExists    bool   `json:"staging_exists"`
+	LastError        string `json:"last_error,omitempty"`
+	DuplicateEntries int    `json:"duplicate_entries,omitempty"`
+	LastJournalOp    string `json:"last_journal_op,omitempty"`
+	LastJournalLine  int    `json:"last_journal_line,omitempty"`
 }
 
 type DebugStagingReport struct {
@@ -245,6 +275,28 @@ type ConsistencyReport struct {
 }
 
 func (v *VFS) DebugSnapshot() DebugSnapshot {
+	return DebugSnapshot{
+		SchemaVersion: DebugSnapshotSchemaVersion,
+		GeneratedAt:   timeutil.Now(),
+		Kind:          "vfs",
+		Process:       debugProcess(),
+		Mounts:        []MountSnapshot{v.debugMountSnapshot("default")},
+	}
+}
+
+func (v *VFS) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
+	if len(mountNames) == 0 {
+		return v.DebugSnapshot()
+	}
+	names := debugMountNameSet(mountNames)
+	if !names[v.name] && !names["default"] {
+		return DebugSnapshot{
+			SchemaVersion: DebugSnapshotSchemaVersion,
+			GeneratedAt:   timeutil.Now(),
+			Kind:          "vfs",
+			Process:       debugProcess(),
+		}
+	}
 	return DebugSnapshot{
 		SchemaVersion: DebugSnapshotSchemaVersion,
 		GeneratedAt:   timeutil.Now(),
@@ -743,7 +795,111 @@ func (c *Cache) debugReadCache() DebugReadCache {
 	sort.Slice(snapshot.Files, func(i, j int) bool {
 		return snapshot.Files[i].ID < snapshot.Files[j].ID
 	})
+	snapshot.Journal = c.debugJournal()
 	return snapshot
+}
+
+func (c *Cache) debugJournal() *DebugJournal {
+	path := c.journalPath()
+	journal := &DebugJournal{Path: path}
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		c.mu.RLock()
+		journal.PendingCount = len(c.pending)
+		c.mu.RUnlock()
+		return journal
+	}
+	if err != nil {
+		journal.Error = err.Error()
+		return journal
+	}
+	journal.Exists = true
+	journal.Bytes = info.Size()
+
+	f, err := os.Open(path)
+	if err != nil {
+		journal.Error = err.Error()
+		return journal
+	}
+	defer f.Close()
+
+	type pathState struct {
+		item DebugJournalPath
+	}
+	paths := map[string]*pathState{}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	line := 0
+	validEntries := 0
+	for scanner.Scan() {
+		line++
+		journal.Entries++
+		var entry journalEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			journal.InvalidEntries++
+			continue
+		}
+		if entry.Path == "" {
+			journal.InvalidEntries++
+			continue
+		}
+		state := paths[entry.Path]
+		if state == nil {
+			state = &pathState{item: DebugJournalPath{Path: entry.Path}}
+			paths[entry.Path] = state
+		}
+		validEntries++
+		state.item.Entries++
+		state.item.LastJournalOp = entry.Op
+		state.item.LastJournalLine = line
+		if entry.Op == "dirty" {
+			state.item.LatestSize = entry.Size
+			state.item.LastError = entry.LastError
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		journal.Error = err.Error()
+	}
+
+	c.mu.RLock()
+	journal.PendingCount = len(c.pending)
+	pending := make(map[string]PendingFile, len(c.pending))
+	for path, item := range c.pending {
+		pending[path] = item
+	}
+	c.mu.RUnlock()
+
+	journal.UniquePaths = len(paths)
+	if validEntries > journal.UniquePaths {
+		journal.DuplicateEntries = validEntries - journal.UniquePaths
+	}
+	journal.CompactRecommended = c.shouldCompactJournal(journal.Entries)
+
+	for path, state := range paths {
+		if state.item.Entries > 1 {
+			state.item.DuplicateEntries = state.item.Entries - 1
+		}
+		if p, ok := pending[path]; ok {
+			state.item.LatestSize = p.Size
+			state.item.LastError = p.LastError
+			if info, err := os.Stat(p.LocalPath); err == nil {
+				state.item.StagingExists = true
+				state.item.StagingSize = info.Size()
+				state.item.SizeMatches = info.Size() == p.Size
+			}
+		}
+		journal.LargestPaths = append(journal.LargestPaths, state.item)
+	}
+	sort.Slice(journal.LargestPaths, func(i, j int) bool {
+		if journal.LargestPaths[i].Entries == journal.LargestPaths[j].Entries {
+			return journal.LargestPaths[i].Path < journal.LargestPaths[j].Path
+		}
+		return journal.LargestPaths[i].Entries > journal.LargestPaths[j].Entries
+	})
+	if len(journal.LargestPaths) > 10 {
+		journal.LargestPaths = journal.LargestPaths[:10]
+	}
+	return journal
 }
 
 func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport, error) {
@@ -1062,6 +1218,43 @@ func (n *Namespace) DebugSnapshot() DebugSnapshot {
 	}
 	n.mu.RUnlock()
 	return snapshot
+}
+
+func (n *Namespace) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
+	if len(mountNames) == 0 {
+		return n.DebugSnapshot()
+	}
+	snapshot := DebugSnapshot{
+		SchemaVersion: DebugSnapshotSchemaVersion,
+		GeneratedAt:   timeutil.Now(),
+		Kind:          "namespace",
+		Process:       debugProcess(),
+	}
+	names := debugMountNameSet(mountNames)
+	n.mu.RLock()
+	matched := make([]string, 0, len(names))
+	for name := range names {
+		if _, ok := n.mounts[name]; ok {
+			matched = append(matched, name)
+		}
+	}
+	sort.Strings(matched)
+	for _, name := range matched {
+		snapshot.Mounts = append(snapshot.Mounts, n.mounts[name].debugMountSnapshot(name))
+	}
+	n.mu.RUnlock()
+	return snapshot
+}
+
+func debugMountNameSet(mountNames []string) map[string]bool {
+	set := map[string]bool{}
+	for _, name := range mountNames {
+		name = cleanMountName(name)
+		if name != "" {
+			set[name] = true
+		}
+	}
+	return set
 }
 
 func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {
