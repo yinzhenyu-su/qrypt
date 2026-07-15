@@ -57,6 +57,7 @@ type VFS struct {
 	uploadTimers  map[string]*time.Timer
 	activeUploads map[string]*uploadSnapshotState
 	uploadHistory []UploadSnapshot
+	uploadAdmit   uploadAdmission
 	readHistory   []drive.MetricEvent
 	readSequence  uint64
 	readMu        sync.Mutex
