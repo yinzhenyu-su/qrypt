@@ -364,7 +364,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	parentID, name, source := req.ParentID, req.Name, req.Source
 	size := source.Size()
 	if size > maxUploadSize {
-		return drive.Entry{}, fmt.Errorf("139: upload %s (%d bytes) exceeds max size (%d)", name, size, maxUploadSize)
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("139: upload %s (%d bytes) exceeds max size (%d)", name, size, maxUploadSize))
 	}
 	return d.putSource(ctx, parentID, name, source, req.Progress)
 }
@@ -518,7 +518,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
 	if sum, ok := drive.SourceHash(source, drive.HashSHA256); ok {
 		if len(sum) != sha256.Size {
-			return "", fmt.Errorf("139: source SHA-256 metadata has %d bytes, want %d", len(sum), sha256.Size)
+			return "", drive.NonRetryable(fmt.Errorf("139: source SHA-256 metadata has %d bytes, want %d", len(sum), sha256.Size))
 		}
 		return fmt.Sprintf("%X", sum), nil
 	}
@@ -621,12 +621,20 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			}
 			resp.Body.Close()
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				return fmt.Errorf("139: upload part %d: status %d", up.partNumber, resp.StatusCode)
+				err := fmt.Errorf("139: upload part %d: status %d", up.partNumber, resp.StatusCode)
+				if nonRetryableUploadStatus(resp.StatusCode) {
+					err = drive.NonRetryable(err)
+				}
+				return err
 			}
 			return nil
 		})
 	}
 	return g.Wait()
+}
+
+func nonRetryableUploadStatus(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }
 
 func calcPartSize(fileSize int64) int64 {

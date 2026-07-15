@@ -275,7 +275,7 @@ func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
 	parentID, name, source := d.resolveID(req.ParentID), req.Name, req.Source
 	if source == nil {
-		return drive.Entry{}, fmt.Errorf("115: upload source is nil")
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("115: upload source is nil"))
 	}
 	body, err := source.Open(ctx)
 	if err != nil {
@@ -287,7 +287,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	uploadBody = d.bandwidthLimiter.LimitUpload(ctx, uploadBody)
 	uploadSeekBody, ok := uploadBody.(io.ReadSeeker)
 	if !ok {
-		return drive.Entry{}, fmt.Errorf("115: upload source is not seekable after wrapping")
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("115: upload source is not seekable after wrapping"))
 	}
 	err = d.recordSDK(ctx, "upload", map[string]any{"parent_id": parentID, "name": name, "size": source.Size()}, func() error {
 		return d.uploadSource(parentID, name, source.Size(), uploadSeekBody)
@@ -311,7 +311,7 @@ func (d *Driver) uploadSource(parentID, name string, size int64, body io.ReadSee
 		return err
 	}
 	if d.cl.UploadMetaInfo != nil && size > d.cl.UploadMetaInfo.SizeLimit {
-		return driver115.ErrUploadTooLarge
+		return drive.NonRetryable(driver115.ErrUploadTooLarge)
 	}
 	digest, err := d.cl.GetDigestResult(body)
 	if err != nil {
