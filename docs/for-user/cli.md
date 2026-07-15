@@ -92,15 +92,19 @@ qrypt driver schema NAME [--json]
 
 ## 调试
 
-运行时调试命令必须提供 `--socket PATH`：
+运行时调试命令必须提供 `--socket PATH`。`collect`、`watch` 和
+`bundle` 还需要说明要检查哪个挂载：平时请用 `--mount NAME`；确实需要
+检查全部挂载时，再用 `--all-mounts`。
 
 ```sh
-qrypt debug collect [REMOTE] [--dest DESTINATION] --socket PATH
-qrypt debug watch [REMOTE] --socket PATH
+qrypt debug collect [REMOTE] [--dest DESTINATION] --socket PATH --mount NAME
+qrypt debug watch [REMOTE] --socket PATH --mount NAME
 qrypt debug test TEST --socket PATH
 qrypt debug raw ENDPOINT --socket PATH
-qrypt debug bundle [REMOTE] [--dest DESTINATION] --socket PATH --out FILE [--force]
+qrypt debug bundle [REMOTE] [--dest DESTINATION] --socket PATH --mount NAME --out FILE [--force]
 ```
+
+`--mount` 可以重复传入多个挂载名。`--all-mounts` 会收集全部挂载，输出可能更大，请只在需要整体排查时使用。
 
 跨挂载传输问题应同时提供源路径和 `--dest`；报告会分别收集两端路径状态、读取/上传历史和挂载能力。
 
