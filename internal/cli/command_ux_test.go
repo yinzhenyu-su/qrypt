@@ -169,6 +169,60 @@ func TestDebugRequiredFlags(t *testing.T) {
 	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "fs"}); err == nil || !strings.Contains(err.Error(), "fs test requires --mount") {
 		t.Fatalf("expected fs test without mount to fail clearly, got %v", err)
 	}
+	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "crud", Samples: 1}); err != nil {
+		t.Fatalf("expected crud benchmark request to be valid: %v", err)
+	}
+	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "fs", Mount: "mem", Samples: 1}); err != nil {
+		t.Fatalf("expected fs benchmark request to be valid: %v", err)
+	}
+	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "fs", Samples: 1}); err == nil ||
+		!strings.Contains(err.Error(), "fs benchmark requires --mount") {
+		t.Fatalf("expected fs benchmark without mount to fail clearly, got %v", err)
+	}
+	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "crud", Samples: 0}); err == nil {
+		t.Fatal("expected benchmark with zero samples to fail")
+	}
+	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "xfer"}); err == nil ||
+		!strings.Contains(err.Error(), "xfer benchmark requires --source and --dest") {
+		t.Fatalf("expected xfer benchmark without source/dest to fail clearly, got %v", err)
+	}
+	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "xfer", Source: "src", Dest: "dst", Samples: 1}); err != nil {
+		t.Fatalf("expected xfer benchmark request to be valid: %v", err)
+	}
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	currentPath := filepath.Join(dir, "current.json")
+	baseReport := control.BenchmarkReport{
+		SchemaVersion: control.BenchmarkSchemaVersion,
+		Kind:          "driver_crud_benchmark",
+		Mount:         "mem",
+		Driver:        "memory",
+		Pass:          true,
+		Summary:       control.BenchmarkSummary{TotalCases: 1, PassedCases: 1, EventCount: 2},
+	}
+	currentReport := baseReport
+	currentReport.Summary.EventCount = 1
+	for path, value := range map[string]control.BenchmarkReport{basePath: baseReport, currentPath: currentReport} {
+		body, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root = NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"debug", "bench", "compare", "--base", basePath, "--current", currentPath})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("debug bench compare failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"kind": "benchmark_comparison"`) ||
+		!strings.Contains(out.String(), `"summary.event_count"`) {
+		t.Fatalf("unexpected compare output: %s", out.String())
+	}
 
 	root = NewRootCommand()
 	root.SetArgs([]string{"debug", "test", "xfer", "--socket", "/tmp/qrypt.sock"})

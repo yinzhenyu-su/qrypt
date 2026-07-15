@@ -180,7 +180,7 @@ go run ./cmd/qrypt debug test crud --socket /tmp/qrypt.sock
 
 The CRUD result includes a contract-oriented `steps[]` report with per-step
 input, expected values, actual values, duration, and error. It also reports
-`created[]`, `cleanup[]`, `residual[]`, `residual_timeline[]`, `events[]`, and a
+`created[]`, `cleanup[]`, `residual[]`, `residual_timeline[]`, `metrics[]`, and a
 retry command. The matrix covers directory creation/listing, nested directories,
 ordinary files, empty files, one-byte files, spaces, Unicode names,
 rename/list verification, reads, deletes, and cleanup verification.
@@ -189,6 +189,38 @@ rename/list verification, reads, deletes, and cleanup verification.
 time, residual count, and residual names. Use it to distinguish a real cleanup
 failure from a backend that deletes successfully but remains briefly visible in
 list results.
+
+Run a machine-comparable benchmark when you need a stable artifact shape
+for baseline comparison:
+
+```sh
+go run ./cmd/qrypt debug bench crud --mount default --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug bench crud --mount default --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
+go run ./cmd/qrypt debug bench fs --mount default --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
+go run ./cmd/qrypt debug bench xfer --source local --dest quark --size 16m --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
+go run ./cmd/qrypt debug bench xfer --source local --dest quark --size 16m --vfs --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
+go run ./cmd/qrypt debug bench compare --base baseline.json --current current.json
+```
+
+The benchmark output wraps the raw test result with `summary`, `assessment`,
+`environment.network_probe`, `samples[]`, `cases[]`, and `events[]`. With
+`--samples`, the summary includes sample counts, median/p95/max duration,
+throughput stats, and CV. Performance is marked comparable only when there are
+at least three stable samples and the read-only network probe is `ok`. Compare
+always checks structural metrics such as pass/fail, error count, retry count,
+cleanup residuals, metric event count, event operation counts, and network probe
+status. When both reports are performance-comparable, it also warns on median or
+p95 latency regressions above 30% and read/write throughput regressions above
+25%. Stage summaries under `summary.operations` and
+`summary.event_operation_summaries` identify whether a regression is tied to a
+CRUD step such as `put` or to a driver event operation such as `api_request` or
+`download`. The `fs` benchmark reuses the VFS smoke test and reports VFS
+operations such as `write`, `flush`, `wait_upload`, `read`, `remove`, and
+`wait_cleanup` with the same `BenchmarkReport` shape. Its `summary.vfs` section
+adds pending/upload/delete drain state, cache hit ratio and cache errors,
+staging orphan and size mismatch counts, and active loader counters. Compare
+fails when final pending/upload/delete state does not drain and warns on
+staging/cache regressions.
 
 Mount state is reported as `vfs.MountSnapshot`. The snapshot separates stable
 state from event streams:
@@ -203,7 +235,7 @@ state from event streams:
   metrics
 - `runtime`: chunk, window, and prefetch activity counters
 
-`events[]`, `timeline[]`, `events.reads[]`, and `events.driver[]` use
+`metrics[]`, `events[]`, `timeline[]`, `events.reads[]`, and `events.driver[]` use
 `drive.MetricEvent`. Events are correlated through `op_id`, `step`, and `name`.
 `kind` identifies the event family such as `driver`, `vfs_read`, `vfs_upload`,
 or `transfer`; `operation` is the low-cardinality machine-comparable operation;
