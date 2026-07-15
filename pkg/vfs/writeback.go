@@ -12,9 +12,12 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+const maxUploadRetryDelay = 15 * time.Minute
 
 func (v *VFS) Pending() []PendingFile {
 	return v.cache.Pending()
@@ -86,16 +89,36 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		v.enqueue(latest)
 		return nil
 	}
-	v.setUploadSnapshotState(pending.Path, "removing_existing")
+	uploadName := pending.Name
+	var replaceExisting []drive.Entry
+	needsReplace := false
+	alreadyReplaced := false
+	v.setUploadSnapshotState(pending.Path, "prepare_remote")
 	phaseStart = timeutil.Now()
-	if err := v.removeExistingFile(ctx, pending.ParentID, pending.Name); err != nil {
-		v.recordUploadEvent(pending.Path, "remove_existing", phaseStart, 0, map[string]any{"error": err.Error()})
+	replaceUpload := pending.ReplaceUpload
+	if target, err := v.prepareUploadTarget(ctx, pending.ParentID, pending.Name, pending.FID, pendingReplaceUploadID(replaceUpload)); err != nil {
+		v.recordUploadEvent(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"error": err.Error()})
 		finishErr = err.Error()
-		logging.L.Warnf("[VFS] upload remove existing failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
+		logging.L.Warnf("[VFS] upload remote preparation failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
 		return err
+	} else {
+		uploadName = target.UploadName
+		replaceExisting = target.ReplaceExisting
+		alreadyReplaced = target.AlreadyReplaced
+		needsReplace = !alreadyReplaced && (replaceUpload != nil || len(replaceExisting) > 0)
+		v.recordUploadEvent(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"upload_name": uploadName, "replace_existing": len(replaceExisting), "replace_resume": replaceUpload != nil, "already_replaced": target.AlreadyReplaced})
 	}
-	v.recordUploadEvent(pending.Path, "remove_existing", phaseStart, 0, nil)
-	v.setUploadSnapshotState(pending.Path, uploadSnapshotStateUploading)
+	var entry drive.Entry
+	if replaceUpload != nil {
+		entry = pendingReplaceUploadEntry(*replaceUpload)
+		if alreadyReplaced {
+			entry.Name = pending.Name
+		}
+		uploadName = entry.Name
+		v.setUploadSnapshotMetadata(pending.Path, entry.ID, nil)
+	} else {
+		v.setUploadSnapshotState(pending.Path, uploadSnapshotStateUploading)
+	}
 	source := drive.NewLocalReadOnlyFileSourceWithHashes(snapshot.Path, pending.Size, snapshot.Hashes)
 	progress := debugUploadProgress{
 		v:    v,
@@ -104,37 +127,68 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			v.updateUploadSnapshot(pending.Path, int(n))
 		},
 	}
-	phaseStart = timeutil.Now()
-	entry, err := v.driver.PutSource(ctx, drive.UploadRequest{
-		ParentID: pending.ParentID,
-		Name:     pending.Name,
-		Source:   source,
-		Progress: progress,
-	})
-	v.setUploadSnapshotMetadata(pending.Path, entry.ID, nil)
-	traceExtra := map[string]any{"entry_id": entry.ID}
-	if err != nil {
-		traceExtra["error"] = err.Error()
-	}
-	v.recordUploadEvent(pending.Path, "driver_put_source", phaseStart, pending.Size, traceExtra)
-	v.healthTracker.RecordResult(drive.HealthOpUpload, err)
-	if err != nil {
-		finishErr = err.Error()
-		if ctx.Err() == nil {
-			if drive.IsNonRetryable(err) {
-				if latest, ok, saveErr := v.cache.RecordPendingPermanentFailure(pending.Path, err); saveErr != nil {
-					logging.L.Warnf("[VFS] upload failed permanently and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+	if replaceUpload == nil {
+		phaseStart = timeutil.Now()
+		var err error
+		entry, err = v.driver.PutSource(ctx, drive.UploadRequest{
+			ParentID: pending.ParentID,
+			Name:     uploadName,
+			Source:   source,
+			Progress: progress,
+		})
+		v.setUploadSnapshotMetadata(pending.Path, entry.ID, nil)
+		traceExtra := map[string]any{"entry_id": entry.ID}
+		if err != nil {
+			traceExtra["error"] = err.Error()
+		}
+		v.recordUploadEvent(pending.Path, "driver_put_source", phaseStart, pending.Size, traceExtra)
+		v.healthTracker.RecordResult(drive.HealthOpUpload, err)
+		if err != nil {
+			finishErr = err.Error()
+			if ctx.Err() == nil {
+				if drive.IsNonRetryable(err) {
+					if latest, ok, saveErr := v.cache.RecordPendingPermanentFailure(pending.Path, err); saveErr != nil {
+						logging.L.Warnf("[VFS] upload failed permanently and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+					} else if ok {
+						logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, err)
+					}
+				} else if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay)); saveErr != nil {
+					logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 				} else if ok {
-					logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, err)
+					logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
+					v.enqueue(latest)
 				}
-			} else if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, v.uploadDelay); saveErr != nil {
-				logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+			}
+			return err
+		}
+	}
+	if err := validateUploadedEntry(entry, uploadName, pending.Size); err != nil {
+		finishErr = err.Error()
+		logging.L.Warnf("[VFS] upload returned invalid entry op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
+		if ctx.Err() == nil {
+			if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay)); saveErr != nil {
+				logging.L.Warnf("[VFS] upload validation failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 			} else if ok {
-				logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
 				v.enqueue(latest)
 			}
 		}
 		return err
+	}
+	if len(replaceExisting) > 0 && pending.ReplaceUpload == nil {
+		latest, ok, saveErr := v.cache.RecordPendingReplaceUploadIfUnchanged(pending, pendingReplaceUpload(entry))
+		if saveErr != nil {
+			finishErr = saveErr.Error()
+			logging.L.Warnf("[VFS] upload replace state save failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, saveErr)
+			return saveErr
+		}
+		if !ok {
+			finishState = uploadSnapshotStateSuperseded
+			if drive.HasCapability(v.driver, drive.CapabilityWriter) && ctx.Err() == nil {
+				_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
+			}
+			return nil
+		}
+		pending = latest
 	}
 	if latest, ok := v.cache.PendingByPath(pending.Path); !ok || !samePendingFile(latest, pending) {
 		finishState = uploadSnapshotStateSuperseded
@@ -146,6 +200,25 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			v.enqueue(latest)
 		}
 		return nil
+	}
+	if needsReplace {
+		v.setUploadSnapshotState(pending.Path, "replacing_existing")
+		phaseStart = timeutil.Now()
+		if err := v.replaceUploadedFile(ctx, entry, replaceExisting, pending.Name); err != nil {
+			v.recordUploadEvent(pending.Path, "replace_existing", phaseStart, 0, map[string]any{"error": err.Error(), "uploaded_id": entry.ID})
+			finishErr = err.Error()
+			logging.L.Warnf("[VFS] upload replace existing failed op_id=%q path=%q uploaded_id=%q name=%q err=%v", pending.FID, pending.Path, entry.ID, pending.Name, err)
+			if ctx.Err() == nil {
+				if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay)); saveErr != nil {
+					logging.L.Warnf("[VFS] upload replace failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+				} else if ok {
+					v.enqueue(latest)
+				}
+			}
+			return err
+		}
+		entry.Name = pending.Name
+		v.recordUploadEvent(pending.Path, "replace_existing", phaseStart, 0, map[string]any{"uploaded_id": entry.ID, "replaced": len(replaceExisting)})
 	}
 	if modTime := v.localModTimeFor(pending.Path); !modTime.IsZero() {
 		entry.ModTime = modTime
@@ -268,21 +341,103 @@ func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 	}
 }
 
-func (v *VFS) removeExistingFile(ctx context.Context, parentID, name string) error {
+type uploadTarget struct {
+	UploadName      string
+	ReplaceExisting []drive.Entry
+	AlreadyReplaced bool
+}
+
+func (v *VFS) prepareUploadTarget(ctx context.Context, parentID, name, fid, replaceUploadID string) (uploadTarget, error) {
+	target := uploadTarget{UploadName: name}
 	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
-		return nil
+		return target, nil
 	}
 	entries, err := v.driver.List(ctx, parentID)
 	if err != nil {
-		return err
+		return target, err
 	}
+	tempName := temporaryUploadName(name, fid)
 	for _, entry := range entries {
-		if entry.Name == name && !entry.IsDir {
-			logging.L.InfofEvery("vfs.remove_existing_before_upload", time.Second, "[VFS] removing existing file before upload parent=%q name=%q id=%q size=%d", parentID, name, entry.ID, entry.Size)
+		if entry.IsDir {
+			continue
+		}
+		switch entry.Name {
+		case name:
+			if replaceUploadID != "" && entry.ID == replaceUploadID {
+				target.AlreadyReplaced = true
+				continue
+			}
+			target.ReplaceExisting = append(target.ReplaceExisting, entry)
+		case tempName:
+			if replaceUploadID != "" && entry.ID == replaceUploadID {
+				continue
+			}
+			logging.L.InfofEvery("vfs.remove_stale_temp_upload", time.Second, "[VFS] removing stale temporary upload parent=%q name=%q id=%q size=%d", parentID, tempName, entry.ID, entry.Size)
 			if err := v.driver.Remove(ctx, entry); err != nil {
-				return err
+				return target, err
 			}
 		}
+	}
+	if len(target.ReplaceExisting) > 0 {
+		target.UploadName = tempName
+	}
+	return target, nil
+}
+
+func (v *VFS) replaceUploadedFile(ctx context.Context, uploaded drive.Entry, existing []drive.Entry, finalName string) error {
+	for _, entry := range existing {
+		logging.L.InfofEvery("vfs.remove_existing_after_upload", time.Second, "[VFS] removing existing file after replacement upload parent=%q name=%q id=%q size=%d", entry.ParentID, entry.Name, entry.ID, entry.Size)
+		if err := v.driver.Remove(ctx, entry); err != nil {
+			return err
+		}
+	}
+	if err := v.driver.Rename(ctx, uploaded, finalName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func temporaryUploadName(name, fid string) string {
+	if fid == "" {
+		fid = stagingFID(name)
+	}
+	return ".qrypt-upload-" + fid + "-" + name
+}
+
+func pendingReplaceUploadID(upload *PendingReplaceUpload) string {
+	if upload == nil {
+		return ""
+	}
+	return upload.ID
+}
+
+func pendingReplaceUpload(entry drive.Entry) PendingReplaceUpload {
+	return PendingReplaceUpload{
+		ID:       entry.ID,
+		ParentID: entry.ParentID,
+		Name:     entry.Name,
+		Size:     entry.Size,
+	}
+}
+
+func pendingReplaceUploadEntry(upload PendingReplaceUpload) drive.Entry {
+	return drive.Entry{
+		ID:       upload.ID,
+		ParentID: upload.ParentID,
+		Name:     upload.Name,
+		Size:     upload.Size,
+	}
+}
+
+func validateUploadedEntry(entry drive.Entry, name string, size int64) error {
+	if entry.ID == "" {
+		return fmt.Errorf("vfs: upload returned empty entry id")
+	}
+	if entry.Size != size {
+		return fmt.Errorf("vfs: upload returned size %d, expected %d", entry.Size, size)
+	}
+	if entry.Name != "" && entry.Name != name {
+		return fmt.Errorf("vfs: upload returned name %q, expected %q", entry.Name, name)
 	}
 	return nil
 }
@@ -292,7 +447,7 @@ func (v *VFS) enqueue(p PendingFile) {
 		logging.L.WarnfEvery("vfs.enqueue_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q size=%d retry=%d last_error=%q", p.FID, p.Path, p.Size, p.RetryCount, p.LastError)
 		return
 	}
-	v.enqueueAfter(p, v.uploadDelay)
+	v.enqueueAfter(p, pendingUploadDelay(p, v.uploadDelay))
 }
 
 type debugUploadProgress struct {
@@ -377,4 +532,29 @@ func (v *VFS) sendUpload(p PendingFile) {
 		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background op_id=%q path=%q size=%d", p.FID, p.Path, p.Size)
 		go func() { v.queue <- p }()
 	}
+}
+
+func pendingUploadDelay(p PendingFile, fallback time.Duration) time.Duration {
+	if p.NextAttemptAt <= 0 {
+		return fallback
+	}
+	next := time.Unix(0, p.NextAttemptAt)
+	if delay := time.Until(next); delay > 0 {
+		return delay
+	}
+	return 0
+}
+
+func uploadRetryDelay(retryCount int, minimum time.Duration) time.Duration {
+	if retryCount < 1 {
+		retryCount = 1
+	}
+	delay := retry.ExponentialBackoff(retryCount - 1)
+	if delay < minimum {
+		delay = minimum
+	}
+	if delay > maxUploadRetryDelay {
+		delay = maxUploadRetryDelay
+	}
+	return delay
 }
