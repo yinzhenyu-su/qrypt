@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +102,7 @@ type quarkUploadSession struct {
 
 const quarkUploadSessionStateFile = "quark_upload_sessions.json"
 const quarkUploadSessionMaxAge = 24 * time.Hour
+const quarkUploadSessionMaxEntries = 1024
 
 func init() {
 	drive.Register("quark", func(params drive.Params) (drive.Driver, error) {
@@ -199,6 +201,7 @@ func (d *Driver) Drop(ctx context.Context) error {
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+	d.pruneStoredUploadSessions()
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -486,7 +489,6 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime}, nil
 		}
 		session = uploadSessionFromPre(sessionKey, parentID, name, size, hashData, preResp, partSize)
-		d.saveUploadSession(session)
 	} else if resumedSession && session.Etags == nil {
 		session.Etags = map[int]string{}
 	}
@@ -872,13 +874,12 @@ func (d *Driver) loadUploadSessions() uploadSessionState {
 }
 
 func (d *Driver) loadUploadSession(key string) (quarkUploadSession, bool) {
-	state := d.loadUploadSessions()
+	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if changed {
+		d.saveUploadSessionState(state)
+	}
 	session, ok := state.Sessions[key]
 	if !ok {
-		return quarkUploadSession{}, false
-	}
-	if !session.UpdatedAt.IsZero() && time.Since(session.UpdatedAt) > quarkUploadSessionMaxAge {
-		d.deleteUploadSession(key)
 		return quarkUploadSession{}, false
 	}
 	return session, true
@@ -892,7 +893,8 @@ func (d *Driver) saveUploadSession(session quarkUploadSession) {
 	session.UpdatedAt = time.Now()
 	state.Version = 1
 	state.Sessions[session.Key] = session
-	if err := d.stateStore.SaveJSON(quarkUploadSessionStateFile, state); err != nil {
+	state, _ = d.prunedUploadSessions(state, time.Now())
+	if err := d.saveUploadSessionState(state); err != nil {
 		logging.L.Warnf("[QUARK] upload session save failed key=%q task=%q err=%v", session.Key, session.TaskID, err)
 	}
 }
@@ -901,15 +903,80 @@ func (d *Driver) deleteUploadSession(key string) {
 	if d.stateStore == nil || key == "" {
 		return
 	}
-	state := d.loadUploadSessions()
+	state, _ := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
 	if _, ok := state.Sessions[key]; !ok {
 		return
 	}
 	delete(state.Sessions, key)
 	state.Version = 1
-	if err := d.stateStore.SaveJSON(quarkUploadSessionStateFile, state); err != nil {
+	if err := d.saveUploadSessionState(state); err != nil {
 		logging.L.Warnf("[QUARK] upload session delete failed key=%q err=%v", key, err)
 	}
+}
+
+func (d *Driver) pruneStoredUploadSessions() {
+	if d.stateStore == nil {
+		return
+	}
+	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if !changed {
+		return
+	}
+	if err := d.saveUploadSessionState(state); err != nil {
+		logging.L.Warnf("[QUARK] upload session prune failed err=%v", err)
+	}
+}
+
+func (d *Driver) saveUploadSessionState(state uploadSessionState) error {
+	if d.stateStore == nil {
+		return nil
+	}
+	state.Version = 1
+	if state.Sessions == nil {
+		state.Sessions = map[string]quarkUploadSession{}
+	}
+	return d.stateStore.SaveJSON(quarkUploadSessionStateFile, state)
+}
+
+func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (uploadSessionState, bool) {
+	state.Version = 1
+	if state.Sessions == nil {
+		state.Sessions = map[string]quarkUploadSession{}
+		return state, false
+	}
+	changed := false
+	for key, session := range state.Sessions {
+		if key == "" || session.Key == "" || len(session.Etags) == 0 || uploadSessionExpired(session, now) {
+			delete(state.Sessions, key)
+			changed = true
+		}
+	}
+	if len(state.Sessions) <= quarkUploadSessionMaxEntries {
+		return state, changed
+	}
+	type uploadSessionItem struct {
+		key       string
+		updatedAt time.Time
+	}
+	items := make([]uploadSessionItem, 0, len(state.Sessions))
+	for key, session := range state.Sessions {
+		items = append(items, uploadSessionItem{key: key, updatedAt: session.UpdatedAt})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].updatedAt.After(items[j].updatedAt)
+	})
+	for _, item := range items[quarkUploadSessionMaxEntries:] {
+		delete(state.Sessions, item.key)
+		changed = true
+	}
+	return state, changed
+}
+
+func uploadSessionExpired(session quarkUploadSession, now time.Time) bool {
+	if session.UpdatedAt.IsZero() {
+		return false
+	}
+	return now.Sub(session.UpdatedAt) > quarkUploadSessionMaxAge
 }
 
 func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
