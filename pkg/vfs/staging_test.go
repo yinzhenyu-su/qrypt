@@ -140,8 +140,10 @@ func TestUploadAdmissionLargeUploadIsExclusive(t *testing.T) {
 	}
 	admission.release(large)
 
-	if !admission.tryAcquire(small, 3) || !admission.tryAcquire(small, 3) || !admission.tryAcquire(small, 3) {
-		t.Fatal("small uploads should be admitted up to worker count")
+	for i := range 3 {
+		if !admission.tryAcquire(small, 3) {
+			t.Fatalf("small upload %d was not admitted", i+1)
+		}
 	}
 	if admission.tryAcquire(large, 3) {
 		t.Fatal("large upload admitted while small uploads are active")

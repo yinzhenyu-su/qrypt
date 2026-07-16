@@ -48,6 +48,41 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 	}
 }
 
+func TestVFSDebugSnapshotUsesConfiguredName(t *testing.T) {
+	ctx := context.Background()
+	drv := localfs.New(t.TempDir())
+	if err := drv.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(drv, vfs.Options{Name: "cloud", CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := fs.DebugSnapshot()
+	if len(snapshot.Mounts) != 1 {
+		t.Fatalf("mount count = %d, want 1", len(snapshot.Mounts))
+	}
+	if snapshot.Mounts[0].Identity.Name != "cloud" {
+		t.Fatalf("debug mount name = %q, want configured name", snapshot.Mounts[0].Identity.Name)
+	}
+	filtered := fs.DebugSnapshotForMounts([]string{"cloud"})
+	if len(filtered.Mounts) != 1 || filtered.Mounts[0].Identity.Name != "cloud" {
+		t.Fatalf("filtered snapshot = %+v, want cloud mount", filtered.Mounts)
+	}
+	filtered = fs.DebugSnapshotForMounts([]string{"default"})
+	if len(filtered.Mounts) != 0 {
+		t.Fatalf("default should not match configured mount name: %+v", filtered.Mounts)
+	}
+	staging, err := fs.DebugStaging(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staging.Mounts) != 1 || staging.Mounts[0].Mount != "cloud" {
+		t.Fatalf("staging mount = %+v, want cloud", staging.Mounts)
+	}
+}
+
 func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 	ctx := context.Background()
 	drv := localfs.New(t.TempDir())

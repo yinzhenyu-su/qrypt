@@ -1,6 +1,7 @@
 package yun139
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -534,6 +536,19 @@ func TestPutSmallFile(t *testing.T) {
 		switch r.URL.Path {
 		case "/file/create":
 			createCalled = true
+			var body struct {
+				ParallelUpload bool       `json:"parallelUpload"`
+				PartInfos      []partMeta `json:"partInfos"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.ParallelUpload {
+				t.Fatal("parallelUpload = true, want false")
+			}
+			if len(body.PartInfos) != 1 || body.PartInfos[0].PartSize != 5 {
+				t.Fatalf("partInfos = %+v, want one 5-byte part", body.PartInfos)
+			}
 			writeJSON(t, w, map[string]interface{}{
 				"success": true,
 				"data": map[string]interface{}{
@@ -713,6 +728,144 @@ func TestPutInstantUploadIncrementsDebugCounter(t *testing.T) {
 	}
 }
 
+func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
+	payload := append(bytes.Repeat([]byte("a"), 100<<20), []byte("tail")...)
+	source := drive.NewBytesReadOnlyFileSource(payload)
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	var uploadMu sync.Mutex
+	partAttempts := map[string]int{}
+	createCalls := 0
+	completeCalls := 0
+	failPart2 := true
+	part1Done := make(chan struct{})
+
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		part := strings.TrimPrefix(r.URL.Path, "/")
+		uploadMu.Lock()
+		partAttempts[part]++
+		shouldFailPart2 := part == "2" && failPart2
+		uploadMu.Unlock()
+		if shouldFailPart2 {
+			select {
+			case <-part1Done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("part 2 did not wait for part 1")
+			}
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read part body: %v", err)
+		}
+		if part == "1" && len(data) != 100<<20 {
+			t.Fatalf("part 1 size = %d", len(data))
+		}
+		if part == "2" && string(data) != "tail" {
+			t.Fatalf("part 2 body = %q", data)
+		}
+		if shouldFailPart2 {
+			uploadMu.Lock()
+			failPart2 = false
+			uploadMu.Unlock()
+			http.Error(w, "temporary failure", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if part == "1" {
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			close(part1Done)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	defer uploadServer.Close()
+
+	server, first := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/create":
+			createCalls++
+			if createCalls > 1 {
+				t.Fatalf("unexpected create call during resume")
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"fileId":   "file-1",
+					"uploadId": "upload-1",
+					"partInfos": []map[string]interface{}{
+						{"partNumber": 1, "uploadUrl": uploadServer.URL + "/1"},
+						{"partNumber": 2, "uploadUrl": uploadServer.URL + "/2"},
+					},
+				},
+			})
+		case "/file/complete":
+			completeCalls++
+			writeJSON(t, w, map[string]interface{}{"success": true})
+		}
+	})
+	defer server.Close()
+	first.InstallStateStore(store)
+
+	_, err := first.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err == nil || !strings.Contains(err.Error(), "upload part 2") {
+		t.Fatalf("first upload error = %v, want part 2 failure", err)
+	}
+	uploadMu.Lock()
+	partAttemptsAfterFirst := map[string]int{"1": partAttempts["1"], "2": partAttempts["2"]}
+	uploadMu.Unlock()
+	if partAttemptsAfterFirst["1"] != 1 || partAttemptsAfterFirst["2"] != 1 {
+		t.Fatalf("part attempts after first upload = %+v", partAttemptsAfterFirst)
+	}
+	var state uploadSessionState
+	if err := store.LoadJSON(uploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 1 {
+		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
+	}
+
+	second := New(testAuth("test", "token"), "/", "")
+	first.cl.mu.Lock()
+	second.cl.personalCloudHost = first.cl.personalCloudHost
+	second.cl.account = first.cl.account
+	first.cl.mu.Unlock()
+	second.InstallStateStore(store)
+	entry, err := second.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "file-1" || entry.Name != "resume.bin" || entry.Size != source.Size() {
+		t.Fatalf("unexpected resumed entry: %+v", entry)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+	if completeCalls != 1 {
+		t.Fatalf("complete calls = %d, want 1", completeCalls)
+	}
+	uploadMu.Lock()
+	partAttemptsAfterResume := map[string]int{"1": partAttempts["1"], "2": partAttempts["2"]}
+	uploadMu.Unlock()
+	if partAttemptsAfterResume["1"] != 1 || partAttemptsAfterResume["2"] != 2 {
+		t.Fatalf("part attempts after resume = %+v, want part 1 skipped", partAttemptsAfterResume)
+	}
+	state = uploadSessionState{}
+	if err := store.LoadJSON(uploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 0 {
+		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
+	}
+}
+
 func TestResolvePath(t *testing.T) {
 	d := &Driver{rootID: "/root-id"}
 	path, err := d.ResolvePath(context.Background(), "/")
@@ -729,11 +882,12 @@ func TestCalcPartSize(t *testing.T) {
 		size int64
 		want int64
 	}{
-		{0, 4 << 20},
-		{50 << 20, 4 << 20},
-		{200 << 20, 10 << 20},
-		{800 << 20, 20 << 20},
-		{2 << 30, 50 << 20},
+		{0, 100 << 20},
+		{50 << 20, 100 << 20},
+		{200 << 20, 100 << 20},
+		{800 << 20, 100 << 20},
+		{2 << 30, 100 << 20},
+		{31 << 30, 512 << 20},
 	}
 	for _, tt := range tests {
 		got := calcPartSize(tt.size)
@@ -766,7 +920,7 @@ func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
 	var uploadResp personalUploadResp
 	uploadResp.Data.PartInfos = []personalPartInfo{{PartNumber: 1, UploadURL: uploadServer.URL}}
 	source := drive.NewLocalReadOnlyFileSource(localPath, 4)
-	err := drv.uploadParts(ctx, source, nil, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4)
+	err := drv.uploadParts(ctx, source, nil, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4, nil, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("uploadParts error = %v, want context deadline exceeded", err)
 	}

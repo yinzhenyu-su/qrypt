@@ -111,6 +111,7 @@ not supported.
 | Verify driver credentials | `debug test auth --mount NAME` |
 | Verify driver CRUD behavior | `debug test crud --mount NAME` |
 | Verify VFS writeback behavior | `debug test fs --mount NAME` |
+| Verify resumable upload recovery | `debug test resume --mount NAME` |
 | Compare performance or regressions | `debug bench ...` |
 
 Use `collect` first when you are unsure. Use `raw` when you already know which
@@ -132,6 +133,19 @@ go run ./cmd/qrypt debug test fs --socket /tmp/qrypt.sock --mount quark-test --s
 waits for upload, reads back, and removes the test data. It writes to the
 selected mount, so use it only when temporary remote writes are acceptable.
 
+If the issue is about interrupted uploads or resumable upload sessions, run:
+
+```sh
+go run ./cmd/qrypt debug test resume --socket /tmp/qrypt.sock --mount quark-test --size 64m
+```
+
+`debug test resume` writes one temporary file, injects a one-shot upload
+`context canceled` fault after upload progress starts, waits for qrypt to retry,
+then checks that the final remote file has the expected size. A passing result
+means the VFS writeback path recovered from the cancellation. The JSON `outcome`
+field tells you whether the driver reused a resumable session or safely fell
+back to a fresh upload after the provider rejected the old session.
+
 To inspect the current state without continuous sampling, use these raw
 endpoints:
 
@@ -141,6 +155,7 @@ go run ./cmd/qrypt debug raw '/v1/pending?mount=quark-test' --socket /tmp/qrypt.
 go run ./cmd/qrypt debug raw '/v1/staging?mount=quark-test' --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw '/v1/cache?mount=quark-test' --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw '/v1/events?level=warn&limit=100' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/debug/faults/upload-cancel' --socket /tmp/qrypt.sock
 ```
 
 Useful fields:
@@ -154,6 +169,8 @@ Useful fields:
 - `cache.mounts[].cache.journal`: pending journal size, duplicate entries, and
   whether compaction is recommended.
 - `events.events[]`: recent warnings and errors.
+- `faults[]`: currently armed debug upload-cancel faults. This should normally
+  be empty outside an active `debug test resume` run.
 
 For one report instead of separate raw calls:
 
@@ -326,6 +343,7 @@ Common endpoints:
 | `/v1/staging?mount=NAME` | Staging files and orphan staging files | Grows with staging files |
 | `/v1/cache?mount=NAME` | Read cache and pending journal health | Grows with cache files |
 | `/v1/events?level=warn&limit=100` | Recent warnings/errors | Limited by `limit` |
+| `/v1/debug/faults/upload-cancel` | Armed upload cancellation test faults | Small |
 | `/v1/driver?mount=NAME` | Driver debug snapshot and metrics | Driver dependent |
 | `/v1/mounts/health?mount=NAME` | Recent operation health | Small |
 | `/v1/resolve?path=PATH` | Resolve a virtual path | Small |
@@ -388,6 +406,9 @@ signed upload URLs, encrypted request blobs, or full response bodies.
   temporary remote objects.
 - `debug test fs --size` accepts bytes or `k`, `m`, `g` suffixes. Large values
   consume upload time and provider bandwidth.
+- `debug test resume --size` has the same size format. It intentionally cancels
+  one upload attempt through the VFS debug fault injector, then waits for normal
+  retry or resumable-upload recovery.
 - `--all-mounts` can significantly increase report size.
 - `--goroutines` is useful for blocking or deadlock investigations, but it can
   make bundles larger.

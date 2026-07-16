@@ -165,3 +165,80 @@ func TestCurrentCookieHeaderMergesRestyJarCookies(t *testing.T) {
 		}
 	}
 }
+
+func TestUploadPartRanges(t *testing.T) {
+	parts := p115UploadPartRanges(35, 16)
+	want := []p115UploadPartRange{
+		{Number: 1, Offset: 0, Size: 16},
+		{Number: 2, Offset: 16, Size: 16},
+		{Number: 3, Offset: 32, Size: 3},
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("parts len = %d, want %d", len(parts), len(want))
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Fatalf("part[%d] = %+v, want %+v", i, parts[i], want[i])
+		}
+	}
+}
+
+func TestUploadSessionStoreRoundTrip(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := New(Options{Cookie: "UID=uid"})
+	driver.InstallStateStore(store)
+
+	session := p115UploadSession{
+		Key:      "session-key",
+		ParentID: "0",
+		Name:     "video.bin",
+		Size:     32 << 20,
+		SHA1:     "ABC",
+		Bucket:   "bucket",
+		Object:   "object",
+		UploadID: "upload-id",
+		PartSize: p115MultipartPartSize,
+		Parts: []ossPart{
+			{Number: 1, ETag: "etag-1"},
+		},
+		Callback:  "callback",
+		CallbackV: "callback-var",
+	}
+	driver.saveUploadSession(session)
+
+	loaded, ok := driver.loadUploadSession("session-key")
+	if !ok {
+		t.Fatal("expected session to load")
+	}
+	if loaded.UploadID != "upload-id" || len(loaded.Parts) != 1 || loaded.Parts[0].ETag != "etag-1" {
+		t.Fatalf("unexpected loaded session: %+v", loaded)
+	}
+	if loaded.SavedAt.IsZero() {
+		t.Fatal("SavedAt was not set")
+	}
+
+	var state p115UploadSessionState
+	if err := store.LoadJSON(p115UploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != 1 || len(state.Sessions) != 1 {
+		t.Fatalf("unexpected persisted state: %+v", state)
+	}
+}
+
+func TestUploadSessionStoreRejectsEmptyParts(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := New(Options{Cookie: "UID=uid"})
+	driver.InstallStateStore(store)
+
+	driver.saveUploadSession(p115UploadSession{
+		Key:      "session-key",
+		Bucket:   "bucket",
+		Object:   "object",
+		UploadID: "upload-id",
+		PartSize: p115MultipartPartSize,
+	})
+	if _, ok := driver.loadUploadSession("session-key"); ok {
+		t.Fatal("expected empty-parts session to be rejected")
+	}
+}

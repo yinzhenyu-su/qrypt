@@ -19,6 +19,7 @@ func newDebugTestCmd() *cobra.Command {
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("crud", "Run a CRUD driver test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("fs", "Run a VFS filesystem smoke test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("instantupload", "Run an instant-upload driver test")))
+	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("resume", "Run a VFS resumable-upload test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("xfer", "Run a transfer driver test")))
 	return cmd
 }
@@ -38,11 +39,11 @@ func newDebugTestCaseCmd(test, short string) *cobra.Command {
 }
 
 func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
-	if test == "" || test == "auth" || test == "crud" || test == "fs" || test == "instantupload" {
-		cmd.Flags().String("mount", "", "mount name for auth, crud, fs, or instantupload tests")
+	if test == "" || test == "auth" || test == "crud" || test == "fs" || test == "instantupload" || test == "resume" {
+		cmd.Flags().String("mount", "", "mount name for auth, crud, fs, instantupload, or resume tests")
 	}
-	if test == "fs" {
-		cmd.Flags().String("size", "", "fs test size in bytes, or k/m/g suffix")
+	if test == "fs" || test == "resume" {
+		cmd.Flags().String("size", "", "test size in bytes, or k/m/g suffix")
 	}
 	if test == "" || test == "xfer" {
 		cmd.Flags().String("source", "", "source mount for xfer test")
@@ -89,12 +90,12 @@ func validateDriverTestRequest(req control.DriverTestRequest) error {
 		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {
 			return fmt.Errorf("%s test only supports --mount", req.Test)
 		}
-	case "fs":
+	case "fs", "resume":
 		if req.Source != "" || req.Dest != "" || req.VFS {
-			return fmt.Errorf("fs test only supports --mount and --size")
+			return fmt.Errorf("%s test only supports --mount and --size", req.Test)
 		}
 		if req.Mount == "" {
-			return fmt.Errorf("fs test requires --mount\n\nExample:\n  qrypt debug test fs --mount cloud --socket /tmp/qrypt.sock")
+			return fmt.Errorf("%s test requires --mount\n\nExample:\n  qrypt debug test %s --mount cloud --socket /tmp/qrypt.sock", req.Test, req.Test)
 		}
 	case "xfer":
 		if req.Mount != "" {

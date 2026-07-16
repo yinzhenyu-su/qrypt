@@ -23,12 +23,16 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = fs.FlushReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	rc.Close()
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
 	rc, err = fs.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +55,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = fs.FlushReadCache() })
 	if err := fs.Create(ctx, "/qrypt.log"); err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +113,9 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 	if err := c1.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
 		t.Fatal(err)
 	}
+	if err := c1.FlushReadIndex(); err != nil {
+		t.Fatal(err)
+	}
 
 	c2, err := vfs.NewCache(cacheDir, 10<<20)
 	if err != nil {
@@ -119,6 +127,160 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 	}
 	if !ok || string(got) != "cached" {
 		t.Fatalf("cached chunk = %q ok=%v, want cached", got, ok)
+	}
+}
+
+func TestReadCacheCleansStaleIndexTempOnStartup(t *testing.T) {
+	cacheDir := t.TempDir()
+	readingDir := filepath.Join(cacheDir, "reading")
+	if err := os.MkdirAll(readingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := filepath.Join(readingDir, "index.json.tmp")
+	if err := os.WriteFile(tmpPath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vfs.NewCache(cacheDir, 10<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Fatalf("stale temp index still exists, err=%v", err)
+	}
+}
+
+func TestReadCacheGetsChunkRange(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	chunk := bytes.Repeat([]byte("x"), testReadChunkSize)
+	copy(chunk[32:48], []byte("0123456789abcdef"))
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.PutChunk(key, int64(len(chunk)), 0, chunk); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := cache.GetChunkRange(key, 0, 32, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("range cache lookup missed")
+	}
+	if string(got) != "0123456789abcdef" {
+		t.Fatalf("range cache data = %q", got)
+	}
+	state := cache.DebugReadCacheForTest()
+	if state.Hits != 1 || state.Misses != 0 {
+		t.Fatalf("cache stats = hits %d misses %d, want hits 1 misses 0", state.Hits, state.Misses)
+	}
+}
+
+func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(cacheDir, "reading", "*.batch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("batch files = %v, want one", matches)
+	}
+	if err := os.Remove(matches[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := cache.GetChunkRange(key, 0, 0, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || got != nil {
+		t.Fatalf("missing batch range = %q ok=%v, want miss", got, ok)
+	}
+	if has, err := cache.HasChunk(key, 0); err != nil {
+		t.Fatal(err)
+	} else if has {
+		t.Fatal("stale chunk index was not removed")
+	}
+}
+
+func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	cache.WaitReadCacheWrites()
+	if err := cache.FlushReadIndex(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := cache.GetChunk(key, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "cached" {
+		t.Fatalf("cached chunk = %q ok=%v, want cached", got, ok)
+	}
+	state := cache.DebugReadCacheForTest()
+	if state.Puts != 1 {
+		t.Fatalf("puts = %d, want 1", state.Puts)
+	}
+
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("new"))
+	cache.WaitReadCacheWrites()
+	got, ok, err = cache.GetChunk(key, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "cached" {
+		t.Fatalf("cached chunk after duplicate async put = %q ok=%v, want cached", got, ok)
+	}
+	state = cache.DebugReadCacheForTest()
+	if state.Puts != 1 {
+		t.Fatalf("puts after duplicate existing put = %d, want 1", state.Puts)
+	}
+}
+
+func TestReadCacheCloseFlushesAsyncWrites(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	if err := cache.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cache.PutChunkAsync(key, int64(len("ignored")), 1, []byte("ignored"))
+
+	reopened, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := reopened.GetChunk(key, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "cached" {
+		t.Fatalf("closed cache chunk = %q ok=%v, want cached", got, ok)
+	}
+	if _, ok, err := reopened.GetChunk(key, 1); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("put after close was written")
 	}
 }
 
@@ -206,6 +368,7 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = fs1.FlushReadCache() })
 	rc, err := fs1.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
@@ -221,11 +384,15 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 	if count := drv.readCount(0); count != 1 {
 		t.Fatalf("driver read count after first read = %d, want 1", count)
 	}
+	if err := fs1.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
 
 	fs2, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = fs2.FlushReadCache() })
 	rc, err = fs2.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
@@ -252,12 +419,16 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = fs.FlushReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.FlushReadCache(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,6 +455,7 @@ func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = fs.FlushReadCache() })
 	fs.Start(ctx)
 
 	rc, err := fs.Read(ctx, "/index.html", 0, 0)
@@ -297,6 +469,9 @@ func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 	}
 	if string(oldData) != "old content" {
 		t.Fatalf("old read = %q", oldData)
+	}
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
 	}
 	if cache := fs.DebugSnapshot().Mounts[0].ReadCacheState(); cache.ChunkCount == 0 {
 		t.Fatalf("expected old content to be cached, got %+v", cache)

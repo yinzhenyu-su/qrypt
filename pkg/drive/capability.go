@@ -10,6 +10,7 @@ type Capability string
 const (
 	CapabilityWriter             Capability = "writer"
 	CapabilitySourceUploader     Capability = "source_uploader"
+	CapabilityResumableUploader  Capability = "resumable_uploader"
 	CapabilitySpace              Capability = "space"
 	CapabilityPathResolver       Capability = "path_resolver"
 	CapabilityRemoteNameResolver Capability = "remote_name_resolver"

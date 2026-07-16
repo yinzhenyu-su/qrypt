@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func testCommand() *cobra.Command {
@@ -211,6 +212,17 @@ root_path = "`+remoteB+`"
 	}
 	defer cleanup()
 	fs.Start(ctx)
+
+	snapshotter, ok := fs.(interface {
+		DebugSnapshot() vfs.DebugSnapshot
+	})
+	if !ok {
+		t.Fatal("selected filesystem does not expose debug snapshot")
+	}
+	snapshot := snapshotter.DebugSnapshot()
+	if len(snapshot.Mounts) != 1 || snapshot.Mounts[0].Identity.Name != "quark-test" {
+		t.Fatalf("single selected mount debug name = %+v, want quark-test", snapshot.Mounts)
+	}
 
 	entries, err := fs.List(ctx, "/")
 	if err != nil {

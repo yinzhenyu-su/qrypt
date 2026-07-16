@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -42,7 +42,7 @@ type client struct {
 	deviceID     string
 	signature    string
 	onRefresh    func(accessToken, refreshToken string)
-	metrics      *traceutil.Buffer
+	metrics      *util.Buffer
 }
 
 type clientOptions struct {
@@ -69,7 +69,7 @@ func newClient(refreshToken string, opts clientOptions) *client {
 		apiBaseURL:   apiBaseURL,
 		authURL:      authURL,
 		refreshToken: refreshToken,
-		metrics:      traceutil.NewBuffer(500),
+		metrics:      util.NewBuffer(500),
 	}
 }
 
@@ -252,9 +252,9 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Duration:  time.Since(start).String(),
-			Request:   traceutil.BodyFields(body),
+			Request:   util.BodyFields(body),
 			Error:     err.Error(),
 		})
 		return err
@@ -265,10 +265,10 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
-			Request:   traceutil.BodyFields(body),
+			Request:   util.BodyFields(body),
 			Error:     err.Error(),
 		})
 		return err
@@ -276,16 +276,16 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	event := drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    resp.StatusCode,
 		Duration:  time.Since(start).String(),
-		Request:   traceutil.BodyFields(body),
+		Request:   util.BodyFields(body),
 		Response:  map[string]any{"bytes": len(respBody)},
 	}
 	var apiErr apiError
 	_ = json.Unmarshal(respBody, &apiErr)
 	if resp.StatusCode >= 400 || apiErr.Code != "" {
-		event.Response = map[string]any{"bytes": len(respBody), "body_snippet": traceutil.Snippet(respBody)}
+		event.Response = map[string]any{"bytes": len(respBody), "body_snippet": util.Snippet(respBody)}
 		c.recordMetric(ctx, event)
 		return &apiStatusError{status: resp.StatusCode, code: apiErr.Code, message: apiErr.Message}
 	}
