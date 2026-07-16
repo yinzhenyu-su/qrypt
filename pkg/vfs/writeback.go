@@ -356,10 +356,11 @@ func (v *VFS) snapshotPending(pending PendingFile) (uploadSnapshot, error) {
 }
 
 func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
-	if entry.ID == "" || localPath == "" {
+	cacheKey := v.readCacheKey(entry)
+	if cacheKey == "" || localPath == "" {
 		return
 	}
-	if err := v.cache.PutLocalFile(entry.ID, localPath); err != nil {
+	if err := v.cache.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {
 		logging.L.Warnf("[VFS] read cache seed failed id=%q local=%q err=%v", entry.ID, localPath, err)
 	}
 }

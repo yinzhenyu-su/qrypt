@@ -163,24 +163,29 @@ type DebugCopyHidden struct {
 }
 
 type DebugReadCache struct {
-	MaxBytes       int64                `json:"max_bytes"`
-	ChunkCount     int                  `json:"chunk_count"`
-	Bytes          int64                `json:"bytes"`
-	FileCount      int                  `json:"file_count"`
-	Hits           int64                `json:"hits"`
-	Misses         int64                `json:"misses"`
-	Puts           int64                `json:"puts"`
-	Evicted        int64                `json:"evicted"`
-	LastGetError   string               `json:"last_get_error,omitempty"`
-	LastGetErrorAt *time.Time           `json:"last_get_error_at,omitempty"`
-	LastPutError   string               `json:"last_put_error,omitempty"`
-	LastPutErrorAt *time.Time           `json:"last_put_error_at,omitempty"`
-	Files          []DebugReadCacheFile `json:"files,omitempty"`
-	Journal        *DebugJournal        `json:"journal,omitempty"`
+	MaxBytes           int64                `json:"max_bytes"`
+	LargeFileThreshold int64                `json:"large_file_threshold"`
+	ChunkCount         int                  `json:"chunk_count"`
+	Bytes              int64                `json:"bytes"`
+	LargeFileBytes     int64                `json:"large_file_bytes"`
+	SmallFileBytes     int64                `json:"small_file_bytes"`
+	FileCount          int                  `json:"file_count"`
+	Hits               int64                `json:"hits"`
+	Misses             int64                `json:"misses"`
+	Puts               int64                `json:"puts"`
+	Evicted            int64                `json:"evicted"`
+	LastGetError       string               `json:"last_get_error,omitempty"`
+	LastGetErrorAt     *time.Time           `json:"last_get_error_at,omitempty"`
+	LastPutError       string               `json:"last_put_error,omitempty"`
+	LastPutErrorAt     *time.Time           `json:"last_put_error_at,omitempty"`
+	Files              []DebugReadCacheFile `json:"files,omitempty"`
+	Journal            *DebugJournal        `json:"journal,omitempty"`
 }
 
 type DebugReadCacheFile struct {
 	ID         string `json:"id"`
+	Size       int64  `json:"size,omitempty"`
+	Large      bool   `json:"large,omitempty"`
 	ChunkCount int    `json:"chunk_count"`
 	Bytes      int64  `json:"bytes"`
 }
@@ -760,7 +765,7 @@ func (v *VFS) setUploadSnapshotExtra(path string, key string, value any) {
 }
 
 func (c *Cache) debugReadCache() DebugReadCache {
-	snapshot := DebugReadCache{MaxBytes: c.maxSize}
+	snapshot := DebugReadCache{MaxBytes: c.maxSize, LargeFileThreshold: readCacheLargeFileBytes}
 	c.mu.RLock()
 	snapshot.FileCount = len(c.chunks)
 	snapshot.Hits = c.stats.hits
@@ -779,12 +784,18 @@ func (c *Cache) debugReadCache() DebugReadCache {
 	}
 	for fid, fc := range c.chunks {
 		fc.mu.RLock()
-		file := DebugReadCacheFile{ID: fid}
+		file := DebugReadCacheFile{ID: fid, Size: fc.fileSize}
 		for _, chunk := range fc.chunks {
 			snapshot.ChunkCount++
 			snapshot.Bytes += chunk.size
 			file.ChunkCount++
 			file.Bytes += chunk.size
+		}
+		file.Large = readCacheFileLarge(file.Size, file.Bytes)
+		if file.Large {
+			snapshot.LargeFileBytes += file.Bytes
+		} else {
+			snapshot.SmallFileBytes += file.Bytes
 		}
 		if file.ChunkCount > 0 {
 			snapshot.Files = append(snapshot.Files, file)
@@ -1090,15 +1101,14 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		info.ParentID = pending.ParentID
 		info.RemoteID = pending.FID
 		info.Size = pending.Size
+		info.CacheID = v.readCacheKey(drive.Entry{ID: pending.FID, Size: pending.Size, ModTime: pendingModTime(pending)})
 	}
 	if entry, err := v.resolve(ctx, path); err == nil {
 		info.RemoteID = entry.ID
 		info.ParentID = entry.ParentID
 		info.IsDir = entry.IsDir
 		info.Size = entry.Size
-	}
-	if info.RemoteID != "" {
-		info.CacheID = cacheFileID(info.RemoteID)
+		info.CacheID = v.readCacheKey(entry)
 	}
 	info.Encrypted = debugEncrypted(v.driver)
 	if driverSnapshot, err := v.driver.DebugSnapshot(ctx); err == nil {

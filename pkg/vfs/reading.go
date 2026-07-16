@@ -3,6 +3,8 @@ package vfs
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
@@ -113,21 +115,26 @@ func readEnd(offset, size, entrySize int64) (int64, bool) {
 }
 
 func (v *VFS) readChunk(ctx context.Context, entry drive.Entry, index int64) ([]byte, error) {
-	if cached, ok, err := v.cache.GetChunk(entry.ID, index); err != nil {
-		return nil, err
-	} else if ok {
-		return cached, nil
+	cacheKey := v.readCacheKey(entry)
+	if cacheKey != "" {
+		if cached, ok, err := v.cache.GetChunk(cacheKey, index); err != nil {
+			return nil, err
+		} else if ok {
+			return cached, nil
+		}
 	}
-	if data, ok, err := v.waitWindow(ctx, entry.ID, index); err != nil {
+	if data, ok, err := v.waitWindow(ctx, cacheKey, index); err != nil {
 		return nil, err
 	} else if ok {
 		if data != nil {
 			return data, nil
 		}
-		if cached, ok, err := v.cache.GetChunk(entry.ID, index); err != nil {
-			return nil, err
-		} else if ok {
-			return cached, nil
+		if cacheKey != "" {
+			if cached, ok, err := v.cache.GetChunk(cacheKey, index); err != nil {
+				return nil, err
+			} else if ok {
+				return cached, nil
+			}
 		}
 	}
 	return v.loadChunk(ctx, entry, index)
@@ -140,7 +147,7 @@ type chunkLoad struct {
 }
 
 func (v *VFS) loadChunk(ctx context.Context, entry drive.Entry, index int64) ([]byte, error) {
-	key := readChunkKey(entry.ID, index)
+	key := readChunkKey(v.readLoadKey(entry), index)
 	v.chunkLoadMu.Lock()
 	if load := v.chunkLoads[key]; load != nil {
 		v.chunkLoadMu.Unlock()
@@ -186,8 +193,10 @@ func (v *VFS) fetchChunk(ctx context.Context, entry drive.Entry, index int64) ([
 		return nil, closeErr
 	}
 	if len(data) > 0 {
-		if err := v.cache.PutChunk(entry.ID, index, data); err != nil {
-			logging.L.Warnf("[CACHE] put chunk failed fid=%q index=%d size=%d err=%v", entry.ID, index, len(data), err)
+		if cacheKey := v.readCacheKey(entry); cacheKey != "" {
+			if err := v.cache.PutChunk(cacheKey, entry.Size, index, data); err != nil {
+				logging.L.Warnf("[CACHE] put chunk failed fid=%q index=%d size=%d err=%v", entry.ID, index, len(data), err)
+			}
 		}
 	}
 	return data, nil
@@ -214,13 +223,17 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 	if entry.Size > 0 && startIndex*readChunkSize >= entry.Size {
 		return
 	}
+	cacheKey := v.readCacheKey(entry)
+	if cacheKey == "" {
+		return
+	}
 	endIndex := startIndex + int64(count) - 1
 	for index := startIndex; index <= endIndex; index++ {
 		if entry.Size > 0 && index*readChunkSize >= entry.Size {
 			endIndex = index - 1
 			break
 		}
-		if _, ok, err := v.cache.GetChunk(entry.ID, index); err != nil || ok {
+		if _, ok, err := v.cache.GetChunk(cacheKey, index); err != nil || ok {
 			if index == startIndex {
 				startIndex++
 			}
@@ -230,7 +243,7 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 	if endIndex < startIndex {
 		return
 	}
-	key := readWindowKey(entry.ID, startIndex, endIndex)
+	key := readWindowKey(cacheKey, startIndex, endIndex)
 	v.prefetchMu.Lock()
 	if _, ok := v.prefetching[key]; ok {
 		v.prefetchMu.Unlock()
@@ -247,7 +260,7 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 		return
 	}
 
-	load := &windowLoad{fid: entry.ID, start: startIndex, end: endIndex, done: make(chan struct{})}
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, done: make(chan struct{})}
 	v.windowLoadMu.Lock()
 	v.windowLoads[key] = load
 	v.windowLoadMu.Unlock()
@@ -297,8 +310,10 @@ func (v *VFS) fetchChunkWindow(ctx context.Context, entry drive.Entry, startInde
 		chunk := make([]byte, chunkSize)
 		copy(chunk, data[:chunkSize])
 		chunks[index] = chunk
-		if err := v.cache.PutChunk(entry.ID, index, chunk); err != nil {
-			logging.L.Warnf("[CACHE] put chunk failed fid=%q index=%d size=%d err=%v", entry.ID, index, len(chunk), err)
+		if cacheKey := v.readCacheKey(entry); cacheKey != "" {
+			if err := v.cache.PutChunk(cacheKey, entry.Size, index, chunk); err != nil {
+				logging.L.Warnf("[CACHE] put chunk failed fid=%q index=%d size=%d err=%v", entry.ID, index, len(chunk), err)
+			}
 		}
 		data = data[chunkSize:]
 	}
@@ -306,6 +321,9 @@ func (v *VFS) fetchChunkWindow(ctx context.Context, entry drive.Entry, startInde
 }
 
 func (v *VFS) waitWindow(ctx context.Context, fid string, index int64) ([]byte, bool, error) {
+	if fid == "" {
+		return nil, false, nil
+	}
 	v.windowLoadMu.Lock()
 	var load *windowLoad
 	for _, candidate := range v.windowLoads {
@@ -336,10 +354,14 @@ func (v *VFS) prefetchChunk(ctx context.Context, entry drive.Entry, index int64)
 	if entry.Size > 0 && index*readChunkSize >= entry.Size {
 		return
 	}
-	if _, ok, err := v.cache.GetChunk(entry.ID, index); err != nil || ok {
+	cacheKey := v.readCacheKey(entry)
+	if cacheKey == "" {
 		return
 	}
-	key := readChunkKey(entry.ID, index)
+	if _, ok, err := v.cache.GetChunk(cacheKey, index); err != nil || ok {
+		return
+	}
+	key := readChunkKey(cacheKey, index)
 	v.prefetchMu.Lock()
 	if _, ok := v.prefetching[key]; ok {
 		v.prefetchMu.Unlock()
@@ -365,6 +387,21 @@ func (v *VFS) prefetchChunk(ctx context.Context, entry drive.Entry, index int64)
 		}()
 		_, _ = v.loadChunk(context.WithoutCancel(ctx), entry, index)
 	}()
+}
+
+func (v *VFS) readLoadKey(entry drive.Entry) string {
+	if key := v.readCacheKey(entry); key != "" {
+		return key
+	}
+	return entry.ID
+}
+
+func (v *VFS) readCacheKey(entry drive.Entry) string {
+	if entry.ID == "" || entry.ModTime.IsZero() {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(v.rootID + "\x00" + entry.ID + "\x00" + strconv.FormatInt(entry.Size, 10) + "\x00" + strconv.FormatInt(entry.ModTime.UTC().UnixNano(), 10)))
+	return hex.EncodeToString(sum[:])
 }
 
 func readChunkKey(fid string, index int64) string {
