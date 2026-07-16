@@ -103,6 +103,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilityWriter,
 			},

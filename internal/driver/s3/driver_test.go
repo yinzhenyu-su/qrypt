@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -32,13 +34,28 @@ type s3Object struct {
 	modTime time.Time
 }
 
+type mockMultipartUpload struct {
+	key   string
+	parts map[int32][]byte
+	etags map[int32]string
+}
+
 type mockS3 struct {
-	mu      sync.RWMutex
-	objects map[string]*s3Object // key → object
+	mu              sync.RWMutex
+	objects         map[string]*s3Object // key → object
+	uploads         map[string]*mockMultipartUpload
+	nextUploadID    int
+	failUploadPart  map[int32]int
+	uploadPartCalls map[int32]int
 }
 
 func newMockS3() *mockS3 {
-	return &mockS3{objects: map[string]*s3Object{}}
+	return &mockS3{
+		objects:         map[string]*s3Object{},
+		uploads:         map[string]*mockMultipartUpload{},
+		failUploadPart:  map[int32]int{},
+		uploadPartCalls: map[int32]int{},
+	}
 }
 
 func (m *mockS3) put(key string, data []byte) {
@@ -87,6 +104,18 @@ func (m *mockS3) list(prefix, delimiter string) ([]s3Object, []string) {
 	return contents, sortedPrefixes
 }
 
+func (m *mockS3) failPartOnce(partNumber int32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failUploadPart[partNumber]++
+}
+
+func (m *mockS3) partCalls(partNumber int32) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.uploadPartCalls[partNumber]
+}
+
 // S3 XML response types
 type listBucketResult struct {
 	XMLName     xml.Name      `xml:"ListBucketResult"`
@@ -129,6 +158,33 @@ type copyObjectResult struct {
 	XMLNS        string   `xml:"xmlns,attr"`
 	LastModified string   `xml:"LastModified"`
 	ETag         string   `xml:"ETag"`
+}
+
+type createMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+	XMLNS    string   `xml:"xmlns,attr"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	UploadID string   `xml:"UploadId"`
+}
+
+type completeMultipartUploadRequest struct {
+	XMLName xml.Name              `xml:"CompleteMultipartUpload"`
+	Parts   []completePartRequest `xml:"Part"`
+}
+
+type completePartRequest struct {
+	PartNumber int32  `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
+}
+
+type completeMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+	XMLNS    string   `xml:"xmlns,attr"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	ETag     string   `xml:"ETag"`
+	Location string   `xml:"Location"`
 }
 
 type deleteResponse struct {
@@ -288,6 +344,39 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write(data)
 
 	case http.MethodPut:
+		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {
+			partNumber64, err := strconv.ParseInt(r.URL.Query().Get("partNumber"), 10, 32)
+			if err != nil || partNumber64 <= 0 {
+				http.Error(w, "InvalidPart", http.StatusBadRequest)
+				return
+			}
+			partNumber := int32(partNumber64)
+			data, _ := io.ReadAll(r.Body)
+
+			m.mu.Lock()
+			m.uploadPartCalls[partNumber]++
+			if m.failUploadPart[partNumber] > 0 {
+				m.failUploadPart[partNumber]--
+				m.mu.Unlock()
+				http.Error(w, "InvalidPart", http.StatusBadRequest)
+				return
+			}
+			upload, ok := m.uploads[uploadID]
+			if !ok {
+				m.mu.Unlock()
+				http.Error(w, "NoSuchUpload", http.StatusNotFound)
+				return
+			}
+			etag := fmt.Sprintf(`"etag-%s-%d"`, uploadID, partNumber)
+			upload.parts[partNumber] = data
+			upload.etags[partNumber] = etag
+			m.mu.Unlock()
+
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		// PutObject or CopyObject
 		copySource := r.Header.Get("X-Amz-Copy-Source")
 		if copySource != "" {
@@ -320,11 +409,77 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case http.MethodDelete:
+		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {
+			m.mu.Lock()
+			delete(m.uploads, uploadID)
+			m.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		// DeleteObject
 		m.del(objKey)
 		w.WriteHeader(http.StatusNoContent)
 
 	case http.MethodPost:
+		if r.URL.Query().Has("uploads") {
+			m.mu.Lock()
+			m.nextUploadID++
+			uploadID := fmt.Sprintf("upload-%d", m.nextUploadID)
+			m.uploads[uploadID] = &mockMultipartUpload{key: objKey, parts: map[int32][]byte{}, etags: map[int32]string{}}
+			m.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			xml.NewEncoder(w).Encode(createMultipartUploadResult{
+				XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
+				Bucket:   bucket,
+				Key:      objKey,
+				UploadID: uploadID,
+			})
+			return
+		}
+
+		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {
+			var req completeMultipartUploadRequest
+			if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "MalformedXML", http.StatusBadRequest)
+				return
+			}
+
+			m.mu.Lock()
+			upload, ok := m.uploads[uploadID]
+			if !ok {
+				m.mu.Unlock()
+				http.Error(w, "NoSuchUpload", http.StatusNotFound)
+				return
+			}
+			var data []byte
+			for _, part := range req.Parts {
+				partData, ok := upload.parts[part.PartNumber]
+				if !ok {
+					m.mu.Unlock()
+					http.Error(w, "InvalidPart", http.StatusBadRequest)
+					return
+				}
+				data = append(data, partData...)
+			}
+			m.objects[objKey] = &s3Object{key: objKey, data: data, modTime: time.Now()}
+			delete(m.uploads, uploadID)
+			m.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			xml.NewEncoder(w).Encode(completeMultipartUploadResult{
+				XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
+				Bucket:   bucket,
+				Key:      objKey,
+				ETag:     `"complete-etag"`,
+				Location: "/" + bucket + "/" + objKey,
+			})
+			return
+		}
+
 		// DeleteObjects (batch delete)
 		if r.URL.Query().Get("delete") == "" {
 			http.Error(w, "MethodNotAllowed", http.StatusMethodNotAllowed)
@@ -666,6 +821,100 @@ func TestPutSource(t *testing.T) {
 	}
 	if !slices.Contains(progress.phases, drive.UploadPhaseUploading) {
 		t.Fatalf("upload phases = %v, want uploading", progress.phases)
+	}
+}
+
+func TestUploadPartRanges(t *testing.T) {
+	got := s3UploadPartRanges(35, 16)
+	want := []s3UploadPartRange{
+		{Number: 1, Offset: 0, Size: 16},
+		{Number: 2, Offset: 16, Size: 16},
+		{Number: 3, Offset: 32, Size: 3},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ranges = %+v, want %+v", got, want)
+	}
+}
+
+func TestPutSourceMultipart(t *testing.T) {
+	ctx := context.Background()
+	d, mock, _ := setupTest(t)
+	d.InstallStateStore(drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver")))
+
+	content := bytes.Repeat([]byte("a"), s3MultipartPartSize+3)
+	progress := &recordingUploadProgress{}
+	entry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "large.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(content),
+		Progress: progress,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", entry.Size, len(content))
+	}
+	obj, ok := mock.get("large.bin")
+	if !ok {
+		t.Fatal("expected large.bin in mock")
+	}
+	if !bytes.Equal(obj.data, content) {
+		t.Fatal("multipart data mismatch")
+	}
+	if mock.partCalls(1) != 1 || mock.partCalls(2) != 1 {
+		t.Fatalf("part calls = part1:%d part2:%d, want 1 each", mock.partCalls(1), mock.partCalls(2))
+	}
+	if progress.bytes < int64(len(content)) {
+		t.Fatalf("uploaded bytes = %d, want at least %d", progress.bytes, len(content))
+	}
+}
+
+func TestPutSourceMultipartResumesCompletedPart(t *testing.T) {
+	ctx := context.Background()
+	d, mock, _ := setupTest(t)
+	d.InstallStateStore(drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver")))
+	mock.failPartOnce(2)
+
+	content := bytes.Repeat([]byte("r"), s3MultipartPartSize+7)
+	req := drive.UploadRequest{
+		ParentID: "0",
+		Name:     "resume.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(content),
+		Progress: &recordingUploadProgress{},
+	}
+	if _, err := d.PutSource(ctx, req); err == nil {
+		t.Fatal("expected first upload to fail")
+	}
+
+	sessionKey := util.UploadSessionKey(d.bucket, "resume.bin", int64(len(content)))
+	session, ok := d.loadUploadSession(sessionKey)
+	if !ok {
+		t.Fatal("expected saved upload session after first part")
+	}
+	if len(session.Parts) != 1 || session.Parts[0].Number != 1 {
+		t.Fatalf("saved parts = %+v, want only part 1", session.Parts)
+	}
+
+	req.Progress = &recordingUploadProgress{}
+	if _, err := d.PutSource(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := mock.get("resume.bin")
+	if !ok {
+		t.Fatal("expected resume.bin in mock")
+	}
+	if !bytes.Equal(obj.data, content) {
+		t.Fatal("resumed multipart data mismatch")
+	}
+	if mock.partCalls(1) != 1 {
+		t.Fatalf("part 1 calls = %d, want 1 because resume should skip it", mock.partCalls(1))
+	}
+	if mock.partCalls(2) != 2 {
+		t.Fatalf("part 2 calls = %d, want 2 because first attempt failed once", mock.partCalls(2))
+	}
+	if _, ok := d.loadUploadSession(sessionKey); ok {
+		t.Fatal("upload session should be deleted after complete")
 	}
 }
 

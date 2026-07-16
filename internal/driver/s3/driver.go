@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/url"
 	stdpath "path"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,9 +55,10 @@ type Driver struct {
 
 	signExpire time.Duration
 
-	client  *s3.Client
-	limiter *drive.BandwidthLimiter
-	metrics *util.Buffer
+	client     *s3.Client
+	limiter    *drive.BandwidthLimiter
+	stateStore drive.StateStore
+	metrics    *util.Buffer
 }
 
 // Options configures a new S3 driver.
@@ -75,7 +77,40 @@ type Options struct {
 	SignURLExpire   time.Duration
 }
 
-const defaultSignExpire = 4 * time.Hour
+const (
+	defaultSignExpire = 4 * time.Hour
+
+	s3MultipartPartSize = 16 * 1024 * 1024
+	s3MultipartMinSize  = s3MultipartPartSize
+
+	s3UploadSessionStateFile  = "s3_upload_sessions.json"
+	s3UploadSessionMaxAge     = 24 * time.Hour
+	s3UploadSessionMaxEntries = 1024
+)
+
+type s3UploadSession struct {
+	Key      string         `json:"key"`
+	Bucket   string         `json:"bucket"`
+	Object   string         `json:"object"`
+	UploadID string         `json:"upload_id"`
+	ParentID string         `json:"parent_id"`
+	Name     string         `json:"name"`
+	Size     int64          `json:"size"`
+	PartSize int64          `json:"part_size"`
+	Parts    []s3UploadPart `json:"parts,omitempty"`
+	SavedAt  time.Time      `json:"saved_at,omitempty"`
+}
+
+type s3UploadPart struct {
+	Number int32  `json:"number"`
+	ETag   string `json:"etag"`
+}
+
+type s3UploadPartRange struct {
+	Number int32
+	Offset int64
+	Size   int64
+}
 
 func init() {
 	drive.Register("s3", func(params drive.Params) (drive.Driver, error) {
@@ -247,6 +282,11 @@ func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.stateStore = store
+	d.pruneStoredUploadSessions()
+}
+
 // List returns the immediate children of the directory identified by parentID.
 // parentID is a key prefix like "/" (root) or "photos/".
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
@@ -361,6 +401,19 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	defer body.Close()
 
 	key := d.toS3Key(d.joinPath(parentID, name))
+	if source.Size() >= s3MultipartMinSize {
+		if err := d.putMultipartSource(ctx, parentID, name, key, source.Size(), body, req.Progress); err != nil {
+			return drive.Entry{}, err
+		}
+		return drive.Entry{
+			ID:       d.joinPath(parentID, name),
+			ParentID: d.normParent(parentID),
+			Name:     name,
+			Size:     source.Size(),
+			ModTime:  time.Now(),
+		}, nil
+	}
+
 	var uploadBody io.Reader = drive.NewUploadProgressReader(req.Progress, body)
 	if d.limiter != nil {
 		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
@@ -455,10 +508,104 @@ func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive
 func (d *Driver) Capabilities() []drive.Capability {
 	return []drive.Capability{
 		drive.CapabilityPathResolver,
+		drive.CapabilityResumableUploader,
 		drive.CapabilityWriter,
 		drive.CapabilitySourceUploader,
 		drive.CapabilityRemoteNameResolver,
 	}
+}
+
+func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key string, size int64, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
+	sessionKey := util.UploadSessionKey(d.bucket, key, size)
+	session, resumedSession := d.loadUploadSession(sessionKey)
+	if !resumedSession {
+		start := time.Now()
+		resp, err := d.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+			Bucket: aws.String(d.bucket),
+			Key:    aws.String(key),
+		})
+		d.recordSDK(ctx, "CreateMultipartUpload", start, map[string]any{"bucket": d.bucket, "key": key, "bytes": size}, err)
+		if err != nil {
+			err = fmt.Errorf("s3: create multipart upload %q: %w", key, err)
+			if nonRetryableUploadError(err) {
+				err = drive.NonRetryable(err)
+			}
+			return err
+		}
+		session = s3UploadSession{
+			Key:      sessionKey,
+			Bucket:   d.bucket,
+			Object:   key,
+			UploadID: aws.ToString(resp.UploadId),
+			ParentID: parentID,
+			Name:     name,
+			Size:     size,
+			PartSize: s3MultipartPartSize,
+		}
+	}
+
+	ranges := s3UploadPartRanges(size, session.PartSize)
+	completedByNumber := s3PartsByNumber(session.Parts)
+	for _, part := range ranges {
+		if completed, ok := completedByNumber[part.Number]; ok && completed.ETag != "" {
+			drive.ReportUploadProgress(progress, part.Size)
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		}
+		reader := io.NewSectionReader(body, part.Offset, part.Size)
+		var uploadBody io.Reader = drive.NewUploadProgressReader(progress, reader)
+		if d.limiter != nil {
+			uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
+		}
+		start := time.Now()
+		resp, err := d.client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:        aws.String(session.Bucket),
+			Key:           aws.String(session.Object),
+			UploadId:      aws.String(session.UploadID),
+			PartNumber:    aws.Int32(part.Number),
+			Body:          uploadBody,
+			ContentLength: aws.Int64(part.Size),
+		})
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		d.recordSDK(ctx, "UploadPart", start, map[string]any{"bucket": session.Bucket, "key": session.Object, "part": part.Number, "bytes": part.Size}, err)
+		if err != nil {
+			err = fmt.Errorf("s3: upload part %d: %w", part.Number, err)
+			if nonRetryableUploadError(err) {
+				err = drive.NonRetryable(err)
+			}
+			return d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		}
+		session.Parts = upsertS3UploadPart(session.Parts, s3UploadPart{Number: part.Number, ETag: aws.ToString(resp.ETag)})
+		completedByNumber[part.Number] = s3UploadPart{Number: part.Number, ETag: aws.ToString(resp.ETag)}
+		d.saveUploadSession(session)
+	}
+
+	start := time.Now()
+	_, err := d.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(session.Bucket),
+		Key:      aws.String(session.Object),
+		UploadId: aws.String(session.UploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: s3CompletedParts(session.Parts),
+		},
+	})
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	d.recordSDK(ctx, "CompleteMultipartUpload", start, map[string]any{"bucket": session.Bucket, "key": session.Object, "parts": len(session.Parts)}, err)
+	if err != nil {
+		err = fmt.Errorf("s3: complete multipart upload %q: %w", key, err)
+		if nonRetryableUploadError(err) {
+			err = drive.NonRetryable(err)
+		}
+		return d.resumedUploadSessionError(resumedSession, sessionKey, err)
+	}
+	d.deleteUploadSession(sessionKey)
+	return nil
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
@@ -617,6 +764,125 @@ func (d *Driver) recordSDK(ctx context.Context, operation string, start time.Tim
 	d.metrics.Record(ctx, event)
 }
 
+func (d *Driver) loadUploadSession(key string) (s3UploadSession, bool) {
+	session, ok := d.uploadSessionStore().Load(key)
+	return session, ok
+}
+
+func (d *Driver) saveUploadSession(session s3UploadSession) {
+	d.uploadSessionStore().Save(session)
+}
+
+func (d *Driver) deleteUploadSession(key string) {
+	d.uploadSessionStore().Delete(key)
+}
+
+func (d *Driver) pruneStoredUploadSessions() {
+	d.uploadSessionStore().Prune()
+}
+
+func (d *Driver) uploadSessionStore() *util.UploadSessionStore[s3UploadSession] {
+	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[s3UploadSession]{
+		Store:      d.stateStore,
+		File:       s3UploadSessionStateFile,
+		MaxAge:     s3UploadSessionMaxAge,
+		MaxEntries: s3UploadSessionMaxEntries,
+		Key: func(session s3UploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session s3UploadSession) bool {
+			return session.Key != "" && session.Bucket != "" && session.Object != "" && session.UploadID != "" && session.PartSize > 0 && len(session.Parts) > 0
+		},
+		UpdatedAt: func(session s3UploadSession) time.Time {
+			return session.SavedAt
+		},
+		Touch: func(session *s3UploadSession, now time.Time) {
+			session.SavedAt = now
+		},
+	})
+}
+
+func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
+	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+		d.deleteUploadSession(key)
+		return fmt.Errorf("s3: resumed upload session invalid, will retry from scratch: %v", err)
+	}
+	return err
+}
+
+func invalidResumedUploadSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch strings.ToLower(apiErr.ErrorCode()) {
+		case "nosuchupload", "invaliduploadid", "invalidrequest", "nosuchbucket":
+			return true
+		}
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "nosuchupload") ||
+		strings.Contains(s, "invalidupload") ||
+		strings.Contains(s, "uploadid") ||
+		strings.Contains(s, "upload id") ||
+		strings.Contains(s, "404") ||
+		strings.Contains(s, "409")
+}
+
+func s3UploadPartRanges(size, partSize int64) []s3UploadPartRange {
+	if size <= 0 || partSize <= 0 {
+		return nil
+	}
+	parts := make([]s3UploadPartRange, 0, int((size+partSize-1)/partSize))
+	for offset, number := int64(0), int32(1); offset < size; offset, number = offset+partSize, number+1 {
+		partBytes := partSize
+		if remaining := size - offset; remaining < partBytes {
+			partBytes = remaining
+		}
+		parts = append(parts, s3UploadPartRange{Number: number, Offset: offset, Size: partBytes})
+	}
+	return parts
+}
+
+func s3PartsByNumber(parts []s3UploadPart) map[int32]s3UploadPart {
+	out := make(map[int32]s3UploadPart, len(parts))
+	for _, part := range parts {
+		if part.Number > 0 && part.ETag != "" {
+			out[part.Number] = part
+		}
+	}
+	return out
+}
+
+func s3CompletedParts(parts []s3UploadPart) []types.CompletedPart {
+	sorted := append([]s3UploadPart(nil), parts...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Number < sorted[j].Number
+	})
+	out := make([]types.CompletedPart, 0, len(sorted))
+	for _, part := range sorted {
+		if part.Number <= 0 || part.ETag == "" {
+			continue
+		}
+		out = append(out, types.CompletedPart{
+			ETag:       aws.String(part.ETag),
+			PartNumber: aws.Int32(part.Number),
+		})
+	}
+	return out
+}
+
+func upsertS3UploadPart(parts []s3UploadPart, part s3UploadPart) []s3UploadPart {
+	for i := range parts {
+		if parts[i].Number == part.Number {
+			parts[i] = part
+			return parts
+		}
+	}
+	return append(parts, part)
+}
+
 // ─── S3 error helpers ───────────────────────────────────────────────────────
 
 func isS3NotFound(err error) bool {
@@ -629,5 +895,6 @@ func isS3NotFound(err error) bool {
 
 // Compile-time interface checks.
 var (
-	_ drive.Driver = (*Driver)(nil)
+	_ drive.Driver              = (*Driver)(nil)
+	_ drive.StateStoreInstaller = (*Driver)(nil)
 )
