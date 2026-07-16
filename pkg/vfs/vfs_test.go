@@ -28,6 +28,7 @@ type countingReadDriver struct {
 	drive.UnsupportedOperations
 	data    []byte
 	id      string
+	modTime time.Time
 	mu      sync.Mutex
 	read    map[int64]int
 	sizes   map[int64]int64
@@ -282,7 +283,14 @@ func (d *metricHealthDriver) Metrics(context.Context, time.Time) ([]drive.Metric
 }
 
 func newCountingReadDriver(data []byte) *countingReadDriver {
-	return &countingReadDriver{data: data, read: map[int64]int{}, sizes: map[int64]int64{}, block: map[int64]chan struct{}{}, entered: map[int64]chan struct{}{}}
+	return &countingReadDriver{
+		data:    data,
+		modTime: time.Unix(123, 0).UTC(),
+		read:    map[int64]int{},
+		sizes:   map[int64]int64{},
+		block:   map[int64]chan struct{}{},
+		entered: map[int64]chan struct{}{},
+	}
 }
 
 func newCountingRemoveDriver() *countingRemoveDriver {
@@ -307,6 +315,7 @@ func (d *countingReadDriver) List(context.Context, string) ([]drive.Entry, error
 		ParentID: "0",
 		Name:     "data.bin",
 		Size:     int64(len(d.data)),
+		ModTime:  d.modTime,
 	}}, nil
 }
 
@@ -1260,6 +1269,152 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 	}
 }
 
+func TestReadCachePersistsBatchIndex(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+
+	c1, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c1.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+		t.Fatal(err)
+	}
+
+	c2, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := c2.GetChunk(key, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "cached" {
+		t.Fatalf("cached chunk = %q ok=%v, want cached", got, ok)
+	}
+}
+
+func TestReadCacheEvictionPrefersLargeChunksWhenLargePoolOverBudget(t *testing.T) {
+	cacheDir := t.TempDir()
+	smallKey := strings.Repeat("a", sha256.Size*2)
+	largeKey := strings.Repeat("b", sha256.Size*2)
+	chunk := bytes.Repeat([]byte("x"), testReadChunkSize)
+	cache, err := vfs.NewCache(cacheDir, 4*testReadChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk); err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(0); i < 5; i++ {
+		if err := cache.PutChunk(largeKey, 20<<20, i, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, ok, err := cache.GetChunk(smallKey, 0); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("small-file chunk was evicted while large-file pool was over budget")
+	}
+	var largeChunks int
+	for i := int64(0); i < 5; i++ {
+		if _, ok, err := cache.GetChunk(largeKey, i); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			largeChunks++
+		}
+	}
+	if largeChunks >= 5 {
+		t.Fatalf("large-file chunks were not evicted, still have %d", largeChunks)
+	}
+}
+
+func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
+	cacheDir := t.TempDir()
+	smallKey := strings.Repeat("a", sha256.Size*2)
+	legacyLargeKey := strings.Repeat("b", sha256.Size*2)
+	chunk := bytes.Repeat([]byte("x"), testReadChunkSize)
+	cache, err := vfs.NewCache(cacheDir, 17*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk); err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(0); i < 36; i++ {
+		if err := cache.PutChunk(legacyLargeKey, 0, i, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, ok, err := cache.GetChunk(smallKey, 0); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("small-file chunk was evicted before unknown-size large cached file")
+	}
+	var largeChunks int
+	for i := int64(0); i < 36; i++ {
+		if _, ok, err := cache.GetChunk(legacyLargeKey, i); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			largeChunks++
+		}
+	}
+	if largeChunks >= 36 {
+		t.Fatalf("unknown-size large cached file was not treated as large, still have %d chunks", largeChunks)
+	}
+}
+
+func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("cache me after remount")
+	cacheDir := t.TempDir()
+	drv := newCountingReadDriver(data)
+
+	fs1, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := fs1.Read(ctx, "/data.bin", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("first read = %q, want %q", got, data)
+	}
+	if count := drv.readCount(0); count != 1 {
+		t.Fatalf("driver read count after first read = %d, want 1", count)
+	}
+
+	fs2, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err = fs2.Read(ctx, "/data.bin", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("second read = %q, want %q", got, data)
+	}
+	if count := drv.readCount(0); count != 1 {
+		t.Fatalf("driver read count after remount = %d, want cached read without driver call", count)
+	}
+}
+
 func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 	ctx := context.Background()
 	data := []byte("cache me")
@@ -1282,8 +1437,8 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 	if cache.Puts != 1 || cache.ChunkCount != 1 {
 		t.Fatalf("expected one cached chunk for slash ID, got %+v", cache)
 	}
-	if len(cache.Files) != 1 || cache.Files[0].ID != drv.id {
-		t.Fatalf("expected original ID in debug cache details, got %+v", cache.Files)
+	if len(cache.Files) != 1 || strings.Contains(cache.Files[0].ID, "/") || len(cache.Files[0].ID) != sha256.Size*2 {
+		t.Fatalf("expected safe hashed ID in debug cache details, got %+v", cache.Files)
 	}
 }
 
