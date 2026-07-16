@@ -48,6 +48,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  baidunetdisk.New(baidunetdisk.Options{RefreshToken: "token"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -90,6 +91,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,

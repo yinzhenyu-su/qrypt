@@ -253,8 +253,9 @@ func fsPendingSample(fs vfs.FileSystem, mount string, attempt int, elapsed time.
 		Uploads:      state.Uploads,
 	}
 	if snapshotter, ok := fs.(vfsDebugSnapshotter); ok {
-		for _, mountState := range snapshotter.DebugSnapshot().Mounts {
-			if mountState.Identity.Name != mount {
+		snapshot := snapshotter.DebugSnapshot()
+		for _, mountState := range snapshot.Mounts {
+			if !debugMountNameMatches(mountState.Identity.Name, mount) {
 				continue
 			}
 			for _, timer := range mountState.ActiveDeleteTimers() {
@@ -268,8 +269,9 @@ func fsPendingSample(fs vfs.FileSystem, mount string, attempt int, elapsed time.
 func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 	state := &FSMountState{Mount: mount}
 	if snapshotter, ok := fs.(vfsDebugSnapshotter); ok {
-		for _, mountState := range snapshotter.DebugSnapshot().Mounts {
-			if mountState.Identity.Name != mount {
+		snapshot := snapshotter.DebugSnapshot()
+		for _, mountState := range snapshot.Mounts {
+			if !debugMountNameMatches(mountState.Identity.Name, mount) {
 				continue
 			}
 			state.PendingCount = len(mountState.PendingFiles())
@@ -314,6 +316,10 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 		state.Pending = append(state.Pending, pending.Path)
 	}
 	return state
+}
+
+func debugMountNameMatches(actual, requested string) bool {
+	return actual == requested
 }
 
 func fsFinalMountState(ctx context.Context, fs vfs.FileSystem, mount string) *FSMountState {

@@ -181,6 +181,12 @@ type RuntimeResponse struct {
 	Mem           MemStats  `json:"mem"`
 }
 
+type DebugUploadCancelFaultsResponse struct {
+	SchemaVersion int                          `json:"schema_version"`
+	GeneratedAt   time.Time                    `json:"generated_at"`
+	Faults        []vfs.DebugUploadCancelFault `json:"faults"`
+}
+
 type MemStats struct {
 	Alloc      uint64 `json:"alloc"`
 	TotalAlloc uint64 `json:"total_alloc"`
@@ -234,6 +240,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/transfer/context", s.handleTransferContext)
 	mux.HandleFunc("/v1/cache", s.handleCache)
 	mux.HandleFunc("/v1/staging", s.handleStaging)
+	mux.HandleFunc("/v1/debug/faults/upload-cancel", s.handleDebugUploadCancelFaults)
 	mux.HandleFunc("/v1/consistency", s.handleConsistency)
 	mux.HandleFunc("/v1/runtime", s.handleRuntime)
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
@@ -503,6 +510,42 @@ func (s *Server) handleStaging(w http.ResponseWriter, r *http.Request) {
 		Path:          report.Path,
 		Mounts:        report.Mounts,
 	})
+}
+
+func (s *Server) handleDebugUploadCancelFaults(w http.ResponseWriter, r *http.Request) {
+	injector, ok := s.source.(vfs.DebugUploadCancelInjector)
+	if !ok {
+		http.Error(w, "debug upload cancel faults not available", http.StatusNotImplemented)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, DebugUploadCancelFaultsResponse{
+			SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+			GeneratedAt:   time.Now(),
+			Faults:        injector.DebugUploadCancelFaults(r.Context()),
+		})
+	case http.MethodPost:
+		var req vfs.DebugUploadCancelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, err := injector.DebugInjectUploadCancel(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, result)
+	case http.MethodDelete:
+		if err := injector.DebugClearUploadCancel(r.Context(), r.URL.Query().Get("id")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func filterDebugStagingMounts(mounts []vfs.DebugStagingMount, mountNames []string) []vfs.DebugStagingMount {

@@ -223,6 +223,13 @@ func TestDebugRequiredFlags(t *testing.T) {
 	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "fs"}); err == nil || !strings.Contains(err.Error(), "fs test requires --mount") {
 		t.Fatalf("expected fs test without mount to fail clearly, got %v", err)
 	}
+	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "resume"}); err == nil || !strings.Contains(err.Error(), "resume test requires --mount") {
+		t.Fatalf("expected resume test without mount to fail clearly, got %v", err)
+	}
+	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "resume", Mount: "mem", Source: "src"}); err == nil ||
+		!strings.Contains(err.Error(), "resume test only supports --mount and --size") {
+		t.Fatalf("expected resume test with source to fail clearly, got %v", err)
+	}
 	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "crud", Samples: 1}); err != nil {
 		t.Fatalf("expected crud benchmark request to be valid: %v", err)
 	}

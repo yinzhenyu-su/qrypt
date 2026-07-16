@@ -51,16 +51,17 @@ type VFS struct {
 	lists   map[string]listCacheEntry
 	queue   chan PendingFile
 
-	uploadDelay   time.Duration
-	uploadWorkers int
-	uploadMu      sync.Mutex
-	uploadTimers  map[string]*time.Timer
-	activeUploads map[string]*uploadSnapshotState
-	uploadHistory []UploadSnapshot
-	uploadAdmit   uploadAdmission
-	readHistory   []drive.MetricEvent
-	readSequence  uint64
-	readMu        sync.Mutex
+	uploadDelay        time.Duration
+	uploadWorkers      int
+	uploadMu           sync.Mutex
+	uploadTimers       map[string]*time.Timer
+	activeUploads      map[string]*uploadSnapshotState
+	uploadHistory      []UploadSnapshot
+	uploadAdmit        uploadAdmission
+	uploadCancelFaults map[string]*debugUploadCancelFault
+	readHistory        []drive.MetricEvent
+	readSequence       uint64
+	readMu             sync.Mutex
 
 	deleteDelay  time.Duration
 	deleteMu     sync.Mutex

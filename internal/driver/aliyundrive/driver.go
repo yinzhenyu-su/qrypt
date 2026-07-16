@@ -245,104 +245,48 @@ func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha1Hex str
 	return util.UploadSessionKey(parentID, name, size, sha1Hex)
 }
 
-func (d *Driver) loadUploadSessions() aliyunUploadSessionState {
-	state := aliyunUploadSessionState{Version: 1, Sessions: map[string]aliyunUploadSession{}}
-	if d.stateStore == nil {
-		return state
-	}
-	if err := d.stateStore.LoadJSON(aliyunUploadSessionStateFile, &state); err != nil {
-		return aliyunUploadSessionState{Version: 1, Sessions: map[string]aliyunUploadSession{}}
-	}
-	if state.Sessions == nil {
-		state.Sessions = map[string]aliyunUploadSession{}
-	}
-	return state
-}
-
 func (d *Driver) loadUploadSession(key string) (aliyunUploadSession, bool) {
-	if key == "" {
-		return aliyunUploadSession{}, false
-	}
-	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
-	if changed {
-		_ = d.saveUploadSessionState(state)
-	}
-	session, ok := state.Sessions[key]
-	if !ok || session.UploadID == "" || session.FileID == "" || len(session.PartInfoList) == 0 || len(session.CompletedParts) == 0 {
-		return aliyunUploadSession{}, false
-	}
+	session, ok := d.uploadSessionStore().Load(key)
 	if session.CompletedParts == nil {
 		session.CompletedParts = map[int]bool{}
 	}
-	return session, true
+	return session, ok
 }
 
 func (d *Driver) saveUploadSession(session aliyunUploadSession) {
-	if d.stateStore == nil || session.Key == "" {
-		return
-	}
-	state := d.loadUploadSessions()
-	session.SavedAt = time.Now()
-	state.Version = 1
-	state.Sessions[session.Key] = session
-	state, _ = d.prunedUploadSessions(state, time.Now())
-	if err := d.saveUploadSessionState(state); err != nil {
-		d.setLastError(fmt.Errorf("aliyundrive: upload session save: %w", err))
-	}
+	d.uploadSessionStore().Save(session)
 }
 
 func (d *Driver) deleteUploadSession(key string) {
-	if d.stateStore == nil || key == "" {
-		return
-	}
-	state, _ := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
-	if _, ok := state.Sessions[key]; !ok {
-		return
-	}
-	delete(state.Sessions, key)
-	state.Version = 1
-	if err := d.saveUploadSessionState(state); err != nil {
-		d.setLastError(fmt.Errorf("aliyundrive: upload session delete: %w", err))
-	}
+	d.uploadSessionStore().Delete(key)
 }
 
 func (d *Driver) pruneStoredUploadSessions() {
-	if d.stateStore == nil {
-		return
-	}
-	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
-	if !changed {
-		return
-	}
-	if err := d.saveUploadSessionState(state); err != nil {
-		d.setLastError(fmt.Errorf("aliyundrive: upload session prune: %w", err))
-	}
+	d.uploadSessionStore().Prune()
 }
 
-func (d *Driver) saveUploadSessionState(state aliyunUploadSessionState) error {
-	if d.stateStore == nil {
-		return nil
-	}
-	state.Version = 1
-	if state.Sessions == nil {
-		state.Sessions = map[string]aliyunUploadSession{}
-	}
-	return d.stateStore.SaveJSON(aliyunUploadSessionStateFile, state)
-}
-
-func (d *Driver) prunedUploadSessions(state aliyunUploadSessionState, now time.Time) (aliyunUploadSessionState, bool) {
-	state.Version = 1
-	if state.Sessions == nil {
-		state.Sessions = map[string]aliyunUploadSession{}
-		return state, false
-	}
-	changed := false
-	changed = util.PruneSessions(state.Sessions, now, aliyunUploadSessionMaxAge, aliyunUploadSessionMaxEntries, func(key string, session aliyunUploadSession) bool {
-		return session.Key != "" && session.UploadID != "" && session.FileID != "" && len(session.PartInfoList) > 0 && len(session.CompletedParts) > 0
-	}, func(session aliyunUploadSession) time.Time {
-		return session.SavedAt
+func (d *Driver) uploadSessionStore() *util.UploadSessionStore[aliyunUploadSession] {
+	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[aliyunUploadSession]{
+		Store:      d.stateStore,
+		File:       aliyunUploadSessionStateFile,
+		MaxAge:     aliyunUploadSessionMaxAge,
+		MaxEntries: aliyunUploadSessionMaxEntries,
+		Key: func(session aliyunUploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session aliyunUploadSession) bool {
+			return session.Key != "" && session.UploadID != "" && session.FileID != "" && len(session.PartInfoList) > 0 && len(session.CompletedParts) > 0
+		},
+		UpdatedAt: func(session aliyunUploadSession) time.Time {
+			return session.SavedAt
+		},
+		Touch: func(session *aliyunUploadSession, now time.Time) {
+			session.SavedAt = now
+		},
+		OnError: func(err error) {
+			d.setLastError(fmt.Errorf("aliyundrive: upload session state: %w", err))
+		},
 	})
-	return state, changed
 }
 
 func uploadSessionFromCreate(key, parentID, name string, size int64, sha1Hex string, partSize int64, create createResp) aliyunUploadSession {

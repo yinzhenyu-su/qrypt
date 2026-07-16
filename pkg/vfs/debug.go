@@ -285,7 +285,7 @@ func (v *VFS) DebugSnapshot() DebugSnapshot {
 		GeneratedAt:   timeutil.Now(),
 		Kind:          "vfs",
 		Process:       debugProcess(),
-		Mounts:        []MountSnapshot{v.debugMountSnapshot("default")},
+		Mounts:        []MountSnapshot{v.debugMountSnapshot(v.name)},
 	}
 }
 
@@ -294,7 +294,7 @@ func (v *VFS) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
 		return v.DebugSnapshot()
 	}
 	names := debugMountNameSet(mountNames)
-	if !names[v.name] && !names["default"] {
+	if !names[v.name] {
 		return DebugSnapshot{
 			SchemaVersion: DebugSnapshotSchemaVersion,
 			GeneratedAt:   timeutil.Now(),
@@ -307,7 +307,7 @@ func (v *VFS) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
 		GeneratedAt:   timeutil.Now(),
 		Kind:          "vfs",
 		Process:       debugProcess(),
-		Mounts:        []MountSnapshot{v.debugMountSnapshot("default")},
+		Mounts:        []MountSnapshot{v.debugMountSnapshot(v.name)},
 	}
 }
 
@@ -915,7 +915,7 @@ func (c *Cache) debugJournal() *DebugJournal {
 
 func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport, error) {
 	path = cleanVirtual(path)
-	mount := v.debugStagingMount("default", path)
+	mount := v.debugStagingMount(v.name, path)
 	report := DebugStagingReport{Mounts: []DebugStagingMount{mount}}
 	if path != "" && path != "/" {
 		report.Path = path

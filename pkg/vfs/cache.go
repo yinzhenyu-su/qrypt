@@ -942,6 +942,9 @@ func countJournalEntries(path string) int {
 	for scanner.Scan() {
 		entries++
 	}
+	if err := scanner.Err(); err != nil {
+		logging.L.Warnf("[CACHE] count pending journal entries failed: %v", err)
+	}
 	return entries
 }
 

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	cipher "github.com/SheltonZhu/115driver/pkg/crypto/ec115"
+	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/go-resty/resty/v2"
 	"golang.org/x/time/rate"
 
@@ -56,6 +58,38 @@ type cookieState struct {
 	Cookie    string    `json:"cookie,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
+
+type p115UploadSessionState struct {
+	Version  int                          `json:"version"`
+	Sessions map[string]p115UploadSession `json:"sessions,omitempty"`
+}
+
+type p115UploadSession struct {
+	Key       string    `json:"key"`
+	ParentID  string    `json:"parent_id"`
+	Name      string    `json:"name"`
+	Size      int64     `json:"size"`
+	SHA1      string    `json:"sha1"`
+	Bucket    string    `json:"bucket"`
+	Object    string    `json:"object"`
+	UploadID  string    `json:"upload_id"`
+	PartSize  int64     `json:"part_size"`
+	Parts     []ossPart `json:"parts,omitempty"`
+	Callback  string    `json:"callback,omitempty"`
+	CallbackV string    `json:"callback_var,omitempty"`
+	SavedAt   time.Time `json:"saved_at"`
+}
+
+type ossPart struct {
+	Number int    `json:"number"`
+	ETag   string `json:"etag"`
+}
+
+const p115UploadSessionStateFile = "115_upload_sessions.json"
+const p115UploadSessionMaxAge = 24 * time.Hour
+const p115UploadSessionMaxEntries = 1024
+const p115MultipartPartSize = 16 * 1024 * 1024
+const p115MultipartMinSize = p115MultipartPartSize
 
 func init() {
 	drive.Register("115", func(params drive.Params) (drive.Driver, error) {
@@ -283,14 +317,8 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 	defer body.Close()
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
-	uploadBody := drive.NewUploadProgressReader(req.Progress, body)
-	uploadBody = d.bandwidthLimiter.LimitUpload(ctx, uploadBody)
-	uploadSeekBody, ok := uploadBody.(io.ReadSeeker)
-	if !ok {
-		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("115: upload source is not seekable after wrapping"))
-	}
 	err = d.recordSDK(ctx, "upload", map[string]any{"parent_id": parentID, "name": name, "size": source.Size()}, func() error {
-		return d.uploadSource(parentID, name, source.Size(), uploadSeekBody)
+		return d.uploadSource(ctx, parentID, name, source.Size(), body, req.Progress)
 	})
 	if err != nil {
 		d.setLastError(fmt.Sprintf("115: upload %q: %v", name, err))
@@ -305,7 +333,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	return entry, nil
 }
 
-func (d *Driver) uploadSource(parentID, name string, size int64, body io.ReadSeeker) error {
+func (d *Driver) uploadSource(ctx context.Context, parentID, name string, size int64, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
 	ok, err := d.cl.UploadAvailable()
 	if err != nil || !ok {
 		return err
@@ -331,7 +359,12 @@ func (d *Driver) uploadSource(parentID, name string, size int64, body io.ReadSee
 	if _, err := body.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	return d.cl.UploadByOSS(&fastInfo.UploadOSSParams, body, parentID)
+	if size < p115MultipartMinSize {
+		uploadBody := drive.NewUploadProgressReader(progress, body)
+		uploadBody = d.bandwidthLimiter.LimitUpload(ctx, uploadBody)
+		return d.cl.UploadByOSS(&fastInfo.UploadOSSParams, uploadBody, parentID)
+	}
+	return d.uploadMultipart(ctx, parentID, name, size, digest.QuickID, &fastInfo.UploadOSSParams, body, progress)
 }
 
 func (d *Driver) rapidUpload(size int64, name, parentID, preID, sha1ID string, body io.ReadSeeker) (*driver115.UploadInitResp, error) {
@@ -414,6 +447,271 @@ func uploadToken(userID, sha1ID, preID, timestamp, size, signKey, signVal string
 	userIDMD5 := md5.Sum([]byte(userID))
 	tokenMD5 := md5.Sum([]byte(md5Salt + sha1ID + size + signKey + signVal + userID + timestamp + hex.EncodeToString(userIDMD5[:]) + appVer))
 	return hex.EncodeToString(tokenMD5[:])
+}
+
+type p115UploadPartRange struct {
+	Number int
+	Offset int64
+	Size   int64
+}
+
+func (d *Driver) uploadMultipart(ctx context.Context, parentID, name string, size int64, sha1Hex string, params *driver115.UploadOSSParams, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
+	if params == nil || params.Bucket == "" || params.Object == "" {
+		return drive.NonRetryable(fmt.Errorf("115: upload oss params missing bucket or object"))
+	}
+	sessionKey := util.UploadSessionKey(parentID, name, size, strings.ToUpper(sha1Hex))
+	session, resumed := d.loadUploadSession(sessionKey)
+	if resumed {
+		logging.L.InfofEvery("115.upload_resume", time.Second, "[115] upload resume name=%q upload_id=%q completed_parts=%d", name, session.UploadID, len(session.Parts))
+		params = session.uploadParams()
+	} else {
+		session = p115UploadSession{
+			Key:       sessionKey,
+			ParentID:  parentID,
+			Name:      name,
+			Size:      size,
+			SHA1:      strings.ToUpper(sha1Hex),
+			Bucket:    params.Bucket,
+			Object:    params.Object,
+			PartSize:  p115MultipartPartSize,
+			Callback:  params.Callback.Callback,
+			CallbackV: params.Callback.CallbackVar,
+		}
+	}
+	partSize := session.PartSize
+	if partSize <= 0 {
+		partSize = p115MultipartPartSize
+		session.PartSize = partSize
+	}
+	ossToken, err := d.cl.GetOSSToken()
+	if err != nil {
+		return fmt.Errorf("115: get oss token: %w", err)
+	}
+	ossClient, err := oss.New(
+		d.cl.GetOSSEndpoint(d.cl.UseInternalUpload),
+		ossToken.AccessKeyID,
+		ossToken.AccessKeySecret,
+		oss.EnableMD5(true),
+		oss.EnableCRC(true),
+	)
+	if err != nil {
+		return fmt.Errorf("115: create oss client: %w", err)
+	}
+	bucket, err := ossClient.Bucket(session.Bucket)
+	if err != nil {
+		return fmt.Errorf("115: open oss bucket: %w", err)
+	}
+	imur := oss.InitiateMultipartUploadResult{
+		Bucket:   session.Bucket,
+		Key:      session.Object,
+		UploadID: session.UploadID,
+	}
+	if !resumed || imur.UploadID == "" {
+		imur, err = bucket.InitiateMultipartUpload(session.Object,
+			oss.SetHeader(driver115.OssSecurityTokenHeaderName, ossToken.SecurityToken),
+			oss.UserAgentHeader(driver115.OSSUserAgent),
+			oss.EnableSha1(),
+			oss.Sequential(),
+		)
+		if err != nil {
+			return fmt.Errorf("115: initiate multipart upload: %w", err)
+		}
+		session.UploadID = imur.UploadID
+	}
+	partsByNumber := session.partsByNumber()
+	uploadParts := make([]oss.UploadPart, 0, len(p115UploadPartRanges(size, partSize)))
+	for _, part := range p115UploadPartRanges(size, partSize) {
+		if completed, ok := partsByNumber[part.Number]; ok {
+			drive.ReportUploadProgress(progress, part.Size)
+			uploadParts = append(uploadParts, completed)
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if time.Until(ossToken.Expiration) < 5*time.Minute {
+			ossToken, err = d.cl.GetOSSToken()
+			if err != nil {
+				return fmt.Errorf("115: refresh oss token: %w", err)
+			}
+		}
+		reader := io.NewSectionReader(body, part.Offset, part.Size)
+		uploadBody := drive.NewUploadProgressReader(progress, reader)
+		uploadBody = d.bandwidthLimiter.LimitUpload(ctx, uploadBody)
+		uploadBody = contextReader{ctx: ctx, reader: uploadBody}
+		start := time.Now()
+		uploadedPart, err := bucket.UploadPart(imur, uploadBody, part.Size, part.Number, driver115.OssOption(params, ossToken)...)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
+			}
+		}
+		d.metrics.Record(ctx, uploadPartMetric("oss_upload_part", part, start, err))
+		if err != nil {
+			return d.resumedUploadSessionError(resumed, sessionKey, fmt.Errorf("115: upload part %d: %w", part.Number, err))
+		}
+		partsByNumber[part.Number] = uploadedPart
+		uploadParts = append(uploadParts, uploadedPart)
+		session.Parts = append(session.Parts, ossPart{Number: uploadedPart.PartNumber, ETag: uploadedPart.ETag})
+		d.saveUploadSession(session)
+	}
+	sort.Slice(uploadParts, func(i, j int) bool {
+		return uploadParts[i].PartNumber < uploadParts[j].PartNumber
+	})
+	drive.ReportUploadPhase(progress, drive.UploadPhaseCommitting)
+	var bodyBytes []byte
+	_, err = bucket.CompleteMultipartUpload(imur, uploadParts,
+		append(driver115.OssOption(params, ossToken), oss.CallbackResult(&bodyBytes))...,
+	)
+	if err != nil {
+		return d.resumedUploadSessionError(resumed, sessionKey, fmt.Errorf("115: complete multipart upload: %w", err))
+	}
+	var uploadResult driver115.UploadResult
+	if err := json.Unmarshal(bodyBytes, &uploadResult); err != nil {
+		return d.resumedUploadSessionError(resumed, sessionKey, fmt.Errorf("115: complete multipart response: %w", err))
+	}
+	if err := uploadResult.Err(string(bodyBytes)); err != nil {
+		return d.resumedUploadSessionError(resumed, sessionKey, fmt.Errorf("115: complete multipart result: %w", err))
+	}
+	d.deleteUploadSession(sessionKey)
+	return nil
+}
+
+func uploadPartMetric(operation string, part p115UploadPartRange, started time.Time, err error) drive.MetricEvent {
+	event := drive.MetricEvent{
+		Layer:     "driver.oss",
+		Operation: operation,
+		Duration:  time.Since(started).String(),
+		Request: map[string]any{
+			"part_number": part.Number,
+			"bytes":       part.Size,
+			"offset":      part.Offset,
+		},
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	return event
+}
+
+func p115UploadPartRanges(size, partSize int64) []p115UploadPartRange {
+	if size < 0 || partSize <= 0 {
+		return nil
+	}
+	if size == 0 {
+		return []p115UploadPartRange{{Number: 1}}
+	}
+	parts := make([]p115UploadPartRange, 0, int((size+partSize-1)/partSize))
+	for offset, number := int64(0), 1; offset < size; offset, number = offset+partSize, number+1 {
+		length := partSize
+		if remaining := size - offset; remaining < length {
+			length = remaining
+		}
+		parts = append(parts, p115UploadPartRange{Number: number, Offset: offset, Size: length})
+	}
+	return parts
+}
+
+func (s p115UploadSession) uploadParams() *driver115.UploadOSSParams {
+	params := &driver115.UploadOSSParams{
+		SHA1:   s.SHA1,
+		Bucket: s.Bucket,
+		Object: s.Object,
+	}
+	params.Callback.Callback = s.Callback
+	params.Callback.CallbackVar = s.CallbackV
+	return params
+}
+
+func (s p115UploadSession) partsByNumber() map[int]oss.UploadPart {
+	parts := make(map[int]oss.UploadPart, len(s.Parts))
+	for _, part := range s.Parts {
+		if part.Number <= 0 || part.ETag == "" {
+			continue
+		}
+		parts[part.Number] = oss.UploadPart{PartNumber: part.Number, ETag: part.ETag}
+	}
+	return parts
+}
+
+func (d *Driver) loadUploadSession(key string) (p115UploadSession, bool) {
+	return d.uploadSessionStore().Load(key)
+}
+
+func (d *Driver) saveUploadSession(session p115UploadSession) {
+	d.uploadSessionStore().Save(session)
+}
+
+func (d *Driver) deleteUploadSession(key string) {
+	d.uploadSessionStore().Delete(key)
+}
+
+func (d *Driver) pruneStoredUploadSessions() {
+	d.uploadSessionStore().Prune()
+}
+
+func (d *Driver) uploadSessionStore() *util.UploadSessionStore[p115UploadSession] {
+	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[p115UploadSession]{
+		Store:      d.stateStore,
+		File:       p115UploadSessionStateFile,
+		MaxAge:     p115UploadSessionMaxAge,
+		MaxEntries: p115UploadSessionMaxEntries,
+		Key: func(session p115UploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session p115UploadSession) bool {
+			return session.Key != "" && session.Bucket != "" && session.Object != "" && session.UploadID != "" && session.PartSize > 0 && len(session.Parts) > 0
+		},
+		UpdatedAt: func(session p115UploadSession) time.Time {
+			return session.SavedAt
+		},
+		Touch: func(session *p115UploadSession, now time.Time) {
+			session.SavedAt = now
+		},
+		OnError: func(err error) {
+			logging.L.Warnf("115: upload session state failed: %v", err)
+		},
+	})
+}
+
+func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
+	if resumed && invalidResumedUploadSession(err) {
+		d.deleteUploadSession(key)
+		return fmt.Errorf("115: resumed upload session invalid, will retry from scratch: %v", err)
+	}
+	return err
+}
+
+func invalidResumedUploadSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "nosuchupload") ||
+		strings.Contains(s, "invalidupload") ||
+		strings.Contains(s, "uploadid") ||
+		strings.Contains(s, "upload id") ||
+		strings.Contains(s, "404") ||
+		strings.Contains(s, "409")
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(p)
+	if err != nil {
+		return n, err
+	}
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, nil
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID string, name string) (drive.Entry, error) {

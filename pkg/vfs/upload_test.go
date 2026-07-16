@@ -148,6 +148,56 @@ func TestVFSUploadsWithSourceOnlyDriver(t *testing.T) {
 	}
 }
 
+func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
+	ctx := context.Background()
+	drv := &cancelAwareUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	content := []byte(strings.Repeat("resume-test", 128))
+	if _, err := fs.WriteAt(ctx, "/resume-debug.bin", content, 0); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fs.DebugInjectUploadCancel(ctx, vfs.DebugUploadCancelRequest{
+		Path:       "/resume-debug.bin",
+		Phase:      drive.UploadPhaseUploading,
+		AfterBytes: 1,
+		Once:       true,
+		Reason:     "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Armed || result.ID == "" {
+		t.Fatalf("unexpected fault result: %+v", result)
+	}
+	if err := fs.Flush(ctx, "/resume-debug.bin"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitNoPending(t, fs)
+	attempts, canceled := drv.state()
+	if attempts < 2 {
+		t.Fatalf("upload attempts = %d, want retry after debug cancel", attempts)
+	}
+	if !canceled {
+		t.Fatal("driver did not observe context cancellation")
+	}
+	if faults := fs.DebugUploadCancelFaults(ctx); len(faults) != 0 {
+		t.Fatalf("one-shot debug fault was not cleared: %+v", faults)
+	}
+	entry, err := fs.Stat(ctx, "/resume-debug.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Size != int64(len(content)) {
+		t.Fatalf("uploaded size = %d, want %d", entry.Size, len(content))
+	}
+}
+
 func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
 	ctx := context.Background()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}

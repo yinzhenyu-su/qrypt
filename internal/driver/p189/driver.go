@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -47,6 +48,41 @@ type cookieState struct {
 	PasswordReloginFailedAt time.Time `json:"password_relogin_failed_at,omitempty"`
 	PasswordReloginError    string    `json:"password_relogin_error,omitempty"`
 }
+
+type p189UploadSessionState struct {
+	Version  int                          `json:"version"`
+	Sessions map[string]p189UploadSession `json:"sessions,omitempty"`
+}
+
+type p189UploadSession struct {
+	Key            string       `json:"key"`
+	ParentID       string       `json:"parent_id"`
+	Name           string       `json:"name"`
+	Size           int64        `json:"size"`
+	FileMD5        string       `json:"file_md5"`
+	SliceMD5       string       `json:"slice_md5"`
+	UploadFileID   string       `json:"upload_file_id"`
+	PartSize       int64        `json:"part_size"`
+	CompletedParts map[int]bool `json:"completed_parts,omitempty"`
+	SavedAt        time.Time    `json:"saved_at"`
+}
+
+type p189UploadHashes struct {
+	FileMD5  string
+	SliceMD5 string
+	Parts    []p189UploadPartMeta
+}
+
+type p189UploadPartMeta struct {
+	Number    int
+	Size      int64
+	MD5Hex    string
+	MD5Base64 string
+}
+
+const p189UploadSessionStateFile = "189_upload_sessions.json"
+const p189UploadSessionMaxAge = 24 * time.Hour
+const p189UploadSessionMaxEntries = 1024
 
 func init() {
 	drive.Register("189", func(params drive.Params) (drive.Driver, error) {
@@ -331,94 +367,55 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 	size := source.Size()
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
-	fileMD5, err := sourceMD5Hex(ctx, source, size)
+	hashes, err := sourceUploadHashes(ctx, source, size, uploadPartSize)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sliceMD5, err := sourceSliceMD5Hex(ctx, source, size)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	sliceMD5 = uploadSliceMD5(fileMD5, sliceMD5, size)
-	uploadFileID, fileDataExists, err := d.cl.initUpload(ctx, parent, name, size, fileMD5, sliceMD5)
-	if err != nil {
-		return drive.Entry{}, err
+	sessionKey := util.UploadSessionKey(parentID, name, size, hashes.FileMD5, hashes.SliceMD5)
+	session, resumedSession := d.loadUploadSession(sessionKey)
+	uploadFileID := session.UploadFileID
+	fileDataExists := false
+	if !resumedSession {
+		uploadFileID, fileDataExists, err = d.cl.initUpload(ctx, parent, name, size, hashes.FileMD5, hashes.SliceMD5)
+		if err != nil {
+			return drive.Entry{}, err
+		}
 	}
 	if !fileDataExists {
-		partInfo, err := uploadPartInfo(fileMD5)
-		if err != nil {
-			return drive.Entry{}, err
+		if resumedSession {
+			if session.CompletedParts == nil {
+				session.CompletedParts = map[int]bool{}
+			}
+		} else {
+			session = p189UploadSession{
+				Key:            sessionKey,
+				ParentID:       parentID,
+				Name:           name,
+				Size:           size,
+				FileMD5:        hashes.FileMD5,
+				SliceMD5:       hashes.SliceMD5,
+				UploadFileID:   uploadFileID,
+				PartSize:       uploadPartSize,
+				CompletedParts: map[int]bool{},
+			}
 		}
-		urls, err := d.cl.uploadData(ctx, uploadFileID, partInfo)
-		if err != nil {
-			return drive.Entry{}, err
-		}
-		part := urls["partNumber_1"]
-		if part.RequestURL == "" {
-			return drive.Entry{}, fmt.Errorf("189: upload urls missing partNumber_1")
-		}
-		body, err := source.Open(ctx)
-		if err != nil {
-			return drive.Entry{}, fmt.Errorf("189: upload source open: %w", err)
-		}
-		uploadBody := drive.NewUploadProgressReader(req.Progress, io.LimitReader(body, size))
-		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, part.RequestURL, uploadBody)
-		if err != nil {
-			body.Close()
-			return drive.Entry{}, err
-		}
-		req.ContentLength = size
-		applyUploadHeaders(req, part.RequestHeader)
-		if req.Header.Get("Content-Type") == "" {
-			req.Header.Set("Content-Type", "application/octet-stream")
-		}
-		resp, err := d.cl.hc.Do(req)
-		closeErr := body.Close()
-		if err != nil {
-			d.cl.recordMetric(ctx, drive.MetricEvent{
-				Operation: "upload_part",
-				Method:    req.Method,
-				URL:       traceURL(req.URL),
-				Request:   map[string]any{"bytes": size, "headers": headerKeys(req.Header)},
-				Error:     err.Error(),
-			})
-			return drive.Entry{}, err
-		}
-		if closeErr != nil {
-			resp.Body.Close()
-			return drive.Entry{}, closeErr
-		}
-		if resp.StatusCode != http.StatusOK {
-			raw, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			d.cl.recordMetric(ctx, drive.MetricEvent{
-				Operation: "upload_part",
-				Method:    req.Method,
-				URL:       traceURL(req.URL),
-				Status:    resp.StatusCode,
-				Request:   map[string]any{"bytes": size, "headers": headerKeys(req.Header)},
-				Response:  map[string]any{"body_snippet": responseSnippet(raw)},
-			})
-			return drive.Entry{}, fmt.Errorf("189: upload part: %s body=%q", resp.Status, responseSnippet(raw))
-		}
-		resp.Body.Close()
-		d.cl.recordMetric(ctx, drive.MetricEvent{
-			Operation: "upload_part",
-			Method:    req.Method,
-			URL:       traceURL(req.URL),
-			Status:    resp.StatusCode,
-			Request:   map[string]any{"bytes": size, "headers": headerKeys(req.Header)},
+		err := d.uploadParts(ctx, source, req.Progress, uploadFileID, hashes.Parts, session.CompletedParts, func(partNumber int) {
+			session.CompletedParts[partNumber] = true
+			d.saveUploadSession(session)
 		})
+		if err != nil {
+			return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		}
 	}
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
-	if err := d.cl.commitUpload(ctx, uploadFileID, fileMD5, sliceMD5); err != nil {
-		return drive.Entry{}, err
+	if err := d.cl.commitUpload(ctx, uploadFileID, hashes.FileMD5, hashes.SliceMD5); err != nil {
+		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
 	}
 	fileEntry, err := d.waitUploadedFile(ctx, parent, name)
 	if err != nil {
 		return drive.Entry{}, err
 	}
+	d.deleteUploadSession(sessionKey)
 	return drive.Entry{
 		ID:       strconv.FormatInt(fileEntry.ID, 10),
 		ParentID: parentID,
@@ -428,12 +425,80 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}, nil
 }
 
-func uploadPartInfo(fileMD5 string) (string, error) {
-	sum, err := hex.DecodeString(fileMD5)
-	if err != nil {
-		return "", fmt.Errorf("189: decode file md5: %w", err)
+func uploadPartInfo(part p189UploadPartMeta) string {
+	return fmt.Sprintf("%d-%s", part.Number, part.MD5Base64)
+}
+
+func sourceUploadHashes(ctx context.Context, source drive.ReadOnlyFileSource, size, partSize int64) (p189UploadHashes, error) {
+	if partSize <= 0 {
+		return p189UploadHashes{}, fmt.Errorf("189: invalid upload part size")
 	}
-	return "1-" + base64.StdEncoding.EncodeToString(sum), nil
+	if size <= partSize {
+		fileMD5, err := sourceMD5Hex(ctx, source, size)
+		if err != nil {
+			return p189UploadHashes{}, err
+		}
+		part, err := uploadPartMeta(1, size, fileMD5)
+		if err != nil {
+			return p189UploadHashes{}, err
+		}
+		return p189UploadHashes{FileMD5: fileMD5, SliceMD5: fileMD5, Parts: []p189UploadPartMeta{part}}, nil
+	}
+	file, err := source.Open(ctx)
+	if err != nil {
+		return p189UploadHashes{}, fmt.Errorf("189: hash source open: %w", err)
+	}
+	defer file.Close()
+	fileHash := md5.New()
+	partCount := int((size + partSize - 1) / partSize)
+	partHexes := make([]string, 0, partCount)
+	parts := make([]p189UploadPartMeta, 0, partCount)
+	buf := make([]byte, 1024*1024)
+	for number := 1; number <= partCount; number++ {
+		offset := int64(number-1) * partSize
+		length := partSize
+		if remaining := size - offset; remaining < length {
+			length = remaining
+		}
+		partHash := md5.New()
+		reader := io.NewSectionReader(file, offset, length)
+		written, err := io.CopyBuffer(io.MultiWriter(fileHash, partHash), reader, buf)
+		if err != nil {
+			return p189UploadHashes{}, fmt.Errorf("189: hash source read part %d: %w", number, err)
+		}
+		if written != length {
+			return p189UploadHashes{}, fmt.Errorf("189: hash source part %d size mismatch: read %d, expected %d", number, written, length)
+		}
+		partMD5 := partHash.Sum(nil)
+		partHex := strings.ToUpper(hex.EncodeToString(partMD5))
+		partHexes = append(partHexes, partHex)
+		parts = append(parts, p189UploadPartMeta{
+			Number:    number,
+			Size:      length,
+			MD5Hex:    partHex,
+			MD5Base64: base64.StdEncoding.EncodeToString(partMD5),
+		})
+	}
+	fileMD5 := strings.ToUpper(hex.EncodeToString(fileHash.Sum(nil)))
+	sliceSum := md5.Sum([]byte(strings.Join(partHexes, "\n")))
+	return p189UploadHashes{
+		FileMD5:  fileMD5,
+		SliceMD5: strings.ToUpper(hex.EncodeToString(sliceSum[:])),
+		Parts:    parts,
+	}, nil
+}
+
+func uploadPartMeta(number int, size int64, md5Hex string) (p189UploadPartMeta, error) {
+	sum, err := hex.DecodeString(md5Hex)
+	if err != nil {
+		return p189UploadPartMeta{}, fmt.Errorf("189: decode part md5: %w", err)
+	}
+	return p189UploadPartMeta{
+		Number:    number,
+		Size:      size,
+		MD5Hex:    strings.ToUpper(md5Hex),
+		MD5Base64: base64.StdEncoding.EncodeToString(sum),
+	}, nil
 }
 
 func uploadSliceMD5(fileMD5, sliceMD5 string, size int64) string {
@@ -467,6 +532,144 @@ func headerKeys(headers http.Header) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, uploadFileID string, parts []p189UploadPartMeta, completed map[int]bool, markComplete func(int)) error {
+	file, err := source.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("189: upload source open: %w", err)
+	}
+	defer file.Close()
+	for _, meta := range parts {
+		if completed[meta.Number] {
+			drive.ReportUploadProgress(progress, meta.Size)
+			continue
+		}
+		urls, err := d.cl.uploadData(ctx, uploadFileID, uploadPartInfo(meta))
+		if err != nil {
+			return fmt.Errorf("189: get upload url part %d: %w", meta.Number, err)
+		}
+		part := urls["partNumber_"+strconv.Itoa(meta.Number)]
+		if part.RequestURL == "" {
+			return drive.NonRetryable(fmt.Errorf("189: upload urls missing partNumber_%d", meta.Number))
+		}
+		offset := int64(meta.Number-1) * uploadPartSize
+		uploadBody := drive.NewUploadProgressReader(progress, io.NewSectionReader(file, offset, meta.Size))
+		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, part.RequestURL, uploadBody)
+		if err != nil {
+			return err
+		}
+		req.ContentLength = meta.Size
+		applyUploadHeaders(req, part.RequestHeader)
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/octet-stream")
+		}
+		start := time.Now()
+		resp, err := d.cl.hc.Do(req)
+		if err != nil {
+			d.cl.recordMetric(ctx, drive.MetricEvent{
+				Operation: "upload_part",
+				Method:    req.Method,
+				URL:       traceURL(req.URL),
+				Duration:  time.Since(start).String(),
+				Request:   map[string]any{"part_number": meta.Number, "bytes": meta.Size, "headers": headerKeys(req.Header)},
+				Error:     err.Error(),
+			})
+			return fmt.Errorf("189: upload part %d: %w", meta.Number, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			d.cl.recordMetric(ctx, drive.MetricEvent{
+				Operation: "upload_part",
+				Method:    req.Method,
+				URL:       traceURL(req.URL),
+				Status:    resp.StatusCode,
+				Duration:  time.Since(start).String(),
+				Request:   map[string]any{"part_number": meta.Number, "bytes": meta.Size, "headers": headerKeys(req.Header)},
+				Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			})
+			err := fmt.Errorf("189: upload part %d: %s body=%q", meta.Number, resp.Status, responseSnippet(raw))
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
+				err = drive.NonRetryable(err)
+			}
+			return err
+		}
+		resp.Body.Close()
+		d.cl.recordMetric(ctx, drive.MetricEvent{
+			Operation: "upload_part",
+			Method:    req.Method,
+			URL:       traceURL(req.URL),
+			Status:    resp.StatusCode,
+			Duration:  time.Since(start).String(),
+			Request:   map[string]any{"part_number": meta.Number, "bytes": meta.Size, "headers": headerKeys(req.Header)},
+		})
+		if markComplete != nil {
+			markComplete(meta.Number)
+		}
+	}
+	return nil
+}
+
+func (d *Driver) loadUploadSession(key string) (p189UploadSession, bool) {
+	session, ok := d.uploadSessionStore().Load(key)
+	if session.CompletedParts == nil {
+		session.CompletedParts = map[int]bool{}
+	}
+	return session, ok
+}
+
+func (d *Driver) saveUploadSession(session p189UploadSession) {
+	d.uploadSessionStore().Save(session)
+}
+
+func (d *Driver) deleteUploadSession(key string) {
+	d.uploadSessionStore().Delete(key)
+}
+
+func (d *Driver) uploadSessionStore() *util.UploadSessionStore[p189UploadSession] {
+	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[p189UploadSession]{
+		Store:      d.stateStore,
+		File:       p189UploadSessionStateFile,
+		MaxAge:     p189UploadSessionMaxAge,
+		MaxEntries: p189UploadSessionMaxEntries,
+		Key: func(session p189UploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session p189UploadSession) bool {
+			return session.Key != "" && session.UploadFileID != "" && len(session.CompletedParts) > 0
+		},
+		UpdatedAt: func(session p189UploadSession) time.Time {
+			return session.SavedAt
+		},
+		Touch: func(session *p189UploadSession, now time.Time) {
+			session.SavedAt = now
+		},
+		OnError: func(err error) {
+			logging.L.Warnf("189: upload session state failed: %v", err)
+		},
+	})
+}
+
+func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
+	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+		d.deleteUploadSession(key)
+		return fmt.Errorf("189: resumed upload session invalid, will retry from scratch: %v", err)
+	}
+	return err
+}
+
+func invalidResumedUploadSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "409") ||
+		strings.Contains(s, "404") ||
+		strings.Contains(s, "410") ||
+		strings.Contains(s, "uploadFileId") ||
+		strings.Contains(s, "InvalidUpload")
 }
 
 func (d *Driver) waitUploadedFile(ctx context.Context, parentID int64, name string) (File, error) {

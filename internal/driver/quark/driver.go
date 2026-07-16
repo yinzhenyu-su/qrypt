@@ -856,97 +856,51 @@ func (d *Driver) uploadSessionKey(parentID, name string, size int64, hashData ma
 	return util.UploadSessionKey(parentID, name, size, md5Hex, sha1Hex)
 }
 
-func (d *Driver) loadUploadSessions() uploadSessionState {
-	state := uploadSessionState{Version: 1, Sessions: map[string]quarkUploadSession{}}
-	if d.stateStore == nil {
-		return state
-	}
-	if err := d.stateStore.LoadJSON(quarkUploadSessionStateFile, &state); err != nil {
-		return uploadSessionState{Version: 1, Sessions: map[string]quarkUploadSession{}}
-	}
-	if state.Sessions == nil {
-		state.Sessions = map[string]quarkUploadSession{}
-	}
-	return state
-}
-
 func (d *Driver) loadUploadSession(key string) (quarkUploadSession, bool) {
-	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
-	if changed {
-		d.saveUploadSessionState(state)
-	}
-	session, ok := state.Sessions[key]
-	if !ok {
-		return quarkUploadSession{}, false
-	}
-	return session, true
+	return d.uploadSessionStore().Load(key)
 }
 
 func (d *Driver) saveUploadSession(session quarkUploadSession) {
-	if d.stateStore == nil || session.Key == "" {
-		return
-	}
-	state := d.loadUploadSessions()
-	session.UpdatedAt = time.Now()
-	state.Version = 1
-	state.Sessions[session.Key] = session
-	state, _ = d.prunedUploadSessions(state, time.Now())
-	if err := d.saveUploadSessionState(state); err != nil {
-		logging.L.Warnf("[QUARK] upload session save failed key=%q task=%q err=%v", session.Key, session.TaskID, err)
-	}
+	d.uploadSessionStore().Save(session)
 }
 
 func (d *Driver) deleteUploadSession(key string) {
-	if d.stateStore == nil || key == "" {
-		return
-	}
-	state, _ := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
-	if _, ok := state.Sessions[key]; !ok {
-		return
-	}
-	delete(state.Sessions, key)
-	state.Version = 1
-	if err := d.saveUploadSessionState(state); err != nil {
-		logging.L.Warnf("[QUARK] upload session delete failed key=%q err=%v", key, err)
-	}
+	d.uploadSessionStore().Delete(key)
 }
 
 func (d *Driver) pruneStoredUploadSessions() {
-	if d.stateStore == nil {
-		return
-	}
-	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
-	if !changed {
-		return
-	}
-	if err := d.saveUploadSessionState(state); err != nil {
-		logging.L.Warnf("[QUARK] upload session prune failed err=%v", err)
-	}
-}
-
-func (d *Driver) saveUploadSessionState(state uploadSessionState) error {
-	if d.stateStore == nil {
-		return nil
-	}
-	state.Version = 1
-	if state.Sessions == nil {
-		state.Sessions = map[string]quarkUploadSession{}
-	}
-	return d.stateStore.SaveJSON(quarkUploadSessionStateFile, state)
+	d.uploadSessionStore().Prune()
 }
 
 func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (uploadSessionState, bool) {
 	state.Version = 1
-	if state.Sessions == nil {
-		state.Sessions = map[string]quarkUploadSession{}
-		return state, false
-	}
-	changed := util.PruneSessions(state.Sessions, now, quarkUploadSessionMaxAge, quarkUploadSessionMaxEntries, func(key string, session quarkUploadSession) bool {
-		return session.Key != "" && len(session.Etags) > 0
-	}, func(session quarkUploadSession) time.Time {
-		return session.UpdatedAt
-	})
+	sessions, changed := d.uploadSessionStore().PrunedForTest(state.Sessions, now)
+	state.Sessions = sessions
 	return state, changed
+}
+
+func (d *Driver) uploadSessionStore() *util.UploadSessionStore[quarkUploadSession] {
+	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[quarkUploadSession]{
+		Store:      d.stateStore,
+		File:       quarkUploadSessionStateFile,
+		MaxAge:     quarkUploadSessionMaxAge,
+		MaxEntries: quarkUploadSessionMaxEntries,
+		Key: func(session quarkUploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session quarkUploadSession) bool {
+			return session.Key != "" && len(session.Etags) > 0
+		},
+		UpdatedAt: func(session quarkUploadSession) time.Time {
+			return session.UpdatedAt
+		},
+		Touch: func(session *quarkUploadSession, now time.Time) {
+			session.UpdatedAt = now
+		},
+		OnError: func(err error) {
+			logging.L.Warnf("[QUARK] upload session state failed err=%v", err)
+		},
+	})
 }
 
 func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
