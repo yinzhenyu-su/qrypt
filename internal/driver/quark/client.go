@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
@@ -47,7 +47,7 @@ type client struct {
 	metaSem        chan struct{}
 	ossSem         chan struct{}
 	onCookieUpdate func(cookie string)
-	metrics        *traceutil.Buffer
+	metrics        *util.Buffer
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -70,7 +70,7 @@ func newClient(cookie string, opts clientOptions) *client {
 		mgmtSem:        make(chan struct{}, 500),
 		metaSem:        make(chan struct{}, 500),
 		ossSem:         make(chan struct{}, ossMaxConcurrent),
-		metrics:        traceutil.NewBuffer(500),
+		metrics:        util.NewBuffer(500),
 	}
 }
 
@@ -256,11 +256,11 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
 				Method:    req.Method,
-				URL:       traceutil.URL(req.URL),
+				URL:       util.URL(req.URL),
 				Duration:  time.Since(httpStart).String(),
 				Attempt:   attempt + 1,
 				Retry:     attempt > 0,
-				Request:   traceutil.MergeRequest(traceutil.RequestFields(query), traceutil.BodyFields(body)),
+				Request:   util.MergeRequest(util.RequestFields(query), util.BodyFields(body)),
 				Error:     err.Error(),
 			})
 			if attempt < httpMaxRetries && retryableHTTPError(err) {
@@ -276,12 +276,12 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
 				Method:    req.Method,
-				URL:       traceutil.URL(req.URL),
+				URL:       util.URL(req.URL),
 				Status:    resp.StatusCode,
 				Duration:  time.Since(httpStart).String(),
 				Attempt:   attempt + 1,
 				Retry:     attempt > 0,
-				Request:   traceutil.MergeRequest(traceutil.RequestFields(query), traceutil.BodyFields(body)),
+				Request:   util.MergeRequest(util.RequestFields(query), util.BodyFields(body)),
 				Error:     readErr.Error(),
 			})
 			return fmt.Errorf("read response failed: %w", readErr)
@@ -289,12 +289,12 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		event := drive.MetricEvent{
 			Operation: path,
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    resp.StatusCode,
 			Duration:  time.Since(httpStart).String(),
 			Attempt:   attempt + 1,
 			Retry:     attempt > 0,
-			Request:   traceutil.MergeRequest(traceutil.RequestFields(query), traceutil.BodyFields(body)),
+			Request:   util.MergeRequest(util.RequestFields(query), util.BodyFields(body)),
 			Response:  map[string]any{"bytes": len(bodyBytes)},
 		}
 		for _, cookie := range resp.Cookies() {
@@ -310,13 +310,13 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		if result != nil {
 			if err := json.Unmarshal(bodyBytes, result); err != nil {
 				event.Error = err.Error()
-				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": traceutil.Snippet(bodyBytes)}
+				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
 				c.recordMetric(ctx, event)
 				return fmt.Errorf("parse response failed: %w", err)
 			}
 		}
 		if resp.StatusCode >= 400 {
-			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": traceutil.Snippet(bodyBytes)}
+			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
 			c.recordMetric(ctx, event)
 			return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
 		}

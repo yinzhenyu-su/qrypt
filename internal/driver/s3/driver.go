@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -56,7 +56,7 @@ type Driver struct {
 
 	client  *s3.Client
 	limiter *drive.BandwidthLimiter
-	metrics *traceutil.Buffer
+	metrics *util.Buffer
 }
 
 // Options configures a new S3 driver.
@@ -217,7 +217,7 @@ func New(opts Options) *Driver {
 		secretKey:    opts.SecretAccessKey,
 		sessionToken: opts.SessionToken,
 		signExpire:   opts.SignURLExpire,
-		metrics:      traceutil.NewBuffer(500),
+		metrics:      util.NewBuffer(500),
 	}
 }
 

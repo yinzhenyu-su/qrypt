@@ -37,6 +37,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  aliyundrive.New(aliyundrive.Options{RefreshToken: "token", DriveID: "drive"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -57,6 +58,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  quark.New("cookie", quark.Options{}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -67,6 +69,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  yun139.New("authorization", "", ""),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,

@@ -2,7 +2,7 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
-	_ "github.com/yinzhenyu/qrypt/internal/driver/all"
+	_ "github.com/yinzhenyu/qrypt/internal/driver"
 )
 
 // NewRootCommand builds the qrypt command tree.

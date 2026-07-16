@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
@@ -25,7 +25,7 @@ type partMeta struct {
 }
 
 const (
-	uploadPartConcurrency = 4
+	uploadPartConcurrency = 1
 	quotaSizeUnit         = osutil.MiB
 )
 
@@ -47,6 +47,31 @@ type authState struct {
 	Authorization string    `json:"authorization,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
+
+type uploadSessionState struct {
+	Version  int                            `json:"version"`
+	Sessions map[string]yun139UploadSession `json:"sessions,omitempty"`
+}
+
+type yun139UploadSession struct {
+	Key            string             `json:"key"`
+	ParentID       string             `json:"parent_id"`
+	Name           string             `json:"name"`
+	Size           int64              `json:"size"`
+	SHA256         string             `json:"sha256"`
+	FileID         string             `json:"file_id"`
+	FileName       string             `json:"file_name,omitempty"`
+	UploadID       string             `json:"upload_id"`
+	PartSize       int64              `json:"part_size"`
+	PartInfos      []partMeta         `json:"part_infos,omitempty"`
+	UploadPartInfo []personalPartInfo `json:"upload_part_infos,omitempty"`
+	CompletedParts map[int]bool       `json:"completed_parts,omitempty"`
+	SavedAt        time.Time          `json:"saved_at"`
+}
+
+const uploadSessionStateFile = "yun139_upload_sessions.json"
+const uploadSessionMaxAge = 24 * time.Hour
+const uploadSessionMaxEntries = 1024
 
 func init() {
 	drive.Register("yun139", func(params drive.Params) (drive.Driver, error) {
@@ -119,11 +144,16 @@ func (d *Driver) Drop(ctx context.Context) error { return nil }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+	d.pruneStoredUploadSessions()
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
+}
+
+func (d *Driver) RequiredUploadHashes() []drive.HashAlgorithm {
+	return []drive.HashAlgorithm{drive.HashSHA256}
 }
 
 func (d *Driver) resolveID(fileID string) string {
@@ -179,6 +209,153 @@ func (d *Driver) getLastError() string {
 	return d.lastError
 }
 
+func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha256Hex string) string {
+	return util.UploadSessionKey(parentID, name, size, sha256Hex)
+}
+
+func (d *Driver) loadUploadSessions() uploadSessionState {
+	state := uploadSessionState{Version: 1, Sessions: map[string]yun139UploadSession{}}
+	if d.stateStore == nil {
+		return state
+	}
+	if err := d.stateStore.LoadJSON(uploadSessionStateFile, &state); err != nil {
+		return uploadSessionState{Version: 1, Sessions: map[string]yun139UploadSession{}}
+	}
+	if state.Sessions == nil {
+		state.Sessions = map[string]yun139UploadSession{}
+	}
+	return state
+}
+
+func (d *Driver) loadUploadSession(key string) (yun139UploadSession, bool) {
+	if key == "" {
+		return yun139UploadSession{}, false
+	}
+	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if changed {
+		_ = d.saveUploadSessionState(state)
+	}
+	session, ok := state.Sessions[key]
+	if !ok || session.FileID == "" || session.UploadID == "" || len(session.UploadPartInfo) == 0 || len(session.CompletedParts) == 0 {
+		return yun139UploadSession{}, false
+	}
+	if session.CompletedParts == nil {
+		session.CompletedParts = map[int]bool{}
+	}
+	return session, true
+}
+
+func (d *Driver) saveUploadSession(session yun139UploadSession) {
+	if d.stateStore == nil || session.Key == "" {
+		return
+	}
+	state := d.loadUploadSessions()
+	session.SavedAt = time.Now()
+	state.Version = 1
+	state.Sessions[session.Key] = session
+	state, _ = d.prunedUploadSessions(state, time.Now())
+	if err := d.saveUploadSessionState(state); err != nil {
+		d.setLastError(fmt.Errorf("139: upload session save: %w", err))
+	}
+}
+
+func (d *Driver) deleteUploadSession(key string) {
+	if d.stateStore == nil || key == "" {
+		return
+	}
+	state, _ := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if _, ok := state.Sessions[key]; !ok {
+		return
+	}
+	delete(state.Sessions, key)
+	state.Version = 1
+	if err := d.saveUploadSessionState(state); err != nil {
+		d.setLastError(fmt.Errorf("139: upload session delete: %w", err))
+	}
+}
+
+func (d *Driver) pruneStoredUploadSessions() {
+	if d.stateStore == nil {
+		return
+	}
+	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if !changed {
+		return
+	}
+	if err := d.saveUploadSessionState(state); err != nil {
+		d.setLastError(fmt.Errorf("139: upload session prune: %w", err))
+	}
+}
+
+func (d *Driver) saveUploadSessionState(state uploadSessionState) error {
+	if d.stateStore == nil {
+		return nil
+	}
+	state.Version = 1
+	if state.Sessions == nil {
+		state.Sessions = map[string]yun139UploadSession{}
+	}
+	return d.stateStore.SaveJSON(uploadSessionStateFile, state)
+}
+
+func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (uploadSessionState, bool) {
+	state.Version = 1
+	if state.Sessions == nil {
+		state.Sessions = map[string]yun139UploadSession{}
+		return state, false
+	}
+	changed := util.PruneSessions(state.Sessions, now, uploadSessionMaxAge, uploadSessionMaxEntries, func(key string, session yun139UploadSession) bool {
+		return session.Key != "" && session.FileID != "" && session.UploadID != "" && len(session.UploadPartInfo) > 0 && len(session.CompletedParts) > 0
+	}, func(session yun139UploadSession) time.Time {
+		return session.SavedAt
+	})
+	return state, changed
+}
+
+func uploadSessionFromCreate(key, parentID, name string, size int64, sha256Hex string, partSize int64, partInfos []partMeta, create personalUploadResp) yun139UploadSession {
+	return yun139UploadSession{
+		Key:            key,
+		ParentID:       parentID,
+		Name:           name,
+		Size:           size,
+		SHA256:         sha256Hex,
+		FileID:         create.Data.FileID,
+		FileName:       create.Data.FileName,
+		UploadID:       create.Data.UploadID,
+		PartSize:       partSize,
+		PartInfos:      append([]partMeta(nil), partInfos...),
+		UploadPartInfo: append([]personalPartInfo(nil), create.Data.PartInfos...),
+		CompletedParts: map[int]bool{},
+	}
+}
+
+func (s yun139UploadSession) createResp() personalUploadResp {
+	var resp personalUploadResp
+	resp.Success = true
+	resp.Data.FileID = s.FileID
+	resp.Data.FileName = s.FileName
+	resp.Data.UploadID = s.UploadID
+	resp.Data.PartInfos = append([]personalPartInfo(nil), s.UploadPartInfo...)
+	return resp
+}
+
+func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
+	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+		d.deleteUploadSession(key)
+		return fmt.Errorf("139: resumed upload session invalid, will retry from scratch: %v", err)
+	}
+	return err
+}
+
+func invalidResumedUploadSession(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "status 400") ||
+		strings.Contains(msg, "status 404") ||
+		strings.Contains(msg, "status 409") ||
+		strings.Contains(msg, "status 410") ||
+		strings.Contains(msg, "upload complete failed")
+}
+
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	fileID := d.resolveID(parentID)
 
@@ -231,7 +408,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
 		Request:   map[string]any{"range": req.Header.Get("Range")},
@@ -410,6 +587,8 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	if err != nil {
 		return drive.Entry{}, err
 	}
+	sessionKey := d.uploadSessionKey(fileID, name, size, sha256Hex)
+	session, resumedSession := d.loadUploadSession(sessionKey)
 	partCount := size / partSize
 	if size%partSize > 0 {
 		partCount++
@@ -432,7 +611,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		"contentHash":          sha256Hex,
 		"contentHashAlgorithm": "SHA256",
 		"contentType":          "application/octet-stream",
-		"parallelUpload":       true,
+		"parallelUpload":       false,
 		"partInfos":            partInfos,
 		"size":                 size,
 		"parentFileId":         fileID,
@@ -441,11 +620,21 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		"fileRenameMode":       "auto_rename",
 	}
 	var createResp personalUploadResp
-	if err := d.cl.personalPost(ctx, "/file/create", createData, &createResp); err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload create: %w", err)
-	}
-	if !createResp.Success {
-		return drive.Entry{}, fmt.Errorf("139: upload create failed (code=%s): %s", createResp.Code, createResp.Message)
+	if resumedSession {
+		createResp = session.createResp()
+		if session.PartSize > 0 {
+			partSize = session.PartSize
+		}
+		if len(session.PartInfos) > 0 {
+			partInfos = append([]partMeta(nil), session.PartInfos...)
+		}
+	} else {
+		if err := d.cl.personalPost(ctx, "/file/create", createData, &createResp); err != nil {
+			return drive.Entry{}, fmt.Errorf("139: upload create: %w", err)
+		}
+		if !createResp.Success {
+			return drive.Entry{}, fmt.Errorf("139: upload create failed (code=%s): %s", createResp.Code, createResp.Message)
+		}
 	}
 
 	logging.L.Debugf("[139] upload create: fileId=%s exist=%v instant=%v parts=%d uploadId=%s",
@@ -457,13 +646,30 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		d.debugMu.Lock()
 		d.instantUploadCount++
 		d.debugMu.Unlock()
+		d.deleteUploadSession(sessionKey)
 		return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+	}
+
+	if !resumedSession {
+		session = uploadSessionFromCreate(sessionKey, fileID, name, size, sha256Hex, partSize, partInfos, createResp)
+		d.saveUploadSession(session)
+	} else if session.CompletedParts == nil {
+		session.CompletedParts = map[int]bool{}
 	}
 
 	// Server returns upload URLs when it needs multipart upload.
 	if len(createResp.Data.PartInfos) > 0 {
-		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size); err != nil {
-			return drive.Entry{}, err
+		var sessionMu sync.Mutex
+		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size, session.CompletedParts, func(partNumber int) {
+			sessionMu.Lock()
+			defer sessionMu.Unlock()
+			if session.CompletedParts == nil {
+				session.CompletedParts = map[int]bool{}
+			}
+			session.CompletedParts[partNumber] = true
+			d.saveUploadSession(session)
+		}); err != nil {
+			return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
 		}
 	}
 
@@ -477,10 +683,10 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	logging.L.Debugf("[139] upload complete: fileId=%s uploadId=%s", createResp.Data.FileID, createResp.Data.UploadID)
 	var completeResp baseResp
 	if err := d.cl.personalPost(ctx, "/file/complete", completeData, &completeResp); err != nil {
-		return drive.Entry{}, fmt.Errorf("139: upload complete: %w", err)
+		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, fmt.Errorf("139: upload complete: %w", err))
 	}
 	if !completeResp.Success {
-		return drive.Entry{}, fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)
+		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, drive.NonRetryable(fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)))
 	}
 
 	// Handle auto_rename conflict: server renamed our uploaded file because
@@ -508,10 +714,12 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		// file ID (toEntry strips the suffix so the list name is ambiguous).
 		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileID}, name); err != nil {
 			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileID, name, err)
+			d.deleteUploadSession(sessionKey)
 			return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 		}
 	}
 
+	d.deleteUploadSession(sessionKey)
 	return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
 }
 
@@ -541,10 +749,14 @@ func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size 
 	return fmt.Sprintf("%X", hasher.Sum(nil)), nil
 }
 
-func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize, size int64) error {
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize, size int64, completed map[int]bool, markComplete func(int)) error {
 	type uploadPart struct {
 		partNumber int
 		uploadURL  string
+	}
+	completedParts := make(map[int]bool, len(completed))
+	for partNumber, done := range completed {
+		completedParts[partNumber] = done
 	}
 	var uploadParts []uploadPart
 	for _, p := range createResp.Data.PartInfos {
@@ -587,6 +799,10 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			if end > size {
 				end = size
 			}
+			if completedParts[up.partNumber] {
+				drive.ReportUploadProgress(progress, end-start)
+				return nil
+			}
 			f, err := source.Open(uploadCtx)
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
@@ -610,7 +826,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			d.cl.recordMetric(uploadCtx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
-				URL:       traceutil.URL(req.URL),
+				URL:       util.URL(req.URL),
 				Status:    responseStatus(resp),
 				Duration:  time.Since(httpStart).String(),
 				Request:   map[string]any{"part_number": up.partNumber, "bytes": req.ContentLength},
@@ -627,6 +843,9 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 				}
 				return err
 			}
+			if markComplete != nil {
+				markComplete(up.partNumber)
+			}
 			return nil
 		})
 	}
@@ -638,18 +857,10 @@ func nonRetryableUploadStatus(status int) bool {
 }
 
 func calcPartSize(fileSize int64) int64 {
-	switch {
-	case fileSize <= 0:
-		return 4 * 1024 * 1024
-	case fileSize <= 100*1024*1024:
-		return 4 * 1024 * 1024
-	case fileSize <= 500*1024*1024:
-		return 10 * 1024 * 1024
-	case fileSize <= 1*1024*1024*1024:
-		return 20 * 1024 * 1024
-	default:
-		return 50 * 1024 * 1024
+	if fileSize/osutil.GiB > 30 {
+		return 512 * osutil.MiB
 	}
+	return 100 * osutil.MiB
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {

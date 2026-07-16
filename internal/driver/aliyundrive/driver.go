@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -56,6 +56,31 @@ type tokenState struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
+
+type aliyunUploadSessionState struct {
+	Version  int                            `json:"version"`
+	Sessions map[string]aliyunUploadSession `json:"sessions,omitempty"`
+}
+
+type aliyunUploadSession struct {
+	Key            string           `json:"key"`
+	ParentID       string           `json:"parent_id"`
+	Name           string           `json:"name"`
+	Size           int64            `json:"size"`
+	SHA1           string           `json:"sha1"`
+	FileID         string           `json:"file_id"`
+	UploadID       string           `json:"upload_id"`
+	PartSize       int64            `json:"part_size"`
+	PartInfoList   []uploadPartInfo `json:"part_info_list,omitempty"`
+	CompletedParts map[int]bool     `json:"completed_parts,omitempty"`
+	CreatedAt      *time.Time       `json:"created_at,omitempty"`
+	UpdatedAt      *time.Time       `json:"updated_at,omitempty"`
+	SavedAt        time.Time        `json:"saved_at"`
+}
+
+const aliyunUploadSessionStateFile = "aliyundrive_upload_sessions.json"
+const aliyunUploadSessionMaxAge = 24 * time.Hour
+const aliyunUploadSessionMaxEntries = 1024
 
 func init() {
 	drive.Register("aliyundrive", func(params drive.Params) (drive.Driver, error) {
@@ -196,6 +221,7 @@ func (d *Driver) Drop(ctx context.Context) error { return nil }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+	d.pruneStoredUploadSessions()
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -213,6 +239,155 @@ func (d *Driver) sourceSHA1(source drive.ReadOnlyFileSource) (string, bool) {
 		return "", false
 	}
 	return hex.EncodeToString(sum), true
+}
+
+func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha1Hex string) string {
+	return util.UploadSessionKey(parentID, name, size, sha1Hex)
+}
+
+func (d *Driver) loadUploadSessions() aliyunUploadSessionState {
+	state := aliyunUploadSessionState{Version: 1, Sessions: map[string]aliyunUploadSession{}}
+	if d.stateStore == nil {
+		return state
+	}
+	if err := d.stateStore.LoadJSON(aliyunUploadSessionStateFile, &state); err != nil {
+		return aliyunUploadSessionState{Version: 1, Sessions: map[string]aliyunUploadSession{}}
+	}
+	if state.Sessions == nil {
+		state.Sessions = map[string]aliyunUploadSession{}
+	}
+	return state
+}
+
+func (d *Driver) loadUploadSession(key string) (aliyunUploadSession, bool) {
+	if key == "" {
+		return aliyunUploadSession{}, false
+	}
+	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if changed {
+		_ = d.saveUploadSessionState(state)
+	}
+	session, ok := state.Sessions[key]
+	if !ok || session.UploadID == "" || session.FileID == "" || len(session.PartInfoList) == 0 || len(session.CompletedParts) == 0 {
+		return aliyunUploadSession{}, false
+	}
+	if session.CompletedParts == nil {
+		session.CompletedParts = map[int]bool{}
+	}
+	return session, true
+}
+
+func (d *Driver) saveUploadSession(session aliyunUploadSession) {
+	if d.stateStore == nil || session.Key == "" {
+		return
+	}
+	state := d.loadUploadSessions()
+	session.SavedAt = time.Now()
+	state.Version = 1
+	state.Sessions[session.Key] = session
+	state, _ = d.prunedUploadSessions(state, time.Now())
+	if err := d.saveUploadSessionState(state); err != nil {
+		d.setLastError(fmt.Errorf("aliyundrive: upload session save: %w", err))
+	}
+}
+
+func (d *Driver) deleteUploadSession(key string) {
+	if d.stateStore == nil || key == "" {
+		return
+	}
+	state, _ := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if _, ok := state.Sessions[key]; !ok {
+		return
+	}
+	delete(state.Sessions, key)
+	state.Version = 1
+	if err := d.saveUploadSessionState(state); err != nil {
+		d.setLastError(fmt.Errorf("aliyundrive: upload session delete: %w", err))
+	}
+}
+
+func (d *Driver) pruneStoredUploadSessions() {
+	if d.stateStore == nil {
+		return
+	}
+	state, changed := d.prunedUploadSessions(d.loadUploadSessions(), time.Now())
+	if !changed {
+		return
+	}
+	if err := d.saveUploadSessionState(state); err != nil {
+		d.setLastError(fmt.Errorf("aliyundrive: upload session prune: %w", err))
+	}
+}
+
+func (d *Driver) saveUploadSessionState(state aliyunUploadSessionState) error {
+	if d.stateStore == nil {
+		return nil
+	}
+	state.Version = 1
+	if state.Sessions == nil {
+		state.Sessions = map[string]aliyunUploadSession{}
+	}
+	return d.stateStore.SaveJSON(aliyunUploadSessionStateFile, state)
+}
+
+func (d *Driver) prunedUploadSessions(state aliyunUploadSessionState, now time.Time) (aliyunUploadSessionState, bool) {
+	state.Version = 1
+	if state.Sessions == nil {
+		state.Sessions = map[string]aliyunUploadSession{}
+		return state, false
+	}
+	changed := false
+	changed = util.PruneSessions(state.Sessions, now, aliyunUploadSessionMaxAge, aliyunUploadSessionMaxEntries, func(key string, session aliyunUploadSession) bool {
+		return session.Key != "" && session.UploadID != "" && session.FileID != "" && len(session.PartInfoList) > 0 && len(session.CompletedParts) > 0
+	}, func(session aliyunUploadSession) time.Time {
+		return session.SavedAt
+	})
+	return state, changed
+}
+
+func uploadSessionFromCreate(key, parentID, name string, size int64, sha1Hex string, partSize int64, create createResp) aliyunUploadSession {
+	return aliyunUploadSession{
+		Key:            key,
+		ParentID:       parentID,
+		Name:           name,
+		Size:           size,
+		SHA1:           sha1Hex,
+		FileID:         create.FileID,
+		UploadID:       create.UploadID,
+		PartSize:       partSize,
+		PartInfoList:   append([]uploadPartInfo(nil), create.PartInfoList...),
+		CompletedParts: map[int]bool{},
+		CreatedAt:      create.CreatedAt,
+		UpdatedAt:      create.UpdatedAt,
+	}
+}
+
+func (s aliyunUploadSession) createResp() createResp {
+	return createResp{
+		FileID:       s.FileID,
+		Name:         s.Name,
+		Size:         s.Size,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.UpdatedAt,
+		UploadID:     s.UploadID,
+		PartInfoList: append([]uploadPartInfo(nil), s.PartInfoList...),
+	}
+}
+
+func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
+	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+		d.deleteUploadSession(key)
+		return fmt.Errorf("aliyundrive: resumed upload session invalid, will retry from scratch: %v", err)
+	}
+	return err
+}
+
+func invalidResumedUploadSession(err error) bool {
+	var apiErr *apiStatusError
+	if errors.As(err, &apiErr) {
+		return apiErr.status == http.StatusConflict || apiErr.status == http.StatusNotFound || apiErr.status == http.StatusGone || apiErr.status == http.StatusBadRequest
+	}
+	return false
 }
 
 func (d *Driver) resolveID(fileID string) string {
@@ -302,7 +477,7 @@ func (d *Driver) readWithDownloadURL(ctx context.Context, entry drive.Entry, off
 	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    responseStatus(httpResp),
 		Duration:  time.Since(start).String(),
 		Request:   map[string]any{"range": req.Header.Get("Range")},
@@ -417,19 +592,26 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		"size":            size,
 		"type":            "file",
 	}
+	sessionKey := ""
+	var session aliyunUploadSession
+	var resumedSession bool
 	// When source provides SHA1 (e.g. from crypt ContentDedupCrypt),
 	// skip two-phase pre_hash negotiation: saves one API round trip
 	// and avoids re-encrypting the full source on every Open().
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
 	if sha1sum, ok := d.sourceSHA1(source); ok {
+		sessionKey = d.uploadSessionKey(parentID, name, size, sha1sum)
+		session, resumedSession = d.loadUploadSession(sessionKey)
 		body["content_hash"] = sha1sum
 		body["content_hash_name"] = "sha1"
 		body["proof_version"] = "v1"
-		proofCode, err := d.proofCode(ctx, source, size)
-		if err != nil {
-			return drive.Entry{}, err
+		if !resumedSession {
+			proofCode, err := d.proofCode(ctx, source, size)
+			if err != nil {
+				return drive.Entry{}, err
+			}
+			body["proof_code"] = proofCode
 		}
-		body["proof_code"] = proofCode
 	} else {
 		if preHash, err := fileHeadSHA1(ctx, source, 1024); err == nil {
 			body["pre_hash"] = preHash
@@ -438,31 +620,61 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			body["proof_version"] = "v1"
 		}
 	}
-	err := d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
-	var apiErr *apiStatusError
-	if errors.As(err, &apiErr) && apiErr.code == "PreHashMatched" {
-		delete(body, "pre_hash")
-		instantFields, instantErr := d.instantUploadFields(ctx, source, size)
-		if instantErr != nil {
-			return drive.Entry{}, instantErr
-		}
-		for key, value := range instantFields {
-			body[key] = value
-		}
+	var err error
+	if resumedSession {
+		create = session.createResp()
+	} else {
 		err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
-	}
-	if err != nil {
-		return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload create: %w", err))
+		var apiErr *apiStatusError
+		if errors.As(err, &apiErr) && apiErr.code == "PreHashMatched" {
+			delete(body, "pre_hash")
+			instantFields, instantErr := d.instantUploadFields(ctx, source, size)
+			if instantErr != nil {
+				return drive.Entry{}, instantErr
+			}
+			for key, value := range instantFields {
+				body[key] = value
+			}
+			err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
+		}
+		if err != nil {
+			return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload create: %w", err))
+		}
 	}
 	if create.InstantUpload {
 		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
 		d.debugMu.Lock()
 		d.instantUploadCount++
 		d.debugMu.Unlock()
+		d.deleteUploadSession(sessionKey)
 		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(create.UpdatedAt, create.CreatedAt, now)}, nil
 	}
-	if err := d.uploadParts(ctx, source, req.Progress, create.PartInfoList); err != nil {
-		return drive.Entry{}, err
+	if sessionKey != "" {
+		if resumedSession {
+			if session.CompletedParts == nil {
+				session.CompletedParts = map[int]bool{}
+			}
+		} else {
+			sha1sum, _ := body["content_hash"].(string)
+			session = uploadSessionFromCreate(sessionKey, parentID, name, size, sha1sum, d.partSize, create)
+			d.saveUploadSession(session)
+		}
+	}
+	uploadPartSize := d.partSize
+	if resumedSession && session.PartSize > 0 {
+		uploadPartSize = session.PartSize
+	}
+	if err := d.uploadParts(ctx, source, req.Progress, create.PartInfoList, uploadPartSize, session.CompletedParts, func(partNumber int) {
+		if sessionKey == "" {
+			return
+		}
+		if session.CompletedParts == nil {
+			session.CompletedParts = map[int]bool{}
+		}
+		session.CompletedParts[partNumber] = true
+		d.saveUploadSession(session)
+	}); err != nil {
+		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
 	}
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	var complete completeResp
@@ -472,7 +684,8 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		"upload_id": create.UploadID,
 	}
 	if err := d.cl.request(ctx, http.MethodPost, "/v2/file/complete", completeBody, &complete); err != nil {
-		return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload complete: %w", err))
+		err = classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload complete: %w", err))
+		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
 	}
 	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(complete.UpdatedAt, complete.CreatedAt, responseModTime(create.UpdatedAt, create.CreatedAt, now))}
 	if complete.FileID != "" {
@@ -484,6 +697,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if complete.Size > 0 {
 		entry.Size = complete.Size
 	}
+	d.deleteUploadSession(sessionKey)
 	return entry, nil
 }
 
@@ -581,7 +795,7 @@ func fileSHA1(ctx context.Context, source drive.ReadOnlyFileSource) (string, err
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, parts []uploadPartInfo) error {
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, parts []uploadPartInfo, partSize int64, completed map[int]bool, markComplete func(int)) error {
 	file, err := source.Open(ctx)
 	if err != nil {
 		return fmt.Errorf("aliyundrive: upload open: %w", err)
@@ -592,13 +806,17 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 		if part.UploadURL == "" {
 			return drive.NonRetryable(fmt.Errorf("aliyundrive: upload part %d has empty url", part.PartNumber))
 		}
-		offset := int64(part.PartNumber-1) * d.partSize
-		length := d.partSize
+		offset := int64(part.PartNumber-1) * partSize
+		length := partSize
 		if remaining := size - offset; remaining < length {
 			length = remaining
 		}
 		if length < 0 {
 			length = 0
+		}
+		if completed[part.PartNumber] {
+			drive.ReportUploadProgress(progress, length)
+			continue
 		}
 		reader := drive.NewUploadProgressReader(progress, io.NewSectionReader(file, offset, length))
 		body := d.limiter.LimitUpload(ctx, reader)
@@ -612,7 +830,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "upload_part",
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    responseStatus(resp),
 			Duration:  time.Since(start).String(),
 			Request:   map[string]any{"part_number": part.PartNumber, "bytes": length},
@@ -628,6 +846,9 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 				err = drive.NonRetryable(err)
 			}
 			return err
+		}
+		if markComplete != nil {
+			markComplete(part.PartNumber)
 		}
 	}
 	return nil

@@ -1,5 +1,5 @@
-// Package all registers every storage driver shipped with qrypt.
-package all
+// Package driver registers every storage driver shipped with qrypt.
+package driver
 
 import (
 	_ "github.com/yinzhenyu/qrypt/internal/driver/aliyundrive"

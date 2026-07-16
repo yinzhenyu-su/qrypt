@@ -11,6 +11,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 	return []drive.Capability{
 		drive.CapabilityWriter,
 		drive.CapabilitySourceUploader,
+		drive.CapabilityResumableUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityPathResolver,
 	}

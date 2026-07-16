@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -64,7 +64,7 @@ type Driver struct {
 	lastErrorMu        sync.Mutex
 	lastError          string
 	instantUploadCount int64
-	metrics            *traceutil.Buffer
+	metrics            *util.Buffer
 }
 
 type Options struct {
@@ -190,7 +190,7 @@ func New(opts Options) *Driver {
 		useOnlineAPI: opts.UseOnlineAPI,
 		downloadUA:   downloadUA,
 		tokenSource:  "config",
-		metrics:      traceutil.NewBuffer(500),
+		metrics:      util.NewBuffer(500),
 	}
 }
 
@@ -625,7 +625,7 @@ func (d *Driver) doRequest(ctx context.Context, method, rawURL string, params, f
 	}
 	start := time.Now()
 	resp, err := d.httpClient.Do(req)
-	request := traceutil.MergeRequest(traceutil.RequestFields(params), traceutil.RequestFields(form))
+	request := util.MergeRequest(util.RequestFields(params), util.RequestFields(form))
 	d.recordHTTP(ctx, u.Path, req, resp, start, request, err)
 	if err != nil {
 		return err
@@ -917,7 +917,7 @@ func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Req
 	event := drive.MetricEvent{
 		Operation: operation,
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Duration:  time.Since(start).String(),
 		Request:   request,
 	}

@@ -23,7 +23,7 @@ import (
 	"golang.org/x/time/rate"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -44,7 +44,7 @@ type Driver struct {
 	limiter          *rate.Limiter
 	bandwidthLimiter *drive.BandwidthLimiter
 	httpClient       *http.Client
-	metrics          *traceutil.Buffer
+	metrics          *util.Buffer
 	stateStore       drive.StateStore
 	cookieSource     string
 	cookieUpdated    time.Time
@@ -96,7 +96,7 @@ func New(opts Options) *Driver {
 		rootPath:     opts.RootPath,
 		cookies:      opts.Cookie,
 		limitRate:    opts.LimitRate,
-		metrics:      traceutil.NewBuffer(500),
+		metrics:      util.NewBuffer(500),
 		cookieSource: "config",
 	}
 }
@@ -228,7 +228,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Duration:  time.Since(start).String(),
 			Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
 			Error:     err.Error(),
@@ -240,7 +240,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
@@ -256,13 +256,13 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 	d.metrics.Record(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    resp.StatusCode,
 		Duration:  time.Since(start).String(),
 		Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
-		Response:  map[string]any{"body_snippet": traceutil.Snippet(raw)},
+		Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 	})
-	err = fmt.Errorf("115: read: %s body=%q", resp.Status, traceutil.Snippet(raw))
+	err = fmt.Errorf("115: read: %s body=%q", resp.Status, util.Snippet(raw))
 	d.setLastError(err.Error())
 	return nil, err
 }

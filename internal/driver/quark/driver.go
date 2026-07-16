@@ -5,20 +5,18 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/sha1"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 
@@ -302,7 +300,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(httpStart).String(),
 		Request:   map[string]any{"range": req.Header.Get("Range")},
@@ -855,8 +853,7 @@ func (d *Driver) saveUpdatedCookie(cookie string) {
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, hashData map[string]any) string {
 	md5Hex, _ := hashData["md5"].(string)
 	sha1Hex, _ := hashData["sha1"].(string)
-	sum := sha256.Sum256([]byte(parentID + "\x00" + name + "\x00" + strconv.FormatInt(size, 10) + "\x00" + md5Hex + "\x00" + sha1Hex))
-	return fmt.Sprintf("%x", sum[:])
+	return util.UploadSessionKey(parentID, name, size, md5Hex, sha1Hex)
 }
 
 func (d *Driver) loadUploadSessions() uploadSessionState {
@@ -944,39 +941,12 @@ func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (
 		state.Sessions = map[string]quarkUploadSession{}
 		return state, false
 	}
-	changed := false
-	for key, session := range state.Sessions {
-		if key == "" || session.Key == "" || len(session.Etags) == 0 || uploadSessionExpired(session, now) {
-			delete(state.Sessions, key)
-			changed = true
-		}
-	}
-	if len(state.Sessions) <= quarkUploadSessionMaxEntries {
-		return state, changed
-	}
-	type uploadSessionItem struct {
-		key       string
-		updatedAt time.Time
-	}
-	items := make([]uploadSessionItem, 0, len(state.Sessions))
-	for key, session := range state.Sessions {
-		items = append(items, uploadSessionItem{key: key, updatedAt: session.UpdatedAt})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].updatedAt.After(items[j].updatedAt)
+	changed := util.PruneSessions(state.Sessions, now, quarkUploadSessionMaxAge, quarkUploadSessionMaxEntries, func(key string, session quarkUploadSession) bool {
+		return session.Key != "" && len(session.Etags) > 0
+	}, func(session quarkUploadSession) time.Time {
+		return session.UpdatedAt
 	})
-	for _, item := range items[quarkUploadSessionMaxEntries:] {
-		delete(state.Sessions, item.key)
-		changed = true
-	}
 	return state, changed
-}
-
-func uploadSessionExpired(session quarkUploadSession, now time.Time) bool {
-	if session.UpdatedAt.IsZero() {
-		return false
-	}
-	return now.Sub(session.UpdatedAt) > quarkUploadSessionMaxAge
 }
 
 func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
@@ -1234,10 +1204,10 @@ func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "oss_complete",
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    responseStatus(resp),
 			Duration:  time.Since(start).String(),
-			Request:   map[string]any{"headers": traceutil.HeaderKeys(req.Header)},
+			Request:   map[string]any{"headers": util.HeaderKeys(req.Header)},
 			Error:     errorString(err),
 		})
 		if err != nil {
@@ -1328,10 +1298,10 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "oss_upload_part",
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    responseStatus(resp),
 			Duration:  ossDur.String(),
-			Request:   map[string]any{"part_number": partNumber, "bytes": len(data), "headers": traceutil.HeaderKeys(req.Header)},
+			Request:   map[string]any{"part_number": partNumber, "bytes": len(data), "headers": util.HeaderKeys(req.Header)},
 			Error:     errorString(err),
 		})
 		if err != nil {

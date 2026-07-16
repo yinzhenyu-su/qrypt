@@ -83,6 +83,7 @@ func (d *capabilityFullDriver) Capabilities() []Capability {
 		CapabilityForeignEntries,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
+		CapabilityResumableUploader,
 		CapabilitySourceUploader,
 		CapabilitySpace,
 		CapabilityWriter,
@@ -113,6 +114,7 @@ func TestCapabilitiesFullDriver(t *testing.T) {
 		CapabilityForeignEntries,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
+		CapabilityResumableUploader,
 		CapabilitySourceUploader,
 		CapabilitySpace,
 		CapabilityWriter,
@@ -122,6 +124,9 @@ func TestCapabilitiesFullDriver(t *testing.T) {
 	}
 	if !HasCapability(&capabilityFullDriver{}, CapabilitySourceUploader) {
 		t.Fatal("full driver should report source uploader capability")
+	}
+	if !HasCapability(&capabilityFullDriver{}, CapabilityResumableUploader) {
+		t.Fatal("full driver should report resumable uploader capability")
 	}
 }
 
@@ -135,6 +140,7 @@ func TestCapabilitiesBandwidthWrapperPreservesRuntimeCapabilities(t *testing.T) 
 		CapabilityForeignEntries,
 		CapabilityPathResolver,
 		CapabilityRemoteNameResolver,
+		CapabilityResumableUploader,
 		CapabilitySourceUploader,
 		CapabilitySpace,
 		CapabilityWriter,
