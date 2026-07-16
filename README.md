@@ -4,6 +4,8 @@
 
 qrypt turns your cloud drives into one encrypted local folder — mount it, open it, use it like any other drive.
 
+![Encryption comparison](artifacts/compare.png)
+
 ## Features
 
 - **FUSE mount** — mounts all configured drives as subdirectories under one local directory
@@ -19,10 +21,10 @@ qrypt turns your cloud drives into one encrypted local folder — mount it, open
 
 ## Requirements
 
-| Dependency | macOS | Linux | Windows |
-|---|---|---|---|
-| FUSE | [macFUSE](https://macfuse.io/) | libfuse (usually pre-installed) | [WinFsp](https://winfsp.dev/) |
-| Go (source build only) | 1.26+ | 1.26+ | 1.26+ |
+| Dependency             | macOS                          | Linux                           | Windows                       |
+| ---------------------- | ------------------------------ | ------------------------------- | ----------------------------- |
+| FUSE                   | [macFUSE](https://macfuse.io/) | libfuse (usually pre-installed) | [WinFsp](https://winfsp.dev/) |
+| Go (source build only) | 1.26+                          | 1.26+                           | 1.26+                         |
 
 The `fs` commands (list, cat, get, put) do not require FUSE — only `mount` does.
 Config files are discovered automatically; you can skip `--config` when the file
