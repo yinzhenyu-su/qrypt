@@ -7,6 +7,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/driver/aliyundrive"
 	"github.com/yinzhenyu/qrypt/internal/driver/baidunetdisk"
 	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
+	"github.com/yinzhenyu/qrypt/internal/driver/onedrive"
 	"github.com/yinzhenyu/qrypt/internal/driver/p115"
 	"github.com/yinzhenyu/qrypt/internal/driver/quark"
 	"github.com/yinzhenyu/qrypt/internal/driver/s3"
@@ -49,6 +50,28 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "onedrive",
+			drv:  onedrive.New(onedrive.Options{RefreshToken: "token"}),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "onedrive_app",
+			drv:  onedrive.New(onedrive.Options{AppMode: true, TenantID: "tenant", Email: "user@example.com", ClientID: "client", ClientSecret: "secret"}),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
