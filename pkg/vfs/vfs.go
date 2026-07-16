@@ -799,6 +799,9 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 	if entry.ID == "" {
 		return
 	}
+	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
+		v.cache.InvalidateFile(cacheKey)
+	}
 	v.cache.InvalidateFile(entry.ID)
 }
 
