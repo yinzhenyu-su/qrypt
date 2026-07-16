@@ -37,6 +37,9 @@ func (v *VFS) prefetchChildren(ctx context.Context, parentPath, parentID string)
 func (v *VFS) listChildrenWithMode(ctx context.Context, parentPath, parentID string, prefetch bool) ([]drive.Entry, error) {
 	parentPath = cleanVirtual(parentPath)
 	for {
+		if v.isUnavailable(parentPath) {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
+		}
 		now := time.Now()
 		v.mu.RLock()
 		cached, ok := v.lists[parentPath]
@@ -54,6 +57,9 @@ func (v *VFS) listChildrenWithMode(ctx context.Context, parentPath, parentID str
 			case <-load.done:
 				if load.err != nil {
 					if load.prefetch && !prefetch && ctx.Err() == nil {
+						if v.isUnavailable(parentPath) {
+							return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
+						}
 						continue
 					}
 					return nil, load.err
