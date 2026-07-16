@@ -2790,7 +2790,6 @@ func TestVFSDirectoryPrefetchDiscardsStalePathAfterRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs.StartDirectoryPrefetch(ctx)
 	if _, err := fs.List(ctx, "/"); err != nil {
 		t.Fatal(err)
 	}

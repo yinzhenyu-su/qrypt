@@ -339,9 +339,10 @@ func (c *Cache) RemovePending(path string) error {
 	pending, ok := c.pending[path]
 	delete(c.pending, path)
 	c.mu.Unlock()
-	if ok {
-		_ = c.staging.remove(pending.LocalPath)
+	if !ok {
+		return nil
 	}
+	_ = c.staging.remove(pending.LocalPath)
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()
 	if err := c.appendJournalLocked(journalEntry{Op: "clean", PendingFile: PendingFile{Path: path}}); err != nil {
