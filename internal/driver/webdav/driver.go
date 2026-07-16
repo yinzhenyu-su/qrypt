@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -94,7 +94,7 @@ type Driver struct {
 	password string
 	client   *http.Client
 	limiter  *drive.BandwidthLimiter
-	metrics  *traceutil.Buffer
+	metrics  *util.Buffer
 }
 
 // Options for creating a new WebDAV driver.
@@ -171,7 +171,7 @@ func New(opts Options) *Driver {
 				DisableCompression: false,
 			},
 		},
-		metrics: traceutil.NewBuffer(500),
+		metrics: util.NewBuffer(500),
 	}
 }
 
@@ -683,7 +683,7 @@ func (d *Driver) move(ctx context.Context, srcURL, destURL string) error {
 	req.Header.Set("Overwrite", "F")
 	start := time.Now()
 	resp, err := d.client.Do(req)
-	d.recordHTTP(ctx, "move", req, resp, start, map[string]any{"headers": traceutil.HeaderKeys(req.Header)}, err)
+	d.recordHTTP(ctx, "move", req, resp, start, map[string]any{"headers": util.HeaderKeys(req.Header)}, err)
 	if err != nil {
 		return fmt.Errorf("webdav: move: %w", err)
 	}
@@ -710,7 +710,7 @@ func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Req
 	event := drive.MetricEvent{
 		Operation: operation,
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Duration:  time.Since(start).String(),
 		Request:   request,
 	}

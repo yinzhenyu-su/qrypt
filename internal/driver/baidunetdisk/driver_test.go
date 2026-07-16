@@ -1,6 +1,7 @@
 package baidunetdisk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +272,130 @@ func TestPutSourceUploadsAndCreatesFile(t *testing.T) {
 	}
 }
 
+func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("x"), defaultUploadPart*2+7)
+	source := drive.NewBytesReadOnlyFileSource(data)
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	precreateCalls := 0
+	createCalls := 0
+	partAttempts := map[string]int{}
+	failPart1 := true
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			writeJSON(t, w, tokenResp{AccessToken: "access", RefreshToken: "refresh", ExpiresIn: 3600})
+		case "/rest/2.0/xpan/file":
+			method := r.URL.Query().Get("method")
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			switch method {
+			case "precreate":
+				precreateCalls++
+				if precreateCalls > 1 {
+					t.Fatalf("unexpected precreate call during resume")
+				}
+				writeJSON(t, w, precreateResp{ReturnType: 1, UploadID: "upload-id", BlockList: []int{0, 1, 2}})
+			case "create":
+				createCalls++
+				if got := r.Form.Get("uploadid"); got != "upload-id" {
+					t.Fatalf("uploadid = %q, want upload-id", got)
+				}
+				writeJSON(t, w, createResp{FsID: 123, Path: "/Qrypt/resume.bin"})
+			default:
+				t.Fatalf("unexpected xpan method %q", method)
+			}
+		case "/rest/2.0/pcs/superfile2":
+			partSeq := r.URL.Query().Get("partseq")
+			partAttempts[partSeq]++
+			if err := r.ParseMultipartForm(16 << 20); err != nil {
+				t.Fatal(err)
+			}
+			file, _, err := r.FormFile("file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(file)
+			_ = file.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			seq, err := strconv.Atoi(partSeq)
+			if err != nil {
+				t.Fatalf("partseq = %q", partSeq)
+			}
+			offset := seq * defaultUploadPart
+			end := offset + defaultUploadPart
+			if end > len(data) {
+				end = len(data)
+			}
+			if string(body) != string(data[offset:end]) {
+				t.Fatalf("part %d body mismatch: got %d bytes", seq, len(body))
+			}
+			if partSeq == "1" && failPart1 {
+				failPart1 = false
+				http.Error(w, "temporary failure", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(t, w, uploadSliceResp{})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	first := newTestBaiduDriver(srv.URL, store)
+	_, err := first.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err == nil || !strings.Contains(err.Error(), "upload part 1") {
+		t.Fatalf("first upload error = %v, want part 1 failure", err)
+	}
+	if partAttempts["0"] != 1 || partAttempts["1"] != 1 || partAttempts["2"] != 0 {
+		t.Fatalf("part attempts after first upload = %+v", partAttempts)
+	}
+	var state baiduUploadSessionState
+	if err := store.LoadJSON(baiduUploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 1 {
+		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
+	}
+
+	second := newTestBaiduDriver(srv.URL, store)
+	entry, err := second.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "/Qrypt/resume.bin" || entryFSID(entry) != "123" {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if precreateCalls != 1 {
+		t.Fatalf("precreate calls = %d, want 1", precreateCalls)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+	if partAttempts["0"] != 1 || partAttempts["1"] != 2 || partAttempts["2"] != 1 {
+		t.Fatalf("part attempts after resume = %+v, want part 0 skipped", partAttempts)
+	}
+	state = baiduUploadSessionState{}
+	if err := store.LoadJSON(baiduUploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 0 {
+		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
+	}
+}
+
 func TestPutSourceRejectsEmptyFile(t *testing.T) {
 	d := New(Options{RefreshToken: "refresh", UseOnlineAPI: true})
 	_, err := d.PutSource(context.Background(), drive.UploadRequest{
@@ -410,6 +536,21 @@ func TestInitUsesStoredTokenStateBeforeConfigToken(t *testing.T) {
 	if d.tokenSource != "state" {
 		t.Fatalf("tokenSource = %q, want state", d.tokenSource)
 	}
+}
+
+func newTestBaiduDriver(serverURL string, store drive.StateStore) *Driver {
+	d := New(Options{
+		RefreshToken: "refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RootPath:     "/Qrypt",
+		OAuthURL:     serverURL + "/token",
+		APIBaseURL:   serverURL + "/rest/2.0",
+		UploadAPI:    serverURL,
+		UseOnlineAPI: false,
+	})
+	d.InstallStateStore(store)
+	return d
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {

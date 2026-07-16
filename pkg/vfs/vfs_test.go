@@ -126,6 +126,14 @@ type sourceOnlyUploadDriver struct {
 	lastData []byte
 }
 
+type cancelAwareUploadDriver struct {
+	drive.UnsupportedOperations
+	mu       sync.Mutex
+	entries  map[string]drive.Entry
+	attempts int
+	canceled bool
+}
+
 type metricHealthDriver struct {
 	*countingReadDriver
 	metrics []drive.MetricEvent
@@ -274,6 +282,19 @@ func (d *sourceOnlyUploadDriver) Metrics(context.Context, time.Time) ([]drive.Me
 	return nil, nil
 }
 
+func (d *cancelAwareUploadDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader}
+}
+func (d *cancelAwareUploadDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *cancelAwareUploadDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return testDriverSnapshot("cancel-aware-upload"), nil
+}
+func (d *cancelAwareUploadDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
 func (d *metricHealthDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
 	return d.metrics, nil
 }
@@ -340,6 +361,27 @@ func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size
 		end = int64(len(d.data))
 	}
 	return io.NopCloser(bytes.NewReader(d.data[offset:end])), nil
+}
+
+type overReadDriver struct {
+	*countingReadDriver
+}
+
+func (d *overReadDriver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	rc, err := d.countingReadDriver.Read(ctx, entry, offset, size)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	data = append(data, 'x')
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 func (d *countingReadDriver) readCount(offset int64) int {
@@ -893,6 +935,62 @@ func (d *sourceOnlyUploadDriver) PutSource(ctx context.Context, req drive.Upload
 	entry := drive.Entry{ID: id, ParentID: parentID, Name: name, Size: source.Size()}
 	d.entries[id] = entry
 	return entry, nil
+}
+
+func (d *cancelAwareUploadDriver) Init(context.Context) error { return nil }
+func (d *cancelAwareUploadDriver) Drop(context.Context) error { return nil }
+func (d *cancelAwareUploadDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+func (d *cancelAwareUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *cancelAwareUploadDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	d.mu.Lock()
+	d.attempts++
+	d.mu.Unlock()
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
+	f, err := req.Source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	_, err = io.Copy(io.Discard, drive.NewUploadProgressReader(req.Progress, f))
+	closeErr := f.Close()
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	if closeErr != nil {
+		return drive.Entry{}, closeErr
+	}
+	if err := ctx.Err(); err != nil {
+		d.mu.Lock()
+		d.canceled = true
+		d.mu.Unlock()
+		return drive.Entry{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.entries == nil {
+		d.entries = map[string]drive.Entry{}
+	}
+	id := req.Name + "-" + strconv.Itoa(d.attempts)
+	entry := drive.Entry{ID: id, ParentID: req.ParentID, Name: req.Name, Size: req.Source.Size()}
+	d.entries[id] = entry
+	return entry, nil
+}
+
+func (d *cancelAwareUploadDriver) state() (attempts int, canceled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.attempts, d.canceled
 }
 
 func waitNoPending(t *testing.T, fs vfs.FileSystem) {

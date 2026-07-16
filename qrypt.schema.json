@@ -273,7 +273,7 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "yun139", "115", "189", "aliyundrive", "baidu_netdisk", "webdav", "s3"]
+          "enum": ["localfs", "quark", "yun139", "115", "189", "aliyundrive", "baidu_netdisk", "onedrive", "onedrive_app", "webdav", "s3"]
         },
         "params": {
           "description": "Driver-specific key/value parameters (e.g. cookie and root_path).",
@@ -389,6 +389,34 @@
             "properties": {
               "params": {
                 "$ref": "#/definitions/webdavParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "onedrive" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/onedriveParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "onedrive_app" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/onedriveAppParams"
               }
             }
           }
@@ -679,6 +707,169 @@
           "type": "string",
           "default": "/",
           "x-example": "/qrypt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "onedriveParams": {
+      "type": "object",
+      "required": ["refresh_token"],
+      "properties": {
+        "refresh_token": {
+          "description": "OneDrive refresh token.",
+          "type": "string", "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-refresh-token"
+        },
+        "access_token": {
+          "description": "Optional initial OneDrive access token; refreshed automatically when needed.",
+          "type": "string",
+          "x-secret": true
+        },
+        "region": {
+          "description": "Microsoft cloud region.",
+          "type": "string",
+          "default": "global",
+          "enum": ["global", "cn", "us", "de"]
+        },
+        "root_path": {
+          "description": "OneDrive path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "use_online_api": {
+          "description": "Use OpenList-compatible online token refresh API.",
+          "type": "boolean",
+          "default": true
+        },
+        "online_api": {
+          "description": "Online token refresh API URL.",
+          "type": "string",
+          "x-example": "https://api.oplist.org/onedrive/renewapi"
+        },
+        "client_id": {
+          "description": "OAuth client ID used when use_online_api=false.",
+          "type": "string",
+          "x-secret": true
+        },
+        "client_key": {
+          "description": "Alias for client_id.",
+          "type": "string",
+          "x-secret": true
+        },
+        "client_secret": {
+          "description": "OAuth client secret used when use_online_api=false.",
+          "type": "string",
+          "x-secret": true
+        },
+        "redirect_uri": {
+          "description": "OAuth redirect URI used when your Microsoft app requires it.",
+          "type": "string"
+        },
+        "api_base_url": {
+          "description": "Custom Microsoft Graph API base URL.",
+          "type": "string",
+          "x-example": "https://graph.microsoft.com"
+        },
+        "oauth_base_url": {
+          "description": "Custom Microsoft OAuth base URL.",
+          "type": "string",
+          "x-example": "https://login.microsoftonline.com"
+        },
+        "is_sharepoint": {
+          "description": "Use SharePoint site drive instead of the current user's drive.",
+          "type": "boolean",
+          "default": false
+        },
+        "site_id": {
+          "description": "SharePoint site ID when is_sharepoint=true.",
+          "type": "string"
+        },
+        "custom_host": {
+          "description": "Custom host for download URLs.",
+          "type": "string"
+        },
+        "chunk_size": {
+          "description": "Large upload chunk size in MiB.",
+          "type": "integer",
+          "default": 5
+        },
+        "disable_disk_usage": {
+          "description": "Disable OneDrive quota query.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "onedriveAppParams": {
+      "type": "object",
+      "required": ["client_secret", "tenant_id", "email"],
+      "anyOf": [
+        { "required": ["client_id"] },
+        { "required": ["client_key"] }
+      ],
+      "properties": {
+        "client_id": {
+          "description": "Microsoft Entra application client ID.",
+          "type": "string", "minLength": 1,
+          "x-secret": true
+        },
+        "client_key": {
+          "description": "Alias for client_id.",
+          "type": "string",
+          "x-secret": true
+        },
+        "client_secret": {
+          "description": "Microsoft Entra application client secret.",
+          "type": "string", "minLength": 1,
+          "x-secret": true
+        },
+        "tenant_id": {
+          "description": "Microsoft Entra tenant ID.",
+          "type": "string", "minLength": 1
+        },
+        "email": {
+          "description": "User principal name or email whose drive should be mounted.",
+          "type": "string", "minLength": 1,
+          "x-example": "user@example.com"
+        },
+        "region": {
+          "description": "Microsoft cloud region.",
+          "type": "string",
+          "default": "global",
+          "enum": ["global", "cn", "us", "de"]
+        },
+        "root_path": {
+          "description": "OneDrive path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "api_base_url": {
+          "description": "Custom Microsoft Graph API base URL.",
+          "type": "string",
+          "x-example": "https://graph.microsoft.com"
+        },
+        "oauth_base_url": {
+          "description": "Custom Microsoft OAuth base URL.",
+          "type": "string",
+          "x-example": "https://login.microsoftonline.com"
+        },
+        "custom_host": {
+          "description": "Custom host for download URLs.",
+          "type": "string"
+        },
+        "chunk_size": {
+          "description": "Large upload chunk size in MiB.",
+          "type": "integer",
+          "default": 5
+        },
+        "disable_disk_usage": {
+          "description": "Disable OneDrive quota query.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

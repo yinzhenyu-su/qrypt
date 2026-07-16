@@ -7,6 +7,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/driver/aliyundrive"
 	"github.com/yinzhenyu/qrypt/internal/driver/baidunetdisk"
 	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
+	"github.com/yinzhenyu/qrypt/internal/driver/onedrive"
 	"github.com/yinzhenyu/qrypt/internal/driver/p115"
 	"github.com/yinzhenyu/qrypt/internal/driver/quark"
 	"github.com/yinzhenyu/qrypt/internal/driver/s3"
@@ -37,6 +38,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  aliyundrive.New(aliyundrive.Options{RefreshToken: "token", DriveID: "drive"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -47,6 +49,29 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  baidunetdisk.New(baidunetdisk.Options{RefreshToken: "token"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "onedrive",
+			drv:  onedrive.New(onedrive.Options{RefreshToken: "token"}),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "onedrive_app",
+			drv:  onedrive.New(onedrive.Options{AppMode: true, TenantID: "tenant", Email: "user@example.com", ClientID: "client", ClientSecret: "secret"}),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -57,6 +82,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  quark.New("cookie", quark.Options{}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -67,6 +93,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  yun139.New("authorization", "", ""),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -87,6 +114,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -98,6 +126,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilityWriter,
 			},

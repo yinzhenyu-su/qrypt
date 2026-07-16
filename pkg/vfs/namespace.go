@@ -131,6 +131,30 @@ func (n *Namespace) Start(ctx context.Context) {
 	}
 }
 
+func (n *Namespace) FlushReadCache() error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	var lastErr error
+	for _, fs := range n.mounts {
+		if err := fs.FlushReadCache(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func (n *Namespace) CloseReadCache() error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	var lastErr error
+	for _, fs := range n.mounts {
+		if err := fs.CloseReadCache(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 func (n *Namespace) StartDirectoryPrefetch(ctx context.Context) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()

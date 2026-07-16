@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -276,6 +280,28 @@ func TestSourceSliceMD5HexSmallFileUsesSourceMetadata(t *testing.T) {
 	}
 }
 
+func TestSourceUploadHashesCalculatesMultipartSliceMD5(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), uploadPartSize+3)
+	hashes, err := sourceUploadHashes(context.Background(), drive.NewBytesReadOnlyFileSource(data), int64(len(data)), uploadPartSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hashes.Parts) != 2 {
+		t.Fatalf("part count = %d, want 2", len(hashes.Parts))
+	}
+	first := md5.Sum(data[:uploadPartSize])
+	second := md5.Sum(data[uploadPartSize:])
+	firstHex := stringUpperHex(first[:])
+	secondHex := stringUpperHex(second[:])
+	slice := md5.Sum([]byte(firstHex + "\n" + secondHex))
+	if hashes.Parts[0].MD5Hex != firstHex || hashes.Parts[1].MD5Hex != secondHex {
+		t.Fatalf("part md5s = %+v, want %s/%s", hashes.Parts, firstHex, secondHex)
+	}
+	if want := stringUpperHex(slice[:]); hashes.SliceMD5 != want {
+		t.Fatalf("slice md5 = %s, want %s", hashes.SliceMD5, want)
+	}
+}
+
 func TestUploadSliceMD5UsesFileMD5ThroughTenMB(t *testing.T) {
 	fileMD5 := "0123456789ABCDEF0123456789ABCDEF"
 	if got := uploadSliceMD5(fileMD5, "different", int64(uploadPartSize)); got != fileMD5 {
@@ -283,6 +309,137 @@ func TestUploadSliceMD5UsesFileMD5ThroughTenMB(t *testing.T) {
 	}
 	if got := uploadSliceMD5(fileMD5, "different", int64(uploadPartSize)+1); got != "different" {
 		t.Fatalf("slice md5 = %s, want computed slice md5 above 10MB", got)
+	}
+}
+
+func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), uploadPartSize*2+7)
+	source := drive.NewBytesReadOnlyFileSource(data)
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	partAttempts := map[int]int{}
+	createCalls := 0
+	commitCalls := 0
+	uploadURLCalls := 0
+	failPart2 := true
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/person/initMultiUpload":
+			createCalls++
+			if createCalls > 1 {
+				t.Fatalf("unexpected init call during resume")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": "SUCCESS",
+				"data": map[string]any{"uploadFileId": "upload-1"},
+			})
+		case r.URL.Path == "/person/getMultiUploadUrls":
+			uploadURLCalls++
+			sequence := []int{1, 2, 2, 3}
+			if uploadURLCalls > len(sequence) {
+				t.Fatalf("unexpected upload url call %d", uploadURLCalls)
+			}
+			partNumber := sequence[uploadURLCalls-1]
+			_ = json.NewEncoder(w).Encode(UploadUrlsResp{
+				Code: "SUCCESS",
+				UploadUrls: map[string]uploadPart{
+					"partNumber_" + strconv.Itoa(partNumber): {
+						RequestURL: serverURLFromRequest(r) + "/upload/" + strconv.Itoa(partNumber),
+					},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/upload/"):
+			partNumber, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/upload/"))
+			if err != nil {
+				t.Fatalf("bad upload path: %s", r.URL.Path)
+			}
+			partAttempts[partNumber]++
+			got, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read upload body: %v", err)
+			}
+			offset := (partNumber - 1) * uploadPartSize
+			end := offset + uploadPartSize
+			if end > len(data) {
+				end = len(data)
+			}
+			if !bytes.Equal(got, data[offset:end]) {
+				t.Fatalf("part %d body mismatch: got %d bytes", partNumber, len(got))
+			}
+			if partNumber == 2 && failPart2 {
+				failPart2 = false
+				http.Error(w, "temporary failure", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/person/commitMultiUploadFile":
+			commitCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "SUCCESS"})
+		case r.URL.Path == "/api/open/file/listFiles.action":
+			_ = json.NewEncoder(w).Encode(ListResp{
+				ResCode: 0,
+				FileListAO: struct {
+					Count      int      `json:"count"`
+					FolderList []Folder `json:"folderList"`
+					FileList   []File   `json:"fileList"`
+				}{
+					Count:    1,
+					FileList: []File{{ID: 123, Name: "resume.bin", Size: int64(len(data)), LastOpTime: "2026-07-16 10:00:00"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	first := newTestUploadDriver(t, server.URL, store)
+	_, err := first.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "-11",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err == nil || !strings.Contains(err.Error(), "upload part 2") {
+		t.Fatalf("first upload error = %v, want part 2 failure", err)
+	}
+	if partAttempts[1] != 1 || partAttempts[2] != 1 || partAttempts[3] != 0 {
+		t.Fatalf("part attempts after first upload = %+v", partAttempts)
+	}
+	var state p189UploadSessionState
+	if err := store.LoadJSON(p189UploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 1 {
+		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
+	}
+
+	second := newTestUploadDriver(t, server.URL, store)
+	entry, err := second.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "-11",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "123" || entry.Name != "resume.bin" || entry.Size != int64(len(data)) {
+		t.Fatalf("unexpected resumed entry: %+v", entry)
+	}
+	if createCalls != 1 {
+		t.Fatalf("init calls = %d, want 1", createCalls)
+	}
+	if commitCalls != 1 {
+		t.Fatalf("commit calls = %d, want 1", commitCalls)
+	}
+	if partAttempts[1] != 1 || partAttempts[2] != 2 || partAttempts[3] != 1 {
+		t.Fatalf("part attempts after resume = %+v, want part 1 skipped", partAttempts)
+	}
+	state = p189UploadSessionState{}
+	if err := store.LoadJSON(p189UploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 0 {
+		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
 	}
 }
 
@@ -343,6 +500,62 @@ func TestSourceMD5HexFallbackStreamsSource(t *testing.T) {
 	if want := "4CCB1142EBDD7CA505D88C28DF648283"; got != want {
 		t.Fatalf("md5 = %s, want %s", got, want)
 	}
+}
+
+func newTestUploadDriver(t *testing.T, serverURL string, store drive.StateStore) *Driver {
+	t.Helper()
+	base, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := &Driver{
+		cl:         newClient("COOKIE_LOGIN_SESSION=session", "", ""),
+		rootID:     -11,
+		limiter:    drive.NewBandwidthLimiter(drive.BandwidthLimits{}),
+		stateStore: store,
+	}
+	driver.cl.uploadBaseURL = serverURL
+	driver.cl.sessionKey = "session"
+	driver.cl.hc.Transport = rewriteHostTransport{target: base}
+	driver.cl.uploadRequestHook = func(ctx context.Context, uri string, form map[string]string) ([]byte, error) {
+		vals := url.Values{}
+		for key, value := range form {
+			vals.Set(key, value)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(serverURL, "/")+uri+"?"+vals.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := driver.cl.hc.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("test upload request %s: %s body=%q", uri, resp.Status, responseSnippet(raw))
+		}
+		return raw, nil
+	}
+	return driver
+}
+
+type rewriteHostTransport struct {
+	target *url.URL
+}
+
+func (t rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	copied := req.Clone(req.Context())
+	copied.URL.Scheme = t.target.Scheme
+	copied.URL.Host = t.target.Host
+	return http.DefaultTransport.RoundTrip(copied)
+}
+
+func serverURLFromRequest(r *http.Request) string {
+	return "http://" + r.Host
 }
 
 var _ drive.ReadOnlyFile = countingReadOnlyFile{}

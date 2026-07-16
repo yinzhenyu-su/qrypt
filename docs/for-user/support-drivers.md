@@ -11,6 +11,8 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `localfs` | 本地目录 | `root_path` |
 | `aliyundrive` | 阿里云盘 | `refresh_token`, `drive_id` |
 | `baidu_netdisk` | 百度网盘 | `refresh_token` |
+| `onedrive` | OneDrive | `refresh_token` |
+| `onedrive_app` | OneDrive 应用权限 | `client_id` 或 `client_key`, `client_secret`, `tenant_id`, `email` |
 | `quark` | 夸克网盘 | `cookie` |
 | `yun139` | 天翼云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
@@ -94,6 +96,87 @@ refresh_token = "your-refresh-token"
 | `api_base_url` | string | 否 | Custom Baidu REST API base URL |
 | `oauth_url` | string | 否 | Custom Baidu OAuth token URL |
 | `download_user_agent` | string | 否 | User-Agent used for Baidu download requests，默认 `pan.baidu.com` |
+
+---
+
+## onedrive
+
+OneDrive。
+
+```toml
+[mounts.params]
+refresh_token = "your-refresh-token"
+# access_token = "optional-access-token"
+# region = "global"
+# root_path = "/qrypt"
+# use_online_api = true
+# online_api = "https://api.oplist.org/onedrive/renewapi"
+# redirect_uri = "https://your-app/callback"
+# api_base_url = "https://graph.microsoft.com"
+# oauth_base_url = "https://login.microsoftonline.com"
+# is_sharepoint = false
+# site_id = "your-sharepoint-site-id"
+# custom_host = "download.example.com"
+# chunk_size = 5
+# disable_disk_usage = false
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `refresh_token` | string (secret) | 是 | OneDrive refresh token |
+| `access_token` | string (secret) | 否 | Optional initial OneDrive access token; refreshed automatically when needed |
+| `region` | string | 否 | Microsoft cloud region，默认 `global` |
+| `root_path` | string | 否 | OneDrive path used as this mount root，默认 `/` |
+| `use_online_api` | boolean | 否 | Use OpenList-compatible online token refresh API，默认 `true` |
+| `online_api` | string | 否 | Online token refresh API URL |
+| `client_id` | string (secret) | 否 | OAuth client ID used when use_online_api=false |
+| `client_key` | string (secret) | 否 | Alias for client_id |
+| `client_secret` | string (secret) | 否 | OAuth client secret used when use_online_api=false |
+| `redirect_uri` | string | 否 | OAuth redirect URI used when your Microsoft app requires it |
+| `api_base_url` | string | 否 | Custom Microsoft Graph API base URL |
+| `oauth_base_url` | string | 否 | Custom Microsoft OAuth base URL |
+| `is_sharepoint` | boolean | 否 | Use SharePoint site drive instead of the current user's drive，默认 `false` |
+| `site_id` | string | 否 | SharePoint site ID when is_sharepoint=true |
+| `custom_host` | string | 否 | Custom host for download URLs |
+| `chunk_size` | integer | 否 | Large upload chunk size in MiB，默认 `5` |
+| `disable_disk_usage` | boolean | 否 | Disable OneDrive quota query，默认 `false` |
+
+---
+
+## onedrive_app
+
+OneDrive 应用权限模式。这个驱动使用 Microsoft Entra 应用的 client credentials 访问指定用户的 OneDrive。
+
+```toml
+[mounts.params]
+client_id = "your-client-id"
+# client_key = "your-client-id"
+client_secret = "your-client-secret"
+tenant_id = "your-tenant-id"
+email = "user@example.com"
+# region = "global"
+# root_path = "/qrypt"
+# api_base_url = "https://graph.microsoft.com"
+# oauth_base_url = "https://login.microsoftonline.com"
+# custom_host = "download.example.com"
+# chunk_size = 5
+# disable_disk_usage = false
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `client_id` | string (secret) | 否 | Microsoft Entra application client ID；与 `client_key` 二选一 |
+| `client_key` | string (secret) | 否 | Alias for client_id；与 `client_id` 二选一 |
+| `client_secret` | string (secret) | 是 | Microsoft Entra application client secret |
+| `tenant_id` | string | 是 | Microsoft Entra tenant ID |
+| `email` | string | 是 | User principal name or email whose drive should be mounted |
+| `region` | string | 否 | Microsoft cloud region，默认 `global` |
+| `root_path` | string | 否 | OneDrive path used as this mount root，默认 `/` |
+| `api_base_url` | string | 否 | Custom Microsoft Graph API base URL |
+| `oauth_base_url` | string | 否 | Custom Microsoft OAuth base URL |
+| `custom_host` | string | 否 | Custom host for download URLs |
+| `chunk_size` | integer | 否 | Large upload chunk size in MiB，默认 `5` |
+| `disable_disk_usage` | boolean | 否 | Disable OneDrive quota query，默认 `false` |
 
 ---
 

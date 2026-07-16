@@ -41,6 +41,7 @@ const passwordReloginCooldown = time.Hour
 
 type client struct {
 	hc                      *http.Client
+	uploadBaseURL           string
 	cookieMu                sync.RWMutex
 	cookie                  string
 	username                string
@@ -54,6 +55,7 @@ type client struct {
 	passwordReloginError    string
 	onPasswordReloginState  func(failedAt time.Time, lastError string)
 	onCookieUpdate          func(cookie string)
+	uploadRequestHook       func(ctx context.Context, uri string, form map[string]string) ([]byte, error)
 	traceMu                 sync.Mutex
 	metrics                 []drive.MetricEvent
 }
@@ -73,10 +75,11 @@ var sensitiveSnippetPatterns = []*regexp.Regexp{
 func newClient(cookie, username, password string) *client {
 	jar, _ := cookiejar.New(nil)
 	c := &client{
-		hc:       &http.Client{Jar: jar},
-		cookie:   cookie,
-		username: username,
-		password: password,
+		hc:            &http.Client{Jar: jar},
+		uploadBaseURL: uploadBase,
+		cookie:        cookie,
+		username:      username,
+		password:      password,
 	}
 	c.seedCookieJar(cookie)
 	return c
@@ -530,6 +533,9 @@ func (c *client) getResKey(ctx context.Context) (string, string, error) {
 }
 
 func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]string) ([]byte, error) {
+	if c.uploadRequestHook != nil {
+		return c.uploadRequestHook(ctx, uri, form)
+	}
 	if c.sessionKey == "" {
 		if err := c.getSessionKey(ctx); err != nil {
 			return nil, fmt.Errorf("189: get session key: %w", err)
@@ -543,7 +549,11 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://upload.cloud.189.cn"+uri+"?params="+params, nil)
+	baseURL := c.uploadBaseURL
+	if baseURL == "" {
+		baseURL = uploadBase
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+uri+"?params="+params, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/traceutil"
+	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -89,7 +89,7 @@ type client struct {
 	onAuthorizationUpdate func(authorization string)
 	mu                    sync.RWMutex
 	tokenExpiry           time.Time
-	metrics               *traceutil.Buffer
+	metrics               *util.Buffer
 }
 
 func newClient(authorization string) *client {
@@ -97,7 +97,7 @@ func newClient(authorization string) *client {
 		httpClient:     httputil.NewClient(60*time.Second, 30*time.Second),
 		authorization:  authorization,
 		authRefreshURL: "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do",
-		metrics:        traceutil.NewBuffer(500),
+		metrics:        util.NewBuffer(500),
 	}
 }
 
@@ -188,7 +188,7 @@ func (c *client) refreshToken(ctx context.Context) error {
 	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: "token_refresh",
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
 		Error:     errorString(err),
@@ -273,10 +273,10 @@ func (c *client) ensurePersonalCloudHost() error {
 	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
-		Request:   traceutil.BodyFields(routeData),
+		Request:   util.BodyFields(routeData),
 		Error:     errorString(err),
 	})
 	if err != nil {
@@ -439,10 +439,10 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: path,
 		Method:    req.Method,
-		URL:       traceutil.URL(req.URL),
+		URL:       util.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
-		Request:   traceutil.BodyFields(bodyData),
+		Request:   util.BodyFields(bodyData),
 		Error:     errorString(err),
 	})
 	if err != nil {
@@ -457,9 +457,9 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: path,
 			Method:    req.Method,
-			URL:       traceutil.URL(req.URL),
+			URL:       util.URL(req.URL),
 			Status:    resp.StatusCode,
-			Response:  map[string]any{"body_snippet": traceutil.Snippet(respBody)},
+			Response:  map[string]any{"body_snippet": util.Snippet(respBody)},
 		})
 		return fmt.Errorf("API returned non-JSON: %s", string(respBody))
 	}

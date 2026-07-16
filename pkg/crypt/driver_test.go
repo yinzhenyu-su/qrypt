@@ -107,6 +107,18 @@ func (d *sourceWritableRawDriver) Capabilities() []drive.Capability {
 	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
 }
 
+type resumableRawDriver struct {
+	sourceWritableRawDriver
+}
+
+func (d *resumableRawDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{
+		drive.CapabilityResumableUploader,
+		drive.CapabilitySourceUploader,
+		drive.CapabilityWriter,
+	}
+}
+
 type hashRequiringRawDriver struct {
 	sourceWritableRawDriver
 }
@@ -190,6 +202,13 @@ func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {
 	sourceWritable := NewDriver(&sourceWritableRawDriver{}, cp, DriverOptions{})
 	if !drive.HasCapability(sourceWritable, drive.CapabilitySourceUploader) {
 		t.Fatal("crypt wrapper over source uploader raw should report source uploader capability")
+	}
+	if drive.HasCapability(sourceWritable, drive.CapabilityResumableUploader) {
+		t.Fatal("crypt wrapper over source uploader raw should not report resumable uploader capability")
+	}
+	resumable := NewDriver(&resumableRawDriver{}, cp, DriverOptions{})
+	if !drive.HasCapability(resumable, drive.CapabilityResumableUploader) {
+		t.Fatal("crypt wrapper over resumable raw should report resumable uploader capability")
 	}
 }
 

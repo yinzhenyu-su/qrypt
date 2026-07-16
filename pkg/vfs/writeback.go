@@ -147,14 +147,32 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			v.updateUploadSnapshot(pending.Path, int(n))
 		},
 	}
+	uploadCtx := ctx
+	var uploadCancel context.CancelFunc
+	var uploadProgress drive.UploadProgress = progress
+	if fault := v.matchUploadCancelFault(pending.Path, pending.FID); fault != nil {
+		uploadCtx, uploadCancel = context.WithCancel(ctx)
+		cancelProgress := &debugUploadCancelProgress{
+			inner:      progress,
+			fault:      fault,
+			cancel:     uploadCancel,
+			cancelPath: pending.Path,
+			cancelOpID: pending.FID,
+			v:          v,
+		}
+		uploadProgress = cancelProgress
+		defer cancelProgress.Close()
+		defer uploadCancel()
+		v.setUploadSnapshotExtra(pending.Path, "debug_upload_cancel_fault", fault.id)
+	}
 	if replaceUpload == nil {
 		phaseStart = timeutil.Now()
 		var err error
-		entry, err = v.driver.PutSource(ctx, drive.UploadRequest{
+		entry, err = v.driver.PutSource(uploadCtx, drive.UploadRequest{
 			ParentID: pending.ParentID,
 			Name:     uploadName,
 			Source:   source,
-			Progress: progress,
+			Progress: uploadProgress,
 		})
 		v.setUploadSnapshotMetadata(pending.Path, entry.ID, nil)
 		traceExtra := map[string]any{"entry_id": entry.ID}

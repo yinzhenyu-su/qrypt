@@ -49,6 +49,9 @@ func (d *Driver) Capabilities() []drive.Capability {
 	if drive.HasCapability(d.raw, drive.CapabilitySourceUploader) {
 		caps = append(caps, drive.CapabilitySourceUploader)
 	}
+	if drive.HasCapability(d.raw, drive.CapabilityResumableUploader) {
+		caps = append(caps, drive.CapabilityResumableUploader)
+	}
 	if drive.HasCapability(d.raw, drive.CapabilitySpace) {
 		caps = append(caps, drive.CapabilitySpace)
 	}

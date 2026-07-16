@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -596,4 +597,128 @@ func TestPutSourceWithPrecomputedSHA1SkipsPreHash(t *testing.T) {
 	if createCalls != 1 {
 		t.Fatalf("create calls = %d, want 1 (sha1 fast path should not need retry)", createCalls)
 	}
+}
+
+func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
+	source := drive.NewBytesReadOnlyFileSource([]byte("abcdefgh"))
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	partAttempts := map[string]int{}
+	createCalls := 0
+	completeCalls := 0
+	failPart2 := true
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/adrive/v2/file/createWithFolders":
+			createCalls++
+			if createCalls > 1 {
+				t.Fatalf("unexpected create call during resume")
+			}
+			_ = json.NewEncoder(w).Encode(createResp{
+				FileID:   "file-1",
+				Name:     "resume.bin",
+				Size:     source.Size(),
+				UploadID: "upload-1",
+				PartInfoList: []uploadPartInfo{
+					{PartNumber: 1, UploadURL: serverURL(r) + "/upload/1"},
+					{PartNumber: 2, UploadURL: serverURL(r) + "/upload/2"},
+					{PartNumber: 3, UploadURL: serverURL(r) + "/upload/3"},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/upload/"):
+			part := strings.TrimPrefix(r.URL.Path, "/upload/")
+			partAttempts[part]++
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read part body: %v", err)
+			}
+			partNum, err := strconv.Atoi(part)
+			if err != nil {
+				t.Fatalf("bad part path: %s", part)
+			}
+			start := (partNum - 1) * 3
+			end := start + 3
+			if end > int(source.Size()) {
+				end = int(source.Size())
+			}
+			if string(data) != string([]byte("abcdefgh")[start:end]) {
+				t.Fatalf("part %s body = %q", part, data)
+			}
+			if part == "2" && failPart2 {
+				failPart2 = false
+				http.Error(w, "temporary failure", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v2/file/complete":
+			completeCalls++
+			_ = json.NewEncoder(w).Encode(completeResp{FileID: "file-1", Name: "resume.bin", Size: source.Size()})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	first := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
+	first.partSize = 3
+	first.cl.mu.Lock()
+	first.cl.accessToken = "access-token"
+	first.cl.mu.Unlock()
+	first.InstallStateStore(store)
+	_, err := first.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err == nil || !strings.Contains(err.Error(), "upload part 2") {
+		t.Fatalf("first upload error = %v, want part 2 failure", err)
+	}
+	if partAttempts["1"] != 1 || partAttempts["2"] != 1 || partAttempts["3"] != 0 {
+		t.Fatalf("part attempts after first upload = %+v", partAttempts)
+	}
+	var state aliyunUploadSessionState
+	if err := store.LoadJSON(aliyunUploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 1 {
+		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
+	}
+
+	second := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
+	second.partSize = 3
+	second.cl.mu.Lock()
+	second.cl.accessToken = "access-token"
+	second.cl.mu.Unlock()
+	second.InstallStateStore(store)
+	entry, err := second.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "file-1" || entry.Name != "resume.bin" || entry.Size != source.Size() {
+		t.Fatalf("unexpected resumed entry: %+v", entry)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+	if completeCalls != 1 {
+		t.Fatalf("complete calls = %d, want 1", completeCalls)
+	}
+	if partAttempts["1"] != 1 || partAttempts["2"] != 2 || partAttempts["3"] != 1 {
+		t.Fatalf("part attempts after resume = %+v, want part 1 skipped on resume", partAttempts)
+	}
+	state = aliyunUploadSessionState{}
+	if err := store.LoadJSON(aliyunUploadSessionStateFile, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Sessions) != 0 {
+		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
+	}
+}
+
+func serverURL(r *http.Request) string {
+	return "http://" + r.Host
 }
