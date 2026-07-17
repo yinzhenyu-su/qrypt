@@ -163,14 +163,21 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 		return nil, nil, fmt.Errorf("config: no mounts selected")
 	}
 	if selectedMount != "" && !forceNamespace {
-		return mounts[0].FS, func() { dropAll(ctx, drivers) }, nil
+		fs := mounts[0].FS
+		return fs, func() {
+			flushReadCache(fs)
+			dropAll(ctx, drivers)
+		}, nil
 	}
 	ns, err := vfs.NewNamespace(mounts)
 	if err != nil {
 		dropAll(ctx, drivers)
 		return nil, nil, err
 	}
-	return ns, func() { dropAll(ctx, drivers) }, nil
+	return ns, func() {
+		flushReadCache(ns)
+		dropAll(ctx, drivers)
+	}, nil
 }
 
 func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error) {
@@ -189,5 +196,27 @@ func installDriverStateStore(driver drive.Driver, cacheDir string) {
 func dropAll(ctx context.Context, drivers []drive.Driver) {
 	for _, drv := range drivers {
 		_ = drv.Drop(ctx)
+	}
+}
+
+type readCacheFlusher interface {
+	FlushReadCache() error
+}
+
+type readCacheCloser interface {
+	CloseReadCache() error
+}
+
+func flushReadCache(fs any) {
+	if closer, ok := fs.(readCacheCloser); ok {
+		if err := closer.CloseReadCache(); err != nil {
+			logging.L.Warnf("[CACHE] close read cache failed: %v", err)
+		}
+		return
+	}
+	if flusher, ok := fs.(readCacheFlusher); ok {
+		if err := flusher.FlushReadCache(); err != nil {
+			logging.L.Warnf("[CACHE] flush read cache failed: %v", err)
+		}
 	}
 }

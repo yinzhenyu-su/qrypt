@@ -363,6 +363,27 @@ func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size
 	return io.NopCloser(bytes.NewReader(d.data[offset:end])), nil
 }
 
+type overReadDriver struct {
+	*countingReadDriver
+}
+
+func (d *overReadDriver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	rc, err := d.countingReadDriver.Read(ctx, entry, offset, size)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(rc)
+	closeErr := rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	data = append(data, 'x')
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
 func (d *countingReadDriver) readCount(offset int64) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()

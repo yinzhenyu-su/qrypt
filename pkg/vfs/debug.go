@@ -163,23 +163,28 @@ type DebugCopyHidden struct {
 }
 
 type DebugReadCache struct {
-	MaxBytes           int64                `json:"max_bytes"`
-	LargeFileThreshold int64                `json:"large_file_threshold"`
-	ChunkCount         int                  `json:"chunk_count"`
-	Bytes              int64                `json:"bytes"`
-	LargeFileBytes     int64                `json:"large_file_bytes"`
-	SmallFileBytes     int64                `json:"small_file_bytes"`
-	FileCount          int                  `json:"file_count"`
-	Hits               int64                `json:"hits"`
-	Misses             int64                `json:"misses"`
-	Puts               int64                `json:"puts"`
-	Evicted            int64                `json:"evicted"`
-	LastGetError       string               `json:"last_get_error,omitempty"`
-	LastGetErrorAt     *time.Time           `json:"last_get_error_at,omitempty"`
-	LastPutError       string               `json:"last_put_error,omitempty"`
-	LastPutErrorAt     *time.Time           `json:"last_put_error_at,omitempty"`
-	Files              []DebugReadCacheFile `json:"files,omitempty"`
-	Journal            *DebugJournal        `json:"journal,omitempty"`
+	MaxBytes            int64                `json:"max_bytes"`
+	LargeFileThreshold  int64                `json:"large_file_threshold"`
+	ChunkCount          int                  `json:"chunk_count"`
+	Bytes               int64                `json:"bytes"`
+	LargeFileBytes      int64                `json:"large_file_bytes"`
+	SmallFileBytes      int64                `json:"small_file_bytes"`
+	FileCount           int                  `json:"file_count"`
+	Hits                int64                `json:"hits"`
+	Misses              int64                `json:"misses"`
+	Puts                int64                `json:"puts"`
+	Evicted             int64                `json:"evicted"`
+	LastGetError        string               `json:"last_get_error,omitempty"`
+	LastGetErrorAt      *time.Time           `json:"last_get_error_at,omitempty"`
+	LastPutError        string               `json:"last_put_error,omitempty"`
+	LastPutErrorAt      *time.Time           `json:"last_put_error_at,omitempty"`
+	WriteQueueLength    int                  `json:"write_queue_len"`
+	WriteQueueCap       int                  `json:"write_queue_cap"`
+	WriteQueueDropped   int64                `json:"write_queue_dropped"`
+	IndexDirty          bool                 `json:"index_dirty"`
+	IndexFlushScheduled bool                 `json:"index_flush_scheduled"`
+	Files               []DebugReadCacheFile `json:"files,omitempty"`
+	Journal             *DebugJournal        `json:"journal,omitempty"`
 }
 
 type DebugReadCacheFile struct {
@@ -766,12 +771,19 @@ func (v *VFS) setUploadSnapshotExtra(path string, key string, value any) {
 
 func (c *Cache) debugReadCache() DebugReadCache {
 	snapshot := DebugReadCache{MaxBytes: c.maxSize, LargeFileThreshold: readCacheLargeFileBytes}
+	snapshot.WriteQueueLength = len(c.readWriteQueue)
+	snapshot.WriteQueueCap = cap(c.readWriteQueue)
+	c.readIndexMu.Lock()
+	snapshot.IndexDirty = c.readIndexDirty
+	snapshot.IndexFlushScheduled = c.readIndexTimer != nil
+	c.readIndexMu.Unlock()
 	c.mu.RLock()
 	snapshot.FileCount = len(c.chunks)
 	snapshot.Hits = c.stats.hits
 	snapshot.Misses = c.stats.misses
 	snapshot.Puts = c.stats.puts
 	snapshot.Evicted = c.stats.evicted
+	snapshot.WriteQueueDropped = c.stats.writeDropped
 	snapshot.LastGetError = c.lastGetError
 	if !c.lastGetAt.IsZero() {
 		at := c.lastGetAt
@@ -808,6 +820,10 @@ func (c *Cache) debugReadCache() DebugReadCache {
 	})
 	snapshot.Journal = c.debugJournal()
 	return snapshot
+}
+
+func (c *Cache) DebugReadCacheForTest() DebugReadCache {
+	return c.debugReadCache()
 }
 
 func (c *Cache) debugJournal() *DebugJournal {

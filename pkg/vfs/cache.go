@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,9 @@ const (
 	readCacheIndexName       = "index.json"
 	readCacheLargeFileBytes  = 16 << 20
 	readCacheSmallReserveDiv = 4
+	readCacheWriteQueueSize  = 64
+	readCacheWriteBatchLimit = 16
+	readCacheIndexSaveDelay  = 30 * time.Second
 	journalCompactMaxBytes   = 512 << 10
 	journalCompactMaxEntries = 1024
 )
@@ -142,6 +146,13 @@ type readCacheIndexChunk struct {
 	AccessAt time.Time `json:"access_at"`
 }
 
+type readCacheWrite struct {
+	fid      string
+	fileSize int64
+	index    int64
+	data     []byte
+}
+
 type Cache struct {
 	dir     string
 	maxSize int64
@@ -151,19 +162,33 @@ type Cache struct {
 	journalMu     sync.Mutex
 	pending       map[string]PendingFile
 	chunks        map[string]*fileChunks
+	readBytes     atomic.Int64
 	lastDiskCheck atomic.Int64 // unix nano
 	stats         cacheStats
 	lastGetError  string
 	lastGetAt     time.Time
 	lastPutError  string
 	lastPutAt     time.Time
+
+	readWriteQueue  chan readCacheWrite
+	readWriteWG     sync.WaitGroup
+	readWriteWGMu   sync.Mutex
+	readWriterWG    sync.WaitGroup
+	readWriteMu     sync.Mutex
+	readWrites      map[string]struct{}
+	readWriteClosed bool
+	readIndexSaveMu sync.Mutex
+	readIndexMu     sync.Mutex
+	readIndexDirty  bool
+	readIndexTimer  *time.Timer
 }
 
 type cacheStats struct {
-	hits    int64
-	misses  int64
-	puts    int64
-	evicted int64
+	hits         int64
+	misses       int64
+	puts         int64
+	evicted      int64
+	writeDropped int64
 }
 
 func NewCache(dir string, maxSize int64) (*Cache, error) {
@@ -176,7 +201,10 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 	if entries, err := os.ReadDir(readingDir); err == nil {
 		var cleaned int
 		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".seed") {
+			if entry.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(entry.Name(), ".seed") || entry.Name() == readCacheIndexName+".tmp" {
 				_ = os.Remove(filepath.Join(readingDir, entry.Name()))
 				cleaned++
 			}
@@ -197,11 +225,13 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 		logging.L.Infof("[CACHE] cleaned %d orphaned staging upload files", cleaned)
 	}
 	c := &Cache{
-		dir:     dir,
-		maxSize: adjusted,
-		staging: staging,
-		pending: map[string]PendingFile{},
-		chunks:  map[string]*fileChunks{},
+		dir:            dir,
+		maxSize:        adjusted,
+		staging:        staging,
+		pending:        map[string]PendingFile{},
+		chunks:         map[string]*fileChunks{},
+		readWriteQueue: make(chan readCacheWrite, readCacheWriteQueueSize),
+		readWrites:     map[string]struct{}{},
 	}
 	if err := c.loadReadIndex(); err != nil {
 		logging.L.Warnf("[CACHE] load read cache index failed: %v", err)
@@ -215,6 +245,8 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 			logging.L.Warnf("[CACHE] compact pending journal failed: %v", err)
 		}
 	}
+	c.readWriterWG.Add(1)
+	go c.runReadCacheWriter()
 	return c, nil
 }
 
@@ -425,6 +457,10 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	if err != nil {
 		c.addMiss()
 		c.setLastGetError(err)
+		if isStaleReadCacheError(err) {
+			c.dropReadChunkIndex(fid, index)
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
 	defer f.Close()
@@ -432,6 +468,10 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	if _, err := f.ReadAt(data, info.offset); err != nil {
 		c.addMiss()
 		c.setLastGetError(err)
+		if isStaleReadCacheError(err) {
+			c.dropReadChunkIndex(fid, index)
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
 	info.accessAt = time.Now()
@@ -442,11 +482,319 @@ func (c *Cache) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	return data, true, nil
 }
 
+func (c *Cache) GetChunkRange(fid string, index, start, size int64) ([]byte, bool, error) {
+	data, _, ok, err := c.getChunkRange(fid, index, start, size, false)
+	return data, ok, err
+}
+
+func (c *Cache) GetChunkWithRange(fid string, index, start, size int64) ([]byte, []byte, bool, error) {
+	return c.getChunkRange(fid, index, start, size, true)
+}
+
+func (c *Cache) getChunkRange(fid string, index, start, size int64, includeChunk bool) ([]byte, []byte, bool, error) {
+	if start < 0 || size < 0 {
+		return nil, nil, false, fmt.Errorf("cache: chunk range must be non-negative")
+	}
+	c.mu.RLock()
+	fc := c.chunks[fid]
+	c.mu.RUnlock()
+	if fc == nil {
+		c.addMiss()
+		return nil, nil, false, nil
+	}
+	fc.mu.RLock()
+	info, ok := fc.chunks[index]
+	fc.mu.RUnlock()
+	if !ok {
+		c.addMiss()
+		return nil, nil, false, nil
+	}
+	if start >= info.size {
+		c.addHit()
+		return nil, nil, true, nil
+	}
+	if size == 0 || start+size > info.size {
+		size = info.size - start
+	}
+	f, err := os.Open(info.file)
+	if err != nil {
+		c.addMiss()
+		c.setLastGetError(err)
+		if isStaleReadCacheError(err) {
+			c.dropReadChunkIndex(fid, index)
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, err
+	}
+	defer f.Close()
+	var full []byte
+	if includeChunk {
+		full = make([]byte, info.size)
+		if _, err := f.ReadAt(full, info.offset); err != nil {
+			c.addMiss()
+			c.setLastGetError(err)
+			if isStaleReadCacheError(err) {
+				c.dropReadChunkIndex(fid, index)
+				return nil, nil, false, nil
+			}
+			return nil, nil, false, err
+		}
+	} else {
+		full = make([]byte, size)
+		if _, err := f.ReadAt(full, info.offset+start); err != nil {
+			c.addMiss()
+			c.setLastGetError(err)
+			if isStaleReadCacheError(err) {
+				c.dropReadChunkIndex(fid, index)
+				return nil, nil, false, nil
+			}
+			return nil, nil, false, err
+		}
+	}
+	data := full
+	chunk := full
+	if includeChunk {
+		data = full[start : start+size]
+	} else {
+		chunk = nil
+	}
+	if len(data) != int(size) {
+		c.addMiss()
+		err := io.ErrUnexpectedEOF
+		c.setLastGetError(err)
+		c.dropReadChunkIndex(fid, index)
+		return nil, nil, false, nil
+	}
+	info.accessAt = time.Now()
+	fc.mu.Lock()
+	fc.chunks[index] = info
+	fc.mu.Unlock()
+	c.addHit()
+	return data, chunk, true, nil
+}
+
+func (c *Cache) HasChunk(fid string, index int64) (bool, error) {
+	c.mu.RLock()
+	fc := c.chunks[fid]
+	c.mu.RUnlock()
+	if fc == nil {
+		return false, nil
+	}
+	fc.mu.RLock()
+	_, ok := fc.chunks[index]
+	fc.mu.RUnlock()
+	if !ok {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (c *Cache) dropReadChunkIndex(fid string, index int64) {
+	c.mu.RLock()
+	fc := c.chunks[fid]
+	c.mu.RUnlock()
+	if fc == nil {
+		return
+	}
+	fc.mu.Lock()
+	info, ok := fc.chunks[index]
+	if ok {
+		delete(fc.chunks, index)
+		c.readBytes.Add(-info.size)
+	}
+	empty := len(fc.chunks) == 0
+	fc.mu.Unlock()
+	if empty {
+		c.mu.Lock()
+		if c.chunks[fid] == fc {
+			delete(c.chunks, fid)
+		}
+		c.mu.Unlock()
+	}
+	c.scheduleReadIndexSave()
+}
+
+func isStaleReadCacheError(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
 func (c *Cache) PutChunk(fid string, fileSize, index int64, data []byte) error {
+	if err := c.putChunk(fid, fileSize, index, data); err != nil {
+		return err
+	}
+	c.scheduleReadIndexSave()
+	return nil
+}
+
+func (c *Cache) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
+	if fid == "" || len(data) == 0 {
+		return
+	}
+	if ok, err := c.HasChunk(fid, index); err != nil || ok {
+		return
+	}
+	writeKey := readChunkKey(fid, index)
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	c.readWriteWGMu.Lock()
+	c.readWriteMu.Lock()
+	if c.readWriteClosed {
+		c.readWriteMu.Unlock()
+		c.readWriteWGMu.Unlock()
+		return
+	}
+	if _, exists := c.readWrites[writeKey]; exists {
+		c.readWriteMu.Unlock()
+		c.readWriteWGMu.Unlock()
+		return
+	}
+	if len(c.readWriteQueue) >= cap(c.readWriteQueue) {
+		c.readWriteMu.Unlock()
+		c.readWriteWGMu.Unlock()
+		c.addWriteDropped()
+		logging.L.WarnfEvery("vfs.read_cache_queue_full", time.Second, "[CACHE] read cache write queue full; dropped chunk fid=%q index=%d size=%d", fid, index, len(data))
+		return
+	}
+	c.readWrites[writeKey] = struct{}{}
+	c.readWriteWG.Add(1)
+	write := readCacheWrite{fid: fid, fileSize: fileSize, index: index, data: copied}
+	select {
+	case c.readWriteQueue <- write:
+	default:
+		delete(c.readWrites, writeKey)
+		c.readWriteWG.Done()
+		c.addWriteDropped()
+		logging.L.WarnfEvery("vfs.read_cache_queue_full", time.Second, "[CACHE] read cache write queue full; dropped chunk fid=%q index=%d size=%d", fid, index, len(data))
+	}
+	c.readWriteMu.Unlock()
+	c.readWriteWGMu.Unlock()
+}
+
+func (c *Cache) runReadCacheWriter() {
+	defer c.readWriterWG.Done()
+	for write := range c.readWriteQueue {
+		writes := []readCacheWrite{write}
+	drain:
+		for len(writes) < readCacheWriteBatchLimit {
+			select {
+			case next, ok := <-c.readWriteQueue:
+				if !ok {
+					break drain
+				}
+				writes = append(writes, next)
+			default:
+				break drain
+			}
+		}
+		c.handleReadCacheWrites(writes)
+	}
+}
+
+func (c *Cache) handleReadCacheWrites(writes []readCacheWrite) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logging.L.Warnf("[CACHE] async put chunk panic recovered writes=%d panic=%v", len(writes), recovered)
+		}
+		for range writes {
+			c.readWriteWG.Done()
+		}
+		c.readWriteMu.Lock()
+		for _, write := range writes {
+			delete(c.readWrites, readChunkKey(write.fid, write.index))
+		}
+		c.readWriteMu.Unlock()
+	}()
+	groups := map[string][]readCacheWrite{}
+	var paths []string
+	for _, write := range writes {
+		path := c.readBatchPath(write.fid, write.index/cacheBatchBlocks)
+		if _, ok := groups[path]; !ok {
+			paths = append(paths, path)
+		}
+		groups[path] = append(groups[path], write)
+	}
+	wrote := false
+	for _, path := range paths {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			c.setLastPutError(err)
+			for _, write := range groups[path] {
+				logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
+			}
+			continue
+		}
+		for _, write := range groups[path] {
+			if err := c.writeReadCacheChunk(f, path, write); err != nil {
+				c.setLastPutError(err)
+				logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
+				continue
+			}
+			wrote = true
+		}
+		if err := f.Close(); err != nil {
+			c.setLastPutError(err)
+			logging.L.Warnf("[CACHE] async put batch close failed path=%q err=%v", path, err)
+		}
+	}
+	if wrote {
+		if err := c.evictIfNeeded(); err != nil {
+			c.setLastPutError(err)
+		}
+		c.scheduleReadIndexSave()
+	}
+}
+
+func (c *Cache) writeReadCacheChunk(f *os.File, path string, write readCacheWrite) error {
+	offset := int64(write.index%cacheBatchBlocks) * readChunkSize
+	if _, err := f.WriteAt(write.data, offset); err != nil {
+		return err
+	}
+	fc := c.fileChunks(write.fid, write.fileSize)
+	fc.mu.Lock()
+	if write.fileSize > 0 {
+		fc.fileSize = write.fileSize
+	}
+	old, existed := fc.chunks[write.index]
+	fc.chunks[write.index] = chunkInfo{file: path, offset: offset, size: int64(len(write.data)), accessAt: time.Now()}
+	fc.mu.Unlock()
+	delta := int64(len(write.data))
+	if existed {
+		delta -= old.size
+	}
+	c.readBytes.Add(delta)
+	c.addPut()
+	return nil
+}
+
+func (c *Cache) WaitReadCacheWrites() {
+	c.readWriteWGMu.Lock()
+	c.readWriteWG.Wait()
+	c.readWriteWGMu.Unlock()
+}
+
+func (c *Cache) FlushReadCache() error {
+	c.readWriteWGMu.Lock()
+	defer c.readWriteWGMu.Unlock()
+	c.readWriteWG.Wait()
+	return c.FlushReadIndex()
+}
+
+func (c *Cache) Close() error {
+	c.readWriteMu.Lock()
+	if !c.readWriteClosed {
+		c.readWriteClosed = true
+		close(c.readWriteQueue)
+	}
+	c.readWriteMu.Unlock()
+	c.readWriterWG.Wait()
+	return c.FlushReadCache()
+}
+
+func (c *Cache) putChunk(fid string, fileSize, index int64, data []byte) error {
 	batch := index / cacheBatchBlocks
 	offset := int64(index%cacheBatchBlocks) * readChunkSize
 	path := c.readBatchPath(fid, batch)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		c.setLastPutError(err)
 		return err
@@ -465,14 +813,16 @@ func (c *Cache) PutChunk(fid string, fileSize, index int64, data []byte) error {
 	if fileSize > 0 {
 		fc.fileSize = fileSize
 	}
+	old, existed := fc.chunks[index]
 	fc.chunks[index] = chunkInfo{file: path, offset: offset, size: int64(len(data)), accessAt: time.Now()}
 	fc.mu.Unlock()
+	delta := int64(len(data))
+	if existed {
+		delta -= old.size
+	}
+	c.readBytes.Add(delta)
 	c.addPut()
 	if err := c.evictIfNeeded(); err != nil {
-		c.setLastPutError(err)
-		return err
-	}
-	if err := c.saveReadIndex(); err != nil {
 		c.setLastPutError(err)
 		return err
 	}
@@ -565,10 +915,7 @@ func (c *Cache) PutLocalFile(fid string, fileSize int64, localPath string) error
 		c.setLastPutError(err)
 		return err
 	}
-	if err := c.saveReadIndex(); err != nil {
-		c.setLastPutError(err)
-		return err
-	}
+	c.scheduleReadIndexSave()
 	return nil
 }
 
@@ -579,20 +926,28 @@ func (c *Cache) cleanupSeedFiles(files map[string]string) {
 }
 
 func (c *Cache) replaceFileChunks(fid string, fileSize int64, chunks map[int64]chunkInfo) map[string]struct{} {
+	var newBytes int64
+	for _, chunk := range chunks {
+		newBytes += chunk.size
+	}
 	c.mu.Lock()
 	old := c.chunks[fid]
 	c.chunks[fid] = &fileChunks{fileSize: fileSize, chunks: chunks}
 	c.mu.Unlock()
 	files := map[string]struct{}{}
 	if old == nil {
+		c.readBytes.Add(newBytes)
 		return files
 	}
+	var oldBytes int64
 	old.mu.Lock()
 	defer old.mu.Unlock()
 	for _, chunk := range old.chunks {
+		oldBytes += chunk.size
 		files[chunk.file] = struct{}{}
 	}
 	old.chunks = map[int64]chunkInfo{}
+	c.readBytes.Add(newBytes - oldBytes)
 	return files
 }
 
@@ -606,12 +961,15 @@ func (c *Cache) InvalidateFile(fid string) {
 	}
 
 	files := map[string]struct{}{}
+	var removedBytes int64
 	fc.mu.Lock()
 	for _, chunk := range fc.chunks {
+		removedBytes += chunk.size
 		files[chunk.file] = struct{}{}
 	}
 	fc.chunks = map[int64]chunkInfo{}
 	fc.mu.Unlock()
+	c.readBytes.Add(-removedBytes)
 
 	for file := range files {
 		if err := os.Remove(file); err == nil {
@@ -620,9 +978,7 @@ func (c *Cache) InvalidateFile(fid string) {
 			c.mu.Unlock()
 		}
 	}
-	if err := c.saveReadIndex(); err != nil {
-		c.setLastPutError(err)
-	}
+	c.scheduleReadIndexSave()
 }
 
 func (c *Cache) loadReadIndex() error {
@@ -678,6 +1034,7 @@ func (c *Cache) loadReadIndex() error {
 				size:     chunk.Size,
 				accessAt: chunk.AccessAt,
 			}
+			c.readBytes.Add(chunk.Size)
 			referenced[filepath.Base(batchPath)] = struct{}{}
 		}
 		if len(fc.chunks) > 0 {
@@ -688,23 +1045,60 @@ func (c *Cache) loadReadIndex() error {
 		logging.L.Infof("[CACHE] cleaned %d unindexed read cache batch files", cleaned)
 	}
 	if changed {
-		return c.saveReadIndex()
+		return c.saveReadIndexNow()
 	}
 	return nil
 }
 
-func (c *Cache) saveReadIndex() error {
+func (c *Cache) scheduleReadIndexSave() {
+	c.readIndexMu.Lock()
+	c.readIndexDirty = true
+	if c.readIndexTimer != nil {
+		c.readIndexMu.Unlock()
+		return
+	}
+	c.readIndexTimer = time.AfterFunc(readCacheIndexSaveDelay, func() {
+		if err := c.FlushReadIndex(); err != nil {
+			c.setLastPutError(err)
+			logging.L.Warnf("[CACHE] save read cache index failed: %v", err)
+		}
+	})
+	c.readIndexMu.Unlock()
+}
+
+func (c *Cache) FlushReadIndex() error {
+	c.readIndexSaveMu.Lock()
+	defer c.readIndexSaveMu.Unlock()
+
+	var lastErr error
+	for {
+		c.readIndexMu.Lock()
+		if c.readIndexTimer != nil {
+			c.readIndexTimer.Stop()
+			c.readIndexTimer = nil
+		}
+		if !c.readIndexDirty {
+			c.readIndexMu.Unlock()
+			return lastErr
+		}
+		c.readIndexDirty = false
+		c.readIndexMu.Unlock()
+
+		if err := c.saveReadIndexNow(); err != nil {
+			lastErr = err
+			c.setLastPutError(err)
+		}
+	}
+}
+
+func (c *Cache) saveReadIndexNow() error {
 	index := c.readIndexSnapshot()
 	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	if err := writeFileSync(c.readIndexPath(), data, 0o644); err != nil {
-		return err
-	}
-	_ = syncParentDir(c.readIndexPath())
-	return nil
+	return writeFileAtomic(c.readIndexPath(), data, 0o644)
 }
 
 func (c *Cache) readIndexSnapshot() readCacheIndex {
@@ -803,6 +1197,12 @@ func (c *Cache) addMiss() {
 func (c *Cache) addPut() {
 	c.mu.Lock()
 	c.stats.puts++
+	c.mu.Unlock()
+}
+
+func (c *Cache) addWriteDropped() {
+	c.mu.Lock()
+	c.stats.writeDropped++
 	c.mu.Unlock()
 }
 
@@ -1005,6 +1405,24 @@ func writeFileSync(path string, data []byte, perm os.FileMode) error {
 	return f.Close()
 }
 
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func syncParentDir(path string) error {
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
@@ -1055,6 +1473,9 @@ func (c *Cache) evictIfNeeded() error {
 		if adjusted, _ := limitByDiskSpace(maxSize, c.dir); adjusted < maxSize {
 			maxSize = adjusted
 		}
+	}
+	if c.readBytes.Load() <= maxSize {
+		return nil
 	}
 
 	var total int64
@@ -1121,7 +1542,7 @@ func (c *Cache) evictIfNeeded() error {
 	}
 	logging.L.Infof("[CACHE] evicted %d chunks size=%d max_size=%d", evicted, total, maxSize)
 	if evicted > 0 {
-		return c.saveReadIndex()
+		c.scheduleReadIndexSave()
 	}
 	return nil
 }
@@ -1157,6 +1578,7 @@ func (c *Cache) removeReadChunk(fid string, index int64, expected chunkInfo) boo
 		_ = os.Remove(current.file)
 	}
 	delete(fc.chunks, index)
+	c.readBytes.Add(-current.size)
 	c.mu.Lock()
 	c.stats.evicted++
 	c.mu.Unlock()

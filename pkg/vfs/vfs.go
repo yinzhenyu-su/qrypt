@@ -89,6 +89,13 @@ type VFS struct {
 
 	chunkLoadMu sync.Mutex
 	chunkLoads  map[string]*chunkLoad
+	hotChunkMu  sync.Mutex
+	hotChunks   map[string][]byte
+	hotChunkLRU []string
+
+	rangeHitMu  sync.Mutex
+	rangeHits   map[string]int
+	rangeHitLRU []string
 
 	windowLoadMu sync.Mutex
 	windowLoads  map[string]*windowLoad
@@ -158,6 +165,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		dirPrefetchSem: make(chan struct{}, dirPrefetchLimit),
 		listLoads:      map[string]*listLoad{},
 		chunkLoads:     map[string]*chunkLoad{},
+		hotChunks:      map[string][]byte{},
+		rangeHits:      map[string]int{},
 		windowLoads:    map[string]*windowLoad{},
 		pathLocks:      map[string]*sync.Mutex{},
 	}
@@ -170,6 +179,14 @@ func (v *VFS) Start(ctx context.Context) {
 		go v.uploadWorker(ctx)
 	}
 	v.Resume(ctx)
+}
+
+func (v *VFS) FlushReadCache() error {
+	return v.cache.FlushReadCache()
+}
+
+func (v *VFS) CloseReadCache() error {
+	return v.cache.Close()
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
@@ -333,7 +350,7 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, err)
 		return nil, err
 	}
-	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk)
+	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk, size)
 	var chunks int64
 	if len(data) > 0 {
 		chunks = endChunk - startChunk + 1
