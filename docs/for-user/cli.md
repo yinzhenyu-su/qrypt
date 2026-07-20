@@ -92,16 +92,32 @@ qrypt driver schema NAME [--json]
 
 ## 调试
 
-运行时调试命令必须提供 `--socket PATH`。`collect`、`watch` 和
+运行时调试命令使用 `--socket PATH`、`--url URL` 或配置中的
+`[debug].listen` 连接运行中的 debug server。`collect`、`watch` 和
 `bundle` 还需要说明要检查哪个挂载：平时请用 `--mount NAME`；确实需要
 检查全部挂载时，再用 `--all-mounts`。
 
 ```sh
 qrypt debug collect [REMOTE] [--dest DESTINATION] --socket PATH --mount NAME
+qrypt debug collect [REMOTE] [--dest DESTINATION] --url http://127.0.0.1:19090 --mount NAME
 qrypt debug watch [REMOTE] --socket PATH --mount NAME
 qrypt debug test TEST --socket PATH
 qrypt debug raw ENDPOINT --socket PATH
 qrypt debug bundle [REMOTE] [--dest DESTINATION] --socket PATH --mount NAME --out FILE [--force]
+```
+
+也可以在配置中启用 HTTP 调试入口：
+
+```toml
+[debug]
+enabled = true
+listen = "127.0.0.1:19090"
+```
+
+启用后，debug 命令可以省略 `--url`：
+
+```sh
+qrypt debug collect --mount NAME
 ```
 
 `--mount` 可以重复传入多个挂载名。`--all-mounts` 会收集全部挂载，输出可能更大，请只在需要整体排查时使用。

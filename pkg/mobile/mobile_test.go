@@ -142,6 +142,88 @@ root_path = "`+remote+`"
 	if raw := FlushReadCacheJSON(opened.Data); !strings.Contains(raw, `"ok":true`) {
 		t.Fatalf("FlushReadCacheJSON = %s, want ok", raw)
 	}
+
+	var logs struct {
+		OK   bool `json:"ok"`
+		Data []struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(LogFilesJSON(opened.Data)), &logs); err != nil {
+		t.Fatal(err)
+	}
+	if !logs.OK || len(logs.Data) == 0 || logs.Data[0].Name == "" {
+		t.Fatalf("LogFilesJSON = %+v, want log files", logs)
+	}
+	if raw := ReadLogJSON(opened.Data, logs.Data[0].Name, 0, 64); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("ReadLogJSON = %s, want ok", raw)
+	}
+}
+
+func TestMobileImportOpenAndResume(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("resume"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+cache_dir = "/desktop/cache"
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(tmp, "work")
+	if raw := ImportConfigJSON(configPath, workDir); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("ImportConfigJSON = %s, want ok", raw)
+	}
+	var opened struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(OpenImportedJSON(workDir)), &opened); err != nil {
+		t.Fatal(err)
+	}
+	if !opened.OK || opened.Data == "" {
+		t.Fatalf("OpenImportedJSON = %+v, want core id", opened)
+	}
+	defer Close(opened.Data)
+
+	var info struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ID      string `json:"id"`
+			Size    int64  `json:"size"`
+			ModTime string `json:"mod_time"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(FileInfoJSON(opened.Data, "/quark/file.txt")), &info); err != nil {
+		t.Fatal(err)
+	}
+	if !info.OK || info.Data.Size != int64(len("resume")) {
+		t.Fatalf("FileInfoJSON = %+v, want file info", info)
+	}
+	var check struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			OK bool `json:"ok"`
+		} `json:"data"`
+	}
+	raw := ValidateResumeJSON(opened.Data, "/quark/file.txt", info.Data.ID, info.Data.Size, info.Data.ModTime)
+	if err := json.Unmarshal([]byte(raw), &check); err != nil {
+		t.Fatal(err)
+	}
+	if !check.OK || !check.Data.OK {
+		t.Fatalf("ValidateResumeJSON = %s, want ok resume", raw)
+	}
 }
 
 func TestMobileReadAtRepeatedSeek(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -24,6 +25,7 @@ func newFsListCmd() *cobra.Command {
 		ValidArgsFunction: noFileCompletions,
 	}
 	cmd.Flags().Bool("json", false, "write JSON output")
+	cmd.Flags().Bool("remote-names", false, "include backend remote names and raw paths")
 	return cmd
 }
 
@@ -43,20 +45,103 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
+	includeRemoteNames, _ := cmd.Flags().GetBool("remote-names")
 	if asJSON {
 		if entries == nil {
 			entries = []drive.Entry{}
 		}
+		if includeRemoteNames {
+			output, err := listEntriesWithRemoteNames(ctx, fs, path, entries)
+			if err != nil {
+				return err
+			}
+			return writePrettyJSON(cmd.OutOrStdout(), output)
+		}
 		return writePrettyJSON(cmd.OutOrStdout(), entries)
+	}
+	remoteParent := ""
+	if includeRemoteNames {
+		remoteParent, err = remoteParentPath(ctx, fs, path)
+		if err != nil {
+			return err
+		}
 	}
 	for _, entry := range entries {
 		kind := "file"
 		if entry.IsDir {
 			kind = "dir "
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %10d %s\n", kind, entry.Size, entry.Name)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %10d %s", kind, entry.Size, entry.Name)
+		if includeRemoteNames {
+			remoteName, _ := drive.EntryRemoteName(entry)
+			fmt.Fprintf(cmd.OutOrStdout(), "\tremote_name=%s\tremote_path=%s", remoteName, joinRemotePath(remoteParent, remoteName))
+		}
+		fmt.Fprintln(cmd.OutOrStdout())
 	}
 	return nil
+}
+
+type fsListEntry struct {
+	drive.Entry
+	RemoteName string `json:"remote_name"`
+	RemotePath string `json:"remote_path"`
+}
+
+func listEntriesWithRemoteNames(ctx context.Context, fs vfs.FileSystem, dir string, entries []drive.Entry) ([]fsListEntry, error) {
+	remoteParent, err := remoteParentPath(ctx, fs, dir)
+	if err != nil {
+		return nil, err
+	}
+	output := make([]fsListEntry, 0, len(entries))
+	for _, entry := range entries {
+		remoteName, _ := drive.EntryRemoteName(entry)
+		output = append(output, fsListEntry{
+			Entry:      entry,
+			RemoteName: remoteName,
+			RemotePath: joinRemotePath(remoteParent, remoteName),
+		})
+	}
+	return output, nil
+}
+
+func remoteParentPath(ctx context.Context, fs vfs.FileSystem, dir string) (string, error) {
+	clean := cleanListPath(dir)
+	if clean == "/" {
+		return "/", nil
+	}
+	parts := strings.Split(strings.Trim(clean, "/"), "/")
+	if len(parts) == 0 {
+		return "/", nil
+	}
+	rawParts := []string{parts[0]}
+	resolver, ok := fs.(vfs.DebugResolver)
+	if !ok {
+		return clean, nil
+	}
+	for i := 1; i < len(parts); i++ {
+		prefix := "/" + strings.Join(parts[:i+1], "/")
+		info, err := resolver.DebugResolve(ctx, prefix, true)
+		if err != nil || info.RemoteName == "" {
+			rawParts = append(rawParts, parts[i])
+			continue
+		}
+		rawParts = append(rawParts, info.RemoteName)
+	}
+	return "/" + strings.Join(rawParts, "/"), nil
+}
+
+func cleanListPath(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "/"
+	}
+	return pathpkg.Clean("/" + strings.Trim(value, "/"))
+}
+
+func joinRemotePath(parent, name string) string {
+	if parent == "" || parent == "/" {
+		return "/" + strings.Trim(name, "/")
+	}
+	return strings.TrimRight(parent, "/") + "/" + strings.TrimLeft(name, "/")
 }
 
 func newFsCatCmd() *cobra.Command {

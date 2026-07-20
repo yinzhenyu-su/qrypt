@@ -45,6 +45,27 @@ Start qrypt with a local debug socket:
 go run ./cmd/qrypt mount --config ./qrypt.toml --socket /tmp/qrypt.sock
 ```
 
+Or enable the debug server from the config:
+
+```toml
+[debug]
+enabled = true
+listen = "127.0.0.1:19090"
+```
+
+Then connect over HTTP:
+
+```sh
+go run ./cmd/qrypt debug collect --url http://127.0.0.1:19090 --mount quark-test
+```
+
+When the same config is discoverable or passed with `--config`, debug commands
+can use `[debug].listen` by default:
+
+```sh
+go run ./cmd/qrypt debug collect --config ./qrypt.toml --mount quark-test
+```
+
 Then collect one focused report:
 
 ```sh
@@ -59,6 +80,10 @@ go run ./cmd/qrypt debug collect /quark-test/example.bin --socket /tmp/qrypt.soc
 
 The socket file is created with `0600` permissions. qrypt refuses to replace a
 live socket and removes stale socket files during startup.
+
+HTTP debug listeners must bind to loopback addresses such as `127.0.0.1` or
+`localhost`. This keeps Android and remote-device debugging usable through
+tools such as `adb forward` without exposing the debug API on the LAN.
 
 ### Enable Debug Logs
 

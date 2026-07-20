@@ -20,6 +20,8 @@ func newDebugCmd() *cobra.Command {
 		}),
 		RunE: showHelp,
 	}
+	cmd.PersistentFlags().StringP("config", "c", "", "config file path (auto-discovered when omitted)")
+	cmd.PersistentPreRunE = prepareConfig
 	cmd.AddCommand(newDebugBenchCmd())
 	cmd.AddCommand(withDebugSocketFlag(newDebugBundleCmd()))
 	cmd.AddCommand(withDebugSocketFlag(newDebugCollectCmd()))
@@ -34,16 +36,37 @@ type debugSocketContextKey struct{}
 
 func withDebugSocketFlag(cmd *cobra.Command) *cobra.Command {
 	cmd.Flags().StringP("socket", "s", "", "debug socket path (required)")
+	cmd.Flags().String("url", "", "debug HTTP URL")
 	run := cmd.RunE
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		socket, err := cmd.Flags().GetString("socket")
 		if err != nil {
 			return err
 		}
-		if socket == "" {
+		debugURL, err := cmd.Flags().GetString("url")
+		if err != nil {
+			return err
+		}
+		if socket != "" && debugURL != "" {
+			return fmt.Errorf("--socket and --url are mutually exclusive")
+		}
+		endpoint := socket
+		if endpoint == "" {
+			endpoint = debugURL
+		}
+		if endpoint == "" {
+			state, err := commandConfig(cmd)
+			if err != nil {
+				return err
+			}
+			if state.cfg != nil && state.cfg.Debug.Enabled {
+				endpoint = state.cfg.Debug.EffectiveListen()
+			}
+		}
+		if endpoint == "" {
 			return missingSocketError(cmd)
 		}
-		cmd.SetContext(context.WithValue(commandContext(cmd), debugSocketContextKey{}, socket))
+		cmd.SetContext(context.WithValue(commandContext(cmd), debugSocketContextKey{}, endpoint))
 		return run(cmd, args)
 	}
 	return cmd

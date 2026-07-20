@@ -29,6 +29,7 @@ type Config struct {
 	TotalSpace         string          `toml:"total_space"`
 	FreeSpace          string          `toml:"free_space"`
 	Logging            LoggingConfig   `toml:"logging"`
+	Debug              DebugConfig     `toml:"debug"`
 	Time               TimeConfig      `toml:"time"`
 	Bandwidth          BandwidthConfig `toml:"bandwidth"`
 	Encryption         crypt.Config    `toml:"encryption"`
@@ -105,6 +106,20 @@ type LoggingConfig struct {
 	LogLevel  string `toml:"log_level"`
 	LogFile   string `toml:"log_file"`
 	ErrorFile string `toml:"error_file"`
+}
+
+type DebugConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Listen  string `toml:"listen"`
+}
+
+const DefaultDebugListen = "127.0.0.1:19090"
+
+func (c DebugConfig) EffectiveListen() string {
+	if c.Listen != "" {
+		return c.Listen
+	}
+	return DefaultDebugListen
 }
 
 type TimeConfig struct {

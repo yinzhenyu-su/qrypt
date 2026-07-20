@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -28,6 +29,23 @@ type Driver struct {
 
 type DriverOptions struct {
 	ContentDedup bool
+}
+
+// EntryExtra preserves raw backend metadata for entries whose public name and
+// size have been transformed by the crypt driver.
+type EntryExtra struct {
+	RemoteName string
+	RawExtra   any
+}
+
+func (e EntryExtra) EntryRemoteName() string {
+	return e.RemoteName
+}
+
+// RemoteName returns the backend object name captured before filename
+// decryption. Non-crypt entries fall back to their public name.
+func RemoteName(entry drive.Entry) (string, bool) {
+	return drive.EntryRemoteName(entry)
 }
 
 func NewDriver(raw drive.Driver, cp Cipher, opts DriverOptions) *Driver {
@@ -97,7 +115,8 @@ func (d *Driver) ForeignEntries(ctx context.Context, parentID string) ([]drive.F
 	}
 	foreign := make([]drive.ForeignEntry, 0)
 	for _, entry := range entries {
-		if _, err := d.cp.DecryptSegment(entry.Name); err != nil {
+		name, err := d.cp.DecryptSegment(entry.Name)
+		if err != nil {
 			foreign = append(foreign, drive.ForeignEntry{
 				ID:         entry.ID,
 				ParentID:   entry.ParentID,
@@ -105,6 +124,17 @@ func (d *Driver) ForeignEntries(ctx context.Context, parentID string) ([]drive.F
 				IsDir:      entry.IsDir,
 				Size:       entry.Size,
 				Reason:     "filename_decrypt_failed",
+			})
+			continue
+		}
+		if !validPlainName(name) {
+			foreign = append(foreign, drive.ForeignEntry{
+				ID:         entry.ID,
+				ParentID:   entry.ParentID,
+				RemoteName: entry.Name,
+				IsDir:      entry.IsDir,
+				Size:       entry.Size,
+				Reason:     "invalid_plain_filename",
 			})
 		}
 	}
@@ -116,18 +146,33 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 	if err != nil {
 		return nil, err
 	}
+	out := entries[:0]
 	for i := range entries {
-		name, err := d.cp.DecryptSegment(entries[i].Name)
-		if err == nil {
-			entries[i].Name = strings.TrimSpace(name)
+		entry := entries[i]
+		rawName := entry.Name
+		entry.Extra = EntryExtra{RemoteName: rawName, RawExtra: entry.Extra}
+		name, err := d.cp.DecryptSegment(entry.Name)
+		if err != nil || !validPlainName(name) {
+			continue
 		}
-		if !entries[i].IsDir {
-			if size, err := d.cp.DecryptedSize(entries[i].Size); err == nil {
-				entries[i].Size = size
+		entry.Name = strings.TrimSpace(name)
+		if !entry.IsDir {
+			if size, err := d.cp.DecryptedSize(entry.Size); err == nil {
+				entry.Size = size
 			}
 		}
+		out = append(out, entry)
 	}
-	return entries, nil
+	return out, nil
+}
+
+func validPlainName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name != "" &&
+		name != "." &&
+		name != ".." &&
+		utf8.ValidString(name) &&
+		!strings.ContainsAny(name, "/\x00")
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -240,8 +285,10 @@ func (r *discardPrefixReader) Read(p []byte) (int, error) {
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
-	entry, err := d.raw.Mkdir(ctx, parentID, d.cp.EncryptSegment(name))
+	encName := d.cp.EncryptSegment(name)
+	entry, err := d.raw.Mkdir(ctx, parentID, encName)
 	if err == nil {
+		entry.Extra = EntryExtra{RemoteName: encName, RawExtra: entry.Extra}
 		entry.Name = name
 	}
 	return entry, err
@@ -300,6 +347,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	entry, err := d.raw.PutSource(ctx, rawReq)
 	if err == nil {
 		d.nonceCache.Store(entry.ID, nonce)
+		entry.Extra = EntryExtra{RemoteName: encName, RawExtra: entry.Extra}
 		entry.Name = req.Name
 		entry.Size = source.Size()
 	}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,145 @@ root_path = "`+remote+`"
 		t.Fatal(err)
 	}
 	waitPathMissing(t, filepath.Join(remote, "dir"))
+}
+
+func TestFSListRemoteNamesForEncryptedMount(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = "`+filepath.Join(tmp, "mnt")+`"
+cache_dir = "`+filepath.Join(tmp, "cache")+`"
+
+[defaults.cache]
+upload_delay = "10ms"
+delete_delay = "10ms"
+
+[[mounts]]
+name = "encrypted"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+[mounts.encryption]
+password = "encrypted-pass"
+salt = "encrypted-salt"
+filename_encryption = "standard"
+filename_encoding = "base32"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(tmp, "secret.txt")
+	if err := os.WriteFile(localPath, []byte("secret data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "put", "--wait-timeout", "5s", localPath, "/encrypted/secret.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs put: %v", err)
+	}
+
+	rawEntries, err := os.ReadDir(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawEntries) != 1 {
+		t.Fatalf("remote entry count = %d, want 1", len(rawEntries))
+	}
+	rawName := rawEntries[0].Name()
+	if rawName == "secret.txt" {
+		t.Fatal("expected encrypted backend filename")
+	}
+
+	var out bytes.Buffer
+	root = NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "list", "--json", "--remote-names", "/encrypted"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs list: %v", err)
+	}
+	var entries []fsListEntry
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal list output: %v\n%s", err, out.String())
+	}
+	if len(entries) != 1 {
+		t.Fatalf("list entries = %d, want 1: %s", len(entries), out.String())
+	}
+	if entries[0].Name != "secret.txt" {
+		t.Fatalf("name = %q, want secret.txt", entries[0].Name)
+	}
+	if entries[0].RemoteName != rawName {
+		t.Fatalf("remote_name = %q, want %q", entries[0].RemoteName, rawName)
+	}
+	if entries[0].RemotePath != "/encrypted/"+rawName {
+		t.Fatalf("remote_path = %q, want %q", entries[0].RemotePath, "/encrypted/"+rawName)
+	}
+
+	root = NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "mkdir", "/encrypted/nested-dir"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs mkdir nested: %v", err)
+	}
+	rawEntries, err = os.ReadDir(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawDir string
+	for _, entry := range rawEntries {
+		if entry.IsDir() {
+			rawDir = entry.Name()
+			break
+		}
+	}
+	if rawDir == "" {
+		t.Fatal("expected encrypted backend directory")
+	}
+
+	root = NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "put", "--wait-timeout", "5s", localPath, "/encrypted/nested-dir/child.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs put nested: %v", err)
+	}
+	rawChildren, err := os.ReadDir(filepath.Join(remote, rawDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawChildren) != 1 {
+		t.Fatalf("raw child count = %d, want 1", len(rawChildren))
+	}
+	rawChild := rawChildren[0].Name()
+
+	out.Reset()
+	root = NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "list", "--json", "--remote-names", "/encrypted/nested-dir"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs list nested: %v", err)
+	}
+	entries = nil
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal nested list output: %v\n%s", err, out.String())
+	}
+	if len(entries) != 1 {
+		t.Fatalf("nested list entries = %d, want 1: %s", len(entries), out.String())
+	}
+	if entries[0].RemoteName != rawChild {
+		t.Fatalf("nested remote_name = %q, want %q", entries[0].RemoteName, rawChild)
+	}
+	if entries[0].RemotePath != "/encrypted/"+rawDir+"/"+rawChild {
+		t.Fatalf("nested remote_path = %q, want %q", entries[0].RemotePath, "/encrypted/"+rawDir+"/"+rawChild)
+	}
 }
 
 func TestFSGetDirRecursive(t *testing.T) {

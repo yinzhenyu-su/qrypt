@@ -30,6 +30,10 @@ func newMountCmd() *cobra.Command {
 			defer stop()
 
 			socket, _ := cmd.Flags().GetString("socket")
+			debugListen := socket
+			if debugListen == "" && state.cfg.Debug.Enabled {
+				debugListen = state.cfg.Debug.EffectiveListen()
+			}
 			mountPointFlag, _ := cmd.Flags().GetString("mount-point")
 			selectedMount := ""
 			if len(args) == 1 {
@@ -43,12 +47,12 @@ func newMountCmd() *cobra.Command {
 			defer cleanup()
 			fs.Start(ctx)
 
-			if socket != "" {
+			if debugListen != "" {
 				snapshotter, ok := fs.(control.Snapshotter)
 				if !ok {
 					return fmt.Errorf("debug socket requires filesystem debug snapshots")
 				}
-				controlServer, err := control.NewServer(socket, snapshotter)
+				controlServer, err := control.NewServer(debugListen, snapshotter)
 				if err != nil {
 					return err
 				}

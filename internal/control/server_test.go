@@ -487,6 +487,32 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 }
 
+func TestServerExposesHTTPListenEndpoint(t *testing.T) {
+	server, err := NewServer("127.0.0.1:0", fakeSnapshotter{snapshot: vfs.DebugSnapshot{Kind: "test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+
+	listen := strings.TrimPrefix(server.ListenAddress(), "tcp:")
+	client, err := NewClient("http://" + listen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.Get(context.Background(), "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"ok": true`) {
+		t.Fatalf("unexpected health response: %s", body)
+	}
+}
+
 func TestServerFiltersDebugEndpointsByMount(t *testing.T) {
 	socketPath := testSocketPath(t)
 	source := fakeSnapshotter{snapshot: vfs.DebugSnapshot{

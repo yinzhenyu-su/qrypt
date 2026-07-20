@@ -317,6 +317,22 @@ func FlushReadCacheJSON(coreID string) string {
 	return resultJSON(nil, s.core.FlushReadCache())
 }
 
+func StartDebugServerJSON(coreID, listen string) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	return resultJSON(nil, s.core.StartDebugServer(context.Background(), listen))
+}
+
+func StopDebugServerJSON(coreID string) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	return resultJSON(nil, s.core.StopDebugServer(context.Background()))
+}
+
 func LogFilesJSON(coreID string) string {
 	s, err := getSession(coreID)
 	if err != nil {
