@@ -303,6 +303,45 @@ func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
 	}
 }
 
+func TestDriverListSkipsInvalidPlainFilenames(t *testing.T) {
+	ctx := context.Background()
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := &recordingRawDriver{entries: []drive.Entry{
+		{ID: "ok", ParentID: "root", Name: cp.EncryptSegment("secret.txt"), Size: 42},
+		{ID: "slash", ParentID: "root", Name: cp.EncryptSegment("bad/name"), Size: 7},
+		{ID: "dot", ParentID: "root", Name: cp.EncryptSegment("."), Size: 8},
+		{ID: "empty", ParentID: "root", Name: cp.EncryptSegment("   "), Size: 9},
+	}}
+	drv := NewDriver(raw, cp, DriverOptions{})
+
+	entries, err := drv.List(ctx, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("list entries = %+v, want only valid entry", entries)
+	}
+	if entries[0].ID != "ok" || entries[0].Name != "secret.txt" {
+		t.Fatalf("unexpected list entry: %+v", entries[0])
+	}
+
+	foreign, err := drv.ForeignEntries(ctx, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(foreign) != 3 {
+		t.Fatalf("foreign entries = %+v, want three invalid entries", foreign)
+	}
+	for _, entry := range foreign {
+		if entry.Reason != "invalid_plain_filename" {
+			t.Fatalf("foreign reason = %q, want invalid_plain_filename: %+v", entry.Reason, entry)
+		}
+	}
+}
+
 func TestEncryptedReadOnlyFileSourceMatchesEncryptingReader(t *testing.T) {
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
