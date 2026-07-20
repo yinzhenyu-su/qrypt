@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -155,6 +156,20 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unknown configuration keys: %s", strings.Join(keys, ", "))
 	}
 	return &cfg, nil
+}
+
+func Save(path string, cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config: configuration is empty")
+	}
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // EncryptionFor returns encryption config for one mount.
