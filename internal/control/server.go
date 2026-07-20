@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,6 +31,9 @@ type Snapshotter interface {
 
 type Server struct {
 	socketPath string
+	endpoint   string
+	network    string
+	address    string
 	source     Snapshotter
 	server     *http.Server
 	listener   net.Listener
@@ -203,23 +207,40 @@ func NewServer(socketPath string, source Snapshotter) (*Server, error) {
 	if source == nil {
 		return nil, fmt.Errorf("control: snapshot source required")
 	}
-	return &Server{socketPath: osutil.ExpandHome(socketPath), source: source}, nil
+	network, address, err := listenEndpoint(socketPath)
+	if err != nil {
+		return nil, err
+	}
+	server := &Server{
+		endpoint: socketPath,
+		network:  network,
+		address:  address,
+		source:   source,
+	}
+	if network == "unix" {
+		server.socketPath = address
+	}
+	return server, nil
 }
 
 func (s *Server) Start(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(s.socketPath), 0o755); err != nil {
-		return err
+	if s.network == "unix" {
+		if err := os.MkdirAll(filepath.Dir(s.socketPath), 0o755); err != nil {
+			return err
+		}
+		if err := removeStaleSocket(s.socketPath); err != nil {
+			return err
+		}
 	}
-	if err := removeStaleSocket(s.socketPath); err != nil {
-		return err
-	}
-	listener, err := net.Listen("unix", s.socketPath)
+	listener, err := net.Listen(s.network, s.address)
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(s.socketPath, 0o600); err != nil {
-		listener.Close()
-		return err
+	if s.network == "unix" {
+		if err := os.Chmod(s.socketPath, 0o600); err != nil {
+			listener.Close()
+			return err
+		}
 	}
 	s.listener = listener
 	mux := http.NewServeMux()
@@ -251,10 +272,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 	go func() {
 		if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			logging.L.Warnf("[CONTROL] server stopped with error socket=%q err=%v", s.socketPath, err)
+			logging.L.Warnf("[CONTROL] server stopped with error listen=%q err=%v", s.ListenAddress(), err)
 		}
 	}()
-	logging.L.Infof("[CONTROL] listening socket=%q", s.socketPath)
+	logging.L.Infof("[CONTROL] listening %s", s.ListenAddress())
 	return nil
 }
 
@@ -796,6 +817,52 @@ func removeStaleSocket(path string) error {
 	return os.Remove(path)
 }
 
+func listenEndpoint(endpoint string) (network, address string, err error) {
+	endpoint = strings.TrimSpace(endpoint)
+	switch {
+	case endpoint == "":
+		return "", "", fmt.Errorf("control: listen endpoint required")
+	case strings.HasPrefix(endpoint, "unix:"):
+		path := strings.TrimPrefix(endpoint, "unix:")
+		if path == "" {
+			return "", "", fmt.Errorf("control: unix listen path required")
+		}
+		return "unix", osutil.ExpandHome(path), nil
+	case strings.HasPrefix(endpoint, "tcp:"):
+		return tcpListenEndpoint(strings.TrimPrefix(endpoint, "tcp:"))
+	case strings.HasPrefix(endpoint, "http://"):
+		parsed, err := url.Parse(endpoint)
+		if err != nil {
+			return "", "", err
+		}
+		return tcpListenEndpoint(parsed.Host)
+	case strings.HasPrefix(endpoint, "https://"):
+		return "", "", fmt.Errorf("control: https listen is not supported")
+	}
+	if _, _, err := net.SplitHostPort(endpoint); err == nil {
+		return tcpListenEndpoint(endpoint)
+	}
+	return "unix", osutil.ExpandHome(endpoint), nil
+}
+
+func tcpListenEndpoint(address string) (string, string, error) {
+	if address == "" {
+		return "", "", fmt.Errorf("control: tcp listen address required")
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", "", err
+	}
+	if host == "" {
+		return "", "", fmt.Errorf("control: tcp debug listen must bind to loopback, got %q", address)
+	}
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return "", "", fmt.Errorf("control: tcp debug listen must bind to loopback, got %q", address)
+	}
+	return "tcp", address, nil
+}
+
 func (s *Server) Close(ctx context.Context) error {
 	if s.server != nil {
 		_ = s.server.Shutdown(ctx)
@@ -811,6 +878,16 @@ func (s *Server) Close(ctx context.Context) error {
 
 func (s *Server) SocketPath() string {
 	return s.socketPath
+}
+
+func (s *Server) ListenAddress() string {
+	if s.listener != nil {
+		return s.network + ":" + s.listener.Addr().String()
+	}
+	if s.network == "unix" {
+		return "unix:" + s.socketPath
+	}
+	return s.network + ":" + s.address
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
