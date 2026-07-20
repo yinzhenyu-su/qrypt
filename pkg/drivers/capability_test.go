@@ -1,19 +1,19 @@
-package driver_test
+package drivers_test
 
 import (
 	"reflect"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/aliyundrive"
-	"github.com/yinzhenyu/qrypt/internal/driver/baidunetdisk"
-	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
-	"github.com/yinzhenyu/qrypt/internal/driver/onedrive"
-	"github.com/yinzhenyu/qrypt/internal/driver/p115"
-	"github.com/yinzhenyu/qrypt/internal/driver/quark"
-	"github.com/yinzhenyu/qrypt/internal/driver/s3"
-	"github.com/yinzhenyu/qrypt/internal/driver/webdav"
-	"github.com/yinzhenyu/qrypt/internal/driver/yun139"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/aliyundrive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/baidunetdisk"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/p115"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/quark"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/s3"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/yun139"
 )
 
 func TestBuiltinDriverCapabilities(t *testing.T) {
