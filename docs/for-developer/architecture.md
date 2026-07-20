@@ -12,7 +12,7 @@ cmd/qrypt
   minimal executable entry point
 
 internal/cli
-  configuration, commands, runtime assembly
+  configuration and commands
 
 internal/control
   debug socket HTTP API over runtime snapshots
@@ -29,8 +29,14 @@ pkg/crypt
 pkg/drive
   backend contracts, optional capability model, registry
 
-internal/driver/<name>
+pkg/drivers/<name>
   provider-specific API clients and metadata mapping
+
+pkg/drivers/all
+  bundled driver registration set
+
+pkg/core
+  reusable runtime assembly for CLI, mobile, and future clients
 ```
 
 Dependencies should point downward in this list. Provider drivers must not
@@ -39,18 +45,23 @@ concrete provider packages.
 
 ## Runtime Assembly
 
-`internal/cli/filesystem_builder.go` is the composition root:
+`pkg/core` is the reusable composition root:
 
 1. Load config.
-2. Build each concrete `drive.Driver` from `internal/driver/*`.
+2. Build each concrete `drive.Driver` from the registered `pkg/drivers/*`
+   packages.
 3. Install driver state stores where supported.
 4. Install bandwidth limiting into drivers that support it, then optionally wrap with `pkg/crypt`.
 5. Build one `pkg/vfs.VFS` per configured mount.
 6. Combine mounts into `pkg/vfs.Namespace`.
-7. Pass the resulting `vfs.FileSystem` to `internal/mount` or CLI commands.
+7. Pass the resulting `vfs.FileSystem` to FUSE, CLI commands, mobile bindings,
+   or future clients.
 
 This keeps construction policy out of VFS and keeps provider details out of the
 mount layer.
+
+`internal/cli` and `pkg/mobile` import `pkg/drivers/all` for the full bundled
+driver set.
 
 ## Drive Contracts
 
@@ -115,8 +126,9 @@ inputs and errors, track handles, and delegate behavior to VFS.
 
 ## Extension Rules
 
-- Add a new provider under `internal/driver/<name>`.
+- Add a new provider under `pkg/drivers/<name>`.
 - Register it through `drive.Register`.
+- Add it to `pkg/drivers/all` when it should be bundled by qrypt clients.
 - Keep provider parameters under `[[mounts]].params`.
 - Use `drive.Capabilities` in diagnostics and contract tests.
 - Preserve optional capabilities when adding wrappers.
