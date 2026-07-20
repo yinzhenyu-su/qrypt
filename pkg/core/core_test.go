@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
@@ -50,6 +51,56 @@ func TestBuildFileSystemUsesWorkDirCache(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmp, "mount-cache")); !os.IsNotExist(err) {
 		t.Fatalf("mount cache should not be used, stat err = %v", err)
 	}
+}
+
+func TestImportConfigSanitizesRuntimePaths(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(tmp, "desktop.toml")
+	if err := os.WriteFile(src, []byte(`
+mount_point = "/Volumes/Qrypt"
+cache_dir = "/desktop/cache"
+
+[logging]
+log_file = "/desktop/qrypt.log"
+error_file = "/desktop/qrypt-error.log"
+
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+[mounts.cache]
+dir = "/desktop/mount-cache"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(tmp, "work")
+	imported, err := ImportConfig(src, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported != filepath.Join(workDir, "config", "qrypt.toml") {
+		t.Fatalf("imported path = %q", imported)
+	}
+	data, err := os.ReadFile(imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, forbidden := range []string{"/Volumes/Qrypt", "/desktop/cache", "/desktop/qrypt.log", "/desktop/mount-cache"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("imported config still contains %q:\n%s", forbidden, text)
+		}
+	}
+	c, err := OpenImported(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(context.Background())
 }
 
 func TestOpenInitializesWorkDirLog(t *testing.T) {
