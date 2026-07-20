@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )

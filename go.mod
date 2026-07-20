@@ -5,24 +5,25 @@ go 1.26.2
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/SheltonZhu/115driver v1.3.3
+	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.27
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.0
+	github.com/aws/smithy-go v1.27.3
 	github.com/dustinxie/ecc v0.0.0-20210511000915-959544187564
 	github.com/go-resty/resty/v2 v2.14.0
 	github.com/rfjakob/eme v1.2.0
 	github.com/spf13/cobra v1.10.2
 	github.com/winfsp/cgofuse v1.6.0
-	golang.org/x/crypto v0.50.0
-	golang.org/x/sync v0.21.0
-	golang.org/x/sys v0.43.0
+	golang.org/x/crypto v0.54.0
+	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/time v0.8.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
 	github.com/aead/ecdh v0.2.0 // indirect
-	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible // indirect
 	github.com/andreburgaud/crypt2go v1.1.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
@@ -32,12 +33,16 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.23 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.30 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.31 // indirect
-	github.com/aws/smithy-go v1.27.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.17 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/mobile v0.0.0-20260709172247-6129f5bee9d5 // indirect
+	golang.org/x/mod v0.38.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/tools v0.48.0 // indirect
 )
+
+tool golang.org/x/mobile/cmd/gobind

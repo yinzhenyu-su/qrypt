@@ -9,7 +9,7 @@ This guide describes how to add a cloud-drive backend to qrypt.
   writes, pending journal recovery, and upload scheduling.
 - `pkg/crypt` wraps any driver with rclone-compatible encryption.
 - `internal/mount` translates FUSE callbacks into VFS calls.
-- `internal/driver/<name>` is the only place that should know provider API
+- `pkg/drivers/<name>` is the only place that should know provider API
   details.
 
 Drivers must not import FUSE, mount lifecycle code, or qrypt's encryption
@@ -18,7 +18,7 @@ implementation. VFS and mount code must not import provider SDKs.
 ## File Layout
 
 ```text
-internal/driver/<name>/
+pkg/drivers/<name>/
   driver.go
   client.go        # optional provider API client
   types.go         # optional response and metadata mapping
@@ -69,11 +69,11 @@ func init() {
 }
 ```
 
-Then add a blank import to the bundled-driver registry in
-`internal/driver/all.go`:
+Then add a blank import to the full bundled-driver registry in
+`pkg/drivers/all/all.go`:
 
 ```go
-_ "github.com/yinzhenyu/qrypt/internal/driver/baidu"
+_ "github.com/yinzhenyu/qrypt/pkg/drivers/baidu"
 ```
 
 Users should be able to inspect parameters with:
@@ -254,9 +254,9 @@ accounts.
 
 ## Checklist
 
-- Driver lives under `internal/driver/<name>`.
+- Driver lives under `pkg/drivers/<name>`.
 - Driver is registered with `drive.Register`.
-- `internal/driver/all.go` imports the driver for registration.
+- `pkg/drivers/all/all.go` imports the driver for full CLI registration.
 - Required params are declared and validated.
 - `Init` validates credentials and root selection.
 - `List` returns direct children only.

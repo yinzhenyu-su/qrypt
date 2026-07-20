@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/driver/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"golang.org/x/sync/errgroup"
 )
@@ -486,7 +486,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	parentID, name, source := req.ParentID, req.Name, req.Source
 	size := source.Size()
 	if size > maxUploadSize {
-		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("139: upload %s (%d bytes) exceeds max size (%d)", name, size, maxUploadSize))
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("139: upload %s (%d bytes) exceeds max size (%d)", name, size, int64(maxUploadSize)))
 	}
 	return d.putSource(ctx, parentID, name, source, req.Progress)
 }
