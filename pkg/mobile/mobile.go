@@ -73,6 +73,27 @@ func OpenJSON(configPath, workDir string) string {
 	return resultJSON(id, err)
 }
 
+func ImportConfigJSON(srcPath, workDir string) string {
+	path, err := core.ImportConfig(srcPath, workDir)
+	return resultJSON(path, err)
+}
+
+func OpenImportedJSON(workDir string) string {
+	c, err := core.OpenImported(context.Background(), workDir)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	id, err := newID()
+	if err != nil {
+		_ = c.Close(context.Background())
+		return resultJSON(nil, wrapError(err))
+	}
+	registry.mu.Lock()
+	registry.sessions[id] = &session{core: c}
+	registry.mu.Unlock()
+	return resultJSON(id, nil)
+}
+
 func List(coreID, path string) (string, error) {
 	s, err := getSession(coreID)
 	if err != nil {
@@ -131,6 +152,24 @@ func StatJSON(coreID, path string) string {
 		return resultJSON(nil, err)
 	}
 	return resultJSON(item, nil)
+}
+
+func FileInfoJSON(coreID, path string) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	info, err := s.core.FileInfo(context.Background(), path)
+	return resultJSON(info, err)
+}
+
+func ValidateResumeJSON(coreID, path, id string, size int64, modTime string) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	check, err := s.core.ValidateResume(context.Background(), path, id, size, modTime)
+	return resultJSON(check, err)
 }
 
 func OpenFile(coreID, path string) (string, error) {
@@ -276,6 +315,24 @@ func FlushReadCacheJSON(coreID string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	return resultJSON(nil, s.core.FlushReadCache())
+}
+
+func LogFilesJSON(coreID string) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	files, err := s.core.LogFiles()
+	return resultJSON(files, err)
+}
+
+func ReadLogJSON(coreID, name string, offset int64, length int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	data, err := s.core.ReadLog(name, offset, length)
+	return resultJSON(data, err)
 }
 
 func getSession(coreID string) (*session, error) {
