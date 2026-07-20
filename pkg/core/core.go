@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -27,9 +28,10 @@ type Options struct {
 }
 
 type Core struct {
-	fs         vfs.FileSystem
-	cleanup    func()
-	workLayout WorkLayout
+	fs          vfs.FileSystem
+	cleanup     func()
+	workLayout  WorkLayout
+	debugServer *control.Server
 }
 
 const DefaultReadChunkLimit = 4 << 20
@@ -63,7 +65,14 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 		return nil, err
 	}
 	fs.Start(ctx)
-	return &Core{fs: fs, cleanup: cleanup, workLayout: layout}, nil
+	c := &Core{fs: fs, cleanup: cleanup, workLayout: layout}
+	if cfg.Debug.Enabled {
+		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
+			c.Close(context.Background())
+			return nil, err
+		}
+	}
+	return c, nil
 }
 
 func (c *Core) FileSystem() vfs.FileSystem {
@@ -144,10 +153,42 @@ func (c *Core) FlushReadCache() error {
 	return flusher.FlushReadCache()
 }
 
+func (c *Core) StartDebugServer(ctx context.Context, listen string) error {
+	if c == nil || c.fs == nil {
+		return fmt.Errorf("core: closed")
+	}
+	if c.debugServer != nil {
+		return fmt.Errorf("core: debug server already started")
+	}
+	snapshotter, ok := c.fs.(control.Snapshotter)
+	if !ok {
+		return fmt.Errorf("core: debug server requires filesystem debug snapshots")
+	}
+	server, err := control.NewServer(listen, snapshotter)
+	if err != nil {
+		return err
+	}
+	if err := server.Start(ctx); err != nil {
+		return err
+	}
+	c.debugServer = server
+	return nil
+}
+
+func (c *Core) StopDebugServer(ctx context.Context) error {
+	if c == nil || c.debugServer == nil {
+		return nil
+	}
+	err := c.debugServer.Close(ctx)
+	c.debugServer = nil
+	return err
+}
+
 func (c *Core) Close(ctx context.Context) error {
 	if c == nil || c.cleanup == nil {
 		return nil
 	}
+	_ = c.StopDebugServer(ctx)
 	c.cleanup()
 	c.cleanup = nil
 	c.fs = nil

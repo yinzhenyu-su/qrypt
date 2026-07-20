@@ -29,7 +29,7 @@ the same bundled driver set as the CLI.
 ## WorkDir
 
 Android should copy the imported `qrypt.toml` into app-private storage and pass
-an app-private work directory to `mobile.Open`.
+an app-private work directory to `mobile.OpenImportedJSON`.
 
 Suggested layout:
 
@@ -39,6 +39,7 @@ filesDir/qrypt/
   cache/
   state/
   logs/
+  tmp/
 ```
 
 When `WorkDir` is set, qrypt core stores each mount cache under:
@@ -47,29 +48,94 @@ When `WorkDir` is set, qrypt core stores each mount cache under:
 WorkDir/cache/<mount>
 ```
 
-Driver state stores are installed under the mount cache directory, so Quark
-state files also stay inside the app-private work directory.
+Driver state stores are installed under:
+
+```text
+WorkDir/state/<mount>/driver
+```
+
+Quark cookie and upload-session state therefore stay inside the app-private
+work directory. Runtime logs are written under `WorkDir/logs`.
+
+## Config Import
+
+Android should import config through the mobile API:
+
+```text
+ImportConfigJSON(srcPath, workDir)
+OpenImportedJSON(workDir)
+```
+
+Import copies the config to:
+
+```text
+WorkDir/config/qrypt.toml
+```
+
+During import, desktop runtime paths are cleared:
+
+- `mount_point`
+- `cache_dir`
+- `logging.log_file`
+- `logging.error_file`
+- `[[mounts]].cache.dir`
+
+The core then applies Android `WorkDir` paths at runtime.
 
 ## Mobile API
 
-Current gomobile-facing functions:
+Android should prefer the `*JSON` functions. They return:
 
-```text
-Open(configPath, workDir) -> coreID
-List(coreID, path) -> JSON
-Stat(coreID, path) -> JSON
-OpenFile(coreID, path) -> handleID
-ReadAt(handleID, offset, length) -> bytes
-CloseFile(handleID)
-Close(coreID)
-ClassifyErrorMessage(message) -> JSON
+```json
+{
+  "ok": true,
+  "data": {},
+  "error": null
+}
 ```
 
-`List` and `Stat` return JSON to keep the binding stable and avoid exposing Go
-interfaces to Kotlin.
+Errors use:
 
-`ReadAt` is intended for preview and random-access readers. Android should keep
-chunk sizes bounded and call `ReadAt` repeatedly for seek-heavy consumers.
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "network_retryable",
+    "category": "network",
+    "retryable": true,
+    "message": "..."
+  }
+}
+```
+
+Current gomobile-facing JSON functions:
+
+```text
+ImportConfigJSON(srcPath, workDir)
+OpenImportedJSON(workDir)
+OpenJSON(configPath, workDir)
+ListJSON(coreID, path)
+StatJSON(coreID, path)
+FileInfoJSON(coreID, path)
+ValidateResumeJSON(coreID, path, id, size, modTime)
+OpenFileJSON(coreID, path)
+ReadAtJSON(handleID, offset, length, timeoutMS)
+CloseFileJSON(handleID)
+CloseJSON(coreID)
+DriverNamesJSON()
+DriverSchemaJSON(name)
+DebugSnapshotJSON(coreID)
+FlushReadCacheJSON(coreID)
+LogFilesJSON(coreID)
+ReadLogJSON(coreID, name, offset, length)
+```
+
+The older non-envelope functions remain available for compatibility but should
+not be the primary Android integration surface.
+
+`ReadAtJSON` is intended for preview and random-access readers. The core
+enforces a default 4 MiB chunk limit. Android should call it repeatedly for
+seek-heavy consumers and pass `timeoutMS` for preview/download cancellation.
 
 ## Error Handling
 
@@ -89,7 +155,7 @@ unsupported
 unknown
 ```
 
-`pkg/mobile` prefixes returned errors with the code, for example:
+Legacy non-JSON mobile APIs prefix returned errors with the code, for example:
 
 ```text
 network_retryable: context deadline exceeded

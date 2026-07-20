@@ -1112,6 +1112,7 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		Parent:    filepath.Dir(path),
 		PlainName: filepath.Base(path),
 	}
+	resolvedRemoteName := ""
 	if pending, err := v.pending(path); err == nil {
 		info.Pending = true
 		info.ParentID = pending.ParentID
@@ -1125,6 +1126,9 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		info.IsDir = entry.IsDir
 		info.Size = entry.Size
 		info.CacheID = v.readCacheKey(entry)
+		if remoteName, ok := drive.EntryRemoteName(entry); ok {
+			resolvedRemoteName = remoteName
+		}
 	}
 	info.Encrypted = debugEncrypted(v.driver)
 	if driverSnapshot, err := v.driver.DebugSnapshot(ctx); err == nil {
@@ -1134,7 +1138,9 @@ func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName b
 		}
 	}
 	if includeRemoteName {
-		if drive.HasCapability(v.driver, drive.CapabilityRemoteNameResolver) {
+		if resolvedRemoteName != "" {
+			info.RemoteName = resolvedRemoteName
+		} else if drive.HasCapability(v.driver, drive.CapabilityRemoteNameResolver) {
 			nameInfo, err := v.driver.ResolveRemoteName(ctx, info.PlainName)
 			if err == nil {
 				info.RemoteName = nameInfo.RemoteName

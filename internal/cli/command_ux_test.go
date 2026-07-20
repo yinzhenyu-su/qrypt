@@ -198,6 +198,32 @@ func TestDebugRequiredFlags(t *testing.T) {
 	}
 
 	root = NewRootCommand()
+	root.SetArgs([]string{"debug", "collect", "--url", "http://127.0.0.1:19090"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
+		t.Fatalf("expected debug collect with --url but without mount scope to fail clearly, got %v", err)
+	}
+
+	debugConfigPath := filepath.Join(t.TempDir(), "qrypt.toml")
+	if err := os.WriteFile(debugConfigPath, []byte(`
+[debug]
+enabled = true
+listen = "127.0.0.1:19090"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root = NewRootCommand()
+	root.SetArgs([]string{"debug", "collect", "--config", debugConfigPath})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
+		t.Fatalf("expected debug collect to use configured debug endpoint, got %v", err)
+	}
+
+	root = NewRootCommand()
+	root.SetArgs([]string{"debug", "raw", "health", "--socket", "/tmp/qrypt.sock", "--url", "http://127.0.0.1:19090"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected --socket and --url conflict, got %v", err)
+	}
+
+	root = NewRootCommand()
 	root.SetArgs([]string{"debug", "bundle", "--socket", "/tmp/qrypt.sock", "--all-mounts"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected debug bundle without --out to fail")

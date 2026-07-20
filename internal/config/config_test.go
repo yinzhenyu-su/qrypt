@@ -159,6 +159,29 @@ log_file = "/tmp/qrypt.log"
 	}
 }
 
+func TestLoadDebugConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	err := os.WriteFile(path, []byte(`
+[debug]
+enabled = true
+listen = "127.0.0.1:19090"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Debug.Enabled {
+		t.Fatal("expected debug to be enabled")
+	}
+	if cfg.Debug.EffectiveListen() != "127.0.0.1:19090" {
+		t.Fatalf("unexpected debug listen: %q", cfg.Debug.EffectiveListen())
+	}
+}
+
 func TestLoadTimeConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`

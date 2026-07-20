@@ -21,6 +21,22 @@ type Entry struct {
 	Extra    any       `json:"-"`
 }
 
+type EntryRemoteNamer interface {
+	EntryRemoteName() string
+}
+
+func EntryRemoteName(entry Entry) (string, bool) {
+	extra, ok := entry.Extra.(EntryRemoteNamer)
+	if !ok {
+		return entry.Name, false
+	}
+	name := extra.EntryRemoteName()
+	if name == "" {
+		return entry.Name, false
+	}
+	return name, true
+}
+
 // Driver is the complete operation and observability contract every cloud
 // drive adapter must implement. Unsupported operations should return
 // ErrUnsupported and stay absent from Capabilities.
