@@ -36,6 +36,21 @@ func TestResolvePathUsesConfiguredRootPath(t *testing.T) {
 	}
 }
 
+func TestEntryFSIDUsesWrappedRawExtra(t *testing.T) {
+	entry := drive.Entry{
+		ID:   "/Qrypt/a.txt",
+		Name: "a.txt",
+		Extra: drive.EntryExtraWrapper{
+			RemoteName: "encrypted-name",
+			Raw:        map[string]any{"fs_id": "12345"},
+		},
+	}
+
+	if got := entryFSID(entry); got != "12345" {
+		t.Fatalf("entryFSID = %q, want 12345", got)
+	}
+}
+
 func TestListUsesRootPathAndPaginates(t *testing.T) {
 	ctx := context.Background()
 	var listed []string

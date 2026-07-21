@@ -361,21 +361,26 @@ Common endpoints:
 | --- | --- | --- |
 | `/v1/health` | Debug socket health | Small |
 | `/v1/runtime` | Go runtime and memory summary | Small |
+| `/v1/debug/reset` | Reset debug epoch and clear VFS read history | Small |
+| `/v1/debug/stacks` | Goroutine stack dump | Text, can be large |
 | `/v1/state?mount=NAME` | Mount snapshot | Can grow with pending, cache, events |
 | `/v1/pending?mount=NAME` | Pending writeback files | Grows with pending count |
 | `/v1/uploads?mount=NAME&history=1` | Active and recent uploads | Bounded history |
-| `/v1/reads?mount=NAME` | Recent read events | Bounded history |
+| `/v1/ops?mount=NAME` | Active VFS read, chunk, window, and prefetch ops | Small, current in-flight ops only |
+| `/v1/reads?mount=NAME&limit=200&since=2m` | Recent read events | Bounded history, filtered server-side |
 | `/v1/staging?mount=NAME` | Staging files and orphan staging files | Grows with staging files |
 | `/v1/cache?mount=NAME` | Read cache and pending journal health | Grows with cache files |
 | `/v1/events?level=warn&limit=100` | Recent warnings/errors | Limited by `limit` |
 | `/v1/debug/faults/upload-cancel` | Armed upload cancellation test faults | Small |
-| `/v1/driver?mount=NAME` | Driver debug snapshot and metrics | Driver dependent |
+| `/v1/driver?mount=NAME&limit=200&since=2m` | Driver debug snapshot and metrics | Driver dependent, metrics filtered server-side |
 | `/v1/mounts/health?mount=NAME` | Recent operation health | Small |
 | `/v1/resolve?path=PATH` | Resolve a virtual path | Small |
 | `/v1/consistency?path=PATH` | Compare pending and remote state for a path | Small for one path |
 
 Raw endpoints can take repeated `mount=NAME` query parameters when multiple
 mounts are relevant.
+`/v1/reads` and `/v1/driver` also support `operation`, `phase`, `op_id`,
+`remote_id`, and `error_only=1`.
 
 ## Benchmarks
 

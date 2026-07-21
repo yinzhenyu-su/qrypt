@@ -121,6 +121,7 @@ func newDebugBundleCmd() *cobra.Command {
 					"raw/state.json":        debugEndpointWithMounts("/v1/state", mounts),
 					"raw/pending.json":      debugEndpointWithMounts("/v1/pending", mounts),
 					"raw/uploads.json":      debugEndpointWithMounts("/v1/uploads?history=1", mounts),
+					"raw/ops.json":          debugEndpointWithMounts("/v1/ops", mounts),
 					"raw/reads.json":        debugEndpointWithMounts("/v1/reads", mounts),
 					"raw/events.json":       "/v1/events?level=warn&limit=500",
 					"raw/cache.json":        debugEndpointWithMounts("/v1/cache", mounts),

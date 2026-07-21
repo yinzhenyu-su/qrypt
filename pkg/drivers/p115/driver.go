@@ -25,9 +25,9 @@ import (
 	"golang.org/x/time/rate"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const defaultAppVer = "35.6.0.3"
@@ -892,7 +892,7 @@ func entryFromFile(f driver115.File) drive.Entry {
 }
 
 func (d *Driver) pickCode(ctx context.Context, entry drive.Entry) (string, error) {
-	switch f := entry.Extra.(type) {
+	switch f := drive.EntryRawExtra(entry).(type) {
 	case driver115.File:
 		if f.PickCode != "" {
 			return f.PickCode, nil
@@ -953,7 +953,7 @@ func (d *Driver) waitUploadedFile(ctx context.Context, parentID, name string, so
 }
 
 func entrySHA1(entry drive.Entry) string {
-	switch f := entry.Extra.(type) {
+	switch f := drive.EntryRawExtra(entry).(type) {
 	case driver115.File:
 		return strings.ToUpper(f.Sha1)
 	case *driver115.File:
@@ -965,7 +965,7 @@ func entrySHA1(entry drive.Entry) string {
 }
 
 func rawEntrySize(entry drive.Entry) int64 {
-	switch f := entry.Extra.(type) {
+	switch f := drive.EntryRawExtra(entry).(type) {
 	case driver115.File:
 		return f.GetSize()
 	case *driver115.File:

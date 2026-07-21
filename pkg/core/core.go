@@ -15,9 +15,12 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/media"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+const uploadCopyChunkSize = 256 * 1024
 
 type Options struct {
 	ConfigPath     string
@@ -96,6 +99,104 @@ func (c *Core) List(ctx context.Context, path string) ([]drive.Entry, error) {
 	return c.fs.List(ctx, path)
 }
 
+func (c *Core) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
+	if c == nil || c.fs == nil {
+		return drive.Entry{}, fmt.Errorf("core: closed")
+	}
+	return c.fs.Mkdir(ctx, path)
+}
+
+func (c *Core) Rename(ctx context.Context, oldPath, newPath string) error {
+	if c == nil || c.fs == nil {
+		return fmt.Errorf("core: closed")
+	}
+	return c.fs.Rename(ctx, oldPath, newPath)
+}
+
+func (c *Core) Remove(ctx context.Context, path string) error {
+	if c == nil || c.fs == nil {
+		return fmt.Errorf("core: closed")
+	}
+	item, err := c.fs.Stat(ctx, path)
+	if err != nil {
+		return err
+	}
+	if item.IsDir {
+		return c.fs.RemoveDir(ctx, path)
+	}
+	return c.fs.Remove(ctx, path)
+}
+
+func (c *Core) Capabilities(ctx context.Context, path string) (vfs.CapabilityInfo, error) {
+	if c == nil || c.fs == nil {
+		return vfs.CapabilityInfo{}, fmt.Errorf("core: closed")
+	}
+	reporter, ok := c.fs.(vfs.CapabilityReporter)
+	if !ok {
+		return vfs.CapabilityInfo{}, fmt.Errorf("core: capability query unavailable")
+	}
+	return reporter.CapabilitiesForPath(ctx, path)
+}
+
+func (c *Core) Mounts() ([]vfs.MountInfo, error) {
+	if c == nil || c.fs == nil {
+		return nil, fmt.Errorf("core: closed")
+	}
+	reporter, ok := c.fs.(vfs.MountReporter)
+	if !ok {
+		return nil, fmt.Errorf("core: mount query unavailable")
+	}
+	mounts := reporter.Mounts()
+	out := make([]vfs.MountInfo, len(mounts))
+	copy(out, mounts)
+	return out, nil
+}
+
+func (c *Core) UploadLocalFile(ctx context.Context, localPath, remotePath string) (drive.Entry, error) {
+	if c == nil || c.fs == nil {
+		return drive.Entry{}, fmt.Errorf("core: closed")
+	}
+	if strings.TrimSpace(localPath) == "" {
+		return drive.Entry{}, fmt.Errorf("core: local path required")
+	}
+	if strings.TrimSpace(remotePath) == "" {
+		return drive.Entry{}, fmt.Errorf("core: remote path required")
+	}
+	f, err := os.Open(localPath)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer f.Close()
+	if err := c.fs.Create(ctx, remotePath); err != nil {
+		return drive.Entry{}, err
+	}
+	buf := make([]byte, uploadCopyChunkSize)
+	var off int64
+	for {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			written, err := c.fs.WriteAt(ctx, remotePath, buf[:n], off)
+			if err != nil {
+				return drive.Entry{}, err
+			}
+			if written != n {
+				return drive.Entry{}, fmt.Errorf("core: short staging write: wrote %d of %d", written, n)
+			}
+			off += int64(written)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return drive.Entry{}, readErr
+		}
+	}
+	if err := c.fs.Flush(ctx, remotePath); err != nil {
+		return drive.Entry{}, err
+	}
+	return c.fs.Stat(ctx, remotePath)
+}
+
 func (c *Core) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
 	if c == nil || c.fs == nil {
 		return nil, fmt.Errorf("core: closed")
@@ -125,6 +226,36 @@ func (c *Core) ReadAt(ctx context.Context, path string, offset int64, length int
 	}
 	defer rc.Close()
 	return io.ReadAll(rc)
+}
+
+func (c *Core) ProbeMP4(ctx context.Context, path string) (media.MP4Probe, error) {
+	item, err := c.Stat(ctx, path)
+	if err != nil {
+		return media.MP4Probe{}, err
+	}
+	if item.IsDir {
+		return media.MP4Probe{}, fmt.Errorf("core: %s is a directory", path)
+	}
+	return media.ProbeMP4(ctx, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
+		return c.ReadAt(ctx, path, offset, length, DefaultReadChunkLimit)
+	})
+}
+
+func (c *Core) OpenVirtualFile(ctx context.Context, path, mode string) (media.VirtualFile, error) {
+	item, err := c.Stat(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if item.IsDir {
+		return nil, fmt.Errorf("core: %s is a directory", path)
+	}
+	return media.NewVirtualFile(ctx, mode, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
+		limit := DefaultReadChunkLimit
+		if length > limit {
+			limit = length
+		}
+		return c.ReadAt(ctx, path, offset, length, limit)
+	})
 }
 
 func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {
@@ -354,6 +485,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 			CacheDir:      mountCacheDir,
 			CacheMaxBytes: maxBytes,
 			RootID:        rootID,
+			Encrypted:     enc.Password != "",
 			UploadDelay:   uploadDelay,
 			UploadWorkers: cache.UploadWorkers,
 			DeleteDelay:   deleteDelay,

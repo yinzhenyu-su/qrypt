@@ -9,7 +9,10 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -119,61 +122,83 @@ func (v *VFS) readChunkRange(ctx context.Context, entry drive.Entry, index, star
 	if cacheKey != "" {
 		if hot, ok := v.hotChunk(cacheKey, index); ok {
 			v.cache.addHit()
-			return sliceChunkRange(hot, start, size), nil
+			data := sliceChunkRange(hot, start, size)
+			v.recordReadChunkDetail(ctx, entry, "cache_hot_hit", index, start, size, int64(len(data)), timeutil.Now(), nil, nil)
+			return data, nil
 		}
 		if shouldPromoteCachedRange(size) && v.shouldPromoteCachedRange(cacheKey, index) {
+			started := timeutil.Now()
 			if cached, chunk, ok, err := v.cache.GetChunkWithRange(cacheKey, index, start, size); err != nil {
+				v.recordReadChunkDetail(ctx, entry, "cache_range_promote", index, start, size, 0, started, nil, err)
 				return nil, err
 			} else if ok {
 				if len(chunk) > 0 {
 					v.putHotChunk(cacheKey, index, chunk)
 				}
+				v.recordReadChunkDetail(ctx, entry, "cache_range_promote", index, start, size, int64(len(cached)), started, map[string]any{"promoted": len(chunk) > 0}, nil)
 				return cached, nil
 			}
 		}
+		started := timeutil.Now()
 		if cached, ok, err := v.cache.GetChunkRange(cacheKey, index, start, size); err != nil {
+			v.recordReadChunkDetail(ctx, entry, "cache_range_hit", index, start, size, 0, started, nil, err)
 			return nil, err
 		} else if ok {
 			v.recordCachedRangeHit(cacheKey, index, size)
+			v.recordReadChunkDetail(ctx, entry, "cache_range_hit", index, start, size, int64(len(cached)), started, nil, nil)
 			return cached, nil
 		}
 	}
+	waitStarted := timeutil.Now()
 	if data, ok, err := v.waitWindow(ctx, cacheKey, index); err != nil {
+		v.recordReadChunkDetail(ctx, entry, "wait_window", index, start, size, 0, waitStarted, nil, err)
 		return nil, err
 	} else if ok {
 		if data != nil {
-			return sliceChunkRange(data, start, size), nil
+			chunk := sliceChunkRange(data, start, size)
+			v.recordReadChunkDetail(ctx, entry, "wait_window", index, start, size, int64(len(chunk)), waitStarted, nil, nil)
+			return chunk, nil
 		}
 		if cacheKey != "" {
 			if shouldPromoteCachedRange(size) && v.shouldPromoteCachedRange(cacheKey, index) {
+				started := timeutil.Now()
 				if cached, chunk, ok, err := v.cache.GetChunkWithRange(cacheKey, index, start, size); err != nil {
+					v.recordReadChunkDetail(ctx, entry, "wait_window_cache_promote", index, start, size, 0, started, nil, err)
 					return nil, err
 				} else if ok {
 					if len(chunk) > 0 {
 						v.putHotChunk(cacheKey, index, chunk)
 					}
+					v.recordReadChunkDetail(ctx, entry, "wait_window_cache_promote", index, start, size, int64(len(cached)), started, map[string]any{"promoted": len(chunk) > 0}, nil)
 					return cached, nil
 				}
 			}
+			started := timeutil.Now()
 			if cached, ok, err := v.cache.GetChunkRange(cacheKey, index, start, size); err != nil {
+				v.recordReadChunkDetail(ctx, entry, "wait_window_cache_hit", index, start, size, 0, started, nil, err)
 				return nil, err
 			} else if ok {
 				v.recordCachedRangeHit(cacheKey, index, size)
+				v.recordReadChunkDetail(ctx, entry, "wait_window_cache_hit", index, start, size, int64(len(cached)), started, nil, nil)
 				return cached, nil
 			}
 		}
 	}
 	var data []byte
 	var err error
+	loadStarted := timeutil.Now()
 	if cacheKey != "" {
 		data, err = v.loadChunkWindow(ctx, entry, index, readWindowChunks(size))
 	} else {
 		data, err = v.loadChunk(ctx, entry, index)
 	}
 	if err != nil {
+		v.recordReadChunkDetail(ctx, entry, "cache_miss_load", index, start, size, 0, loadStarted, nil, err)
 		return nil, err
 	}
-	return sliceChunkRange(data, start, size), nil
+	chunk := sliceChunkRange(data, start, size)
+	v.recordReadChunkDetail(ctx, entry, "cache_miss_load", index, start, size, int64(len(chunk)), loadStarted, map[string]any{"window_chunks": readWindowChunks(size)}, nil)
+	return chunk, nil
 }
 
 func sliceChunkRange(data []byte, start, size int64) []byte {
@@ -221,7 +246,7 @@ func (v *VFS) readChunk(ctx context.Context, entry drive.Entry, index int64) ([]
 }
 
 func readWindowChunks(requestSize int64) int {
-	if requestSize > 0 && requestSize < readChunkSize {
+	if requestSize > 0 && requestSize <= readChunkSize {
 		return 1
 	}
 	return readPrefetchChunks
@@ -278,10 +303,22 @@ func (v *VFS) loadChunk(ctx context.Context, entry drive.Entry, index int64) ([]
 	v.chunkLoadMu.Lock()
 	if load := v.chunkLoads[key]; load != nil {
 		v.chunkLoadMu.Unlock()
+		started := timeutil.Now()
+		activeID := v.beginDebugActive(DebugActiveOp{
+			Kind:       "vfs_wait",
+			Phase:      "wait_chunk_load",
+			Path:       debugOperationName(ctx),
+			RemoteID:   entry.ID,
+			ChunkIndex: index,
+			WaitFor:    key,
+		})
+		defer v.finishDebugActive(activeID)
 		select {
 		case <-load.done:
+			v.recordReadChunkDetail(ctx, entry, "wait_chunk_load", index, 0, readChunkSize, int64(len(load.data)), started, nil, load.err)
 			return load.data, load.err
 		case <-ctx.Done():
+			v.recordReadChunkDetail(ctx, entry, "wait_chunk_load", index, 0, readChunkSize, 0, started, nil, ctx.Err())
 			return nil, ctx.Err()
 		}
 	}
@@ -289,7 +326,21 @@ func (v *VFS) loadChunk(ctx context.Context, entry drive.Entry, index int64) ([]
 	v.chunkLoads[key] = load
 	v.chunkLoadMu.Unlock()
 
+	started := timeutil.Now()
+	activeID := v.beginDebugActive(DebugActiveOp{
+		Kind:       "vfs_chunk_load",
+		Phase:      "fetch_chunk",
+		Path:       debugOperationName(ctx),
+		RemoteID:   entry.ID,
+		Offset:     index * readChunkSize,
+		Requested:  readChunkSize,
+		ChunkIndex: index,
+		Background: debugOperationStep(ctx) == "vfs_prefetch_chunk",
+		WaitFor:    key,
+	})
 	load.data, load.err = v.fetchChunk(ctx, entry, index)
+	v.finishDebugActive(activeID)
+	v.recordReadChunkDetail(ctx, entry, "fetch_chunk", index, 0, readChunkSize, int64(len(load.data)), started, nil, load.err)
 	close(load.done)
 
 	v.chunkLoadMu.Lock()
@@ -320,13 +371,28 @@ func (v *VFS) loadChunkWindow(ctx context.Context, entry drive.Entry, startIndex
 	v.windowLoadMu.Lock()
 	if load := v.windowLoads[key]; load != nil {
 		v.windowLoadMu.Unlock()
+		started := timeutil.Now()
+		activeID := v.beginDebugActive(DebugActiveOp{
+			Kind:        "vfs_wait",
+			Phase:       "wait_window_load",
+			Path:        debugOperationName(ctx),
+			RemoteID:    entry.ID,
+			ChunkIndex:  startIndex,
+			WindowStart: startIndex,
+			WindowEnd:   endIndex,
+			WaitFor:     key,
+		})
+		defer v.finishDebugActive(activeID)
 		select {
 		case <-load.done:
 			if load.err != nil {
+				v.recordReadChunkDetail(ctx, entry, "wait_window_load", startIndex, 0, readChunkSize, 0, started, map[string]any{"window_start": startIndex, "window_end": endIndex}, load.err)
 				return nil, load.err
 			}
+			v.recordReadChunkDetail(ctx, entry, "wait_window_load", startIndex, 0, readChunkSize, int64(len(load.data[startIndex])), started, map[string]any{"window_start": startIndex, "window_end": endIndex}, nil)
 			return load.data[startIndex], nil
 		case <-ctx.Done():
+			v.recordReadChunkDetail(ctx, entry, "wait_window_load", startIndex, 0, readChunkSize, 0, started, map[string]any{"window_start": startIndex, "window_end": endIndex}, ctx.Err())
 			return nil, ctx.Err()
 		}
 	}
@@ -334,7 +400,22 @@ func (v *VFS) loadChunkWindow(ctx context.Context, entry drive.Entry, startIndex
 	v.windowLoads[key] = load
 	v.windowLoadMu.Unlock()
 
+	started := timeutil.Now()
+	activeID := v.beginDebugActive(DebugActiveOp{
+		Kind:        "vfs_window_load",
+		Phase:       "fetch_window",
+		Path:        debugOperationName(ctx),
+		RemoteID:    entry.ID,
+		Offset:      startIndex * readChunkSize,
+		Requested:   (endIndex - startIndex + 1) * readChunkSize,
+		ChunkIndex:  startIndex,
+		WindowStart: startIndex,
+		WindowEnd:   endIndex,
+		WaitFor:     key,
+	})
 	load.data, load.err = v.fetchChunkWindow(ctx, entry, startIndex, endIndex)
+	v.finishDebugActive(activeID)
+	v.recordReadChunkDetail(ctx, entry, "fetch_window", startIndex, 0, (endIndex-startIndex+1)*readChunkSize, windowBytes(load.data), started, map[string]any{"window_start": startIndex, "window_end": endIndex}, load.err)
 	close(load.done)
 
 	v.windowLoadMu.Lock()
@@ -449,7 +530,21 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 	v.windowLoadMu.Unlock()
 
 	go func() {
+		activeID := v.beginDebugActive(DebugActiveOp{
+			Kind:        "vfs_prefetch",
+			Phase:       "fetch_window",
+			Path:        debugOperationName(ctx),
+			RemoteID:    entry.ID,
+			Offset:      startIndex * readChunkSize,
+			Requested:   (endIndex - startIndex + 1) * readChunkSize,
+			ChunkIndex:  startIndex,
+			WindowStart: startIndex,
+			WindowEnd:   endIndex,
+			Background:  true,
+			WaitFor:     key,
+		})
 		defer func() {
+			v.finishDebugActive(activeID)
 			close(load.done)
 			v.windowLoadMu.Lock()
 			delete(v.windowLoads, key)
@@ -532,6 +627,17 @@ func (v *VFS) waitWindow(ctx context.Context, fid string, index int64) ([]byte, 
 	if load == nil {
 		return nil, false, nil
 	}
+	activeID := v.beginDebugActive(DebugActiveOp{
+		Kind:        "vfs_wait",
+		Phase:       "wait_window",
+		Path:        debugOperationName(ctx),
+		RemoteID:    fid,
+		ChunkIndex:  index,
+		WindowStart: load.start,
+		WindowEnd:   load.end,
+		WaitFor:     readWindowKey(load.fid, load.start, load.end),
+	})
+	defer v.finishDebugActive(activeID)
 	select {
 	case <-load.done:
 		if load.err != nil {
@@ -581,7 +687,12 @@ func (v *VFS) prefetchChunk(ctx context.Context, entry drive.Entry, index int64)
 			delete(v.prefetching, key)
 			v.prefetchMu.Unlock()
 		}()
-		_, _ = v.loadChunk(context.WithoutCancel(ctx), entry, index)
+		prefetchCtx := drive.WithDebugOperation(context.WithoutCancel(ctx), drive.DebugOperation{
+			OpID: fmt.Sprintf("prefetch-%d", atomic.AddUint64(&v.activeSequence, 1)),
+			Step: "vfs_prefetch_chunk",
+			Name: debugOperationName(ctx),
+		})
+		_, _ = v.loadChunk(prefetchCtx, entry, index)
 	}()
 }
 
@@ -607,6 +718,45 @@ func (v *VFS) readChunkAvailable(cacheKey string, index int64) bool {
 		}
 	}
 	return false
+}
+
+func (v *VFS) recordReadChunkDetail(ctx context.Context, entry drive.Entry, phase string, index, start, size, bytes int64, started time.Time, extra map[string]any, err error) {
+	op, ok := drive.DebugOperationFromContext(ctx)
+	if !ok || op.OpID == "" {
+		return
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	extra["chunk_index"] = index
+	extra["chunk_offset"] = index * readChunkSize
+	extra["chunk_range_start"] = start
+	extra["chunk_range_size"] = size
+	v.recordDebugReadDetail(ctx, op.Name, entry.ID, phase, index*readChunkSize+start, size, bytes, started, extra, err)
+}
+
+func debugOperationName(ctx context.Context) string {
+	op, ok := drive.DebugOperationFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	return op.Name
+}
+
+func debugOperationStep(ctx context.Context) string {
+	op, ok := drive.DebugOperationFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	return op.Step
+}
+
+func windowBytes(chunks map[int64][]byte) int64 {
+	var total int64
+	for _, chunk := range chunks {
+		total += int64(len(chunk))
+	}
+	return total
 }
 
 func (v *VFS) hotChunk(cacheKey string, index int64) ([]byte, bool) {

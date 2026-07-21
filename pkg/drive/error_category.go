@@ -62,6 +62,8 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryCancelled
 	case containsAny(msg, "deadline exceeded", "timeout", "timed out", "i/o timeout"):
 		return ErrorCategoryTimeout
+	case containsAny(msg, "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "no such host", "software caused connection abort", "eof"):
+		return ErrorCategoryNetwork
 	case containsAny(msg, "unauthorized", "forbidden", "permission denied", "access denied", "invalid token", "token expired", "login", "credential", "401", "403"):
 		return ErrorCategoryAuth
 	case containsAny(msg, "rate limit", "too many requests", "quota exceeded", "429"):
@@ -78,8 +80,6 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryConsistency
 	case containsAny(msg, "500", "502", "503", "504", "internal server error", "bad gateway", "service unavailable", "gateway timeout"):
 		return ErrorCategoryRemote5xx
-	case containsAny(msg, "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "eof"):
-		return ErrorCategoryNetwork
 	case containsAny(msg, "input/output error", "disk full", "no space left", "read-only file system"):
 		return ErrorCategoryLocalIO
 	default:

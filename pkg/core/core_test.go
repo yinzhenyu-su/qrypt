@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func TestBuildFileSystemUsesWorkDirCache(t *testing.T) {
@@ -167,4 +170,66 @@ func TestCoreReadAtLimit(t *testing.T) {
 	if string(data) != "ell" {
 		t.Fatalf("ReadAt = %q, want ell", string(data))
 	}
+}
+
+func TestCoreCRUDUsesVFSStaging(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		CacheDir:    filepath.Join(tmp, "cache"),
+		UploadDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+	c := &Core{fs: fs}
+
+	dir, err := c.Mkdir(ctx, "/docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dir.IsDir || dir.Name != "docs" {
+		t.Fatalf("mkdir entry = %+v", dir)
+	}
+
+	localPath := filepath.Join(tmp, "local.txt")
+	if err := os.WriteFile(localPath, []byte("hello from staging"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uploaded, err := c.UploadLocalFile(ctx, localPath, "/docs/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Name != "file.txt" || uploaded.Size != int64(len("hello from staging")) {
+		t.Fatalf("uploaded entry = %+v", uploaded)
+	}
+	waitCoreCondition(t, func() bool {
+		data, err := os.ReadFile(filepath.Join(remote, "docs", "file.txt"))
+		return err == nil && string(data) == "hello from staging"
+	})
+
+	if err := c.Rename(ctx, "/docs/file.txt", "/docs/renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitCoreCondition(t, func() bool {
+		data, err := os.ReadFile(filepath.Join(remote, "docs", "renamed.txt"))
+		return err == nil && string(data) == "hello from staging"
+	})
+}
+
+func waitCoreCondition(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met before timeout")
 }
