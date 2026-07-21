@@ -31,17 +31,6 @@ type DriverOptions struct {
 	ContentDedup bool
 }
 
-// EntryExtra preserves raw backend metadata for entries whose public name and
-// size have been transformed by the crypt driver.
-type EntryExtra struct {
-	RemoteName string
-	RawExtra   any
-}
-
-func (e EntryExtra) EntryRemoteName() string {
-	return e.RemoteName
-}
-
 // RemoteName returns the backend object name captured before filename
 // decryption. Non-crypt entries fall back to their public name.
 func RemoteName(entry drive.Entry) (string, bool) {
@@ -150,7 +139,7 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 	for i := range entries {
 		entry := entries[i]
 		rawName := entry.Name
-		entry.Extra = EntryExtra{RemoteName: rawName, RawExtra: entry.Extra}
+		entry.Extra = drive.EntryExtraWrapper{RemoteName: rawName, Raw: entry.Extra}
 		name, err := d.cp.DecryptSegment(entry.Name)
 		if err != nil || !validPlainName(name) {
 			continue
@@ -288,7 +277,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	encName := d.cp.EncryptSegment(name)
 	entry, err := d.raw.Mkdir(ctx, parentID, encName)
 	if err == nil {
-		entry.Extra = EntryExtra{RemoteName: encName, RawExtra: entry.Extra}
+		entry.Extra = drive.EntryExtraWrapper{RemoteName: encName, Raw: entry.Extra}
 		entry.Name = name
 	}
 	return entry, err
@@ -347,7 +336,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	entry, err := d.raw.PutSource(ctx, rawReq)
 	if err == nil {
 		d.nonceCache.Store(entry.ID, nonce)
-		entry.Extra = EntryExtra{RemoteName: encName, RawExtra: entry.Extra}
+		entry.Extra = drive.EntryExtraWrapper{RemoteName: encName, Raw: entry.Extra}
 		entry.Name = req.Name
 		entry.Size = source.Size()
 	}

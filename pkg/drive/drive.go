@@ -25,6 +25,25 @@ type EntryRemoteNamer interface {
 	EntryRemoteName() string
 }
 
+type EntryRawExtraer interface {
+	EntryRawExtra() any
+}
+
+// EntryExtraWrapper preserves backend metadata when a higher-level driver
+// transforms the public entry name, size, or other visible fields.
+type EntryExtraWrapper struct {
+	RemoteName string
+	Raw        any
+}
+
+func (e EntryExtraWrapper) EntryRemoteName() string {
+	return e.RemoteName
+}
+
+func (e EntryExtraWrapper) EntryRawExtra() any {
+	return e.Raw
+}
+
 func EntryRemoteName(entry Entry) (string, bool) {
 	extra, ok := entry.Extra.(EntryRemoteNamer)
 	if !ok {
@@ -35,6 +54,22 @@ func EntryRemoteName(entry Entry) (string, bool) {
 		return entry.Name, false
 	}
 	return name, true
+}
+
+func EntryRawExtra(entry Entry) any {
+	return RawEntryExtra(entry.Extra)
+}
+
+func RawEntryExtra(raw any) any {
+	extra, ok := raw.(EntryRawExtraer)
+	if !ok {
+		return raw
+	}
+	next := extra.EntryRawExtra()
+	if next == nil || next == raw {
+		return raw
+	}
+	return RawEntryExtra(next)
 }
 
 // Driver is the complete operation and observability contract every cloud
