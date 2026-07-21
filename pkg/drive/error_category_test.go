@@ -56,6 +56,8 @@ func TestErrorCategoryMessage(t *testing.T) {
 		{message: "invalid parameter parent_id", want: ErrorCategoryInvalidRequest},
 		{message: "driver does not support upload", want: ErrorCategoryUnsupported},
 		{message: "connection reset by peer", want: ErrorCategoryNetwork},
+		{message: `Get "https://dl-pc-sz.drive.quark.cn/file?auth_key=token": dial tcp: lookup dl-pc-sz.drive.quark.cn: no such host`, want: ErrorCategoryNetwork},
+		{message: "read encrypted block: read tcp 192.168.1.32:40128->222.186.17.199:443: read: software caused connection abort", want: ErrorCategoryNetwork},
 		{message: "no space left on device", want: ErrorCategoryLocalIO},
 	}
 	for _, tc := range tests {
