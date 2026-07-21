@@ -75,3 +75,37 @@ func TestNormalizeMetricEventsDoesNotDuplicateTopLevelFieldsInExtra(t *testing.T
 		t.Fatalf("extra = %#v, want nil", metrics[0].Extra)
 	}
 }
+
+func TestNormalizeMetricEventsMasksSensitiveURL(t *testing.T) {
+	metrics := NormalizeMetricEvents("driver", []MetricEvent{{
+		At:              time.Now(),
+		Operation:       "download",
+		Method:          "GET",
+		URL:             "https://download.example/path/secret-token",
+		SensitiveMasked: true,
+	}})
+	if len(metrics) != 1 {
+		t.Fatalf("metrics len = %d, want 1", len(metrics))
+	}
+	if metrics[0].URL != "" {
+		t.Fatalf("url = %q, want masked", metrics[0].URL)
+	}
+	if got := metrics[0].Request["url_host"]; got != "download.example" {
+		t.Fatalf("url_host = %v, want download.example", got)
+	}
+}
+
+func TestNormalizeMetricEventsKeepsNonSensitiveURL(t *testing.T) {
+	metrics := NormalizeMetricEvents("driver", []MetricEvent{{
+		At:        time.Now(),
+		Operation: "api_request",
+		Method:    "GET",
+		URL:       "https://example.invalid/api",
+	}})
+	if len(metrics) != 1 {
+		t.Fatalf("metrics len = %d, want 1", len(metrics))
+	}
+	if metrics[0].URL != "https://example.invalid/api" {
+		t.Fatalf("url = %q, want original", metrics[0].URL)
+	}
+}
