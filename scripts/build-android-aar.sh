@@ -4,6 +4,8 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT_DIR="${1:-$ROOT_DIR/dist/android}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
+GOPATH_BIN="$(go env GOPATH)/bin"
+PATH="$PATH:$GOPATH_BIN"
 
 if ! command -v gomobile >/dev/null 2>&1; then
   echo "gomobile is required. Install it with: go install golang.org/x/mobile/cmd/gomobile@latest" >&2
