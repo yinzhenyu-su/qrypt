@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
@@ -20,9 +21,23 @@ import (
 
 const DebugSnapshotSchemaVersion = 2
 const uploadSnapshotHistoryLimit = 100
-const debugReadHistoryLimit = 100
+const debugReadHistoryLimit = 1000
 
 var debugStartedAt = time.Now()
+var debugStartedAtMu sync.RWMutex
+
+func DebugStartedAt() time.Time {
+	debugStartedAtMu.RLock()
+	defer debugStartedAtMu.RUnlock()
+	return debugStartedAt
+}
+
+func ResetDebugStartedAt() time.Time {
+	debugStartedAtMu.Lock()
+	defer debugStartedAtMu.Unlock()
+	debugStartedAt = timeutil.Now()
+	return debugStartedAt
+}
 
 const (
 	uploadSnapshotStatePreparing  = string(drive.UploadPhasePreparing)
@@ -348,7 +363,7 @@ func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
 			snapshot.Identity.Encrypted = true
 		}
 	}
-	if metrics, err := v.driver.Metrics(context.Background(), debugStartedAt); err == nil {
+	if metrics, err := v.driver.Metrics(context.Background(), DebugStartedAt()); err == nil {
 		snapshot.Events.Driver = metrics
 	}
 	for i := range snapshot.Events.Reads {
@@ -486,7 +501,7 @@ func (s MountSnapshot) ReadCacheState() DebugReadCache {
 }
 
 func debugProcess() DebugProcess {
-	return DebugProcess{PID: os.Getpid(), StartedAt: debugStartedAt}
+	return DebugProcess{PID: os.Getpid(), StartedAt: DebugStartedAt()}
 }
 
 func debugDriverEncrypted(snapshot drive.DebugSnapshot) bool {
@@ -741,10 +756,51 @@ func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, by
 	v.readMu.Unlock()
 }
 
+func (v *VFS) recordDebugReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
+	op, ok := drive.DebugOperationFromContext(ctx)
+	if !ok || op.OpID == "" {
+		return
+	}
+	finished := timeutil.Now()
+	event := drive.MetricEvent{
+		At: finished, ParentOpID: op.OpID, Kind: "vfs_read", Operation: "read", Phase: phase, State: "completed", OK: true,
+		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
+		Bytes: bytes, StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
+		Extra: extra,
+	}
+	if bytes > 0 && finished.After(started) {
+		event.Throughput = int64(float64(bytes) / finished.Sub(started).Seconds())
+	}
+	if err != nil {
+		event.State = "failed"
+		event.OK = false
+		event.Error = err.Error()
+		event.ErrorCategory = drive.ErrorCategory(err)
+	}
+	v.readMu.Lock()
+	v.readHistory = append(v.readHistory, event)
+	if len(v.readHistory) > debugReadHistoryLimit {
+		v.readHistory = append([]drive.MetricEvent(nil), v.readHistory[len(v.readHistory)-debugReadHistoryLimit:]...)
+	}
+	v.readMu.Unlock()
+}
+
 func (v *VFS) debugReadHistory() []drive.MetricEvent {
 	v.readMu.Lock()
 	defer v.readMu.Unlock()
 	return append([]drive.MetricEvent(nil), v.readHistory...)
+}
+
+func (v *VFS) DebugReset(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	v.readMu.Lock()
+	v.readHistory = nil
+	v.readMu.Unlock()
+	return nil
 }
 
 func durationMillis(d time.Duration) int64 {
@@ -1276,6 +1332,26 @@ func (n *Namespace) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
 	}
 	n.mu.RUnlock()
 	return snapshot
+}
+
+func (n *Namespace) DebugReset(ctx context.Context) error {
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	for _, mount := range n.mounts {
+		mounts = append(mounts, mount)
+	}
+	n.mu.RUnlock()
+	for _, mount := range mounts {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		mount.readMu.Lock()
+		mount.readHistory = nil
+		mount.readMu.Unlock()
+	}
+	return nil
 }
 
 func debugMountNameSet(mountNames []string) map[string]bool {

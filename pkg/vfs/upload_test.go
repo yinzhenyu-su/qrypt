@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -68,10 +68,16 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	if history.Mount != "default" || history.Driver != "localfs" {
 		t.Fatalf("upload history missing mount metadata: %+v", history)
 	}
-	if len(snapshot.Mounts[0].ReadEvents()) != 1 {
-		t.Fatalf("read history count = %d, want 1: %+v", len(snapshot.Mounts[0].ReadEvents()), snapshot.Mounts[0].ReadEvents())
+	var read drive.MetricEvent
+	for _, event := range snapshot.Mounts[0].ReadEvents() {
+		if event.Phase == "read" {
+			read = event
+			break
+		}
 	}
-	read := snapshot.Mounts[0].ReadEvents()[0]
+	if read.Phase != "read" {
+		t.Fatalf("read history missing summary event: %+v", snapshot.Mounts[0].ReadEvents())
+	}
 	if read.Kind != "vfs_read" || read.Operation != "read" || !read.OK || read.Path != "/hello.txt" || read.RemoteID == "" || read.Bytes != int64(len("hello qrypt")) || read.State != "completed" {
 		t.Fatalf("unexpected read history: %+v", read)
 	}

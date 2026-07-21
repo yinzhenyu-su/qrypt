@@ -62,6 +62,9 @@ type VFS struct {
 	readHistory        []drive.MetricEvent
 	readSequence       uint64
 	readMu             sync.Mutex
+	activeSequence     uint64
+	activeMu           sync.Mutex
+	activeOps          map[string]DebugActiveOp
 
 	deleteDelay  time.Duration
 	deleteMu     sync.Mutex
@@ -150,6 +153,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		uploadWorkers:  opts.UploadWorkers,
 		uploadTimers:   map[string]*time.Timer{},
 		activeUploads:  map[string]*uploadSnapshotState{},
+		activeOps:      map[string]DebugActiveOp{},
 		deleteDelay:    opts.DeleteDelay,
 		deleteTimers:   map[string]*time.Timer{},
 		deleted:        map[string]drive.Entry{},
@@ -319,42 +323,73 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 	path = cleanVirtual(path)
 	started := timeutil.Now()
 	opID := fmt.Sprintf("read-%d", atomic.AddUint64(&v.readSequence, 1))
+	activeID := v.beginDebugActive(DebugActiveOp{
+		OpID:      opID,
+		Kind:      "vfs_read",
+		Phase:     "resolve",
+		Path:      path,
+		Offset:    offset,
+		Requested: size,
+	})
 	if pending, err := v.pending(path); err == nil {
+		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+			op.Phase = "staging_flush"
+			op.RemoteID = pending.FID
+		})
 		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
+			v.finishDebugActive(activeID)
 			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
 			return nil, err
 		}
+		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+			op.Phase = "staging_open"
+		})
 		rc, err := osutil.OpenRead(pending.LocalPath, offset, size)
 		if err != nil {
+			v.finishDebugActive(activeID)
 			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
+			v.finishDebugActive(activeID)
 			v.recordDebugRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, readErr)
 		}}, nil
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
+		v.finishDebugActive(activeID)
 		v.recordDebugRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
+		v.finishDebugActive(activeID)
 		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, err)
 		return nil, err
 	}
+	v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+		op.Phase = "read_range"
+		op.RemoteID = entry.ID
+	})
 	hitsBefore, missesBefore := v.debugCacheCounters()
-	data, startChunk, endChunk, err := v.readRange(ctx, entry, offset, size)
+	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
+	data, startChunk, endChunk, err := v.readRange(readCtx, entry, offset, size)
 	hitsAfter, missesAfter := v.debugCacheCounters()
 	if err != nil {
+		v.finishDebugActive(activeID)
 		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, err)
 		return nil, err
 	}
-	v.prefetchAdjacentChunks(ctx, entry, startChunk, endChunk, size)
+	v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+		op.Phase = "prefetch_schedule"
+		op.Extra = map[string]any{"start_chunk": startChunk, "end_chunk": endChunk}
+	})
+	v.prefetchAdjacentChunks(readCtx, entry, startChunk, endChunk, size)
 	var chunks int64
 	if len(data) > 0 {
 		chunks = endChunk - startChunk + 1
 	}
+	v.finishDebugActive(activeID)
 	v.recordDebugRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, nil)
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
