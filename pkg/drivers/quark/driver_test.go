@@ -108,6 +108,151 @@ func TestRegisterQuarkDriver(t *testing.T) {
 	}
 }
 
+func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
+	var apiCalls int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		apiCalls++
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	var downloadCalls int
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		downloadCalls++
+		if downloadCalls == 1 {
+			return nil, &net.DNSError{Name: req.URL.Host, Err: "no such host"}
+		}
+		if got := req.Header.Get("Range"); got != "bytes=4-8" {
+			t.Fatalf("range = %q, want bytes=4-8", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("hello")),
+			Request:    req,
+		}, nil
+	})
+
+	rc, err := driver.Read(context.Background(), drive.Entry{ID: "fid-1", Name: "file.bin", Size: 100}, 4, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("body = %q, want hello", data)
+	}
+	if apiCalls != 1 {
+		t.Fatalf("download URL calls = %d, want 1", apiCalls)
+	}
+	if downloadCalls != 2 {
+		t.Fatalf("download calls = %d, want 2", downloadCalls)
+	}
+	if _, ok := driver.getURL("fid-1"); !ok {
+		t.Fatal("download URL cache was invalidated after transient network error")
+	}
+	metrics := driver.cl.metricEvents(time.Time{})
+	if got := metricCount(metrics, "download_url"); got != 1 {
+		t.Fatalf("download_url metric count = %d, want 1", got)
+	}
+	if got := metricCount(metrics, "download"); got != 2 {
+		t.Fatalf("download metric count = %d, want 2", got)
+	}
+	var sawDownload bool
+	for _, event := range metrics {
+		if event.Operation != "download" || event.Attempt != 2 {
+			continue
+		}
+		sawDownload = true
+		if event.RemoteID != "fid-1" {
+			t.Fatalf("download remote_id = %q, want fid-1", event.RemoteID)
+		}
+		if event.Offset != 4 || event.Requested != 5 {
+			t.Fatalf("download offset/size = %d/%d, want 4/5", event.Offset, event.Requested)
+		}
+		if got := event.Request["range"]; got != "bytes=4-8" {
+			t.Fatalf("download range = %v, want bytes=4-8", got)
+		}
+		if got := event.Request["url_host"]; got != "download.test" {
+			t.Fatalf("download url_host = %v, want download.test", got)
+		}
+		if got := event.Request["url_cache_hit"]; got != false {
+			t.Fatalf("download url_cache_hit = %v, want false", got)
+		}
+	}
+	if !sawDownload {
+		t.Fatal("missing second download metric")
+	}
+}
+
+func TestDriverReadRefreshesURLAfterForbidden(t *testing.T) {
+	var apiCalls int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		apiCalls++
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": fmt.Sprintf("https://download.test/file-%d.bin", apiCalls)},
+			},
+		})
+	}))
+	defer api.Close()
+
+	var downloadCalls int
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		downloadCalls++
+		status := http.StatusPartialContent
+		body := "fresh"
+		if downloadCalls == 1 {
+			status = http.StatusForbidden
+			body = "expired"
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+
+	rc, err := driver.Read(context.Background(), drive.Entry{ID: "fid-1", Name: "file.bin", Size: 100}, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "fresh" {
+		t.Fatalf("body = %q, want fresh", data)
+	}
+	if apiCalls != 2 {
+		t.Fatalf("download URL calls = %d, want 2", apiCalls)
+	}
+	if downloadCalls != 2 {
+		t.Fatalf("download calls = %d, want 2", downloadCalls)
+	}
+}
+
 func TestDriverDebugSnapshot(t *testing.T) {
 	driver := New("k=v", Options{RootID: "root", RootPath: "/Docs"})
 	snapshot, err := driver.DebugSnapshot(context.Background())
@@ -1115,10 +1260,26 @@ func routeOSSToTestServer(c *http.Client, server *httptest.Server) {
 	}
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func metricCount(events []drive.MetricEvent, operation string) int {
+	var count int
+	for _, event := range events {
+		if event.Operation == operation {
+			count++
+		}
+	}
+	return count
 }

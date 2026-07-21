@@ -29,6 +29,10 @@ type Snapshotter interface {
 	DebugSnapshot() vfs.DebugSnapshot
 }
 
+type debugResetter interface {
+	DebugReset(context.Context) error
+}
+
 type Server struct {
 	socketPath string
 	endpoint   string
@@ -40,9 +44,14 @@ type Server struct {
 }
 
 type HealthResponse struct {
-	API       string    `json:"api"`
-	OK        bool      `json:"ok"`
-	Timestamp time.Time `json:"timestamp"`
+	API           string    `json:"api"`
+	OK            bool      `json:"ok"`
+	Timestamp     time.Time `json:"timestamp"`
+	PID           int       `json:"pid"`
+	DebugStarted  time.Time `json:"debug_started_at"`
+	GoVersion     string    `json:"go_version"`
+	NumGoroutine  int       `json:"num_goroutine"`
+	ListenAddress string    `json:"listen_address,omitempty"`
 }
 
 type PendingResponse struct {
@@ -78,10 +87,23 @@ type MountHealthResponse struct {
 	Mounts        []vfs.MountHealth `json:"mounts"`
 }
 
+type ActiveOpsResponse struct {
+	SchemaVersion int                    `json:"schema_version"`
+	GeneratedAt   time.Time              `json:"generated_at"`
+	Mounts        []vfs.DebugActiveMount `json:"mounts"`
+}
+
 type EventsResponse struct {
 	SchemaVersion int             `json:"schema_version"`
 	GeneratedAt   time.Time       `json:"generated_at"`
 	Events        []logging.Event `json:"events"`
+}
+
+type DebugResetResponse struct {
+	SchemaVersion  int       `json:"schema_version"`
+	GeneratedAt    time.Time `json:"generated_at"`
+	DebugStartedAt time.Time `json:"debug_started_at"`
+	Reset          []string  `json:"reset"`
 }
 
 type DebugDriverSummary struct {
@@ -245,15 +267,15 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = listener
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
+	mux.HandleFunc("/v1/debug/reset", s.handleDebugReset)
 	mux.HandleFunc("/v1/state", s.handleState)
 	mux.HandleFunc("/v1/pending", s.handlePending)
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
+	mux.HandleFunc("/v1/ops", s.handleOps)
 	mux.HandleFunc("/v1/reads", s.handleReads)
 	mux.HandleFunc("/v1/bench", s.handleBench)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
-	mux.HandleFunc("/v1/driver/bench", s.handleBench)
 	mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
-	mux.HandleFunc("/v1/probe/driver", s.handleDriverTest)
 	mux.HandleFunc("/v1/mounts/health", s.handleMountHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/list", s.handleList)
@@ -265,6 +287,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/consistency", s.handleConsistency)
 	mux.HandleFunc("/v1/runtime", s.handleRuntime)
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
+	mux.HandleFunc("/v1/debug/stacks", s.handleGoroutines)
 	s.server = &http.Server{Handler: mux}
 	go func() {
 		<-ctx.Done()
@@ -302,6 +325,28 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 			HeapSys:    mem.HeapSys,
 			NumGC:      mem.NumGC,
 		},
+	})
+}
+
+func (s *Server) handleOps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provider, ok := s.source.(vfs.DebugActiveProvider)
+	if !ok {
+		http.Error(w, "active ops not available", http.StatusNotImplemented)
+		return
+	}
+	mounts, err := provider.DebugActiveOps(r.Context(), debugMountQuery(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, ActiveOpsResponse{
+		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
+		GeneratedAt:   time.Now(),
+		Mounts:        mounts,
 	})
 }
 
@@ -481,7 +526,11 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 			if mount.Identity.Name != mountName {
 				continue
 			}
-			cache := filterReadCacheFile(mount.ReadCacheState(), info.RemoteID)
+			cacheID := info.CacheID
+			if cacheID == "" {
+				cacheID = info.RemoteID
+			}
+			cache := filterReadCacheFile(mount.ReadCacheState(), cacheID)
 			writeJSON(w, CacheResponse{
 				SchemaVersion: snapshot.SchemaVersion,
 				GeneratedAt:   snapshot.GeneratedAt,
@@ -895,7 +944,38 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, HealthResponse{API: APIVersion, OK: true, Timestamp: time.Now()})
+	writeJSON(w, HealthResponse{
+		API:           APIVersion,
+		OK:            true,
+		Timestamp:     time.Now(),
+		PID:           os.Getpid(),
+		DebugStarted:  vfs.DebugStartedAt(),
+		GoVersion:     runtime.Version(),
+		NumGoroutine:  runtime.NumGoroutine(),
+		ListenAddress: s.ListenAddress(),
+	})
+}
+
+func (s *Server) handleDebugReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	vfs.ResetDebugStartedAt()
+	reset := []string{"debug_started_at"}
+	if resetter, ok := s.source.(debugResetter); ok {
+		if err := resetter.DebugReset(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		reset = append(reset, "vfs_reads")
+	}
+	writeJSON(w, DebugResetResponse{
+		SchemaVersion:  vfs.DebugSnapshotSchemaVersion,
+		GeneratedAt:    time.Now(),
+		DebugStartedAt: vfs.DebugStartedAt(),
+		Reset:          reset,
+	})
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -1054,6 +1134,12 @@ func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.debugSnapshot(r)
 	filterPath := cleanVirtual(r.URL.Query().Get("path"))
 	hasFilter := r.URL.Query().Get("path") != ""
+	since, sinceOK, err := parseSinceQuery(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	limit := parseLimitQuery(r.URL.Query().Get("limit"), 200, 2000)
 	var reads []drive.MetricEvent
 	for _, mount := range snapshot.Mounts {
 		for _, event := range mount.ReadEvents() {
@@ -1069,15 +1155,84 @@ func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 			if hasFilter && cleanVirtual(event.Path) != filterPath {
 				continue
 			}
+			if sinceOK && eventTime(event).Before(since) {
+				continue
+			}
+			if !metricEventMatchesQuery(event, r.URL.Query()) {
+				continue
+			}
 			reads = append(reads, event)
 		}
 	}
 	sort.Slice(reads, func(i, j int) bool { return reads[i].StartedAt.Before(reads[j].StartedAt) })
+	reads = limitMetricEvents(reads, limit)
 	resp := ReadsResponse{SchemaVersion: snapshot.SchemaVersion, GeneratedAt: snapshot.GeneratedAt, Reads: reads}
 	if hasFilter {
 		resp.Path = filterPath
 	}
 	writeJSON(w, resp)
+}
+
+func parseSinceQuery(raw string) (time.Time, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return time.Now().Add(-d), true, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("invalid since %q: use duration like 2m or RFC3339 timestamp", raw)
+	}
+	return t, true, nil
+}
+
+func parseLimitQuery(raw string, def, max int) int {
+	limit := def
+	if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && parsed > 0 {
+		limit = parsed
+	}
+	if limit > max {
+		limit = max
+	}
+	return limit
+}
+
+func metricEventMatchesQuery(event drive.MetricEvent, q url.Values) bool {
+	if operation := strings.TrimSpace(q.Get("operation")); operation != "" && event.Operation != operation {
+		return false
+	}
+	if phase := strings.TrimSpace(q.Get("phase")); phase != "" && event.Phase != phase {
+		return false
+	}
+	if opID := strings.TrimSpace(q.Get("op_id")); opID != "" && event.OpID != opID && event.ParentOpID != opID {
+		return false
+	}
+	if remoteID := strings.TrimSpace(q.Get("remote_id")); remoteID != "" && event.RemoteID != remoteID {
+		return false
+	}
+	if parseBoolQuery(q.Get("error_only")) && event.Error == "" && event.OK {
+		return false
+	}
+	return true
+}
+
+func eventTime(event drive.MetricEvent) time.Time {
+	if !event.At.IsZero() {
+		return event.At
+	}
+	if !event.FinishedAt.IsZero() {
+		return event.FinishedAt
+	}
+	return event.StartedAt
+}
+
+func limitMetricEvents(events []drive.MetricEvent, limit int) []drive.MetricEvent {
+	if limit <= 0 || len(events) <= limit {
+		return events
+	}
+	return append([]drive.MetricEvent(nil), events[len(events)-limit:]...)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
