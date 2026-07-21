@@ -2,6 +2,7 @@ package drive
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -80,6 +81,19 @@ func NormalizeMetricEvents(driver string, raw []MetricEvent) []MetricEvent {
 	events := make([]MetricEvent, 0, len(raw))
 	for _, event := range raw {
 		duration, _ := time.ParseDuration(event.Duration)
+		request := cloneMetricMap(event.Request)
+		metricURL := event.URL
+		if event.SensitiveMasked {
+			metricURL = ""
+			if host := metricURLHost(event.URL); host != "" {
+				if request == nil {
+					request = map[string]any{}
+				}
+				if _, exists := request["url_host"]; !exists {
+					request["url_host"] = host
+				}
+			}
+		}
 		metric := MetricEvent{
 			At:              event.At,
 			OpID:            event.OpID,
@@ -95,7 +109,7 @@ func NormalizeMetricEvents(driver string, raw []MetricEvent) []MetricEvent {
 			State:           event.State,
 			OK:              event.Error == "",
 			Method:          event.Method,
-			URL:             event.URL,
+			URL:             metricURL,
 			Status:          event.Status,
 			Path:            event.Path,
 			RemoteID:        event.RemoteID,
@@ -114,8 +128,8 @@ func NormalizeMetricEvents(driver string, raw []MetricEvent) []MetricEvent {
 			Chunks:          event.Chunks,
 			StartedAt:       event.StartedAt,
 			FinishedAt:      event.FinishedAt,
-			Request:         event.Request,
-			Response:        event.Response,
+			Request:         request,
+			Response:        cloneMetricMap(event.Response),
 			SensitiveMasked: event.SensitiveMasked,
 			Extra:           traceMetricExtra(event),
 		}
@@ -167,6 +181,29 @@ func traceMetricExtra(event MetricEvent) map[string]any {
 		return nil
 	}
 	return extra
+}
+
+func cloneMetricMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func metricURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 func durationMillis(d time.Duration) int64 {

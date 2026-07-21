@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const (
@@ -1108,7 +1108,7 @@ func responseErrno(data []byte) (int, string) {
 }
 
 func entryFSID(entry drive.Entry) string {
-	if extra, ok := entry.Extra.(map[string]any); ok {
+	if extra, ok := drive.EntryRawExtra(entry).(map[string]any); ok {
 		switch v := extra["fs_id"].(type) {
 		case string:
 			return v

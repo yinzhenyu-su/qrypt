@@ -26,8 +26,35 @@ func (f fakeSnapshotter) DebugSnapshot() vfs.DebugSnapshot {
 	return f.snapshot
 }
 
+type fakeResetSnapshotter struct {
+	fakeSnapshotter
+	resetCalled bool
+}
+
+func (f *fakeResetSnapshotter) DebugReset(ctx context.Context) error {
+	f.resetCalled = true
+	return nil
+}
+
 func (f fakeSnapshotter) Drivers() []vfs.NamedDriver {
 	return f.drivers
+}
+
+func (f fakeSnapshotter) DebugActiveOps(ctx context.Context, mountNames []string) ([]vfs.DebugActiveMount, error) {
+	return []vfs.DebugActiveMount{{
+		Mount: "local",
+		Ops: []vfs.DebugActiveOp{{
+			OpID:      "read-1",
+			Kind:      "vfs_read",
+			Phase:     "read_range",
+			State:     "active",
+			Mount:     "local",
+			Path:      "/old.txt",
+			RemoteID:  "old",
+			StartedAt: time.Unix(6, 0),
+			UpdatedAt: time.Unix(6, 0),
+		}},
+	}}, nil
 }
 
 func (f fakeSnapshotter) MountHealth(ctx context.Context, mountName string) ([]vfs.MountHealth, error) {
@@ -182,6 +209,12 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			Events: vfs.MountSnapshotEvents{Reads: []drive.MetricEvent{{
 				OpID: "read-1", Kind: "vfs_read", Operation: "read", Phase: "read", State: "completed", OK: true,
 				Path: "/old.txt", RemoteID: "old", Bytes: 5, StartedAt: time.Unix(6, 0),
+			}}, Driver: []drive.MetricEvent{{
+				OpID: "driver-1", Kind: "driver", Operation: "list", Phase: "request", State: "completed", OK: true,
+				Path: "/old.txt", RemoteID: "old", StartedAt: time.Unix(6, 0),
+			}, {
+				OpID: "driver-2", Kind: "driver", Operation: "download", Phase: "request", State: "failed", OK: false,
+				Path: "/old.txt", RemoteID: "old", Error: "timeout", StartedAt: time.Unix(7, 0),
 			}}},
 			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
 				Path:       "/file.txt",
@@ -198,7 +231,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				Bytes:      512,
 				Hits:       2,
 				Misses:     1,
-				Files:      []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "remote-id", ChunkCount: 1, Bytes: 7}},
+				Files:      []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "cache-id", ChunkCount: 1, Bytes: 7}},
 			},
 		}},
 	}, drivers: []vfs.NamedDriver{{
@@ -278,6 +311,15 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("filtered upload history should not include other paths: %s", uploadHistoryBody)
 	}
 
+	opsBody, err := client.Get(context.Background(), "/v1/ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(opsBody), `"op_id": "read-1"`) ||
+		!strings.Contains(string(opsBody), `"phase": "read_range"`) {
+		t.Fatalf("unexpected active ops response: %s", opsBody)
+	}
+
 	readsBody, err := client.Get(context.Background(), "/v1/reads?path=/local/old.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -318,6 +360,14 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(driverSpaceBody), `"free": "1.50 GiB"`) {
 		t.Fatalf("unexpected driver space response: %s", driverSpaceBody)
 	}
+	driverMetricsBody, err := client.Get(context.Background(), "/v1/driver?operation=download&limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(driverMetricsBody), `"op_id": "driver-2"`) ||
+		strings.Contains(string(driverMetricsBody), `"op_id": "driver-1"`) {
+		t.Fatalf("unexpected filtered driver metrics response: %s", driverMetricsBody)
+	}
 
 	testBody, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
@@ -341,12 +391,8 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(benchBody), `"network_probe"`) {
 		t.Fatalf("unexpected driver benchmark response: %s", benchBody)
 	}
-	legacyBenchBody, err := client.PostJSON(context.Background(), "/v1/driver/bench", DriverTestRequest{Test: "crud", Mount: "local"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(legacyBenchBody), `"kind": "driver_crud_benchmark"`) {
-		t.Fatalf("unexpected legacy driver benchmark response: %s", legacyBenchBody)
+	if _, err := client.PostJSON(context.Background(), "/v1/driver/bench", DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
+		t.Fatal("expected old driver benchmark endpoint to be unavailable")
 	}
 	if _, err := client.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
@@ -389,6 +435,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
 		t.Fatal("expected old driver test endpoint to be unavailable")
+	}
+	if _, err := client.PostJSON(context.Background(), "/v1/probe/driver", DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
+		t.Fatal("expected old driver probe endpoint to be unavailable")
 	}
 
 	mountHealthBody, err := client.Get(context.Background(), "/v1/mounts/health")
@@ -442,7 +491,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if !strings.Contains(string(cachePathBody), `"path": "/local/file.txt"`) || !strings.Contains(string(cachePathBody), `"remote_id": "remote-id"`) {
 		t.Fatalf("unexpected path cache response: %s", cachePathBody)
 	}
-	if !strings.Contains(string(cachePathBody), `"id": "remote-id"`) || strings.Contains(string(cachePathBody), `"id": "fid"`) {
+	if !strings.Contains(string(cachePathBody), `"id": "cache-id"`) || strings.Contains(string(cachePathBody), `"id": "fid"`) {
 		t.Fatalf("path cache response should include only resolved file: %s", cachePathBody)
 	}
 
@@ -484,6 +533,37 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if !strings.Contains(string(goroutineBody), "goroutine") {
 		t.Fatalf("unexpected goroutine response: %s", goroutineBody)
+	}
+	stackBody, err := client.Get(context.Background(), "/v1/debug/stacks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stackBody), "goroutine") {
+		t.Fatalf("unexpected stack response: %s", stackBody)
+	}
+	resetSource := &fakeResetSnapshotter{fakeSnapshotter: fakeSnapshotter{snapshot: source.snapshot}}
+	resetSocket := testSocketPath(t)
+	resetServer, err := NewServer(resetSocket, resetSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetCtx, resetCancel := context.WithCancel(context.Background())
+	defer resetCancel()
+	if err := resetServer.Start(resetCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer resetServer.Close(context.Background())
+	resetClient, err := NewClient(resetSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetBody, err := resetClient.PostJSON(context.Background(), "/v1/debug/reset", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resetSource.resetCalled || !strings.Contains(string(resetBody), `"vfs_reads"`) ||
+		!strings.Contains(string(resetBody), `"debug_started_at"`) {
+		t.Fatalf("unexpected reset response: called=%v body=%s", resetSource.resetCalled, resetBody)
 	}
 }
 

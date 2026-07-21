@@ -183,6 +183,29 @@ func TestUploadPartRanges(t *testing.T) {
 	}
 }
 
+func TestWrappedEntryExtraPreservesRawMetadata(t *testing.T) {
+	raw := driver115.File{
+		FileID:   "file-id",
+		Name:     "encrypted-name",
+		Size:     74,
+		PickCode: "pick-code",
+		Sha1:     "abc123",
+	}
+	entry := drive.Entry{
+		ID:    "file-id",
+		Name:  "plain.txt",
+		Size:  26,
+		Extra: drive.EntryExtraWrapper{RemoteName: raw.Name, Raw: raw},
+	}
+
+	if got := rawEntrySize(entry); got != raw.Size {
+		t.Fatalf("rawEntrySize = %d, want %d", got, raw.Size)
+	}
+	if got := entrySHA1(entry); got != "ABC123" {
+		t.Fatalf("entrySHA1 = %q, want ABC123", got)
+	}
+}
+
 func TestUploadSessionStoreRoundTrip(t *testing.T) {
 	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
 	driver := New(Options{Cookie: "UID=uid"})

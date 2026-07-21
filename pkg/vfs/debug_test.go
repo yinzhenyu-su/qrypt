@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -93,12 +93,12 @@ func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 105; i++ {
+	for i := 0; i < 1005; i++ {
 		_, _ = fs.Read(ctx, fmt.Sprintf("/missing-%d", i), 0, 0)
 	}
 	reads := fs.DebugSnapshot().Mounts[0].ReadEvents()
-	if len(reads) != 100 {
-		t.Fatalf("read history count = %d, want 100", len(reads))
+	if len(reads) != 1000 {
+		t.Fatalf("read history count = %d, want 1000", len(reads))
 	}
 	if reads[0].State != "failed" || reads[0].ErrorCategory == "" {
 		t.Fatalf("bounded history missing structured failure: %+v", reads[0])

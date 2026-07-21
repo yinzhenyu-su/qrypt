@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,16 +40,23 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 	if parseBoolQuery(r.URL.Query().Get("space")) {
 		spaceByMount = s.driverSpaces(r.Context(), debugMountQuery(r))
 	}
+	since, sinceOK, err := parseSinceQuery(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	limit := parseLimitQuery(r.URL.Query().Get("limit"), 200, 2000)
 	var drivers []DebugDriverSummary
 	for _, mount := range snapshot.Mounts {
 		if mount.Identity.Driver == nil {
 			continue
 		}
+		metrics := filterDriverMetricEvents(mount.DriverMetricEvents(), r.URL.Query(), since, sinceOK, limit)
 		drivers = append(drivers, DebugDriverSummary{
 			Mount:        mount.Identity.Name,
 			Capabilities: mount.Identity.Capabilities,
 			Driver:       *mount.Identity.Driver,
-			Metrics:      mount.DriverMetricEvents(),
+			Metrics:      metrics,
 			Space:        spaceByMount[mount.Identity.Name],
 		})
 	}
@@ -60,6 +68,29 @@ func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   snapshot.GeneratedAt,
 		Drivers:       drivers,
 	})
+}
+
+func filterDriverMetricEvents(events []drive.MetricEvent, q url.Values, since time.Time, sinceOK bool, limit int) []drive.MetricEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	filterPath := cleanVirtual(q.Get("path"))
+	hasPath := q.Get("path") != ""
+	out := make([]drive.MetricEvent, 0, len(events))
+	for _, event := range events {
+		if hasPath && cleanVirtual(event.Path) != filterPath {
+			continue
+		}
+		if sinceOK && eventTime(event).Before(since) {
+			continue
+		}
+		if !metricEventMatchesQuery(event, q) {
+			continue
+		}
+		out = append(out, event)
+	}
+	sort.Slice(out, func(i, j int) bool { return eventTime(out[i]).Before(eventTime(out[j])) })
+	return limitMetricEvents(out, limit)
 }
 
 func (s *Server) handleMountHealth(w http.ResponseWriter, r *http.Request) {
