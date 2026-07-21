@@ -15,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/media"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -125,6 +126,76 @@ func (c *Core) ReadAt(ctx context.Context, path string, offset int64, length int
 	}
 	defer rc.Close()
 	return io.ReadAll(rc)
+}
+
+func (c *Core) ProbeMP4(ctx context.Context, path string) (media.MP4Probe, error) {
+	item, err := c.Stat(ctx, path)
+	if err != nil {
+		return media.MP4Probe{}, err
+	}
+	if item.IsDir {
+		return media.MP4Probe{}, fmt.Errorf("core: %s is a directory", path)
+	}
+	return media.ProbeMP4(ctx, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
+		return c.ReadAt(ctx, path, offset, length, DefaultReadChunkLimit)
+	})
+}
+
+func (c *Core) WriteFastStartMP4(ctx context.Context, path, localPath string) (media.MP4Probe, error) {
+	if strings.TrimSpace(localPath) == "" {
+		return media.MP4Probe{}, fmt.Errorf("core: local path required")
+	}
+	item, err := c.Stat(ctx, path)
+	if err != nil {
+		return media.MP4Probe{}, err
+	}
+	if item.IsDir {
+		return media.MP4Probe{}, fmt.Errorf("core: %s is a directory", path)
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return media.MP4Probe{}, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".qrypt-faststart-*")
+	if err != nil {
+		return media.MP4Probe{}, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	probe, err := media.WriteFastStartMP4(ctx, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
+		limit := DefaultReadChunkLimit
+		if length > limit {
+			limit = length
+		}
+		return c.ReadAt(ctx, path, offset, length, limit)
+	}, tmp)
+	closeErr := tmp.Close()
+	if err != nil {
+		return probe, err
+	}
+	if closeErr != nil {
+		return probe, closeErr
+	}
+	if err := os.Rename(tmpPath, localPath); err != nil {
+		return probe, err
+	}
+	return probe, nil
+}
+
+func (c *Core) OpenVirtualFile(ctx context.Context, path, mode string) (media.VirtualFile, error) {
+	item, err := c.Stat(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if item.IsDir {
+		return nil, fmt.Errorf("core: %s is a directory", path)
+	}
+	return media.NewVirtualFile(ctx, mode, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
+		limit := DefaultReadChunkLimit
+		if length > limit {
+			limit = length
+		}
+		return c.ReadAt(ctx, path, offset, length, limit)
+	})
 }
 
 func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {

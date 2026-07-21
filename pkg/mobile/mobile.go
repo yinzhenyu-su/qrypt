@@ -12,6 +12,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
+	"github.com/yinzhenyu/qrypt/pkg/media"
 )
 
 type entry struct {
@@ -34,13 +35,20 @@ type fileHandle struct {
 	size   int64
 }
 
+type virtualHandle struct {
+	coreID string
+	file   media.VirtualFile
+}
+
 var registry = struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	files    map[string]*fileHandle
+	virtuals map[string]*virtualHandle
 }{
 	sessions: map[string]*session{},
 	files:    map[string]*fileHandle{},
+	virtuals: map[string]*virtualHandle{},
 }
 
 type envelope struct {
@@ -247,6 +255,108 @@ func ReadAtJSON(handleID string, offset int64, length int, timeoutMS int) string
 	return resultJSON(data, err)
 }
 
+func ProbeMP4JSON(coreID, path string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	probe, err := s.core.ProbeMP4(ctx, path)
+	return resultJSON(probe, err)
+}
+
+func WriteFastStartMP4JSON(coreID, path, localPath string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	probe, err := s.core.WriteFastStartMP4(ctx, path, localPath)
+	return resultJSON(probe, err)
+}
+
+type virtualOpenResult struct {
+	Handle string                `json:"handle"`
+	Info   media.VirtualFileInfo `json:"info"`
+}
+
+func OpenVirtualFile(coreID, path, mode string, timeoutMS int) (string, error) {
+	s, err := getSession(coreID)
+	if err != nil {
+		return "", wrapError(err)
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	file, err := s.core.OpenVirtualFile(ctx, path, mode)
+	if err != nil {
+		return "", wrapError(err)
+	}
+	id, err := newID()
+	if err != nil {
+		_ = file.Close()
+		return "", wrapError(err)
+	}
+	registry.mu.Lock()
+	registry.virtuals[id] = &virtualHandle{coreID: coreID, file: file}
+	registry.mu.Unlock()
+	data, err := json.Marshal(virtualOpenResult{Handle: id, Info: file.Info()})
+	if err != nil {
+		_ = CloseVirtualFile(id)
+		return "", wrapError(err)
+	}
+	return string(data), nil
+}
+
+func OpenVirtualFileJSON(coreID, path, mode string, timeoutMS int) string {
+	raw, err := OpenVirtualFile(coreID, path, mode, timeoutMS)
+	if err != nil {
+		return resultJSON(nil, err)
+	}
+	var data virtualOpenResult
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return resultJSON(nil, err)
+	}
+	return resultJSON(data, nil)
+}
+
+func ReadVirtualFileAt(handleID string, offset int64, length int, timeoutMS int) ([]byte, error) {
+	handle, err := getVirtualFile(handleID)
+	if err != nil {
+		return nil, wrapError(err)
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	data, err := handle.file.ReadAt(ctx, offset, length)
+	if err != nil {
+		return nil, wrapError(err)
+	}
+	return data, nil
+}
+
+func ReadVirtualFileAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
+	data, err := ReadVirtualFileAt(handleID, offset, length, timeoutMS)
+	return resultJSON(data, err)
+}
+
+func CloseVirtualFile(handleID string) error {
+	registry.mu.Lock()
+	handle, ok := registry.virtuals[handleID]
+	if ok {
+		delete(registry.virtuals, handleID)
+	}
+	registry.mu.Unlock()
+	if !ok {
+		return wrapError(fmt.Errorf("mobile: unknown virtual file handle %q", handleID))
+	}
+	return wrapError(handle.file.Close())
+}
+
+func CloseVirtualFileJSON(handleID string) string {
+	return resultJSON(nil, CloseVirtualFile(handleID))
+}
+
 func CloseFile(handleID string) error {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -274,7 +384,17 @@ func Close(coreID string) error {
 			delete(registry.files, id)
 		}
 	}
+	virtuals := make([]media.VirtualFile, 0)
+	for id, handle := range registry.virtuals {
+		if handle.coreID == coreID {
+			virtuals = append(virtuals, handle.file)
+			delete(registry.virtuals, id)
+		}
+	}
 	registry.mu.Unlock()
+	for _, file := range virtuals {
+		_ = file.Close()
+	}
 	return s.core.Close(context.Background())
 }
 
@@ -367,6 +487,16 @@ func getFile(handleID string) (*fileHandle, error) {
 	handle := registry.files[handleID]
 	if handle == nil {
 		return nil, fmt.Errorf("mobile: unknown file handle %q", handleID)
+	}
+	return handle, nil
+}
+
+func getVirtualFile(handleID string) (*virtualHandle, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	handle := registry.virtuals[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown virtual file handle %q", handleID)
 	}
 	return handle, nil
 }
