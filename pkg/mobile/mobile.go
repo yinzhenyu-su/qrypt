@@ -325,17 +325,6 @@ func ProbeMP4JSON(coreID, path string, timeoutMS int) string {
 	return resultJSON(probe, err)
 }
 
-func WriteFastStartMP4JSON(coreID, path, localPath string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	probe, err := s.core.WriteFastStartMP4(ctx, path, localPath)
-	return resultJSON(probe, err)
-}
-
 type virtualOpenResult struct {
 	Handle string                `json:"handle"`
 	Info   media.VirtualFileInfo `json:"info"`

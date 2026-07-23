@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"io"
 )
 
 const (
 	atomHeaderSize         = 8
 	extendedAtomHeaderSize = 16
-	copyChunkSize          = 1 << 20
 )
 
 type ReadAtFunc func(ctx context.Context, offset int64, length int) ([]byte, error)
@@ -67,45 +65,6 @@ func ProbeMP4(ctx context.Context, size int64, readAt ReadAtFunc) (MP4Probe, err
 	out.FastStart = out.MoovOffset < out.MdatOffset
 	out.NeedsFastStart = out.MdatOffset < out.MoovOffset
 	return out, nil
-}
-
-func WriteFastStartMP4(ctx context.Context, size int64, readAt ReadAtFunc, out io.Writer) (MP4Probe, error) {
-	probe, err := ProbeMP4(ctx, size, readAt)
-	if err != nil {
-		return probe, err
-	}
-	if !probe.IsMP4 {
-		return probe, fmt.Errorf("media: not an mp4 file")
-	}
-	if probe.MoovSize == 0 || probe.MdatSize == 0 || probe.FtypSize == 0 {
-		return probe, fmt.Errorf("media: unsupported mp4 atom layout")
-	}
-	if !probe.NeedsFastStart {
-		return probe, fmt.Errorf("media: mp4 already faststart")
-	}
-	if probe.MoovSize > int64(^uint(0)>>1) {
-		return probe, fmt.Errorf("media: moov atom too large")
-	}
-
-	moov, err := readAt(ctx, probe.MoovOffset, int(probe.MoovSize))
-	if err != nil {
-		return probe, fmt.Errorf("media: read moov: %w", err)
-	}
-	if int64(len(moov)) != probe.MoovSize {
-		return probe, fmt.Errorf("media: short moov read")
-	}
-	patchChunkOffsets(moov, probe.MoovSize)
-
-	if err := copyRange(ctx, readAt, out, probe.FtypOffset, probe.FtypSize); err != nil {
-		return probe, err
-	}
-	if _, err := out.Write(moov); err != nil {
-		return probe, err
-	}
-	if err := copyRange(ctx, readAt, out, probe.MdatOffset, probe.MdatSize); err != nil {
-		return probe, err
-	}
-	return probe, nil
 }
 
 func readAtom(ctx context.Context, readAt ReadAtFunc, offset, fileSize int64) (atom, error) {
@@ -220,33 +179,4 @@ func patchCO64(atom []byte, delta int64) {
 		}
 		pos += 8
 	}
-}
-
-func copyRange(ctx context.Context, readAt ReadAtFunc, out io.Writer, offset, size int64) error {
-	remaining := size
-	cursor := offset
-	for remaining > 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		want := copyChunkSize
-		if remaining < int64(want) {
-			want = int(remaining)
-		}
-		data, err := readAt(ctx, cursor, want)
-		if err != nil {
-			return err
-		}
-		if len(data) == 0 {
-			return io.ErrUnexpectedEOF
-		}
-		if _, err := out.Write(data); err != nil {
-			return err
-		}
-		cursor += int64(len(data))
-		remaining -= int64(len(data))
-	}
-	return nil
 }

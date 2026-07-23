@@ -38,7 +38,7 @@ func TestProbeMP4DetectsTailMoov(t *testing.T) {
 	}
 }
 
-func TestWriteFastStartMP4MovesMoovAndPatchesCO64(t *testing.T) {
+func TestMP4FastStartVirtualFilePatchesCO64(t *testing.T) {
 	co64 := make([]byte, 24)
 	binary.BigEndian.PutUint32(co64[0:4], uint32(len(co64)))
 	copy(co64[4:8], "co64")
@@ -51,15 +51,18 @@ func TestWriteFastStartMP4MovesMoovAndPatchesCO64(t *testing.T) {
 		moov,
 	)
 
-	var out bytes.Buffer
-	probe, err := WriteFastStartMP4(context.Background(), int64(len(data)), bytesReadAt(data), &out)
+	vf, err := NewMP4FastStartVirtualFile(context.Background(), int64(len(data)), bytesReadAt(data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !probe.NeedsFastStart {
-		t.Fatalf("probe = %+v, want tail moov", probe)
+	info := vf.Info()
+	if !info.Transformed || info.MP4 == nil || !info.MP4.NeedsFastStart {
+		t.Fatalf("info = %+v, want transformed tail moov mp4", info)
 	}
-	got := out.Bytes()
+	got, err := vf.ReadAt(context.Background(), 0, int(info.Size))
+	if err != nil {
+		t.Fatal(err)
+	}
 	first, err := readAtom(context.Background(), bytesReadAt(got), 0, int64(len(got)))
 	if err != nil {
 		t.Fatal(err)

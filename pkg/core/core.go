@@ -227,46 +227,6 @@ func (c *Core) ProbeMP4(ctx context.Context, path string) (media.MP4Probe, error
 	})
 }
 
-func (c *Core) WriteFastStartMP4(ctx context.Context, path, localPath string) (media.MP4Probe, error) {
-	if strings.TrimSpace(localPath) == "" {
-		return media.MP4Probe{}, fmt.Errorf("core: local path required")
-	}
-	item, err := c.Stat(ctx, path)
-	if err != nil {
-		return media.MP4Probe{}, err
-	}
-	if item.IsDir {
-		return media.MP4Probe{}, fmt.Errorf("core: %s is a directory", path)
-	}
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return media.MP4Probe{}, err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".qrypt-faststart-*")
-	if err != nil {
-		return media.MP4Probe{}, err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	probe, err := media.WriteFastStartMP4(ctx, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
-		limit := DefaultReadChunkLimit
-		if length > limit {
-			limit = length
-		}
-		return c.ReadAt(ctx, path, offset, length, limit)
-	}, tmp)
-	closeErr := tmp.Close()
-	if err != nil {
-		return probe, err
-	}
-	if closeErr != nil {
-		return probe, closeErr
-	}
-	if err := os.Rename(tmpPath, localPath); err != nil {
-		return probe, err
-	}
-	return probe, nil
-}
-
 func (c *Core) OpenVirtualFile(ctx context.Context, path, mode string) (media.VirtualFile, error) {
 	item, err := c.Stat(ctx, path)
 	if err != nil {
