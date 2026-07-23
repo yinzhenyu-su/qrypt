@@ -207,6 +207,15 @@ func CapabilitiesJSON(coreID, path string, timeoutMS int) string {
 	return resultJSON(info, err)
 }
 
+func MountsJSON(coreID string) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	mounts, err := s.core.Mounts()
+	return resultJSON(mounts, err)
+}
+
 func UploadLocalFileJSON(coreID, localPath, remotePath string, timeoutMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {

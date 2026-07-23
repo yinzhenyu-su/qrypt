@@ -34,6 +34,7 @@ type Options struct {
 	CacheDir      string
 	CacheMaxBytes int64
 	RootID        string
+	Encrypted     bool
 	UploadDelay   time.Duration
 	UploadWorkers int
 	DeleteDelay   time.Duration
@@ -45,6 +46,7 @@ type VFS struct {
 	healthTracker *drive.HealthTracker
 	cache         *Cache
 	rootID        string
+	encrypted     bool
 
 	mu      sync.RWMutex
 	entries map[string]drive.Entry
@@ -146,6 +148,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		healthTracker:  drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
 		cache:          cache,
 		rootID:         opts.RootID,
+		encrypted:      opts.Encrypted,
 		entries:        map[string]drive.Entry{},
 		lists:          map[string]listCacheEntry{},
 		queue:          make(chan PendingFile, 128),

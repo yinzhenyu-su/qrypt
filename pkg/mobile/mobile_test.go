@@ -161,6 +161,67 @@ root_path = "`+remote+`"
 	}
 }
 
+func TestMobileMountsJSONReportsEncryptedPerMount(t *testing.T) {
+	tmp := t.TempDir()
+	plainRemote := filepath.Join(tmp, "plain-remote")
+	encryptedRemote := filepath.Join(tmp, "encrypted-remote")
+	if err := os.MkdirAll(plainRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(encryptedRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "plain"
+type = "localfs"
+[mounts.params]
+root_path = "`+plainRemote+`"
+
+[[mounts]]
+name = "secret"
+type = "localfs"
+[mounts.params]
+root_path = "`+encryptedRemote+`"
+[mounts.encryption]
+password = "test-password"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	coreID, err := Open(configPath, filepath.Join(tmp, "work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(coreID)
+
+	var mounts struct {
+		OK   bool `json:"ok"`
+		Data []struct {
+			Name      string `json:"name"`
+			Path      string `json:"path"`
+			Encrypted bool   `json:"encrypted"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(MountsJSON(coreID)), &mounts); err != nil {
+		t.Fatal(err)
+	}
+	if !mounts.OK || len(mounts.Data) != 2 {
+		t.Fatalf("MountsJSON = %+v, want two mounts", mounts)
+	}
+	got := map[string]bool{}
+	for _, mount := range mounts.Data {
+		got[mount.Path] = mount.Encrypted
+	}
+	if got["/plain"] {
+		t.Fatalf("plain mount reported encrypted: %+v", mounts.Data)
+	}
+	if !got["/secret"] {
+		t.Fatalf("secret mount did not report encrypted: %+v", mounts.Data)
+	}
+}
+
 func TestMobileImportOpenAndResume(t *testing.T) {
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")

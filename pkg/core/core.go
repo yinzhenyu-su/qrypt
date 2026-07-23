@@ -138,6 +138,20 @@ func (c *Core) Capabilities(ctx context.Context, path string) (vfs.CapabilityInf
 	return reporter.CapabilitiesForPath(ctx, path)
 }
 
+func (c *Core) Mounts() ([]vfs.MountInfo, error) {
+	if c == nil || c.fs == nil {
+		return nil, fmt.Errorf("core: closed")
+	}
+	reporter, ok := c.fs.(vfs.MountReporter)
+	if !ok {
+		return nil, fmt.Errorf("core: mount query unavailable")
+	}
+	mounts := reporter.Mounts()
+	out := make([]vfs.MountInfo, len(mounts))
+	copy(out, mounts)
+	return out, nil
+}
+
 func (c *Core) UploadLocalFile(ctx context.Context, localPath, remotePath string) (drive.Entry, error) {
 	if c == nil || c.fs == nil {
 		return drive.Entry{}, fmt.Errorf("core: closed")
@@ -471,6 +485,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 			CacheDir:      mountCacheDir,
 			CacheMaxBytes: maxBytes,
 			RootID:        rootID,
+			Encrypted:     enc.Password != "",
 			UploadDelay:   uploadDelay,
 			UploadWorkers: cache.UploadWorkers,
 			DeleteDelay:   deleteDelay,
