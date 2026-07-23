@@ -20,6 +20,8 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+const uploadCopyChunkSize = 256 * 1024
+
 type Options struct {
 	ConfigPath     string
 	WorkDir        string
@@ -95,6 +97,90 @@ func (c *Core) List(ctx context.Context, path string) ([]drive.Entry, error) {
 		return nil, fmt.Errorf("core: closed")
 	}
 	return c.fs.List(ctx, path)
+}
+
+func (c *Core) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
+	if c == nil || c.fs == nil {
+		return drive.Entry{}, fmt.Errorf("core: closed")
+	}
+	return c.fs.Mkdir(ctx, path)
+}
+
+func (c *Core) Rename(ctx context.Context, oldPath, newPath string) error {
+	if c == nil || c.fs == nil {
+		return fmt.Errorf("core: closed")
+	}
+	return c.fs.Rename(ctx, oldPath, newPath)
+}
+
+func (c *Core) Remove(ctx context.Context, path string) error {
+	if c == nil || c.fs == nil {
+		return fmt.Errorf("core: closed")
+	}
+	item, err := c.fs.Stat(ctx, path)
+	if err != nil {
+		return err
+	}
+	if item.IsDir {
+		return c.fs.RemoveDir(ctx, path)
+	}
+	return c.fs.Remove(ctx, path)
+}
+
+func (c *Core) Capabilities(ctx context.Context, path string) (vfs.CapabilityInfo, error) {
+	if c == nil || c.fs == nil {
+		return vfs.CapabilityInfo{}, fmt.Errorf("core: closed")
+	}
+	reporter, ok := c.fs.(vfs.CapabilityReporter)
+	if !ok {
+		return vfs.CapabilityInfo{}, fmt.Errorf("core: capability query unavailable")
+	}
+	return reporter.CapabilitiesForPath(ctx, path)
+}
+
+func (c *Core) UploadLocalFile(ctx context.Context, localPath, remotePath string) (drive.Entry, error) {
+	if c == nil || c.fs == nil {
+		return drive.Entry{}, fmt.Errorf("core: closed")
+	}
+	if strings.TrimSpace(localPath) == "" {
+		return drive.Entry{}, fmt.Errorf("core: local path required")
+	}
+	if strings.TrimSpace(remotePath) == "" {
+		return drive.Entry{}, fmt.Errorf("core: remote path required")
+	}
+	f, err := os.Open(localPath)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer f.Close()
+	if err := c.fs.Create(ctx, remotePath); err != nil {
+		return drive.Entry{}, err
+	}
+	buf := make([]byte, uploadCopyChunkSize)
+	var off int64
+	for {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			written, err := c.fs.WriteAt(ctx, remotePath, buf[:n], off)
+			if err != nil {
+				return drive.Entry{}, err
+			}
+			if written != n {
+				return drive.Entry{}, fmt.Errorf("core: short staging write: wrote %d of %d", written, n)
+			}
+			off += int64(written)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return drive.Entry{}, readErr
+		}
+	}
+	if err := c.fs.Flush(ctx, remotePath); err != nil {
+		return drive.Entry{}, err
+	}
+	return c.fs.Stat(ctx, remotePath)
 }
 
 func (c *Core) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {

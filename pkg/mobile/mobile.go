@@ -162,6 +162,65 @@ func StatJSON(coreID, path string) string {
 	return resultJSON(item, nil)
 }
 
+func MkdirJSON(coreID, path string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	item, err := s.core.Mkdir(ctx, path)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	return resultJSON(fromDriveEntry(item, path), nil)
+}
+
+func RenameJSON(coreID, oldPath, newPath string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	return resultJSON(nil, s.core.Rename(ctx, oldPath, newPath))
+}
+
+func RemoveJSON(coreID, path string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	return resultJSON(nil, s.core.Remove(ctx, path))
+}
+
+func CapabilitiesJSON(coreID, path string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	info, err := s.core.Capabilities(ctx, path)
+	return resultJSON(info, err)
+}
+
+func UploadLocalFileJSON(coreID, localPath, remotePath string, timeoutMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	item, err := s.core.UploadLocalFile(ctx, localPath, remotePath)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	return resultJSON(fromDriveEntry(item, remotePath), nil)
+}
+
 func FileInfoJSON(coreID, path string) string {
 	s, err := getSession(coreID)
 	if err != nil {
