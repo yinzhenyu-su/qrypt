@@ -9,19 +9,24 @@ import (
 )
 
 type CapabilityInfo struct {
-	Mount        string             `json:"mount,omitempty"`
-	Path         string             `json:"path"`
-	Root         bool               `json:"root"`
-	MountRoot    bool               `json:"mount_root"`
-	Capabilities []drive.Capability `json:"capabilities,omitempty"`
-	CanRead      bool               `json:"can_read"`
-	CanList      bool               `json:"can_list"`
-	CanUpload    bool               `json:"can_upload"`
-	CanMkdir     bool               `json:"can_mkdir"`
-	CanRename    bool               `json:"can_rename"`
-	CanMove      bool               `json:"can_move"`
-	CanRemove    bool               `json:"can_remove"`
-	CanSpace     bool               `json:"can_space"`
+	Mount          string             `json:"mount,omitempty"`
+	Path           string             `json:"path"`
+	Root           bool               `json:"root"`
+	MountRoot      bool               `json:"mount_root"`
+	Capabilities   []drive.Capability `json:"capabilities,omitempty"`
+	CanRead        bool               `json:"can_read"`
+	CanList        bool               `json:"can_list"`
+	CanUpload      bool               `json:"can_upload"`
+	CanMkdir       bool               `json:"can_mkdir"`
+	CanRename      bool               `json:"can_rename"`
+	CanMove        bool               `json:"can_move"`
+	CanRemove      bool               `json:"can_remove"`
+	CanSpace       bool               `json:"can_space"`
+	CanUploadChild bool               `json:"can_upload_child"`
+	CanMkdirChild  bool               `json:"can_mkdir_child"`
+	CanRenameChild bool               `json:"can_rename_child"`
+	CanMoveChild   bool               `json:"can_move_child"`
+	CanRemoveChild bool               `json:"can_remove_child"`
 }
 
 type CapabilityReporter interface {
@@ -44,19 +49,24 @@ func (v *VFS) capabilitiesForPath(ctx context.Context, path, mount, displayPath 
 	space := hasCapability(caps, drive.CapabilitySpace)
 	targetReadOnly := path == "/" || mountRoot
 	return CapabilityInfo{
-		Mount:        mount,
-		Path:         cleanVirtual(displayPath),
-		Root:         false,
-		MountRoot:    mountRoot,
-		Capabilities: caps,
-		CanRead:      !entry.IsDir,
-		CanList:      entry.IsDir,
-		CanUpload:    entry.IsDir && uploader,
-		CanMkdir:     entry.IsDir && writer,
-		CanRename:    !targetReadOnly && writer,
-		CanMove:      !targetReadOnly && writer,
-		CanRemove:    !targetReadOnly && writer,
-		CanSpace:     space,
+		Mount:          mount,
+		Path:           cleanVirtual(displayPath),
+		Root:           false,
+		MountRoot:      mountRoot,
+		Capabilities:   caps,
+		CanRead:        !entry.IsDir,
+		CanList:        entry.IsDir,
+		CanUpload:      entry.IsDir && uploader,
+		CanMkdir:       entry.IsDir && writer,
+		CanRename:      !targetReadOnly && writer,
+		CanMove:        !targetReadOnly && writer,
+		CanRemove:      !targetReadOnly && writer,
+		CanSpace:       space,
+		CanUploadChild: entry.IsDir && uploader,
+		CanMkdirChild:  entry.IsDir && writer,
+		CanRenameChild: entry.IsDir && writer,
+		CanMoveChild:   entry.IsDir && writer,
+		CanRemoveChild: entry.IsDir && writer,
 	}, nil
 }
 

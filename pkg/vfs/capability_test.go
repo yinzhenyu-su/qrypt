@@ -24,8 +24,11 @@ func TestVFSRootCapabilitiesAllowCreatingChildren(t *testing.T) {
 	if info.Root || info.MountRoot || !info.CanList || info.CanRead {
 		t.Fatalf("root info = %+v", info)
 	}
-	if !info.CanUpload || !info.CanMkdir {
+	if !info.CanUpload || !info.CanMkdir || !info.CanUploadChild || !info.CanMkdirChild {
 		t.Fatalf("root create capabilities = %+v, want upload and mkdir", info)
+	}
+	if !info.CanRenameChild || !info.CanMoveChild || !info.CanRemoveChild {
+		t.Fatalf("root child mutation capabilities = %+v, want child mutations enabled", info)
 	}
 	if info.CanRemove || info.CanRename || info.CanMove {
 		t.Fatalf("root target mutation capabilities = %+v, want target mutations disabled", info)
@@ -65,8 +68,11 @@ func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
 	if mountRoot.Mount != "local" || !mountRoot.MountRoot || !mountRoot.CanList {
 		t.Fatalf("mount root capabilities = %+v", mountRoot)
 	}
-	if !mountRoot.CanUpload || !mountRoot.CanMkdir {
+	if !mountRoot.CanUpload || !mountRoot.CanMkdir || !mountRoot.CanUploadChild || !mountRoot.CanMkdirChild {
 		t.Fatalf("mount root create capabilities = %+v, want upload and mkdir", mountRoot)
+	}
+	if !mountRoot.CanRenameChild || !mountRoot.CanMoveChild || !mountRoot.CanRemoveChild {
+		t.Fatalf("mount root child mutation capabilities = %+v, want child mutations enabled", mountRoot)
 	}
 	if mountRoot.CanRemove || mountRoot.CanRename || mountRoot.CanMove {
 		t.Fatalf("mount root target mutation capabilities = %+v, want target mutations disabled", mountRoot)
@@ -76,7 +82,7 @@ func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dir.MountRoot || !dir.CanList || dir.CanRead || !dir.CanUpload || !dir.CanMkdir || !dir.CanRemove || !dir.CanRename || !dir.CanMove {
+	if dir.MountRoot || !dir.CanList || dir.CanRead || !dir.CanUpload || !dir.CanMkdir || !dir.CanRemove || !dir.CanRename || !dir.CanMove || !dir.CanRemoveChild || !dir.CanRenameChild {
 		t.Fatalf("directory capabilities = %+v", dir)
 	}
 
@@ -84,7 +90,33 @@ func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !file.CanRead || file.CanList || file.CanUpload || file.CanMkdir || !file.CanRemove || !file.CanRename || !file.CanMove {
+	if !file.CanRead || file.CanList || file.CanUpload || file.CanMkdir || !file.CanRemove || !file.CanRename || !file.CanMove || file.CanRemoveChild || file.CanRenameChild {
 		t.Fatalf("file capabilities = %+v", file)
+	}
+}
+
+func TestNamespaceMountsReportRuntimePathsAndEncryption(t *testing.T) {
+	plain, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "plain", CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "secret", CacheDir: t.TempDir(), Encrypted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "secret", FS: secret}, {Name: "plain", FS: plain}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mounts := ns.Mounts()
+	if len(mounts) != 2 {
+		t.Fatalf("mounts = %+v, want two mounts", mounts)
+	}
+	if mounts[0].Path != "/plain" || mounts[0].Encrypted {
+		t.Fatalf("first mount = %+v, want plain unencrypted", mounts[0])
+	}
+	if mounts[1].Path != "/secret" || !mounts[1].Encrypted {
+		t.Fatalf("second mount = %+v, want secret encrypted", mounts[1])
 	}
 }
