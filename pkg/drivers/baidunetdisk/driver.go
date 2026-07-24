@@ -773,19 +773,6 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 }
 
 func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress, remotePath, name, uploadID string, partSeq int, section *io.SectionReader) error {
-	body := &bytes.Buffer{}
-	mw := multipart.NewWriter(body)
-	part, err := mw.CreateFormFile("file", name)
-	if err != nil {
-		return err
-	}
-	uploadReader := drive.NewUploadProgressReader(progress, section)
-	if _, err := io.Copy(part, d.limiter.LimitUpload(ctx, uploadReader)); err != nil {
-		return err
-	}
-	if err := mw.Close(); err != nil {
-		return err
-	}
 	u, err := url.Parse(d.uploadAPI + "/rest/2.0/pcs/superfile2")
 	if err != nil {
 		return err
@@ -798,12 +785,18 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 	query.Set("uploadid", uploadID)
 	query.Set("partseq", strconv.Itoa(partSeq))
 	u.RawQuery = query.Encode()
+
+	body, contentType, contentLength, err := multipartUploadBody(ctx, d.limiter, progress, name, section)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.ContentLength = int64(body.Len())
+	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = contentLength
 	start := time.Now()
 	resp, err := d.httpClient.Do(req)
 	d.recordHTTP(ctx, "upload_part", req, resp, start, map[string]any{"part_seq": partSeq, "bytes": req.ContentLength}, err)
@@ -838,6 +831,58 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 		}
 	}
 	return nil
+}
+
+func multipartUploadBody(ctx context.Context, limiter *drive.BandwidthLimiter, progress drive.UploadProgress, name string, section *io.SectionReader) (io.ReadCloser, string, int64, error) {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	contentLength, err := multipartContentLength(mw.Boundary(), name, section.Size())
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return nil, "", 0, err
+	}
+	go func() {
+		part, err := mw.CreateFormFile("file", name)
+		if err == nil {
+			uploadReader := drive.NewUploadProgressReader(progress, section)
+			reader := io.Reader(uploadReader)
+			if limiter != nil {
+				reader = limiter.LimitUpload(ctx, uploadReader)
+			}
+			_, err = io.Copy(part, reader)
+		}
+		if closeErr := mw.Close(); err == nil {
+			err = closeErr
+		}
+		_ = pw.CloseWithError(err)
+	}()
+	return pr, mw.FormDataContentType(), contentLength, nil
+}
+
+func multipartContentLength(boundary, name string, payloadSize int64) (int64, error) {
+	counter := countingWriter{}
+	mw := multipart.NewWriter(&counter)
+	if err := mw.SetBoundary(boundary); err != nil {
+		return 0, err
+	}
+	if _, err := mw.CreateFormFile("file", name); err != nil {
+		return 0, err
+	}
+	counter.n += payloadSize
+	if err := mw.Close(); err != nil {
+		return 0, err
+	}
+	return counter.n, nil
+}
+
+type countingWriter struct {
+	n int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n += int64(len(p))
+	return len(p), nil
 }
 
 func nonRetryableUploadStatus(status int) bool {

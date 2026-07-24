@@ -228,6 +228,31 @@ func (c *Core) ReadAt(ctx context.Context, path string, offset int64, length int
 	return io.ReadAll(rc)
 }
 
+func (c *Core) ReadAtInto(ctx context.Context, path string, offset int64, dst []byte, limit int) (int, error) {
+	if offset < 0 {
+		return 0, fmt.Errorf("core: offset must be non-negative")
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = DefaultReadChunkLimit
+	}
+	if len(dst) > limit {
+		return 0, fmt.Errorf("core: read length %d exceeds limit %d", len(dst), limit)
+	}
+	rc, err := c.Read(ctx, path, offset, int64(len(dst)))
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+	n, err := io.ReadFull(rc, dst)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return n, nil
+	}
+	return n, err
+}
+
 func (c *Core) ProbeMP4(ctx context.Context, path string) (media.MP4Probe, error) {
 	item, err := c.Stat(ctx, path)
 	if err != nil {
@@ -249,13 +274,21 @@ func (c *Core) OpenVirtualFile(ctx context.Context, path, mode string) (media.Vi
 	if item.IsDir {
 		return nil, fmt.Errorf("core: %s is a directory", path)
 	}
-	return media.NewVirtualFile(ctx, mode, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
+	readAt := func(ctx context.Context, offset int64, length int) ([]byte, error) {
 		limit := DefaultReadChunkLimit
 		if length > limit {
 			limit = length
 		}
-		return c.ReadAt(ctx, path, offset, length, limit)
-	})
+		return c.ReadAt(vfs.WithoutReadPrefetch(ctx), path, offset, length, limit)
+	}
+	readAtInto := func(ctx context.Context, offset int64, dst []byte) (int, error) {
+		limit := DefaultReadChunkLimit
+		if len(dst) > limit {
+			limit = len(dst)
+		}
+		return c.ReadAtInto(vfs.WithoutReadPrefetch(ctx), path, offset, dst, limit)
+	}
+	return media.NewVirtualFileInto(ctx, mode, item.Size, readAt, readAtInto)
 }
 
 func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {

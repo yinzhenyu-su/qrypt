@@ -215,6 +215,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			}, {
 				OpID: "driver-2", Kind: "driver", Operation: "download", Phase: "request", State: "failed", OK: false,
 				Path: "/old.txt", RemoteID: "old", Error: "timeout", StartedAt: time.Unix(7, 0),
+			}, {
+				OpID: "driver-3", Kind: "driver", Operation: "upload_part", Phase: "request", State: "completed", OK: true,
+				Path: "/file.txt", Bytes: 4 * osutil.MiB, StartedAt: time.Now().Add(-time.Minute),
 			}}},
 			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
 				Path:       "/file.txt",
@@ -226,12 +229,21 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			}}},
 			Queues: vfs.MountSnapshotQueues{UploadLength: 2, UploadCap: 128},
 			Cache: vfs.DebugReadCache{
-				MaxBytes:   1024,
-				ChunkCount: 1,
-				Bytes:      512,
-				Hits:       2,
-				Misses:     1,
-				Files:      []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "cache-id", ChunkCount: 1, Bytes: 7}},
+				MaxBytes:           1024,
+				ChunkCount:         1,
+				Bytes:              512,
+				Hits:               2,
+				Misses:             1,
+				WriteQueueBytes:    128,
+				WriteQueueMaxBytes: 1024,
+				Files:              []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "cache-id", ChunkCount: 1, Bytes: 7}},
+			},
+			Runtime: vfs.MountSnapshotRuntime{
+				HotChunkCount: 2,
+				HotChunkBytes: 2 * osutil.MiB,
+				HotChunkLimit: 64,
+				RangeHitCount: 3,
+				RangeHitLimit: 1024,
 			},
 		}},
 	}, drivers: []vfs.NamedDriver{{
@@ -495,6 +507,16 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("path cache response should include only resolved file: %s", cachePathBody)
 	}
 
+	readMemoryBody, err := client.Get(context.Background(), "/v1/read-memory?mount=local&since=1000000h&limit=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readMemoryBody), `"hot_chunk_bytes": 2097152`) ||
+		!strings.Contains(string(readMemoryBody), `"write_queue_bytes": 128`) ||
+		!strings.Contains(string(readMemoryBody), `"phase_counts"`) {
+		t.Fatalf("unexpected read memory response: %s", readMemoryBody)
+	}
+
 	stagingBody, err := client.Get(context.Background(), "/v1/staging?path=/local/file.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -525,6 +547,20 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	}
 	if !strings.Contains(string(runtimeBody), `"go_version"`) || !strings.Contains(string(runtimeBody), `"num_goroutine"`) {
 		t.Fatalf("unexpected runtime response: %s", runtimeBody)
+	}
+	if !strings.Contains(string(runtimeBody), `"process"`) || !strings.Contains(string(runtimeBody), `"rss_available"`) {
+		t.Fatalf("runtime response missing process memory: %s", runtimeBody)
+	}
+
+	uploadMemoryBody, err := client.Get(context.Background(), "/v1/upload-memory?mount=local&limit=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(uploadMemoryBody), `"/local/file.txt"`) ||
+		!strings.Contains(string(uploadMemoryBody), `"runtime"`) ||
+		!strings.Contains(string(uploadMemoryBody), `"recent_parts"`) ||
+		!strings.Contains(string(uploadMemoryBody), `"op_id": "driver-3"`) {
+		t.Fatalf("unexpected upload memory response: %s", uploadMemoryBody)
 	}
 
 	goroutineBody, err := client.Get(context.Background(), "/v1/goroutines")

@@ -212,6 +212,60 @@ func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
 	}
 }
 
+func TestReadCachePutRecreatesReadingDir(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(cacheDir, "reading")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.FlushReadIndex(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := cache.GetChunk(key, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "cached" {
+		t.Fatalf("cached chunk = %q ok=%v, want cached", got, ok)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "reading", "index.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("a", sha256.Size*2)
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(cacheDir, "reading")); err != nil {
+		t.Fatal(err)
+	}
+
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	cache.WaitReadCacheWrites()
+	if err := cache.FlushReadIndex(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := cache.GetChunk(key, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(got) != "cached" {
+		t.Fatalf("cached chunk = %q ok=%v, want cached", got, ok)
+	}
+}
+
 func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
@@ -334,7 +388,8 @@ func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
 	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk); err != nil {
 		t.Fatal(err)
 	}
-	for i := int64(0); i < 36; i++ {
+	largeChunkCount := int64(17*1024*1024/testReadChunkSize + 1)
+	for i := int64(0); i < largeChunkCount; i++ {
 		if err := cache.PutChunk(legacyLargeKey, 0, i, chunk); err != nil {
 			t.Fatal(err)
 		}
@@ -346,14 +401,14 @@ func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
 		t.Fatal("small-file chunk was evicted before unknown-size large cached file")
 	}
 	var largeChunks int
-	for i := int64(0); i < 36; i++ {
+	for i := int64(0); i < largeChunkCount; i++ {
 		if _, ok, err := cache.GetChunk(legacyLargeKey, i); err != nil {
 			t.Fatal(err)
 		} else if ok {
 			largeChunks++
 		}
 	}
-	if largeChunks >= 36 {
+	if largeChunks >= int(largeChunkCount) {
 		t.Fatalf("unknown-size large cached file was not treated as large, still have %d chunks", largeChunks)
 	}
 }

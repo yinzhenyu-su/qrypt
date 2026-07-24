@@ -246,6 +246,49 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 	l.mu.Unlock()
 }
 
+func (l *Logger) logEveryFunc(level Level, key string, interval time.Duration, message func(suppressed int) string) {
+	if level < l.level {
+		return
+	}
+	if interval <= 0 {
+		l.logf(level, "%s", message(0))
+		return
+	}
+	sampleNow := time.Now()
+	now := timeutil.Now()
+
+	l.mu.Lock()
+	if l.samples == nil {
+		l.samples = map[string]sampleState{}
+	}
+	state := l.samples[key]
+	if !state.last.IsZero() && sampleNow.Sub(state.last) < interval {
+		state.suppressed++
+		l.samples[key] = state
+		l.mu.Unlock()
+		return
+	}
+	suppressed := state.suppressed
+	l.samples[key] = sampleState{last: sampleNow}
+	l.mu.Unlock()
+
+	msg := sanitize(message(suppressed))
+	if suppressed > 0 {
+		msg = fmt.Sprintf("%s (suppressed=%d)", msg, suppressed)
+	}
+	ts := now.Format("2006-01-02 15:04:05.000")
+	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
+
+	l.mu.Lock()
+	l.recordEventLocked(level, now, msg, suppressed)
+	if level >= LevelWarn && l.errWriter != nil {
+		fmt.Fprint(l.errWriter, line)
+	} else if l.writer != nil {
+		fmt.Fprint(l.writer, line)
+	}
+	l.mu.Unlock()
+}
+
 func (l *Logger) Debugf(format string, v ...interface{}) { l.logf(LevelDebug, format, v...) }
 func (l *Logger) Infof(format string, v ...interface{})  { l.logf(LevelInfo, format, v...) }
 func (l *Logger) Warnf(format string, v ...interface{})  { l.logf(LevelWarn, format, v...) }
@@ -253,6 +296,10 @@ func (l *Logger) Errorf(format string, v ...interface{}) { l.logf(LevelError, fo
 
 func (l *Logger) DebugfEvery(key string, interval time.Duration, format string, v ...interface{}) {
 	l.logfEvery(LevelDebug, key, interval, format, v...)
+}
+
+func (l *Logger) DebugfEveryFunc(key string, interval time.Duration, message func(suppressed int) string) {
+	l.logEveryFunc(LevelDebug, key, interval, message)
 }
 
 func (l *Logger) InfofEvery(key string, interval time.Duration, format string, v ...interface{}) {

@@ -197,14 +197,22 @@ type ConsistencyResponse struct {
 }
 
 type RuntimeResponse struct {
-	SchemaVersion int       `json:"schema_version"`
-	GeneratedAt   time.Time `json:"generated_at"`
-	GoVersion     string    `json:"go_version"`
-	GOOS          string    `json:"goos"`
-	GOARCH        string    `json:"goarch"`
-	NumCPU        int       `json:"num_cpu"`
-	NumGoroutine  int       `json:"num_goroutine"`
-	Mem           MemStats  `json:"mem"`
+	SchemaVersion int           `json:"schema_version"`
+	GeneratedAt   time.Time     `json:"generated_at"`
+	GoVersion     string        `json:"go_version"`
+	GOOS          string        `json:"goos"`
+	GOARCH        string        `json:"goarch"`
+	NumCPU        int           `json:"num_cpu"`
+	NumGoroutine  int           `json:"num_goroutine"`
+	Process       ProcessMemory `json:"process"`
+	Mem           MemStats      `json:"mem"`
+}
+
+type ProcessMemory struct {
+	PID          int    `json:"pid"`
+	RSSBytes     uint64 `json:"rss_bytes,omitempty"`
+	RSSAvailable bool   `json:"rss_available"`
+	RSSSource    string `json:"rss_source,omitempty"`
 }
 
 type DebugUploadCancelFaultsResponse struct {
@@ -220,6 +228,55 @@ type MemStats struct {
 	HeapAlloc  uint64 `json:"heap_alloc"`
 	HeapSys    uint64 `json:"heap_sys"`
 	NumGC      uint32 `json:"num_gc"`
+}
+
+type UploadMemoryResponse struct {
+	SchemaVersion int                      `json:"schema_version"`
+	GeneratedAt   time.Time                `json:"generated_at"`
+	Runtime       RuntimeResponse          `json:"runtime"`
+	Uploads       []vfs.UploadSnapshot     `json:"uploads"`
+	Drivers       []UploadMemoryDriver     `json:"drivers,omitempty"`
+	Diagnostics   []UploadMemoryDiagnostic `json:"diagnostics,omitempty"`
+}
+
+type UploadMemoryDriver struct {
+	Mount         string              `json:"mount"`
+	Driver        string              `json:"driver,omitempty"`
+	ActiveUploads int                 `json:"active_uploads,omitempty"`
+	RecentParts   []drive.MetricEvent `json:"recent_parts,omitempty"`
+}
+
+type UploadMemoryDiagnostic struct {
+	Level   string         `json:"level"`
+	Code    string         `json:"code"`
+	Mount   string         `json:"mount,omitempty"`
+	Message string         `json:"message"`
+	Extra   map[string]any `json:"extra,omitempty"`
+}
+
+type ReadMemoryResponse struct {
+	SchemaVersion int                    `json:"schema_version"`
+	GeneratedAt   time.Time              `json:"generated_at"`
+	Runtime       RuntimeResponse        `json:"runtime"`
+	Mounts        []ReadMemoryMount      `json:"mounts"`
+	Diagnostics   []ReadMemoryDiagnostic `json:"diagnostics,omitempty"`
+}
+
+type ReadMemoryMount struct {
+	Mount       string                   `json:"mount"`
+	Driver      string                   `json:"driver,omitempty"`
+	Runtime     vfs.MountSnapshotRuntime `json:"runtime"`
+	Cache       vfs.DebugReadCache       `json:"cache"`
+	PhaseCounts map[string]int           `json:"phase_counts,omitempty"`
+	RecentReads []drive.MetricEvent      `json:"recent_reads,omitempty"`
+}
+
+type ReadMemoryDiagnostic struct {
+	Level   string         `json:"level"`
+	Code    string         `json:"code"`
+	Mount   string         `json:"mount,omitempty"`
+	Message string         `json:"message"`
+	Extra   map[string]any `json:"extra,omitempty"`
 }
 
 func NewServer(socketPath string, source Snapshotter) (*Server, error) {
@@ -282,10 +339,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/resolve", s.handleResolve)
 	mux.HandleFunc("/v1/transfer/context", s.handleTransferContext)
 	mux.HandleFunc("/v1/cache", s.handleCache)
+	mux.HandleFunc("/v1/read-memory", s.handleReadMemory)
 	mux.HandleFunc("/v1/staging", s.handleStaging)
 	mux.HandleFunc("/v1/debug/faults/upload-cancel", s.handleDebugUploadCancelFaults)
 	mux.HandleFunc("/v1/consistency", s.handleConsistency)
 	mux.HandleFunc("/v1/runtime", s.handleRuntime)
+	mux.HandleFunc("/v1/upload-memory", s.handleUploadMemory)
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
 	mux.HandleFunc("/v1/debug/stacks", s.handleGoroutines)
 	s.server = &http.Server{Handler: mux}
@@ -307,9 +366,14 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	writeJSON(w, runtimeSnapshot())
+}
+
+func runtimeSnapshot() RuntimeResponse {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	writeJSON(w, RuntimeResponse{
+	rss, rssSource, rssOK := currentProcessRSS()
+	return RuntimeResponse{
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Now(),
 		GoVersion:     runtime.Version(),
@@ -317,6 +381,12 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		GOARCH:        runtime.GOARCH,
 		NumCPU:        runtime.NumCPU(),
 		NumGoroutine:  runtime.NumGoroutine(),
+		Process: ProcessMemory{
+			PID:          os.Getpid(),
+			RSSBytes:     rss,
+			RSSAvailable: rssOK,
+			RSSSource:    rssSource,
+		},
 		Mem: MemStats{
 			Alloc:      mem.Alloc,
 			TotalAlloc: mem.TotalAlloc,
@@ -325,7 +395,7 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 			HeapSys:    mem.HeapSys,
 			NumGC:      mem.NumGC,
 		},
-	})
+	}
 }
 
 func (s *Server) handleOps(w http.ResponseWriter, r *http.Request) {
@@ -553,6 +623,145 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   snapshot.GeneratedAt,
 		Mounts:        mounts,
 	})
+}
+
+func (s *Server) handleReadMemory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	since, sinceOK, err := parseSinceQuery(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !sinceOK {
+		since = time.Now().Add(-2 * time.Minute)
+		sinceOK = true
+	}
+	limit := parseLimitQuery(r.URL.Query().Get("limit"), 30, 500)
+	snapshot := s.debugSnapshot(r)
+	mounts := readMemoryMounts(snapshot, r.URL.Query(), since, sinceOK, limit)
+	runtime := runtimeSnapshot()
+	writeJSON(w, ReadMemoryResponse{
+		SchemaVersion: snapshot.SchemaVersion,
+		GeneratedAt:   snapshot.GeneratedAt,
+		Runtime:       runtime,
+		Mounts:        mounts,
+		Diagnostics:   readMemoryDiagnostics(runtime, mounts),
+	})
+}
+
+func readMemoryMounts(snapshot vfs.DebugSnapshot, q url.Values, since time.Time, sinceOK bool, limit int) []ReadMemoryMount {
+	filterPath := cleanVirtual(q.Get("path"))
+	hasFilter := q.Get("path") != ""
+	out := make([]ReadMemoryMount, 0, len(snapshot.Mounts))
+	for _, mount := range snapshot.Mounts {
+		reads := make([]drive.MetricEvent, 0, len(mount.ReadEvents()))
+		phaseCounts := map[string]int{}
+		for _, event := range mount.ReadEvents() {
+			if event.Mount == "" {
+				event.Mount = mount.Identity.Name
+			}
+			if event.Driver == "" {
+				event.Driver = mount.Identity.DriverName
+			}
+			if snapshot.Kind == "namespace" && mount.Identity.Name != "" {
+				event.Path = joinVirtual("/"+mount.Identity.Name, event.Path)
+			}
+			if hasFilter && cleanVirtual(event.Path) != filterPath {
+				continue
+			}
+			if sinceOK && eventTime(event).Before(since) {
+				continue
+			}
+			if !metricEventMatchesQuery(event, q) {
+				continue
+			}
+			phase := firstNonEmptyString(event.Phase, event.Operation, "unknown")
+			phaseCounts[phase]++
+			reads = append(reads, event)
+		}
+		sort.Slice(reads, func(i, j int) bool { return eventTime(reads[i]).Before(eventTime(reads[j])) })
+		reads = limitMetricEvents(reads, limit)
+		if len(phaseCounts) == 0 {
+			phaseCounts = nil
+		}
+		out = append(out, ReadMemoryMount{
+			Mount:       mount.Identity.Name,
+			Driver:      mount.Identity.DriverName,
+			Runtime:     mount.Runtime,
+			Cache:       mount.ReadCacheState(),
+			PhaseCounts: phaseCounts,
+			RecentReads: reads,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Mount < out[j].Mount })
+	return out
+}
+
+func readMemoryDiagnostics(runtime RuntimeResponse, mounts []ReadMemoryMount) []ReadMemoryDiagnostic {
+	var diagnostics []ReadMemoryDiagnostic
+	if runtime.Mem.HeapAlloc >= 128*osutil.MiB {
+		diagnostics = append(diagnostics, ReadMemoryDiagnostic{
+			Level:   "warn",
+			Code:    "heap_high_during_read",
+			Message: "Go heap is high during read activity; inspect hot chunks, async write queue, and large response buffers.",
+			Extra: map[string]any{
+				"heap_alloc": runtime.Mem.HeapAlloc,
+				"heap_sys":   runtime.Mem.HeapSys,
+			},
+		})
+	}
+	if runtime.Process.RSSAvailable && runtime.Process.RSSBytes > runtime.Mem.HeapAlloc+128*osutil.MiB {
+		diagnostics = append(diagnostics, ReadMemoryDiagnostic{
+			Level:   "info",
+			Code:    "rss_exceeds_go_heap",
+			Message: "Process RSS is much larger than Go heap; inspect non-Go memory, stacks, mmap, or allocator-retained pages.",
+			Extra: map[string]any{
+				"rss_bytes":  runtime.Process.RSSBytes,
+				"heap_alloc": runtime.Mem.HeapAlloc,
+			},
+		})
+	}
+	for _, mount := range mounts {
+		if mount.Runtime.HotChunkBytes >= 32*osutil.MiB {
+			diagnostics = append(diagnostics, ReadMemoryDiagnostic{
+				Level:   "info",
+				Code:    "hot_chunks_high",
+				Mount:   mount.Mount,
+				Message: "Hot read chunks are a significant resident memory user.",
+				Extra: map[string]any{
+					"hot_chunk_count": mount.Runtime.HotChunkCount,
+					"hot_chunk_bytes": mount.Runtime.HotChunkBytes,
+					"hot_chunk_limit": mount.Runtime.HotChunkLimit,
+				},
+			})
+		}
+		if mount.Cache.WriteQueueBytes > 0 {
+			diagnostics = append(diagnostics, ReadMemoryDiagnostic{
+				Level:   "info",
+				Code:    "read_cache_write_queue_pending",
+				Mount:   mount.Mount,
+				Message: "Async read-cache writes are holding copied chunks in memory.",
+				Extra: map[string]any{
+					"write_queue_len":       mount.Cache.WriteQueueLength,
+					"write_queue_bytes":     mount.Cache.WriteQueueBytes,
+					"write_queue_max_bytes": mount.Cache.WriteQueueMaxBytes,
+				},
+			})
+		}
+	}
+	return diagnostics
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleStaging(w http.ResponseWriter, r *http.Request) {
@@ -1075,6 +1284,62 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 	filterPath := cleanVirtual(r.URL.Query().Get("path"))
 	hasFilter := r.URL.Query().Get("path") != ""
 	includeHistory := parseBoolQuery(r.URL.Query().Get("history"))
+	uploads := uploadSnapshots(snapshot, includeHistory, filterPath, hasFilter)
+	resp := UploadsResponse{
+		SchemaVersion: snapshot.SchemaVersion,
+		GeneratedAt:   snapshot.GeneratedAt,
+		History:       includeHistory,
+		Uploads:       uploads,
+	}
+	if hasFilter {
+		resp.Path = filterPath
+	}
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleUploadMemory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	since, sinceOK, err := parseSinceQuery(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !sinceOK {
+		since = time.Now().Add(-2 * time.Minute)
+		sinceOK = true
+	}
+	limit := parseLimitQuery(r.URL.Query().Get("limit"), 20, 200)
+	snapshot := s.debugSnapshot(r)
+	includeHistory := parseBoolQuery(r.URL.Query().Get("history"))
+	filterPath := cleanVirtual(r.URL.Query().Get("path"))
+	hasFilter := r.URL.Query().Get("path") != ""
+	uploads := uploadSnapshots(snapshot, includeHistory, filterPath, hasFilter)
+	drivers := uploadMemoryDrivers(snapshot, r.URL.Query(), since, sinceOK, limit)
+	runtime := runtimeSnapshot()
+	writeJSON(w, UploadMemoryResponse{
+		SchemaVersion: snapshot.SchemaVersion,
+		GeneratedAt:   snapshot.GeneratedAt,
+		Runtime:       runtime,
+		Uploads:       uploads,
+		Drivers:       drivers,
+		Diagnostics:   uploadMemoryDiagnostics(runtime, uploads, drivers),
+	})
+}
+
+func prefixUploadSnapshotPath(upload *vfs.UploadSnapshot, mountName string) {
+	prefix := "/" + mountName
+	upload.Path = joinVirtual(prefix, upload.Path)
+	for i := range upload.Events {
+		if upload.Events[i].Path != "" {
+			upload.Events[i].Path = joinVirtual(prefix, upload.Events[i].Path)
+		}
+	}
+}
+
+func uploadSnapshots(snapshot vfs.DebugSnapshot, includeHistory bool, filterPath string, hasFilter bool) []vfs.UploadSnapshot {
 	var uploads []vfs.UploadSnapshot
 	for _, mount := range snapshot.Mounts {
 		for _, item := range mount.ActiveUploads() {
@@ -1104,26 +1369,107 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 		}
 		return uploads[i].UpdatedAt.Before(uploads[j].UpdatedAt)
 	})
-	resp := UploadsResponse{
-		SchemaVersion: snapshot.SchemaVersion,
-		GeneratedAt:   snapshot.GeneratedAt,
-		History:       includeHistory,
-		Uploads:       uploads,
-	}
-	if hasFilter {
-		resp.Path = filterPath
-	}
-	writeJSON(w, resp)
+	return uploads
 }
 
-func prefixUploadSnapshotPath(upload *vfs.UploadSnapshot, mountName string) {
-	prefix := "/" + mountName
-	upload.Path = joinVirtual(prefix, upload.Path)
-	for i := range upload.Events {
-		if upload.Events[i].Path != "" {
-			upload.Events[i].Path = joinVirtual(prefix, upload.Events[i].Path)
+func uploadMemoryDrivers(snapshot vfs.DebugSnapshot, q url.Values, since time.Time, sinceOK bool, limit int) []UploadMemoryDriver {
+	partQuery := cloneValues(q)
+	partQuery.Del("operation")
+	partQuery.Del("kind")
+	drivers := make([]UploadMemoryDriver, 0, len(snapshot.Mounts))
+	for _, mount := range snapshot.Mounts {
+		if mount.Identity.Driver == nil && len(mount.DriverMetricEvents()) == 0 && len(mount.ActiveUploads()) == 0 {
+			continue
+		}
+		var driverName string
+		if mount.Identity.Driver != nil {
+			driverName = mount.Identity.Driver.Driver
+		}
+		if driverName == "" {
+			driverName = mount.Identity.DriverName
+		}
+		events := filterDriverMetricEvents(mount.DriverMetricEvents(), partQuery, since, sinceOK, 0)
+		recentParts := make([]drive.MetricEvent, 0, len(events))
+		for _, event := range events {
+			if !isUploadPartMetric(event) {
+				continue
+			}
+			recentParts = append(recentParts, event)
+		}
+		recentParts = limitMetricEvents(recentParts, limit)
+		drivers = append(drivers, UploadMemoryDriver{
+			Mount:         mount.Identity.Name,
+			Driver:        driverName,
+			ActiveUploads: len(mount.ActiveUploads()),
+			RecentParts:   recentParts,
+		})
+	}
+	sort.Slice(drivers, func(i, j int) bool { return drivers[i].Mount < drivers[j].Mount })
+	return drivers
+}
+
+func isUploadPartMetric(event drive.MetricEvent) bool {
+	op := strings.ToLower(event.Operation)
+	name := strings.ToLower(event.Name)
+	step := strings.ToLower(event.Step)
+	return strings.Contains(op, "upload_part") ||
+		strings.Contains(op, "part_upload") ||
+		strings.Contains(name, "upload_part") ||
+		strings.Contains(step, "upload_part")
+}
+
+func uploadMemoryDiagnostics(runtime RuntimeResponse, uploads []vfs.UploadSnapshot, drivers []UploadMemoryDriver) []UploadMemoryDiagnostic {
+	var diagnostics []UploadMemoryDiagnostic
+	if len(uploads) > 0 && runtime.Mem.HeapAlloc >= 128*osutil.MiB {
+		diagnostics = append(diagnostics, UploadMemoryDiagnostic{
+			Level:   "warn",
+			Code:    "heap_high_during_upload",
+			Message: "Go heap is high while uploads are active; inspect source buffering and multipart body construction.",
+			Extra: map[string]any{
+				"heap_alloc":     runtime.Mem.HeapAlloc,
+				"active_uploads": len(uploads),
+			},
+		})
+	}
+	if runtime.Process.RSSAvailable && runtime.Process.RSSBytes > runtime.Mem.HeapAlloc+128*osutil.MiB {
+		diagnostics = append(diagnostics, UploadMemoryDiagnostic{
+			Level:   "info",
+			Code:    "rss_exceeds_go_heap",
+			Message: "Process RSS is much larger than Go heap; this usually points to non-Go memory, stacks, mmap, or allocator-retained pages.",
+			Extra: map[string]any{
+				"rss_bytes":  runtime.Process.RSSBytes,
+				"heap_alloc": runtime.Mem.HeapAlloc,
+			},
+		})
+	}
+	for _, driver := range drivers {
+		for _, event := range driver.RecentParts {
+			if event.Bytes < 16*osutil.MiB {
+				continue
+			}
+			diagnostics = append(diagnostics, UploadMemoryDiagnostic{
+				Level:   "info",
+				Code:    "large_upload_part",
+				Mount:   driver.Mount,
+				Message: "Recent upload part is large; this is fine when streamed, but it is the first place to inspect if heap grows by part size.",
+				Extra: map[string]any{
+					"bytes":     event.Bytes,
+					"operation": event.Operation,
+					"op_id":     event.OpID,
+				},
+			})
+			break
 		}
 	}
+	return diagnostics
+}
+
+func cloneValues(values url.Values) url.Values {
+	out := make(url.Values, len(values))
+	for key, items := range values {
+		out[key] = append([]string(nil), items...)
+	}
+	return out
 }
 
 func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
