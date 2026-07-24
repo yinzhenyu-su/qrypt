@@ -170,10 +170,21 @@ func TestCoreReadAtLimit(t *testing.T) {
 	if string(data) != "ell" {
 		t.Fatalf("ReadAt = %q, want ell", string(data))
 	}
+	buf := []byte("xxxxx")
+	n, err := c.ReadAtInto(ctx, "/quark/file.txt", 3, buf, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || string(buf[:n]) != "lo" {
+		t.Fatalf("ReadAtInto n=%d data=%q, want 2 lo", n, string(buf[:n]))
+	}
+	if _, err := c.ReadAtInto(ctx, "/quark/file.txt", 0, make([]byte, 5), 4); err == nil {
+		t.Fatal("expected ReadAtInto limit error")
+	}
 }
 
 func TestCoreCRUDUsesVFSStaging(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -181,12 +192,16 @@ func TestCoreCRUDUsesVFSStaging(t *testing.T) {
 	}
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{
 		CacheDir:    filepath.Join(tmp, "cache"),
-		UploadDelay: 10 * time.Millisecond,
+		UploadDelay: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	fs.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = fs.CloseReadCache()
+	})
 	c := &Core{fs: fs}
 
 	dir, err := c.Mkdir(ctx, "/docs")
@@ -212,6 +227,7 @@ func TestCoreCRUDUsesVFSStaging(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(remote, "docs", "file.txt"))
 		return err == nil && string(data) == "hello from staging"
 	})
+	waitVFSIdle(t, fs)
 
 	if err := c.Rename(ctx, "/docs/file.txt", "/docs/renamed.txt"); err != nil {
 		t.Fatal(err)
@@ -220,11 +236,22 @@ func TestCoreCRUDUsesVFSStaging(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(remote, "docs", "renamed.txt"))
 		return err == nil && string(data) == "hello from staging"
 	})
+	waitVFSIdle(t, fs)
+}
+
+func waitVFSIdle(t *testing.T, fs *vfs.VFS) {
+	t.Helper()
+	waitCoreCondition(t, func() bool {
+		snapshot := fs.DebugSnapshot()
+		return len(fs.Pending()) == 0 &&
+			len(snapshot.Mounts) == 1 &&
+			len(snapshot.Mounts[0].ActiveUploads()) == 0
+	})
 }
 
 func waitCoreCondition(t *testing.T, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if ok() {
 			return

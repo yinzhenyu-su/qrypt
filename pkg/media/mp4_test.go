@@ -80,6 +80,59 @@ func TestMP4FastStartVirtualFilePatchesCO64(t *testing.T) {
 	}
 }
 
+func TestMP4FastStartConvertsOverflowingSTCOToCO64(t *testing.T) {
+	stco := make([]byte, 20)
+	binary.BigEndian.PutUint32(stco[0:4], uint32(len(stco)))
+	copy(stco[4:8], "stco")
+	binary.BigEndian.PutUint32(stco[12:16], 1)
+	binary.BigEndian.PutUint32(stco[16:20], ^uint32(0)-1)
+	moov := atomBytes("moov", stco)
+	data := appendAtoms(
+		atomBytes("ftyp", []byte("isom")),
+		atomBytes("mdat", []byte("payload")),
+		moov,
+	)
+
+	vf, err := NewMP4FastStartVirtualFile(context.Background(), int64(len(data)), bytesReadAt(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vf.Close()
+	if got, want := vf.Info().Size, int64(len(data)+4); got != want {
+		t.Fatalf("virtual size = %d, want %d after stco to co64 growth", got, want)
+	}
+	got, err := vf.ReadAt(context.Background(), 0, int(vf.Info().Size))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := readAtom(context.Background(), bytesReadAt(got), 0, int64(len(got)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := readAtom(context.Background(), bytesReadAt(got), first.size, int64(len(got)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := readAtom(context.Background(), bytesReadAt(got), first.size+atomHeaderSize, int64(len(got)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.typ != "moov" || converted.typ != "co64" {
+		t.Fatalf("atom order = %s,%s; want moov containing co64", second.typ, converted.typ)
+	}
+	third, err := readAtom(context.Background(), bytesReadAt(got), first.size+second.size, int64(len(got)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.typ != "mdat" || !bytes.Equal(got[len(got)-7:], []byte("payload")) {
+		t.Fatalf("mdat = %s payload=%q, want payload", third.typ, got[len(got)-7:])
+	}
+	patchedOffset := binary.BigEndian.Uint64(got[first.size+atomHeaderSize+16 : first.size+atomHeaderSize+24])
+	if want := uint64(^uint32(0)-1) + uint64(second.size); patchedOffset != want {
+		t.Fatalf("converted co64 offset = %d, want %d", patchedOffset, want)
+	}
+}
+
 func bytesReadAt(data []byte) ReadAtFunc {
 	return func(ctx context.Context, offset int64, length int) ([]byte, error) {
 		if offset >= int64(len(data)) {

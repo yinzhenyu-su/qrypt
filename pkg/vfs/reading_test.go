@@ -21,7 +21,7 @@ func TestVFSReadSpansChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
@@ -62,7 +62,7 @@ func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 4096, 1024)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestVFSReadClampsDriverReadToEntrySize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, 1024)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestVFSReadSmallMissLoadsSingleChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
 	if err != nil {
@@ -138,14 +138,6 @@ func TestVFSReadSmallMissLoadsSingleChunk(t *testing.T) {
 		t.Fatalf("foreground chunk read size = %d, want %d", got, testReadChunkSize)
 	}
 
-	rc, err = fs.Read(ctx, "/data.bin", testReadChunkSize, 16)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = rc.Close()
-	if got := drv.readCount(testReadChunkSize); got != 1 {
-		t.Fatalf("second chunk read count = %d, want 1", got)
-	}
 }
 
 func TestVFSReadExactChunkMissLoadsSingleChunk(t *testing.T) {
@@ -156,9 +148,9 @@ func TestVFSReadExactChunkMissLoadsSingleChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
-	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
+	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +161,56 @@ func TestVFSReadExactChunkMissLoadsSingleChunk(t *testing.T) {
 	}
 	if got := drv.readSize(0); got != testReadChunkSize {
 		t.Fatalf("foreground chunk read size = %d, want %d", got, testReadChunkSize)
+	}
+}
+
+func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("t"), 16*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	rc, err = fs.Read(ctx, "/data.bin", int64(8*testReadChunkSize), 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	var sawWindow, sawDriverTiming bool
+	for _, event := range fs.DebugSnapshot().Mounts[0].ReadEvents() {
+		if _, ok := event.Extra["prefetch_chunks"]; ok {
+			t.Fatalf("read debug event still includes removed prefetch_chunks field: %+v", event)
+		}
+		switch event.Phase {
+		case "cache_miss_load":
+			if event.Extra["window_chunks"] != nil {
+				sawWindow = true
+			}
+		case "fetch_window":
+			_, hasOpen := event.Extra["driver_open_ms"]
+			_, hasBody := event.Extra["driver_body_ms"]
+			_, hasClose := event.Extra["driver_close_ms"]
+			if hasOpen && hasBody && hasClose {
+				sawDriverTiming = true
+			}
+		case "fetch_chunk", "wait_chunk_load":
+			t.Fatalf("read debug event still uses removed chunk load phase: %+v", event)
+		}
+	}
+	if !sawWindow {
+		t.Fatal("read debug events missing read window field")
+	}
+	if !sawDriverTiming {
+		t.Fatal("read debug events missing driver timing fields")
 	}
 }
 
@@ -181,9 +223,9 @@ func TestVFSReadWaitsForInFlightPrefetchWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
-	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
+	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +275,7 @@ func TestVFSActiveOpsExposeBlockedPrefetchAndWaiter(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = fs.FlushReadCache() })
 
-	rc, err := fs.Read(ctx, "/data.bin", 0, 16)
+	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +376,7 @@ func TestVFSReadRangeUsesPersistedCacheAfterRemount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs1.FlushReadCache() })
+	t.Cleanup(func() { _ = fs1.CloseReadCache() })
 
 	rc, err := fs1.Read(ctx, "/data.bin", testReadChunkSize+32, 16)
 	if err != nil {
@@ -353,7 +395,7 @@ func TestVFSReadRangeUsesPersistedCacheAfterRemount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs2.FlushReadCache() })
+	t.Cleanup(func() { _ = fs2.CloseReadCache() })
 	rc, err = fs2.Read(ctx, "/data.bin", testReadChunkSize+32, 16)
 	if err != nil {
 		t.Fatal(err)
@@ -502,4 +544,26 @@ func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
 	waitForCondition(t, func() bool {
 		return drv.readCount(testReadChunkSize) == 1
 	})
+}
+
+func TestVFSReadWithoutPrefetchSkipsAdjacentChunk(t *testing.T) {
+	ctx := vfs.WithoutReadPrefetch(context.Background())
+	data := bytes.Repeat([]byte("e"), 3*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.FlushReadCache() })
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if got := drv.readCount(testReadChunkSize); got != 0 {
+		t.Fatalf("prefetch read count = %d, want 0", got)
+	}
 }

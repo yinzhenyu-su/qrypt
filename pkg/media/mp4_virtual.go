@@ -20,9 +20,14 @@ type MP4FastStartVirtualFile struct {
 	moov             []byte
 	mdatVirtualStart int64
 	readAt           ReadAtFunc
+	readAtInto       ReadAtIntoFunc
 }
 
 func NewMP4FastStartVirtualFile(ctx context.Context, size int64, readAt ReadAtFunc) (*MP4FastStartVirtualFile, error) {
+	return NewMP4FastStartVirtualFileInto(ctx, size, readAt, readAtIntoFromReadAt(readAt))
+}
+
+func NewMP4FastStartVirtualFileInto(ctx context.Context, size int64, readAt ReadAtFunc, readAtInto ReadAtIntoFunc) (*MP4FastStartVirtualFile, error) {
 	probe, err := ProbeMP4(ctx, size, readAt)
 	if err != nil {
 		return nil, err
@@ -54,14 +59,18 @@ func NewMP4FastStartVirtualFile(ctx context.Context, size int64, readAt ReadAtFu
 	if int64(len(moov)) != probe.MoovSize {
 		return nil, fmt.Errorf("media: short moov read")
 	}
-	patchChunkOffsets(moov, probe.MoovSize)
+	moov, err = patchChunkOffsets(moov, probe.MoovSize)
+	if err != nil {
+		return nil, err
+	}
 	return &MP4FastStartVirtualFile{
-		size:             probe.FtypSize + probe.MoovSize + probe.MdatSize,
+		size:             probe.FtypSize + int64(len(moov)) + probe.MdatSize,
 		probe:            probe,
 		ftyp:             ftyp,
 		moov:             moov,
-		mdatVirtualStart: probe.FtypSize + probe.MoovSize,
+		mdatVirtualStart: probe.FtypSize + int64(len(moov)),
 		readAt:           readAt,
+		readAtInto:       readAtInto,
 	}, nil
 }
 
@@ -88,12 +97,80 @@ func (v *MP4FastStartVirtualFile) ReadAt(ctx context.Context, offset int64, leng
 		length = int(max)
 	}
 
-	out := make([]byte, 0, length)
+	out := make([]byte, length)
+	n, err := v.ReadAtInto(ctx, offset, out)
+	if err != nil {
+		return nil, err
+	}
+	return out[:n], nil
+}
+
+func (v *MP4FastStartVirtualFile) ReadAtInto(ctx context.Context, offset int64, dst []byte) (int, error) {
+	if offset < 0 {
+		return 0, fmt.Errorf("media: offset must be non-negative")
+	}
+	if len(dst) == 0 || offset >= v.size {
+		return 0, nil
+	}
+	if max := v.size - offset; int64(len(dst)) > max {
+		dst = dst[:max]
+	}
+
+	cursor := offset
+	written := 0
+	remaining := len(dst)
+	for remaining > 0 {
+		if cursor < int64(len(v.ftyp)) {
+			n := copyFromBytes(dst[written:], v.ftyp, cursor, remaining)
+			cursor += int64(n)
+			remaining -= n
+			written += n
+			continue
+		}
+		moovStart := int64(len(v.ftyp))
+		moovEnd := moovStart + int64(len(v.moov))
+		if cursor < moovEnd {
+			n := copyFromBytes(dst[written:], v.moov, cursor-moovStart, remaining)
+			cursor += int64(n)
+			remaining -= n
+			written += n
+			continue
+		}
+		rawOffset := v.probe.MdatOffset + (cursor - v.mdatVirtualStart)
+		n, err := v.readAtInto(ctx, rawOffset, dst[written:written+remaining])
+		if err != nil {
+			return written + n, err
+		}
+		if n == 0 {
+			break
+		}
+		cursor += int64(n)
+		remaining -= n
+		written += n
+	}
+	return written, nil
+}
+
+func (v *MP4FastStartVirtualFile) ReadMappings(offset int64, length int) []VirtualReadMapping {
+	if offset < 0 || length <= 0 || offset >= v.size {
+		return nil
+	}
+	if max := v.size - offset; int64(length) > max {
+		length = int(max)
+	}
+
+	var mappings []VirtualReadMapping
 	cursor := offset
 	remaining := length
 	for remaining > 0 {
 		if cursor < int64(len(v.ftyp)) {
-			n := copyFromBytes(&out, v.ftyp, cursor, remaining)
+			n := segmentLength(cursor, remaining, int64(len(v.ftyp)))
+			mappings = append(mappings, VirtualReadMapping{
+				VirtualOffset: cursor,
+				Length:        n,
+				Source:        "ftyp",
+				SourceOffset:  v.probe.FtypOffset + cursor,
+			})
 			cursor += int64(n)
 			remaining -= n
 			continue
@@ -101,34 +178,38 @@ func (v *MP4FastStartVirtualFile) ReadAt(ctx context.Context, offset int64, leng
 		moovStart := int64(len(v.ftyp))
 		moovEnd := moovStart + int64(len(v.moov))
 		if cursor < moovEnd {
-			n := copyFromBytes(&out, v.moov, cursor-moovStart, remaining)
+			n := segmentLength(cursor, remaining, moovEnd)
+			mappings = append(mappings, VirtualReadMapping{
+				VirtualOffset: cursor,
+				Length:        n,
+				Source:        "moov",
+				SourceOffset:  v.probe.MoovOffset + (cursor - moovStart),
+			})
 			cursor += int64(n)
 			remaining -= n
 			continue
 		}
-		rawOffset := v.probe.MdatOffset + (cursor - v.mdatVirtualStart)
-		data, err := v.readAt(ctx, rawOffset, remaining)
-		if err != nil {
-			return nil, err
-		}
-		if len(data) == 0 {
-			break
-		}
-		out = append(out, data...)
-		cursor += int64(len(data))
-		remaining -= len(data)
+		n := remaining
+		mappings = append(mappings, VirtualReadMapping{
+			VirtualOffset: cursor,
+			Length:        n,
+			Source:        "mdat",
+			SourceOffset:  v.probe.MdatOffset + (cursor - v.mdatVirtualStart),
+		})
+		break
 	}
-	return out, nil
+	return mappings
 }
 
 func (v *MP4FastStartVirtualFile) Close() error {
 	v.ftyp = nil
 	v.moov = nil
 	v.readAt = nil
+	v.readAtInto = nil
 	return nil
 }
 
-func copyFromBytes(out *[]byte, source []byte, offset int64, length int) int {
+func copyFromBytes(dst []byte, source []byte, offset int64, length int) int {
 	if offset >= int64(len(source)) || length <= 0 {
 		return 0
 	}
@@ -136,6 +217,13 @@ func copyFromBytes(out *[]byte, source []byte, offset int64, length int) int {
 	if end > int64(len(source)) {
 		end = int64(len(source))
 	}
-	*out = append(*out, source[offset:end]...)
-	return int(end - offset)
+	return copy(dst, source[offset:end])
+}
+
+func segmentLength(cursor int64, remaining int, segmentEnd int64) int {
+	n := segmentEnd - cursor
+	if n > int64(remaining) {
+		n = int64(remaining)
+	}
+	return int(n)
 }

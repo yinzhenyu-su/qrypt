@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-const testReadChunkSize = 512 * 1024
+const testReadChunkSize = 1024 * 1024
 const testUploadDelay = 10 * time.Millisecond
 
 type countingReadDriver struct {
@@ -336,7 +336,7 @@ func (d *countingReadDriver) List(context.Context, string) ([]drive.Entry, error
 	}}, nil
 }
 
-func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
+func (d *countingReadDriver) Read(ctx context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	d.mu.Lock()
 	d.read[offset]++
 	d.sizes[offset] = size
@@ -351,7 +351,11 @@ func (d *countingReadDriver) Read(_ context.Context, _ drive.Entry, offset, size
 		}
 	}
 	if block != nil {
-		<-block
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	if offset >= int64(len(d.data)) {
 		return io.NopCloser(bytes.NewReader(nil)), nil

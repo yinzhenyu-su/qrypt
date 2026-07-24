@@ -844,6 +844,7 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	plainMD5Hex := fmt.Sprintf("%X", plainMD5[:])
 	plainSHA1Hex := fmt.Sprintf("%X", plainSHA1[:])
 	var hashCalled bool
+	var hashBody map[string]any
 	var finishCalled bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -875,16 +876,10 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			cipherMD5 := md5.Sum(uploadedCipher)
-			cipherSHA1 := sha1.Sum(uploadedCipher)
-			wantMD5 := fmt.Sprintf("%X", cipherMD5[:])
-			wantSHA1 := fmt.Sprintf("%X", cipherSHA1[:])
-			if body["md5"] != wantMD5 || body["sha1"] != wantSHA1 {
-				t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", body, wantMD5, wantSHA1)
-			}
 			if body["md5"] == plainMD5Hex || body["sha1"] == plainSHA1Hex {
 				t.Fatalf("hash body used plaintext hash: %+v", body)
 			}
+			hashBody = body
 			writeJSON(t, w, map[string]any{
 				"status": 200,
 				"code":   0,
@@ -927,6 +922,13 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	}
 	if bytes.Contains(uploadedCipher, plain) {
 		t.Fatal("uploaded body contains plaintext")
+	}
+	cipherMD5 := md5.Sum(uploadedCipher)
+	cipherSHA1 := sha1.Sum(uploadedCipher)
+	wantMD5 := fmt.Sprintf("%X", cipherMD5[:])
+	wantSHA1 := fmt.Sprintf("%X", cipherSHA1[:])
+	if hashBody["md5"] != wantMD5 || hashBody["sha1"] != wantSHA1 {
+		t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", hashBody, wantMD5, wantSHA1)
 	}
 	if !hashCalled {
 		t.Fatal("hash update was not called")
@@ -1144,6 +1146,75 @@ func TestDriverPutRespectsServerPartSize(t *testing.T) {
 	}
 }
 
+func TestDriverPutSourceStreamsMultipartWithoutPartSizedReads(t *testing.T) {
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Etag", "etag-"+r.URL.Query().Get("partNumber"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer oss.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-1",
+					"upload_id":  "upload-1",
+					"obj_key":    "obj-1",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 4 * 1024 * 1024},
+			})
+		case "/file/upload/auth":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"auth_key": "auth-key"},
+			})
+		case "/file/update/hash":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": false},
+			})
+		case "/file/upload/finish":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	routeOSSToTestServer(driver.cl.ossClient, oss)
+	source := newTrackingReadOnlyFileSource(bytes.Repeat([]byte("a"), 4*1024*1024+17))
+	if _, err := driver.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "data.bin",
+		Source:   source,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := source.maxRead(); got >= 1024*1024 {
+		t.Fatalf("max source read buffer = %d, want streaming reads below 1MiB", got)
+	}
+}
+
 func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
@@ -1181,7 +1252,9 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	pre.Data.Bucket = "bucket"
 	pre.Data.AuthInfo = "auth-info"
 
-	_, err := driver.uploadPart(ctx, pre, 1, []byte("slow"))
+	_, err := driver.uploadPart(ctx, pre, 1, int64(len("slow")), func() (io.Reader, error) {
+		return strings.NewReader("slow"), nil
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("uploadPart error = %v, want context deadline exceeded", err)
 	}
@@ -1209,6 +1282,79 @@ func TestOssURLWithoutBucket(t *testing.T) {
 	if got != want {
 		t.Fatalf("ossURL = %q, want %q", got, want)
 	}
+}
+
+type trackingReadOnlyFileSource struct {
+	data []byte
+	mu   sync.Mutex
+	max  int
+}
+
+func newTrackingReadOnlyFileSource(data []byte) *trackingReadOnlyFileSource {
+	return &trackingReadOnlyFileSource{data: append([]byte(nil), data...)}
+}
+
+func (s *trackingReadOnlyFileSource) Size() int64 {
+	return int64(len(s.data))
+}
+
+func (s *trackingReadOnlyFileSource) Open(ctx context.Context) (drive.ReadOnlyFile, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return &trackingReadOnlyFile{source: s, reader: bytes.NewReader(s.data)}, nil
+}
+
+func (s *trackingReadOnlyFileSource) Hash(algorithm drive.HashAlgorithm) ([]byte, bool) {
+	switch algorithm {
+	case drive.HashMD5:
+		sum := md5.Sum(s.data)
+		return sum[:], true
+	case drive.HashSHA1:
+		sum := sha1.Sum(s.data)
+		return sum[:], true
+	default:
+		return nil, false
+	}
+}
+
+func (s *trackingReadOnlyFileSource) recordRead(size int) {
+	s.mu.Lock()
+	if size > s.max {
+		s.max = size
+	}
+	s.mu.Unlock()
+}
+
+func (s *trackingReadOnlyFileSource) maxRead() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.max
+}
+
+type trackingReadOnlyFile struct {
+	source *trackingReadOnlyFileSource
+	reader *bytes.Reader
+}
+
+func (f *trackingReadOnlyFile) Read(p []byte) (int, error) {
+	f.source.recordRead(len(p))
+	return f.reader.Read(p)
+}
+
+func (f *trackingReadOnlyFile) ReadAt(p []byte, off int64) (int, error) {
+	f.source.recordRead(len(p))
+	return f.reader.ReadAt(p, off)
+}
+
+func (f *trackingReadOnlyFile) Seek(offset int64, whence int) (int64, error) {
+	return f.reader.Seek(offset, whence)
+}
+
+func (f *trackingReadOnlyFile) Close() error {
+	return nil
 }
 
 func TestOssURLStripsProtocol(t *testing.T) {

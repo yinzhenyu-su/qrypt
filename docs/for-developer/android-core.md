@@ -133,9 +133,20 @@ ReadLogJSON(coreID, name, offset, length)
 The older non-envelope functions remain available for compatibility but should
 not be the primary Android integration surface.
 
-`ReadAtJSON` is intended for preview and random-access readers. The core
-enforces a default 4 MiB chunk limit. Android should call it repeatedly for
-seek-heavy consumers and pass `timeoutMS` for preview/download cancellation.
+Do not use JSON functions for media byte transfer. JSON encodes `[]byte` as
+base64 and forces extra large string allocations. Video playback should use
+the byte-buffer APIs instead:
+
+```text
+ReadAtInto(handleID, offset, dst)
+ReadAtIntoWithTimeout(handleID, offset, dst, timeoutMS)
+ReadVirtualFileAtInto(handleID, offset, dst, timeoutMS)
+```
+
+`ReadAtJSON` and `ReadVirtualFileAtJSON` remain for compatibility and small
+preview reads only. The core enforces a default 4 MiB chunk limit. Android
+should call the byte-buffer APIs repeatedly for seek-heavy consumers and pass
+`timeoutMS` for preview/playback cancellation.
 
 ## Error Handling
 

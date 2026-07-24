@@ -66,7 +66,6 @@ type FSMountState struct {
 	ReadCacheBytes        int64      `json:"read_cache_bytes,omitempty"`
 	StagingOrphans        int        `json:"staging_orphans,omitempty"`
 	StagingSizeMismatches int        `json:"staging_size_mismatches,omitempty"`
-	ChunkLoads            int        `json:"chunk_loads,omitempty"`
 	WindowLoads           int        `json:"window_loads,omitempty"`
 	Prefetches            int        `json:"prefetches,omitempty"`
 }
@@ -291,7 +290,6 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 			}
 			state.ReadCacheFiles = cache.FileCount
 			state.ReadCacheBytes = cache.Bytes
-			state.ChunkLoads = mountState.Runtime.ChunkLoads
 			state.WindowLoads = mountState.Runtime.WindowLoads
 			state.Prefetches = mountState.Runtime.Prefetches
 			for _, pending := range mountState.PendingFiles() {

@@ -92,8 +92,6 @@ type VFS struct {
 	listLoadMu sync.Mutex
 	listLoads  map[string]*listLoad
 
-	chunkLoadMu sync.Mutex
-	chunkLoads  map[string]*chunkLoad
 	hotChunkMu  sync.Mutex
 	hotChunks   map[string][]byte
 	hotChunkLRU []string
@@ -171,7 +169,6 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		dirPrefetched:  map[string]time.Time{},
 		dirPrefetchSem: make(chan struct{}, dirPrefetchLimit),
 		listLoads:      map[string]*listLoad{},
-		chunkLoads:     map[string]*chunkLoad{},
 		hotChunks:      map[string][]byte{},
 		rangeHits:      map[string]int{},
 		windowLoads:    map[string]*windowLoad{},
@@ -341,7 +338,7 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 		})
 		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
 			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
+			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
 		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
@@ -350,24 +347,24 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 		rc, err := osutil.OpenRead(pending.LocalPath, offset, size)
 		if err != nil {
 			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, err)
+			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
 			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, readErr)
+			v.recordDebugRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, nil, readErr)
 		}}, nil
 	}
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
 		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, err)
+		v.recordDebugRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
 		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, err)
+		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
 	v.updateDebugActive(activeID, func(op *DebugActiveOp) {
@@ -376,24 +373,31 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.
 	})
 	hitsBefore, missesBefore := v.debugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
-	data, startChunk, endChunk, err := v.readRange(readCtx, entry, offset, size)
+	windowChunks := readWindowChunks(size)
+	data, startChunk, endChunk, err := v.readRange(readCtx, entry, offset, size, windowChunks)
 	hitsAfter, missesAfter := v.debugCacheCounters()
 	if err != nil {
 		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, err)
+		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, readWindowExtra(windowChunks), err)
 		return nil, err
 	}
-	v.updateDebugActive(activeID, func(op *DebugActiveOp) {
-		op.Phase = "prefetch_schedule"
-		op.Extra = map[string]any{"start_chunk": startChunk, "end_chunk": endChunk}
-	})
-	v.prefetchAdjacentChunks(readCtx, entry, startChunk, endChunk, size)
+	if readPrefetchEnabled(ctx) {
+		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+			op.Phase = "prefetch_schedule"
+			op.Extra = map[string]any{
+				"start_chunk":   startChunk,
+				"end_chunk":     endChunk,
+				"window_chunks": windowChunks,
+			}
+		})
+		v.prefetchAdjacentChunks(readCtx, entry, endChunk, windowChunks)
+	}
 	var chunks int64
 	if len(data) > 0 {
 		chunks = endChunk - startChunk + 1
 	}
 	v.finishDebugActive(activeID)
-	v.recordDebugRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, nil)
+	v.recordDebugRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, readWindowExtra(windowChunks), nil)
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 

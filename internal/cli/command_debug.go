@@ -27,6 +27,8 @@ func newDebugCmd() *cobra.Command {
 	cmd.AddCommand(withDebugSocketFlag(newDebugCollectCmd()))
 	cmd.AddCommand(newRemovedDebugInspectCmd())
 	cmd.AddCommand(withDebugSocketFlag(newDebugWatchCmd()))
+	cmd.AddCommand(withDebugSocketFlag(newDebugUploadMemoryCmd()))
+	cmd.AddCommand(withDebugSocketFlag(newDebugReadMemoryCmd()))
 	cmd.AddCommand(newDebugTestCmd())
 	cmd.AddCommand(withDebugSocketFlag(newDebugRawCmd()))
 	return cmd

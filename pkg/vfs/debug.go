@@ -113,9 +113,13 @@ type MountSnapshotEvents struct {
 }
 
 type MountSnapshotRuntime struct {
-	ChunkLoads  int `json:"chunk_loads"`
-	WindowLoads int `json:"window_loads"`
-	Prefetches  int `json:"prefetches"`
+	WindowLoads   int   `json:"window_loads"`
+	Prefetches    int   `json:"prefetches"`
+	HotChunkCount int   `json:"hot_chunk_count"`
+	HotChunkBytes int64 `json:"hot_chunk_bytes"`
+	HotChunkLimit int   `json:"hot_chunk_limit"`
+	RangeHitCount int   `json:"range_hit_count"`
+	RangeHitLimit int   `json:"range_hit_limit"`
 }
 
 type UploadSnapshot struct {
@@ -195,7 +199,13 @@ type DebugReadCache struct {
 	LastPutErrorAt      *time.Time           `json:"last_put_error_at,omitempty"`
 	WriteQueueLength    int                  `json:"write_queue_len"`
 	WriteQueueCap       int                  `json:"write_queue_cap"`
+	WriteQueueBytes     int64                `json:"write_queue_bytes"`
+	WriteQueueMaxBytes  int64                `json:"write_queue_max_bytes"`
 	WriteQueueDropped   int64                `json:"write_queue_dropped"`
+	LastWriteMS         int64                `json:"last_write_ms,omitempty"`
+	MaxWriteMS          int64                `json:"max_write_ms,omitempty"`
+	LastWriteQueueMS    int64                `json:"last_write_queue_ms,omitempty"`
+	MaxWriteQueueMS     int64                `json:"max_write_queue_ms,omitempty"`
 	IndexDirty          bool                 `json:"index_dirty"`
 	IndexFlushScheduled bool                 `json:"index_flush_scheduled"`
 	Files               []DebugReadCacheFile `json:"files,omitempty"`
@@ -459,15 +469,18 @@ func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
 		return snapshot.Overlay.CopyHidden[i].Dir < snapshot.Overlay.CopyHidden[j].Dir
 	})
 
-	v.chunkLoadMu.Lock()
-	snapshot.Runtime.ChunkLoads = len(v.chunkLoads)
-	v.chunkLoadMu.Unlock()
 	v.windowLoadMu.Lock()
 	snapshot.Runtime.WindowLoads = len(v.windowLoads)
 	v.windowLoadMu.Unlock()
 	v.prefetchMu.Lock()
 	snapshot.Runtime.Prefetches = len(v.prefetching)
 	v.prefetchMu.Unlock()
+	snapshot.Runtime.HotChunkCount, snapshot.Runtime.HotChunkBytes = v.debugHotChunks()
+	snapshot.Runtime.HotChunkLimit = readHotChunkLimit
+	v.rangeHitMu.Lock()
+	snapshot.Runtime.RangeHitCount = len(v.rangeHits)
+	v.rangeHitMu.Unlock()
+	snapshot.Runtime.RangeHitLimit = readRangeHitLimit
 
 	return snapshot
 }
@@ -730,14 +743,18 @@ func (v *VFS) debugCacheCounters() (hits, misses int64) {
 	return hits, misses
 }
 
-func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, err error) {
+func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
 	finished := timeutil.Now()
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	extra["source"] = source
 	event := drive.MetricEvent{
 		At: finished, OpID: opID, Kind: "vfs_read", Operation: "read", Phase: "read", State: "completed", OK: true,
 		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
 		Bytes: bytes, CacheHits: cacheHits, CacheMisses: cacheMisses, Chunks: chunks,
 		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
-		Extra: map[string]any{"source": source},
+		Extra: extra,
 	}
 	if bytes > 0 && finished.After(started) {
 		event.Throughput = int64(float64(bytes) / finished.Sub(started).Seconds())
@@ -829,6 +846,8 @@ func (c *Cache) debugReadCache() DebugReadCache {
 	snapshot := DebugReadCache{MaxBytes: c.maxSize, LargeFileThreshold: readCacheLargeFileBytes}
 	snapshot.WriteQueueLength = len(c.readWriteQueue)
 	snapshot.WriteQueueCap = cap(c.readWriteQueue)
+	snapshot.WriteQueueBytes = c.readWriteBytes.Load()
+	snapshot.WriteQueueMaxBytes = int64(cap(c.readWriteQueue)) * readChunkSize
 	c.readIndexMu.Lock()
 	snapshot.IndexDirty = c.readIndexDirty
 	snapshot.IndexFlushScheduled = c.readIndexTimer != nil
@@ -840,6 +859,10 @@ func (c *Cache) debugReadCache() DebugReadCache {
 	snapshot.Puts = c.stats.puts
 	snapshot.Evicted = c.stats.evicted
 	snapshot.WriteQueueDropped = c.stats.writeDropped
+	snapshot.LastWriteMS = c.stats.lastWriteMS
+	snapshot.MaxWriteMS = c.stats.maxWriteMS
+	snapshot.LastWriteQueueMS = c.stats.lastWriteQueueMS
+	snapshot.MaxWriteQueueMS = c.stats.maxWriteQueueMS
 	snapshot.LastGetError = c.lastGetError
 	if !c.lastGetAt.IsZero() {
 		at := c.lastGetAt

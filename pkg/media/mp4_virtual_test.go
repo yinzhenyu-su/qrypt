@@ -33,6 +33,14 @@ func TestMP4FastStartVirtualFileReadsVirtualLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	buf := make([]byte, len(raw))
+	n, err := vf.ReadAtInto(context.Background(), 0, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(raw) || !bytes.Equal(buf[:n], all) {
+		t.Fatalf("ReadAtInto n=%d matches=%v, want transformed layout", n, bytes.Equal(buf[:n], all))
+	}
 	first, err := readAtom(context.Background(), bytesReadAt(all), 0, int64(len(all)))
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +63,15 @@ func TestMP4FastStartVirtualFileReadsVirtualLayout(t *testing.T) {
 	if want := uint64(16 + len(moov)); patchedOffset != want {
 		t.Fatalf("patched co64 offset = %d, want %d", patchedOffset, want)
 	}
+	mappings := vf.ReadMappings(int64(len(ftyp)-2), len(moov)+6)
+	wantMappings := []VirtualReadMapping{
+		{VirtualOffset: int64(len(ftyp) - 2), Length: 2, Source: "ftyp", SourceOffset: int64(len(ftyp) - 2)},
+		{VirtualOffset: int64(len(ftyp)), Length: len(moov), Source: "moov", SourceOffset: int64(len(ftyp) + len(mdat))},
+		{VirtualOffset: int64(len(ftyp) + len(moov)), Length: 4, Source: "mdat", SourceOffset: int64(len(ftyp))},
+	}
+	if !readMappingsEqual(mappings, wantMappings) {
+		t.Fatalf("ReadMappings = %+v, want %+v", mappings, wantMappings)
+	}
 }
 
 func TestVirtualAutoMediaFallsBackToPassthrough(t *testing.T) {
@@ -74,4 +91,29 @@ func TestVirtualAutoMediaFallsBackToPassthrough(t *testing.T) {
 	if string(data) != "mp4" {
 		t.Fatalf("ReadAt = %q, want mp4", data)
 	}
+	buf := make([]byte, len(raw))
+	n, err := vf.ReadAtInto(context.Background(), 0, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(raw) || !bytes.Equal(buf[:n], raw) {
+		t.Fatalf("ReadAtInto n=%d data=%q, want passthrough layout", n, string(buf[:n]))
+	}
+	mappings := vf.ReadMappings(2, 4)
+	want := []VirtualReadMapping{{VirtualOffset: 2, Length: 4, Source: "passthrough", SourceOffset: 2}}
+	if !readMappingsEqual(mappings, want) {
+		t.Fatalf("ReadMappings = %+v, want %+v", mappings, want)
+	}
+}
+
+func readMappingsEqual(a, b []VirtualReadMapping) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

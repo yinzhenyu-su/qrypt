@@ -61,6 +61,14 @@ root_path = "`+remote+`"
 	if string(data) != "mobile" {
 		t.Fatalf("ReadAt = %q, want mobile", string(data))
 	}
+	buf := []byte("......")
+	n, err := ReadAtInto(handleID, 6, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 6 || string(buf) != "mobile" {
+		t.Fatalf("ReadAtInto n=%d data=%q, want 6 mobile", n, string(buf))
+	}
 }
 
 func TestMobileJSONEnvelopeAndDiagnostics(t *testing.T) {
@@ -338,6 +346,53 @@ root_path = "`+remote+`"
 		if string(data) != read.want {
 			t.Fatalf("ReadAt(%d,%d) = %q, want %q", read.offset, read.length, string(data), read.want)
 		}
+	}
+}
+
+func TestMobileVirtualFileReadAtInto(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "video.bin"), []byte("virtual video data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	coreID, err := Open(configPath, filepath.Join(tmp, "work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(coreID)
+
+	raw, err := OpenVirtualFile(coreID, "/quark/video.bin", "passthrough", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opened virtualOpenResult
+	if err := json.Unmarshal([]byte(raw), &opened); err != nil {
+		t.Fatal(err)
+	}
+	handleID := opened.Handle
+	defer CloseVirtualFile(handleID)
+
+	buf := []byte(".....")
+	n, err := ReadVirtualFileAtInto(handleID, 8, buf, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 5 || string(buf) != "video" {
+		t.Fatalf("ReadVirtualFileAtInto n=%d data=%q, want 5 video", n, string(buf))
 	}
 }
 

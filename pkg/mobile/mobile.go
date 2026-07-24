@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
@@ -300,7 +302,20 @@ func ReadAt(handleID string, offset int64, length int) ([]byte, error) {
 	return data, nil
 }
 
+func ReadAtInto(handleID string, offset int64, dst []byte) (int, error) {
+	return ReadAtIntoWithTimeout(handleID, offset, dst, 0)
+}
+
 func ReadAtWithTimeout(handleID string, offset int64, length int, timeoutMS int) ([]byte, error) {
+	if offset < 0 {
+		return nil, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
+	}
+	if length < 0 {
+		return nil, wrapError(fmt.Errorf("mobile: length must be non-negative"))
+	}
+	if length == 0 {
+		return []byte{}, nil
+	}
 	handle, err := getFile(handleID)
 	if err != nil {
 		return nil, wrapError(err)
@@ -311,11 +326,36 @@ func ReadAtWithTimeout(handleID string, offset int64, length int, timeoutMS int)
 	}
 	ctx, cancel := core.TimeoutContext(timeoutMS)
 	defer cancel()
-	data, err := s.core.ReadAt(ctx, handle.path, offset, length, 0)
+	data := make([]byte, length)
+	n, err := s.core.ReadAtInto(ctx, handle.path, offset, data, 0)
 	if err != nil {
 		return nil, wrapError(err)
 	}
-	return data, nil
+	return data[:n], nil
+}
+
+func ReadAtIntoWithTimeout(handleID string, offset int64, dst []byte, timeoutMS int) (int, error) {
+	if offset < 0 {
+		return 0, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	handle, err := getFile(handleID)
+	if err != nil {
+		return 0, wrapError(err)
+	}
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return 0, wrapError(err)
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	n, err := s.core.ReadAtInto(ctx, handle.path, offset, dst, 0)
+	if err != nil {
+		return n, wrapError(err)
+	}
+	return n, nil
 }
 
 func ReadAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
@@ -385,16 +425,68 @@ func ReadVirtualFileAt(handleID string, offset int64, length int, timeoutMS int)
 	}
 	ctx, cancel := core.TimeoutContext(timeoutMS)
 	defer cancel()
+	info := handle.file.Info()
+	started := time.Now()
 	data, err := handle.file.ReadAt(ctx, offset, length)
+	logVirtualRead(handleID, handle.file, info, offset, length, len(data), time.Since(started), err)
 	if err != nil {
 		return nil, wrapError(err)
 	}
 	return data, nil
 }
 
+func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, timeoutMS int) (int, error) {
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	handle, err := getVirtualFile(handleID)
+	if err != nil {
+		return 0, wrapError(err)
+	}
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	defer cancel()
+	info := handle.file.Info()
+	started := time.Now()
+	n, err := handle.file.ReadAtInto(ctx, offset, dst)
+	logVirtualRead(handleID, handle.file, info, offset, len(dst), n, time.Since(started), err)
+	if err != nil {
+		return n, wrapError(err)
+	}
+	return n, nil
+}
+
 func ReadVirtualFileAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
 	data, err := ReadVirtualFileAt(handleID, offset, length, timeoutMS)
 	return resultJSON(data, err)
+}
+
+func logVirtualRead(handleID string, file media.VirtualFile, info media.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
+	if err != nil {
+		mappings := file.ReadMappings(offset, requested)
+		logging.L.Warnf("[MOBILE] virtual read handle=%q mode=%s transformed=%t offset=%d requested=%d bytes=%d dur=%s mappings=%s err=%v",
+			handleID, info.Mode, info.Transformed, offset, requested, bytes, dur, formatReadMappings(mappings), err)
+		return
+	}
+	logging.L.DebugfEveryFunc(virtualReadLogKey(handleID, info), time.Second, func(int) string {
+		mappings := file.ReadMappings(offset, requested)
+		return fmt.Sprintf("[MOBILE] virtual read handle=%q mode=%s transformed=%t offset=%d requested=%d bytes=%d dur=%s mappings=%s err=%v",
+			handleID, info.Mode, info.Transformed, offset, requested, bytes, dur, formatReadMappings(mappings), err)
+	})
+}
+
+func virtualReadLogKey(handleID string, info media.VirtualFileInfo) string {
+	return "mobile.virtual_read." + handleID + "." + info.Mode
+}
+
+func formatReadMappings(mappings []media.VirtualReadMapping) string {
+	if len(mappings) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(mappings))
+	for _, item := range mappings {
+		parts = append(parts, fmt.Sprintf("%d+%d:%s@%d", item.VirtualOffset, item.Length, item.Source, item.SourceOffset))
+	}
+	return strings.Join(parts, ",")
 }
 
 func CloseVirtualFile(handleID string) error {

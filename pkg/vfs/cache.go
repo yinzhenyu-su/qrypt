@@ -151,6 +151,7 @@ type readCacheWrite struct {
 	fileSize int64
 	index    int64
 	data     []byte
+	queuedAt time.Time
 }
 
 type Cache struct {
@@ -171,6 +172,7 @@ type Cache struct {
 	lastPutAt     time.Time
 
 	readWriteQueue  chan readCacheWrite
+	readWriteBytes  atomic.Int64
 	readWriteWG     sync.WaitGroup
 	readWriteWGMu   sync.Mutex
 	readWriterWG    sync.WaitGroup
@@ -184,11 +186,15 @@ type Cache struct {
 }
 
 type cacheStats struct {
-	hits         int64
-	misses       int64
-	puts         int64
-	evicted      int64
-	writeDropped int64
+	hits             int64
+	misses           int64
+	puts             int64
+	evicted          int64
+	writeDropped     int64
+	lastWriteMS      int64
+	maxWriteMS       int64
+	lastWriteQueueMS int64
+	maxWriteQueueMS  int64
 }
 
 func NewCache(dir string, maxSize int64) (*Cache, error) {
@@ -657,10 +663,12 @@ func (c *Cache) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
 	}
 	c.readWrites[writeKey] = struct{}{}
 	c.readWriteWG.Add(1)
-	write := readCacheWrite{fid: fid, fileSize: fileSize, index: index, data: copied}
+	write := readCacheWrite{fid: fid, fileSize: fileSize, index: index, data: copied, queuedAt: timeutil.Now()}
+	c.readWriteBytes.Add(int64(len(copied)))
 	select {
 	case c.readWriteQueue <- write:
 	default:
+		c.readWriteBytes.Add(-int64(len(copied)))
 		delete(c.readWrites, writeKey)
 		c.readWriteWG.Done()
 		c.addWriteDropped()
@@ -700,6 +708,7 @@ func (c *Cache) handleReadCacheWrites(writes []readCacheWrite) {
 		}
 		c.readWriteMu.Lock()
 		for _, write := range writes {
+			c.readWriteBytes.Add(-int64(len(write.data)))
 			delete(c.readWrites, readChunkKey(write.fid, write.index))
 		}
 		c.readWriteMu.Unlock()
@@ -713,6 +722,13 @@ func (c *Cache) handleReadCacheWrites(writes []readCacheWrite) {
 		}
 		groups[path] = append(groups[path], write)
 	}
+	if err := c.ensureReadCacheDir(); err != nil {
+		c.setLastPutError(err)
+		for _, write := range writes {
+			logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
+		}
+		return
+	}
 	wrote := false
 	for _, path := range paths {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
@@ -724,11 +740,13 @@ func (c *Cache) handleReadCacheWrites(writes []readCacheWrite) {
 			continue
 		}
 		for _, write := range groups[path] {
+			writeStarted := timeutil.Now()
 			if err := c.writeReadCacheChunk(f, path, write); err != nil {
 				c.setLastPutError(err)
 				logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
 				continue
 			}
+			c.recordReadCacheWriteTiming(durationMillis(writeStarted.Sub(write.queuedAt)), durationMillis(timeutil.Now().Sub(writeStarted)))
 			wrote = true
 		}
 		if err := f.Close(); err != nil {
@@ -794,6 +812,10 @@ func (c *Cache) putChunk(fid string, fileSize, index int64, data []byte) error {
 	batch := index / cacheBatchBlocks
 	offset := int64(index%cacheBatchBlocks) * readChunkSize
 	path := c.readBatchPath(fid, batch)
+	if err := c.ensureReadCacheDir(); err != nil {
+		c.setLastPutError(err)
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		c.setLastPutError(err)
@@ -832,6 +854,10 @@ func (c *Cache) putChunk(fid string, fileSize, index int64, data []byte) error {
 func (c *Cache) PutLocalFile(fid string, fileSize int64, localPath string) error {
 	if fid == "" {
 		return nil
+	}
+	if err := c.ensureReadCacheDir(); err != nil {
+		c.setLastPutError(err)
+		return err
 	}
 	f, err := os.Open(localPath)
 	if err != nil {
@@ -1098,6 +1124,9 @@ func (c *Cache) saveReadIndexNow() error {
 		return err
 	}
 	data = append(data, '\n')
+	if err := c.ensureReadCacheDir(); err != nil {
+		return err
+	}
 	return writeFileAtomic(c.readIndexPath(), data, 0o644)
 }
 
@@ -1162,6 +1191,10 @@ func (c *Cache) readBatchPath(fid string, batch int64) string {
 	return filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", cacheFileID(fid), batch))
 }
 
+func (c *Cache) ensureReadCacheDir() error {
+	return os.MkdirAll(filepath.Join(c.dir, "reading"), 0o755)
+}
+
 func cacheFileID(fid string) string {
 	if isSHA256Hex(fid) {
 		return fid
@@ -1203,6 +1236,19 @@ func (c *Cache) addPut() {
 func (c *Cache) addWriteDropped() {
 	c.mu.Lock()
 	c.stats.writeDropped++
+	c.mu.Unlock()
+}
+
+func (c *Cache) recordReadCacheWriteTiming(queueMS, writeMS int64) {
+	c.mu.Lock()
+	c.stats.lastWriteQueueMS = queueMS
+	if queueMS > c.stats.maxWriteQueueMS {
+		c.stats.maxWriteQueueMS = queueMS
+	}
+	c.stats.lastWriteMS = writeMS
+	if writeMS > c.stats.maxWriteMS {
+		c.stats.maxWriteMS = writeMS
+	}
 	c.mu.Unlock()
 }
 

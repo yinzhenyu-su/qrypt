@@ -105,6 +105,42 @@ func TestLoggerDebugfEverySamplesRepeatedMessages(t *testing.T) {
 	}
 }
 
+func TestLoggerDebugfEveryFuncBuildsMessageOnlyWhenSampled(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{level: LevelInfo, writer: &buf}
+	calls := 0
+	l.DebugfEveryFunc("hot", 20*time.Millisecond, func(int) string {
+		calls++
+		return "hidden"
+	})
+	if calls != 0 || buf.Len() != 0 {
+		t.Fatalf("debug lazy message built at info level: calls=%d output=%q", calls, buf.String())
+	}
+
+	l.SetLevel("debug")
+	l.DebugfEveryFunc("hot", 20*time.Millisecond, func(int) string {
+		calls++
+		return "first"
+	})
+	l.DebugfEveryFunc("hot", 20*time.Millisecond, func(int) string {
+		calls++
+		return "second"
+	})
+	time.Sleep(25 * time.Millisecond)
+	l.DebugfEveryFunc("hot", 20*time.Millisecond, func(int) string {
+		calls++
+		return "third"
+	})
+
+	output := buf.String()
+	if calls != 2 {
+		t.Fatalf("lazy message calls = %d, want 2", calls)
+	}
+	if !strings.Contains(output, "DEBUG first") || strings.Contains(output, "second") || !strings.Contains(output, "DEBUG third (suppressed=1)") {
+		t.Fatalf("unexpected lazy sampling output: %s", output)
+	}
+}
+
 func TestLoggerInfofEveryAndWarnfEverySampleAtTheirLevels(t *testing.T) {
 	var infoBuf bytes.Buffer
 	var warnBuf bytes.Buffer
