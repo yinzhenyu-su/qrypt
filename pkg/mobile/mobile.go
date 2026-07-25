@@ -6,25 +6,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
-	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/core"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
 	"github.com/yinzhenyu/qrypt/pkg/media"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type entry struct {
-	Name     string `json:"name"`
-	Path     string `json:"path,omitempty"`
-	ID       string `json:"id,omitempty"`
-	ParentID string `json:"parent_id,omitempty"`
-	IsDir    bool   `json:"is_dir"`
-	Size     int64  `json:"size"`
-	ModTime  string `json:"mod_time,omitempty"`
+	Name      string `json:"name"`
+	Path      string `json:"path,omitempty"`
+	ID        string `json:"id,omitempty"`
+	ParentID  string `json:"parent_id,omitempty"`
+	IsDir     bool   `json:"is_dir"`
+	Size      int64  `json:"size"`
+	ModTime   string `json:"mod_time,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 type session struct {
@@ -32,9 +31,10 @@ type session struct {
 }
 
 type fileHandle struct {
-	coreID string
-	path   string
-	size   int64
+	coreID       string
+	path         string
+	size         int64
+	readPriority vfs.ReadPriority
 }
 
 type virtualHandle struct {
@@ -42,27 +42,51 @@ type virtualHandle struct {
 	file   media.VirtualFile
 }
 
+type streamingUploadHandle struct {
+	mu     sync.Mutex
+	coreID string
+	path   string
+	offset int64
+	closed bool
+}
+
+type runtimeJSON struct {
+	ConfigDir string `json:"config_dir"`
+	Storage   struct {
+		ReadCacheDir string `json:"read_cache_dir"`
+		ThumbnailDir string `json:"thumbnail_cache_dir"`
+		WritebackDir string `json:"writeback_dir"`
+		StateDir     string `json:"state_dir"`
+		LogDir       string `json:"log_dir"`
+		TmpDir       string `json:"tmp_dir"`
+	} `json:"storage"`
+}
+
 var registry = struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	files    map[string]*fileHandle
 	virtuals map[string]*virtualHandle
+	uploads  map[string]*streamingUploadHandle
 }{
 	sessions: map[string]*session{},
 	files:    map[string]*fileHandle{},
 	virtuals: map[string]*virtualHandle{},
+	uploads:  map[string]*streamingUploadHandle{},
 }
 
-type envelope struct {
-	OK    bool            `json:"ok"`
-	Data  any             `json:"data,omitempty"`
-	Error *core.ErrorInfo `json:"error,omitempty"`
+func Open(configPath, runtimeRaw string) (string, error) {
+	runtime, err := parseRuntimeJSON(runtimeRaw)
+	if err != nil {
+		return "", wrapError(err)
+	}
+	return openWithRuntime(configPath, runtime)
 }
 
-func Open(configPath, workDir string) (string, error) {
+func openWithRuntime(configPath string, runtime core.RuntimeLayout) (string, error) {
 	c, err := core.Open(context.Background(), core.Options{
 		ConfigPath: configPath,
-		WorkDir:    workDir,
+		Runtime:    runtime,
 	})
 	if err != nil {
 		return "", wrapError(err)
@@ -78,18 +102,30 @@ func Open(configPath, workDir string) (string, error) {
 	return id, nil
 }
 
-func OpenJSON(configPath, workDir string) string {
-	id, err := Open(configPath, workDir)
+func OpenJSON(configPath, runtimeRaw string) string {
+	runtime, err := parseRuntimeJSON(runtimeRaw)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	id, err := openWithRuntime(configPath, runtime)
 	return resultJSON(id, err)
 }
 
-func ImportConfigJSON(srcPath, workDir string) string {
-	path, err := core.ImportConfig(srcPath, workDir)
+func ImportConfigJSON(srcPath, runtimeRaw string) string {
+	runtime, err := parseRuntimeJSON(runtimeRaw)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	path, err := core.ImportConfig(srcPath, runtime)
 	return resultJSON(path, err)
 }
 
-func OpenImportedJSON(workDir string) string {
-	c, err := core.OpenImported(context.Background(), workDir)
+func OpenImportedJSON(runtimeRaw string) string {
+	runtime, err := parseRuntimeJSON(runtimeRaw)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	c, err := core.OpenImported(context.Background(), runtime)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -104,420 +140,42 @@ func OpenImportedJSON(workDir string) string {
 	return resultJSON(id, nil)
 }
 
-func List(coreID, path string) (string, error) {
-	s, err := getSession(coreID)
-	if err != nil {
-		return "", wrapError(err)
+func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
+	var in runtimeJSON
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: invalid runtime json: %w", err)
 	}
-	entries, err := s.core.List(context.Background(), path)
-	if err != nil {
-		return "", wrapError(err)
+	runtime := core.RuntimeLayout{
+		ConfigDir:    in.ConfigDir,
+		ReadCacheDir: in.Storage.ReadCacheDir,
+		ThumbnailDir: in.Storage.ThumbnailDir,
+		WritebackDir: in.Storage.WritebackDir,
+		StateDir:     in.Storage.StateDir,
+		LogDir:       in.Storage.LogDir,
+		TmpDir:       in.Storage.TmpDir,
 	}
-	out := make([]entry, 0, len(entries))
-	for _, item := range entries {
-		out = append(out, fromDriveEntry(item, core.JoinPath(path, item.Name)))
+	if runtime.ConfigDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime config_dir required")
 	}
-	data, err := json.Marshal(out)
-	if err != nil {
-		return "", wrapError(err)
+	if runtime.ReadCacheDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.read_cache_dir required")
 	}
-	return string(data), nil
-}
-
-func ListJSON(coreID, path string) string {
-	raw, err := List(coreID, path)
-	if err != nil {
-		return resultJSON(nil, err)
+	if runtime.ThumbnailDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.thumbnail_cache_dir required")
 	}
-	var entries []entry
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return resultJSON(nil, err)
+	if runtime.WritebackDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.writeback_dir required")
 	}
-	return resultJSON(entries, nil)
-}
-
-func Stat(coreID, path string) (string, error) {
-	s, err := getSession(coreID)
-	if err != nil {
-		return "", wrapError(err)
+	if runtime.StateDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.state_dir required")
 	}
-	item, err := s.core.Stat(context.Background(), path)
-	if err != nil {
-		return "", wrapError(err)
+	if runtime.LogDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.log_dir required")
 	}
-	data, err := json.Marshal(fromDriveEntry(item, path))
-	if err != nil {
-		return "", wrapError(err)
+	if runtime.TmpDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.tmp_dir required")
 	}
-	return string(data), nil
-}
-
-func StatJSON(coreID, path string) string {
-	raw, err := Stat(coreID, path)
-	if err != nil {
-		return resultJSON(nil, err)
-	}
-	var item entry
-	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		return resultJSON(nil, err)
-	}
-	return resultJSON(item, nil)
-}
-
-func MkdirJSON(coreID, path string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	item, err := s.core.Mkdir(ctx, path)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	return resultJSON(fromDriveEntry(item, path), nil)
-}
-
-func RenameJSON(coreID, oldPath, newPath string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	return resultJSON(nil, s.core.Rename(ctx, oldPath, newPath))
-}
-
-func RemoveJSON(coreID, path string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	return resultJSON(nil, s.core.Remove(ctx, path))
-}
-
-func CapabilitiesJSON(coreID, path string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	info, err := s.core.Capabilities(ctx, path)
-	return resultJSON(info, err)
-}
-
-func MountsJSON(coreID string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	mounts, err := s.core.Mounts()
-	return resultJSON(mounts, err)
-}
-
-func UploadLocalFileJSON(coreID, localPath, remotePath string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	item, err := s.core.UploadLocalFile(ctx, localPath, remotePath)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	return resultJSON(fromDriveEntry(item, remotePath), nil)
-}
-
-func FileInfoJSON(coreID, path string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	info, err := s.core.FileInfo(context.Background(), path)
-	return resultJSON(info, err)
-}
-
-func ValidateResumeJSON(coreID, path, id string, size int64, modTime string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	check, err := s.core.ValidateResume(context.Background(), path, id, size, modTime)
-	return resultJSON(check, err)
-}
-
-func OpenFile(coreID, path string) (string, error) {
-	s, err := getSession(coreID)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	item, err := s.core.Stat(context.Background(), path)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	if item.IsDir {
-		return "", wrapError(fmt.Errorf("mobile: %s is a directory", path))
-	}
-	id, err := newID()
-	if err != nil {
-		return "", wrapError(err)
-	}
-	registry.mu.Lock()
-	registry.files[id] = &fileHandle{coreID: coreID, path: path, size: item.Size}
-	registry.mu.Unlock()
-	return id, nil
-}
-
-func OpenFileJSON(coreID, path string) string {
-	id, err := OpenFile(coreID, path)
-	return resultJSON(id, err)
-}
-
-func ReadAt(handleID string, offset int64, length int) ([]byte, error) {
-	if offset < 0 {
-		return nil, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
-	}
-	if length < 0 {
-		return nil, wrapError(fmt.Errorf("mobile: length must be non-negative"))
-	}
-	if length == 0 {
-		return []byte{}, nil
-	}
-	handle, err := getFile(handleID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	s, err := getSession(handle.coreID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	data, err := s.core.ReadAt(context.Background(), handle.path, offset, length, 0)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	return data, nil
-}
-
-func ReadAtInto(handleID string, offset int64, dst []byte) (int, error) {
-	return ReadAtIntoWithTimeout(handleID, offset, dst, 0)
-}
-
-func ReadAtWithTimeout(handleID string, offset int64, length int, timeoutMS int) ([]byte, error) {
-	if offset < 0 {
-		return nil, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
-	}
-	if length < 0 {
-		return nil, wrapError(fmt.Errorf("mobile: length must be non-negative"))
-	}
-	if length == 0 {
-		return []byte{}, nil
-	}
-	handle, err := getFile(handleID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	s, err := getSession(handle.coreID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	data := make([]byte, length)
-	n, err := s.core.ReadAtInto(ctx, handle.path, offset, data, 0)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	return data[:n], nil
-}
-
-func ReadAtIntoWithTimeout(handleID string, offset int64, dst []byte, timeoutMS int) (int, error) {
-	if offset < 0 {
-		return 0, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
-	}
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	handle, err := getFile(handleID)
-	if err != nil {
-		return 0, wrapError(err)
-	}
-	s, err := getSession(handle.coreID)
-	if err != nil {
-		return 0, wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	n, err := s.core.ReadAtInto(ctx, handle.path, offset, dst, 0)
-	if err != nil {
-		return n, wrapError(err)
-	}
-	return n, nil
-}
-
-func ReadAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
-	data, err := ReadAtWithTimeout(handleID, offset, length, timeoutMS)
-	return resultJSON(data, err)
-}
-
-func ProbeMP4JSON(coreID, path string, timeoutMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	probe, err := s.core.ProbeMP4(ctx, path)
-	return resultJSON(probe, err)
-}
-
-type virtualOpenResult struct {
-	Handle string                `json:"handle"`
-	Info   media.VirtualFileInfo `json:"info"`
-}
-
-func OpenVirtualFile(coreID, path, mode string, timeoutMS int) (string, error) {
-	s, err := getSession(coreID)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	file, err := s.core.OpenVirtualFile(ctx, path, mode)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	id, err := newID()
-	if err != nil {
-		_ = file.Close()
-		return "", wrapError(err)
-	}
-	registry.mu.Lock()
-	registry.virtuals[id] = &virtualHandle{coreID: coreID, file: file}
-	registry.mu.Unlock()
-	data, err := json.Marshal(virtualOpenResult{Handle: id, Info: file.Info()})
-	if err != nil {
-		_ = CloseVirtualFile(id)
-		return "", wrapError(err)
-	}
-	return string(data), nil
-}
-
-func OpenVirtualFileJSON(coreID, path, mode string, timeoutMS int) string {
-	raw, err := OpenVirtualFile(coreID, path, mode, timeoutMS)
-	if err != nil {
-		return resultJSON(nil, err)
-	}
-	var data virtualOpenResult
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return resultJSON(nil, err)
-	}
-	return resultJSON(data, nil)
-}
-
-func ReadVirtualFileAt(handleID string, offset int64, length int, timeoutMS int) ([]byte, error) {
-	handle, err := getVirtualFile(handleID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	info := handle.file.Info()
-	started := time.Now()
-	data, err := handle.file.ReadAt(ctx, offset, length)
-	logVirtualRead(handleID, handle.file, info, offset, length, len(data), time.Since(started), err)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	return data, nil
-}
-
-func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, timeoutMS int) (int, error) {
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	handle, err := getVirtualFile(handleID)
-	if err != nil {
-		return 0, wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	info := handle.file.Info()
-	started := time.Now()
-	n, err := handle.file.ReadAtInto(ctx, offset, dst)
-	logVirtualRead(handleID, handle.file, info, offset, len(dst), n, time.Since(started), err)
-	if err != nil {
-		return n, wrapError(err)
-	}
-	return n, nil
-}
-
-func ReadVirtualFileAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
-	data, err := ReadVirtualFileAt(handleID, offset, length, timeoutMS)
-	return resultJSON(data, err)
-}
-
-func logVirtualRead(handleID string, file media.VirtualFile, info media.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
-	if err != nil {
-		mappings := file.ReadMappings(offset, requested)
-		logging.L.Warnf("[MOBILE] virtual read handle=%q mode=%s transformed=%t offset=%d requested=%d bytes=%d dur=%s mappings=%s err=%v",
-			handleID, info.Mode, info.Transformed, offset, requested, bytes, dur, formatReadMappings(mappings), err)
-		return
-	}
-	logging.L.DebugfEveryFunc(virtualReadLogKey(handleID, info), time.Second, func(int) string {
-		mappings := file.ReadMappings(offset, requested)
-		return fmt.Sprintf("[MOBILE] virtual read handle=%q mode=%s transformed=%t offset=%d requested=%d bytes=%d dur=%s mappings=%s err=%v",
-			handleID, info.Mode, info.Transformed, offset, requested, bytes, dur, formatReadMappings(mappings), err)
-	})
-}
-
-func virtualReadLogKey(handleID string, info media.VirtualFileInfo) string {
-	return "mobile.virtual_read." + handleID + "." + info.Mode
-}
-
-func formatReadMappings(mappings []media.VirtualReadMapping) string {
-	if len(mappings) == 0 {
-		return "-"
-	}
-	parts := make([]string, 0, len(mappings))
-	for _, item := range mappings {
-		parts = append(parts, fmt.Sprintf("%d+%d:%s@%d", item.VirtualOffset, item.Length, item.Source, item.SourceOffset))
-	}
-	return strings.Join(parts, ",")
-}
-
-func CloseVirtualFile(handleID string) error {
-	registry.mu.Lock()
-	handle, ok := registry.virtuals[handleID]
-	if ok {
-		delete(registry.virtuals, handleID)
-	}
-	registry.mu.Unlock()
-	if !ok {
-		return wrapError(fmt.Errorf("mobile: unknown virtual file handle %q", handleID))
-	}
-	return wrapError(handle.file.Close())
-}
-
-func CloseVirtualFileJSON(handleID string) string {
-	return resultJSON(nil, CloseVirtualFile(handleID))
-}
-
-func CloseFile(handleID string) error {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if _, ok := registry.files[handleID]; !ok {
-		return wrapError(fmt.Errorf("mobile: unknown file handle %q", handleID))
-	}
-	delete(registry.files, handleID)
-	return nil
-}
-
-func CloseFileJSON(handleID string) string {
-	return resultJSON(nil, CloseFile(handleID))
+	return runtime, nil
 }
 
 func Close(coreID string) error {
@@ -538,6 +196,11 @@ func Close(coreID string) error {
 		if handle.coreID == coreID {
 			virtuals = append(virtuals, handle.file)
 			delete(registry.virtuals, id)
+		}
+	}
+	for id, handle := range registry.uploads {
+		if handle.coreID == coreID {
+			delete(registry.uploads, id)
 		}
 	}
 	registry.mu.Unlock()
@@ -567,57 +230,6 @@ func DriverNamesJSON() string {
 func DriverSchemaJSON(name string) string {
 	raw, err := core.DriverSchemaJSON(name)
 	return rawResultJSON(raw, err)
-}
-
-func DebugSnapshotJSON(coreID string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	raw, err := s.core.DebugSnapshotJSON(context.Background())
-	return rawResultJSON(raw, err)
-}
-
-func FlushReadCacheJSON(coreID string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	return resultJSON(nil, s.core.FlushReadCache())
-}
-
-func StartDebugServerJSON(coreID, listen string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	return resultJSON(nil, s.core.StartDebugServer(context.Background(), listen))
-}
-
-func StopDebugServerJSON(coreID string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	return resultJSON(nil, s.core.StopDebugServer(context.Background()))
-}
-
-func LogFilesJSON(coreID string) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	files, err := s.core.LogFiles()
-	return resultJSON(files, err)
-}
-
-func ReadLogJSON(coreID, name string, offset int64, length int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	data, err := s.core.ReadLog(name, offset, length)
-	return resultJSON(data, err)
 }
 
 func getSession(coreID string) (*session, error) {
@@ -650,19 +262,33 @@ func getVirtualFile(handleID string) (*virtualHandle, error) {
 	return handle, nil
 }
 
-func fromDriveEntry(item drive.Entry, path string) entry {
-	out := entry{
-		Name:     item.Name,
-		Path:     path,
-		ID:       item.ID,
-		ParentID: item.ParentID,
-		IsDir:    item.IsDir,
-		Size:     item.Size,
+func getStreamingUpload(handleID string) (*streamingUploadHandle, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	handle := registry.uploads[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown streaming upload handle %q", handleID)
 	}
-	if !item.ModTime.IsZero() {
-		out.ModTime = item.ModTime.Format(time.RFC3339)
+	return handle, nil
+}
+
+func takeStreamingUpload(handleID string) (*streamingUploadHandle, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	handle := registry.uploads[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown streaming upload handle %q", handleID)
 	}
-	return out
+	delete(registry.uploads, handleID)
+	return handle, nil
+}
+
+func removeStreamingUpload(handleID string, handle *streamingUploadHandle) {
+	registry.mu.Lock()
+	if registry.uploads[handleID] == handle {
+		delete(registry.uploads, handleID)
+	}
+	registry.mu.Unlock()
 }
 
 func newID() (string, error) {
@@ -671,47 +297,4 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
-}
-
-func resultJSON(data any, err error) string {
-	env := envelope{OK: err == nil, Data: data}
-	if err != nil {
-		info := core.ClassifyError(err)
-		env.Error = &info
-	}
-	raw, marshalErr := json.Marshal(env)
-	if marshalErr != nil {
-		fallback := core.ClassifyError(marshalErr)
-		raw, _ = json.Marshal(envelope{OK: false, Error: &fallback})
-	}
-	return string(raw)
-}
-
-func rawResultJSON(raw string, err error) string {
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	var data any
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return resultJSON(nil, err)
-	}
-	return resultJSON(data, nil)
-}
-
-type classifiedError struct {
-	info core.ErrorInfo
-}
-
-func (e classifiedError) Error() string {
-	if e.info.Code == "" {
-		return e.info.Message
-	}
-	return string(e.info.Code) + ": " + e.info.Message
-}
-
-func wrapError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return classifiedError{info: core.ClassifyError(err)}
 }

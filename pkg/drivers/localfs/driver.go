@@ -84,13 +84,15 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 		if err != nil {
 			continue
 		}
+		modTime := info.ModTime()
 		entries = append(entries, drive.Entry{
-			ID:       filepath.Join(dir, item.Name()),
-			ParentID: dir,
-			Name:     item.Name(),
-			IsDir:    item.IsDir(),
-			Size:     info.Size(),
-			ModTime:  info.ModTime(),
+			ID:        filepath.Join(dir, item.Name()),
+			ParentID:  dir,
+			Name:      item.Name(),
+			IsDir:     item.IsDir(),
+			Size:      info.Size(),
+			ModTime:   modTime,
+			UpdatedAt: modTime,
 		})
 	}
 	return entries, nil
@@ -109,7 +111,8 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	if err := os.Mkdir(path, 0o755); err != nil {
 		return drive.Entry{}, err
 	}
-	return drive.Entry{ID: path, ParentID: d.resolve(parentID), Name: name, IsDir: true, ModTime: time.Now()}, nil
+	now := time.Now()
+	return drive.Entry{ID: path, ParentID: d.resolve(parentID), Name: name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -149,7 +152,8 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{ID: path, ParentID: parent, Name: name, Size: source.Size()}, nil
 	}
-	return drive.Entry{ID: path, ParentID: parent, Name: name, Size: info.Size(), ModTime: info.ModTime()}, nil
+	modTime := info.ModTime()
+	return drive.Entry{ID: path, ParentID: parent, Name: name, Size: info.Size(), ModTime: modTime, UpdatedAt: modTime}, nil
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {

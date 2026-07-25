@@ -290,15 +290,21 @@ func TestParseSizeRejectsInvalidValues(t *testing.T) {
 	}
 }
 
-func TestCacheConfigMaxSizeBytes(t *testing.T) {
-	if got := (CacheConfig{}).MaxSizeBytes(); got != 0 {
+func TestReadCacheConfigMaxSizeBytes(t *testing.T) {
+	if got := (ReadCacheConfig{}).MaxSizeBytes(); got != 0 {
 		t.Fatalf("empty max size = %d, want 0", got)
 	}
-	if got := (CacheConfig{MaxSize: "512M"}).MaxSizeBytes(); got != 512*(1<<20) {
+	if got := (ReadCacheConfig{MaxSize: "512M"}).MaxSizeBytes(); got != 512*(1<<20) {
 		t.Fatalf("max size = %d, want %d", got, 512*(1<<20))
 	}
 	if got := ParseMaxSize("invalid"); got != 0 {
 		t.Fatalf("invalid max size = %d, want 0", got)
+	}
+}
+
+func TestThumbnailCacheConfigMaxSizeBytes(t *testing.T) {
+	if got := (ReadCacheConfig{MaxSize: "256M"}).MaxSizeBytes(); got != 256*(1<<20) {
+		t.Fatalf("thumbnail max size = %d, want %d", got, 256*(1<<20))
 	}
 }
 
@@ -337,17 +343,26 @@ func TestEffectiveSpaceBytesRejectsInvalidValues(t *testing.T) {
 	}
 }
 
-func TestCacheForIncludesOperationDelays(t *testing.T) {
+func TestReadCacheAndWritebackForIncludeMountOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
-[defaults.cache]
+	[read_cache]
+	max_size = "512M"
+
+	[thumbnail_cache]
+	max_size = "256M"
+
+[writeback]
 upload_delay = "5s"
 upload_workers = 2
 delete_delay = "2s"
 
 [[mounts]]
 name = "fast"
-[mounts.cache]
+[mounts.read_cache]
+max_size = "1G"
+
+[mounts.writeback]
 upload_delay = "250ms"
 upload_workers = 8
 delete_delay = "500ms"
@@ -360,22 +375,31 @@ delete_delay = "500ms"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.CacheFor("slow").UploadDelay; got != "5s" {
+	if got := cfg.ReadCacheFor("slow").MaxSize; got != "512M" {
+		t.Fatalf("default max_size = %q, want 512M", got)
+	}
+	if got := cfg.ReadCacheFor("fast").MaxSize; got != "1G" {
+		t.Fatalf("mount max_size = %q, want 1G", got)
+	}
+	if got := cfg.ThumbnailCache.MaxSize; got != "256M" {
+		t.Fatalf("thumbnail max_size = %q, want 256M", got)
+	}
+	if got := cfg.WritebackFor("slow").UploadDelay; got != "5s" {
 		t.Fatalf("default upload_delay = %q, want 5s", got)
 	}
-	if got := cfg.CacheFor("slow").UploadWorkers; got != 2 {
+	if got := cfg.WritebackFor("slow").UploadWorkers; got != 2 {
 		t.Fatalf("default upload_workers = %d, want 2", got)
 	}
-	if got := cfg.CacheFor("slow").DeleteDelay; got != "2s" {
+	if got := cfg.WritebackFor("slow").DeleteDelay; got != "2s" {
 		t.Fatalf("default delete_delay = %q, want 2s", got)
 	}
-	if got := cfg.CacheFor("fast").UploadDelay; got != "250ms" {
+	if got := cfg.WritebackFor("fast").UploadDelay; got != "250ms" {
 		t.Fatalf("mount upload_delay = %q, want 250ms", got)
 	}
-	if got := cfg.CacheFor("fast").UploadWorkers; got != 8 {
+	if got := cfg.WritebackFor("fast").UploadWorkers; got != 8 {
 		t.Fatalf("mount upload_workers = %d, want 8", got)
 	}
-	if got := cfg.CacheFor("fast").DeleteDelay; got != "500ms" {
+	if got := cfg.WritebackFor("fast").DeleteDelay; got != "500ms" {
 		t.Fatalf("mount delete_delay = %q, want 500ms", got)
 	}
 }

@@ -19,11 +19,6 @@
       "type": "string",
       "default": "~/Qrypt"
     },
-    "cache_dir": {
-      "description": "Directory for read cache and pending upload staging.",
-      "type": "string",
-      "default": "~/.qrypt/qrypt-cache"
-    },
     "volume_name": {
       "description": "Volume label shown in the OS file manager.",
       "type": "string",
@@ -84,15 +79,24 @@
     "encryption": {
       "$ref": "#/definitions/encryptionConfig"
     },
+    "storage": {
+      "$ref": "#/definitions/storageConfig"
+    },
+    "read_cache": {
+      "$ref": "#/definitions/readCacheConfig"
+    },
+    "thumbnail_cache": {
+      "$ref": "#/definitions/thumbnailCacheConfig"
+    },
+    "writeback": {
+      "$ref": "#/definitions/writebackConfig"
+    },
     "defaults": {
       "type": "object",
       "description": "Default values inherited by every mount unless overridden.",
       "properties": {
         "encryption": {
           "$ref": "#/definitions/encryptionConfig"
-        },
-        "cache": {
-          "$ref": "#/definitions/cacheConfig"
         }
       },
       "additionalProperties": false
@@ -160,20 +164,73 @@
       },
       "additionalProperties": false
     },
-    "cacheConfig": {
+    "storageConfig": {
       "type": "object",
-      "description": "Per-mount (or default) cache settings.",
+      "description": "Runtime storage directories.",
       "properties": {
-        "dir": {
-          "description": "Cache directory for this mount. Falls back to cache_dir/<mount_name>.",
-          "type": "string"
+        "read_cache_dir": {
+          "description": "Root directory for read cache files.",
+          "type": "string",
+          "default": ""
         },
+        "thumbnail_cache_dir": {
+          "description": "Root directory for generated thumbnail cache files.",
+          "type": "string",
+          "default": ""
+        },
+        "writeback_dir": {
+          "description": "Root directory for upload staging and pending journal files.",
+          "type": "string",
+          "default": ""
+        },
+        "state_dir": {
+          "description": "Root directory for persistent driver and runtime state.",
+          "type": "string",
+          "default": ""
+        },
+        "log_dir": {
+          "description": "Root directory for runtime logs when log files are not explicitly configured.",
+          "type": "string",
+          "default": ""
+        },
+        "tmp_dir": {
+          "description": "Root directory for temporary runtime files.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "readCacheConfig": {
+      "type": "object",
+      "description": "Read cache settings.",
+      "properties": {
         "max_size": {
           "description": "Maximum read-cache size (e.g. \"512M\", \"2G\", \"1T\").",
           "type": "string",
           "default": "512M",
           "pattern": "^\\d+[KMGTP]?$|^\\d+$"
-        },
+        }
+      },
+      "additionalProperties": false
+    },
+    "thumbnailCacheConfig": {
+      "type": "object",
+      "description": "Thumbnail cache settings.",
+      "properties": {
+        "max_size": {
+          "description": "Maximum thumbnail-cache size (e.g. \"256M\", \"1G\").",
+          "type": "string",
+          "default": "256M",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "writebackConfig": {
+      "type": "object",
+      "description": "Writeback and upload scheduling settings.",
+      "properties": {
         "upload_delay": {
           "description": "Debounce delay before flushing a new file to the cloud (e.g. \"5s\", \"1m\").",
           "type": "string",
@@ -289,8 +346,11 @@
         "encryption": {
           "$ref": "#/definitions/encryptionConfig"
         },
-        "cache": {
-          "$ref": "#/definitions/cacheConfig"
+        "read_cache": {
+          "$ref": "#/definitions/readCacheConfig"
+        },
+        "writeback": {
+          "$ref": "#/definitions/writebackConfig"
         }
       },
       "required": ["name", "type"],

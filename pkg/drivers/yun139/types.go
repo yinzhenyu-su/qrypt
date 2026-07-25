@@ -53,16 +53,20 @@ func personalParseTime(s string) time.Time {
 
 func toEntry(item personalItem) drive.Entry {
 	name := cloudRenameSuffix.ReplaceAllString(item.Name, "")
-	modTime := personalParseTime(item.UpdatedAt)
+	createdAt := personalParseTime(item.CreatedAt)
+	updatedAt := personalParseTime(item.UpdatedAt)
+	modTime := updatedAt
 	if modTime.IsZero() {
-		modTime = personalParseTime(item.CreatedAt)
+		modTime = createdAt
 	}
 	return drive.Entry{
-		ID:      item.FileID,
-		Name:    name,
-		IsDir:   item.Type == "folder",
-		Size:    item.Size,
-		ModTime: modTime,
+		ID:        item.FileID,
+		Name:      name,
+		IsDir:     item.Type == "folder",
+		Size:      item.Size,
+		ModTime:   modTime,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
 	}
 }
 

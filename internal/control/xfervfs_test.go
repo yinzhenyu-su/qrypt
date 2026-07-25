@@ -99,6 +99,8 @@ func (f *xferFakeFS) Truncate(context.Context, string, int64) error {
 	return nil
 }
 
+func (f *xferFakeFS) RefreshPath(string) {}
+
 func (f *xferFakeFS) Pending() []vfs.PendingFile {
 	return f.pending
 }

@@ -48,11 +48,15 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 	latest, ok := v.cache.PendingByPath(pending.Path)
 	if !ok {
 		logging.L.DebugfEvery("vfs.skip_upload_removed", time.Second, "[VFS] skip upload; pending already removed op_id=%q path=%q local=%q", pending.FID, pending.Path, pending.LocalPath)
+		v.cache.removeStagingIfUnreferenced(pending.LocalPath)
 		return nil
 	}
 	if !samePendingFile(latest, pending) {
 		logging.L.InfofEvery("vfs.upload_superseded", time.Second, "[VFS] upload superseded op_id=%q path=%q old_local=%q new_local=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.LocalPath, latest.LocalPath, pending.Size, latest.Size)
-		v.enqueue(latest)
+		v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+		if latest.Frozen {
+			v.enqueue(latest)
+		}
 		return nil
 	}
 	if delay := v.pendingQuietDelay(pending); delay > 0 {
@@ -99,14 +103,17 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		logging.L.Warnf("[VFS] upload snapshot failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
 		return err
 	}
-	defer os.Remove(snapshot.Path)
 	if latest, ok := v.cache.PendingByPath(pending.Path); !ok {
 		logging.L.DebugfEvery("vfs.skip_upload_removed_after_snapshot", time.Second, "[VFS] skip upload after snapshot; pending removed op_id=%q path=%q", pending.FID, pending.Path)
+		v.cache.removeStagingIfUnreferenced(pending.LocalPath)
 		return nil
 	} else if !samePendingFile(latest, pending) {
 		finishState = uploadSnapshotStateSuperseded
 		logging.L.InfofEvery("vfs.upload_superseded_after_snapshot", time.Second, "[VFS] upload superseded after snapshot op_id=%q path=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.Size, latest.Size)
-		v.enqueue(latest)
+		v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+		if latest.Frozen {
+			v.enqueue(latest)
+		}
 		return nil
 	}
 	uploadName := pending.Name
@@ -185,16 +192,26 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			finishErr = err.Error()
 			if ctx.Err() == nil {
 				if drive.IsNonRetryable(err) {
-					if latest, ok, saveErr := v.cache.RecordPendingPermanentFailure(pending.Path, err); saveErr != nil {
+					latest, ok, saveErr := v.cache.RecordPendingPermanentFailureIfUnchanged(pending, err)
+					if saveErr != nil {
 						logging.L.Warnf("[VFS] upload failed permanently and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 					} else if ok {
 						logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, err)
 					}
-				} else if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay)); saveErr != nil {
-					logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
-				} else if ok {
-					logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
-					v.enqueue(latest)
+					if !ok {
+						v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+					}
+				} else {
+					latest, ok, saveErr := v.cache.RecordPendingFailureIfUnchanged(pending, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay))
+					if saveErr != nil {
+						logging.L.Warnf("[VFS] upload failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
+					} else if ok {
+						logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
+						v.enqueue(latest)
+					}
+					if !ok {
+						v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+					}
 				}
 			}
 			return err
@@ -204,10 +221,14 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload returned invalid entry op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
 		if ctx.Err() == nil {
-			if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay)); saveErr != nil {
+			latest, ok, saveErr := v.cache.RecordPendingFailureIfUnchanged(pending, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay))
+			if saveErr != nil {
 				logging.L.Warnf("[VFS] upload validation failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 			} else if ok {
 				v.enqueue(latest)
+			}
+			if !ok {
+				v.cache.removeStagingIfUnreferenced(pending.LocalPath)
 			}
 		}
 		return err
@@ -224,6 +245,10 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			if drive.HasCapability(v.driver, drive.CapabilityWriter) && ctx.Err() == nil {
 				_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
 			}
+			v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+			if latest, ok := v.cache.PendingByPath(pending.Path); ok && latest.Frozen {
+				v.enqueue(latest)
+			}
 			return nil
 		}
 		pending = latest
@@ -234,7 +259,8 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		if drive.HasCapability(v.driver, drive.CapabilityWriter) && ctx.Err() == nil {
 			_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
 		}
-		if ok {
+		v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+		if ok && latest.Frozen {
 			v.enqueue(latest)
 		}
 		return nil
@@ -247,10 +273,14 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 			finishErr = err.Error()
 			logging.L.Warnf("[VFS] upload replace existing failed op_id=%q path=%q uploaded_id=%q name=%q err=%v", pending.FID, pending.Path, entry.ID, pending.Name, err)
 			if ctx.Err() == nil {
-				if latest, ok, saveErr := v.cache.RecordPendingFailure(pending.Path, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay)); saveErr != nil {
+				latest, ok, saveErr := v.cache.RecordPendingFailureIfUnchanged(pending, err, uploadRetryDelay(pending.RetryCount+1, v.uploadDelay))
+				if saveErr != nil {
 					logging.L.Warnf("[VFS] upload replace failed and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 				} else if ok {
 					v.enqueue(latest)
+				}
+				if !ok {
+					v.cache.removeStagingIfUnreferenced(pending.LocalPath)
 				}
 			}
 			return err
@@ -290,7 +320,8 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingFile) error {
 		if drive.HasCapability(v.driver, drive.CapabilityWriter) && ctx.Err() == nil {
 			_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
 		}
-		if latest, ok := v.cache.PendingByPath(pending.Path); ok {
+		v.cache.removeStagingIfUnreferenced(pending.LocalPath)
+		if latest, ok := v.cache.PendingByPath(pending.Path); ok && latest.Frozen {
 			v.enqueue(latest)
 		}
 		return nil
@@ -330,41 +361,14 @@ func (v *VFS) snapshotPending(pending PendingFile) (uploadSnapshot, error) {
 		return uploadSnapshot{}, err
 	}
 	defer src.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(pending.LocalPath), filepath.Base(pending.LocalPath)+".upload-*")
-	if err != nil {
-		return uploadSnapshot{}, err
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
 	md5Hash := md5.New()
 	sha1Hash := sha1.New()
 	sha256Hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmp, md5Hash, sha1Hash, sha256Hash), src)
-	if err != nil {
-		tmp.Close()
+	if _, err := io.Copy(io.MultiWriter(md5Hash, sha1Hash, sha256Hash), src); err != nil {
 		return uploadSnapshot{}, err
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return uploadSnapshot{}, err
-	}
-	if err := tmp.Close(); err != nil {
-		return uploadSnapshot{}, err
-	}
-	if written != pending.Size {
-		return uploadSnapshot{}, fmt.Errorf("vfs: upload snapshot size mismatch: wrote %d, expected %d", written, pending.Size)
-	}
-	if cleaned := v.cache.staging.cleanupUploadTempsFor(pending.LocalPath, tmpPath); cleaned > 0 {
-		logging.L.InfofEvery("vfs.cleanup_old_upload_snapshots", time.Second, "[VFS] cleaned old upload snapshots path=%q local=%q count=%d", pending.Path, pending.LocalPath, cleaned)
-	}
-	cleanup = false
 	return uploadSnapshot{
-		Path: tmpPath,
+		Path: pending.LocalPath,
 		Hashes: drive.SourceHashes{
 			drive.HashMD5:    md5Hash.Sum(nil),
 			drive.HashSHA1:   sha1Hash.Sum(nil),
@@ -376,6 +380,10 @@ func (v *VFS) snapshotPending(pending PendingFile) (uploadSnapshot, error) {
 func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 	cacheKey := v.readCacheKey(entry)
 	if cacheKey == "" || localPath == "" {
+		return
+	}
+	if entry.Size >= readCacheLargeFileBytes {
+		logging.L.DebugfEvery("vfs.read_cache_seed_skip_large", time.Second, "[VFS] skip read cache seed for large upload id=%q size=%d local=%q", entry.ID, entry.Size, localPath)
 		return
 	}
 	if err := v.cache.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {

@@ -38,13 +38,22 @@ func (f file) int64Size() int64 {
 }
 
 func (f file) modTime() time.Time {
-	if f.UpdatedAt > 0 {
-		return time.UnixMilli(f.UpdatedAt)
+	createdAt, updatedAt := f.times()
+	if !updatedAt.IsZero() {
+		return updatedAt
 	}
+	return createdAt
+}
+
+func (f file) times() (time.Time, time.Time) {
+	var createdAt, updatedAt time.Time
 	if f.CreatedAt > 0 {
-		return time.UnixMilli(f.CreatedAt)
+		createdAt = time.UnixMilli(f.CreatedAt)
 	}
-	return time.Time{}
+	if f.UpdatedAt > 0 {
+		updatedAt = time.UnixMilli(f.UpdatedAt)
+	}
+	return createdAt, updatedAt
 }
 
 func (f file) entry(parentID string) drive.Entry {
@@ -52,14 +61,17 @@ func (f file) entry(parentID string) drive.Entry {
 	if m := conflictSuffix.FindStringSubmatch(name); len(m) == 2 {
 		name = m[1]
 	}
+	createdAt, updatedAt := f.times()
 	return drive.Entry{
-		ID:       f.Fid,
-		ParentID: parentID,
-		Name:     name,
-		IsDir:    f.isDir(),
-		Size:     f.int64Size(),
-		ModTime:  f.modTime(),
-		Extra:    quarkFileMeta{Category: f.Category},
+		ID:        f.Fid,
+		ParentID:  parentID,
+		Name:      name,
+		IsDir:     f.isDir(),
+		Size:      f.int64Size(),
+		ModTime:   f.modTime(),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+		Extra:     quarkFileMeta{Category: f.Category},
 	}
 }
 

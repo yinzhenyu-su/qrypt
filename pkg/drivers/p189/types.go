@@ -6,6 +6,7 @@ import "encoding/xml"
 type Folder struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
+	CreateDate string `json:"createDate"`
 	LastOpTime string `json:"lastOpTime"`
 }
 
@@ -14,6 +15,7 @@ type File struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Size       int64  `json:"size"`
+	CreateDate string `json:"createDate"`
 	LastOpTime string `json:"lastOpTime"`
 	Icon       struct {
 		SmallURL string `json:"smallUrl"`

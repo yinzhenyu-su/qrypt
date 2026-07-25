@@ -2,11 +2,37 @@ package mobile
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+func testRuntimeJSON(tmp string) string {
+	return fmt.Sprintf(`{
+		"config_dir": %q,
+		"storage": {
+				"read_cache_dir": %q,
+				"thumbnail_cache_dir": %q,
+				"writeback_dir": %q,
+			"state_dir": %q,
+			"log_dir": %q,
+			"tmp_dir": %q
+		}
+	}`,
+		filepath.Join(tmp, "files", "qrypt", "config"),
+		filepath.Join(tmp, "cache", "qrypt", "read"),
+		filepath.Join(tmp, "cache", "qrypt", "thumbnail"),
+		filepath.Join(tmp, "files", "qrypt", "writeback"),
+		filepath.Join(tmp, "files", "qrypt", "state"),
+		filepath.Join(tmp, "files", "qrypt", "logs"),
+		filepath.Join(tmp, "cache", "qrypt", "tmp"),
+	)
+}
 
 func TestMobileListAndReadAt(t *testing.T) {
 	tmp := t.TempDir()
@@ -28,7 +54,7 @@ root_path = "`+remote+`"
 		t.Fatal(err)
 	}
 
-	coreID, err := Open(configPath, filepath.Join(tmp, "work"))
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +97,77 @@ root_path = "`+remote+`"
 	}
 }
 
+func TestFromDriveEntryIncludesCreateAndUpdateTimes(t *testing.T) {
+	createdAt := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	item := fromDriveEntry(drive.Entry{
+		Name:      "file.txt",
+		ModTime:   updatedAt,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}, "/file.txt")
+	if item.CreatedAt != createdAt.Format(time.RFC3339) || item.UpdatedAt != updatedAt.Format(time.RFC3339) {
+		t.Fatalf("entry times = created %q updated %q", item.CreatedAt, item.UpdatedAt)
+	}
+}
+
+func TestMobileCreateMoveTaskJSON(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "old.txt"), []byte("move"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var opened struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(OpenJSON(configPath, testRuntimeJSON(tmp))), &opened); err != nil {
+		t.Fatal(err)
+	}
+	if !opened.OK {
+		t.Fatalf("OpenJSON = %+v, want ok", opened)
+	}
+	defer Close(opened.Data)
+
+	raw := CreateMoveTaskJSON(opened.Data, `{"source_path":"/local/old.txt","dest_path":"/local/new.txt"}`, 0)
+	var moved struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ID     string         `json:"id"`
+			Type   string         `json:"type"`
+			State  string         `json:"state"`
+			Path   string         `json:"path"`
+			Detail map[string]any `json:"detail"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &moved); err != nil {
+		t.Fatal(err)
+	}
+	if !moved.OK || moved.Data.Type != "move_remote" || moved.Data.State != "succeeded" || moved.Data.Path != "/local/old.txt" {
+		t.Fatalf("CreateMoveTaskJSON = %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "new.txt")); err != nil {
+		t.Fatalf("new file missing after move: %v", err)
+	}
+	listRaw := ListTasksJSON(opened.Data, `{"types":["move_remote"]}`)
+	if !strings.Contains(listRaw, moved.Data.ID) {
+		t.Fatalf("ListTasksJSON = %s, want move task %s", listRaw, moved.Data.ID)
+	}
+}
+
 func TestMobileJSONEnvelopeAndDiagnostics(t *testing.T) {
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
@@ -92,7 +189,7 @@ root_path = "`+remote+`"
 		OK   bool   `json:"ok"`
 		Data string `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(OpenJSON(configPath, filepath.Join(tmp, "work"))), &opened); err != nil {
+	if err := json.Unmarshal([]byte(OpenJSON(configPath, testRuntimeJSON(tmp))), &opened); err != nil {
 		t.Fatal(err)
 	}
 	if !opened.OK || opened.Data == "" {
@@ -150,6 +247,29 @@ root_path = "`+remote+`"
 	if raw := FlushReadCacheJSON(opened.Data); !strings.Contains(raw, `"ok":true`) {
 		t.Fatalf("FlushReadCacheJSON = %s, want ok", raw)
 	}
+	readingFile := filepath.Join(tmp, "cache", "qrypt", "read", "quark", "mobile.batch")
+	if err := os.WriteFile(readingFile, []byte("mobile-cache"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var storage struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ReadCacheBytes int64 `json:"read_cache_bytes"`
+			StagingBytes   int64 `json:"staging_bytes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(StorageUsageJSON(opened.Data)), &storage); err != nil {
+		t.Fatal(err)
+	}
+	if !storage.OK || storage.Data.ReadCacheBytes != int64(len("mobile-cache")) {
+		t.Fatalf("StorageUsageJSON = %+v, want read cache bytes", storage)
+	}
+	if raw := ClearReadCacheJSON(opened.Data, 0); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("ClearReadCacheJSON = %s, want ok", raw)
+	}
+	if _, err := os.Stat(readingFile); !os.IsNotExist(err) {
+		t.Fatalf("reading file still exists after ClearReadCacheJSON, err=%v", err)
+	}
 
 	var logs struct {
 		OK   bool `json:"ok"`
@@ -166,6 +286,79 @@ root_path = "`+remote+`"
 	}
 	if raw := ReadLogJSON(opened.Data, logs.Data[0].Name, 0, 64); !strings.Contains(raw, `"ok":true`) {
 		t.Fatalf("ReadLogJSON = %s, want ok", raw)
+	}
+}
+
+func TestMobileThumbnailCacheUsesFilePaths(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "photo.jpg"), []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+	[[mounts]]
+	name = "quark"
+	type = "localfs"
+	[mounts.params]
+	root_path = "`+remote+`"
+	`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(coreID)
+
+	localThumb := filepath.Join(tmp, "thumb.jpg")
+	if err := os.WriteFile(localThumb, []byte("thumb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var put struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Hit  bool   `json:"hit"`
+			Path string `json:"path"`
+			Mime string `json:"mime"`
+			Size int64  `json:"size"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(PutThumbnailFileJSON(coreID, "/quark/photo.jpg", "grid-128", "image/jpeg", localThumb, 0)), &put); err != nil {
+		t.Fatal(err)
+	}
+	if !put.OK || !put.Data.Hit || put.Data.Path == "" || put.Data.Mime != "image/jpeg" || put.Data.Size != int64(len("thumb")) {
+		t.Fatalf("PutThumbnailFileJSON = %+v", put)
+	}
+	if strings.Contains(put.Data.Path, localThumb) {
+		t.Fatalf("thumbnail path = %q, want qrypt-managed cache path", put.Data.Path)
+	}
+
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Hit  bool   `json:"hit"`
+			Path string `json:"path"`
+			Mime string `json:"mime"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(GetThumbnailFileJSON(coreID, "/quark/photo.jpg", "grid-128", 0)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || !got.Data.Hit || got.Data.Path != put.Data.Path || got.Data.Mime != "image/jpeg" {
+		t.Fatalf("GetThumbnailFileJSON = %+v", got)
+	}
+	if raw := ThumbnailCacheUsageJSON(coreID, 0); !strings.Contains(raw, `"ok":true`) || !strings.Contains(raw, `"data":`) {
+		t.Fatalf("ThumbnailCacheUsageJSON = %s", raw)
+	}
+	if raw := ClearThumbnailCacheJSON(coreID, 0); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("ClearThumbnailCacheJSON = %s", raw)
+	}
+	if raw := GetThumbnailFileJSON(coreID, "/quark/photo.jpg", "grid-128", 0); !strings.Contains(raw, `"hit":false`) {
+		t.Fatalf("GetThumbnailFileJSON after clear = %s", raw)
 	}
 }
 
@@ -198,7 +391,7 @@ password = "test-password"
 		t.Fatal(err)
 	}
 
-	coreID, err := Open(configPath, filepath.Join(tmp, "work"))
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +434,11 @@ func TestMobileImportOpenAndResume(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
-cache_dir = "/desktop/cache"
+[storage]
+read_cache_dir = "/desktop/cache/read"
+writeback_dir = "/desktop/writeback"
+state_dir = "/desktop/state"
+
 [[mounts]]
 name = "quark"
 type = "localfs"
@@ -250,15 +447,15 @@ root_path = "`+remote+`"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	workDir := filepath.Join(tmp, "work")
-	if raw := ImportConfigJSON(configPath, workDir); !strings.Contains(raw, `"ok":true`) {
+	runtimeRaw := testRuntimeJSON(tmp)
+	if raw := ImportConfigJSON(configPath, runtimeRaw); !strings.Contains(raw, `"ok":true`) {
 		t.Fatalf("ImportConfigJSON = %s, want ok", raw)
 	}
 	var opened struct {
 		OK   bool   `json:"ok"`
 		Data string `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(OpenImportedJSON(workDir)), &opened); err != nil {
+	if err := json.Unmarshal([]byte(OpenImportedJSON(runtimeRaw)), &opened); err != nil {
 		t.Fatal(err)
 	}
 	if !opened.OK || opened.Data == "" {
@@ -295,6 +492,139 @@ root_path = "`+remote+`"
 	}
 }
 
+func TestMobileStreamingUploadWritesStaging(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(coreID)
+
+	uploadID, err := OpenStreamingUpload(coreID, "/quark/upload.bin", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := WriteStreamingUpload(uploadID, []byte("hello "), 0); err != nil || n != len("hello ") {
+		t.Fatalf("WriteStreamingUpload first n=%d err=%v", n, err)
+	}
+	if n, err := WriteStreamingUpload(uploadID, []byte("streaming upload"), 0); err != nil || n != len("streaming upload") {
+		t.Fatalf("WriteStreamingUpload second n=%d err=%v", n, err)
+	}
+	raw, err := FinishStreamingUpload(uploadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result uploadFinishResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Entry.Path != "/quark/upload.bin" || result.Entry.Size != int64(len("hello streaming upload")) {
+		t.Fatalf("FinishStreamingUpload entry = %+v", result.Entry)
+	}
+	if result.Task.ID == "" || result.Task.Type != "upload_remote" || result.Task.Path != "/quark/upload.bin" {
+		t.Fatalf("FinishStreamingUpload task = %+v", result.Task)
+	}
+	taskRaw := GetTaskJSON(coreID, result.Task.ID)
+	var taskCheck struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ID   string `json:"id"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(taskRaw), &taskCheck); err != nil {
+		t.Fatal(err)
+	}
+	if !taskCheck.OK || taskCheck.Data.ID != result.Task.ID || taskCheck.Data.Path != "/quark/upload.bin" {
+		t.Fatalf("GetTaskJSON = %s", taskRaw)
+	}
+	listRaw := ListTasksJSON(coreID, `{"types":["upload_remote"],"path":"/quark/upload.bin"}`)
+	var listCheck struct {
+		OK   bool `json:"ok"`
+		Data []struct {
+			ID   string `json:"id"`
+			Path string `json:"path"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(listRaw), &listCheck); err != nil {
+		t.Fatal(err)
+	}
+	if !listCheck.OK || len(listCheck.Data) != 1 || listCheck.Data[0].ID != result.Task.ID {
+		t.Fatalf("ListTasksJSON = %s", listRaw)
+	}
+
+	handleID, err := OpenFile(coreID, "/quark/upload.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer CloseFile(handleID)
+	buf := make([]byte, len("hello streaming upload"))
+	n, err := ReadAtInto(handleID, 0, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(buf) || string(buf) != "hello streaming upload" {
+		t.Fatalf("ReadAtInto n=%d data=%q", n, string(buf[:n]))
+	}
+	if _, err := WriteStreamingUpload(uploadID, []byte("again"), 0); err == nil {
+		t.Fatal("WriteStreamingUpload after finish succeeded, want error")
+	}
+}
+
+func TestMobileStreamingUploadCancelRemovesStaging(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Close(coreID)
+
+	uploadID, err := OpenStreamingUpload(coreID, "/quark/cancel.bin", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteStreamingUpload(uploadID, []byte("discard"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := CancelStreamingUpload(uploadID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if raw := StatJSON(coreID, "/quark/cancel.bin"); !strings.Contains(raw, `"ok":false`) {
+		t.Fatalf("StatJSON after cancel = %s, want error", raw)
+	}
+}
+
 func TestMobileReadAtRepeatedSeek(t *testing.T) {
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
@@ -316,7 +646,7 @@ root_path = "`+remote+`"
 		t.Fatal(err)
 	}
 
-	coreID, err := Open(configPath, filepath.Join(tmp, "work"))
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +699,7 @@ root_path = "`+remote+`"
 		t.Fatal(err)
 	}
 
-	coreID, err := Open(configPath, filepath.Join(tmp, "work"))
+	coreID, err := Open(configPath, testRuntimeJSON(tmp))
 	if err != nil {
 		t.Fatal(err)
 	}

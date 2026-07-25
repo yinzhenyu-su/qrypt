@@ -18,12 +18,15 @@ func TestBuildNamespaceDoesNotLimitLocalStagingUpload(t *testing.T) {
 
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [bandwidth]
 upload = "1"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -57,7 +60,7 @@ filename_encoding = "base32"
 	waitPendingEmpty(t, fs)
 }
 
-func TestBuildNamespaceUsesTopLevelCacheDir(t *testing.T) {
+func TestBuildNamespaceUsesStorageDirs(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 	remoteA := filepath.Join(tmp, "remote-a")
@@ -72,9 +75,12 @@ func TestBuildNamespaceUsesTopLevelCacheDir(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+cacheDir+`"
+[storage]
+read_cache_dir = "`+filepath.Join(cacheDir, "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -108,10 +114,16 @@ root_path = "`+remoteB+`"
 	}
 	waitPendingEmpty(t, fs)
 
-	if _, err := os.Stat(filepath.Join(cacheDir, "one", "staging")); err != nil {
-		t.Fatalf("expected cache dir for mount one: %v", err)
+	if _, err := os.Stat(filepath.Join(cacheDir, "read", "one")); err != nil {
+		t.Fatalf("expected read cache dir for mount one: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "two", "staging")); err != nil {
-		t.Fatalf("expected cache dir for mount two: %v", err)
+	if _, err := os.Stat(filepath.Join(cacheDir, "read", "two")); err != nil {
+		t.Fatalf("expected read cache dir for mount two: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "writeback", "one", "staging")); err != nil {
+		t.Fatalf("expected writeback dir for mount one: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "writeback", "two", "staging")); err != nil {
+		t.Fatalf("expected writeback dir for mount two: %v", err)
 	}
 }

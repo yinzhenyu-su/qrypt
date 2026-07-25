@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -117,12 +118,12 @@ func debugCacheTargets(cacheDir string, cfg *config.Config, mountName string) ([
 		}
 		return []debugCacheTarget{{Name: "default", Dir: osutil.ExpandHome(cacheDir)}}, nil
 	}
-	baseCacheDir := cfg.CacheDir
+	baseCacheDir := cfg.Storage.WritebackDir
 	if cacheDir != "" {
 		baseCacheDir = cacheDir
 	}
 	if baseCacheDir == "" {
-		baseCacheDir = defaultCacheDir()
+		baseCacheDir = core.DefaultWritebackDir()
 	} else {
 		baseCacheDir = osutil.ExpandHome(baseCacheDir)
 	}
@@ -134,13 +135,7 @@ func debugCacheTargets(cacheDir string, cfg *config.Config, mountName string) ([
 		if mountName != "" && mount.Name != mountName {
 			continue
 		}
-		cache := cfg.CacheFor(mount.Name)
-		dir := cache.Dir
-		if dir == "" {
-			dir = filepath.Join(baseCacheDir, mount.Name)
-		} else {
-			dir = osutil.ExpandHome(dir)
-		}
+		dir := filepath.Join(baseCacheDir, mount.Name)
 		targets = append(targets, debugCacheTarget{Name: mount.Name, Dir: dir})
 	}
 	if len(targets) == 0 {

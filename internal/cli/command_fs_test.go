@@ -21,9 +21,13 @@ func TestFSCommandsCreateMoveAndRemoveLocalFS(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
+upload_delay = "10ms"
 delete_delay = "10ms"
 
 [[mounts]]
@@ -104,9 +108,12 @@ func TestFSListRemoteNamesForEncryptedMount(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 delete_delay = "10ms"
 
@@ -243,9 +250,12 @@ func TestFSGetDirRecursive(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 delete_delay = "10ms"
 
 [[mounts]]
@@ -349,7 +359,10 @@ func TestFSMountFlagInitializesOnlySelectedMount(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [[mounts]]
 name = "local"

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,8 @@ const localCreateLookupTTL = 2 * time.Minute
 type Options struct {
 	Name          string
 	CacheDir      string
+	ReadCacheDir  string
+	WritebackDir  string
 	CacheMaxBytes int64
 	RootID        string
 	Encrypted     bool
@@ -81,6 +84,9 @@ type VFS struct {
 	prefetchMu  sync.Mutex
 	prefetching map[string]struct{}
 	prefetchSem chan struct{}
+
+	readSem     chan struct{}
+	readHighSem chan struct{}
 
 	dirPrefetchMu      sync.Mutex
 	dirPrefetching     map[string]struct{}
@@ -132,11 +138,15 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if opts.DeleteDelay == 0 {
 		opts.DeleteDelay = deleteDebounceDelay
 	}
-	// CacheDir is scoped to the current mount's driver/encryption mode.
-	// If a mount is switched between plain and crypt, stop qrypt and clear
-	// that mount's cache directory first; pending journal entries, staging
-	// files, and read-cache chunks all carry IDs/names with the old semantics.
-	cache, err := NewCache(opts.CacheDir, opts.CacheMaxBytes)
+	readCacheDir := opts.ReadCacheDir
+	writebackDir := opts.WritebackDir
+	if readCacheDir == "" {
+		readCacheDir = filepath.Join(opts.CacheDir, "reading")
+	}
+	if writebackDir == "" {
+		writebackDir = opts.CacheDir
+	}
+	cache, err := NewCacheWithDirs(writebackDir, readCacheDir, opts.CacheMaxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +175,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		localModTime:   map[string]time.Time{},
 		prefetching:    map[string]struct{}{},
 		prefetchSem:    make(chan struct{}, readPrefetchLimit),
+		readSem:        make(chan struct{}, readMaxConcurrency-readHighReserve),
+		readHighSem:    make(chan struct{}, readHighReserve),
 		dirPrefetching: map[string]struct{}{},
 		dirPrefetched:  map[string]time.Time{},
 		dirPrefetchSem: make(chan struct{}, dirPrefetchLimit),
@@ -174,7 +186,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		windowLoads:    map[string]*windowLoad{},
 		pathLocks:      map[string]*sync.Mutex{},
 	}
-	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: timeutil.Now()}
+	now := timeutil.Now()
+	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}
 	return v, nil
 }
 
@@ -187,6 +200,10 @@ func (v *VFS) Start(ctx context.Context) {
 
 func (v *VFS) FlushReadCache() error {
 	return v.cache.FlushReadCache()
+}
+
+func (v *VFS) ClearReadCache() error {
+	return v.cache.ClearReadCache()
 }
 
 func (v *VFS) CloseReadCache() error {
@@ -238,6 +255,10 @@ func (v *VFS) Resume(ctx context.Context) {
 			logging.L.WarnfEvery("vfs.resume_pending_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
 			continue
 		}
+		if !pending.Frozen {
+			logging.L.InfofEvery("vfs.resume_pending_mutable", time.Second, "[VFS] keep unflushed pending local; waiting for next flush op_id=%q path=%q name=%q size=%d local=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath)
+			continue
+		}
 		logging.L.InfofEvery("vfs.resume_pending", time.Second, "[VFS] resume pending upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
 		v.enqueue(pending)
 	}
@@ -260,12 +281,13 @@ func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err err
 	path = cleanVirtual(path)
 	if pending, err := v.pending(path); err == nil {
 		entry := drive.Entry{
-			ID:       pending.FID,
-			ParentID: pending.ParentID,
-			Name:     pending.Name,
-			IsDir:    false,
-			Size:     pending.Size,
-			ModTime:  pendingModTime(pending),
+			ID:        pending.FID,
+			ParentID:  pending.ParentID,
+			Name:      pending.Name,
+			IsDir:     false,
+			Size:      pending.Size,
+			ModTime:   pendingModTime(pending),
+			UpdatedAt: pendingModTime(pending),
 		}
 		return v.applyLocalModTime(path, entry), nil
 	}
@@ -421,7 +443,8 @@ func (v *VFS) createLocked(ctx context.Context, path string) error {
 		return err
 	}
 	v.unhideCopyChild(filepath.Dir(path), name)
-	fid := stagingFID(path)
+	old, hadOld := v.cache.PendingByPath(path)
+	fid := newStagingFID(path)
 	localPath, err := v.cache.staging.create(fid)
 	if err != nil {
 		return err
@@ -429,11 +452,75 @@ func (v *VFS) createLocked(ctx context.Context, path string) error {
 	now := timeutil.Now()
 	pending := PendingFile{Path: path, FID: fid, ParentID: parent.ID, Name: name, LocalPath: localPath, ModTime: now.UnixNano()}
 	if err := v.cache.SavePending(pending); err != nil {
+		_ = v.cache.staging.remove(localPath)
 		return err
+	}
+	if hadOld && !old.Frozen {
+		v.cache.removeStagingIfUnreferenced(old.LocalPath)
 	}
 	v.setLocalModTime(path, now)
 	logging.L.InfofEvery("vfs.pending_created", time.Second, "[VFS] pending created op_id=%q path=%q parent=%q name=%q local=%q", pending.FID, path, parent.ID, name, localPath)
 	return nil
+}
+
+// rotateFrozenGeneration replaces a frozen pending with a new mutable
+// generation seeded with the old staging content, preserving write-at-offset
+// semantics. The old pending stays current until the new staging is fully
+// prepared; on any failure the new staging is removed and the old pending is
+// left untouched. The old frozen staging survives for any in-flight upload.
+// Parent/Name are reused from the old pending because the path already went
+// through createLocked once.
+func (v *VFS) rotateFrozenGeneration(path string, old PendingFile) (PendingFile, error) {
+	fid := newStagingFID(path)
+	localPath, err := v.cache.staging.create(fid)
+	if err != nil {
+		return PendingFile{}, err
+	}
+	size, err := copyStagingContent(old.LocalPath, localPath)
+	if err != nil {
+		_ = v.cache.staging.remove(localPath)
+		return PendingFile{}, err
+	}
+	now := timeutil.Now()
+	pending := PendingFile{
+		Path:      path,
+		FID:       fid,
+		ParentID:  old.ParentID,
+		Name:      old.Name,
+		LocalPath: localPath,
+		Size:      size,
+		ModTime:   now.UnixNano(),
+	}
+	if err := v.cache.SavePending(pending); err != nil {
+		_ = v.cache.staging.remove(localPath)
+		return PendingFile{}, err
+	}
+	v.setLocalModTime(path, now)
+	return pending, nil
+}
+
+func copyStagingContent(srcPath, dstPath string) (int64, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	written, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return 0, copyErr
+	}
+	if closeErr != nil {
+		return 0, closeErr
+	}
+	return written, nil
 }
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
@@ -455,6 +542,12 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 			}
 		}
 		pending, err = v.pending(path)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if pending.Frozen {
+		pending, err = v.rotateFrozenGeneration(path, pending)
 		if err != nil {
 			return 0, err
 		}
@@ -495,6 +588,7 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 		return err
 	}
 	pending.Size = size
+	pending.Frozen = true
 	if pending.ModTime == 0 {
 		now := timeutil.Now()
 		pending.ModTime = now.UnixNano()
@@ -564,11 +658,12 @@ func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []dr
 			continue
 		}
 		entries = append(entries, drive.Entry{
-			ID:       pending.FID,
-			ParentID: pending.ParentID,
-			Name:     pending.Name,
-			Size:     pending.Size,
-			ModTime:  pendingModTime(pending),
+			ID:        pending.FID,
+			ParentID:  pending.ParentID,
+			Name:      pending.Name,
+			Size:      pending.Size,
+			ModTime:   pendingModTime(pending),
+			UpdatedAt: pendingModTime(pending),
 		})
 		seen[pending.Name] = true
 	}
@@ -778,6 +873,12 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 			return err
 		}
 	}
+	if pending.Frozen {
+		pending, err = v.rotateFrozenGeneration(path, pending)
+		if err != nil {
+			return err
+		}
+	}
 	if err := v.cache.staging.truncate(pending.LocalPath, size); err != nil {
 		return err
 	}
@@ -796,7 +897,7 @@ func (v *VFS) stageExisting(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	fid := stagingFID(path)
+	fid := newStagingFID(path)
 	localPath, err := v.cache.staging.create(fid)
 	if err != nil {
 		return err
@@ -929,6 +1030,7 @@ func (v *VFS) applyLocalModTimes(parentPath string, entries []drive.Entry) []dri
 func (v *VFS) applyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry {
 	if modTime, ok := v.localModTime[cleanVirtual(path)]; ok && !modTime.IsZero() {
 		entry.ModTime = modTime
+		entry.UpdatedAt = modTime
 	}
 	return entry
 }
@@ -1062,6 +1164,14 @@ func (v *VFS) isRecentLocalDir(path string) bool {
 	return true
 }
 
+// RefreshPath clears the directory listing cache for path so the next List call
+// fetches fresh data from the remote driver.
+func (v *VFS) RefreshPath(path string) {
+	v.mu.Lock()
+	delete(v.lists, cleanVirtual(path))
+	v.mu.Unlock()
+}
+
 func (v *VFS) invalidateListLocked(path string) {
 	delete(v.lists, cleanVirtual(path))
 }
@@ -1145,4 +1255,9 @@ func stagingFID(path string) string {
 	}
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_")
 	return replacer.Replace(path)
+}
+
+func newStagingFID(path string) string {
+	base := stagingFID(path)
+	return base + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }

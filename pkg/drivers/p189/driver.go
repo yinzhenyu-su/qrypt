@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const timeFormat = "2006-01-02 15:04:05"
@@ -192,21 +192,29 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 	}
 	entries := make([]drive.Entry, 0, len(folders)+len(files))
 	for _, f := range folders {
+		createdAt := parseTime(f.CreateDate)
+		modTime := parseTime(f.LastOpTime)
 		entries = append(entries, drive.Entry{
-			ID:       strconv.FormatInt(f.ID, 10),
-			ParentID: parentID,
-			Name:     f.Name,
-			IsDir:    true,
-			ModTime:  parseTime(f.LastOpTime),
+			ID:        strconv.FormatInt(f.ID, 10),
+			ParentID:  parentID,
+			Name:      f.Name,
+			IsDir:     true,
+			ModTime:   modTime,
+			CreatedAt: createdAt,
+			UpdatedAt: modTime,
 		})
 	}
 	for _, f := range files {
+		createdAt := parseTime(f.CreateDate)
+		modTime := parseTime(f.LastOpTime)
 		entries = append(entries, drive.Entry{
-			ID:       strconv.FormatInt(f.ID, 10),
-			ParentID: parentID,
-			Name:     f.Name,
-			Size:     f.Size,
-			ModTime:  parseTime(f.LastOpTime),
+			ID:        strconv.FormatInt(f.ID, 10),
+			ParentID:  parentID,
+			Name:      f.Name,
+			Size:      f.Size,
+			ModTime:   modTime,
+			CreatedAt: createdAt,
+			UpdatedAt: modTime,
 		})
 	}
 	return entries, nil
@@ -416,12 +424,16 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		return drive.Entry{}, err
 	}
 	d.deleteUploadSession(sessionKey)
+	createdAt := parseTime(fileEntry.CreateDate)
+	modTime := parseTime(fileEntry.LastOpTime)
 	return drive.Entry{
-		ID:       strconv.FormatInt(fileEntry.ID, 10),
-		ParentID: parentID,
-		Name:     fileEntry.Name,
-		Size:     fileEntry.Size,
-		ModTime:  parseTime(fileEntry.LastOpTime),
+		ID:        strconv.FormatInt(fileEntry.ID, 10),
+		ParentID:  parentID,
+		Name:      fileEntry.Name,
+		Size:      fileEntry.Size,
+		ModTime:   modTime,
+		CreatedAt: createdAt,
+		UpdatedAt: modTime,
 	}, nil
 }
 

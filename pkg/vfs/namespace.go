@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
 var ErrReadOnly = errors.New("vfs: read-only namespace path")
 var ErrNotFound = errors.New("vfs: not found")
+var ErrCrossMount = errors.New("vfs: cross-mount rename")
 
 // FileSystem is the common API implemented by a single-drive VFS and a
 // multi-drive Namespace.
@@ -30,6 +32,7 @@ type FileSystem interface {
 	Remove(ctx context.Context, path string) error
 	RemoveDir(ctx context.Context, path string) error
 	Rename(ctx context.Context, oldPath, newPath string) error
+	RefreshPath(path string)
 	Truncate(ctx context.Context, path string, size int64) error
 	Pending() []PendingFile
 }
@@ -143,6 +146,18 @@ func (n *Namespace) FlushReadCache() error {
 	return lastErr
 }
 
+func (n *Namespace) ClearReadCache() error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	var lastErr error
+	for _, fs := range n.mounts {
+		if err := fs.ClearReadCache(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 func (n *Namespace) CloseReadCache() error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -169,11 +184,11 @@ func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) 
 		return drive.Entry{}, err
 	}
 	if root {
-		return drive.Entry{ID: "/", Name: "/", IsDir: true, ModTime: n.createdAt}, nil
+		return drive.Entry{ID: "/", Name: "/", IsDir: true, ModTime: n.createdAt, CreatedAt: n.createdAt, UpdatedAt: n.createdAt}, nil
 	}
 	if rest == "/" {
 		name := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
-		return drive.Entry{ID: "/" + name, ParentID: "/", Name: name, IsDir: true, ModTime: n.createdAt}, nil
+		return drive.Entry{ID: "/" + name, ParentID: "/", Name: name, IsDir: true, ModTime: n.createdAt, CreatedAt: n.createdAt, UpdatedAt: n.createdAt}, nil
 	}
 	return mount.Stat(ctx, rest)
 }
@@ -290,9 +305,17 @@ func (n *Namespace) Rename(ctx context.Context, oldPath, newPath string) error {
 		return ErrReadOnly
 	}
 	if oldMount != newMount {
-		return fmt.Errorf("vfs: cannot rename across mounts")
+		return fmt.Errorf("%w: %s -> %s", ErrCrossMount, oldPath, newPath)
 	}
 	return oldMount.Rename(ctx, oldRest, newRest)
+}
+
+func (n *Namespace) RefreshPath(path string) {
+	mount, rest, _, err := n.resolve(path)
+	if err != nil || mount == nil {
+		return
+	}
+	mount.RefreshPath(rest)
 }
 
 func (n *Namespace) Truncate(ctx context.Context, path string, size int64) error {
@@ -345,6 +368,124 @@ func (n *Namespace) Pending() []PendingFile {
 	}
 	sort.Slice(pending, func(i, j int) bool { return pending[i].Path < pending[j].Path })
 	return pending
+}
+
+func (n *Namespace) Tasks(filter task.Filter) []task.Task {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	var tasks []task.Task
+	for name, fs := range n.mounts {
+		mountFilter := filter
+		if filter.Mount != "" && filter.Mount != name {
+			continue
+		}
+		if filter.Path != "" {
+			mountName, rest, root := splitNamespacePath(filter.Path)
+			if root || mountName != name {
+				continue
+			}
+			mountFilter.Path = rest
+		}
+		mountFilter.Mount = ""
+		for _, item := range fs.Tasks(mountFilter) {
+			item.Mount = name
+			item.ID = namespaceTaskID(name, item.ID)
+			item.Path = joinVirtual("/"+name, strings.TrimPrefix(item.Path, "/"))
+			if filter.Match(item) {
+				tasks = append(tasks, item)
+			}
+		}
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].UpdatedAt.Equal(tasks[j].UpdatedAt) {
+			return tasks[i].ID < tasks[j].ID
+		}
+		return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
+	})
+	if filter.Limit > 0 && len(tasks) > filter.Limit {
+		tasks = tasks[:filter.Limit]
+	}
+	return tasks
+}
+
+func splitNamespacePath(path string) (string, string, bool) {
+	path = cleanVirtual(path)
+	if path == "/" {
+		return "", "", true
+	}
+	trimmed := strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	if len(parts) == 1 {
+		return parts[0], "/", false
+	}
+	return parts[0], "/" + parts[1], false
+}
+
+func namespaceTaskID(mount, id string) string {
+	if mount == "" || id == "" {
+		return id
+	}
+	return mount + ":" + id
+}
+
+func splitNamespaceTaskID(id string) (string, string, bool) {
+	mount, local, ok := strings.Cut(id, ":")
+	if !ok || mount == "" || local == "" {
+		return "", "", false
+	}
+	return mount, local, true
+}
+
+func (n *Namespace) CancelTask(ctx context.Context, id string) error {
+	if mountName, localID, ok := splitNamespaceTaskID(id); ok {
+		n.mu.RLock()
+		fs := n.mounts[mountName]
+		n.mu.RUnlock()
+		if fs == nil {
+			return ErrNotFound
+		}
+		return fs.CancelTask(ctx, localID)
+	}
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	for _, fs := range n.mounts {
+		mounts = append(mounts, fs)
+	}
+	n.mu.RUnlock()
+	for _, fs := range mounts {
+		if err := fs.CancelTask(ctx, id); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	return ErrNotFound
+}
+
+func (n *Namespace) RetryTask(ctx context.Context, id string) error {
+	if mountName, localID, ok := splitNamespaceTaskID(id); ok {
+		n.mu.RLock()
+		fs := n.mounts[mountName]
+		n.mu.RUnlock()
+		if fs == nil {
+			return ErrNotFound
+		}
+		return fs.RetryTask(ctx, localID)
+	}
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	for _, fs := range n.mounts {
+		mounts = append(mounts, fs)
+	}
+	n.mu.RUnlock()
+	for _, fs := range mounts {
+		if err := fs.RetryTask(ctx, id); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
+	return ErrNotFound
 }
 
 func (n *Namespace) Space(ctx context.Context) (drive.Space, error) {
@@ -405,11 +546,13 @@ func (n *Namespace) rootEntries() []drive.Entry {
 	entries := make([]drive.Entry, 0, len(names))
 	for _, name := range names {
 		entries = append(entries, drive.Entry{
-			ID:       "/" + name,
-			ParentID: "/",
-			Name:     name,
-			IsDir:    true,
-			ModTime:  n.createdAt,
+			ID:        "/" + name,
+			ParentID:  "/",
+			Name:      name,
+			IsDir:     true,
+			ModTime:   n.createdAt,
+			CreatedAt: n.createdAt,
+			UpdatedAt: n.createdAt,
 		})
 	}
 	return entries

@@ -30,20 +30,26 @@ type itemResp struct {
 }
 
 func (i itemResp) entry(parentID string) drive.Entry {
+	createdAt := time.Time{}
+	updatedAt := time.Time{}
 	modTime := time.Time{}
 	if i.FileSystemInfo != nil {
-		modTime = i.FileSystemInfo.LastModifiedDateTime
+		createdAt = i.FileSystemInfo.CreatedDateTime
+		updatedAt = i.FileSystemInfo.LastModifiedDateTime
+		modTime = updatedAt
 	}
 	if parentID == "" {
 		parentID = i.ParentReference.ID
 	}
 	return drive.Entry{
-		ID:       i.ID,
-		ParentID: parentID,
-		Name:     i.Name,
-		IsDir:    i.Folder != nil,
-		Size:     i.Size,
-		ModTime:  modTime,
+		ID:        i.ID,
+		ParentID:  parentID,
+		Name:      i.Name,
+		IsDir:     i.Folder != nil,
+		Size:      i.Size,
+		ModTime:   modTime,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
 	}
 }
 

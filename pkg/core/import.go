@@ -33,15 +33,15 @@ type LogFile struct {
 	Size int64  `json:"size"`
 }
 
-func ImportConfig(srcPath, workDir string) (string, error) {
+func ImportConfig(srcPath string, runtime RuntimeLayout) (string, error) {
 	if srcPath == "" {
 		return "", fmt.Errorf("core: source config path required")
 	}
-	layout := NewWorkLayout(workDir)
-	if layout.ConfigDir == "" {
-		return "", fmt.Errorf("core: work dir required")
+	if runtime.ConfigDir == "" {
+		return "", fmt.Errorf("core: runtime config dir required")
 	}
-	if err := ensureWorkLayout(layout); err != nil {
+	layout := NewStorageLayout(nil, runtime)
+	if err := ensureRuntimeLayout(layout); err != nil {
 		return "", err
 	}
 	cfg, err := config.Load(srcPath)
@@ -56,20 +56,19 @@ func ImportConfig(srcPath, workDir string) (string, error) {
 	return dstPath, nil
 }
 
-func ImportedConfigPath(workDir string) (string, error) {
-	layout := NewWorkLayout(workDir)
-	if layout.ConfigDir == "" {
-		return "", fmt.Errorf("core: work dir required")
+func ImportedConfigPath(runtime RuntimeLayout) (string, error) {
+	if runtime.ConfigDir == "" {
+		return "", fmt.Errorf("core: runtime config dir required")
 	}
-	return filepath.Join(layout.ConfigDir, ImportedConfigName), nil
+	return filepath.Join(runtime.ConfigDir, ImportedConfigName), nil
 }
 
-func OpenImported(ctx context.Context, workDir string) (*Core, error) {
-	path, err := ImportedConfigPath(workDir)
+func OpenImported(ctx context.Context, runtime RuntimeLayout) (*Core, error) {
+	path, err := ImportedConfigPath(runtime)
 	if err != nil {
 		return nil, err
 	}
-	return Open(ctx, Options{ConfigPath: path, WorkDir: workDir})
+	return Open(ctx, Options{ConfigPath: path, Runtime: runtime})
 }
 
 func sanitizeImportedConfig(cfg *config.Config) {
@@ -77,14 +76,9 @@ func sanitizeImportedConfig(cfg *config.Config) {
 		return
 	}
 	cfg.MountPoint = ""
-	cfg.CacheDir = ""
+	cfg.Storage = config.StorageConfig{}
 	cfg.Logging.LogFile = ""
 	cfg.Logging.ErrorFile = ""
-	for i := range cfg.Mounts {
-		if cfg.Mounts[i].Cache != nil {
-			cfg.Mounts[i].Cache.Dir = ""
-		}
-	}
 }
 
 func (c *Core) FileInfo(ctx context.Context, path string) (FileInfo, error) {
@@ -116,10 +110,10 @@ func (c *Core) ValidateResume(ctx context.Context, path, id string, size int64, 
 }
 
 func (c *Core) LogFiles() ([]LogFile, error) {
-	if c == nil || c.workLayout.LogDir == "" {
+	if c == nil || c.runtimeLayout.LogDir == "" {
 		return nil, fmt.Errorf("core: logs unavailable")
 	}
-	entries, err := os.ReadDir(c.workLayout.LogDir)
+	entries, err := os.ReadDir(c.runtimeLayout.LogDir)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +132,7 @@ func (c *Core) LogFiles() ([]LogFile, error) {
 }
 
 func (c *Core) ReadLog(name string, offset int64, length int) ([]byte, error) {
-	if c == nil || c.workLayout.LogDir == "" {
+	if c == nil || c.runtimeLayout.LogDir == "" {
 		return nil, fmt.Errorf("core: logs unavailable")
 	}
 	if offset < 0 {
@@ -153,7 +147,7 @@ func (c *Core) ReadLog(name string, offset int64, length int) ([]byte, error) {
 	if length > DefaultReadChunkLimit {
 		return nil, fmt.Errorf("core: log length %d exceeds limit %d", length, DefaultReadChunkLimit)
 	}
-	path := filepath.Join(c.workLayout.LogDir, filepath.Base(filepath.Clean(name)))
+	path := filepath.Join(c.runtimeLayout.LogDir, filepath.Base(filepath.Clean(name)))
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

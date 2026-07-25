@@ -39,23 +39,31 @@ type file struct {
 }
 
 func (f file) entry(parentID string) drive.Entry {
+	createdAt := time.Time{}
+	updatedAt := time.Time{}
 	modTime := time.Time{}
 	if f.UpdatedAt != nil {
-		modTime = *f.UpdatedAt
+		updatedAt = *f.UpdatedAt
+		modTime = updatedAt
 	} else if f.CreatedAt != nil {
 		modTime = *f.CreatedAt
+	}
+	if f.CreatedAt != nil {
+		createdAt = *f.CreatedAt
 	}
 	if parentID == "" {
 		parentID = f.ParentFileID
 	}
 	return drive.Entry{
-		ID:       f.FileID,
-		ParentID: parentID,
-		Name:     f.Name,
-		IsDir:    f.Type == "folder",
-		Size:     f.Size,
-		ModTime:  modTime,
-		Extra:    f,
+		ID:        f.FileID,
+		ParentID:  parentID,
+		Name:      f.Name,
+		IsDir:     f.Type == "folder",
+		Size:      f.Size,
+		ModTime:   modTime,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+		Extra:     f,
 	}
 }
 

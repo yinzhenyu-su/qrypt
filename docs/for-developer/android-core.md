@@ -18,7 +18,7 @@ Android Kotlin
 ```
 
 `pkg/core` owns reusable qrypt engine construction. It loads `qrypt.toml`,
-applies a caller-provided work directory, builds the VFS namespace, and exposes
+applies a caller-provided runtime layout, builds the VFS namespace, and exposes
 path-based filesystem operations.
 
 `pkg/mobile` owns gomobile-friendly session and file-handle APIs.
@@ -26,61 +26,91 @@ path-based filesystem operations.
 The mobile binding imports `pkg/drivers/all`, so the generated AAR registers
 the same bundled driver set as the CLI.
 
-## WorkDir
+## Runtime Layout
 
-Android should copy the imported `qrypt.toml` into app-private storage and pass
-an app-private work directory to `mobile.OpenImportedJSON`.
+Android should pass an explicit runtime layout JSON to `mobile.ImportConfigJSON`,
+`mobile.OpenImportedJSON`, and `mobile.OpenJSON`. The layout tells qrypt where
+each class of runtime data belongs.
 
 Suggested layout:
 
 ```text
 filesDir/qrypt/
   config/qrypt.toml
-  cache/
+  writeback/
   state/
+    driver/
   logs/
+
+cacheDir/qrypt/
+  read/
   tmp/
 ```
 
-When `WorkDir` is set, qrypt core stores each mount cache under:
+Example `runtimeJSON`:
+
+```json
+{
+  "config_dir": "<filesDir>/qrypt/config",
+  "storage": {
+    "read_cache_dir": "<cacheDir>/qrypt/read",
+    "writeback_dir": "<filesDir>/qrypt/writeback",
+    "state_dir": "<filesDir>/qrypt/state",
+    "log_dir": "<filesDir>/qrypt/logs",
+    "tmp_dir": "<cacheDir>/qrypt/tmp"
+  }
+}
+```
+
+qrypt stores each mount read cache under:
 
 ```text
-WorkDir/cache/<mount>
+<read_cache_dir>/<mount>
+```
+
+Pending uploads and staging files are stored under:
+
+```text
+<writeback_dir>/<mount>
 ```
 
 Driver state stores are installed under:
 
 ```text
-WorkDir/state/<mount>/driver
+<state_dir>/driver/<mount>
 ```
 
 Quark cookie and upload-session state therefore stay inside the app-private
-work directory. Runtime logs are written under `WorkDir/logs`.
+files directory, while read cache and temp data can live in Android `cacheDir`.
 
 ## Config Import
 
 Android should import config through the mobile API:
 
 ```text
-ImportConfigJSON(srcPath, workDir)
-OpenImportedJSON(workDir)
+ImportConfigJSON(srcPath, runtimeJSON)
+OpenImportedJSON(runtimeJSON)
 ```
 
 Import copies the config to:
 
 ```text
-WorkDir/config/qrypt.toml
+<config_dir>/qrypt.toml
 ```
 
 During import, desktop runtime paths are cleared:
 
 - `mount_point`
-- `cache_dir`
+- `storage.read_cache_dir`
+- `storage.writeback_dir`
+- `storage.state_dir`
+- `storage.log_dir`
+- `storage.tmp_dir`
 - `logging.log_file`
 - `logging.error_file`
-- `[[mounts]].cache.dir`
 
-The core then applies Android `WorkDir` paths at runtime.
+The core then applies the supplied runtime layout when opening the imported
+config.
 
 ## Mobile API
 
@@ -111,11 +141,20 @@ Errors use:
 Current gomobile-facing JSON functions:
 
 ```text
-ImportConfigJSON(srcPath, workDir)
-OpenImportedJSON(workDir)
-OpenJSON(configPath, workDir)
+ImportConfigJSON(srcPath, runtimeJSON)
+OpenImportedJSON(runtimeJSON)
+OpenJSON(configPath, runtimeJSON)
 ListJSON(coreID, path)
 StatJSON(coreID, path)
+UploadLocalFileJSON(coreID, localPath, remotePath, timeoutMS)
+OpenStreamingUploadJSON(coreID, remotePath, timeoutMS)
+WriteStreamingUploadJSON(handleID, data, timeoutMS)
+FinishStreamingUploadJSON(handleID, timeoutMS)
+CancelStreamingUploadJSON(handleID, timeoutMS)
+ListTasksJSON(coreID, filterJSON)
+GetTaskJSON(coreID, taskID)
+CancelTaskJSON(coreID, taskID, timeoutMS)
+RetryTaskJSON(coreID, taskID, timeoutMS)
 FileInfoJSON(coreID, path)
 ValidateResumeJSON(coreID, path, id, size, modTime)
 OpenFileJSON(coreID, path)
@@ -126,6 +165,8 @@ DriverNamesJSON()
 DriverSchemaJSON(name)
 DebugSnapshotJSON(coreID)
 FlushReadCacheJSON(coreID)
+StorageUsageJSON(coreID)
+ClearReadCacheJSON(coreID, timeoutMS)
 LogFilesJSON(coreID)
 ReadLogJSON(coreID, name, offset, length)
 ```
@@ -147,6 +188,33 @@ ReadVirtualFileAtInto(handleID, offset, dst, timeoutMS)
 preview reads only. The core enforces a default 4 MiB chunk limit. Android
 should call the byte-buffer APIs repeatedly for seek-heavy consumers and pass
 `timeoutMS` for preview/playback cancellation.
+
+For large uploads from `content://`, prefer streaming into qrypt staging instead
+of first copying to an app-private temp file:
+
+```text
+OpenStreamingUploadJSON(coreID, remotePath, timeoutMS)
+WriteStreamingUpload(handleID, data, timeoutMS)
+FinishStreamingUploadJSON(handleID, timeoutMS)
+CancelStreamingUploadJSON(handleID, timeoutMS)
+```
+
+`WriteStreamingUpload` accepts a Java/Kotlin `byte[]` through gomobile and
+appends it to the staging file. Keep the chunk buffer reusable on the Android
+side. Use `FinishStreamingUploadJSON` after EOF to flush staging and enqueue the
+normal qrypt upload. Use `CancelStreamingUploadJSON` when the Android transfer is
+aborted; it removes the pending staging file.
+
+`FinishStreamingUploadJSON` returns an `entry` plus a `task`. Android should keep
+the returned `task.id` and use `GetTaskJSON` or `ListTasksJSON` to show remote
+upload progress after staging is complete. `CancelTaskJSON` cancels pending
+writeback upload state and removes its staging file. `RetryTaskJSON` clears
+retry wait/failure state and schedules the upload immediately.
+
+Android and iOS should use `StorageUsageJSON` to show qrypt-owned storage and
+`ClearReadCacheJSON` to clear only reusable read cache data. `ClearReadCacheJSON`
+does not remove upload staging, pending upload journals, config, driver state,
+or logs.
 
 ## Error Handling
 

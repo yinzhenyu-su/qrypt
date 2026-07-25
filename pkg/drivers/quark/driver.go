@@ -413,7 +413,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		return drive.Entry{}, err
 	}
 	logging.L.InfofEvery("quark.mkdir_complete", time.Second, "[QUARK] mkdir complete parent=%q name=%q id=%q", parentID, name, resp.Data.Fid)
-	return drive.Entry{ID: resp.Data.Fid, ParentID: parentID, Name: name, IsDir: true, ModTime: now}, nil
+	return drive.Entry{ID: resp.Data.Fid, ParentID: parentID, Name: name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -530,7 +530,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		d.instantUploadCount++
 		d.debugMu.Unlock()
 		d.deleteUploadSession(sessionKey)
-		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime}, nil
+		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime, CreatedAt: mtime, UpdatedAt: mtime}, nil
 	}
 
 	partSize := preResp.Metadata.PartSize
@@ -554,7 +554,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		if finished {
 			drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
 			d.deleteUploadSession(sessionKey)
-			return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime}, nil
+			return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime, CreatedAt: mtime, UpdatedAt: mtime}, nil
 		}
 		session = uploadSessionFromPre(sessionKey, parentID, name, size, hashData, preResp, partSize)
 	} else if resumedSession && session.Etags == nil {
@@ -658,7 +658,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 	logging.L.InfofEvery("quark.upload_complete", time.Second, "[QUARK] upload complete name=%q fid=%q size=%d parts=%d dur=%s", name, finalFid, totalRead, len(etags), time.Since(putStart))
 	d.deleteUploadSession(sessionKey)
-	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime}, nil
+	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime, CreatedAt: mtime, UpdatedAt: mtime}, nil
 }
 
 func quarkSourceHashes(source drive.ReadOnlyFileSource) (map[string]any, bool, error) {

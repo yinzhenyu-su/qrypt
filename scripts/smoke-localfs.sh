@@ -17,12 +17,16 @@ mkdir -p "$REMOTE" "$CACHE"
 
 cat >"$CONFIG" <<EOF
 mount_point = "$WORKDIR/mount"
-cache_dir = "$CACHE"
+
+[storage]
+read_cache_dir = "$CACHE/read"
+writeback_dir = "$WORKDIR/writeback"
+state_dir = "$WORKDIR/state"
 
 [time]
 ntp_enabled = false
 
-[defaults.cache]
+[writeback]
 upload_delay = "1ms"
 delete_delay = "1ms"
 upload_workers = 2

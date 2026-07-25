@@ -116,9 +116,12 @@ func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -182,9 +185,12 @@ func TestBuildFileSystemSelectsSingleMount(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -255,10 +261,14 @@ func TestBuildFileSystemUsesResolvedRootID(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 	cfg := &config.Config{
-		CacheDir: filepath.Join(tmp, "cache"),
-		Defaults: config.Defaults{Cache: config.CacheConfig{
+		Storage: config.StorageConfig{
+			ReadCacheDir: filepath.Join(tmp, "cache", "read"),
+			WritebackDir: filepath.Join(tmp, "writeback"),
+			StateDir:     filepath.Join(tmp, "state"),
+		},
+		Writeback: config.WritebackConfig{
 			UploadDelay: "10ms",
-		}},
+		},
 		Mounts: []config.MountConfig{{
 			Name: "rooted",
 			Type: "cli-rootid-test",
