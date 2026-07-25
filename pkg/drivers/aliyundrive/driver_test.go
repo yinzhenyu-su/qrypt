@@ -87,6 +87,7 @@ func TestFileSHA1UsesSourceMetadata(t *testing.T) {
 }
 
 func TestFileEntryMapping(t *testing.T) {
+	createdAt := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	modTime := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	item := file{
 		FileID:       "file-id",
@@ -94,6 +95,7 @@ func TestFileEntryMapping(t *testing.T) {
 		Type:         "file",
 		Name:         "report.pdf",
 		Size:         123,
+		CreatedAt:    &createdAt,
 		UpdatedAt:    &modTime,
 	}
 	entry := item.entry("parent")
@@ -105,6 +107,9 @@ func TestFileEntryMapping(t *testing.T) {
 	}
 	if entry.Size != 123 || !entry.ModTime.Equal(modTime) {
 		t.Fatalf("unexpected entry metadata: %+v", entry)
+	}
+	if !entry.CreatedAt.Equal(createdAt) || !entry.UpdatedAt.Equal(modTime) {
+		t.Fatalf("entry times = created %s updated %s, want %s %s", entry.CreatedAt, entry.UpdatedAt, createdAt, modTime)
 	}
 }
 

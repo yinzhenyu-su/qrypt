@@ -55,6 +55,12 @@ func (r *debugReadCloser) Close() error {
 const readChunkSize = 1024 * 1024
 const readPrefetchLimit = 2
 const readPrefetchChunks = 8
+
+// readMaxConcurrency caps total concurrent remote read windows.
+const readMaxConcurrency = 8
+
+// readHighReserve is the number of read slots reserved for high-priority reads.
+const readHighReserve = 2
 const readHotChunkLimit = 16
 const readRangeHitLimit = 1024
 const readRangePromoteHits = 2
@@ -62,6 +68,37 @@ const readRangePromoteHits = 2
 func readWindowExtra(windowChunks int) map[string]any {
 	return map[string]any{
 		"window_chunks": windowChunks,
+	}
+}
+
+func (v *VFS) acquireReadSlot(ctx context.Context) (func(), error) {
+	prio := readPriority(ctx)
+	if prio == PriorityHigh {
+		select {
+		case v.readSem <- struct{}{}:
+			return func() { <-v.readSem }, nil
+		default:
+		}
+		select {
+		case v.readHighSem <- struct{}{}:
+			return func() { <-v.readHighSem }, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if prio == PriorityLow {
+		select {
+		case v.readSem <- struct{}{}:
+			return func() { <-v.readSem }, nil
+		default:
+			return nil, fmt.Errorf("vfs: read slots full")
+		}
+	}
+	select {
+	case v.readSem <- struct{}{}:
+		return func() { <-v.readSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -325,7 +362,7 @@ func (v *VFS) loadWindow(ctx context.Context, entry drive.Entry, startIndex int6
 	started := timeutil.Now()
 	activeID := v.beginDebugActive(DebugActiveOp{
 		Kind:        "vfs_window_load",
-		Phase:       "fetch_window",
+		Phase:       "acquire_slot",
 		Path:        debugOperationName(ctx),
 		RemoteID:    entry.ID,
 		Offset:      startIndex * readChunkSize,
@@ -335,7 +372,19 @@ func (v *VFS) loadWindow(ctx context.Context, entry drive.Entry, startIndex int6
 		WindowEnd:   endIndex,
 		WaitFor:     key,
 	})
+	releaseSlot, slotErr := v.acquireReadSlot(ctx)
+	if slotErr != nil {
+		load.err = slotErr
+		v.finishDebugActive(activeID)
+		close(load.done)
+		v.windowLoadMu.Lock()
+		delete(v.windowLoads, key)
+		v.windowLoadMu.Unlock()
+		return nil, slotErr
+	}
+	v.updateDebugActive(activeID, func(op *DebugActiveOp) { op.Phase = "fetch_window" })
 	load.data, load.extra, load.err = v.fetchChunkWindow(ctx, entry, startIndex, endIndex)
+	releaseSlot()
 	v.finishDebugActive(activeID)
 	v.recordReadChunkDetail(ctx, entry, "fetch_window", startIndex, 0, (endIndex-startIndex+1)*readChunkSize, windowBytes(load.data), started, readExtraWithWindow(load.extra, startIndex, endIndex), load.err)
 	close(load.done)
@@ -419,6 +468,7 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 		return
 	}
 	prefetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	prefetchCtx = WithReadPriority(prefetchCtx, PriorityLow)
 
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, done: make(chan struct{})}
 	v.windowLoadMu.Lock()
@@ -428,7 +478,7 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 	go func() {
 		activeID := v.beginDebugActive(DebugActiveOp{
 			Kind:        "vfs_prefetch",
-			Phase:       "fetch_window",
+			Phase:       "acquire_slot",
 			Path:        debugOperationName(ctx),
 			RemoteID:    entry.ID,
 			Offset:      startIndex * readChunkSize,
@@ -439,7 +489,23 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 			Background:  true,
 			WaitFor:     key,
 		})
+		releaseSlot, err := v.acquireReadSlot(prefetchCtx)
+		if err != nil {
+			load.err = err
+			v.finishDebugActive(activeID)
+			close(load.done)
+			v.windowLoadMu.Lock()
+			delete(v.windowLoads, key)
+			v.windowLoadMu.Unlock()
+			<-v.prefetchSem
+			v.prefetchMu.Lock()
+			delete(v.prefetching, key)
+			v.prefetchMu.Unlock()
+			cancel()
+			return
+		}
 		defer func() {
+			releaseSlot()
 			v.finishDebugActive(activeID)
 			close(load.done)
 			v.windowLoadMu.Lock()
@@ -451,6 +517,7 @@ func (v *VFS) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex 
 			v.prefetchMu.Unlock()
 			cancel()
 		}()
+		v.updateDebugActive(activeID, func(op *DebugActiveOp) { op.Phase = "fetch_window" })
 		load.data, load.extra, load.err = v.fetchChunkWindow(prefetchCtx, entry, startIndex, endIndex)
 	}()
 }

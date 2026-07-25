@@ -344,7 +344,10 @@ func writeFsCopyConfig(t *testing.T, tmp, srcRemote, dstRemote string) string {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	content := `
 mount_point = "` + filepath.Join(tmp, "mnt") + `"
-cache_dir = "` + filepath.Join(tmp, "cache") + `"
+[storage]
+read_cache_dir = "` + filepath.Join(tmp, "cache", "read") + `"
+writeback_dir = "` + filepath.Join(tmp, "writeback") + `"
+state_dir = "` + filepath.Join(tmp, "state") + `"
 
 [[mounts]]
 name = "src"

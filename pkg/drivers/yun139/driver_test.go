@@ -932,6 +932,7 @@ func TestToEntry(t *testing.T) {
 		Name:      "file.txt",
 		Type:      "file",
 		Size:      100,
+		CreatedAt: "2024-01-14T09:20:00.000+08:00",
 		UpdatedAt: "2024-01-15T10:30:00.000+08:00",
 	}
 	entry := toEntry(item)
@@ -944,6 +945,9 @@ func TestToEntry(t *testing.T) {
 	want := time.Date(2024, 1, 15, 10, 30, 0, 0, time.FixedZone("", 8*60*60))
 	if !entry.ModTime.Equal(want) {
 		t.Fatalf("mod time = %s, want %s", entry.ModTime, want)
+	}
+	if entry.CreatedAt.IsZero() || !entry.UpdatedAt.Equal(want) {
+		t.Fatalf("unexpected entry times: %+v", entry)
 	}
 
 	createdOnly := personalItem{

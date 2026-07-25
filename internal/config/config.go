@@ -16,7 +16,6 @@ import (
 type Config struct {
 	Version            string          `toml:"version"`
 	MountPoint         string          `toml:"mount_point"`
-	CacheDir           string          `toml:"cache_dir"`
 	VolumeName         string          `toml:"volume_name"`
 	ReadOnly           bool            `toml:"read_only"`
 	AllowOther         bool            `toml:"allow_other"`
@@ -32,6 +31,10 @@ type Config struct {
 	Debug              DebugConfig     `toml:"debug"`
 	Time               TimeConfig      `toml:"time"`
 	Bandwidth          BandwidthConfig `toml:"bandwidth"`
+	Storage            StorageConfig   `toml:"storage"`
+	ReadCache          ReadCacheConfig `toml:"read_cache"`
+	ThumbnailCache     ReadCacheConfig `toml:"thumbnail_cache"`
+	Writeback          WritebackConfig `toml:"writeback"`
 	Encryption         crypt.Config    `toml:"encryption"`
 	Defaults           Defaults        `toml:"defaults"`
 	Mounts             []MountConfig   `toml:"mounts"`
@@ -39,15 +42,15 @@ type Config struct {
 
 type Defaults struct {
 	Encryption crypt.Config `toml:"encryption"`
-	Cache      CacheConfig  `toml:"cache"`
 }
 
 type MountConfig struct {
-	Name       string        `toml:"name"`
-	Type       string        `toml:"type"`
-	Params     ParamMap      `toml:"params"`
-	Encryption *crypt.Config `toml:"encryption"`
-	Cache      *CacheConfig  `toml:"cache"`
+	Name       string           `toml:"name"`
+	Type       string           `toml:"type"`
+	Params     ParamMap         `toml:"params"`
+	Encryption *crypt.Config    `toml:"encryption"`
+	ReadCache  *ReadCacheConfig `toml:"read_cache"`
+	Writeback  *WritebackConfig `toml:"writeback"`
 }
 
 type ParamMap map[string]string
@@ -78,9 +81,20 @@ func (p *ParamMap) UnmarshalTOML(data any) error {
 	return nil
 }
 
-type CacheConfig struct {
-	Dir           string `toml:"dir"`
-	MaxSize       string `toml:"max_size"`
+type StorageConfig struct {
+	ReadCacheDir      string `toml:"read_cache_dir"`
+	ThumbnailCacheDir string `toml:"thumbnail_cache_dir"`
+	WritebackDir      string `toml:"writeback_dir"`
+	StateDir          string `toml:"state_dir"`
+	LogDir            string `toml:"log_dir"`
+	TmpDir            string `toml:"tmp_dir"`
+}
+
+type ReadCacheConfig struct {
+	MaxSize string `toml:"max_size"`
+}
+
+type WritebackConfig struct {
 	UploadDelay   string `toml:"upload_delay"`
 	UploadWorkers int    `toml:"upload_workers"`
 	DeleteDelay   string `toml:"delete_delay"`
@@ -88,7 +102,7 @@ type CacheConfig struct {
 
 // MaxSizeBytes parses MaxSize (e.g. "512M", "1G", "2T") and returns bytes.
 // Returns 0 if MaxSize is empty or unparseable.
-func (c CacheConfig) MaxSizeBytes() int64 {
+func (c ReadCacheConfig) MaxSizeBytes() int64 {
 	if c.MaxSize == "" {
 		return 0
 	}
@@ -219,19 +233,34 @@ func (c *Config) EncryptionFor(mountName string) crypt.Config {
 	return cfg.WithDefaults()
 }
 
-func (c *Config) CacheFor(mountName string) CacheConfig {
-	var cache CacheConfig
+func (c *Config) ReadCacheFor(mountName string) ReadCacheConfig {
+	var cache ReadCacheConfig
 	if c == nil {
 		return cache
 	}
-	cache = c.Defaults.Cache
+	cache = c.ReadCache
 	for _, mount := range c.Mounts {
-		if mount.Name == mountName && mount.Cache != nil {
-			cache = *mount.Cache
+		if mount.Name == mountName && mount.ReadCache != nil {
+			cache = *mount.ReadCache
 			break
 		}
 	}
 	return cache
+}
+
+func (c *Config) WritebackFor(mountName string) WritebackConfig {
+	var writeback WritebackConfig
+	if c == nil {
+		return writeback
+	}
+	writeback = c.Writeback
+	for _, mount := range c.Mounts {
+		if mount.Name == mountName && mount.Writeback != nil {
+			writeback = *mount.Writeback
+			break
+		}
+	}
+	return writeback
 }
 
 func (c *Config) EffectiveMountPoint() string {

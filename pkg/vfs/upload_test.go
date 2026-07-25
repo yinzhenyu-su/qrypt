@@ -13,6 +13,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -87,6 +88,64 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	}
 	if report.Status != "ok" || !report.RemoteFound || !report.SizeMatches {
 		t.Fatalf("unexpected consistency report: %+v", report)
+	}
+}
+
+func TestVFSUploadTaskCancelRemovesPendingUpload(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/cancel.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/cancel.txt"); err != nil {
+		t.Fatal(err)
+	}
+	tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeUploadRemote}})
+	if len(tasks) != 1 || tasks[0].State != task.StateScheduled || !tasks[0].Cancelable {
+		t.Fatalf("tasks = %+v, want one cancelable scheduled upload", tasks)
+	}
+	if err := fs.CancelTask(ctx, tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if pending := fs.Pending(); len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none", pending)
+	}
+	if got := drv.uploadCount(); got != 0 {
+		t.Fatalf("upload count = %d, want 0", got)
+	}
+}
+
+func TestVFSUploadTaskRetryRunsScheduledUploadNow(t *testing.T) {
+	ctx := context.Background()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/retry-now.txt", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/retry-now.txt"); err != nil {
+		t.Fatal(err)
+	}
+	tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeUploadRemote}, Path: "/retry-now.txt"})
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %+v, want one upload", tasks)
+	}
+	if err := fs.RetryTask(ctx, tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+	if got := drv.uploadCount(); got != 1 {
+		t.Fatalf("upload count = %d, want 1", got)
 	}
 }
 
@@ -204,10 +263,103 @@ func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
 	}
 }
 
-func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
+func TestVFSWriteAfterFlushPreservesStagedContent(t *testing.T) {
 	ctx := context.Background()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
 	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("hello world"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drv.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first upload did not start")
+	}
+	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("qrypt"), 6); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
+		t.Fatal(err)
+	}
+	close(drv.blockFirst)
+	waitNoPending(t, fs)
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if got := string(drv.lastData); got != "hello qrypt" {
+		t.Fatalf("final upload data = %q, want %q", got, "hello qrypt")
+	}
+}
+
+func TestVFSMutableGenerationIsNotUploadedWithoutFlush(t *testing.T) {
+	ctx := context.Background()
+	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("hello world"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drv.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first upload did not start")
+	}
+	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("qrypt"), 6); err != nil {
+		t.Fatal(err)
+	}
+	close(drv.blockFirst)
+
+	waitForCondition(t, func() bool {
+		drv.mu.Lock()
+		defer drv.mu.Unlock()
+		return drv.putSourceCalls == 1
+	})
+	time.Sleep(150 * time.Millisecond)
+	drv.mu.Lock()
+	calls := drv.putSourceStart
+	first := string(drv.allData[0])
+	drv.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("mutable generation uploaded without flush: putSource calls = %d, want 1", calls)
+	}
+	if first != "hello world" {
+		t.Fatalf("first upload data = %q, want %q", first, "hello world")
+	}
+
+	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	if drv.putSourceStart != 2 {
+		t.Fatalf("putSource calls after flush = %d, want 2", drv.putSourceStart)
+	}
+	if got := string(drv.lastData); got != "hello qrypt" {
+		t.Fatalf("last upload data = %q, want %q", got, "hello qrypt")
+	}
+}
+
+func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
+	ctx := context.Background()
+	cacheDir := t.TempDir()
+	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
+	fs, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +389,6 @@ func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
 	waitNoPending(t, fs)
 
 	drv.mu.Lock()
-	defer drv.mu.Unlock()
 	if len(drv.allData) < 2 {
 		t.Fatalf("uploads = %q, want superseded upload and latest upload", drv.allData)
 	}
@@ -246,6 +397,17 @@ func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
 	}
 	if string(drv.lastData) != "second" {
 		t.Fatalf("last upload data = %q, want second", drv.lastData)
+	}
+	drv.mu.Unlock()
+
+	stagingEntries, err := os.ReadDir(filepath.Join(cacheDir, "staging"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range stagingEntries {
+		if strings.HasSuffix(entry.Name(), ".staging") {
+			t.Fatalf("staging file leaked after superseded upload: %s", entry.Name())
+		}
 	}
 }
 
@@ -749,6 +911,20 @@ func TestVFSRecoversPendingUploads(t *testing.T) {
 		t.Fatal(err)
 	}
 	second.Start(ctx)
+
+	// The recovered generation was never flushed, so it must stay local
+	// until an explicit flush after restart.
+	time.Sleep(150 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(remote, "resume.txt")); !os.IsNotExist(err) {
+		t.Fatalf("unflushed pending uploaded after restart, stat err=%v", err)
+	}
+	if got := len(second.Pending()); got != 1 {
+		t.Fatalf("recovered pending count = %d, want 1", got)
+	}
+
+	if err := second.Flush(ctx, "/resume.txt"); err != nil {
+		t.Fatal(err)
+	}
 	waitNoPending(t, second)
 
 	data, err := os.ReadFile(remote + "/resume.txt")
@@ -803,6 +979,21 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 	}
 
 	second.Start(ctx)
+
+	// Size repair runs on resume, but the unflushed generation must stay
+	// local until an explicit flush after restart.
+	waitForCondition(t, func() bool {
+		pending := second.Pending()
+		return len(pending) == 1 && pending[0].Size == int64(len(content))
+	})
+	time.Sleep(150 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(remote, "resume-large.bin")); !os.IsNotExist(err) {
+		t.Fatalf("unflushed pending uploaded after restart, stat err=%v", err)
+	}
+
+	if err := second.Flush(ctx, "/resume-large.bin"); err != nil {
+		t.Fatal(err)
+	}
 	waitNoPending(t, second)
 	data, err := os.ReadFile(filepath.Join(remote, "resume-large.bin"))
 	if err != nil {

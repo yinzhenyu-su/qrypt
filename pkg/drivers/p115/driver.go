@@ -853,14 +853,16 @@ func (d *Driver) getFiles(dirID string) ([]drive.Entry, error) {
 	}
 	entries := make([]drive.Entry, len(*files))
 	for i, f := range *files {
+		modTime := f.ModTime()
 		entries[i] = drive.Entry{
-			ID:       f.GetID(),
-			ParentID: f.ParentID,
-			Name:     f.GetName(),
-			Size:     f.GetSize(),
-			IsDir:    f.IsDir(),
-			ModTime:  f.ModTime(),
-			Extra:    f,
+			ID:        f.GetID(),
+			ParentID:  f.ParentID,
+			Name:      f.GetName(),
+			Size:      f.GetSize(),
+			IsDir:     f.IsDir(),
+			ModTime:   modTime,
+			UpdatedAt: modTime,
+			Extra:     f,
 		}
 	}
 	return entries, nil
@@ -880,14 +882,16 @@ func (d *Driver) getNewEntry(ctx context.Context, id string) (drive.Entry, error
 }
 
 func entryFromFile(f driver115.File) drive.Entry {
+	modTime := f.ModTime()
 	return drive.Entry{
-		ID:       f.GetID(),
-		ParentID: f.ParentID,
-		Name:     f.GetName(),
-		Size:     f.GetSize(),
-		IsDir:    f.IsDir(),
-		ModTime:  f.ModTime(),
-		Extra:    f,
+		ID:        f.GetID(),
+		ParentID:  f.ParentID,
+		Name:      f.GetName(),
+		Size:      f.GetSize(),
+		IsDir:     f.IsDir(),
+		ModTime:   modTime,
+		UpdatedAt: modTime,
+		Extra:     f,
 	}
 }
 

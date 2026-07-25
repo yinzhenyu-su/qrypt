@@ -12,13 +12,15 @@ import (
 
 // Entry describes one object on a backend.
 type Entry struct {
-	ID       string    `json:"id"`
-	ParentID string    `json:"parent_id,omitempty"`
-	Name     string    `json:"name"`
-	IsDir    bool      `json:"is_dir"`
-	Size     int64     `json:"size"`
-	ModTime  time.Time `json:"mod_time,omitempty"`
-	Extra    any       `json:"-"`
+	ID        string    `json:"id"`
+	ParentID  string    `json:"parent_id,omitempty"`
+	Name      string    `json:"name"`
+	IsDir     bool      `json:"is_dir"`
+	Size      int64     `json:"size"`
+	ModTime   time.Time `json:"mod_time,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	Extra     any       `json:"-"`
 }
 
 type EntryRemoteNamer interface {

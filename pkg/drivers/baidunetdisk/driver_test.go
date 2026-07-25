@@ -51,6 +51,24 @@ func TestEntryFSIDUsesWrappedRawExtra(t *testing.T) {
 	}
 }
 
+func TestFileEntryMappingIncludesCreateAndUpdateTimes(t *testing.T) {
+	item := file{
+		FsID:           12345,
+		Path:           "/Qrypt/a.txt",
+		ServerFilename: "a.txt",
+		Size:           7,
+		ServerCtime:    1710000000,
+		ServerMtime:    1710000300,
+	}
+	entry := item.entry("/Qrypt")
+	if !entry.CreatedAt.Equal(time.Unix(1710000000, 0)) || !entry.UpdatedAt.Equal(time.Unix(1710000300, 0)) {
+		t.Fatalf("unexpected entry times: %+v", entry)
+	}
+	if !entry.ModTime.Equal(entry.UpdatedAt) {
+		t.Fatalf("mod time = %s, want updated_at %s", entry.ModTime, entry.UpdatedAt)
+	}
+}
+
 func TestListUsesRootPathAndPaginates(t *testing.T) {
 	ctx := context.Background()
 	var listed []string

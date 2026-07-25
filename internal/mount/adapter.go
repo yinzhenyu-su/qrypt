@@ -379,6 +379,9 @@ func fuseErr(err error) int {
 	if errors.Is(err, vfs.ErrNotFound) {
 		return -fuse.ENOENT
 	}
+	if errors.Is(err, vfs.ErrCrossMount) {
+		return -fuse.EXDEV
+	}
 	return -fuse.EIO
 }
 

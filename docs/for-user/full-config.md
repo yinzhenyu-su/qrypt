@@ -7,7 +7,6 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `mount_point` | string | ~/Qrypt | FUSE mount point (e.g. ~/Qrypt). |
-| `cache_dir` | string | ~/.qrypt/qrypt-cache | Directory for read cache and pending upload staging. |
 | `volume_name` | string | Qrypt | Volume label shown in the OS file manager. |
 | `no_apple_double` | boolean | true | Skip writing Apple Double (._) metadata files on macOS. |
 | `no_apple_xattr` | boolean | false | Ignore com.apple.* extended attributes on macOS. |
@@ -43,14 +42,32 @@
 | `filename_encoding` | string | base32 | Encoding for encrypted file names. |
 | `content_dedup` | boolean | false | When true, enables deterministic encryption so identical plaintext produces identical ciphertext, allowing the backend to deduplicate content (instant upload). May leak content equality to the storage provider. |
 
-## 缓存配置
+## 存储目录
 
-在 `[defaults.cache]` 中设置，作为所有云盘的缓存默认值。每个 mount 可以在 `[mounts.cache]` 中单独覆盖。
+在 `[storage]` 中设置运行数据根目录。当移动端或其他宿主传入 runtime layout 时，这些目录会被运行时布局覆盖。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `dir` | string | - | Cache directory for this mount. Falls back to cache_dir/<mount_name>. |
+| `read_cache_dir` | string | - | Root directory for read cache files. |
+| `writeback_dir` | string | - | Root directory for upload staging and pending journal files. |
+| `state_dir` | string | - | Root directory for persistent driver and runtime state. |
+| `log_dir` | string | - | Root directory for runtime logs when log files are not explicitly configured. |
+| `tmp_dir` | string | - | Root directory for temporary runtime files. |
+
+## 读取缓存
+
+在 `[read_cache]` 中设置读取缓存默认值。每个 mount 可以在 `[mounts.read_cache]` 中单独覆盖。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
 | `max_size` | string | 512M | Maximum read-cache size (e.g. "512M", "2G", "1T"). |
+
+## 写回与上传
+
+在 `[writeback]` 中设置写回和上传调度默认值。每个 mount 可以在 `[mounts.writeback]` 中单独覆盖。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
 | `upload_delay` | string | 0s | Debounce delay before flushing a new file to the cloud (e.g. "5s", "1m"). |
 | `upload_workers` | integer | 4 | Number of concurrent upload workers per mount. |
 | `delete_delay` | string | 0s | Debounce delay before deleting a file from the cloud (e.g. "2s"). |
@@ -89,4 +106,4 @@ qrypt 依赖精确的系统时间进行文件操作。当系统时间可能不�
 
 - [支持的驱动](support-drivers.md)
 
-每个 mount 可以在 `[mounts.encryption]` 和 `[mounts.cache]` 中覆盖全局加密和缓存配置，具体参数见上文对应章节。
+每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.writeback]` 中覆盖全局配置，具体参数见上文对应章节。

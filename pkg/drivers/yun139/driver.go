@@ -403,7 +403,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		// Name collision — FUSE layer handles this by looking up existing dir.
 		return drive.Entry{}, fmt.Errorf("139: mkdir failed (code=%s): %s", resp.Code, resp.Message)
 	}
-	return drive.Entry{ID: resp.Data.FileID, ParentID: fileID, Name: resp.Data.Name, IsDir: true, ModTime: now}, nil
+	return drive.Entry{ID: resp.Data.FileID, ParentID: fileID, Name: resp.Data.Name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -592,7 +592,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		d.instantUploadCount++
 		d.debugMu.Unlock()
 		d.deleteUploadSession(sessionKey)
-		return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+		return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 	}
 
 	if !resumedSession {
@@ -660,12 +660,12 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileID}, name); err != nil {
 			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileID, name, err)
 			d.deleteUploadSession(sessionKey)
-			return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+			return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 		}
 	}
 
 	d.deleteUploadSession(sessionKey)
-	return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now}, nil
+	return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {

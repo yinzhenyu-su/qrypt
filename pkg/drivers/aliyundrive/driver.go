@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const (
@@ -482,7 +482,8 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
-	return drive.Entry{ID: resp.FileID, ParentID: parentID, Name: name, IsDir: true, ModTime: responseModTime(resp.UpdatedAt, resp.CreatedAt, now)}, nil
+	createdAt, updatedAt, modTime := responseTimes(resp.UpdatedAt, resp.CreatedAt, now)
+	return drive.Entry{ID: resp.FileID, ParentID: parentID, Name: name, IsDir: true, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
@@ -591,7 +592,8 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		d.instantUploadCount++
 		d.debugMu.Unlock()
 		d.deleteUploadSession(sessionKey)
-		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(create.UpdatedAt, create.CreatedAt, now)}, nil
+		createdAt, updatedAt, modTime := responseTimes(create.UpdatedAt, create.CreatedAt, now)
+		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 	}
 	if sessionKey != "" {
 		if resumedSession {
@@ -631,7 +633,8 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		err = classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload complete: %w", err))
 		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
 	}
-	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: responseModTime(complete.UpdatedAt, complete.CreatedAt, responseModTime(create.UpdatedAt, create.CreatedAt, now))}
+	createdAt, updatedAt, modTime := responseTimes(complete.UpdatedAt, complete.CreatedAt, responseModTime(create.UpdatedAt, create.CreatedAt, now))
+	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}
 	if complete.FileID != "" {
 		entry.ID = complete.FileID
 	}
@@ -653,6 +656,17 @@ func responseModTime(updatedAt, createdAt *time.Time, fallback time.Time) time.T
 		return *createdAt
 	}
 	return fallback
+}
+
+func responseTimes(updatedAt, createdAt *time.Time, fallback time.Time) (time.Time, time.Time, time.Time) {
+	var created, updated time.Time
+	if createdAt != nil {
+		created = *createdAt
+	}
+	if updatedAt != nil {
+		updated = *updatedAt
+	}
+	return created, updated, responseModTime(updatedAt, createdAt, fallback)
 }
 
 func classifyAliyunUploadError(err error) error {

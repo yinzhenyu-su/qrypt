@@ -24,8 +24,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 // Driver implements drive.Driver (plus Writer, SourceUploader, Debugger, and
@@ -354,12 +354,15 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		return drive.Entry{}, fmt.Errorf("s3: mkdir %q: %w", dirKey, err)
 	}
 	entryID := d.joinPath(parentID, name) + "/"
+	now := time.Now()
 	return drive.Entry{
-		ID:       entryID,
-		ParentID: d.normParent(parentID),
-		Name:     name,
-		IsDir:    true,
-		ModTime:  time.Now(),
+		ID:        entryID,
+		ParentID:  d.normParent(parentID),
+		Name:      name,
+		IsDir:     true,
+		ModTime:   now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
@@ -405,12 +408,15 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		if err := d.putMultipartSource(ctx, parentID, name, key, source.Size(), body, req.Progress); err != nil {
 			return drive.Entry{}, err
 		}
+		now := time.Now()
 		return drive.Entry{
-			ID:       d.joinPath(parentID, name),
-			ParentID: d.normParent(parentID),
-			Name:     name,
-			Size:     source.Size(),
-			ModTime:  time.Now(),
+			ID:        d.joinPath(parentID, name),
+			ParentID:  d.normParent(parentID),
+			Name:      name,
+			Size:      source.Size(),
+			ModTime:   now,
+			CreatedAt: now,
+			UpdatedAt: now,
 		}, nil
 	}
 
@@ -432,12 +438,15 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		}
 		return drive.Entry{}, err
 	}
+	now := time.Now()
 	return drive.Entry{
-		ID:       d.joinPath(parentID, name),
-		ParentID: d.normParent(parentID),
-		Name:     name,
-		Size:     source.Size(),
-		ModTime:  time.Now(),
+		ID:        d.joinPath(parentID, name),
+		ParentID:  d.normParent(parentID),
+		Name:      name,
+		Size:      source.Size(),
+		ModTime:   now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 

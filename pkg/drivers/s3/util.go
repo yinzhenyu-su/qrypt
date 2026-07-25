@@ -78,12 +78,14 @@ func (d *Driver) listV1(ctx context.Context, parentID string) ([]drive.Entry, er
 			if strings.HasSuffix(relKey, "/") {
 				continue
 			}
+			modTime := aws.ToTime(obj.LastModified)
 			entries = append(entries, drive.Entry{
-				ID:       stdpath.Join(parentID, name),
-				ParentID: parentID,
-				Name:     name,
-				Size:     aws.ToInt64(obj.Size),
-				ModTime:  aws.ToTime(obj.LastModified),
+				ID:        stdpath.Join(parentID, name),
+				ParentID:  parentID,
+				Name:      name,
+				Size:      aws.ToInt64(obj.Size),
+				ModTime:   modTime,
+				UpdatedAt: modTime,
 			})
 		}
 
@@ -144,12 +146,14 @@ func (d *Driver) listV2(ctx context.Context, parentID string) ([]drive.Entry, er
 			if strings.HasSuffix(relKey, "/") {
 				continue
 			}
+			modTime := aws.ToTime(obj.LastModified)
 			entries = append(entries, drive.Entry{
-				ID:       stdpath.Join(parentID, name),
-				ParentID: parentID,
-				Name:     name,
-				Size:     aws.ToInt64(obj.Size),
-				ModTime:  aws.ToTime(obj.LastModified),
+				ID:        stdpath.Join(parentID, name),
+				ParentID:  parentID,
+				Name:      name,
+				Size:      aws.ToInt64(obj.Size),
+				ModTime:   modTime,
+				UpdatedAt: modTime,
 			})
 		}
 

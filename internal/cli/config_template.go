@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"text/template"
 
@@ -40,7 +39,6 @@ func generateConfigTemplate(starterRoot string) ([]byte, error) {
 		"Drivers":        drivers,
 		"EncryptionSalt": encryptionSalt,
 		"StarterRoot":    starterRoot,
-		"StarterCache":   filepath.Join(filepath.Dir(starterRoot), "qrypt-cache"),
 	}); err != nil {
 		return nil, err
 	}
@@ -86,9 +84,6 @@ version = "1"
 # FUSE mount point (expanded with ~)
 mount_point = "~/Qrypt"
 
-# Global cache directory
-cache_dir = {{printf "%q" .StarterCache}}
-
 # Volume name shown in the OS file manager
 volume_name = "Qrypt"
 
@@ -107,6 +102,15 @@ log_level = "info"
 # log_file  = "~/.qrypt/qrypt.log"
 # error_file = "~/.qrypt/qrypt-error.log"
 
+# ── Runtime storage directories (empty = platform defaults) ─────
+[storage]
+read_cache_dir = ""
+thumbnail_cache_dir = ""
+writeback_dir  = ""
+state_dir      = ""
+log_dir        = ""
+tmp_dir        = ""
+
 # ── Time source (NTP first, system clock fallback) ────────────────
 [time]
 ntp_enabled = true
@@ -114,9 +118,16 @@ ntp_enabled = true
 ntp_timeout = "1500ms"
 ntp_poll_interval = "30m"
 
-# ── Default cache settings (applied to all mounts) ────────────────
-[defaults.cache]
-max_size       = "2G"
+# ── Read cache settings ───────────────────────────────────────────
+[read_cache]
+max_size = "2G"
+
+# ── Thumbnail cache settings ─────────────────────────────────────
+[thumbnail_cache]
+max_size = "256M"
+
+# ── Writeback settings ────────────────────────────────────────────
+[writeback]
 upload_workers = 8
 upload_delay   = "3s"
 delete_delay   = "2s"

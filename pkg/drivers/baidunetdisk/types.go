@@ -33,13 +33,23 @@ func (f file) entry(parentPath string) drive.Entry {
 	if modUnix > 0 {
 		modTime = time.Unix(modUnix, 0)
 	}
+	createUnix := f.ServerCtime
+	if createUnix == 0 {
+		createUnix = f.Ctime
+	}
+	var createdAt time.Time
+	if createUnix > 0 {
+		createdAt = time.Unix(createUnix, 0)
+	}
 	return drive.Entry{
-		ID:       f.Path,
-		ParentID: normalizeDir(parentPath),
-		Name:     name,
-		IsDir:    f.IsDir == 1,
-		Size:     f.Size,
-		ModTime:  modTime,
+		ID:        f.Path,
+		ParentID:  normalizeDir(parentPath),
+		Name:      name,
+		IsDir:     f.IsDir == 1,
+		Size:      f.Size,
+		ModTime:   modTime,
+		CreatedAt: createdAt,
+		UpdatedAt: modTime,
 		Extra: map[string]any{
 			"fs_id": strconv.FormatInt(f.FsID, 10),
 		},

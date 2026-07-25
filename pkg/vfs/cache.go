@@ -95,6 +95,7 @@ type PendingFile struct {
 	NextAttemptAt int64                 `json:"next_attempt_at,omitempty"`
 	ReplaceUpload *PendingReplaceUpload `json:"replace_upload,omitempty"`
 	Staging       *PendingStagingStatus `json:"staging,omitempty"`
+	Frozen        bool                  `json:"frozen,omitempty"`
 }
 
 type PendingReplaceUpload struct {
@@ -156,6 +157,7 @@ type readCacheWrite struct {
 
 type Cache struct {
 	dir     string
+	readDir string
 	maxSize int64
 	staging *stagingStore
 
@@ -198,7 +200,11 @@ type cacheStats struct {
 }
 
 func NewCache(dir string, maxSize int64) (*Cache, error) {
-	readingDir := filepath.Join(dir, "reading")
+	return NewCacheWithDirs(dir, filepath.Join(dir, "reading"), maxSize)
+}
+
+func NewCacheWithDirs(writebackDir, readCacheDir string, maxSize int64) (*Cache, error) {
+	readingDir := readCacheDir
 	if err := os.MkdirAll(readingDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -219,11 +225,11 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 			logging.L.Infof("[CACHE] cleaned %d orphaned read cache seed files", cleaned)
 		}
 	}
-	adjusted, reason := limitByDiskSpace(maxSize, dir)
+	adjusted, reason := limitByDiskSpace(maxSize, readingDir)
 	if reason != "" {
 		logging.L.Infof("[CACHE] %s", reason)
 	}
-	staging, err := newStagingStore(filepath.Join(dir, "staging"))
+	staging, err := newStagingStore(filepath.Join(writebackDir, "staging"))
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +237,8 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 		logging.L.Infof("[CACHE] cleaned %d orphaned staging upload files", cleaned)
 	}
 	c := &Cache{
-		dir:            dir,
+		dir:            writebackDir,
+		readDir:        readCacheDir,
 		maxSize:        adjusted,
 		staging:        staging,
 		pending:        map[string]PendingFile{},
@@ -250,6 +257,9 @@ func NewCache(dir string, maxSize int64) (*Cache, error) {
 		if err := c.compactJournal(); err != nil {
 			logging.L.Warnf("[CACHE] compact pending journal failed: %v", err)
 		}
+	}
+	if cleaned := c.sweepUnreferencedStaging(); cleaned > 0 {
+		logging.L.Infof("[CACHE] cleaned %d unreferenced staging files", cleaned)
 	}
 	c.readWriterWG.Add(1)
 	go c.runReadCacheWriter()
@@ -292,6 +302,17 @@ func (c *Cache) PendingByPath(path string) (PendingFile, bool) {
 
 func (c *Cache) SavePending(p PendingFile) error {
 	p.UpdatedAt = timeutil.Now().UnixNano()
+	return c.savePending(p)
+}
+
+func (c *Cache) SavePendingExact(p PendingFile) error {
+	if p.UpdatedAt == 0 {
+		p.UpdatedAt = timeutil.Now().UnixNano()
+	}
+	return c.savePending(p)
+}
+
+func (c *Cache) savePending(p PendingFile) error {
 	c.mu.Lock()
 	c.pending[p.Path] = p
 	c.mu.Unlock()
@@ -372,6 +393,62 @@ func (c *Cache) RecordPendingPermanentFailure(path string, err error) (PendingFi
 	return pending, true, c.appendJournal(journalEntry{Op: "dirty", PendingFile: pending})
 }
 
+// RecordPendingFailureIfUnchanged records a failure only if the pending
+// file has not changed since it was enqueued. This prevents an old
+// frozen generation's upload failure from clobbering a newer generation's state.
+func (c *Cache) RecordPendingFailureIfUnchanged(p PendingFile, err error, retryDelay time.Duration) (PendingFile, bool, error) {
+	now := timeutil.Now()
+	c.mu.Lock()
+	current, ok := c.pending[p.Path]
+	if ok && samePendingFile(current, p) {
+		current.RetryCount++
+		if err != nil {
+			current.LastError = err.Error()
+		}
+		current.LastAttemptAt = now.UnixNano()
+		if retryDelay > 0 {
+			current.NextAttemptAt = now.Add(retryDelay).UnixNano()
+		} else {
+			current.NextAttemptAt = 0
+		}
+		current.UpdatedAt = now.UnixNano()
+		c.pending[p.Path] = current
+	} else {
+		ok = false
+	}
+	c.mu.Unlock()
+	if !ok {
+		return PendingFile{}, false, nil
+	}
+	return current, true, c.appendJournal(journalEntry{Op: "dirty", PendingFile: current})
+}
+
+// RecordPendingPermanentFailureIfUnchanged records a permanent failure only
+// if the pending file has not changed since it was enqueued.
+func (c *Cache) RecordPendingPermanentFailureIfUnchanged(p PendingFile, err error) (PendingFile, bool, error) {
+	now := timeutil.Now()
+	c.mu.Lock()
+	current, ok := c.pending[p.Path]
+	if ok && samePendingFile(current, p) {
+		current.RetryCount++
+		if err != nil {
+			current.LastError = err.Error()
+		}
+		current.PermanentFail = true
+		current.LastAttemptAt = now.UnixNano()
+		current.NextAttemptAt = 0
+		current.UpdatedAt = now.UnixNano()
+		c.pending[p.Path] = current
+	} else {
+		ok = false
+	}
+	c.mu.Unlock()
+	if !ok {
+		return PendingFile{}, false, nil
+	}
+	return current, true, c.appendJournal(journalEntry{Op: "dirty", PendingFile: current})
+}
+
 func (c *Cache) RemovePending(path string) error {
 	c.mu.Lock()
 	pending, ok := c.pending[path]
@@ -387,6 +464,59 @@ func (c *Cache) RemovePending(path string) error {
 		return err
 	}
 	return c.compactJournalLocked()
+}
+
+// removeStagingIfUnreferenced removes a staging file only when no current
+// pending points at it. RenamePending reuses the same staging file under a
+// new path, so a bare existence check is not enough.
+func (c *Cache) removeStagingIfUnreferenced(localPath string) {
+	if localPath == "" {
+		return
+	}
+	c.mu.RLock()
+	inUse := false
+	for _, p := range c.pending {
+		if p.LocalPath == localPath {
+			inUse = true
+			break
+		}
+	}
+	c.mu.RUnlock()
+	if inUse {
+		return
+	}
+	if err := c.staging.remove(localPath); err != nil {
+		logging.L.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
+	}
+}
+
+// sweepUnreferencedStaging deletes staging files no pending refers to.
+// Generations superseded before a crash are otherwise leaked forever.
+func (c *Cache) sweepUnreferencedStaging() int {
+	c.mu.RLock()
+	referenced := make(map[string]struct{}, len(c.pending))
+	for _, p := range c.pending {
+		referenced[filepath.Clean(p.LocalPath)] = struct{}{}
+	}
+	c.mu.RUnlock()
+	entries, err := os.ReadDir(c.staging.dir)
+	if err != nil {
+		return 0
+	}
+	var cleaned int
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".staging") {
+			continue
+		}
+		path := filepath.Join(c.staging.dir, entry.Name())
+		if _, ok := referenced[filepath.Clean(path)]; ok {
+			continue
+		}
+		if err := os.Remove(path); err == nil {
+			cleaned++
+		}
+	}
+	return cleaned
 }
 
 func (c *Cache) RemovePendingUnder(dir string) error {
@@ -797,6 +927,44 @@ func (c *Cache) FlushReadCache() error {
 	return c.FlushReadIndex()
 }
 
+func (c *Cache) ClearReadCache() error {
+	c.readWriteWGMu.Lock()
+	defer c.readWriteWGMu.Unlock()
+	c.readWriteWG.Wait()
+
+	c.readIndexMu.Lock()
+	if c.readIndexTimer != nil {
+		c.readIndexTimer.Stop()
+		c.readIndexTimer = nil
+	}
+	c.readIndexDirty = false
+	c.readIndexMu.Unlock()
+
+	var removed int64
+	c.mu.Lock()
+	for _, fc := range c.chunks {
+		fc.mu.Lock()
+		removed += int64(len(fc.chunks))
+		fc.chunks = map[int64]chunkInfo{}
+		fc.mu.Unlock()
+	}
+	c.chunks = map[string]*fileChunks{}
+	c.readBytes.Store(0)
+	c.stats.evicted += removed
+	c.mu.Unlock()
+
+	readingDir := c.readDir
+	if err := os.RemoveAll(readingDir); err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	if err := os.MkdirAll(readingDir, 0o755); err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	return nil
+}
+
 func (c *Cache) Close() error {
 	c.readWriteMu.Lock()
 	if !c.readWriteClosed {
@@ -876,10 +1044,10 @@ func (c *Cache) PutLocalFile(fid string, fileSize int64, localPath string) error
 		if n > 0 {
 			batch := index / cacheBatchBlocks
 			offset := int64(index%cacheBatchBlocks) * readChunkSize
-			finalPath := filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", cacheID, batch))
+			finalPath := filepath.Join(c.readDir, fmt.Sprintf("%s_%d.batch", cacheID, batch))
 			tmpPath := tempFiles[finalPath]
 			if tmpPath == "" {
-				tmpPath = filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d_%d.seed", cacheID, batch, now.UnixNano()))
+				tmpPath = filepath.Join(c.readDir, fmt.Sprintf("%s_%d_%d.seed", cacheID, batch, now.UnixNano()))
 				tempFiles[finalPath] = tmpPath
 			}
 			out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY, 0o644)
@@ -1162,7 +1330,7 @@ func (c *Cache) readIndexSnapshot() readCacheIndex {
 }
 
 func (c *Cache) cleanupUnindexedReadCacheBatches(referenced map[string]struct{}) int {
-	entries, err := os.ReadDir(filepath.Join(c.dir, "reading"))
+	entries, err := os.ReadDir(c.readDir)
 	if err != nil {
 		return 0
 	}
@@ -1176,7 +1344,7 @@ func (c *Cache) cleanupUnindexedReadCacheBatches(referenced map[string]struct{})
 				continue
 			}
 		}
-		if err := os.Remove(filepath.Join(c.dir, "reading", entry.Name())); err == nil {
+		if err := os.Remove(filepath.Join(c.readDir, entry.Name())); err == nil {
 			cleaned++
 		}
 	}
@@ -1184,15 +1352,15 @@ func (c *Cache) cleanupUnindexedReadCacheBatches(referenced map[string]struct{})
 }
 
 func (c *Cache) readIndexPath() string {
-	return filepath.Join(c.dir, "reading", readCacheIndexName)
+	return filepath.Join(c.readDir, readCacheIndexName)
 }
 
 func (c *Cache) readBatchPath(fid string, batch int64) string {
-	return filepath.Join(c.dir, "reading", fmt.Sprintf("%s_%d.batch", cacheFileID(fid), batch))
+	return filepath.Join(c.readDir, fmt.Sprintf("%s_%d.batch", cacheFileID(fid), batch))
 }
 
 func (c *Cache) ensureReadCacheDir() error {
-	return os.MkdirAll(filepath.Join(c.dir, "reading"), 0o755)
+	return os.MkdirAll(c.readDir, 0o755)
 }
 
 func cacheFileID(fid string) string {

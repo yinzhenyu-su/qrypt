@@ -28,7 +28,7 @@ def build_field_rows(props, skip_encryption=False, skip_cache=False):
     for name, prop in props.items():
         if skip_encryption and name in ("encryption",):
             continue
-        if skip_cache and name in ("cache",):
+        if skip_cache and name in ("read_cache", "writeback"):
             continue
         if name == "type":
             continue
@@ -53,7 +53,7 @@ def generate():
     sections.append("")
 
     global_keys = [
-        "mount_point", "cache_dir", "volume_name", "no_apple_double",
+        "mount_point", "volume_name", "no_apple_double",
         "no_apple_xattr", "read_only", "allow_other", "default_permissions",
     ]
     rows = []
@@ -108,16 +108,40 @@ def generate():
     sections.append(build_field_rows(enc_props))
     sections.append("")
 
-    cache = defs.get("cacheConfig", {})
-    cache_props = cache.get("properties", {})
-    sections.append("## 缓存配置")
+    storage = defs.get("storageConfig", {})
+    storage_props = storage.get("properties", {})
+    sections.append("## 存储目录")
     sections.append("")
     sections.append(
-        "在 `[defaults.cache]` 中设置，作为所有云盘的缓存默认值。"
-        "每个 mount 可以在 `[mounts.cache]` 中单独覆盖。"
+        "在 `[storage]` 中设置运行数据根目录。"
+        "当移动端或其他宿主传入 runtime layout 时，这些目录会被运行时布局覆盖。"
     )
     sections.append("")
-    sections.append(build_field_rows(cache_props))
+    sections.append(build_field_rows(storage_props))
+    sections.append("")
+
+    read_cache = defs.get("readCacheConfig", {})
+    read_cache_props = read_cache.get("properties", {})
+    sections.append("## 读取缓存")
+    sections.append("")
+    sections.append(
+        "在 `[read_cache]` 中设置读取缓存默认值。"
+        "每个 mount 可以在 `[mounts.read_cache]` 中单独覆盖。"
+    )
+    sections.append("")
+    sections.append(build_field_rows(read_cache_props))
+    sections.append("")
+
+    writeback = defs.get("writebackConfig", {})
+    writeback_props = writeback.get("properties", {})
+    sections.append("## 写回与上传")
+    sections.append("")
+    sections.append(
+        "在 `[writeback]` 中设置写回和上传调度默认值。"
+        "每个 mount 可以在 `[mounts.writeback]` 中单独覆盖。"
+    )
+    sections.append("")
+    sections.append(build_field_rows(writeback_props))
     sections.append("")
 
     log = defs.get("loggingConfig", {})
@@ -155,8 +179,8 @@ def generate():
     sections.append("- [支持的驱动](support-drivers.md)")
     sections.append("")
     sections.append(
-        "每个 mount 可以在 `[mounts.encryption]` 和 `[mounts.cache]` 中"
-        "覆盖全局加密和缓存配置，具体参数见上文对应章节。"
+        "每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` "
+        "和 `[mounts.writeback]` 中覆盖全局配置，具体参数见上文对应章节。"
     )
     sections.append("")
 

@@ -241,6 +241,39 @@ func TestReadCachePutRecreatesReadingDir(t *testing.T) {
 	}
 }
 
+func TestReadCacheClearRemovesReadingData(t *testing.T) {
+	cacheDir := t.TempDir()
+	key := strings.Repeat("b", sha256.Size*2)
+	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cache.Close() })
+
+	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
+	if state := cache.DebugReadCacheForTest(); state.Bytes == 0 || state.ChunkCount == 0 {
+		t.Fatalf("cache not populated before clear: %+v", state)
+	}
+
+	if err := cache.ClearReadCache(); err != nil {
+		t.Fatal(err)
+	}
+	state := cache.DebugReadCacheForTest()
+	if state.Bytes != 0 || state.ChunkCount != 0 || state.FileCount != 0 {
+		t.Fatalf("cache not cleared: %+v", state)
+	}
+	if entries, err := os.ReadDir(filepath.Join(cacheDir, "reading")); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("reading dir entries after clear = %d, want 0", len(entries))
+	}
+}
+
 func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)

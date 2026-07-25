@@ -565,6 +565,7 @@ func (v *VFS) uploadSnapshots(pending []PendingFile) []UploadSnapshot {
 			Name:           item.Name,
 			State:          state,
 			BytesTotal:     item.Size,
+			UpdatedAt:      timeFromUnixNano(item.UpdatedAt),
 			RetryCount:     item.RetryCount,
 			LastError:      item.LastError,
 			LastAttemptAt:  item.LastAttemptAt,

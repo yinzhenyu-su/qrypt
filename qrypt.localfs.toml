@@ -1,11 +1,15 @@
 #:schema ./qrypt.schema.json
 version = "1"
 mount_point = "~/Qrypt"
-cache_dir = "/tmp/qrypt-cache"
 volume_name = "Qrypt"
 no_apple_double = true
 total_space = "1T"
 free_space = "800G"
+
+[storage]
+read_cache_dir = "/tmp/qrypt-cache/read"
+writeback_dir = "/tmp/qrypt-writeback"
+state_dir = "/tmp/qrypt-state"
 
 [logging]
 log_level = "info"
@@ -15,7 +19,7 @@ log_file = "/tmp/qrypt.log"
 download = ""
 upload = ""
 
-[defaults.cache]
+[read_cache]
 max_size = "512M"
 
 [[mounts]]

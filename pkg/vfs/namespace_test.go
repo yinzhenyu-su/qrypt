@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -113,6 +114,55 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	}
 	if string(readBack) != "from localfs" {
 		t.Fatalf("unexpected readback: %q", readBack)
+	}
+}
+
+func TestNamespaceUploadTasksUseGlobalIDs(t *testing.T) {
+	ctx := context.Background()
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{
+		{Name: "one", FS: fsA},
+		{Name: "two", FS: fsB},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns.Start(ctx)
+
+	for _, path := range []string{"/one/same.txt", "/two/same.txt"} {
+		if _, err := ns.WriteAt(ctx, path, []byte("data"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := ns.Flush(ctx, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks := ns.Tasks(task.Filter{Types: []task.Type{task.TypeUploadRemote}})
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %+v, want two uploads", tasks)
+	}
+	ids := map[string]bool{}
+	for _, item := range tasks {
+		ids[item.ID] = true
+		if item.ID == "same.txt" || item.Mount == "" {
+			t.Fatalf("task missing namespace identity: %+v", item)
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("task ids are not unique: %+v", tasks)
+	}
+	if err := ns.CancelTask(ctx, tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if pending := ns.Pending(); len(pending) != 1 || pending[0].Path == tasks[0].Path {
+		t.Fatalf("pending after cancel = %+v, canceled task=%+v", pending, tasks[0])
 	}
 }
 

@@ -62,7 +62,7 @@ func TestDriverInitListAndResolveRootPath(t *testing.T) {
 				"code":   0,
 				"data": map[string]any{
 					"list": []map[string]any{
-						{"fid": "file-1", "file_name": "a.txt", "file": true, "file_size": 12, "updated_at": 1700000000000},
+						{"fid": "file-1", "file_name": "a.txt", "file": true, "file_size": 12, "created_at": 1699990000000, "updated_at": 1700000000000},
 					},
 				},
 				"metadata": map[string]any{"_total": 1},
@@ -91,6 +91,9 @@ func TestDriverInitListAndResolveRootPath(t *testing.T) {
 	entry := entries[0]
 	if entry.ID != "file-1" || entry.ParentID != "root-docs" || entry.Name != "a.txt" || entry.IsDir || entry.Size != 12 {
 		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if entry.CreatedAt.IsZero() || entry.UpdatedAt.IsZero() || !entry.ModTime.Equal(entry.UpdatedAt) {
+		t.Fatalf("unexpected entry times: %+v", entry)
 	}
 }
 

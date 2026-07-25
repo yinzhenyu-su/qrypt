@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -100,6 +100,14 @@ func (s failingListFS) List(context.Context, string) ([]drive.Entry, error) {
 	return nil, s.err
 }
 
+type crossMountRenameFS struct {
+	stubFS
+}
+
+func (crossMountRenameFS) Rename(context.Context, string, string) error {
+	return vfs.ErrCrossMount
+}
+
 func (s blockingReadFS) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
 	close(s.entered)
 	<-ctx.Done()
@@ -117,6 +125,7 @@ func (stubFS) Remove(context.Context, string) error                        { ret
 func (stubFS) RemoveDir(context.Context, string) error                     { return nil }
 func (stubFS) Rename(context.Context, string, string) error                { return nil }
 func (stubFS) Truncate(context.Context, string, int64) error               { return nil }
+func (stubFS) RefreshPath(string)                                       {}
 func (stubFS) Pending() []vfs.PendingFile                                  { return nil }
 
 func (s *createRouteFS) Create(_ context.Context, path string) error {
@@ -781,6 +790,13 @@ func TestAdapterReadOnlyPathModeAndWriteErrors(t *testing.T) {
 	}
 	if errc := ad.Chmod("/a", 0o777); errc != -fuse.EROFS {
 		t.Fatalf("Chmod readonly err = %d, want EROFS", errc)
+	}
+}
+
+func TestAdapterCrossMountRenameReturnsEXDEV(t *testing.T) {
+	ad := newAdapter(crossMountRenameFS{}, StatfsOptions{})
+	if errc := ad.Rename("/a/file.txt", "/b/file.txt"); errc != -fuse.EXDEV {
+		t.Fatalf("Rename cross mount err = %d, want EXDEV", errc)
 	}
 }
 

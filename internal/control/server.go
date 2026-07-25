@@ -134,13 +134,15 @@ type ListResponse struct {
 }
 
 type ListEntry struct {
-	Name     string    `json:"name"`
-	Path     string    `json:"path"`
-	ID       string    `json:"id"`
-	ParentID string    `json:"parent_id"`
-	IsDir    bool      `json:"is_dir"`
-	Size     int64     `json:"size"`
-	ModTime  time.Time `json:"mod_time,omitempty"`
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	ID        string    `json:"id"`
+	ParentID  string    `json:"parent_id"`
+	IsDir     bool      `json:"is_dir"`
+	Size      int64     `json:"size"`
+	ModTime   time.Time `json:"mod_time,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 type ResolveResponse struct {
@@ -1049,13 +1051,15 @@ func listEntries(parentPath string, entries []drive.Entry) []ListEntry {
 	out := make([]ListEntry, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, ListEntry{
-			Name:     entry.Name,
-			Path:     joinVirtual(parentPath, entry.Name),
-			ID:       entry.ID,
-			ParentID: entry.ParentID,
-			IsDir:    entry.IsDir,
-			Size:     entry.Size,
-			ModTime:  entry.ModTime,
+			Name:      entry.Name,
+			Path:      joinVirtual(parentPath, entry.Name),
+			ID:        entry.ID,
+			ParentID:  entry.ParentID,
+			IsDir:     entry.IsDir,
+			Size:      entry.Size,
+			ModTime:   entry.ModTime,
+			CreatedAt: entry.CreatedAt,
+			UpdatedAt: entry.UpdatedAt,
 		})
 	}
 	return out

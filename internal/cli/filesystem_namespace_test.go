@@ -24,9 +24,12 @@ func TestBuildNamespaceUsesPerMountEncryption(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -105,7 +108,10 @@ func TestBuildNamespaceAppliesGlobalEncryptionToMountWithoutEncryption(t *testin
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [encryption]
 password = "global-pass"
@@ -113,7 +119,7 @@ salt = "global-salt"
 filename_encryption = "standard"
 filename_encoding = "base32"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -180,9 +186,12 @@ func TestBuildNamespaceReadsPlainFilesWhenNoEncryptionConfigured(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
-cache_dir = "`+filepath.Join(tmp, "cache")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[defaults.cache]
+[writeback]
 upload_delay = "10ms"
 
 [[mounts]]

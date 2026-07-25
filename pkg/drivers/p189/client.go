@@ -1136,6 +1136,7 @@ func parseListFilesBody(body []byte) ([]Folder, []File, int, error) {
 			folders = append(folders, Folder{
 				ID:         f.ID,
 				Name:       f.Name,
+				CreateDate: f.CreateDate,
 				LastOpTime: f.CreateDate,
 			})
 		}
@@ -1145,6 +1146,7 @@ func parseListFilesBody(body []byte) ([]Folder, []File, int, error) {
 				ID:         f.ID,
 				Name:       f.Name,
 				Size:       f.Size,
+				CreateDate: f.CreateDate,
 				LastOpTime: f.LastOpTime,
 			})
 		}

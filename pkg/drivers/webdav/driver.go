@@ -28,9 +28,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 // ─── XML types for PROPFIND responses ────────────────────────────────────
@@ -228,12 +228,13 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 
 		isDir, size, modTime := d.parseProps(r.Propstat)
 		entries = append(entries, drive.Entry{
-			ID:       rPath,
-			ParentID: parentRel,
-			Name:     name,
-			IsDir:    isDir,
-			Size:     size,
-			ModTime:  modTime,
+			ID:        rPath,
+			ParentID:  parentRel,
+			Name:      name,
+			IsDir:     isDir,
+			Size:      size,
+			ModTime:   modTime,
+			UpdatedAt: modTime,
 		})
 	}
 	return entries, nil
@@ -303,12 +304,15 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 		return drive.Entry{}, fmt.Errorf("webdav: mkdir: status %d for %s/%s", resp.StatusCode, parentID, name)
 	}
 	childPath := d.joinPath(parentID, name)
+	now := time.Now()
 	return drive.Entry{
-		ID:       childPath,
-		ParentID: d.relativePath(parentID),
-		Name:     name,
-		IsDir:    true,
-		ModTime:  time.Now(),
+		ID:        childPath,
+		ParentID:  d.relativePath(parentID),
+		Name:      name,
+		IsDir:     true,
+		ModTime:   now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
@@ -475,12 +479,15 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 		return drive.Entry{}, err
 	}
 	childPath := d.joinPath(parentID, name)
+	now := time.Now()
 	return drive.Entry{
-		ID:       childPath,
-		ParentID: d.relativePath(parentID),
-		Name:     name,
-		Size:     source.Size(),
-		ModTime:  time.Now(),
+		ID:        childPath,
+		ParentID:  d.relativePath(parentID),
+		Name:      name,
+		Size:      source.Size(),
+		ModTime:   now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 

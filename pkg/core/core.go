@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
@@ -15,37 +15,41 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/media"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-const uploadCopyChunkSize = 256 * 1024
-
 type Options struct {
 	ConfigPath     string
-	WorkDir        string
+	Runtime        RuntimeLayout
 	MountName      string
 	ForceNamespace bool
 	ReadChunkLimit int
 }
 
 type Core struct {
-	fs          vfs.FileSystem
-	cleanup     func()
-	workLayout  WorkLayout
-	debugServer *control.Server
+	fs            vfs.FileSystem
+	cleanup       func()
+	runtimeLayout RuntimeLayout
+	readCacheDir  string
+	thumbnailDir  string
+	thumbnailMax  int64
+	writebackDir  string
+	debugServer   *control.Server
+	taskMu        sync.Mutex
+	moveTasks     map[string]taskRecord
 }
 
-const DefaultReadChunkLimit = 4 << 20
-
-type WorkLayout struct {
-	RootDir   string
-	ConfigDir string
-	CacheDir  string
-	StateDir  string
-	LogDir    string
-	TmpDir    string
+type RuntimeLayout struct {
+	RootDir      string
+	ConfigDir    string
+	ReadCacheDir string
+	ThumbnailDir string
+	WritebackDir string
+	StateDir     string
+	DriverDir    string
+	LogDir       string
+	TmpDir       string
 }
 
 func Open(ctx context.Context, opts Options) (*Core, error) {
@@ -56,11 +60,11 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	if err != nil {
 		return nil, err
 	}
-	layout := NewWorkLayout(opts.WorkDir)
-	if err := ensureWorkLayout(layout); err != nil {
+	runtime := NewStorageLayout(cfg, opts.Runtime)
+	if err := ensureRuntimeLayout(runtime); err != nil {
 		return nil, err
 	}
-	if err := initWorkDirLogger(cfg, layout); err != nil {
+	if err := initRuntimeLogger(cfg, runtime); err != nil {
 		return nil, err
 	}
 	fs, cleanup, err := BuildFileSystem(ctx, cfg, opts)
@@ -68,7 +72,7 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 		return nil, err
 	}
 	fs.Start(ctx)
-	c := &Core{fs: fs, cleanup: cleanup, workLayout: layout}
+	c := &Core{fs: fs, cleanup: cleanup, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), writebackDir: runtime.WritebackDir}
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
 			c.Close(context.Background())
@@ -113,6 +117,14 @@ func (c *Core) Rename(ctx context.Context, oldPath, newPath string) error {
 	return c.fs.Rename(ctx, oldPath, newPath)
 }
 
+// RefreshPath clears the directory listing cache for path.
+func (c *Core) RefreshPath(path string) {
+	if c == nil || c.fs == nil {
+		return
+	}
+	c.fs.RefreshPath(path)
+}
+
 func (c *Core) Remove(ctx context.Context, path string) error {
 	if c == nil || c.fs == nil {
 		return fmt.Errorf("core: closed")
@@ -152,202 +164,6 @@ func (c *Core) Mounts() ([]vfs.MountInfo, error) {
 	return out, nil
 }
 
-func (c *Core) UploadLocalFile(ctx context.Context, localPath, remotePath string) (drive.Entry, error) {
-	if c == nil || c.fs == nil {
-		return drive.Entry{}, fmt.Errorf("core: closed")
-	}
-	if strings.TrimSpace(localPath) == "" {
-		return drive.Entry{}, fmt.Errorf("core: local path required")
-	}
-	if strings.TrimSpace(remotePath) == "" {
-		return drive.Entry{}, fmt.Errorf("core: remote path required")
-	}
-	f, err := os.Open(localPath)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	defer f.Close()
-	if err := c.fs.Create(ctx, remotePath); err != nil {
-		return drive.Entry{}, err
-	}
-	buf := make([]byte, uploadCopyChunkSize)
-	var off int64
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			written, err := c.fs.WriteAt(ctx, remotePath, buf[:n], off)
-			if err != nil {
-				return drive.Entry{}, err
-			}
-			if written != n {
-				return drive.Entry{}, fmt.Errorf("core: short staging write: wrote %d of %d", written, n)
-			}
-			off += int64(written)
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return drive.Entry{}, readErr
-		}
-	}
-	if err := c.fs.Flush(ctx, remotePath); err != nil {
-		return drive.Entry{}, err
-	}
-	return c.fs.Stat(ctx, remotePath)
-}
-
-func (c *Core) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
-	if c == nil || c.fs == nil {
-		return nil, fmt.Errorf("core: closed")
-	}
-	return c.fs.Read(ctx, path, offset, size)
-}
-
-func (c *Core) ReadAt(ctx context.Context, path string, offset int64, length int, limit int) ([]byte, error) {
-	if offset < 0 {
-		return nil, fmt.Errorf("core: offset must be non-negative")
-	}
-	if length < 0 {
-		return nil, fmt.Errorf("core: length must be non-negative")
-	}
-	if length == 0 {
-		return []byte{}, nil
-	}
-	if limit <= 0 {
-		limit = DefaultReadChunkLimit
-	}
-	if length > limit {
-		return nil, fmt.Errorf("core: read length %d exceeds limit %d", length, limit)
-	}
-	rc, err := c.Read(ctx, path, offset, int64(length))
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-	return io.ReadAll(rc)
-}
-
-func (c *Core) ReadAtInto(ctx context.Context, path string, offset int64, dst []byte, limit int) (int, error) {
-	if offset < 0 {
-		return 0, fmt.Errorf("core: offset must be non-negative")
-	}
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	if limit <= 0 {
-		limit = DefaultReadChunkLimit
-	}
-	if len(dst) > limit {
-		return 0, fmt.Errorf("core: read length %d exceeds limit %d", len(dst), limit)
-	}
-	rc, err := c.Read(ctx, path, offset, int64(len(dst)))
-	if err != nil {
-		return 0, err
-	}
-	defer rc.Close()
-	n, err := io.ReadFull(rc, dst)
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		return n, nil
-	}
-	return n, err
-}
-
-func (c *Core) ProbeMP4(ctx context.Context, path string) (media.MP4Probe, error) {
-	item, err := c.Stat(ctx, path)
-	if err != nil {
-		return media.MP4Probe{}, err
-	}
-	if item.IsDir {
-		return media.MP4Probe{}, fmt.Errorf("core: %s is a directory", path)
-	}
-	return media.ProbeMP4(ctx, item.Size, func(ctx context.Context, offset int64, length int) ([]byte, error) {
-		return c.ReadAt(ctx, path, offset, length, DefaultReadChunkLimit)
-	})
-}
-
-func (c *Core) OpenVirtualFile(ctx context.Context, path, mode string) (media.VirtualFile, error) {
-	item, err := c.Stat(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	if item.IsDir {
-		return nil, fmt.Errorf("core: %s is a directory", path)
-	}
-	readAt := func(ctx context.Context, offset int64, length int) ([]byte, error) {
-		limit := DefaultReadChunkLimit
-		if length > limit {
-			limit = length
-		}
-		return c.ReadAt(vfs.WithoutReadPrefetch(ctx), path, offset, length, limit)
-	}
-	readAtInto := func(ctx context.Context, offset int64, dst []byte) (int, error) {
-		limit := DefaultReadChunkLimit
-		if len(dst) > limit {
-			limit = len(dst)
-		}
-		return c.ReadAtInto(vfs.WithoutReadPrefetch(ctx), path, offset, dst, limit)
-	}
-	return media.NewVirtualFileInto(ctx, mode, item.Size, readAt, readAtInto)
-}
-
-func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {
-	if c == nil || c.fs == nil {
-		return "", fmt.Errorf("core: closed")
-	}
-	snapshotter, ok := c.fs.(interface {
-		DebugSnapshot() vfs.DebugSnapshot
-	})
-	if !ok {
-		return "", fmt.Errorf("core: debug snapshot unavailable")
-	}
-	return marshalJSON(snapshotter.DebugSnapshot())
-}
-
-func (c *Core) FlushReadCache() error {
-	if c == nil || c.fs == nil {
-		return fmt.Errorf("core: closed")
-	}
-	flusher, ok := c.fs.(interface {
-		FlushReadCache() error
-	})
-	if !ok {
-		return fmt.Errorf("core: read cache flush unavailable")
-	}
-	return flusher.FlushReadCache()
-}
-
-func (c *Core) StartDebugServer(ctx context.Context, listen string) error {
-	if c == nil || c.fs == nil {
-		return fmt.Errorf("core: closed")
-	}
-	if c.debugServer != nil {
-		return fmt.Errorf("core: debug server already started")
-	}
-	snapshotter, ok := c.fs.(control.Snapshotter)
-	if !ok {
-		return fmt.Errorf("core: debug server requires filesystem debug snapshots")
-	}
-	server, err := control.NewServer(listen, snapshotter)
-	if err != nil {
-		return err
-	}
-	if err := server.Start(ctx); err != nil {
-		return err
-	}
-	c.debugServer = server
-	return nil
-}
-
-func (c *Core) StopDebugServer(ctx context.Context) error {
-	if c == nil || c.debugServer == nil {
-		return nil
-	}
-	err := c.debugServer.Close(ctx)
-	c.debugServer = nil
-	return err
-}
-
 func (c *Core) Close(ctx context.Context) error {
 	if c == nil || c.cleanup == nil {
 		return nil
@@ -383,7 +199,7 @@ func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (vfs
 	if err != nil {
 		return nil, nil, err
 	}
-	return buildNamespace(ctx, cfg, workLayoutCacheDir(cfg, opts.WorkDir), bandwidthLimiter(limits), opts)
+	return buildNamespace(ctx, cfg, NewStorageLayout(cfg, opts.Runtime), bandwidthLimiter(limits), opts)
 }
 
 func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
@@ -393,41 +209,92 @@ func bandwidthLimiter(limits config.BandwidthLimits) *drive.BandwidthLimiter {
 	})
 }
 
-func EffectiveCacheDir(cfg *config.Config, workDir string) string {
-	return workLayoutCacheDir(cfg, workDir)
-}
-
-func workLayoutCacheDir(cfg *config.Config, workDir string) string {
-	if workDir != "" {
-		return NewWorkLayout(workDir).CacheDir
-	}
-	if cfg != nil && cfg.CacheDir != "" {
-		return osutil.ExpandHome(cfg.CacheDir)
-	}
-	return DefaultCacheDir()
+func EffectiveCacheDir(cfg *config.Config, runtime RuntimeLayout) string {
+	return NewStorageLayout(cfg, runtime).ReadCacheDir
 }
 
 func DefaultCacheDir() string {
 	return osutil.ExpandHome("~/.qrypt/qrypt-cache")
 }
 
-func NewWorkLayout(workDir string) WorkLayout {
-	if workDir == "" {
-		return WorkLayout{}
-	}
-	root := osutil.ExpandHome(workDir)
-	return WorkLayout{
-		RootDir:   root,
-		ConfigDir: filepath.Join(root, "config"),
-		CacheDir:  filepath.Join(root, "cache"),
-		StateDir:  filepath.Join(root, "state"),
-		LogDir:    filepath.Join(root, "logs"),
-		TmpDir:    filepath.Join(root, "tmp"),
-	}
+func DefaultWritebackDir() string {
+	return osutil.ExpandHome("~/.qrypt/qrypt-writeback")
 }
 
-func ensureWorkLayout(layout WorkLayout) error {
-	for _, dir := range []string{layout.ConfigDir, layout.CacheDir, layout.StateDir, layout.LogDir, layout.TmpDir} {
+func DefaultStateDir() string {
+	return osutil.ExpandHome("~/.qrypt/qrypt-state")
+}
+
+func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
+	storage := config.StorageConfig{}
+	if cfg != nil {
+		storage = cfg.Storage
+	}
+	readCacheDir := osutil.ExpandHome(storage.ReadCacheDir)
+	if readCacheDir == "" {
+		readCacheDir = filepath.Join(DefaultCacheDir(), "read")
+	}
+	thumbnailDir := osutil.ExpandHome(storage.ThumbnailCacheDir)
+	if thumbnailDir == "" {
+		thumbnailDir = filepath.Join(DefaultCacheDir(), "thumbnail")
+	}
+	writebackDir := osutil.ExpandHome(storage.WritebackDir)
+	if writebackDir == "" {
+		writebackDir = DefaultWritebackDir()
+	}
+	stateDir := osutil.ExpandHome(storage.StateDir)
+	if stateDir == "" {
+		stateDir = DefaultStateDir()
+	}
+	logDir := osutil.ExpandHome(storage.LogDir)
+	tmpDir := osutil.ExpandHome(storage.TmpDir)
+	layout := RuntimeLayout{
+		ReadCacheDir: readCacheDir,
+		ThumbnailDir: thumbnailDir,
+		WritebackDir: writebackDir,
+		StateDir:     stateDir,
+		DriverDir:    filepath.Join(stateDir, "driver"),
+		LogDir:       logDir,
+		TmpDir:       tmpDir,
+	}
+	return mergeRuntimeLayout(layout, runtime)
+}
+
+func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
+	if override.RootDir != "" {
+		base.RootDir = osutil.ExpandHome(override.RootDir)
+	}
+	if override.ConfigDir != "" {
+		base.ConfigDir = osutil.ExpandHome(override.ConfigDir)
+	}
+	if override.ReadCacheDir != "" {
+		base.ReadCacheDir = osutil.ExpandHome(override.ReadCacheDir)
+	}
+	if override.ThumbnailDir != "" {
+		base.ThumbnailDir = osutil.ExpandHome(override.ThumbnailDir)
+	}
+	if override.WritebackDir != "" {
+		base.WritebackDir = osutil.ExpandHome(override.WritebackDir)
+	}
+	if override.StateDir != "" {
+		base.StateDir = osutil.ExpandHome(override.StateDir)
+	}
+	if override.DriverDir != "" {
+		base.DriverDir = osutil.ExpandHome(override.DriverDir)
+	} else if override.StateDir != "" {
+		base.DriverDir = filepath.Join(base.StateDir, "driver")
+	}
+	if override.LogDir != "" {
+		base.LogDir = osutil.ExpandHome(override.LogDir)
+	}
+	if override.TmpDir != "" {
+		base.TmpDir = osutil.ExpandHome(override.TmpDir)
+	}
+	return base
+}
+
+func ensureRuntimeLayout(layout RuntimeLayout) error {
+	for _, dir := range []string{layout.ConfigDir, layout.ReadCacheDir, layout.ThumbnailDir, layout.WritebackDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
 		if dir == "" {
 			continue
 		}
@@ -438,7 +305,7 @@ func ensureWorkLayout(layout WorkLayout) error {
 	return nil
 }
 
-func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, limiter *drive.BandwidthLimiter, opts Options) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, opts Options) (vfs.FileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {
@@ -449,21 +316,14 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 		for key, value := range mountCfg.Params {
 			params[key] = value
 		}
-		cache := cfg.CacheFor(mountCfg.Name)
-		mountCacheDir := cache.Dir
-		if opts.WorkDir != "" {
-			mountCacheDir = filepath.Join(cacheDir, mountCfg.Name)
-		} else if mountCacheDir == "" {
-			mountCacheDir = filepath.Join(cacheDir, mountCfg.Name)
-		} else {
-			mountCacheDir = osutil.ExpandHome(mountCacheDir)
-		}
-		stateDir := driverStateDir(opts.WorkDir, mountCfg.Name, mountCacheDir)
-		if opts.WorkDir != "" {
-			if err := os.MkdirAll(stateDir, 0o700); err != nil {
-				dropAll(ctx, drivers)
-				return nil, nil, err
-			}
+		readCache := cfg.ReadCacheFor(mountCfg.Name)
+		writeback := cfg.WritebackFor(mountCfg.Name)
+		mountReadCacheDir := filepath.Join(layout.ReadCacheDir, mountCfg.Name)
+		mountWritebackDir := filepath.Join(layout.WritebackDir, mountCfg.Name)
+		stateDir := driverStateDir(layout, mountCfg.Name)
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			dropAll(ctx, drivers)
+			return nil, nil, err
 		}
 		raw, err := drive.New(mountCfg.Type, params)
 		if err != nil {
@@ -495,32 +355,33 @@ func buildNamespace(ctx context.Context, cfg *config.Config, cacheDir string, li
 			}
 			drv = crypt.NewDriver(drv, cp, crypt.DriverOptions{ContentDedup: enc.ContentDedup})
 		}
-		maxBytes := cache.MaxSizeBytes()
+		maxBytes := readCache.MaxSizeBytes()
 		if maxBytes == 0 {
 			maxBytes = 512 << 20
 		}
-		uploadDelay, err := config.ParseDuration(cache.UploadDelay)
+		uploadDelay, err := config.ParseDuration(writeback.UploadDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid cache.upload_delay: %w", mountCfg.Name, err)
+			return nil, nil, fmt.Errorf("config: mount %s invalid writeback.upload_delay: %w", mountCfg.Name, err)
 		}
-		deleteDelay, err := config.ParseDuration(cache.DeleteDelay)
+		deleteDelay, err := config.ParseDuration(writeback.DeleteDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid cache.delete_delay: %w", mountCfg.Name, err)
+			return nil, nil, fmt.Errorf("config: mount %s invalid writeback.delete_delay: %w", mountCfg.Name, err)
 		}
-		if cache.UploadWorkers < 0 {
+		if writeback.UploadWorkers < 0 {
 			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid cache.upload_workers: must be non-negative", mountCfg.Name)
+			return nil, nil, fmt.Errorf("config: mount %s invalid writeback.upload_workers: must be non-negative", mountCfg.Name)
 		}
 		fs, err := vfs.New(drv, vfs.Options{
 			Name:          mountCfg.Name,
-			CacheDir:      mountCacheDir,
+			ReadCacheDir:  mountReadCacheDir,
+			WritebackDir:  mountWritebackDir,
 			CacheMaxBytes: maxBytes,
 			RootID:        rootID,
 			Encrypted:     enc.Password != "",
 			UploadDelay:   uploadDelay,
-			UploadWorkers: cache.UploadWorkers,
+			UploadWorkers: writeback.UploadWorkers,
 			DeleteDelay:   deleteDelay,
 		})
 		if err != nil {
@@ -560,11 +421,8 @@ func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error
 	return driver.ResolvePath(ctx, "/")
 }
 
-func driverStateDir(workDir, mountName, fallbackCacheDir string) string {
-	if workDir == "" {
-		return filepath.Join(fallbackCacheDir, "driver")
-	}
-	return filepath.Join(NewWorkLayout(workDir).StateDir, mountName, "driver")
+func driverStateDir(layout RuntimeLayout, mountName string) string {
+	return filepath.Join(layout.DriverDir, mountName)
 }
 
 func installDriverStateStore(driver drive.Driver, stateDir string) {
@@ -580,7 +438,7 @@ func dropAll(ctx context.Context, drivers []drive.Driver) {
 	}
 }
 
-func initWorkDirLogger(cfg *config.Config, layout WorkLayout) error {
+func initRuntimeLogger(cfg *config.Config, layout RuntimeLayout) error {
 	if layout.LogDir == "" {
 		return nil
 	}
@@ -592,10 +450,10 @@ func initWorkDirLogger(cfg *config.Config, layout WorkLayout) error {
 	errFile := filepath.Join(layout.LogDir, "qrypt-error.log")
 	newLogger, err := logging.New(level, logFile, errFile, nil)
 	if err != nil {
-		return fmt.Errorf("initialize workdir logging: %w", err)
+		return fmt.Errorf("initialize runtime logging: %w", err)
 	}
 	logging.L = newLogger
-	logging.L.Infof("[CORE] workdir logging initialized")
+	logging.L.Infof("[CORE] runtime logging initialized")
 	return nil
 }
 

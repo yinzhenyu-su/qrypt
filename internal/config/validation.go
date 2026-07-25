@@ -49,6 +49,11 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("config: %s must be greater than 0", name)
 		}
 	}
+	if cfg.ThumbnailCache.MaxSize != "" {
+		if _, err := ParseSize(cfg.ThumbnailCache.MaxSize); err != nil {
+			return fmt.Errorf("config: invalid thumbnail_cache.max_size: %w", err)
+		}
+	}
 	if len(cfg.Mounts) == 0 {
 		return fmt.Errorf("config: at least one [[mounts]] entry is required")
 	}
@@ -97,20 +102,21 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
 			}
 		}
-		cache := cfg.CacheFor(mountCfg.Name)
-		if cache.MaxSize != "" {
-			if _, err := ParseSize(cache.MaxSize); err != nil {
-				return fmt.Errorf("config: mount %q invalid cache.max_size: %w", mountCfg.Name, err)
+		readCache := cfg.ReadCacheFor(mountCfg.Name)
+		if readCache.MaxSize != "" {
+			if _, err := ParseSize(readCache.MaxSize); err != nil {
+				return fmt.Errorf("config: mount %q invalid read_cache.max_size: %w", mountCfg.Name, err)
 			}
 		}
-		if _, err := ParseDuration(cache.UploadDelay); err != nil {
-			return fmt.Errorf("config: mount %q invalid cache.upload_delay: %w", mountCfg.Name, err)
+		writeback := cfg.WritebackFor(mountCfg.Name)
+		if _, err := ParseDuration(writeback.UploadDelay); err != nil {
+			return fmt.Errorf("config: mount %q invalid writeback.upload_delay: %w", mountCfg.Name, err)
 		}
-		if _, err := ParseDuration(cache.DeleteDelay); err != nil {
-			return fmt.Errorf("config: mount %q invalid cache.delete_delay: %w", mountCfg.Name, err)
+		if _, err := ParseDuration(writeback.DeleteDelay); err != nil {
+			return fmt.Errorf("config: mount %q invalid writeback.delete_delay: %w", mountCfg.Name, err)
 		}
-		if cache.UploadWorkers < 0 {
-			return fmt.Errorf("config: mount %q invalid cache.upload_workers: must be non-negative", mountCfg.Name)
+		if writeback.UploadWorkers < 0 {
+			return fmt.Errorf("config: mount %q invalid writeback.upload_workers: must be non-negative", mountCfg.Name)
 		}
 	}
 	return nil
