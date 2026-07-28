@@ -12,7 +12,7 @@ import (
 
 func TestVFSRootCapabilitiesAllowCreatingChildren(t *testing.T) {
 	ctx := context.Background()
-	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: t.TempDir()})
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "dir", "file.txt"), []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir()})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +96,11 @@ func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
 }
 
 func TestNamespaceMountsReportRuntimePathsAndEncryption(t *testing.T) {
-	plain, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "plain", CacheDir: t.TempDir()})
+	plain, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "plain", StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "secret", CacheDir: t.TempDir(), Encrypted: true})
+	secret, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "secret", StorageDir: t.TempDir(), Encrypted: true})
 	if err != nil {
 		t.Fatal(err)
 	}

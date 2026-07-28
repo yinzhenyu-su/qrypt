@@ -118,10 +118,10 @@ func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -187,10 +187,10 @@ func TestBuildFileSystemSelectsSingleMount(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -263,10 +263,10 @@ func TestBuildFileSystemUsesResolvedRootID(t *testing.T) {
 	cfg := &config.Config{
 		Storage: config.StorageConfig{
 			ReadCacheDir: filepath.Join(tmp, "cache", "read"),
-			WritebackDir: filepath.Join(tmp, "writeback"),
+			UploadDir:    filepath.Join(tmp, "upload"),
 			StateDir:     filepath.Join(tmp, "state"),
 		},
-		Writeback: config.WritebackConfig{
+		Upload: config.UploadConfig{
 			UploadDelay: "10ms",
 		},
 		Mounts: []config.MountConfig{{

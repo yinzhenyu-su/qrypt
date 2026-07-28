@@ -12,7 +12,7 @@ import (
 func TestVFSListCachesChildrenForStat(t *testing.T) {
 	ctx := context.Background()
 	drv := &countingListDriver{lists: map[string]int{}}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestVFSStartDirectoryPrefetchWarmsRootChildDirs(t *testing.T) {
 			},
 		},
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestVFSListPrefetchesNextLevelChildDirs(t *testing.T) {
 			},
 		},
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestVFSListWaitsForInFlightDirectoryPrefetch(t *testing.T) {
 		entered: map[string]chan struct{}{"dir-a": entered},
 		release: map[string]chan struct{}{"dir-a": release},
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestVFSForegroundListRetriesCanceledDirectoryPrefetch(t *testing.T) {
 		entered: map[string]chan struct{}{"dir-a": entered},
 		release: map[string]chan struct{}{"dir-a": release},
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestVFSDirectoryPrefetchFallsBackAfterSessionContextCanceled(t *testing.T) 
 			},
 		},
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestVFSDirectoryPrefetchDiscardsStalePathAfterRename(t *testing.T) {
 		entered: map[string]chan struct{}{"dir-a": entered},
 		release: map[string]chan struct{}{"dir-a": release},
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}

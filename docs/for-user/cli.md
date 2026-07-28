@@ -124,7 +124,7 @@ qrypt debug collect --mount NAME
 
 跨挂载传输问题应同时提供源路径和 `--dest`；报告会分别收集两端路径状态、读取/上传历史和挂载能力。
 
-driver 和 VFS 测试通过 `debug test` 显式执行，`TEST` 可为 `auth`、`crud`、`instantupload`、`fs`、`resume` 或 `xfer`。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`fs` 会检查 VFS 写入、上传、读取和清理流程；`resume` 会故意取消一次上传，用来确认断点续传或重试恢复是否正常。
+driver 和 VFS 测试通过 `debug test` 显式执行，`TEST` 可为 `auth`、`crud`、`instantupload`、`fs`、`resume` 或 `xfer`。这些测试只会使用在 `[[mounts]]` 中设置了 `test_enabled = true` 的挂载；`xfer` 要求 source 和 dest 都启用。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`fs` 会检查 VFS 写入、上传、读取和清理流程；`resume` 会故意取消一次上传，用来确认断点续传或重试恢复是否正常。
 
 离线 journal 检查使用 `fs journal`，可传配置文件或明确的缓存目录。
 

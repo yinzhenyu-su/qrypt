@@ -21,7 +21,7 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	drv := crypt.NewDriver(raw, cp, crypt.DriverOptions{})
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,7 +49,7 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `read_cache_dir` | string | - | Root directory for read cache files. |
-| `writeback_dir` | string | - | Root directory for upload staging and pending journal files. |
+| `upload_dir` | string | - | Root directory for upload staging and pending journal files. |
 | `state_dir` | string | - | Root directory for persistent driver and runtime state. |
 | `log_dir` | string | - | Root directory for runtime logs when log files are not explicitly configured. |
 | `tmp_dir` | string | - | Root directory for temporary runtime files. |
@@ -62,15 +62,17 @@
 |---|---|---|---|
 | `max_size` | string | 512M | Maximum read-cache size (e.g. "512M", "2G", "1T"). |
 
-## 写回与上传
+## 上传
 
-在 `[writeback]` 中设置写回和上传调度默认值。每个 mount 可以在 `[mounts.writeback]` 中单独覆盖。
+在 `[upload]` 中设置上传和删除调度默认值，以及任务上传的默认目标。调度参数可以在 `[mounts.upload]` 中单独覆盖；`default_mount` 和 `default_path` 只支持顶层 `[upload]`。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `upload_delay` | string | 0s | Debounce delay before flushing a new file to the cloud (e.g. "5s", "1m"). |
 | `upload_workers` | integer | 4 | Number of concurrent upload workers per mount. |
 | `delete_delay` | string | 0s | Debounce delay before deleting a file from the cloud (e.g. "2s"). |
+| `default_mount` | string | - | Default mount used when upload tasks receive an empty or relative destination path. Only supported in top-level [upload]. |
+| `default_path` | string | / | Default directory under upload.default_mount used when upload tasks receive an empty or relative destination path. qrypt creates this directory if missing, but does not create missing parent directories. Only supported in top-level [upload]. |
 
 ## 日志
 
@@ -106,4 +108,12 @@ qrypt 依赖精确的系统时间进行文件操作。当系统时间可能不�
 
 - [支持的驱动](support-drivers.md)
 
-每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.writeback]` 中覆盖全局配置，具体参数见上文对应章节。
+通用参数：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `name` | string | - | Mount name — used as the directory name under the mount point. |
+| `type` | string | - | Backend driver type. |
+| `test_enabled` | boolean | false | Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects. |
+
+每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见上文对应章节。

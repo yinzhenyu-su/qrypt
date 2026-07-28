@@ -8,7 +8,7 @@ free_space = "800G"
 
 [storage]
 read_cache_dir = "/tmp/qrypt-cache/read"
-writeback_dir = "/tmp/qrypt-writeback"
+upload_dir = "/tmp/qrypt-upload"
 state_dir = "/tmp/qrypt-state"
 
 [logging]

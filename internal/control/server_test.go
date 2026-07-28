@@ -219,7 +219,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				OpID: "driver-3", Kind: "driver", Operation: "upload_part", Phase: "request", State: "completed", OK: true,
 				Path: "/file.txt", Bytes: 4 * osutil.MiB, StartedAt: time.Now().Add(-time.Minute),
 			}}},
-			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
+			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingUpload{{
 				Path:       "/file.txt",
 				FID:        "file",
 				LocalPath:  "/tmp/file.staging",
@@ -247,8 +247,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			},
 		}},
 	}, drivers: []vfs.NamedDriver{{
-		Name:   "local",
-		Driver: fakeSpaceDriver{space: drive.Space{Total: 2 * osutil.GiB, Free: 1536 * osutil.MiB}},
+		Name:        "local",
+		Driver:      fakeSpaceDriver{space: drive.Space{Total: 2 * osutil.GiB, Free: 1536 * osutil.MiB}},
+		TestEnabled: true,
 	}}}
 	server, err := NewServer(socketPath, source)
 	if err != nil {
@@ -393,6 +394,33 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount error, got %v", err)
 	}
+	disabledSource := fakeSnapshotter{drivers: []vfs.NamedDriver{{
+		Name:   "disabled",
+		Driver: fakeSpaceDriver{},
+	}}}
+	disabledSocket := testSocketPath(t)
+	disabledServer, err := NewServer(disabledSocket, disabledSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledCtx, disabledCancel := context.WithCancel(context.Background())
+	defer disabledCancel()
+	if err := disabledServer.Start(disabledCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer disabledServer.Close(context.Background())
+	disabledClient, err := NewClient(disabledSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledClient.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
+		t.Fatalf("expected disabled mount test error, got %v", err)
+	}
+	if _, err := disabledClient.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
+		t.Fatalf("expected disabled mount benchmark error, got %v", err)
+	}
 	benchBody, err := client.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
@@ -411,8 +439,8 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("expected missing mount benchmark error, got %v", err)
 	}
 	xferSource := fakeSnapshotter{drivers: []vfs.NamedDriver{
-		{Name: "local", Driver: newCRUDMemoryDriver()},
-		{Name: "cloud", Driver: newCRUDMemoryDriver()},
+		{Name: "local", Driver: newCRUDMemoryDriver(), TestEnabled: true},
+		{Name: "cloud", Driver: newCRUDMemoryDriver(), TestEnabled: true},
 	}}
 	xferSocket := testSocketPath(t)
 	xferServer, err := NewServer(xferSocket, xferSource)
@@ -444,6 +472,32 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(xferBenchBody), `"dest_mount": "cloud"`) ||
 		!strings.Contains(string(xferBenchBody), `"read_bps"`) {
 		t.Fatalf("unexpected xfer benchmark response: %s", xferBenchBody)
+	}
+	disabledXferSource := fakeSnapshotter{drivers: []vfs.NamedDriver{
+		{Name: "local", Driver: newCRUDMemoryDriver(), TestEnabled: true},
+		{Name: "cloud", Driver: newCRUDMemoryDriver()},
+	}}
+	disabledXferSocket := testSocketPath(t)
+	disabledXferServer, err := NewServer(disabledXferSocket, disabledXferSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledXferCtx, disabledXferCancel := context.WithCancel(context.Background())
+	defer disabledXferCancel()
+	if err := disabledXferServer.Start(disabledXferCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer disabledXferServer.Close(context.Background())
+	disabledXferClient, err := NewClient(disabledXferSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledXferClient.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{
+		Test:   "xfer",
+		Source: "local",
+		Dest:   "cloud",
+	}); err == nil || !strings.Contains(err.Error(), `mount "cloud" is not enabled for debug tests`) {
+		t.Fatalf("expected disabled xfer mount error, got %v", err)
 	}
 	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
 		t.Fatal("expected old driver test endpoint to be unavailable")
@@ -637,7 +691,7 @@ func TestServerFiltersDebugEndpointsByMount(t *testing.T) {
 		Kind:          "namespace",
 		Mounts: []vfs.MountSnapshot{{
 			Identity: vfs.MountSnapshotIdentity{Name: "local", DriverName: "localfs"},
-			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
+			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingUpload{{
 				Path: "/local.txt",
 				FID:  "local",
 				Size: 1,
@@ -648,7 +702,7 @@ func TestServerFiltersDebugEndpointsByMount(t *testing.T) {
 			}}},
 		}, {
 			Identity: vfs.MountSnapshotIdentity{Name: "cloud", DriverName: "quark"},
-			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingFile{{
+			Overlay: vfs.MountSnapshotOverlay{Pending: []vfs.PendingUpload{{
 				Path: "/cloud.txt",
 				FID:  "cloud",
 				Size: 2,

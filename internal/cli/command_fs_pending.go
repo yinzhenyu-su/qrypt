@@ -33,24 +33,27 @@ func runPending(cmd *cobra.Command, args []string) error {
 	if verbose && asJSON {
 		return fmt.Errorf("--verbose and --json cannot be used together")
 	}
+	pending, err := pendingFiles(fs)
+	if err != nil {
+		return err
+	}
 	if asJSON {
-		pending := fs.Pending()
 		if pending == nil {
-			pending = []vfs.PendingFile{}
+			pending = []vfs.PendingUpload{}
 		}
 		return writePrettyJSON(cmd.OutOrStdout(), pending)
 	}
 	if verbose {
-		printPendingVerbose(cmd.OutOrStdout(), fs.Pending())
+		printPendingVerbose(cmd.OutOrStdout(), pending)
 		return nil
 	}
-	for _, pending := range fs.Pending() {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %d %s\n", pending.Path, pending.Size, pending.LocalPath)
+	for _, item := range pending {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %d %s\n", item.Path, item.Size, item.LocalPath)
 	}
 	return nil
 }
 
-func printPendingVerbose(w io.Writer, pending []vfs.PendingFile) {
+func printPendingVerbose(w io.Writer, pending []vfs.PendingUpload) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PATH\tSIZE\tLOCAL\tSTAGING\tRETRY\tLAST_ATTEMPT\tNEXT_ATTEMPT\tLAST_ERROR")
 	for _, item := range pending {

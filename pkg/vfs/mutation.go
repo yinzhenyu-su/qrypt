@@ -2,348 +2,406 @@ package vfs
 
 import (
 	"context"
-	"path/filepath"
-	"time"
-
+	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
-func (v *VFS) markDeleted(path string, entry drive.Entry) {
-	v.deleteMu.Lock()
-	v.deleted[path] = entry
-	delete(v.overlayOps, path)
-	delete(v.restoredDirs, path)
-	v.deleteMu.Unlock()
-
-	v.mu.Lock()
-	delete(v.entries, path)
-	if entry.IsDir {
-		for cachedPath := range v.entries {
-			if isPathUnder(cachedPath, path) {
-				delete(v.entries, cachedPath)
-			}
-		}
-		for cachedPath := range v.lists {
-			if cachedPath == path || isPathUnder(cachedPath, path) {
-				delete(v.lists, cachedPath)
-			}
-		}
-	}
-	v.mu.Unlock()
+func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
+	return v.prepareDirectoryCopyWithRuntime(ctx, path, newVFSDirectoryCopyRuntime(v))
 }
 
-func (v *VFS) restoreDeletedPath(path string) (drive.Entry, bool) {
+func (v *VFS) prepareDirectoryCopyWithRuntime(ctx context.Context, path string, runtime vfsDirectoryCopyRuntime) error {
 	path = cleanVirtual(path)
-	v.deleteMu.Lock()
-	entry, ok := v.deleted[path]
-	if !ok {
-		v.deleteMu.Unlock()
-		return drive.Entry{}, false
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
 	}
-	delete(v.deleted, path)
-	if timer := v.deleteTimers[path]; timer != nil {
-		timer.Stop()
-		delete(v.deleteTimers, path)
-		logging.L.Infof("[VFS] canceled pending delete for restored path=%q id=%q", path, entry.ID)
+	if !entry.IsDir {
+		return fmt.Errorf("vfs: %s is not a directory", path)
 	}
-	if entry.IsDir {
-		v.restoredDirs[path] = time.Now().Add(restoredDirTTL)
-	}
-	v.deleteMu.Unlock()
-
-	v.mu.Lock()
-	v.entries[path] = entry
-	v.invalidateListLocked(filepath.Dir(path))
-	v.mu.Unlock()
-	return entry, true
-}
-
-func (v *VFS) restoreDeletedAncestor(path string) {
-	path = cleanVirtual(path)
-	v.deleteMu.Lock()
-	var restorePath string
-	var entry drive.Entry
-	for deletedPath, deletedEntry := range v.deleted {
-		if deletedEntry.IsDir && (path == deletedPath || isPathUnder(path, deletedPath)) {
-			if restorePath == "" || len(deletedPath) > len(restorePath) {
-				restorePath = deletedPath
-				entry = deletedEntry
+	hideNames := map[string]time.Time{}
+	if entries, err := runtime.ListChildren(ctx, entry.ID); err == nil {
+		expires := time.Now().Add(directoryCopyHideTTL)
+		for _, child := range entries {
+			if !isAppleMetadataName(child.Name) {
+				hideNames[child.Name] = expires
 			}
 		}
 	}
-	if restorePath == "" {
-		v.deleteMu.Unlock()
-		return
+	if err := runtime.CleanupPendingChildren(path); err != nil {
+		return err
 	}
-	delete(v.deleted, restorePath)
-	if timer := v.deleteTimers[restorePath]; timer != nil {
-		timer.Stop()
-		delete(v.deleteTimers, restorePath)
-		logging.L.Infof("[VFS] canceled pending delete for restored ancestor path=%q id=%q requested=%q", restorePath, entry.ID, path)
-	}
-	v.restoredDirs[restorePath] = time.Now().Add(restoredDirTTL)
-	v.deleteMu.Unlock()
-
-	v.mu.Lock()
-	v.entries[restorePath] = entry
-	v.invalidateListLocked(filepath.Dir(restorePath))
-	v.mu.Unlock()
+	runtime.PrepareLocalDirectoryCopy(path, hideNames)
+	return nil
 }
 
-func (v *VFS) cancelDeletedFile(path string) {
+func isAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already exists") ||
+		strings.Contains(text, "file exists") ||
+		strings.Contains(text, "同名冲突") ||
+		strings.Contains(text, "已存在")
+}
+
+func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
+	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v))
+}
+
+func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, runtime mutationRuntime) (entry drive.Entry, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
+	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
+		return drive.Entry{}, err
+	}
 	path = cleanVirtual(path)
-	v.deleteMu.Lock()
-	entry, ok := v.deleted[path]
-	if ok && !entry.IsDir {
-		delete(v.deleted, path)
-		if timer := v.deleteTimers[path]; timer != nil {
-			timer.Stop()
-			delete(v.deleteTimers, path)
-			logging.L.Infof("[VFS] canceled pending delete for recreated file path=%q id=%q", path, entry.ID)
+	if entry, err := v.resolve(ctx, path); err == nil {
+		if entry.IsDir {
+			logging.L.Debugf("[VFS] mkdir skipped existing directory path=%q id=%q", path, entry.ID)
+			return entry, nil
+		}
+		return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
+	}
+	if entry, ok := v.restoreDeletedPath(path); ok {
+		logging.L.InfofEvery("vfs.mkdir_restored_deleted", time.Second, "[VFS] mkdir restored deleted directory path=%q id=%q", path, entry.ID)
+		return entry, nil
+	}
+	v.restoreDeletedAncestor(filepath.Dir(path))
+	if v.isUnderRestoredDir(path) {
+		if entry, err := v.resolve(ctx, path); err == nil && entry.IsDir {
+			logging.L.InfofEvery("vfs.mkdir_reused_restored", time.Second, "[VFS] mkdir reused restored ancestor path=%q id=%q", path, entry.ID)
+			return entry, nil
 		}
 	}
-	v.deleteMu.Unlock()
+	parent, name, err := v.parent(ctx, path)
+	if err != nil {
+		logging.L.Warnf("[VFS] mkdir parent resolve failed path=%q err=%v", path, err)
+		return drive.Entry{}, err
+	}
+	logging.L.InfofEvery("vfs.mkdir_start", time.Second, "[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
+	entry, err = backend.Mkdir(ctx, parent.ID, name)
+	if err != nil {
+		if !isAlreadyExistsError(err) {
+			logging.L.Warnf("[VFS] mkdir failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
+			return drive.Entry{}, err
+		}
+		logging.L.InfofEvery("vfs.mkdir_already_exists", time.Second, "[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
+		entry, err = findExistingChildDir(ctx, backend, runtime, filepath.Dir(path), parent.ID, name)
+		if err != nil {
+			logging.L.Warnf("[VFS] mkdir existing directory resolve failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
+			return drive.Entry{}, err
+		}
+	}
+	runtime.CommitMkdir(path, entry)
+	logging.L.InfofEvery("vfs.mkdir_complete", time.Second, "[VFS] mkdir complete path=%q id=%q parent=%q", path, entry.ID, entry.ParentID)
+	return entry, nil
 }
 
-func (v *VFS) addOverlay(oldPath, newPath, entryID string, recursive bool) {
+func findExistingChildDir(ctx context.Context, backend mutationBackend, runtime mutationRuntime, parentPath, parentID, name string) (drive.Entry, error) {
+	entries, err := backend.List(ctx, parentID)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	runtime.CacheListedChildren(parentPath, entries)
+	for _, child := range entries {
+		if child.Name == name && child.IsDir {
+			return child, nil
+		}
+	}
+	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
+}
+func (v *VFS) Remove(ctx context.Context, path string) (err error) {
+	return v.removeWithRuntime(ctx, path, newVFSRemoveRuntime(v))
+}
+
+func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
+	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
+		return err
+	}
+	path = cleanVirtual(path)
+	if _, err := v.pendingUpload(path); err == nil {
+		unlock := v.lockPath(path)
+		defer unlock()
+		return runtime.RemovePendingUpload(path)
+	}
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
+	}
+	runtime.InvalidateReadCache(entry)
+	runtime.MarkDeleted(path, entry)
+	runtime.ClearLocalModTime(path)
+	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deleteDelay)
+	v.scheduleDelete(path, entry)
+	return nil
+}
+func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
+	return v.removeDirWithRuntime(ctx, path, newVFSRemoveRuntime(v))
+}
+
+func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
+	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
+		return err
+	}
+	path = cleanVirtual(path)
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
+	}
+	if !entry.IsDir {
+		return fmt.Errorf("vfs: %s is not a directory", path)
+	}
+	runtime.InvalidateReadCache(entry)
+	runtime.CancelChildUploads(path)
+	if err := runtime.RemovePendingUploadsUnder(path); err != nil {
+		return err
+	}
+	runtime.CancelChildDeletes(path)
+	runtime.MarkDeleted(path, entry)
+	runtime.ClearLocalModTime(path)
+	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deleteDelay)
+	v.scheduleDelete(path, entry)
+	return nil
+}
+func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
+	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v))
+}
+
+func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutationBackend, runtime mutationRuntime) (err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
+	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "rename"); err != nil {
+		return err
+	}
 	oldPath = cleanVirtual(oldPath)
 	newPath = cleanVirtual(newPath)
-	v.suppressDirPrefetch(oldPath)
-	v.deleteMu.Lock()
-	v.overlayOps[oldPath] = overlayOp{oldPath: oldPath, newPath: newPath, entryID: entryID, isDir: recursive}
-	if recursive {
-		for key, op := range v.overlayOps {
-			if key != oldPath && isPathUnder(op.oldPath, oldPath) {
-				delete(v.overlayOps, key)
-			}
+	if oldPath == "/" || newPath == "/" {
+		return fmt.Errorf("vfs: cannot rename root")
+	}
+
+	if pending, err := v.pendingUpload(oldPath); err == nil {
+		unlockOld := v.lockPath(oldPath)
+		defer unlockOld()
+		parent, name, err := v.parent(ctx, newPath)
+		if err != nil {
+			return err
 		}
-	}
-	v.deleteMu.Unlock()
-}
-
-func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
-	if v.deleteDelay <= 0 {
-		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
-		v.deleteRemote(context.Background(), path, entry)
-		return
-	}
-	v.deleteMu.Lock()
-	if timer := v.deleteTimers[path]; timer != nil {
-		timer.Stop()
-	}
-	v.deleteTimers[path] = time.AfterFunc(v.deleteDelay, func() {
-		v.deleteMu.Lock()
-		delete(v.deleteTimers, path)
-		v.deleteMu.Unlock()
-		logging.L.Infof("[VFS] delete timer fired path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
-		v.deleteRemote(context.Background(), path, entry)
-	})
-	v.deleteMu.Unlock()
-}
-
-func (v *VFS) cancelChildDeletes(dir string) {
-	dir = cleanVirtual(dir)
-	v.deleteMu.Lock()
-	for path, timer := range v.deleteTimers {
-		if isPathUnder(path, dir) {
-			timer.Stop()
-			delete(v.deleteTimers, path)
-			delete(v.deleted, path)
+		pending.Path = newPath
+		pending.ParentID = parent.ID
+		pending.Name = name
+		if err := runtime.RenamePendingUpload(oldPath, newPath, pending); err != nil {
+			return err
 		}
+		return nil
 	}
-	v.deleteMu.Unlock()
-}
 
-func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) {
-	v.deleteMu.Lock()
-	current, ok := v.deleted[path]
-	if !ok || current.ID != entry.ID {
-		v.deleteMu.Unlock()
-		logging.L.Infof("[VFS] delete remote skipped path=%q id=%q current_ok=%t current_id=%q", path, entry.ID, ok, current.ID)
-		return
-	}
-	v.deleteMu.Unlock()
-	err := v.driver.Remove(ctx, entry)
-	v.healthTracker.RecordResult(drive.HealthOpDelete, err)
+	entry, err := v.resolve(ctx, oldPath)
 	if err != nil {
-		logging.L.Warnf("[VFS] delete remote failed path=%q id=%q dir=%t err=%v", path, entry.ID, entry.IsDir, err)
-		return
+		return err
 	}
-	logging.L.Infof("[VFS] delete remote complete path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
-	v.deleteMu.Lock()
-	delete(v.deleted, path)
-	delete(v.restoredDirs, path)
-	v.deleteMu.Unlock()
-
-	v.mu.Lock()
-	v.invalidateListLocked(filepath.Dir(path))
-	v.mu.Unlock()
-
-	_ = v.cache.RemovePending(path)
-}
-
-func (v *VFS) stopDeleteTimers() {
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	for path, timer := range v.deleteTimers {
-		timer.Stop()
-		delete(v.deleteTimers, path)
+	runtime.InvalidateReadCache(entry)
+	dstParent, newName, err := v.parent(ctx, newPath)
+	if err != nil {
+		return err
 	}
-}
-
-func (v *VFS) isUnavailable(path string) bool {
-	return v.isDeleted(path) || v.isHidden(path) || v.isCopyHidden(path)
-}
-
-func (v *VFS) isDeleted(path string) bool {
-	path = cleanVirtual(path)
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	for deletedPath, entry := range v.deleted {
-		if path == deletedPath || (entry.IsDir && isPathUnder(path, deletedPath)) {
-			return true
+	oldParent := filepath.Dir(oldPath)
+	newParent := filepath.Dir(newPath)
+	if filepath.Base(oldPath) != newName {
+		if err := backend.Rename(ctx, entry, newName); err != nil {
+			return err
 		}
+		entry.Name = newName
 	}
-	return false
+	if oldParent != newParent {
+		if err := backend.Move(ctx, entry, dstParent.ID); err != nil {
+			return err
+		}
+		entry.ParentID = dstParent.ID
+	}
+	entry.Name = newName
+	entry.ParentID = dstParent.ID
+	runtime.CommitRemoteRename(oldPath, newPath, entry)
+	return nil
 }
 
-func (v *VFS) isHidden(path string) bool {
-	path = cleanVirtual(path)
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	for _, op := range v.overlayOps {
-		if path == op.oldPath || (op.isDir && isPathUnder(path, op.oldPath)) {
-			return true
-		}
-	}
-	return false
+type mutationBackend interface {
+	List(ctx context.Context, parentID string) ([]drive.Entry, error)
+	Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error)
+	Rename(ctx context.Context, entry drive.Entry, newName string) error
+	Move(ctx context.Context, entry drive.Entry, dstParentID string) error
 }
 
-func (v *VFS) isUnderRestoredDir(path string) bool {
-	path = cleanVirtual(path)
-	now := time.Now()
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	for restoredPath, expires := range v.restoredDirs {
-		if now.After(expires) {
-			delete(v.restoredDirs, restoredPath)
-			continue
-		}
-		if path == restoredPath || isPathUnder(path, restoredPath) {
-			return true
-		}
-	}
-	return false
+type driverMutationBackend struct {
+	driver drive.Driver
 }
 
-func (v *VFS) setCopyHidden(dir string, names map[string]time.Time) {
-	dir = cleanVirtual(dir)
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	if len(names) == 0 {
-		delete(v.copyHidden, dir)
-		return
-	}
-	v.copyHidden[dir] = names
+func newDriverMutationBackend(driver drive.Driver) driverMutationBackend {
+	return driverMutationBackend{driver: driver}
 }
 
-func (v *VFS) unhideCopyChild(parentPath, name string) {
-	parentPath = cleanVirtual(parentPath)
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	if names := v.copyHidden[parentPath]; names != nil {
-		delete(names, name)
-		if len(names) == 0 {
-			delete(v.copyHidden, parentPath)
-		}
+func (b driverMutationBackend) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	return b.driver.List(ctx, parentID)
+}
+
+func (b driverMutationBackend) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	return b.driver.Mkdir(ctx, parentID, name)
+}
+
+func (b driverMutationBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+	return b.driver.Rename(ctx, entry, newName)
+}
+
+func (b driverMutationBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+	return b.driver.Move(ctx, entry, dstParentID)
+}
+
+type mutationRuntime interface {
+	CacheListedChildren(parentPath string, entries []drive.Entry)
+	CommitMkdir(path string, entry drive.Entry)
+	CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry
+	InvalidateReadCache(entry drive.Entry)
+	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
+}
+
+type vfsMutationRuntime struct {
+	v *VFS
+}
+
+func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
+	return vfsMutationRuntime{v: v}
+}
+
+func (r vfsMutationRuntime) CacheListedChildren(parentPath string, entries []drive.Entry) {
+	r.v.view.mu.Lock()
+	defer r.v.view.mu.Unlock()
+	for _, child := range entries {
+		r.v.view.entries[joinVirtual(parentPath, child.Name)] = child
 	}
 }
 
-func (v *VFS) isCopyHidden(path string) bool {
-	path = cleanVirtual(path)
-	parentPath := filepath.Dir(path)
-	name := filepath.Base(path)
-	now := time.Now()
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	names := v.copyHidden[parentPath]
-	if len(names) == 0 {
-		delete(v.copyHidden, parentPath)
-		return false
-	}
-	expires, ok := names[name]
-	if !ok {
-		return false
-	}
-	if now.After(expires) {
-		delete(names, name)
-		if len(names) == 0 {
-			delete(v.copyHidden, parentPath)
-		}
-		return false
-	}
-	return true
+func (r vfsMutationRuntime) CommitMkdir(path string, entry drive.Entry) {
+	r.v.view.mu.Lock()
+	r.v.view.entries[path] = entry
+	r.v.markLocalDirLocked(path)
+	r.v.invalidateListLocked(filepath.Dir(path))
+	r.v.view.mu.Unlock()
 }
 
-func (v *VFS) updateOverlay(parentPath string, entries []drive.Entry) {
-	parentPath = cleanVirtual(parentPath)
-	v.deleteMu.Lock()
-	defer v.deleteMu.Unlock()
-	for key, op := range v.overlayOps {
-		if filepath.Dir(op.oldPath) == parentPath {
-			op.oldGone = !entryListHasPath(entries, filepath.Base(op.oldPath), op.entryID)
-		}
-		if filepath.Dir(op.newPath) == parentPath {
-			op.newSeen = entryListHasPath(entries, filepath.Base(op.newPath), op.entryID)
-		}
-		if op.oldGone && op.newSeen {
-			delete(v.overlayOps, key)
-			continue
-		}
-		v.overlayOps[key] = op
-	}
+func (r vfsMutationRuntime) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry {
+	oldParent := filepath.Dir(oldPath)
+	newParent := filepath.Dir(newPath)
+	r.v.view.mu.Lock()
+	delete(r.v.view.entries, oldPath)
+	delete(r.v.view.entries, newPath)
+	r.v.rebaseCachedPathsLocked(oldPath, newPath)
+	r.v.moveLocalModTimeLocked(oldPath, newPath)
+	r.v.invalidateListLocked(oldParent)
+	r.v.invalidateListLocked(newParent)
+	entry = r.v.applyLocalModTimeLocked(newPath, entry)
+	r.v.view.entries[newPath] = entry
+	r.v.view.mu.Unlock()
+	r.v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
+	return entry
 }
 
-func (v *VFS) filterDeleted(parentPath string, entries []drive.Entry) []drive.Entry {
-	entries = cloneEntries(entries)
-	filtered := entries[:0]
-	for _, entry := range entries {
-		if v.isUnavailable(joinVirtual(parentPath, entry.Name)) {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	return filtered
+func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
+	r.v.invalidateReadCache(entry)
 }
 
-func (v *VFS) localChildren(parentPath string, entries []drive.Entry) []drive.Entry {
-	parentPath = cleanVirtual(parentPath)
-	seen := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		seen[entry.Name] = true
+func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
+	r.v.moveLocalModTime(oldPath, newPath)
+	if err := r.v.uploads.RenameUpload(oldPath, pending); err != nil {
+		return err
 	}
-	var local []struct {
-		path  string
-		entry drive.Entry
+	r.v.uploadHashes.renamePath(oldPath, newPath, pending)
+	return nil
+}
+
+type vfsRemoveRuntime struct {
+	v *VFS
+}
+
+func newVFSRemoveRuntime(v *VFS) vfsRemoveRuntime {
+	return vfsRemoveRuntime{v: v}
+}
+
+func (r vfsRemoveRuntime) InvalidateReadCache(entry drive.Entry) {
+	r.v.invalidateReadCache(entry)
+}
+
+func (r vfsRemoveRuntime) RemovePendingUpload(path string) error {
+	r.v.cancelUpload(path)
+	r.v.clearLocalModTime(path)
+	if err := r.v.uploads.RemoveUpload(path); err != nil {
+		return err
 	}
-	v.mu.RLock()
-	for path, entry := range v.entries {
-		if path == "/" || filepath.Dir(path) != parentPath || seen[entry.Name] {
-			continue
+	r.v.uploadHashes.removePath(path)
+	return nil
+}
+
+func (r vfsRemoveRuntime) RemovePendingUploadsUnder(path string) error {
+	if err := r.v.uploads.RemoveUploadsUnder(path); err != nil {
+		return err
+	}
+	r.v.uploadHashes.removeUnder(path)
+	return nil
+}
+
+func (r vfsRemoveRuntime) MarkDeleted(path string, entry drive.Entry) {
+	r.v.markDeleted(path, entry)
+}
+
+func (r vfsRemoveRuntime) ClearLocalModTime(path string) {
+	r.v.clearLocalModTime(path)
+}
+
+func (r vfsRemoveRuntime) CancelChildUploads(path string) {
+	r.v.cancelChildUploads(path)
+}
+
+func (r vfsRemoveRuntime) CancelChildDeletes(path string) {
+	r.v.cancelChildDeletes(path)
+}
+
+type vfsDirectoryCopyRuntime struct {
+	v *VFS
+}
+
+func newVFSDirectoryCopyRuntime(v *VFS) vfsDirectoryCopyRuntime {
+	return vfsDirectoryCopyRuntime{v: v}
+}
+
+func (r vfsDirectoryCopyRuntime) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	return newVFSDriverRuntime(r.v).List(ctx, parentID)
+}
+
+func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
+	r.v.cancelChildUploads(path)
+	if err := r.v.uploads.RemoveUploadsUnder(path); err != nil {
+		return err
+	}
+	r.v.uploadHashes.removeUnder(path)
+	return nil
+}
+
+func (r vfsDirectoryCopyRuntime) PrepareLocalDirectoryCopy(path string, hideNames map[string]time.Time) {
+	r.v.view.mu.Lock()
+	for cachedPath, cachedEntry := range r.v.view.entries {
+		if filepath.Dir(cachedPath) == path {
+			if _, ok := hideNames[cachedEntry.Name]; !ok && !isAppleMetadataName(cachedEntry.Name) {
+				hideNames[cachedEntry.Name] = time.Now().Add(directoryCopyHideTTL)
+			}
+			delete(r.v.view.entries, cachedPath)
 		}
-		local = append(local, struct {
-			path  string
-			entry drive.Entry
-		}{path: path, entry: entry})
 	}
-	v.mu.RUnlock()
-	for _, item := range local {
-		if seen[item.entry.Name] || v.isUnavailable(item.path) {
-			continue
-		}
-		entries = append(entries, item.entry)
-		seen[item.entry.Name] = true
-	}
-	return entries
+	r.v.markLocalDirLocked(path)
+	r.v.invalidateListLocked(path)
+	r.v.view.mu.Unlock()
+	r.v.setCopyHidden(path, hideNames)
 }

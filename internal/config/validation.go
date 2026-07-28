@@ -108,15 +108,30 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("config: mount %q invalid read_cache.max_size: %w", mountCfg.Name, err)
 			}
 		}
-		writeback := cfg.WritebackFor(mountCfg.Name)
-		if _, err := ParseDuration(writeback.UploadDelay); err != nil {
-			return fmt.Errorf("config: mount %q invalid writeback.upload_delay: %w", mountCfg.Name, err)
+		upload := cfg.UploadFor(mountCfg.Name)
+		if _, err := ParseDuration(upload.UploadDelay); err != nil {
+			return fmt.Errorf("config: mount %q invalid upload.upload_delay: %w", mountCfg.Name, err)
 		}
-		if _, err := ParseDuration(writeback.DeleteDelay); err != nil {
-			return fmt.Errorf("config: mount %q invalid writeback.delete_delay: %w", mountCfg.Name, err)
+		if _, err := ParseDuration(upload.DeleteDelay); err != nil {
+			return fmt.Errorf("config: mount %q invalid upload.delete_delay: %w", mountCfg.Name, err)
 		}
-		if writeback.UploadWorkers < 0 {
-			return fmt.Errorf("config: mount %q invalid writeback.upload_workers: must be non-negative", mountCfg.Name)
+		if upload.UploadWorkers < 0 {
+			return fmt.Errorf("config: mount %q invalid upload.upload_workers: must be non-negative", mountCfg.Name)
+		}
+		if mountCfg.Upload != nil && (strings.TrimSpace(mountCfg.Upload.DefaultMount) != "" || strings.TrimSpace(mountCfg.Upload.DefaultPath) != "") {
+			return fmt.Errorf("config: mount %q upload.default_mount and upload.default_path are only supported in top-level [upload]", mountCfg.Name)
+		}
+	}
+	if strings.TrimSpace(cfg.Upload.DefaultMount) == "" {
+		if strings.TrimSpace(cfg.Upload.DefaultPath) != "" {
+			return fmt.Errorf("config: upload.default_path requires upload.default_mount")
+		}
+	} else {
+		if !seenMounts[cfg.Upload.DefaultMount] {
+			return fmt.Errorf("config: upload.default_mount %q does not match any mount", cfg.Upload.DefaultMount)
+		}
+		if cfg.Upload.DefaultPath != "" && !strings.HasPrefix(cfg.Upload.DefaultPath, "/") {
+			return fmt.Errorf("config: upload.default_path must be absolute")
 		}
 	}
 	return nil

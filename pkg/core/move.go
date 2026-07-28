@@ -16,18 +16,15 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-type MoveTaskRequest struct {
-	SourcePath string `json:"source_path"`
-	DestPath   string `json:"dest_path"`
-	Overwrite  bool   `json:"overwrite,omitempty"`
-	Recursive  bool   `json:"recursive,omitempty"`
+type moveTaskSpec struct {
+	SourcePath  string `json:"source_path"`
+	DestPath    string `json:"dest_path"`
+	Overwrite   bool   `json:"overwrite,omitempty"`
+	Recursive   bool   `json:"recursive,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
 }
 
-type taskRecord struct {
-	task task.Task
-}
-
-func (c *Core) CreateMoveTask(ctx context.Context, req MoveTaskRequest) (task.Task, error) {
+func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task, error) {
 	if c == nil || c.fs == nil {
 		return task.Task{}, fmt.Errorf("core: closed")
 	}
@@ -47,18 +44,21 @@ func (c *Core) CreateMoveTask(ctx context.Context, req MoveTaskRequest) (task.Ta
 	item := task.Task{
 		ID:        newMoveTaskID(),
 		Type:      task.TypeMoveRemote,
-		State:     task.StateRunning,
+		State:     task.StateQueued,
 		Scope:     task.ScopeUser,
 		Path:      req.SourcePath,
 		Name:      path.Base(req.SourcePath),
 		CreatedAt: now,
-		StartedAt: now,
 		UpdatedAt: now,
+		Capabilities: task.Capabilities{
+			Cancelable: true,
+		},
 		Detail: map[string]any{
 			"source_path": req.SourcePath,
 			"dest_path":   req.DestPath,
 			"overwrite":   req.Overwrite,
 			"recursive":   req.Recursive,
+			"concurrency": taskConcurrency(req.Concurrency),
 		},
 	}
 
@@ -70,64 +70,60 @@ func (c *Core) CreateMoveTask(ctx context.Context, req MoveTaskRequest) (task.Ta
 	if destMount != "" {
 		item.Detail["dest_mount"] = destMount
 	}
-
-	var err error
+	var crossCopySpec copyTaskSpec
 	if crossQryptMount {
-		item.Detail["mode"] = "copy_delete"
-		err = c.runCrossMountMove(ctx, req, &item)
-	} else {
-		item.Detail["mode"] = "server_move"
-		err = c.fs.Rename(ctx, req.SourcePath, req.DestPath)
+		crossCopySpec = copyTaskSpec{
+			Items:                 []task.Item{{SourcePath: req.SourcePath, DestPath: req.DestPath}},
+			OriginalItems:         []task.Item{{SourcePath: req.SourcePath, DestPath: req.DestPath}},
+			Overwrite:             req.Overwrite,
+			Recursive:             req.Recursive,
+			Concurrency:           taskConcurrency(req.Concurrency),
+			DeleteSourceAfterCopy: true,
+		}
+		var err error
+		crossCopySpec, err = c.expandCopyTask(ctx, crossCopySpec)
+		if err != nil {
+			return task.Task{}, err
+		}
+		item.Progress.ItemsTotal = int64(len(crossCopySpec.Items))
+		item.Detail["items"] = copyTaskDetailItems(crossCopySpec.Items)
+		item.Capabilities.Persistent = true
+		item.Capabilities.Dismissible = true
 	}
-	c.finishMoveTask(&item, err)
-	c.recordMoveTask(item)
-	return item, nil
-}
 
-func (c *Core) runCrossMountMove(ctx context.Context, req MoveTaskRequest, item *task.Task) error {
-	entry, err := c.fs.Stat(ctx, req.SourcePath)
+	manager, err := c.taskManager()
 	if err != nil {
-		item.Detail["phase"] = "stat_source"
-		return err
+		return task.Task{}, err
 	}
-	if entry.IsDir && !req.Recursive {
-		item.Detail["phase"] = "validate_source"
-		return fmt.Errorf("core: source %q is a directory; recursive move is required", req.SourcePath)
-	}
-	source, ok := c.fs.(control.DriverCopySource)
-	if !ok {
-		item.Detail["phase"] = "validate_source"
-		return fmt.Errorf("core: cross-mount move requires driver copy support")
-	}
-	if entry.IsDir {
-		if path.Base(req.SourcePath) != path.Base(req.DestPath) {
-			item.Detail["phase"] = "validate_dest"
-			return fmt.Errorf("core: recursive cross-mount move currently requires destination name %q", path.Base(req.SourcePath))
+	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+		runItem := item
+		runItem.Detail = cloneTaskDetail(item.Detail)
+		var err error
+		if crossQryptMount {
+			update(func(item *task.Task) {
+				item.Detail["mode"] = "copy_delete"
+				item.Detail["phase"] = "copy"
+			})
+			return c.runCopyTask(runCtx, update, crossCopySpec)
+		} else {
+			update(func(item *task.Task) {
+				item.Detail["mode"] = "server_move"
+				item.Detail["phase"] = "move"
+			})
+			runItem.Detail["mode"] = "server_move"
+			runItem.Detail["phase"] = "move"
+			err = c.fs.Rename(runCtx, req.SourcePath, req.DestPath)
 		}
-		result := control.RunDirectDriverCopyDir(ctx, c.fs, source, req.SourcePath, path.Dir(req.DestPath), req.Overwrite)
-		item.Detail["copy_op_id"] = result.OpID
-		item.BytesTotal = result.Bytes
-		item.BytesDone = result.Bytes
-		if !result.Pass {
-			item.Detail["phase"] = "copy"
-			if result.Error != "" {
-				return fmt.Errorf("%s", result.Error)
+		update(func(item *task.Task) {
+			item.Progress.TransferBytesTotal = runItem.Progress.TransferBytesTotal
+			item.Progress.TransferBytesDone = runItem.Progress.TransferBytesDone
+			item.Detail = cloneTaskDetail(runItem.Detail)
+			if err == nil {
+				item.Detail["phase"] = "complete"
 			}
-			return fmt.Errorf("core: directory copy failed")
-		}
-	} else {
-		result := control.RunDirectDriverCopy(ctx, source, req.SourcePath, req.DestPath, req.Overwrite)
-		item.Detail["copy_op_id"] = result.OpID
-		item.BytesTotal = result.Bytes
-		item.BytesDone = result.Bytes
-		if !result.Pass {
-			item.Detail["phase"] = "copy"
-			return fmt.Errorf("%s", control.DriverCopyError(result))
-		}
-	}
-
-	item.Detail["phase"] = "delete_source"
-	return removeMoveSource(ctx, source, req.SourcePath, entry.IsDir)
+		})
+		return err
+	}), nil
 }
 
 func removeMoveSource(ctx context.Context, source control.DriverCopySource, sourcePath string, isDir bool) error {
@@ -157,55 +153,6 @@ func removeMoveSource(ctx context.Context, source control.DriverCopySource, sour
 	})
 }
 
-func (c *Core) finishMoveTask(item *task.Task, err error) {
-	now := timeutil.Now()
-	item.UpdatedAt = now
-	item.CompletedAt = now
-	item.Cancelable = false
-	item.Retryable = false
-	if err != nil {
-		item.State = task.StateFailed
-		item.LastError = err.Error()
-		if _, ok := item.Detail["phase"]; !ok {
-			item.Detail["phase"] = "move"
-		}
-		return
-	}
-	item.State = task.StateSucceeded
-	item.Detail["phase"] = "complete"
-}
-
-func (c *Core) recordMoveTask(item task.Task) {
-	c.taskMu.Lock()
-	defer c.taskMu.Unlock()
-	if c.moveTasks == nil {
-		c.moveTasks = map[string]taskRecord{}
-	}
-	c.moveTasks[item.ID] = taskRecord{task: item}
-}
-
-func (c *Core) moveTaskSnapshot(filter task.Filter) []task.Task {
-	c.taskMu.Lock()
-	defer c.taskMu.Unlock()
-	if len(c.moveTasks) == 0 {
-		return nil
-	}
-	tasks := make([]task.Task, 0, len(c.moveTasks))
-	for _, record := range c.moveTasks {
-		if filter.Match(record.task) {
-			tasks = append(tasks, record.task)
-		}
-	}
-	return tasks
-}
-
-func (c *Core) hasMoveTask(id string) bool {
-	c.taskMu.Lock()
-	defer c.taskMu.Unlock()
-	_, ok := c.moveTasks[id]
-	return ok
-}
-
 func moveMounts(sourcePath, destPath string, fs vfs.FileSystem) (string, string, bool) {
 	if _, ok := fs.(*vfs.Namespace); !ok {
 		return "", "", false
@@ -216,6 +163,17 @@ func moveMounts(sourcePath, destPath string, fs vfs.FileSystem) (string, string,
 		return sourceMount, destMount, false
 	}
 	return sourceMount, destMount, sourceMount != "" && destMount != "" && sourceMount != destMount
+}
+
+func cloneTaskDetail(detail map[string]any) map[string]any {
+	if detail == nil {
+		return nil
+	}
+	clone := make(map[string]any, len(detail))
+	for key, value := range detail {
+		clone[key] = value
+	}
+	return clone
 }
 
 func splitMoveNamespacePath(p string) (string, string, bool) {

@@ -16,6 +16,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -28,16 +29,20 @@ type Options struct {
 }
 
 type Core struct {
-	fs            vfs.FileSystem
-	cleanup       func()
-	runtimeLayout RuntimeLayout
-	readCacheDir  string
-	thumbnailDir  string
-	thumbnailMax  int64
-	writebackDir  string
-	debugServer   *control.Server
-	taskMu        sync.Mutex
-	moveTasks     map[string]taskRecord
+	fs                 vfs.FileSystem
+	cleanup            func()
+	runtimeLayout      RuntimeLayout
+	readCacheDir       string
+	thumbnailDir       string
+	thumbnailMax       int64
+	uploadDir          string
+	defaultUploadMount string
+	defaultUploadPath  string
+	debugServer        *control.Server
+	tasks              *task.Manager
+	streamsMu          sync.Mutex
+	downloadStreams    map[string]*downloadStreamBatch
+	uploadStreams      map[string]*uploadStreamBatch
 }
 
 type RuntimeLayout struct {
@@ -45,7 +50,7 @@ type RuntimeLayout struct {
 	ConfigDir    string
 	ReadCacheDir string
 	ThumbnailDir string
-	WritebackDir string
+	UploadDir    string
 	StateDir     string
 	DriverDir    string
 	LogDir       string
@@ -72,7 +77,8 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 		return nil, err
 	}
 	fs.Start(ctx)
-	c := &Core{fs: fs, cleanup: cleanup, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), writebackDir: runtime.WritebackDir}
+	c := &Core{fs: fs, cleanup: cleanup, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath}
+	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
 			c.Close(context.Background())
@@ -168,6 +174,9 @@ func (c *Core) Close(ctx context.Context) error {
 	if c == nil || c.cleanup == nil {
 		return nil
 	}
+	if c.tasks != nil {
+		c.tasks.Close()
+	}
 	_ = c.StopDebugServer(ctx)
 	c.cleanup()
 	c.cleanup = nil
@@ -217,8 +226,8 @@ func DefaultCacheDir() string {
 	return osutil.ExpandHome("~/.qrypt/qrypt-cache")
 }
 
-func DefaultWritebackDir() string {
-	return osutil.ExpandHome("~/.qrypt/qrypt-writeback")
+func DefaultUploadDir() string {
+	return osutil.ExpandHome("~/.qrypt/qrypt-upload")
 }
 
 func DefaultStateDir() string {
@@ -238,9 +247,9 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 	if thumbnailDir == "" {
 		thumbnailDir = filepath.Join(DefaultCacheDir(), "thumbnail")
 	}
-	writebackDir := osutil.ExpandHome(storage.WritebackDir)
-	if writebackDir == "" {
-		writebackDir = DefaultWritebackDir()
+	uploadDir := osutil.ExpandHome(storage.UploadDir)
+	if uploadDir == "" {
+		uploadDir = DefaultUploadDir()
 	}
 	stateDir := osutil.ExpandHome(storage.StateDir)
 	if stateDir == "" {
@@ -251,7 +260,7 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 	layout := RuntimeLayout{
 		ReadCacheDir: readCacheDir,
 		ThumbnailDir: thumbnailDir,
-		WritebackDir: writebackDir,
+		UploadDir:    uploadDir,
 		StateDir:     stateDir,
 		DriverDir:    filepath.Join(stateDir, "driver"),
 		LogDir:       logDir,
@@ -273,8 +282,8 @@ func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 	if override.ThumbnailDir != "" {
 		base.ThumbnailDir = osutil.ExpandHome(override.ThumbnailDir)
 	}
-	if override.WritebackDir != "" {
-		base.WritebackDir = osutil.ExpandHome(override.WritebackDir)
+	if override.UploadDir != "" {
+		base.UploadDir = osutil.ExpandHome(override.UploadDir)
 	}
 	if override.StateDir != "" {
 		base.StateDir = osutil.ExpandHome(override.StateDir)
@@ -294,7 +303,7 @@ func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 }
 
 func ensureRuntimeLayout(layout RuntimeLayout) error {
-	for _, dir := range []string{layout.ConfigDir, layout.ReadCacheDir, layout.ThumbnailDir, layout.WritebackDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
+	for _, dir := range []string{layout.ConfigDir, layout.ReadCacheDir, layout.ThumbnailDir, layout.UploadDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
 		if dir == "" {
 			continue
 		}
@@ -317,9 +326,9 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 			params[key] = value
 		}
 		readCache := cfg.ReadCacheFor(mountCfg.Name)
-		writeback := cfg.WritebackFor(mountCfg.Name)
+		upload := cfg.UploadFor(mountCfg.Name)
 		mountReadCacheDir := filepath.Join(layout.ReadCacheDir, mountCfg.Name)
-		mountWritebackDir := filepath.Join(layout.WritebackDir, mountCfg.Name)
+		mountUploadDir := filepath.Join(layout.UploadDir, mountCfg.Name)
 		stateDir := driverStateDir(layout, mountCfg.Name)
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
 			dropAll(ctx, drivers)
@@ -359,29 +368,30 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		if maxBytes == 0 {
 			maxBytes = 512 << 20
 		}
-		uploadDelay, err := config.ParseDuration(writeback.UploadDelay)
+		uploadDelay, err := config.ParseDuration(upload.UploadDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid writeback.upload_delay: %w", mountCfg.Name, err)
+			return nil, nil, fmt.Errorf("config: mount %s invalid upload.upload_delay: %w", mountCfg.Name, err)
 		}
-		deleteDelay, err := config.ParseDuration(writeback.DeleteDelay)
+		deleteDelay, err := config.ParseDuration(upload.DeleteDelay)
 		if err != nil {
 			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid writeback.delete_delay: %w", mountCfg.Name, err)
+			return nil, nil, fmt.Errorf("config: mount %s invalid upload.delete_delay: %w", mountCfg.Name, err)
 		}
-		if writeback.UploadWorkers < 0 {
+		if upload.UploadWorkers < 0 {
 			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid writeback.upload_workers: must be non-negative", mountCfg.Name)
+			return nil, nil, fmt.Errorf("config: mount %s invalid upload.upload_workers: must be non-negative", mountCfg.Name)
 		}
 		fs, err := vfs.New(drv, vfs.Options{
 			Name:          mountCfg.Name,
 			ReadCacheDir:  mountReadCacheDir,
-			WritebackDir:  mountWritebackDir,
+			UploadDir:     mountUploadDir,
 			CacheMaxBytes: maxBytes,
 			RootID:        rootID,
 			Encrypted:     enc.Password != "",
+			TestEnabled:   mountCfg.TestEnabled,
 			UploadDelay:   uploadDelay,
-			UploadWorkers: writeback.UploadWorkers,
+			UploadWorkers: upload.UploadWorkers,
 			DeleteDelay:   deleteDelay,
 		})
 		if err != nil {
@@ -452,7 +462,7 @@ func initRuntimeLogger(cfg *config.Config, layout RuntimeLayout) error {
 	if err != nil {
 		return fmt.Errorf("initialize runtime logging: %w", err)
 	}
-	logging.L = newLogger
+	logging.ReplaceDefault(newLogger)
 	logging.L.Infof("[CORE] runtime logging initialized")
 	return nil
 }

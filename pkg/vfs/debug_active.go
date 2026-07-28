@@ -3,12 +3,10 @@ package vfs
 import (
 	"context"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 )
 
 type DebugActiveOp struct {
@@ -41,46 +39,16 @@ type DebugActiveProvider interface {
 	DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugActiveMount, error)
 }
 
-func (v *VFS) beginDebugActive(op DebugActiveOp) string {
-	if op.OpID == "" {
-		op.OpID = fmt.Sprintf("active-%d", atomic.AddUint64(&v.activeSequence, 1))
-	}
-	if op.Mount == "" {
-		op.Mount = v.name
-	}
-	if op.State == "" {
-		op.State = "active"
-	}
-	now := timeutil.Now()
-	op.StartedAt = now
-	op.UpdatedAt = now
-	v.activeMu.Lock()
-	v.activeOps[op.OpID] = cloneDebugActiveOp(op)
-	v.activeMu.Unlock()
-	return op.OpID
+func (v *VFS) beginDebugActive(op DebugActiveOp) uint64 {
+	return newVFSDebugActiveRuntime(v).Begin(op)
 }
 
-func (v *VFS) updateDebugActive(opID string, fn func(*DebugActiveOp)) {
-	if opID == "" {
-		return
-	}
-	v.activeMu.Lock()
-	op, ok := v.activeOps[opID]
-	if ok {
-		fn(&op)
-		op.UpdatedAt = timeutil.Now()
-		v.activeOps[opID] = cloneDebugActiveOp(op)
-	}
-	v.activeMu.Unlock()
+func (v *VFS) updateDebugActive(opID uint64, fn func(*DebugActiveOp)) {
+	newVFSDebugActiveRuntime(v).Update(opID, fn)
 }
 
-func (v *VFS) finishDebugActive(opID string) {
-	if opID == "" {
-		return
-	}
-	v.activeMu.Lock()
-	delete(v.activeOps, opID)
-	v.activeMu.Unlock()
+func (v *VFS) finishDebugActive(opID uint64) {
+	newVFSDebugActiveRuntime(v).Finish(opID)
 }
 
 func (v *VFS) DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugActiveMount, error) {
@@ -96,15 +64,7 @@ func (v *VFS) DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugA
 }
 
 func (v *VFS) debugActiveOps() []DebugActiveOp {
-	now := timeutil.Now()
-	v.activeMu.Lock()
-	ops := make([]DebugActiveOp, 0, len(v.activeOps))
-	for _, op := range v.activeOps {
-		item := cloneDebugActiveOp(op)
-		item.AgeMS = durationMillis(now.Sub(item.StartedAt))
-		ops = append(ops, item)
-	}
-	v.activeMu.Unlock()
+	ops := newVFSDebugActiveRuntime(v).Snapshot()
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].StartedAt.Equal(ops[j].StartedAt) {
 			return ops[i].OpID < ops[j].OpID
@@ -164,4 +124,93 @@ func debugActiveMountAllowed(mountName string, mountNames []string) bool {
 		}
 	}
 	return false
+}
+
+type vfsDebugActiveRuntime struct {
+	v *VFS
+}
+
+func newVFSDebugActiveRuntime(v *VFS) vfsDebugActiveRuntime {
+	return vfsDebugActiveRuntime{v: v}
+}
+
+func (r vfsDebugActiveRuntime) Begin(op DebugActiveOp) uint64 {
+	if op.OpID == "" {
+		op.OpID = fmt.Sprintf("active-%d", r.v.activeDebug.sequence.Add(1))
+	}
+	if op.Mount == "" {
+		op.Mount = r.v.name
+	}
+	if op.State == "" {
+		op.State = "active"
+	}
+	now := timeutil.Now()
+	op.StartedAt = now
+	op.UpdatedAt = now
+	// Linear probe for a free slot. Active ops are short-lived, so an empty
+	// slot is almost always found on the first try; no per-op allocation and
+	// no shared mutex.
+	state := r.v.activeDebug
+	for i := 0; i < debugActiveSlots; i++ {
+		seq := state.sequence.Add(1)
+		slot := &state.slots[seq%debugActiveSlots]
+		slot.mu.Lock()
+		if slot.seq.Load() == 0 {
+			slot.op = op
+			slot.seq.Store(seq)
+			slot.mu.Unlock()
+			return seq
+		}
+		slot.mu.Unlock()
+	}
+	// All slots busy: tracking is skipped for this op (no data loss for
+	// existing ops; the new op is transient).
+	return 0
+}
+
+func (r vfsDebugActiveRuntime) Update(opID uint64, fn func(*DebugActiveOp)) {
+	if opID == 0 {
+		return
+	}
+	slot := &r.v.activeDebug.slots[opID%debugActiveSlots]
+	if slot.seq.Load() != opID {
+		return
+	}
+	slot.mu.Lock()
+	if slot.seq.Load() == opID {
+		fn(&slot.op)
+		slot.op.UpdatedAt = timeutil.Now()
+	}
+	slot.mu.Unlock()
+}
+
+func (r vfsDebugActiveRuntime) Finish(opID uint64) {
+	if opID == 0 {
+		return
+	}
+	slot := &r.v.activeDebug.slots[opID%debugActiveSlots]
+	slot.mu.Lock()
+	if slot.seq.Load() == opID {
+		slot.op = DebugActiveOp{}
+		slot.seq.Store(0)
+	}
+	slot.mu.Unlock()
+}
+
+func (r vfsDebugActiveRuntime) Snapshot() []DebugActiveOp {
+	now := timeutil.Now()
+	state := r.v.activeDebug
+	ops := make([]DebugActiveOp, 0, debugActiveSlots)
+	for i := range state.slots {
+		slot := &state.slots[i]
+		if slot.seq.Load() == 0 {
+			continue
+		}
+		slot.mu.RLock()
+		item := cloneDebugActiveOp(slot.op)
+		slot.mu.RUnlock()
+		item.AgeMS = durationMillis(now.Sub(item.StartedAt))
+		ops = append(ops, item)
+	}
+	return ops
 }

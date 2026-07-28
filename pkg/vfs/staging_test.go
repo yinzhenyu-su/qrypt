@@ -1,13 +1,17 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
@@ -40,7 +44,7 @@ func TestStagingCleanupUploadTempsKeepsPendingStaging(t *testing.T) {
 }
 
 func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
-	cache, err := NewCache(t.TempDir(), 0)
+	cache, err := NewStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +55,16 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	if _, err := cache.staging.writeAt(oldLocal, []byte("hello world"), 0); err != nil {
 		t.Fatal(err)
 	}
-	old := PendingFile{Path: "/file", FID: "old-fid", ParentID: "0", Name: "file", LocalPath: oldLocal, Size: 11, Frozen: true}
-	if err := cache.SavePending(old); err != nil {
+	old := PendingUpload{Path: "/file", FID: "old-fid", ParentID: "0", Name: "file", LocalPath: oldLocal, Size: 11, Frozen: true}
+	if err := cache.SaveUpload(old); err != nil {
 		t.Fatal(err)
 	}
-	v := &VFS{cache: cache, pathLocks: map[string]*sync.Mutex{}, localModTime: map[string]time.Time{}}
+	v := &VFS{
+		readCache: cache.readCacheStore,
+		uploads:   cache.uploadStore,
+		pathLocks: newPathLockState(),
+		view:      newViewState("0", time.Now()),
+	}
 	next, err := v.rotateFrozenGeneration("/file", old)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +85,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	if string(data) != "hello world" {
 		t.Fatalf("new generation content = %q, want %q", data, "hello world")
 	}
-	latest, ok := cache.PendingByPath("/file")
+	latest, ok := cache.UploadByPath("/file")
 	if !ok || latest.FID != next.FID {
 		t.Fatalf("pending not swapped to new generation: %+v ok=%v", latest, ok)
 	}
@@ -86,23 +95,28 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 }
 
 func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
-	cache, err := NewCache(t.TempDir(), 0)
+	cache, err := NewStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := &VFS{cache: cache, pathLocks: map[string]*sync.Mutex{}}
-	old := PendingFile{
+	v := &VFS{
+		readCache: cache.readCacheStore,
+		uploads:   cache.uploadStore,
+		pathLocks: newPathLockState(),
+		view:      newViewState("0", time.Now()),
+	}
+	old := PendingUpload{
 		Path: "/file", FID: "old-fid", ParentID: "0", Name: "file",
 		LocalPath: t.TempDir(),
 		Size:      10, Frozen: true,
 	}
-	if err := cache.SavePending(old); err != nil {
+	if err := cache.SaveUpload(old); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := v.rotateFrozenGeneration("/file", old); err == nil {
 		t.Fatal("rotateFrozenGeneration succeeded with directory source, want error")
 	}
-	latest, ok := cache.PendingByPath("/file")
+	latest, ok := cache.UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing after failed rotation")
 	}
@@ -124,14 +138,14 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 
 func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	ctx := context.Background()
-	fs, err := New(localfs.New(t.TempDir()), Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := fs.Create(ctx, "/file"); err != nil {
 		t.Fatal(err)
 	}
-	old, ok := fs.cache.PendingByPath("/file")
+	old, ok := fs.uploads.UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing")
 	}
@@ -145,7 +159,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	if _, err := os.Stat(oldLocal); !os.IsNotExist(err) {
 		t.Fatalf("old mutable staging still exists, err=%v", err)
 	}
-	latest, ok := fs.cache.PendingByPath("/file")
+	latest, ok := fs.uploads.UploadByPath("/file")
 	if !ok {
 		t.Fatal("new pending missing")
 	}
@@ -159,7 +173,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 
 func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	ctx := context.Background()
-	fs, err := New(localfs.New(t.TempDir()), Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +186,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	if err := fs.Flush(ctx, "/file"); err != nil {
 		t.Fatal(err)
 	}
-	old, ok := fs.cache.PendingByPath("/file")
+	old, ok := fs.uploads.UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing")
 	}
@@ -185,7 +199,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	if _, err := os.Stat(old.LocalPath); err != nil {
 		t.Fatalf("old frozen staging removed: %v", err)
 	}
-	latest, ok := fs.cache.PendingByPath("/file")
+	latest, ok := fs.uploads.UploadByPath("/file")
 	if !ok {
 		t.Fatal("new pending missing")
 	}
@@ -196,7 +210,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 
 func TestSweepUnreferencedStaging(t *testing.T) {
 	dir := t.TempDir()
-	cache, err := NewCache(dir, 0)
+	cache, err := NewStoresInDir(dir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +218,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.SavePending(PendingFile{Path: "/live", FID: "live-fid", LocalPath: live}); err != nil {
+	if err := cache.SaveUpload(PendingUpload{Path: "/live", FID: "live-fid", LocalPath: live}); err != nil {
 		t.Fatal(err)
 	}
 	stagingDir := filepath.Join(dir, "staging")
@@ -214,7 +228,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stagingDir, "note.txt"), []byte("z"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewCache(dir, 0); err != nil {
+	if _, err := NewStoresInDir(dir, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(live); err != nil {
@@ -229,13 +243,15 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 }
 
 func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
-	cache, err := NewCache(t.TempDir(), 0)
+	cache, err := NewStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	v := &VFS{
-		cache:     cache,
-		pathLocks: map[string]*sync.Mutex{},
+		readCache: cache.readCacheStore,
+		uploads:   cache.uploadStore,
+		pathLocks: newPathLockState(),
+		view:      newViewState("0", time.Now()),
 	}
 	localPath, err := cache.staging.create("file")
 	if err != nil {
@@ -244,7 +260,7 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 	if _, err := cache.staging.writeAt(localPath, []byte("snapshot-data"), 0); err != nil {
 		t.Fatal(err)
 	}
-	pending := PendingFile{Path: "/file", FID: "file", LocalPath: localPath, Size: int64(len("snapshot-data"))}
+	pending := PendingUpload{Path: "/file", FID: "file", LocalPath: localPath, Size: int64(len("snapshot-data"))}
 
 	snapshot, err := v.snapshotPending(pending)
 	if err != nil {
@@ -256,27 +272,179 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 	if snapshot.Hashes == nil {
 		t.Fatal("expected hashes to be computed")
 	}
+	if len(snapshot.Hashes) != 1 {
+		t.Fatalf("expected 1 hash, got %d", len(snapshot.Hashes))
+	}
+	wantSHA256 := sha256.Sum256([]byte("snapshot-data"))
+	if got, ok := snapshot.Hashes[drive.HashSHA256]; !ok || !bytes.Equal(got, wantSHA256[:]) {
+		t.Fatalf("SHA256 metadata = %x, present=%v; want %x", got, ok, wantSHA256)
+	}
+	if _, ok := snapshot.Hashes[drive.HashMD5]; ok {
+		t.Fatal("unexpected MD5 metadata without driver requirement")
+	}
+	if _, ok := snapshot.Hashes[drive.HashSHA1]; ok {
+		t.Fatal("unexpected SHA1 metadata without driver requirement")
+	}
+}
+
+func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
+	cache, err := NewStoresInDir(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("driver-required-hashes")
+	drv := &snapshotHashDriver{
+		Driver: localfs.New(t.TempDir()),
+		hashes: []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1, drive.HashSHA1},
+	}
+	v := &VFS{
+		driver:    drv,
+		readCache: cache.readCacheStore,
+		uploads:   cache.uploadStore,
+		pathLocks: newPathLockState(),
+		view:      newViewState("0", time.Now()),
+	}
+	localPath, err := cache.staging.create("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.staging.writeAt(localPath, content, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := v.snapshotPending(PendingUpload{Path: "/file", FID: "file", LocalPath: localPath, Size: int64(len(content))})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(snapshot.Hashes) != 3 {
 		t.Fatalf("expected 3 hashes, got %d", len(snapshot.Hashes))
 	}
+	wantMD5 := md5.Sum(content)
+	wantSHA1 := sha1.Sum(content)
+	wantSHA256 := sha256.Sum256(content)
+	for algorithm, want := range map[drive.HashAlgorithm][]byte{
+		drive.HashMD5:    wantMD5[:],
+		drive.HashSHA1:   wantSHA1[:],
+		drive.HashSHA256: wantSHA256[:],
+	} {
+		if got, ok := snapshot.Hashes[algorithm]; !ok || !bytes.Equal(got, want) {
+			t.Fatalf("%s metadata = %x, present=%v; want %x", algorithm, got, ok, want)
+		}
+	}
+}
+
+func TestSnapshotPendingUsesIncrementalHashesForSequentialWrite(t *testing.T) {
+	ctx := context.Background()
+	raw := localfs.New(t.TempDir())
+	if err := raw.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	drv := &snapshotHashDriver{
+		Driver: raw,
+		hashes: []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1},
+	}
+	v, err := New(drv, Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Create(ctx, "/file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteAt(ctx, "/file", []byte("hello "), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteAt(ctx, "/file", []byte("qrypt"), int64(len("hello "))); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := v.pendingUpload("/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := v.snapshotPending(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Incremental {
+		t.Fatal("snapshot did not use incremental hashes")
+	}
+	content := []byte("hello qrypt")
+	wantMD5 := md5.Sum(content)
+	wantSHA1 := sha1.Sum(content)
+	wantSHA256 := sha256.Sum256(content)
+	for algorithm, want := range map[drive.HashAlgorithm][]byte{
+		drive.HashMD5:    wantMD5[:],
+		drive.HashSHA1:   wantSHA1[:],
+		drive.HashSHA256: wantSHA256[:],
+	} {
+		if got, ok := snapshot.Hashes[algorithm]; !ok || !bytes.Equal(got, want) {
+			t.Fatalf("%s metadata = %x, present=%v; want %x", algorithm, got, ok, want)
+		}
+	}
+}
+
+func TestSnapshotPendingFallsBackAfterNonSequentialWrite(t *testing.T) {
+	ctx := context.Background()
+	raw := localfs.New(t.TempDir())
+	if err := raw.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	v, err := New(raw, Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Create(ctx, "/file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteAt(ctx, "/file", []byte("abcdef"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteAt(ctx, "/file", []byte("XY"), 1); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := v.pendingUpload("/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := v.snapshotPending(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Incremental {
+		t.Fatal("snapshot used incremental hashes after non-sequential write")
+	}
+	wantSHA256 := sha256.Sum256([]byte("aXYdef"))
+	if got, ok := snapshot.Hashes[drive.HashSHA256]; !ok || !bytes.Equal(got, wantSHA256[:]) {
+		t.Fatalf("SHA256 metadata = %x, present=%v; want %x", got, ok, wantSHA256)
+	}
+}
+
+type snapshotHashDriver struct {
+	drive.Driver
+	hashes []drive.HashAlgorithm
+}
+
+func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
+	return d.hashes
 }
 
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
 	v := &VFS{uploadDelay: 10 * time.Millisecond}
 
-	small := v.pendingQuietWindow(PendingFile{Size: largeUploadQuietThreshold - 1})
+	small := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold - 1})
 	if small != 10*time.Millisecond {
 		t.Fatalf("small quiet window = %s, want configured delay", small)
 	}
-	large := v.pendingQuietWindow(PendingFile{Size: largeUploadQuietThreshold})
+	large := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold})
 	if large != largeUploadQuietDelay {
 		t.Fatalf("large quiet window = %s, want %s", large, largeUploadQuietDelay)
 	}
 }
 
 func TestUploadAdmissionLargeUploadIsExclusive(t *testing.T) {
-	small := PendingFile{Path: "/small.txt", Size: largeUploadQuietThreshold - 1}
-	large := PendingFile{Path: "/large.bin", Size: largeUploadQuietThreshold}
+	small := PendingUpload{Path: "/small.txt", Size: largeUploadQuietThreshold - 1}
+	large := PendingUpload{Path: "/large.bin", Size: largeUploadQuietThreshold}
 
 	var admission uploadAdmission
 	if !admission.tryAcquire(large, 3) {

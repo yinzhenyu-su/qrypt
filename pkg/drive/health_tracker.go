@@ -28,11 +28,16 @@ type healthEvent struct {
 	message string
 }
 
+// HealthTracker records per-operation health results in a fixed-capacity
+// ring buffer. Recording is O(1): no time-window trimming happens on the hot
+// path (a trim would walk the whole buffer on every operation). The window
+// filter is applied lazily when Status is queried.
 type HealthTracker struct {
-	mu        sync.Mutex
-	events    []healthEvent
-	window    time.Duration
-	maxEvents int
+	mu     sync.Mutex
+	events []healthEvent
+	head   int // next write slot
+	count  int // number of live events in the ring
+	window time.Duration
 }
 
 func NewHealthTracker(window time.Duration, maxEvents int) *HealthTracker {
@@ -43,8 +48,8 @@ func NewHealthTracker(window time.Duration, maxEvents int) *HealthTracker {
 		maxEvents = DefaultMaxEvents
 	}
 	return &HealthTracker{
-		window:    window,
-		maxEvents: maxEvents,
+		events: make([]healthEvent, maxEvents),
+		window: window,
 	}
 }
 
@@ -111,7 +116,6 @@ func MergeHealthStatus(a, b HealthTrackerStatus) HealthTrackerStatus {
 func (t *HealthTracker) Status() HealthTrackerStatus {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.trim()
 	return t.statusLocked()
 }
 
@@ -127,19 +131,32 @@ func (t *HealthTracker) recordAt(at time.Time, op string, ok bool, message strin
 		at = time.Now()
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.events = append(t.events, healthEvent{at: at, op: op, ok: ok, message: message})
-	t.trim()
+	slot := t.head % len(t.events)
+	t.events[slot] = healthEvent{at: at, op: op, ok: ok, message: message}
+	t.head = slot + 1
+	if t.count < len(t.events) {
+		t.count++
+	}
+	t.mu.Unlock()
 }
 
+// statusLocked aggregates the ring, applying the time-window filter lazily.
+// The caller must hold t.mu.
 func (t *HealthTracker) statusLocked() HealthTrackerStatus {
+	cutoff := time.Now().Add(-t.window)
 	status := HealthTrackerStatus{
 		OK:        true,
 		Level:     HealthLevelOK,
 		CheckedAt: time.Now(),
 		Ops:       map[string]HealthOpStatus{},
 	}
-	for _, event := range t.events {
+	n := len(t.events)
+	for i := 0; i < t.count; i++ {
+		idx := (t.head - t.count + i + n) % n
+		event := t.events[idx]
+		if event.at.Before(cutoff) {
+			continue
+		}
 		op := status.Ops[event.op]
 		if event.ok {
 			op.Success++
@@ -195,21 +212,6 @@ func mergeHealthOps(dst map[string]HealthOpStatus, src map[string]HealthOpStatus
 			current.LastErrorAt = status.LastErrorAt
 		}
 		dst[name] = current
-	}
-}
-
-func (t *HealthTracker) trim() {
-	cutoff := time.Now().Add(-t.window)
-	keep := t.events[:0]
-	for _, e := range t.events {
-		if e.at.After(cutoff) {
-			keep = append(keep, e)
-		}
-	}
-	t.events = keep
-
-	if len(t.events) > t.maxEvents {
-		t.events = t.events[len(t.events)-t.maxEvents:]
 	}
 }
 

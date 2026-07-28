@@ -23,10 +23,10 @@ func TestFSCommandsCreateMoveAndRemoveLocalFS(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 delete_delay = "10ms"
 
@@ -110,10 +110,10 @@ func TestFSListRemoteNamesForEncryptedMount(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 delete_delay = "10ms"
 
@@ -252,10 +252,10 @@ func TestFSGetDirRecursive(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 delete_delay = "10ms"
 
 [[mounts]]
@@ -361,7 +361,7 @@ func TestFSMountFlagInitializesOnlySelectedMount(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [[mounts]]

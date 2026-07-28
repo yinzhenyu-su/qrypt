@@ -318,7 +318,7 @@ func waitVFSIdle(ctx context.Context, fs vfs.FileSystem, timeout time.Duration) 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if len(fs.Pending()) == 0 {
+		if pendingCount(fs) == 0 {
 			return nil
 		}
 		select {

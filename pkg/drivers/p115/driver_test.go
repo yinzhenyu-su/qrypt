@@ -26,6 +26,34 @@ func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
 	}
 }
 
+func TestRequiredUploadHashesIncludesSHA1(t *testing.T) {
+	d := &Driver{}
+	got := d.RequiredUploadHashes()
+	if len(got) != 1 || got[0] != drive.HashSHA1 {
+		t.Fatalf("RequiredUploadHashes = %+v, want [%s]", got, drive.HashSHA1)
+	}
+}
+
+func TestDebugSnapshotReportsInstantUploadCount(t *testing.T) {
+	d := &Driver{}
+	snapshot, err := d.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Extra[drive.DebugExtraInstantUploadCount]; got != int64(0) {
+		t.Fatalf("instant upload count = %v, want 0", got)
+	}
+
+	d.instantUploads.Add(2)
+	snapshot, err = d.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Extra[drive.DebugExtraInstantUploadCount]; got != int64(2) {
+		t.Fatalf("instant upload count = %v, want 2", got)
+	}
+}
+
 func TestLoginCheckWithRetryRetriesEOF(t *testing.T) {
 	oldDelays := loginCheckRetryDelays
 	loginCheckRetryDelays = []time.Duration{0}

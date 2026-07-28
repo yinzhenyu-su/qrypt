@@ -26,10 +26,10 @@ func TestBuildNamespaceUsesPerMountEncryption(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -110,7 +110,7 @@ func TestBuildNamespaceAppliesGlobalEncryptionToMountWithoutEncryption(t *testin
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [encryption]
@@ -119,7 +119,7 @@ salt = "global-salt"
 filename_encryption = "standard"
 filename_encoding = "base32"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -188,10 +188,10 @@ func TestBuildNamespaceReadsPlainFilesWhenNoEncryptionConfigured(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]

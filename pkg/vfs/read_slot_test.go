@@ -11,8 +11,10 @@ import (
 
 func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 	fs := &VFS{
-		readSem:     make(chan struct{}, 1),
-		readHighSem: make(chan struct{}, 1),
+		readSlots: &readSlotState{
+			normal: make(chan struct{}, 1),
+			high:   make(chan struct{}, 1),
+		},
 	}
 
 	releaseHighNormalSlot, err := fs.acquireReadSlot(WithReadPriority(context.Background(), PriorityHigh))
@@ -40,13 +42,13 @@ func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 }
 
 func TestLoadWindowSlotFailurePropagatesToWaiter(t *testing.T) {
-	fs, err := New(blockedReadSlotDriver{}, Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := New(blockedReadSlotDriver{}, Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fs.CloseReadCache() })
-	for i := 0; i < cap(fs.readSem); i++ {
-		fs.readSem <- struct{}{}
+	for i := 0; i < cap(fs.readSlots.normal); i++ {
+		fs.readSlots.normal <- struct{}{}
 	}
 
 	ctx := WithReadPriority(context.Background(), PriorityLow)
@@ -59,8 +61,9 @@ func TestLoadWindowSlotFailurePropagatesToWaiter(t *testing.T) {
 func TestWaitWindowTreatsCanceledLoadAsRetryableMiss(t *testing.T) {
 	fs := &VFS{
 		name:        "test",
-		activeOps:   map[string]DebugActiveOp{},
-		windowLoads: map[string]*windowLoad{},
+		readHistory: newReadHistoryState(),
+		activeDebug: newActiveDebugState(),
+		readWindows: newReadWindowState(),
 	}
 	load := &windowLoad{
 		fid:  "file",
@@ -68,7 +71,7 @@ func TestWaitWindowTreatsCanceledLoadAsRetryableMiss(t *testing.T) {
 		err:  context.Canceled,
 	}
 	close(load.done)
-	fs.windowLoads["file\x000\x000"] = load
+	fs.readWindows.loads["file\x000\x000"] = load
 
 	data, ok, err := fs.waitWindow(context.Background(), "file", 0)
 	if err != nil {

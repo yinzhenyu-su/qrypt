@@ -17,7 +17,7 @@ func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 	}
 	defer done()
 	if a.hasIgnoredAppleMetadata(path) {
-		fillStat(stat, a.ignoredAppleEntry(path), path)
+		a.fillStat(stat, a.ignoredAppleEntry(path), path)
 		return 0
 	}
 	entry, err := a.fs.Stat(ctx, path)
@@ -25,7 +25,7 @@ func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 		errc = fuseErr(err)
 		if errc == -fuse.ENOENT && fh != 0 {
 			if handleEntry, ok := a.handleEntry(fh); ok {
-				fillStat(stat, handleEntry, path)
+				a.fillStat(stat, handleEntry, path)
 				errc = 0
 				return 0
 			}
@@ -33,7 +33,7 @@ func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 		logFuseError("Getattr", path, errc, err)
 		return errc
 	}
-	fillStat(stat, entry, path)
+	a.fillStat(stat, entry, path)
 	if a.isReadOnlyPath(path) {
 		stat.Mode &^= 0o222
 	}

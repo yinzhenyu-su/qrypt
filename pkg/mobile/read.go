@@ -1,27 +1,26 @@
 package mobile
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func OpenFile(coreID, path string) (string, error) {
-	return openFileWithPriority(coreID, path, vfs.PriorityNormal)
+type openFileOptions struct {
+	DeadlineMS int    `json:"deadline_ms"`
+	Priority   string `json:"priority"`
 }
 
-func OpenFileHighPriority(coreID, path string) (string, error) {
-	return openFileWithPriority(coreID, path, vfs.PriorityHigh)
-}
-
-func openFileWithPriority(coreID, path string, priority vfs.ReadPriority) (string, error) {
+func openFileWithPriority(coreID, path string, priority vfs.ReadPriority, deadlineMS int) (string, error) {
 	s, err := getSession(coreID)
 	if err != nil {
 		return "", wrapError(err)
 	}
-	item, err := s.core.Stat(context.Background(), path)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
+	defer cancel()
+	item, err := s.core.Stat(ctx, path)
 	if err != nil {
 		return "", wrapError(err)
 	}
@@ -38,54 +37,42 @@ func openFileWithPriority(coreID, path string, priority vfs.ReadPriority) (strin
 	return id, nil
 }
 
-func OpenFileJSON(coreID, path string) string {
-	id, err := OpenFile(coreID, path)
+func OpenFileJSON(coreID, path, optionsRaw string) string {
+	options, err := parseOpenFileOptions(optionsRaw)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	priority, err := options.priority()
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	id, err := openFileWithPriority(coreID, path, priority, options.DeadlineMS)
 	return resultJSON(id, err)
 }
 
-func OpenFileHighPriorityJSON(coreID, path string) string {
-	id, err := OpenFileHighPriority(coreID, path)
-	return resultJSON(id, err)
+func parseOpenFileOptions(raw string) (openFileOptions, error) {
+	if raw == "" {
+		return openFileOptions{}, nil
+	}
+	var options openFileOptions
+	if err := json.Unmarshal([]byte(raw), &options); err != nil {
+		return openFileOptions{}, err
+	}
+	return options, nil
 }
 
-func ReadAt(handleID string, offset int64, length int) ([]byte, error) {
-	return ReadAtWithTimeout(handleID, offset, length, 0)
+func (o openFileOptions) priority() (vfs.ReadPriority, error) {
+	switch o.Priority {
+	case "", "normal":
+		return vfs.PriorityNormal, nil
+	case "high":
+		return vfs.PriorityHigh, nil
+	default:
+		return vfs.PriorityNormal, fmt.Errorf("mobile: unknown file priority %q", o.Priority)
+	}
 }
 
-func ReadAtInto(handleID string, offset int64, dst []byte) (int, error) {
-	return ReadAtIntoWithTimeout(handleID, offset, dst, 0)
-}
-
-func ReadAtWithTimeout(handleID string, offset int64, length int, timeoutMS int) ([]byte, error) {
-	if offset < 0 {
-		return nil, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
-	}
-	if length < 0 {
-		return nil, wrapError(fmt.Errorf("mobile: length must be non-negative"))
-	}
-	if length == 0 {
-		return []byte{}, nil
-	}
-	handle, err := getFile(handleID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	s, err := getSession(handle.coreID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	ctx = vfs.WithReadPriority(ctx, handle.readPriority)
-	data := make([]byte, length)
-	n, err := s.core.ReadAtInto(ctx, handle.path, offset, data, 0)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	return data[:n], nil
-}
-
-func ReadAtIntoWithTimeout(handleID string, offset int64, dst []byte, timeoutMS int) (int, error) {
+func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int, error) {
 	if offset < 0 {
 		return 0, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
 	}
@@ -100,7 +87,7 @@ func ReadAtIntoWithTimeout(handleID string, offset int64, dst []byte, timeoutMS 
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	ctx = vfs.WithReadPriority(ctx, handle.readPriority)
 	n, err := s.core.ReadAtInto(ctx, handle.path, offset, dst, 0)
@@ -110,12 +97,7 @@ func ReadAtIntoWithTimeout(handleID string, offset int64, dst []byte, timeoutMS 
 	return n, nil
 }
 
-func ReadAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
-	data, err := ReadAtWithTimeout(handleID, offset, length, timeoutMS)
-	return resultJSON(data, err)
-}
-
-func CloseFile(handleID string) error {
+func closeFile(handleID string) error {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	if _, ok := registry.files[handleID]; !ok {
@@ -126,5 +108,5 @@ func CloseFile(handleID string) error {
 }
 
 func CloseFileJSON(handleID string) string {
-	return resultJSON(nil, CloseFile(handleID))
+	return resultJSON(nil, closeFile(handleID))
 }

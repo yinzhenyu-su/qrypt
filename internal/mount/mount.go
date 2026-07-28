@@ -72,6 +72,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 			FreeSpace:  opts.FreeSpace,
 		},
 		ReadOnly:            opts.ReadOnly,
+		AllowOther:          opts.AllowOther,
 		IgnoreAppleMetadata: opts.NoAppleDouble,
 		IgnoreAppleXattr:    opts.NoAppleXattr,
 	})

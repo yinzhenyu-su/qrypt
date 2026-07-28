@@ -129,7 +129,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	if err == nil {
 		_, err = fs.WriteAt(ctx, file, data, 0)
 	}
-	step.Actual = map[string]any{"pending_count": len(fs.Pending())}
+	step.Actual = map[string]any{"pending_count": pendingCount(fs)}
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
@@ -141,7 +141,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.Input = map[string]any{"path": file}
 	start = time.Now()
 	err = fs.Flush(ctx, file)
-	step.Actual = map[string]any{"pending_count": len(fs.Pending())}
+	step.Actual = map[string]any{"pending_count": pendingCount(fs)}
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
@@ -273,7 +273,7 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 			if !debugMountNameMatches(mountState.Identity.Name, mount) {
 				continue
 			}
-			state.PendingCount = len(mountState.PendingFiles())
+			state.PendingCount = len(mountState.PendingUploads())
 			state.UploadCount = len(mountState.ActiveUploads())
 			state.DeleteTimers = len(mountState.ActiveDeleteTimers())
 			cache := mountState.ReadCacheState()
@@ -292,7 +292,7 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 			state.ReadCacheBytes = cache.Bytes
 			state.WindowLoads = mountState.Runtime.WindowLoads
 			state.Prefetches = mountState.Runtime.Prefetches
-			for _, pending := range mountState.PendingFiles() {
+			for _, pending := range mountState.PendingUploads() {
 				state.Pending = append(state.Pending, pending.Path)
 			}
 			for _, upload := range mountState.ActiveUploads() {
@@ -309,8 +309,8 @@ func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
 			return state
 		}
 	}
-	state.PendingCount = len(fs.Pending())
-	for _, pending := range fs.Pending() {
+	state.PendingCount = pendingCount(fs)
+	for _, pending := range pendingFiles(fs) {
 		state.Pending = append(state.Pending, pending.Path)
 	}
 	return state

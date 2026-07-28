@@ -125,8 +125,8 @@ func (stubFS) Remove(context.Context, string) error                        { ret
 func (stubFS) RemoveDir(context.Context, string) error                     { return nil }
 func (stubFS) Rename(context.Context, string, string) error                { return nil }
 func (stubFS) Truncate(context.Context, string, int64) error               { return nil }
-func (stubFS) RefreshPath(string)                                       {}
-func (stubFS) Pending() []vfs.PendingFile                                  { return nil }
+func (stubFS) RefreshPath(string)                                          {}
+func (stubFS) PendingUploads() []vfs.PendingUpload                         { return nil }
 
 func (s *createRouteFS) Create(_ context.Context, path string) error {
 	s.created = append(s.created, path)
@@ -868,7 +868,7 @@ func TestStableInodeFallsBackToPathWhenIDEmpty(t *testing.T) {
 
 func TestAdapterWritableMountRootModeAllowsFinderDrop(t *testing.T) {
 	ctx := context.Background()
-	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}

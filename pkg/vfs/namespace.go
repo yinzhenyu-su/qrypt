@@ -34,7 +34,10 @@ type FileSystem interface {
 	Rename(ctx context.Context, oldPath, newPath string) error
 	RefreshPath(path string)
 	Truncate(ctx context.Context, path string, size int64) error
-	Pending() []PendingFile
+}
+
+type UploadInspector interface {
+	PendingUploads() []PendingUpload
 }
 
 type RemoteLister interface {
@@ -85,8 +88,9 @@ type MountHealthChecker interface {
 // NamedDriver pairs a mount name with its underlying drive.Driver.
 // Used by the debug socket to expose driver-level operations.
 type NamedDriver struct {
-	Name   string
-	Driver drive.Driver
+	Name        string
+	Driver      drive.Driver
+	TestEnabled bool
 }
 
 // DriverProvider is implemented by VFS and Namespace to expose the
@@ -356,12 +360,12 @@ func (n *Namespace) IsReadOnlyPath(path string) bool {
 	return path == "/"
 }
 
-func (n *Namespace) Pending() []PendingFile {
+func (n *Namespace) PendingUploads() []PendingUpload {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	var pending []PendingFile
+	var pending []PendingUpload
 	for name, fs := range n.mounts {
-		for _, item := range fs.Pending() {
+		for _, item := range fs.PendingUploads() {
 			item.Path = joinVirtual("/"+name, strings.TrimPrefix(item.Path, "/"))
 			pending = append(pending, item)
 		}
@@ -375,37 +379,110 @@ func (n *Namespace) Tasks(filter task.Filter) []task.Task {
 	defer n.mu.RUnlock()
 	var tasks []task.Task
 	for name, fs := range n.mounts {
-		mountFilter := filter
-		if filter.Mount != "" && filter.Mount != name {
+		mountFilter, ok := namespaceMountTaskFilter(filter, name)
+		if !ok {
 			continue
 		}
-		if filter.Path != "" {
-			mountName, rest, root := splitNamespacePath(filter.Path)
-			if root || mountName != name {
-				continue
-			}
-			mountFilter.Path = rest
-		}
-		mountFilter.Mount = ""
 		for _, item := range fs.Tasks(mountFilter) {
-			item.Mount = name
-			item.ID = namespaceTaskID(name, item.ID)
-			item.Path = joinVirtual("/"+name, strings.TrimPrefix(item.Path, "/"))
+			item = namespaceTask(name, item)
 			if filter.Match(item) {
 				tasks = append(tasks, item)
 			}
 		}
 	}
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].UpdatedAt.Equal(tasks[j].UpdatedAt) {
-			return tasks[i].ID < tasks[j].ID
-		}
-		return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
-	})
+	sortTasks(tasks)
 	if filter.Limit > 0 && len(tasks) > filter.Limit {
 		tasks = tasks[:filter.Limit]
 	}
 	return tasks
+}
+
+func (n *Namespace) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return n.Tasks(filter), nil
+}
+
+// dismisser is satisfied by VFS instances that support task dismissal.
+type dismisser interface {
+	DismissTask(ctx context.Context, id string) error
+	DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error)
+}
+
+func (n *Namespace) DismissTask(ctx context.Context, id string) error {
+	mount, rest, ok := splitNamespaceTaskID(id)
+	if !ok {
+		return task.ErrNotFound
+	}
+	n.mu.RLock()
+	fs, ok := n.mounts[mount]
+	n.mu.RUnlock()
+	if !ok {
+		return task.ErrNotFound
+	}
+	dismissible, ok := interface{}(fs).(dismisser)
+	if !ok {
+		return task.ErrNotFound
+	}
+	return dismissible.DismissTask(ctx, rest)
+}
+
+func (n *Namespace) DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	removed := 0
+	for name, fs := range n.mounts {
+		mountFilter, ok := namespaceMountTaskFilter(filter, name)
+		if !ok {
+			continue
+		}
+		dismissible, ok := interface{}(fs).(dismisser)
+		if !ok {
+			continue
+		}
+		n, err := dismissible.DismissFinishedTasks(ctx, mountFilter)
+		if err != nil {
+			return removed, err
+		}
+		removed += n
+	}
+	return removed, nil
+}
+
+func (n *Namespace) GetTask(ctx context.Context, id string) (task.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return task.Task{}, err
+	}
+	for _, item := range n.Tasks(task.Filter{}) {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return task.Task{}, task.ErrNotFound
+}
+
+func namespaceMountTaskFilter(filter task.Filter, mount string) (task.Filter, bool) {
+	if filter.Mount != "" && filter.Mount != mount {
+		return task.Filter{}, false
+	}
+	mountFilter := filter
+	if filter.Path != "" {
+		mountName, rest, root := splitNamespacePath(filter.Path)
+		if root || mountName != mount {
+			return task.Filter{}, false
+		}
+		mountFilter.Path = rest
+	}
+	mountFilter.Mount = ""
+	return mountFilter, true
+}
+
+func namespaceTask(mount string, item task.Task) task.Task {
+	item.Mount = mount
+	item.ID = namespaceTaskID(mount, item.ID)
+	item.Path = joinVirtual("/"+mount, strings.TrimPrefix(item.Path, "/"))
+	return item
 }
 
 func splitNamespacePath(path string) (string, string, bool) {
@@ -437,40 +514,26 @@ func splitNamespaceTaskID(id string) (string, string, bool) {
 }
 
 func (n *Namespace) CancelTask(ctx context.Context, id string) error {
-	if mountName, localID, ok := splitNamespaceTaskID(id); ok {
-		n.mu.RLock()
-		fs := n.mounts[mountName]
-		n.mu.RUnlock()
-		if fs == nil {
-			return ErrNotFound
-		}
+	return n.applyTaskAction(ctx, id, func(fs *VFS, localID string) error {
 		return fs.CancelTask(ctx, localID)
-	}
-	n.mu.RLock()
-	mounts := make([]*VFS, 0, len(n.mounts))
-	for _, fs := range n.mounts {
-		mounts = append(mounts, fs)
-	}
-	n.mu.RUnlock()
-	for _, fs := range mounts {
-		if err := fs.CancelTask(ctx, id); err == nil {
-			return nil
-		} else if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-	}
-	return ErrNotFound
+	})
 }
 
 func (n *Namespace) RetryTask(ctx context.Context, id string) error {
+	return n.applyTaskAction(ctx, id, func(fs *VFS, localID string) error {
+		return fs.RetryTask(ctx, localID)
+	})
+}
+
+func (n *Namespace) applyTaskAction(ctx context.Context, id string, fn func(*VFS, string) error) error {
 	if mountName, localID, ok := splitNamespaceTaskID(id); ok {
 		n.mu.RLock()
 		fs := n.mounts[mountName]
 		n.mu.RUnlock()
 		if fs == nil {
-			return ErrNotFound
+			return task.ErrNotFound
 		}
-		return fs.RetryTask(ctx, localID)
+		return fn(fs, localID)
 	}
 	n.mu.RLock()
 	mounts := make([]*VFS, 0, len(n.mounts))
@@ -479,13 +542,13 @@ func (n *Namespace) RetryTask(ctx context.Context, id string) error {
 	}
 	n.mu.RUnlock()
 	for _, fs := range mounts {
-		if err := fs.RetryTask(ctx, id); err == nil {
+		if err := fn(fs, id); err == nil {
 			return nil
-		} else if !errors.Is(err, ErrNotFound) {
+		} else if !isTaskNotFound(err) {
 			return err
 		}
 	}
-	return ErrNotFound
+	return task.ErrNotFound
 }
 
 func (n *Namespace) Space(ctx context.Context) (drive.Space, error) {

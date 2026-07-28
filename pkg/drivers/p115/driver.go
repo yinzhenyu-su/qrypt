@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -52,6 +53,7 @@ type Driver struct {
 	cookieUpdated    time.Time
 	debugMu          sync.Mutex
 	lastError        string
+	instantUploads   atomic.Int64
 }
 
 type cookieState struct {
@@ -354,6 +356,7 @@ func (d *Driver) uploadSource(ctx context.Context, parentID, name string, size i
 		return err
 	}
 	if instant {
+		d.instantUploads.Add(1)
 		return nil
 	}
 	if _, err := body.Seek(0, io.SeekStart); err != nil {
@@ -646,10 +649,6 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) pruneStoredUploadSessions() {
-	d.uploadSessionStore().Prune()
-}
-
 func (d *Driver) uploadSessionStore() *util.UploadSessionStore[p115UploadSession] {
 	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[p115UploadSession]{
 		Store:      d.stateStore,
@@ -817,7 +816,8 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	lastError := d.lastError
 	d.debugMu.Unlock()
 	extra := map[string]any{
-		drive.DebugExtraCredentialSource: d.cookieSource,
+		drive.DebugExtraCredentialSource:   d.cookieSource,
+		drive.DebugExtraInstantUploadCount: d.instantUploads.Load(),
 	}
 	if !d.cookieUpdated.IsZero() {
 		extra[drive.DebugExtraCredentialUpdated] = d.cookieUpdated

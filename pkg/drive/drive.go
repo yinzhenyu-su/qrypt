@@ -159,7 +159,7 @@ func (e nonRetryableError) Unwrap() error {
 	return e.err
 }
 
-// NonRetryable marks an error as deterministic for writeback purposes. VFS
+// NonRetryable marks an error as deterministic for upload purposes. VFS
 // should keep the pending staging state for inspection but must not keep
 // calling the remote API for the same failing payload.
 func NonRetryable(err error) error {

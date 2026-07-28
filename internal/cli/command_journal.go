@@ -38,7 +38,7 @@ type journalInvalidEntry struct {
 }
 
 type journalPendingDebug struct {
-	vfs.PendingFile
+	vfs.PendingUpload
 	StagingExists bool   `json:"staging_exists"`
 	StagingSize   int64  `json:"staging_size"`
 	StagingError  string `json:"staging_error,omitempty"`
@@ -46,7 +46,7 @@ type journalPendingDebug struct {
 
 type debugJournalEntry struct {
 	Op string `json:"op"`
-	vfs.PendingFile
+	vfs.PendingUpload
 }
 
 func newJournalCmdWithUse(use string) *cobra.Command {
@@ -118,24 +118,24 @@ func debugCacheTargets(cacheDir string, cfg *config.Config, mountName string) ([
 		}
 		return []debugCacheTarget{{Name: "default", Dir: osutil.ExpandHome(cacheDir)}}, nil
 	}
-	baseCacheDir := cfg.Storage.WritebackDir
+	baseStorageDir := cfg.Storage.UploadDir
 	if cacheDir != "" {
-		baseCacheDir = cacheDir
+		baseStorageDir = cacheDir
 	}
-	if baseCacheDir == "" {
-		baseCacheDir = core.DefaultWritebackDir()
+	if baseStorageDir == "" {
+		baseStorageDir = core.DefaultUploadDir()
 	} else {
-		baseCacheDir = osutil.ExpandHome(baseCacheDir)
+		baseStorageDir = osutil.ExpandHome(baseStorageDir)
 	}
 	if len(cfg.Mounts) == 0 {
-		return []debugCacheTarget{{Name: "default", Dir: baseCacheDir}}, nil
+		return []debugCacheTarget{{Name: "default", Dir: baseStorageDir}}, nil
 	}
 	var targets []debugCacheTarget
 	for _, mount := range cfg.Mounts {
 		if mountName != "" && mount.Name != mountName {
 			continue
 		}
-		dir := filepath.Join(baseCacheDir, mount.Name)
+		dir := filepath.Join(baseStorageDir, mount.Name)
 		targets = append(targets, debugCacheTarget{Name: mount.Name, Dir: dir})
 	}
 	if len(targets) == 0 {
@@ -155,7 +155,7 @@ func inspectJournalCache(target debugCacheTarget) journalDebugReport {
 	file, err := os.Open(journalPath)
 	if err == nil {
 		defer file.Close()
-		pending := map[string]vfs.PendingFile{}
+		pending := map[string]vfs.PendingUpload{}
 		scanner := bufio.NewScanner(file)
 		line := 0
 		for scanner.Scan() {
@@ -170,7 +170,7 @@ func inspectJournalCache(target debugCacheTarget) journalDebugReport {
 			case "dirty":
 				report.DirtyEntries++
 				if entry.LocalPath != "" {
-					pending[entry.Path] = entry.PendingFile
+					pending[entry.Path] = entry.PendingUpload
 				}
 			case "clean":
 				report.CleanEntries++
@@ -183,7 +183,7 @@ func inspectJournalCache(target debugCacheTarget) journalDebugReport {
 			report.InvalidEntries = append(report.InvalidEntries, journalInvalidEntry{Line: line + 1, Err: err.Error()})
 		}
 		for _, item := range pending {
-			debug := journalPendingDebug{PendingFile: item}
+			debug := journalPendingDebug{PendingUpload: item}
 			status, size := stagingStatus(item)
 			debug.StagingExists = status == "ok" || status == "size-mismatch"
 			debug.StagingSize = size

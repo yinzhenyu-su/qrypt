@@ -1,78 +1,47 @@
 package mobile
 
 import (
-	"context"
-	"encoding/json"
-
 	"github.com/yinzhenyu/qrypt/pkg/core"
 )
 
-func List(coreID, path string) (string, error) {
+func ListJSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
-		return "", wrapError(err)
+		return resultJSON(nil, wrapError(err))
 	}
-	entries, err := s.core.List(context.Background(), path)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
+	defer cancel()
+	entries, err := s.core.List(ctx, path)
 	if err != nil {
-		return "", wrapError(err)
+		return resultJSON(nil, wrapError(err))
 	}
 	out := make([]entry, 0, len(entries))
 	for _, item := range entries {
 		out = append(out, fromDriveEntry(item, core.JoinPath(path, item.Name)))
 	}
-	data, err := json.Marshal(out)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	return string(data), nil
+	return resultJSON(out, nil)
 }
 
-func ListJSON(coreID, path string) string {
-	raw, err := List(coreID, path)
-	if err != nil {
-		return resultJSON(nil, err)
-	}
-	var entries []entry
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return resultJSON(nil, err)
-	}
-	return resultJSON(entries, nil)
-}
-
-func Stat(coreID, path string) (string, error) {
-	s, err := getSession(coreID)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	item, err := s.core.Stat(context.Background(), path)
-	if err != nil {
-		return "", wrapError(err)
-	}
-	data, err := json.Marshal(fromDriveEntry(item, path))
-	if err != nil {
-		return "", wrapError(err)
-	}
-	return string(data), nil
-}
-
-func StatJSON(coreID, path string) string {
-	raw, err := Stat(coreID, path)
-	if err != nil {
-		return resultJSON(nil, err)
-	}
-	var item entry
-	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		return resultJSON(nil, err)
-	}
-	return resultJSON(item, nil)
-}
-
-func MkdirJSON(coreID, path string, timeoutMS int) string {
+func StatJSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
+	defer cancel()
+	item, err := s.core.Stat(ctx, path)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	return resultJSON(fromDriveEntry(item, path), nil)
+}
+
+func MkdirJSON(coreID, path string, deadlineMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	item, err := s.core.Mkdir(ctx, path)
 	if err != nil {
@@ -81,12 +50,12 @@ func MkdirJSON(coreID, path string, timeoutMS int) string {
 	return resultJSON(fromDriveEntry(item, path), nil)
 }
 
-func RenameJSON(coreID, oldPath, newPath string, timeoutMS int) string {
+func RenameJSON(coreID, oldPath, newPath string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, s.core.Rename(ctx, oldPath, newPath))
 }
@@ -100,22 +69,22 @@ func RefreshPathJSON(coreID, path string) string {
 	return resultJSON(true, nil)
 }
 
-func RemoveJSON(coreID, path string, timeoutMS int) string {
+func RemoveJSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, s.core.Remove(ctx, path))
 }
 
-func CapabilitiesJSON(coreID, path string, timeoutMS int) string {
+func CapabilitiesJSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	info, err := s.core.Capabilities(ctx, path)
 	return resultJSON(info, err)
@@ -130,20 +99,24 @@ func MountsJSON(coreID string) string {
 	return resultJSON(mounts, err)
 }
 
-func FileInfoJSON(coreID, path string) string {
+func FileInfoJSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	info, err := s.core.FileInfo(context.Background(), path)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
+	defer cancel()
+	info, err := s.core.FileInfo(ctx, path)
 	return resultJSON(info, err)
 }
 
-func ValidateResumeJSON(coreID, path, id string, size int64, modTime string) string {
+func ValidateResumeJSON(coreID, path, fileID string, size int64, modTime string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	check, err := s.core.ValidateResume(context.Background(), path, id, size, modTime)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
+	defer cancel()
+	check, err := s.core.ValidateResume(ctx, path, fileID, size, modTime)
 	return resultJSON(check, err)
 }

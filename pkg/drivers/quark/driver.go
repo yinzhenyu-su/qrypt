@@ -774,15 +774,6 @@ func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.Met
 	return d.cl.metricEvents(since), nil
 }
 
-func (d *Driver) setLastError(err error) {
-	if err == nil {
-		return
-	}
-	d.debugMu.Lock()
-	d.lastError = err.Error()
-	d.debugMu.Unlock()
-}
-
 func (d *Driver) getLastError() string {
 	d.debugMu.Lock()
 	defer d.debugMu.Unlock()
