@@ -20,13 +20,13 @@ mount_point = "$WORKDIR/mount"
 
 [storage]
 read_cache_dir = "$CACHE/read"
-writeback_dir = "$WORKDIR/writeback"
+upload_dir = "$WORKDIR/upload"
 state_dir = "$WORKDIR/state"
 
 [time]
 ntp_enabled = false
 
-[writeback]
+[upload]
 upload_delay = "1ms"
 delete_delay = "1ms"
 upload_workers = 2

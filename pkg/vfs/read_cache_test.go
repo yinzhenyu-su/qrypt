@@ -19,7 +19,7 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 	ctx := context.Background()
 	data := []byte("cache me")
 	drv := newCountingReadDriver(data)
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 	ctx := context.Background()
 	cacheDir := t.TempDir()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 	if _, err := fs.WriteAt(ctx, "/qrypt.log", []byte("data"), 0); err != nil {
 		t.Fatal(err)
 	}
-	pending := fs.Pending()
+	pending := fs.PendingUploads()
 	if len(pending) != 1 {
 		t.Fatalf("pending count = %d, want 1", len(pending))
 	}
@@ -106,7 +106,7 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 
-	c1, err := vfs.NewCache(cacheDir, 10<<20)
+	c1, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c2, err := vfs.NewCache(cacheDir, 10<<20)
+	c2, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestReadCacheCleansStaleIndexTempOnStartup(t *testing.T) {
 	if err := os.WriteFile(tmpPath, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := vfs.NewCache(cacheDir, 10<<20); err != nil {
+	if _, err := vfs.NewStoresInDir(cacheDir, 10<<20); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
@@ -153,7 +153,7 @@ func TestReadCacheGetsChunkRange(t *testing.T) {
 	key := strings.Repeat("a", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), testReadChunkSize)
 	copy(chunk[32:48], []byte("0123456789abcdef"))
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestReadCacheGetsChunkRange(t *testing.T) {
 func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
 func TestReadCachePutRecreatesReadingDir(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestReadCachePutRecreatesReadingDir(t *testing.T) {
 func TestReadCacheClearRemovesReadingData(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("b", sha256.Size*2)
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestReadCacheClearRemovesReadingData(t *testing.T) {
 func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
 func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
 func TestReadCacheCloseFlushesAsyncWrites(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
-	cache, err := vfs.NewCache(cacheDir, 10<<20)
+	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestReadCacheCloseFlushesAsyncWrites(t *testing.T) {
 	}
 	cache.PutChunkAsync(key, int64(len("ignored")), 1, []byte("ignored"))
 
-	reopened, err := vfs.NewCache(cacheDir, 10<<20)
+	reopened, err := vfs.NewStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestReadCacheEvictionPrefersLargeChunksWhenLargePoolOverBudget(t *testing.T
 	smallKey := strings.Repeat("a", sha256.Size*2)
 	largeKey := strings.Repeat("b", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), testReadChunkSize)
-	cache, err := vfs.NewCache(cacheDir, 4*testReadChunkSize)
+	cache, err := vfs.NewStoresInDir(cacheDir, 4*testReadChunkSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
 	smallKey := strings.Repeat("a", sha256.Size*2)
 	legacyLargeKey := strings.Repeat("b", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), testReadChunkSize)
-	cache, err := vfs.NewCache(cacheDir, 17*1024*1024)
+	cache, err := vfs.NewStoresInDir(cacheDir, 17*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 	cacheDir := t.TempDir()
 	drv := newCountingReadDriver(data)
 
-	fs1, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20})
+	fs1, err := vfs.New(drv, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +476,7 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fs2, err := vfs.New(drv, vfs.Options{CacheDir: cacheDir, CacheMaxBytes: 10 << 20})
+	fs2, err := vfs.New(drv, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 	data := []byte("cache me")
 	drv := newCountingReadDriver(data)
 	drv.id = "/未命名文件夹/运维必读.txt"
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +539,7 @@ func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 	if err := raw.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}

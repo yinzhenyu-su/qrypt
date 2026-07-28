@@ -135,7 +135,7 @@ not supported.
 | Query one socket endpoint | `debug raw ENDPOINT` |
 | Verify driver credentials | `debug test auth --mount NAME` |
 | Verify driver CRUD behavior | `debug test crud --mount NAME` |
-| Verify VFS writeback behavior | `debug test fs --mount NAME` |
+| Verify VFS upload behavior | `debug test fs --mount NAME` |
 | Verify resumable upload recovery | `debug test resume --mount NAME` |
 | Compare performance or regressions | `debug bench ...` |
 
@@ -143,7 +143,7 @@ Use `collect` first when you are unsure. Use `raw` when you already know which
 endpoint you need. Use `watch` when the issue only appears during a time window,
 for example upload retries or stale reads.
 
-## Inspect Uploads And Writeback
+## Inspect Uploads And Upload
 
 This is the most useful workflow for staging, pending upload, and slow upload
 problems.
@@ -167,7 +167,7 @@ go run ./cmd/qrypt debug test resume --socket /tmp/qrypt.sock --mount quark-test
 `debug test resume` writes one temporary file, injects a one-shot upload
 `context canceled` fault after upload progress starts, waits for qrypt to retry,
 then checks that the final remote file has the expected size. A passing result
-means the VFS writeback path recovered from the cancellation. The JSON `outcome`
+means the VFS upload path recovered from the cancellation. The JSON `outcome`
 field tells you whether the driver reused a resumable session or safely fell
 back to a fresh upload after the provider rejected the old session.
 
@@ -187,7 +187,7 @@ Useful fields:
 
 - `uploads.uploads[]`: active and recent upload attempts, state, retry count,
   uploaded bytes, and last error.
-- `pending.pending[]`: files waiting for writeback.
+- `pending.pending[]`: files waiting for upload.
 - `staging.mounts[].files[]`: local staging file size and whether it matches
   the pending size.
 - `staging.mounts[].orphans[]`: staging files not referenced by pending state.
@@ -261,7 +261,7 @@ drivers.
 ## Inspect Driver Behavior
 
 Use driver tests when the question is about the provider API or credentials,
-not local staging or VFS writeback.
+not local staging or VFS upload.
 
 Read-only auth check:
 
@@ -364,7 +364,7 @@ Common endpoints:
 | `/v1/debug/reset` | Reset debug epoch and clear VFS read history | Small |
 | `/v1/debug/stacks` | Goroutine stack dump | Text, can be large |
 | `/v1/state?mount=NAME` | Mount snapshot | Can grow with pending, cache, events |
-| `/v1/pending?mount=NAME` | Pending writeback files | Grows with pending count |
+| `/v1/pending?mount=NAME` | Pending upload files | Grows with pending count |
 | `/v1/uploads?mount=NAME&history=1` | Active and recent uploads | Bounded history |
 | `/v1/ops?mount=NAME` | Active VFS read, chunk, window, and prefetch ops | Small, current in-flight ops only |
 | `/v1/reads?mount=NAME&limit=200&since=2m` | Recent read events | Bounded history, filtered server-side |
@@ -434,6 +434,9 @@ signed upload URLs, encrypted request blobs, or full response bodies.
   tools.
 - `debug test` and `debug bench` may create, upload, read, rename, or delete
   temporary remote objects.
+- `debug test` and `debug bench` only run against mounts with
+  `test_enabled = true` in `[[mounts]]`. Transfer tests require both source and
+  destination mounts to opt in.
 - `debug test fs --size` accepts bytes or `k`, `m`, `g` suffixes. Large values
   consume upload time and provider bandwidth.
 - `debug test resume --size` has the same size format. It intentionally cancels

@@ -29,10 +29,10 @@ func TestInspectJournalCacheReportsPendingProblems(t *testing.T) {
 	journalPath := filepath.Join(cacheDir, "pending.jsonl")
 	dirty, err := json.Marshal(struct {
 		Op string `json:"op"`
-		vfs.PendingFile
+		vfs.PendingUpload
 	}{
 		Op: "dirty",
-		PendingFile: vfs.PendingFile{
+		PendingUpload: vfs.PendingUpload{
 			Path:       "/file.txt",
 			FID:        "file",
 			Name:       "file.txt",
@@ -47,10 +47,10 @@ func TestInspectJournalCacheReportsPendingProblems(t *testing.T) {
 	}
 	clean, err := json.Marshal(struct {
 		Op string `json:"op"`
-		vfs.PendingFile
+		vfs.PendingUpload
 	}{
-		Op:          "clean",
-		PendingFile: vfs.PendingFile{Path: "/old.txt"},
+		Op:            "clean",
+		PendingUpload: vfs.PendingUpload{Path: "/old.txt"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestPrintPendingVerboseIncludesDebugState(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	printPendingVerbose(&out, []vfs.PendingFile{{
+	printPendingVerbose(&out, []vfs.PendingUpload{{
 		Path:       "/file.txt",
 		Size:       4,
 		LocalPath:  localPath,
@@ -104,12 +104,20 @@ func waitPendingEmpty(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(fs.Pending()) == 0 && activeUploadCount(fs) == 0 {
+		pending, err := pendingFiles(fs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 0 && activeUploadCount(fs) == 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("pending uploads did not drain: %+v", fs.Pending())
+	pending, err := pendingFiles(fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("pending uploads did not drain: %+v", pending)
 }
 
 func activeUploadCount(fs vfs.FileSystem) int {

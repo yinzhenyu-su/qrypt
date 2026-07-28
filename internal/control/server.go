@@ -55,9 +55,9 @@ type HealthResponse struct {
 }
 
 type PendingResponse struct {
-	SchemaVersion int               `json:"schema_version"`
-	GeneratedAt   time.Time         `json:"generated_at"`
-	Pending       []vfs.PendingFile `json:"pending"`
+	SchemaVersion int                 `json:"schema_version"`
+	GeneratedAt   time.Time           `json:"generated_at"`
+	Pending       []vfs.PendingUpload `json:"pending"`
 }
 
 type UploadsResponse struct {
@@ -940,7 +940,7 @@ func (s *Server) consistencyReports(ctx context.Context, checker vfs.DebugConsis
 		paths[path] = true
 	}
 	for _, mount := range s.source.DebugSnapshot().Mounts {
-		for _, pending := range mount.PendingFiles() {
+		for _, pending := range mount.PendingUploads() {
 			path := pending.Path
 			if mount.Identity.Name != "" {
 				path = joinVirtual("/"+mount.Identity.Name, path)
@@ -1260,9 +1260,9 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.debugSnapshot(r)
-	var pending []vfs.PendingFile
+	var pending []vfs.PendingUpload
 	for _, mount := range snapshot.Mounts {
-		for _, item := range mount.PendingFiles() {
+		for _, item := range mount.PendingUploads() {
 			if snapshot.Kind == "namespace" && mount.Identity.Name != "" {
 				item.Path = joinVirtual("/"+mount.Identity.Name, item.Path)
 			}

@@ -3,10 +3,11 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"time"
-
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"path/filepath"
+	"sort"
+	"time"
 )
 
 const listCacheTTL = 10 * time.Second
@@ -26,6 +27,54 @@ type listLoad struct {
 	prefetch bool
 }
 
+func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
+	entries, err := v.listNoPrefetch(ctx, path)
+	v.recordHealthResult(drive.HealthOpList, err)
+	if err != nil {
+		return nil, err
+	}
+	if dirPrefetchEnabled(ctx) {
+		v.scheduleDirPrefetch(ctx, cleanVirtual(path), entries)
+	}
+	return entries, nil
+}
+
+func (v *VFS) listNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := v.listChildren(ctx, path, entry.ID)
+	if err != nil {
+		return nil, err
+	}
+	entries = v.withPendingChildren(path, entries)
+	return entries, nil
+}
+
+func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
+	path = cleanVirtual(path)
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if !entry.IsDir {
+		return nil, fmt.Errorf("vfs: %s is not a directory", path)
+	}
+	entries, err := newVFSDriverRuntime(v).ListBackend().ListChildren(ctx, entry.ID)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+	return entries, nil
+}
+
+func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+	return newVFSListingRuntime(v).PendingChildren(parentPath, entries)
+}
+
 func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]drive.Entry, error) {
 	return v.listChildrenWithMode(ctx, parentPath, parentID, false)
 }
@@ -35,23 +84,19 @@ func (v *VFS) prefetchChildren(ctx context.Context, parentPath, parentID string)
 }
 
 func (v *VFS) listChildrenWithMode(ctx context.Context, parentPath, parentID string, prefetch bool) ([]drive.Entry, error) {
+	runtime := newVFSListingRuntime(v)
+	scheduler := newVFSListScheduler(v)
 	parentPath = cleanVirtual(parentPath)
 	for {
 		if v.isUnavailable(parentPath) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
 		}
 		now := time.Now()
-		v.mu.RLock()
-		cached, ok := v.lists[parentPath]
-		if ok && now.Before(cached.expires) {
-			entries := cloneEntries(cached.entries)
-			v.mu.RUnlock()
-			entries = v.applyLocalModTimes(parentPath, entries)
-			return v.localChildren(parentPath, v.filterDeleted(parentPath, entries)), nil
+		if entries, ok := runtime.FreshCachedList(parentPath, now); ok {
+			return entries, nil
 		}
-		v.mu.RUnlock()
 
-		load, owner := v.beginListLoad(parentPath, prefetch)
+		load, owner := scheduler.BeginListLoad(parentPath, prefetch)
 		if !owner {
 			select {
 			case <-load.done:
@@ -72,62 +117,25 @@ func (v *VFS) listChildrenWithMode(ctx context.Context, parentPath, parentID str
 			}
 		}
 
-		entries, err := v.loadRemoteChildren(ctx, parentPath, parentID, prefetch)
-		v.finishListLoad(parentPath, load, entries, err)
+		entries, err := loadRemoteChildrenWithRuntime(ctx, parentPath, parentID, prefetch, runtime, newVFSDriverRuntime(v).ListBackend())
+		scheduler.FinishListLoad(parentPath, load, entries, err)
 		return entries, err
 	}
 }
 
-func (v *VFS) loadRemoteChildren(ctx context.Context, parentPath, parentID string, prefetch bool) ([]drive.Entry, error) {
+func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID string, prefetch bool, runtime listingRuntime, backend listBackend) ([]drive.Entry, error) {
 	parentPath = cleanVirtual(parentPath)
 	now := time.Now()
-	entries, err := v.driver.List(ctx, parentID)
+	entries, err := backend.ListChildren(ctx, parentID)
 	if err != nil {
 		return nil, err
 	}
 	if prefetch {
-		if !v.isCurrentPrefetchDir(parentPath, parentID) {
+		if !runtime.IsCurrentPrefetchDir(parentPath, parentID) {
 			return nil, fmt.Errorf("vfs: discard stale directory prefetch path=%q id=%q", parentPath, parentID)
 		}
 	}
-	v.updateOverlay(parentPath, entries)
-	entries = v.filterDeleted(parentPath, entries)
-	v.mu.Lock()
-	for i, child := range entries {
-		childPath := joinVirtual(parentPath, child.Name)
-		child = v.applyLocalModTimeLocked(childPath, child)
-		entries[i] = child
-		v.entries[childPath] = child
-	}
-	v.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: now.Add(listCacheTTL)}
-	v.mu.Unlock()
-	return v.localChildren(parentPath, entries), nil
-}
-
-func (v *VFS) beginListLoad(parentPath string, prefetch bool) (*listLoad, bool) {
-	parentPath = cleanVirtual(parentPath)
-	v.listLoadMu.Lock()
-	defer v.listLoadMu.Unlock()
-	if load := v.listLoads[parentPath]; load != nil {
-		return load, false
-	}
-	load := &listLoad{done: make(chan struct{}), prefetch: prefetch}
-	v.listLoads[parentPath] = load
-	return load, true
-}
-
-func (v *VFS) finishListLoad(parentPath string, load *listLoad, entries []drive.Entry, err error) {
-	parentPath = cleanVirtual(parentPath)
-	if err == nil {
-		load.entries = cloneEntries(entries)
-	}
-	load.err = err
-	v.listLoadMu.Lock()
-	if v.listLoads[parentPath] == load {
-		delete(v.listLoads, parentPath)
-	}
-	v.listLoadMu.Unlock()
-	close(load.done)
+	return runtime.CommitRemoteList(parentPath, entries, now.Add(listCacheTTL)), nil
 }
 
 func (v *VFS) scheduleDirPrefetch(ctx context.Context, parentPath string, entries []drive.Entry) {
@@ -141,11 +149,12 @@ func (v *VFS) scheduleDirPrefetch(ctx context.Context, parentPath string, entrie
 	if len(dirs) == 0 {
 		return
 	}
-	bgCtx := v.dirPrefetchCtx(ctx)
+	bgCtx := newVFSListScheduler(v).DirPrefetchContext(ctx)
 	go v.prefetchDirectDirs(bgCtx, parentPath, dirs)
 }
 
 func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []drive.Entry) {
+	scheduler := newVFSListScheduler(v)
 	scheduled := 0
 	for _, dir := range dirs {
 		if ctx.Err() != nil {
@@ -155,25 +164,23 @@ func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []
 		if !v.isCurrentPrefetchDir(childPath, dir.ID) {
 			continue
 		}
-		if !v.markDirPrefetch(childPath) {
+		if !scheduler.MarkDirPrefetch(childPath) {
 			continue
 		}
 		scheduled++
-		select {
-		case v.dirPrefetchSem <- struct{}{}:
-		case <-ctx.Done():
-			v.finishDirPrefetch(childPath)
+		if !scheduler.AcquireDirPrefetchSlot(ctx) {
+			scheduler.FinishDirPrefetch(childPath)
 			return
 		}
 		if !v.isCurrentPrefetchDir(childPath, dir.ID) {
-			v.finishDirPrefetch(childPath)
-			<-v.dirPrefetchSem
+			scheduler.FinishDirPrefetch(childPath)
+			scheduler.ReleaseDirPrefetchSlot()
 			continue
 		}
 		if v.prefetchOneDir(ctx, childPath, dir.ID) {
-			v.markDirPrefetchComplete(childPath)
+			scheduler.MarkDirPrefetchComplete(childPath)
 		}
-		<-v.dirPrefetchSem
+		scheduler.ReleaseDirPrefetchSlot()
 	}
 	if scheduled > 0 {
 		logging.L.DebugfEvery("vfs.dir_prefetch_scheduled", time.Second, "[PREFETCH] child dirs scheduled parent=%q count=%d", parentPath, scheduled)
@@ -181,7 +188,7 @@ func (v *VFS) prefetchDirectDirs(ctx context.Context, parentPath string, dirs []
 }
 
 func (v *VFS) prefetchOneDir(ctx context.Context, path, parentID string) bool {
-	defer v.finishDirPrefetch(path)
+	defer newVFSListScheduler(v).FinishDirPrefetch(path)
 	start := time.Now()
 	opCtx, cancel := context.WithTimeout(ctx, dirPrefetchTimeout)
 	defer cancel()
@@ -196,69 +203,219 @@ func (v *VFS) prefetchOneDir(ctx context.Context, path, parentID string) bool {
 	return true
 }
 
-func (v *VFS) markDirPrefetch(path string) bool {
-	path = cleanVirtual(path)
-	if v.hasFreshListCache(path) {
-		return false
-	}
-	now := time.Now()
-	v.dirPrefetchMu.Lock()
-	defer v.dirPrefetchMu.Unlock()
-	if _, ok := v.dirPrefetching[path]; ok {
-		return false
-	}
-	if last, ok := v.dirPrefetched[path]; ok && now.Sub(last) < dirPrefetchCooldown {
-		return false
-	}
-	v.dirPrefetching[path] = struct{}{}
-	return true
-}
-
-func (v *VFS) markDirPrefetchComplete(path string) {
-	path = cleanVirtual(path)
-	v.dirPrefetchMu.Lock()
-	v.dirPrefetched[path] = time.Now()
-	v.dirPrefetchMu.Unlock()
-}
-
 func (v *VFS) suppressDirPrefetch(path string) {
-	path = cleanVirtual(path)
-	v.dirPrefetchMu.Lock()
-	v.dirPrefetched[path] = time.Now()
-	v.dirPrefetchMu.Unlock()
-}
-
-func (v *VFS) finishDirPrefetch(path string) {
-	path = cleanVirtual(path)
-	v.dirPrefetchMu.Lock()
-	delete(v.dirPrefetching, path)
-	v.dirPrefetchMu.Unlock()
-}
-
-func (v *VFS) hasFreshListCache(path string) bool {
-	path = cleanVirtual(path)
-	now := time.Now()
-	v.mu.RLock()
-	cached, ok := v.lists[path]
-	v.mu.RUnlock()
-	return ok && now.Before(cached.expires)
+	newVFSListScheduler(v).SuppressDirPrefetch(path)
 }
 
 func (v *VFS) isCurrentPrefetchDir(path, id string) bool {
+	return newVFSListingRuntime(v).IsCurrentPrefetchDir(path, id)
+}
+
+type listingRuntime interface {
+	FreshCachedList(parentPath string, now time.Time) ([]drive.Entry, bool)
+	CommitRemoteList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry
+	PendingChildren(parentPath string, entries []drive.Entry) []drive.Entry
+	IsCurrentPrefetchDir(path, id string) bool
+}
+
+type vfsListingRuntime struct {
+	v *VFS
+}
+
+func newVFSListingRuntime(v *VFS) vfsListingRuntime {
+	return vfsListingRuntime{v: v}
+}
+
+func (r vfsListingRuntime) FreshCachedList(parentPath string, now time.Time) ([]drive.Entry, bool) {
+	parentPath = cleanVirtual(parentPath)
+	r.v.view.mu.RLock()
+	cached, ok := r.v.view.lists[parentPath]
+	if ok && now.Before(cached.expires) {
+		entries := cloneEntries(cached.entries)
+		r.v.view.mu.RUnlock()
+		entries = r.v.applyLocalModTimes(parentPath, entries)
+		return r.v.localChildren(parentPath, r.v.filterDeleted(parentPath, entries)), true
+	}
+	r.v.view.mu.RUnlock()
+	return nil, false
+}
+
+func (r vfsListingRuntime) CommitRemoteList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
+	parentPath = cleanVirtual(parentPath)
+	r.v.updateOverlay(parentPath, entries)
+	entries = r.v.filterDeleted(parentPath, entries)
+	r.v.view.mu.Lock()
+	for i, child := range entries {
+		childPath := joinVirtual(parentPath, child.Name)
+		child = r.v.applyLocalModTimeLocked(childPath, child)
+		entries[i] = child
+		r.v.view.entries[childPath] = child
+	}
+	r.v.view.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: expires}
+	r.v.view.mu.Unlock()
+	return r.v.localChildren(parentPath, entries)
+}
+
+func (r vfsListingRuntime) PendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+	parentPath = cleanVirtual(parentPath)
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.Name] = true
+	}
+	for _, pending := range r.v.uploads.PendingUploads() {
+		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || r.v.isDeleted(pending.Path) {
+			continue
+		}
+		entries = append(entries, drive.Entry{
+			ID:        pending.FID,
+			ParentID:  pending.ParentID,
+			Name:      pending.Name,
+			Size:      pending.Size,
+			ModTime:   uploadModTime(pending),
+			UpdatedAt: uploadModTime(pending),
+		})
+		seen[pending.Name] = true
+	}
+	return entries
+}
+
+func (r vfsListingRuntime) IsCurrentPrefetchDir(path, id string) bool {
 	path = cleanVirtual(path)
-	if v.isUnavailable(path) {
+	if r.v.isUnavailable(path) {
 		return false
 	}
-	v.mu.RLock()
-	entry, ok := v.entries[path]
-	v.mu.RUnlock()
+	r.v.view.mu.RLock()
+	entry, ok := r.v.view.entries[path]
+	r.v.view.mu.RUnlock()
 	return ok && entry.IsDir && entry.ID == id
 }
 
-func (v *VFS) dirPrefetchCtx(fallback context.Context) context.Context {
-	v.dirPrefetchMu.Lock()
-	ctx := v.dirPrefetchContext
-	v.dirPrefetchMu.Unlock()
+type listBackend interface {
+	ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error)
+}
+
+type driverListBackend struct {
+	driver drive.Driver
+}
+
+func newDriverListBackend(driver drive.Driver) driverListBackend {
+	return driverListBackend{driver: driver}
+}
+
+func (b driverListBackend) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	return b.driver.List(ctx, parentID)
+}
+
+type vfsListScheduler struct {
+	v *VFS
+}
+
+func newVFSListScheduler(v *VFS) vfsListScheduler {
+	return vfsListScheduler{v: v}
+}
+
+func (s vfsListScheduler) BeginListLoad(parentPath string, prefetch bool) (*listLoad, bool) {
+	parentPath = cleanVirtual(parentPath)
+	s.v.listState.loadMu.Lock()
+	defer s.v.listState.loadMu.Unlock()
+	if load := s.v.listState.loads[parentPath]; load != nil {
+		return load, false
+	}
+	load := &listLoad{done: make(chan struct{}), prefetch: prefetch}
+	s.v.listState.loads[parentPath] = load
+	return load, true
+}
+
+func (s vfsListScheduler) FinishListLoad(parentPath string, load *listLoad, entries []drive.Entry, err error) {
+	parentPath = cleanVirtual(parentPath)
+	if err == nil {
+		load.entries = cloneEntries(entries)
+	}
+	load.err = err
+	s.v.listState.loadMu.Lock()
+	if s.v.listState.loads[parentPath] == load {
+		delete(s.v.listState.loads, parentPath)
+	}
+	s.v.listState.loadMu.Unlock()
+	close(load.done)
+}
+
+func (s vfsListScheduler) HasFreshListCache(path string) bool {
+	path = cleanVirtual(path)
+	now := time.Now()
+	s.v.view.mu.RLock()
+	cached, ok := s.v.view.lists[path]
+	s.v.view.mu.RUnlock()
+	return ok && now.Before(cached.expires)
+}
+
+func (s vfsListScheduler) MarkDirPrefetch(path string) bool {
+	path = cleanVirtual(path)
+	if s.HasFreshListCache(path) {
+		return false
+	}
+	now := time.Now()
+	s.v.dirPrefetch.mu.Lock()
+	defer s.v.dirPrefetch.mu.Unlock()
+	if _, ok := s.v.dirPrefetch.inFlight[path]; ok {
+		return false
+	}
+	if last, ok := s.v.dirPrefetch.done[path]; ok && now.Sub(last) < dirPrefetchCooldown {
+		return false
+	}
+	s.v.dirPrefetch.inFlight[path] = struct{}{}
+	return true
+}
+
+func (s vfsListScheduler) MarkDirPrefetchComplete(path string) {
+	path = cleanVirtual(path)
+	s.v.dirPrefetch.mu.Lock()
+	s.v.dirPrefetch.done[path] = time.Now()
+	s.v.dirPrefetch.mu.Unlock()
+}
+
+func (s vfsListScheduler) SuppressDirPrefetch(path string) {
+	path = cleanVirtual(path)
+	s.v.dirPrefetch.mu.Lock()
+	s.v.dirPrefetch.done[path] = time.Now()
+	s.v.dirPrefetch.mu.Unlock()
+}
+
+func (s vfsListScheduler) FinishDirPrefetch(path string) {
+	path = cleanVirtual(path)
+	s.v.dirPrefetch.mu.Lock()
+	delete(s.v.dirPrefetch.inFlight, path)
+	s.v.dirPrefetch.mu.Unlock()
+}
+
+func (s vfsListScheduler) AcquireDirPrefetchSlot(ctx context.Context) bool {
+	select {
+	case s.v.dirPrefetch.sem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s vfsListScheduler) ReleaseDirPrefetchSlot() {
+	<-s.v.dirPrefetch.sem
+}
+
+func (s vfsListScheduler) StartDirPrefetch(ctx context.Context) bool {
+	s.v.dirPrefetch.mu.Lock()
+	defer s.v.dirPrefetch.mu.Unlock()
+	if s.v.dirPrefetch.started {
+		return false
+	}
+	s.v.dirPrefetch.started = true
+	s.v.dirPrefetch.context = ctx
+	return true
+}
+
+func (s vfsListScheduler) DirPrefetchContext(fallback context.Context) context.Context {
+	s.v.dirPrefetch.mu.Lock()
+	ctx := s.v.dirPrefetch.context
+	s.v.dirPrefetch.mu.Unlock()
 	if ctx != nil && ctx.Err() == nil {
 		return ctx
 	}

@@ -114,7 +114,7 @@ func watchMountSummaries(state *vfs.DebugSnapshot, staging *control.StagingRespo
 				activeUploads++
 			}
 		}
-		pending := mount.PendingFiles()
+		pending := mount.PendingUploads()
 		item := debugAIWatchMount{
 			Name:           mount.Identity.Name,
 			Driver:         mount.Identity.DriverName,

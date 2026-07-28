@@ -3,23 +3,16 @@
 package vfs
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
-
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 )
 
 const uploadDebounceDelay = 5 * time.Second
@@ -32,12 +25,13 @@ const localCreateLookupTTL = 2 * time.Minute
 
 type Options struct {
 	Name          string
-	CacheDir      string
+	StorageDir    string
 	ReadCacheDir  string
-	WritebackDir  string
+	UploadDir     string
 	CacheMaxBytes int64
 	RootID        string
 	Encrypted     bool
+	TestEnabled   bool
 	UploadDelay   time.Duration
 	UploadWorkers int
 	DeleteDelay   time.Duration
@@ -47,70 +41,41 @@ type VFS struct {
 	driver        drive.Driver
 	name          string
 	healthTracker *drive.HealthTracker
-	cache         *Cache
+	readCache     *readCacheStore
+	uploads       *uploadStore
 	rootID        string
 	encrypted     bool
+	testEnabled   bool
 
-	mu      sync.RWMutex
-	entries map[string]drive.Entry
-	lists   map[string]listCacheEntry
-	queue   chan PendingFile
+	view        *viewState
+	uploadQueue chan PendingUpload
 
-	uploadDelay        time.Duration
-	uploadWorkers      int
-	uploadMu           sync.Mutex
-	uploadTimers       map[string]*time.Timer
-	activeUploads      map[string]*uploadSnapshotState
-	uploadHistory      []UploadSnapshot
-	uploadAdmit        uploadAdmission
-	uploadCancelFaults map[string]*debugUploadCancelFault
-	readHistory        []drive.MetricEvent
-	readSequence       uint64
-	readMu             sync.Mutex
-	activeSequence     uint64
-	activeMu           sync.Mutex
-	activeOps          map[string]DebugActiveOp
+	deleteTasks    *deleteTaskState
+	uploadDelay    time.Duration
+	uploadWorkers  int
+	uploadSchedule *uploadScheduleState
+	uploadDebug    *uploadDebugState
+	uploadFaults   *uploadFaultState
+	uploadHashes   *uploadHashTrackerState
+	uploadAdmit    uploadAdmission
+	readHistory    *readHistoryState
+	activeDebug    *activeDebugState
 
-	deleteDelay  time.Duration
-	deleteMu     sync.Mutex
-	deleteTimers map[string]*time.Timer
-	deleted      map[string]drive.Entry
-	overlayOps   map[string]overlayOp
-	restoredDirs map[string]time.Time
-	copyHidden   map[string]map[string]time.Time
-	localDirs    map[string]time.Time
-	localModTime map[string]time.Time
+	deleteDelay time.Duration
 
-	prefetchMu  sync.Mutex
-	prefetching map[string]struct{}
-	prefetchSem chan struct{}
+	readPrefetch *readPrefetchState
 
-	readSem     chan struct{}
-	readHighSem chan struct{}
+	readSlots *readSlotState
 
-	dirPrefetchMu      sync.Mutex
-	dirPrefetching     map[string]struct{}
-	dirPrefetched      map[string]time.Time
-	dirPrefetchSem     chan struct{}
-	dirPrefetchContext context.Context
-	dirPrefetchStarted bool
+	dirPrefetch *dirPrefetchState
 
-	listLoadMu sync.Mutex
-	listLoads  map[string]*listLoad
+	listState *listState
 
-	hotChunkMu  sync.Mutex
-	hotChunks   map[string][]byte
-	hotChunkLRU []string
+	readFastPath *readFastPathState
 
-	rangeHitMu  sync.Mutex
-	rangeHits   map[string]int
-	rangeHitLRU []string
+	readWindows *readWindowState
 
-	windowLoadMu sync.Mutex
-	windowLoads  map[string]*windowLoad
-
-	pathLockMu sync.Mutex
-	pathLocks  map[string]*sync.Mutex
+	pathLocks *pathLockState
 }
 
 type overlayOp struct {
@@ -139,55 +104,50 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		opts.DeleteDelay = deleteDebounceDelay
 	}
 	readCacheDir := opts.ReadCacheDir
-	writebackDir := opts.WritebackDir
+	uploadDir := opts.UploadDir
 	if readCacheDir == "" {
-		readCacheDir = filepath.Join(opts.CacheDir, "reading")
+		readCacheDir = filepath.Join(opts.StorageDir, "reading")
 	}
-	if writebackDir == "" {
-		writebackDir = opts.CacheDir
+	if uploadDir == "" {
+		uploadDir = opts.StorageDir
 	}
-	cache, err := NewCacheWithDirs(writebackDir, readCacheDir, opts.CacheMaxBytes)
+	stores, err := NewStores(uploadDir, readCacheDir, opts.CacheMaxBytes)
 	if err != nil {
 		return nil, err
 	}
+	now := timeutil.Now()
+	overlay, deleteTasks := newDeleteStates()
+	view := newViewState(opts.RootID, now)
+	view.overlay = overlay
 	v := &VFS{
 		driver:         driver,
 		name:           opts.Name,
 		healthTracker:  drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
-		cache:          cache,
+		readCache:      stores.readCacheStore,
+		uploads:        stores.uploadStore,
 		rootID:         opts.RootID,
 		encrypted:      opts.Encrypted,
-		entries:        map[string]drive.Entry{},
-		lists:          map[string]listCacheEntry{},
-		queue:          make(chan PendingFile, 128),
+		testEnabled:    opts.TestEnabled,
+		view:           view,
+		uploadQueue:    make(chan PendingUpload, 128),
+		deleteTasks:    deleteTasks,
 		uploadDelay:    opts.UploadDelay,
 		uploadWorkers:  opts.UploadWorkers,
-		uploadTimers:   map[string]*time.Timer{},
-		activeUploads:  map[string]*uploadSnapshotState{},
-		activeOps:      map[string]DebugActiveOp{},
+		uploadSchedule: newUploadScheduleState(),
+		uploadDebug:    newUploadDebugState(),
+		uploadFaults:   newUploadFaultState(),
+		uploadHashes:   newUploadHashTrackerState(),
+		readHistory:    newReadHistoryState(),
+		activeDebug:    newActiveDebugState(),
 		deleteDelay:    opts.DeleteDelay,
-		deleteTimers:   map[string]*time.Timer{},
-		deleted:        map[string]drive.Entry{},
-		overlayOps:     map[string]overlayOp{},
-		restoredDirs:   map[string]time.Time{},
-		copyHidden:     map[string]map[string]time.Time{},
-		localDirs:      map[string]time.Time{},
-		localModTime:   map[string]time.Time{},
-		prefetching:    map[string]struct{}{},
-		prefetchSem:    make(chan struct{}, readPrefetchLimit),
-		readSem:        make(chan struct{}, readMaxConcurrency-readHighReserve),
-		readHighSem:    make(chan struct{}, readHighReserve),
-		dirPrefetching: map[string]struct{}{},
-		dirPrefetched:  map[string]time.Time{},
-		dirPrefetchSem: make(chan struct{}, dirPrefetchLimit),
-		listLoads:      map[string]*listLoad{},
-		hotChunks:      map[string][]byte{},
-		rangeHits:      map[string]int{},
-		windowLoads:    map[string]*windowLoad{},
-		pathLocks:      map[string]*sync.Mutex{},
+		readPrefetch:   newReadPrefetchState(),
+		readSlots:      newReadSlotState(),
+		dirPrefetch:    newDirPrefetchState(),
+		listState:      newListState(),
+		readFastPath:   newReadFastPathState(),
+		readWindows:    newReadWindowState(),
+		pathLocks:      newPathLockState(),
 	}
-	now := timeutil.Now()
-	v.entries["/"] = drive.Entry{ID: opts.RootID, Name: "/", IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}
 	return v, nil
 }
 
@@ -198,27 +158,10 @@ func (v *VFS) Start(ctx context.Context) {
 	v.Resume(ctx)
 }
 
-func (v *VFS) FlushReadCache() error {
-	return v.cache.FlushReadCache()
-}
-
-func (v *VFS) ClearReadCache() error {
-	return v.cache.ClearReadCache()
-}
-
-func (v *VFS) CloseReadCache() error {
-	return v.cache.Close()
-}
-
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
-	v.dirPrefetchMu.Lock()
-	if v.dirPrefetchStarted {
-		v.dirPrefetchMu.Unlock()
+	if !newVFSListScheduler(v).StartDirPrefetch(ctx) {
 		return
 	}
-	v.dirPrefetchStarted = true
-	v.dirPrefetchContext = ctx
-	v.dirPrefetchMu.Unlock()
 
 	go func() {
 		select {
@@ -239,13 +182,74 @@ func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
 	}()
 }
 
+func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpStat, err) }()
+	path = cleanVirtual(path)
+	if pending, err := v.pendingUpload(path); err == nil {
+		entry := drive.Entry{
+			ID:        pending.FID,
+			ParentID:  pending.ParentID,
+			Name:      pending.Name,
+			IsDir:     false,
+			Size:      pending.Size,
+			ModTime:   uploadModTime(pending),
+			UpdatedAt: uploadModTime(pending),
+		}
+		return v.applyLocalModTime(path, entry), nil
+	}
+	entry, err = v.resolve(ctx, path)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	return v.applyLocalModTime(path, entry), nil
+}
+
+func uploadModTime(p PendingUpload) time.Time {
+	if p.ModTime == 0 {
+		if p.UpdatedAt == 0 {
+			return time.Time{}
+		}
+		return time.Unix(0, p.UpdatedAt)
+	}
+	return time.Unix(0, p.ModTime)
+}
+
+func cloneEntries(entries []drive.Entry) []drive.Entry {
+	if entries == nil {
+		return nil
+	}
+	cloned := make([]drive.Entry, len(entries))
+	copy(cloned, entries)
+	return cloned
+}
+
+func cleanVirtual(path string) string {
+	return CleanVirtualPath(path)
+}
+
+func isAppleMetadataName(name string) bool {
+	return name == ".DS_Store" || strings.HasPrefix(name, "._")
+}
+
+func (v *VFS) FlushReadCache() error {
+	return v.readCache.FlushReadCache()
+}
+
+func (v *VFS) ClearReadCache() error {
+	return v.readCache.ClearReadCache()
+}
+
+func (v *VFS) CloseReadCache() error {
+	return v.readCache.Close()
+}
+
 func (v *VFS) Resume(ctx context.Context) {
-	for _, pending := range v.cache.Pending() {
+	for _, pending := range v.uploads.PendingUploads() {
 		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
 			oldSize := pending.Size
 			pending.Size = info.Size()
 			pending.UpdatedAt = timeutil.Now().UnixNano()
-			if err := v.cache.SavePending(pending); err != nil {
+			if err := v.uploads.SaveUpload(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
 			} else {
 				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
@@ -268,692 +272,8 @@ func (v *VFS) recordHealthResult(op string, err error) {
 	v.healthTracker.RecordResult(op, err)
 }
 
-func (v *VFS) Space(ctx context.Context) (space drive.Space, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpSpace, err) }()
-	if !drive.HasCapability(v.driver, drive.CapabilitySpace) {
-		return drive.Space{}, fmt.Errorf("vfs: driver does not support space query")
-	}
-	return v.driver.Space(ctx)
-}
-
-func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpStat, err) }()
-	path = cleanVirtual(path)
-	if pending, err := v.pending(path); err == nil {
-		entry := drive.Entry{
-			ID:        pending.FID,
-			ParentID:  pending.ParentID,
-			Name:      pending.Name,
-			IsDir:     false,
-			Size:      pending.Size,
-			ModTime:   pendingModTime(pending),
-			UpdatedAt: pendingModTime(pending),
-		}
-		return v.applyLocalModTime(path, entry), nil
-	}
-	entry, err = v.resolve(ctx, path)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	return v.applyLocalModTime(path, entry), nil
-}
-
-func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
-	entries, err := v.listNoPrefetch(ctx, path)
-	v.healthTracker.RecordResult(drive.HealthOpList, err)
-	if err != nil {
-		return nil, err
-	}
-	v.scheduleDirPrefetch(ctx, cleanVirtual(path), entries)
-	return entries, nil
-}
-
-func (v *VFS) listNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := v.listChildren(ctx, path, entry.ID)
-	if err != nil {
-		return nil, err
-	}
-	entries = v.withPendingChildren(path, entries)
-	return entries, nil
-}
-
-func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
-	path = cleanVirtual(path)
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	if !entry.IsDir {
-		return nil, fmt.Errorf("vfs: %s is not a directory", path)
-	}
-	entries, err := v.driver.List(ctx, entry.ID)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name < entries[j].Name
-	})
-	return entries, nil
-}
-
-func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpRead, err) }()
-	path = cleanVirtual(path)
-	started := timeutil.Now()
-	opID := fmt.Sprintf("read-%d", atomic.AddUint64(&v.readSequence, 1))
-	activeID := v.beginDebugActive(DebugActiveOp{
-		OpID:      opID,
-		Kind:      "vfs_read",
-		Phase:     "resolve",
-		Path:      path,
-		Offset:    offset,
-		Requested: size,
-	})
-	if pending, err := v.pending(path); err == nil {
-		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
-			op.Phase = "staging_flush"
-			op.RemoteID = pending.FID
-		})
-		if err := v.cache.staging.flush(pending.LocalPath); err != nil {
-			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
-			return nil, err
-		}
-		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
-			op.Phase = "staging_open"
-		})
-		rc, err := osutil.OpenRead(pending.LocalPath, offset, size)
-		if err != nil {
-			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
-			return nil, err
-		}
-		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
-			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, offset, size, bytes, "staging", 0, 0, 0, started, nil, readErr)
-		}}, nil
-	}
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, "", offset, size, 0, "remote", 0, 0, 0, started, nil, err)
-		return nil, err
-	}
-	if entry.IsDir {
-		err := fmt.Errorf("vfs: %s is a directory", path)
-		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", 0, 0, 0, started, nil, err)
-		return nil, err
-	}
-	v.updateDebugActive(activeID, func(op *DebugActiveOp) {
-		op.Phase = "read_range"
-		op.RemoteID = entry.ID
-	})
-	hitsBefore, missesBefore := v.debugCacheCounters()
-	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
-	windowChunks := readWindowChunks(size)
-	data, startChunk, endChunk, err := v.readRange(readCtx, entry, offset, size, windowChunks)
-	hitsAfter, missesAfter := v.debugCacheCounters()
-	if err != nil {
-		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, readWindowExtra(windowChunks), err)
-		return nil, err
-	}
-	if readPrefetchEnabled(ctx) {
-		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
-			op.Phase = "prefetch_schedule"
-			op.Extra = map[string]any{
-				"start_chunk":   startChunk,
-				"end_chunk":     endChunk,
-				"window_chunks": windowChunks,
-			}
-		})
-		v.prefetchAdjacentChunks(readCtx, entry, endChunk, windowChunks)
-	}
-	var chunks int64
-	if len(data) > 0 {
-		chunks = endChunk - startChunk + 1
-	}
-	v.finishDebugActive(activeID)
-	v.recordDebugRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, readWindowExtra(windowChunks), nil)
-	return io.NopCloser(bytes.NewReader(data)), nil
-}
-
-func (v *VFS) Create(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
-	if !drive.HasCapability(v.driver, drive.CapabilitySourceUploader) {
-		return fmt.Errorf("vfs: driver does not support upload")
-	}
-	path = cleanVirtual(path)
-	unlock := v.lockPath(path)
-	defer unlock()
-	return v.createLocked(ctx, path)
-}
-
-func (v *VFS) createLocked(ctx context.Context, path string) error {
-	path = cleanVirtual(path)
-	v.restoreDeletedAncestor(filepath.Dir(path))
-	v.cancelDeletedFile(path)
-	parent, name, err := v.parent(ctx, path)
-	if err != nil {
-		return err
-	}
-	v.unhideCopyChild(filepath.Dir(path), name)
-	old, hadOld := v.cache.PendingByPath(path)
-	fid := newStagingFID(path)
-	localPath, err := v.cache.staging.create(fid)
-	if err != nil {
-		return err
-	}
-	now := timeutil.Now()
-	pending := PendingFile{Path: path, FID: fid, ParentID: parent.ID, Name: name, LocalPath: localPath, ModTime: now.UnixNano()}
-	if err := v.cache.SavePending(pending); err != nil {
-		_ = v.cache.staging.remove(localPath)
-		return err
-	}
-	if hadOld && !old.Frozen {
-		v.cache.removeStagingIfUnreferenced(old.LocalPath)
-	}
-	v.setLocalModTime(path, now)
-	logging.L.InfofEvery("vfs.pending_created", time.Second, "[VFS] pending created op_id=%q path=%q parent=%q name=%q local=%q", pending.FID, path, parent.ID, name, localPath)
-	return nil
-}
-
-// rotateFrozenGeneration replaces a frozen pending with a new mutable
-// generation seeded with the old staging content, preserving write-at-offset
-// semantics. The old pending stays current until the new staging is fully
-// prepared; on any failure the new staging is removed and the old pending is
-// left untouched. The old frozen staging survives for any in-flight upload.
-// Parent/Name are reused from the old pending because the path already went
-// through createLocked once.
-func (v *VFS) rotateFrozenGeneration(path string, old PendingFile) (PendingFile, error) {
-	fid := newStagingFID(path)
-	localPath, err := v.cache.staging.create(fid)
-	if err != nil {
-		return PendingFile{}, err
-	}
-	size, err := copyStagingContent(old.LocalPath, localPath)
-	if err != nil {
-		_ = v.cache.staging.remove(localPath)
-		return PendingFile{}, err
-	}
-	now := timeutil.Now()
-	pending := PendingFile{
-		Path:      path,
-		FID:       fid,
-		ParentID:  old.ParentID,
-		Name:      old.Name,
-		LocalPath: localPath,
-		Size:      size,
-		ModTime:   now.UnixNano(),
-	}
-	if err := v.cache.SavePending(pending); err != nil {
-		_ = v.cache.staging.remove(localPath)
-		return PendingFile{}, err
-	}
-	v.setLocalModTime(path, now)
-	return pending, nil
-}
-
-func copyStagingContent(srcPath, dstPath string) (int64, error) {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	defer src.Close()
-	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return 0, err
-	}
-	written, copyErr := io.Copy(dst, src)
-	closeErr := dst.Close()
-	if copyErr != nil {
-		return 0, copyErr
-	}
-	if closeErr != nil {
-		return 0, closeErr
-	}
-	return written, nil
-}
-
-func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
-	path = cleanVirtual(path)
-	unlock := v.lockPath(path)
-	defer unlock()
-	pending, err := v.pending(path)
-	if err != nil {
-		if entry, resolveErr := v.resolve(ctx, path); resolveErr == nil && !entry.IsDir {
-			v.invalidateReadCache(entry)
-			logging.L.InfofEvery("vfs.stage_existing_for_write", time.Second, "[VFS] staging existing file for write path=%q id=%q size=%d", path, entry.ID, entry.Size)
-			if err := v.stageExisting(ctx, path); err != nil {
-				return 0, err
-			}
-		} else {
-			if err := v.createLocked(ctx, path); err != nil {
-				return 0, err
-			}
-		}
-		pending, err = v.pending(path)
-		if err != nil {
-			return 0, err
-		}
-	}
-	if pending.Frozen {
-		pending, err = v.rotateFrozenGeneration(path, pending)
-		if err != nil {
-			return 0, err
-		}
-	}
-	n, err = v.cache.staging.writeAt(pending.LocalPath, data, off)
-	if err != nil {
-		return n, err
-	}
-	if writtenEnd := off + int64(n); writtenEnd > pending.Size {
-		pending.Size = writtenEnd
-	}
-	now := timeutil.Now()
-	pending.ModTime = now.UnixNano()
-	v.cache.UpdatePendingTransient(pending)
-	v.setLocalModTime(path, now)
-	logging.L.DebugfEvery("vfs.write_staged", time.Second, "[VFS] write staged op_id=%q path=%q off=%d len=%d written=%d size=%d local=%q", pending.FID, path, off, len(data), n, pending.Size, pending.LocalPath)
-	return n, nil
-}
-
-func (v *VFS) Flush(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
-	path = cleanVirtual(path)
-	unlock := v.lockPath(path)
-	defer unlock()
-	pending, err := v.pending(path)
-	if err != nil {
-		logging.L.DebugfEvery("vfs.flush_ignored", time.Second, "[VFS] flush ignored without pending path=%q", path)
-		return nil
-	}
-	if err := v.cache.staging.flush(pending.LocalPath); err != nil {
-		return err
-	}
-	if err := v.cache.staging.sync(pending.LocalPath); err != nil {
-		return err
-	}
-	size, err := v.cache.staging.size(pending.LocalPath)
-	if err != nil {
-		return err
-	}
-	pending.Size = size
-	pending.Frozen = true
-	if pending.ModTime == 0 {
-		now := timeutil.Now()
-		pending.ModTime = now.UnixNano()
-		v.setLocalModTime(path, now)
-	}
-	if err := v.cache.SavePending(pending); err != nil {
-		return err
-	}
-	if latest, ok := v.cache.PendingByPath(path); ok {
-		pending = latest
-	}
-	delay := v.uploadDelay
-	if pending.Size == 0 && delay < zeroByteUploadDebounceDelay {
-		delay = zeroByteUploadDebounceDelay
-	}
-	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q delay=%s", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, delay)
-	v.enqueueAfter(pending, delay)
-	return nil
-}
-
-func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
-	path = cleanVirtual(path)
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		return err
-	}
-	if !entry.IsDir {
-		return fmt.Errorf("vfs: %s is not a directory", path)
-	}
-	hideNames := map[string]time.Time{}
-	if entries, err := v.driver.List(ctx, entry.ID); err == nil {
-		expires := time.Now().Add(directoryCopyHideTTL)
-		for _, child := range entries {
-			if !isAppleMetadataName(child.Name) {
-				hideNames[child.Name] = expires
-			}
-		}
-	}
-	v.cancelChildUploads(path)
-	if err := v.cache.RemovePendingUnder(path); err != nil {
-		return err
-	}
-	v.mu.Lock()
-	for cachedPath, cachedEntry := range v.entries {
-		if filepath.Dir(cachedPath) == path {
-			if _, ok := hideNames[cachedEntry.Name]; !ok && !isAppleMetadataName(cachedEntry.Name) {
-				hideNames[cachedEntry.Name] = time.Now().Add(directoryCopyHideTTL)
-			}
-			delete(v.entries, cachedPath)
-		}
-	}
-	v.markLocalDirLocked(path)
-	v.invalidateListLocked(path)
-	v.mu.Unlock()
-	v.setCopyHidden(path, hideNames)
-	return nil
-}
-
-func (v *VFS) withPendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
-	parentPath = cleanVirtual(parentPath)
-	seen := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		seen[entry.Name] = true
-	}
-	for _, pending := range v.cache.Pending() {
-		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || v.isDeleted(pending.Path) {
-			continue
-		}
-		entries = append(entries, drive.Entry{
-			ID:        pending.FID,
-			ParentID:  pending.ParentID,
-			Name:      pending.Name,
-			Size:      pending.Size,
-			ModTime:   pendingModTime(pending),
-			UpdatedAt: pendingModTime(pending),
-		})
-		seen[pending.Name] = true
-	}
-	return entries
-}
-
-func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
-	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
-		return drive.Entry{}, fmt.Errorf("vfs: driver does not support mkdir")
-	}
-	path = cleanVirtual(path)
-	if entry, err := v.resolve(ctx, path); err == nil {
-		if entry.IsDir {
-			logging.L.Debugf("[VFS] mkdir skipped existing directory path=%q id=%q", path, entry.ID)
-			return entry, nil
-		}
-		return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
-	}
-	if entry, ok := v.restoreDeletedPath(path); ok {
-		logging.L.InfofEvery("vfs.mkdir_restored_deleted", time.Second, "[VFS] mkdir restored deleted directory path=%q id=%q", path, entry.ID)
-		return entry, nil
-	}
-	v.restoreDeletedAncestor(filepath.Dir(path))
-	if v.isUnderRestoredDir(path) {
-		if entry, err := v.resolve(ctx, path); err == nil && entry.IsDir {
-			logging.L.InfofEvery("vfs.mkdir_reused_restored", time.Second, "[VFS] mkdir reused restored ancestor path=%q id=%q", path, entry.ID)
-			return entry, nil
-		}
-	}
-	parent, name, err := v.parent(ctx, path)
-	if err != nil {
-		logging.L.Warnf("[VFS] mkdir parent resolve failed path=%q err=%v", path, err)
-		return drive.Entry{}, err
-	}
-	logging.L.InfofEvery("vfs.mkdir_start", time.Second, "[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
-	entry, err = v.driver.Mkdir(ctx, parent.ID, name)
-	if err != nil {
-		if !isAlreadyExistsError(err) {
-			logging.L.Warnf("[VFS] mkdir failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
-			return drive.Entry{}, err
-		}
-		logging.L.InfofEvery("vfs.mkdir_already_exists", time.Second, "[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
-		entry, err = v.findExistingChildDir(ctx, filepath.Dir(path), parent.ID, name)
-		if err != nil {
-			logging.L.Warnf("[VFS] mkdir existing directory resolve failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
-			return drive.Entry{}, err
-		}
-	}
-	v.mu.Lock()
-	v.entries[path] = entry
-	v.markLocalDirLocked(path)
-	v.invalidateListLocked(filepath.Dir(path))
-	v.mu.Unlock()
-	logging.L.InfofEvery("vfs.mkdir_complete", time.Second, "[VFS] mkdir complete path=%q id=%q parent=%q", path, entry.ID, entry.ParentID)
-	return entry, nil
-}
-
-func (v *VFS) findExistingChildDir(ctx context.Context, parentPath, parentID, name string) (drive.Entry, error) {
-	entries, err := v.driver.List(ctx, parentID)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	v.mu.Lock()
-	for _, child := range entries {
-		childPath := joinVirtual(parentPath, child.Name)
-		v.entries[childPath] = child
-		if child.Name == name && child.IsDir {
-			v.mu.Unlock()
-			return child, nil
-		}
-	}
-	v.mu.Unlock()
-	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
-}
-
-func (v *VFS) Remove(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
-	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
-		return fmt.Errorf("vfs: driver does not support remove")
-	}
-	path = cleanVirtual(path)
-	if _, err := v.pending(path); err == nil {
-		unlock := v.lockPath(path)
-		defer unlock()
-		v.cancelUpload(path)
-		v.clearLocalModTime(path)
-		return v.cache.RemovePending(path)
-	}
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		return err
-	}
-	v.invalidateReadCache(entry)
-	v.markDeleted(path, entry)
-	v.clearLocalModTime(path)
-	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deleteDelay)
-	v.scheduleDelete(path, entry)
-	return nil
-}
-
-func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
-	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
-		return fmt.Errorf("vfs: driver does not support remove")
-	}
-	path = cleanVirtual(path)
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		return err
-	}
-	if !entry.IsDir {
-		return fmt.Errorf("vfs: %s is not a directory", path)
-	}
-	v.invalidateReadCache(entry)
-	v.cancelChildUploads(path)
-	if err := v.cache.RemovePendingUnder(path); err != nil {
-		return err
-	}
-	v.cancelChildDeletes(path)
-	v.markDeleted(path, entry)
-	v.clearLocalModTime(path)
-	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deleteDelay)
-	v.scheduleDelete(path, entry)
-	return nil
-}
-
-func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
-	if !drive.HasCapability(v.driver, drive.CapabilityWriter) {
-		return fmt.Errorf("vfs: driver does not support rename")
-	}
-	oldPath = cleanVirtual(oldPath)
-	newPath = cleanVirtual(newPath)
-	if oldPath == "/" || newPath == "/" {
-		return fmt.Errorf("vfs: cannot rename root")
-	}
-
-	if pending, err := v.pending(oldPath); err == nil {
-		unlockOld := v.lockPath(oldPath)
-		defer unlockOld()
-		parent, name, err := v.parent(ctx, newPath)
-		if err != nil {
-			return err
-		}
-		pending.Path = newPath
-		pending.ParentID = parent.ID
-		pending.Name = name
-		v.moveLocalModTime(oldPath, newPath)
-		return v.cache.RenamePending(oldPath, pending)
-	}
-
-	entry, err := v.resolve(ctx, oldPath)
-	if err != nil {
-		return err
-	}
-	v.invalidateReadCache(entry)
-	dstParent, newName, err := v.parent(ctx, newPath)
-	if err != nil {
-		return err
-	}
-	oldParent := filepath.Dir(oldPath)
-	newParent := filepath.Dir(newPath)
-	if filepath.Base(oldPath) != newName {
-		if err := v.driver.Rename(ctx, entry, newName); err != nil {
-			return err
-		}
-		entry.Name = newName
-	}
-	if oldParent != newParent {
-		if err := v.driver.Move(ctx, entry, dstParent.ID); err != nil {
-			return err
-		}
-		entry.ParentID = dstParent.ID
-	}
-	v.mu.Lock()
-	delete(v.entries, oldPath)
-	delete(v.entries, newPath)
-	v.rebaseCachedPathsLocked(oldPath, newPath)
-	v.moveLocalModTimeLocked(oldPath, newPath)
-	v.invalidateListLocked(oldParent)
-	v.invalidateListLocked(newParent)
-	entry.Name = newName
-	entry.ParentID = dstParent.ID
-	entry = v.applyLocalModTimeLocked(newPath, entry)
-	v.entries[newPath] = entry
-	v.mu.Unlock()
-	v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
-	return nil
-}
-
-func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
-	if size < 0 {
-		return fmt.Errorf("vfs: truncate size must be non-negative")
-	}
-	path = cleanVirtual(path)
-	unlock := v.lockPath(path)
-	defer unlock()
-	pending, err := v.pending(path)
-	if err != nil {
-		if err := v.stageExisting(ctx, path); err != nil {
-			return err
-		}
-		pending, err = v.pending(path)
-		if err != nil {
-			return err
-		}
-	}
-	if pending.Frozen {
-		pending, err = v.rotateFrozenGeneration(path, pending)
-		if err != nil {
-			return err
-		}
-	}
-	if err := v.cache.staging.truncate(pending.LocalPath, size); err != nil {
-		return err
-	}
-	pending.Size = size
-	now := timeutil.Now()
-	pending.ModTime = now.UnixNano()
-	v.setLocalModTime(path, now)
-	if entry, err := v.resolve(ctx, path); err == nil && !entry.IsDir {
-		v.invalidateReadCache(entry)
-	}
-	return v.cache.SavePending(pending)
-}
-
-func (v *VFS) stageExisting(ctx context.Context, path string) error {
-	parent, name, err := v.parent(ctx, path)
-	if err != nil {
-		return err
-	}
-	fid := newStagingFID(path)
-	localPath, err := v.cache.staging.create(fid)
-	if err != nil {
-		return err
-	}
-	if entry, err := v.resolve(ctx, path); err == nil && !entry.IsDir {
-		rc, err := v.driver.Read(ctx, entry, 0, 0)
-		if err != nil {
-			return err
-		}
-		f, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, copyErr := io.Copy(f, rc)
-		closeErr := f.Close()
-		rc.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-	size, _ := v.cache.staging.size(localPath)
-	modTime := timeutil.Now()
-	if entry, err := v.resolve(ctx, path); err == nil && !entry.ModTime.IsZero() {
-		modTime = entry.ModTime
-	}
-	pending := PendingFile{
-		Path:      path,
-		FID:       fid,
-		ParentID:  parent.ID,
-		Name:      name,
-		LocalPath: localPath,
-		Size:      size,
-		ModTime:   modTime.UnixNano(),
-	}
-	if err := v.cache.SavePending(pending); err != nil {
-		return err
-	}
-	logging.L.InfofEvery("vfs.existing_file_staged", time.Second, "[VFS] existing file staged op_id=%q path=%q parent=%q name=%q size=%d local=%q", pending.FID, path, parent.ID, name, size, localPath)
-	return nil
-}
-
-func (v *VFS) lockPath(path string) func() {
-	path = cleanVirtual(path)
-	v.pathLockMu.Lock()
-	mu := v.pathLocks[path]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		v.pathLocks[path] = mu
-	}
-	v.pathLockMu.Unlock()
-	mu.Lock()
-	return mu.Unlock
+func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
+	return newVFSDriverRuntime(v).Space(ctx)
 }
 
 func (v *VFS) invalidateReadCache(entry drive.Entry) {
@@ -961,303 +281,28 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 		return
 	}
 	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
-		v.cache.InvalidateFile(cacheKey)
+		v.readCache.InvalidateFile(cacheKey)
 	}
-	v.cache.InvalidateFile(entry.ID)
+	v.readCache.InvalidateFile(entry.ID)
 }
 
-func (v *VFS) pending(path string) (PendingFile, error) {
+func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 	path = cleanVirtual(path)
-	for _, p := range v.cache.Pending() {
-		if p.Path == path {
-			return p, nil
-		}
+	if pending, ok := v.uploads.UploadByPath(path); ok {
+		return pending, nil
 	}
-	return PendingFile{}, fmt.Errorf("vfs: no pending file for %s", path)
+	return PendingUpload{}, fmt.Errorf("vfs: no pending file for %s", path)
 }
 
-func pendingModTime(p PendingFile) time.Time {
-	if p.ModTime == 0 {
-		if p.UpdatedAt == 0 {
-			return time.Time{}
-		}
-		return time.Unix(0, p.UpdatedAt)
-	}
-	return time.Unix(0, p.ModTime)
-}
-
-func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (err error) {
-	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
+func (v *VFS) lockPath(path string) func() {
 	path = cleanVirtual(path)
-	if modTime.IsZero() {
-		return nil
+	v.pathLocks.mu.Lock()
+	mu := v.pathLocks.locks[path]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		v.pathLocks.locks[path] = mu
 	}
-	unlock := v.lockPath(path)
-	defer unlock()
-	if _, err := v.pending(path); err == nil {
-		v.setLocalModTime(path, modTime)
-		return nil
-	}
-	if entry, err := v.resolve(ctx, path); err != nil {
-		return err
-	} else {
-		entry.ModTime = modTime
-		v.mu.Lock()
-		v.entries[path] = entry
-		v.setLocalModTimeLocked(path, modTime)
-		v.invalidateListLocked(filepath.Dir(path))
-		v.mu.Unlock()
-	}
-	return nil
-}
-
-func (v *VFS) applyLocalModTime(path string, entry drive.Entry) drive.Entry {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	return v.applyLocalModTimeLocked(path, entry)
-}
-
-func (v *VFS) applyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry {
-	parentPath = cleanVirtual(parentPath)
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	for i, entry := range entries {
-		entries[i] = v.applyLocalModTimeLocked(joinVirtual(parentPath, entry.Name), entry)
-	}
-	return entries
-}
-
-func (v *VFS) applyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry {
-	if modTime, ok := v.localModTime[cleanVirtual(path)]; ok && !modTime.IsZero() {
-		entry.ModTime = modTime
-		entry.UpdatedAt = modTime
-	}
-	return entry
-}
-
-func (v *VFS) localModTimeFor(path string) time.Time {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	return v.localModTime[cleanVirtual(path)]
-}
-
-func (v *VFS) setLocalModTime(path string, modTime time.Time) {
-	v.mu.Lock()
-	v.setLocalModTimeLocked(path, modTime)
-	v.mu.Unlock()
-}
-
-func (v *VFS) setLocalModTimeLocked(path string, modTime time.Time) {
-	if modTime.IsZero() {
-		return
-	}
-	v.localModTime[cleanVirtual(path)] = modTime
-}
-
-func (v *VFS) clearLocalModTime(path string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	path = cleanVirtual(path)
-	for knownPath := range v.localModTime {
-		if knownPath == path || isPathUnder(knownPath, path) {
-			delete(v.localModTime, knownPath)
-		}
-	}
-}
-
-func (v *VFS) moveLocalModTime(oldPath, newPath string) {
-	v.mu.Lock()
-	v.moveLocalModTimeLocked(oldPath, newPath)
-	v.mu.Unlock()
-}
-
-func (v *VFS) moveLocalModTimeLocked(oldPath, newPath string) {
-	oldPath = cleanVirtual(oldPath)
-	newPath = cleanVirtual(newPath)
-	for knownPath, modTime := range v.localModTime {
-		if knownPath == oldPath {
-			delete(v.localModTime, knownPath)
-			v.localModTime[newPath] = modTime
-			continue
-		}
-		if isPathUnder(knownPath, oldPath) {
-			nextPath := joinVirtual(newPath, strings.TrimPrefix(knownPath, oldPath+"/"))
-			delete(v.localModTime, knownPath)
-			v.localModTime[nextPath] = modTime
-		}
-	}
-}
-
-func (v *VFS) rebaseCachedPathsLocked(oldPath, newPath string) {
-	oldPath = cleanVirtual(oldPath)
-	newPath = cleanVirtual(newPath)
-	for path, entry := range v.entries {
-		if !isPathUnder(path, oldPath) {
-			continue
-		}
-		nextPath := joinVirtual(newPath, strings.TrimPrefix(path, oldPath+"/"))
-		delete(v.entries, path)
-		v.entries[nextPath] = entry
-	}
-}
-
-func (v *VFS) parent(ctx context.Context, path string) (drive.Entry, string, error) {
-	path = cleanVirtual(path)
-	name, parentPath := splitVirtual(path)
-	parent, err := v.resolve(ctx, parentPath)
-	return parent, name, err
-}
-
-func (v *VFS) resolve(ctx context.Context, path string) (drive.Entry, error) {
-	path = cleanVirtual(path)
-	if v.isUnavailable(path) {
-		return drive.Entry{}, fmt.Errorf("%w: %s", ErrNotFound, path)
-	}
-	v.mu.RLock()
-	entry, ok := v.entries[path]
-	v.mu.RUnlock()
-	if ok {
-		return entry, nil
-	}
-	name, parentPath := splitVirtual(path)
-	parent, err := v.resolve(ctx, parentPath)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	if v.isRecentLocalDir(parentPath) {
-		return drive.Entry{}, fmt.Errorf("%w: %s", ErrNotFound, path)
-	}
-	entries, err := v.listChildren(ctx, parentPath, parent.ID)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	for _, child := range entries {
-		childPath := joinVirtual(parentPath, child.Name)
-		child = v.applyLocalModTimeLocked(childPath, child)
-		v.entries[childPath] = child
-		if child.Name == name {
-			return child, nil
-		}
-	}
-	return drive.Entry{}, fmt.Errorf("%w: %s", ErrNotFound, path)
-}
-
-func (v *VFS) markLocalDirLocked(path string) {
-	v.localDirs[cleanVirtual(path)] = time.Now().Add(localCreateLookupTTL)
-}
-
-func (v *VFS) isRecentLocalDir(path string) bool {
-	path = cleanVirtual(path)
-	now := time.Now()
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	expires, ok := v.localDirs[path]
-	if !ok {
-		return false
-	}
-	if now.After(expires) {
-		delete(v.localDirs, path)
-		return false
-	}
-	return true
-}
-
-// RefreshPath clears the directory listing cache for path so the next List call
-// fetches fresh data from the remote driver.
-func (v *VFS) RefreshPath(path string) {
-	v.mu.Lock()
-	delete(v.lists, cleanVirtual(path))
-	v.mu.Unlock()
-}
-
-func (v *VFS) invalidateListLocked(path string) {
-	delete(v.lists, cleanVirtual(path))
-}
-
-func cloneEntries(entries []drive.Entry) []drive.Entry {
-	if entries == nil {
-		return nil
-	}
-	cloned := make([]drive.Entry, len(entries))
-	copy(cloned, entries)
-	return cloned
-}
-
-func cleanVirtual(path string) string {
-	return CleanVirtualPath(path)
-}
-
-// splitVirtual splits a cleaned virtual path into the last component (name)
-// and its parent directory. Unlike filepath.Dir/Base, this uses forward-slash
-// semantics regardless of the host OS, which is required for virtual FUSE paths.
-func splitVirtual(p string) (name, parent string) {
-	if p == "/" {
-		return "/", "/"
-	}
-	idx := strings.LastIndexByte(p, '/')
-	if idx <= 0 {
-		return p[1:], "/"
-	}
-	return p[idx+1:], p[:idx]
-}
-
-func joinVirtual(parent, name string) string {
-	parent = cleanVirtual(parent)
-	if parent == "/" {
-		return "/" + name
-	}
-	return parent + "/" + name
-}
-
-func isPathUnder(path, dir string) bool {
-	path = cleanVirtual(path)
-	dir = cleanVirtual(dir)
-	return dir != "/" && strings.HasPrefix(path, dir+"/")
-}
-
-func isAppleMetadataFile(path string) bool {
-	return isAppleMetadataName(filepath.Base(cleanVirtual(path)))
-}
-
-func isAppleMetadataName(name string) bool {
-	return name == ".DS_Store" || strings.HasPrefix(name, "._")
-}
-
-func isAlreadyExistsError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "already exists") ||
-		strings.Contains(text, "file exists") ||
-		strings.Contains(text, "同名冲突") ||
-		strings.Contains(text, "已存在")
-}
-
-func entryListHasPath(entries []drive.Entry, name, entryID string) bool {
-	for _, entry := range entries {
-		if entry.Name != name {
-			continue
-		}
-		if entryID == "" || entry.ID == "" || entry.ID == entryID {
-			return true
-		}
-	}
-	return false
-}
-
-func stagingFID(path string) string {
-	path = strings.Trim(cleanVirtual(path), "/")
-	if path == "" {
-		return "root"
-	}
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_")
-	return replacer.Replace(path)
-}
-
-func newStagingFID(path string) string {
-	base := stagingFID(path)
-	return base + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	v.pathLocks.mu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }

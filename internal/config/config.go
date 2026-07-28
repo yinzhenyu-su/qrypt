@@ -34,7 +34,7 @@ type Config struct {
 	Storage            StorageConfig   `toml:"storage"`
 	ReadCache          ReadCacheConfig `toml:"read_cache"`
 	ThumbnailCache     ReadCacheConfig `toml:"thumbnail_cache"`
-	Writeback          WritebackConfig `toml:"writeback"`
+	Upload             UploadConfig    `toml:"upload"`
 	Encryption         crypt.Config    `toml:"encryption"`
 	Defaults           Defaults        `toml:"defaults"`
 	Mounts             []MountConfig   `toml:"mounts"`
@@ -45,12 +45,13 @@ type Defaults struct {
 }
 
 type MountConfig struct {
-	Name       string           `toml:"name"`
-	Type       string           `toml:"type"`
-	Params     ParamMap         `toml:"params"`
-	Encryption *crypt.Config    `toml:"encryption"`
-	ReadCache  *ReadCacheConfig `toml:"read_cache"`
-	Writeback  *WritebackConfig `toml:"writeback"`
+	Name        string           `toml:"name"`
+	Type        string           `toml:"type"`
+	TestEnabled bool             `toml:"test_enabled"`
+	Params      ParamMap         `toml:"params"`
+	Encryption  *crypt.Config    `toml:"encryption"`
+	ReadCache   *ReadCacheConfig `toml:"read_cache"`
+	Upload      *UploadConfig    `toml:"upload"`
 }
 
 type ParamMap map[string]string
@@ -84,7 +85,7 @@ func (p *ParamMap) UnmarshalTOML(data any) error {
 type StorageConfig struct {
 	ReadCacheDir      string `toml:"read_cache_dir"`
 	ThumbnailCacheDir string `toml:"thumbnail_cache_dir"`
-	WritebackDir      string `toml:"writeback_dir"`
+	UploadDir         string `toml:"upload_dir"`
 	StateDir          string `toml:"state_dir"`
 	LogDir            string `toml:"log_dir"`
 	TmpDir            string `toml:"tmp_dir"`
@@ -94,10 +95,12 @@ type ReadCacheConfig struct {
 	MaxSize string `toml:"max_size"`
 }
 
-type WritebackConfig struct {
+type UploadConfig struct {
 	UploadDelay   string `toml:"upload_delay"`
 	UploadWorkers int    `toml:"upload_workers"`
 	DeleteDelay   string `toml:"delete_delay"`
+	DefaultMount  string `toml:"default_mount"`
+	DefaultPath   string `toml:"default_path"`
 }
 
 // MaxSizeBytes parses MaxSize (e.g. "512M", "1G", "2T") and returns bytes.
@@ -248,19 +251,19 @@ func (c *Config) ReadCacheFor(mountName string) ReadCacheConfig {
 	return cache
 }
 
-func (c *Config) WritebackFor(mountName string) WritebackConfig {
-	var writeback WritebackConfig
+func (c *Config) UploadFor(mountName string) UploadConfig {
+	var upload UploadConfig
 	if c == nil {
-		return writeback
+		return upload
 	}
-	writeback = c.Writeback
+	upload = c.Upload
 	for _, mount := range c.Mounts {
-		if mount.Name == mountName && mount.Writeback != nil {
-			writeback = *mount.Writeback
+		if mount.Name == mountName && mount.Upload != nil {
+			upload = *mount.Upload
 			break
 		}
 	}
-	return writeback
+	return upload
 }
 
 func (c *Config) EffectiveMountPoint() string {

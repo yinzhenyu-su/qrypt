@@ -19,7 +19,7 @@ func testRuntimeLayout(tmp string) RuntimeLayout {
 		ConfigDir:    filepath.Join(tmp, "runtime", "config"),
 		ReadCacheDir: filepath.Join(tmp, "cache", "read"),
 		ThumbnailDir: filepath.Join(tmp, "cache", "thumbnail"),
-		WritebackDir: filepath.Join(tmp, "runtime", "writeback"),
+		UploadDir:    filepath.Join(tmp, "runtime", "upload"),
 		StateDir:     filepath.Join(tmp, "runtime", "state"),
 		LogDir:       filepath.Join(tmp, "runtime", "logs"),
 		TmpDir:       filepath.Join(tmp, "cache", "tmp"),
@@ -37,7 +37,7 @@ func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
 		Storage: config.StorageConfig{
 			ReadCacheDir:      filepath.Join(tmp, "desktop-read-cache"),
 			ThumbnailCacheDir: filepath.Join(tmp, "desktop-thumbnail-cache"),
-			WritebackDir:      filepath.Join(tmp, "desktop-writeback"),
+			UploadDir:         filepath.Join(tmp, "desktop-upload"),
 			StateDir:          filepath.Join(tmp, "desktop-state"),
 		},
 		Mounts: []config.MountConfig{{
@@ -59,8 +59,8 @@ func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(runtime.ReadCacheDir, "quark")); err != nil {
 		t.Fatalf("runtime read cache not created: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(runtime.WritebackDir, "quark", "staging")); err != nil {
-		t.Fatalf("runtime writeback not created: %v", err)
+	if _, err := os.Stat(filepath.Join(runtime.UploadDir, "quark", "staging")); err != nil {
+		t.Fatalf("runtime upload not created: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(runtime.StateDir, "driver", "quark")); err != nil {
 		t.Fatalf("runtime state not created: %v", err)
@@ -86,7 +86,7 @@ error_file = "/desktop/qrypt-error.log"
 [storage]
 read_cache_dir = "/desktop/cache"
 thumbnail_cache_dir = "/desktop/thumbnail"
-writeback_dir = "/desktop/writeback"
+upload_dir = "/desktop/upload"
 state_dir = "/desktop/state"
 log_dir = "/desktop/logs"
 tmp_dir = "/desktop/tmp"
@@ -112,7 +112,7 @@ root_path = "`+remote+`"
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, forbidden := range []string{"/Volumes/Qrypt", "/desktop/cache", "/desktop/thumbnail", "/desktop/qrypt.log", "/desktop/writeback", "/desktop/state"} {
+	for _, forbidden := range []string{"/Volumes/Qrypt", "/desktop/cache", "/desktop/thumbnail", "/desktop/qrypt.log", "/desktop/upload", "/desktop/state"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("imported config still contains %q:\n%s", forbidden, text)
 		}
@@ -180,7 +180,7 @@ root_path = "`+remote+`"
 	if err := os.WriteFile(readingFile, []byte("read-cache"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stagingFile := filepath.Join(runtime.WritebackDir, "quark", "staging", "data.staging")
+	stagingFile := filepath.Join(runtime.UploadDir, "quark", "staging", "data.staging")
 	if err := os.WriteFile(stagingFile, []byte("staging"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func TestCoreCRUDUsesVFSStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{
-		CacheDir:    filepath.Join(tmp, "cache"),
+		StorageDir:  filepath.Join(tmp, "cache"),
 		UploadDelay: time.Millisecond,
 	})
 	if err != nil {
@@ -475,7 +475,7 @@ func waitVFSIdle(t *testing.T, fs *vfs.VFS) {
 	t.Helper()
 	waitCoreCondition(t, func() bool {
 		snapshot := fs.DebugSnapshot()
-		return len(fs.Pending()) == 0 &&
+		return len(fs.PendingUploads()) == 0 &&
 			len(snapshot.Mounts) == 1 &&
 			len(snapshot.Mounts[0].ActiveUploads()) == 0
 	})

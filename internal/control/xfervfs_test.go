@@ -16,7 +16,7 @@ import (
 
 type xferFakeFS struct {
 	files             map[string][]byte
-	pending           []vfs.PendingFile
+	pending           []vfs.PendingUpload
 	corruptSourceRead bool
 	removeCalls       []string
 	removeDirCalls    []string
@@ -101,7 +101,7 @@ func (f *xferFakeFS) Truncate(context.Context, string, int64) error {
 
 func (f *xferFakeFS) RefreshPath(string) {}
 
-func (f *xferFakeFS) Pending() []vfs.PendingFile {
+func (f *xferFakeFS) PendingUploads() []vfs.PendingUpload {
 	return f.pending
 }
 
@@ -177,7 +177,7 @@ func TestRunVFSXferTestFailsOnCorruptSourceRead(t *testing.T) {
 
 func TestWaitVFSIdleReturnsContextError(t *testing.T) {
 	fs := newXferFakeFS()
-	fs.pending = []vfs.PendingFile{{Path: "/pending"}}
+	fs.pending = []vfs.PendingUpload{{Path: "/pending"}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

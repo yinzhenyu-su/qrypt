@@ -88,8 +88,8 @@
     "thumbnail_cache": {
       "$ref": "#/definitions/thumbnailCacheConfig"
     },
-    "writeback": {
-      "$ref": "#/definitions/writebackConfig"
+    "upload": {
+      "$ref": "#/definitions/uploadConfig"
     },
     "defaults": {
       "type": "object",
@@ -178,7 +178,7 @@
           "type": "string",
           "default": ""
         },
-        "writeback_dir": {
+        "upload_dir": {
           "description": "Root directory for upload staging and pending journal files.",
           "type": "string",
           "default": ""
@@ -227,9 +227,42 @@
       },
       "additionalProperties": false
     },
-    "writebackConfig": {
+    "uploadConfig": {
       "type": "object",
-      "description": "Writeback and upload scheduling settings.",
+      "description": "Upload and delete scheduling settings.",
+      "properties": {
+        "upload_delay": {
+          "description": "Debounce delay before flushing a new file to the cloud (e.g. \"5s\", \"1m\").",
+          "type": "string",
+          "default": "0s"
+        },
+        "upload_workers": {
+          "description": "Number of concurrent upload workers per mount.",
+          "type": "integer",
+          "default": 4,
+          "minimum": 0
+        },
+        "delete_delay": {
+          "description": "Debounce delay before deleting a file from the cloud (e.g. \"2s\").",
+          "type": "string",
+          "default": "0s"
+        },
+        "default_mount": {
+          "description": "Default mount used when upload tasks receive an empty or relative destination path. Only supported in top-level [upload].",
+          "type": "string",
+          "default": ""
+        },
+        "default_path": {
+          "description": "Default directory under upload.default_mount used when upload tasks receive an empty or relative destination path. qrypt creates this directory if missing, but does not create missing parent directories. Only supported in top-level [upload].",
+          "type": "string",
+          "default": "/"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mountUploadConfig": {
+      "type": "object",
+      "description": "Per-mount upload and delete scheduling overrides.",
       "properties": {
         "upload_delay": {
           "description": "Debounce delay before flushing a new file to the cloud (e.g. \"5s\", \"1m\").",
@@ -332,6 +365,11 @@
           "type": "string",
           "enum": ["localfs", "quark", "yun139", "115", "189", "aliyundrive", "baidu_netdisk", "onedrive", "onedrive_app", "webdav", "s3"]
         },
+        "test_enabled": {
+          "description": "Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
+          "type": "boolean",
+          "default": false
+        },
         "params": {
           "description": "Driver-specific key/value parameters (e.g. cookie and root_path).",
           "type": "object",
@@ -349,8 +387,8 @@
         "read_cache": {
           "$ref": "#/definitions/readCacheConfig"
         },
-        "writeback": {
-          "$ref": "#/definitions/writebackConfig"
+        "upload": {
+          "$ref": "#/definitions/mountUploadConfig"
         }
       },
       "required": ["name", "type"],

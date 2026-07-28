@@ -32,7 +32,7 @@ func (a *adapter) Readdir(path string, fill func(name string, stat *fuse.Stat_t,
 	}
 	for _, entry := range entries {
 		st := &fuse.Stat_t{}
-		fillStat(st, entry, childPath(path, entry.Name))
+		a.fillStat(st, entry, childPath(path, entry.Name))
 		if a.isReadOnlyPath(childPath(path, entry.Name)) {
 			st.Mode &^= 0o222
 		}

@@ -106,7 +106,7 @@ log_level = "info"
 [storage]
 read_cache_dir = ""
 thumbnail_cache_dir = ""
-writeback_dir  = ""
+upload_dir  = ""
 state_dir      = ""
 log_dir        = ""
 tmp_dir        = ""
@@ -126,8 +126,8 @@ max_size = "2G"
 [thumbnail_cache]
 max_size = "256M"
 
-# ── Writeback settings ────────────────────────────────────────────
-[writeback]
+# ── Upload settings ────────────────────────────────────────────
+[upload]
 upload_workers = 8
 upload_delay   = "3s"
 delete_delay   = "2s"

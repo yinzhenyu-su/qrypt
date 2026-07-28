@@ -32,12 +32,12 @@ func StorageUsageJSON(coreID string) string {
 	return resultJSON(usage, err)
 }
 
-func ClearReadCacheJSON(coreID string, timeoutMS int) string {
+func ClearReadCacheJSON(coreID string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, s.core.ClearReadCache(ctx))
 }

@@ -2,7 +2,6 @@ package vfs
 
 import (
 	"context"
-	"slices"
 	"strings"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -43,10 +42,11 @@ func (v *VFS) capabilitiesForPath(ctx context.Context, path, mount, displayPath 
 	if err != nil {
 		return CapabilityInfo{}, err
 	}
-	caps := drive.Capabilities(v.driver)
-	writer := hasCapability(caps, drive.CapabilityWriter)
-	uploader := hasCapability(caps, drive.CapabilitySourceUploader)
-	space := hasCapability(caps, drive.CapabilitySpace)
+	driverRuntime := newVFSDriverRuntime(v)
+	caps := driverRuntime.Capabilities()
+	writer := driverRuntime.HasCapability(drive.CapabilityWriter)
+	uploader := driverRuntime.HasCapability(drive.CapabilitySourceUploader)
+	space := driverRuntime.HasCapability(drive.CapabilitySpace)
 	targetReadOnly := path == "/" || mountRoot
 	return CapabilityInfo{
 		Mount:          mount,
@@ -84,8 +84,4 @@ func (n *Namespace) CapabilitiesForPath(ctx context.Context, path string) (Capab
 		name = name[:i]
 	}
 	return mount.capabilitiesForPath(ctx, rest, name, path, rest == "/")
-}
-
-func hasCapability(caps []drive.Capability, capability drive.Capability) bool {
-	return slices.Contains(caps, capability)
 }

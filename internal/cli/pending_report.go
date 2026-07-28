@@ -8,7 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func stagingStatus(item vfs.PendingFile) (string, int64) {
+func stagingStatus(item vfs.PendingUpload) (string, int64) {
 	fi, err := os.Stat(item.LocalPath)
 	if err != nil {
 		return "missing", 0

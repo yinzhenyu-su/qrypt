@@ -1363,14 +1363,6 @@ func sumFSTestDurationMS(results []FSTestResult) int64 {
 	return total
 }
 
-func sumXferDurationMS(results []XferTestResult) int64 {
-	var total int64
-	for _, result := range results {
-		total += result.Metrics.WallMS
-	}
-	return total
-}
-
 func benchmarkStats(values []int64) BenchmarkStats {
 	if len(values) == 0 {
 		return BenchmarkStats{}

@@ -1,7 +1,6 @@
 package mobile
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,12 +10,12 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/media"
 )
 
-func ProbeMP4JSON(coreID, path string, timeoutMS int) string {
+func ProbeMP4JSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	probe, err := s.core.ProbeMP4(ctx, path)
 	return resultJSON(probe, err)
@@ -27,63 +26,34 @@ type virtualOpenResult struct {
 	Info   media.VirtualFileInfo `json:"info"`
 }
 
-func OpenVirtualFile(coreID, path, mode string, timeoutMS int) (string, error) {
+func openVirtualFile(coreID, path, mode string, deadlineMS int) (virtualOpenResult, error) {
 	s, err := getSession(coreID)
 	if err != nil {
-		return "", wrapError(err)
+		return virtualOpenResult{}, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	file, err := s.core.OpenVirtualFile(ctx, path, mode)
 	if err != nil {
-		return "", wrapError(err)
+		return virtualOpenResult{}, wrapError(err)
 	}
 	id, err := newID()
 	if err != nil {
 		_ = file.Close()
-		return "", wrapError(err)
+		return virtualOpenResult{}, wrapError(err)
 	}
 	registry.mu.Lock()
 	registry.virtuals[id] = &virtualHandle{coreID: coreID, file: file}
 	registry.mu.Unlock()
-	data, err := json.Marshal(virtualOpenResult{Handle: id, Info: file.Info()})
-	if err != nil {
-		_ = CloseVirtualFile(id)
-		return "", wrapError(err)
-	}
-	return string(data), nil
+	return virtualOpenResult{Handle: id, Info: file.Info()}, nil
 }
 
-func OpenVirtualFileJSON(coreID, path, mode string, timeoutMS int) string {
-	raw, err := OpenVirtualFile(coreID, path, mode, timeoutMS)
-	if err != nil {
-		return resultJSON(nil, err)
-	}
-	var data virtualOpenResult
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return resultJSON(nil, err)
-	}
-	return resultJSON(data, nil)
+func OpenVirtualFileJSON(coreID, path, mode string, deadlineMS int) string {
+	data, err := openVirtualFile(coreID, path, mode, deadlineMS)
+	return resultJSON(data, err)
 }
 
-func ReadVirtualFileAt(handleID string, offset int64, length int, timeoutMS int) ([]byte, error) {
-	handle, err := getVirtualFile(handleID)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
-	defer cancel()
-	info := handle.file.Info()
-	started := time.Now()
-	data, err := handle.file.ReadAt(ctx, offset, length)
-	logVirtualRead(handleID, handle.file, info, offset, length, len(data), time.Since(started), err)
-	if err != nil {
-		return nil, wrapError(err)
-	}
-	return data, nil
-}
-
-func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, timeoutMS int) (int, error) {
+func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int, error) {
 	if len(dst) == 0 {
 		return 0, nil
 	}
@@ -91,7 +61,7 @@ func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, timeoutMS 
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(timeoutMS)
+	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	info := handle.file.Info()
 	started := time.Now()
@@ -101,11 +71,6 @@ func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, timeoutMS 
 		return n, wrapError(err)
 	}
 	return n, nil
-}
-
-func ReadVirtualFileAtJSON(handleID string, offset int64, length int, timeoutMS int) string {
-	data, err := ReadVirtualFileAt(handleID, offset, length, timeoutMS)
-	return resultJSON(data, err)
 }
 
 func logVirtualRead(handleID string, file media.VirtualFile, info media.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
@@ -137,7 +102,7 @@ func formatReadMappings(mappings []media.VirtualReadMapping) string {
 	return strings.Join(parts, ",")
 }
 
-func CloseVirtualFile(handleID string) error {
+func closeVirtualFile(handleID string) error {
 	registry.mu.Lock()
 	handle, ok := registry.virtuals[handleID]
 	if ok {
@@ -151,5 +116,5 @@ func CloseVirtualFile(handleID string) error {
 }
 
 func CloseVirtualFileJSON(handleID string) string {
-	return resultJSON(nil, CloseVirtualFile(handleID))
+	return resultJSON(nil, closeVirtualFile(handleID))
 }

@@ -258,13 +258,6 @@ func traceURL(u *url.URL) string {
 	return out.String()
 }
 
-func (c *client) isLoggedIn() bool {
-	if c.cookieValue() != "" {
-		return true
-	}
-	return c.username != "" && c.password != ""
-}
-
 func (c *client) loginInit(ctx context.Context) error {
 	if c.cookieValue() != "" {
 		return c.loginWithCookie(ctx)
@@ -621,66 +614,6 @@ func nonRetryableUploadError(status int, body []byte) bool {
 	s := string(body)
 	return strings.Contains(s, "SliceMd5DoesNotMatch") ||
 		strings.Contains(s, "InvalidPartSize")
-}
-
-func (c *client) doPostRaw(ctx context.Context, u string, form map[string]string) ([]byte, error) {
-	vals := url.Values{}
-	for k, v := range form {
-		vals.Set(k, v)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(vals.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	if cookie := c.cookieValue(); cookie != "" {
-		req.Header.Set("Cookie", cookie)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Referer", "https://cloud.189.cn/")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	start := time.Now()
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		c.recordMetric(ctx, drive.MetricEvent{
-			Operation: req.URL.Path,
-			Method:    req.Method,
-			URL:       traceURL(req.URL),
-			Duration:  time.Since(start).String(),
-			Request:   traceRequestFields(form),
-			Error:     err.Error(),
-		})
-		return nil, err
-	}
-	c.captureCookies(resp)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		c.recordMetric(ctx, drive.MetricEvent{
-			Operation: req.URL.Path,
-			Method:    req.Method,
-			URL:       traceURL(req.URL),
-			Status:    resp.StatusCode,
-			Duration:  time.Since(start).String(),
-			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
-		})
-		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
-	}
-	raw, err := io.ReadAll(resp.Body)
-	event := drive.MetricEvent{
-		Operation: req.URL.Path,
-		Method:    req.Method,
-		URL:       traceURL(req.URL),
-		Status:    resp.StatusCode,
-		Duration:  time.Since(start).String(),
-		Request:   traceRequestFields(form),
-		Response:  map[string]any{"bytes": len(raw)},
-	}
-	if err != nil {
-		event.Error = err.Error()
-	}
-	c.recordMetric(ctx, event)
-	return raw, err
 }
 
 func responseSnippet(raw []byte) string {
@@ -1160,10 +1093,6 @@ func parseListFilesBody(body []byte) ([]Folder, []File, int, error) {
 		return nil, nil, 0, fmt.Errorf("189: list: %s", resp.ResMessage)
 	}
 	return resp.FileListAO.FolderList, resp.FileListAO.FileList, resp.FileListAO.Count, nil
-}
-
-func (c *client) withRetry(ctx context.Context, fn func(context.Context) error) error {
-	return c.retryOnAuthError(ctx, fn)
 }
 
 func (c *client) getDownloadURL(ctx context.Context, fileID int64) (downloadURL string, err error) {

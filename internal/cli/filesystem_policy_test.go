@@ -20,13 +20,13 @@ func TestBuildNamespaceDoesNotLimitLocalStagingUpload(t *testing.T) {
 	err := os.WriteFile(configPath, []byte(`
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [bandwidth]
 upload = "1"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -77,10 +77,10 @@ func TestBuildNamespaceUsesStorageDirs(t *testing.T) {
 mount_point = "`+filepath.Join(tmp, "mnt")+`"
 [storage]
 read_cache_dir = "`+filepath.Join(cacheDir, "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
-[writeback]
+[upload]
 upload_delay = "10ms"
 
 [[mounts]]
@@ -120,10 +120,10 @@ root_path = "`+remoteB+`"
 	if _, err := os.Stat(filepath.Join(cacheDir, "read", "two")); err != nil {
 		t.Fatalf("expected read cache dir for mount two: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "writeback", "one", "staging")); err != nil {
-		t.Fatalf("expected writeback dir for mount one: %v", err)
+	if _, err := os.Stat(filepath.Join(tmp, "upload", "one", "staging")); err != nil {
+		t.Fatalf("expected upload dir for mount one: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "writeback", "two", "staging")); err != nil {
-		t.Fatalf("expected writeback dir for mount two: %v", err)
+	if _, err := os.Stat(filepath.Join(tmp, "upload", "two", "staging")); err != nil {
+		t.Fatalf("expected upload dir for mount two: %v", err)
 	}
 }

@@ -91,21 +91,154 @@ assembly.
 
 ## VFS Responsibilities
 
-`pkg/vfs` owns provider-independent filesystem semantics. It is split by
-internal responsibility:
+`pkg/vfs` owns provider-independent filesystem semantics. Files are grouped
+by domain; the `vfsXxxRuntime` types are thin method-grouping views over the
+shared `VFS` state, used to keep each domain's helpers close to its public
+operations.
 
-- `vfs.go`: public VFS operations and path-level orchestration
-- `listing.go`: directory cache, list coalescing, directory prefetch
-- `reading.go`: chunk reads, read cache, read prefetch
-- `writeback.go`: pending uploads, retry, snapshots, upload scheduling
-- `mutation.go`: delayed delete, rename overlays, hidden local state
-- `cache.go`: durable read cache and pending journal
-- `staging.go`: local write staging
+- `vfs.go`: VFS construction, lifecycle, health, cache controls, shared path
+  helpers, pending-upload lookup, and path locking
+- `driver_runtime.go`: driver capability checks and driver-backed backend
+  factory for list, mutation, remote mutation, and debug driver exposure
+- `listing.go`: public list operations, directory cache, list coalescing,
+  directory prefetch, list backend around driver `List`, and list scheduler
+  state
+- `read.go`: public read operation and read-slot acquisition entrypoint
+- `read_range.go`: range reads, chunk slicing, and bounded driver reads
+- `read_window.go`: read window load/coalescing, in-flight wait handling,
+  read-path staging flush, chunk availability, read-slot admission,
+  prefetch reservations, cache/window/hot-chunk/range-hit state, and the
+  read-window driver read / chunk-cache write backend
+- `read_prefetch.go`: adjacent read prefetch scheduling and execution
+- `read_fast_path.go`: hot chunk cache and cached-range promotion helpers
+- `read_keys.go` and `read_debug_helpers.go`: read cache keys and diagnostic
+  helpers
+- `staging.go` and `staging_write.go`: local write staging, create/write/
+  flush/truncate/mtime operations, and write-side pending/staging/hash state
+- `upload_write_store.go`: write-side store/hash-tracker/remote-read adapters
+  used by staging write operations
+- `upload_worker.go`: upload worker loop, quiet-window checks, admission, and
+  the worker runtime boundary
+- `upload_engine.go`: one pending upload execution (snapshot, remote
+  preparation, driver upload, replacement, cache seed, cleanup), the upload
+  runtime state boundary, observability, fault injection, and timer
+  scheduling
+- `pending_upload_store.go`: pending upload state/staging cleanup adapter used
+  by the upload engine
+- `remote_mutation_backend.go`: upload-side remote mutation adapter around
+  driver calls used by the upload engine and upload replacement policy
+- `upload_snapshot.go`: frozen staging snapshot validation, upload hashing,
+  and read-cache seeding
+- `upload_replace.go`: temporary upload naming and existing-file replacement
+- `upload_schedule.go` and `upload_admission.go`: upload enqueue, debounce,
+  retry delay, cancellation, and concurrency admission
+- `upload_store.go` and `upload_journal.go`: pending upload state, journal
+  persistence, and staging ownership
+- `mutation.go`: public mutation operations, remote mkdir/list/rename/move
+  backend, and local view/cache/pending-upload state boundaries for mkdir,
+  rename, remove, and directory-copy flows
+- `delete_executor.go`: delayed delete execution, remote delete runtime
+  boundary, and delete scheduler state
+- `delete_task.go`: delete task source boundary for deleted overlay records,
+  restore, retry scheduling, and failure cleanup
+- `visibility_overlay.go`: delete visibility, rename overlay, copy-hidden,
+  unavailable filtering, and local child visibility state
+- `resolve.go`: virtual path resolution against cached and remote entries,
+  and the resolve-path cached-entry lookup / child commit boundary
+- `view_state.go`: virtual view cache state, cached path rebase, list
+  invalidation, local directory TTL, and local mtime overlays
+- `stores.go`: read/upload store types and constructors
+- `read_cache_store.go`, `read_cache_writer.go`, `read_cache_index.go`, and
+  `read_cache_eviction.go`: durable read chunks, async write queue, index
+  persistence, and eviction
 - `namespace.go`: multi-mount namespace
-- `debug.go`: snapshots and debug reports
+- `task.go`: VFS background task source integration for upload/delete tasks,
+  including the upload task source boundary
+- `debug.go`: debug schema types and debug process start time
+- `debug_snapshot.go`: VFS and namespace snapshot aggregation, queue timers,
+  overlay state, and read runtime counters
+- `debug_active.go`: active debug operation state for begin, update, finish,
+  and snapshot
+- `debug_cache.go`: debug cache snapshot for read-cache and upload-journal
+  state
+- `debug_read.go`: debug read events for read sequence, cache counters,
+  history append, history reads, and reset
+- `debug_staging.go`: debug staging for pending uploads, active upload state,
+  and local staging directory scans
+- `debug_resolve.go`: debug resolve/consistency for pending lookup, cache IDs,
+  driver diagnostics, remote names, and foreign entries
+- `debug_health.go`: debug health for local health state and driver metric
+  health merge
+- `debug_upload.go`: debug upload active snapshot, history, progress, event,
+  metadata, and extra-field state
+- `debug_fault.go`: debug upload cancel fault injection for arm, clear, list,
+  match, expiration, and fired marking
+- `capability.go`, `diskfree.go`, `mount.go`, and `path.go`: capability
+  reporting, disk space helpers, mount metadata, and path utilities
+- `dir_prefetch_state.go`, `list_state.go`, `path_lock_state.go`, and
+  `read_state.go`: small state containers for their domains
+  health/driver listing
+
+VFS also keeps mutable runtime state grouped by ownership instead of keeping
+every mutex and map directly on `VFS`:
+
+- `viewState`: cached virtual entries, directory list cache, locally created
+  directory visibility, local mtime overlays, and delete/rename visibility
+  overlays
+- `deleteTaskState`: delayed delete timers, active remote deletes, and delete
+  failures; it shares the delete overlay lock so visibility and execution state
+  remain consistent
+- `uploadScheduleState`: upload timers and delayed enqueue scheduling
+- `uploadDebugState`: active upload snapshots and upload history
+- `uploadFaultState`: debug upload cancellation fault injection state
+- `uploadAdmission`: upload concurrency admission state
+- `readHistoryState`: VFS read history and read operation sequence
+- `activeDebugState`: currently active read/window/prefetch diagnostic
+  operations
+- `readSlotState`, `readWindowState`, `readFastPathState`, and
+  `readPrefetchState`: read concurrency slots, in-flight read windows,
+  hot-chunk/range-hit acceleration, and read prefetch tracking
+  - `readFastPathState` groups `hotChunkState` for resident chunk data and
+    `rangeHitState` for cached range promotion counters
+- `dirPrefetchState`: directory prefetch in-flight/cooldown state and
+  background context
+- `listState`: in-flight directory list coalescing
+- `pathLockState`: per-path serialization for staging mutation, truncate, and
+  generation rotation
+
+The grouping is an internal maintenance boundary, not a public extension API.
+Callers should still use `vfs.FileSystem`, `vfs.Namespace`, or `pkg/core`.
+Tests should prefer constructing VFS through `New` unless they intentionally
+exercise a small internal helper with explicit state initialization.
+
+`vfs.FileSystem` is the file-operation contract. Upload internals such as
+`PendingUpload` are exposed through the narrower `UploadInspector` diagnostic
+interface, not as part of the base filesystem contract. VFS and Namespace also
+implement `task.Source`, so core task management can consume upload/delete
+background tasks without a legacy adapter layer.
 
 VFS should not know provider API details. It should operate on `drive.Entry`
 and optional `drive` capabilities only.
+
+## Upload Responsibilities
+
+`pkg/core.UploadService` is the business-level upload boundary for clients,
+mobile bindings, CLI flows, and directory watchers. It owns default destination
+resolution, default upload directory creation, conflict policy, remote
+completion confirmation, and cache refresh after successful upload.
+
+Destination resolution is isolated in `UploadDestinationResolver`. It maps empty
+or relative upload destinations to `[upload].default_mount/default_path` and
+returns the default directory that UploadService should create before uploading.
+
+UploadService writes through `UploadBackend`. The default `VFSUploadBackend`
+wraps the internal `vfs.FileSystem` API so it can reuse staging, retry,
+instant-upload hashes, and driver capabilities. A future backend can target a
+driver upload fast path directly without changing mobile or task callers.
+
+UploadService is not a FUSE entry point: clients should not copy files into a
+mounted qrypt directory to create upload tasks. FUSE and upload tasks share
+VFS/driver state but remain separate protocol adapters.
 
 ## Mount Responsibilities
 

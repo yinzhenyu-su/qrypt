@@ -88,7 +88,7 @@ func RunVFSResumeTest(ctx context.Context, fs vfs.FileSystem, mount string, size
 	step.Input = map[string]any{"path": file, "bytes": size}
 	start = time.Now()
 	err = writeRandomVFSFile(ctx, fs, file, size)
-	step.Actual = map[string]any{"pending_count": len(fs.Pending())}
+	step.Actual = map[string]any{"pending_count": pendingCount(fs)}
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
@@ -129,7 +129,7 @@ func RunVFSResumeTest(ctx context.Context, fs vfs.FileSystem, mount string, size
 	step.Input = map[string]any{"path": file}
 	start = time.Now()
 	err = fs.Flush(ctx, file)
-	step.Actual = map[string]any{"pending_count": len(fs.Pending())}
+	step.Actual = map[string]any{"pending_count": pendingCount(fs)}
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
@@ -246,7 +246,7 @@ func waitVFSUploadCanceled(ctx context.Context, fs vfs.FileSystem, mount, path s
 func uploadCanceled(fs vfs.FileSystem, mount, path string) bool {
 	snapshotter, ok := fs.(vfsDebugSnapshotter)
 	if !ok {
-		for _, pending := range fs.Pending() {
+		for _, pending := range pendingFiles(fs) {
 			if sameDebugPath(pending.Path, path) && strings.Contains(pending.LastError, "context canceled") {
 				return true
 			}
@@ -263,7 +263,7 @@ func uploadCanceled(fs vfs.FileSystem, mount, path string) bool {
 				return true
 			}
 		}
-		for _, pending := range mountState.PendingFiles() {
+		for _, pending := range mountState.PendingUploads() {
 			if sameDebugPath(pending.Path, path) && strings.Contains(pending.LastError, "context canceled") {
 				return true
 			}

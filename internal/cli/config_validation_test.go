@@ -19,7 +19,7 @@ func TestBuildNamespaceRejectsInvalidDeleteDelay(t *testing.T) {
 	err := os.WriteFile(configPath, []byte(`
 [storage]
 read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-writeback_dir = "`+filepath.Join(tmp, "writeback")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
 state_dir = "`+filepath.Join(tmp, "state")+`"
 
 [[mounts]]
@@ -27,7 +27,7 @@ name = "local"
 type = "localfs"
 [mounts.params]
 root_path = "`+remote+`"
-[mounts.writeback]
+[mounts.upload]
 delete_delay = "soon"
 `), 0o644)
 	if err != nil {
@@ -38,8 +38,8 @@ delete_delay = "soon"
 	if cleanup != nil {
 		defer cleanup()
 	}
-	if err == nil || !strings.Contains(err.Error(), "writeback.delete_delay") {
-		t.Fatalf("expected writeback.delete_delay error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "upload.delete_delay") {
+		t.Fatalf("expected upload.delete_delay error, got %v", err)
 	}
 }
 

@@ -35,7 +35,7 @@ func (r *DecryptingReader) Read(p []byte) (int, error) {
 	total := 0
 	for total < len(p) {
 		if len(r.pending) == 0 {
-			if err := r.fillPending(); err != nil {
+			if err := r.fillPendingUploads(); err != nil {
 				if err == io.EOF && total > 0 {
 					return total, nil
 				}
@@ -50,7 +50,7 @@ func (r *DecryptingReader) Read(p []byte) (int, error) {
 	return total, nil
 }
 
-func (r *DecryptingReader) fillPending() error {
+func (r *DecryptingReader) fillPendingUploads() error {
 	if r.encEOF {
 		return io.EOF
 	}

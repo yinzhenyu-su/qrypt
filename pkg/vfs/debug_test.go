@@ -20,7 +20,7 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestVFSDebugSnapshotUsesConfiguredName(t *testing.T) {
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(drv, vfs.Options{Name: "cloud", CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{Name: "cloud", StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
 	drv := &countingUploadDriver{entries: map[string]drive.Entry{
 		"remote-zero": {ID: "remote-zero", ParentID: "0", Name: "zero.txt", Size: 5},
 	}}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
 func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
 	ctx := context.Background()
 	drv := newBlockingUploadDriver()
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,14 +165,14 @@ func TestVFSDebugStagingReportsSizeMismatch(t *testing.T) {
 	remote := t.TempDir()
 	cache := t.TempDir()
 
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: cache, CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fs.WriteAt(ctx, "/mismatch.txt", []byte("expected"), 0); err != nil {
 		t.Fatal(err)
 	}
-	pending := fs.Pending()
+	pending := fs.PendingUploads()
 	if len(pending) != 1 {
 		t.Fatalf("pending count = %d, want 1", len(pending))
 	}
@@ -205,7 +205,7 @@ func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	drv := crypt.NewDriver(raw, cp, crypt.DriverOptions{})
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
 	raw := localfs.New(remote)
-	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
 func TestVFSMountHealthTracksUserOperations(t *testing.T) {
 	ctx := context.Background()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
-		CacheDir:      t.TempDir(),
+		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
 		UploadDelay:   time.Hour,
 	})
@@ -331,7 +331,7 @@ func TestVFSMountHealthIncludesDriverMetrics(t *testing.T) {
 			Error:     "driver api failed",
 		}},
 	}
-	fs, err := vfs.New(driver, vfs.Options{CacheDir: t.TempDir()})
+	fs, err := vfs.New(driver, vfs.Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestVFSRemoteDeleteUpdatesMountHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{
-		CacheDir:      t.TempDir(),
+		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
 		DeleteDelay:   10 * time.Millisecond,
 	})

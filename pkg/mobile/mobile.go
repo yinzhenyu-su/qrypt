@@ -42,12 +42,23 @@ type virtualHandle struct {
 	file   media.VirtualFile
 }
 
-type streamingUploadHandle struct {
-	mu     sync.Mutex
+type downloadStreamHandle struct {
 	coreID string
-	path   string
-	offset int64
-	closed bool
+	handle *core.DownloadStreamItemHandle
+}
+
+type uploadStreamItemHandle struct {
+	coreID string
+	handle *core.UploadStreamItemHandle
+}
+
+type taskEventHandle struct {
+	coreID string
+	sub    interface {
+		Read(context.Context) ([]core.TaskEvent, error)
+		ReadAvailable() ([]core.TaskEvent, error)
+		Close()
+	}
 }
 
 type runtimeJSON struct {
@@ -55,7 +66,7 @@ type runtimeJSON struct {
 	Storage   struct {
 		ReadCacheDir string `json:"read_cache_dir"`
 		ThumbnailDir string `json:"thumbnail_cache_dir"`
-		WritebackDir string `json:"writeback_dir"`
+		UploadDir    string `json:"upload_dir"`
 		StateDir     string `json:"state_dir"`
 		LogDir       string `json:"log_dir"`
 		TmpDir       string `json:"tmp_dir"`
@@ -63,19 +74,23 @@ type runtimeJSON struct {
 }
 
 var registry = struct {
-	mu       sync.Mutex
-	sessions map[string]*session
-	files    map[string]*fileHandle
-	virtuals map[string]*virtualHandle
-	uploads  map[string]*streamingUploadHandle
+	mu          sync.Mutex
+	sessions    map[string]*session
+	files       map[string]*fileHandle
+	virtuals    map[string]*virtualHandle
+	downloads   map[string]*downloadStreamHandle
+	taskUploads map[string]*uploadStreamItemHandle
+	taskEvents  map[string]*taskEventHandle
 }{
-	sessions: map[string]*session{},
-	files:    map[string]*fileHandle{},
-	virtuals: map[string]*virtualHandle{},
-	uploads:  map[string]*streamingUploadHandle{},
+	sessions:    map[string]*session{},
+	files:       map[string]*fileHandle{},
+	virtuals:    map[string]*virtualHandle{},
+	downloads:   map[string]*downloadStreamHandle{},
+	taskUploads: map[string]*uploadStreamItemHandle{},
+	taskEvents:  map[string]*taskEventHandle{},
 }
 
-func Open(configPath, runtimeRaw string) (string, error) {
+func openCore(configPath, runtimeRaw string) (string, error) {
 	runtime, err := parseRuntimeJSON(runtimeRaw)
 	if err != nil {
 		return "", wrapError(err)
@@ -149,7 +164,7 @@ func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
 		ConfigDir:    in.ConfigDir,
 		ReadCacheDir: in.Storage.ReadCacheDir,
 		ThumbnailDir: in.Storage.ThumbnailDir,
-		WritebackDir: in.Storage.WritebackDir,
+		UploadDir:    in.Storage.UploadDir,
 		StateDir:     in.Storage.StateDir,
 		LogDir:       in.Storage.LogDir,
 		TmpDir:       in.Storage.TmpDir,
@@ -163,8 +178,8 @@ func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
 	if runtime.ThumbnailDir == "" {
 		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.thumbnail_cache_dir required")
 	}
-	if runtime.WritebackDir == "" {
-		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.writeback_dir required")
+	if runtime.UploadDir == "" {
+		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.upload_dir required")
 	}
 	if runtime.StateDir == "" {
 		return core.RuntimeLayout{}, fmt.Errorf("mobile: runtime storage.state_dir required")
@@ -178,7 +193,7 @@ func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
 	return runtime, nil
 }
 
-func Close(coreID string) error {
+func closeCore(coreID string) error {
 	registry.mu.Lock()
 	s, ok := registry.sessions[coreID]
 	if !ok {
@@ -198,28 +213,49 @@ func Close(coreID string) error {
 			delete(registry.virtuals, id)
 		}
 	}
-	for id, handle := range registry.uploads {
+	downloads := make([]*core.DownloadStreamItemHandle, 0)
+	for id, handle := range registry.downloads {
 		if handle.coreID == coreID {
-			delete(registry.uploads, id)
+			downloads = append(downloads, handle.handle)
+			delete(registry.downloads, id)
+		}
+	}
+	taskUploads := make([]*core.UploadStreamItemHandle, 0)
+	for id, handle := range registry.taskUploads {
+		if handle.coreID == coreID {
+			taskUploads = append(taskUploads, handle.handle)
+			delete(registry.taskUploads, id)
+		}
+	}
+	taskEvents := make([]interface{ Close() }, 0)
+	for id, handle := range registry.taskEvents {
+		if handle.coreID == coreID {
+			taskEvents = append(taskEvents, handle.sub)
+			delete(registry.taskEvents, id)
 		}
 	}
 	registry.mu.Unlock()
 	for _, file := range virtuals {
 		_ = file.Close()
 	}
+	for _, handle := range downloads {
+		_ = handle.Close()
+	}
+	for _, handle := range taskUploads {
+		_ = handle.Close()
+	}
+	for _, handle := range taskEvents {
+		handle.Close()
+	}
 	return s.core.Close(context.Background())
 }
 
 func CloseJSON(coreID string) string {
-	return resultJSON(nil, Close(coreID))
+	return resultJSON(nil, closeCore(coreID))
 }
 
-func ClassifyErrorMessage(message string) (string, error) {
-	data, err := json.Marshal(core.ClassifyErrorMessage(message))
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+func ClassifyErrorMessageJSON(message string) string {
+	return resultJSON(core.ClassifyErrorMessage(message), nil)
 }
 
 func DriverNamesJSON() string {
@@ -262,33 +298,67 @@ func getVirtualFile(handleID string) (*virtualHandle, error) {
 	return handle, nil
 }
 
-func getStreamingUpload(handleID string) (*streamingUploadHandle, error) {
+func getDownloadStream(handleID string) (*downloadStreamHandle, error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	handle := registry.uploads[handleID]
+	handle := registry.downloads[handleID]
 	if handle == nil {
-		return nil, fmt.Errorf("mobile: unknown streaming upload handle %q", handleID)
+		return nil, fmt.Errorf("mobile: unknown download stream handle %q", handleID)
 	}
 	return handle, nil
 }
 
-func takeStreamingUpload(handleID string) (*streamingUploadHandle, error) {
+func takeDownloadStream(handleID string) (*downloadStreamHandle, error) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	handle := registry.uploads[handleID]
+	handle := registry.downloads[handleID]
 	if handle == nil {
-		return nil, fmt.Errorf("mobile: unknown streaming upload handle %q", handleID)
+		return nil, fmt.Errorf("mobile: unknown download stream handle %q", handleID)
 	}
-	delete(registry.uploads, handleID)
+	delete(registry.downloads, handleID)
 	return handle, nil
 }
 
-func removeStreamingUpload(handleID string, handle *streamingUploadHandle) {
+func getUploadStreamItem(handleID string) (*uploadStreamItemHandle, error) {
 	registry.mu.Lock()
-	if registry.uploads[handleID] == handle {
-		delete(registry.uploads, handleID)
+	defer registry.mu.Unlock()
+	handle := registry.taskUploads[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown upload stream item handle %q", handleID)
 	}
-	registry.mu.Unlock()
+	return handle, nil
+}
+
+func takeUploadStreamItem(handleID string) (*uploadStreamItemHandle, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	handle := registry.taskUploads[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown upload stream item handle %q", handleID)
+	}
+	delete(registry.taskUploads, handleID)
+	return handle, nil
+}
+
+func getTaskEvent(handleID string) (*taskEventHandle, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	handle := registry.taskEvents[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown task events handle %q", handleID)
+	}
+	return handle, nil
+}
+
+func takeTaskEvent(handleID string) (*taskEventHandle, error) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	handle := registry.taskEvents[handleID]
+	if handle == nil {
+		return nil, fmt.Errorf("mobile: unknown task events handle %q", handleID)
+	}
+	delete(registry.taskEvents, handleID)
+	return handle, nil
 }
 
 func newID() (string, error) {

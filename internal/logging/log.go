@@ -188,8 +188,21 @@ func (l *Logger) SetLevel(level string) {
 	l.mu.Unlock()
 }
 
+// Enabled reports whether messages at level would be logged. Callers on hot
+// paths should check it before building expensive message strings, since the
+// log functions format and sanitize the message before applying the level
+// filter.
+func (l *Logger) Enabled(level Level) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return level >= l.level
+}
+
 func (l *Logger) logf(level Level, format string, v ...interface{}) {
-	if level < l.level {
+	// Check the level before building/sanitizing the message: the format and
+	// sanitize passes are expensive (regex) and were paid even when the level
+	// is filtered.
+	if !l.Enabled(level) {
 		return
 	}
 	msg := sanitize(fmt.Sprintf(format, v...))
@@ -198,6 +211,10 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 
 	l.mu.Lock()
+	if level < l.level {
+		l.mu.Unlock()
+		return
+	}
 	l.recordEventLocked(level, now, msg, 0)
 	if level >= LevelWarn && l.errWriter != nil {
 		fmt.Fprint(l.errWriter, line)
@@ -208,11 +225,11 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 }
 
 func (l *Logger) logfEvery(level Level, key string, interval time.Duration, format string, v ...interface{}) {
-	if interval <= 0 {
-		l.logf(level, format, v...)
+	if !l.Enabled(level) {
 		return
 	}
-	if level < l.level {
+	if interval <= 0 {
+		l.logf(level, format, v...)
 		return
 	}
 	sampleNow := time.Now()
@@ -221,6 +238,10 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 	ts := now.Format("2006-01-02 15:04:05.000")
 
 	l.mu.Lock()
+	if level < l.level {
+		l.mu.Unlock()
+		return
+	}
 	if l.samples == nil {
 		l.samples = map[string]sampleState{}
 	}
@@ -247,9 +268,6 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 }
 
 func (l *Logger) logEveryFunc(level Level, key string, interval time.Duration, message func(suppressed int) string) {
-	if level < l.level {
-		return
-	}
 	if interval <= 0 {
 		l.logf(level, "%s", message(0))
 		return
@@ -258,6 +276,10 @@ func (l *Logger) logEveryFunc(level Level, key string, interval time.Duration, m
 	now := timeutil.Now()
 
 	l.mu.Lock()
+	if level < l.level {
+		l.mu.Unlock()
+		return
+	}
 	if l.samples == nil {
 		l.samples = map[string]sampleState{}
 	}
@@ -387,6 +409,33 @@ func (l *Logger) Close() error {
 }
 
 var L = NewDefault()
+
+func ReplaceDefault(next *Logger) {
+	if next == nil {
+		return
+	}
+	L.mu.Lock()
+	oldLJ := L.lj
+	oldErrLJ := L.errLj
+	oldWriter := L.writer
+	L.level = next.level
+	L.writer = next.writer
+	L.errWriter = next.errWriter
+	L.lj = next.lj
+	L.errLj = next.errLj
+	L.samples = nil
+	L.events = eventRing{}
+	L.mu.Unlock()
+	if oldLJ != nil {
+		_ = oldLJ.Close()
+	}
+	if oldErrLJ != nil && oldErrLJ != oldLJ {
+		_ = oldErrLJ.Close()
+	}
+	if c, ok := oldWriter.(io.Closer); ok && c != oldLJ && c != oldErrLJ {
+		_ = c.Close()
+	}
+}
 
 func NewDefault() *Logger {
 	l, err := New("info", "", "", nil)

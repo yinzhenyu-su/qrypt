@@ -22,7 +22,7 @@ func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {
 	if report.State != nil {
 		for _, mount := range report.State.Mounts {
 			addRootIDDiagnostics(out, mount)
-			pending := mount.PendingFiles()
+			pending := mount.PendingUploads()
 			if len(pending) > 0 {
 				*out = append(*out, debugAIDiagnostic{
 					Severity:  "warn",

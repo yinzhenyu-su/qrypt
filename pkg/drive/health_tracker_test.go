@@ -86,8 +86,8 @@ func TestHealthTrackerMaxEvents(t *testing.T) {
 	for range 10 {
 		tracker.RecordError(HealthOpRead, errors.New("read failed"))
 	}
-	if len(tracker.events) > 5 {
-		t.Fatalf("max events should be 5, got %d", len(tracker.events))
+	if tracker.count > 5 {
+		t.Fatalf("max events should be 5, got %d", tracker.count)
 	}
 	if got := tracker.Status().Ops[HealthOpRead]; got.Errors != 5 {
 		t.Fatalf("read status = %+v, want last 5 errors", got)

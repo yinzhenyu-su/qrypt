@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
@@ -25,16 +26,31 @@ type adapter struct {
 	handles             map[uint64]fuseHandle
 	ignoredApple        map[string]ignoredAppleNode
 	xattrs              map[string]map[string][]byte
-	activeOps           map[uint64]activeFuseOp
+	activeOps           [activeOpsSlots]activeOpsSlot
 	nextFH              uint64
-	nextOp              uint64
-	stopping            bool
+	nextOp              atomic.Uint64
+	stopping            atomic.Bool
 	trace               fuseTracer
 	statfs              StatfsOptions
 	statfsAuto          statfsAutoCache
 	readOnly            bool
+	allowOther          bool
+	credsOnce           sync.Once
+	cachedUID           uint32
+	cachedGID           uint32
 	ignoreAppleMetadata bool
 	ignoreAppleXattr    bool
+}
+
+// activeOpsSlots is the fixed capacity of the per-op active-operation ring.
+// FUSE ops are short-lived, so a few hundred concurrent ops is a generous
+// bound; when full, beginOp returns false (op runs untracked).
+const activeOpsSlots = 256
+
+type activeOpsSlot struct {
+	id atomic.Uint64 // 0 = empty, otherwise the op id occupying the slot
+	mu sync.RWMutex
+	op activeFuseOp
 }
 
 type ignoredAppleNode struct {
@@ -60,6 +76,12 @@ type activeFuseOp struct {
 type fuseTracer struct{}
 
 func (fuseTracer) log(op, path, format string, args ...any) {
+	// Hot path: every FUSE op builds and sanitizes this message. Skip the
+	// work entirely unless debug logging is enabled; real errors are logged
+	// separately via logFuseError regardless of level.
+	if !logging.L.Enabled(logging.LevelDebug) {
+		return
+	}
 	msg := fmt.Sprintf("[FUSE] %s path=%q %s", op, path, fmt.Sprintf(format, args...))
 	if strings.Contains(msg, "err=") && !strings.Contains(msg, "err=0") && !strings.Contains(msg, "err=-2") && !strings.Contains(msg, "err=-93") {
 		if fuseErrorTraceSuppressed(op, path) {
@@ -144,6 +166,7 @@ func newAdapter(fs vfs.FileSystem, statfs StatfsOptions) *adapter {
 type adapterOptions struct {
 	Statfs              StatfsOptions
 	ReadOnly            bool
+	AllowOther          bool
 	IgnoreAppleMetadata bool
 	IgnoreAppleXattr    bool
 }
@@ -154,14 +177,14 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 		fs:                  fs,
 		ctx:                 ctx,
 		cancel:              cancel,
-		handles:             map[uint64]fuseHandle{},
-		ignoredApple:        map[string]ignoredAppleNode{},
-		xattrs:              map[string]map[string][]byte{},
-		activeOps:           map[uint64]activeFuseOp{},
-		trace:               fuseTracer{},
+		handles:      map[uint64]fuseHandle{},
+		ignoredApple: map[string]ignoredAppleNode{},
+		xattrs:       map[string]map[string][]byte{},
+		trace:        fuseTracer{},
 		statfs:              opts.Statfs,
 		statfsAuto:          statfsAutoCache{},
 		readOnly:            opts.ReadOnly,
+		allowOther:          opts.AllowOther,
 		ignoreAppleMetadata: opts.IgnoreAppleMetadata,
 		ignoreAppleXattr:    opts.IgnoreAppleXattr,
 	}
@@ -169,11 +192,11 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 
 func (a *adapter) shutdown() {
 	a.mu.Lock()
-	if a.stopping {
+	if a.stopping.Load() {
 		a.mu.Unlock()
 		return
 	}
-	a.stopping = true
+	a.stopping.Store(true)
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -192,40 +215,49 @@ func (a *adapter) Destroy() {
 	logging.L.Infof("[FUSE] Destroy pid=%d", os.Getpid())
 }
 
-func (a *adapter) isStopping() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.stopping
-}
-
 func (a *adapter) beginOp(op, path string) (context.Context, func(), bool) {
-	a.mu.Lock()
-	if a.stopping {
-		a.mu.Unlock()
+	if a.stopping.Load() {
 		return context.Background(), func() {}, false
 	}
-	a.nextOp++
-	id := a.nextOp
-	a.activeOps[id] = activeFuseOp{Op: op, Path: path, Start: time.Now()}
-	ctx := a.ctx
-	a.mu.Unlock()
-	return ctx, func() {
-		a.mu.Lock()
-		delete(a.activeOps, id)
-		a.mu.Unlock()
-	}, true
+	now := time.Now()
+	id := a.nextOp.Add(1)
+	for i := 0; i < activeOpsSlots; i++ {
+		slot := &a.activeOps[id%activeOpsSlots]
+		slot.mu.Lock()
+		if slot.id.Load() == 0 {
+			slot.op = activeFuseOp{Op: op, Path: path, Start: now}
+			slot.id.Store(id)
+			slot.mu.Unlock()
+			return a.ctx, func() {
+				slot.mu.Lock()
+				if slot.id.Load() == id {
+					slot.op = activeFuseOp{}
+					slot.id.Store(0)
+				}
+				slot.mu.Unlock()
+			}, true
+		}
+		slot.mu.Unlock()
+		id++
+	}
+	// All slots busy: run the op untracked.
+	return context.Background(), func() {}, false
 }
 
 func (a *adapter) activeOpsSnapshot() []activeFuseOp {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	return a.activeOpsSnapshotLocked()
 }
 
 func (a *adapter) activeOpsSnapshotLocked() []activeFuseOp {
-	ops := make([]activeFuseOp, 0, len(a.activeOps))
-	for _, op := range a.activeOps {
-		ops = append(ops, op)
+	ops := make([]activeFuseOp, 0, activeOpsSlots)
+	for i := range a.activeOps {
+		slot := &a.activeOps[i]
+		if slot.id.Load() == 0 {
+			continue
+		}
+		slot.mu.RLock()
+		ops = append(ops, slot.op)
+		slot.mu.RUnlock()
 	}
 	return ops
 }
@@ -337,9 +369,22 @@ func blocksForBytes(bytes int64, blockSize uint64) uint64 {
 }
 
 func fillStat(stat *fuse.Stat_t, entry drive.Entry, fallbackPath ...string) {
-	uid, gid, _ := fuse.Getcontext()
-	stat.Uid = uid
-	stat.Gid = gid
+	fillStatWithCreds(stat, entry, 0, 0, false, fallbackPath...)
+}
+
+// fillStatWithCreds fills stat. When cacheCreds is set, uid/gid come from the
+// provided cached values instead of fuse.Getcontext. fuse.Getcontext returns
+// per-request caller credentials, so caching is only valid when allow_other is
+// off (single-user mounts).
+func fillStatWithCreds(stat *fuse.Stat_t, entry drive.Entry, cachedUID, cachedGID uint32, cacheCreds bool, fallbackPath ...string) {
+	if cacheCreds {
+		stat.Uid = cachedUID
+		stat.Gid = cachedGID
+	} else {
+		uid, gid, _ := fuse.Getcontext()
+		stat.Uid = uid
+		stat.Gid = gid
+	}
 	if entry.IsDir {
 		stat.Mode = fuse.S_IFDIR | 0o755
 		stat.Nlink = 2
@@ -370,6 +415,22 @@ func (a *adapter) isReadOnlyPath(path string) bool {
 	}
 	checker, ok := a.fs.(readOnlyPathChecker)
 	return ok && checker.IsReadOnlyPath(path)
+}
+
+// fillStat fills stat with adapter-owned attributes. For single-user mounts
+// (allow_other off) the caller credentials are constant, so fuse.Getcontext
+// is resolved once instead of per stat/readdir entry.
+func (a *adapter) fillStat(stat *fuse.Stat_t, entry drive.Entry, fallbackPath ...string) {
+	if a.allowOther {
+		fillStat(stat, entry, fallbackPath...)
+		return
+	}
+	a.credsOnce.Do(func() {
+		uid, gid, _ := fuse.Getcontext()
+		a.cachedUID = uid
+		a.cachedGID = gid
+	})
+	fillStatWithCreds(stat, entry, a.cachedUID, a.cachedGID, true, fallbackPath...)
 }
 
 func fuseErr(err error) int {
@@ -411,6 +472,9 @@ func logFuseResult(op, path string, start time.Time, errc *int) {
 		logging.L.WarnfEvery("fuse.slow."+op, time.Second, "[FUSE] %s path=%q errc=%d took=%v (slow)", op, path, *errc, elapsed)
 		return
 	}
+	if !logging.L.Enabled(logging.LevelDebug) {
+		return
+	}
 	logging.L.DebugfEvery("fuse.result."+op, time.Second, "[FUSE] %s path=%q errc=%d took=%v", op, path, *errc, elapsed)
 }
 
@@ -427,5 +491,8 @@ func logFuseError(op, path string, errc int, err error) {
 }
 
 func logFuseAttrResult(path string, stat *fuse.Stat_t, entry drive.Entry) {
+	if !logging.L.Enabled(logging.LevelDebug) {
+		return
+	}
 	logging.L.DebugfEvery("fuse.attr", time.Second, "[FUSE] GetattrResult path=%q ino=%d mode=%o size=%d dir=%t", path, stat.Ino, stat.Mode, stat.Size, entry.IsDir)
 }

@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
 	ctx := context.Background()
 	drv := newCountingRemoveDriver()
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 50 * time.Millisecond})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,10 +41,89 @@ func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
 	}
 }
 
+func TestVFSDeleteTasksExposeScheduledDeletes(t *testing.T) {
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}})
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %+v, want one delete task", tasks)
+	}
+	item := tasks[0]
+	if item.Scope != task.ScopeSync || item.State != task.StateScheduled || item.Path != "/dir/a.txt" || !item.Capabilities.Cancelable || item.Capabilities.Retryable {
+		t.Fatalf("delete task = %+v, want scheduled cancelable background task", item)
+	}
+}
+
+func TestVFSDeleteTaskCancelRestoresPendingDelete(t *testing.T) {
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}})
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %+v, want one delete task", tasks)
+	}
+	if err := fs.CancelTask(ctx, tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(ctx, "/dir/a.txt"); err != nil {
+		t.Fatalf("deleted path was not restored: %v", err)
+	}
+	if tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}}); len(tasks) != 0 {
+		t.Fatalf("tasks after cancel = %+v, want none", tasks)
+	}
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("remote deletes = %v, want none", removed)
+	}
+}
+
+func TestVFSDeleteTaskRetryFailedDelete(t *testing.T) {
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	drv.failRemoves = 1
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool {
+		tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}})
+		return len(tasks) == 1 && tasks[0].State == task.StateFailed && tasks[0].Capabilities.Retryable
+	})
+	tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}})
+	if err := fs.RetryTask(ctx, tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool { return len(drv.removedIDs()) == 1 })
+	if tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}}); len(tasks) != 0 {
+		t.Fatalf("tasks after retry success = %+v, want none", tasks)
+	}
+}
+
 func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
 	ctx := context.Background()
 	drv := newCountingRemoveDriver()
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 30 * time.Millisecond})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 30 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +157,7 @@ func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{
-		CacheDir:      t.TempDir(),
+		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
 		UploadDelay:   time.Hour,
 		DeleteDelay:   time.Hour,
@@ -113,14 +193,14 @@ func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
 			t.Fatalf("pending child leaked into restored directory list: %v", entries)
 		}
 	}
-	if pending := fs.Pending(); len(pending) != 0 {
+	if pending := fs.PendingUploads(); len(pending) != 0 {
 		t.Fatalf("pending files = %v, want none", pending)
 	}
 }
 
 func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
 	ctx := context.Background()
-	fs, err := vfs.New(&staleMkdirListDriver{}, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(&staleMkdirListDriver{}, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +223,7 @@ func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
 func TestVFSMkdirReusesExistingDirectoryOnConflict(t *testing.T) {
 	ctx := context.Background()
 	drv := &existingMkdirDriver{}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +249,7 @@ func TestVFSMkdirReusesExistingDirectoryOnConflict(t *testing.T) {
 func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
 	ctx := context.Background()
 	drv := &staleMkdirListDriver{failFirstPut: true}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +278,7 @@ func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
 func TestVFSStatMissingChildrenInNewLocalDirectoryDoesNotRelistRemote(t *testing.T) {
 	ctx := context.Background()
 	drv := &staleMkdirListDriver{listCalls: map[string]int{}}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +300,7 @@ func TestVFSStatMissingChildrenInNewLocalDirectoryDoesNotRelistRemote(t *testing
 func TestVFSPrepareDirectoryCopyClearsPendingChildren(t *testing.T) {
 	ctx := context.Background()
 	drv := &staleMkdirListDriver{}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +332,7 @@ func TestVFSPrepareDirectoryCopyClearsPendingChildren(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("pending children should be cleared, got %+v", entries)
 	}
-	if pending := fs.Pending(); len(pending) != 0 {
+	if pending := fs.PendingUploads(); len(pending) != 0 {
 		t.Fatalf("pending should be empty, got %+v", pending)
 	}
 }
@@ -270,7 +350,7 @@ func TestVFSPrepareDirectoryCopyHidesExistingRemoteChildrenUntilRecreated(t *tes
 	if err := raw.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(raw, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +391,7 @@ func TestVFSPrepareDirectoryCopyHidesExistingRemoteChildrenUntilRecreated(t *tes
 func TestVFSRenameMoveOverlayHidesStaleBackendEntries(t *testing.T) {
 	ctx := context.Background()
 	drv := &staleMoveListDriver{}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +425,7 @@ func TestVFSRenameMoveOverlayHidesStaleBackendEntries(t *testing.T) {
 func TestVFSRenameMoveOverlayConfirmsRemoteConvergence(t *testing.T) {
 	ctx := context.Background()
 	drv := &staleMoveListDriver{}
-	fs, err := vfs.New(drv, vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +457,7 @@ func TestVFSRenameMoveOverlayConfirmsRemoteConvergence(t *testing.T) {
 func TestVFSRenameUploadedFile(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,10 +485,10 @@ func TestVFSRenameUploadedFile(t *testing.T) {
 	}
 }
 
-func TestVFSRenamePendingFile(t *testing.T) {
+func TestVFSRenameUploadUpload(t *testing.T) {
 	ctx := context.Background()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{CacheDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}

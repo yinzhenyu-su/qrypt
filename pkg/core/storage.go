@@ -51,18 +51,18 @@ func (c *Core) StorageUsage(ctx context.Context) (StorageUsage, error) {
 		usage.ThumbnailBytes = bytes
 		usage.CacheBytes += bytes
 	}
-	if c.writebackDir != "" {
-		writebackBytes, err := dirSize(ctx, c.writebackDir)
+	if c.uploadDir != "" {
+		uploadBytes, err := dirSize(ctx, c.uploadDir)
 		if err != nil {
 			return StorageUsage{}, err
 		}
-		mounts, stagingBytes, err := writebackMountUsage(ctx, c.readCacheDir, c.writebackDir)
+		mounts, stagingBytes, err := uploadMountUsage(ctx, c.readCacheDir, c.uploadDir)
 		if err != nil {
 			return StorageUsage{}, err
 		}
 		usage.Mounts = mounts
 		usage.StagingBytes = stagingBytes
-		usage.CacheBytes += writebackBytes
+		usage.CacheBytes += uploadBytes
 	}
 	if c.runtimeLayout.ConfigDir != "" {
 		bytes, err := dirSize(ctx, c.runtimeLayout.ConfigDir)
@@ -151,8 +151,8 @@ func (c *Core) ClearThumbnailCache(ctx context.Context) error {
 	return os.MkdirAll(c.thumbnailDir, 0o700)
 }
 
-func writebackMountUsage(ctx context.Context, readCacheDir, writebackDir string) ([]StorageMountUsage, int64, error) {
-	entries, err := os.ReadDir(writebackDir)
+func uploadMountUsage(ctx context.Context, readCacheDir, uploadDir string) ([]StorageMountUsage, int64, error) {
+	entries, err := os.ReadDir(uploadDir)
 	if os.IsNotExist(err) {
 		return nil, 0, nil
 	}
@@ -165,8 +165,8 @@ func writebackMountUsage(ctx context.Context, readCacheDir, writebackDir string)
 		if !entry.IsDir() {
 			continue
 		}
-		writebackMountDir := filepath.Join(writebackDir, entry.Name())
-		writebackBytes, err := dirSize(ctx, writebackMountDir)
+		uploadMountDir := filepath.Join(uploadDir, entry.Name())
+		uploadBytes, err := dirSize(ctx, uploadMountDir)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -174,13 +174,13 @@ func writebackMountUsage(ctx context.Context, readCacheDir, writebackDir string)
 		if err != nil {
 			return nil, 0, err
 		}
-		stagingBytes, err := dirSize(ctx, filepath.Join(writebackMountDir, "staging"))
+		stagingBytes, err := dirSize(ctx, filepath.Join(uploadMountDir, "staging"))
 		if err != nil {
 			return nil, 0, err
 		}
 		item := StorageMountUsage{
 			Name:           entry.Name(),
-			CacheBytes:     readBytes + writebackBytes,
+			CacheBytes:     readBytes + uploadBytes,
 			ReadCacheBytes: readBytes,
 			StagingBytes:   stagingBytes,
 		}

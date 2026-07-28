@@ -44,11 +44,11 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	ctx := context.Background()
 	remoteA := t.TempDir()
 	remoteB := t.TempDir()
-	fsA, err := vfs.New(localfs.New(remoteA), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a"), UploadDelay: testUploadDelay})
+	fsA, err := vfs.New(localfs.New(remoteA), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a"), UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(localfs.New(remoteB), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b"), UploadDelay: testUploadDelay})
+	fsB, err := vfs.New(localfs.New(remoteB), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "b"), UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,11 +119,11 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 
 func TestNamespaceUploadTasksUseGlobalIDs(t *testing.T) {
 	ctx := context.Background()
-	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a"), UploadDelay: time.Hour})
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a"), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b"), UploadDelay: time.Hour})
+	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "b"), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestNamespaceUploadTasksUseGlobalIDs(t *testing.T) {
 	if err := ns.CancelTask(ctx, tasks[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if pending := ns.Pending(); len(pending) != 1 || pending[0].Path == tasks[0].Path {
+	if pending := ns.PendingUploads(); len(pending) != 1 || pending[0].Path == tasks[0].Path {
 		t.Fatalf("pending after cancel = %+v, canceled task=%+v", pending, tasks[0])
 	}
 }
@@ -183,11 +183,11 @@ func TestNamespaceStartDirectoryPrefetchWarmsAllMounts(t *testing.T) {
 			"b-dir": {{ID: "b-file", ParentID: "b-dir", Name: "b.txt"}},
 		},
 	}
-	fsA, err := vfs.New(drvA, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(drvA, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(drvB, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	fsB, err := vfs.New(drvB, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "b")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,11 +206,11 @@ func TestNamespaceStartDirectoryPrefetchWarmsAllMounts(t *testing.T) {
 
 func TestNamespaceRejectsCrossMountRename(t *testing.T) {
 	ctx := context.Background()
-	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	fsB, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "b")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,11 +231,11 @@ func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 	ctx := context.Background()
 	spaceA := drive.Space{Total: 1000, Free: 700}
 	spaceB := drive.Space{Total: 2000, Free: 300}
-	fsA, err := vfs.New(fixedSpaceDriver{space: spaceA}, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(fixedSpaceDriver{space: spaceA}, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fsB, err := vfs.New(fixedSpaceDriver{space: spaceB}, vfs.Options{CacheDir: filepath.Join(t.TempDir(), "b")})
+	fsB, err := vfs.New(fixedSpaceDriver{space: spaceB}, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "b")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 
 func TestNamespaceMarksOnlyNamespaceRootReadOnly(t *testing.T) {
 	ctx := context.Background()
-	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestNamespaceMarksOnlyNamespaceRootReadOnly(t *testing.T) {
 
 func TestNamespaceVirtualDirectoryModTimeIsStable(t *testing.T) {
 	ctx := context.Background()
-	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{CacheDir: filepath.Join(t.TempDir(), "a")})
+	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
 	if err != nil {
 		t.Fatal(err)
 	}

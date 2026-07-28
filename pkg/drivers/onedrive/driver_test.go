@@ -39,7 +39,6 @@ type mockOneDrive struct {
 type mockUploadSession struct {
 	parentID string
 	name     string
-	size     int64
 	data     []byte
 }
 

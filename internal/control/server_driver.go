@@ -186,11 +186,22 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			matched = true
+			if !nd.TestEnabled {
+				if req.Mount != "" {
+					http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
+					return
+				}
+				continue
+			}
 			result := RunDriverAuthTest(r.Context(), nd.Name, nd.Driver)
 			results = append(results, *result)
 		}
 		if req.Mount != "" && !matched {
 			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
+		if len(results) == 0 {
+			http.Error(w, "no mounts enabled for debug tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
 			return
 		}
 		writeJSON(w, results)
@@ -203,6 +214,13 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			matched = true
+			if !nd.TestEnabled {
+				if req.Mount != "" {
+					http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
+					return
+				}
+				continue
+			}
 			switch testType {
 			case "crud":
 				result := RunDriverCRUDTest(r.Context(), nd.Name, nd.Driver)
@@ -214,6 +232,10 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Mount != "" && !matched {
 			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
+		if len(results) == 0 {
+			http.Error(w, "no mounts enabled for debug tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
 			return
 		}
 		writeJSON(w, results)
@@ -230,6 +252,24 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		size := parseXferSize(req.Size)
+		srcDriver, srcOK := findDebugTestDriver(drivers, srcMount)
+		if !srcOK {
+			http.Error(w, fmt.Sprintf("source mount %q not found", srcMount), http.StatusNotFound)
+			return
+		}
+		if !srcDriver.TestEnabled {
+			http.Error(w, debugTestDisabledError(srcMount), http.StatusForbidden)
+			return
+		}
+		dstDriver, dstOK := findDebugTestDriver(drivers, dstMount)
+		if !dstOK {
+			http.Error(w, fmt.Sprintf("dest mount %q not found", dstMount), http.StatusNotFound)
+			return
+		}
+		if !dstDriver.TestEnabled {
+			http.Error(w, debugTestDisabledError(dstMount), http.StatusForbidden)
+			return
+		}
 
 		if req.VFS {
 			filesys, ok := s.source.(vfs.FileSystem)
@@ -240,24 +280,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			result := RunVFSXferTest(r.Context(), filesys, srcMount, dstMount, size)
 			writeJSON(w, result)
 		} else {
-			var srcDriver, dstDriver drive.Driver
-			for _, nd := range drivers {
-				if nd.Name == srcMount {
-					srcDriver = nd.Driver
-				}
-				if nd.Name == dstMount {
-					dstDriver = nd.Driver
-				}
-			}
-			if srcDriver == nil {
-				http.Error(w, fmt.Sprintf("source mount %q not found", srcMount), http.StatusNotFound)
-				return
-			}
-			if dstDriver == nil {
-				http.Error(w, fmt.Sprintf("dest mount %q not found", dstMount), http.StatusNotFound)
-				return
-			}
-			result := RunDriverXferTest(r.Context(), srcMount, srcDriver, dstMount, dstDriver, size)
+			result := RunDriverXferTest(r.Context(), srcMount, srcDriver.Driver, dstMount, dstDriver.Driver, size)
 			writeJSON(w, result)
 		}
 
@@ -271,15 +294,13 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "VFS fs test not available: source does not implement FileSystem", http.StatusNotImplemented)
 			return
 		}
-		matched := false
-		for _, nd := range drivers {
-			if nd.Name == req.Mount {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		nd, ok := findDebugTestDriver(drivers, req.Mount)
+		if !ok {
 			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
+		if !nd.TestEnabled {
+			http.Error(w, debugTestDisabledError(req.Mount), http.StatusForbidden)
 			return
 		}
 		result := RunVFSSmokeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
@@ -299,15 +320,13 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "VFS resume test not available: source does not support debug upload cancel injection", http.StatusNotImplemented)
 			return
 		}
-		matched := false
-		for _, nd := range drivers {
-			if nd.Name == req.Mount {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		nd, ok := findDebugTestDriver(drivers, req.Mount)
+		if !ok {
 			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+			return
+		}
+		if !nd.TestEnabled {
+			http.Error(w, debugTestDisabledError(req.Mount), http.StatusForbidden)
 			return
 		}
 		result := RunVFSResumeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
@@ -317,6 +336,19 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown driver test: %s", req.Test), http.StatusBadRequest)
 		return
 	}
+}
+
+func debugTestDisabledError(mount string) string {
+	return fmt.Sprintf("mount %q is not enabled for debug tests; set test_enabled = true in [[mounts]]", mount)
+}
+
+func findDebugTestDriver(drivers []vfs.NamedDriver, mount string) (vfs.NamedDriver, bool) {
+	for _, nd := range drivers {
+		if nd.Name == mount {
+			return nd, true
+		}
+	}
+	return vfs.NamedDriver{}, false
 }
 
 func (s *Server) handleBench(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +426,13 @@ func (s *Server) writeCRUDBenchmark(w http.ResponseWriter, r *http.Request, prov
 			continue
 		}
 		matched = true
+		if !nd.TestEnabled {
+			if req.Mount != "" {
+				http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
+				return
+			}
+			continue
+		}
 		probe := RunBenchmarkNetworkProbe(r.Context(), nd.Driver)
 		results := make([]CRUDTestResult, 0, samples)
 		for i := 0; i < samples; i++ {
@@ -416,22 +455,24 @@ func (s *Server) writeCRUDBenchmark(w http.ResponseWriter, r *http.Request, prov
 		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
 		return
 	}
+	if len(reports) == 0 {
+		http.Error(w, "no mounts enabled for debug tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
+		return
+	}
 	writeJSON(w, reports)
 }
 
 func (s *Server) writeFSBenchmark(w http.ResponseWriter, r *http.Request, provider vfs.DriverProvider, filesys vfs.FileSystem, req DriverTestRequest, samples int, interval time.Duration) {
-	var driver drive.Driver
-	for _, nd := range provider.Drivers() {
-		if nd.Name == req.Mount {
-			driver = nd.Driver
-			break
-		}
-	}
-	if driver == nil {
+	nd, ok := findDebugTestDriver(provider.Drivers(), req.Mount)
+	if !ok {
 		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
 		return
 	}
-	probe := RunBenchmarkNetworkProbe(r.Context(), driver)
+	if !nd.TestEnabled {
+		http.Error(w, debugTestDisabledError(req.Mount), http.StatusForbidden)
+		return
+	}
+	probe := RunBenchmarkNetworkProbe(r.Context(), nd.Driver)
 	results := make([]FSTestResult, 0, samples)
 	for i := 0; i < samples; i++ {
 		if i > 0 && interval > 0 {
@@ -451,27 +492,29 @@ func (s *Server) writeFSBenchmark(w http.ResponseWriter, r *http.Request, provid
 }
 
 func (s *Server) writeXferBenchmark(w http.ResponseWriter, r *http.Request, provider vfs.DriverProvider, req DriverTestRequest, samples int, interval time.Duration) {
-	var srcDriver, dstDriver drive.Driver
-	for _, nd := range provider.Drivers() {
-		if nd.Name == req.Source {
-			srcDriver = nd.Driver
-		}
-		if nd.Name == req.Dest {
-			dstDriver = nd.Driver
-		}
-	}
-	if srcDriver == nil {
+	drivers := provider.Drivers()
+	srcDriver, srcOK := findDebugTestDriver(drivers, req.Source)
+	if !srcOK {
 		http.Error(w, fmt.Sprintf("source mount %q not found", req.Source), http.StatusNotFound)
 		return
 	}
-	if dstDriver == nil {
+	if !srcDriver.TestEnabled {
+		http.Error(w, debugTestDisabledError(req.Source), http.StatusForbidden)
+		return
+	}
+	dstDriver, dstOK := findDebugTestDriver(drivers, req.Dest)
+	if !dstOK {
 		http.Error(w, fmt.Sprintf("dest mount %q not found", req.Dest), http.StatusNotFound)
+		return
+	}
+	if !dstDriver.TestEnabled {
+		http.Error(w, debugTestDisabledError(req.Dest), http.StatusForbidden)
 		return
 	}
 
 	probe := mergeBenchmarkNetworkProbes(
-		RunBenchmarkNetworkProbe(r.Context(), srcDriver),
-		RunBenchmarkNetworkProbe(r.Context(), dstDriver),
+		RunBenchmarkNetworkProbe(r.Context(), srcDriver.Driver),
+		RunBenchmarkNetworkProbe(r.Context(), dstDriver.Driver),
 	)
 	results := make([]XferTestResult, 0, samples)
 	for i := 0; i < samples; i++ {
@@ -493,7 +536,7 @@ func (s *Server) writeXferBenchmark(w http.ResponseWriter, r *http.Request, prov
 			}
 			results = append(results, *RunVFSXferTest(r.Context(), filesys, req.Source, req.Dest, parseXferSize(req.Size)))
 		} else {
-			results = append(results, *RunDriverXferTest(r.Context(), req.Source, srcDriver, req.Dest, dstDriver, parseXferSize(req.Size)))
+			results = append(results, *RunDriverXferTest(r.Context(), req.Source, srcDriver.Driver, req.Dest, dstDriver.Driver, parseXferSize(req.Size)))
 		}
 	}
 	writeJSON(w, []BenchmarkReport{NewXferBenchmarkReportSamplesWithEnvironment(results, BenchmarkEnvironment{NetworkProbe: &probe})})

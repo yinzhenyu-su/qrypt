@@ -28,7 +28,7 @@ def build_field_rows(props, skip_encryption=False, skip_cache=False):
     for name, prop in props.items():
         if skip_encryption and name in ("encryption",):
             continue
-        if skip_cache and name in ("read_cache", "writeback"):
+        if skip_cache and name in ("read_cache", "upload"):
             continue
         if name == "type":
             continue
@@ -132,16 +132,17 @@ def generate():
     sections.append(build_field_rows(read_cache_props))
     sections.append("")
 
-    writeback = defs.get("writebackConfig", {})
-    writeback_props = writeback.get("properties", {})
-    sections.append("## 写回与上传")
+    upload = defs.get("uploadConfig", {})
+    upload_props = upload.get("properties", {})
+    sections.append("## 上传")
     sections.append("")
     sections.append(
-        "在 `[writeback]` 中设置写回和上传调度默认值。"
-        "每个 mount 可以在 `[mounts.writeback]` 中单独覆盖。"
+        "在 `[upload]` 中设置上传和删除调度默认值，以及任务上传的默认目标。"
+        "调度参数可以在 `[mounts.upload]` 中单独覆盖；"
+        "`default_mount` 和 `default_path` 只支持顶层 `[upload]`。"
     )
     sections.append("")
-    sections.append(build_field_rows(writeback_props))
+    sections.append(build_field_rows(upload_props))
     sections.append("")
 
     log = defs.get("loggingConfig", {})
@@ -178,9 +179,19 @@ def generate():
     sections.append("")
     sections.append("- [支持的驱动](support-drivers.md)")
     sections.append("")
+    mount_props = defs.get("mountConfig", {}).get("properties", {})
+    common_mount_props = {
+        name: mount_props[name]
+        for name in ("name", "type", "test_enabled")
+        if name in mount_props
+    }
+    sections.append("通用参数：")
+    sections.append("")
+    sections.append(build_field_rows(common_mount_props))
+    sections.append("")
     sections.append(
         "每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` "
-        "和 `[mounts.writeback]` 中覆盖全局配置，具体参数见上文对应章节。"
+        "和 `[mounts.upload]` 中覆盖全局配置，具体参数见上文对应章节。"
     )
     sections.append("")
 

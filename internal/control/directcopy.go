@@ -240,11 +240,15 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 }
 
 func RunDirectDriverCopyDir(ctx context.Context, fs CopyFileSystem, source DriverCopySource, srcPath, dstParentPath string, overwrite bool) *DriverCopyDirResult {
+	return RunDirectDriverCopyDirToPath(ctx, fs, source, srcPath, pathpkg.Join(cleanVirtual(dstParentPath), pathpkg.Base(cleanVirtual(srcPath))), overwrite)
+}
+
+func RunDirectDriverCopyDirToPath(ctx context.Context, fs CopyFileSystem, source DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyDirResult {
 	started := timeutil.Now()
 	result := &DriverCopyDirResult{
 		OpID:       newDebugOperationID("copydir"),
 		SourcePath: cleanVirtual(srcPath),
-		DestPath:   pathpkg.Join(cleanVirtual(dstParentPath), pathpkg.Base(cleanVirtual(srcPath))),
+		DestPath:   cleanVirtual(dstPath),
 		Started:    started,
 		Entries:    []DriverCopyEntryResult{},
 	}

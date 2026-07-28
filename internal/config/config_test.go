@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {
@@ -18,6 +19,76 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "mount_piont") {
 		t.Fatalf("expected unknown key error, got %v", err)
+	}
+}
+
+func TestLoadMountTestEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	if err := os.WriteFile(path, []byte(`
+[[mounts]]
+name = "enabled"
+type = "localfs"
+test_enabled = true
+
+[[mounts]]
+name = "disabled"
+type = "localfs"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Mounts[0].TestEnabled {
+		t.Fatal("first mount TestEnabled = false, want true")
+	}
+	if cfg.Mounts[1].TestEnabled {
+		t.Fatal("second mount TestEnabled = true, want false")
+	}
+}
+
+func TestValidateUploadDefaultTarget(t *testing.T) {
+	cfg := &Config{
+		Upload: UploadConfig{DefaultMount: "cloud", DefaultPath: "/Inbox"},
+		Mounts: []MountConfig{{
+			Name: "cloud",
+			Type: "localfs",
+			Params: ParamMap{
+				"root_path": t.TempDir(),
+			},
+		}},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate default target = %v, want nil", err)
+	}
+
+	cfg.Upload.DefaultMount = "missing"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "upload.default_mount") {
+		t.Fatalf("expected invalid default_mount error, got %v", err)
+	}
+
+	cfg.Upload.DefaultMount = "cloud"
+	cfg.Upload.DefaultPath = "Inbox"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "upload.default_path must be absolute") {
+		t.Fatalf("expected invalid default_path error, got %v", err)
+	}
+}
+
+func TestValidateRejectsMountUploadDefaultTarget(t *testing.T) {
+	cfg := &Config{
+		Mounts: []MountConfig{{
+			Name: "cloud",
+			Type: "localfs",
+			Params: ParamMap{
+				"root_path": t.TempDir(),
+			},
+			Upload: &UploadConfig{DefaultPath: "/Inbox"},
+		}},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "top-level [upload]") {
+		t.Fatalf("expected mount upload default target error, got %v", err)
 	}
 }
 
@@ -343,7 +414,7 @@ func TestEffectiveSpaceBytesRejectsInvalidValues(t *testing.T) {
 	}
 }
 
-func TestReadCacheAndWritebackForIncludeMountOverrides(t *testing.T) {
+func TestReadCacheAndUploadForIncludeMountOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
 	[read_cache]
@@ -352,7 +423,7 @@ func TestReadCacheAndWritebackForIncludeMountOverrides(t *testing.T) {
 	[thumbnail_cache]
 	max_size = "256M"
 
-[writeback]
+[upload]
 upload_delay = "5s"
 upload_workers = 2
 delete_delay = "2s"
@@ -362,7 +433,7 @@ name = "fast"
 [mounts.read_cache]
 max_size = "1G"
 
-[mounts.writeback]
+[mounts.upload]
 upload_delay = "250ms"
 upload_workers = 8
 delete_delay = "500ms"
@@ -384,22 +455,22 @@ delete_delay = "500ms"
 	if got := cfg.ThumbnailCache.MaxSize; got != "256M" {
 		t.Fatalf("thumbnail max_size = %q, want 256M", got)
 	}
-	if got := cfg.WritebackFor("slow").UploadDelay; got != "5s" {
+	if got := cfg.UploadFor("slow").UploadDelay; got != "5s" {
 		t.Fatalf("default upload_delay = %q, want 5s", got)
 	}
-	if got := cfg.WritebackFor("slow").UploadWorkers; got != 2 {
+	if got := cfg.UploadFor("slow").UploadWorkers; got != 2 {
 		t.Fatalf("default upload_workers = %d, want 2", got)
 	}
-	if got := cfg.WritebackFor("slow").DeleteDelay; got != "2s" {
+	if got := cfg.UploadFor("slow").DeleteDelay; got != "2s" {
 		t.Fatalf("default delete_delay = %q, want 2s", got)
 	}
-	if got := cfg.WritebackFor("fast").UploadDelay; got != "250ms" {
+	if got := cfg.UploadFor("fast").UploadDelay; got != "250ms" {
 		t.Fatalf("mount upload_delay = %q, want 250ms", got)
 	}
-	if got := cfg.WritebackFor("fast").UploadWorkers; got != 8 {
+	if got := cfg.UploadFor("fast").UploadWorkers; got != 8 {
 		t.Fatalf("mount upload_workers = %d, want 8", got)
 	}
-	if got := cfg.WritebackFor("fast").DeleteDelay; got != "500ms" {
+	if got := cfg.UploadFor("fast").DeleteDelay; got != "500ms" {
 		t.Fatalf("mount delete_delay = %q, want 500ms", got)
 	}
 }

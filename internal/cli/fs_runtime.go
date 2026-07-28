@@ -81,7 +81,11 @@ func waitFileSystemIdle(ctx context.Context, fs vfs.FileSystem, timeout time.Dur
 	defer ticker.Stop()
 	for {
 		uploads, deleteTimers := fileSystemActivity(fs)
-		if len(fs.Pending()) == 0 && uploads == 0 && deleteTimers == 0 {
+		pending, err := pendingFiles(fs)
+		if err != nil {
+			return err
+		}
+		if len(pending) == 0 && uploads == 0 && deleteTimers == 0 {
 			return nil
 		}
 		select {

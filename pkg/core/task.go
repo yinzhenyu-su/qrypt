@@ -3,108 +3,199 @@ package core
 import (
 	"context"
 	"fmt"
-	"sort"
+	"path/filepath"
 
 	"github.com/yinzhenyu/qrypt/pkg/task"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type Task = task.Task
 type TaskFilter = task.Filter
+type TaskItem = task.Item
+type TaskOptions = task.Options
+type TaskRequest = task.Request
 type TaskType = task.Type
 type TaskState = task.State
+type TaskItemFilter = task.ItemFilter
 
-type taskManager interface {
-	Tasks(task.Filter) []task.Task
-	CancelTask(ctx context.Context, id string) error
-	RetryTask(ctx context.Context, id string) error
+func (c *Core) newTaskManager() *task.Manager {
+	var sources []task.Source
+	if source, ok := c.fs.(task.Source); ok {
+		sources = append(sources, source)
+	}
+	store := c.taskStore()
+	return task.NewManagerWithStore(store, sources...)
 }
 
-func (c *Core) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
+func (c *Core) taskStore() task.Store {
+	if c == nil || c.runtimeLayout.StateDir == "" {
+		return task.NewMemoryStore()
+	}
+	store, err := task.NewPersistentStore(filepath.Join(c.runtimeLayout.StateDir, "tasks", "tasks.jsonl"))
+	if err != nil {
+		return task.NewMemoryStore()
+	}
+	return store
+}
+
+func (c *Core) taskManager() (*task.Manager, error) {
 	if c == nil || c.fs == nil {
 		return nil, fmt.Errorf("core: closed")
 	}
-	if err := ctx.Err(); err != nil {
+	if c.tasks == nil {
+		c.tasks = c.newTaskManager()
+	}
+	return c.tasks, nil
+}
+
+func (c *Core) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
+	manager, err := c.taskManager()
+	if err != nil {
 		return nil, err
 	}
-	manager, ok := c.fs.(taskManager)
-	if !ok {
-		return nil, fmt.Errorf("core: tasks are not supported")
-	}
-	tasks := manager.Tasks(filter)
-	tasks = append(tasks, c.moveTaskSnapshot(filter)...)
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].UpdatedAt.Equal(tasks[j].UpdatedAt) {
-			return tasks[i].ID < tasks[j].ID
-		}
-		return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
-	})
-	if filter.Limit > 0 && len(tasks) > filter.Limit {
-		tasks = tasks[:filter.Limit]
-	}
-	return tasks, nil
+	return manager.ListTasks(ctx, filter)
 }
 
 func (c *Core) GetTask(ctx context.Context, id string) (task.Task, error) {
 	if id == "" {
 		return task.Task{}, fmt.Errorf("core: task id required")
 	}
-	tasks, err := c.ListTasks(ctx, task.Filter{})
+	manager, err := c.taskManager()
 	if err != nil {
 		return task.Task{}, err
 	}
-	for _, item := range tasks {
-		if item.ID == id {
-			return item, nil
+	return manager.GetTask(ctx, id)
+}
+
+func (c *Core) ListTaskItems(ctx context.Context, taskID string, filter task.ItemFilter) ([]task.ItemResult, error) {
+	item, err := c.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]task.ItemResult, 0, len(item.Result.Items))
+	for _, result := range item.Result.Items {
+		if !filter.Match(result) {
+			continue
+		}
+		out = append(out, result)
+		if filter.Limit > 0 && len(out) >= filter.Limit {
+			break
 		}
 	}
-	return task.Task{}, fmt.Errorf("core: task %q not found", id)
+	return out, nil
+}
+
+func (c *Core) GetTaskItem(ctx context.Context, taskID, itemID string) (task.ItemResult, error) {
+	if itemID == "" {
+		return task.ItemResult{}, fmt.Errorf("core: task item id required")
+	}
+	items, err := c.ListTaskItems(ctx, taskID, task.ItemFilter{ItemID: itemID, Limit: 1})
+	if err != nil {
+		return task.ItemResult{}, err
+	}
+	if len(items) == 0 {
+		return task.ItemResult{}, fmt.Errorf("%w: task item %q", task.ErrNotFound, itemID)
+	}
+	return items[0], nil
+}
+
+func (c *Core) CancelTaskItem(ctx context.Context, taskID, itemID string) error {
+	if taskID == "" {
+		return fmt.Errorf("core: task id required")
+	}
+	if itemID == "" {
+		return fmt.Errorf("core: task item id required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if batch := c.getUploadStream(taskID); batch != nil {
+		return c.cancelUploadStreamItem(ctx, batch, itemID)
+	}
+	if batch := c.getDownloadStream(taskID); batch != nil {
+		return c.cancelDownloadStreamItem(ctx, batch, itemID)
+	}
+	return fmt.Errorf("core: task item cancel is only supported for active stream tasks")
 }
 
 func (c *Core) CancelTask(ctx context.Context, id string) error {
-	if c == nil || c.fs == nil {
-		return fmt.Errorf("core: closed")
-	}
 	if id == "" {
 		return fmt.Errorf("core: task id required")
 	}
-	manager, ok := c.fs.(taskManager)
-	if !ok {
-		return fmt.Errorf("core: tasks are not supported")
+	manager, err := c.taskManager()
+	if err != nil {
+		return err
 	}
-	if err := manager.CancelTask(ctx, id); err != nil {
-		if !vfs.IsNotFound(err) {
-			return err
-		}
-	} else {
-		return nil
-	}
-	if c.hasMoveTask(id) {
-		return fmt.Errorf("core: move task %q is not cancelable", id)
-	}
-	return fmt.Errorf("core: task %q not found", id)
+	return manager.CancelTask(ctx, id)
 }
 
 func (c *Core) RetryTask(ctx context.Context, id string) error {
-	if c == nil || c.fs == nil {
-		return fmt.Errorf("core: closed")
-	}
 	if id == "" {
 		return fmt.Errorf("core: task id required")
 	}
-	manager, ok := c.fs.(taskManager)
-	if !ok {
-		return fmt.Errorf("core: tasks are not supported")
+	manager, err := c.taskManager()
+	if err != nil {
+		return err
 	}
-	if err := manager.RetryTask(ctx, id); err != nil {
-		if !vfs.IsNotFound(err) {
-			return err
+	return manager.RetryTask(ctx, id)
+}
+
+func (c *Core) DismissTask(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("core: task id required")
+	}
+	manager, err := c.taskManager()
+	if err != nil {
+		return err
+	}
+	return manager.DismissTask(ctx, id)
+}
+
+func (c *Core) DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error) {
+	manager, err := c.taskManager()
+	if err != nil {
+		return 0, err
+	}
+	return manager.DismissFinishedTasks(ctx, filter)
+}
+
+func (c *Core) CreateTask(ctx context.Context, req task.Request) (task.Task, error) {
+	switch req.Type {
+	case task.TypeUploadRemote, task.TypeUploadBatch:
+		return c.createUploadTask(ctx, req)
+	case task.TypeUploadStreamBatch:
+		return c.createUploadStreamTask(ctx, req)
+	case task.TypeDownload:
+		return c.createDownloadTask(ctx, req)
+	case task.TypeDownloadStreamBatch:
+		return c.createDownloadStreamTask(ctx, req)
+	case task.TypeDeleteRemote, task.TypeDeleteBatch:
+		return c.createDeleteTask(ctx, req)
+	case task.TypeCopy:
+		return c.createCopyTask(ctx, req)
+	case task.TypeMoveRemote:
+		move, err := moveSpecFromTaskRequest(req)
+		if err != nil {
+			return task.Task{}, err
 		}
-	} else {
-		return nil
+		return c.createMoveTask(ctx, move)
+	default:
+		return task.Task{}, fmt.Errorf("core: unsupported task type %q", req.Type)
 	}
-	if c.hasMoveTask(id) {
-		return fmt.Errorf("core: move task %q is not retryable", id)
+}
+
+func moveSpecFromTaskRequest(req task.Request) (moveTaskSpec, error) {
+	if len(req.Items) != 1 {
+		return moveTaskSpec{}, fmt.Errorf("core: move task requires exactly one item")
 	}
-	return fmt.Errorf("core: task %q not found", id)
+	item := req.Items[0]
+	if item.SourcePath == "" || item.DestPath == "" {
+		return moveTaskSpec{}, fmt.Errorf("core: move task item requires source_path and dest_path")
+	}
+	return moveTaskSpec{
+		SourcePath:  item.SourcePath,
+		DestPath:    item.DestPath,
+		Overwrite:   req.Options.Overwrite,
+		Recursive:   req.Options.Recursive,
+		Concurrency: req.Options.Concurrency,
+	}, nil
 }
