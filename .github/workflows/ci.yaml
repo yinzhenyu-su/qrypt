@@ -6,6 +6,12 @@ on:
     tags: [v*]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v0.3.0)"
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,7 +47,7 @@ jobs:
         run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./internal/control ./internal/logging ./cmd/qrypt
 
   update-changelog:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [check]
     runs-on: ubuntu-latest
     permissions:
@@ -52,7 +58,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate changelog
-        run: bash scripts/gen-changelog.sh "${GITHUB_REF_NAME}"
+        run: bash scripts/gen-changelog.sh "${{ inputs.version || github.ref_name }}"
 
       - name: Commit and push
         run: |
@@ -67,7 +73,7 @@ jobs:
           fi
 
   dist-linux-windows:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [check]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -140,7 +146,8 @@ jobs:
 
       - name: Package ${{ matrix.target }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ inputs.version || github.ref_name }}"
+          version="${version#v}"
           asset="qrypt_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
           if [ "${{ matrix.archive_format }}" = "zip" ]; then
             (cd dist && zip "${asset}.zip" "${{ matrix.output }}")
@@ -150,13 +157,13 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: qrypt-${{ matrix.target }}-${{ github.ref_name }}
+          name: qrypt-${{ matrix.target }}-${{ inputs.version || github.ref_name }}
           path: |
             dist/*.tar.gz
             dist/*.zip
 
   dist-darwin:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [check]
     runs-on: macos-14
     steps:
@@ -185,17 +192,18 @@ jobs:
 
       - name: Package darwin binaries
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ inputs.version || github.ref_name }}"
+          version="${version#v}"
           tar -C dist -czf "dist/qrypt_${version}_darwin_amd64.tar.gz" qrypt-darwin-amd64
           tar -C dist -czf "dist/qrypt_${version}_darwin_arm64.tar.gz" qrypt-darwin-arm64
 
       - uses: actions/upload-artifact@v7
         with:
-          name: qrypt-darwin-${{ github.ref_name }}
+          name: qrypt-darwin-${{ inputs.version || github.ref_name }}
           path: dist/*.tar.gz
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [dist-linux-windows, dist-darwin]
     runs-on: ubuntu-latest
     permissions:
@@ -204,6 +212,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Verify tag exists
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag -l "${{ inputs.version }}" | grep -q . || { echo "tag ${{ inputs.version }} 不存在"; exit 1; }
 
       - uses: actions/download-artifact@v7
         with:
@@ -216,3 +229,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.version || github.ref_name }}
