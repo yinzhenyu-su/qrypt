@@ -212,6 +212,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # dispatch 时 checkout 到发布 tag,与 tag push 行为一致(goreleaser 要求 tag == HEAD)
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
 
       - name: Verify tag exists
         if: github.event_name == 'workflow_dispatch'
