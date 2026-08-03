@@ -273,7 +273,7 @@ func TestVFSActiveOpsExposeBlockedPrefetchAndWaiter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err != nil {
