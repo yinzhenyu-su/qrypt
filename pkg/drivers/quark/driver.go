@@ -160,19 +160,22 @@ func New(cookie string, opts Options) *Driver {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	configCookie := d.cookie
 	d.loadCookieState()
 	if d.cookie == "" {
 		return fmt.Errorf("quark: cookie is required")
 	}
-	var resp sortResp
-	if err := d.cl.request(ctx, http.MethodGet, "/file/sort", map[string]string{
-		"pdir_fid": d.rootID,
-		"_size":    "1",
-	}, nil, &resp); err != nil {
+	if err := d.validateWithFallback(ctx, configCookie, func() error {
+		var resp sortResp
+		if err := d.cl.request(ctx, http.MethodGet, "/file/sort", map[string]string{
+			"pdir_fid": d.rootID,
+			"_size":    "1",
+		}, nil, &resp); err != nil {
+			return err
+		}
+		return apiError(resp.respEnvelope)
+	}); err != nil {
 		return fmt.Errorf("quark: validate cookie: %w", err)
-	}
-	if err := apiError(resp.respEnvelope); err != nil {
-		return err
 	}
 	if d.rootPath != "" && d.rootPath != "/" {
 		rootID, err := d.resolvePathFrom(ctx, "0", d.rootPath)
@@ -815,6 +818,32 @@ func (d *Driver) loadCookieState() {
 		d.cookieSource = "state"
 	}
 	d.cookieUpdated = state.UpdatedAt
+}
+
+// validateWithFallback runs validate with the current cookie and, when the
+// persisted state cookie fails while a config cookie is available, retries
+// with the config cookie alone and replaces the stale quark_cookie.json.
+// A stale state file therefore cannot wedge the mount: only when both the
+// state and the config cookie fail is the error returned.
+func (d *Driver) validateWithFallback(ctx context.Context, configCookie string, validate func() error) error {
+	err := validate()
+	if err == nil {
+		return nil
+	}
+	if d.cookieSource != "state" || configCookie == "" || configCookie == d.cookie {
+		return err
+	}
+	// The state cookie is stale; fall back to the config cookie.
+	d.cookie = configCookie
+	d.cl.setCookie(configCookie)
+	d.cookieSource = "config"
+	if retryErr := validate(); retryErr != nil {
+		return retryErr
+	}
+	// The config cookie authenticated; persist it so later restarts do not
+	// reuse the stale state cookie again.
+	d.saveUpdatedCookie(d.cookie)
+	return nil
 }
 
 func (d *Driver) saveUpdatedCookie(cookie string) {

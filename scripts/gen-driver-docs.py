@@ -11,15 +11,29 @@ DRIVER_META = {
     "localfs":       {"name": "本地目录",                "type": "localfs"},
     "aliyundrive":   {"name": "阿里云盘",                "type": "aliyundrive"},
     "baiduNetdisk":  {"name": "百度网盘",                "type": "baidu_netdisk"},
+    "onedrive":      {"name": "OneDrive",                "type": "onedrive"},
+    "onedriveApp":   {"name": "OneDrive 应用权限",      "type": "onedrive_app"},
     "quark":         {"name": "夸克网盘",                "type": "quark"},
     "yun139":        {"name": "天翼云盘",                "type": "yun139"},
     "p115":          {"name": "115 云盘",                "type": "115"},
+    "p115open":      {"name": "115 云盘（开放平台）",   "type": "115_open"},
     "p189":          {"name": "天翼云盘 189",            "type": "189"},
     "webdav":        {"name": "WebDAV",                  "type": "webdav"},
     "s3":            {"name": "Amazon S3 / 兼容 S3",     "type": "s3"},
 }
 
-DRIVER_ORDER = ["localfs", "aliyundrive", "baiduNetdisk", "quark", "yun139", "p115", "p189", "webdav", "s3"]
+DRIVER_ORDER = ["localfs", "aliyundrive", "baiduNetdisk", "onedrive", "onedriveApp", "quark", "yun139", "p115", "p115open", "p189", "webdav", "s3"]
+
+# Optional per-driver notes rendered right after the driver heading.
+DRIVER_INTRO = {
+    "p115open": (
+        "115 云盘（开放平台 API，`refresh_token` 认证）。使用官方 "
+        "[115 开放平台](https://open.115.com) 的 Bearer token 认证，token 过期自动刷新并持久化，无需手动更新 cookie。\n\n"
+        "**获取 refresh_token**:在 [open.115.com](https://open.115.com) 注册应用，或使用公共应用 ID，通过 PKCE 设备码扫码"
+        "（115 App 扫码授权）获得 `access_token` 与 `refresh_token`。注意：同一应用同一账号最多持有 2 个 refresh_token，"
+        "第 3 次获取会使第 1 个失效；每次刷新都会轮换（旧 refresh_token 立即作废）。"
+    ),
+}
 
 
 def load_schema():
@@ -57,6 +71,8 @@ def build_driver_list_table(defs):
 def toml_value(val, prop_type):
     if prop_type == "boolean":
         return str(val).lower() if isinstance(val, bool) else val
+    if prop_type in ("integer", "number"):
+        return val
     return f'"{val}"'
 
 
@@ -66,6 +82,11 @@ def build_driver_section(defs, key):
     param_def = defs[def_name]
     props = param_def.get("properties", {})
     required_set = set(param_def.get("required", []))
+
+    intro = DRIVER_INTRO.get(key, "")
+    if intro:
+        intro = intro + "\n"
+
 
     example_lines = ["[mounts.params]"]
     for pname, prop in props.items():
@@ -101,7 +122,7 @@ def build_driver_section(defs, key):
 
 {meta['name']}。
 
-```toml
+{intro}```toml
 {example_toml}
 ```
 

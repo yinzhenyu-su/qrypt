@@ -633,3 +633,69 @@ func TestBaiduDebugSnapshot(t *testing.T) {
 		t.Fatalf("expected last_error in extra")
 	}
 }
+
+func TestLoadTokenStateStateWinsAfterRotation(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("baidu_netdisk_token.json", tokenState{
+		AccessToken:        "rotated-access",
+		RefreshToken:       "rotated-refresh",
+		ExpiresAt:          time.Now().Add(time.Hour),
+		ConfigRefreshToken: "original-refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "original-refresh"})
+	driver.InstallStateStore(store)
+
+	driver.loadTokenState()
+
+	if driver.refreshToken != "rotated-refresh" || driver.accessToken != "rotated-access" {
+		t.Fatalf("tokens = %q/%q, want rotated state tokens", driver.accessToken, driver.refreshToken)
+	}
+	if driver.tokenSource != "state" {
+		t.Fatalf("tokenSource = %q, want state", driver.tokenSource)
+	}
+}
+
+func TestLoadTokenStateConfigWinsOnAccountSwitch(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("baidu_netdisk_token.json", tokenState{
+		AccessToken:        "old-access",
+		RefreshToken:       "old-refresh",
+		ConfigRefreshToken: "old-config-refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "new-config-refresh"})
+	driver.InstallStateStore(store)
+
+	driver.loadTokenState()
+
+	if driver.refreshToken != "new-config-refresh" {
+		t.Fatalf("refreshToken = %q, want config token on account switch", driver.refreshToken)
+	}
+	if driver.accessToken != "" {
+		t.Fatalf("accessToken = %q, want empty (config token not applied)", driver.accessToken)
+	}
+	if driver.tokenSource != "config" {
+		t.Fatalf("tokenSource = %q, want config", driver.tokenSource)
+	}
+}
+
+func TestLoadTokenStateStateWinsForLegacyState(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("baidu_netdisk_token.json", tokenState{
+		AccessToken:  "legacy-access",
+		RefreshToken: "legacy-refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "cfg-refresh"})
+	driver.InstallStateStore(store)
+
+	driver.loadTokenState()
+
+	if driver.refreshToken != "legacy-refresh" || driver.accessToken != "legacy-access" {
+		t.Fatalf("tokens = %q/%q, want legacy state tokens", driver.accessToken, driver.refreshToken)
+	}
+}

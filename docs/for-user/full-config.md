@@ -49,6 +49,7 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `read_cache_dir` | string | - | Root directory for read cache files. |
+| `thumbnail_cache_dir` | string | - | Root directory for generated thumbnail cache files. |
 | `upload_dir` | string | - | Root directory for upload staging and pending journal files. |
 | `state_dir` | string | - | Root directory for persistent driver and runtime state. |
 | `log_dir` | string | - | Root directory for runtime logs when log files are not explicitly configured. |
@@ -113,7 +114,6 @@ qrypt 依赖精确的系统时间进行文件操作。当系统时间可能不�
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `name` | string | - | Mount name — used as the directory name under the mount point. |
-| `type` | string | - | Backend driver type. |
 | `test_enabled` | boolean | false | Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects. |
 
 每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见上文对应章节。

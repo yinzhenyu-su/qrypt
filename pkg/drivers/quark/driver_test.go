@@ -1432,3 +1432,88 @@ func metricCount(events []drive.MetricEvent, operation string) int {
 	}
 	return count
 }
+
+func TestValidateWithFallbackFallsBackToConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("quark_cookie.json", cookieState{Cookie: "stored=1"}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New("config=1", Options{})
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	if driver.cookie != "stored=1" {
+		t.Fatalf("precondition: cookie = %q, want stored state cookie", driver.cookie)
+	}
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.validateWithFallback(context.Background(), "config=1", func() error {
+		calls++
+		if calls == 1 {
+			return want // state cookie fails
+		}
+		return nil // config cookie succeeds
+	})
+	if err != nil {
+		t.Fatalf("validateWithFallback error = %v, want nil after config fallback", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (state + config retry)", calls)
+	}
+	if driver.cookie != "config=1" {
+		t.Fatalf("cookie = %q, want config cookie after fallback", driver.cookie)
+	}
+	var state cookieState
+	if err := store.LoadJSON("quark_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Cookie != "config=1" {
+		t.Fatalf("persisted cookie = %q, want working config cookie", state.Cookie)
+	}
+}
+
+func TestValidateWithFallbackBothFailReturnsError(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("quark_cookie.json", cookieState{Cookie: "stored=1"}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New("config=1", Options{})
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.validateWithFallback(context.Background(), "config=1", func() error {
+		calls++
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("validateWithFallback error = %v, want %v", err, want)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (state and config both fail)", calls)
+	}
+}
+
+func TestValidateWithFallbackNoFallbackWithoutConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("quark_cookie.json", cookieState{Cookie: "stored=1"}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New("", Options{})
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.validateWithFallback(context.Background(), "", func() error {
+		calls++
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("validateWithFallback error = %v, want %v", err, want)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (no config cookie to retry with)", calls)
+	}
+}

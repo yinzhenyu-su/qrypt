@@ -41,6 +41,7 @@ type Driver struct {
 	stateStore         drive.StateStore
 	tokenSource        string
 	tokenUpdated       time.Time
+	configRefreshToken string
 	debugMu            sync.Mutex
 	lastError          string
 	instantUploadCount int64
@@ -52,9 +53,13 @@ type cachedDownloadURL struct {
 }
 
 type tokenState struct {
-	AccessToken  string    `json:"access_token,omitempty"`
-	RefreshToken string    `json:"refresh_token,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	// ConfigRefreshToken records the config refresh token that produced this
+	// state, so a rotated pair (state newer than config) can be distinguished
+	// from a user-swapped config token (config newer than state).
+	ConfigRefreshToken string    `json:"config_refresh_token,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at,omitempty"`
 }
 
 type aliyunUploadSessionState struct {
@@ -176,14 +181,15 @@ func New(opts Options) *Driver {
 		orderDirection = "DESC"
 	}
 	d := &Driver{
-		cl:             newClient(opts.RefreshToken, clientOptions{APIBaseURL: opts.APIBaseURL, AuthURL: opts.AuthURL}),
-		driveID:        opts.DriveID,
-		rootID:         rootID,
-		rootPath:       opts.RootPath,
-		orderBy:        orderBy,
-		orderDirection: orderDirection,
-		partSize:       defaultUploadPartSize,
-		tokenSource:    "config",
+		cl:                 newClient(opts.RefreshToken, clientOptions{APIBaseURL: opts.APIBaseURL, AuthURL: opts.AuthURL}),
+		driveID:            opts.DriveID,
+		rootID:             rootID,
+		rootPath:           opts.RootPath,
+		orderBy:            orderBy,
+		orderDirection:     orderDirection,
+		partSize:           defaultUploadPartSize,
+		configRefreshToken: opts.RefreshToken,
+		tokenSource:        "config",
 	}
 	d.cl.onRefresh = d.saveRefreshedToken
 	return d
@@ -969,7 +975,11 @@ func (d *Driver) loadTokenState() {
 		}
 		return
 	}
-	if state.AccessToken != "" || state.RefreshToken != "" {
+	// The state wins when it was derived from the current config token (token
+	// rotation) or when it predates the source marker. A config token that
+	// differs from the token the state was derived from is an account switch.
+	stateDerived := state.ConfigRefreshToken == "" || state.ConfigRefreshToken == d.configRefreshToken
+	if (state.AccessToken != "" || state.RefreshToken != "") && stateDerived {
 		d.cl.setTokens(state.AccessToken, state.RefreshToken)
 		d.tokenSource = "state"
 	}
@@ -983,9 +993,10 @@ func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
 		return
 	}
 	if err := d.stateStore.SaveJSON("aliyundrive_token.json", tokenState{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		UpdatedAt:    d.tokenUpdated,
+		AccessToken:        accessToken,
+		RefreshToken:       refreshToken,
+		ConfigRefreshToken: d.configRefreshToken,
+		UpdatedAt:          d.tokenUpdated,
 	}); err != nil {
 		d.setLastError(fmt.Errorf("aliyundrive: save token state: %w", err))
 	}

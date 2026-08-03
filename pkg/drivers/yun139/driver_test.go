@@ -1012,3 +1012,63 @@ func TestYun139DebugSnapshotDegraded(t *testing.T) {
 		t.Fatalf("last_error = %v, want simulated API error", snapshot.Extra[drive.DebugExtraLastError])
 	}
 }
+
+func TestLoadAuthStateStateWinsAfterRefresh(t *testing.T) {
+	configAuth := testAuth("test", "original-auth")
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("yun139_auth.json", authState{
+		Authorization:       testAuth("test", "refreshed-auth"),
+		ConfigAuthorization: configAuth,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(configAuth, "/", "")
+	driver.InstallStateStore(store)
+
+	driver.loadAuthState()
+
+	if got := driver.cl.getAuthorization(); got != testAuth("test", "refreshed-auth") {
+		t.Fatalf("authorization = %q, want refreshed state auth", got)
+	}
+	if driver.authSource != "state" {
+		t.Fatalf("authSource = %q, want state", driver.authSource)
+	}
+}
+
+func TestLoadAuthStateConfigWinsOnAccountSwitch(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("yun139_auth.json", authState{
+		Authorization:       "old-auth",
+		ConfigAuthorization: "old-config-auth",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(testAuth("test", "new-config-auth"), "/", "")
+	driver.InstallStateStore(store)
+
+	driver.loadAuthState()
+
+	if got := driver.cl.getAuthorization(); got != testAuth("test", "new-config-auth") {
+		t.Fatalf("authorization = %q, want config auth on account switch", got)
+	}
+	if driver.authSource != "config" {
+		t.Fatalf("authSource = %q, want config", driver.authSource)
+	}
+}
+
+func TestLoadAuthStateStateWinsForLegacyState(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("yun139_auth.json", authState{
+		Authorization: testAuth("test", "legacy-auth"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(testAuth("test", "cfg-auth"), "/", "")
+	driver.InstallStateStore(store)
+
+	driver.loadAuthState()
+
+	if got := driver.cl.getAuthorization(); got != testAuth("test", "legacy-auth") {
+		t.Fatalf("authorization = %q, want legacy state auth", got)
+	}
+}

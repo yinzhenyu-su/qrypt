@@ -143,8 +143,11 @@ func init() {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	configCookie := d.cl.cookieValue()
 	d.loadCookieState()
-	if err := d.cl.loginInit(ctx); err != nil {
+	if err := d.loginInitWithFallback(ctx, configCookie, func() error {
+		return d.cl.loginInit(ctx)
+	}); err != nil {
 		return fmt.Errorf("189: login init: %w", err)
 	}
 	if d.cl.username != "" {
@@ -890,6 +893,38 @@ func (d *Driver) loadCookieState() {
 	}
 	d.cookieUpdated = state.UpdatedAt
 	d.cl.setPasswordReloginFailure(state.PasswordReloginFailedAt, state.PasswordReloginError)
+}
+
+// loginInitWithFallback runs loginInit with the current cookie and, when the
+// persisted state cookie fails while config credentials (cookie or
+// username/password) are available, retries with the config credentials alone
+// and persists the working cookie. A stale 189_cookie.json therefore cannot
+// wedge the mount: only when both the state and the config credentials fail is
+// the error returned.
+func (d *Driver) loginInitWithFallback(ctx context.Context, configCookie string, login func() error) error {
+	err := login()
+	if err == nil {
+		return nil
+	}
+	if d.cookieSource != "state" || configCookie == d.cl.cookieValue() {
+		return err
+	}
+	// The state cookie is stale; fall back to the config credentials.
+	if configCookie == "" {
+		d.cl.clearCookie()
+	} else {
+		d.cl.setCookie(configCookie)
+	}
+	d.cookieSource = "config"
+	if retryErr := login(); retryErr != nil {
+		return retryErr
+	}
+	// The config cookie authenticated; persist it so later restarts do not
+	// reuse the stale state cookie again.
+	if cookie := d.cl.cookieValue(); cookie != "" {
+		d.saveUpdatedCookie(cookie)
+	}
+	return nil
 }
 
 func (d *Driver) saveUpdatedCookie(cookie string) {

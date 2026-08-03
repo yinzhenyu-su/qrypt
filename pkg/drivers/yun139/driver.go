@@ -31,21 +31,26 @@ const (
 
 type Driver struct {
 	drive.UnsupportedOperations
-	cl                 *client
-	rootID             string
-	rootPath           string
-	limiter            *drive.BandwidthLimiter
-	stateStore         drive.StateStore
-	authSource         string
-	authUpdated        time.Time
-	debugMu            sync.Mutex
-	lastError          string
-	instantUploadCount int64
+	cl                  *client
+	rootID              string
+	rootPath            string
+	limiter             *drive.BandwidthLimiter
+	stateStore          drive.StateStore
+	authSource          string
+	authUpdated         time.Time
+	configAuthorization string
+	debugMu             sync.Mutex
+	lastError           string
+	instantUploadCount  int64
 }
 
 type authState struct {
-	Authorization string    `json:"authorization,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	Authorization string `json:"authorization,omitempty"`
+	// ConfigAuthorization records the config authorization that produced this
+	// state, so a refreshed value (state newer than config) can be distinguished
+	// from a user-swapped config token (config newer than state).
+	ConfigAuthorization string    `json:"config_authorization,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at,omitempty"`
 }
 
 type uploadSessionState struct {
@@ -107,10 +112,11 @@ func init() {
 
 func New(authorization, rootPath, rootID string) *Driver {
 	d := &Driver{
-		cl:         newClient(authorization),
-		rootPath:   rootPath,
-		rootID:     rootID,
-		authSource: "config",
+		cl:                  newClient(authorization),
+		rootPath:            rootPath,
+		rootID:              rootID,
+		configAuthorization: authorization,
+		authSource:          "config",
 	}
 	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
 	return d
@@ -172,7 +178,11 @@ func (d *Driver) loadAuthState() {
 	if err != nil {
 		return
 	}
-	if state.Authorization != "" {
+	// The state wins when it was derived from the current config authorization
+	// (refresh) or when it predates the source marker. A config authorization
+	// that differs from the one the state was derived from is an account switch.
+	stateDerived := state.ConfigAuthorization == "" || state.ConfigAuthorization == d.configAuthorization
+	if state.Authorization != "" && stateDerived {
 		d.cl.setAuthorization(state.Authorization)
 		d.authSource = "state"
 	}
@@ -189,8 +199,9 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 		return
 	}
 	_ = d.stateStore.SaveJSON("yun139_auth.json", authState{
-		Authorization: authorization,
-		UpdatedAt:     d.authUpdated,
+		Authorization:       authorization,
+		ConfigAuthorization: d.configAuthorization,
+		UpdatedAt:           d.authUpdated,
 	})
 }
 
