@@ -53,10 +53,12 @@ func (s *PersistentStore) UpdateManaged(id string, fn func(*ManagedTask)) (Manag
 		before := taskDurableKey(mt.Task)
 		fn(mt)
 		changed = taskDurableKey(mt.Task) != before
+		// 在 store 锁内先写 journal、后提交内存:重开/replay 时不会读到
+		// 早于最新状态的记录(消除任务终态的内存可见性与持久化之间的窗口)。
+		if changed && mt.Task.Capabilities.Persistent {
+			_ = s.append(taskJournalEntry{Op: "update", ID: id, Task: mt.Task})
+		}
 	})
-	if ok && managed.Task.Capabilities.Persistent && changed {
-		s.persistTask(managed.Task)
-	}
 	return managed, ok
 }
 
@@ -66,17 +68,13 @@ func (s *PersistentStore) UpdateManagedInPlace(id string, fn func(*ManagedTask))
 		before := taskDurableKey(mt.Task)
 		fn(mt)
 		changed = taskDurableKey(mt.Task) != before
+		// 与 UpdateManaged 一致:store 锁内先写 journal、后提交内存,
+		// 消除重开/replay 读到滞后状态的窗口。
+		if changed && mt.Task.Capabilities.Persistent {
+			_ = s.append(taskJournalEntry{Op: "update", ID: id, Task: mt.Task})
+		}
 	}) {
 		return false
-	}
-	// Journal only when the durable state actually changed. Progress-only
-	// ticks are skipped: replay normalizes non-terminal tasks to
-	// failed/interrupted, so intermediate progress has no recovery value and
-	// journaling it is pure disk churn. Non-persistent tasks skip entirely.
-	if changed {
-		if item, ok := s.inner.GetManaged(id); ok {
-			s.persistTask(item.Task)
-		}
 	}
 	return true
 }
