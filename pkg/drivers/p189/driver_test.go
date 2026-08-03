@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -581,4 +582,108 @@ func stringUpperHex(data []byte) string {
 		out[i*2+1] = digits[b&0x0f]
 	}
 	return string(out)
+}
+
+func TestLoginInitWithFallbackFallsBackToConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("189_cookie.json", cookieState{Cookie: "JSESSIONID=stored"}); err != nil {
+		t.Fatal(err)
+	}
+	configCookie := "config=1; JSESSIONID=config; COOKIE_LOGIN_USER=config-user"
+	driver := &Driver{
+		cl:           newClient(configCookie, "", ""),
+		cookieSource: "config",
+	}
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	if driver.cl.cookieValue() == configCookie {
+		t.Fatal("precondition: state cookie should override config")
+	}
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginInitWithFallback(context.Background(), configCookie, func() error {
+		calls++
+		if calls == 1 {
+			return want // state cookie fails
+		}
+		return nil // config cookie succeeds
+	})
+	if err != nil {
+		t.Fatalf("loginInitWithFallback error = %v, want nil after config fallback", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (state + config retry)", calls)
+	}
+	got := driver.cl.cookieValue()
+	if !strings.Contains(got, "config=1") || strings.Contains(got, "JSESSIONID=stored") {
+		t.Fatalf("cookie = %q, want config cookie without stale state", got)
+	}
+	var state cookieState
+	if err := store.LoadJSON("189_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(state.Cookie, "stored") || !strings.Contains(state.Cookie, "config=1") {
+		t.Fatalf("persisted cookie = %q, want working config cookie", state.Cookie)
+	}
+}
+
+func TestLoginInitWithFallbackBothFailReturnsError(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("189_cookie.json", cookieState{Cookie: "JSESSIONID=stored"}); err != nil {
+		t.Fatal(err)
+	}
+	configCookie := "config=1; JSESSIONID=config"
+	driver := &Driver{
+		cl:           newClient(configCookie, "", ""),
+		cookieSource: "config",
+	}
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginInitWithFallback(context.Background(), configCookie, func() error {
+		calls++
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("loginInitWithFallback error = %v, want %v", err, want)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (state and config both fail)", calls)
+	}
+}
+
+func TestLoginInitWithFallbackClearsForPasswordConfig(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("189_cookie.json", cookieState{Cookie: "JSESSIONID=stored"}); err != nil {
+		t.Fatal(err)
+	}
+	// Config uses username/password: no config cookie to fall back to.
+	driver := &Driver{
+		cl:           newClient("", "user", "pass"),
+		cookieSource: "config",
+	}
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginInitWithFallback(context.Background(), "", func() error {
+		calls++
+		if calls == 1 {
+			return want // state cookie fails
+		}
+		return nil // config username/password succeeds
+	})
+	if err != nil {
+		t.Fatalf("loginInitWithFallback error = %v, want nil after credential fallback", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if got := driver.cl.cookieValue(); got != "" {
+		t.Fatalf("cookie = %q, want cleared before config credential retry", got)
+	}
 }

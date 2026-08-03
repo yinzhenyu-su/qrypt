@@ -138,6 +138,7 @@ func New(opts Options) *Driver {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	configCookie := d.cookies
 	d.loadCookieState()
 	if d.cookies == "" {
 		return fmt.Errorf("115: Init: missing cookie")
@@ -158,7 +159,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		return fmt.Errorf("115: parse cookie: %w", err)
 	}
 	d.cl.ImportCredential(cred)
-	if err := d.recordSDK(ctx, "login_check", nil, func() error {
+	if err := d.loginCheckWithFallback(ctx, configCookie, func() error {
 		return d.loginCheckWithRetry(ctx, d.cl.LoginCheck)
 	}); err != nil {
 		d.setLastError(fmt.Sprintf("115: login check: %v", err))
@@ -1044,6 +1045,36 @@ func (d *Driver) loginCheckWithRetry(ctx context.Context, fn func() error) error
 		case <-timer.C:
 		}
 	}
+}
+
+// loginCheckWithFallback verifies the current cookie and, when the persisted
+// state cookie fails authentication while a config cookie is available, retries
+// with the config cookie alone and replaces the stale 115_cookie.json state.
+// A stale state file therefore cannot wedge the mount: the config cookie is
+// re-imported and, on success, the working cookie is persisted for later runs.
+func (d *Driver) loginCheckWithFallback(ctx context.Context, configCookie string, login func() error) error {
+	err := login()
+	if err == nil {
+		return nil
+	}
+	if d.cookieSource != "state" || configCookie == "" || configCookie == d.cookies {
+		return err
+	}
+	// The state cookie is stale; fall back to the config cookie.
+	d.cookies = configCookie
+	d.cookieSource = "config"
+	cred := &driver115.Credential{}
+	if cerr := cred.FromCookie(d.cookies); cerr != nil {
+		return err
+	}
+	d.cl.ImportCredential(cred)
+	if retryErr := login(); retryErr != nil {
+		return retryErr
+	}
+	// The config cookie authenticated; persist it so later restarts do not
+	// reuse the stale state cookie again.
+	d.saveCookieState(d.currentCookieHeader(), d.cookieSource)
+	return nil
 }
 
 func isRetryableLoginCheckError(err error) bool {

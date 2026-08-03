@@ -43,6 +43,7 @@ type Driver struct {
 	httpClient         *http.Client
 	refreshToken       string
 	accessToken        string
+	configRefreshToken string
 	clientID           string
 	clientSecret       string
 	rootPath           string
@@ -94,7 +95,11 @@ type tokenState struct {
 	AccessToken  string    `json:"access_token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	// ConfigRefreshToken records the config refresh token that produced this
+	// state, so a rotated pair (state newer than config) can be distinguished
+	// from a user-swapped config token (config newer than state).
+	ConfigRefreshToken string    `json:"config_refresh_token,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at,omitempty"`
 }
 
 type baiduUploadSessionState struct {
@@ -201,22 +206,23 @@ func New(opts Options) *Driver {
 		downloadUA = defaultDownloadUA
 	}
 	return &Driver{
-		httpClient:   &http.Client{Timeout: 60 * time.Second},
-		refreshToken: opts.RefreshToken,
-		accessToken:  opts.AccessToken,
-		clientID:     opts.ClientID,
-		clientSecret: opts.ClientSecret,
-		rootPath:     rootPath,
-		orderBy:      opts.OrderBy,
-		orderDesc:    opts.OrderDesc,
-		apiBaseURL:   apiBaseURL,
-		oauthURL:     oauthURL,
-		onlineAPI:    onlineAPI,
-		uploadAPI:    uploadAPI,
-		useOnlineAPI: opts.UseOnlineAPI,
-		downloadUA:   downloadUA,
-		tokenSource:  "config",
-		metrics:      util.NewBuffer(500),
+		httpClient:         &http.Client{Timeout: 60 * time.Second},
+		refreshToken:       opts.RefreshToken,
+		accessToken:        opts.AccessToken,
+		configRefreshToken: opts.RefreshToken,
+		clientID:           opts.ClientID,
+		clientSecret:       opts.ClientSecret,
+		rootPath:           rootPath,
+		orderBy:            opts.OrderBy,
+		orderDesc:          opts.OrderDesc,
+		apiBaseURL:         apiBaseURL,
+		oauthURL:           oauthURL,
+		onlineAPI:          onlineAPI,
+		uploadAPI:          uploadAPI,
+		useOnlineAPI:       opts.UseOnlineAPI,
+		downloadUA:         downloadUA,
+		tokenSource:        "config",
+		metrics:            util.NewBuffer(500),
 	}
 }
 
@@ -1047,14 +1053,18 @@ func (d *Driver) loadTokenState() {
 		}
 		return
 	}
-	if state.RefreshToken != "" {
+	// The state wins when it was derived from the current config token (token
+	// rotation) or when it predates the source marker. A config token that
+	// differs from the token the state was derived from is an account switch.
+	stateDerived := state.ConfigRefreshToken == "" || state.ConfigRefreshToken == d.configRefreshToken
+	if state.RefreshToken != "" && stateDerived {
 		d.refreshToken = state.RefreshToken
 		d.tokenSource = "state"
 	}
-	if state.AccessToken != "" {
+	if state.AccessToken != "" && stateDerived {
 		d.accessToken = state.AccessToken
 	}
-	if !state.ExpiresAt.IsZero() {
+	if !state.ExpiresAt.IsZero() && stateDerived {
 		d.tokenExpires = state.ExpiresAt
 	}
 	d.tokenUpdated = state.UpdatedAt
@@ -1065,10 +1075,11 @@ func (d *Driver) saveTokenState() error {
 		return nil
 	}
 	return d.stateStore.SaveJSON("baidu_netdisk_token.json", tokenState{
-		AccessToken:  d.accessToken,
-		RefreshToken: d.refreshToken,
-		ExpiresAt:    d.tokenExpires,
-		UpdatedAt:    d.tokenUpdated,
+		AccessToken:        d.accessToken,
+		RefreshToken:       d.refreshToken,
+		ExpiresAt:          d.tokenExpires,
+		ConfigRefreshToken: d.configRefreshToken,
+		UpdatedAt:          d.tokenUpdated,
 	})
 }
 

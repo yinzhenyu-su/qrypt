@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/OpenListTeam/115-sdk-go v0.2.4
 	github.com/SheltonZhu/115driver v1.3.3
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/aws/aws-sdk-go-v2 v1.42.1
@@ -43,6 +44,7 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
+	resty.dev/v3 v3.0.0-beta.1 // indirect
 )
 
 tool golang.org/x/mobile/cmd/gobind

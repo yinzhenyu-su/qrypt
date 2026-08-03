@@ -727,3 +727,71 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 func serverURL(r *http.Request) string {
 	return "http://" + r.Host
 }
+
+func TestLoadTokenStateStateWinsAfterRotation(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("aliyundrive_token.json", tokenState{
+		AccessToken:        "rotated-access",
+		RefreshToken:       "rotated-refresh",
+		ConfigRefreshToken: "original-refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "original-refresh"})
+	driver.InstallStateStore(store)
+
+	driver.loadTokenState()
+
+	access, refresh := driver.cl.tokens()
+	if access != "rotated-access" || refresh != "rotated-refresh" {
+		t.Fatalf("tokens = %q/%q, want rotated state tokens", access, refresh)
+	}
+	if driver.tokenSource != "state" {
+		t.Fatalf("tokenSource = %q, want state", driver.tokenSource)
+	}
+}
+
+func TestLoadTokenStateConfigWinsOnAccountSwitch(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("aliyundrive_token.json", tokenState{
+		AccessToken:        "old-access",
+		RefreshToken:       "old-refresh",
+		ConfigRefreshToken: "old-config-refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "new-config-refresh"})
+	driver.InstallStateStore(store)
+
+	driver.loadTokenState()
+
+	access, refresh := driver.cl.tokens()
+	if refresh != "new-config-refresh" {
+		t.Fatalf("refresh = %q, want config token on account switch", refresh)
+	}
+	if access != "" {
+		t.Fatalf("access = %q, want empty (config token not applied)", access)
+	}
+	if driver.tokenSource != "config" {
+		t.Fatalf("tokenSource = %q, want config", driver.tokenSource)
+	}
+}
+
+func TestLoadTokenStateStateWinsForLegacyState(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("aliyundrive_token.json", tokenState{
+		AccessToken:  "legacy-access",
+		RefreshToken: "legacy-refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "cfg-refresh"})
+	driver.InstallStateStore(store)
+
+	driver.loadTokenState()
+
+	access, refresh := driver.cl.tokens()
+	if access != "legacy-access" || refresh != "legacy-refresh" {
+		t.Fatalf("tokens = %q/%q, want legacy state tokens", access, refresh)
+	}
+}

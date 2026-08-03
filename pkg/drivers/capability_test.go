@@ -10,6 +10,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/p115"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/p115open"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/s3"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
@@ -114,6 +115,18 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "115_open",
+			drv:  p115open.New(p115open.Options{RefreshToken: "token"}),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,

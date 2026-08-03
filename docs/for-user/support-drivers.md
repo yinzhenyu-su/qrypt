@@ -12,10 +12,11 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `aliyundrive` | 阿里云盘 | `refresh_token`, `drive_id` |
 | `baidu_netdisk` | 百度网盘 | `refresh_token` |
 | `onedrive` | OneDrive | `refresh_token` |
-| `onedrive_app` | OneDrive 应用权限 | `client_id` 或 `client_key`, `client_secret`, `tenant_id`, `email` |
+| `onedrive_app` | OneDrive 应用权限 | `client_secret`, `tenant_id`, `email` |
 | `quark` | 夸克网盘 | `cookie` |
 | `yun139` | 天翼云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
+| `115_open` | 115 云盘（开放平台） | `refresh_token` |
 | `189` | 天翼云盘 189 | `cookie` |
 | `webdav` | WebDAV | `url`, `username`, `password` |
 | `s3` | Amazon S3 / 兼容 S3 | `bucket`, `endpoint`, `access_key_id`, `secret_access_key` |
@@ -111,6 +112,9 @@ refresh_token = "your-refresh-token"
 # root_path = "/qrypt"
 # use_online_api = true
 # online_api = "https://api.oplist.org/onedrive/renewapi"
+# client_id = "your-client-id"
+# client_key = "your-client-id"
+# client_secret = "your-client-secret"
 # redirect_uri = "https://your-app/callback"
 # api_base_url = "https://graph.microsoft.com"
 # oauth_base_url = "https://login.microsoftonline.com"
@@ -129,7 +133,7 @@ refresh_token = "your-refresh-token"
 | `root_path` | string | 否 | OneDrive path used as this mount root，默认 `/` |
 | `use_online_api` | boolean | 否 | Use OpenList-compatible online token refresh API，默认 `true` |
 | `online_api` | string | 否 | Online token refresh API URL |
-| `client_id` | string (secret) | 否 | OAuth client ID used when use_online_api=false |
+| `client_id` | string (secret) | 否 | OAuth client ID used when use_online_api=false; mutually exclusive with client_key |
 | `client_key` | string (secret) | 否 | Alias for client_id |
 | `client_secret` | string (secret) | 否 | OAuth client secret used when use_online_api=false |
 | `redirect_uri` | string | 否 | OAuth redirect URI used when your Microsoft app requires it |
@@ -145,11 +149,11 @@ refresh_token = "your-refresh-token"
 
 ## onedrive_app
 
-OneDrive 应用权限模式。这个驱动使用 Microsoft Entra 应用的 client credentials 访问指定用户的 OneDrive。
+OneDrive 应用权限。
 
 ```toml
 [mounts.params]
-client_id = "your-client-id"
+# client_id = "your-client-id"
 # client_key = "your-client-id"
 client_secret = "your-client-secret"
 tenant_id = "your-tenant-id"
@@ -165,8 +169,8 @@ email = "user@example.com"
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `client_id` | string (secret) | 否 | Microsoft Entra application client ID；与 `client_key` 二选一 |
-| `client_key` | string (secret) | 否 | Alias for client_id；与 `client_id` 二选一 |
+| `client_id` | string (secret) | 否 | Microsoft Entra application client ID; mutually exclusive with client_key |
+| `client_key` | string (secret) | 否 | Alias for client_id |
 | `client_secret` | string (secret) | 是 | Microsoft Entra application client secret |
 | `tenant_id` | string | 是 | Microsoft Entra tenant ID |
 | `email` | string | 是 | User principal name or email whose drive should be mounted |
@@ -234,6 +238,30 @@ cookie = "k1=v1; k2=v2"
 |---|---|---|---|
 | `cookie` | string (secret) | 是 | 115 cloud drive authentication cookie |
 | `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
+
+---
+
+## 115_open
+
+115 云盘（开放平台）。
+
+115 云盘（开放平台 API，`refresh_token` 认证）。使用官方 [115 开放平台](https://open.115.com) 的 Bearer token 认证，token 过期自动刷新并持久化，无需手动更新 cookie。
+
+**获取 refresh_token**:在 [open.115.com](https://open.115.com) 注册应用，或使用公共应用 ID，通过 PKCE 设备码扫码（115 App 扫码授权）获得 `access_token` 与 `refresh_token`。注意：同一应用同一账号最多持有 2 个 refresh_token，第 3 次获取会使第 1 个失效；每次刷新都会轮换（旧 refresh_token 立即作废）。
+```toml
+[mounts.params]
+refresh_token = "eg2t4.<hex>.<hex>"
+# access_token = "eg2t4.<hex>.<hex>"
+# root_path = "/qrypt"
+# limit_rate = 2
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `refresh_token` | string (secret) | 是 | 115 open platform refresh token (obtained by authorizing an app on open.115.com) |
+| `access_token` | string (secret) | 否 | 115 open platform access token (optional; refreshed automatically when missing or expired) |
+| `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
+| `limit_rate` | integer | 否 | Limit all API requests to N per second，默认 `2` |
 
 ---
 

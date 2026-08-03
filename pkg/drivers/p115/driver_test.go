@@ -98,6 +98,96 @@ func TestLoginCheckWithRetryDoesNotRetryBusinessError(t *testing.T) {
 	}
 }
 
+func TestLoginCheckWithFallbackFallsBackToConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("115_cookie.json", cookieState{Cookie: "UID=state-uid; CID=state-cid; SEID=state-seid; KID=state-kid"}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{Cookie: "UID=cfg-uid; CID=cfg-cid; SEID=cfg-seid; KID=cfg-kid"})
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	driver.cl = driver115.New()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginCheckWithFallback(context.Background(), "UID=cfg-uid; CID=cfg-cid; SEID=cfg-seid; KID=cfg-kid", func() error {
+		calls++
+		if calls == 1 {
+			return want // state cookie fails
+		}
+		return nil // config cookie succeeds
+	})
+
+	if err != nil {
+		t.Fatalf("loginCheckWithFallback error = %v, want nil after config fallback", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (state + config retry)", calls)
+	}
+	if driver.cookieSource != "config" {
+		t.Fatalf("cookieSource = %q, want config after fallback", driver.cookieSource)
+	}
+	// The stale state must be replaced by the working config cookie.
+	var state cookieState
+	if err := store.LoadJSON("115_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Cookie == "" || strings.Contains(state.Cookie, "state-uid") {
+		t.Fatalf("state cookie not refreshed: %q", state.Cookie)
+	}
+}
+
+func TestLoginCheckWithFallbackNoFallbackWithoutConfigCookie(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("115_cookie.json", cookieState{Cookie: "UID=state-uid; CID=state-cid; SEID=state-seid; KID=state-kid"}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{}) // no config cookie
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	driver.cl = driver115.New()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginCheckWithFallback(context.Background(), "", func() error {
+		calls++
+		return want
+	})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("loginCheckWithFallback error = %v, want %v", err, want)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (no config cookie to retry with)", calls)
+	}
+}
+
+func TestLoginCheckWithFallbackNoFallbackWhenConfigMatchesState(t *testing.T) {
+	cookie := "UID=uid; CID=cid; SEID=seid; KID=kid"
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	if err := store.SaveJSON("115_cookie.json", cookieState{Cookie: cookie}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{Cookie: cookie})
+	driver.InstallStateStore(store)
+	driver.loadCookieState()
+	driver.cl = driver115.New()
+
+	want := errors.New("bad cookie")
+	calls := 0
+	err := driver.loginCheckWithFallback(context.Background(), cookie, func() error {
+		calls++
+		return want
+	})
+
+	if !errors.Is(err, want) {
+		t.Fatalf("loginCheckWithFallback error = %v, want %v", err, want)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (config equals state, nothing to retry with)", calls)
+	}
+}
+
 func TestFactoryAllowsCookieFromState(t *testing.T) {
 	drv, err := drive.New("115", drive.Params{})
 	if err != nil {
