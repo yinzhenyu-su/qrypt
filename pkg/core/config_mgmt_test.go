@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,5 +112,77 @@ root_path = "/keep"
 		if !strings.Contains(content, want) {
 			t.Fatalf("merged config missing %q:\n%s", want, content)
 		}
+	}
+}
+
+// TestApplyConfigUpdateUploadFieldMerge ensures a partial upload update only
+// touches the provided fields instead of zeroing the rest.
+func TestApplyConfigUpdateUploadFieldMerge(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "/tmp"
+
+[upload]
+upload_delay = "30s"
+upload_workers = 4
+delete_delay = "1m"
+default_mount = "quark"
+default_path = "/backup"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Core{configPath: configPath}
+
+	delay := "5s"
+	if _, err := c.ApplyConfigUpdate(ConfigUpdateRequest{Upload: &UploadSummary{UploadDelay: &delay}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{`upload_workers = 4`, `delete_delay = "1m"`, `default_mount = "quark"`, `default_path = "/backup"`, `upload_delay = "5s"`} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("partial upload update clobbered %q:\n%s", want, content)
+		}
+	}
+}
+
+// TestCoreReloadClosesOldCore verifies Reload shuts down the previous core's
+// resources before handing out the replacement.
+func TestCoreReloadClosesOldCore(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	old, err := Open(ctx, Options{ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.cleanup == nil {
+		t.Fatal("old core should be open")
+	}
+	reloaded, err := old.Reload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close(ctx)
+	if old.cleanup != nil {
+		t.Fatal("Reload must close the old core's filesystem resources")
+	}
+	if old.fs != nil {
+		t.Fatal("Reload must detach the old core's filesystem")
 	}
 }

@@ -17,7 +17,7 @@ func ProbeMP4JSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	probe, err := s.core.ProbeMP4(ctx, path)
+	probe, err := withCore(s, func(c *core.Core) (media.MP4Probe, error) { return c.ProbeMP4(ctx, path) })
 	return resultJSON(probe, err)
 }
 
@@ -33,7 +33,7 @@ func openVirtualFile(coreID, path, mode string, deadlineMS int) (virtualOpenResu
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	file, err := s.core.OpenVirtualFile(ctx, path, mode)
+	file, err := withCore(s, func(c *core.Core) (media.VirtualFile, error) { return c.OpenVirtualFile(ctx, path, mode) })
 	if err != nil {
 		return virtualOpenResult{}, wrapError(err)
 	}

@@ -1,11 +1,13 @@
 package mobile
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
@@ -37,28 +39,34 @@ func UploadLocalFileJSON(coreID, localPath, remotePath string, deadlineMS int) s
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	resolvedRemotePath, err := s.core.ResolveUploadDestination(remotePath, filepath.Base(localPath))
+	resolvedRemotePath, err := withCore(s, func(c *core.Core) (string, error) {
+		return c.ResolveUploadDestination(remotePath, filepath.Base(localPath))
+	})
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	created, err := s.core.CreateTask(ctx, task.Request{
-		Type: task.TypeUploadStreamBatch,
-		Items: []task.Item{{
-			ItemID:   "local-1",
-			DestPath: resolvedRemotePath,
-			Name:     filepath.Base(localPath),
-			Size:     info.Size(),
-		}},
+	created, err := withCore(s, func(c *core.Core) (task.Task, error) {
+		return c.CreateTask(ctx, task.Request{
+			Type: task.TypeUploadStreamBatch,
+			Items: []task.Item{{
+				ItemID:   "local-1",
+				DestPath: resolvedRemotePath,
+				Name:     filepath.Base(localPath),
+				Size:     info.Size(),
+			}},
+		})
 	})
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
 	itemID, err := firstUploadStreamItemID(created)
 	if err != nil {
+		cancelCreatedTask(ctx, s, created.ID)
 		return resultJSON(nil, wrapError(err))
 	}
 	handleID, err := openTaskUploadItem(coreID, created.ID, itemID, deadlineMS)
 	if err != nil {
+		cancelCreatedTask(ctx, s, created.ID)
 		return resultJSON(nil, wrapError(err))
 	}
 	file, err := os.Open(localPath)
@@ -93,9 +101,12 @@ func UploadLocalFileJSON(coreID, localPath, remotePath string, deadlineMS int) s
 		return resultJSON(nil, wrapError(streamErr))
 	}
 	if err := commitUploadItem(handleID, deadlineMS); err != nil {
+		// The staged upload never became a real upload; terminate the task so
+		// it does not linger in queued state without a usable handle.
+		cancelCreatedTask(ctx, s, created.ID)
 		return resultJSON(nil, wrapError(err))
 	}
-	entryItem, err := s.core.Stat(ctx, resolvedRemotePath)
+	entryItem, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Stat(ctx, resolvedRemotePath) })
 	if err != nil {
 		entryItem = drive.Entry{Name: filepath.Base(localPath), Size: info.Size()}
 	}
@@ -111,4 +122,15 @@ func firstUploadStreamItemID(item task.Task) (string, error) {
 		id = "local-1"
 	}
 	return id, nil
+}
+
+// cancelCreatedTask best-effort terminates a task created by this upload
+// flow when a later step fails, so the task does not linger in queued state.
+func cancelCreatedTask(ctx context.Context, s *session, taskID string) {
+	if taskID == "" {
+		return
+	}
+	if err := withCoreErr(s, func(c *core.Core) error { return c.CancelTask(ctx, taskID) }); err != nil {
+		logging.L.Warnf("[MOBILE] upload: cancel dangling task %s: %v", taskID, err)
+	}
 }

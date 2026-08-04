@@ -18,7 +18,7 @@ func ListTasksJSON(coreID, filterRaw string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	applyDefaultMobileTaskFilter(&filter)
-	tasks, err := s.core.ListTasks(context.Background(), filter)
+	tasks, err := withCore(s, func(c *core.Core) ([]task.Task, error) { return c.ListTasks(context.Background(), filter) })
 	if tasks == nil {
 		tasks = []task.Task{}
 	}
@@ -30,7 +30,7 @@ func GetTaskJSON(coreID, taskID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	item, err := s.core.GetTask(context.Background(), taskID)
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.GetTask(context.Background(), taskID) })
 	return resultJSON(item, err)
 }
 
@@ -43,7 +43,9 @@ func ListTaskItemsJSON(coreID, taskID, filterRaw string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	items, err := s.core.ListTaskItems(context.Background(), taskID, filter)
+	items, err := withCore(s, func(c *core.Core) ([]task.ItemResult, error) {
+		return c.ListTaskItems(context.Background(), taskID, filter)
+	})
 	return resultJSON(items, err)
 }
 
@@ -52,7 +54,9 @@ func GetTaskItemJSON(coreID, taskID, itemID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	item, err := s.core.GetTaskItem(context.Background(), taskID, itemID)
+	item, err := withCore(s, func(c *core.Core) (task.ItemResult, error) {
+		return c.GetTaskItem(context.Background(), taskID, itemID)
+	})
 	return resultJSON(item, err)
 }
 
@@ -63,7 +67,7 @@ func CancelTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.CancelTask(ctx, taskID))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.CancelTask(ctx, taskID) }))
 }
 
 func CancelTaskItemJSON(coreID, taskID, itemID string, deadlineMS int) string {
@@ -73,7 +77,7 @@ func CancelTaskItemJSON(coreID, taskID, itemID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.CancelTaskItem(ctx, taskID, itemID))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.CancelTaskItem(ctx, taskID, itemID) }))
 }
 
 func RetryTaskJSON(coreID, taskID string, deadlineMS int) string {
@@ -83,7 +87,7 @@ func RetryTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.RetryTask(ctx, taskID))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.RetryTask(ctx, taskID) }))
 }
 
 func DismissTaskJSON(coreID, taskID string, deadlineMS int) string {
@@ -93,7 +97,7 @@ func DismissTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.DismissTask(ctx, taskID))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.DismissTask(ctx, taskID) }))
 }
 
 func DismissFinishedTasksJSON(coreID, filterRaw string, deadlineMS int) string {
@@ -107,7 +111,7 @@ func DismissFinishedTasksJSON(coreID, filterRaw string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	removed, err := s.core.DismissFinishedTasks(ctx, filter)
+	removed, err := withCore(s, func(c *core.Core) (int, error) { return c.DismissFinishedTasks(ctx, filter) })
 	return resultJSON(map[string]int{"removed": removed}, err)
 }
 
@@ -122,7 +126,7 @@ func CreateTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.CreateTask(ctx, req)
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
 	return resultJSON(item, err)
 }
 
@@ -138,7 +142,7 @@ func CreateUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	req.Type = task.TypeUploadStreamBatch
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.CreateTask(ctx, req)
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
 	return resultJSON(item, err)
 }
 
@@ -153,7 +157,7 @@ func CreateLocalUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.CreateLocalUploadTask(ctx, req)
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateLocalUploadTask(ctx, req) })
 	return resultJSON(item, err)
 }
 
@@ -169,7 +173,7 @@ func CreateDownloadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	req.Type = task.TypeDownloadStreamBatch
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.CreateTask(ctx, req)
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
 	return resultJSON(item, err)
 }
 

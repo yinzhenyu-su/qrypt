@@ -11,7 +11,9 @@ func openTaskUploadItem(coreID, taskID, itemID string, deadlineMS int) (string, 
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	handle, err := s.core.OpenUploadStreamItem(ctx, taskID, itemID)
+	handle, err := withCore(s, func(c *core.Core) (*core.UploadStreamItemHandle, error) {
+		return c.OpenUploadStreamItem(ctx, taskID, itemID)
+	})
 	if err != nil {
 		return "", wrapError(err)
 	}

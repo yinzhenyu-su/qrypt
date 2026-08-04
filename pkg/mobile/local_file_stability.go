@@ -19,6 +19,8 @@ func WaitLocalFileStableJSON(coreID, localPath, optionsRaw string, deadlineMS in
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	result, err := s.core.WaitLocalFileStable(ctx, localPath, opts)
+	result, err := withCore(s, func(c *core.Core) (core.LocalFileStability, error) {
+		return c.WaitLocalFileStable(ctx, localPath, opts)
+	})
 	return resultJSON(result, err)
 }
