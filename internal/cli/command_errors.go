@@ -54,6 +54,18 @@ func maxArgs(n int) cobra.PositionalArgs {
 	}
 }
 
+func rangeArgs(min, max int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) >= min && len(args) <= max {
+			return nil
+		}
+		if len(args) < min {
+			return commandUsageError(cmd, "missing arguments: expected %d to %d, got %d", min, max, len(args))
+		}
+		return commandUsageError(cmd, "too many arguments: expected %d to %d, got %d", min, max, len(args))
+	}
+}
+
 func showHelp(cmd *cobra.Command, _ []string) error {
 	return cmd.Help()
 }

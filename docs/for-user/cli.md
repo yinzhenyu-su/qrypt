@@ -77,6 +77,8 @@ qrypt fs cat REMOTE
 qrypt fs get REMOTE LOCAL [--force]
 qrypt fs put LOCAL REMOTE [--wait-timeout DURATION]
 qrypt fs copy SOURCE DESTINATION [--recursive] [--force] [--dry-run] [--json]
+qrypt fs crypt-encode [MOUNT] NAME [--json]
+qrypt fs crypt-decode [MOUNT] NAME [--json]
 qrypt fs mkdir REMOTE
 qrypt fs mv SOURCE DESTINATION
 qrypt fs rm REMOTE [--wait-timeout DURATION]
@@ -96,6 +98,15 @@ qrypt fs list / --config PATH
 `get` 和单文件 `copy` 默认拒绝覆盖文件；明确覆盖时使用 `--force`。`copy` 直接通过驱动在远端路径之间复制文件。复制目录时使用 `--recursive`，目标路径会作为父目录并追加源目录名，例如 `/src/parent -> /dst` 会写入 `/dst/parent/...`；目录会自动创建，已有文件默认跳过，`--force` 会覆盖已有文件。目录复制遇到读取、创建目录或复制文件错误时会停止并返回失败；`--json` 会输出逐项 `entries`，标记 `ready`、`copied`、`skipped` 或 `failed`。`copy` 支持 `--dry-run`：只枚举并输出将传输的文件计划（`--json` 时输出结构化计划），不执行任何复制。目录复制部分成功（有文件复制成功也有失败）时退出码为 3，全部失败时为 1。`put` 和 `rm` 会等待异步远端操作完成，可通过 `--wait-timeout` 调整最长等待时间。
 
 `list` 支持 `--jsonl`（JSON Lines）：每行输出一个条目的 JSON，适合大目录流式消费（`jq -s` 可聚合）；`--json` 与 `--jsonl` 互斥。
+
+`crypt-encode` / `crypt-decode` 用指定 mount 的 `[mounts.encryption]` 配置对文件名逐段加解密，用于对照网盘后端存储的密文文件名和本地明文路径：
+
+```sh
+qrypt fs crypt-encode [MOUNT] "hello.txt"    # 明文 → 密文（验证网盘里应显示的名字）
+qrypt fs crypt-decode [MOUNT] "b4l6g..."     # 密文 → 明文（反查本地对应文件）
+```
+
+`MOUNT` 省略时使用第一个配置了加密的 mount。加密方向与挂载时 VFS 对后端文件名使用的算法一致（同一 password/salt/编码，可逐段处理多级路径）。未加密的 mount 会报错。
 
 ## 驱动信息
 

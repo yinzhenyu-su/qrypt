@@ -23,6 +23,8 @@ func newFsCmd() *cobra.Command {
 	cmd.AddCommand(newFsRmCmd())
 	cmd.AddCommand(newFsMvCmd())
 	cmd.AddCommand(newFsCopyCmd())
+	cmd.AddCommand(newFsCryptEncodeCmd())
+	cmd.AddCommand(newFsCryptDecodeCmd())
 	cmd.AddCommand(newJournalCmdWithUse("journal"))
 	return cmd
 }

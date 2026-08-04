@@ -416,3 +416,130 @@ func TestPrintEntryStat(t *testing.T) {
 		}
 	}
 }
+
+func TestFsCryptEncodeDecodeRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "encrypted"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+[mounts.encryption]
+password = "encrypted-pass"
+salt = "encrypted-salt"
+filename_encryption = "standard"
+filename_encoding = "base32"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var encodeOut bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&encodeOut)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "crypt-encode", "encrypted", "dir/hello.txt", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("crypt-encode failed: %v", err)
+	}
+	var encoded fsCryptResult
+	if err := json.Unmarshal(encodeOut.Bytes(), &encoded); err != nil {
+		t.Fatalf("encode JSON invalid: %v\n%s", err, encodeOut.String())
+	}
+	if encoded.Mount != "encrypted" || encoded.Input != "dir/hello.txt" {
+		t.Fatalf("encode result = %+v", encoded)
+	}
+	if encoded.Output == encoded.Input || encoded.Output == "" {
+		t.Fatalf("encode produced no transformation: %+v", encoded)
+	}
+
+	var decodeOut bytes.Buffer
+	root = NewRootCommand()
+	root.SetOut(&decodeOut)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "crypt-decode", "encrypted", encoded.Output, "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("crypt-decode failed: %v", err)
+	}
+	var decoded fsCryptResult
+	if err := json.Unmarshal(decodeOut.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode JSON invalid: %v\n%s", err, decodeOut.String())
+	}
+	if decoded.Output != "dir/hello.txt" {
+		t.Fatalf("decode round trip = %q, want dir/hello.txt", decoded.Output)
+	}
+}
+
+func TestFsCryptEncodeDefaultsToFirstEncryptedMount(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "plain"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+
+[[mounts]]
+name = "encrypted"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+[mounts.encryption]
+password = "p"
+salt = "s"
+filename_encryption = "standard"
+filename_encoding = "base32"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "crypt-encode", "hello.txt", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("crypt-encode without mount failed: %v", err)
+	}
+	var result fsCryptResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Mount != "encrypted" {
+		t.Fatalf("default mount = %q, want encrypted", result.Mount)
+	}
+}
+
+func TestFsCryptRejectsUnencryptedMount(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "plain"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "crypt-encode", "plain", "hello.txt"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("crypt-encode on unencrypted mount must fail")
+	}
+}
