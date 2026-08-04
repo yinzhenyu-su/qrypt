@@ -12,9 +12,11 @@ import (
 
 type recordingRawDriver struct {
 	drive.UnsupportedOperations
-	data    []byte
-	reads   []rawRead
-	entries []drive.Entry
+	data            []byte
+	reads           []rawRead
+	entries         []drive.Entry
+	RemoteHashAlg   drive.HashAlgorithm
+	RemoteHashValue string
 }
 
 type rawRead struct {
@@ -42,6 +44,14 @@ func (d *recordingRawDriver) Read(_ context.Context, _ drive.Entry, offset, size
 
 func (d *recordingRawDriver) Space(context.Context) (drive.Space, error) {
 	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+
+// RemoteHash implements drive.RemoteHasher when RemoteHashValue is non-empty.
+func (d *recordingRawDriver) RemoteHash(context.Context, drive.Entry) (drive.HashAlgorithm, string, error) {
+	if d.RemoteHashValue == "" {
+		return "", "", drive.ErrUnsupported
+	}
+	return d.RemoteHashAlg, d.RemoteHashValue, nil
 }
 
 func (d *recordingRawDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {

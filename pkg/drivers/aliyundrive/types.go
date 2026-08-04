@@ -36,6 +36,9 @@ type file struct {
 	Size         int64      `json:"size"`
 	CreatedAt    *time.Time `json:"created_at"`
 	UpdatedAt    *time.Time `json:"updated_at"`
+	// ContentHash is the content hash reported by the API (sha1 for aliyundrive).
+	ContentHash     string `json:"content_hash"`
+	ContentHashName string `json:"content_hash_name"`
 }
 
 func (f file) entry(parentID string) drive.Entry {

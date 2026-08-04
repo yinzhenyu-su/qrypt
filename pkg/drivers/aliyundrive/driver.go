@@ -826,6 +826,20 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	return drive.Space{Total: resp.DriveTotalSize, Free: resp.DriveTotalSize - resp.DriveUsedSize}, nil
 }
 
+// RemoteHash reports the content hash the API returned when the entry was
+// listed (aliyundrive computes sha1 of the stored bytes).
+func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
+	raw := drive.RawEntryExtra(entry.Extra)
+	f, ok := raw.(file)
+	if !ok {
+		return "", "", fmt.Errorf("aliyundrive: remote hash: no file metadata for entry %q", entry.ID)
+	}
+	if f.ContentHash == "" {
+		return "", "", drive.ErrUnsupported
+	}
+	return drive.HashSHA1, f.ContentHash, nil
+}
+
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
 	path = strings.Trim(path, "/")
 	if path == "" {

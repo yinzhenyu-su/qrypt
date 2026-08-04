@@ -27,6 +27,13 @@ type EntryRemoteNamer interface {
 	EntryRemoteName() string
 }
 
+// RemoteHasher is an optional backend capability: the drive reports a content
+// hash for a stored file without downloading it. The returned algorithm is
+// one of HashMD5/HashSHA1/HashSHA256; the hash is hex-encoded.
+type RemoteHasher interface {
+	RemoteHash(ctx context.Context, entry Entry) (HashAlgorithm, string, error)
+}
+
 type EntryRawExtraer interface {
 	EntryRawExtra() any
 }

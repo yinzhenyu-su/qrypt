@@ -795,3 +795,42 @@ func TestLoadTokenStateStateWinsForLegacyState(t *testing.T) {
 		t.Fatalf("tokens = %q/%q, want legacy state tokens", access, refresh)
 	}
 }
+
+func TestDriverRemoteHashFromListMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/file/list" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(listResp{Items: []file{
+			{
+				DriveID:         "drive",
+				FileID:          "f1",
+				ParentFileID:    "root",
+				Type:            "file",
+				Name:            "secret.txt",
+				Size:            100,
+				ContentHash:     "0123456789abcdef0123456789abcdef01234567",
+				ContentHashName: "sha1",
+			},
+		}})
+	}))
+	defer server.Close()
+
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
+	d.cl.setTokens("access", "refresh")
+	entries, err := d.List(context.Background(), "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	algorithm, hash, err := d.RemoteHash(context.Background(), entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if algorithm != drive.HashSHA1 || hash != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("RemoteHash = (%s, %s), want (sha1, content_hash)", algorithm, hash)
+	}
+}

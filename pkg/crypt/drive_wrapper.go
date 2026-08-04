@@ -479,3 +479,41 @@ func (d *Driver) nonceForSource(source drive.ReadOnlyFileSource) ([FileNonceSize
 }
 
 var _ drive.Driver = (*Driver)(nil)
+
+// RemoteHash delegates to the raw backend: the reported hash covers the
+// encrypted bytes stored on the drive. The entry passed in carries the raw
+// backend metadata in its Extra wrapper, which the backend needs to find the
+// stored hash.
+func (d *Driver) RemoteHash(ctx context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
+	hasher, ok := d.raw.(drive.RemoteHasher)
+	if !ok {
+		return "", "", drive.ErrUnsupported
+	}
+	return hasher.RemoteHash(ctx, entry)
+}
+
+// EncryptedHash computes the backend content hash that plaintext would have
+// after encryption with this driver's cipher, using the nonce stored in the
+// remote file header. This lets a client verify "local plaintext matches the
+// encrypted file on the drive" without downloading the ciphertext: it
+// re-encrypts locally and compares with the remote hash.
+func (d *Driver) EncryptedHash(ctx context.Context, entry drive.Entry, plain io.Reader, plainSize int64, algorithm drive.HashAlgorithm) (string, error) {
+	nonce, err := d.fileNonce(ctx, entry)
+	if err != nil {
+		return "", err
+	}
+	var h hash.Hash
+	switch algorithm {
+	case drive.HashSHA1:
+		h = sha1.New()
+	case drive.HashMD5:
+		h = md5.New()
+	default:
+		return "", fmt.Errorf("crypt: unsupported hash algorithm %q", algorithm)
+	}
+	reader := NewEncryptingReader(plain, d.cp, nonce, plainSize)
+	if _, err := io.Copy(h, reader); err != nil {
+		return "", fmt.Errorf("crypt: encrypting for hash: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
