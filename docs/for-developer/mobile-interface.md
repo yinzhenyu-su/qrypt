@@ -39,6 +39,23 @@ task                represents long-running or multi-item work
 task event stream   drives UI updates without polling
 ```
 
+### Threading
+
+Every function in this interface is blocking. In particular
+`ReadTaskEventsJSON(handleID, waitMS)` with `waitMS > 0` blocks until an
+event arrives or the timeout expires. Call all APIs from a background thread
+or coroutine; never call them from the Android main thread / iOS main queue,
+or the UI will freeze or ANR.
+
+### Handle IDs Are Not Durable
+
+File, virtual file, upload stream, download stream, and task event handles
+live in an in-memory registry inside the mobile session. They are invalidated
+by `CloseJSON`, `ReloadConfigJSON`, and process death. Never persist a handle
+ID across restarts. Task IDs are durable (persisted to the task store) and
+can be used to reload state after a process restart via `GetTaskJSON` /
+`ListTasksJSON`.
+
 Use `deadlineMS` only for a single request or handle operation. A deadline error
 means that call stopped waiting; it does not mean a task failed unless the app
 explicitly called cancel, fail, or dismiss.
@@ -136,10 +153,20 @@ Use these for file-browser screens:
 
 ```text
 ListJSON(coreID, path, deadlineMS)
+ListPageJSON(coreID, path, cursor, limit, deadlineMS)
 StatJSON(coreID, path, deadlineMS)
 FileInfoJSON(coreID, path, deadlineMS)
 ValidateResumeJSON(coreID, path, fileID, size, modTime, deadlineMS)
 ```
+
+Use `ListPageJSON` for large directories. It returns a deterministic,
+name-sorted page (`entries`) plus a `next_cursor`; pass the cursor back for
+subsequent pages and stop when `next_cursor` is empty. Entries are sorted by
+name (then id), and the cursor encodes the last entry's `(name, id)`, so
+paging stays correct even when a directory contains entries that share a
+name. Treat `next_cursor` as opaque — always pass back exactly what qrypt
+returned. `limit <= 0` returns the whole listing without a cursor. The list
+cache inside qrypt makes later pages cheap after the first fetch.
 
 Use `ValidateResumeJSON` before resuming app-managed reads or downloads when the
 app has cached file metadata. `fileID` is the remote driver file ID returned by
@@ -172,7 +199,35 @@ CloseFileJSON(handleID)
 Use `deadlineMS` for seek-heavy playback so the app can stop waiting on stale
 reads. Do not use JSON APIs for media bytes.
 
+Cancel in-flight reads when the user cancels a preview or the player seeks
+past a stalled range:
+
+```text
+CancelFileReadJSON(handleID)
+CancelVirtualReadJSON(handleID)
+```
+
+These abort the current reads for the handle without closing it; the handle
+remains usable for future reads. `CloseFileJSON` / `CloseVirtualFileJSON`
+also cancel any in-flight reads.
+
 ### Upload App-Owned Files
+
+Pick the upload entry point that matches the source of the data:
+
+| API | Input source | Behavior | Task visible / events |
+| --- | --- | --- | --- |
+| `CreateUploadTaskJSON` | app input stream (SAF `content://` on Android, security-scoped on iOS) | creates `upload_stream_batch`; app writes chunks | yes |
+| `CreateLocalUploadTaskJSON` | stable local filesystem path | creates a user-scope `upload_remote`/`upload_batch` task; waits for stability when `wait_stable` | yes |
+| `UploadLocalFileJSON` | stable local filesystem path | convenience wrapper that streams the file into an `upload_stream_batch` task and returns after staging | yes |
+| `CreateTaskJSON(type="upload_batch")` | qrypt-readable local paths | generic task API | yes |
+
+All upload paths create user-visible tasks: they appear in the default
+`ListTasksJSON` result (which defaults to user-scope tasks) and emit
+`task_updated` events. The VFS sync tasks that carry out the actual cloud
+upload (`upload_remote`, sync scope) stay hidden from the default list and do
+not emit events; user tasks surface their cloud progress by watching those
+sync tasks internally.
 
 Use `CreateUploadTaskJSON` when the app owns the input stream. On Android this
 is usually a SAF/content URI InputStream. On iOS this can be a security-scoped
@@ -228,7 +283,9 @@ Use `PauseUploadItemJSON(handleID)` only when the app intentionally drops the
 current handle but wants to resume later without marking an error.
 
 Use `UploadLocalFileJSON` only when qrypt can read a stable local filesystem
-path directly.
+path directly. It streams the file into an `upload_stream_batch` task, returns
+`{entry, task}` once the file is staged and the cloud upload is queued, and
+emits progress events from then on — watch the task like any other upload.
 
 For client-side directory watch uploads, keep the watcher in the client and send
 stable files to qrypt through upload task APIs. Do not copy watched files into
@@ -448,6 +505,13 @@ task reaches a terminal state, close the event handle with
 `GetTaskJSON`, `ListTasksJSON`, or `GetTaskItemJSON` to reload the latest task
 snapshot and continue from that state.
 
+Events cover qrypt-managed user tasks created through `CreateTaskJSON` and its
+wrappers (`CreateUploadTaskJSON`, `CreateDownloadTaskJSON`,
+`CreateLocalUploadTaskJSON`, `UploadLocalFileJSON`). Sync-scope VFS tasks
+(`upload_remote` bookkeeping) are not managed by the mobile task manager and do
+not emit events. `ListTasksJSON` with an empty filter defaults to user-scope
+tasks, so the app's task list naturally excludes sync internals.
+
 ### Recursive Operations
 
 When a mobile flow allows directory input, pass `options.recursive=true`.
@@ -471,10 +535,54 @@ DriverNamesJSON()
 DriverSchemaJSON(name)
 ```
 
+### Configuration Management
+
+```text
+ConfigSummaryJSON(coreID)
+UpdateConfigJSON(coreID, updateJSON, deadlineMS)
+ReloadConfigJSON(coreID, deadlineMS)
+```
+
+`ConfigSummaryJSON` returns a settings-UI friendly view of the current config:
+mounts (secret params masked as `***`), read cache, thumbnail cache, and
+upload settings.
+
+`UpdateConfigJSON` mutates the config file with mount changes and optional
+settings, validates the result, and saves it atomically (a failed update
+leaves the previous config untouched; the file itself is written via a temp
+file + rename, so a reader never sees a truncated config). Mount params use
+field-level merge semantics: params not present in the update are kept, and a
+masked secret placeholder (`***`) for an existing secret keeps the previous
+value. A typical settings-UI round trip — read the summary, edit plain
+fields, submit with the `***` placeholders intact — therefore never erases
+credentials. Submit a real value to change a secret, or omit the param to
+leave it unchanged. Request shape:
+
+```json
+{
+  "mounts": [
+    {"action": "add",    "name": "backup", "type": "localfs", "params": {"root_path": "..."}},
+    {"action": "update", "name": "quark",  "type": "quark",  "params": {"cookie": "..."}},
+    {"action": "remove", "name": "old"}
+  ],
+  "read_cache": {"max_size": "512M"},
+  "upload": {"upload_delay": "5s", "upload_workers": 4, "default_mount": "quark"}
+}
+```
+
+Driver params are validated against the driver schema before saving. Changes
+take effect on the next open; call `ReloadConfigJSON` to apply them to the
+running session. `ReloadConfigJSON` reopens the core from the current config
+with the same runtime layout, invalidates all handles for the session (the app
+must re-open file/task/event handles), and keeps the same `coreID`. If the
+config fails to load, the previous core keeps running and an error is
+returned.
+
 ### Filesystem
 
 ```text
 ListJSON(coreID, path, deadlineMS)
+ListPageJSON(coreID, path, cursor, limit, deadlineMS)
 StatJSON(coreID, path, deadlineMS)
 MkdirJSON(coreID, path, deadlineMS)
 RenameJSON(coreID, oldPath, newPath, deadlineMS)
@@ -491,8 +599,10 @@ RefreshPathJSON(coreID, path)
 ```text
 OpenFileJSON(coreID, path, optionsJSON)
 ReadAtInto(handleID, offset, dst, deadlineMS)
+CancelFileReadJSON(handleID)
 OpenVirtualFileJSON(coreID, path, mode, deadlineMS)
 ReadVirtualFileAtInto(handleID, offset, dst, deadlineMS)
+CancelVirtualReadJSON(handleID)
 CloseVirtualFileJSON(handleID)
 CloseFileJSON(handleID)
 ```
@@ -563,6 +673,62 @@ StopDebugServerJSON(coreID)
 LogFilesJSON(coreID)
 ReadLogJSON(coreID, name, offset, length)
 ```
+
+`DebugSnapshotJSON` includes a `mobile_handles` object reporting the number of
+open file, virtual file, download, upload stream, and task event handles for
+the session — useful for diagnosing handle leaks. `ThumbnailCacheUsageJSON`
+returns `{"bytes": N}`; `RefreshPathJSON` returns `{"refreshed": true}`.
+
+## Performance
+
+The Go side of the mobile interface is already near its practical limit, so
+performance work belongs mostly in the client, not in qrypt.
+
+Measured on Apple M1 Pro (localfs, 16 MiB file):
+
+```text
+ReadAtInto 64 KiB buffer   ~10.7 µs/call   6.1 GB/s    49 allocs/call
+ReadAtInto 1 MiB buffer    ~90 µs/call    11.6 GB/s    49 allocs/call
+ListJSON 1000 entries      ~28 µs/call    ~38 KB JSON  199 allocs
+```
+
+The per-call overhead of the mobile layer itself (handle registry lookups,
+read-cancel bookkeeping, context creation) is under 1 µs and a few allocations
+— there is no meaningful optimization left inside qrypt's call path. The real
+cost is the gomobile/JNI boundary: every Kotlin-to-Go call pays a fixed JNI
+overhead plus a `byte[]` copy in each direction.
+
+### Client Best Practices (biggest wins, one line each)
+
+1. **Use larger read buffers.** Cutting call count is the single most
+effective change: reading a 1 GiB file with a 64 KiB buffer means ~16k JNI
+calls; a 1 MiB buffer means ~1k. Size the buffer to your seek granularity —
+256 KiB to 1 MiB is a good range for media playback and copy/export loops.
+2. **Reuse the destination `ByteArray`** across reads instead of allocating a
+new one per call, to avoid GC pressure on the Kotlin heap.
+3. **Browse large directories with `ListPageJSON`** (opaque cursor paging)
+instead of `ListJSON`, so each response stays small and the UI can render
+incrementally.
+4. **Use task event long polling** (`ReadTaskEventsJSON` with `waitMS > 0`)
+for progress instead of polling `ListTasksJSON`/`GetTaskJSON` — events are
+batched and return full snapshots.
+5. **Never move media bytes through `*JSON` APIs** — they base64-encode and
+double the memory footprint. Use the byte-buffer APIs everywhere.
+
+### Structural Directions (future, higher cost)
+
+These would change the communication model and are only worth pursuing with
+real throughput requirements on a specific flow:
+
+- **Bulk read API**: one call returns a whole file/large chunk in a single
+Go-allocated `[]byte` (one JNI round trip). Fits small files, thumbnails, and
+import flows; unsuitable for seek-heavy playback.
+- **Guaranteed read-fill**: make `ReadAtInto` loop internally until the buffer
+is full or EOF, removing short-read handling from the client. Reduces client
+logic, not call count.
+- **Native direct memory**: bypass gomobile with a custom JNI binding and
+direct `ByteBuffer`s to avoid copies entirely. Highest throughput, highest
+maintenance cost — only for extreme cases.
 
 ## Error Handling
 

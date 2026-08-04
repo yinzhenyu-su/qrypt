@@ -22,6 +22,34 @@ func ListJSON(coreID, path string, deadlineMS int) string {
 	return resultJSON(out, nil)
 }
 
+type listPageResult struct {
+	Entries    []entry `json:"entries,omitempty"`
+	NextCursor string  `json:"next_cursor,omitempty"`
+}
+
+// ListPageJSON returns a deterministic slice of a directory listing (sorted
+// by name) with a name cursor. Pass the previous response's next_cursor to
+// fetch the following page; pass "" for the first page. limit <= 0 returns
+// the whole listing. Use this for large directories instead of ListJSON so
+// each response stays small enough for mobile memory and UI rendering.
+func ListPageJSON(coreID, path, cursor string, limit int, deadlineMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := core.TimeoutContext(deadlineMS)
+	defer cancel()
+	result, err := s.core.ListPage(ctx, path, cursor, limit)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	out := listPageResult{NextCursor: result.NextCursor}
+	for _, item := range result.Entries {
+		out.Entries = append(out.Entries, fromDriveEntry(item, core.JoinPath(path, item.Name)))
+	}
+	return resultJSON(out, nil)
+}
+
 func StatJSON(coreID, path string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
@@ -66,7 +94,7 @@ func RefreshPathJSON(coreID, path string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	s.core.RefreshPath(path)
-	return resultJSON(true, nil)
+	return resultJSON(map[string]bool{"refreshed": true}, nil)
 }
 
 func RemoveJSON(coreID, path string, deadlineMS int) string {

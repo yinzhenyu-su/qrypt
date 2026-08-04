@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -190,6 +191,12 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+var saveMu sync.Mutex
+
+// Save writes cfg to path atomically: the data is written to a temporary
+// file in the same directory, synced, and renamed over the target. A reader
+// never observes a truncated or half-written config. Concurrent saves are
+// serialized.
 func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config: configuration is empty")
@@ -198,10 +205,40 @@ func Save(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		// Windows cannot rename over an existing file; fall back to a
+		// remove+rename sequence.
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			return err
+		}
+		if rerr := os.Rename(tmpName, path); rerr != nil {
+			return rerr
+		}
+	}
+	return nil
 }
 
 // EncryptionFor returns encryption config for one mount.

@@ -398,9 +398,19 @@ upload_delay = "10ms"
 		t.Fatalf("ListTasksJSON default = %s", listRaw)
 	}
 	for _, listedTask := range listed.Data {
-		if listedTask.ID == created.Data.ID || listedTask.Type == "upload_batch" || listedTask.Type == "upload_remote" {
-			t.Fatalf("ListTasksJSON default = %+v, want upload internals hidden", listed.Data)
+		if listedTask.Type == "upload_remote" {
+			t.Fatalf("ListTasksJSON default = %+v, want sync upload internals hidden", listed.Data)
 		}
+	}
+	foundUserUpload := false
+	for _, listedTask := range listed.Data {
+		if listedTask.ID == created.Data.ID {
+			foundUserUpload = true
+			break
+		}
+	}
+	if !foundUserUpload {
+		t.Fatalf("ListTasksJSON default = %+v, want user upload task %s visible", listed.Data, created.Data.ID)
 	}
 	explicitRaw := ListTasksJSON(opened.Data, `{"types":["upload_batch"]}`)
 	var explicit struct {
@@ -1683,5 +1693,405 @@ func TestMobileErrorsAreClassified(t *testing.T) {
 	}
 	if !info.OK || info.Data.Code != "auth_expired" {
 		t.Fatalf("ClassifyErrorMessageJSON = %s, want auth_expired", raw)
+	}
+}
+
+func TestMobileUploadLocalFileJSONCreatesUserTask(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(tmp, "local.bin")
+	content := []byte("local file upload via stream task")
+	if err := os.WriteFile(local, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+
+[upload]
+upload_delay = "10ms"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeCore(coreID)
+
+	raw := UploadLocalFileJSON(coreID, local, "/quark/uploaded.bin", 5000)
+	var result struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Entry struct {
+				Name string `json:"name"`
+			} `json:"entry"`
+			Task mobileTask `json:"task"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Data.Task.ID == "" {
+		t.Fatalf("UploadLocalFileJSON = %s, want task", raw)
+	}
+	if result.Data.Task.Type != "upload_stream_batch" {
+		t.Fatalf("task type = %q, want upload_stream_batch", result.Data.Task.Type)
+	}
+	if result.Data.Entry.Name != "uploaded.bin" {
+		t.Fatalf("entry = %+v, want uploaded.bin", result.Data.Entry)
+	}
+	item := waitMobileTaskState(t, coreID, result.Data.Task.ID, "succeeded")
+	if item.Progress.StagingBytesDone != int64(len(content)) {
+		t.Fatalf("task progress = %+v, want staging bytes %d", item.Progress, len(content))
+	}
+	listRaw := ListTasksJSON(coreID, `{}`)
+	var listed struct {
+		OK   bool `json:"ok"`
+		Data []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(listRaw), &listed); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, task := range listed.Data {
+		if task.ID == result.Data.Task.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ListTasksJSON default = %+v, want UploadLocalFileJSON task visible", listed.Data)
+	}
+	if data, err := os.ReadFile(filepath.Join(remote, "uploaded.bin")); err != nil || string(data) != string(content) {
+		t.Fatalf("remote upload data = %q err=%v", data, err)
+	}
+}
+
+func TestMobileListPageJSON(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create files out of alphabetical order to prove sorting.
+	names := []string{"zeta.txt", "alpha.txt", "mid.txt", "beta.txt", "gamma.txt"}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(remote, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeCore(coreID)
+
+	var page1 struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Entries    []entry `json:"entries"`
+			NextCursor string  `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(ListPageJSON(coreID, "/quark", "", 2, 0)), &page1); err != nil {
+		t.Fatal(err)
+	}
+	if !page1.OK {
+		t.Fatalf("ListPageJSON first page = %+v", page1)
+	}
+	if len(page1.Data.Entries) != 2 || page1.Data.Entries[0].Name != "alpha.txt" || page1.Data.Entries[1].Name != "beta.txt" {
+		t.Fatalf("page1 entries = %+v, want sorted alpha, beta", page1.Data.Entries)
+	}
+	if page1.Data.NextCursor == "" {
+		t.Fatalf("page1 next_cursor empty, want opaque cursor")
+	}
+
+	var page2 struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Entries    []entry `json:"entries"`
+			NextCursor string  `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(ListPageJSON(coreID, "/quark", page1.Data.NextCursor, 2, 0)), &page2); err != nil {
+		t.Fatal(err)
+	}
+	if !page2.OK {
+		t.Fatalf("ListPageJSON second page = %+v", page2)
+	}
+	if len(page2.Data.Entries) != 2 || page2.Data.Entries[0].Name != "gamma.txt" || page2.Data.Entries[1].Name != "mid.txt" {
+		t.Fatalf("page2 entries = %+v, want sorted gamma, mid", page2.Data.Entries)
+	}
+	if page2.Data.NextCursor == "" {
+		t.Fatalf("page2 next_cursor empty, want opaque cursor")
+	}
+
+	var page3 struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Entries    []entry `json:"entries"`
+			NextCursor string  `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(ListPageJSON(coreID, "/quark", page2.Data.NextCursor, 2, 0)), &page3); err != nil {
+		t.Fatal(err)
+	}
+	if !page3.OK || len(page3.Data.Entries) != 1 || page3.Data.Entries[0].Name != "zeta.txt" || page3.Data.NextCursor != "" {
+		t.Fatalf("page3 = %+v, want only zeta and no cursor", page3.Data)
+	}
+}
+
+func TestMobileCancelFileReadKeepsHandleUsable(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("cancel me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeCore(coreID)
+
+	var opened struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(OpenFileJSON(coreID, "/quark/file.txt", "")), &opened); err != nil {
+		t.Fatal(err)
+	}
+	if !opened.OK || opened.Data == "" {
+		t.Fatalf("OpenFileJSON = %+v, want handle", opened)
+	}
+	handleID := opened.Data
+	defer CloseFileJSON(handleID)
+
+	var cancelled struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(CancelFileReadJSON(handleID)), &cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled.OK {
+		t.Fatalf("CancelFileReadJSON = %+v", cancelled)
+	}
+	// The handle must remain usable after a cancel.
+	buf := make([]byte, 4)
+	n, err := ReadAtInto(handleID, 0, buf, 0)
+	if err != nil || n != 4 || string(buf) != "canc" {
+		t.Fatalf("ReadAtInto after cancel n=%d data=%q err=%v, want usable handle", n, buf, err)
+	}
+	if raw := CancelFileReadJSON("missing-handle"); !strings.Contains(raw, `"ok":false`) {
+		t.Fatalf("CancelFileReadJSON unknown handle = %s, want error", raw)
+	}
+}
+
+func TestMobileConfigManagement(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	configContent := `
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "` + remote + `"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeCore(coreID)
+
+	var summary struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ConfigPath string `json:"config_path"`
+			Mounts     []struct {
+				Name      string `json:"name"`
+				Type      string `json:"type"`
+				Encrypted bool   `json:"encrypted"`
+			} `json:"mounts"`
+			ReadCache struct {
+				MaxSize string `json:"max_size"`
+			} `json:"read_cache"`
+			Upload struct {
+				DefaultMount string `json:"default_mount"`
+			} `json:"upload"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(ConfigSummaryJSON(coreID)), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if !summary.OK || len(summary.Data.Mounts) != 1 || summary.Data.Mounts[0].Name != "quark" || summary.Data.Mounts[0].Type != "localfs" {
+		t.Fatalf("ConfigSummaryJSON = %+v", summary)
+	}
+
+	raw := UpdateConfigJSON(coreID, `{"read_cache":{"max_size":"128M"},"upload":{"default_mount":"quark","default_path":"/inbox"},"mounts":[{"action":"add","name":"backup","type":"localfs","params":{"root_path":`+fmt.Sprintf("%q", filepath.Join(tmp, "backup-remote"))+`}}]}`, 0)
+	var updated struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Mounts []struct {
+				Name string `json:"name"`
+			} `json:"mounts"`
+			ReadCache struct {
+				MaxSize string `json:"max_size"`
+			} `json:"read_cache"`
+			Upload struct {
+				DefaultMount string `json:"default_mount"`
+				DefaultPath  string `json:"default_path"`
+			} `json:"upload"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.OK {
+		t.Fatalf("UpdateConfigJSON = %s, want ok", raw)
+	}
+	if len(updated.Data.Mounts) != 2 || updated.Data.Mounts[1].Name != "backup" {
+		t.Fatalf("updated mounts = %+v, want backup added", updated.Data.Mounts)
+	}
+	if updated.Data.ReadCache.MaxSize != "128M" || updated.Data.Upload.DefaultMount != "quark" || updated.Data.Upload.DefaultPath != "/inbox" {
+		t.Fatalf("updated settings = %+v", updated.Data)
+	}
+
+	badRaw := UpdateConfigJSON(coreID, `{"mounts":[{"action":"add","name":"bad","type":"does-not-exist","params":{}}]}`, 0)
+	var bad struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(badRaw), &bad); err != nil {
+		t.Fatal(err)
+	}
+	if bad.OK {
+		t.Fatalf("UpdateConfigJSON with unknown driver = %s, want error", badRaw)
+	}
+	afterBad := ConfigSummaryJSON(coreID)
+	if strings.Contains(afterBad, `"bad"`) {
+		t.Fatalf("failed update must not persist: %s", afterBad)
+	}
+
+	if err := os.MkdirAll(filepath.Join(tmp, "backup-remote"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if raw := ReloadConfigJSON(coreID, 5000); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("ReloadConfigJSON = %s, want ok", raw)
+	}
+	if err := os.MkdirAll(filepath.Join(remote, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listRaw := ListJSON(coreID, "/quark", 0)
+	if !strings.Contains(listRaw, `"docs"`) {
+		t.Fatalf("ListJSON after reload = %s, want docs visible", listRaw)
+	}
+	if data, err := os.ReadFile(configPath); err != nil || !strings.Contains(string(data), "128M") {
+		t.Fatalf("config file after update = %q err=%v, want saved read_cache.max_size", data, err)
+	}
+}
+
+func TestMobileDebugSnapshotHandleCounts(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("count"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeCore(coreID)
+
+	var opened struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(OpenFileJSON(coreID, "/quark/file.txt", "")), &opened); err != nil {
+		t.Fatal(err)
+	}
+	if !opened.OK {
+		t.Fatalf("OpenFileJSON = %+v", opened)
+	}
+	handleID := opened.Data
+
+	snapshotRaw := DebugSnapshotJSON(coreID)
+	var snapshot struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			MobileHandles map[string]int `json:"mobile_handles"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(snapshotRaw), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.OK || snapshot.Data.MobileHandles["files"] != 1 {
+		t.Fatalf("DebugSnapshotJSON handles = %+v, want 1 open file handle", snapshot.Data.MobileHandles)
+	}
+	CloseFileJSON(handleID)
+	snapshotRaw = DebugSnapshotJSON(coreID)
+	var after struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			MobileHandles map[string]int `json:"mobile_handles"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(snapshotRaw), &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Data.MobileHandles["files"] != 0 {
+		t.Fatalf("DebugSnapshotJSON handles after close = %+v, want 0", after.Data.MobileHandles)
 	}
 }

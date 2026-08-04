@@ -87,8 +87,8 @@ func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int,
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
-	defer cancel()
+	ctx, done := handle.reads.begin(deadlineMS)
+	defer done()
 	ctx = vfs.WithReadPriority(ctx, handle.readPriority)
 	n, err := s.core.ReadAtInto(ctx, handle.path, offset, dst, 0)
 	if err != nil {
@@ -97,13 +97,27 @@ func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int,
 	return n, nil
 }
 
+// CancelFileReadJSON aborts any in-flight reads on the handle. The handle
+// remains usable; future reads are unaffected.
+func CancelFileReadJSON(handleID string) string {
+	handle, err := getFile(handleID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	handle.reads.cancelAll()
+	return resultJSON(nil, nil)
+}
+
 func closeFile(handleID string) error {
 	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if _, ok := registry.files[handleID]; !ok {
+	handle, ok := registry.files[handleID]
+	if !ok {
+		registry.mu.Unlock()
 		return wrapError(fmt.Errorf("mobile: unknown file handle %q", handleID))
 	}
 	delete(registry.files, handleID)
+	registry.mu.Unlock()
+	handle.reads.cancelAll()
 	return nil
 }
 

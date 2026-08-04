@@ -8,11 +8,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
-var (
-	allUploadTaskTypes     = []task.Type{task.TypeUploadRemote, task.TypeUploadBatch, task.TypeUploadStreamBatch}
-	defaultMobileTaskTypes = []task.Type{task.TypeUploadStreamBatch, task.TypeDownloadStreamBatch, task.TypeMoveRemote}
-)
-
 func ListTasksJSON(coreID, filterRaw string) string {
 	s, err := getSession(coreID)
 	if err != nil {
@@ -190,10 +185,12 @@ func parseTaskFilter(raw string) (task.Filter, error) {
 }
 
 func applyDefaultMobileTaskFilter(filter *task.Filter) {
-	if filter == nil || filter.ID != "" || len(filter.Types) > 0 {
+	if filter == nil || filter.ID != "" || len(filter.Types) > 0 || filter.Scope != "" {
 		return
 	}
-	filter.Types = defaultMobileTaskTypes
+	// Mobile task lists default to user-visible tasks. Sync-scope tasks
+	// (VFS upload_remote/delete_remote bookkeeping) stay out of the UI list.
+	filter.Scope = task.ScopeUser
 }
 
 func parseTaskItemFilter(raw string) (task.ItemFilter, error) {
