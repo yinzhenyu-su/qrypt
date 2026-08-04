@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -23,12 +24,17 @@ func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func()
 	fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
 	ctx, stop := signal.NotifyContext(commandContext(cmd), shutdownSignals()...)
 	selectedMount := commandFSMount(cmd)
+	bandwidth, err := bandwidthOverrideFromFlags(cmd)
+	if err != nil {
+		stop()
+		return nil, nil, nil, err
+	}
 	var fs vfs.FileSystem
 	var cleanup func()
 	if selectedMount != "" {
-		fs, cleanup, err = buildFileSystemFromConfigMountNamespace(ctx, state.cfg, selectedMount)
+		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, selectedMount, true, bandwidth)
 	} else {
-		fs, cleanup, err = buildFileSystemFromConfig(ctx, state.cfg)
+		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, "", true, bandwidth)
 	}
 	if err != nil {
 		stop()
@@ -118,4 +124,70 @@ func fileSystemActivity(fs vfs.FileSystem) (uploads, deleteTimers int) {
 		deleteTimers += len(mount.ActiveDeleteTimers())
 	}
 	return uploads, deleteTimers
+}
+
+// bandwidthOverrideFromFlags maps the fs --bwlimit flags onto bandwidth
+// limits. nil means no override (use the config [bandwidth] section).
+func bandwidthOverrideFromFlags(cmd *cobra.Command) (*config.BandwidthLimits, error) {
+	both := flagStringValue(cmd, "bwlimit")
+	download := flagStringValue(cmd, "bwlimit-download")
+	upload := flagStringValue(cmd, "bwlimit-upload")
+	if both == "" && download == "" && upload == "" {
+		return nil, nil
+	}
+	parse := func(flagName, value string) (int64, error) {
+		if value == "" {
+			return 0, nil
+		}
+		n, err := config.ParseSize(value)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s: %w", flagName, err)
+		}
+		return n, nil
+	}
+	limits := &config.BandwidthLimits{}
+	if both != "" {
+		n, err := parse("--bwlimit", both)
+		if err != nil {
+			return nil, err
+		}
+		limits.DownloadBytesPerSecond = n
+		limits.UploadBytesPerSecond = n
+	}
+	if download != "" {
+		down, err := parse("--bwlimit-download", download)
+		if err != nil {
+			return nil, err
+		}
+		limits.DownloadBytesPerSecond = down
+	}
+	if upload != "" {
+		up, err := parse("--bwlimit-upload", upload)
+		if err != nil {
+			return nil, err
+		}
+		limits.UploadBytesPerSecond = up
+	}
+	if limits.DownloadBytesPerSecond <= 0 && limits.UploadBytesPerSecond <= 0 {
+		return nil, fmt.Errorf("bandwidth limit must be greater than zero")
+	}
+	return limits, nil
+}
+
+func addFSBandwidthFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("bwlimit", "", "limit both download and upload bandwidth (e.g. 10M)")
+	cmd.PersistentFlags().String("bwlimit-download", "", "limit download bandwidth (e.g. 10M)")
+	cmd.PersistentFlags().String("bwlimit-upload", "", "limit upload bandwidth (e.g. 10M)")
+}
+
+// flagStringValue reads a string flag that may live on the command or any
+// of its parents (persistent flags).
+func flagStringValue(cmd *cobra.Command, name string) string {
+	if flag := cmd.Flags().Lookup(name); flag != nil {
+		return flag.Value.String()
+	}
+	if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
+		return flag.Value.String()
+	}
+	return ""
 }

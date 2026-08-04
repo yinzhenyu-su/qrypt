@@ -32,9 +32,16 @@ func buildFileSystemFromConfigMountNamespace(ctx context.Context, cfg *config.Co
 }
 
 func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool) (vfs.FileSystem, func(), error) {
+	return buildFileSystemWithBandwidth(ctx, cfg, mountName, forceNamespace, nil)
+}
+
+// buildFileSystemWithBandwidth builds a filesystem with an optional CLI
+// bandwidth override (nil means use the config [bandwidth] section).
+func buildFileSystemWithBandwidth(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool, bandwidth *config.BandwidthLimits) (vfs.FileSystem, func(), error) {
 	return core.BuildFileSystem(ctx, cfg, core.Options{
 		MountName:      mountName,
 		ForceNamespace: forceNamespace,
+		Bandwidth:      bandwidth,
 	})
 }
 

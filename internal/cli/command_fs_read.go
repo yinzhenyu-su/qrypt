@@ -27,6 +27,7 @@ func newFsListCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("json", false, "write JSON output")
 	cmd.Flags().Bool("jsonl", false, "write JSON Lines output (one entry per line)")
+	cmd.Flags().Bool("human", false, "human-readable sizes (K/M/G/T)")
 	cmd.Flags().Bool("remote-names", false, "include backend remote names and raw paths")
 	return cmd
 }
@@ -102,7 +103,12 @@ func runList(cmd *cobra.Command, args []string) error {
 		if entry.IsDir {
 			kind = "dir "
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %10d %s", kind, entry.Size, entry.Name)
+		size := fmt.Sprintf("%10d", entry.Size)
+		human, _ := cmd.Flags().GetBool("human")
+		if human {
+			size = fmt.Sprintf("%10s", formatBytes(entry.Size))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s", kind, size, entry.Name)
 		if includeRemoteNames {
 			remoteName, _ := drive.EntryRemoteName(entry)
 			fmt.Fprintf(cmd.OutOrStdout(), "\tremote_name=%s\tremote_path=%s", remoteName, joinRemotePath(remoteParent, remoteName))
