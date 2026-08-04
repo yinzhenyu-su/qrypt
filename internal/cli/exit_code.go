@@ -12,6 +12,7 @@ const (
 	ExitFailure     = 1   // runtime/transfer error not otherwise categorised
 	ExitUsage       = 2   // syntax or usage error
 	ExitPartial     = 3   // operation completed but some transfers failed
+	ExitMismatch    = 4   // check found differences between the two trees
 	ExitInterrupted = 130 // terminated by SIGINT (128 + 2)
 )
 
