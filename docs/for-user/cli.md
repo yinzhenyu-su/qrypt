@@ -12,6 +12,7 @@
 - `fs get` 的 `LOCAL` 为 `-` 时写入标准输出。
 - `fs put` 的 `LOCAL` 为 `-` 时读取标准输入。
 - 支持 `--json` 的查询命令会向标准输出写入稳定的 JSON，状态提示和错误写入标准错误。
+- 命令不再在每次执行时打印所用配置文件路径；需要确认时用 `qrypt config path`。
 - 路径参数中的 `~` 会被展开为用户主目录。
 
 ### 退出码
@@ -48,6 +49,12 @@ qrypt config validate [--config PATH]
 
 ```sh
 qrypt config show [--config PATH]
+```
+
+查询当前解析到的配置文件路径（`--config` 优先，否则按搜索顺序取第一个存在的文件；找不到时报错）：
+
+```sh
+qrypt config path [--config PATH] [--json]
 ```
 
 导出 rclone 兼容密码：
