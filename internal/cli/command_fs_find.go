@@ -3,12 +3,20 @@ package cli
 import (
 	"context"
 	"fmt"
+	pathpkg "path"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+// fsFindResult pairs a match with its full virtual path so JSON consumers can
+// tell same-named files in different directories apart.
+type fsFindResult struct {
+	Path  string      `json:"path"`
+	Entry drive.Entry `json:"entry"`
+}
 
 func newFsFindCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -31,6 +39,9 @@ func runFind(cmd *cobra.Command, args []string) error {
 	if needle == "" {
 		return commandUsageError(cmd, "NAME must not be empty")
 	}
+	// Normalize so results always carry canonical /mount/... paths even when
+	// the caller passed a relative or dot-prefixed path.
+	path = cleanListPath(path)
 	ctx, fs, cleanup, err := openFileSystem(cmd)
 	if err != nil {
 		return err
@@ -38,39 +49,37 @@ func runFind(cmd *cobra.Command, args []string) error {
 	defer cleanup()
 
 	needle = strings.ToLower(needle)
-	var matches []drive.Entry
-	var matchPaths []string
-	if err := walkFind(ctx, fs, path, needle, &matches, &matchPaths); err != nil {
+	var matches []fsFindResult
+	if err := walkFind(ctx, fs, path, needle, &matches); err != nil {
 		return err
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	if asJSON {
 		if matches == nil {
-			matches = []drive.Entry{}
+			matches = []fsFindResult{}
 		}
 		return writePrettyJSON(cmd.OutOrStdout(), matches)
 	}
-	for _, path := range matchPaths {
-		fmt.Fprintln(cmd.OutOrStdout(), path)
+	for _, match := range matches {
+		fmt.Fprintln(cmd.OutOrStdout(), match.Path)
 	}
 	return nil
 }
 
-// walkFind recursively lists path, collecting entries whose name contains
-// the (lowercased) needle, case-insensitively.
-func walkFind(ctx context.Context, fs vfs.FileSystem, path, needle string, matches *[]drive.Entry, matchPaths *[]string) error {
+// walkFind recursively lists path, collecting entries whose name contains the
+// (lowercased) needle, case-insensitively.
+func walkFind(ctx context.Context, fs vfs.FileSystem, path, needle string, matches *[]fsFindResult) error {
 	entries, err := fs.List(ctx, path)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		child := strings.TrimSuffix(path, "/") + "/" + entry.Name
+		child := pathpkg.Join(path, entry.Name)
 		if strings.Contains(strings.ToLower(entry.Name), needle) {
-			*matches = append(*matches, entry)
-			*matchPaths = append(*matchPaths, child)
+			*matches = append(*matches, fsFindResult{Path: child, Entry: entry})
 		}
 		if entry.IsDir {
-			if err := walkFind(ctx, fs, child, needle, matches, matchPaths); err != nil {
+			if err := walkFind(ctx, fs, child, needle, matches); err != nil {
 				return err
 			}
 		}

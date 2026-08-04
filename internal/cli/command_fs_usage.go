@@ -16,6 +16,7 @@ type fsSpaceEntry struct {
 	Total int64  `json:"total"`
 	Free  int64  `json:"free"`
 	Used  int64  `json:"used"`
+	Error string `json:"error,omitempty"`
 }
 
 func newFsDfCmd() *cobra.Command {
@@ -86,6 +87,7 @@ func runDf(cmd *cobra.Command, args []string) error {
 			entries := make([]fsSpaceEntry, 0, len(mounts))
 			for _, mount := range mounts {
 				if mount.Err != nil {
+					entries = append(entries, fsSpaceEntry{Name: mount.Name, Error: mount.Err.Error()})
 					continue
 				}
 				entry, err := entryFrom(mount.Name, mount.Space, nil)
@@ -161,10 +163,20 @@ func runDu(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer cleanup()
+	entry, err := fs.Stat(ctx, path)
+	if err != nil {
+		return err
+	}
 	var files int
 	var bytes int64
-	if err := walkCopySource(ctx, fs, path, nil, &files, &bytes); err != nil {
-		return err
+	if entry.IsDir {
+		if err := walkCopySource(ctx, fs, path, nil, &files, &bytes); err != nil {
+			return err
+		}
+	} else {
+		// du on a single file reports just that file.
+		files = 1
+		bytes = entry.Size
 	}
 	result := fsDiskUsageResult{Path: path, Files: files, Bytes: bytes}
 	asJSON, _ := cmd.Flags().GetBool("json")
