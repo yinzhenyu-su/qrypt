@@ -1517,3 +1517,49 @@ func TestValidateWithFallbackNoFallbackWithoutConfigCookie(t *testing.T) {
 		t.Fatalf("calls = %d, want 1 (no config cookie to retry with)", calls)
 	}
 }
+
+func TestDriverSpaceParsesEnvelope(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/member" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": map[string]any{
+				"total_capacity": int64(10995116277760), // 10 TiB
+				"use_capacity":   int64(1234567890),
+			},
+		})
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	space, err := driver.Space(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if space.Total != 10995116277760 {
+		t.Fatalf("total = %d, want 10995116277760 (capacity lives under data envelope)", space.Total)
+	}
+	if want := int64(10995116277760 - 1234567890); space.Free != want {
+		t.Fatalf("free = %d, want %d", space.Free, want)
+	}
+}
+
+func TestDriverSpaceReportsAPIError(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"status":  400,
+			"code":    23001,
+			"message": "not found",
+			"data":    map[string]any{},
+		})
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	if _, err := driver.Space(context.Background()); err == nil {
+		t.Fatal("Space must surface the API error envelope")
+	}
+}
