@@ -785,8 +785,11 @@ func (d *Driver) getLastError() string {
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	var resp struct {
-		Total int64 `json:"total_capacity"`
-		Used  int64 `json:"use_capacity"`
+		respEnvelope
+		Data struct {
+			Total int64 `json:"total_capacity"`
+			Used  int64 `json:"use_capacity"`
+		} `json:"data"`
 	}
 	err := d.cl.request(ctx, http.MethodGet, "/member", map[string]string{
 		"uc_param_str":    "",
@@ -797,9 +800,12 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	if err != nil {
 		return drive.Space{}, fmt.Errorf("quark: space: %w", err)
 	}
+	if err := apiError(resp.respEnvelope); err != nil {
+		return drive.Space{}, fmt.Errorf("quark: space: %w", err)
+	}
 	return drive.Space{
-		Total: resp.Total,
-		Free:  resp.Total - resp.Used,
+		Total: resp.Data.Total,
+		Free:  resp.Data.Total - resp.Data.Used,
 	}, nil
 }
 
