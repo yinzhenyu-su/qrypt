@@ -48,10 +48,11 @@ func ReplayUploadJournal(dir string) ([]PendingUpload, error) {
 	return replayed, nil
 }
 
-// PruneUploadJournal rewrites the journal keeping only dirty entries whose
-// staging file still exists and matches the recorded size (offline data is
-// intact). Terminal clean markers and entries whose data is gone are dropped.
-// It returns the number of dropped entries.
+// PruneUploadJournal rewrites the journal to only the current pending set:
+// entries are replayed by path (dirty overrides, clean removes) and then
+// dirty entries whose staging file is gone or size-mismatched are dropped,
+// since their offline data no longer exists. Terminal clean markers and
+// corrupt lines are dropped. It returns the number of dropped entries.
 func PruneUploadJournal(dir string) (int, error) {
 	journalPath := filepath.Join(dir, "pending.jsonl")
 	file, err := os.Open(journalPath)
@@ -63,32 +64,47 @@ func PruneUploadJournal(dir string) (int, error) {
 	}
 	defer file.Close()
 
-	var kept []journalEntry
+	// Replay the journal into the final per-path state, exactly like
+	// loadJournal: a later clean supersedes an earlier dirty, so a finished
+	// upload never comes back just because its old dirty line was kept.
+	pending := map[string]journalEntry{}
+	pruned := 0
+	changed := false // a clean marker or unparsable line requires a rewrite
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	pruned := 0
 	for scanner.Scan() {
 		var entry journalEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			pruned++ // tolerate and drop corrupt lines, like loadJournal does
+			changed = true
 			continue
 		}
 		switch entry.Op {
 		case "dirty":
-			info, statErr := os.Stat(entry.LocalPath)
-			if statErr != nil || info.Size() != entry.Size {
-				pruned++
-				continue
-			}
-			kept = append(kept, entry)
+			pending[entry.Path] = entry
+		case "clean":
+			delete(pending, entry.Path)
+			changed = true
 		default:
 			pruned++
+			changed = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return pruned, err
 	}
-	if pruned == 0 {
+
+	// Drop entries whose staging data is gone; what remains is the kept set.
+	var kept []journalEntry
+	for _, entry := range pending {
+		info, statErr := os.Stat(entry.LocalPath)
+		if statErr != nil || info.Size() != entry.Size {
+			pruned++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if pruned == 0 && !changed {
 		return 0, nil
 	}
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +114,64 @@ func TestPruneUploadJournalDropsMissingStaging(t *testing.T) {
 	}
 	if paths["/gone.txt"] {
 		t.Fatalf("gone.txt still pending after prune: %v", paths)
+	}
+}
+
+// TestPruneUploadJournalRespectsCleanMarkers guards against resurrecting a
+// finished upload: the replay must apply dirty/clean by path before pruning,
+// so an old dirty line superseded by a later clean never comes back.
+func TestPruneUploadJournalRespectsCleanMarkers(t *testing.T) {
+	dir := t.TempDir()
+	journal := filepath.Join(dir, "pending.jsonl")
+	doneStaging := filepath.Join(dir, "staging", "chunk-done")
+	if err := os.MkdirAll(filepath.Dir(doneStaging), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doneStaging, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keepStaging := filepath.Join(dir, "staging", "chunk-keep")
+	if err := os.WriteFile(keepStaging, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// /done.txt was uploaded and then cleaned; its staging still exists so a
+	// naive per-line prune would keep the old dirty line and re-upload it.
+	writeJournalEntry(t, journal, "dirty", PendingUpload{
+		Path: "/done.txt", FID: "f-done", LocalPath: doneStaging, Size: 4,
+	})
+	writeJournalEntry(t, journal, "clean", PendingUpload{Path: "/done.txt"})
+	// /keep.txt is still pending and valid.
+	writeJournalEntry(t, journal, "dirty", PendingUpload{
+		Path: "/keep.txt", FID: "f-keep", LocalPath: keepStaging, Size: 4,
+	})
+
+	pruned, err := PruneUploadJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 0 {
+		t.Fatalf("pruned = %d, want 0 (clean marker removal is not a prune)", pruned)
+	}
+	data, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "/done.txt") {
+		t.Fatalf("journal resurrected a cleaned upload:\n%s", content)
+	}
+	if !strings.Contains(content, "/keep.txt") {
+		t.Fatalf("journal lost a live entry:\n%s", content)
+	}
+
+	// A reload must not see /done.txt as pending either.
+	store, err := newUploadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range store.PendingUploads() {
+		if p.Path == "/done.txt" {
+			t.Fatalf("pruned journal still loads /done.txt as pending")
+		}
 	}
 }
