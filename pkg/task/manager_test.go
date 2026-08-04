@@ -369,3 +369,24 @@ func waitTaskState(t *testing.T, m *Manager, id string, want State) Task {
 	t.Fatalf("task %s state=%s, want %s", id, item.State, want)
 	return Task{}
 }
+
+func TestFilterMatchByScope(t *testing.T) {
+	userTask := Task{ID: "user-1", Type: TypeMoveRemote, Scope: ScopeUser}
+	syncTask := Task{ID: "sync-1", Type: TypeUploadRemote, Scope: ScopeSync}
+	unspecified := Task{ID: "none-1", Type: TypeMoveRemote}
+	if !(Filter{Scope: ScopeUser}).Match(userTask) {
+		t.Fatalf("scope user filter should match user task")
+	}
+	if (Filter{Scope: ScopeUser}).Match(syncTask) {
+		t.Fatalf("scope user filter should not match sync task")
+	}
+	if (Filter{Scope: ScopeSync}).Match(userTask) {
+		t.Fatalf("scope sync filter should not match user task")
+	}
+	if (Filter{Scope: ScopeUser}).Match(unspecified) {
+		t.Fatalf("scope user filter should not match task without scope")
+	}
+	if !(Filter{Types: []Type{TypeUploadRemote}}).Match(syncTask) {
+		t.Fatalf("type-only filter should still match regardless of scope")
+	}
+}

@@ -208,6 +208,17 @@ func (n *Namespace) List(ctx context.Context, path string) ([]drive.Entry, error
 	return mount.List(ctx, rest)
 }
 
+func (n *Namespace) ListPage(ctx context.Context, path, cursor string, limit int) (ListPageResult, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return ListPageResult{}, err
+	}
+	if root {
+		return paginateEntries(n.rootEntries(), cursor, limit), nil
+	}
+	return mount.ListPage(ctx, rest, cursor, limit)
+}
+
 func (n *Namespace) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {

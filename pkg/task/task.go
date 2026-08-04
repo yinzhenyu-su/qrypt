@@ -175,6 +175,7 @@ type Filter struct {
 	ID     string  `json:"id,omitempty"`
 	Types  []Type  `json:"types,omitempty"`
 	States []State `json:"states,omitempty"`
+	Scope  Scope   `json:"scope,omitempty"`
 	Mount  string  `json:"mount,omitempty"`
 	Path   string  `json:"path,omitempty"`
 	Limit  int     `json:"limit,omitempty"`
@@ -188,6 +189,9 @@ type ItemFilter struct {
 
 func (f Filter) Match(t Task) bool {
 	if f.ID != "" && t.ID != f.ID {
+		return false
+	}
+	if f.Scope != "" && t.Scope != f.Scope {
 		return false
 	}
 	if len(f.Types) > 0 {

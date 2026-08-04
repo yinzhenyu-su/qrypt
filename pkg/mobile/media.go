@@ -61,8 +61,8 @@ func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, deadlineMS
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
-	defer cancel()
+	ctx, done := handle.reads.begin(deadlineMS)
+	defer done()
 	info := handle.file.Info()
 	started := time.Now()
 	n, err := handle.file.ReadAtInto(ctx, offset, dst)
@@ -71,6 +71,17 @@ func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, deadlineMS
 		return n, wrapError(err)
 	}
 	return n, nil
+}
+
+// CancelVirtualReadJSON aborts any in-flight virtual reads on the handle. The
+// handle remains usable; future reads are unaffected.
+func CancelVirtualReadJSON(handleID string) string {
+	handle, err := getVirtualFile(handleID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	handle.reads.cancelAll()
+	return resultJSON(nil, nil)
 }
 
 func logVirtualRead(handleID string, file media.VirtualFile, info media.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
@@ -112,6 +123,7 @@ func closeVirtualFile(handleID string) error {
 	if !ok {
 		return wrapError(fmt.Errorf("mobile: unknown virtual file handle %q", handleID))
 	}
+	handle.reads.cancelAll()
 	return wrapError(handle.file.Close())
 }
 

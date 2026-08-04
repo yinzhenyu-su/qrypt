@@ -31,6 +31,7 @@ type Options struct {
 type Core struct {
 	fs                 vfs.FileSystem
 	cleanup            func()
+	configPath         string
 	runtimeLayout      RuntimeLayout
 	readCacheDir       string
 	thumbnailDir       string
@@ -77,7 +78,7 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 		return nil, err
 	}
 	fs.Start(ctx)
-	c := &Core{fs: fs, cleanup: cleanup, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath}
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
@@ -107,6 +108,24 @@ func (c *Core) List(ctx context.Context, path string) ([]drive.Entry, error) {
 		return nil, fmt.Errorf("core: closed")
 	}
 	return c.fs.List(ctx, path)
+}
+
+type listPager interface {
+	ListPage(ctx context.Context, path, cursor string, limit int) (vfs.ListPageResult, error)
+}
+
+// ListPage returns a deterministic slice of a directory listing (sorted by
+// name) with a cursor for incremental browsing. limit <= 0 returns the whole
+// listing.
+func (c *Core) ListPage(ctx context.Context, path, cursor string, limit int) (vfs.ListPageResult, error) {
+	if c == nil || c.fs == nil {
+		return vfs.ListPageResult{}, fmt.Errorf("core: closed")
+	}
+	pager, ok := c.fs.(listPager)
+	if !ok {
+		return vfs.ListPageResult{}, fmt.Errorf("core: list paging unsupported")
+	}
+	return pager.ListPage(ctx, path, cursor, limit)
 }
 
 func (c *Core) Mkdir(ctx context.Context, path string) (drive.Entry, error) {

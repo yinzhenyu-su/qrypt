@@ -31,7 +31,7 @@ func OpenUploadItemJSON(coreID, taskID, itemID string, deadlineMS int) string {
 	return resultJSON(id, err)
 }
 
-func WriteUploadItem(handleID string, data []byte, deadlineMS int) (int, error) {
+func writeUploadItem(handleID string, data []byte, deadlineMS int) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
@@ -48,22 +48,34 @@ func WriteUploadItem(handleID string, data []byte, deadlineMS int) (int, error) 
 	return n, nil
 }
 
-func CommitUploadItemJSON(handleID string, deadlineMS int) string {
+func commitUploadItem(handleID string, deadlineMS int) error {
 	handle, err := takeUploadStreamItem(handleID)
 	if err != nil {
-		return resultJSON(nil, wrapError(err))
+		return wrapError(err)
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, handle.handle.Commit(ctx))
+	return wrapError(handle.handle.Commit(ctx))
+}
+
+func failUploadItem(handleID, code, message string) error {
+	handle, err := takeUploadStreamItem(handleID)
+	if err != nil {
+		return wrapError(err)
+	}
+	return wrapError(handle.handle.Fail(code, message))
+}
+
+func WriteUploadItem(handleID string, data []byte, deadlineMS int) (int, error) {
+	return writeUploadItem(handleID, data, deadlineMS)
+}
+
+func CommitUploadItemJSON(handleID string, deadlineMS int) string {
+	return resultJSON(nil, commitUploadItem(handleID, deadlineMS))
 }
 
 func FailUploadItemJSON(handleID, code, message string) string {
-	handle, err := takeUploadStreamItem(handleID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	return resultJSON(nil, handle.handle.Fail(code, message))
+	return resultJSON(nil, failUploadItem(handleID, code, message))
 }
 
 func PauseUploadItemJSON(handleID string) string {

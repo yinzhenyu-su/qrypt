@@ -32,7 +32,7 @@ func ThumbnailCacheUsageJSON(coreID string, deadlineMS int) string {
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
 	bytes, err := s.core.ThumbnailCacheUsage(ctx)
-	return resultJSON(bytes, err)
+	return resultJSON(map[string]int64{"bytes": bytes}, err)
 }
 
 func ClearThumbnailCacheJSON(coreID string, deadlineMS int) string {

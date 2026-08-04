@@ -2,12 +2,14 @@ package vfs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 const listCacheTTL = 10 * time.Second
@@ -37,6 +39,80 @@ func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
 		v.scheduleDirPrefetch(ctx, cleanVirtual(path), entries)
 	}
 	return entries, nil
+}
+
+// ListPageResult is a deterministic slice of a directory listing. Entries are
+// sorted by name (then id) so a name cursor stays stable while the directory
+// changes between requests.
+type ListPageResult struct {
+	Entries    []drive.Entry `json:"entries,omitempty"`
+	NextCursor string        `json:"next_cursor,omitempty"`
+}
+
+// ListPage returns up to limit entries of path, skipping entries whose name
+// is <= cursor. The returned NextCursor is the name of the last returned
+// entry when more entries remain, otherwise empty. limit <= 0 returns the
+// whole (sorted) listing without a cursor.
+func (v *VFS) ListPage(ctx context.Context, path string, cursor string, limit int) (ListPageResult, error) {
+	entries, err := v.List(ctx, path)
+	if err != nil {
+		return ListPageResult{}, err
+	}
+	return paginateEntries(entries, cursor, limit), nil
+}
+
+func paginateEntries(entries []drive.Entry, cursor string, limit int) ListPageResult {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Name != entries[j].Name {
+			return entries[i].Name < entries[j].Name
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	start := 0
+	if cursor != "" {
+		if c, ok := decodeListPageCursor(cursor); ok {
+			// Skip everything before (name, id) so entries that share a name
+			// with the cursor are not dropped on the next page.
+			start = sort.Search(len(entries), func(i int) bool {
+				if entries[i].Name != c.Name {
+					return entries[i].Name > c.Name
+				}
+				return entries[i].ID > c.ID
+			})
+		}
+	}
+	if limit > 0 && start+limit < len(entries) {
+		last := entries[start+limit-1]
+		return ListPageResult{
+			Entries:    entries[start : start+limit],
+			NextCursor: encodeListPageCursor(last.Name, last.ID),
+		}
+	}
+	return ListPageResult{Entries: entries[start:]}
+}
+
+// listPageCursor is the opaque cursor value returned in NextCursor. Encoding
+// both name and id keeps paging correct when a directory contains entries
+// that share the same name.
+type listPageCursor struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+func encodeListPageCursor(name, id string) string {
+	raw, err := json.Marshal(listPageCursor{Name: name, ID: id})
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func decodeListPageCursor(cursor string) (listPageCursor, bool) {
+	var c listPageCursor
+	if err := json.Unmarshal([]byte(cursor), &c); err != nil {
+		return listPageCursor{}, false
+	}
+	return c, true
 }
 
 func (v *VFS) listNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {

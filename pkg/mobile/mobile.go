@@ -14,6 +14,48 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+type readCancels struct {
+	mu     sync.Mutex
+	active []struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+	}
+}
+
+// begin registers an in-flight read so CancelFileReadJSON /
+// CancelVirtualReadJSON can abort it. The returned done function unregisters
+// the read when it finishes. Future reads are unaffected by a cancel.
+func (r *readCancels) begin(timeoutMS int) (context.Context, func()) {
+	ctx, cancel := core.TimeoutContext(timeoutMS)
+	r.mu.Lock()
+	r.active = append(r.active, struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+	}{ctx: ctx, cancel: cancel})
+	r.mu.Unlock()
+	done := func() {
+		r.mu.Lock()
+		for i, item := range r.active {
+			if item.ctx == ctx {
+				r.active = append(r.active[:i], r.active[i+1:]...)
+				break
+			}
+		}
+		r.mu.Unlock()
+	}
+	return ctx, done
+}
+
+func (r *readCancels) cancelAll() {
+	r.mu.Lock()
+	active := r.active
+	r.active = nil
+	r.mu.Unlock()
+	for _, item := range active {
+		item.cancel()
+	}
+}
+
 type entry struct {
 	Name      string `json:"name"`
 	Path      string `json:"path,omitempty"`
@@ -27,7 +69,9 @@ type entry struct {
 }
 
 type session struct {
-	core *core.Core
+	core       *core.Core
+	configPath string
+	runtime    core.RuntimeLayout
 }
 
 type fileHandle struct {
@@ -35,11 +79,13 @@ type fileHandle struct {
 	path         string
 	size         int64
 	readPriority vfs.ReadPriority
+	reads        readCancels
 }
 
 type virtualHandle struct {
 	coreID string
 	file   media.VirtualFile
+	reads  readCancels
 }
 
 type downloadStreamHandle struct {
@@ -112,7 +158,7 @@ func openWithRuntime(configPath string, runtime core.RuntimeLayout) (string, err
 		return "", wrapError(err)
 	}
 	registry.mu.Lock()
-	registry.sessions[id] = &session{core: c}
+	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime}
 	registry.mu.Unlock()
 	return id, nil
 }
@@ -140,6 +186,10 @@ func OpenImportedJSON(runtimeRaw string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
+	configPath, err := core.ImportedConfigPath(runtime)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
 	c, err := core.OpenImported(context.Background(), runtime)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
@@ -150,7 +200,7 @@ func OpenImportedJSON(runtimeRaw string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	registry.mu.Lock()
-	registry.sessions[id] = &session{core: c}
+	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime}
 	registry.mu.Unlock()
 	return resultJSON(id, nil)
 }
@@ -201,53 +251,68 @@ func closeCore(coreID string) error {
 		return wrapError(fmt.Errorf("mobile: unknown core %q", coreID))
 	}
 	delete(registry.sessions, coreID)
+	handles := collectCoreHandlesLocked(coreID)
+	registry.mu.Unlock()
+	closeCollectedHandles(handles)
+	return s.core.Close(context.Background())
+}
+
+func collectCoreHandlesLocked(coreID string) coreHandles {
+	var handles coreHandles
 	for id, handle := range registry.files {
 		if handle.coreID == coreID {
+			handle.reads.cancelAll()
 			delete(registry.files, id)
 		}
 	}
-	virtuals := make([]media.VirtualFile, 0)
 	for id, handle := range registry.virtuals {
 		if handle.coreID == coreID {
-			virtuals = append(virtuals, handle.file)
+			handles.virtuals = append(handles.virtuals, handle)
 			delete(registry.virtuals, id)
 		}
 	}
-	downloads := make([]*core.DownloadStreamItemHandle, 0)
 	for id, handle := range registry.downloads {
 		if handle.coreID == coreID {
-			downloads = append(downloads, handle.handle)
+			handles.downloads = append(handles.downloads, handle.handle)
 			delete(registry.downloads, id)
 		}
 	}
-	taskUploads := make([]*core.UploadStreamItemHandle, 0)
 	for id, handle := range registry.taskUploads {
 		if handle.coreID == coreID {
-			taskUploads = append(taskUploads, handle.handle)
+			handles.taskUploads = append(handles.taskUploads, handle.handle)
 			delete(registry.taskUploads, id)
 		}
 	}
-	taskEvents := make([]interface{ Close() }, 0)
 	for id, handle := range registry.taskEvents {
 		if handle.coreID == coreID {
-			taskEvents = append(taskEvents, handle.sub)
+			handles.taskEvents = append(handles.taskEvents, handle.sub)
 			delete(registry.taskEvents, id)
 		}
 	}
-	registry.mu.Unlock()
-	for _, file := range virtuals {
-		_ = file.Close()
+	return handles
+}
+
+type coreHandles struct {
+	virtuals    []*virtualHandle
+	downloads   []*core.DownloadStreamItemHandle
+	taskUploads []*core.UploadStreamItemHandle
+	taskEvents  []interface{ Close() }
+}
+
+func closeCollectedHandles(handles coreHandles) {
+	for _, file := range handles.virtuals {
+		file.reads.cancelAll()
+		_ = file.file.Close()
 	}
-	for _, handle := range downloads {
+	for _, handle := range handles.downloads {
 		_ = handle.Close()
 	}
-	for _, handle := range taskUploads {
+	for _, handle := range handles.taskUploads {
 		_ = handle.Close()
 	}
-	for _, handle := range taskEvents {
+	for _, handle := range handles.taskEvents {
 		handle.Close()
 	}
-	return s.core.Close(context.Background())
 }
 
 func CloseJSON(coreID string) string {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -524,5 +525,67 @@ func TestParseSize(t *testing.T) {
 func TestParseSizeRejectsInvalidValue(t *testing.T) {
 	if _, err := ParseSize("ten G"); err == nil {
 		t.Fatal("expected invalid size to fail")
+	}
+}
+
+func TestSaveIsAtomicAndLeavesNoTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrypt.toml")
+	cfg := &Config{Version: "1", Mounts: []MountConfig{{Name: "web", Type: "webdav"}}}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != "1" || len(loaded.Mounts) != 1 || loaded.Mounts[0].Name != "web" {
+		t.Fatalf("loaded = %+v, want saved config round trip", loaded)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("temp file %q left behind after Save", entry.Name())
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config perm = %o, want 600", perm)
+	}
+}
+
+func TestSaveConcurrentWritersNeverCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		index := i
+		go func() {
+			for j := 0; j < 20; j++ {
+				cfg := &Config{Version: "1", Mounts: []MountConfig{{Name: fmt.Sprintf("m%d-%d", index, j), Type: "localfs"}}}
+				if err := Save(path, cfg); err != nil {
+					done <- err
+					return
+				}
+			}
+			done <- nil
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("config corrupted by concurrent saves: %v", err)
+	}
+	if len(loaded.Mounts) != 1 {
+		t.Fatalf("loaded mounts = %+v, want exactly one complete writer's config", loaded.Mounts)
 	}
 }
