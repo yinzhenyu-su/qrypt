@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yinzhenyu/qrypt/internal/control"
 )
 
 func TestFsCopyCopiesBetweenMounts(t *testing.T) {
@@ -375,5 +378,159 @@ func checkLocalFile(t *testing.T, path, want string) {
 	}
 	if string(data) != want {
 		t.Fatalf("%q = %q, want %q", path, data, want)
+	}
+}
+
+func TestFsCopyDryRunDoesNotCopy(t *testing.T) {
+	tmp := t.TempDir()
+	srcRemote := filepath.Join(tmp, "src")
+	dstRemote := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(srcRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "file.txt"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeFsCopyConfig(t, tmp, srcRemote, dstRemote)
+
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"fs", "--config", configPath, "copy", "--dry-run", "/src/file.txt", "/dst/copied.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("dry-run copy failed: %v stderr=%s", err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dstRemote, "copied.txt")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not create the destination, stat err = %v", err)
+	}
+	if !strings.Contains(out.String(), "dry run: would copy 1 files (7 bytes)") {
+		t.Fatalf("dry-run summary missing:\n%s", out.String())
+	}
+}
+
+func TestFsCopyDryRunRecursiveJSON(t *testing.T) {
+	tmp := t.TempDir()
+	srcRemote := filepath.Join(tmp, "src")
+	dstRemote := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(filepath.Join(srcRemote, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "sub", "b.txt"), []byte("bb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeFsCopyConfig(t, tmp, srcRemote, dstRemote)
+
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"fs", "--config", configPath, "copy", "--dry-run", "--recursive", "--json", "/src", "/dst"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("dry-run recursive failed: %v stderr=%s", err, stderr.String())
+	}
+	var plan fsCopyDryRunResult
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatalf("dry-run JSON invalid: %v\n%s", err, out.String())
+	}
+	if !plan.DryRun || plan.Files != 2 || plan.Bytes != 3 {
+		t.Fatalf("plan = %+v, want dry_run, 2 files, 3 bytes", plan)
+	}
+	joined := strings.Join(plan.Entries, " ")
+	if !strings.Contains(joined, "/src/a.txt") || !strings.Contains(joined, "/src/sub/b.txt") {
+		t.Fatalf("plan entries = %v, want both files", plan.Entries)
+	}
+}
+
+func TestFsCopyDirErrorPartialExitCode(t *testing.T) {
+	partial := &control.DriverCopyDirResult{Copied: 3, Failed: 1, Error: "one failed"}
+	err := fsCopyDirError(partial)
+	var xe *ExitError
+	if !errors.As(err, &xe) || xe.Code != ExitPartial {
+		t.Fatalf("partial failure err = %v, want ExitError{3}", err)
+	}
+	total := &control.DriverCopyDirResult{Copied: 0, Failed: 3, Error: "all failed"}
+	if err := fsCopyDirError(total); err == nil {
+		t.Fatal("all-failed must return an error")
+	} else if errors.As(err, &xe) {
+		t.Fatalf("all-failed must not be tagged partial, got %+v", xe)
+	}
+}
+
+func TestFsListJSONLOutputsOneEntryPerLine(t *testing.T) {
+	tmp := t.TempDir()
+	srcRemote := filepath.Join(tmp, "src")
+	dstRemote := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(srcRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRemote, "b.txt"), []byte("bb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeFsCopyConfig(t, tmp, srcRemote, dstRemote)
+
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"fs", "--config", configPath, "list", "--jsonl", "/src"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list --jsonl failed: %v stderr=%s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("jsonl output has %d lines, want 2:\n%s", len(lines), out.String())
+	}
+	var names []string
+	for _, line := range lines {
+		var entry fsListEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("jsonl line invalid: %v\n%s", err, line)
+		}
+		names = append(names, entry.Name)
+	}
+	if names[0] != "a.txt" || names[1] != "b.txt" {
+		t.Fatalf("jsonl entries = %v, want [a.txt b.txt]", names)
+	}
+}
+
+func TestFsListJSONLConflictWithJSONIsUsageError(t *testing.T) {
+	tmp := t.TempDir()
+	srcRemote := filepath.Join(tmp, "src")
+	dstRemote := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(srcRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dstRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeFsCopyConfig(t, tmp, srcRemote, dstRemote)
+
+	root := NewRootCommand()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "list", "--json", "--jsonl", "/src"})
+	err := root.Execute()
+	var xe *ExitError
+	if err == nil || !errors.As(err, &xe) || xe.Code != ExitUsage {
+		t.Fatalf("err = %v, want ExitError{2}", err)
 	}
 }

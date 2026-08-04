@@ -9,7 +9,7 @@ import (
 
 func commandUsageError(cmd *cobra.Command, format string, args ...any) error {
 	message := fmt.Sprintf(format, args...)
-	return fmt.Errorf("%s\n\nUsage:\n  %s", message, cmd.UseLine())
+	return usageErrorf("%s\n\nUsage:\n  %s", message, cmd.UseLine())
 }
 
 func noArgs(cmd *cobra.Command, args []string) error {
@@ -25,9 +25,9 @@ func commandGroupArgs(hints map[string]string) cobra.PositionalArgs {
 			return nil
 		}
 		if hint := hints[args[0]]; hint != "" {
-			return fmt.Errorf("%s", hint)
+			return usageErrorf("%s", hint)
 		}
-		return fmt.Errorf("unknown command %q for %q\n\nRun '%s --help' to see available commands.", args[0], cmd.CommandPath(), cmd.CommandPath())
+		return usageErrorf("unknown command %q for %q\n\nRun '%s --help' to see available commands.", args[0], cmd.CommandPath(), cmd.CommandPath())
 	}
 }
 
@@ -60,7 +60,7 @@ func showHelp(cmd *cobra.Command, _ []string) error {
 
 func installFlagErrorHelp(cmd *cobra.Command) {
 	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
-		return fmt.Errorf("%w\n\nRun '%s --help' for valid flags.", err, cmd.CommandPath())
+		return usageErrorf("%w\n\nRun '%s --help' for valid flags.", err, cmd.CommandPath())
 	})
 	for _, child := range cmd.Commands() {
 		installFlagErrorHelp(child)

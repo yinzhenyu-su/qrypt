@@ -13,7 +13,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func watchDebugAI(ctx context.Context, path string, duration, interval time.Duration, eventLimit int, mountNames []string, allMounts bool) debugAIWatchReport {
+func watchDebugAI(ctx context.Context, path string, duration, interval time.Duration, eventLimit int, mountNames []string, allMounts bool, onSample func(debugAIWatchSample)) debugAIWatchReport {
 	startedAt := time.Now()
 	report := debugAIWatchReport{
 		SchemaVersion: debugAIReportSchemaVersion,
@@ -33,6 +33,9 @@ func watchDebugAI(ctx context.Context, path string, duration, interval time.Dura
 		sample := sampleDebugAIWatch(ctx, path, eventLimit, mountNames)
 		report.Samples = append(report.Samples, sample)
 		report.Errors = append(report.Errors, sample.Errors...)
+		if onSample != nil {
+			onSample(sample)
+		}
 		if time.Now().Add(interval).After(deadline) {
 			break
 		}

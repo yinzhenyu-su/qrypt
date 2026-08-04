@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -179,7 +180,16 @@ func newDebugWatchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			report := watchDebugAI(cmd.Context(), cleanDebugPath(path), duration, interval, eventLimit, mounts, allMounts)
+			asJSONL, _ := cmd.Flags().GetBool("jsonl")
+			if asJSONL {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetEscapeHTML(false)
+				watchDebugAI(cmd.Context(), cleanDebugPath(path), duration, interval, eventLimit, mounts, allMounts, func(sample debugAIWatchSample) {
+					_ = encoder.Encode(sample)
+				})
+				return nil
+			}
+			report := watchDebugAI(cmd.Context(), cleanDebugPath(path), duration, interval, eventLimit, mounts, allMounts, nil)
 			return writePrettyJSON(cmd.OutOrStdout(), report)
 		},
 		ValidArgsFunction: noFileCompletions,
@@ -187,6 +197,7 @@ func newDebugWatchCmd() *cobra.Command {
 	cmd.Flags().Duration("duration", 30*time.Second, "sampling window")
 	cmd.Flags().Duration("interval", 2*time.Second, "sampling interval")
 	cmd.Flags().Int("events-limit", 100, "maximum recent warn/error events per sample")
+	cmd.Flags().Bool("jsonl", false, "stream one JSON sample per line instead of a single report")
 	addDebugMountScopeFlags(cmd)
 	return cmd
 }
