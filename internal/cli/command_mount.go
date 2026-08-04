@@ -79,7 +79,6 @@ func newMountCmd() *cobra.Command {
 			}
 
 			mountPointExpanded := osutil.ExpandHome(mountPoint)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
 			fmt.Fprintf(cmd.ErrOrStderr(), "Mounting at %s ...\n", mountPointExpanded)
 			session, err := mount.NewMounter().Mount(ctx, fs, mount.Options{

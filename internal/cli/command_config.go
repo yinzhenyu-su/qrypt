@@ -18,6 +18,7 @@ func newConfigCmd() *cobra.Command {
 		RunE:  showHelp,
 	}
 	cmd.AddCommand(newConfigInitCmd())
+	cmd.AddCommand(newConfigPathCmd())
 	cmd.AddCommand(newConfigShowCmd())
 	cmd.AddCommand(newConfigValidateCmd())
 	cmd.AddCommand(newConfigExportRclonePasswordCmd())
