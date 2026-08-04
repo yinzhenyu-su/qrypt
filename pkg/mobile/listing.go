@@ -2,6 +2,8 @@ package mobile
 
 import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func ListJSON(coreID, path string, deadlineMS int) string {
@@ -11,7 +13,7 @@ func ListJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	entries, err := s.core.List(ctx, path)
+	entries, err := withCore(s, func(c *core.Core) ([]drive.Entry, error) { return c.List(ctx, path) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -39,7 +41,7 @@ func ListPageJSON(coreID, path, cursor string, limit int, deadlineMS int) string
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	result, err := s.core.ListPage(ctx, path, cursor, limit)
+	result, err := withCore(s, func(c *core.Core) (vfs.ListPageResult, error) { return c.ListPage(ctx, path, cursor, limit) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -57,7 +59,7 @@ func StatJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.Stat(ctx, path)
+	item, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Stat(ctx, path) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -71,7 +73,7 @@ func MkdirJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.Mkdir(ctx, path)
+	item, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Mkdir(ctx, path) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -85,7 +87,7 @@ func RenameJSON(coreID, oldPath, newPath string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.Rename(ctx, oldPath, newPath))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.Rename(ctx, oldPath, newPath) }))
 }
 
 func RefreshPathJSON(coreID, path string) string {
@@ -93,7 +95,9 @@ func RefreshPathJSON(coreID, path string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
+	s.mu.RLock()
 	s.core.RefreshPath(path)
+	s.mu.RUnlock()
 	return resultJSON(map[string]bool{"refreshed": true}, nil)
 }
 
@@ -104,7 +108,7 @@ func RemoveJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.Remove(ctx, path))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.Remove(ctx, path) }))
 }
 
 func CapabilitiesJSON(coreID, path string, deadlineMS int) string {
@@ -114,7 +118,7 @@ func CapabilitiesJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	info, err := s.core.Capabilities(ctx, path)
+	info, err := withCore(s, func(c *core.Core) (vfs.CapabilityInfo, error) { return c.Capabilities(ctx, path) })
 	return resultJSON(info, err)
 }
 
@@ -123,7 +127,7 @@ func MountsJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	mounts, err := s.core.Mounts()
+	mounts, err := withCore(s, func(c *core.Core) ([]vfs.MountInfo, error) { return c.Mounts() })
 	return resultJSON(mounts, err)
 }
 
@@ -134,7 +138,7 @@ func FileInfoJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	info, err := s.core.FileInfo(ctx, path)
+	info, err := withCore(s, func(c *core.Core) (core.FileInfo, error) { return c.FileInfo(ctx, path) })
 	return resultJSON(info, err)
 }
 
@@ -145,6 +149,8 @@ func ValidateResumeJSON(coreID, path, fileID string, size int64, modTime string,
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	check, err := s.core.ValidateResume(ctx, path, fileID, size, modTime)
+	check, err := withCore(s, func(c *core.Core) (core.ResumeCheck, error) {
+		return c.ValidateResume(ctx, path, fileID, size, modTime)
+	})
 	return resultJSON(check, err)
 }

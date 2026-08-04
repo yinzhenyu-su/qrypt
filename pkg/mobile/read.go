@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -20,7 +21,7 @@ func openFileWithPriority(coreID, path string, priority vfs.ReadPriority, deadli
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	item, err := s.core.Stat(ctx, path)
+	item, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Stat(ctx, path) })
 	if err != nil {
 		return "", wrapError(err)
 	}
@@ -90,7 +91,7 @@ func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int,
 	ctx, done := handle.reads.begin(deadlineMS)
 	defer done()
 	ctx = vfs.WithReadPriority(ctx, handle.readPriority)
-	n, err := s.core.ReadAtInto(ctx, handle.path, offset, dst, 0)
+	n, err := withCore(s, func(c *core.Core) (int, error) { return c.ReadAtInto(ctx, handle.path, offset, dst, 0) })
 	if err != nil {
 		return n, wrapError(err)
 	}

@@ -12,7 +12,7 @@ func DebugSnapshotJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	raw, err := s.core.DebugSnapshotJSON(context.Background())
+	raw, err := withCore(s, func(c *core.Core) (string, error) { return c.DebugSnapshotJSON(context.Background()) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -61,7 +61,7 @@ func FlushReadCacheJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	return resultJSON(nil, s.core.FlushReadCache())
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.FlushReadCache() }))
 }
 
 func StorageUsageJSON(coreID string) string {
@@ -69,7 +69,7 @@ func StorageUsageJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	usage, err := s.core.StorageUsage(context.Background())
+	usage, err := withCore(s, func(c *core.Core) (core.StorageUsage, error) { return c.StorageUsage(context.Background()) })
 	return resultJSON(usage, err)
 }
 
@@ -80,7 +80,7 @@ func ClearReadCacheJSON(coreID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.ClearReadCache(ctx))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.ClearReadCache(ctx) }))
 }
 
 func StartDebugServerJSON(coreID, listen string) string {
@@ -88,7 +88,7 @@ func StartDebugServerJSON(coreID, listen string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	return resultJSON(nil, s.core.StartDebugServer(context.Background(), listen))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.StartDebugServer(context.Background(), listen) }))
 }
 
 func StopDebugServerJSON(coreID string) string {
@@ -96,7 +96,7 @@ func StopDebugServerJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	return resultJSON(nil, s.core.StopDebugServer(context.Background()))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.StopDebugServer(context.Background()) }))
 }
 
 func LogFilesJSON(coreID string) string {
@@ -104,7 +104,7 @@ func LogFilesJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	files, err := s.core.LogFiles()
+	files, err := withCore(s, func(c *core.Core) ([]core.LogFile, error) { return c.LogFiles() })
 	return resultJSON(files, err)
 }
 
@@ -113,6 +113,6 @@ func ReadLogJSON(coreID, name string, offset int64, length int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	data, err := s.core.ReadLog(name, offset, length)
+	data, err := withCore(s, func(c *core.Core) ([]byte, error) { return c.ReadLog(name, offset, length) })
 	return resultJSON(data, err)
 }

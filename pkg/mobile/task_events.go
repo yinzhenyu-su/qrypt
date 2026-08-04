@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
 func openTaskEvents(coreID, filterJSON string, deadlineMS int) (string, error) {
@@ -18,7 +19,7 @@ func openTaskEvents(coreID, filterJSON string, deadlineMS int) (string, error) {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	sub, err := s.core.OpenTaskEvents(ctx, filter)
+	sub, err := withCore(s, func(c *core.Core) (*task.Subscription, error) { return c.OpenTaskEvents(ctx, filter) })
 	if err != nil {
 		return "", wrapError(err)
 	}

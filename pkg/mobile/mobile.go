@@ -72,6 +72,25 @@ type session struct {
 	core       *core.Core
 	configPath string
 	runtime    core.RuntimeLayout
+	// mu guards core so a concurrent ReloadConfigJSON cannot swap or close
+	// the core while another API call is using it.
+	mu sync.RWMutex
+}
+
+// withCore runs fn while holding the session read lock. A concurrent
+// ReloadConfigJSON takes the write lock, so the core pointer is stable for
+// the whole call and never observed mid-close.
+func withCore[T any](s *session, fn func(*core.Core) (T, error)) (T, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return fn(s.core)
+}
+
+// withCoreErr is withCore for calls that only return an error.
+func withCoreErr(s *session, fn func(*core.Core) error) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return fn(s.core)
 }
 
 type fileHandle struct {
@@ -254,7 +273,7 @@ func closeCore(coreID string) error {
 	handles := collectCoreHandlesLocked(coreID)
 	registry.mu.Unlock()
 	closeCollectedHandles(handles)
-	return s.core.Close(context.Background())
+	return withCoreErr(s, func(c *core.Core) error { return c.Close(context.Background()) })
 }
 
 func collectCoreHandlesLocked(coreID string) coreHandles {

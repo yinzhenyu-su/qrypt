@@ -16,7 +16,7 @@ func ConfigSummaryJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	raw, err := s.core.ConfigSummaryJSON()
+	raw, err := withCore(s, func(c *core.Core) (string, error) { return c.ConfigSummaryJSON() })
 	return rawResultJSON(raw, err)
 }
 
@@ -34,7 +34,7 @@ func UpdateConfigJSON(coreID, updateRaw string, deadlineMS int) string {
 	if err := json.Unmarshal([]byte(updateRaw), &req); err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	summary, err := s.core.ApplyConfigUpdate(req)
+	summary, err := withCore(s, func(c *core.Core) (core.ConfigSummary, error) { return c.ApplyConfigUpdate(req) })
 	return resultJSON(summary, err)
 }
 
@@ -68,9 +68,13 @@ func ReloadConfigJSON(coreID string, deadlineMS int) string {
 		_ = newCore.Close(context.Background())
 		return resultJSON(nil, wrapError(fmt.Errorf("mobile: session %q disappeared during reload", coreID)))
 	}
+	// Hold the session write lock while swapping the core so no in-flight API
+	// call is using the old core, then close it once every reader is done.
+	current.mu.Lock()
 	oldCore := current.core
 	current.core = newCore
 	handles := collectCoreHandlesLocked(coreID)
+	current.mu.Unlock()
 	registry.mu.Unlock()
 	closeCollectedHandles(handles)
 	_ = oldCore.Close(context.Background())

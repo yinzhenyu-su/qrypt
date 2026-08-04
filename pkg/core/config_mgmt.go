@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -30,12 +31,15 @@ type ReadCacheSummary struct {
 	MaxSize string `json:"max_size,omitempty"`
 }
 
+// UploadSummary carries upload settings. Pointer fields follow field-level
+// merge semantics in ApplyConfigUpdate: nil means "leave unchanged", so a
+// partial update never zeroes unmentioned settings.
 type UploadSummary struct {
-	UploadDelay   string `json:"upload_delay,omitempty"`
-	UploadWorkers int    `json:"upload_workers,omitempty"`
-	DeleteDelay   string `json:"delete_delay,omitempty"`
-	DefaultMount  string `json:"default_mount,omitempty"`
-	DefaultPath   string `json:"default_path,omitempty"`
+	UploadDelay   *string `json:"upload_delay,omitempty"`
+	UploadWorkers *int    `json:"upload_workers,omitempty"`
+	DeleteDelay   *string `json:"delete_delay,omitempty"`
+	DefaultMount  *string `json:"default_mount,omitempty"`
+	DefaultPath   *string `json:"default_path,omitempty"`
 }
 
 // ConfigMountUpdate mutates one mount entry. Action is one of
@@ -79,11 +83,11 @@ func summarizeConfig(path string, cfg *config.Config) ConfigSummary {
 		ReadCache:      ReadCacheSummary{MaxSize: cfg.ReadCache.MaxSize},
 		ThumbnailCache: ReadCacheSummary{MaxSize: cfg.ThumbnailCache.MaxSize},
 		Upload: UploadSummary{
-			UploadDelay:   cfg.Upload.UploadDelay,
-			UploadWorkers: cfg.Upload.UploadWorkers,
-			DeleteDelay:   cfg.Upload.DeleteDelay,
-			DefaultMount:  cfg.Upload.DefaultMount,
-			DefaultPath:   cfg.Upload.DefaultPath,
+			UploadDelay:   &cfg.Upload.UploadDelay,
+			UploadWorkers: &cfg.Upload.UploadWorkers,
+			DeleteDelay:   &cfg.Upload.DeleteDelay,
+			DefaultMount:  &cfg.Upload.DefaultMount,
+			DefaultPath:   &cfg.Upload.DefaultPath,
 		},
 	}
 	for _, mount := range cfg.Mounts {
@@ -170,11 +174,21 @@ func applyConfigUpdate(cfg *config.Config, req ConfigUpdateRequest) error {
 		cfg.ReadCache.MaxSize = req.ReadCache.MaxSize
 	}
 	if req.Upload != nil {
-		cfg.Upload.UploadDelay = req.Upload.UploadDelay
-		cfg.Upload.UploadWorkers = req.Upload.UploadWorkers
-		cfg.Upload.DeleteDelay = req.Upload.DeleteDelay
-		cfg.Upload.DefaultMount = req.Upload.DefaultMount
-		cfg.Upload.DefaultPath = req.Upload.DefaultPath
+		if req.Upload.UploadDelay != nil {
+			cfg.Upload.UploadDelay = *req.Upload.UploadDelay
+		}
+		if req.Upload.UploadWorkers != nil {
+			cfg.Upload.UploadWorkers = *req.Upload.UploadWorkers
+		}
+		if req.Upload.DeleteDelay != nil {
+			cfg.Upload.DeleteDelay = *req.Upload.DeleteDelay
+		}
+		if req.Upload.DefaultMount != nil {
+			cfg.Upload.DefaultMount = *req.Upload.DefaultMount
+		}
+		if req.Upload.DefaultPath != nil {
+			cfg.Upload.DefaultPath = *req.Upload.DefaultPath
+		}
 	}
 	return nil
 }
@@ -248,11 +262,20 @@ func isSecretParam(driverType, name string) bool {
 }
 
 // Reload reopens the core from the current config file with the same runtime
-// layout. The old filesystem and task manager are closed. Callers own the new
-// core and must Close it.
+// layout. The old core's filesystem, task manager, caches, and debug server
+// are closed once the replacement is ready; callers own the new core and
+// must Close it. If the config fails to load, the old core keeps running and
+// an error is returned.
 func (c *Core) Reload(ctx context.Context) (*Core, error) {
 	if c == nil || c.configPath == "" {
 		return nil, fmt.Errorf("core: config path unavailable")
 	}
-	return Open(ctx, Options{ConfigPath: c.configPath, Runtime: c.runtimeLayout})
+	newCore, err := Open(ctx, Options{ConfigPath: c.configPath, Runtime: c.runtimeLayout})
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Close(ctx); err != nil {
+		logging.L.Warnf("[CORE] reload: close old core: %v", err)
+	}
+	return newCore, nil
 }

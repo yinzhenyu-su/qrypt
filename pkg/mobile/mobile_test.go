@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2094,4 +2095,50 @@ root_path = "`+remote+`"
 	if after.Data.MobileHandles["files"] != 0 {
 		t.Fatalf("DebugSnapshotJSON handles after close = %+v, want 0", after.Data.MobileHandles)
 	}
+}
+
+// TestMobileReloadConcurrentWithAPICalls exercises the session core lock:
+// API calls read s.core while ReloadConfigJSON swaps it, and the old core is
+// only closed after no reader can hold it. Run under -race.
+func TestMobileReloadConcurrentWithAPICalls(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "a.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeCore(coreID)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 15; j++ {
+				raw := ListJSON(coreID, "/loc", 1000)
+				if !strings.Contains(raw, `"ok":true`) {
+					t.Errorf("ListJSON failed concurrently: %s", raw)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		raw := ReloadConfigJSON(coreID, 1000)
+		if !strings.Contains(raw, `"ok":true`) {
+			t.Errorf("ReloadConfigJSON failed: %s", raw)
+			return
+		}
+	}
+	wg.Wait()
 }

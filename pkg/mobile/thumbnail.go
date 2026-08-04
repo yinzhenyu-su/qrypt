@@ -9,7 +9,7 @@ func GetThumbnailFileJSON(coreID, path, preset string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	info, err := s.core.GetThumbnailFile(ctx, path, preset)
+	info, err := withCore(s, func(c *core.Core) (core.ThumbnailInfo, error) { return c.GetThumbnailFile(ctx, path, preset) })
 	return resultJSON(info, err)
 }
 
@@ -20,7 +20,9 @@ func PutThumbnailFileJSON(coreID, path, preset, mime, localPath string, deadline
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	info, err := s.core.PutThumbnailFile(ctx, path, preset, mime, localPath)
+	info, err := withCore(s, func(c *core.Core) (core.ThumbnailInfo, error) {
+		return c.PutThumbnailFile(ctx, path, preset, mime, localPath)
+	})
 	return resultJSON(info, err)
 }
 
@@ -31,7 +33,7 @@ func ThumbnailCacheUsageJSON(coreID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	bytes, err := s.core.ThumbnailCacheUsage(ctx)
+	bytes, err := withCore(s, func(c *core.Core) (int64, error) { return c.ThumbnailCacheUsage(ctx) })
 	return resultJSON(map[string]int64{"bytes": bytes}, err)
 }
 
@@ -42,5 +44,5 @@ func ClearThumbnailCacheJSON(coreID string, deadlineMS int) string {
 	}
 	ctx, cancel := core.TimeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, s.core.ClearThumbnailCache(ctx))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.ClearThumbnailCache(ctx) }))
 }
