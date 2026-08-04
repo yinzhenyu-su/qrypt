@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,5 +205,119 @@ func TestBandwidthOverrideFromFlags(t *testing.T) {
 	limits, err = bandwidthOverrideFromFlags(fsCmd)
 	if err != nil || limits != nil {
 		t.Fatalf("no flags: limits = %v err = %v, want nil", limits, err)
+	}
+}
+
+func TestFsDfJSONIncludesUnsupportedMountError(t *testing.T) {
+	// s3 backends do not support space queries; the JSON output must keep the
+	// failing mount with an error field instead of silently dropping it.
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // satisfies HeadBucket during Init
+	}))
+	defer api.Close()
+
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	cfg := `[[mounts]]
+name = "loc"
+type = "localfs"
+[mounts.params]
+root_path = "` + remote + `"
+
+[[mounts]]
+name = "s3m"
+type = "s3"
+[mounts.params]
+bucket = "b"
+endpoint = "` + api.URL + `"
+region = "us-east-1"
+access_key_id = "x"
+secret_access_key = "y"
+`
+	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "df", "--json")
+	if err != nil {
+		t.Fatalf("df --json failed: %v", err)
+	}
+	var result struct {
+		Mounts []fsSpaceEntry `json:"mounts"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("df JSON invalid: %v\n%s", err, out)
+	}
+	if len(result.Mounts) != 2 {
+		t.Fatalf("df mounts = %d, want 2 (failing mount must not be dropped)", len(result.Mounts))
+	}
+	byName := map[string]fsSpaceEntry{}
+	for _, m := range result.Mounts {
+		byName[m.Name] = m
+	}
+	if byName["loc"].Error != "" || byName["loc"].Total <= 0 {
+		t.Fatalf("loc mount malformed: %+v", byName["loc"])
+	}
+	if byName["s3m"].Error == "" || !strings.Contains(byName["s3m"].Error, "space query") {
+		t.Fatalf("s3 mount missing error field: %+v", byName["s3m"])
+	}
+}
+
+func TestFsDuSingleFile(t *testing.T) {
+	configPath := setupUsageTest(t)
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "du", "--json", "/loc/a.txt")
+	if err != nil {
+		t.Fatalf("du on a file failed: %v", err)
+	}
+	var result fsDiskUsageResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("du JSON invalid: %v\n%s", err, out)
+	}
+	if result.Files != 1 || result.Bytes != 3 {
+		t.Fatalf("du file = %+v, want 1 file, 3 bytes", result)
+	}
+}
+
+func TestFsFindNormalizesRelativePath(t *testing.T) {
+	configPath := setupUsageTest(t)
+	// No leading slash: results must still be canonical /loc/... paths.
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "find", "loc", "zeb")
+	if err != nil {
+		t.Fatalf("find with relative path failed: %v", err)
+	}
+	if !strings.Contains(out, "/loc/zebra.txt") {
+		t.Fatalf("find output not canonical:\n%s", out)
+	}
+	if strings.Contains(out, "\nloc/") {
+		t.Fatalf("find output leaked non-canonical path:\n%s", out)
+	}
+}
+
+func TestFsFindJSONIncludesFullPath(t *testing.T) {
+	configPath := setupUsageTest(t)
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "find", "--json", "/loc", "a.txt")
+	if err != nil {
+		t.Fatalf("find --json failed: %v", err)
+	}
+	var results []fsFindResult
+	if err := json.Unmarshal([]byte(out), &results); err != nil {
+		t.Fatalf("find JSON invalid: %v\n%s", err, out)
+	}
+	if len(results) != 2 {
+		t.Fatalf("find results = %d, want 2", len(results))
+	}
+	paths := map[string]bool{}
+	for _, r := range results {
+		if r.Path == "" || r.Entry.Name == "" {
+			t.Fatalf("find result missing path or entry: %+v", r)
+		}
+		paths[r.Path] = true
+	}
+	if !paths["/loc/a.txt"] || !paths["/loc/zebra.txt"] {
+		t.Fatalf("find paths = %v, want /loc/a.txt and /loc/zebra.txt", paths)
 	}
 }
