@@ -26,6 +26,8 @@ type Options struct {
 	MountName      string
 	ForceNamespace bool
 	ReadChunkLimit int
+	// Bandwidth overrides the config [bandwidth] section when set (CLI flags).
+	Bandwidth *config.BandwidthLimits
 }
 
 type Core struct {
@@ -226,6 +228,9 @@ func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (vfs
 	limits, err := cfg.EffectiveBandwidthLimits()
 	if err != nil {
 		return nil, nil, err
+	}
+	if opts.Bandwidth != nil {
+		limits = *opts.Bandwidth
 	}
 	return buildNamespace(ctx, cfg, NewStorageLayout(cfg, opts.Runtime), bandwidthLimiter(limits), opts)
 }

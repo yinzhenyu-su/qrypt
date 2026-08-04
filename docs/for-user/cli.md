@@ -71,7 +71,10 @@ qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH] [--socket PATH]
 ## 文件系统操作
 
 ```sh
-qrypt fs list [REMOTE] [--json | --jsonl]
+qrypt fs list [REMOTE] [--json | --jsonl] [--human]
+qrypt fs find [REMOTE] NAME [--json]
+qrypt fs df [MOUNT] [--json] [--bytes]
+qrypt fs du [REMOTE] [--json] [--bytes]
 qrypt fs stat REMOTE [--json]
 qrypt fs cat REMOTE
 qrypt fs get REMOTE LOCAL [--force]
@@ -80,8 +83,8 @@ qrypt fs copy SOURCE DESTINATION [--recursive] [--force] [--dry-run] [--json]
 qrypt fs crypt-encode [MOUNT] NAME [--json]
 qrypt fs crypt-decode [MOUNT] NAME [--json]
 qrypt fs mkdir REMOTE
-qrypt fs mv SOURCE DESTINATION
-qrypt fs rm REMOTE [--wait-timeout DURATION]
+qrypt fs mv SOURCE DESTINATION [--json]
+qrypt fs rm REMOTE [--wait-timeout DURATION] [--json]
 qrypt fs pending [--verbose | --json]
 qrypt fs journal [--config PATH | --cache-dir PATH] [--json]
 qrypt fs journal replay [--config PATH | --cache-dir PATH] [--json]
@@ -97,7 +100,20 @@ qrypt fs list / --config PATH
 
 `get` 和单文件 `copy` 默认拒绝覆盖文件；明确覆盖时使用 `--force`。`copy` 直接通过驱动在远端路径之间复制文件。复制目录时使用 `--recursive`，目标路径会作为父目录并追加源目录名，例如 `/src/parent -> /dst` 会写入 `/dst/parent/...`；目录会自动创建，已有文件默认跳过，`--force` 会覆盖已有文件。目录复制遇到读取、创建目录或复制文件错误时会停止并返回失败；`--json` 会输出逐项 `entries`，标记 `ready`、`copied`、`skipped` 或 `failed`。`copy` 支持 `--dry-run`：只枚举并输出将传输的文件计划（`--json` 时输出结构化计划），不执行任何复制。目录复制部分成功（有文件复制成功也有失败）时退出码为 3，全部失败时为 1。`put` 和 `rm` 会等待异步远端操作完成，可通过 `--wait-timeout` 调整最长等待时间。
 
-`list` 支持 `--jsonl`（JSON Lines）：每行输出一个条目的 JSON，适合大目录流式消费（`jq -s` 可聚合）；`--json` 与 `--jsonl` 互斥。
+`list` 支持 `--jsonl`（JSON Lines）：每行输出一个条目的 JSON，适合大目录流式消费（`jq -s` 可聚合）；`--json` 与 `--jsonl` 互斥。`list --human` 以 K/M/G/T 显示大小。`find` 递归查找名字包含 `NAME`（大小写不敏感）的条目，`--json` 输出匹配条目列表。`du` 统计目录树文件数与总字节数；`df` 显示所配置驱动的空间（默认逐 mount 列出；`MOUNT` 参数或 `--mount` 只看单个）。两者默认人类可读大小，`--bytes` 输出原始字节，`--json` 输出数字。`rm`/`mv` 支持 `--json` 输出结构化结果。
+
+`fs` 命令组还支持 `--bwlimit` 系列 flag，覆盖配置中的 `[bandwidth]` 段：
+
+```sh
+qrypt fs --bwlimit 10M list /
+qrypt fs --bwlimit-download 5M get REMOTE LOCAL
+qrypt fs --bwlimit-upload 2M put LOCAL REMOTE
+qrypt fs --bwlimit 10M --bwlimit-upload 2M copy SRC DST
+```
+
+`--bwlimit SIZE` 同时限制下载与上传；`--bwlimit-download` / `--bwlimit-upload` 单独限制一个方向，可与 `--bwlimit` 组合（细粒度 flag 优先）。
+
+`fs` 命令组支持 `--config PATH`，既可写在子命令前，也可写在子命令后：
 
 `crypt-encode` / `crypt-decode` 用指定 mount 的 `[mounts.encryption]` 配置对文件名逐段加解密，用于对照网盘后端存储的密文文件名和本地明文路径：
 

@@ -68,6 +68,7 @@ func newFsRmCmd() *cobra.Command {
 		ValidArgsFunction: noFileCompletions,
 	}
 	cmd.Flags().Duration("wait-timeout", 30*time.Second, "maximum time to wait for deletion to finish")
+	cmd.Flags().Bool("json", false, "write JSON output")
 	return cmd
 }
 
@@ -90,22 +91,38 @@ func runRm(cmd *cobra.Command, args []string) error {
 		if err := fs.RemoveDir(ctx, args[0]); err != nil {
 			return err
 		}
-		return waitFileSystemIdle(ctx, fs, waitTimeout)
+		if err := waitFileSystemIdle(ctx, fs, waitTimeout); err != nil {
+			return err
+		}
+	} else {
+		if err := fs.Remove(ctx, args[0]); err != nil {
+			return err
+		}
+		if err := waitFileSystemIdle(ctx, fs, waitTimeout); err != nil {
+			return err
+		}
 	}
-	if err := fs.Remove(ctx, args[0]); err != nil {
-		return err
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if asJSON {
+		return writePrettyJSON(cmd.OutOrStdout(), struct {
+			Path    string `json:"path"`
+			Removed bool   `json:"removed"`
+		}{Path: args[0], Removed: true})
 	}
-	return waitFileSystemIdle(ctx, fs, waitTimeout)
+	fmt.Fprintf(cmd.OutOrStdout(), "removed %s\n", args[0])
+	return nil
 }
 
 func newFsMvCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:               "mv SOURCE DESTINATION",
 		Short:             "Rename or move a path",
 		Args:              exactNamedArgs("SOURCE", "DESTINATION"),
 		RunE:              runMv,
 		ValidArgsFunction: noFileCompletions,
 	}
+	cmd.Flags().Bool("json", false, "write JSON output")
+	return cmd
 }
 
 func noFileCompletions(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
@@ -118,5 +135,17 @@ func runMv(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer cleanup()
-	return fs.Rename(ctx, args[0], args[1])
+	if err := fs.Rename(ctx, args[0], args[1]); err != nil {
+		return err
+	}
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if asJSON {
+		return writePrettyJSON(cmd.OutOrStdout(), struct {
+			Source      string `json:"source"`
+			Destination string `json:"destination"`
+			Renamed     bool   `json:"renamed"`
+		}{Source: args[0], Destination: args[1], Renamed: true})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "renamed %s -> %s\n", args[0], args[1])
+	return nil
 }

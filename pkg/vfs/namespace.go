@@ -562,6 +562,36 @@ func (n *Namespace) applyTaskAction(ctx context.Context, id string, fn func(*VFS
 	return task.ErrNotFound
 }
 
+// MountSpace pairs a mount name with its space usage. Err is set when the
+// underlying driver does not support space queries.
+type MountSpace struct {
+	Name  string
+	Space drive.Space
+	Err   error
+}
+
+// MountSpaces reports space usage for every mount individually, sorted by
+// mount name. Unlike Space (which aggregates), this lets callers show a
+// per-mount breakdown.
+func (n *Namespace) MountSpaces(ctx context.Context) []MountSpace {
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	names := make([]string, 0, len(n.mounts))
+	for name, mount := range n.mounts {
+		mounts = append(mounts, mount)
+		names = append(names, name)
+	}
+	n.mu.RUnlock()
+
+	results := make([]MountSpace, 0, len(mounts))
+	for i, mount := range mounts {
+		space, err := mount.Space(ctx)
+		results = append(results, MountSpace{Name: names[i], Space: space, Err: err})
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	return results
+}
+
 func (n *Namespace) Space(ctx context.Context) (drive.Space, error) {
 	n.mu.RLock()
 	mounts := make([]*VFS, 0, len(n.mounts))
