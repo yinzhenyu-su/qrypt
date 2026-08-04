@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,7 @@ func newFsListCmd() *cobra.Command {
 		ValidArgsFunction: noFileCompletions,
 	}
 	cmd.Flags().Bool("json", false, "write JSON output")
+	cmd.Flags().Bool("jsonl", false, "write JSON Lines output (one entry per line)")
 	cmd.Flags().Bool("remote-names", false, "include backend remote names and raw paths")
 	return cmd
 }
@@ -45,7 +47,36 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
+	asJSONL, _ := cmd.Flags().GetBool("jsonl")
+	if asJSON && asJSONL {
+		return commandUsageError(cmd, "--json and --jsonl cannot be used together")
+	}
 	includeRemoteNames, _ := cmd.Flags().GetBool("remote-names")
+	if asJSONL {
+		if entries == nil {
+			return nil
+		}
+		encoder := json.NewEncoder(cmd.OutOrStdout())
+		encoder.SetEscapeHTML(false)
+		if includeRemoteNames {
+			output, err := listEntriesWithRemoteNames(ctx, fs, path, entries)
+			if err != nil {
+				return err
+			}
+			for _, entry := range output {
+				if err := encoder.Encode(entry); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		for _, entry := range entries {
+			if err := encoder.Encode(entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if asJSON {
 		if entries == nil {
 			entries = []drive.Entry{}

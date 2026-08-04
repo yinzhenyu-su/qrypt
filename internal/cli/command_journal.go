@@ -52,25 +52,10 @@ type debugJournalEntry struct {
 func newJournalCmdWithUse(use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
-		Short: "Inspect offline upload journal",
+		Short: "Inspect and maintain the offline upload journal",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cacheDir, _ := cmd.Flags().GetString("cache-dir")
-			mountName, _ := cmd.Flags().GetString("mount")
-			state, err := commandConfig(cmd)
-			if err != nil {
-				return err
-			}
-			if state.cfg != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
-			}
-			if state.cfg == nil && cacheDir == "" {
-				return fmt.Errorf("%w; alternatively use --cache-dir", configNotFoundError())
-			}
-			if state.cfg == nil && mountName != "" {
-				return fmt.Errorf("--mount requires a config file")
-			}
-			targets, err := debugCacheTargets(cacheDir, state.cfg, mountName)
+			targets, err := journalTargetsFromCmd(cmd)
 			if err != nil {
 				return err
 			}
@@ -93,9 +78,127 @@ func newJournalCmdWithUse(use string) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().String("mount", "", "mount name")
-	cmd.Flags().String("cache-dir", "", "cache directory")
+	addJournalTargetFlags(cmd)
+	cmd.AddCommand(newJournalReplayCmd())
+	cmd.AddCommand(newJournalPruneCmd())
+	return cmd
+}
+
+// journalTargetsFromCmd resolves the journal directories to inspect from the
+// config (or explicit --cache-dir/--mount flags).
+func journalTargetsFromCmd(cmd *cobra.Command) ([]debugCacheTarget, error) {
+	cacheDir := journalFlagValue(cmd, "cache-dir")
+	mountName := journalFlagValue(cmd, "mount")
+	state, err := commandConfig(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if state.cfg != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Config: %s\n", state.path)
+	}
+	if state.cfg == nil && cacheDir == "" {
+		return nil, fmt.Errorf("%w; alternatively use --cache-dir", configNotFoundError())
+	}
+	if state.cfg == nil && mountName != "" {
+		return nil, fmt.Errorf("--mount requires a config file")
+	}
+	return debugCacheTargets(cacheDir, state.cfg, mountName)
+}
+
+func addJournalTargetFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("mount", "", "mount name")
+	cmd.PersistentFlags().String("cache-dir", "", "cache directory")
 	cmd.Flags().Bool("json", false, "write JSON output")
+}
+
+func addJournalJSONFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool("json", false, "write JSON output")
+}
+
+// journalFlagValue reads a flag that may live on the command or its parents.
+func journalFlagValue(cmd *cobra.Command, name string) string {
+	if flag := cmd.Flags().Lookup(name); flag != nil {
+		return flag.Value.String()
+	}
+	if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
+		return flag.Value.String()
+	}
+	return ""
+}
+
+type journalMaintenanceResult struct {
+	Mount    string   `json:"mount"`
+	Dir      string   `json:"dir"`
+	Replayed int      `json:"replayed,omitempty"`
+	Pruned   int      `json:"pruned,omitempty"`
+	Entries  []string `json:"entries"`
+}
+
+func newJournalReplayCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "replay",
+		Short: "Reset failed offline uploads so the next mount retries them",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			targets, err := journalTargetsFromCmd(cmd)
+			if err != nil {
+				return err
+			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			var results []journalMaintenanceResult
+			for _, target := range targets {
+				replayed, err := vfs.ReplayUploadJournal(target.Dir)
+				if err != nil {
+					return err
+				}
+				paths := make([]string, 0, len(replayed))
+				for _, pending := range replayed {
+					paths = append(paths, pending.Path)
+				}
+				results = append(results, journalMaintenanceResult{Mount: target.Name, Dir: target.Dir, Replayed: len(replayed), Entries: paths})
+				if !asJSON {
+					fmt.Fprintf(cmd.OutOrStdout(), "journal %s: replayed %d failed upload(s)\n", target.Name, len(replayed))
+				}
+			}
+			if asJSON {
+				return writePrettyJSON(cmd.OutOrStdout(), results)
+			}
+			return nil
+		},
+	}
+	addJournalJSONFlag(cmd)
+	return cmd
+}
+
+func newJournalPruneCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Drop offline uploads whose staging data is gone",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			targets, err := journalTargetsFromCmd(cmd)
+			if err != nil {
+				return err
+			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			var results []journalMaintenanceResult
+			for _, target := range targets {
+				pruned, err := vfs.PruneUploadJournal(target.Dir)
+				if err != nil {
+					return err
+				}
+				results = append(results, journalMaintenanceResult{Mount: target.Name, Dir: target.Dir, Pruned: pruned})
+				if !asJSON {
+					fmt.Fprintf(cmd.OutOrStdout(), "journal %s: pruned %d stale upload(s)\n", target.Name, pruned)
+				}
+			}
+			if asJSON {
+				return writePrettyJSON(cmd.OutOrStdout(), results)
+			}
+			return nil
+		},
+	}
+	addJournalJSONFlag(cmd)
 	return cmd
 }
 

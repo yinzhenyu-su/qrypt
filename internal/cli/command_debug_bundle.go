@@ -110,7 +110,7 @@ func newDebugBundleCmd() *cobra.Command {
 					return err
 				}
 				if watchDuration > 0 {
-					watch := watchDebugAI(ctx, cleanPath, watchDuration, watchInterval, eventLimit, mounts, allMounts)
+					watch := watchDebugAI(ctx, cleanPath, watchDuration, watchInterval, eventLimit, mounts, allMounts, nil)
 					if err := writeZipJSON(zw, "watch.json", watch); err != nil {
 						return err
 					}
