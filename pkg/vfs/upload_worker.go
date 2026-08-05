@@ -148,6 +148,14 @@ func (r vfsUploadWorkerRuntime) SendUpload(pending PendingUpload) {
 		logging.L.DebugfEvery("vfs.upload_enqueued", time.Second, "[VFS] upload enqueued op_id=%q path=%q size=%d retry=%d", pending.FID, pending.Path, pending.Size, pending.RetryCount)
 	default:
 		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background op_id=%q path=%q size=%d", pending.FID, pending.Path, pending.Size)
-		go func() { r.v.uploadQueue <- pending }()
+		// Blocking enqueue must also exit on shutdown: the upload workers
+		// return on ctx.Done, and without this select the goroutine would
+		// block on a full queue forever.
+		go func() {
+			select {
+			case r.v.uploadQueue <- pending:
+			case <-r.v.done:
+			}
+		}()
 	}
 }

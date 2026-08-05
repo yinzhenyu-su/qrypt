@@ -61,6 +61,11 @@ type VFS struct {
 	readHistory    *readHistoryState
 	activeDebug    *activeDebugState
 
+	// done is closed when the VFS shuts down (context cancel in Start). The
+	// blocking upload-queue enqueue goroutine selects on it so it cannot
+	// leak after the upload workers have exited.
+	done chan struct{}
+
 	deleteDelay time.Duration
 
 	readPrefetch *readPrefetchState
@@ -128,6 +133,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		rootID:         opts.RootID,
 		encrypted:      opts.Encrypted,
 		testEnabled:    opts.TestEnabled,
+		done:           make(chan struct{}),
 		view:           view,
 		uploadQueue:    make(chan PendingUpload, 128),
 		deleteTasks:    deleteTasks,
@@ -162,6 +168,7 @@ func (v *VFS) Start(ctx context.Context) {
 	// cache writer only exits when its queue is closed, which CloseReadCache
 	// does and waits for.
 	context.AfterFunc(ctx, func() {
+		close(v.done)
 		v.stopDeleteTimers()
 		v.stopUploadTimers()
 		_ = v.CloseReadCache()

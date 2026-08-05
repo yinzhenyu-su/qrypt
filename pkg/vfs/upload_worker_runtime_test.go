@@ -2,8 +2,13 @@ package vfs
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
+
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 type fakeUploadWorkerRuntime struct {
@@ -133,5 +138,42 @@ func TestUploadPendingWithRuntimeExecutesAndReleasesAdmission(t *testing.T) {
 	}
 	if runtime.executed != 1 || runtime.released != 1 {
 		t.Fatalf("executed=%d released=%d", runtime.executed, runtime.released)
+	}
+}
+
+// TestUploadQueueBlockingEnqueueExitsOnShutdown covers the leak path where
+// the upload queue is full: SendUpload falls back to a background blocking
+// enqueue that must also exit when the VFS shuts down (upload workers stop
+// consuming on ctx.Done, so without the done channel the goroutine would
+// block on the full queue forever).
+func TestUploadQueueBlockingEnqueueExitsOnShutdown(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "remote")
+	cache := filepath.Join(t.TempDir(), "cache")
+	v, err := New(localfs.New(remote), Options{StorageDir: cache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = v.CloseReadCache()
+		_ = v.ClearReadCache()
+	}()
+	// Shrink the queue so the second SendUpload hits the blocking path; no
+	// worker is started, so the slot stays occupied.
+	v.uploadQueue = make(chan PendingUpload, 1)
+	r := vfsUploadWorkerRuntime{v: v}
+	r.SendUpload(PendingUpload{FID: "a", Path: "/a"})
+	r.SendUpload(PendingUpload{FID: "b", Path: "/b"})
+
+	close(v.done) // Start's AfterFunc closes it on context cancellation
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := goleak.Find(goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/pkg/vfs.(*readCacheStore).runReadCacheWriter")); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blocking enqueue goroutine leaked after shutdown")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
