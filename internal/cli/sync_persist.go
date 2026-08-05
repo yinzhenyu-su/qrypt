@@ -238,25 +238,39 @@ func (p *syncPersist) isDone(path string, action syncAction) bool {
 	return p.done[syncStateKey(path, action)]
 }
 
-// markDone appends one finished op to the journal. Failed ops are recorded
+// markDone appends one finished op to the journal before marking it done in
+// memory (journal-first, like the task store), so a crash never leaves an
+// in-memory state ahead of what a resume would replay. The journal write is
+// not best-effort: a persistence failure is returned so the caller can count
+// the op as failed and keep the session for a retry. Failed ops are recorded
 // for visibility but not marked done, so a resume retries them.
-func (p *syncPersist) markDone(path string, action syncAction, err error) {
+func (p *syncPersist) markDone(path string, action syncAction, err error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	entry := syncStateEntry{Op: "done", Path: path, Action: action, OK: err == nil}
 	if err != nil {
 		entry.Error = err.Error()
 	}
+	data, marshalErr := json.Marshal(entry)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	f, openErr := os.OpenFile(filepath.Join(p.dir, "state.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if openErr != nil {
+		return openErr
+	}
+	_, writeErr := f.Write(append(data, '\n'))
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
 	if err == nil {
 		p.done[syncStateKey(path, action)] = true
 	}
-	data, _ := json.Marshal(entry)
-	f, openErr := os.OpenFile(filepath.Join(p.dir, "state.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if openErr != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(data, '\n'))
+	return nil
 }
 
 // pendingOps returns the ops that have not finished OK, in plan order.
