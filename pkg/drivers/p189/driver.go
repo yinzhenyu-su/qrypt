@@ -182,13 +182,13 @@ func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 }
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
-	cap, err := d.cl.getCapacity(ctx)
+	capacity, err := d.cl.getCapacity(ctx)
 	if err != nil {
 		return drive.Space{}, err
 	}
 	return drive.Space{
-		Total: cap.CloudCapacityInfo.TotalSize,
-		Free:  cap.CloudCapacityInfo.FreeSize,
+		Total: capacity.CloudCapacityInfo.TotalSize,
+		Free:  capacity.CloudCapacityInfo.FreeSize,
 	}, nil
 }
 

@@ -283,7 +283,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					resp.Prefixes = append(resp.Prefixes, s3PrefixXML{Prefix: p})
 				}
 				w.Header().Set("Content-Type", "application/xml")
-				xml.NewEncoder(w).Encode(resp)
+				_ = xml.NewEncoder(w).Encode(resp)
 				return
 			}
 
@@ -308,7 +308,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				resp.Prefixes = append(resp.Prefixes, s3PrefixXML{Prefix: p})
 			}
 			w.Header().Set("Content-Type", "application/xml")
-			xml.NewEncoder(w).Encode(resp)
+			_ = xml.NewEncoder(w).Encode(resp)
 			return
 		}
 
@@ -395,7 +395,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.put(objKey, srcObj.data)
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(http.StatusOK)
-			xml.NewEncoder(w).Encode(copyObjectResult{
+			_ = xml.NewEncoder(w).Encode(copyObjectResult{
 				XMLNS:        "http://s3.amazonaws.com/doc/2006-03-01/",
 				LastModified: s3Time(time.Now()),
 				ETag:         `"test-etag"`,
@@ -431,7 +431,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(http.StatusOK)
-			xml.NewEncoder(w).Encode(createMultipartUploadResult{
+			_ = xml.NewEncoder(w).Encode(createMultipartUploadResult{
 				XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
 				Bucket:   bucket,
 				Key:      objKey,
@@ -470,7 +470,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(http.StatusOK)
-			xml.NewEncoder(w).Encode(completeMultipartUploadResult{
+			_ = xml.NewEncoder(w).Encode(completeMultipartUploadResult{
 				XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
 				Bucket:   bucket,
 				Key:      objKey,
@@ -497,7 +497,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusOK)
-		xml.NewEncoder(w).Encode(resp)
+		_ = xml.NewEncoder(w).Encode(resp)
 
 	default:
 		http.Error(w, "MethodNotAllowed", http.StatusMethodNotAllowed)
