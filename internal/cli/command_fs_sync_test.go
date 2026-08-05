@@ -186,6 +186,15 @@ func TestFsSyncTypeConflictFails(t *testing.T) {
 	if summary.Conflict < 1 {
 		t.Fatalf("summary = %+v, want conflicts", summary)
 	}
+	// The JSON ok flag must agree with the exit code (conflicts under the
+	// error policy are not success).
+	var result syncResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("ok=true with %d conflicts under --conflict=error", summary.Conflict)
+	}
 	// The destination directory must be untouched.
 	if _, statErr := os.Stat(filepath.Join(local, "sub", "item", "x.txt")); statErr != nil {
 		t.Fatalf("conflict overwrote destination: %v", statErr)
@@ -319,6 +328,34 @@ func TestFsSyncVFSToVFS(t *testing.T) {
 	}
 	if !strings.Contains(got, "vfs-to-vfs") {
 		t.Fatalf("copied content = %q", got)
+	}
+}
+
+// TestFsSyncVFSToVFSConverges: the source mtime must propagate through the
+// direct driver copy, so a second sync sees no update instead of re-copying
+// every file whose destination mtime differs.
+func TestFsSyncVFSToVFSConverges(t *testing.T) {
+	configPath, remote, _ := setupSyncTest(t)
+	if err := os.MkdirAll(filepath.Join(remote, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "src", "f.txt"), []byte("vfs-to-vfs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(remote, "dst"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := executeCLI(t, "fs", "--config", configPath, "sync", "/loc/src", "/loc/dst"); err != nil {
+		t.Fatalf("first sync failed: %v", err)
+	}
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "sync", "--json", "/loc/src", "/loc/dst")
+	if err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+	summary := syncSummaryOf(t, out)
+	if summary.Update != 0 || summary.Add != 0 || summary.Failed != 0 {
+		t.Fatalf("second sync summary = %+v, want convergence (no updates)", summary)
 	}
 }
 

@@ -832,7 +832,10 @@ func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlg
 	raw := drive.RawEntryExtra(entry.Extra)
 	f, ok := raw.(file)
 	if !ok {
-		return "", "", fmt.Errorf("aliyundrive: remote hash: no file metadata for entry %q", entry.ID)
+		// The entry carries no file metadata, so no hash is available; the
+		// caller degrades on ErrUnsupported without treating it as a network
+		// or data error.
+		return "", "", drive.ErrUnsupported
 	}
 	if f.ContentHash == "" {
 		return "", "", drive.ErrUnsupported

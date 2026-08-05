@@ -284,3 +284,27 @@ func TestSyncPersistKeyIsDeterministic(t *testing.T) {
 		t.Fatal("session key changed with trailing slash")
 	}
 }
+
+// TestSyncPersistMarkDonePersistenceFailure: a journal write failure must
+// surface as an error and must NOT mark the op done in memory, so the
+// session stays consistent with the disk and a resume retries the op.
+func TestSyncPersistMarkDonePersistenceFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "session")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(dir, "state.jsonl")
+	if err := os.WriteFile(journal, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(journal, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	p := &syncPersist{dir: dir, done: map[string]bool{}}
+	if err := p.markDone("a.txt", syncAdd, nil); err == nil {
+		t.Fatal("markDone on a read-only journal must fail")
+	}
+	if p.isDone("a.txt", syncAdd) {
+		t.Fatal("failed journal write must not mark the op done in memory")
+	}
+}

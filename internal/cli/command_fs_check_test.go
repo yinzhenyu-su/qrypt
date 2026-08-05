@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -362,6 +363,40 @@ func TestCompareVFSHashPairAutoDegrades(t *testing.T) {
 	// forced (--hash / fs check): error surfaces.
 	if _, _, err := compareVFSHashPair(ctx, fs, a, b, "f.txt", false); !errors.Is(err, drive.ErrUnsupported) {
 		t.Fatalf("forced err = %v, want ErrUnsupported", err)
+	}
+}
+
+// errHashFS simulates a backend whose RemoteHash fails with a network/IO
+// error rather than the unsupported-hash signal.
+type errHashFS struct{ vfs.FileSystem }
+
+func (errHashFS) RemoteHash(context.Context, string) (drive.HashAlgorithm, string, error) {
+	return "", "", io.ErrUnexpectedEOF
+}
+
+// TestCompareVFSHashPairNetworkErrorNotDegraded: an autoHash comparison must
+// propagate network/data errors instead of reporting a match, so a backend
+// outage or permission failure never looks like content equality.
+func TestCompareVFSHashPairNetworkErrorNotDegraded(t *testing.T) {
+	ctx := context.Background()
+	vfsSide := checkTarget{kind: targetVFS, vfsPath: "/loc", mountName: "loc"}
+	localSide := checkTarget{kind: targetLocal, localPath: t.TempDir()}
+
+	for name, args := range map[string]struct {
+		a, b     checkTarget
+		autoHash bool
+	}{
+		"vfs-local autoHash": {vfsSide, localSide, true},
+		"vfs-vfs autoHash":   {vfsSide, vfsSide, true},
+		"forced hash":        {vfsSide, localSide, false},
+	} {
+		_, _, err := compareVFSHashPair(ctx, errHashFS{}, args.a, args.b, "f.txt", args.autoHash)
+		if err == nil {
+			t.Fatalf("%s: network error was degraded to a match", name)
+		}
+		if errors.Is(err, drive.ErrUnsupported) {
+			t.Fatalf("%s: error was misclassified as unsupported: %v", name, err)
+		}
 	}
 }
 

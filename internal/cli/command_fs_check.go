@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -155,14 +156,16 @@ func runCheck(cmd *cobra.Command, args []string) error {
 // reports whether they match. The encrypted-mount case re-encrypts the local
 // plaintext with the remote nonce so no file body is downloaded.
 //
-// autoHash degrades to "match" when the backends cannot provide hashes
-// (unsupported backend, missing hash, algorithm mismatch) instead of
-// erroring; fs check passes false (explicit --hash must fail loudly), fs
-// sync passes true for its default comparison.
+// autoHash degrades to "match" only when the backends explicitly cannot
+// provide hashes (drive.ErrUnsupported: unsupported algorithm, entry without
+// hash metadata); network, auth, timeout and local IO errors propagate so
+// they are never mistaken for content equality. fs check passes false
+// (explicit --hash must fail loudly), fs sync passes true for its default
+// comparison.
 func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget, rel string, autoHash bool) (bool, string, error) {
 	degrade := func(err error) (bool, string, error) {
-		if autoHash {
-			return true, "", nil // cannot verify content; assume match (size compared)
+		if autoHash && errors.Is(err, drive.ErrUnsupported) {
+			return true, "", nil // backend cannot verify content; assume match (size compared)
 		}
 		return false, "", err
 	}

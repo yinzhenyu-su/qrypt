@@ -100,6 +100,15 @@ type CopyFileSystem interface {
 }
 
 func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyResult {
+	return RunDirectDriverCopyWithModTime(ctx, source, srcPath, dstPath, overwrite, time.Time{})
+}
+
+// RunDirectDriverCopyWithModTime is RunDirectDriverCopy with an optional
+// mtime to stamp on the uploaded destination file (zero value leaves the
+// backend default). The mtime propagates through PutSource's
+// UploadRequest.ModTime, which localfs persists via Chtimes and other
+// backends ignore.
+func RunDirectDriverCopyWithModTime(ctx context.Context, source DriverCopySource, srcPath, dstPath string, overwrite bool, modTime time.Time) *DriverCopyResult {
 	result := &DriverCopyResult{
 		OpID:       newDebugOperationID("copy"),
 		SourcePath: cleanVirtual(srcPath),
@@ -216,6 +225,7 @@ func RunDirectDriverCopy(ctx context.Context, source DriverCopySource, srcPath, 
 		Name:     dstName,
 		Source:   drive.NewLocalReadOnlyFileSourceWithHashes(tmp.path, tmp.bytes, hashes),
 		Progress: progress,
+		ModTime:  modTime,
 	})
 	progress.finish()
 	extra := map[string]any{

@@ -196,7 +196,7 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 			persist.close()
 		}
 	}
-	result.OK = result.Summary.Failed == 0
+	result.OK = result.Summary.Failed == 0 && !(result.Summary.Conflict > 0 && conflictPolicy == "error")
 
 	asJSON, _ := cmd.Flags().GetBool("json")
 	if asJSON {
@@ -256,7 +256,7 @@ func runFsSyncResume(cmd *cobra.Command, source, destination checkTarget) error 
 	if err := waitFileSystemIdle(ctx, fs, 0); err != nil {
 		return err
 	}
-	result.OK = result.Summary.Failed == 0
+	result.OK = result.Summary.Failed == 0 && !(result.Summary.Conflict > 0 && persist.plan.Flags.Conflict == "error")
 	if !persist.transferPending() {
 		persist.remove()
 	}
@@ -372,8 +372,9 @@ func diffBytes(a, b int64) int64 {
 // executeSyncPlan runs the plan in dependency order: directories before the
 // files inside them, and deletes before adds/updates when --conflict=source
 // replaced a type conflict. When persist is non-nil, ops already finished
-// OK in the session journal are skipped and every completed op is recorded.
-// Returns the number of failed items.
+// OK in the session journal are skipped and every completed op is recorded;
+// a journal persistence failure counts the op as failed so the session is
+// kept for a retry. Returns the number of failed items.
 func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntry, source, destination checkTarget, persist *syncPersist) int {
 	failed := 0
 	// Pass 1: deletions (children before parents; plan is path-sorted, so
@@ -387,13 +388,14 @@ func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntr
 			continue
 		}
 		err := syncDeletePath(ctx, fs, entry.Path, destination, entry.IsDir)
-		if persist != nil {
-			persist.markDone(entry.Path, entry.Action, err)
-		}
-		if err != nil {
-			reportSyncFailure("delete", entry.Path, err)
-			failed++
-		}
+		failed += recordSyncOutcome(persist, entry.Path, entry.Action, err)
+	}
+	// VFS deletes are queued and applied asynchronously; wait for them to
+	// land before creating anything under the same name (--conflict=source
+	// removes a path then re-adds it, which would race the removal).
+	if err := waitFileSystemIdle(ctx, fs, 0); err != nil {
+		reportSyncFailure("wait", "<deletes>", err)
+		return failed + 1
 	}
 	// Pass 2: directories first, then files, so parents exist before children.
 	for _, entry := range plan {
@@ -407,13 +409,7 @@ func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntr
 			continue
 		}
 		err := syncMkdir(ctx, fs, entry.Path, destination)
-		if persist != nil {
-			persist.markDone(entry.Path, entry.Action, err)
-		}
-		if err != nil {
-			reportSyncFailure("mkdir", entry.Path, err)
-			failed++
-		}
+		failed += recordSyncOutcome(persist, entry.Path, entry.Action, err)
 	}
 	for _, entry := range plan {
 		if entry.Action != syncAdd && entry.Action != syncUpdate {
@@ -426,15 +422,27 @@ func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntr
 			continue
 		}
 		err := syncCopyFile(ctx, fs, entry.Path, source, destination, entry.SourceModTime)
-		if persist != nil {
-			persist.markDone(entry.Path, entry.Action, err)
-		}
-		if err != nil {
-			reportSyncFailure(string(entry.Action), entry.Path, err)
-			failed++
-		}
+		failed += recordSyncOutcome(persist, entry.Path, entry.Action, err)
 	}
 	return failed
+}
+
+// recordSyncOutcome persists one op result (when a session is active) and
+// reports it. The op counts as failed if the transfer failed OR the progress
+// journal could not be written: an in-memory-only success would desync the
+// session state from disk and lose progress on interruption.
+func recordSyncOutcome(persist *syncPersist, path string, action syncAction, err error) int {
+	if persist != nil {
+		if perr := persist.markDone(path, action, err); perr != nil {
+			reportSyncFailure("persist", path, perr)
+			return 1
+		}
+	}
+	if err != nil {
+		reportSyncFailure(string(action), path, err)
+		return 1
+	}
+	return 0
 }
 
 // targetSupportsMTime reports whether the destination backend persists
@@ -516,7 +524,10 @@ func syncCopyFile(ctx context.Context, fs vfs.FileSystem, rel string, source, de
 		if !ok {
 			return fmt.Errorf("direct copy requires a filesystem with driver debug resolution")
 		}
-		result := control.RunDirectDriverCopy(ctx, copier, srcPath, dstPath, true)
+		// Propagate the source mtime through the driver copy so a
+		// destination backend that can persist it (CapabilityMtime)
+		// converges on the next run; other backends ignore the stamp.
+		result := control.RunDirectDriverCopyWithModTime(ctx, copier, srcPath, dstPath, true, unixModTime(sourceModTime))
 		if !result.Pass {
 			return fmt.Errorf("direct copy: %s", control.DriverCopyError(result))
 		}
@@ -538,6 +549,15 @@ func syncCopyFile(ctx context.Context, fs vfs.FileSystem, rel string, source, de
 		return nil
 	}
 	return fmt.Errorf("unsupported sync pair: %v -> %v", source.kind, destination.kind)
+}
+
+// unixModTime converts a stored Unix-seconds mtime to a time.Time, zero for
+// absent values (so the backend keeps its own stamp).
+func unixModTime(sec int64) time.Time {
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0)
 }
 
 // syncSetModTime applies the source mtime to a VFS path when the filesystem
