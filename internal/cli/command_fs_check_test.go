@@ -415,3 +415,80 @@ func TestLocalFileHashMD5(t *testing.T) {
 		t.Fatalf("md5 = %q, want 900150983cd24fb0d6963f7d28e17f72", got)
 	}
 }
+
+func TestFsCheckCompareMtimeOnlyIgnoresSizeChange(t *testing.T) {
+	configPath, remote, local := setupCheckTest(t)
+	copyTree(t, remote, local)
+	// Same mtime, different size: size-mtime reports a mismatch, mtime-only
+	// treats the pair as identical because mtime matches.
+	remoteInfo, err := os.Stat(filepath.Join(remote, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := remoteInfo.ModTime()
+	if err := os.WriteFile(filepath.Join(local, "a.txt"), []byte("local-size-differs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(local, "a.txt"), st, st); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = executeCLI(t, "fs", "--config", configPath, "check", "/loc", local)
+	var xe *ExitError
+	if err == nil || !errors.As(err, &xe) || xe.Code != ExitMismatch {
+		t.Fatalf("default check err = %v, want ExitMismatch(4)", err)
+	}
+
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "check", "--compare=mtime-only", "/loc", local)
+	if err != nil {
+		t.Fatalf("mtime-only check failed: %v", err)
+	}
+	if !strings.Contains(out, "ok: 2 files match") {
+		t.Fatalf("mtime-only check output = %q, want ok summary", out)
+	}
+}
+
+func TestFsCheckCompareMtimeOnlyDetectsMtimeChange(t *testing.T) {
+	configPath, remote, local := setupCheckTest(t)
+	copyTree(t, remote, local)
+	past := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(local, "a.txt"), past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "check", "--compare=mtime-only", "--json", "/loc", local)
+	if err == nil {
+		t.Fatal("mtime difference must fail the check")
+	}
+	var result struct {
+		Differences []treeDifference `json:"differences"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("json: %v\n%s", err, out)
+	}
+	if len(result.Differences) != 1 || result.Differences[0].Reason != "mtime" {
+		t.Fatalf("differences = %+v, want one mtime mismatch", result.Differences)
+	}
+}
+
+func TestFsCheckCompareHashForcesHash(t *testing.T) {
+	configPath, remote, local := setupCheckTest(t)
+	copyTree(t, remote, local)
+	// localfs has no content-hash support, so --compare=hash must behave
+	// exactly like --hash: an unsupported error.
+	_, _, err := executeCLI(t, "fs", "--config", configPath, "check", "--compare=hash", "/loc", local)
+	if err == nil {
+		t.Fatal("--compare=hash on a backend without hash support must error")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("--compare=hash error = %v, want unsupported", err)
+	}
+}
+
+func TestFsCheckCompareInvalidMode(t *testing.T) {
+	configPath, _, local := setupCheckTest(t)
+	_, _, err := executeCLI(t, "fs", "--config", configPath, "check", "--compare=bogus", "/loc", local)
+	if err == nil || !strings.Contains(err.Error(), "invalid --compare") {
+		t.Fatalf("invalid --compare err = %v, want validation error", err)
+	}
+}

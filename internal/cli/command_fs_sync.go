@@ -86,6 +86,7 @@ failed, 2 on usage errors, 1 on overall failures.`,
 	cmd.Flags().Bool("dry-run", false, "show the sync plan without changing anything")
 	cmd.Flags().Bool("delete", false, "delete files on DESTINATION that are not on SOURCE")
 	cmd.Flags().Bool("hash", false, "also compare content hashes (needs backend hash support)")
+	cmd.Flags().String("compare", "size-mtime", "comparison strategy: size-mtime, mtime-only, or hash")
 	cmd.Flags().String("conflict", "error", "type-conflict policy: error, skip, or source")
 	cmd.Flags().Bool("json", false, "write JSON output")
 	cmd.Flags().Bool("resume", false, "continue the interrupted sync session for SOURCE and DESTINATION")
@@ -128,6 +129,12 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	defer cleanup()
 
 	forceHash, _ := cmd.Flags().GetBool("hash")
+	compareMode, _ := cmd.Flags().GetString("compare")
+	skipSize, modeHash, err := parseCompareMode(compareMode)
+	if err != nil {
+		return err
+	}
+	forceHash = forceHash || modeHash
 	snapA, err := snapshotTarget(ctx, fs, source)
 	if err != nil {
 		return err
@@ -144,7 +151,7 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	// Sync always attempts content-hash comparison; AutoHash degrades to
 	// size/mtime when the backends cannot provide hashes. --hash forces it
 	// (missing hash support becomes an error).
-	opts := treeCompareOptions{AsHash: true, AutoHash: !forceHash}
+	opts := treeCompareOptions{AsHash: true, AutoHash: !forceHash, SkipSize: skipSize}
 	opts.Hash = func(ctx context.Context, rel string) (bool, string, error) {
 		return compareVFSHashPair(ctx, fs, source, destination, rel, opts.AutoHash)
 	}
@@ -154,7 +161,12 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	}
 
 	deleteExtra, _ := cmd.Flags().GetBool("delete")
-	plan := planSync(diffs, snapA, snapB, deleteExtra, conflictPolicy, targetSupportsMTime(fs, destination))
+	// mtime-only forces mtime-driven updates even when the destination
+	// backend cannot persist mtimes (the user explicitly opted into the
+	// strategy; on such backends every sync re-updates files because the
+	// stored mtime is the upload time).
+	compareMTime := targetSupportsMTime(fs, destination) || compareMode == "mtime-only"
+	plan := planSync(diffs, snapA, snapB, deleteExtra, conflictPolicy, compareMTime)
 	result := syncResult{
 		Source:      args[0],
 		Destination: args[1],

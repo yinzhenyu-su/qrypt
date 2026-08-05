@@ -384,3 +384,48 @@ func TestFsSyncConvergesOnSecondRun(t *testing.T) {
 		t.Fatalf("second sync not converged: %+v", summary)
 	}
 }
+
+// TestFsSyncCompareMtimeOnlySkipsSizeOnlyChange: a local file whose size
+// changed but whose mtime matches the source is ignored under
+// --compare=mtime-only, while the default strategy updates it.
+func TestFsSyncCompareMtimeOnlySkipsSizeOnlyChange(t *testing.T) {
+	configPath, remote, local := setupSyncTest(t)
+	copyTree(t, remote, local)
+	remoteInfo, err := os.Stat(filepath.Join(remote, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := remoteInfo.ModTime()
+	if err := os.WriteFile(filepath.Join(local, "a.txt"), []byte("local-size-only-change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(local, "a.txt"), st, st); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default strategy sees the size difference and updates.
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "sync", "--json", local, "/loc")
+	if err != nil {
+		t.Fatalf("default sync failed: %v", err)
+	}
+	if summary := syncSummaryOf(t, out); summary.Update < 1 || summary.Failed != 0 {
+		t.Fatalf("default sync summary = %+v, want update", summary)
+	}
+
+	// mtime-only treats the pair as identical: no update.
+	out, _, err = executeCLI(t, "fs", "--config", configPath, "sync", "--json", "--compare=mtime-only", local, "/loc")
+	if err != nil {
+		t.Fatalf("mtime-only sync failed: %v", err)
+	}
+	if summary := syncSummaryOf(t, out); summary.Add != 0 || summary.Update != 0 || summary.Delete != 0 || summary.Failed != 0 {
+		t.Fatalf("mtime-only sync summary = %+v, want empty plan", summary)
+	}
+}
+
+func TestFsSyncCompareInvalidMode(t *testing.T) {
+	configPath, _, local := setupSyncTest(t)
+	_, _, err := executeCLI(t, "fs", "--config", configPath, "sync", "--compare=bogus", local, "/loc")
+	if err == nil || !strings.Contains(err.Error(), "invalid --compare") {
+		t.Fatalf("invalid --compare err = %v, want validation error", err)
+	}
+}
