@@ -41,6 +41,7 @@ type Server struct {
 	source     Snapshotter
 	server     *http.Server
 	listener   net.Listener
+	stop       context.CancelFunc
 }
 
 type HealthResponse struct {
@@ -350,6 +351,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
 	mux.HandleFunc("/v1/debug/stacks", s.handleGoroutines)
 	s.server = &http.Server{Handler: mux}
+	// Derive our own context so the goroutine below exits on Close even when
+	// the caller passed a background context (context.Background().Done() is
+	// nil, which would block the <-ctx.Done() receive forever).
+	ctx, stop := context.WithCancel(ctx)
+	s.stop = stop
 	go func() {
 		<-ctx.Done()
 		_ = s.Close(context.Background())
@@ -1126,6 +1132,11 @@ func tcpListenEndpoint(address string) (string, string, error) {
 }
 
 func (s *Server) Close(ctx context.Context) error {
+	// Notify the ctx.Done goroutine started by Start so it cannot leak even
+	// if the original Start context was background.
+	if s.stop != nil {
+		s.stop()
+	}
 	if s.server != nil {
 		_ = s.server.Shutdown(ctx)
 	}
