@@ -1250,7 +1250,13 @@ func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string
 }
 
 func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int, length int64, openBody func() (io.Reader, error)) (string, error) {
-	logging.L.DebugfEvery("quark.upload_part.enter", time.Second, "[QUARK] upload part enter task=%q part=%d bytes=%d bucket=%q obj=%q upload_url=%q", pre.Data.TaskID, partNumber, length, pre.Data.Bucket, pre.Data.ObjKey, pre.Data.UploadURL)
+	// Log the host+path only: the upload URL carries an OSS signature
+	// (OSSAccessKeyId/Signature/Expires) that must not reach the log.
+	uploadURL := pre.Data.UploadURL
+	if i := strings.IndexByte(uploadURL, '?'); i != -1 {
+		uploadURL = uploadURL[:i]
+	}
+	logging.L.DebugfEvery("quark.upload_part.enter", time.Second, "[QUARK] upload part enter task=%q part=%d bytes=%d bucket=%q obj=%q upload_url=%q", pre.Data.TaskID, partNumber, length, pre.Data.Bucket, pre.Data.ObjKey, uploadURL)
 	for attempt := 0; attempt <= ossMaxRetries; attempt++ {
 		dateStr := time.Now().UTC().Format(http.TimeFormat)
 		ossPath := pre.Data.ObjKey
