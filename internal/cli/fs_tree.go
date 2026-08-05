@@ -114,9 +114,30 @@ type treeCompareOptions struct {
 	// the default for sync: backends with free hashes get content
 	// verification, others silently fall back.
 	AutoHash bool
+	// SkipSize ignores size differences (--compare=mtime-only): a file is
+	// considered identical when size and mtime both match, or when mtime
+	// matches regardless of size. Content changed without a size or mtime
+	// change is silently treated as identical.
+	SkipSize bool
 	// Hash reports whether the file at the relative path has the same
 	// content on both sides. detail describes the remote hash on mismatch.
 	Hash func(ctx context.Context, rel string) (matched bool, detail string, err error)
+}
+
+// parseCompareMode validates the --compare flag and maps it to the tree
+// comparison knobs: mtime-only skips size checks, hash forces content-hash
+// comparison (equivalent to --hash).
+func parseCompareMode(mode string) (skipSize, forceHash bool, err error) {
+	switch mode {
+	case "size-mtime":
+	case "mtime-only":
+		skipSize = true
+	case "hash":
+		forceHash = true
+	default:
+		return false, false, fmt.Errorf("invalid --compare %q: want size-mtime, mtime-only, or hash", mode)
+	}
+	return skipSize, forceHash, nil
 }
 
 // treeDifference records one mismatch between two tree snapshots. Reasons:
@@ -147,7 +168,7 @@ func compareTrees(ctx context.Context, source, destination treeSnapshot, opts tr
 		if entryA.IsDir {
 			continue // directories are present on both sides with matching type
 		}
-		if entryA.Size != entryB.Size {
+		if !opts.SkipSize && entryA.Size != entryB.Size {
 			diffs = append(diffs, treeDifference{Path: rel, Reason: "size", A: fmt.Sprintf("%d", entryA.Size), B: fmt.Sprintf("%d", entryB.Size)})
 			continue
 		}

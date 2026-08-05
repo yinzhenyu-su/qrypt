@@ -40,6 +40,7 @@ Exit code: 0 when identical, 4 when differences are found, 1 on errors.`,
 		ValidArgsFunction: noFileCompletions,
 	}
 	cmd.Flags().Bool("hash", false, "also compare content hashes (needs backend hash support)")
+	cmd.Flags().String("compare", "size-mtime", "comparison strategy: size-mtime, mtime-only, or hash")
 	cmd.Flags().Bool("json", false, "write JSON output")
 	return cmd
 }
@@ -102,6 +103,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	defer cleanup()
 
 	asHash, _ := cmd.Flags().GetBool("hash")
+	compareMode, _ := cmd.Flags().GetString("compare")
+	skipSize, modeHash, err := parseCompareMode(compareMode)
+	if err != nil {
+		return err
+	}
+	asHash = asHash || modeHash
 	snapA, err := snapshotTarget(ctx, fs, targetA)
 	if err != nil {
 		return err
@@ -110,7 +117,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	opts := treeCompareOptions{AsHash: asHash}
+	opts := treeCompareOptions{AsHash: asHash, SkipSize: skipSize}
 	if asHash {
 		opts.Hash = func(ctx context.Context, rel string) (bool, string, error) {
 			return compareVFSHashPair(ctx, fs, targetA, targetB, rel, false)
