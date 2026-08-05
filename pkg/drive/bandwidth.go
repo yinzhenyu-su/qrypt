@@ -65,7 +65,6 @@ func WrapBandwidthLimitedDriver(raw Driver, limiter *BandwidthLimiter) Driver {
 	return raw
 }
 
-
 func (l *BandwidthLimiter) LimitDownload(ctx context.Context, rc io.ReadCloser) io.ReadCloser {
 	if l == nil || l.download == nil || rc == nil {
 		return rc
