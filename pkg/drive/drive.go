@@ -131,6 +131,11 @@ type Space struct {
 var ErrUnsupported = errors.New("drive: operation unsupported")
 var ErrSpaceUnsupported = errors.New("drive: space query unsupported")
 
+// ErrNotFound is the stable sentinel for "the referenced object does not
+// exist". Drivers wrap it when a backend reports a missing resource; vfs
+// aliases it as vfs.ErrNotFound so both layers classify with errors.Is.
+var ErrNotFound = errors.New("drive: not found")
+
 // UnsupportedOperations provides default implementations for Driver methods
 // that a read-only or partial driver intentionally does not advertise in
 // Capabilities.

@@ -30,7 +30,6 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // downloadUserAgent is the User-Agent used to request download URLs and fetch
@@ -1002,7 +1001,7 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string,
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("%w: directory %q not found under %q", vfs.ErrNotFound, segment, p)
+			return "", fmt.Errorf("%w: directory %q not found under %q", drive.ErrNotFound, segment, p)
 		}
 	}
 	return currentID, nil

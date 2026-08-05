@@ -22,7 +22,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type Driver struct {
@@ -1041,7 +1040,7 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, path string) (stri
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("%w: quark: child not found: %s", vfs.ErrNotFound, segment)
+			return "", fmt.Errorf("%w: quark: child not found: %s", drive.ErrNotFound, segment)
 		}
 	}
 	return currentID, nil
@@ -1415,7 +1414,7 @@ func apiError(resp respEnvelope) error {
 	}
 	switch resp.Code {
 	case 23001:
-		return fmt.Errorf("%w: quark: not found", vfs.ErrNotFound)
+		return fmt.Errorf("%w: quark: not found", drive.ErrNotFound)
 	case 23004:
 		return nil
 	case 23008:
