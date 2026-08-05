@@ -17,6 +17,7 @@ func newDebugTestCmd() *cobra.Command {
 	}
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("auth", "Run a read-only auth driver test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("crud", "Run a CRUD driver test")))
+	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("contract", "Run the driver behavioral contract suite")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("fs", "Run a VFS filesystem smoke test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("instantupload", "Run an instant-upload driver test")))
 	cmd.AddCommand(withDebugSocketFlag(newDebugTestCaseCmd("multipart", "Run a multipart/chunked upload driver test")))
@@ -40,8 +41,8 @@ func newDebugTestCaseCmd(test, short string) *cobra.Command {
 }
 
 func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
-	if test == "" || test == "auth" || test == "crud" || test == "fs" || test == "instantupload" || test == "resume" || test == "multipart" {
-		cmd.Flags().String("mount", "", "mount name for auth, crud, fs, instantupload, resume, or multipart tests")
+	if test == "" || test == "auth" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "resume" || test == "multipart" {
+		cmd.Flags().String("mount", "", "mount name for auth, contract, crud, fs, instantupload, resume, or multipart tests")
 	}
 	if test == "fs" || test == "resume" {
 		cmd.Flags().String("size", "", "test size in bytes, or k/m/g suffix")
@@ -90,7 +91,7 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 
 func validateDriverTestRequest(req control.DriverTestRequest) error {
 	switch req.Test {
-	case "auth", "crud", "instantupload":
+	case "auth", "contract", "crud", "instantupload":
 		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {
 			return fmt.Errorf("%s test only supports --mount", req.Test)
 		}

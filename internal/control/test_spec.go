@@ -106,6 +106,13 @@ var driverTestSpecs = map[string]TestSpec{
 			return fromFSTestResult("fs", *RunVFSSmokeTest(env.Ctx, env.FileSys, mount, parseXferSize(env.Req.Size)))
 		},
 	},
+	"contract": {
+		Name:     "contract",
+		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return runContractChecks(env.Ctx, mount, d)
+		},
+	},
 	"resume": {
 		Name:        "resume",
 		RequiresVFS: true,

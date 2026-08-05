@@ -178,7 +178,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
-	case "auth", "crud", "instantupload", "multipart", "fs", "resume":
+	case "auth", "contract", "crud", "instantupload", "multipart", "fs", "resume":
 		spec, ok := driverTestSpecs[testType]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown driver test: %s", testType), http.StatusBadRequest)
