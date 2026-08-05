@@ -2,6 +2,7 @@ package vfs_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,8 +20,9 @@ func TestSetModTimeAppliesToUpload(t *testing.T) {
 	if err := driver.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	storage := filepath.Join(t.TempDir(), "cache")
 	v, err := vfs.New(driver, vfs.Options{
-		StorageDir:  filepath.Join(t.TempDir(), "cache"),
+		StorageDir:  storage,
 		UploadDelay: time.Second,
 	})
 	if err != nil {
@@ -79,5 +81,22 @@ done:
 	}
 	if !entry.ModTime.Equal(fixed) {
 		t.Fatalf("committed mtime = %v, want %v", entry.ModTime, fixed)
+	}
+
+	// The upload engine deletes the staging file asynchronously after the
+	// backend file becomes visible (Chtimes lands before the staging
+	// removal). Wait for the staging subdirectory to empty out so the test
+	// TempDir cleanup does not race the removal.
+	stagingDir := filepath.Join(storage, "staging")
+	cleanupDeadline := time.Now().Add(5 * time.Second)
+	for {
+		entries, err := os.ReadDir(stagingDir)
+		if err == nil && len(entries) == 0 {
+			break
+		}
+		if time.Now().After(cleanupDeadline) {
+			t.Fatalf("staging never cleared in %s: %v", stagingDir, entries)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
