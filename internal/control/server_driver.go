@@ -206,7 +206,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, results)
 
-	case "crud", "instantupload":
+	case "crud", "instantupload", "multipart":
 		var results []CRUDTestResult
 		matched := false
 		for _, nd := range drivers {
@@ -227,6 +227,9 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				results = append(results, *result)
 			case "instantupload":
 				result := RunDriverInstantUploadTest(r.Context(), nd.Name, nd.Driver)
+				results = append(results, *result)
+			case "multipart":
+				result := RunDriverMultipartTest(r.Context(), nd.Name, nd.Driver, parseXferSize(req.Size))
 				results = append(results, *result)
 			}
 		}
