@@ -129,6 +129,7 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 			Name:     uploadName,
 			Source:   source,
 			Progress: uploadProgress,
+			ModTime:  e.runtime.ModTimeFor(pending.Path),
 		})
 		observer.Metadata(pending.Path, entry.ID, nil)
 		traceExtra := map[string]any{"entry_id": entry.ID}
@@ -302,6 +303,13 @@ func (r vfsUploadRuntime) RequeueIfFrozen(pending PendingUpload) {
 	if pending.Frozen {
 		r.Requeue(pending)
 	}
+}
+
+// ModTimeFor returns the authoritative mtime for a pending upload (the
+// local mod time set via SetModTime), or zero when the backend should use
+// the upload time.
+func (r vfsUploadRuntime) ModTimeFor(path string) time.Time {
+	return r.v.localModTimeFor(path)
 }
 
 func (r vfsUploadRuntime) ApplyUploadModTime(pending PendingUpload, entry drive.Entry) drive.Entry {

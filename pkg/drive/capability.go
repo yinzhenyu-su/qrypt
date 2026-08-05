@@ -15,6 +15,11 @@ const (
 	CapabilityPathResolver       Capability = "path_resolver"
 	CapabilityRemoteNameResolver Capability = "remote_name_resolver"
 	CapabilityForeignEntries     Capability = "foreign_entries"
+	// CapabilityMtime means the backend persists an uploaded object's mtime
+	// (settable via UploadRequest.ModTime) rather than stamping the upload
+	// time. Sync uses it to decide whether mtime differences require an
+	// update; backends without it fall back to size/hash comparison only.
+	CapabilityMtime Capability = "mtime"
 )
 
 // Capabilities returns the driver-declared optional behavior in a stable order.

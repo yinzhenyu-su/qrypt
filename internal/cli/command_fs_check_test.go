@@ -290,3 +290,51 @@ func TestFsCheckTwoVFSTreesHashUnsupported(t *testing.T) {
 		t.Fatalf("--hash error = %v, want unsupported", err)
 	}
 }
+
+// TestFsCheckDetectsTypeConflict verifies a file/directory mismatch on the
+// same relative path is reported as type instead of silently ignored.
+func TestFsCheckDetectsTypeConflict(t *testing.T) {
+	configPath, remote, _ := setupCheckTest(t)
+
+	// Source: file at sub/item. Destination: directory at sub/item.
+	if err := os.Remove(filepath.Join(remote, "sub", "b.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "sub", "item"), []byte("file-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(t.TempDir(), "local")
+	if err := os.MkdirAll(filepath.Join(local, "sub", "item", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "sub", "item", "nested", "x.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "a.txt"), []byte("aaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := executeCLI(t, "fs", "--config", configPath, "check", "--json", "/loc", local)
+	var xe *ExitError
+	if err == nil || !errors.As(err, &xe) || xe.Code != ExitMismatch {
+		t.Fatalf("type conflict err = %v, want ExitMismatch(4)", err)
+	}
+	var result struct {
+		OK          bool             `json:"ok"`
+		Differences []treeDifference `json:"differences"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v out=%s", err, out)
+	}
+	got := map[string]string{}
+	for _, d := range result.Differences {
+		got[d.Path] = d.Reason
+	}
+	if got["sub/item"] != "type" {
+		t.Fatalf("sub/item reason = %q, want type; all diffs = %v", got["sub/item"], got)
+	}
+	// Differences are sorted by path for stable output.
+	if result.Differences[0].Path != "sub/item" {
+		t.Fatalf("first diff = %s, want sub/item (sorted)", result.Differences[0].Path)
+	}
+}

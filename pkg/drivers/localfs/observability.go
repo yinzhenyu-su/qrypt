@@ -14,6 +14,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilitySpace,
 		drive.CapabilityPathResolver,
 		drive.CapabilityRemoteNameResolver,
+		drive.CapabilityMtime,
 	}
 }
 

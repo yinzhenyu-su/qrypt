@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"io"
 	"os"
+	"time"
 )
 
 // ReadOnlyFile is a stable, seekable, read-only file handle.
@@ -66,6 +67,10 @@ type UploadRequest struct {
 	Name     string
 	Source   ReadOnlyFileSource
 	Progress UploadProgress
+	// ModTime, when non-zero, is the authoritative source mtime the backend
+	// should stamp on the uploaded object; zero means the backend uses the
+	// upload time. Propagating it keeps repeated syncs convergent.
+	ModTime time.Time
 }
 
 func SourceHash(source ReadOnlyFileSource, algorithm HashAlgorithm) ([]byte, bool) {

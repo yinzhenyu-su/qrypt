@@ -463,7 +463,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	size := source.Size()
 	parentID = d.resolve(parentID)
 	putStart := time.Now()
-	mtime := time.Now()
+	mtime := req.ModTime
+	if mtime.IsZero() {
+		mtime = time.Now()
+	}
 	logging.L.InfofEvery("quark.upload_start", time.Second, "[QUARK] upload start parent=%q name=%q size=%d", parentID, name, size)
 
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
