@@ -387,7 +387,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(testBody), `"mount": "local"`) ||
-		!strings.Contains(string(testBody), "driver does not implement Writer") {
+		!strings.Contains(string(testBody), "driver lacks capability") {
 		t.Fatalf("unexpected driver test response: %s", testBody)
 	}
 	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||

@@ -178,8 +178,13 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
-	case "auth":
-		var results []AuthTestResult
+	case "auth", "crud", "instantupload", "multipart":
+		spec, ok := driverTestSpecs[testType]
+		if !ok {
+			http.Error(w, fmt.Sprintf("unknown driver test: %s", testType), http.StatusBadRequest)
+			return
+		}
+		var results []TestRun
 		matched := false
 		for _, nd := range drivers {
 			if req.Mount != "" && nd.Name != req.Mount {
@@ -193,45 +198,25 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
-			result := RunDriverAuthTest(r.Context(), nd.Name, nd.Driver)
-			results = append(results, *result)
-		}
-		if req.Mount != "" && !matched {
-			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
-			return
-		}
-		if len(results) == 0 {
-			http.Error(w, "no mounts enabled for debug tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
-			return
-		}
-		writeJSON(w, results)
-
-	case "crud", "instantupload", "multipart":
-		var results []CRUDTestResult
-		matched := false
-		for _, nd := range drivers {
-			if req.Mount != "" && nd.Name != req.Mount {
-				continue
-			}
-			matched = true
-			if !nd.TestEnabled {
+			// Capability matrix: a spec only runs on mounts that provide its
+			// prerequisites. Explicit mounts get a coded failure run, bulk
+			// runs skip the mount with a reason instead of a failing step.
+			if missing := missingCapabilities(nd.Driver, spec.Requires); len(missing) > 0 {
+				reason := fmt.Sprintf("driver lacks capability %v required by %s test", missing, spec.Name)
 				if req.Mount != "" {
-					http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
-					return
+					results = append(results, TestRun{
+						Spec: spec.Name, Mount: nd.Name,
+						Pass: false, Error: reason, ErrorCategory: drive.ErrorCategoryUnsupported,
+					})
+				} else {
+					results = append(results, TestRun{
+						Spec: spec.Name, Mount: nd.Name,
+						Skipped: true, SkipReason: reason,
+					})
 				}
 				continue
 			}
-			switch testType {
-			case "crud":
-				result := RunDriverCRUDTest(r.Context(), nd.Name, nd.Driver)
-				results = append(results, *result)
-			case "instantupload":
-				result := RunDriverInstantUploadTest(r.Context(), nd.Name, nd.Driver)
-				results = append(results, *result)
-			case "multipart":
-				result := RunDriverMultipartTest(r.Context(), nd.Name, nd.Driver, parseXferSize(req.Size))
-				results = append(results, *result)
-			}
+			results = append(results, spec.Run(r.Context(), nd.Name, nd.Driver, req))
 		}
 		if req.Mount != "" && !matched {
 			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
@@ -281,10 +266,10 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			result := RunVFSXferTest(r.Context(), filesys, srcMount, dstMount, size)
-			writeJSON(w, result)
+			writeJSON(w, []TestRun{fromXferTestResult(*result)})
 		} else {
 			result := RunDriverXferTest(r.Context(), srcMount, srcDriver.Driver, dstMount, dstDriver.Driver, size)
-			writeJSON(w, result)
+			writeJSON(w, []TestRun{fromXferTestResult(*result)})
 		}
 
 	case "fs":
@@ -307,7 +292,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result := RunVFSSmokeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
-		writeJSON(w, result)
+		writeJSON(w, []TestRun{fromFSTestResult("fs", *result)})
 
 	case "resume":
 		if req.Mount == "" {
@@ -333,7 +318,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result := RunVFSResumeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
-		writeJSON(w, result)
+		writeJSON(w, []TestRun{fromResumeTestResult(*result)})
 
 	default:
 		http.Error(w, fmt.Sprintf("unknown driver test: %s", req.Test), http.StatusBadRequest)
