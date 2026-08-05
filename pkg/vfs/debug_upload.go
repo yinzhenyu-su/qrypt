@@ -3,6 +3,7 @@ package vfs
 import (
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"maps"
 	"sort"
 	"time"
 )
@@ -119,7 +120,7 @@ func (r vfsDebugUploadRuntime) ActiveSnapshots() map[string]UploadSnapshot {
 	active := map[string]UploadSnapshot{}
 	r.v.uploadDebug.mu.Lock()
 	for path, state := range r.v.uploadDebug.active {
-		active[path] = state.upload
+		active[path] = cloneUploadSnapshot(state.upload)
 	}
 	r.v.uploadDebug.mu.Unlock()
 	return active
@@ -128,7 +129,10 @@ func (r vfsDebugUploadRuntime) ActiveSnapshots() map[string]UploadSnapshot {
 func (r vfsDebugUploadRuntime) History() []UploadSnapshot {
 	r.v.uploadDebug.mu.Lock()
 	defer r.v.uploadDebug.mu.Unlock()
-	out := append([]UploadSnapshot(nil), r.v.uploadDebug.history...)
+	out := make([]UploadSnapshot, len(r.v.uploadDebug.history))
+	for i, upload := range r.v.uploadDebug.history {
+		out[i] = cloneUploadSnapshot(upload)
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
 			return out[i].Path < out[j].Path
@@ -136,6 +140,17 @@ func (r vfsDebugUploadRuntime) History() []UploadSnapshot {
 		return out[i].UpdatedAt.Before(out[j].UpdatedAt)
 	})
 	return out
+}
+
+// cloneUploadSnapshot deep-copies the slice and map fields that are mutated
+// under the upload debug lock, so snapshot consumers can read their copy
+// outside the lock without racing the upload pipeline.
+func cloneUploadSnapshot(u UploadSnapshot) UploadSnapshot {
+	u.Events = append([]drive.MetricEvent(nil), u.Events...)
+	u.Hashes = append([]string(nil), u.Hashes...)
+	u.Extra = maps.Clone(u.Extra)
+	u.StageDurations = maps.Clone(u.StageDurations)
+	return u
 }
 
 func (r vfsDebugUploadRuntime) RemoveHistoryByID(id string) bool {

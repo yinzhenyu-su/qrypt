@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // TestStep is the unified step record every test spec emits. Consumers
@@ -46,44 +47,70 @@ type TestRun struct {
 	DurationMS       int64                  `json:"duration_ms"`
 }
 
+// TestEnv carries the objects a spec runner may need, resolved once by the
+// scheduler per request. Driver-layer specs use Driver; VFS-layer specs
+// (fs, resume) use FileSys.
+type TestEnv struct {
+	Ctx     context.Context
+	Req     DriverTestRequest
+	FileSys vfs.FileSystem
+}
+
 // TestSpec describes one debug test: its identity, the driver capabilities
 // it requires (the scheduler filters mounts by these before running), and a
 // runner that produces a unified TestRun.
 type TestSpec struct {
-	Name     string
-	Requires []drive.Capability
-	Run      func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun
+	Name        string
+	Requires    []drive.Capability
+	RequiresVFS bool // runs against the VFS layer instead of the raw driver
+	Run         func(env TestEnv, mount string, d drive.Driver) TestRun
 }
 
-// driverTestSpecs registers the drive-layer test specs. Adding a new test is
-// one entry here; the scheduler handles traversal, capability filtering,
-// test_enabled checks, and result aggregation.
+// driverTestSpecs registers every single-mount test spec. Adding a new test
+// is one entry here; the scheduler handles traversal, capability filtering,
+// test_enabled checks, VFS preconditions, and result aggregation. The xfer
+// spec is the one exception: it drives two mounts and is scheduled
+// separately in handleDriverTest.
 var driverTestSpecs = map[string]TestSpec{
 	"crud": {
 		Name:     "crud",
 		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
-		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
-			return fromCRUDTestResult("crud", *RunDriverCRUDTest(ctx, mount, d))
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromCRUDTestResult("crud", *RunDriverCRUDTest(env.Ctx, mount, d))
 		},
 	},
 	"multipart": {
 		Name:     "multipart",
 		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
-		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
-			return fromCRUDTestResult("multipart", *RunDriverMultipartTest(ctx, mount, d, parseXferSize(req.Size)))
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromCRUDTestResult("multipart", *RunDriverMultipartTest(env.Ctx, mount, d, parseXferSize(env.Req.Size)))
 		},
 	},
 	"instantupload": {
 		Name:     "instantupload",
 		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
-		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
-			return fromCRUDTestResult("instantupload", *RunDriverInstantUploadTest(ctx, mount, d))
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromCRUDTestResult("instantupload", *RunDriverInstantUploadTest(env.Ctx, mount, d))
 		},
 	},
 	"auth": {
 		Name: "auth",
-		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
-			return fromAuthTestResult(*RunDriverAuthTest(ctx, mount, d))
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromAuthTestResult(*RunDriverAuthTest(env.Ctx, mount, d))
+		},
+	},
+	"fs": {
+		Name:        "fs",
+		RequiresVFS: true,
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromFSTestResult("fs", *RunVFSSmokeTest(env.Ctx, env.FileSys, mount, parseXferSize(env.Req.Size)))
+		},
+	},
+	"resume": {
+		Name:        "resume",
+		RequiresVFS: true,
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromResumeTestResult(*RunVFSResumeTest(env.Ctx, env.FileSys, mount, parseXferSize(env.Req.Size)))
 		},
 	},
 }
