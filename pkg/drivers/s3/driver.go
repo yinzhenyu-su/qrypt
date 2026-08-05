@@ -26,6 +26,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // Driver implements drive.Driver (plus Writer, SourceUploader, Debugger, and
@@ -327,7 +328,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	d.recordSDK(ctx, "GetObject", start, map[string]any{"bucket": d.bucket, "key": key, "range": aws.ToString(input.Range)}, err)
 	if err != nil {
 		if isS3NotFound(err) {
-			return nil, fmt.Errorf("s3: not found %q", entry.ID)
+			return nil, fmt.Errorf("%w: s3: not found %q", vfs.ErrNotFound, entry.ID)
 		}
 		return nil, fmt.Errorf("s3: get %q: %w", entry.ID, err)
 	}

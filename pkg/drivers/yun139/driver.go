@@ -14,6 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -843,7 +844,7 @@ func (d *Driver) resolvePathFrom(ctx context.Context, rootID, p string) (string,
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("directory %q not found under %q", segment, p)
+			return "", fmt.Errorf("%w: directory %q not found under %q", vfs.ErrNotFound, segment, p)
 		}
 	}
 	return currentID, nil

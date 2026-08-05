@@ -19,6 +19,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const timeFormat = "2006-01-02 15:04:05"
@@ -364,7 +365,7 @@ func (d *Driver) resolvePath(ctx context.Context, parentID int64, p string) (int
 			}
 		}
 		if !found {
-			return 0, fmt.Errorf("189: path %q not found", p)
+			return 0, fmt.Errorf("%w: 189: path %q not found", vfs.ErrNotFound, p)
 		}
 	}
 	return currentID, nil
