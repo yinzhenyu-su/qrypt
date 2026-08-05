@@ -148,9 +148,20 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if _, err := io.Copy(f, drive.NewUploadProgressReader(req.Progress, body)); err != nil {
 		return drive.Entry{}, err
 	}
-	info, err := f.Stat()
+	if err := f.Sync(); err != nil {
+		return drive.Entry{}, err
+	}
+	if err := f.Close(); err != nil {
+		return drive.Entry{}, err
+	}
+	if !req.ModTime.IsZero() {
+		if err := os.Chtimes(path, req.ModTime, req.ModTime); err != nil {
+			return drive.Entry{}, fmt.Errorf("localfs: set mtime: %w", err)
+		}
+	}
+	info, err := os.Stat(path)
 	if err != nil {
-		return drive.Entry{ID: path, ParentID: parent, Name: name, Size: source.Size()}, nil
+		return drive.Entry{ID: path, ParentID: parent, Name: name, Size: source.Size(), ModTime: req.ModTime}, nil
 	}
 	modTime := info.ModTime()
 	return drive.Entry{ID: path, ParentID: parent, Name: name, Size: info.Size(), ModTime: modTime, UpdatedAt: modTime}, nil

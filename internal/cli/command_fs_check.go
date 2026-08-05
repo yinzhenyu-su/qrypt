@@ -10,7 +10,6 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
@@ -21,7 +20,7 @@ import (
 // checkDifference records one mismatch between the two checked trees.
 type checkDifference struct {
 	Path   string `json:"path"`
-	Reason string `json:"reason"` // missing_in_b, extra_in_b, size, mtime, hash
+	Reason string `json:"reason"` // missing_in_b, extra_in_b, size, mtime, hash, type
 	A      string `json:"a,omitempty"`
 	B      string `json:"b,omitempty"`
 }
@@ -108,23 +107,32 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	defer cleanup()
 
 	asHash, _ := cmd.Flags().GetBool("hash")
-	var differences []checkDifference
-	filesChecked := 0
-	if targetA.kind == targetVFS && targetB.kind == targetVFS {
-		differences, filesChecked, err = checkTwoVFSTrees(ctx, fs, targetA, targetB, asHash)
-	} else {
-		differences, filesChecked, err = checkVFSAgainstLocal(ctx, fs, targetA, targetB, asHash)
-	}
+	snapA, err := snapshotTarget(ctx, fs, targetA)
 	if err != nil {
 		return err
 	}
+	snapB, err := snapshotTarget(ctx, fs, targetB)
+	if err != nil {
+		return err
+	}
+	opts := treeCompareOptions{AsHash: asHash}
+	if asHash {
+		opts.Hash = func(ctx context.Context, rel string) (bool, string, error) {
+			return compareVFSHashPair(ctx, fs, targetA, targetB, rel)
+		}
+	}
+	differences, err := compareTrees(ctx, snapA, snapB, opts)
+	if err != nil {
+		return err
+	}
+	filesChecked := snapA.fileCount()
 
 	asJSON, _ := cmd.Flags().GetBool("json")
 	if asJSON {
 		if err := writePrettyJSON(cmd.OutOrStdout(), struct {
-			OK           bool              `json:"ok"`
-			FilesChecked int               `json:"files_checked"`
-			Differences  []checkDifference `json:"differences"`
+			OK           bool             `json:"ok"`
+			FilesChecked int              `json:"files_checked"`
+			Differences  []treeDifference `json:"differences"`
 		}{
 			OK:           len(differences) == 0,
 			FilesChecked: filesChecked,
@@ -147,112 +155,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return &ExitError{Code: ExitMismatch, Err: fmt.Errorf("check found %d difference(s)", len(differences))}
-}
-
-// checkTwoVFSTrees compares two virtual trees. Missing/extra are relative to
-// the argument order (a is the first argument).
-func checkTwoVFSTrees(ctx context.Context, fs vfs.FileSystem, a, b checkTarget, asHash bool) ([]checkDifference, int, error) {
-	treeA, err := walkVFSTree(ctx, fs, a.vfsPath)
-	if err != nil {
-		return nil, 0, fmt.Errorf("walk %s: %w", a.raw, err)
-	}
-	treeB, err := walkVFSTree(ctx, fs, b.vfsPath)
-	if err != nil {
-		return nil, 0, fmt.Errorf("walk %s: %w", b.raw, err)
-	}
-	var diffs []checkDifference
-	for rel, entryA := range treeA {
-		entryB, ok := treeB[rel]
-		if !ok {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "missing_in_b"})
-			continue
-		}
-		if entryA.Size != entryB.Size {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "size", A: fmt.Sprintf("%d", entryA.Size), B: fmt.Sprintf("%d", entryB.Size)})
-			continue
-		}
-		if entryA.ModTime.Unix() != entryB.ModTime.Unix() {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "mtime", A: entryA.ModTime.String(), B: entryB.ModTime.String()})
-			continue
-		}
-		if asHash {
-			matched, detail, err := compareVFSHashPair(ctx, fs, a, b, rel)
-			if err != nil {
-				return diffs, len(treeA), err
-			}
-			if !matched {
-				diffs = append(diffs, checkDifference{Path: rel, Reason: "hash", A: detail})
-			}
-		}
-	}
-	for rel := range treeB {
-		if _, ok := treeA[rel]; !ok {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "extra_in_b"})
-		}
-	}
-	return diffs, len(treeA), nil
-}
-
-// checkVFSAgainstLocal compares a virtual tree against a local directory.
-// a and b keep the argument order; exactly one of them is a virtual target.
-func checkVFSAgainstLocal(ctx context.Context, fs vfs.FileSystem, a, b checkTarget, asHash bool) ([]checkDifference, int, error) {
-	virtual, local := a, b
-	if a.kind == targetLocal {
-		virtual, local = b, a
-	}
-	treeV, err := walkVFSTree(ctx, fs, virtual.vfsPath)
-	if err != nil {
-		return nil, 0, fmt.Errorf("walk %s: %w", virtual.raw, err)
-	}
-	treeL, err := walkLocalTree(local.localPath)
-	if err != nil {
-		return nil, 0, fmt.Errorf("walk %s: %w", local.raw, err)
-	}
-	// virtualIsA tells whether the virtual tree is the first argument, which
-	// decides the missing/extra direction.
-	virtualIsA := virtual.raw == a.raw
-
-	var diffs []checkDifference
-
-	for rel, entryV := range treeV {
-		infoL, ok := treeL[rel]
-		if !ok {
-			if virtualIsA {
-				diffs = append(diffs, checkDifference{Path: rel, Reason: "missing_in_b"})
-			} else {
-				diffs = append(diffs, checkDifference{Path: rel, Reason: "extra_in_b"})
-			}
-			continue
-		}
-		if entryV.Size != infoL.size {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "size", A: fmt.Sprintf("%d", entryV.Size), B: fmt.Sprintf("%d", infoL.size)})
-			continue
-		}
-		if entryV.ModTime.Unix() != infoL.modTime {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "mtime", A: entryV.ModTime.String(), B: time.Unix(infoL.modTime, 0).String()})
-			continue
-		}
-		if asHash {
-			matched, detail, err := compareVFSHashPair(ctx, fs, a, b, rel)
-			if err != nil {
-				return diffs, len(treeV), err
-			}
-			if !matched {
-				diffs = append(diffs, checkDifference{Path: rel, Reason: "hash", A: detail})
-			}
-		}
-	}
-	for rel := range treeL {
-		if _, ok := treeV[rel]; ok {
-			continue
-		}
-		if virtualIsA {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "extra_in_b"})
-		} else {
-			diffs = append(diffs, checkDifference{Path: rel, Reason: "missing_in_b"})
-		}
-	}
-	return diffs, len(treeV), nil
 }
 
 // compareVFSHashPair hashes one file on both sides (argument order a, b) and
@@ -345,70 +247,7 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 
 func joinVFS(base, rel string) string {
 	return pathpkg.Join(base, rel)
-}
-
-// walkVFSTree lists every file under root, keyed by slash-separated relative
-// path.
-func walkVFSTree(ctx context.Context, fs vfs.FileSystem, root string) (map[string]drive.Entry, error) {
-	result := map[string]drive.Entry{}
-	var walk func(dir, prefix string) error
-	walk = func(dir, prefix string) error {
-		entries, err := fs.List(ctx, dir)
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			rel := pathpkg.Join(prefix, entry.Name)
-			if entry.IsDir {
-				if err := walk(pathpkg.Join(dir, entry.Name), rel); err != nil {
-					return err
-				}
-				continue
-			}
-			result[rel] = entry
-		}
-		return nil
-	}
-	if err := walk(root, ""); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-type localTreeFile struct {
-	size    int64
-	modTime int64
-}
-
-// walkLocalTree lists every file under root, keyed by slash-separated
-// relative path.
-func walkLocalTree(root string) (map[string]localTreeFile, error) {
-	result := map[string]localTreeFile{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		result[filepath.ToSlash(rel)] = localTreeFile{size: info.Size(), modTime: info.ModTime().Unix()}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// localFileHash computes a local file's content hash with the given algorithm.
+} // localFileHash computes a local file's content hash with the given algorithm.
 func localFileHash(path string, algorithm drive.HashAlgorithm) (string, error) {
 	if algorithm != drive.HashSHA1 {
 		return "", fmt.Errorf("unsupported local hash algorithm %q", algorithm)

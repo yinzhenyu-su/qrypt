@@ -27,6 +27,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "localfs",
 			drv:  localfs.New(t.TempDir()),
 			want: []drive.Capability{
+				drive.CapabilityMtime,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilitySourceUploader,
