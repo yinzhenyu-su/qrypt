@@ -37,14 +37,26 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Test
         run: go test -count=1 ./...
 
       - name: Localfs Smoke
         run: scripts/smoke-localfs.sh
 
+      # Race covers the concurrency-heavy packages: the VFS/upload engine,
+      # the task manager, the mobile/core session layer and the CLI sync
+      # machinery, plus every driver and the mount adapter.
       - name: Race Test
-        run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./internal/control ./internal/logging ./cmd/qrypt
+        run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./internal/control ./internal/logging ./internal/cli ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
 
   update-changelog:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
