@@ -957,6 +957,16 @@ func (d *Driver) waitUploadedFile(ctx context.Context, parentID, name string, so
 	return drive.Entry{}, fmt.Errorf("115: uploaded file %q not visible after upload; files=%v", name, names)
 }
 
+// RemoteHash reports the content SHA1 the 115 API returned when the entry
+// was listed (115 computes sha1 of the stored bytes).
+func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
+	sha1 := entrySHA1(entry)
+	if sha1 == "" {
+		return "", "", drive.ErrUnsupported
+	}
+	return drive.HashSHA1, sha1, nil
+}
+
 func entrySHA1(entry drive.Entry) string {
 	switch f := drive.EntryRawExtra(entry).(type) {
 	case driver115.File:

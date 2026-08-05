@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	pathpkg "path"
@@ -16,14 +18,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
-
-// checkDifference records one mismatch between the two checked trees.
-type checkDifference struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason"` // missing_in_b, extra_in_b, size, mtime, hash, type
-	A      string `json:"a,omitempty"`
-	B      string `json:"b,omitempty"`
-}
 
 func newFsCheckCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -118,7 +112,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	opts := treeCompareOptions{AsHash: asHash}
 	if asHash {
 		opts.Hash = func(ctx context.Context, rel string) (bool, string, error) {
-			return compareVFSHashPair(ctx, fs, targetA, targetB, rel)
+			return compareVFSHashPair(ctx, fs, targetA, targetB, rel, false)
 		}
 	}
 	differences, err := compareTrees(ctx, snapA, snapB, opts)
@@ -160,28 +154,39 @@ func runCheck(cmd *cobra.Command, args []string) error {
 // compareVFSHashPair hashes one file on both sides (argument order a, b) and
 // reports whether they match. The encrypted-mount case re-encrypts the local
 // plaintext with the remote nonce so no file body is downloaded.
-func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget, rel string) (bool, string, error) {
+//
+// autoHash degrades to "match" when the backends cannot provide hashes
+// (unsupported backend, missing hash, algorithm mismatch) instead of
+// erroring; fs check passes false (explicit --hash must fail loudly), fs
+// sync passes true for its default comparison.
+func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget, rel string, autoHash bool) (bool, string, error) {
+	degrade := func(err error) (bool, string, error) {
+		if autoHash {
+			return true, "", nil // cannot verify content; assume match (size compared)
+		}
+		return false, "", err
+	}
 	// Case 1: both sides virtual.
 	if a.kind == targetVFS && b.kind == targetVFS {
 		if a.encrypted || b.encrypted {
-			return false, "", fmt.Errorf("hash comparison between encrypted mounts is not supported")
+			return degrade(fmt.Errorf("hash comparison between encrypted mounts is not supported"))
 		}
 		hasher, ok := fs.(interface {
 			RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error)
 		})
 		if !ok {
-			return false, "", drive.ErrUnsupported
+			return degrade(drive.ErrUnsupported)
 		}
 		algA, hashA, err := hasher.RemoteHash(ctx, joinVFS(a.vfsPath, rel))
 		if err != nil {
-			return false, "", err
+			return degrade(err)
 		}
 		algB, hashB, err := hasher.RemoteHash(ctx, joinVFS(b.vfsPath, rel))
 		if err != nil {
-			return false, "", err
+			return degrade(err)
 		}
 		if algA != algB {
-			return false, "", fmt.Errorf("hash algorithms differ between sides: %s vs %s", algA, algB)
+			return degrade(fmt.Errorf("hash algorithms differ between sides: %s vs %s", algA, algB))
 		}
 		return hashA == hashB, hashA, nil
 	}
@@ -208,11 +213,11 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 		RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error)
 	})
 	if !ok {
-		return false, "", drive.ErrUnsupported
+		return degrade(drive.ErrUnsupported)
 	}
 	algorithm, remote, err := hasher.RemoteHash(ctx, joinVFS(virtual.vfsPath, rel))
 	if err != nil {
-		return false, "", err
+		return degrade(err)
 	}
 
 	if virtual.encrypted {
@@ -227,11 +232,11 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 			EncryptedHash(ctx context.Context, path string, plain io.Reader, plainSize int64, algorithm drive.HashAlgorithm) (string, error)
 		})
 		if !ok {
-			return false, "", drive.ErrUnsupported
+			return degrade(drive.ErrUnsupported)
 		}
 		recomputed, err := encrypter.EncryptedHash(ctx, joinVFS(virtual.vfsPath, rel), plain, size, algorithm)
 		if err != nil {
-			return false, "", err
+			return degrade(err)
 		}
 		return recomputed == remote, remote, nil
 	}
@@ -240,7 +245,7 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 	// the same algorithm on the local file.
 	localHash, err := localFileHash(filepath.Join(local.localPath, filepath.FromSlash(rel)), algorithm)
 	if err != nil {
-		return false, "", err
+		return degrade(err)
 	}
 	return localHash == remote, remote, nil
 }
@@ -249,7 +254,13 @@ func joinVFS(base, rel string) string {
 	return pathpkg.Join(base, rel)
 } // localFileHash computes a local file's content hash with the given algorithm.
 func localFileHash(path string, algorithm drive.HashAlgorithm) (string, error) {
-	if algorithm != drive.HashSHA1 {
+	var h hash.Hash
+	switch algorithm {
+	case drive.HashSHA1:
+		h = sha1.New()
+	case drive.HashMD5:
+		h = md5.New()
+	default:
 		return "", fmt.Errorf("unsupported local hash algorithm %q", algorithm)
 	}
 	f, err := os.Open(path)
@@ -257,7 +268,6 @@ func localFileHash(path string, algorithm drive.HashAlgorithm) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	h := sha1.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}

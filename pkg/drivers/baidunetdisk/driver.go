@@ -495,6 +495,12 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	return drive.Space{Total: resp.Total, Free: resp.Total - resp.Used}, nil
 }
 
+// RemoteHash reports the content MD5 the API returned when the entry was
+// listed (baidu computes md5 of the stored bytes; large files may lack it).
+func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
+	return drive.RemoteHashFromExtra(entry, "md5", drive.HashMD5)
+}
+
 func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 	if p == "" || p == "/" {
 		return d.rootPath, nil

@@ -18,6 +18,7 @@ type file struct {
 	ServerMtime    int64  `json:"server_mtime"`
 	Ctime          int64  `json:"ctime"`
 	Mtime          int64  `json:"mtime"`
+	MD5            string `json:"md5"`
 }
 
 func (f file) entry(parentPath string) drive.Entry {
@@ -41,6 +42,12 @@ func (f file) entry(parentPath string) drive.Entry {
 	if createUnix > 0 {
 		createdAt = time.Unix(createUnix, 0)
 	}
+	extra := map[string]any{
+		"fs_id": strconv.FormatInt(f.FsID, 10),
+	}
+	if f.MD5 != "" {
+		extra["md5"] = f.MD5
+	}
 	return drive.Entry{
 		ID:        f.Path,
 		ParentID:  normalizeDir(parentPath),
@@ -50,9 +57,7 @@ func (f file) entry(parentPath string) drive.Entry {
 		ModTime:   modTime,
 		CreatedAt: createdAt,
 		UpdatedAt: modTime,
-		Extra: map[string]any{
-			"fs_id": strconv.FormatInt(f.FsID, 10),
-		},
+		Extra:     extra,
 	}
 }
 

@@ -109,6 +109,11 @@ func snapshotLocal(root string) (treeSnapshot, error) {
 // whose size and mtime match, when the caller wants content verification.
 type treeCompareOptions struct {
 	AsHash bool
+	// AutoHash, when set with AsHash, degrades to size/mtime comparison when
+	// the backends cannot provide content hashes instead of erroring. This is
+	// the default for sync: backends with free hashes get content
+	// verification, others silently fall back.
+	AutoHash bool
 	// Hash reports whether the file at the relative path has the same
 	// content on both sides. detail describes the remote hash on mismatch.
 	Hash func(ctx context.Context, rel string) (matched bool, detail string, err error)

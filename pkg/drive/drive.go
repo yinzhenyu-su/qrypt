@@ -69,6 +69,24 @@ func EntryRawExtra(entry Entry) any {
 	return RawEntryExtra(entry.Extra)
 }
 
+// RemoteHashFromExtra reads a hex-encoded content hash stored under key in
+// the entry's Extra map. Backends that carry provider hashes in list
+// metadata (e.g. baidunetdisk md5, onedrive sha1Hash) share this pattern;
+// ErrUnsupported is returned when the entry lacks the hash so callers can
+// degrade cleanly.
+func RemoteHashFromExtra(entry Entry, key string, algorithm HashAlgorithm) (HashAlgorithm, string, error) {
+	raw := RawEntryExtra(entry.Extra)
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return "", "", ErrUnsupported
+	}
+	hash, ok := m[key].(string)
+	if !ok || hash == "" {
+		return "", "", ErrUnsupported
+	}
+	return algorithm, hash, nil
+}
+
 func RawEntryExtra(raw any) any {
 	extra, ok := raw.(EntryRawExtraer)
 	if !ok {
