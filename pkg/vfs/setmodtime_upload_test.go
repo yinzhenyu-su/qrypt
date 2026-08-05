@@ -84,20 +84,20 @@ done:
 		t.Fatalf("committed mtime = %v, want %v", entry.ModTime, fixed)
 	}
 
-	// The upload engine deletes the staging file asynchronously after the
-	// backend file becomes visible (Chtimes lands before the staging
-	// removal). Wait for the staging subdirectory to empty out so the test
-	// TempDir cleanup does not race the removal.
+	// The upload engine finishes asynchronously inside the worker:
+	// CommitUploadedEntry -> RemoveIfUnchanged (pending record) ->
+	// RemoveStaging (staging file) -> observer.Finish (deferred) -> return.
+	// A bare staging-directory poll is not enough: the worker is still
+	// running its finish path after the staging file is gone, racing this
+	// test's TempDir cleanup. waitNoPending covers the full drain (no
+	// pending record AND no active worker).
+	waitNoPending(t, v)
+
+	// Double-check the staging file is really gone (RemoveStaging runs
+	// inside the worker just before it returns).
 	stagingDir := filepath.Join(storage, "staging")
-	cleanupDeadline := time.Now().Add(5 * time.Second)
-	for {
+	waitForCondition(t, func() bool {
 		entries, err := os.ReadDir(stagingDir)
-		if err == nil && len(entries) == 0 {
-			break
-		}
-		if time.Now().After(cleanupDeadline) {
-			t.Fatalf("staging never cleared in %s: %v", stagingDir, entries)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return err == nil && len(entries) == 0
+	})
 }
