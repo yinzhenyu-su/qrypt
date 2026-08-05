@@ -61,6 +61,11 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+      # VFS tests exercise the async upload engine (worker shutdown, staging
+      # cleanup, journaling); a triple run catches the occasional timing
+      # flake before it reaches main.
+      - name: VFS Stability
+        run: go test -count=3 ./pkg/vfs/
       - name: Localfs Smoke
         run: scripts/smoke-localfs.sh
 
