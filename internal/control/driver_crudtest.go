@@ -82,10 +82,6 @@ func stepOp(op, name string) CRUDTestStep {
 	return CRUDTestStep{Operation: op, Name: name, Duration: "0s"}
 }
 
-func (s *CRUDTestStep) done(err error) {
-	s.finish(time.Now(), err)
-}
-
 func (s *CRUDTestStep) finish(start time.Time, err error) {
 	duration := time.Since(start)
 	s.Duration = duration.String()

@@ -27,10 +27,6 @@ func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mou
 	return buildFileSystemFromConfigMountMode(ctx, cfg, mountName, false)
 }
 
-func buildFileSystemFromConfigMountNamespace(ctx context.Context, cfg *config.Config, mountName string) (vfs.FileSystem, func(), error) {
-	return buildFileSystemFromConfigMountMode(ctx, cfg, mountName, true)
-}
-
 func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool) (vfs.FileSystem, func(), error) {
 	return buildFileSystemWithBandwidth(ctx, cfg, mountName, forceNamespace, nil)
 }

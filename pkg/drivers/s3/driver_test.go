@@ -493,7 +493,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var resp deleteResponse
 		for _, obj := range req.Objects {
 			m.del(obj.Key)
-			resp.Deleted = append(resp.Deleted, deletedObj{Key: obj.Key})
+			resp.Deleted = append(resp.Deleted, deletedObj(obj))
 		}
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(http.StatusOK)

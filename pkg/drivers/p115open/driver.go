@@ -33,8 +33,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-const defaultAppVer = "35.6.0.3"
-
 // downloadUserAgent is the User-Agent used to request download URLs and fetch
 // the resulting CDN links. 115 returns f=1 links (user-agent only) for
 // non-browser UAs; browser-like UAs yield f=3 links that additionally require
@@ -1030,10 +1028,6 @@ func (d *Driver) setLastError(value string) {
 	d.debugMu.Lock()
 	defer d.debugMu.Unlock()
 	d.lastError = value
-}
-
-func (d *Driver) userAgent() string {
-	return fmt.Sprintf("Mozilla/5.0 115Browser/%s", defaultAppVer)
 }
 
 // loadTokenState restores previously rotated tokens from the state store.

@@ -20,7 +20,7 @@ func benchReadHistoryVFS(prefill int) *VFS {
 	if prefill > 0 {
 		v.readHistory.events = make([]drive.MetricEvent, prefill)
 		v.readHistory.count = prefill
-		v.readHistory.pos = prefill % prefill
+		v.readHistory.pos = 0 // ring is full; next write wraps to slot 0
 	}
 	return v
 }

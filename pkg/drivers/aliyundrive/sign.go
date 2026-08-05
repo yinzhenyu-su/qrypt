@@ -70,6 +70,7 @@ func privateKeyFromHex(value string) (*ecdsa.PrivateKey, error) {
 		return nil, fmt.Errorf("aliyundrive: decode device private key: %w", err)
 	}
 	curve := ecc.P256k1()
+	//lint:ignore SA1019 secp256k1 is not a NIST curve, so crypto/ecdh does not support it; ScalarBaseMult is the only way to derive the public key
 	x, y := curve.ScalarBaseMult(raw)
 	if x == nil || y == nil {
 		return nil, fmt.Errorf("aliyundrive: invalid device private key")
@@ -91,6 +92,7 @@ func signatureFor(privateKey *ecdsa.PrivateKey, deviceID, userID string) (string
 }
 
 func publicKeyHex(publicKey *ecdsa.PublicKey) string {
+	//lint:ignore SA1019 the aliyun device protocol serializes the raw 64-byte coordinates (X||Y); PublicKey.Bytes is unavailable on ecdsa keys and reading the coordinates is read-only
 	return hex.EncodeToString(append(pad32(publicKey.X), pad32(publicKey.Y)...))
 }
 

@@ -52,7 +52,7 @@ func newDriverSchemaCmd() *cobra.Command {
 			name := args[0]
 			schema := drive.ParamSchema(name)
 			if !drive.Registered(name) {
-				return fmt.Errorf("unknown driver %q\n\nRun 'qrypt driver list' to see available drivers.", name)
+				return fmt.Errorf("unknown driver %q (run 'qrypt driver list' to see available drivers)", name)
 			}
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {
