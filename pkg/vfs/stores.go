@@ -110,15 +110,15 @@ type readCacheStore struct {
 	dir     string
 	maxSize int64
 
-	shards          [readCacheShards]readCacheShard
-	readBytes       atomic.Int64
-	lastDiskCheck   atomic.Int64 // unix nano
-	stats           cacheStats
-	errMu           sync.Mutex
-	lastGetError    string
-	lastGetAt       time.Time
-	lastPutError    string
-	lastPutAt       time.Time
+	shards        [readCacheShards]readCacheShard
+	readBytes     atomic.Int64
+	lastDiskCheck atomic.Int64 // unix nano
+	stats         cacheStats
+	errMu         sync.Mutex
+	lastGetError  string
+	lastGetAt     time.Time
+	lastPutError  string
+	lastPutAt     time.Time
 
 	cacheWriteQueue     chan readCacheWrite
 	cacheWriteBytes     atomic.Int64
@@ -150,6 +150,7 @@ func (c *readCacheStore) shardFor(fid string) *readCacheShard {
 	_, _ = h.Write([]byte(fid))
 	return &c.shards[h.Sum32()%readCacheShards]
 }
+
 type cacheStats struct {
 	hits             atomic.Int64
 	misses           atomic.Int64
