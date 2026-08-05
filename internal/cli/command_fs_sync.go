@@ -88,6 +88,7 @@ failed, 2 on usage errors, 1 on overall failures.`,
 	cmd.Flags().Bool("hash", false, "also compare content hashes (needs backend hash support)")
 	cmd.Flags().String("conflict", "error", "type-conflict policy: error, skip, or source")
 	cmd.Flags().Bool("json", false, "write JSON output")
+	cmd.Flags().Bool("resume", false, "continue the interrupted sync session for SOURCE and DESTINATION")
 	return cmd
 }
 
@@ -113,6 +114,11 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	// A destination nested under its own source would recurse forever.
 	if err := checkSyncContainment(source, destination); err != nil {
 		return commandUsageError(cmd, "%v", err)
+	}
+
+	resume, _ := cmd.Flags().GetBool("resume")
+	if resume {
+		return runFsSyncResume(cmd, source, destination)
 	}
 
 	ctx, fs, cleanup, err := openFileSystem(cmd)
@@ -161,15 +167,32 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	result.DryRun = dryRun
 	if !dryRun {
+		// A fresh run supersedes any interrupted session for this pair.
+		pruneExpiredSyncSessions()
+		persist, err := newSyncSession(source, destination, syncSessionFlags{
+			Delete: deleteExtra, Hash: forceHash, Conflict: conflictPolicy,
+		}, plan)
+		if err != nil {
+			return err
+		}
 		if err := ensureSyncRoot(ctx, fs, destination); err != nil {
+			persist.remove()
 			return fmt.Errorf("create sync destination: %w", err)
 		}
-		failed := executeSyncPlan(ctx, fs, plan, source, destination)
+		failed := executeSyncPlan(ctx, fs, plan, source, destination, persist)
 		result.Summary.Failed = failed
 		// Wait for async VFS uploads to land so the destination is actually
 		// synced when the command returns.
 		if err := waitFileSystemIdle(ctx, fs, commandWaitTimeout(cmd)); err != nil {
+			persist.close()
 			return err
+		}
+		// A clean run removes the session; partial failures stay on disk so
+		// a later --resume retries the remaining and failed items.
+		if !persist.transferPending() {
+			persist.remove()
+		} else {
+			persist.close()
 		}
 	}
 	result.OK = result.Summary.Failed == 0
@@ -186,6 +209,67 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 		return &ExitError{Code: ExitPartial, Err: fmt.Errorf("sync finished with %d failed item(s)", result.Summary.Failed)}
 	}
 	if result.Summary.Conflict > 0 && conflictPolicy == "error" {
+		return &ExitError{Code: ExitPartial, Err: fmt.Errorf("sync finished with %d type conflict(s); use --conflict=skip or --conflict=source", result.Summary.Conflict)}
+	}
+	return nil
+}
+
+// runFsSyncResume continues an interrupted sync session: it loads the saved
+// plan, skips ops that already finished OK (failed ops are retried) and
+// executes the remainder without re-scanning either tree.
+func runFsSyncResume(cmd *cobra.Command, source, destination checkTarget) error {
+	ctx, fs, cleanup, err := openFileSystem(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	persist, found, err := loadSyncSession(source, destination)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return commandUsageError(cmd, "no resumable sync session for %q -> %q", source.raw, destination.raw)
+	}
+	defer persist.close()
+
+	// The session plan carries the original semantics; the caller does not
+	// need to repeat --delete/--hash/--conflict.
+	pending := persist.pendingOps()
+	result := syncResult{
+		Source:      source.raw,
+		Destination: destination.raw,
+		Entries:     pending,
+	}
+	for _, entry := range pending {
+		result.Summary.add(entry)
+	}
+
+	if err := ensureSyncRoot(ctx, fs, destination); err != nil {
+		return fmt.Errorf("create sync destination: %w", err)
+	}
+	failed := executeSyncPlan(ctx, fs, pending, source, destination, persist)
+	result.Summary.Failed = failed
+	if err := waitFileSystemIdle(ctx, fs, commandWaitTimeout(cmd)); err != nil {
+		return err
+	}
+	result.OK = result.Summary.Failed == 0
+	if !persist.transferPending() {
+		persist.remove()
+	}
+
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if asJSON {
+		if err := writePrettyJSON(cmd.OutOrStdout(), result); err != nil {
+			return err
+		}
+	} else {
+		printSyncSummary(cmd.OutOrStdout(), result)
+	}
+	if result.Summary.Failed > 0 {
+		return &ExitError{Code: ExitPartial, Err: fmt.Errorf("sync finished with %d failed item(s)", result.Summary.Failed)}
+	}
+	if result.Summary.Conflict > 0 && persist.plan.Flags.Conflict == "error" {
 		return &ExitError{Code: ExitPartial, Err: fmt.Errorf("sync finished with %d type conflict(s); use --conflict=skip or --conflict=source", result.Summary.Conflict)}
 	}
 	return nil
@@ -284,8 +368,10 @@ func diffBytes(a, b int64) int64 {
 
 // executeSyncPlan runs the plan in dependency order: directories before the
 // files inside them, and deletes before adds/updates when --conflict=source
-// replaced a type conflict. Returns the number of failed items.
-func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntry, source, destination checkTarget) int {
+// replaced a type conflict. When persist is non-nil, ops already finished
+// OK in the session journal are skipped and every completed op is recorded.
+// Returns the number of failed items.
+func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntry, source, destination checkTarget, persist *syncPersist) int {
 	failed := 0
 	// Pass 1: deletions (children before parents; plan is path-sorted, so
 	// reverse order removes deeper paths first).
@@ -294,7 +380,14 @@ func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntr
 		if entry.Action != syncDelete {
 			continue
 		}
-		if err := syncDeletePath(ctx, fs, entry.Path, destination, entry.IsDir); err != nil {
+		if persist != nil && persist.isDone(entry.Path, entry.Action) {
+			continue
+		}
+		err := syncDeletePath(ctx, fs, entry.Path, destination, entry.IsDir)
+		if persist != nil {
+			persist.markDone(entry.Path, entry.Action, err)
+		}
+		if err != nil {
 			reportSyncFailure("delete", entry.Path, err)
 			failed++
 		}
@@ -307,7 +400,14 @@ func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntr
 		if !entry.IsDir {
 			continue
 		}
-		if err := syncMkdir(ctx, fs, entry.Path, destination); err != nil {
+		if persist != nil && persist.isDone(entry.Path, entry.Action) {
+			continue
+		}
+		err := syncMkdir(ctx, fs, entry.Path, destination)
+		if persist != nil {
+			persist.markDone(entry.Path, entry.Action, err)
+		}
+		if err != nil {
 			reportSyncFailure("mkdir", entry.Path, err)
 			failed++
 		}
@@ -319,7 +419,14 @@ func executeSyncPlan(ctx context.Context, fs vfs.FileSystem, plan []syncPlanEntr
 		if entry.IsDir {
 			continue
 		}
-		if err := syncCopyFile(ctx, fs, entry.Path, source, destination, entry.SourceModTime); err != nil {
+		if persist != nil && persist.isDone(entry.Path, entry.Action) {
+			continue
+		}
+		err := syncCopyFile(ctx, fs, entry.Path, source, destination, entry.SourceModTime)
+		if persist != nil {
+			persist.markDone(entry.Path, entry.Action, err)
+		}
+		if err != nil {
 			reportSyncFailure(string(entry.Action), entry.Path, err)
 			failed++
 		}
