@@ -19,7 +19,6 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const (
@@ -867,7 +866,7 @@ func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("%w: aliyundrive: path not found: %s", vfs.ErrNotFound, filepath.Join("/", path))
+			return "", fmt.Errorf("%w: aliyundrive: path not found: %s", drive.ErrNotFound, filepath.Join("/", path))
 		}
 	}
 	return current, nil

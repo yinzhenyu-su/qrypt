@@ -15,7 +15,7 @@ import (
 )
 
 var ErrReadOnly = errors.New("vfs: read-only namespace path")
-var ErrNotFound = errors.New("vfs: not found")
+var ErrNotFound = drive.ErrNotFound
 var ErrCrossMount = errors.New("vfs: cross-mount rename")
 
 // FileSystem is the common API implemented by a single-drive VFS and a

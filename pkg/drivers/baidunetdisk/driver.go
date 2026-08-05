@@ -21,7 +21,6 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const (
@@ -554,7 +553,7 @@ func (d *Driver) statRoot(ctx context.Context) (drive.Entry, error) {
 			return entry, nil
 		}
 	}
-	return drive.Entry{}, fmt.Errorf("%w: path not found", vfs.ErrNotFound)
+	return drive.Entry{}, fmt.Errorf("%w: path not found", drive.ErrNotFound)
 }
 
 func (d *Driver) resolvePath(id string) string {
