@@ -1,0 +1,219 @@
+package control
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+)
+
+// TestStep is the unified step record every test spec emits. Consumers
+// (CLI output, alerting, result storage) can rely on one schema regardless
+// of which spec produced the run.
+type TestStep struct {
+	Operation     string `json:"operation"`
+	Name          string `json:"name,omitempty"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Duration      string `json:"duration"`
+	DurationMS    int64  `json:"duration_ms"`
+}
+
+// TestRun is the unified envelope every debug test returns. It carries the
+// scheduling context (spec, mount, capability matrix, skip reason) plus the
+// step trace, residual objects, and driver metrics.
+type TestRun struct {
+	Spec             string                 `json:"spec"`
+	Mount            string                 `json:"mount"`
+	Driver           string                 `json:"driver,omitempty"`
+	Pass             bool                   `json:"pass"`
+	Skipped          bool                   `json:"skipped,omitempty"`
+	SkipReason       string                 `json:"skip_reason,omitempty"`
+	Error            string                 `json:"error,omitempty"`
+	ErrorCategory    string                 `json:"error_category,omitempty"`
+	Capabilities     []drive.Capability     `json:"capabilities,omitempty"`
+	Requires         []drive.Capability     `json:"requires,omitempty"`
+	Steps            []TestStep             `json:"steps"`
+	Residual         []CRUDTestArtifact     `json:"residual,omitempty"`
+	ResidualTimeline []CRUDVisibilitySample `json:"residual_timeline,omitempty"`
+	Metrics          []drive.MetricEvent    `json:"metrics,omitempty"`
+	RetryCommand     string                 `json:"retry_command,omitempty"`
+	Started          time.Time              `json:"started_at"`
+	Finished         time.Time              `json:"finished_at"`
+	Duration         string                 `json:"duration"`
+	DurationMS       int64                  `json:"duration_ms"`
+}
+
+// TestSpec describes one debug test: its identity, the driver capabilities
+// it requires (the scheduler filters mounts by these before running), and a
+// runner that produces a unified TestRun.
+type TestSpec struct {
+	Name     string
+	Requires []drive.Capability
+	Run      func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun
+}
+
+// driverTestSpecs registers the drive-layer test specs. Adding a new test is
+// one entry here; the scheduler handles traversal, capability filtering,
+// test_enabled checks, and result aggregation.
+var driverTestSpecs = map[string]TestSpec{
+	"crud": {
+		Name:     "crud",
+		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
+		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
+			return fromCRUDTestResult("crud", *RunDriverCRUDTest(ctx, mount, d))
+		},
+	},
+	"multipart": {
+		Name:     "multipart",
+		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
+		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
+			return fromCRUDTestResult("multipart", *RunDriverMultipartTest(ctx, mount, d, parseXferSize(req.Size)))
+		},
+	},
+	"instantupload": {
+		Name:     "instantupload",
+		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
+		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
+			return fromCRUDTestResult("instantupload", *RunDriverInstantUploadTest(ctx, mount, d))
+		},
+	},
+	"auth": {
+		Name: "auth",
+		Run: func(ctx context.Context, mount string, d drive.Driver, req DriverTestRequest) TestRun {
+			return fromAuthTestResult(*RunDriverAuthTest(ctx, mount, d))
+		},
+	},
+}
+
+// missingCapabilities returns the driver capabilities required by a spec
+// that the driver does not provide.
+func missingCapabilities(d drive.Driver, requires []drive.Capability) []drive.Capability {
+	var missing []drive.Capability
+	for _, capability := range requires {
+		if !drive.HasCapability(d, capability) {
+			missing = append(missing, capability)
+		}
+	}
+	return missing
+}
+
+func fromCRUDTestResult(spec string, r CRUDTestResult) TestRun {
+	tr := TestRun{
+		Spec:             spec,
+		Mount:            r.Mount,
+		Driver:           r.Driver,
+		Pass:             r.Pass,
+		Residual:         r.Residual,
+		ResidualTimeline: r.ResidualTimeline,
+		Metrics:          r.Metrics,
+		RetryCommand:     r.RetryCommand,
+		Started:          r.Started,
+		Finished:         r.Finished,
+		Duration:         r.Duration,
+		DurationMS:       r.DurationMS,
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Operation, Name: s.Name, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
+
+func fromAuthTestResult(r AuthTestResult) TestRun {
+	tr := TestRun{
+		Spec:         "auth",
+		Mount:        r.Mount,
+		Driver:       r.Driver,
+		Pass:         r.Pass,
+		Capabilities: r.Capabilities,
+		RetryCommand: r.RetryCommand,
+		Started:      r.Started,
+		Finished:     r.Finished,
+		Duration:     r.Duration,
+		DurationMS:   r.DurationMS,
+	}
+	if !r.Pass {
+		tr.Error = fmt.Sprintf("auth failed: status=%s", r.AuthStatus)
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Operation, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
+
+func fromFSTestResult(spec string, r FSTestResult) TestRun {
+	tr := TestRun{
+		Spec:         spec,
+		Mount:        r.Mount,
+		Pass:         r.Pass,
+		RetryCommand: r.RetryCommand,
+		Started:      r.Started,
+		Finished:     r.Finished,
+		Duration:     r.Duration,
+		DurationMS:   r.DurationMS,
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Operation, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
+
+func fromXferTestResult(r XferTestResult) TestRun {
+	tr := TestRun{
+		Spec:       "xfer",
+		Mount:      r.SourceMount,
+		Pass:       r.Pass,
+		Started:    r.Started,
+		Finished:   r.Finished,
+		Duration:   r.Finished.Sub(r.Started).String(),
+		DurationMS: durationMillis(r.Finished.Sub(r.Started)),
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Phase, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
+
+func fromResumeTestResult(r ResumeTestResult) TestRun {
+	tr := TestRun{
+		Spec:         "resume",
+		Mount:        r.Mount,
+		Pass:         r.Pass,
+		RetryCommand: r.RetryCommand,
+		Started:      r.Started,
+		Finished:     r.Finished,
+		Duration:     r.Duration,
+		DurationMS:   r.DurationMS,
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Operation, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
