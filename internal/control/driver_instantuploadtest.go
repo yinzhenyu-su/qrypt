@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -93,28 +92,15 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		result.Driver = snap.Driver
 	}
 
-	// Generate a unique test directory name.
-	testSuffix := make([]byte, 6)
-	if _, err := rand.Read(testSuffix); err != nil {
-		result.Steps = append(result.Steps, CRUDTestStep{
-			Operation:     "instant_upload",
-			OK:            false,
-			Error:         fmt.Sprintf("rand read: %v", err),
-			ErrorCategory: drive.ErrorCategory(err),
-			Duration:      "0s",
-		})
-		result.Pass = false
-		result.Finished = time.Now()
-		return result
-	}
-	testName := fmt.Sprintf("__qrypt_instant_upload_test_%x", testSuffix)
-
-	rootID := driverProbeRootID(ctx, d)
-
-	// 1. Mkdir test directory.
-	s := stepOp("mkdir", testName)
+	// 1. Create the unique test directory fixture.
+	fx, err := NewFixture(ctx, d, "instant_upload")
+	s := stepOp("mkdir", "test-dir")
 	start := time.Now()
-	testDir, err := d.Mkdir(ctx, rootID, testName)
+	name := ""
+	if fx != nil {
+		name = fx.Name()
+	}
+	s.Name = name
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
@@ -122,17 +108,16 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		result.Finished = time.Now()
 		return result
 	}
-
 	// 2. First upload — creates the file on the backend.
 	const testContent = "qrypt-instant-upload-test-content-2024"
 	s = stepOp("put", "original.bin")
 	start = time.Now()
 	firstSource := drive.NewBytesReadOnlyFileSource([]byte(testContent))
-	_, err = d.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "original.bin", Source: firstSource})
+	_, err = d.PutSource(ctx, drive.UploadRequest{ParentID: fx.TestDir.ID, Name: "original.bin", Source: firstSource})
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanupProbeDir(ctx, d, testDir)
+		cleanupProbeDir(ctx, d, fx.TestDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -147,7 +132,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 			canVerify = true
 		}
 	} else {
-		cleanupProbeDir(ctx, d, testDir)
+		cleanupProbeDir(ctx, d, fx.TestDir)
 		result.Steps = append(result.Steps, CRUDTestStep{
 			Operation:     "verify_instant",
 			OK:            false,
@@ -164,11 +149,11 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	s = stepOp("put_dup", "duplicate.bin")
 	start = time.Now()
 	secondSource := drive.NewBytesReadOnlyFileSource([]byte(testContent))
-	_, err = d.PutSource(ctx, drive.UploadRequest{ParentID: testDir.ID, Name: "duplicate.bin", Source: secondSource})
+	_, err = d.PutSource(ctx, drive.UploadRequest{ParentID: fx.TestDir.ID, Name: "duplicate.bin", Source: secondSource})
 	s.finish(start, err)
 	result.Steps = append(result.Steps, s)
 	if err != nil {
-		cleanupProbeDir(ctx, d, testDir)
+		cleanupProbeDir(ctx, d, fx.TestDir)
 		result.Pass = false
 		result.Finished = time.Now()
 		return result
@@ -196,9 +181,9 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 	result.Steps = append(result.Steps, s)
 
 	// 6. Remove the test directory.
-	s = stepOp("rmdir", testName)
+	s = stepOp("rmdir", fx.Name())
 	start = time.Now()
-	cleanupProbeDir(ctx, d, testDir)
+	cleanupProbeDir(ctx, d, fx.TestDir)
 	s.finish(start, nil) // best-effort
 	result.Steps = append(result.Steps, s)
 

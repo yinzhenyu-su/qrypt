@@ -3,10 +3,8 @@ package control
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -85,6 +83,13 @@ func stepOp(op, name string) CRUDTestStep {
 }
 
 func (s *CRUDTestStep) done(err error) {
+	s.finish(time.Now(), err)
+}
+
+func (s *CRUDTestStep) finish(start time.Time, err error) {
+	duration := time.Since(start)
+	s.Duration = duration.String()
+	s.DurationMS = durationMillis(duration)
 	if err != nil {
 		s.OK = false
 		s.Error = err.Error()
@@ -94,31 +99,18 @@ func (s *CRUDTestStep) done(err error) {
 	}
 }
 
-func (s *CRUDTestStep) finish(start time.Time, err error) {
-	duration := time.Since(start)
-	s.Duration = duration.String()
-	s.DurationMS = durationMillis(duration)
-	s.done(err)
-}
-
 func (r *CRUDTestResult) newStep(op, name string) CRUDTestStep {
-	step := stepOp(op, name)
-	step.OpID = r.OpID
-	step.Mount = r.Mount
-	step.Driver = r.Driver
-	return step
+	return CRUDTestStep{
+		Operation: op,
+		Name:      name,
+		OpID:      r.OpID,
+		Mount:     r.Mount,
+		Driver:    r.Driver,
+		Duration:  "0s",
+	}
 }
 
 func (r *CRUDTestResult) addStep(step CRUDTestStep) {
-	if step.OpID == "" {
-		step.OpID = r.OpID
-	}
-	if step.Mount == "" {
-		step.Mount = r.Mount
-	}
-	if step.Driver == "" {
-		step.Driver = r.Driver
-	}
 	r.Steps = append(r.Steps, step)
 }
 
@@ -138,10 +130,9 @@ func artifactFromEntry(role string, entry drive.Entry, reason string) CRUDTestAr
 	}
 }
 
-// RunDriverCRUDTest executes a contract-oriented CRUD test sequence on the
-// given driver. It creates a temporary directory, checks list visibility,
-// uploads a small matrix of file names and sizes, reads content back, renames a
-// file, removes all created objects, and reports cleanup/residual state.
+// RunDriverCRUDTest exercises the basic read/write contract of a driver:
+// mkdir, upload, list visibility, byte-exact readback, rename, and cleanup
+// with zero residual remote objects.
 func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDTestResult {
 	result := &CRUDTestResult{
 		OpID:         newDebugOperationID("crud"),
@@ -205,53 +196,40 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		return result
 	}
 
-	// Generate a unique test directory name.
-	testSuffix := make([]byte, 6)
-	if _, err := rand.Read(testSuffix); err != nil {
-		result.addStep(CRUDTestStep{
-			Operation: "generate_name",
-			OpID:      result.OpID,
-			Mount:     result.Mount,
-			Driver:    result.Driver,
-			OK:        false,
-			Error:     err.Error(),
-			Duration:  "0s",
-		})
-		return result
-	}
-	testName := fmt.Sprintf("__qrypt_test_%x", testSuffix)
-
-	rootID := driverProbeRootID(ctx, d)
-
-	// 1. Mkdir test directory.
-	s := result.newStep("mkdir", testName)
-	s.Input = map[string]any{"parent_id": rootID, "name": testName}
-	s.Expected = map[string]any{"is_dir": true, "name": testName}
+	// 1. Create the unique test directory fixture.
+	s := result.newStep("mkdir", "test-dir")
 	start := time.Now()
-	testDir, err := d.Mkdir(stepContext(ctx, s), rootID, testName)
-	s.Actual = entryActual(testDir)
+	fx, err := NewFixture(ctx, d, "test")
+	name := ""
+	if fx != nil {
+		name = fx.Name()
+	}
+	s.Input = map[string]any{"parent_id": driverProbeRootID(ctx, d), "name": name}
+	s.Expected = map[string]any{"is_dir": true, "name": name}
+	s.Actual = map[string]any{"is_dir": err == nil, "name": name}
 	s.finish(start, err)
 	result.addStep(s)
 	if err != nil {
 		return result
 	}
-	result.addCreated("test_dir", testDir)
+	result.addCreated("test_dir", fx.TestDir)
+	testName := fx.Name()
 
 	s = result.newStep("verify_mkdir_list", testName)
-	s.Input = map[string]any{"parent_id": rootID, "name": testName}
+	s.Input = map[string]any{"parent_id": fx.RootID(), "name": testName}
 	s.Expected = map[string]any{"listed": true}
 	start = time.Now()
-	listedDir, err := verifyListContains(stepContext(ctx, s), d, rootID, testName)
+	listedDir, err := fx.VerifyList(stepContext(ctx, s), fx.RootID(), testName, true)
 	s.Actual = map[string]any{"listed": err == nil, "entry": entryActual(listedDir)}
 	s.finish(start, err)
 	result.addStep(s)
 
 	nestedName := "nested dir"
 	s = result.newStep("mkdir_nested", nestedName)
-	s.Input = map[string]any{"parent_id": testDir.ID, "name": nestedName}
+	s.Input = map[string]any{"parent_id": fx.TestDir.ID, "name": nestedName}
 	s.Expected = map[string]any{"is_dir": true, "name": nestedName}
 	start = time.Now()
-	nestedDir, err := d.Mkdir(stepContext(ctx, s), testDir.ID, nestedName)
+	nestedDir, err := d.Mkdir(stepContext(ctx, s), fx.TestDir.ID, nestedName)
 	s.Actual = entryActual(nestedDir)
 	s.finish(start, err)
 	result.addStep(s)
@@ -260,11 +238,11 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	}
 
 	fileCases := []crudFileCase{
-		{Name: "test.txt", Data: []byte("qrypt-crud-test-content-42"), Parent: testDir, Role: "primary_file"},
-		{Name: "empty.bin", Data: []byte{}, Parent: testDir, Role: "empty_file"},
-		{Name: "one-byte.bin", Data: []byte("x"), Parent: testDir, Role: "one_byte_file"},
-		{Name: "space name.txt", Data: []byte("space-name"), Parent: testDir, Role: "space_name_file"},
-		{Name: "unicode-中文.txt", Data: []byte("unicode-name"), Parent: testDir, Role: "unicode_file"},
+		{Name: "test.txt", Data: []byte("qrypt-crud-test-content-42"), Parent: fx.TestDir, Role: "primary_file"},
+		{Name: "empty.bin", Data: []byte{}, Parent: fx.TestDir, Role: "empty_file"},
+		{Name: "one-byte.bin", Data: []byte("x"), Parent: fx.TestDir, Role: "one_byte_file"},
+		{Name: "space name.txt", Data: []byte("space-name"), Parent: fx.TestDir, Role: "space_name_file"},
+		{Name: "unicode-中文.txt", Data: []byte("unicode-name"), Parent: fx.TestDir, Role: "unicode_file"},
 	}
 	if nestedDir.ID != "" {
 		fileCases = append(fileCases, crudFileCase{Name: "nested.txt", Data: []byte("nested-file"), Parent: nestedDir, Role: "nested_file"})
@@ -301,8 +279,8 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 			s.Expected = map[string]any{"old_listed": false, "new_listed": true}
 			start = time.Now()
 			stepCtx := stepContext(ctx, s)
-			oldErr := verifyListNotContains(stepCtx, d, renamed.ParentID, oldName)
-			newEntry, newErr := verifyListContains(stepCtx, d, renamed.ParentID, newName)
+			_, oldErr := fx.VerifyList(stepCtx, renamed.ParentID, oldName, false)
+			newEntry, newErr := fx.VerifyList(stepCtx, renamed.ParentID, newName, true)
 			err = firstErr(oldErr, newErr)
 			s.Actual = map[string]any{
 				"old_listed": oldErr != nil,
@@ -313,27 +291,23 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 			result.addStep(s)
 		}
 
-		cleanupCRUDEntry(ctx, d, result, "renamed_file", renamed)
+		result.cleanupEntry(ctx, fx, "renamed_file", renamed)
 		files = files[1:]
 	}
 
 	for _, entry := range files {
-		cleanupCRUDEntry(ctx, d, result, "file", entry)
+		result.cleanupEntry(ctx, fx, "file", entry)
 	}
 	if nestedDir.ID != "" {
-		cleanupCRUDEntry(ctx, d, result, "nested_dir", nestedDir)
+		result.cleanupEntry(ctx, fx, "nested_dir", nestedDir)
 	}
-	cleanupCRUDEntry(ctx, d, result, "test_dir", testDir)
+	result.cleanupEntry(ctx, fx, "test_dir", fx.TestDir)
 
-	parentForVerify := testDir.ParentID
-	if parentForVerify == "" {
-		parentForVerify = rootID
-	}
-	s = result.newStep("verify_cleanup_list", parentForVerify)
-	s.Input = map[string]any{"parent_id": parentForVerify, "test_prefix": testName}
+	s = result.newStep("verify_cleanup_list", fx.RootID())
+	s.Input = map[string]any{"parent_id": fx.RootID(), "test_prefix": testName}
 	s.Expected = map[string]any{"residual_count": 0}
 	start = time.Now()
-	residual, timeline, err := residualEntries(stepContext(ctx, s), d, parentForVerify, testName)
+	residual, timeline, err := fx.ScanResidual(stepContext(ctx, s))
 	result.ResidualTimeline = timeline
 	for _, entry := range residual {
 		result.Residual = append(result.Residual, artifactFromEntry("residual", entry, "matches test prefix after cleanup"))
@@ -342,6 +316,17 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 	s.finish(start, err)
 	result.addStep(s)
 	return result
+}
+
+// cleanupEntry removes one fixture entry, recording the outcome; failures
+// become residual artifacts so they surface in the result and cleanup
+// guidance instead of being silently dropped.
+func (r *CRUDTestResult) cleanupEntry(ctx context.Context, fx *Fixture, role string, entry drive.Entry) {
+	item, ok := fx.Remove(ctx, entry, role)
+	r.Cleanup = append(r.Cleanup, item)
+	if !ok {
+		r.Residual = append(r.Residual, artifactFromEntry(role, entry, "cleanup failed: "+item.Error))
+	}
 }
 
 type crudFileCase struct {
@@ -373,7 +358,7 @@ func runCRUDPutReadCase(ctx context.Context, d drive.Driver, result *CRUDTestRes
 	s.Input = map[string]any{"parent_id": tc.Parent.ID, "name": tc.Name}
 	s.Expected = map[string]any{"listed": true}
 	start = time.Now()
-	listed, err := verifyListContains(stepContext(ctx, s), d, tc.Parent.ID, tc.Name)
+	listed, err := fxVerifyList(ctx, d, tc.Parent.ID, tc.Name, true)
 	s.Actual = map[string]any{"listed": err == nil, "entry": entryActual(listed)}
 	s.finish(start, err)
 	result.addStep(s)
@@ -392,6 +377,13 @@ func runCRUDPutReadCase(ctx context.Context, d drive.Driver, result *CRUDTestRes
 	return entry, true
 }
 
+// fxVerifyList is the Fixture verify primitive for contexts without a
+// Fixture instance (e.g. per-file checks inside a parent directory).
+func fxVerifyList(ctx context.Context, d drive.Driver, parentID, name string, want bool) (drive.Entry, error) {
+	fx := &Fixture{d: d, name: name}
+	return fx.VerifyList(ctx, parentID, name, want)
+}
+
 func readDriverEntry(ctx context.Context, d drive.Driver, entry drive.Entry, size int64) ([]byte, error) {
 	rc, err := d.Read(ctx, entry, 0, size)
 	if err != nil {
@@ -399,28 +391,6 @@ func readDriverEntry(ctx context.Context, d drive.Driver, entry drive.Entry, siz
 	}
 	defer rc.Close()
 	return io.ReadAll(rc)
-}
-
-func cleanupCRUDEntry(ctx context.Context, d drive.Driver, result *CRUDTestResult, role string, entry drive.Entry) {
-	step := result.newStep("cleanup_remove", entry.Name)
-	start := time.Now()
-	err := d.Remove(stepContext(ctx, step), entry)
-	duration := time.Since(start)
-	item := CRUDCleanupResult{
-		Operation:  "remove",
-		Role:       role,
-		Name:       entry.Name,
-		ID:         entry.ID,
-		OK:         err == nil,
-		Duration:   duration.String(),
-		DurationMS: durationMillis(duration),
-	}
-	if err != nil {
-		item.Error = err.Error()
-		item.ErrorCategory = drive.ErrorCategory(err)
-		result.Residual = append(result.Residual, artifactFromEntry(role, entry, "cleanup failed: "+err.Error()))
-	}
-	result.Cleanup = append(result.Cleanup, item)
 }
 
 func stepContext(ctx context.Context, step CRUDTestStep) context.Context {
@@ -454,100 +424,6 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
-}
-
-func verifyListContains(ctx context.Context, d drive.Driver, parentID string, name string) (drive.Entry, error) {
-	const maxAttempts = 3
-	delay := 1 * time.Second
-	var lastEntries []drive.Entry
-	for attempt := range maxAttempts {
-		if attempt > 0 {
-			time.Sleep(delay)
-			delay *= 2
-		}
-		entries, err := d.List(ctx, parentID)
-		if err != nil {
-			return drive.Entry{}, fmt.Errorf("list %q: %w", parentID, err)
-		}
-		lastEntries = entries
-		for _, entry := range entries {
-			if entry.Name == name {
-				return entry, nil
-			}
-		}
-	}
-	return drive.Entry{}, fmt.Errorf("entry %q not listed under %q after %d attempts: %v", name, parentID, maxAttempts, entryNames(lastEntries))
-}
-
-func verifyListNotContains(ctx context.Context, d drive.Driver, parentID string, name string) error {
-	const maxAttempts = 3
-	delay := 1 * time.Second
-	var lastEntries []drive.Entry
-	for attempt := range maxAttempts {
-		if attempt > 0 {
-			time.Sleep(delay)
-			delay *= 2
-		}
-		entries, err := d.List(ctx, parentID)
-		if err != nil {
-			return fmt.Errorf("list %q: %w", parentID, err)
-		}
-		lastEntries = entries
-		found := false
-		for _, entry := range entries {
-			if entry.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil
-		}
-	}
-	return fmt.Errorf("entry %q still listed under %q after %d attempts: %v", name, parentID, maxAttempts, entryNames(lastEntries))
-}
-
-func residualEntries(ctx context.Context, d drive.Driver, parentID string, testPrefix string) ([]drive.Entry, []CRUDVisibilitySample, error) {
-	const maxAttempts = 7
-	delay := 1 * time.Second
-	var residual []drive.Entry
-	var timeline []CRUDVisibilitySample
-	started := time.Now()
-	for attempt := range maxAttempts {
-		if attempt > 0 {
-			time.Sleep(delay)
-			delay *= 2
-		}
-		entries, err := d.List(ctx, parentID)
-		if err != nil {
-			elapsed := time.Since(started)
-			timeline = append(timeline, CRUDVisibilitySample{
-				Attempt:   attempt + 1,
-				Elapsed:   elapsed.String(),
-				ElapsedMS: durationMillis(elapsed),
-				Error:     err.Error(),
-			})
-			return nil, timeline, fmt.Errorf("verify cleanup list: %w", err)
-		}
-		residual = residual[:0]
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name, testPrefix) {
-				residual = append(residual, entry)
-			}
-		}
-		elapsed := time.Since(started)
-		timeline = append(timeline, CRUDVisibilitySample{
-			Attempt:       attempt + 1,
-			Elapsed:       elapsed.String(),
-			ElapsedMS:     durationMillis(elapsed),
-			ResidualCount: len(residual),
-			ResidualNames: residualNames(residual),
-		})
-		if len(residual) == 0 {
-			return nil, timeline, nil
-		}
-	}
-	return residual, timeline, fmt.Errorf("stale entries after cleanup: %v", entryNames(residual))
 }
 
 func entryNames(entries []drive.Entry) []string {
