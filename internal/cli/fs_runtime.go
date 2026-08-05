@@ -78,9 +78,16 @@ func printEntryStat(w io.Writer, entry drive.Entry) {
 
 func waitFileSystemIdle(ctx context.Context, fs vfs.FileSystem, timeout time.Duration) error {
 	if timeout <= 0 {
-		return fmt.Errorf("--wait-timeout must be greater than 0")
+		// No deadline: wait until the filesystem is idle or the context is
+		// cancelled (Ctrl-C). fs sync uses this because its transfer size is
+		// unbounded; a fixed timeout would report a healthy slow upload as a
+		// failure.
 	}
 	timer := time.NewTimer(timeout)
+	if timeout <= 0 {
+		// A stopped timer never fires; keep the nil-channel pattern simple.
+		timer.Stop()
+	}
 	defer timer.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
