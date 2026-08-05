@@ -26,6 +26,7 @@ func rsaEncode(origData []byte, pubKeyStr string, hex bool) string {
 	block, _ := pem.Decode([]byte(pubKeyData))
 	pubInterface, _ := x509.ParsePKIXPublicKey(block.Bytes)
 	pub := pubInterface.(*rsa.PublicKey)
+	//lint:ignore SA1019 the 189 server requires PKCS#1 v1.5 padding; OAEP would break the protocol
 	b, err := rsa.EncryptPKCS1v15(rand.Reader, pub, origData)
 	if err != nil {
 		return ""
@@ -45,15 +46,15 @@ func b64toHex(a string) string {
 		m := string(a[i])
 		if m != "=" {
 			v := strings.Index(b64map, m)
-			if 0 == e {
+			if e == 0 {
 				e = 1
 				d += fmt.Sprintf("%x", v>>2)
 				c = 3 & v
-			} else if 1 == e {
+			} else if e == 1 {
 				e = 2
 				d += fmt.Sprintf("%x", c<<2|v>>4)
 				c = 15 & v
-			} else if 2 == e {
+			} else if e == 2 {
 				e = 3
 				d += fmt.Sprintf("%x", c)
 				d += fmt.Sprintf("%x", v>>2)

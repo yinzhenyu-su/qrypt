@@ -12,6 +12,8 @@ import (
 func TestRcloneCipher_KeyDerivation(t *testing.T) {
 	password := "testpassword"
 	salt := "testsalt"
+	//lint:ignore SA4006 staticcheck 2026.1 falsely reports this assignment as
+	// unused; c is read below (c.dataKey / c.nameKey / c.nameTweak).
 	c, err := NewRcloneCipher(password, salt)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)

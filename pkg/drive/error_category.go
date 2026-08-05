@@ -98,10 +98,7 @@ func isLocalIO(err error) bool {
 		return true
 	}
 	var linkErr *os.LinkError
-	if errors.As(err, &linkErr) {
-		return true
-	}
-	return false
+	return errors.As(err, &linkErr)
 }
 
 func containsAny(s string, needles ...string) bool {

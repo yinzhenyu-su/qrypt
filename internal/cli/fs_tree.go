@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"os"
 	pathpkg "path"
 	"path/filepath"
 	"sort"
@@ -218,42 +217,7 @@ func snapshotTarget(ctx context.Context, fs vfs.FileSystem, target checkTarget) 
 	return snap, nil
 }
 
-// localTreeFile remains for compatibility with callers of the old walkers.
-type localTreeFile struct {
-	size    int64
-	modTime int64
-}
-
-// walkLocalTree lists every file under root, keyed by slash-separated
-// relative path. Retained for callers that need the legacy shape.
-func walkLocalTree(root string) (map[string]localTreeFile, error) {
-	snap, err := snapshotLocal(root)
-	if err != nil {
-		return nil, err
-	}
-	result := map[string]localTreeFile{}
-	for rel, entry := range snap {
-		if entry.IsDir {
-			continue
-		}
-		result[rel] = localTreeFile{size: entry.Size, modTime: entry.ModTime}
-	}
-	return result, nil
-}
-
 // osPath converts a slash-separated relative path to a local path under root.
 func osPath(root, rel string) string {
 	return filepath.Join(root, filepath.FromSlash(rel))
-}
-
-// localPathExists reports whether the local path exists and what kind it is.
-func localPathExists(path string) (exists, isDir bool, err error) {
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return false, false, nil
-	}
-	if err != nil {
-		return false, false, err
-	}
-	return true, info.IsDir(), nil
 }

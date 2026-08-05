@@ -897,10 +897,7 @@ func upsertS3UploadPart(parts []s3UploadPart, part s3UploadPart) []s3UploadPart 
 
 func isS3NotFound(err error) bool {
 	var nfe *types.NoSuchKey
-	if errors.As(err, &nfe) {
-		return true
-	}
-	return false
+	return errors.As(err, &nfe)
 }
 
 // Compile-time interface checks.
