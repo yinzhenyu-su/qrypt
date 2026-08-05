@@ -2,11 +2,15 @@ package core
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -369,5 +373,160 @@ func TestUploadStreamTaskCancelItemRemovesStaging(t *testing.T) {
 	}
 	if _, err := handle.Write(ctx, []byte("again")); err == nil {
 		t.Fatal("Write after item cancel succeeded, want error")
+	}
+}
+
+// completedBlockingStreamDriver mirrors real drivers (e.g. 115) that report
+// UploadPhaseCompleted as soon as the OSS upload returns, before any
+// post-upload verification (waitUploadedFile) finishes. The internal upload
+// task is therefore briefly reported as succeeded while the engine is still
+// running and the pending record is still present — the exact window in which
+// the upload-stream-task poller used to dismiss (and thereby cancel) the
+// upload and lose the freshly uploaded remote file.
+type completedBlockingStreamDriver struct {
+	drive.UnsupportedOperations
+	mu      sync.Mutex
+	uploads int
+	entries map[string]drive.Entry
+	removed []string
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (d *completedBlockingStreamDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
+}
+func (d *completedBlockingStreamDriver) Init(context.Context) error { return nil }
+func (d *completedBlockingStreamDriver) Drop(context.Context) error { return nil }
+func (d *completedBlockingStreamDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{Driver: "completed-blocking-stream", Health: drive.HealthLevelOK}, nil
+}
+func (d *completedBlockingStreamDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+func (d *completedBlockingStreamDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *completedBlockingStreamDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var entries []drive.Entry
+	for _, entry := range d.entries {
+		if entry.ParentID == parentID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
+}
+func (d *completedBlockingStreamDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+func (d *completedBlockingStreamDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	f, err := req.Source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer f.Close()
+	if _, err := io.Copy(io.Discard, f); err != nil {
+		return drive.Entry{}, err
+	}
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCompleted)
+	d.mu.Lock()
+	d.uploads++
+	id := req.Name + "-" + strconv.Itoa(d.uploads)
+	entry := drive.Entry{ID: id, ParentID: req.ParentID, Name: req.Name, Size: req.Source.Size()}
+	if d.entries == nil {
+		d.entries = map[string]drive.Entry{}
+	}
+	d.entries[id] = entry
+	d.mu.Unlock()
+	d.entered <- struct{}{}
+	<-d.release
+	return entry, nil
+}
+func (d *completedBlockingStreamDriver) Remove(_ context.Context, entry drive.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.removed = append(d.removed, entry.ID)
+	return nil
+}
+func (d *completedBlockingStreamDriver) removedIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.removed...)
+}
+func (d *completedBlockingStreamDriver) remoteCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.entries)
+}
+
+// TestUploadStreamTaskPollerDismissKeepsUploadedFile is the end-to-end
+// regression test for the reported bug where a file that finished uploading
+// disappeared after a directory refresh. It drives the real production path
+// (upload stream task -> VFS pending upload -> poller -> DismissTask) with a
+// driver that reports the completed phase and then blocks, so the poller
+// observes a "succeeded but still active" upload task. The upload must not be
+// canceled by that dismiss, and the freshly uploaded remote file must survive.
+func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
+	ctx := context.Background()
+	drv := &completedBlockingStreamDriver{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), CacheMaxBytes: 10 << 20, UploadDelay: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Start(ctx)
+	c := &Core{fs: fs}
+
+	item, err := c.CreateTask(ctx, task.Request{
+		Type:  task.TypeUploadStreamBatch,
+		Items: []task.Item{{ItemID: "item", DestPath: "/keep.txt", Size: int64(len("payload"))}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := c.OpenUploadStreamItem(ctx, item.ID, "item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := handle.Write(ctx, []byte("payload")); err != nil || n != len("payload") {
+		t.Fatalf("write n=%d err=%v", n, err)
+	}
+	if err := handle.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The driver's PutSource reports the completed phase and blocks, holding
+	// the upload task in "succeeded but still active" state.
+	select {
+	case <-drv.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("driver PutSource did not start")
+	}
+
+	// Give the stream task's 500ms poller enough ticks to run its DismissTask
+	// on the succeeded-but-active internal upload.
+	time.Sleep(1500 * time.Millisecond)
+
+	// The pending record must have survived the poller dismisses.
+	if pendings := fs.PendingUploads(); len(pendings) != 1 {
+		t.Fatalf("pending after poller dismiss = %+v, want 1", pendings)
+	}
+
+	// Let the engine finish the upload normally, then wait for the stream task.
+	close(drv.release)
+	final := waitCoreTask(t, c, item.ID)
+	if final.State != task.StateSucceeded {
+		t.Fatalf("stream task state = %s, want succeeded (task=%+v)", final.State, final)
+	}
+
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("uploaded file was removed from the remote: %v", removed)
+	}
+	if got := drv.remoteCount(); got != 1 {
+		t.Fatalf("remote entries = %d, want 1 (uploaded file must survive)", got)
 	}
 }

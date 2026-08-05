@@ -13,6 +13,7 @@ type fakeUploadTaskRuntime struct {
 	records        []uploadTaskRecord
 	pending        map[string]PendingUpload
 	active         map[string]string
+	states         map[string]string
 	cancelRemoved  []string
 	retried        []string
 	removedHistory []string
@@ -30,6 +31,18 @@ func (r *fakeUploadTaskRuntime) PendingByID(id string) (PendingUpload, bool) {
 func (r *fakeUploadTaskRuntime) ActivePathByID(id string) (string, bool) {
 	path, ok := r.active[id]
 	return path, ok
+}
+
+func (r *fakeUploadTaskRuntime) StateByID(id string) (string, bool) {
+	if state, ok := r.states[id]; ok {
+		return state, true
+	}
+	for _, record := range r.records {
+		if record.id == id {
+			return record.state, true
+		}
+	}
+	return "", false
 }
 
 func (r *fakeUploadTaskRuntime) CancelAndRemove(path string) error {
@@ -76,6 +89,29 @@ func TestUploadTaskSourceUsesRuntimeForCancelRetryAndDismiss(t *testing.T) {
 	}
 	if got := runtime.removedHistory; len(got) != 1 || got[0] != "history-id" {
 		t.Fatalf("removedHistory = %+v", got)
+	}
+}
+
+func TestUploadTaskSourceDismissDoesNotCancelSucceededActiveUpload(t *testing.T) {
+	runtime := &fakeUploadTaskRuntime{
+		pending: map[string]PendingUpload{
+			"succeeded-active-id": {FID: "succeeded-active-id", Path: "/done.txt"},
+		},
+		active: map[string]string{"succeeded-active-id": "/done.txt"},
+		states: map[string]string{"succeeded-active-id": string(drive.UploadPhaseCompleted)},
+	}
+	source := uploadTaskSource{runtime: runtime}
+	if err := source.Dismiss(context.Background(), "succeeded-active-id"); err != nil {
+		t.Fatal(err)
+	}
+	// A succeeded upload that is still active (engine finishing the commit)
+	// must not be canceled: cancel-and-remove would drop the pending record
+	// and the engine would delete the freshly uploaded remote file.
+	if got := runtime.cancelRemoved; len(got) != 0 {
+		t.Fatalf("cancelRemoved = %+v, want none", got)
+	}
+	if len(runtime.pending) != 1 {
+		t.Fatalf("pending = %+v, want preserved", runtime.pending)
 	}
 }
 
