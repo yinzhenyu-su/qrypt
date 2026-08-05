@@ -2,8 +2,10 @@ package localfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,10 +75,13 @@ func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive
 }
 
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dir := d.resolve(parentID)
 	items, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("localfs: readdir %s: %w", dir, err)
+		return nil, classifyLocalError(fmt.Errorf("localfs: readdir %s: %w", dir, err))
 	}
 	entries := make([]drive.Entry, 0, len(items))
 	for _, item := range items {
@@ -99,17 +104,23 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	rc, err := osutil.OpenRead(entry.ID, offset, size)
 	if err != nil {
-		return nil, fmt.Errorf("localfs: open %s: %w", entry.ID, err)
+		return nil, classifyLocalError(fmt.Errorf("localfs: open %s: %w", entry.ID, err))
 	}
 	return rc, nil
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return drive.Entry{}, err
+	}
 	path := filepath.Join(d.resolve(parentID), name)
 	if err := os.Mkdir(path, 0o755); err != nil {
-		return drive.Entry{}, err
+		return drive.Entry{}, classifyLocalError(err)
 	}
 	now := time.Now()
 	return drive.Entry{ID: path, ParentID: d.resolve(parentID), Name: name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
@@ -124,13 +135,19 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if entry.IsDir {
 		return os.RemoveAll(entry.ID)
 	}
-	return os.Remove(entry.ID)
+	return classifyLocalError(os.Remove(entry.ID))
 }
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return drive.Entry{}, err
+	}
 	parentID, name, source := req.ParentID, req.Name, req.Source
 	body, err := source.Open(ctx)
 	if err != nil {
@@ -192,6 +209,15 @@ func (d *Driver) resolve(id string) string {
 		return d.root
 	}
 	return id
+}
+
+// classifyLocalError maps OS not-found errors to drive.ErrNotFound so the
+// whole error layer can classify them with errors.Is.
+func classifyLocalError(err error) error {
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %v", drive.ErrNotFound, err)
+	}
+	return err
 }
 
 var _ drive.Driver = (*Driver)(nil)

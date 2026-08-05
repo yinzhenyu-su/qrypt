@@ -138,6 +138,11 @@ func (c *client) request(ctx context.Context, method, path string, body, result 
 		}
 		return c.rawJSON(ctx, method, url, c.currentAccessToken(), body, result)
 	}
+	if apiErr.status == http.StatusNotFound || apiErr.code == "ForbiddenFileInTheRecycleBin" {
+		// 404 and recycle-bin files are "gone" from the user's perspective;
+		// aliyun soft-deletes into the recycle bin and refuses access there.
+		return fmt.Errorf("%w: %v", drive.ErrNotFound, apiErr)
+	}
 	return err
 }
 

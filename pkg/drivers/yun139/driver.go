@@ -388,7 +388,11 @@ func (d *Driver) getDownloadURL(ctx context.Context, fileID string) (string, err
 		return "", fmt.Errorf("139: download url: %w", err)
 	}
 	if !resp.Success {
-		return "", fmt.Errorf("139: download url failed (code=%s): %s", resp.Code, resp.Message)
+		err := fmt.Errorf("139: download url failed (code=%s): %s", resp.Code, resp.Message)
+		if resp.Code == "04000010" || strings.Contains(resp.Message, "资源不存在") {
+			return "", fmt.Errorf("%w: %v", drive.ErrNotFound, err)
+		}
+		return "", err
 	}
 	if resp.Data.CDNURL != "" {
 		return resp.Data.CDNURL, nil

@@ -233,6 +233,12 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 	})
 	if err != nil {
 		d.setLastError(fmt.Sprintf("115: download info %q: %v", e.ID, err))
+		// The SDK maps errno 50015 (and a few others) to its sentinel, but
+		// when the code is unknown it returns an unexpected error carrying
+		// the raw body ("文件不存在或已删除。"); classify both.
+		if errors.Is(err, driver115.ErrDownloadFileNotExistOrHasDeleted) || strings.Contains(err.Error(), "文件不存在") {
+			return nil, fmt.Errorf("%w: %v", drive.ErrNotFound, err)
+		}
 		return nil, fmt.Errorf("115: download info: %w", err)
 	}
 	if info == nil || info.Url.Url == "" {

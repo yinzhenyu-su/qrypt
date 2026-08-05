@@ -318,6 +318,9 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 	var lastErr error
 	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
 		if attempt > 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			time.Sleep(personalRetryWait << uint(attempt))
 		}
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
@@ -345,6 +348,9 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 	var lastErr error
 	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
 		if attempt > 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			time.Sleep(personalRetryWait << uint(attempt))
 		}
 		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
