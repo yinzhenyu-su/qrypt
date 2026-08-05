@@ -170,8 +170,15 @@ func runDu(cmd *cobra.Command, args []string) error {
 	var files int
 	var bytes int64
 	if entry.IsDir {
-		if err := walkCopySource(ctx, fs, path, nil, &files, &bytes); err != nil {
+		snap, err := snapshotVFS(ctx, fs, path)
+		if err != nil {
 			return err
+		}
+		files = snap.fileCount()
+		for _, e := range snap {
+			if !e.IsDir {
+				bytes += e.Size
+			}
 		}
 	} else {
 		// du on a single file reports just that file.

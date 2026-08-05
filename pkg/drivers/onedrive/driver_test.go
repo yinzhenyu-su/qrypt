@@ -26,6 +26,7 @@ type mockItem struct {
 	data     []byte
 	isDir    bool
 	modTime  time.Time
+	sha1     string
 }
 
 type mockOneDrive struct {
@@ -345,7 +346,13 @@ func (m *mockOneDrive) itemResp(id string, r *http.Request) map[string]any {
 	if item.isDir {
 		resp["folder"] = map[string]int{"childCount": len(m.children[id])}
 	} else {
-		resp["file"] = map[string]string{"mimeType": "application/octet-stream"}
+		resp["file"] = map[string]any{"mimeType": "application/octet-stream"}
+		if item.sha1 != "" {
+			resp["file"] = map[string]any{
+				"mimeType": "application/octet-stream",
+				"hashes":   map[string]string{"sha1Hash": item.sha1},
+			}
+		}
 		resp["@microsoft.graph.downloadUrl"] = "http://" + r.Host + "/download/" + item.id
 	}
 	return resp
@@ -534,4 +541,40 @@ func (m *mockOneDrive) get(id string) (*mockItem, bool) {
 	defer m.mu.RUnlock()
 	item, ok := m.items[id]
 	return item, ok
+}
+
+// TestDriverRemoteHashFromGraphHashes verifies RemoteHash reads file.hashes
+// from the Graph API item (and degrades to unsupported when absent).
+func TestDriverRemoteHashFromGraphHashes(t *testing.T) {
+	driver, mock := newTestDriver(t)
+	mock.mu.Lock()
+	mock.items["file-id"].sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+	mock.mu.Unlock()
+
+	ctx := context.Background()
+	entries, err := driver.List(ctx, "docs-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	algorithm, hash, err := driver.RemoteHash(ctx, entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if algorithm != drive.HashSHA1 || hash != "da39a3ee5e6b4b0d3255bfef95601890afd80709" {
+		t.Fatalf("RemoteHash = (%s, %s), want (sha1, graph sha1Hash)", algorithm, hash)
+	}
+	// A fresh file without hashes degrades cleanly.
+	mock.mu.Lock()
+	mock.items["file-id"].sha1 = ""
+	mock.mu.Unlock()
+	entries, err = driver.List(ctx, "docs-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := driver.RemoteHash(ctx, entries[0]); err != drive.ErrUnsupported {
+		t.Fatalf("RemoteHash without hashes err = %v, want ErrUnsupported", err)
+	}
 }

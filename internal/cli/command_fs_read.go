@@ -308,23 +308,11 @@ func get(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, f
 }
 
 func countDirFiles(ctx context.Context, fs vfs.FileSystem, path string) (int, error) {
-	entries, err := fs.List(ctx, path)
+	snap, err := snapshotVFS(ctx, fs, path)
 	if err != nil {
 		return 0, err
 	}
-	n := 0
-	for _, e := range entries {
-		if e.IsDir {
-			m, err := countDirFiles(ctx, fs, path+"/"+e.Name)
-			if err != nil {
-				return 0, err
-			}
-			n += m
-		} else {
-			n++
-		}
-	}
-	return n, nil
+	return snap.fileCount(), nil
 }
 
 func getDir(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, force bool, bar *progressBar) error {

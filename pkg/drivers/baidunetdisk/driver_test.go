@@ -699,3 +699,54 @@ func TestLoadTokenStateStateWinsForLegacyState(t *testing.T) {
 		t.Fatalf("tokens = %q/%q, want legacy state tokens", driver.accessToken, driver.refreshToken)
 	}
 }
+
+// TestDriverRemoteHashFromListMetadata verifies RemoteHash reads the md5 the
+// list API returned (and degrades to unsupported when absent).
+func TestDriverRemoteHashFromListMetadata(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			writeJSON(t, w, tokenResp{AccessToken: "access", RefreshToken: "refresh", ExpiresIn: 3600})
+		case "/rest/2.0/xpan/file":
+			if r.URL.Query().Get("method") != "list" {
+				t.Fatalf("unexpected method %q", r.URL.Query().Get("method"))
+			}
+			writeJSON(t, w, listResp{List: []file{
+				{FsID: 1, Path: "/Qrypt/hashed.txt", ServerFilename: "hashed.txt", Size: 3, MD5: "d41d8cd98f00b204e9800998ecf8427e"},
+				{FsID: 2, Path: "/Qrypt/nohash.txt", ServerFilename: "nohash.txt", Size: 3},
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	d := New(Options{
+		RefreshToken: "refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RootPath:     "/Qrypt",
+		OAuthURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL + "/rest/2.0",
+		UseOnlineAPI: false,
+	})
+	entries, err := d.List(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	algorithm, hash, err := d.RemoteHash(ctx, entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if algorithm != drive.HashMD5 || hash != "d41d8cd98f00b204e9800998ecf8427e" {
+		t.Fatalf("RemoteHash = (%s, %s), want (md5, list md5)", algorithm, hash)
+	}
+	// Entry without an md5 must degrade to unsupported, not error.
+	if _, _, err := d.RemoteHash(ctx, entries[1]); err != drive.ErrUnsupported {
+		t.Fatalf("RemoteHash without md5 err = %v, want ErrUnsupported", err)
+	}
+}

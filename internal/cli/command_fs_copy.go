@@ -3,7 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
+	"sort"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/control"
@@ -117,9 +117,18 @@ func runFsCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.FileSystem,
 		return err
 	}
 	if entry.IsDir {
-		if err := walkCopySource(ctx, fs, source, &result.Entries, &result.Files, &result.Bytes); err != nil {
+		snap, err := snapshotVFS(ctx, fs, source)
+		if err != nil {
 			return err
 		}
+		result.Files = snap.fileCount()
+		for _, e := range snap {
+			if !e.IsDir {
+				result.Bytes += e.Size
+				result.Entries = append(result.Entries, joinVFS(source, e.RelPath))
+			}
+		}
+		sort.Strings(result.Entries)
 	} else {
 		result.Files = 1
 		result.Bytes = entry.Size
@@ -132,30 +141,6 @@ func runFsCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.FileSystem,
 	fmt.Fprintf(cmd.OutOrStdout(), "dry run: would copy %d files (%d bytes) %s -> %s\n", result.Files, result.Bytes, source, destination)
 	for _, path := range result.Entries {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", path)
-	}
-	return nil
-}
-
-// walkCopySource recursively enumerates files under path, accumulating a
-// dry-run plan without performing any copy.
-func walkCopySource(ctx context.Context, fs vfs.FileSystem, path string, entries *[]string, files *int, bytes *int64) error {
-	list, err := fs.List(ctx, path)
-	if err != nil {
-		return err
-	}
-	for _, entry := range list {
-		child := strings.TrimSuffix(path, "/") + "/" + entry.Name
-		if entry.IsDir {
-			if err := walkCopySource(ctx, fs, child, entries, files, bytes); err != nil {
-				return err
-			}
-			continue
-		}
-		*files++
-		*bytes += entry.Size
-		if entries != nil {
-			*entries = append(*entries, child)
-		}
 	}
 	return nil
 }

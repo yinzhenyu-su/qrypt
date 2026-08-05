@@ -18,6 +18,9 @@ type itemResp struct {
 	} `json:"fileSystemInfo"`
 	File *struct {
 		MimeType string `json:"mimeType"`
+		Hashes   *struct {
+			SHA1Hash string `json:"sha1Hash"`
+		} `json:"hashes"`
 	} `json:"file"`
 	Folder *struct {
 		ChildCount int64 `json:"childCount"`
@@ -41,6 +44,10 @@ func (i itemResp) entry(parentID string) drive.Entry {
 	if parentID == "" {
 		parentID = i.ParentReference.ID
 	}
+	extra := map[string]any{}
+	if i.File != nil && i.File.Hashes != nil && i.File.Hashes.SHA1Hash != "" {
+		extra["sha1"] = i.File.Hashes.SHA1Hash
+	}
 	return drive.Entry{
 		ID:        i.ID,
 		ParentID:  parentID,
@@ -50,6 +57,7 @@ func (i itemResp) entry(parentID string) drive.Entry {
 		ModTime:   modTime,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
+		Extra:     extra,
 	}
 }
 

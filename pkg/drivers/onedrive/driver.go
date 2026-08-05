@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const (
@@ -563,6 +563,11 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilitySpace,
 		drive.CapabilityWriter,
 	}
+}
+
+// RemoteHash reports the content SHA1 from the Graph API file hashes.
+func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
+	return drive.RemoteHashFromExtra(entry, "sha1", drive.HashSHA1)
 }
 
 func (d *Driver) refresh(ctx context.Context) error {

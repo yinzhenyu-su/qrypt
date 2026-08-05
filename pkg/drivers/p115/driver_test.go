@@ -383,3 +383,34 @@ func TestUploadSessionStoreRejectsEmptyParts(t *testing.T) {
 		t.Fatal("expected empty-parts session to be rejected")
 	}
 }
+
+// TestDriverRemoteHashFromListMetadata verifies RemoteHash reads the sha1
+// the 115 list API returned via the SDK file type.
+func TestDriverRemoteHashFromListMetadata(t *testing.T) {
+	d := New(Options{})
+	entry := drive.Entry{
+		ID:   "f1",
+		Size: 100,
+		Extra: driver115.File{
+			FileID: "f1",
+			Name:   "a.txt",
+			Sha1:   "abcdef0123456789abcdef0123456789abcdef01",
+		},
+	}
+	algorithm, hash, err := d.RemoteHash(context.Background(), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if algorithm != drive.HashSHA1 || hash != "ABCDEF0123456789ABCDEF0123456789ABCDEF01" {
+		t.Fatalf("RemoteHash = (%s, %s), want (sha1, uppercase)", algorithm, hash)
+	}
+	// Pointer variant and missing sha1.
+	entry2 := drive.Entry{Extra: &driver115.File{FileID: "f2", Sha1: "beef"}}
+	if _, h, err := d.RemoteHash(context.Background(), entry2); err != nil || h != "BEEF" {
+		t.Fatalf("pointer entry RemoteHash = (%s, %v), want BEEF", h, err)
+	}
+	entry3 := drive.Entry{Extra: driver115.File{FileID: "f3"}}
+	if _, _, err := d.RemoteHash(context.Background(), entry3); err != drive.ErrUnsupported {
+		t.Fatalf("RemoteHash without sha1 err = %v, want ErrUnsupported", err)
+	}
+}

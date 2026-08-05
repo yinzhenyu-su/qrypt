@@ -21,7 +21,7 @@ func TestSetModTimeAppliesToUpload(t *testing.T) {
 	}
 	v, err := vfs.New(driver, vfs.Options{
 		StorageDir:  filepath.Join(t.TempDir(), "cache"),
-		UploadDelay: 10 * time.Millisecond,
+		UploadDelay: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -45,23 +45,33 @@ func TestSetModTimeAppliesToUpload(t *testing.T) {
 		t.Fatalf("SetModTime while pending: %v", err)
 	}
 
-	// Wait for the upload to land on the backend.
+	// Wait until the backend file is visible AND its mtime is stable at the
+	// requested value. localfs creates the file before the Chtimes call, so
+	// "file visible" alone can race the mtime stamp.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		entries, err := driver.List(context.Background(), "")
 		if err == nil {
 			for _, e := range entries {
-				if e.Name == "f.txt" {
-					goto landed
+				if e.Name == "f.txt" && e.ModTime.Equal(fixed) {
+					goto done
 				}
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("upload did not land")
+			found := ""
+			if entries, err := driver.List(context.Background(), ""); err == nil {
+				for _, e := range entries {
+					if e.Name == "f.txt" {
+						found = e.ModTime.String()
+					}
+				}
+			}
+			t.Fatalf("backend mtime never reached %v (last=%s)", fixed, found)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
-landed:
+done:
 
 	entry, err := v.Stat(ctx, path)
 	if err != nil {
@@ -69,15 +79,5 @@ landed:
 	}
 	if !entry.ModTime.Equal(fixed) {
 		t.Fatalf("committed mtime = %v, want %v", entry.ModTime, fixed)
-	}
-	// The backend file must carry the same mtime.
-	info, err := driver.List(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range info {
-		if e.Name == "f.txt" && !e.ModTime.Equal(fixed) {
-			t.Fatalf("backend mtime = %v, want %v", e.ModTime, fixed)
-		}
 	}
 }

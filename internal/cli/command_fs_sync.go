@@ -121,7 +121,7 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	asHash, _ := cmd.Flags().GetBool("hash")
+	forceHash, _ := cmd.Flags().GetBool("hash")
 	snapA, err := snapshotTarget(ctx, fs, source)
 	if err != nil {
 		return err
@@ -135,11 +135,12 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	if snapB == nil {
 		snapB = treeSnapshot{}
 	}
-	opts := treeCompareOptions{AsHash: asHash}
-	if asHash {
-		opts.Hash = func(ctx context.Context, rel string) (bool, string, error) {
-			return compareVFSHashPair(ctx, fs, source, destination, rel)
-		}
+	// Sync always attempts content-hash comparison; AutoHash degrades to
+	// size/mtime when the backends cannot provide hashes. --hash forces it
+	// (missing hash support becomes an error).
+	opts := treeCompareOptions{AsHash: true, AutoHash: !forceHash}
+	opts.Hash = func(ctx context.Context, rel string) (bool, string, error) {
+		return compareVFSHashPair(ctx, fs, source, destination, rel, opts.AutoHash)
 	}
 	diffs, err := compareTrees(ctx, snapA, snapB, opts)
 	if err != nil {
