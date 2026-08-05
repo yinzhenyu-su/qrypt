@@ -13,7 +13,8 @@ import (
 )
 
 func TestCreateTaskSameMountMoveRenamesPath(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "old.txt"), []byte("same mount"), 0o644); err != nil {
 		t.Fatal(err)
@@ -22,8 +23,9 @@ func TestCreateTaskSameMountMoveRenamesPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, moveTaskRequest("/old.txt", "/new.txt", false, false))
 	if err != nil {
@@ -49,7 +51,8 @@ func TestCreateTaskSameMountMoveRenamesPath(t *testing.T) {
 }
 
 func TestCreateTaskMoveRemoteRenamesPath(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "old.txt"), []byte("create task move"), 0o644); err != nil {
 		t.Fatal(err)
@@ -58,8 +61,9 @@ func TestCreateTaskMoveRemoteRenamesPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, moveTaskRequest("/old.txt", "/new.txt", false, false))
 	if err != nil {
@@ -75,7 +79,8 @@ func TestCreateTaskMoveRemoteRenamesPath(t *testing.T) {
 }
 
 func TestCreateTaskCrossQryptMountCopiesThenDeletesSource(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srcRemote := t.TempDir()
 	dstRemote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(srcRemote, "file.txt"), []byte("cross mount"), 0o644); err != nil {
@@ -93,6 +98,7 @@ func TestCreateTaskCrossQryptMountCopiesThenDeletesSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns}
 
@@ -113,7 +119,8 @@ func TestCreateTaskCrossQryptMountCopiesThenDeletesSource(t *testing.T) {
 }
 
 func TestCreateTaskCrossQryptMountRejectsDirectoryWithoutRecursive(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srcRemote := t.TempDir()
 	dstRemote := t.TempDir()
 	if err := os.Mkdir(filepath.Join(srcRemote, "dir"), 0o755); err != nil {
@@ -131,6 +138,7 @@ func TestCreateTaskCrossQryptMountRejectsDirectoryWithoutRecursive(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns}
 
@@ -145,7 +153,8 @@ func TestCreateTaskCrossQryptMountRejectsDirectoryWithoutRecursive(t *testing.T)
 }
 
 func TestCreateTaskCrossQryptMountMovesDirectoryToRenamedDestination(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srcRemote := t.TempDir()
 	dstRemote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(srcRemote, "dir", "nested"), 0o755); err != nil {
@@ -169,6 +178,7 @@ func TestCreateTaskCrossQryptMountMovesDirectoryToRenamedDestination(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns}
 

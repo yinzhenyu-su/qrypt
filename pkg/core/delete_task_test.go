@@ -13,7 +13,8 @@ import (
 )
 
 func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "a.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
@@ -28,8 +29,9 @@ func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeDeleteBatch,
@@ -58,7 +60,8 @@ func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
 }
 
 func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "ok.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
@@ -70,8 +73,9 @@ func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeDeleteBatch,
@@ -96,7 +100,8 @@ func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
 }
 
 func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(remote, "dir", "nested"), 0o755); err != nil {
 		t.Fatal(err)
@@ -114,8 +119,9 @@ func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:    task.TypeDeleteBatch,

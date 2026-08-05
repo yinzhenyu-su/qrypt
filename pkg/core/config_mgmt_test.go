@@ -166,7 +166,8 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	old, err := Open(ctx, Options{ConfigPath: configPath})
 	if err != nil {
 		t.Fatal(err)

@@ -12,7 +12,8 @@ import (
 )
 
 func TestCreateTaskDownloadFile(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "source.txt"), []byte("download me"), 0o644); err != nil {
 		t.Fatal(err)
@@ -21,8 +22,9 @@ func TestCreateTaskDownloadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 	dest := filepath.Join(t.TempDir(), "downloads", "source.txt")
 
 	item, err := c.CreateTask(ctx, downloadTaskRequest("/source.txt", dest, false))
@@ -39,7 +41,8 @@ func TestCreateTaskDownloadFile(t *testing.T) {
 }
 
 func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "source.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
@@ -48,8 +51,9 @@ func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 	dest := filepath.Join(t.TempDir(), "source.txt")
 	if err := os.WriteFile(dest, []byte("local"), 0o644); err != nil {
 		t.Fatal(err)
@@ -69,7 +73,8 @@ func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing
 }
 
 func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "ok.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
@@ -78,8 +83,9 @@ func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 	destDir := t.TempDir()
 
 	item, err := c.CreateTask(ctx, task.Request{
@@ -106,7 +112,8 @@ func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
 }
 
 func TestCreateTaskDownloadDirectoryRecursive(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(remote, "dir", "nested"), 0o755); err != nil {
 		t.Fatal(err)
@@ -124,8 +131,9 @@ func TestCreateTaskDownloadDirectoryRecursive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 	dest := filepath.Join(t.TempDir(), "downloaded-dir")
 
 	item, err := c.CreateTask(ctx, task.Request{

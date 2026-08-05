@@ -15,7 +15,8 @@ import (
 )
 
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
 	raw := localfs.New(remote)
@@ -27,6 +28,7 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/hello.txt", []byte("hello qrypt"), 0); err != nil {
@@ -88,12 +90,14 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	}
 }
 func TestVFSUsesSourceUploaderForStagingSnapshot(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &fileUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/fast.txt", []byte("use staging path"), 0); err != nil {
@@ -124,12 +128,14 @@ func TestVFSUsesSourceUploaderForStagingSnapshot(t *testing.T) {
 	}
 }
 func TestVFSUploadsWithSourceOnlyDriver(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &sourceOnlyUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/source-only.txt", []byte("source only"), 0); err != nil {
@@ -150,7 +156,8 @@ func TestVFSUploadsWithSourceOnlyDriver(t *testing.T) {
 	}
 }
 func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "index.html"), []byte("old content"), 0o644); err != nil {
 		t.Fatal(err)
@@ -163,6 +170,7 @@ func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/index.html", []byte("new content"), 0); err != nil {
@@ -193,12 +201,14 @@ func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
 	}
 }
 func TestVFSCoalescesFlushUploads(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("one"), 0); err != nil {
@@ -223,12 +233,14 @@ func TestVFSCoalescesFlushUploads(t *testing.T) {
 	}
 }
 func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 80 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	for _, data := range []string{"one", "two", "three"} {
@@ -250,7 +262,8 @@ func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
 	}
 }
 func TestVFSUploadWorkersRunConcurrently(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := newBlockingUploadDriver()
 	fs, err := vfs.New(drv, vfs.Options{
 		StorageDir:    t.TempDir(),
@@ -261,6 +274,7 @@ func TestVFSUploadWorkersRunConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	for _, path := range []string{"/one.txt", "/two.txt", "/three.txt"} {

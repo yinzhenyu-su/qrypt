@@ -27,7 +27,8 @@ func testRuntimeLayout(tmp string) RuntimeLayout {
 }
 
 func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -54,6 +55,7 @@ func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := os.Stat(filepath.Join(runtime.ReadCacheDir, "quark")); err != nil {
@@ -117,15 +119,18 @@ root_path = "`+remote+`"
 			t.Fatalf("imported config still contains %q:\n%s", forbidden, text)
 		}
 	}
-	c, err := OpenImported(context.Background(), runtime)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, err := OpenImported(ctx, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close(context.Background())
+	defer c.Close(ctx)
 }
 
 func TestOpenInitializesRuntimeLog(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -153,7 +158,8 @@ root_path = "`+remote+`"
 }
 
 func TestStorageUsageAndClearReadCache(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -213,7 +219,8 @@ root_path = "`+remote+`"
 }
 
 func TestThumbnailCacheFileLifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -309,7 +316,8 @@ func TestThumbnailCacheFileLifecycle(t *testing.T) {
 }
 
 func TestThumbnailCachePrunesOldEntries(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -367,7 +375,8 @@ func TestThumbnailCachePrunesOldEntries(t *testing.T) {
 }
 
 func TestCoreReadAtLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -390,6 +399,7 @@ func TestCoreReadAtLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := &Core{fs: fs, cleanup: cleanup}
 	if _, err := c.ReadAt(ctx, "/quark/file.txt", 0, 5, 4); err == nil {
@@ -429,12 +439,13 @@ func TestCoreCRUDUsesVFSStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	t.Cleanup(func() {
 		cancel()
 		_ = fs.CloseReadCache()
 	})
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	dir, err := c.Mkdir(ctx, "/docs")
 	if err != nil {

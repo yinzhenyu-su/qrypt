@@ -13,7 +13,8 @@ import (
 )
 
 func TestCreateLocalUploadTaskWaitsStableAndUploads(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	local := filepath.Join(t.TempDir(), "local.txt")
 	if err := os.WriteFile(local, []byte("local upload"), 0o644); err != nil {
@@ -23,8 +24,9 @@ func TestCreateLocalUploadTaskWaitsStableAndUploads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateLocalUploadTask(ctx, LocalUploadTaskRequest{
 		Items: []LocalUploadTaskItem{{

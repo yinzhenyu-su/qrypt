@@ -11,12 +11,14 @@ import (
 )
 
 func TestVFSUploadTaskCancelRemovesPendingUpload(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/cancel.txt", []byte("data"), 0); err != nil {
@@ -41,12 +43,14 @@ func TestVFSUploadTaskCancelRemovesPendingUpload(t *testing.T) {
 }
 
 func TestVFSUploadTaskRemoveClearsCompletedHistory(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/done.txt", []byte("data"), 0); err != nil {
@@ -70,12 +74,14 @@ func TestVFSUploadTaskRemoveClearsCompletedHistory(t *testing.T) {
 }
 
 func TestVFSUploadTaskRetryRunsScheduledUploadNow(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/retry-now.txt", []byte("data"), 0); err != nil {
@@ -97,12 +103,14 @@ func TestVFSUploadTaskRetryRunsScheduledUploadNow(t *testing.T) {
 	}
 }
 func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &cancelAwareUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, UploadWorkers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	content := []byte(strings.Repeat("resume-test", 128))
@@ -146,12 +154,14 @@ func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
 	}
 }
 func TestVFSUploadRetryUsesGrowingBackoff(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{failUploads: 2}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/retry.txt", []byte("data"), 0); err != nil {
@@ -179,6 +189,7 @@ func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, first)
 	first.Start(firstCtx)
 	if _, err := first.WriteAt(firstCtx, "/resume-retry.txt", []byte("data"), 0); err != nil {
 		t.Fatal(err)
@@ -197,7 +208,10 @@ func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second.Start(context.Background())
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	defer stopVFS(t, second)
+	second.Start(secondCtx)
 	time.Sleep(100 * time.Millisecond)
 	if got := secondDriver.uploadCount(); got != 0 {
 		t.Fatalf("resume uploaded before next attempt: count=%d", got)
