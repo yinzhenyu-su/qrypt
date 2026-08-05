@@ -1,15 +1,11 @@
 package baidunetdisk
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
@@ -260,252 +255,8 @@ func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
-func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	dir := d.resolvePath(parentID)
-	return d.listDir(ctx, dir)
-}
-
-func (d *Driver) listDir(ctx context.Context, dir string) ([]drive.Entry, error) {
-	start := 0
-	entries := make([]drive.Entry, 0)
-	for {
-		query := map[string]string{
-			"method": "list",
-			"dir":    dir,
-			"web":    "web",
-			"start":  strconv.Itoa(start),
-			"limit":  strconv.Itoa(defaultListPageLimit),
-		}
-		if d.orderBy != "" {
-			query["order"] = d.orderBy
-			if d.orderDesc {
-				query["desc"] = "1"
-			}
-		}
-		var resp listResp
-		if err := d.get(ctx, "/xpan/file", query, &resp); err != nil {
-			err = fmt.Errorf("baidu_netdisk: list %q: %w", dir, err)
-			d.setLastError(err)
-			return nil, err
-		}
-		for _, item := range resp.List {
-			entries = append(entries, item.entry(dir))
-		}
-		if len(resp.List) < defaultListPageLimit {
-			break
-		}
-		start += defaultListPageLimit
-	}
-	return entries, nil
-}
-
-func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	if offset < 0 || size < 0 {
-		return nil, fmt.Errorf("baidu_netdisk: read: negative offset or size")
-	}
-	if entry.Size > 0 && offset >= entry.Size {
-		return io.NopCloser(bytes.NewReader(nil)), nil
-	}
-	u, err := d.downloadURL(ctx, entry)
-	if err != nil {
-		d.setLastError(err)
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", d.downloadUA)
-	if offset > 0 || size > 0 {
-		end := ""
-		if size > 0 {
-			endOffset := offset + size - 1
-			if entry.Size > 0 && endOffset >= entry.Size {
-				endOffset = entry.Size - 1
-			}
-			end = strconv.FormatInt(endOffset, 10)
-		}
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%s", offset, end))
-	}
-	start := time.Now()
-	resp, err := d.httpClient.Do(req)
-	d.recordHTTP(ctx, "download", req, resp, start, map[string]any{"range": req.Header.Get("Range")}, err)
-	if err != nil {
-		d.downloadCache.Delete(entry.ID)
-		err = fmt.Errorf("baidu_netdisk: read: %w", err)
-		d.setLastError(err)
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && entry.Size > 0 && offset >= entry.Size {
-		resp.Body.Close()
-		return io.NopCloser(bytes.NewReader(nil)), nil
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		resp.Body.Close()
-		d.downloadCache.Delete(entry.ID)
-		err := fmt.Errorf("baidu_netdisk: read status %d", resp.StatusCode)
-		d.setLastError(err)
-		return nil, err
-	}
-	return d.limiter.LimitDownload(ctx, resp.Body), nil
-}
-
-func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
-	parentPath := d.resolvePath(parentID)
-	newPath := path.Join(parentPath, name)
-	var resp createResp
-	if err := d.create(ctx, newPath, 0, 1, &resp); err != nil {
-		err = fmt.Errorf("baidu_netdisk: mkdir %q: %w", newPath, err)
-		d.setLastError(err)
-		return drive.Entry{}, err
-	}
-	entry := drive.Entry{ID: newPath, ParentID: parentPath, Name: name, IsDir: true}
-	if resp.File.Path != "" {
-		entry = resp.File.entry(parentPath)
-	} else if resp.Path != "" {
-		entry.ID = resp.Path
-	}
-	if resp.FsID > 0 {
-		entry.Extra = map[string]any{"fs_id": strconv.FormatInt(resp.FsID, 10)}
-	}
-	return entry, nil
-}
-
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	dst := d.resolvePath(dstParentID)
-	err := d.manage(ctx, "move", []map[string]string{{"path": entry.ID, "dest": dst, "newname": entry.Name}})
-	if err != nil {
-		err = fmt.Errorf("baidu_netdisk: move %q to %q: %w", entry.ID, dst, err)
-		d.setLastError(err)
-	}
-	return err
-}
-
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	err := d.manage(ctx, "rename", []map[string]string{{"path": entry.ID, "newname": newName}})
-	if err != nil {
-		err = fmt.Errorf("baidu_netdisk: rename %q: %w", entry.ID, err)
-		d.setLastError(err)
-	}
-	return err
-}
-
-func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
-	err := d.manage(ctx, "delete", []string{entry.ID})
-	if err != nil {
-		err = fmt.Errorf("baidu_netdisk: remove %q: %w", entry.ID, err)
-		d.setLastError(err)
-	}
-	return err
-}
-
-func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
-	parentID, name, source := req.ParentID, req.Name, req.Source
-	size := source.Size()
-	if size < 1 {
-		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("baidu_netdisk: empty files are not allowed by baidu netdisk"))
-	}
-	parentPath := d.resolvePath(parentID)
-	remotePath := path.Join(parentPath, name)
-	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
-	blockList, contentMD5, sliceMD5, err := uploadHashes(ctx, source, size)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	blockListJSON, err := json.Marshal(blockList)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	sessionKey := util.UploadSessionKey(parentPath, name, size, contentMD5, sliceMD5)
-	session, resumedSession := d.loadUploadSession(sessionKey)
-	uploadID := session.UploadID
-	partsToUpload := append([]int(nil), session.BlockList...)
-	if !resumedSession {
-		var pre precreateResp
-		if err := d.precreate(ctx, remotePath, size, string(blockListJSON), contentMD5, sliceMD5, &pre); err != nil {
-			err = fmt.Errorf("baidu_netdisk: upload precreate: %w", err)
-			d.setLastError(err)
-			return drive.Entry{}, err
-		}
-		if pre.ReturnType == 2 {
-			drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
-			d.lastErrorMu.Lock()
-			d.instantUploadCount++
-			d.lastErrorMu.Unlock()
-			d.deleteUploadSession(sessionKey)
-			return pre.File.entry(parentPath), nil
-		}
-		if pre.UploadID == "" {
-			return drive.Entry{}, drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload precreate returned empty uploadid"))
-		}
-		uploadID = pre.UploadID
-		partsToUpload = append([]int(nil), pre.BlockList...)
-		session = baiduUploadSession{
-			Key:            sessionKey,
-			ParentPath:     parentPath,
-			Name:           name,
-			RemotePath:     remotePath,
-			Size:           size,
-			ContentMD5:     contentMD5,
-			SliceMD5:       sliceMD5,
-			UploadID:       uploadID,
-			PartSize:       uploadPartSize(size),
-			BlockList:      partsToUpload,
-			CompletedParts: map[int]bool{},
-		}
-	} else if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
-	}
-	if err := d.uploadParts(ctx, source, req.Progress, remotePath, name, size, uploadID, partsToUpload, session.CompletedParts, func(partSeq int) {
-		session.CompletedParts[partSeq] = true
-		d.saveUploadSession(session)
-	}); err != nil {
-		err = d.resumedUploadSessionError(resumedSession, sessionKey, err)
-		d.setLastError(err)
-		return drive.Entry{}, err
-	}
-	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
-	var created createResp
-	if err := d.createFile(ctx, remotePath, size, uploadID, string(blockListJSON), &created); err != nil {
-		err = fmt.Errorf("baidu_netdisk: upload create: %w", err)
-		err = d.resumedUploadSessionError(resumedSession, sessionKey, err)
-		d.setLastError(err)
-		return drive.Entry{}, err
-	}
-	entry := drive.Entry{ID: remotePath, ParentID: parentPath, Name: name, Size: size}
-	if created.File.Path != "" {
-		entry = created.File.entry(parentPath)
-	} else if created.Path != "" {
-		entry.ID = created.Path
-	}
-	if created.FsID > 0 {
-		entry.Extra = map[string]any{"fs_id": strconv.FormatInt(created.FsID, 10)}
-	}
-	d.deleteUploadSession(sessionKey)
-	return entry, nil
-}
-
-func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
-	var resp quotaResp
-	if err := d.request(ctx, http.MethodGet, "https://pan.baidu.com/api/quota", nil, nil, &resp); err != nil {
-		err = fmt.Errorf("baidu_netdisk: space: %w", err)
-		d.setLastError(err)
-		return drive.Space{}, err
-	}
-	return drive.Space{Total: resp.Total, Free: resp.Total - resp.Used}, nil
-}
-
-// RemoteHash reports the content MD5 the API returned when the entry was
-// listed (baidu computes md5 of the stored bytes; large files may lack it).
-func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
-	return drive.RemoteHashFromExtra(entry, "md5", drive.HashMD5)
-}
-
-func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
-	if p == "" || p == "/" {
-		return d.rootPath, nil
-	}
-	return normalizeDir(path.Join(d.rootPath, strings.Trim(p, "/"))), nil
+func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return d.metrics.Events(since), nil
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {
@@ -537,447 +288,56 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}, nil
 }
 
-func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
-	return d.metrics.Events(since), nil
+func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
+	var resp quotaResp
+	if err := d.request(ctx, http.MethodGet, "https://pan.baidu.com/api/quota", nil, nil, &resp); err != nil {
+		err = fmt.Errorf("baidu_netdisk: space: %w", err)
+		d.setLastError(err)
+		return drive.Space{}, err
+	}
+	return drive.Space{Total: resp.Total, Free: resp.Total - resp.Used}, nil
 }
 
-func (d *Driver) statRoot(ctx context.Context) (drive.Entry, error) {
-	parent := path.Dir(d.rootPath)
-	name := path.Base(d.rootPath)
-	entries, err := d.listDir(ctx, parent)
-	if err != nil {
-		return drive.Entry{}, err
+// RemoteHash reports the content MD5 the API returned when the entry was
+// listed (baidu computes md5 of the stored bytes; large files may lack it).
+
+func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
+	if p == "" || p == "/" {
+		return d.rootPath, nil
 	}
-	for _, entry := range entries {
-		if entry.Name == name && entry.IsDir {
-			return entry, nil
-		}
-	}
-	return drive.Entry{}, fmt.Errorf("%w: path not found", drive.ErrNotFound)
+	return normalizeDir(path.Join(d.rootPath, strings.Trim(p, "/"))), nil
 }
 
-func (d *Driver) resolvePath(id string) string {
-	if id == "" || id == "/" || id == "0" {
-		return d.rootPath
-	}
-	return normalizeDir(id)
-}
-
-func (d *Driver) downloadURL(ctx context.Context, entry drive.Entry) (string, error) {
-	if cached, ok := d.downloadCache.Load(entry.ID); ok {
-		if item, ok := cached.(cachedDownloadURL); ok && item.URL != "" && time.Now().Before(item.ExpiresAt) {
-			return item.URL, nil
-		}
-		d.downloadCache.Delete(entry.ID)
-	}
-	fsID := entryFSID(entry)
-	if fsID == "" {
-		return "", fmt.Errorf("baidu_netdisk: missing fs_id for %q", entry.ID)
-	}
-	var resp downloadResp
-	if err := d.get(ctx, "/xpan/multimedia", map[string]string{
-		"method": "filemetas",
-		"fsids":  "[" + fsID + "]",
-		"dlink":  "1",
-	}, &resp); err != nil {
-		return "", fmt.Errorf("baidu_netdisk: download url: %w", err)
-	}
-	if len(resp.List) == 0 || resp.List[0].Dlink == "" {
-		return "", fmt.Errorf("baidu_netdisk: download url is empty")
-	}
-	dlink := resp.List[0].Dlink
-	if strings.Contains(dlink, "?") {
-		dlink += "&access_token=" + url.QueryEscape(d.accessToken)
-	} else {
-		dlink += "?access_token=" + url.QueryEscape(d.accessToken)
-	}
-	redirectURL, err := d.resolveDownloadRedirect(ctx, dlink)
-	if err != nil {
-		return "", err
-	}
-	d.downloadCache.Store(entry.ID, cachedDownloadURL{URL: redirectURL, ExpiresAt: time.Now().Add(defaultDownloadTTL - defaultTokenSkew)})
-	return redirectURL, nil
-}
-
-func (d *Driver) resolveDownloadRedirect(ctx context.Context, u string) (string, error) {
-	client := *d.httpClient
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", d.downloadUA)
-	start := time.Now()
-	resp, err := client.Do(req)
-	d.recordHTTP(ctx, "resolve_download_redirect", req, resp, start, nil, err)
-	if err != nil {
-		return "", fmt.Errorf("baidu_netdisk: download redirect: %w", err)
-	}
-	defer resp.Body.Close()
-	location := resp.Header.Get("Location")
-	if location == "" {
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return u, nil
-		}
-		return "", fmt.Errorf("baidu_netdisk: download redirect status %d", resp.StatusCode)
-	}
-	if parsed, err := url.Parse(location); err == nil && !parsed.IsAbs() {
-		location = resp.Request.URL.ResolveReference(parsed).String()
-	}
-	return location, nil
-}
-
-func (d *Driver) get(ctx context.Context, pathname string, params map[string]string, out any) error {
-	return d.request(ctx, http.MethodGet, d.apiBaseURL+pathname, params, nil, out)
-}
-
-func (d *Driver) postForm(ctx context.Context, pathname string, params, form map[string]string, out any) error {
-	return d.request(ctx, http.MethodPost, d.apiBaseURL+pathname, params, form, out)
-}
-
-func (d *Driver) request(ctx context.Context, method, rawURL string, params, form map[string]string, out any) error {
-	var lastErr error
-	for attempt := range 3 {
-		if err := d.ensureToken(ctx); err != nil {
-			return err
-		}
-		err := d.doRequest(ctx, method, rawURL, params, form, out)
-		if tokenExpired(err) {
-			if refreshErr := d.refresh(ctx); refreshErr != nil {
-				return refreshErr
-			}
-			lastErr = err
-			continue
-		}
-		if err != nil {
-			lastErr = err
-			if attempt < 2 {
-				if waitErr := retry.Wait(ctx, attempt); waitErr != nil {
-					return waitErr
-				}
-			}
-			continue
-		}
-		return nil
-	}
-	return lastErr
-}
-
-func (d *Driver) doRequest(ctx context.Context, method, rawURL string, params, form map[string]string, out any) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return err
-	}
-	query := u.Query()
-	query.Set("access_token", d.accessToken)
-	for key, value := range params {
-		query.Set(key, value)
-	}
-	u.RawQuery = query.Encode()
-	var body io.Reader
-	if len(form) > 0 {
-		values := url.Values{}
-		for key, value := range form {
-			values.Set(key, value)
-		}
-		body = strings.NewReader(values.Encode())
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
-	if err != nil {
-		return err
-	}
-	if len(form) > 0 {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	start := time.Now()
-	resp, err := d.httpClient.Do(req)
-	request := util.MergeRequest(util.RequestFields(params), util.RequestFields(form))
-	d.recordHTTP(ctx, u.Path, req, resp, start, request, err)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d: %s", resp.StatusCode, string(data))
-	}
-	if out != nil {
-		if err := json.Unmarshal(data, out); err != nil {
-			return err
-		}
-	}
-	if errno, errmsg := responseErrno(data); errno != 0 {
-		return apiError{errno: errno, message: errmsg}
-	}
-	return nil
-}
-
-func (d *Driver) create(ctx context.Context, p string, size int64, isDir int, out any) error {
-	return d.postForm(ctx, "/xpan/file", map[string]string{"method": "create"}, map[string]string{
-		"path":  p,
-		"size":  strconv.FormatInt(size, 10),
-		"isdir": strconv.Itoa(isDir),
-		"rtype": "3",
-	}, out)
-}
-
-func (d *Driver) createFile(ctx context.Context, p string, size int64, uploadID, blockList string, out any) error {
-	return d.postForm(ctx, "/xpan/file", map[string]string{"method": "create"}, map[string]string{
-		"path":       p,
-		"size":       strconv.FormatInt(size, 10),
-		"isdir":      "0",
-		"rtype":      "3",
-		"uploadid":   uploadID,
-		"block_list": blockList,
-	}, out)
-}
-
-func (d *Driver) precreate(ctx context.Context, p string, size int64, blockList, contentMD5, sliceMD5 string, out any) error {
-	return d.postForm(ctx, "/xpan/file", map[string]string{"method": "precreate"}, map[string]string{
-		"path":        p,
-		"size":        strconv.FormatInt(size, 10),
-		"isdir":       "0",
-		"autoinit":    "1",
-		"rtype":       "3",
-		"block_list":  blockList,
-		"content-md5": contentMD5,
-		"slice-md5":   sliceMD5,
-	}, out)
-}
-
-func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, remotePath, name string, size int64, uploadID string, blockList []int, completed map[int]bool, markComplete func(int)) error {
-	file, err := source.Open(ctx)
-	if err != nil {
-		return fmt.Errorf("baidu_netdisk: upload open: %w", err)
-	}
-	defer file.Close()
-	partSize := uploadPartSize(size)
-	for _, partSeq := range blockList {
-		if partSeq < 0 {
-			continue
-		}
-		offset := int64(partSeq) * partSize
-		length := partSize
-		if remaining := size - offset; remaining < length {
-			length = remaining
-		}
-		if length < 0 {
-			length = 0
-		}
-		if completed[partSeq] {
-			drive.ReportUploadProgress(progress, length)
-			continue
-		}
-		section := io.NewSectionReader(file, offset, length)
-		if err := d.uploadSlice(ctx, progress, remotePath, name, uploadID, partSeq, section); err != nil {
-			return err
-		}
-		if markComplete != nil {
-			markComplete(partSeq)
-		}
-	}
-	return nil
-}
-
-func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress, remotePath, name, uploadID string, partSeq int, section *io.SectionReader) error {
-	u, err := url.Parse(d.uploadAPI + "/rest/2.0/pcs/superfile2")
-	if err != nil {
-		return err
-	}
-	query := u.Query()
-	query.Set("method", "upload")
-	query.Set("access_token", d.accessToken)
-	query.Set("type", "tmpfile")
-	query.Set("path", remotePath)
-	query.Set("uploadid", uploadID)
-	query.Set("partseq", strconv.Itoa(partSeq))
-	u.RawQuery = query.Encode()
-
-	body, contentType, contentLength, err := multipartUploadBody(ctx, d.limiter, progress, name, section)
-	if err != nil {
-		return err
-	}
-	defer body.Close()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", contentType)
-	req.ContentLength = contentLength
-	start := time.Now()
-	resp, err := d.httpClient.Do(req)
-	d.recordHTTP(ctx, "upload_part", req, resp, start, map[string]any{"part_seq": partSeq, "bytes": req.ContentLength}, err)
-	if err != nil {
-		return fmt.Errorf("baidu_netdisk: upload part %d: %w", partSeq, err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("baidu_netdisk: upload part %d status %d: %s", partSeq, resp.StatusCode, string(data))
-		if uploadIDExpiredResponse(data) {
-			return errBaiduUploadIDExpired
-		}
-		if nonRetryableUploadStatus(resp.StatusCode) {
-			err = drive.NonRetryable(err)
-		}
-		return err
-	}
-	if uploadIDExpiredResponse(data) {
-		return errBaiduUploadIDExpired
-	}
-	var uploadResp uploadSliceResp
-	if err := json.Unmarshal(data, &uploadResp); err == nil {
-		if uploadResp.ErrorCode != 0 {
-			return drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload part %d error_code %d: %s", partSeq, uploadResp.ErrorCode, uploadResp.ErrorMsg))
-		}
-		if uploadResp.Errno != 0 {
-			return drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload part %d errno %d: %s", partSeq, uploadResp.Errno, uploadResp.Errmsg))
-		}
-	}
-	return nil
-}
-
-func multipartUploadBody(ctx context.Context, limiter *drive.BandwidthLimiter, progress drive.UploadProgress, name string, section *io.SectionReader) (io.ReadCloser, string, int64, error) {
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	contentLength, err := multipartContentLength(mw.Boundary(), name, section.Size())
-	if err != nil {
-		_ = pr.Close()
-		_ = pw.Close()
-		return nil, "", 0, err
-	}
-	go func() {
-		part, err := mw.CreateFormFile("file", name)
-		if err == nil {
-			uploadReader := drive.NewUploadProgressReader(progress, section)
-			reader := io.Reader(uploadReader)
-			if limiter != nil {
-				reader = limiter.LimitUpload(ctx, uploadReader)
-			}
-			_, err = io.Copy(part, reader)
-		}
-		if closeErr := mw.Close(); err == nil {
-			err = closeErr
-		}
-		_ = pw.CloseWithError(err)
-	}()
-	return pr, mw.FormDataContentType(), contentLength, nil
-}
-
-func multipartContentLength(boundary, name string, payloadSize int64) (int64, error) {
-	counter := countingWriter{}
-	mw := multipart.NewWriter(&counter)
-	if err := mw.SetBoundary(boundary); err != nil {
-		return 0, err
-	}
-	if _, err := mw.CreateFormFile("file", name); err != nil {
-		return 0, err
-	}
-	counter.n += payloadSize
-	if err := mw.Close(); err != nil {
-		return 0, err
-	}
-	return counter.n, nil
-}
-
-type countingWriter struct {
-	n int64
-}
-
-func (w *countingWriter) Write(p []byte) (int, error) {
-	w.n += int64(len(p))
-	return len(p), nil
-}
-
-func nonRetryableUploadStatus(status int) bool {
-	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
-}
-
-func uploadIDExpiredResponse(body []byte) bool {
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "uploadid") &&
-		(strings.Contains(lower, "invalid") || strings.Contains(lower, "expired") || strings.Contains(lower, "not found"))
-}
-
-func (d *Driver) loadUploadSession(key string) (baiduUploadSession, bool) {
-	session, ok := d.uploadSessionStore().Load(key)
-	if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
-	}
-	return session, ok
-}
-
-func (d *Driver) saveUploadSession(session baiduUploadSession) {
-	d.uploadSessionStore().Save(session)
-}
-
-func (d *Driver) deleteUploadSession(key string) {
-	d.uploadSessionStore().Delete(key)
-}
-
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[baiduUploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[baiduUploadSession]{
-		Store:      d.stateStore,
-		File:       baiduUploadSessionStateFile,
-		MaxAge:     baiduUploadSessionMaxAge,
-		MaxEntries: baiduUploadSessionMaxEntries,
-		Key: func(session baiduUploadSession) string {
-			return session.Key
-		},
-		Valid: func(key string, session baiduUploadSession) bool {
-			return session.Key != "" && session.UploadID != "" && len(session.BlockList) > 0 && len(session.CompletedParts) > 0
-		},
-		UpdatedAt: func(session baiduUploadSession) time.Time {
-			return session.SavedAt
-		},
-		Touch: func(session *baiduUploadSession, now time.Time) {
-			session.SavedAt = now
-		},
-		OnError: func(err error) {
-			d.setLastError(fmt.Errorf("baidu_netdisk: upload session state: %w", err))
-		},
-	})
-}
-
-func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
-	if resumed && (errors.Is(err, errBaiduUploadIDExpired) || drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
-		d.deleteUploadSession(key)
-		return fmt.Errorf("baidu_netdisk: resumed upload session invalid, will retry from scratch: %v", err)
-	}
-	return err
-}
-
-func invalidResumedUploadSession(err error) bool {
+func (d *Driver) setLastError(err error) {
+	d.lastErrorMu.Lock()
+	defer d.lastErrorMu.Unlock()
 	if err == nil {
-		return false
+		d.lastError = ""
+		return
 	}
-	var apiErr apiError
-	if errors.As(err, &apiErr) {
-		return apiErr.errno != 0
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "uploadid") &&
-		(strings.Contains(s, "invalid") || strings.Contains(s, "expired") || strings.Contains(s, "not found"))
+	d.lastError = err.Error()
 }
 
-func (d *Driver) manage(ctx context.Context, op string, filelist any) error {
-	data, err := json.Marshal(filelist)
-	if err != nil {
-		return err
+type apiError struct {
+	errno   int
+	message string
+}
+
+func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Request, resp *http.Response, start time.Time, request map[string]any, err error) {
+	event := drive.MetricEvent{
+		Operation: operation,
+		Method:    req.Method,
+		URL:       util.URL(req.URL),
+		Duration:  time.Since(start).String(),
+		Request:   request,
 	}
-	return d.postForm(ctx, "/xpan/file", map[string]string{"method": "filemanager", "opera": op}, map[string]string{
-		"async":    "0",
-		"filelist": string(data),
-		"ondup":    "fail",
-	}, nil)
+	if resp != nil {
+		event.Status = resp.StatusCode
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	d.metrics.Record(ctx, event)
 }
 
 func (d *Driver) ensureToken(ctx context.Context) error {
@@ -1111,37 +471,54 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 	return json.Unmarshal(data, out)
 }
 
-func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Request, resp *http.Response, start time.Time, request map[string]any, err error) {
-	event := drive.MetricEvent{
-		Operation: operation,
-		Method:    req.Method,
-		URL:       util.URL(req.URL),
-		Duration:  time.Since(start).String(),
-		Request:   request,
-	}
-	if resp != nil {
-		event.Status = resp.StatusCode
-	}
+func (d *Driver) manage(ctx context.Context, op string, filelist any) error {
+	data, err := json.Marshal(filelist)
 	if err != nil {
-		event.Error = err.Error()
+		return err
 	}
-	d.metrics.Record(ctx, event)
+	return d.postForm(ctx, "/xpan/file", map[string]string{"method": "filemanager", "opera": op}, map[string]string{
+		"async":    "0",
+		"filelist": string(data),
+		"ondup":    "fail",
+	}, nil)
 }
 
-func (d *Driver) setLastError(err error) {
-	d.lastErrorMu.Lock()
-	defer d.lastErrorMu.Unlock()
-	if err == nil {
-		d.lastError = ""
-		return
+func (d *Driver) statRoot(ctx context.Context) (drive.Entry, error) {
+	parent := path.Dir(d.rootPath)
+	name := path.Base(d.rootPath)
+	entries, err := d.listDir(ctx, parent)
+	if err != nil {
+		return drive.Entry{}, err
 	}
-	d.lastError = err.Error()
+	for _, entry := range entries {
+		if entry.Name == name && entry.IsDir {
+			return entry, nil
+		}
+	}
+	return drive.Entry{}, fmt.Errorf("%w: path not found", drive.ErrNotFound)
 }
 
-type apiError struct {
-	errno   int
-	message string
+func normalizeDir(p string) string {
+	if p == "" {
+		return ""
+	}
+	cleaned := path.Clean("/" + strings.TrimSpace(p))
+	if cleaned == "." {
+		return "/"
+	}
+	return cleaned
 }
+
+func baseName(p string) string {
+	if p == "" || p == "/" {
+		return ""
+	}
+	return path.Base(p)
+}
+
+var _ drive.Driver = (*Driver)(nil)
+var _ drive.StateStoreInstaller = (*Driver)(nil)
+var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
 
 func (e apiError) Error() string {
 	if e.message == "" {
@@ -1169,99 +546,50 @@ func responseErrno(data []byte) (int, string) {
 	return *resp.Errno, resp.Errmsg
 }
 
-func entryFSID(entry drive.Entry) string {
-	if extra, ok := drive.EntryRawExtra(entry).(map[string]any); ok {
-		switch v := extra["fs_id"].(type) {
-		case string:
-			return v
-		case int64:
-			return strconv.FormatInt(v, 10)
-		case int:
-			return strconv.Itoa(v)
-		case float64:
-			return strconv.FormatInt(int64(v), 10)
-		}
+func (d *Driver) loadUploadSession(key string) (baiduUploadSession, bool) {
+	session, ok := d.uploadSessionStore().Load(key)
+	if session.CompletedParts == nil {
+		session.CompletedParts = map[int]bool{}
 	}
-	return ""
+	return session, ok
 }
 
-func uploadHashes(ctx context.Context, source drive.ReadOnlyFileSource, size int64) ([]string, string, string, error) {
-	file, err := source.Open(ctx)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("baidu_netdisk: upload hash open: %w", err)
-	}
-	defer file.Close()
-	partSize := uploadPartSize(size)
-	partCount := int((size + partSize - 1) / partSize)
-	blockList := make([]string, 0, partCount)
-	fileHash := md5.New()
-	firstSliceHash := md5.New()
-	firstRemaining := int64(firstSliceMD5Size)
-	buf := make([]byte, 256*1024)
-	for part := 0; part < partCount; part++ {
-		partHash := md5.New()
-		remaining := partSize
-		if part == partCount-1 {
-			remaining = size - int64(part)*partSize
-		}
-		for remaining > 0 {
-			nr := int64(len(buf))
-			if remaining < nr {
-				nr = remaining
-			}
-			n, err := io.ReadFull(file, buf[:nr])
-			if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-				return nil, "", "", fmt.Errorf("baidu_netdisk: upload hash read: %w", err)
-			}
-			if n > 0 {
-				chunk := buf[:n]
-				fileHash.Write(chunk)
-				partHash.Write(chunk)
-				if firstRemaining > 0 {
-					firstN := int64(n)
-					if firstRemaining < firstN {
-						firstN = firstRemaining
-					}
-					firstSliceHash.Write(chunk[:firstN])
-					firstRemaining -= firstN
-				}
-				remaining -= int64(n)
-			}
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			}
-		}
-		blockList = append(blockList, hex.EncodeToString(partHash.Sum(nil)))
-	}
-	return blockList, hex.EncodeToString(fileHash.Sum(nil)), hex.EncodeToString(firstSliceHash.Sum(nil)), nil
+func (d *Driver) saveUploadSession(session baiduUploadSession) {
+	d.uploadSessionStore().Save(session)
 }
 
-func uploadPartSize(size int64) int64 {
-	partSize := int64(defaultUploadPart)
-	if size > int64(maxUploadParts)*partSize {
-		partSize = (size + int64(maxUploadParts) - 1) / int64(maxUploadParts)
-	}
-	return partSize
+func (d *Driver) deleteUploadSession(key string) {
+	d.uploadSessionStore().Delete(key)
 }
 
-func normalizeDir(p string) string {
-	if p == "" {
-		return ""
-	}
-	cleaned := path.Clean("/" + strings.TrimSpace(p))
-	if cleaned == "." {
-		return "/"
-	}
-	return cleaned
+func (d *Driver) uploadSessionStore() *util.UploadSessionStore[baiduUploadSession] {
+	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[baiduUploadSession]{
+		Store:      d.stateStore,
+		File:       baiduUploadSessionStateFile,
+		MaxAge:     baiduUploadSessionMaxAge,
+		MaxEntries: baiduUploadSessionMaxEntries,
+		Key: func(session baiduUploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session baiduUploadSession) bool {
+			return session.Key != "" && session.UploadID != "" && len(session.BlockList) > 0 && len(session.CompletedParts) > 0
+		},
+		UpdatedAt: func(session baiduUploadSession) time.Time {
+			return session.SavedAt
+		},
+		Touch: func(session *baiduUploadSession, now time.Time) {
+			session.SavedAt = now
+		},
+		OnError: func(err error) {
+			d.setLastError(fmt.Errorf("baidu_netdisk: upload session state: %w", err))
+		},
+	})
 }
 
-func baseName(p string) string {
-	if p == "" || p == "/" {
-		return ""
+func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
+	if resumed && (errors.Is(err, errBaiduUploadIDExpired) || drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+		d.deleteUploadSession(key)
+		return fmt.Errorf("baidu_netdisk: resumed upload session invalid, will retry from scratch: %v", err)
 	}
-	return path.Base(p)
+	return err
 }
-
-var _ drive.Driver = (*Driver)(nil)
-var _ drive.StateStoreInstaller = (*Driver)(nil)
-var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
