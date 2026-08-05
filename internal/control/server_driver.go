@@ -178,12 +178,34 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
-	case "auth", "crud", "instantupload", "multipart":
+	case "auth", "crud", "instantupload", "multipart", "fs", "resume":
 		spec, ok := driverTestSpecs[testType]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown driver test: %s", testType), http.StatusBadRequest)
 			return
 		}
+		// VFS-layer specs need the filesystem plus an explicit mount.
+		var env TestEnv
+		if spec.RequiresVFS {
+			filesys, ok := s.source.(vfs.FileSystem)
+			if !ok {
+				http.Error(w, fmt.Sprintf("%s test not available: source does not implement FileSystem", spec.Name), http.StatusNotImplemented)
+				return
+			}
+			if req.Mount == "" {
+				http.Error(w, fmt.Sprintf("%s test requires --mount", spec.Name), http.StatusBadRequest)
+				return
+			}
+			if spec.Name == "resume" {
+				if _, ok := s.source.(vfs.DebugUploadCancelInjector); !ok {
+					http.Error(w, "VFS resume test not available: source does not support debug upload cancel injection", http.StatusNotImplemented)
+					return
+				}
+			}
+			env.FileSys = filesys
+		}
+		env.Ctx = r.Context()
+		env.Req = req
 		var results []TestRun
 		matched := false
 		for _, nd := range drivers {
@@ -216,7 +238,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
-			results = append(results, spec.Run(r.Context(), nd.Name, nd.Driver, req))
+			results = append(results, spec.Run(env, nd.Name, nd.Driver))
 		}
 		if req.Mount != "" && !matched {
 			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
@@ -271,54 +293,6 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			result := RunDriverXferTest(r.Context(), srcMount, srcDriver.Driver, dstMount, dstDriver.Driver, size)
 			writeJSON(w, []TestRun{fromXferTestResult(*result)})
 		}
-
-	case "fs":
-		if req.Mount == "" {
-			http.Error(w, "fs test requires --mount", http.StatusBadRequest)
-			return
-		}
-		filesys, ok := s.source.(vfs.FileSystem)
-		if !ok {
-			http.Error(w, "VFS fs test not available: source does not implement FileSystem", http.StatusNotImplemented)
-			return
-		}
-		nd, ok := findDebugTestDriver(drivers, req.Mount)
-		if !ok {
-			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
-			return
-		}
-		if !nd.TestEnabled {
-			http.Error(w, debugTestDisabledError(req.Mount), http.StatusForbidden)
-			return
-		}
-		result := RunVFSSmokeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
-		writeJSON(w, []TestRun{fromFSTestResult("fs", *result)})
-
-	case "resume":
-		if req.Mount == "" {
-			http.Error(w, "resume test requires --mount", http.StatusBadRequest)
-			return
-		}
-		filesys, ok := s.source.(vfs.FileSystem)
-		if !ok {
-			http.Error(w, "VFS resume test not available: source does not implement FileSystem", http.StatusNotImplemented)
-			return
-		}
-		if _, ok := s.source.(vfs.DebugUploadCancelInjector); !ok {
-			http.Error(w, "VFS resume test not available: source does not support debug upload cancel injection", http.StatusNotImplemented)
-			return
-		}
-		nd, ok := findDebugTestDriver(drivers, req.Mount)
-		if !ok {
-			http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
-			return
-		}
-		if !nd.TestEnabled {
-			http.Error(w, debugTestDisabledError(req.Mount), http.StatusForbidden)
-			return
-		}
-		result := RunVFSResumeTest(r.Context(), filesys, req.Mount, parseXferSize(req.Size))
-		writeJSON(w, []TestRun{fromResumeTestResult(*result)})
 
 	default:
 		http.Error(w, fmt.Sprintf("unknown driver test: %s", req.Test), http.StatusBadRequest)

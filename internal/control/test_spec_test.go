@@ -3,10 +3,12 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -190,5 +192,94 @@ func TestTestRunJSONStable(t *testing.T) {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("TestRun JSON missing %s: %s", want, body)
 		}
+	}
+}
+
+// TestVFSSpecsRegistered asserts the VFS-layer specs (fs, resume) live in the
+// same registry as drive-layer specs, with the RequiresVFS flag set.
+func TestVFSSpecsRegistered(t *testing.T) {
+	for _, name := range []string{"fs", "resume"} {
+		spec, ok := driverTestSpecs[name]
+		if !ok {
+			t.Fatalf("spec %q not registered", name)
+		}
+		if !spec.RequiresVFS {
+			t.Fatalf("spec %q must require the VFS layer", name)
+		}
+	}
+}
+
+// TestVFSSpecRequiresFileSystem verifies the scheduler rejects VFS specs on a
+// source that does not implement FileSystem (drive-layer snapshotters).
+func TestVFSSpecRequiresFileSystem(t *testing.T) {
+	snapshotter := fakeSnapshotter{drivers: []vfs.NamedDriver{{
+		Name:        "local",
+		Driver:      newCRUDMemoryDriver(),
+		TestEnabled: true,
+	}}}
+	_, client := newTestServer(t, snapshotter) // fakeSnapshotter: no FileSystem
+	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "fs", Mount: "local"}); err == nil ||
+		!strings.Contains(err.Error(), "does not implement FileSystem") {
+		t.Fatalf("expected FileSystem rejection, got %v", err)
+	}
+}
+
+// TestVFSFSSpecRunsThroughRegistry drives the fs spec through the real
+// server with a genuine VFS namespace (localfs mount) and asserts the
+// unified envelope, including pass and residual-free cleanup.
+func TestVFSFSSpecRunsThroughRegistry(t *testing.T) {
+	root := t.TempDir()
+	driver := localfs.New(root)
+	if err := driver.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vfs.New(driver, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), TestEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "local", FS: v}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ns.Start(ctx)
+	t.Cleanup(cancel)
+
+	server, err := NewServer(testSocketPath(t), ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close(context.Background()) })
+
+	client, err := NewClient(server.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "fs", Mount: "local", Size: "4k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs []TestRun
+	if err := json.Unmarshal(body, &runs); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	r := runs[0]
+	if r.Spec != "fs" || r.Mount != "local" {
+		t.Fatalf("run identity wrong: %+v", r)
+	}
+	if !r.Pass {
+		t.Fatalf("fs run failed: %+v", r)
+	}
+	if len(r.Steps) == 0 {
+		t.Fatalf("fs run has no steps")
+	}
+	if r.Started.IsZero() || r.Finished.IsZero() || r.Duration == "" {
+		t.Fatalf("fs run missing timing: %+v", r)
 	}
 }
