@@ -175,6 +175,9 @@ func shouldRetryWithAltBase(err error) bool {
 }
 
 func tryNextMgmtBase(err error) bool {
+	if errors.Is(err, drive.ErrNotFound) {
+		return false // a classified not-found is deterministic; no alt-base retry
+	}
 	if shouldRetryWithAltBase(err) {
 		return true
 	}
@@ -264,6 +267,9 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 				Error:     err.Error(),
 			})
 			if attempt < httpMaxRetries && retryableHTTPError(err) {
+				if cerr := ctx.Err(); cerr != nil {
+					return fmt.Errorf("request failed: %w", err)
+				}
 				time.Sleep(retry.ExponentialBackoff(attempt))
 				continue
 			}
@@ -318,7 +324,11 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		if resp.StatusCode >= 400 {
 			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
 			c.recordMetric(ctx, event)
-			return fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
+			apiErr := fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
+			if resp.StatusCode == http.StatusNotFound {
+				return fmt.Errorf("%w: %v", drive.ErrNotFound, apiErr)
+			}
+			return apiErr
 		}
 		c.recordMetric(ctx, event)
 		return nil
