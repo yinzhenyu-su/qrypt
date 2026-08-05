@@ -2,12 +2,9 @@
 package onedrive
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,7 +15,6 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/httputil"
-	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
@@ -305,221 +301,6 @@ func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
-func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	parentID = d.resolveID(parentID)
-	var out []drive.Entry
-	next := d.apiPath(fmt.Sprintf("/items/%s/children?$top=1000&$select=id,name,size,fileSystemInfo,file,folder,parentReference", url.PathEscape(parentID)))
-	for next != "" {
-		var resp listResp
-		if err := d.requestJSON(ctx, http.MethodGet, next, nil, &resp); err != nil {
-			return nil, fmt.Errorf("onedrive: list %q: %w", parentID, err)
-		}
-		for _, item := range resp.Value {
-			out = append(out, item.entry(parentID))
-		}
-		next = resp.NextLink
-	}
-	return out, nil
-}
-
-func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	if entry.IsDir {
-		return nil, fmt.Errorf("onedrive: cannot read directory %q", entry.ID)
-	}
-	if offset < 0 || size < 0 {
-		return nil, fmt.Errorf("onedrive: invalid range offset=%d size=%d", offset, size)
-	}
-	if entry.Size > 0 && offset >= entry.Size {
-		return io.NopCloser(bytes.NewReader(nil)), nil
-	}
-	item, err := d.itemByID(ctx, entry.ID)
-	if err != nil {
-		return nil, fmt.Errorf("onedrive: get download url %q: %w", entry.ID, err)
-	}
-	if item.DownloadURL == "" {
-		return nil, fmt.Errorf("onedrive: item %q has no download url", entry.ID)
-	}
-	downloadURL := d.applyCustomHost(item.DownloadURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if offset > 0 || size > 0 {
-		end := ""
-		if size > 0 {
-			endOffset := offset + size - 1
-			if entry.Size > 0 && endOffset >= entry.Size {
-				endOffset = entry.Size - 1
-			}
-			end = strconv.FormatInt(endOffset, 10)
-		}
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%s", offset, end))
-	}
-	start := time.Now()
-	resp, err := d.client.Do(req)
-	d.recordHTTP(ctx, "download", http.MethodGet, downloadURL, start, respStatus(resp), err)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && entry.Size > 0 && offset >= entry.Size {
-		resp.Body.Close()
-		return io.NopCloser(bytes.NewReader(nil)), nil
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("onedrive: download status=%d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	rc := resp.Body
-	if d.limiter != nil {
-		rc = d.limiter.LimitDownload(ctx, rc)
-	}
-	return rc, nil
-}
-
-func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
-	parentID = d.resolveID(parentID)
-	body := map[string]any{
-		"name":                              name,
-		"folder":                            map[string]any{},
-		"@microsoft.graph.conflictBehavior": "rename",
-	}
-	var item itemResp
-	if err := d.requestJSON(ctx, http.MethodPost, d.apiPath(fmt.Sprintf("/items/%s/children", url.PathEscape(parentID))), body, &item); err != nil {
-		return drive.Entry{}, fmt.Errorf("onedrive: mkdir %q: %w", name, err)
-	}
-	return item.entry(parentID), nil
-}
-
-func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
-	if err := d.requestJSON(ctx, http.MethodDelete, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), nil, nil); err != nil {
-		return fmt.Errorf("onedrive: remove %q: %w", entry.ID, err)
-	}
-	return nil
-}
-
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	body := map[string]any{"name": newName}
-	if err := d.requestJSON(ctx, http.MethodPatch, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), body, nil); err != nil {
-		return fmt.Errorf("onedrive: rename %q: %w", entry.ID, err)
-	}
-	return nil
-}
-
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	dstParentID = d.resolveID(dstParentID)
-	body := map[string]any{
-		"parentReference": map[string]any{"id": dstParentID},
-		"name":            entry.Name,
-	}
-	if err := d.requestJSON(ctx, http.MethodPatch, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), body, nil); err != nil {
-		return fmt.Errorf("onedrive: move %q: %w", entry.ID, err)
-	}
-	return nil
-}
-
-func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
-	parentID := d.resolveID(req.ParentID)
-	body, err := req.Source.Open(ctx)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("onedrive: put source open: %w", err)
-	}
-	defer body.Close()
-	if req.Source.Size() <= oneDriveSmallUploadLimit {
-		return d.putSmall(ctx, parentID, req.Name, req.Source.Size(), body, req.Progress)
-	}
-	return d.putLarge(ctx, parentID, req.Name, req.Source.Size(), body, req.Progress)
-}
-
-func (d *Driver) putSmall(ctx context.Context, parentID, name string, size int64, body io.Reader, progress drive.UploadProgress) (drive.Entry, error) {
-	var uploadBody io.Reader = drive.NewUploadProgressReader(progress, body)
-	if d.limiter != nil {
-		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
-	}
-	var item itemResp
-	path := d.apiPath(fmt.Sprintf("/items/%s:/%s:/content", url.PathEscape(parentID), escapePathSegment(name)))
-	if err := d.requestRaw(ctx, http.MethodPut, path, uploadBody, "application/octet-stream", &item); err != nil {
-		err = fmt.Errorf("onedrive: put %q: %w", name, err)
-		if nonRetryableUploadError(err) {
-			err = drive.NonRetryable(err)
-		}
-		return drive.Entry{}, err
-	}
-	if item.Size == 0 {
-		item.Size = size
-	}
-	return item.entry(parentID), nil
-}
-
-func (d *Driver) putLarge(ctx context.Context, parentID, name string, size int64, body drive.ReadOnlyFile, progress drive.UploadProgress) (drive.Entry, error) {
-	var session createUploadSessionResp
-	sessionPath := d.apiPath(fmt.Sprintf("/items/%s:/%s:/createUploadSession", url.PathEscape(parentID), escapePathSegment(name)))
-	payload := map[string]any{"item": map[string]any{"@microsoft.graph.conflictBehavior": "replace"}}
-	if err := d.requestJSON(ctx, http.MethodPost, sessionPath, payload, &session); err != nil {
-		return drive.Entry{}, fmt.Errorf("onedrive: create upload session %q: %w", name, err)
-	}
-	if session.UploadURL == "" {
-		return drive.Entry{}, fmt.Errorf("onedrive: create upload session %q returned empty uploadUrl", name)
-	}
-	for offset := int64(0); offset < size; offset += d.chunkSize {
-		if err := ctx.Err(); err != nil {
-			return drive.Entry{}, err
-		}
-		partSize := d.chunkSize
-		if remaining := size - offset; remaining < partSize {
-			partSize = remaining
-		}
-		reader := io.NewSectionReader(body, offset, partSize)
-		var uploadBody io.Reader = drive.NewUploadProgressReader(progress, reader)
-		if d.limiter != nil {
-			uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, session.UploadURL, uploadBody)
-		if err != nil {
-			return drive.Entry{}, err
-		}
-		req.ContentLength = partSize
-		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+partSize-1, size))
-		start := time.Now()
-		resp, err := d.client.Do(req)
-		d.recordHTTP(ctx, "UploadPart", http.MethodPut, "upload_session", start, respStatus(resp), err)
-		if err != nil {
-			return drive.Entry{}, fmt.Errorf("onedrive: upload part: %w", err)
-		}
-		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-			data, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			err := fmt.Errorf("onedrive: upload part status=%d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
-				err = drive.NonRetryable(err)
-			}
-			return drive.Entry{}, err
-		}
-		resp.Body.Close()
-	}
-	item, err := d.itemByChildName(ctx, parentID, name)
-	if err != nil {
-		return drive.Entry{}, fmt.Errorf("onedrive: resolve uploaded file %q: %w", name, err)
-	}
-	return item.entry(parentID), nil
-}
-
-func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
-	p = cleanOneDrivePath(p)
-	if p == "/" {
-		return d.resolveID(""), nil
-	}
-	item, err := d.itemByPath(ctx, stdpath.Join(d.rootPath, p))
-	if err != nil {
-		return "", err
-	}
-	return item.ID, nil
-}
-
-func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
-	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
-}
-
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	if d.disableDiskUsage {
 		return drive.Space{}, drive.ErrSpaceUnsupported
@@ -566,226 +347,54 @@ func (d *Driver) Capabilities() []drive.Capability {
 }
 
 // RemoteHash reports the content SHA1 from the Graph API file hashes.
+
 func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlgorithm, string, error) {
 	return drive.RemoteHashFromExtra(entry, "sha1", drive.HashSHA1)
 }
 
-func (d *Driver) refresh(ctx context.Context) error {
+func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
+	p = cleanOneDrivePath(p)
+	if p == "/" {
+		return d.resolveID(""), nil
+	}
+	item, err := d.itemByPath(ctx, stdpath.Join(d.rootPath, p))
+	if err != nil {
+		return "", err
+	}
+	return item.ID, nil
+}
+
+func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
+	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
+}
+
+func (d *Driver) recordHTTP(ctx context.Context, operation, method, rawURL string, start time.Time, status int, err error) {
+	event := drive.MetricEvent{
+		Layer:     "driver.http",
+		Operation: operation,
+		Method:    method,
+		Status:    status,
+		Duration:  time.Since(start).String(),
+	}
+	if rawURL != "" && !strings.Contains(rawURL, "uploadUrl=") {
+		event.URL = rawURL
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+	d.metrics.Record(ctx, event)
+}
+
+func (d *Driver) driverName() string {
 	if d.appMode {
-		return d.refreshApp(ctx)
+		return "onedrive_app"
 	}
-	refreshToken := d.currentRefreshToken()
-	if refreshToken == "" {
-		return fmt.Errorf("onedrive: refresh token is required")
-	}
-	if d.useOnlineAPI {
-		err := d.refreshOnline(ctx, refreshToken)
-		if err == nil {
-			return nil
-		}
-		if d.clientID == "" || d.clientSecret == "" {
-			return err
-		}
-	}
-	return d.refreshOAuth(ctx, refreshToken)
+	return "onedrive"
 }
 
-func (d *Driver) refreshApp(ctx context.Context) error {
-	if d.clientID == "" || d.clientSecret == "" {
-		return fmt.Errorf("onedrive_app: client_id and client_secret are required")
-	}
-	form := url.Values{}
-	form.Set("grant_type", "client_credentials")
-	form.Set("client_id", d.clientID)
-	form.Set("client_secret", d.clientSecret)
-	form.Set("resource", d.apiBaseURL+"/")
-	form.Set("scope", d.apiBaseURL+"/.default")
-	reqBody := strings.NewReader(form.Encode())
-	var resp tokenResp
-	if err := d.requestNoAuthRaw(ctx, http.MethodPost, d.oauthBaseURL+"/"+url.PathEscape(d.tenantID)+"/oauth2/token", reqBody, "application/x-www-form-urlencoded", &resp); err != nil {
-		return fmt.Errorf("onedrive_app: access token: %w", err)
-	}
-	if resp.AccessToken == "" {
-		return fmt.Errorf("onedrive_app: access token returned empty token")
-	}
-	d.setTokens(resp.AccessToken, "")
-	return nil
-}
-
-func (d *Driver) refreshOnline(ctx context.Context, refreshToken string) error {
-	u, err := url.Parse(d.onlineAPI)
-	if err != nil {
-		return err
-	}
-	q := u.Query()
-	q.Set("refresh_ui", refreshToken)
-	q.Set("server_use", "true")
-	q.Set("driver_txt", "onedrive_pr")
-	u.RawQuery = q.Encode()
-	var resp onlineTokenResp
-	if err := d.requestNoAuthJSON(ctx, http.MethodGet, u.String(), nil, &resp); err != nil {
-		return fmt.Errorf("onedrive: refresh token: %w", err)
-	}
-	if resp.AccessToken == "" || resp.RefreshToken == "" {
-		if resp.ErrorMessage != "" {
-			return fmt.Errorf("onedrive: refresh token: %s", resp.ErrorMessage)
-		}
-		return fmt.Errorf("onedrive: refresh token returned empty token")
-	}
-	d.setTokens(resp.AccessToken, resp.RefreshToken)
-	return nil
-}
-
-func (d *Driver) refreshOAuth(ctx context.Context, refreshToken string) error {
-	if d.clientID == "" || d.clientSecret == "" {
-		return fmt.Errorf("onedrive: client_id and client_secret are required when use_online_api=false")
-	}
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("client_id", d.clientID)
-	form.Set("client_secret", d.clientSecret)
-	form.Set("refresh_token", refreshToken)
-	if d.redirectURI != "" {
-		form.Set("redirect_uri", d.redirectURI)
-	}
-	reqBody := strings.NewReader(form.Encode())
-	var resp tokenResp
-	if err := d.requestNoAuthRaw(ctx, http.MethodPost, d.oauthBaseURL+"/common/oauth2/v2.0/token", reqBody, "application/x-www-form-urlencoded", &resp); err != nil {
-		return fmt.Errorf("onedrive: refresh token: %w", err)
-	}
-	if resp.AccessToken == "" || resp.RefreshToken == "" {
-		return fmt.Errorf("onedrive: refresh token returned empty token")
-	}
-	d.setTokens(resp.AccessToken, resp.RefreshToken)
-	return nil
-}
-
-func (d *Driver) itemByPath(ctx context.Context, p string) (itemResp, error) {
-	var item itemResp
-	if err := d.requestJSON(ctx, http.MethodGet, d.metaURL(p), nil, &item); err != nil {
-		return itemResp{}, err
-	}
-	return item, nil
-}
-
-func (d *Driver) itemByID(ctx context.Context, id string) (itemResp, error) {
-	var item itemResp
-	if err := d.requestJSON(ctx, http.MethodGet, d.apiPath(fmt.Sprintf("/items/%s?$select=id,name,size,fileSystemInfo,file,folder,parentReference,@microsoft.graph.downloadUrl", url.PathEscape(id))), nil, &item); err != nil {
-		return itemResp{}, err
-	}
-	return item, nil
-}
-
-func (d *Driver) itemByChildName(ctx context.Context, parentID, name string) (itemResp, error) {
-	var item itemResp
-	if err := d.requestJSON(ctx, http.MethodGet, d.apiPath(fmt.Sprintf("/items/%s:/%s:?$select=id,name,size,fileSystemInfo,file,folder,parentReference", url.PathEscape(parentID), escapePathSegment(name))), nil, &item); err != nil {
-		return itemResp{}, err
-	}
-	return item, nil
-}
-
-func (d *Driver) requestJSON(ctx context.Context, method, rawURL string, body, result any) error {
-	err := d.requestJSONNoRefresh(ctx, method, rawURL, body, result)
-	var apiErr *apiError
-	if errors.As(err, &apiErr) && apiErr.Code == "InvalidAuthenticationToken" {
-		if refreshErr := d.refresh(ctx); refreshErr != nil {
-			return refreshErr
-		}
-		return d.requestJSONNoRefresh(ctx, method, rawURL, body, result)
-	}
-	return err
-}
-
-func (d *Driver) requestJSONNoRefresh(ctx context.Context, method, rawURL string, body, result any) error {
-	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(data)
-	}
-	return d.requestRaw(ctx, method, rawURL, reader, "application/json", result)
-}
-
-func (d *Driver) requestRaw(ctx context.Context, method, rawURL string, body io.Reader, contentType string, result any) error {
-	return d.requestRawWithAuth(ctx, method, rawURL, body, contentType, result, d.currentAccessToken())
-}
-
-func (d *Driver) requestNoAuthJSON(ctx context.Context, method, rawURL string, body, result any) error {
-	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(data)
-	}
-	return d.requestNoAuthRaw(ctx, method, rawURL, reader, "application/json", result)
-}
-
-func (d *Driver) requestNoAuthRaw(ctx context.Context, method, rawURL string, body io.Reader, contentType string, result any) error {
-	return d.requestRawWithAuth(ctx, method, rawURL, body, contentType, result, "")
-}
-
-func (d *Driver) requestRawWithAuth(ctx context.Context, method, rawURL string, body io.Reader, contentType string, result any, accessToken string) error {
-	var lastErr error
-	for attempt := 0; attempt < oneDriveRequestAttempts; attempt++ {
-		err := d.requestRawOnce(ctx, method, rawURL, body, contentType, result, accessToken)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		if !retryableOneDriveError(ctx, err) || attempt == oneDriveRequestAttempts-1 {
-			return err
-		}
-		if waitErr := retry.WaitExponential(ctx, attempt); waitErr != nil {
-			return waitErr
-		}
-	}
-	return lastErr
-}
-
-func (d *Driver) requestRawOnce(ctx context.Context, method, rawURL string, body io.Reader, contentType string, result any, accessToken string) error {
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
-	if err != nil {
-		return err
-	}
-	if accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-	}
-	if contentType != "" && body != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
-	start := time.Now()
-	resp, err := d.client.Do(req)
-	d.recordHTTP(ctx, method, method, rawURL, start, respStatus(resp), err)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNoContent {
-		return nil
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var graphErr graphErrorResp
-		_ = json.Unmarshal(data, &graphErr)
-		if graphErr.Error.Code != "" || graphErr.Error.Message != "" {
-			return &apiError{Status: resp.StatusCode, Code: graphErr.Error.Code, Message: graphErr.Error.Message}
-		}
-		return &apiError{Status: resp.StatusCode, Message: strings.TrimSpace(string(data))}
-	}
-	if result != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, result); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+var (
+	_ drive.Driver = (*Driver)(nil)
+)
 
 func retryableOneDriveError(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
@@ -809,92 +418,6 @@ func nonRetryableUploadError(err error) bool {
 		return apiErr.Status >= 400 && apiErr.Status < 500 && apiErr.Status != http.StatusRequestTimeout && apiErr.Status != http.StatusTooManyRequests
 	}
 	return false
-}
-
-func (d *Driver) metaURL(p string) string {
-	p = cleanOneDrivePath(p)
-	if p == "/" {
-		return d.apiPath("/root")
-	}
-	return d.apiPath("/root:" + escapeDrivePath(p) + ":")
-}
-
-func (d *Driver) apiPath(suffix string) string {
-	if d.appMode {
-		return d.apiBaseURL + "/v1.0/users/" + url.PathEscape(d.email) + "/drive" + suffix
-	}
-	if d.isSharepoint {
-		return d.apiBaseURL + "/v1.0/sites/" + url.PathEscape(d.siteID) + "/drive" + suffix
-	}
-	return d.apiBaseURL + "/v1.0/me/drive" + suffix
-}
-
-func (d *Driver) driveURL() string {
-	if d.appMode {
-		return d.apiBaseURL + "/v1.0/users/" + url.PathEscape(d.email) + "/drive"
-	}
-	if d.isSharepoint {
-		return d.apiBaseURL + "/v1.0/sites/" + url.PathEscape(d.siteID) + "/drive"
-	}
-	return d.apiBaseURL + "/v1.0/me/drive"
-}
-
-func (d *Driver) resolveID(id string) string {
-	if id == "" || id == "0" || id == "/" || id == "root" {
-		if d.rootID != "" {
-			return d.rootID
-		}
-		return "root"
-	}
-	return id
-}
-
-func (d *Driver) applyCustomHost(rawURL string) string {
-	if d.customHost == "" {
-		return rawURL
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	u.Host = d.customHost
-	return u.String()
-}
-
-func (d *Driver) currentAccessToken() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.accessToken
-}
-
-func (d *Driver) currentRefreshToken() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.refreshToken
-}
-
-func (d *Driver) setTokens(accessToken, refreshToken string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.accessToken = accessToken
-	d.refreshToken = refreshToken
-}
-
-func (d *Driver) recordHTTP(ctx context.Context, operation, method, rawURL string, start time.Time, status int, err error) {
-	event := drive.MetricEvent{
-		Layer:     "driver.http",
-		Operation: operation,
-		Method:    method,
-		Status:    status,
-		Duration:  time.Since(start).String(),
-	}
-	if rawURL != "" && !strings.Contains(rawURL, "uploadUrl=") {
-		event.URL = rawURL
-	}
-	if err != nil {
-		event.Error = err.Error()
-	}
-	d.metrics.Record(ctx, event)
 }
 
 func respStatus(resp *http.Response) int {
@@ -938,14 +461,3 @@ func credentialSource(useOnlineAPI bool) string {
 	}
 	return "oauth"
 }
-
-func (d *Driver) driverName() string {
-	if d.appMode {
-		return "onedrive_app"
-	}
-	return "onedrive"
-}
-
-var (
-	_ drive.Driver = (*Driver)(nil)
-)
