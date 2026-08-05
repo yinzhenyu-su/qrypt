@@ -14,12 +14,14 @@ import (
 )
 
 func TestVFSZeroByteFlushWaitsForFollowUpWrite(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if err := fs.Create(ctx, "/draft.txt"); err != nil {
@@ -48,12 +50,14 @@ func TestVFSZeroByteFlushWaitsForFollowUpWrite(t *testing.T) {
 	}
 }
 func TestVFSAppleMetadataWrittenAndUploaded(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if n, err := fs.WriteAt(ctx, "/.DS_Store", []byte("finder"), 0); err != nil || n != len("finder") {
@@ -79,7 +83,8 @@ func TestVFSAppleMetadataWrittenAndUploaded(t *testing.T) {
 	}
 }
 func TestVFSRemoteAppleMetadataVisible(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{entries: map[string]drive.Entry{
 		"meta":   {ID: "meta", ParentID: "0", Name: ".DS_Store", Size: 1},
 		"double": {ID: "double", ParentID: "0", Name: "._asset.js", Size: 1},
@@ -109,7 +114,8 @@ func TestVFSRemoteAppleMetadataVisible(t *testing.T) {
 	}
 }
 func TestVFSWriteAtStagesExistingFile(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "data.txt"), []byte("abcdef"), 0o644); err != nil {
 		t.Fatal(err)
@@ -118,6 +124,7 @@ func TestVFSWriteAtStagesExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/data.txt", []byte("XY"), 2); err != nil {
@@ -137,12 +144,14 @@ func TestVFSWriteAtStagesExistingFile(t *testing.T) {
 	}
 }
 func TestVFSTruncateUploadedFile(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 	if _, err := fs.WriteAt(ctx, "/data.txt", []byte("abcdef"), 0); err != nil {
 		t.Fatal(err)

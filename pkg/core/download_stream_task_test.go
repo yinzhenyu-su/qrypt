@@ -13,7 +13,8 @@ import (
 )
 
 func TestCreateTaskDownloadStreamBatchReadsAckAndFinishes(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "a.txt"), []byte("alpha"), 0o644); err != nil {
 		t.Fatal(err)
@@ -25,8 +26,9 @@ func TestCreateTaskDownloadStreamBatchReadsAckAndFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeDownloadStreamBatch,
@@ -89,7 +91,8 @@ func waitForCoreTaskPhase(t *testing.T, c *Core, id, phase string) task.Task {
 }
 
 func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("stream"), 0o644); err != nil {
 		t.Fatal(err)
@@ -98,8 +101,9 @@ func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeDownloadStreamBatch,
@@ -149,7 +153,8 @@ func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
 }
 
 func TestDownloadStreamTaskCancelItem(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("stream"), 0o644); err != nil {
 		t.Fatal(err)
@@ -158,8 +163,9 @@ func TestDownloadStreamTaskCancelItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeDownloadStreamBatch,

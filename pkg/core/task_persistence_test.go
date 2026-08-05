@@ -13,7 +13,8 @@ import (
 )
 
 func TestCorePersistsDeleteBatchTaskHistory(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	stateDir := filepath.Join(tmp, "state")
@@ -30,6 +31,7 @@ func TestCorePersistsDeleteBatchTaskHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
 
@@ -73,7 +75,8 @@ func TestCorePersistsDeleteBatchTaskHistory(t *testing.T) {
 }
 
 func TestCorePersistsSingleUploadBatchTaskHistory(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	stateDir := filepath.Join(tmp, "state")
@@ -91,6 +94,7 @@ func TestCorePersistsSingleUploadBatchTaskHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
 
@@ -117,7 +121,8 @@ func TestCorePersistsSingleUploadBatchTaskHistory(t *testing.T) {
 }
 
 func TestCorePersistsCrossMountSingleMoveButNotSameMountMove(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	srcRemote := filepath.Join(tmp, "src")
 	dstRemote := filepath.Join(tmp, "dst")
@@ -146,6 +151,7 @@ func TestCorePersistsCrossMountSingleMoveButNotSameMountMove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
 

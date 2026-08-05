@@ -14,7 +14,8 @@ import (
 )
 
 func TestCreateTaskUploadRemoteUploadsLocalFile(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(remote, "Inbox"), 0o755); err != nil {
 		t.Fatal(err)
@@ -27,8 +28,9 @@ func TestCreateTaskUploadRemoteUploadsLocalFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, uploadTaskRequest(local, "/remote.txt"))
 	if err != nil {
@@ -44,7 +46,8 @@ func TestCreateTaskUploadRemoteUploadsLocalFile(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteUsesDefaultDestination(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	local := filepath.Join(t.TempDir(), "local.txt")
 	if err := os.WriteFile(local, []byte("default upload"), 0o644); err != nil {
@@ -58,6 +61,7 @@ func TestCreateTaskUploadRemoteUsesDefaultDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns, defaultUploadMount: "cloud", defaultUploadPath: "/Inbox"}
 
@@ -90,7 +94,8 @@ func TestCreateTaskUploadRemoteUsesDefaultDestination(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteBatchPartialFailed(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	local := filepath.Join(t.TempDir(), "ok.txt")
 	if err := os.WriteFile(local, []byte("ok"), 0o644); err != nil {
@@ -100,8 +105,9 @@ func TestCreateTaskUploadRemoteBatchPartialFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadRemote,
@@ -123,7 +129,8 @@ func TestCreateTaskUploadRemoteBatchPartialFailed(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteConflictPolicySkipExisting(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "existing.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
@@ -136,8 +143,9 @@ func TestCreateTaskUploadRemoteConflictPolicySkipExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadRemote,
@@ -160,7 +168,8 @@ func TestCreateTaskUploadRemoteConflictPolicySkipExisting(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteConflictPolicyFailExisting(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "existing.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
@@ -173,8 +182,9 @@ func TestCreateTaskUploadRemoteConflictPolicyFailExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadRemote,
@@ -208,7 +218,8 @@ func TestUploadResultAppliesRemoteUploadTaskMetadata(t *testing.T) {
 }
 
 func TestVFSUploadBackendReportsNamespaceMount(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "cloud", RootID: "/", StorageDir: filepath.Join(t.TempDir(), "cache")})
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +228,7 @@ func TestVFSUploadBackendReportsNamespaceMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	backend := NewVFSUploadBackend(ns)
 	if got := backend.MountForPath("/cloud/a.txt"); got != "cloud" {

@@ -76,3 +76,24 @@ func namesOf(entries []drive.Entry) string {
 	}
 	return strings.Join(names, ",")
 }
+
+// stopVFS synchronously drops a VFS's cache files so a test TempDir cleanup
+// never races the asynchronous shutdown: close the read-cache writer (waits
+// for queued writes) and remove the cache directory. Pair it with the
+// existing deferred context cancel (which stops upload workers) by adding
+// this right after fs is created:
+//
+//	defer stopVFS(t, fs)
+func stopVFS(t *testing.T, fs vfs.FileSystem) {
+	t.Helper()
+	if closer, ok := fs.(interface{ CloseReadCache() error }); ok {
+		if err := closer.CloseReadCache(); err != nil {
+			t.Logf("close read cache: %v", err)
+		}
+	}
+	if clearer, ok := fs.(interface{ ClearReadCache() error }); ok {
+		if err := clearer.ClearReadCache(); err != nil {
+			t.Logf("clear read cache: %v", err)
+		}
+	}
+}

@@ -15,7 +15,8 @@ import (
 )
 
 func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := localfs.New(t.TempDir())
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -49,7 +50,8 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 }
 
 func TestVFSDebugSnapshotUsesConfiguredName(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := localfs.New(t.TempDir())
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -84,7 +86,8 @@ func TestVFSDebugSnapshotUsesConfiguredName(t *testing.T) {
 }
 
 func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := localfs.New(t.TempDir())
 	if err := drv.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -106,7 +109,8 @@ func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 }
 
 func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{entries: map[string]drive.Entry{
 		"remote-zero": {ID: "remote-zero", ParentID: "0", Name: "zero.txt", Size: 5},
 	}}
@@ -128,12 +132,14 @@ func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
 }
 
 func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := newBlockingUploadDriver()
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/active.txt", []byte("active upload"), 0); err != nil {
@@ -161,7 +167,8 @@ func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
 }
 
 func TestVFSDebugStagingReportsSizeMismatch(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
 
@@ -197,7 +204,8 @@ func TestVFSDebugStagingReportsSizeMismatch(t *testing.T) {
 }
 
 func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	raw := localfs.New(remote)
 	cp, err := crypt.NewRcloneCipher("password", "salt")
@@ -209,6 +217,7 @@ func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/secret.txt", []byte("encrypted"), 0); err != nil {
@@ -238,13 +247,15 @@ func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
 }
 
 func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	raw := localfs.New(remote)
 	fs, err := vfs.New(raw, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 	if err := os.WriteFile(filepath.Join(remote, "plain.txt"), []byte("plain"), 0o600); err != nil {
 		t.Fatal(err)
@@ -263,7 +274,8 @@ func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
 }
 
 func TestVFSMountHealthTracksUserOperations(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
 		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
@@ -346,7 +358,8 @@ func TestVFSMountHealthIncludesDriverMetrics(t *testing.T) {
 }
 
 func TestVFSRemoteDeleteUpdatesMountHealth(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "data.txt"), []byte("delete me"), 0o644); err != nil {
 		t.Fatal(err)

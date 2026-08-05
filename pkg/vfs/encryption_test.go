@@ -12,7 +12,8 @@ import (
 )
 
 func TestEncryptedDriverRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
 	raw := localfs.New(remote)
@@ -25,6 +26,7 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/secret.txt", bytes.Repeat([]byte("a"), 80*1024), 0); err != nil {

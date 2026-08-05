@@ -11,12 +11,14 @@ import (
 )
 
 func TestVFSWriteAfterFlushPreservesStagedContent(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("hello world"), 0); err != nil {
@@ -46,12 +48,14 @@ func TestVFSWriteAfterFlushPreservesStagedContent(t *testing.T) {
 	}
 }
 func TestVFSMutableGenerationIsNotUploadedWithoutFlush(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("hello world"), 0); err != nil {
@@ -101,13 +105,15 @@ func TestVFSMutableGenerationIsNotUploadedWithoutFlush(t *testing.T) {
 	}
 }
 func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cacheDir := t.TempDir()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/fast.txt", []byte("first version"), 0); err != nil {
@@ -156,7 +162,8 @@ func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
 	}
 }
 func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	drv := &countingUploadDriver{entered: entered, blockReturn: release}
@@ -164,6 +171,7 @@ func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("one"), 0); err != nil {

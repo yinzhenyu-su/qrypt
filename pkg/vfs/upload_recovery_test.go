@@ -13,7 +13,8 @@ import (
 )
 
 func TestVFSRecoversPendingUploads(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
 
@@ -32,6 +33,7 @@ func TestVFSRecoversPendingUploads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, second)
 	second.Start(ctx)
 
 	// The recovered generation was never flushed, so it must stay local
@@ -58,7 +60,8 @@ func TestVFSRecoversPendingUploads(t *testing.T) {
 	}
 }
 func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
 	content := bytes.Repeat([]byte("x"), 2*1024*1024+123)
@@ -67,6 +70,7 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, first)
 	for off := 0; off < len(content); off += 16 * 1024 {
 		end := off + 16*1024
 		if end > len(content) {
@@ -91,6 +95,7 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, second)
 	pending := second.PendingUploads()
 	if len(pending) != 1 {
 		t.Fatalf("expected one recovered pending file, got %d", len(pending))
@@ -125,7 +130,8 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 	}
 }
 func TestVFSDropsPendingWhenStagingMissingOnRecovery(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
 

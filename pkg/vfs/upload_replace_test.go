@@ -9,7 +9,8 @@ import (
 )
 
 func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{
 		entries: map[string]drive.Entry{
 			"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
@@ -20,6 +21,7 @@ func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if err := fs.Create(ctx, "/draft.txt"); err != nil {
@@ -48,7 +50,8 @@ func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
 	}
 }
 func TestVFSReplaceUploadRenamesTemporaryFileAfterSuccess(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	drv := &countingUploadDriver{
 		entries: map[string]drive.Entry{
 			"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
@@ -58,6 +61,7 @@ func TestVFSReplaceUploadRenamesTemporaryFileAfterSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	if err := fs.Create(ctx, "/draft.txt"); err != nil {
@@ -97,6 +101,7 @@ func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopVFS(t, first)
 	first.Start(firstCtx)
 
 	if err := first.Create(firstCtx, "/draft.txt"); err != nil {
@@ -125,7 +130,10 @@ func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second.Start(context.Background())
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	defer stopVFS(t, second)
+	second.Start(secondCtx)
 	waitNoPending(t, second)
 
 	if got := secondDriver.uploadCount(); got != 0 {

@@ -16,7 +16,8 @@ import (
 )
 
 func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	data := []byte("cache me")
 	drv := newCountingReadDriver(data)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
@@ -48,7 +49,8 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 }
 
 func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cacheDir := t.TempDir()
 	remote := t.TempDir()
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20})
@@ -447,7 +449,8 @@ func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
 }
 
 func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	data := []byte("cache me after remount")
 	cacheDir := t.TempDir()
 	drv := newCountingReadDriver(data)
@@ -499,7 +502,8 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 }
 
 func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	data := []byte("cache me")
 	drv := newCountingReadDriver(data)
 	drv.id = "/未命名文件夹/运维必读.txt"
@@ -530,7 +534,8 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 }
 
 func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "index.html"), []byte("old content"), 0o644); err != nil {
 		t.Fatal(err)
@@ -544,6 +549,7 @@ func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
 	rc, err := fs.Read(ctx, "/index.html", 0, 0)

@@ -29,6 +29,7 @@ func TestSetModTimeAppliesToUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer stopVFS(t, v)
 	v.Start(ctx)
 	defer cancel()
 

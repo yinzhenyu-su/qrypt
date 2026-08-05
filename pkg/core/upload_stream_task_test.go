@@ -17,7 +17,8 @@ import (
 )
 
 func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(remote, "Inbox"), 0o755); err != nil {
 		t.Fatal(err)
@@ -26,8 +27,9 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -74,7 +76,8 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamBatchUsesDefaultDestination(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{Name: "cloud", RootID: remote, StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: 10 * time.Millisecond})
 	if err != nil {
@@ -84,6 +87,7 @@ func TestCreateTaskUploadStreamBatchUsesDefaultDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns, defaultUploadMount: "cloud", defaultUploadPath: "/Inbox"}
 
@@ -118,7 +122,8 @@ func TestCreateTaskUploadStreamBatchUsesDefaultDestination(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "existing.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
@@ -127,8 +132,9 @@ func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -155,7 +161,8 @@ func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "existing.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
@@ -164,8 +171,9 @@ func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -189,13 +197,15 @@ func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
 }
 
 func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -227,14 +237,16 @@ func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
 }
 
 func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -292,14 +304,16 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 }
 
 func TestUploadStreamTaskCancelRemovesUncommittedStaging(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -328,14 +342,16 @@ func TestUploadStreamTaskCancelRemovesUncommittedStaging(t *testing.T) {
 }
 
 func TestUploadStreamTaskCancelItemRemovesStaging(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -469,17 +485,20 @@ func (d *completedBlockingStreamDriver) remoteCount() int {
 // observes a "succeeded but still active" upload task. The upload must not be
 // canceled by that dismiss, and the freshly uploaded remote file must survive.
 func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	storage := filepath.Join(t.TempDir(), "cache")
 	drv := &completedBlockingStreamDriver{
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), CacheMaxBytes: 10 << 20, UploadDelay: time.Millisecond})
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: storage, CacheMaxBytes: 10 << 20, UploadDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -528,5 +547,22 @@ func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
 	}
 	if got := drv.remoteCount(); got != 1 {
 		t.Fatalf("remote entries = %d, want 1 (uploaded file must survive)", got)
+	}
+
+	// The poller marks the task succeeded as soon as the upload commits, but
+	// the worker removes the staging file slightly after; wait for the
+	// staging directory to drain so the test TempDir cleanup does not race
+	// the removal.
+	stagingDir := filepath.Join(storage, "staging")
+	cleanupDeadline := time.Now().Add(5 * time.Second)
+	for {
+		entries, err := os.ReadDir(stagingDir)
+		if err == nil && len(entries) == 0 {
+			break
+		}
+		if time.Now().After(cleanupDeadline) {
+			t.Fatalf("staging never cleared in %s: %v", stagingDir, entries)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

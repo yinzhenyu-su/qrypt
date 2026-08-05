@@ -38,12 +38,14 @@ func newBenchmarkCore(b *testing.B) (*Core, string) {
 			Params: config.ParamMap{"root_path": remote},
 		}},
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	fs, cleanup, err := BuildFileSystem(ctx, cfg, Options{Runtime: testRuntimeLayout(tmp)})
 	if err != nil {
 		b.Fatal(err)
 	}
 	b.Cleanup(cleanup)
+	b.Cleanup(func() { stopTestVFS(b, fs) })
 	fs.Start(ctx)
 	return &Core{fs: fs, cleanup: cleanup}, "/quark/data.bin"
 }
@@ -56,7 +58,8 @@ const downloadTaskBufferSize = 512 << 10
 // Kept as a comparison baseline; the current downloadOne uses windowed reads.
 func BenchmarkDownloadWholeFileRead(b *testing.B) {
 	c, path := newBenchmarkCore(b)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -74,7 +77,8 @@ func BenchmarkDownloadWholeFileRead(b *testing.B) {
 // Current downloadOne pattern: reusable window buffer through ReadAtInto.
 func BenchmarkDownloadWindowedRead(b *testing.B) {
 	c, path := newBenchmarkCore(b)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	buf := make([]byte, downloadReadBufferSize)
 	b.ReportAllocs()
 	b.ResetTimer()

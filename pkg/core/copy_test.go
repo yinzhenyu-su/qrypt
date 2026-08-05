@@ -12,7 +12,8 @@ import (
 )
 
 func TestCreateTaskCopyFile(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "source.txt"), []byte("copy me"), 0o644); err != nil {
 		t.Fatal(err)
@@ -21,8 +22,9 @@ func TestCreateTaskCopyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, copyTaskRequest("/source.txt", "/copy.txt", false, false))
 	if err != nil {
@@ -41,7 +43,8 @@ func TestCreateTaskCopyFile(t *testing.T) {
 }
 
 func TestCreateTaskCopyDirectoryRecursiveToRenamedDestination(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srcRemote := t.TempDir()
 	dstRemote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(srcRemote, "dir", "nested"), 0o755); err != nil {
@@ -68,6 +71,7 @@ func TestCreateTaskCopyDirectoryRecursiveToRenamedDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, ns)
 	ns.Start(ctx)
 	c := &Core{fs: ns}
 
@@ -94,7 +98,8 @@ func TestCreateTaskCopyDirectoryRecursiveToRenamedDestination(t *testing.T) {
 }
 
 func TestCreateTaskCopyBatchPartialFailed(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	remote := t.TempDir()
 	if err := os.WriteFile(filepath.Join(remote, "ok.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
@@ -103,8 +108,9 @@ func TestCreateTaskCopyBatchPartialFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
-	c := &Core{fs: fs}
+	c := newTestCore(t, fs)
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeCopy,
