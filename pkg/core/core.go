@@ -43,6 +43,7 @@ type Core struct {
 	defaultUploadPath  string
 	debugServer        *control.Server
 	tasks              *task.Manager
+	vfsCancel          context.CancelFunc
 	streamsMu          sync.Mutex
 	downloadStreams    map[string]*downloadStreamBatch
 	uploadStreams      map[string]*uploadStreamBatch
@@ -79,8 +80,13 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	if err != nil {
 		return nil, err
 	}
-	fs.Start(ctx)
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath}
+	// The VFS upload workers derive from this context; keep our own cancel
+	// so Close stops them even when the caller passed a background context
+	// (mobile session layer). Callers who cancel their own context also
+	// stop the workers, and cancel is idempotent.
+	vfsCtx, vfsCancel := context.WithCancel(ctx)
+	fs.Start(vfsCtx)
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
@@ -192,11 +198,23 @@ func (c *Core) Mounts() ([]vfs.MountInfo, error) {
 }
 
 func (c *Core) Close(ctx context.Context) error {
-	if c == nil || c.cleanup == nil {
+	if c == nil {
 		return nil
 	}
+	// The task manager owns long-running goroutines (stream pollers, batch
+	// runners) whose contexts derive from the manager, not from any
+	// caller-passed context; close it even when no cleanup is registered
+	// (directly constructed cores used by tests).
 	if c.tasks != nil {
 		c.tasks.Close()
+	}
+	// Stop the VFS workers even if the caller's context is still alive
+	// (e.g. a background context from the mobile session layer).
+	if c.vfsCancel != nil {
+		c.vfsCancel()
+	}
+	if c.cleanup == nil {
+		return nil
 	}
 	_ = c.StopDebugServer(ctx)
 	c.cleanup()

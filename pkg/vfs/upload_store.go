@@ -191,11 +191,19 @@ func (c *uploadStore) RemoveUpload(path string) error {
 	c.mu.Lock()
 	pending, ok := c.pending[path]
 	delete(c.pending, path)
+	if ok && pending.LocalPath != "" {
+		// Drop the staging file inside the same critical section so a
+		// reader that observes the pending gone also observes the staging
+		// gone; an async removal would leave a cleanup window that test
+		// TempDir teardown can race.
+		if err := c.staging.remove(pending.LocalPath); err != nil {
+			logging.L.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
+		}
+	}
 	c.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	_ = c.staging.remove(pending.LocalPath)
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()
 	if err := c.appendJournalLocked(journalEntry{Op: "clean", PendingUpload: PendingUpload{Path: path}}); err != nil {
@@ -285,6 +293,10 @@ func (c *uploadStore) RemoveUploadIfUnchanged(p PendingUpload) (bool, error) {
 	current, ok := c.pending[p.Path]
 	if ok && sameUploadRecord(current, p) {
 		delete(c.pending, p.Path)
+		// Same critical section: remove the staging file (unless another
+		// pending still references it, as rename/replace can reuse one) so
+		// readers never observe a pending gone while its staging lingers.
+		c.removeStagingLocked(p.LocalPath)
 	} else {
 		ok = false
 	}
@@ -298,6 +310,22 @@ func (c *uploadStore) RemoveUploadIfUnchanged(p PendingUpload) (bool, error) {
 		return false, err
 	}
 	return true, c.compactJournalLocked()
+}
+
+// removeStagingLocked removes a staging file unless another pending still
+// references it. Caller must hold c.mu.
+func (c *uploadStore) removeStagingLocked(localPath string) {
+	if localPath == "" {
+		return
+	}
+	for _, p := range c.pending {
+		if p.LocalPath == localPath {
+			return
+		}
+	}
+	if err := c.staging.remove(localPath); err != nil {
+		logging.L.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
+	}
 }
 func (c *uploadStore) RenameUpload(oldPath string, next PendingUpload) error {
 	c.mu.Lock()

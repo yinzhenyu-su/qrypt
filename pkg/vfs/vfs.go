@@ -156,6 +156,16 @@ func (v *VFS) Start(ctx context.Context) {
 		go v.uploadWorker(ctx)
 	}
 	v.Resume(ctx)
+	// Graceful stop: when the context is cancelled, stop the upload/delete
+	// timers and close the read-cache writer so no background goroutine
+	// outlives the VFS. Upload workers exit on ctx.Done themselves; the
+	// cache writer only exits when its queue is closed, which CloseReadCache
+	// does and waits for.
+	context.AfterFunc(ctx, func() {
+		v.stopDeleteTimers()
+		v.stopUploadTimers()
+		_ = v.CloseReadCache()
+	})
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
