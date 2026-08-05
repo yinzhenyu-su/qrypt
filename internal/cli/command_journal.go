@@ -94,6 +94,7 @@ func journalTargetsFromCmd(cmd *cobra.Command) ([]debugCacheTarget, error) {
 		return nil, err
 	}
 	if state.cfg != nil {
+		// cfg was loaded; only the cache-dir fallback below needs it.
 	}
 	if state.cfg == nil && cacheDir == "" {
 		return nil, fmt.Errorf("%w; alternatively use --cache-dir", configNotFoundError())

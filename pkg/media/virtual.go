@@ -61,8 +61,8 @@ func (v *passthroughVirtualFile) ReadAt(ctx context.Context, offset int64, lengt
 	if length == 0 || offset >= v.size {
 		return []byte{}, nil
 	}
-	if max := v.size - offset; int64(length) > max {
-		length = int(max)
+	if maxLen := v.size - offset; int64(length) > maxLen {
+		length = int(maxLen)
 	}
 	return v.readAt(ctx, offset, length)
 }
@@ -74,8 +74,8 @@ func (v *passthroughVirtualFile) ReadAtInto(ctx context.Context, offset int64, d
 	if len(dst) == 0 || offset >= v.size {
 		return 0, nil
 	}
-	if max := v.size - offset; int64(len(dst)) > max {
-		dst = dst[:max]
+	if maxLen := v.size - offset; int64(len(dst)) > maxLen {
+		dst = dst[:maxLen]
 	}
 	return v.readAtInto(ctx, offset, dst)
 }
@@ -84,8 +84,8 @@ func (v *passthroughVirtualFile) ReadMappings(offset int64, length int) []Virtua
 	if offset < 0 || length <= 0 || offset >= v.size {
 		return nil
 	}
-	if max := v.size - offset; int64(length) > max {
-		length = int(max)
+	if maxLen := v.size - offset; int64(length) > maxLen {
+		length = int(maxLen)
 	}
 	return []VirtualReadMapping{{
 		VirtualOffset: offset,

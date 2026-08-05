@@ -1124,7 +1124,7 @@ func (c *client) createFolder(ctx context.Context, parentID int64, name string) 
 		id = resp.ID
 		return nil
 	})
-	return
+	return id, err
 }
 
 func (c *client) rename(ctx context.Context, fileID int64, name string, isDir bool) error {

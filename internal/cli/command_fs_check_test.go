@@ -164,7 +164,7 @@ func TestFsCheckDirectionFlipsWithArgumentOrder(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "sub", "vonly.txt"), []byte("v"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(local, "lonly.txt"), []byte("l"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(local, "lonely.txt"), []byte("l"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
@@ -172,7 +172,7 @@ func TestFsCheckDirectionFlipsWithArgumentOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// vfs first: vonly missing_in_b, lonly extra_in_b.
+	// vfs first: vonly missing_in_b, lonely extra_in_b.
 	out, _, err := executeCLI(t, "fs", "--config", configPath, "check", "--json", "/loc", local)
 	if err == nil {
 		t.Fatal("expected differences")
@@ -187,8 +187,8 @@ func TestFsCheckDirectionFlipsWithArgumentOrder(t *testing.T) {
 	for _, d := range result.Differences {
 		got[d.Path] = d.Reason
 	}
-	if got["sub/vonly.txt"] != "missing_in_b" || got["lonly.txt"] != "extra_in_b" {
-		t.Fatalf("vfs-first directions = %+v, want vonly=missing_in_b lonly=extra_in_b", got)
+	if got["sub/vonly.txt"] != "missing_in_b" || got["lonely.txt"] != "extra_in_b" {
+		t.Fatalf("vfs-first directions = %+v, want vonly=missing_in_b lonely=extra_in_b", got)
 	}
 
 	// local first: directions flip.
@@ -203,8 +203,8 @@ func TestFsCheckDirectionFlipsWithArgumentOrder(t *testing.T) {
 	for _, d := range result.Differences {
 		got[d.Path] = d.Reason
 	}
-	if got["sub/vonly.txt"] != "extra_in_b" || got["lonly.txt"] != "missing_in_b" {
-		t.Fatalf("local-first directions = %+v, want vonly=extra_in_b lonly=missing_in_b", got)
+	if got["sub/vonly.txt"] != "extra_in_b" || got["lonely.txt"] != "missing_in_b" {
+		t.Fatalf("local-first directions = %+v, want vonly=extra_in_b lonely=missing_in_b", got)
 	}
 }
 

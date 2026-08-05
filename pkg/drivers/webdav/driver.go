@@ -671,7 +671,7 @@ func (d *Driver) parseProps(propstats []propstat) (bool, int64, time.Time) {
 			isDir = true
 		}
 		if ps.Prop.GetContentLen != "" {
-			fmt.Sscanf(ps.Prop.GetContentLen, "%d", &size)
+			_, _ = fmt.Sscanf(ps.Prop.GetContentLen, "%d", &size)
 		}
 		if ps.Prop.GetLastMod != "" {
 			modTime = parseWebDAVTime(ps.Prop.GetLastMod)

@@ -41,6 +41,14 @@ jobs:
         run: |
           go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
+      - name: Golangci-lint
+        run: |
+          go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run ./...
+
+      - name: Vulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       - name: Format
         run: |
           unformatted=$(gofmt -l .)

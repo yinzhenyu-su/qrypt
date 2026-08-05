@@ -26,11 +26,11 @@ func CheckUnsupportedCapabilities(ctx context.Context, d Driver) []CapabilityCon
 	}
 	var violations []CapabilityContractViolation
 	dummyEntry := Entry{ID: "__qrypt_contract_entry__", ParentID: "__qrypt_contract_parent__", Name: "__qrypt_contract_name__"}
-	check := func(cap Capability, op string, err error) {
+	check := func(capability Capability, op string, err error) {
 		if isUnsupported(err) {
 			return
 		}
-		violations = append(violations, CapabilityContractViolation{Capability: cap, Operation: op, Err: err})
+		violations = append(violations, CapabilityContractViolation{Capability: capability, Operation: op, Err: err})
 	}
 
 	if !HasCapability(d, CapabilityWriter) {

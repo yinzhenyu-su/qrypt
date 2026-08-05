@@ -1,0 +1,38 @@
+# golangci-lint configuration. Linters are intentionally strict: this repo
+# treats lint cleanliness as a CI gate, not a suggestion.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # vet checks (always on)
+    - staticcheck   # static analysis (SA/S/ST series)
+    - unused        # unused code (equivalent to staticcheck U1000)
+    - revive        # golint successor: style + naming rules
+    - ineffassign   # assignments that are never used
+    - misspell      # common misspellings in comments/strings
+
+linters-settings:
+  revive:
+    # revive's default rule set is noisy on an established codebase; enable
+    # the rules that catch real problems and leave stylistic ones alone.
+    rules:
+      - name: exported
+      - name: package-comments
+      - name: redefines-builtin-id
+      - name: error-return
+      - name: error-naming
+      - name: var-naming
+      - name: unexported-return
+      - name: range
+      - name: bare-return
+
+issues:
+  exclude-rules:
+    # staticcheck 2026.1 false positive: the assignment IS read via
+    # c.dataKey below, but the analyzer does not recognize it.
+    - path: pkg/crypt/rclone_cipher_test.go
+      linters:
+        - staticcheck
+      text: "SA4006"

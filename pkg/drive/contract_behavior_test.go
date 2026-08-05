@@ -30,7 +30,7 @@ func TestBehaviorChecksPassOnLocalfs(t *testing.T) {
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer d.Drop(context.Background())
+	defer func() { _ = d.Drop(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -45,7 +45,7 @@ func TestBehaviorChecksDetectListViolation(t *testing.T) {
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer d.Drop(context.Background())
+	defer func() { _ = d.Drop(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

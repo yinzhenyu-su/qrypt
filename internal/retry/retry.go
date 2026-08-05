@@ -41,7 +41,7 @@ func ExponentialBackoff(attempt int) time.Duration {
 	return ExponentialBackoffWithOptions(attempt, 500*time.Millisecond, 0, true)
 }
 
-func ExponentialBackoffWithOptions(attempt int, base, max time.Duration, jitter bool) time.Duration {
+func ExponentialBackoffWithOptions(attempt int, base, maxDelay time.Duration, jitter bool) time.Duration {
 	if attempt < 0 {
 		attempt = 0
 	}
@@ -50,20 +50,20 @@ func ExponentialBackoffWithOptions(attempt int, base, max time.Duration, jitter 
 	}
 	delay := base
 	for i := 0; i < attempt; i++ {
-		if max > 0 && delay >= max/2 {
-			delay = max
+		if maxDelay > 0 && delay >= maxDelay/2 {
+			delay = maxDelay
 			break
 		}
 		delay *= 2
 	}
-	if max > 0 && delay > max {
-		delay = max
+	if maxDelay > 0 && delay > maxDelay {
+		delay = maxDelay
 	}
 	if jitter {
 		factor := float64(75+(attempt*7)%50) / 100.0
 		delay = time.Duration(float64(delay) * factor)
-		if max > 0 && delay > max {
-			delay = max
+		if maxDelay > 0 && delay > maxDelay {
+			delay = maxDelay
 		}
 	}
 	return delay
