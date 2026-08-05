@@ -12,6 +12,9 @@ import (
 func setupSyncTest(t *testing.T) (configPath, remote, local string) {
 	t.Helper()
 	configPath, remote, local = setupCheckTest(t)
+	// Every sync test must keep its session store out of the real config
+	// dir; partial-failure runs deliberately keep sessions on disk.
+	t.Setenv("QRYPT_SYNC_DIR", filepath.Join(t.TempDir(), "qrypt-sync"))
 	return configPath, remote, local
 }
 
