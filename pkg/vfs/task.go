@@ -166,6 +166,17 @@ func (s uploadTaskSource) Dismiss(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// A driver reports the upload phase as "completed" before the engine
+	// finishes committing (e.g. waitUploadedFile still polling), so a succeeded
+	// upload can briefly still be marked active with its pending record intact.
+	// Dismissing it must not cancel the upload: cancel-and-remove would drop
+	// the pending record, and the engine would then delete the freshly
+	// uploaded remote file as a "stale version". Drop the history entry when
+	// present; while the task is still active the engine owns it.
+	if state, ok := s.runtime.StateByID(id); ok && state == uploadSnapshotStateCompleted {
+		_ = s.runtime.RemoveHistoryByID(id)
+		return nil
+	}
 	// 1. Pending: cancel + remove from persistent store
 	if pending, ok := s.runtime.PendingByID(id); ok {
 		return s.runtime.CancelAndRemove(pending.Path)
@@ -398,6 +409,7 @@ type uploadTaskRuntime interface {
 	Records() []uploadTaskRecord
 	PendingByID(id string) (PendingUpload, bool)
 	ActivePathByID(id string) (string, bool)
+	StateByID(id string) (string, bool)
 	CancelAndRemove(path string) error
 	Retry(pending PendingUpload) error
 	RemoveHistoryByID(id string) bool
@@ -430,6 +442,22 @@ func (r vfsUploadTaskRuntime) ActivePathByID(id string) (string, bool) {
 	for path, state := range r.v.uploadDebug.active {
 		if state.upload.OpID == id {
 			return path, true
+		}
+	}
+	return "", false
+}
+
+func (r vfsUploadTaskRuntime) StateByID(id string) (string, bool) {
+	r.v.uploadDebug.mu.Lock()
+	defer r.v.uploadDebug.mu.Unlock()
+	for _, state := range r.v.uploadDebug.active {
+		if state.upload.OpID == id {
+			return state.upload.State, true
+		}
+	}
+	for _, upload := range r.v.uploadDebug.history {
+		if upload.OpID == id {
+			return upload.State, true
 		}
 	}
 	return "", false
