@@ -182,8 +182,9 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 		failed := executeSyncPlan(ctx, fs, plan, source, destination, persist)
 		result.Summary.Failed = failed
 		// Wait for async VFS uploads to land so the destination is actually
-		// synced when the command returns.
-		if err := waitFileSystemIdle(ctx, fs, commandWaitTimeout(cmd)); err != nil {
+		// synced when the command returns. No deadline: transfer size is
+		// unbounded and Ctrl-C interrupts (the session stays for --resume).
+		if err := waitFileSystemIdle(ctx, fs, 0); err != nil {
 			persist.close()
 			return err
 		}
@@ -250,7 +251,9 @@ func runFsSyncResume(cmd *cobra.Command, source, destination checkTarget) error 
 	}
 	failed := executeSyncPlan(ctx, fs, pending, source, destination, persist)
 	result.Summary.Failed = failed
-	if err := waitFileSystemIdle(ctx, fs, commandWaitTimeout(cmd)); err != nil {
+	// No deadline: the original run had no bound on transfer size and a
+	// fixed timeout would report a slow upload as failed.
+	if err := waitFileSystemIdle(ctx, fs, 0); err != nil {
 		return err
 	}
 	result.OK = result.Summary.Failed == 0
