@@ -181,7 +181,7 @@ func (r vfsDeleteTaskRuntime) Records() []deleteTaskRecord {
 			entry:     entry,
 			state:     state,
 			phase:     phase,
-			errorText: r.v.deleteTasks.failures[p],
+			errorText: r.v.delete.tasks.failures[p],
 			updatedAt: now,
 		})
 	}
@@ -194,17 +194,24 @@ func (r vfsDeleteTaskRuntime) Restore(path string) (drive.Entry, bool) {
 
 func (r vfsDeleteTaskRuntime) Retry(record deleteTaskRecord) {
 	r.v.view.overlay.mu.Lock()
-	delete(r.v.deleteTasks.failures, record.path)
+	delete(r.v.delete.tasks.failures, record.path)
 	r.v.view.overlay.mu.Unlock()
 	r.v.scheduleDelete(record.path, record.entry)
 }
 
 func (r vfsDeleteTaskRuntime) deleteStateLocked(path string) (task.State, string) {
-	if _, ok := r.v.deleteTasks.active[path]; ok {
+	if _, ok := r.v.delete.tasks.active[path]; ok {
 		return task.StateRunning, "delete"
 	}
-	if _, ok := r.v.deleteTasks.timers[path]; ok {
+	if _, ok := r.v.delete.tasks.timers[path]; ok {
 		return task.StateScheduled, "scheduled"
 	}
 	return task.StateFailed, "failed"
+}
+
+// deleteState groups the VFS delete-domain state: the debounce tasks and
+// the delete delay. Owned by the delete scheduler; initialized in New.
+type deleteState struct {
+	tasks *deleteTaskState
+	delay time.Duration
 }

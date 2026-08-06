@@ -96,16 +96,16 @@ func newVFSDebugReadRuntime(v *VFS) vfsDebugReadRuntime {
 }
 
 func (r vfsDebugReadRuntime) NextOpID() string {
-	return fmt.Sprintf("read-%d", atomic.AddUint64(&r.v.readHistory.sequence, 1))
+	return fmt.Sprintf("read-%d", atomic.AddUint64(&r.v.read.history.sequence, 1))
 }
 
 func (r vfsDebugReadRuntime) CacheCounters() (hits, misses int64) {
-	return r.v.readCache.stats.hits.Load(), r.v.readCache.stats.misses.Load()
+	return r.v.read.cache.stats.hits.Load(), r.v.read.cache.stats.misses.Load()
 }
 
 func (r vfsDebugReadRuntime) AppendEvent(event drive.MetricEvent) {
-	r.v.readHistory.mu.Lock()
-	h := r.v.readHistory
+	r.v.read.history.mu.Lock()
+	h := r.v.read.history
 	if h.events == nil {
 		// Grow lazily toward the limit so idle VFS instances do not
 		// preallocate a full ring.
@@ -135,13 +135,13 @@ func (r vfsDebugReadRuntime) AppendEvent(event drive.MetricEvent) {
 	if h.count < len(h.events) {
 		h.count++
 	}
-	r.v.readHistory.mu.Unlock()
+	r.v.read.history.mu.Unlock()
 }
 
 func (r vfsDebugReadRuntime) History() []drive.MetricEvent {
-	r.v.readHistory.mu.Lock()
-	defer r.v.readHistory.mu.Unlock()
-	h := r.v.readHistory
+	r.v.read.history.mu.Lock()
+	defer r.v.read.history.mu.Unlock()
+	h := r.v.read.history
 	if h.count == 0 {
 		return nil
 	}
@@ -153,9 +153,9 @@ func (r vfsDebugReadRuntime) History() []drive.MetricEvent {
 }
 
 func (r vfsDebugReadRuntime) ResetHistory() {
-	r.v.readHistory.mu.Lock()
-	r.v.readHistory.events = nil
-	r.v.readHistory.pos = 0
-	r.v.readHistory.count = 0
-	r.v.readHistory.mu.Unlock()
+	r.v.read.history.mu.Lock()
+	r.v.read.history.events = nil
+	r.v.read.history.pos = 0
+	r.v.read.history.count = 0
+	r.v.read.history.mu.Unlock()
 }

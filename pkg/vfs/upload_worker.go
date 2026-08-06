@@ -21,7 +21,7 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 	}
 }
 func (v *VFS) uploadPending(ctx context.Context, pending PendingUpload) error {
-	return uploadPendingWithRuntime(ctx, pending, newVFSUploadWorkerRuntime(v), v.uploadWorkers, v.uploadDelay)
+	return uploadPendingWithRuntime(ctx, pending, newVFSUploadWorkerRuntime(v), v.upload.workers, v.upload.delay)
 }
 
 func uploadPendingWithRuntime(ctx context.Context, pending PendingUpload, runtime uploadWorkerRuntime, workers int, fallbackDelay time.Duration) error {
@@ -89,7 +89,7 @@ func (r vfsUploadWorkerRuntime) Receive(ctx context.Context) (PendingUpload, boo
 	select {
 	case <-ctx.Done():
 		return PendingUpload{}, false
-	case pending := <-r.v.uploadQueue:
+	case pending := <-r.v.upload.queue:
 		return pending, true
 	}
 }
@@ -107,11 +107,11 @@ func (r vfsUploadWorkerRuntime) SourceUploadSupported() bool {
 }
 
 func (r vfsUploadWorkerRuntime) LatestUpload(path string) (PendingUpload, bool) {
-	return r.v.uploads.UploadByPath(path)
+	return r.v.upload.store.UploadByPath(path)
 }
 
 func (r vfsUploadWorkerRuntime) RemoveStagingIfUnreferenced(localPath string) {
-	r.v.uploads.removeStagingIfUnreferenced(localPath)
+	r.v.upload.store.removeStagingIfUnreferenced(localPath)
 }
 
 func (r vfsUploadWorkerRuntime) Requeue(pending PendingUpload) {
@@ -131,11 +131,11 @@ func (r vfsUploadWorkerRuntime) QuietWindow(pending PendingUpload) time.Duration
 }
 
 func (r vfsUploadWorkerRuntime) TryAcquire(pending PendingUpload, workers int) bool {
-	return r.v.uploadAdmit.tryAcquire(pending, workers)
+	return r.v.upload.admit.tryAcquire(pending, workers)
 }
 
 func (r vfsUploadWorkerRuntime) Release(pending PendingUpload) {
-	r.v.uploadAdmit.release(pending)
+	r.v.upload.admit.release(pending)
 }
 
 func (r vfsUploadWorkerRuntime) ExecuteUpload(ctx context.Context, pending PendingUpload) error {
@@ -144,7 +144,7 @@ func (r vfsUploadWorkerRuntime) ExecuteUpload(ctx context.Context, pending Pendi
 
 func (r vfsUploadWorkerRuntime) SendUpload(pending PendingUpload) {
 	select {
-	case r.v.uploadQueue <- pending:
+	case r.v.upload.queue <- pending:
 		logging.L.DebugfEvery("vfs.upload_enqueued", time.Second, "[VFS] upload enqueued op_id=%q path=%q size=%d retry=%d", pending.FID, pending.Path, pending.Size, pending.RetryCount)
 	default:
 		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background op_id=%q path=%q size=%d", pending.FID, pending.Path, pending.Size)
@@ -153,7 +153,7 @@ func (r vfsUploadWorkerRuntime) SendUpload(pending PendingUpload) {
 		// block on a full queue forever.
 		go func() {
 			select {
-			case r.v.uploadQueue <- pending:
+			case r.v.upload.queue <- pending:
 			case <-r.v.done:
 			}
 		}()

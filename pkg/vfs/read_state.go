@@ -65,3 +65,17 @@ func newReadPrefetchState() *readPrefetchState {
 		sem:      make(chan struct{}, readPrefetchLimit),
 	}
 }
+
+// readState groups the VFS read-domain state so ownership is explicit:
+// the fields are initialized together in New, touched only by read paths,
+// and shut down by the VFS lifecycle.
+type readState struct {
+	cache       *readCacheStore
+	history     *readHistoryState
+	prefetch    *readPrefetchState
+	slots       *readSlotState
+	fastPath    *readFastPathState
+	windows     *readWindowState
+	dirPrefetch *dirPrefetchState
+	list        *listState
+}

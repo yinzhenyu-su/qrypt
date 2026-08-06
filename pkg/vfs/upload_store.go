@@ -11,7 +11,7 @@ import (
 )
 
 func (v *VFS) PendingUploads() []PendingUpload {
-	return v.uploads.PendingUploads()
+	return v.upload.store.PendingUploads()
 }
 
 func (c *uploadStore) PendingUploads() []PendingUpload {

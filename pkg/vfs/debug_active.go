@@ -136,7 +136,7 @@ func newVFSDebugActiveRuntime(v *VFS) vfsDebugActiveRuntime {
 
 func (r vfsDebugActiveRuntime) Begin(op DebugActiveOp) uint64 {
 	if op.OpID == "" {
-		op.OpID = fmt.Sprintf("active-%d", r.v.activeDebug.sequence.Add(1))
+		op.OpID = fmt.Sprintf("active-%d", r.v.debug.sequence.Add(1))
 	}
 	if op.Mount == "" {
 		op.Mount = r.v.name
@@ -150,7 +150,7 @@ func (r vfsDebugActiveRuntime) Begin(op DebugActiveOp) uint64 {
 	// Linear probe for a free slot. Active ops are short-lived, so an empty
 	// slot is almost always found on the first try; no per-op allocation and
 	// no shared mutex.
-	state := r.v.activeDebug
+	state := r.v.debug
 	for i := 0; i < debugActiveSlots; i++ {
 		seq := state.sequence.Add(1)
 		slot := &state.slots[seq%debugActiveSlots]
@@ -172,7 +172,7 @@ func (r vfsDebugActiveRuntime) Update(opID uint64, fn func(*DebugActiveOp)) {
 	if opID == 0 {
 		return
 	}
-	slot := &r.v.activeDebug.slots[opID%debugActiveSlots]
+	slot := &r.v.debug.slots[opID%debugActiveSlots]
 	if slot.seq.Load() != opID {
 		return
 	}
@@ -188,7 +188,7 @@ func (r vfsDebugActiveRuntime) Finish(opID uint64) {
 	if opID == 0 {
 		return
 	}
-	slot := &r.v.activeDebug.slots[opID%debugActiveSlots]
+	slot := &r.v.debug.slots[opID%debugActiveSlots]
 	slot.mu.Lock()
 	if slot.seq.Load() == opID {
 		slot.op = DebugActiveOp{}
@@ -199,7 +199,7 @@ func (r vfsDebugActiveRuntime) Finish(opID uint64) {
 
 func (r vfsDebugActiveRuntime) Snapshot() []DebugActiveOp {
 	now := timeutil.Now()
-	state := r.v.activeDebug
+	state := r.v.debug
 	ops := make([]DebugActiveOp, 0, debugActiveSlots)
 	for i := range state.slots {
 		slot := &state.slots[i]

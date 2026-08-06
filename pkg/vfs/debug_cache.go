@@ -198,11 +198,11 @@ func newVFSDebugCacheRuntime(v *VFS) vfsDebugCacheRuntime {
 }
 
 func (r vfsDebugCacheRuntime) ReadCache() DebugReadCache {
-	return r.v.readCache.debugReadCache()
+	return r.v.read.cache.debugReadCache()
 }
 
 func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
-	return r.v.uploads.debugJournal()
+	return r.v.upload.store.debugJournal()
 }
 
 func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) DebugReadCache {

@@ -284,40 +284,40 @@ func (r vfsDebugUploadFaultRuntime) PutCancelFault(fault *debugUploadCancelFault
 	if fault == nil || fault.id == "" {
 		return
 	}
-	r.v.uploadFaults.mu.Lock()
-	defer r.v.uploadFaults.mu.Unlock()
-	if r.v.uploadFaults.cancelFaults == nil {
-		r.v.uploadFaults.cancelFaults = map[string]*debugUploadCancelFault{}
+	r.v.upload.faults.mu.Lock()
+	defer r.v.upload.faults.mu.Unlock()
+	if r.v.upload.faults.cancelFaults == nil {
+		r.v.upload.faults.cancelFaults = map[string]*debugUploadCancelFault{}
 	}
-	r.v.uploadFaults.cancelFaults[fault.id] = fault
+	r.v.upload.faults.cancelFaults[fault.id] = fault
 }
 
 func (r vfsDebugUploadFaultRuntime) ClearCancelFault(id string) {
-	r.v.uploadFaults.mu.Lock()
-	defer r.v.uploadFaults.mu.Unlock()
+	r.v.upload.faults.mu.Lock()
+	defer r.v.upload.faults.mu.Unlock()
 	if id == "" {
-		r.v.uploadFaults.cancelFaults = map[string]*debugUploadCancelFault{}
+		r.v.upload.faults.cancelFaults = map[string]*debugUploadCancelFault{}
 		return
 	}
-	delete(r.v.uploadFaults.cancelFaults, id)
+	delete(r.v.upload.faults.cancelFaults, id)
 }
 
 func (r vfsDebugUploadFaultRuntime) CancelFaults(now time.Time) []DebugUploadCancelFault {
-	r.v.uploadFaults.mu.Lock()
-	defer r.v.uploadFaults.mu.Unlock()
+	r.v.upload.faults.mu.Lock()
+	defer r.v.upload.faults.mu.Unlock()
 	r.pruneExpiredCancelFaultsLocked(now)
-	out := make([]DebugUploadCancelFault, 0, len(r.v.uploadFaults.cancelFaults))
-	for _, fault := range r.v.uploadFaults.cancelFaults {
+	out := make([]DebugUploadCancelFault, 0, len(r.v.upload.faults.cancelFaults))
+	for _, fault := range r.v.upload.faults.cancelFaults {
 		out = append(out, fault.snapshot())
 	}
 	return out
 }
 
 func (r vfsDebugUploadFaultRuntime) MatchCancelFault(now time.Time, path, opID string) *debugUploadCancelFault {
-	r.v.uploadFaults.mu.Lock()
-	defer r.v.uploadFaults.mu.Unlock()
+	r.v.upload.faults.mu.Lock()
+	defer r.v.upload.faults.mu.Unlock()
 	r.pruneExpiredCancelFaultsLocked(now)
-	for _, fault := range r.v.uploadFaults.cancelFaults {
+	for _, fault := range r.v.upload.faults.cancelFaults {
 		if fault.fired && fault.once {
 			continue
 		}
@@ -337,23 +337,23 @@ func (r vfsDebugUploadFaultRuntime) MarkCancelFaultFired(id string, now time.Tim
 	if id == "" {
 		return
 	}
-	r.v.uploadFaults.mu.Lock()
-	defer r.v.uploadFaults.mu.Unlock()
-	fault, ok := r.v.uploadFaults.cancelFaults[id]
+	r.v.upload.faults.mu.Lock()
+	defer r.v.upload.faults.mu.Unlock()
+	fault, ok := r.v.upload.faults.cancelFaults[id]
 	if !ok {
 		return
 	}
 	fault.fired = true
 	fault.firedAt = now
 	if fault.once {
-		delete(r.v.uploadFaults.cancelFaults, id)
+		delete(r.v.upload.faults.cancelFaults, id)
 	}
 }
 
 func (r vfsDebugUploadFaultRuntime) pruneExpiredCancelFaultsLocked(now time.Time) {
-	for id, fault := range r.v.uploadFaults.cancelFaults {
+	for id, fault := range r.v.upload.faults.cancelFaults {
 		if !fault.expiresAt.IsZero() && now.After(fault.expiresAt) {
-			delete(r.v.uploadFaults.cancelFaults, id)
+			delete(r.v.upload.faults.cancelFaults, id)
 		}
 	}
 }
