@@ -36,9 +36,6 @@ func (v *VFS) cancelUpload(path string) {
 func (v *VFS) cancelChildUploads(dir string) {
 	newVFSUploadScheduler(v).CancelChildren(dir)
 }
-func (v *VFS) stopUploadTimers() {
-	newVFSUploadScheduler(v).StopAll()
-}
 func (v *VFS) sendUpload(p PendingUpload) {
 	newVFSUploadWorkerRuntime(v).SendUpload(p)
 }
@@ -132,12 +129,7 @@ func (s vfsUploadScheduler) CancelChildren(dir string) {
 }
 
 func (s vfsUploadScheduler) StopAll() {
-	s.v.upload.schedule.mu.Lock()
-	defer s.v.upload.schedule.mu.Unlock()
-	for path, timer := range s.v.upload.schedule.timers {
-		timer.Stop()
-		delete(s.v.upload.schedule.timers, path)
-	}
+	s.v.upload.schedule.stopAll()
 }
 
 func (s vfsUploadScheduler) TimerPaths() map[string]bool {

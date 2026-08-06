@@ -215,3 +215,14 @@ type deleteState struct {
 	tasks *deleteTaskState
 	delay time.Duration
 }
+
+// newDeleteState builds the delete domain state together.
+func newDeleteState(tasks *deleteTaskState, delay time.Duration) *deleteState {
+	return &deleteState{tasks: tasks, delay: delay}
+}
+
+// Close stops the pending delete timers. Called by the VFS lifecycle;
+// in-flight deletes run on the VFS lifecycle context and cancel with it.
+func (d *deleteState) Close() {
+	d.tasks.stopAll()
+}

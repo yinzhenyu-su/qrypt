@@ -2,6 +2,10 @@ package vfs
 
 import "sync"
 
+// readSlotState bounds concurrent driver reads per VFS. Owned by the read
+// domain (readWindowState/readRuntime); the normal/high channels are the
+// lock itself - no additional mutex. Lifecycle: created in newReadState,
+// never closed (workers select on the VFS context instead).
 type readSlotState struct {
 	normal chan struct{}
 	high   chan struct{}
@@ -14,6 +18,9 @@ func newReadSlotState() *readSlotState {
 	}
 }
 
+// readWindowState coalesces concurrent reads of the same cache window.
+// Owned by the read domain; mu guards loads. Lifecycle: created in
+// newReadState, entries are removed when their window load finishes.
 type readWindowState struct {
 	mu    sync.Mutex
 	loads map[string]*windowLoad
@@ -25,6 +32,10 @@ func newReadWindowState() *readWindowState {
 	}
 }
 
+// hotChunkState is the in-memory hot-chunk cache (fast path around the
+// durable read cache). Owned by the read domain via readFastPathState; mu
+// guards chunks/lru. Lifecycle: created in newReadFastPathState, bounded
+// by the fast-path entry budget.
 type hotChunkState struct {
 	mu     sync.Mutex
 	chunks map[string][]byte
@@ -78,4 +89,26 @@ type readState struct {
 	windows     *readWindowState
 	dirPrefetch *dirPrefetchState
 	list        *listState
+}
+
+// newReadState builds the read domain state together so ownership and
+// initialization stay in one place. cache is the durable read-cache store
+// (nil-safe: read paths fall back to no caching).
+func newReadState(cache *readCacheStore) *readState {
+	return &readState{
+		cache:       cache,
+		history:     newReadHistoryState(),
+		prefetch:    newReadPrefetchState(),
+		slots:       newReadSlotState(),
+		fastPath:    newReadFastPathState(),
+		windows:     newReadWindowState(),
+		dirPrefetch: newDirPrefetchState(),
+		list:        newListState(),
+	}
+}
+
+// Close stops the durable read-cache writer and waits for pending writes.
+// Called by the VFS lifecycle.
+func (r *readState) Close() error {
+	return r.cache.Close()
 }
