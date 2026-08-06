@@ -61,7 +61,7 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `max_size` | string | 2G | Maximum read-cache size (e.g. "512M", "2G", "1T"). Set to `"0"` to disable the read cache for this mount; when unset the default 2G applies. |
+| `max_size` | string | 2G | Maximum read-cache size (e.g. "512M", "2G", "1T"). Set to "0" to disable the read cache; when unset the default 2G applies. |
 
 ## 缩略图缓存
 
@@ -69,7 +69,7 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `max_size` | string | 256M | Maximum generated-thumbnail cache size (e.g. "64M", "256M", "1G"). Set to `"0"` to disable thumbnail caching; when unset the default 256M applies. |
+| `max_size` | string | 256M | Maximum generated-thumbnail cache size (e.g. "64M", "256M", "1G"). Set to "0" to disable thumbnail caching; when unset the default 256M applies. |
 
 ## 上传
 

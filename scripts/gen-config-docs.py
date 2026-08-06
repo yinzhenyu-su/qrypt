@@ -132,6 +132,19 @@ def generate():
     sections.append(build_field_rows(read_cache_props))
     sections.append("")
 
+    thumbnail_cache = defs.get("thumbnailCacheConfig", {})
+    thumbnail_props = thumbnail_cache.get("properties", {})
+    sections.append("## 缩略图缓存")
+    sections.append("")
+    sections.append(
+        "在 `[thumbnail_cache]` 中设置缩略图缓存默认值。"
+        "生成的缩略图保存在 `thumbnail_cache_dir`"
+        "（默认 `~/.qrypt/cache/thumbnail`）。"
+    )
+    sections.append("")
+    sections.append(build_field_rows(thumbnail_props))
+    sections.append("")
+
     upload = defs.get("uploadConfig", {})
     upload_props = upload.get("properties", {})
     sections.append("## 上传")

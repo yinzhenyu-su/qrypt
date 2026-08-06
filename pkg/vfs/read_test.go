@@ -344,7 +344,7 @@ func TestVFSReadUsesHotChunkBeforeAsyncCacheWriteCompletes(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(filepath.Join(cacheDir, "reading"), 0o755)
-		_ = fs.FlushReadCache()
+		_ = fs.CloseReadCache()
 	})
 	if err := os.Chmod(filepath.Join(cacheDir, "reading"), 0o555); err != nil {
 		t.Fatal(err)
@@ -428,7 +428,7 @@ func TestVFSReadPromotesPersistedCacheRangeToHotChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs1.FlushReadCache() })
+	t.Cleanup(func() { _ = fs1.CloseReadCache() })
 
 	rc, err := fs1.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err != nil {
@@ -443,7 +443,7 @@ func TestVFSReadPromotesPersistedCacheRangeToHotChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs2.FlushReadCache() })
+	t.Cleanup(func() { _ = fs2.CloseReadCache() })
 	rc, err = fs2.Read(ctx, "/data.bin", 32, 16)
 	if err != nil {
 		t.Fatal(err)
@@ -509,7 +509,7 @@ func TestVFSReadRejectsDriverOverread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err == nil {
@@ -533,7 +533,7 @@ func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err != nil {
@@ -554,7 +554,7 @@ func TestVFSReadWithoutPrefetchSkipsAdjacentChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, testReadChunkSize)
 	if err != nil {
