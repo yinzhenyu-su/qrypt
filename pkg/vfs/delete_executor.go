@@ -11,13 +11,24 @@ import (
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 	if v.deleteDelay <= 0 {
 		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
-		v.deleteRemote(context.Background(), path, entry)
+		v.deleteRemote(v.lifecycleContext(), path, entry)
 		return
 	}
 	newVFSDeleteScheduler(v).Schedule(path, entry, v.deleteDelay, func() {
 		logging.L.Infof("[VFS] delete timer fired path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
-		v.deleteRemote(context.Background(), path, entry)
+		v.deleteRemote(v.lifecycleContext(), path, entry)
 	})
+}
+
+// lifecycleContext returns the VFS lifecycle context when Start has run, or
+// context.Background() for the short window before Start (deletes scheduled
+// during construction in tests). Background tasks derive from it so a VFS
+// shutdown cancels in-flight remote operations.
+func (v *VFS) lifecycleContext() context.Context {
+	if v.ctx != nil {
+		return v.ctx
+	}
+	return context.Background()
 }
 func (v *VFS) cancelChildDeletes(dir string) {
 	newVFSDeleteScheduler(v).CancelChildren(dir)

@@ -17,7 +17,7 @@ func openTaskEvents(coreID, filterJSON string, deadlineMS int) (string, error) {
 	if err != nil {
 		return "", wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	sub, err := withCore(s, func(c *core.Core) (*task.Subscription, error) { return c.OpenTaskEvents(ctx, filter) })
 	if err != nil {
@@ -51,7 +51,11 @@ func ReadTaskEventsJSON(handleID string, waitMS int) string {
 		}
 		return resultJSON(events, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(waitMS)
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := s.timeoutContext(waitMS)
 	defer cancel()
 	events, err := handle.sub.Read(ctx)
 	if errors.Is(err, context.DeadlineExceeded) {

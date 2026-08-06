@@ -1,7 +1,6 @@
 package mobile
 
 import (
-	"context"
 	"encoding/json"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
@@ -12,7 +11,7 @@ func DebugSnapshotJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	raw, err := withCore(s, func(c *core.Core) (string, error) { return c.DebugSnapshotJSON(context.Background()) })
+	raw, err := withCore(s, func(c *core.Core) (string, error) { return c.DebugSnapshotJSON(s.ctx) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -69,7 +68,7 @@ func StorageUsageJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	usage, err := withCore(s, func(c *core.Core) (core.StorageUsage, error) { return c.StorageUsage(context.Background()) })
+	usage, err := withCore(s, func(c *core.Core) (core.StorageUsage, error) { return c.StorageUsage(s.ctx) })
 	return resultJSON(usage, err)
 }
 
@@ -78,7 +77,7 @@ func ClearReadCacheJSON(coreID string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.ClearReadCache(ctx) }))
 }
@@ -88,7 +87,7 @@ func StartDebugServerJSON(coreID, listen string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.StartDebugServer(context.Background(), listen) }))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.StartDebugServer(s.ctx, listen) }))
 }
 
 func StopDebugServerJSON(coreID string) string {
@@ -96,7 +95,7 @@ func StopDebugServerJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.StopDebugServer(context.Background()) }))
+	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.StopDebugServer(s.ctx) }))
 }
 
 func LogFilesJSON(coreID string) string {

@@ -11,7 +11,7 @@ func ListJSON(coreID, path string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	entries, err := withCore(s, func(c *core.Core) ([]drive.Entry, error) { return c.List(ctx, path) })
 	if err != nil {
@@ -39,7 +39,7 @@ func ListPageJSON(coreID, path, cursor string, limit int, deadlineMS int) string
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	result, err := withCore(s, func(c *core.Core) (vfs.ListPageResult, error) { return c.ListPage(ctx, path, cursor, limit) })
 	if err != nil {
@@ -57,7 +57,7 @@ func StatJSON(coreID, path string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	item, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Stat(ctx, path) })
 	if err != nil {
@@ -71,7 +71,7 @@ func MkdirJSON(coreID, path string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	item, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Mkdir(ctx, path) })
 	if err != nil {
@@ -85,7 +85,7 @@ func RenameJSON(coreID, oldPath, newPath string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.Rename(ctx, oldPath, newPath) }))
 }
@@ -106,7 +106,7 @@ func RemoveJSON(coreID, path string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.Remove(ctx, path) }))
 }
@@ -116,7 +116,7 @@ func CapabilitiesJSON(coreID, path string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	info, err := withCore(s, func(c *core.Core) (vfs.CapabilityInfo, error) { return c.Capabilities(ctx, path) })
 	return resultJSON(info, err)
@@ -136,7 +136,7 @@ func FileInfoJSON(coreID, path string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	info, err := withCore(s, func(c *core.Core) (core.FileInfo, error) { return c.FileInfo(ctx, path) })
 	return resultJSON(info, err)
@@ -147,7 +147,7 @@ func ValidateResumeJSON(coreID, path, fileID string, size int64, modTime string,
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	check, err := withCore(s, func(c *core.Core) (core.ResumeCheck, error) {
 		return c.ValidateResume(ctx, path, fileID, size, modTime)

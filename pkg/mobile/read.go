@@ -19,7 +19,7 @@ func openFileWithPriority(coreID, path string, priority vfs.ReadPriority, deadli
 	if err != nil {
 		return "", wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	item, err := withCore(s, func(c *core.Core) (drive.Entry, error) { return c.Stat(ctx, path) })
 	if err != nil {

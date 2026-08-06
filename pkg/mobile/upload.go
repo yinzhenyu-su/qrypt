@@ -37,7 +37,7 @@ func UploadLocalFileJSON(coreID, localPath, remotePath string, deadlineMS int) s
 	if info.IsDir() {
 		return resultJSON(nil, wrapError(fmt.Errorf("mobile: %s is a directory", localPath)))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	resolvedRemotePath, err := withCore(s, func(c *core.Core) (string, error) {
 		return c.ResolveUploadDestination(remotePath, filepath.Base(localPath))

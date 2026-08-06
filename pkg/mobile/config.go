@@ -54,7 +54,7 @@ func ReloadConfigJSON(coreID string, deadlineMS int) string {
 	runtime := s.runtime
 	registry.mu.Unlock()
 
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	newCore, err := core.Open(ctx, core.Options{ConfigPath: configPath, Runtime: runtime})
 	if err != nil {
@@ -65,7 +65,9 @@ func ReloadConfigJSON(coreID string, deadlineMS int) string {
 	current, ok := registry.sessions[coreID]
 	if !ok {
 		registry.mu.Unlock()
-		_ = newCore.Close(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), coreCloseTimeout)
+		_ = newCore.Close(ctx)
+		cancel()
 		return resultJSON(nil, wrapError(fmt.Errorf("mobile: session %q disappeared during reload", coreID)))
 	}
 	// Hold the session write lock while swapping the core so no in-flight API
@@ -77,6 +79,10 @@ func ReloadConfigJSON(coreID string, deadlineMS int) string {
 	current.mu.Unlock()
 	registry.mu.Unlock()
 	closeCollectedHandles(handles)
-	_ = oldCore.Close(context.Background())
+	// The old core may still be draining workers; give shutdown a bounded
+	// window instead of an unbounded background close.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), coreCloseTimeout)
+	defer closeCancel()
+	_ = oldCore.Close(closeCtx)
 	return resultJSON(true, nil)
 }
