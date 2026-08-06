@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all" // registers all drivers via their init functions
@@ -72,9 +73,26 @@ type session struct {
 	core       *core.Core
 	configPath string
 	runtime    core.RuntimeLayout
+	// ctx is the session lifecycle context: created at open, canceled at
+	// close, so every API call and background task derived from it stops
+	// when the session is torn down. Process-level initialization (Open/
+	// Import) uses context.Background() as the parent; nothing else in
+	// mobile should.
+	ctx    context.Context
+	cancel context.CancelFunc
 	// mu guards core so a concurrent ReloadConfigJSON cannot swap or close
 	// the core while another API call is using it.
 	mu sync.RWMutex
+}
+
+// timeoutContext derives a call deadline from the session lifecycle context
+// instead of context.Background(), so a closed session cancels in-flight
+// calls even when their per-call deadline has not elapsed yet.
+func (s *session) timeoutContext(timeoutMS int) (context.Context, context.CancelFunc) {
+	if timeoutMS <= 0 {
+		return context.WithCancel(s.ctx)
+	}
+	return context.WithTimeout(s.ctx, time.Duration(timeoutMS)*time.Millisecond)
 }
 
 // withCore runs fn while holding the session read lock. A concurrent
@@ -173,11 +191,14 @@ func openWithRuntime(configPath string, runtime core.RuntimeLayout) (string, err
 	}
 	id, err := newID()
 	if err != nil {
-		_ = c.Close(context.Background())
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), coreCloseTimeout)
+		_ = c.Close(closeCtx)
+		closeCancel()
 		return "", wrapError(err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	registry.mu.Lock()
-	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime}
+	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime, ctx: ctx, cancel: cancel}
 	registry.mu.Unlock()
 	return id, nil
 }
@@ -215,11 +236,14 @@ func OpenImportedJSON(runtimeRaw string) string {
 	}
 	id, err := newID()
 	if err != nil {
-		_ = c.Close(context.Background())
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), coreCloseTimeout)
+		_ = c.Close(closeCtx)
+		closeCancel()
 		return resultJSON(nil, wrapError(err))
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	registry.mu.Lock()
-	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime}
+	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime, ctx: ctx, cancel: cancel}
 	registry.mu.Unlock()
 	return resultJSON(id, nil)
 }
@@ -262,6 +286,10 @@ func parseRuntimeJSON(raw string) (core.RuntimeLayout, error) {
 	return runtime, nil
 }
 
+// coreCloseTimeout bounds core shutdown during session close so a hung
+// worker cannot block CloseJSON forever.
+const coreCloseTimeout = 30 * time.Second
+
 func closeCore(coreID string) error {
 	registry.mu.Lock()
 	s, ok := registry.sessions[coreID]
@@ -273,7 +301,12 @@ func closeCore(coreID string) error {
 	handles := collectCoreHandlesLocked(coreID)
 	registry.mu.Unlock()
 	closeCollectedHandles(handles)
-	return withCoreErr(s, func(c *core.Core) error { return c.Close(context.Background()) })
+	// Abort every in-flight API call derived from the session context, then
+	// give the core a bounded window to stop workers and flush state.
+	s.cancel()
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), coreCloseTimeout)
+	defer closeCancel()
+	return withCoreErr(s, func(c *core.Core) error { return c.Close(closeCtx) })
 }
 
 func collectCoreHandlesLocked(coreID string) coreHandles {

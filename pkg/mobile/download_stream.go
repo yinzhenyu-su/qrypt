@@ -7,7 +7,7 @@ func openTaskDownloadItem(coreID, taskID, itemID string, deadlineMS int) (string
 	if err != nil {
 		return "", wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	handle, err := withCore(s, func(c *core.Core) (*core.DownloadStreamItemHandle, error) {
 		return c.OpenDownloadStreamItem(ctx, taskID, itemID)
@@ -39,7 +39,11 @@ func ReadDownloadItemInto(handleID string, dst []byte, deadlineMS int) (int, err
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return 0, wrapError(err)
+	}
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	n, err := handle.handle.ReadInto(ctx, dst)
 	if err != nil {
@@ -61,7 +65,11 @@ func CommitDownloadItemJSON(handleID string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	return resultJSON(nil, handle.handle.Commit(ctx))
 }

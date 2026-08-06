@@ -284,6 +284,11 @@ all new code:
 - Every concurrency bug fix ships with a regression test.
 - Split a large file's existing responsibilities before adding new code to it.
 - Benchmarks are diagnostics only; keep them out of the business state machine.
+- `context.Background()` is allowed only for process-level initialization and
+  root lifecycle contexts. API calls, background tasks and shutdown paths
+  derive from the owning context (mobile sessions keep a lifecycle context
+  canceled at close; VFS background deletes use the VFS lifecycle context);
+  shutdown uses a bounded timeout instead of a bare background.
 
 ## Verification
 

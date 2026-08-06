@@ -9,7 +9,7 @@ func openTaskUploadItem(coreID, taskID, itemID string, deadlineMS int) (string, 
 	if err != nil {
 		return "", wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	handle, err := withCore(s, func(c *core.Core) (*core.UploadStreamItemHandle, error) {
 		return c.OpenUploadStreamItem(ctx, taskID, itemID)
@@ -41,7 +41,11 @@ func writeUploadItem(handleID string, data []byte, deadlineMS int) (int, error) 
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return 0, wrapError(err)
+	}
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	n, err := handle.handle.Write(ctx, data)
 	if err != nil {
@@ -55,7 +59,11 @@ func commitUploadItem(handleID string, deadlineMS int) error {
 	if err != nil {
 		return wrapError(err)
 	}
-	ctx, cancel := core.TimeoutContext(deadlineMS)
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return wrapError(err)
+	}
+	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	return wrapError(handle.handle.Commit(ctx))
 }

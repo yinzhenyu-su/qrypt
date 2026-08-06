@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -598,4 +599,54 @@ func TestMobileReloadConcurrentWithAPICalls(t *testing.T) {
 		}
 	}
 	wg.Wait()
+}
+
+func TestCloseCancelsSessionLifecycle(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(cfg, []byte(`
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var opened struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(OpenJSON(cfg, testRuntimeJSON(tmp))), &opened); err != nil {
+		t.Fatalf("OpenJSON: %v", err)
+	}
+	if !opened.OK || opened.Data == "" {
+		t.Fatalf("open = %+v, want ok core id", opened)
+	}
+	coreID := opened.Data
+
+	s, err := getSession(coreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ctx == nil {
+		t.Fatal("session lifecycle ctx not created")
+	}
+
+	// Close cancels the lifecycle context so in-flight calls abort, even
+	// without their own deadline.
+	if raw := CloseJSON(coreID); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("CloseJSON = %s, want ok", raw)
+	}
+	if err := s.ctx.Err(); err != context.Canceled {
+		t.Errorf("session ctx after close = %v, want context.Canceled", s.ctx.Err())
+	}
+	// Subsequent lookups fail.
+	if _, err := getSession(coreID); err == nil {
+		t.Error("getSession after close = nil error, want unknown core")
+	}
 }

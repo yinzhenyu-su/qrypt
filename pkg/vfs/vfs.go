@@ -64,7 +64,12 @@ type VFS struct {
 	// done is closed when the VFS shuts down (context cancel in Start). The
 	// blocking upload-queue enqueue goroutine selects on it so it cannot
 	// leak after the upload workers have exited.
-	done      chan struct{}
+	done chan struct{}
+	// ctx is the lifecycle context from Start, kept so background tasks
+	// (remote deletes, prefetch) derive from the owning context instead of
+	// context.Background(). Written once inside startOnce before any
+	// background task can observe it.
+	ctx       context.Context
 	startOnce sync.Once
 
 	deleteDelay time.Duration
@@ -172,6 +177,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 // cannot be restarted by calling Start again - build a new VFS instead.
 func (v *VFS) Start(ctx context.Context) {
 	v.startOnce.Do(func() {
+		v.ctx = ctx
 		for i := 0; i < v.uploadWorkers; i++ {
 			go v.uploadWorker(ctx)
 		}
