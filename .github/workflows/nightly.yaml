@@ -1,0 +1,65 @@
+name: Nightly Quality Gates
+
+# Full regression suite that is too slow or too flaky for every PR:
+# property fuzzing (30s per fuzzer), the coverage gate, the race suite
+# and the layered fast/all suites. Run nightly or on demand.
+on:
+  schedule:
+    - cron: "0 18 * * *" # 02:00 Asia/Shanghai
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install FUSE headers
+        run: sudo apt-get update && sudo apt-get install -y libfuse-dev
+
+      - name: Fuzz (30s per fuzzer)
+        run: scripts/fuzz-nightly.sh 30s
+
+      # A fuzz failure writes corpus entries under testdata/fuzz; the
+      # regression inputs must be committed, so surface them as an artifact
+      # instead of letting them vanish with the runner.
+      - name: Collect fuzz corpus
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-corpus
+          path: |
+            **/testdata/fuzz/**
+          if-no-files-found: ignore
+
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install FUSE headers
+        run: sudo apt-get update && sudo apt-get install -y libfuse-dev
+
+      - name: Coverage gate
+        run: scripts/coverage.sh
+
+      - name: Race suite
+        run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./internal/control ./internal/logging ./internal/cli ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
+
+      - name: All layers (fast + race + smoke)
+        run: scripts/test-layers.sh all
