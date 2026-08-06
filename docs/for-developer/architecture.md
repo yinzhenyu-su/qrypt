@@ -270,6 +270,19 @@ inputs and errors, track handles, and delegate behavior to VFS.
 - Prefer adding VFS behavior in the responsibility file that owns that behavior,
   not in a generic catch-all file.
 
+## Complexity Guardrails
+
+These rules keep the codebase from growing unbounded complexity; they apply to
+all new code:
+
+- New logic goes behind the caller's own narrow interface first; do not widen
+  a package API to satisfy one caller.
+- A new public API needs at least two real call sites before it is exported.
+- A new state field must document its owner and lock discipline.
+- Every concurrency bug fix ships with a regression test.
+- Split a large file's existing responsibilities before adding new code to it.
+- Benchmarks are diagnostics only; keep them out of the business state machine.
+
 ## Verification
 
 Before merging architectural changes, run:
