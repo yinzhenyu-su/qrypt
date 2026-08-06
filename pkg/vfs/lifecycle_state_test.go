@@ -161,37 +161,47 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	}
 }
 
-// TestUploadQueueEnqueueExitsOnShutdown: a blocked enqueue (queue full)
-// must exit when the VFS lifecycle context is cancelled. The upload worker
-// runtime spawns the blocking enqueue in a background goroutine that
-// selects on the VFS done channel.
+// TestUploadQueueEnqueueExitsOnShutdown asserts the shutdown semantics of
+// a blocked enqueue directly through enqueueBlocking, using two VFS
+// instances to keep the scenarios free of worker competition:
+//   - unstarted VFS: done is open, so a blocked enqueue parks on the full
+//     queue and delivers once space appears;
+//   - started-then-cancelled VFS: workers stopped, queue stays full, so
+//     the done case wins and the enqueue returns without delivering.
 func TestUploadQueueEnqueueExitsOnShutdown(t *testing.T) {
-	fs := newStateTestVFS(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	fs.Start(ctx)
+	// Alive (no worker to compete for slots): blocked enqueue delivers once
+	// space appears.
+	alive := newStateTestVFS(t)
+	aliveRuntime := newVFSUploadWorkerRuntime(alive)
+	for i := 0; i < cap(alive.upload.queue); i++ {
+		alive.upload.queue <- PendingUpload{Path: "/fill", FID: "fill"}
+	}
+	delivered := make(chan bool, 1)
+	go func() { delivered <- aliveRuntime.enqueueBlocking(PendingUpload{Path: "/waited", FID: "waited"}) }()
+	time.Sleep(20 * time.Millisecond) // let it park on the full queue
+	<-alive.upload.queue              // make room; no worker races for it
+	select {
+	case ok := <-delivered:
+		if !ok {
+			t.Fatal("blocked enqueue reported not delivered while VFS alive")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocked enqueue did not deliver after space appeared")
+	}
 
-	// Fill the queue so the next enqueue blocks in the background goroutine.
+	// Shutdown: close the lifecycle done channel (what Start's AfterFunc does
+	// on cancel) while the queue is full, so only the done case is
+	// satisfiable. No worker is running, so the assertion is deterministic.
+	fs := newStateTestVFS(t)
+	runtime := newVFSUploadWorkerRuntime(fs)
 	for i := 0; i < cap(fs.upload.queue); i++ {
 		fs.upload.queue <- PendingUpload{Path: "/fill", FID: "fill"}
 	}
-	done := make(chan struct{})
-	fs.sendUpload(PendingUpload{Path: "/blocked", FID: "blocked"})
-	go func() {
-		// The blocking enqueue goroutine exits on v.done; observe it by
-		// verifying the queue never accepts a second blocked record after
-		// shutdown (the done channel is only observable via SendUpload).
-		<-fs.done
-		close(done)
-	}()
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("VFS done not closed after cancel")
+	close(fs.done)
+	if runtime.enqueueBlocking(PendingUpload{Path: "/blocked", FID: "blocked"}) {
+		t.Fatal("enqueue delivered after shutdown")
 	}
-	// Drain: the blocked goroutine may still be parked; give it a moment to
-	// observe done, then close the remaining domains like the lifecycle does.
-	time.Sleep(50 * time.Millisecond)
+
 	fs.delete.Close()
 	fs.upload.Close()
 	_ = fs.read.Close()

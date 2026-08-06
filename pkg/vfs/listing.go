@@ -499,9 +499,11 @@ func (s vfsListScheduler) DirPrefetchContext(fallback context.Context) context.C
 }
 
 // listingState groups the directory-listing domain state: list
-// coalescing and directory prefetch. Owned by the listing paths
-// (listing.go); separate from the read domain because it serves List
-// (directory browsing) rather than Read (file content).
+// coalescing and directory prefetch. It is separate from the read domain
+// because it serves directory browsing (List) rather than file content
+// (Read). listState and dirPrefetchState each guard their own mutex; the
+// domain holds no persistent resources, so there is no Close - directory
+// prefetch runs on the VFS lifecycle context and stops with it.
 type listingState struct {
 	list        *listState
 	dirPrefetch *dirPrefetchState
