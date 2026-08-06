@@ -126,6 +126,13 @@ earlier operation in the same mount process.
 
 ## Why cross-drive copies write more data to disk than expected
 
+> **TL;DR**: FUSE does not let the daemon distinguish a copy read from a
+> regular read, so the read-cache policy cannot decide between "cache
+> everything" (copies amplify the write 1x) and "cache nothing" (playback and
+> thumbnail reuse lose their hits). qrypt routes explicit copies (`fs copy`,
+> copy tasks) around the blind spot via the driver-level path; the remaining
+> amplification is only unlabelled FUSE `cp` and cross-drive `fs sync`.
+
 ### The two copy paths and their amplification
 
 Copying a file from one netdisk mount to another can go through two very
