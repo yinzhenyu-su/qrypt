@@ -84,7 +84,7 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryTimeout
 	case containsAny(msg, "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "no such host", "software caused connection abort", "eof"):
 		return ErrorCategoryNetwork
-	case containsAny(msg, "unauthorized", "invalid token", "token expired", "login", "credential", "401"):
+	case containsAny(msg, "unauthorized", "invalid token", "token expired", "token refresh", "login", "credential", "authorization", "401", "cookie"):
 		return ErrorCategoryAuth
 	case containsAny(msg, "forbidden", "permission denied", "access denied", "not permitted", "insufficient permission", "403"):
 		return ErrorCategoryPermission
