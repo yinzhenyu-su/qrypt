@@ -312,11 +312,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		if resp.StatusCode >= 400 {
 			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
 			c.recordMetric(ctx, event)
-			apiErr := util.HTTPError("quark", req, resp, bodyBytes)
-			if resp.StatusCode == http.StatusNotFound {
-				return fmt.Errorf("%w: %v", drive.ErrNotFound, apiErr)
-			}
-			return apiErr
+			return util.HTTPError("quark", req, resp, bodyBytes)
 		}
 		c.recordMetric(ctx, event)
 		return nil

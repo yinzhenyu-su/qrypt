@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -380,6 +381,11 @@ func isAuthExpiredError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Prefer the stable sentinel: HTTPError wraps drive.ErrAuth on 401
+	// responses, so retry layers never parse error text.
+	if errors.Is(err, drive.ErrAuth) {
+		return true
+	}
 	return isAuthExpiredMessage(err.Error())
 }
 
@@ -472,7 +478,7 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	}
 	var base baseResp
 	if err := json.Unmarshal(respBody, &base); err == nil && !base.Success && isAuthExpiredMessage(base.Message) {
-		return fmt.Errorf("%s", base.Message)
+		return fmt.Errorf("yun139: %s auth failed: %w: %s", path, drive.ErrAuth, util.Snippet([]byte(base.Message)))
 	}
 	if result == nil {
 		return nil

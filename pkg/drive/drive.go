@@ -145,6 +145,21 @@ var ErrSpaceUnsupported = errors.New("drive: space query unsupported")
 // aliases it as vfs.ErrNotFound so both layers classify with errors.Is.
 var ErrNotFound = errors.New("drive: not found")
 
+// ErrAuth is the stable sentinel for authentication/authorization failure
+// (missing, expired or rejected credentials). Drivers wrap it on 401-style
+// responses and expired-token replies so retry layers can refresh
+// credentials instead of re-running the call blindly.
+var ErrAuth = errors.New("drive: authentication required")
+
+// ErrRateLimit is the stable sentinel for throttling (HTTP 429 or backend
+// quota limits). Drivers wrap it so backoff layers can apply longer waits.
+var ErrRateLimit = errors.New("drive: rate limit exceeded")
+
+// ErrInvalidInput is the stable sentinel for request or payload validation
+// failures (HTTP 400, malformed upload results). Retrying never helps;
+// callers can surface it to the user as a data problem.
+var ErrInvalidInput = errors.New("drive: invalid input")
+
 // UnsupportedOperations provides default implementations for Driver methods
 // that a read-only or partial driver intentionally does not advertise in
 // Capabilities.

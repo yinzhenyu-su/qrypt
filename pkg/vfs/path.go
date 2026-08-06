@@ -16,12 +16,10 @@ func CleanVirtualPath(path string) string {
 }
 
 // IsNotFound reports whether err represents a missing virtual or remote path.
+// The sentinel chain is the single source of truth: drivers wrap
+// drive.ErrNotFound (via util.HTTPError on 404 responses or explicitly), and
+// vfs aliases it. No string matching — a bare "not found" text without the
+// sentinel is not classified as missing.
 func IsNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrNotFound) {
-		return true
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "not found")
+	return errors.Is(err, ErrNotFound)
 }

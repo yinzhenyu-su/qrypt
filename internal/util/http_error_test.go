@@ -2,11 +2,13 @@ package util_test
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // The public sanitizer's contract: one entry point that redacts every
@@ -91,5 +93,32 @@ func TestHTTPErrorMasksUserinfoCredentialsInURL(t *testing.T) {
 	msg := util.HTTPError("webdav: list", req, resp, nil).Error()
 	if strings.Contains(msg, "user-secret") {
 		t.Errorf("URL userinfo leaks password: %s", msg)
+	}
+}
+
+func TestHTTPErrorWrapsStableSentinelsByStatus(t *testing.T) {
+	cases := []struct {
+		code  int
+		class error
+	}{
+		{http.StatusUnauthorized, drive.ErrAuth},
+		{http.StatusNotFound, drive.ErrNotFound},
+		{http.StatusTooManyRequests, drive.ErrRateLimit},
+		{http.StatusBadRequest, drive.ErrInvalidInput},
+	}
+	for _, tc := range cases {
+		resp := &http.Response{StatusCode: tc.code, Status: http.StatusText(tc.code)}
+		err := util.HTTPError("quark: list", nil, resp, []byte(`{}`))
+		if !errors.Is(err, tc.class) {
+			t.Errorf("status %d: errors.Is(%q) = false, want sentinel %v", tc.code, err, tc.class)
+		}
+	}
+	// Non-classifying statuses stay unwrapped.
+	resp := &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error"}
+	err := util.HTTPError("quark: list", nil, resp, nil)
+	for _, sentinel := range []error{drive.ErrAuth, drive.ErrNotFound, drive.ErrRateLimit, drive.ErrInvalidInput} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("500 error unexpectedly wraps %v: %v", sentinel, err)
+		}
 	}
 }

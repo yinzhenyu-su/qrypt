@@ -246,6 +246,26 @@ userinfo; their mask patterns are covered by unit tests in that package. A
 duplicated pattern set in a driver is a review failure — extend `util.Snippet`
 instead.
 
+### Stable error sentinels
+
+Errors crossing layer boundaries must be classifiable with `errors.Is` /
+`errors.As` — never by parsing text. `util.HTTPError` already wraps the
+right sentinel from the HTTP status (401 → `drive.ErrAuth`, 404 →
+`drive.ErrNotFound`, 429 → `drive.ErrRateLimit`, 400 →
+`drive.ErrInvalidInput`), so most driver errors get it for free. For
+non-HTTP failures, wrap the sentinel yourself:
+
+```go
+return fmt.Errorf("quark: %s auth failed: %w: %s", op, drive.ErrAuth, util.Snippet([]byte(msg)))
+```
+
+Sentinels: `drive.ErrAuth` (credential expired/rejected → refresh and
+retry), `drive.ErrNotFound` (missing object), `drive.ErrRateLimit`
+(back off longer), `drive.ErrInvalidInput` (data/validation problem,
+never retryable), plus `context.Canceled` / `context.DeadlineExceeded`.
+"Retryable" is a derived property (`drive.RetryableCategory`); only
+wrap `drive.NonRetryable` for deterministic failures.
+
 ### Shared driver infrastructure
 
 Cross-cutting HTTP plumbing lives under `internal/util` so drivers do not
