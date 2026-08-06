@@ -1,12 +1,9 @@
 package quark
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -234,13 +232,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 	defer func() { <-sem }()
 
 	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
-		var bodyReader io.Reader
-		if body != nil {
-			jsonBody, _ := json.Marshal(body)
-			bodyReader = bytes.NewReader(jsonBody)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
+		req, err := httpclient.NewJSONRequest(ctx, method, u.String(), body)
 		if err != nil {
 			return fmt.Errorf("create request failed: %w", err)
 		}
@@ -249,9 +241,6 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		req.Header.Set("Referer", defaultReferer)
 		req.Header.Set("User-Agent", defaultUserAgent)
 		req.Header.Set("Accept", "application/json, text/plain, */*")
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
 
 		httpStart := time.Now()
 		resp, err := c.httpClient.Do(req)
@@ -276,8 +265,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			return fmt.Errorf("request failed: %w", err)
 		}
 
-		bodyBytes, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		bodyBytes, readErr := httpclient.ReadBody(resp)
 		if readErr != nil {
 			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
@@ -314,7 +302,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			continue
 		}
 		if result != nil {
-			if err := json.Unmarshal(bodyBytes, result); err != nil {
+			if err := httpclient.DecodeJSON(bodyBytes, result); err != nil {
 				event.Error = err.Error()
 				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
 				c.recordMetric(ctx, event)

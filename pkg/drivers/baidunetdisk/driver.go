@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
 	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -461,15 +462,14 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := httpclient.ReadBody(resp)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return util.HTTPError("baidu_netdisk: token", req, resp, data)
 	}
-	return json.Unmarshal(data, out)
+	return httpclient.DecodeJSON(data, out)
 }
 
 func (d *Driver) manage(ctx context.Context, op string, filelist any) error {

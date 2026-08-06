@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/httputil"
+	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -321,7 +323,7 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			time.Sleep(personalRetryWait << uint(attempt))
+			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait, 0, false))
 		}
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
@@ -351,7 +353,7 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			time.Sleep(personalRetryWait << uint(attempt))
+			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait, 0, false))
 		}
 		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
@@ -454,8 +456,7 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpclient.ReadBody(resp)
 	if err != nil {
 		return err
 	}
@@ -476,7 +477,7 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	if result == nil {
 		return nil
 	}
-	if err := json.Unmarshal(respBody, result); err != nil {
+	if err := httpclient.DecodeJSON(respBody, result); err != nil {
 		return fmt.Errorf("personal API: %w", err)
 	}
 	return nil
