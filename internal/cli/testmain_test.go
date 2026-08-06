@@ -30,6 +30,10 @@ func TestMain(m *testing.M) {
 		os.Setenv("QRYPT_HOME", filepath.Join(home, ".qrypt"))
 		defer os.RemoveAll(home)
 	}
+	// Keep the command layer off the network: NTP queries hit DNS, whose
+	// round trips are not interruptible by context cancel and would flake
+	// the goleak check on slow runner DNS (see initTime).
+	os.Setenv("QRYPT_TEST_NTP_DISABLED", "1")
 	code := m.Run()
 	timeutil.StopNTP()
 	if err := goleak.Find(
