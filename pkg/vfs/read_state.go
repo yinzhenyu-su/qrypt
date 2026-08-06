@@ -81,14 +81,12 @@ func newReadPrefetchState() *readPrefetchState {
 // the fields are initialized together in New, touched only by read paths,
 // and shut down by the VFS lifecycle.
 type readState struct {
-	cache       *readCacheStore
-	history     *readHistoryState
-	prefetch    *readPrefetchState
-	slots       *readSlotState
-	fastPath    *readFastPathState
-	windows     *readWindowState
-	dirPrefetch *dirPrefetchState
-	list        *listState
+	cache    *readCacheStore
+	history  *readHistoryState
+	prefetch *readPrefetchState
+	slots    *readSlotState
+	fastPath *readFastPathState
+	windows  *readWindowState
 }
 
 // newReadState builds the read domain state together so ownership and
@@ -96,19 +94,21 @@ type readState struct {
 // (nil-safe: read paths fall back to no caching).
 func newReadState(cache *readCacheStore) *readState {
 	return &readState{
-		cache:       cache,
-		history:     newReadHistoryState(),
-		prefetch:    newReadPrefetchState(),
-		slots:       newReadSlotState(),
-		fastPath:    newReadFastPathState(),
-		windows:     newReadWindowState(),
-		dirPrefetch: newDirPrefetchState(),
-		list:        newListState(),
+		cache:    cache,
+		history:  newReadHistoryState(),
+		prefetch: newReadPrefetchState(),
+		slots:    newReadSlotState(),
+		fastPath: newReadFastPathState(),
+		windows:  newReadWindowState(),
 	}
 }
 
 // Close stops the durable read-cache writer and waits for pending writes.
-// Called by the VFS lifecycle.
+// Called by the VFS lifecycle. Safe on a zero readState (hand-constructed
+// VFS values in tests may have no cache).
 func (r *readState) Close() error {
+	if r == nil || r.cache == nil {
+		return nil
+	}
 	return r.cache.Close()
 }

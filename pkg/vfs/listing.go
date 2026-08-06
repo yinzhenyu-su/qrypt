@@ -392,13 +392,13 @@ func newVFSListScheduler(v *VFS) vfsListScheduler {
 
 func (s vfsListScheduler) BeginListLoad(parentPath string, prefetch bool) (*listLoad, bool) {
 	parentPath = cleanVirtual(parentPath)
-	s.v.read.list.loadMu.Lock()
-	defer s.v.read.list.loadMu.Unlock()
-	if load := s.v.read.list.loads[parentPath]; load != nil {
+	s.v.listing.list.loadMu.Lock()
+	defer s.v.listing.list.loadMu.Unlock()
+	if load := s.v.listing.list.loads[parentPath]; load != nil {
 		return load, false
 	}
 	load := &listLoad{done: make(chan struct{}), prefetch: prefetch}
-	s.v.read.list.loads[parentPath] = load
+	s.v.listing.list.loads[parentPath] = load
 	return load, true
 }
 
@@ -408,11 +408,11 @@ func (s vfsListScheduler) FinishListLoad(parentPath string, load *listLoad, entr
 		load.entries = cloneEntries(entries)
 	}
 	load.err = err
-	s.v.read.list.loadMu.Lock()
-	if s.v.read.list.loads[parentPath] == load {
-		delete(s.v.read.list.loads, parentPath)
+	s.v.listing.list.loadMu.Lock()
+	if s.v.listing.list.loads[parentPath] == load {
+		delete(s.v.listing.list.loads, parentPath)
 	}
-	s.v.read.list.loadMu.Unlock()
+	s.v.listing.list.loadMu.Unlock()
 	close(load.done)
 }
 
@@ -431,42 +431,42 @@ func (s vfsListScheduler) MarkDirPrefetch(path string) bool {
 		return false
 	}
 	now := time.Now()
-	s.v.read.dirPrefetch.mu.Lock()
-	defer s.v.read.dirPrefetch.mu.Unlock()
-	if _, ok := s.v.read.dirPrefetch.inFlight[path]; ok {
+	s.v.listing.dirPrefetch.mu.Lock()
+	defer s.v.listing.dirPrefetch.mu.Unlock()
+	if _, ok := s.v.listing.dirPrefetch.inFlight[path]; ok {
 		return false
 	}
-	if last, ok := s.v.read.dirPrefetch.done[path]; ok && now.Sub(last) < dirPrefetchCooldown {
+	if last, ok := s.v.listing.dirPrefetch.done[path]; ok && now.Sub(last) < dirPrefetchCooldown {
 		return false
 	}
-	s.v.read.dirPrefetch.inFlight[path] = struct{}{}
+	s.v.listing.dirPrefetch.inFlight[path] = struct{}{}
 	return true
 }
 
 func (s vfsListScheduler) MarkDirPrefetchComplete(path string) {
 	path = cleanVirtual(path)
-	s.v.read.dirPrefetch.mu.Lock()
-	s.v.read.dirPrefetch.done[path] = time.Now()
-	s.v.read.dirPrefetch.mu.Unlock()
+	s.v.listing.dirPrefetch.mu.Lock()
+	s.v.listing.dirPrefetch.done[path] = time.Now()
+	s.v.listing.dirPrefetch.mu.Unlock()
 }
 
 func (s vfsListScheduler) SuppressDirPrefetch(path string) {
 	path = cleanVirtual(path)
-	s.v.read.dirPrefetch.mu.Lock()
-	s.v.read.dirPrefetch.done[path] = time.Now()
-	s.v.read.dirPrefetch.mu.Unlock()
+	s.v.listing.dirPrefetch.mu.Lock()
+	s.v.listing.dirPrefetch.done[path] = time.Now()
+	s.v.listing.dirPrefetch.mu.Unlock()
 }
 
 func (s vfsListScheduler) FinishDirPrefetch(path string) {
 	path = cleanVirtual(path)
-	s.v.read.dirPrefetch.mu.Lock()
-	delete(s.v.read.dirPrefetch.inFlight, path)
-	s.v.read.dirPrefetch.mu.Unlock()
+	s.v.listing.dirPrefetch.mu.Lock()
+	delete(s.v.listing.dirPrefetch.inFlight, path)
+	s.v.listing.dirPrefetch.mu.Unlock()
 }
 
 func (s vfsListScheduler) AcquireDirPrefetchSlot(ctx context.Context) bool {
 	select {
-	case s.v.read.dirPrefetch.sem <- struct{}{}:
+	case s.v.listing.dirPrefetch.sem <- struct{}{}:
 		return true
 	case <-ctx.Done():
 		return false
@@ -474,26 +474,43 @@ func (s vfsListScheduler) AcquireDirPrefetchSlot(ctx context.Context) bool {
 }
 
 func (s vfsListScheduler) ReleaseDirPrefetchSlot() {
-	<-s.v.read.dirPrefetch.sem
+	<-s.v.listing.dirPrefetch.sem
 }
 
 func (s vfsListScheduler) StartDirPrefetch(ctx context.Context) bool {
-	s.v.read.dirPrefetch.mu.Lock()
-	defer s.v.read.dirPrefetch.mu.Unlock()
-	if s.v.read.dirPrefetch.started {
+	s.v.listing.dirPrefetch.mu.Lock()
+	defer s.v.listing.dirPrefetch.mu.Unlock()
+	if s.v.listing.dirPrefetch.started {
 		return false
 	}
-	s.v.read.dirPrefetch.started = true
-	s.v.read.dirPrefetch.context = ctx
+	s.v.listing.dirPrefetch.started = true
+	s.v.listing.dirPrefetch.context = ctx
 	return true
 }
 
 func (s vfsListScheduler) DirPrefetchContext(fallback context.Context) context.Context {
-	s.v.read.dirPrefetch.mu.Lock()
-	ctx := s.v.read.dirPrefetch.context
-	s.v.read.dirPrefetch.mu.Unlock()
+	s.v.listing.dirPrefetch.mu.Lock()
+	ctx := s.v.listing.dirPrefetch.context
+	s.v.listing.dirPrefetch.mu.Unlock()
 	if ctx != nil && ctx.Err() == nil {
 		return ctx
 	}
 	return fallback
+}
+
+// listingState groups the directory-listing domain state: list
+// coalescing and directory prefetch. Owned by the listing paths
+// (listing.go); separate from the read domain because it serves List
+// (directory browsing) rather than Read (file content).
+type listingState struct {
+	list        *listState
+	dirPrefetch *dirPrefetchState
+}
+
+// newListingState builds the listing domain state together.
+func newListingState() *listingState {
+	return &listingState{
+		list:        newListState(),
+		dirPrefetch: newDirPrefetchState(),
+	}
 }
