@@ -224,21 +224,21 @@ func (r vfsReadRuntime) CacheKey(entry drive.Entry) string {
 }
 
 func (r vfsReadRuntime) AddCacheHit() {
-	r.v.readCache.addHit()
+	r.v.read.cache.addHit()
 }
 
 func (r vfsReadRuntime) HotChunk(cacheKey string, index int64) ([]byte, bool) {
 	key := readChunkKey(cacheKey, index)
-	r.v.readFastPath.hot.mu.Lock()
-	defer r.v.readFastPath.hot.mu.Unlock()
-	data, ok := r.v.readFastPath.hot.chunks[key]
+	r.v.read.fastPath.hot.mu.Lock()
+	defer r.v.read.fastPath.hot.mu.Unlock()
+	data, ok := r.v.read.fastPath.hot.chunks[key]
 	if !ok {
 		return nil, false
 	}
-	for i, candidate := range r.v.readFastPath.hot.lru {
+	for i, candidate := range r.v.read.fastPath.hot.lru {
 		if candidate == key {
-			copy(r.v.readFastPath.hot.lru[i:], r.v.readFastPath.hot.lru[i+1:])
-			r.v.readFastPath.hot.lru[len(r.v.readFastPath.hot.lru)-1] = key
+			copy(r.v.read.fastPath.hot.lru[i:], r.v.read.fastPath.hot.lru[i+1:])
+			r.v.read.fastPath.hot.lru[len(r.v.read.fastPath.hot.lru)-1] = key
 			break
 		}
 	}
@@ -247,31 +247,31 @@ func (r vfsReadRuntime) HotChunk(cacheKey string, index int64) ([]byte, bool) {
 
 func (r vfsReadRuntime) PutHotChunk(cacheKey string, index int64, data []byte) {
 	key := readChunkKey(cacheKey, index)
-	r.v.readFastPath.hot.mu.Lock()
-	defer r.v.readFastPath.hot.mu.Unlock()
-	if _, ok := r.v.readFastPath.hot.chunks[key]; !ok {
-		r.v.readFastPath.hot.lru = append(r.v.readFastPath.hot.lru, key)
+	r.v.read.fastPath.hot.mu.Lock()
+	defer r.v.read.fastPath.hot.mu.Unlock()
+	if _, ok := r.v.read.fastPath.hot.chunks[key]; !ok {
+		r.v.read.fastPath.hot.lru = append(r.v.read.fastPath.hot.lru, key)
 	}
-	r.v.readFastPath.hot.chunks[key] = data
-	for len(r.v.readFastPath.hot.lru) > readHotChunkLimit {
-		oldest := r.v.readFastPath.hot.lru[0]
-		r.v.readFastPath.hot.lru = r.v.readFastPath.hot.lru[1:]
-		delete(r.v.readFastPath.hot.chunks, oldest)
+	r.v.read.fastPath.hot.chunks[key] = data
+	for len(r.v.read.fastPath.hot.lru) > readHotChunkLimit {
+		oldest := r.v.read.fastPath.hot.lru[0]
+		r.v.read.fastPath.hot.lru = r.v.read.fastPath.hot.lru[1:]
+		delete(r.v.read.fastPath.hot.chunks, oldest)
 	}
 }
 
 func (r vfsReadRuntime) ShouldPromoteCachedRange(cacheKey string, index int64) bool {
 	key := readChunkKey(cacheKey, index)
-	r.v.readFastPath.rangeHit.mu.Lock()
-	defer r.v.readFastPath.rangeHit.mu.Unlock()
-	hits := r.v.readFastPath.rangeHit.hits[key]
+	r.v.read.fastPath.rangeHit.mu.Lock()
+	defer r.v.read.fastPath.rangeHit.mu.Unlock()
+	hits := r.v.read.fastPath.rangeHit.hits[key]
 	if hits+1 < readRangePromoteHits {
 		return false
 	}
-	delete(r.v.readFastPath.rangeHit.hits, key)
-	for i, candidate := range r.v.readFastPath.rangeHit.lru {
+	delete(r.v.read.fastPath.rangeHit.hits, key)
+	for i, candidate := range r.v.read.fastPath.rangeHit.lru {
 		if candidate == key {
-			r.v.readFastPath.rangeHit.lru = append(r.v.readFastPath.rangeHit.lru[:i], r.v.readFastPath.rangeHit.lru[i+1:]...)
+			r.v.read.fastPath.rangeHit.lru = append(r.v.read.fastPath.rangeHit.lru[:i], r.v.read.fastPath.rangeHit.lru[i+1:]...)
 			break
 		}
 	}
@@ -283,39 +283,39 @@ func (r vfsReadRuntime) RecordCachedRangeHit(cacheKey string, index, requestSize
 		return
 	}
 	key := readChunkKey(cacheKey, index)
-	r.v.readFastPath.rangeHit.mu.Lock()
-	defer r.v.readFastPath.rangeHit.mu.Unlock()
-	if _, ok := r.v.readFastPath.rangeHit.hits[key]; !ok {
-		r.v.readFastPath.rangeHit.lru = append(r.v.readFastPath.rangeHit.lru, key)
+	r.v.read.fastPath.rangeHit.mu.Lock()
+	defer r.v.read.fastPath.rangeHit.mu.Unlock()
+	if _, ok := r.v.read.fastPath.rangeHit.hits[key]; !ok {
+		r.v.read.fastPath.rangeHit.lru = append(r.v.read.fastPath.rangeHit.lru, key)
 	}
-	r.v.readFastPath.rangeHit.hits[key]++
-	for len(r.v.readFastPath.rangeHit.lru) > readRangeHitLimit {
-		oldest := r.v.readFastPath.rangeHit.lru[0]
-		r.v.readFastPath.rangeHit.lru = r.v.readFastPath.rangeHit.lru[1:]
-		delete(r.v.readFastPath.rangeHit.hits, oldest)
+	r.v.read.fastPath.rangeHit.hits[key]++
+	for len(r.v.read.fastPath.rangeHit.lru) > readRangeHitLimit {
+		oldest := r.v.read.fastPath.rangeHit.lru[0]
+		r.v.read.fastPath.rangeHit.lru = r.v.read.fastPath.rangeHit.lru[1:]
+		delete(r.v.read.fastPath.rangeHit.hits, oldest)
 	}
 }
 
 func (r vfsReadRuntime) FlushStaging(localPath string) error {
-	return r.v.uploads.staging.flush(localPath)
+	return r.v.upload.store.staging.flush(localPath)
 }
 
 func (r vfsReadRuntime) ChunkAvailable(cacheKey string, index int64) bool {
 	if _, ok := r.v.hotChunk(cacheKey, index); ok {
 		return true
 	}
-	if ok, err := r.v.readCache.HasChunk(cacheKey, index); err != nil || ok {
+	if ok, err := r.v.read.cache.HasChunk(cacheKey, index); err != nil || ok {
 		return true
 	}
 	return r.WindowContains(cacheKey, index)
 }
 
 func (r vfsReadRuntime) GetChunkWithRange(cacheKey string, index, start, size int64) ([]byte, []byte, bool, error) {
-	return r.v.readCache.GetChunkWithRange(cacheKey, index, start, size)
+	return r.v.read.cache.GetChunkWithRange(cacheKey, index, start, size)
 }
 
 func (r vfsReadRuntime) GetChunkRange(cacheKey string, index, start, size int64) ([]byte, bool, error) {
-	return r.v.readCache.GetChunkRange(cacheKey, index, start, size)
+	return r.v.read.cache.GetChunkRange(cacheKey, index, start, size)
 }
 
 func (r vfsReadRuntime) WaitWindow(ctx context.Context, cacheKey string, index int64) ([]byte, bool, error) {
@@ -330,53 +330,53 @@ func (r vfsReadRuntime) AcquireSlot(ctx context.Context) (func(), error) {
 	prio := readPriority(ctx)
 	if prio == PriorityHigh {
 		select {
-		case r.v.readSlots.normal <- struct{}{}:
-			return func() { <-r.v.readSlots.normal }, nil
+		case r.v.read.slots.normal <- struct{}{}:
+			return func() { <-r.v.read.slots.normal }, nil
 		default:
 		}
 		select {
-		case r.v.readSlots.high <- struct{}{}:
-			return func() { <-r.v.readSlots.high }, nil
+		case r.v.read.slots.high <- struct{}{}:
+			return func() { <-r.v.read.slots.high }, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
 	if prio == PriorityLow {
 		select {
-		case r.v.readSlots.normal <- struct{}{}:
-			return func() { <-r.v.readSlots.normal }, nil
+		case r.v.read.slots.normal <- struct{}{}:
+			return func() { <-r.v.read.slots.normal }, nil
 		default:
 			return nil, fmt.Errorf("vfs: read slots full")
 		}
 	}
 	select {
-	case r.v.readSlots.normal <- struct{}{}:
-		return func() { <-r.v.readSlots.normal }, nil
+	case r.v.read.slots.normal <- struct{}{}:
+		return func() { <-r.v.read.slots.normal }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
 func (r vfsReadRuntime) BeginWindowLoad(key string, load *windowLoad) (*windowLoad, bool) {
-	r.v.readWindows.mu.Lock()
-	defer r.v.readWindows.mu.Unlock()
-	if existing := r.v.readWindows.loads[key]; existing != nil {
+	r.v.read.windows.mu.Lock()
+	defer r.v.read.windows.mu.Unlock()
+	if existing := r.v.read.windows.loads[key]; existing != nil {
 		return existing, true
 	}
-	r.v.readWindows.loads[key] = load
+	r.v.read.windows.loads[key] = load
 	return load, false
 }
 
 func (r vfsReadRuntime) EndWindowLoad(key string) {
-	r.v.readWindows.mu.Lock()
-	delete(r.v.readWindows.loads, key)
-	r.v.readWindows.mu.Unlock()
+	r.v.read.windows.mu.Lock()
+	delete(r.v.read.windows.loads, key)
+	r.v.read.windows.mu.Unlock()
 }
 
 func (r vfsReadRuntime) FindWindow(cacheKey string, index int64) *windowLoad {
-	r.v.readWindows.mu.Lock()
-	defer r.v.readWindows.mu.Unlock()
-	for _, candidate := range r.v.readWindows.loads {
+	r.v.read.windows.mu.Lock()
+	defer r.v.read.windows.mu.Unlock()
+	for _, candidate := range r.v.read.windows.loads {
 		if candidate.fid == cacheKey && index >= candidate.start && index <= candidate.end {
 			return candidate
 		}
@@ -389,40 +389,40 @@ func (r vfsReadRuntime) WindowContains(cacheKey string, index int64) bool {
 }
 
 func (r vfsReadRuntime) ReservePrefetch(key string) bool {
-	r.v.readPrefetch.mu.Lock()
-	if _, ok := r.v.readPrefetch.inFlight[key]; ok {
-		r.v.readPrefetch.mu.Unlock()
+	r.v.read.prefetch.mu.Lock()
+	if _, ok := r.v.read.prefetch.inFlight[key]; ok {
+		r.v.read.prefetch.mu.Unlock()
 		return false
 	}
-	r.v.readPrefetch.inFlight[key] = struct{}{}
-	r.v.readPrefetch.mu.Unlock()
+	r.v.read.prefetch.inFlight[key] = struct{}{}
+	r.v.read.prefetch.mu.Unlock()
 
 	select {
-	case r.v.readPrefetch.sem <- struct{}{}:
+	case r.v.read.prefetch.sem <- struct{}{}:
 		return true
 	default:
-		r.v.readPrefetch.mu.Lock()
-		delete(r.v.readPrefetch.inFlight, key)
-		r.v.readPrefetch.mu.Unlock()
+		r.v.read.prefetch.mu.Lock()
+		delete(r.v.read.prefetch.inFlight, key)
+		r.v.read.prefetch.mu.Unlock()
 		return false
 	}
 }
 
 func (r vfsReadRuntime) ReleasePrefetch(key string) {
-	<-r.v.readPrefetch.sem
-	r.v.readPrefetch.mu.Lock()
-	delete(r.v.readPrefetch.inFlight, key)
-	r.v.readPrefetch.mu.Unlock()
+	<-r.v.read.prefetch.sem
+	r.v.read.prefetch.mu.Lock()
+	delete(r.v.read.prefetch.inFlight, key)
+	r.v.read.prefetch.mu.Unlock()
 }
 
 func (r vfsReadRuntime) HotChunkStats() (int, int64) {
-	r.v.readFastPath.hot.mu.Lock()
-	defer r.v.readFastPath.hot.mu.Unlock()
+	r.v.read.fastPath.hot.mu.Lock()
+	defer r.v.read.fastPath.hot.mu.Unlock()
 	var bytes int64
-	for _, data := range r.v.readFastPath.hot.chunks {
+	for _, data := range r.v.read.fastPath.hot.chunks {
 		bytes += int64(len(data))
 	}
-	return len(r.v.readFastPath.hot.chunks), bytes
+	return len(r.v.read.fastPath.hot.chunks), bytes
 }
 
 type readWindowBackend interface {
@@ -452,5 +452,5 @@ func (b vfsReadWindowBackend) StoreChunk(cacheKey string, entry drive.Entry, ind
 		return
 	}
 	b.v.putHotChunk(cacheKey, index, chunk)
-	b.v.readCache.PutChunkAsync(cacheKey, entry.Size, index, chunk)
+	b.v.read.cache.PutChunkAsync(cacheKey, entry.Size, index, chunk)
 }

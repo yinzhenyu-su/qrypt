@@ -1,9 +1,10 @@
 package vfs
 
 import (
+	"time"
+
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
-	"time"
 )
 
 const (
@@ -17,7 +18,7 @@ func (v *VFS) enqueue(p PendingUpload) {
 		logging.L.WarnfEvery("vfs.enqueue_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q size=%d retry=%d last_error=%q", p.FID, p.Path, p.Size, p.RetryCount, p.LastError)
 		return
 	}
-	v.enqueueAfter(p, uploadDelayForRecord(p, v.uploadDelay))
+	v.enqueueAfter(p, uploadDelayForRecord(p, v.upload.delay))
 }
 func (v *VFS) enqueueAfter(p PendingUpload, delay time.Duration) {
 	if delay > 0 {
@@ -63,7 +64,7 @@ func (v *VFS) uploadQuietDelay(p PendingUpload) time.Duration {
 	return quietWindow - quietFor
 }
 func (v *VFS) uploadQuietWindow(p PendingUpload) time.Duration {
-	quietWindow := v.uploadDelay
+	quietWindow := v.upload.delay
 	if p.Size >= largeUploadQuietThreshold && quietWindow < largeUploadQuietDelay {
 		quietWindow = largeUploadQuietDelay
 	}
@@ -81,4 +82,70 @@ func uploadRetryDelay(retryCount int, minimum time.Duration) time.Duration {
 		delay = maxUploadRetryDelay
 	}
 	return delay
+}
+
+type vfsUploadScheduler struct {
+	v *VFS
+}
+
+func newVFSUploadScheduler(v *VFS) vfsUploadScheduler {
+	return vfsUploadScheduler{v: v}
+}
+
+func (s vfsUploadScheduler) Schedule(pending PendingUpload, delay time.Duration) {
+	s.v.upload.schedule.mu.Lock()
+	if timer := s.v.upload.schedule.timers[pending.Path]; timer != nil {
+		timer.Stop()
+		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload op_id=%q path=%q size=%d delay=%s", pending.FID, pending.Path, pending.Size, delay)
+	} else {
+		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload op_id=%q path=%q size=%d delay=%s", pending.FID, pending.Path, pending.Size, delay)
+	}
+	s.v.upload.schedule.timers[pending.Path] = time.AfterFunc(delay, func() {
+		s.v.upload.schedule.mu.Lock()
+		delete(s.v.upload.schedule.timers, pending.Path)
+		s.v.upload.schedule.mu.Unlock()
+		s.v.sendUpload(pending)
+	})
+	s.v.upload.schedule.mu.Unlock()
+}
+
+func (s vfsUploadScheduler) Cancel(path string) {
+	path = cleanVirtual(path)
+	s.v.upload.schedule.mu.Lock()
+	if timer := s.v.upload.schedule.timers[path]; timer != nil {
+		timer.Stop()
+		delete(s.v.upload.schedule.timers, path)
+	}
+	s.v.upload.schedule.mu.Unlock()
+}
+
+func (s vfsUploadScheduler) CancelChildren(dir string) {
+	dir = cleanVirtual(dir)
+	s.v.upload.schedule.mu.Lock()
+	for path, timer := range s.v.upload.schedule.timers {
+		if path == dir || isPathUnder(path, dir) {
+			timer.Stop()
+			delete(s.v.upload.schedule.timers, path)
+		}
+	}
+	s.v.upload.schedule.mu.Unlock()
+}
+
+func (s vfsUploadScheduler) StopAll() {
+	s.v.upload.schedule.mu.Lock()
+	defer s.v.upload.schedule.mu.Unlock()
+	for path, timer := range s.v.upload.schedule.timers {
+		timer.Stop()
+		delete(s.v.upload.schedule.timers, path)
+	}
+}
+
+func (s vfsUploadScheduler) TimerPaths() map[string]bool {
+	paths := map[string]bool{}
+	s.v.upload.schedule.mu.Lock()
+	for path := range s.v.upload.schedule.timers {
+		paths[path] = true
+	}
+	s.v.upload.schedule.mu.Unlock()
+	return paths
 }

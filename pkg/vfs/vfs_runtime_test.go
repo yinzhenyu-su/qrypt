@@ -39,7 +39,7 @@ func TestDefaultVFSRuntimeFindsPendingUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.uploads.SaveUpload(PendingUpload{Path: "/pending.txt", FID: "pending", Name: "pending.txt"}); err != nil {
+	if err := fs.upload.store.SaveUpload(PendingUpload{Path: "/pending.txt", FID: "pending", Name: "pending.txt"}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"hash"
 	"io"
@@ -35,7 +36,7 @@ func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (uploadSnap
 func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 	unlock := v.lockPath(pending.Path)
 	defer unlock()
-	if err := v.uploads.staging.sync(pending.LocalPath); err != nil {
+	if err := v.upload.store.staging.sync(pending.LocalPath); err != nil {
 		return uploadSnapshot{}, err
 	}
 	info, err := os.Stat(pending.LocalPath)
@@ -46,7 +47,7 @@ func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 		return uploadSnapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	algorithms := v.requiredUploadSnapshotHashes()
-	if hashes, ok := v.uploadHashes.snapshot(pending, algorithms); ok {
+	if hashes, ok := v.upload.hashes.snapshot(pending, algorithms); ok {
 		return uploadSnapshot{
 			Path:        pending.LocalPath,
 			Hashes:      hashes,
@@ -131,7 +132,43 @@ func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 		logging.L.DebugfEvery("vfs.read_cache_seed_skip_large", time.Second, "[VFS] skip read cache seed for large upload id=%q size=%d local=%q", entry.ID, entry.Size, localPath)
 		return
 	}
-	if err := v.readCache.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {
+	if err := v.read.cache.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {
 		logging.L.Warnf("[VFS] read cache seed failed id=%q local=%q err=%v", entry.ID, localPath, err)
 	}
+}
+
+// freezeSnapshot snapshots the pending local file and confirms the pending
+// record is still current. ok=false means the upload was removed or
+// superseded while snapshotting; staging is cleaned and the current pending
+// is requeued if frozen.
+func (e uploadEngine) freezeSnapshot(pending PendingUpload) (uploadSnapshot, bool, error) {
+	observer := e.observer
+	phaseStart := timeutil.Now()
+	snapshot, err := e.snapshot.SnapshotPending(pending)
+	hashNames := uploadSnapshotHashNames(snapshot.Hashes)
+	hashSource := "snapshot"
+	if snapshot.Incremental {
+		hashSource = "incremental"
+	}
+	snapshotExtra := map[string]any{"hashes": hashNames, "hash_source": hashSource}
+	if err != nil {
+		snapshotExtra["error"] = err.Error()
+	}
+	observer.Metadata(pending.Path, "", hashNames)
+	observer.Event(pending.Path, "snapshot_hash", phaseStart, pending.Size, snapshotExtra)
+	if err != nil {
+		logging.L.Warnf("[VFS] upload snapshot failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
+		return uploadSnapshot{}, false, err
+	}
+	if latest, ok := e.pending.UploadByPath(pending.Path); !ok {
+		logging.L.DebugfEvery("vfs.skip_upload_removed_after_snapshot", time.Second, "[VFS] skip upload after snapshot; pending removed op_id=%q path=%q", pending.FID, pending.Path)
+		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
+		return uploadSnapshot{}, false, nil
+	} else if !sameUploadRecord(latest, pending) {
+		logging.L.InfofEvery("vfs.upload_superseded_after_snapshot", time.Second, "[VFS] upload superseded after snapshot op_id=%q path=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.Size, latest.Size)
+		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
+		e.runtime.RequeueIfFrozen(latest)
+		return uploadSnapshot{}, false, nil
+	}
+	return snapshot, true, nil
 }

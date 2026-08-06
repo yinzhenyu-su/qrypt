@@ -38,3 +38,19 @@ func newUploadFaultState() *uploadFaultState {
 		cancelFaults: map[string]*debugUploadCancelFault{},
 	}
 }
+
+// uploadState groups the VFS upload-domain state: the persistent store,
+// the pending queue, the debounce scheduler, debug snapshots, fault
+// injection, hash tracking and admission. Owned by the upload engine and
+// workers; initialized together in New.
+type uploadState struct {
+	store    *uploadStore
+	queue    chan PendingUpload
+	schedule *uploadScheduleState
+	debug    *uploadDebugState
+	faults   *uploadFaultState
+	hashes   *uploadHashTrackerState
+	admit    uploadAdmission
+	delay    time.Duration
+	workers  int
+}

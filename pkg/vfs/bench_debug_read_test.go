@@ -16,11 +16,11 @@ import (
 // event (O(limit) per append) under a global mutex shared by all reads.
 
 func benchReadHistoryVFS(prefill int) *VFS {
-	v := &VFS{readHistory: newReadHistoryState()}
+	v := &VFS{read: &readState{history: newReadHistoryState()}}
 	if prefill > 0 {
-		v.readHistory.events = make([]drive.MetricEvent, prefill)
-		v.readHistory.count = prefill
-		v.readHistory.pos = 0 // ring is full; next write wraps to slot 0
+		v.read.history.events = make([]drive.MetricEvent, prefill)
+		v.read.history.count = prefill
+		v.read.history.pos = 0 // ring is full; next write wraps to slot 0
 	}
 	return v
 }

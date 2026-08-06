@@ -41,25 +41,20 @@ type VFS struct {
 	driver        drive.Driver
 	name          string
 	healthTracker *drive.HealthTracker
-	readCache     *readCacheStore
-	uploads       *uploadStore
 	rootID        string
 	encrypted     bool
 	testEnabled   bool
 
-	view        *viewState
-	uploadQueue chan PendingUpload
-
-	deleteTasks    *deleteTaskState
-	uploadDelay    time.Duration
-	uploadWorkers  int
-	uploadSchedule *uploadScheduleState
-	uploadDebug    *uploadDebugState
-	uploadFaults   *uploadFaultState
-	uploadHashes   *uploadHashTrackerState
-	uploadAdmit    uploadAdmission
-	readHistory    *readHistoryState
-	activeDebug    *activeDebugState
+	// Domain state is grouped by ownership: each runtime is initialized in
+	// New, mutated only by its domain's code paths, and shut down by the VFS
+	// lifecycle. debug and pathLocks stay top-level because they are
+	// single-state and cross-domain respectively.
+	view      *viewState
+	read      *readState
+	upload    *uploadState
+	delete    *deleteState
+	debug     *activeDebugState
+	pathLocks *pathLockState
 
 	// done is closed when the VFS shuts down (context cancel in Start). The
 	// blocking upload-queue enqueue goroutine selects on it so it cannot
@@ -71,22 +66,6 @@ type VFS struct {
 	// background task can observe it.
 	ctx       context.Context
 	startOnce sync.Once
-
-	deleteDelay time.Duration
-
-	readPrefetch *readPrefetchState
-
-	readSlots *readSlotState
-
-	dirPrefetch *dirPrefetchState
-
-	listState *listState
-
-	readFastPath *readFastPathState
-
-	readWindows *readWindowState
-
-	pathLocks *pathLockState
 }
 
 type overlayOp struct {
@@ -131,35 +110,41 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	view := newViewState(opts.RootID, now)
 	view.overlay = overlay
 	v := &VFS{
-		driver:         driver,
-		name:           opts.Name,
-		healthTracker:  drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
-		readCache:      stores.readCacheStore,
-		uploads:        stores.uploadStore,
-		rootID:         opts.RootID,
-		encrypted:      opts.Encrypted,
-		testEnabled:    opts.TestEnabled,
-		done:           make(chan struct{}),
-		startOnce:      sync.Once{},
-		view:           view,
-		uploadQueue:    make(chan PendingUpload, 128),
-		deleteTasks:    deleteTasks,
-		uploadDelay:    opts.UploadDelay,
-		uploadWorkers:  opts.UploadWorkers,
-		uploadSchedule: newUploadScheduleState(),
-		uploadDebug:    newUploadDebugState(),
-		uploadFaults:   newUploadFaultState(),
-		uploadHashes:   newUploadHashTrackerState(),
-		readHistory:    newReadHistoryState(),
-		activeDebug:    newActiveDebugState(),
-		deleteDelay:    opts.DeleteDelay,
-		readPrefetch:   newReadPrefetchState(),
-		readSlots:      newReadSlotState(),
-		dirPrefetch:    newDirPrefetchState(),
-		listState:      newListState(),
-		readFastPath:   newReadFastPathState(),
-		readWindows:    newReadWindowState(),
-		pathLocks:      newPathLockState(),
+		driver:        driver,
+		name:          opts.Name,
+		healthTracker: drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
+		rootID:        opts.RootID,
+		encrypted:     opts.Encrypted,
+		testEnabled:   opts.TestEnabled,
+		done:          make(chan struct{}),
+		startOnce:     sync.Once{},
+		view:          view,
+		read: &readState{
+			cache:       stores.readCacheStore,
+			history:     newReadHistoryState(),
+			prefetch:    newReadPrefetchState(),
+			slots:       newReadSlotState(),
+			fastPath:    newReadFastPathState(),
+			windows:     newReadWindowState(),
+			dirPrefetch: newDirPrefetchState(),
+			list:        newListState(),
+		},
+		upload: &uploadState{
+			store:    stores.uploadStore,
+			queue:    make(chan PendingUpload, 128),
+			schedule: newUploadScheduleState(),
+			debug:    newUploadDebugState(),
+			faults:   newUploadFaultState(),
+			hashes:   newUploadHashTrackerState(),
+			delay:    opts.UploadDelay,
+			workers:  opts.UploadWorkers,
+		},
+		delete: &deleteState{
+			tasks: deleteTasks,
+			delay: opts.DeleteDelay,
+		},
+		debug:     newActiveDebugState(),
+		pathLocks: newPathLockState(),
 	}
 	return v, nil
 }
@@ -178,7 +163,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 func (v *VFS) Start(ctx context.Context) {
 	v.startOnce.Do(func() {
 		v.ctx = ctx
-		for i := 0; i < v.uploadWorkers; i++ {
+		for i := 0; i < v.upload.workers; i++ {
 			go v.uploadWorker(ctx)
 		}
 		v.Resume(ctx)
@@ -270,24 +255,24 @@ func isAppleMetadataName(name string) bool {
 }
 
 func (v *VFS) FlushReadCache() error {
-	return v.readCache.FlushReadCache()
+	return v.read.cache.FlushReadCache()
 }
 
 func (v *VFS) ClearReadCache() error {
-	return v.readCache.ClearReadCache()
+	return v.read.cache.ClearReadCache()
 }
 
 func (v *VFS) CloseReadCache() error {
-	return v.readCache.Close()
+	return v.read.cache.Close()
 }
 
 func (v *VFS) Resume(ctx context.Context) {
-	for _, pending := range v.uploads.PendingUploads() {
+	for _, pending := range v.upload.store.PendingUploads() {
 		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
 			oldSize := pending.Size
 			pending.Size = info.Size()
 			pending.UpdatedAt = timeutil.Now().UnixNano()
-			if err := v.uploads.SaveUpload(pending); err != nil {
+			if err := v.upload.store.SaveUpload(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
 			} else {
 				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
@@ -319,14 +304,14 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 		return
 	}
 	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
-		v.readCache.InvalidateFile(cacheKey)
+		v.read.cache.InvalidateFile(cacheKey)
 	}
-	v.readCache.InvalidateFile(entry.ID)
+	v.read.cache.InvalidateFile(entry.ID)
 }
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 	path = cleanVirtual(path)
-	if pending, ok := v.uploads.UploadByPath(path); ok {
+	if pending, ok := v.upload.store.UploadByPath(path); ok {
 		return pending, nil
 	}
 	return PendingUpload{}, fmt.Errorf("vfs: no pending file for %s", path)

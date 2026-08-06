@@ -99,7 +99,11 @@ shared `VFS` state, used to keep each domain's helpers close to its public
 operations.
 
 - `vfs.go`: VFS construction, lifecycle, health, cache controls, shared path
-  helpers, pending-upload lookup, and path locking
+  helpers, pending-upload lookup, and path locking. Domain state is grouped
+  by ownership into `readState`/`uploadState`/`deleteState` (initialized
+  together in `New`, mutated only by their domain's code paths); `debug`
+  and `pathLocks` stay top-level because they are single-state and
+  cross-domain.
 - `driver_runtime.go`: driver capability checks and driver-backed backend
   factory for list, mutation, remote mutation, and debug driver exposure
 - `listing.go`: public list operations, directory cache, list coalescing,
@@ -121,16 +125,21 @@ operations.
   used by staging write operations
 - `upload_worker.go`: upload worker loop, quiet-window checks, admission, and
   the worker runtime boundary
-- `upload_engine.go`: one pending upload execution (snapshot, remote
-  preparation, driver upload, replacement, cache seed, cleanup), the upload
-  runtime state boundary, observability, fault injection, and timer
-  scheduling
+- `upload_engine.go`: one pending upload execution (remote preparation,
+  driver upload, replacement, failure recording), plus the upload engine
+  boundary and its runtime/fault/scheduler seams
+- `upload_snapshot.go`: frozen staging snapshot validation, upload hashing,
+  read-cache seeding, and the upload-engine snapshot/recheck step
+- `upload_commit.go`: upload commit phase - read-cache seed, view commit,
+  pending/staging cleanup, and stale-commit rollback
+- `upload_runtime.go`: upload runtime and observer adapters over VFS state
+- `upload_fault.go`: debug upload-cancel fault injection
+- `upload_schedule.go`: upload enqueue, debounce, retry delay, cancellation,
+  and concurrency admission (engine scheduler seam + VFS helpers)
 - `pending_upload_store.go`: pending upload state/staging cleanup adapter used
   by the upload engine
 - `remote_mutation_backend.go`: upload-side remote mutation adapter around
   driver calls used by the upload engine and upload replacement policy
-- `upload_snapshot.go`: frozen staging snapshot validation, upload hashing,
-  and read-cache seeding
 - `upload_replace.go`: temporary upload naming and existing-file replacement
 - `upload_schedule.go` and `upload_admission.go`: upload enqueue, debounce,
   retry delay, cancellation, and concurrency admission
@@ -153,7 +162,11 @@ operations.
 - `read_cache_store.go`, `read_cache_writer.go`, `read_cache_index.go`, and
   `read_cache_eviction.go`: durable read chunks, async write queue, index
   persistence, and eviction
-- `namespace.go`: multi-mount namespace
+- `namespace.go`: multi-mount namespace contract (interfaces, errors,
+  construction, lifecycle, path resolution)
+- `namespace_read.go`, `namespace_write.go`, `namespace_task.go`,
+  `namespace_query.go`: namespace route-by-operation (reads/cache control,
+  writes/mutations, tasks, upload/space queries)
 - `task.go`: VFS background task source integration for upload/delete tasks,
   including the upload task source boundary
 - `debug.go`: debug schema types and debug process start time

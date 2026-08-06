@@ -266,16 +266,16 @@ func (r vfsDebugSnapshotRuntime) Identity(name string) MountSnapshotIdentity {
 
 func (r vfsDebugSnapshotRuntime) Queues() MountSnapshotQueues {
 	return MountSnapshotQueues{
-		UploadLength:  len(r.v.uploadQueue),
-		UploadCap:     cap(r.v.uploadQueue),
-		UploadWorkers: r.v.uploadWorkers,
-		UploadDelay:   r.v.uploadDelay.String(),
-		DeleteDelay:   r.v.deleteDelay.String(),
+		UploadLength:  len(r.v.upload.queue),
+		UploadCap:     cap(r.v.upload.queue),
+		UploadWorkers: r.v.upload.workers,
+		UploadDelay:   r.v.upload.delay.String(),
+		DeleteDelay:   r.v.delete.delay.String(),
 	}
 }
 
 func (r vfsDebugSnapshotRuntime) PendingUploads() []PendingUpload {
-	return r.v.uploads.PendingUploads()
+	return r.v.upload.store.PendingUploads()
 }
 
 func (r vfsDebugSnapshotRuntime) DriverSnapshot(ctx context.Context) (drive.DebugSnapshot, bool) {
@@ -292,10 +292,10 @@ func (r vfsDebugSnapshotRuntime) DriverMetrics(ctx context.Context, since time.T
 }
 
 func (r vfsDebugSnapshotRuntime) UploadTimers() []DebugTimer {
-	r.v.uploadSchedule.mu.Lock()
-	defer r.v.uploadSchedule.mu.Unlock()
-	timers := make([]DebugTimer, 0, len(r.v.uploadSchedule.timers))
-	for path := range r.v.uploadSchedule.timers {
+	r.v.upload.schedule.mu.Lock()
+	defer r.v.upload.schedule.mu.Unlock()
+	timers := make([]DebugTimer, 0, len(r.v.upload.schedule.timers))
+	for path := range r.v.upload.schedule.timers {
 		timers = append(timers, DebugTimer{Path: path})
 	}
 	sort.Slice(timers, func(i, j int) bool {
@@ -309,7 +309,7 @@ func (r vfsDebugSnapshotRuntime) Overlay() debugOverlayRuntimeSnapshot {
 	out := debugOverlayRuntimeSnapshot{}
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	for path := range r.v.deleteTasks.timers {
+	for path := range r.v.delete.tasks.timers {
 		out.DeleteTimers = append(out.DeleteTimers, DebugTimer{Path: path})
 	}
 	for path, entry := range r.v.view.overlay.deleted {
@@ -375,15 +375,15 @@ func (r vfsDebugSnapshotRuntime) Runtime() debugRuntimeStateSnapshot {
 		HotChunkLimit: readHotChunkLimit,
 		RangeHitLimit: readRangeHitLimit,
 	}
-	r.v.readWindows.mu.Lock()
-	out.WindowLoads = len(r.v.readWindows.loads)
-	r.v.readWindows.mu.Unlock()
-	r.v.readPrefetch.mu.Lock()
-	out.Prefetches = len(r.v.readPrefetch.inFlight)
-	r.v.readPrefetch.mu.Unlock()
+	r.v.read.windows.mu.Lock()
+	out.WindowLoads = len(r.v.read.windows.loads)
+	r.v.read.windows.mu.Unlock()
+	r.v.read.prefetch.mu.Lock()
+	out.Prefetches = len(r.v.read.prefetch.inFlight)
+	r.v.read.prefetch.mu.Unlock()
 	out.HotChunkCount, out.HotChunkBytes = r.v.debugHotChunks()
-	r.v.readFastPath.rangeHit.mu.Lock()
-	out.RangeHitCount = len(r.v.readFastPath.rangeHit.hits)
-	r.v.readFastPath.rangeHit.mu.Unlock()
+	r.v.read.fastPath.rangeHit.mu.Lock()
+	out.RangeHitCount = len(r.v.read.fastPath.rangeHit.hits)
+	r.v.read.fastPath.rangeHit.mu.Unlock()
 	return out
 }

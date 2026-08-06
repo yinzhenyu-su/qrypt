@@ -9,12 +9,12 @@ import (
 )
 
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
-	if v.deleteDelay <= 0 {
+	if v.delete.delay <= 0 {
 		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(v.lifecycleContext(), path, entry)
 		return
 	}
-	newVFSDeleteScheduler(v).Schedule(path, entry, v.deleteDelay, func() {
+	newVFSDeleteScheduler(v).Schedule(path, entry, v.delete.delay, func() {
 		logging.L.Infof("[VFS] delete timer fired path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(v.lifecycleContext(), path, entry)
 	})
@@ -81,8 +81,8 @@ func (r vfsDeleteRemoteRuntime) BeginRemoteDelete(path string, entry drive.Entry
 	if !ok || current.ID != entry.ID {
 		return false
 	}
-	r.v.deleteTasks.active[path] = entry
-	delete(r.v.deleteTasks.failures, path)
+	r.v.delete.tasks.active[path] = entry
+	delete(r.v.delete.tasks.failures, path)
 	return true
 }
 
@@ -97,16 +97,16 @@ func (r vfsDeleteRemoteRuntime) RecordDeleteHealth(err error) {
 func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteFailed(path string, err error) {
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	delete(r.v.deleteTasks.active, path)
+	delete(r.v.delete.tasks.active, path)
 	if err != nil {
-		r.v.deleteTasks.failures[path] = err.Error()
+		r.v.delete.tasks.failures[path] = err.Error()
 	}
 }
 
 func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteComplete(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Lock()
-	delete(r.v.deleteTasks.active, path)
-	delete(r.v.deleteTasks.failures, path)
+	delete(r.v.delete.tasks.active, path)
+	delete(r.v.delete.tasks.failures, path)
 	delete(r.v.view.overlay.deleted, path)
 	delete(r.v.view.overlay.restoredDirs, path)
 	r.v.view.overlay.mu.Unlock()
@@ -117,8 +117,8 @@ func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteComplete(path string, entry driv
 }
 
 func (r vfsDeleteRemoteRuntime) CleanupUploadState(path string) {
-	if err := r.v.uploads.RemoveUpload(path); err == nil {
-		r.v.uploadHashes.removePath(path)
+	if err := r.v.upload.store.RemoveUpload(path); err == nil {
+		r.v.upload.hashes.removePath(path)
 	}
 }
 
@@ -133,13 +133,13 @@ func newVFSDeleteScheduler(v *VFS) vfsDeleteScheduler {
 func (s vfsDeleteScheduler) Schedule(path string, entry drive.Entry, delay time.Duration, fire func()) {
 	s.v.view.overlay.mu.Lock()
 	defer s.v.view.overlay.mu.Unlock()
-	delete(s.v.deleteTasks.failures, path)
-	if timer := s.v.deleteTasks.timers[path]; timer != nil {
+	delete(s.v.delete.tasks.failures, path)
+	if timer := s.v.delete.tasks.timers[path]; timer != nil {
 		timer.Stop()
 	}
-	s.v.deleteTasks.timers[path] = time.AfterFunc(delay, func() {
+	s.v.delete.tasks.timers[path] = time.AfterFunc(delay, func() {
 		s.v.view.overlay.mu.Lock()
-		delete(s.v.deleteTasks.timers, path)
+		delete(s.v.delete.tasks.timers, path)
 		s.v.view.overlay.mu.Unlock()
 		fire()
 	})
@@ -149,12 +149,12 @@ func (s vfsDeleteScheduler) CancelChildren(dir string) {
 	dir = cleanVirtual(dir)
 	s.v.view.overlay.mu.Lock()
 	defer s.v.view.overlay.mu.Unlock()
-	for path, timer := range s.v.deleteTasks.timers {
+	for path, timer := range s.v.delete.tasks.timers {
 		if isPathUnder(path, dir) {
 			timer.Stop()
-			delete(s.v.deleteTasks.timers, path)
+			delete(s.v.delete.tasks.timers, path)
 			delete(s.v.view.overlay.deleted, path)
-			delete(s.v.deleteTasks.failures, path)
+			delete(s.v.delete.tasks.failures, path)
 		}
 	}
 }
@@ -162,8 +162,8 @@ func (s vfsDeleteScheduler) CancelChildren(dir string) {
 func (s vfsDeleteScheduler) StopAll() {
 	s.v.view.overlay.mu.Lock()
 	defer s.v.view.overlay.mu.Unlock()
-	for path, timer := range s.v.deleteTasks.timers {
+	for path, timer := range s.v.delete.tasks.timers {
 		timer.Stop()
-		delete(s.v.deleteTasks.timers, path)
+		delete(s.v.delete.tasks.timers, path)
 	}
 }

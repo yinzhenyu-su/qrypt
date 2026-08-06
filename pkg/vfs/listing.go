@@ -338,7 +338,7 @@ func (r vfsListingRuntime) PendingChildren(parentPath string, entries []drive.En
 	for _, entry := range entries {
 		seen[entry.Name] = true
 	}
-	for _, pending := range r.v.uploads.PendingUploads() {
+	for _, pending := range r.v.upload.store.PendingUploads() {
 		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || r.v.isDeleted(pending.Path) {
 			continue
 		}
@@ -392,13 +392,13 @@ func newVFSListScheduler(v *VFS) vfsListScheduler {
 
 func (s vfsListScheduler) BeginListLoad(parentPath string, prefetch bool) (*listLoad, bool) {
 	parentPath = cleanVirtual(parentPath)
-	s.v.listState.loadMu.Lock()
-	defer s.v.listState.loadMu.Unlock()
-	if load := s.v.listState.loads[parentPath]; load != nil {
+	s.v.read.list.loadMu.Lock()
+	defer s.v.read.list.loadMu.Unlock()
+	if load := s.v.read.list.loads[parentPath]; load != nil {
 		return load, false
 	}
 	load := &listLoad{done: make(chan struct{}), prefetch: prefetch}
-	s.v.listState.loads[parentPath] = load
+	s.v.read.list.loads[parentPath] = load
 	return load, true
 }
 
@@ -408,11 +408,11 @@ func (s vfsListScheduler) FinishListLoad(parentPath string, load *listLoad, entr
 		load.entries = cloneEntries(entries)
 	}
 	load.err = err
-	s.v.listState.loadMu.Lock()
-	if s.v.listState.loads[parentPath] == load {
-		delete(s.v.listState.loads, parentPath)
+	s.v.read.list.loadMu.Lock()
+	if s.v.read.list.loads[parentPath] == load {
+		delete(s.v.read.list.loads, parentPath)
 	}
-	s.v.listState.loadMu.Unlock()
+	s.v.read.list.loadMu.Unlock()
 	close(load.done)
 }
 
@@ -431,42 +431,42 @@ func (s vfsListScheduler) MarkDirPrefetch(path string) bool {
 		return false
 	}
 	now := time.Now()
-	s.v.dirPrefetch.mu.Lock()
-	defer s.v.dirPrefetch.mu.Unlock()
-	if _, ok := s.v.dirPrefetch.inFlight[path]; ok {
+	s.v.read.dirPrefetch.mu.Lock()
+	defer s.v.read.dirPrefetch.mu.Unlock()
+	if _, ok := s.v.read.dirPrefetch.inFlight[path]; ok {
 		return false
 	}
-	if last, ok := s.v.dirPrefetch.done[path]; ok && now.Sub(last) < dirPrefetchCooldown {
+	if last, ok := s.v.read.dirPrefetch.done[path]; ok && now.Sub(last) < dirPrefetchCooldown {
 		return false
 	}
-	s.v.dirPrefetch.inFlight[path] = struct{}{}
+	s.v.read.dirPrefetch.inFlight[path] = struct{}{}
 	return true
 }
 
 func (s vfsListScheduler) MarkDirPrefetchComplete(path string) {
 	path = cleanVirtual(path)
-	s.v.dirPrefetch.mu.Lock()
-	s.v.dirPrefetch.done[path] = time.Now()
-	s.v.dirPrefetch.mu.Unlock()
+	s.v.read.dirPrefetch.mu.Lock()
+	s.v.read.dirPrefetch.done[path] = time.Now()
+	s.v.read.dirPrefetch.mu.Unlock()
 }
 
 func (s vfsListScheduler) SuppressDirPrefetch(path string) {
 	path = cleanVirtual(path)
-	s.v.dirPrefetch.mu.Lock()
-	s.v.dirPrefetch.done[path] = time.Now()
-	s.v.dirPrefetch.mu.Unlock()
+	s.v.read.dirPrefetch.mu.Lock()
+	s.v.read.dirPrefetch.done[path] = time.Now()
+	s.v.read.dirPrefetch.mu.Unlock()
 }
 
 func (s vfsListScheduler) FinishDirPrefetch(path string) {
 	path = cleanVirtual(path)
-	s.v.dirPrefetch.mu.Lock()
-	delete(s.v.dirPrefetch.inFlight, path)
-	s.v.dirPrefetch.mu.Unlock()
+	s.v.read.dirPrefetch.mu.Lock()
+	delete(s.v.read.dirPrefetch.inFlight, path)
+	s.v.read.dirPrefetch.mu.Unlock()
 }
 
 func (s vfsListScheduler) AcquireDirPrefetchSlot(ctx context.Context) bool {
 	select {
-	case s.v.dirPrefetch.sem <- struct{}{}:
+	case s.v.read.dirPrefetch.sem <- struct{}{}:
 		return true
 	case <-ctx.Done():
 		return false
@@ -474,24 +474,24 @@ func (s vfsListScheduler) AcquireDirPrefetchSlot(ctx context.Context) bool {
 }
 
 func (s vfsListScheduler) ReleaseDirPrefetchSlot() {
-	<-s.v.dirPrefetch.sem
+	<-s.v.read.dirPrefetch.sem
 }
 
 func (s vfsListScheduler) StartDirPrefetch(ctx context.Context) bool {
-	s.v.dirPrefetch.mu.Lock()
-	defer s.v.dirPrefetch.mu.Unlock()
-	if s.v.dirPrefetch.started {
+	s.v.read.dirPrefetch.mu.Lock()
+	defer s.v.read.dirPrefetch.mu.Unlock()
+	if s.v.read.dirPrefetch.started {
 		return false
 	}
-	s.v.dirPrefetch.started = true
-	s.v.dirPrefetch.context = ctx
+	s.v.read.dirPrefetch.started = true
+	s.v.read.dirPrefetch.context = ctx
 	return true
 }
 
 func (s vfsListScheduler) DirPrefetchContext(fallback context.Context) context.Context {
-	s.v.dirPrefetch.mu.Lock()
-	ctx := s.v.dirPrefetch.context
-	s.v.dirPrefetch.mu.Unlock()
+	s.v.read.dirPrefetch.mu.Lock()
+	ctx := s.v.read.dirPrefetch.context
+	s.v.read.dirPrefetch.mu.Unlock()
 	if ctx != nil && ctx.Err() == nil {
 		return ctx
 	}

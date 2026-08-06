@@ -137,7 +137,7 @@ func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRem
 	runtime.InvalidateReadCache(entry)
 	runtime.MarkDeleted(path, entry)
 	runtime.ClearLocalModTime(path)
-	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deleteDelay)
+	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.delete.delay)
 	v.scheduleDelete(path, entry)
 	return nil
 }
@@ -166,7 +166,7 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfs
 	runtime.CancelChildDeletes(path)
 	runtime.MarkDeleted(path, entry)
 	runtime.ClearLocalModTime(path)
-	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deleteDelay)
+	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.delete.delay)
 	v.scheduleDelete(path, entry)
 	return nil
 }
@@ -316,10 +316,10 @@ func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
 
 func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
 	r.v.moveLocalModTime(oldPath, newPath)
-	if err := r.v.uploads.RenameUpload(oldPath, pending); err != nil {
+	if err := r.v.upload.store.RenameUpload(oldPath, pending); err != nil {
 		return err
 	}
-	r.v.uploadHashes.renamePath(oldPath, newPath, pending)
+	r.v.upload.hashes.renamePath(oldPath, newPath, pending)
 	return nil
 }
 
@@ -338,18 +338,18 @@ func (r vfsRemoveRuntime) InvalidateReadCache(entry drive.Entry) {
 func (r vfsRemoveRuntime) RemovePendingUpload(path string) error {
 	r.v.cancelUpload(path)
 	r.v.clearLocalModTime(path)
-	if err := r.v.uploads.RemoveUpload(path); err != nil {
+	if err := r.v.upload.store.RemoveUpload(path); err != nil {
 		return err
 	}
-	r.v.uploadHashes.removePath(path)
+	r.v.upload.hashes.removePath(path)
 	return nil
 }
 
 func (r vfsRemoveRuntime) RemovePendingUploadsUnder(path string) error {
-	if err := r.v.uploads.RemoveUploadsUnder(path); err != nil {
+	if err := r.v.upload.store.RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.uploadHashes.removeUnder(path)
+	r.v.upload.hashes.removeUnder(path)
 	return nil
 }
 
@@ -383,10 +383,10 @@ func (r vfsDirectoryCopyRuntime) ListChildren(ctx context.Context, parentID stri
 
 func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
 	r.v.cancelChildUploads(path)
-	if err := r.v.uploads.RemoveUploadsUnder(path); err != nil {
+	if err := r.v.upload.store.RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.uploadHashes.removeUnder(path)
+	r.v.upload.hashes.removeUnder(path)
 	return nil
 }
 
