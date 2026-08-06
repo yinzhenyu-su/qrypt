@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"io"
 	"math/rand"
 	"net/http"

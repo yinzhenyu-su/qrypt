@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 type countingMD5Source struct {

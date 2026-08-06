@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {

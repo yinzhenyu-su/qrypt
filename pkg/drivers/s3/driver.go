@@ -24,8 +24,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
+	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 // Driver implements drive.Driver (plus Writer, SourceUploader, Debugger, and
@@ -525,7 +526,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 }
 
 func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key string, size int64, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
-	sessionKey := util.UploadSessionKey(d.bucket, key, size)
+	sessionKey := uploadsession.UploadSessionKey(d.bucket, key, size)
 	session, resumedSession := d.loadUploadSession(sessionKey)
 	if !resumedSession {
 		start := time.Now()
@@ -790,8 +791,8 @@ func (d *Driver) pruneStoredUploadSessions() {
 	d.uploadSessionStore().Prune()
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[s3UploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[s3UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[s3UploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[s3UploadSession]{
 		Store:      d.stateStore,
 		File:       s3UploadSessionStateFile,
 		MaxAge:     s3UploadSessionMaxAge,

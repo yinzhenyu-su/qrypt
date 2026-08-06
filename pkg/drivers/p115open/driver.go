@@ -19,8 +19,8 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 // downloadUserAgent is the User-Agent used to request download URLs and fetch

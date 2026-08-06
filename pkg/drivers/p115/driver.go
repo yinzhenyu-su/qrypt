@@ -20,8 +20,8 @@ import (
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const defaultAppVer = "35.6.0.3"

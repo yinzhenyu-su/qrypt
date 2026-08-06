@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util"
 )
 
 // The public sanitizer's contract: one entry point that redacts every

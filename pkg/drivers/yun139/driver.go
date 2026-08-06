@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"golang.org/x/sync/errgroup"
 )
@@ -221,7 +222,7 @@ func (d *Driver) getLastError() string {
 }
 
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha256Hex string) string {
-	return util.UploadSessionKey(parentID, name, size, sha256Hex)
+	return uploadsession.UploadSessionKey(parentID, name, size, sha256Hex)
 }
 
 func (d *Driver) loadUploadSession(key string) (yun139UploadSession, bool) {
@@ -244,8 +245,8 @@ func (d *Driver) pruneStoredUploadSessions() {
 	d.uploadSessionStore().Prune()
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[yun139UploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[yun139UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[yun139UploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[yun139UploadSession]{
 		Store:      d.stateStore,
 		File:       uploadSessionStateFile,
 		MaxAge:     uploadSessionMaxAge,

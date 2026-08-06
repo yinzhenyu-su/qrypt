@@ -6,7 +6,7 @@ import (
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 )
 
 const p115OpenUploadSessionStateFile = "115_open_upload_sessions.json"
@@ -62,8 +62,8 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[p115OpenUploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[p115OpenUploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[p115OpenUploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[p115OpenUploadSession]{
 		Store:      d.stateStore,
 		File:       p115OpenUploadSessionStateFile,
 		MaxAge:     p115OpenUploadSessionMaxAge,

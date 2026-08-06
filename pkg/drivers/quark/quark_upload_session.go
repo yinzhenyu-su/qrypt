@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -14,7 +14,7 @@ import (
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, hashData map[string]any) string {
 	md5Hex, _ := hashData["md5"].(string)
 	sha1Hex, _ := hashData["sha1"].(string)
-	return util.UploadSessionKey(parentID, name, size, md5Hex, sha1Hex)
+	return uploadsession.UploadSessionKey(parentID, name, size, md5Hex, sha1Hex)
 }
 
 func (d *Driver) loadUploadSession(key string) (quarkUploadSession, bool) {
@@ -40,8 +40,8 @@ func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (
 	return state, changed
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[quarkUploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[quarkUploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[quarkUploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[quarkUploadSession]{
 		Store:      d.stateStore,
 		File:       quarkUploadSessionStateFile,
 		MaxAge:     quarkUploadSessionMaxAge,
