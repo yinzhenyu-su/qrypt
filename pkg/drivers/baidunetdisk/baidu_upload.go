@@ -191,7 +191,7 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("baidu_netdisk: upload part %d status %d: %s", partSeq, resp.StatusCode, util.Snippet(data))
+		err := util.HTTPError(fmt.Sprintf("baidu_netdisk: upload part %d", partSeq), nil, resp, data)
 		if uploadIDExpiredResponse(data) {
 			return errBaiduUploadIDExpired
 		}
@@ -282,7 +282,7 @@ func (d *Driver) doRequest(ctx context.Context, method, rawURL string, params, f
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d: %s", resp.StatusCode, util.Snippet(data))
+		return util.HTTPError("baidu_netdisk: upload session", nil, resp, data)
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {

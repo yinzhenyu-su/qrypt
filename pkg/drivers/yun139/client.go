@@ -467,7 +467,7 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 			Status:    resp.StatusCode,
 			Response:  map[string]any{"body_snippet": util.Snippet(respBody)},
 		})
-		return fmt.Errorf("API returned non-JSON: %s", util.Snippet(respBody))
+		return util.HTTPError("yun139: non-JSON response", req, resp, respBody)
 	}
 	var base baseResp
 	if err := json.Unmarshal(respBody, &base); err == nil && !base.Success && isAuthExpiredMessage(base.Message) {

@@ -512,7 +512,7 @@ func TestBatchReportsChildResponseError(t *testing.T) {
 
 	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
 	err := d.batch(context.Background(), "file", "dst", "/file/move")
-	if err == nil || !strings.Contains(err.Error(), "status=404") || !strings.Contains(err.Error(), "NotFound") {
+	if err == nil || !strings.Contains(err.Error(), "batch /file/move") || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "NotFound") {
 		t.Fatalf("unexpected batch error: %v", err)
 	}
 }
