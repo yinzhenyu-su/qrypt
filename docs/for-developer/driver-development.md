@@ -231,6 +231,20 @@ return nil, fmt.Errorf("baidu: list: %w", err)
 Include useful context such as `list`, `read`, `upload`, `mkdir`, or
 `resolve root_path`. Do not include credential values.
 
+When an HTTP response body, URL, or raw server text would end up inside an
+error string (they flow into logs, task `LastError`, debug snapshots and
+contract output), route it through the shared redactor — never roll your
+own pattern list:
+
+```go
+return nil, fmt.Errorf("quark: upload status %d: %s", resp.StatusCode, util.Snippet(body))
+```
+
+`util.Snippet` (in `pkg/drivers/internal/util`) truncates at 300 bytes and
+masks tokens, cookies, download URLs and authorization headers; its mask
+patterns are covered by unit tests in that package. A duplicated pattern
+set in a driver is a review failure — extend `util.Snippet` instead.
+
 When a missing object is part of normal path resolution, prefer returning a
 typed error that the VFS/mount layer can distinguish from backend failures.
 
@@ -251,6 +265,15 @@ Add tests for:
 
 Use fake provider servers or clients. Unit tests should not require real
 accounts.
+
+New drivers also get the local contract matrix for free by being testable
+against `drive.FakeDriver` (`pkg/drive/contract_matrix_test.go`): capability
+declarations must match observable behaviour, `UnsupportedOperations` errors
+classify as unsupported, listings must be stable across calls,
+`drive.RunBehaviorChecks` must pass, and debug snapshots must not carry
+credential material. Keep the golden-reference behaviour (fake, localfs)
+green; real-provider contract runs happen nightly or manually via the
+Contract Tests workflow.
 
 ## Checklist
 
