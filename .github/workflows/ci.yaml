@@ -24,9 +24,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
           cache: true
@@ -47,7 +47,7 @@ jobs:
 
       - name: Vulncheck
         run: |
-          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       - name: Format
         run: |
@@ -101,7 +101,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -159,19 +159,19 @@ jobs:
             archive_format: zip
             kind: windows-go
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # 构建 tag 的源码(dispatch 时用 inputs.version),保证二进制内嵌版本号正确
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: matrix.kind == 'windows-go'
         with:
           go-version: "1.26"
           cache: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         if: matrix.kind == 'linux-docker'
 
       - run: mkdir -p dist
@@ -206,7 +206,7 @@ jobs:
             tar -C dist -czf "dist/${asset}.tar.gz" "${{ matrix.output }}"
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qrypt-${{ matrix.target }}-${{ inputs.version || github.ref_name }}
           path: |
@@ -218,11 +218,11 @@ jobs:
     needs: [check]
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
           cache: true
@@ -250,7 +250,7 @@ jobs:
           tar -C dist -czf "dist/qrypt_${version}_darwin_amd64.tar.gz" qrypt-darwin-amd64
           tar -C dist -czf "dist/qrypt_${version}_darwin_arm64.tar.gz" qrypt-darwin-arm64
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qrypt-darwin-${{ inputs.version || github.ref_name }}
           path: dist/*.tar.gz
@@ -262,7 +262,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           # dispatch 时 checkout 到发布 tag,与 tag push 行为一致(goreleaser 要求 tag == HEAD)
@@ -273,13 +273,13 @@ jobs:
         run: |
           git tag -l "${{ inputs.version }}" | grep -q . || { echo "tag ${{ inputs.version }} 不存在"; exit 1; }
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: qrypt-*
           merge-multiple: true
           path: dist/
 
-      - uses: goreleaser/goreleaser-action@v7
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           args: release --clean
         env:
