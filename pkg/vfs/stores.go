@@ -226,6 +226,13 @@ func newReadCacheStore(dir string, maxSize int64) (*readCacheStore, error) {
 			logging.L.Infof("[CACHE] cleaned %d orphaned read cache seed files", cleaned)
 		}
 	}
+	// maxSize <= 0 disables the read cache: no writer goroutine, no write
+	// queue, no index load, and every public method short-circuits. The
+	// directory is still created and orphaned seed files are cleaned so a
+	// previously-enabled mount leaves no debris behind.
+	if maxSize <= 0 {
+		return &readCacheStore{dir: dir}, nil
+	}
 	adjusted, reason := limitByDiskSpace(maxSize, dir)
 	if reason != "" {
 		logging.L.Infof("[CACHE] %s", reason)

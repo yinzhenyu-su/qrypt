@@ -8,6 +8,9 @@ import (
 )
 
 func (c *readCacheStore) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
+	if !c.enabled() {
+		return
+	}
 	if fid == "" || len(data) == 0 {
 		return
 	}
@@ -161,12 +164,18 @@ func (c *readCacheStore) WaitReadCacheWrites() {
 	c.cacheWriteWGMu.Unlock()
 }
 func (c *readCacheStore) FlushReadCache() error {
+	if !c.enabled() {
+		return nil
+	}
 	c.cacheWriteWGMu.Lock()
 	defer c.cacheWriteWGMu.Unlock()
 	c.cacheWriteWG.Wait()
 	return c.FlushReadIndex()
 }
 func (c *readCacheStore) ClearReadCache() error {
+	if !c.enabled() {
+		return nil
+	}
 	c.cacheWriteWGMu.Lock()
 	defer c.cacheWriteWGMu.Unlock()
 	c.cacheWriteWG.Wait()
@@ -207,6 +216,9 @@ func (c *readCacheStore) ClearReadCache() error {
 	return nil
 }
 func (c *readCacheStore) Close() error {
+	if !c.enabled() {
+		return nil
+	}
 	c.cacheWriteMu.Lock()
 	if !c.cacheWriteClosed {
 		c.cacheWriteClosed = true

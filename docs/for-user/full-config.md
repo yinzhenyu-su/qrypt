@@ -61,7 +61,7 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `max_size` | string | 512M | Maximum read-cache size (e.g. "512M", "2G", "1T"). |
+| `max_size` | string | 2G | Maximum read-cache size (e.g. "512M", "2G", "1T"). Set to `"0"` to disable the read cache for this mount; when unset the default 2G applies. |
 
 ## 上传
 
