@@ -54,6 +54,34 @@ type FakeDriver struct {
 	// Calls records every method invocation as "Method:arg" so tests can
 	// assert call counts and sequences.
 	Calls []string
+
+	// FailAfter schedules the Nth invocation of a method (1-based) to fail
+	// with err. Earlier invocations succeed; the fault fires exactly once
+	// and then clears. Unlike Err*, which fails the next call, FailAfter
+	// lets a test land a fault exactly when a retry arrives. The counter
+	// lives on the driver, so it survives across VFS instances that share
+	// this driver (upload-recovery-after-failure scenarios).
+	failAfter map[string]failAt
+
+	// ListStaleness > 0 makes List return the tree as it was N mutations
+	// ago, emulating eventually-consistent backends (quark, p115). Zero is
+	// immediate consistency. Every mutation captures a fresh snapshot, so
+	// N must stay small (test trees).
+	ListStaleness int
+
+	// Gate, when non-nil, makes every method call block until it receives
+	// one token or ctx is done. Tests send a value to release one in-flight
+	// call, or cancel ctx to simulate a hung provider mid-operation.
+	Gate chan struct{}
+
+	// snapshots is the mutation history backing ListStaleness;
+	// snapshots[len-1] is the current tree.
+	snapshots []map[string][]Entry
+}
+
+type failAt struct {
+	remaining int
+	err       error
 }
 
 type fakeNode struct {
@@ -99,6 +127,7 @@ func NewFakeDriver(opts ...FakeCallOption) *FakeDriver {
 	for _, opt := range opts {
 		opt(d)
 	}
+	d.captureLocked()
 	return d
 }
 
@@ -137,6 +166,7 @@ func (d *FakeDriver) Seed(files map[string]string) error {
 		d.nodes[id].data = []byte(content)
 		d.nodes[id].modTime = time.Now()
 	}
+	d.captureLocked()
 	return nil
 }
 
@@ -151,7 +181,67 @@ func (d *FakeDriver) record(method, arg string) {
 	d.Calls = append(d.Calls, method+":"+arg)
 }
 
+// FailAfter schedules the Nth invocation (1-based) of method to fail with
+// err. Earlier invocations succeed. The fault fires exactly once and then
+// clears.
+func (d *FakeDriver) FailAfter(method string, n int, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failAfter == nil {
+		d.failAfter = make(map[string]failAt)
+	}
+	d.failAfter[method] = failAt{remaining: n, err: err}
+}
+
+func (d *FakeDriver) failOn(method string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	f, ok := d.failAfter[method]
+	if !ok {
+		return nil
+	}
+	f.remaining--
+	if f.remaining > 0 {
+		d.failAfter[method] = f
+		return nil
+	}
+	delete(d.failAfter, method)
+	return f.err
+}
+
+func (d *FakeDriver) gate() chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.Gate
+}
+
+// captureLocked snapshots the whole tree. Caller must hold d.mu.
+func (d *FakeDriver) captureLocked() {
+	entries := make(map[string][]Entry)
+	for id, n := range d.nodes {
+		entries[n.parentID] = append(entries[n.parentID], Entry{
+			ID:       id,
+			ParentID: n.parentID,
+			Name:     n.name,
+			IsDir:    n.isDir,
+			Size:     int64(len(n.data)),
+			ModTime:  n.modTime,
+		})
+	}
+	for pid := range entries {
+		sort.Slice(entries[pid], func(i, j int) bool { return entries[pid][i].Name < entries[pid][j].Name })
+	}
+	d.snapshots = append(d.snapshots, entries)
+}
+
 func (d *FakeDriver) wait(ctx context.Context, delay time.Duration) error {
+	if g := d.gate(); g != nil {
+		select {
+		case <-g:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if delay > 0 {
 		t := time.NewTimer(delay)
 		defer t.Stop()
@@ -180,6 +270,9 @@ func (d *FakeDriver) Init(ctx context.Context) error {
 	d.mu.Lock()
 	d.record("Init", "")
 	d.mu.Unlock()
+	if err := d.failOn("Init"); err != nil {
+		return err
+	}
 	return d.wait(ctx, d.Delay)
 }
 
@@ -188,6 +281,9 @@ func (d *FakeDriver) Drop(ctx context.Context) error {
 	d.mu.Lock()
 	d.record("Drop", "")
 	d.mu.Unlock()
+	if err := d.failOn("Drop"); err != nil {
+		return err
+	}
 	return d.wait(ctx, d.Delay)
 }
 
@@ -196,6 +292,9 @@ func (d *FakeDriver) List(ctx context.Context, parentID string) ([]Entry, error)
 	d.mu.Lock()
 	d.record("List", parentID)
 	d.mu.Unlock()
+	if err := d.failOn("List"); err != nil {
+		return nil, err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return nil, err
 	}
@@ -204,25 +303,19 @@ func (d *FakeDriver) List(ctx context.Context, parentID string) ([]Entry, error)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.nodes[parentID]; !ok {
+	// Serve a stale snapshot when ListStaleness is configured; the current
+	// tree is always the last snapshot.
+	idx := len(d.snapshots) - 1 - d.ListStaleness
+	if idx < 0 {
+		idx = 0
+	}
+	if entries, ok := d.snapshots[idx][parentID]; ok {
+		return append([]Entry(nil), entries...), nil
+	}
+	if _, exists := d.nodes[parentID]; !exists {
 		return nil, fmt.Errorf("%w: fake list parent %q", ErrNotFound, parentID)
 	}
-	var out []Entry
-	for id, n := range d.nodes {
-		if n.parentID != parentID {
-			continue
-		}
-		out = append(out, Entry{
-			ID:       id,
-			ParentID: parentID,
-			Name:     n.name,
-			IsDir:    n.isDir,
-			Size:     int64(len(n.data)),
-			ModTime:  n.modTime,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	return nil, nil
 }
 
 // Read implements Driver with offset/size semantics and EOF.
@@ -230,6 +323,9 @@ func (d *FakeDriver) Read(ctx context.Context, entry Entry, offset, size int64) 
 	d.mu.Lock()
 	d.record("Read", entry.ID)
 	d.mu.Unlock()
+	if err := d.failOn("Read"); err != nil {
+		return nil, err
+	}
 	if err := d.wait(ctx, d.Delay+d.ReadDelay); err != nil {
 		return nil, err
 	}
@@ -259,6 +355,9 @@ func (d *FakeDriver) Mkdir(ctx context.Context, parentID, name string) (Entry, e
 	d.mu.Lock()
 	d.record("Mkdir", parentID+"/"+name)
 	d.mu.Unlock()
+	if err := d.failOn("Mkdir"); err != nil {
+		return Entry{}, err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return Entry{}, err
 	}
@@ -276,6 +375,7 @@ func (d *FakeDriver) Mkdir(ctx context.Context, parentID, name string) (Entry, e
 	}
 	d.nextID++
 	d.nodes[id] = &fakeNode{name: name, isDir: true, parentID: parentID, modTime: time.Now()}
+	d.captureLocked()
 	return Entry{ID: id, ParentID: parentID, Name: name, IsDir: true, ModTime: time.Now()}, nil
 }
 
@@ -284,6 +384,9 @@ func (d *FakeDriver) Move(ctx context.Context, entry Entry, dstParentID string) 
 	d.mu.Lock()
 	d.record("Move", entry.ID)
 	d.mu.Unlock()
+	if err := d.failOn("Move"); err != nil {
+		return err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return err
 	}
@@ -300,6 +403,7 @@ func (d *FakeDriver) Move(ctx context.Context, entry Entry, dstParentID string) 
 		return fmt.Errorf("%w: fake move destination %q", ErrNotFound, dstParentID)
 	}
 	d.rekey(entry.ID, n, dstParentID)
+	d.captureLocked()
 	return nil
 }
 
@@ -308,6 +412,9 @@ func (d *FakeDriver) Rename(ctx context.Context, entry Entry, newName string) er
 	d.mu.Lock()
 	d.record("Rename", entry.ID)
 	d.mu.Unlock()
+	if err := d.failOn("Rename"); err != nil {
+		return err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return err
 	}
@@ -322,6 +429,7 @@ func (d *FakeDriver) Rename(ctx context.Context, entry Entry, newName string) er
 	}
 	d.rekey(entry.ID, n, n.parentID)
 	d.nodes[entry.ID].name = newName
+	d.captureLocked()
 	return nil
 }
 
@@ -353,6 +461,9 @@ func (d *FakeDriver) Remove(ctx context.Context, entry Entry) error {
 	d.mu.Lock()
 	d.record("Remove", entry.ID)
 	d.mu.Unlock()
+	if err := d.failOn("Remove"); err != nil {
+		return err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return err
 	}
@@ -370,6 +481,7 @@ func (d *FakeDriver) Remove(ctx context.Context, entry Entry) error {
 			delete(d.nodes, id)
 		}
 	}
+	d.captureLocked()
 	return nil
 }
 
@@ -379,6 +491,9 @@ func (d *FakeDriver) PutSource(ctx context.Context, req UploadRequest) (Entry, e
 	d.mu.Lock()
 	d.record("PutSource", req.Name)
 	d.mu.Unlock()
+	if err := d.failOn("PutSource"); err != nil {
+		return Entry{}, err
+	}
 	if err := d.wait(ctx, d.Delay+d.PutDelay); err != nil {
 		return Entry{}, err
 	}
@@ -411,9 +526,11 @@ func (d *FakeDriver) PutSource(ctx context.Context, req UploadRequest) (Entry, e
 	if n, exists := d.nodes[id]; exists {
 		n.data = payload
 		n.modTime = stamped
+		d.captureLocked()
 		return Entry{ID: id, ParentID: parentID, Name: req.Name, Size: int64(len(payload)), ModTime: stamped}, nil
 	}
 	d.nodes[id] = &fakeNode{name: req.Name, parentID: parentID, data: payload, modTime: stamped}
+	d.captureLocked()
 	return Entry{ID: id, ParentID: parentID, Name: req.Name, Size: int64(len(payload)), ModTime: stamped}, nil
 }
 
@@ -425,6 +542,9 @@ func (d *FakeDriver) ResolvePath(ctx context.Context, path string) (string, erro
 	d.mu.Lock()
 	d.record("ResolvePath", path)
 	d.mu.Unlock()
+	if err := d.failOn("ResolvePath"); err != nil {
+		return "", err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return "", err
 	}
@@ -448,6 +568,9 @@ func (d *FakeDriver) ResolveRemoteName(ctx context.Context, plainName string) (R
 	d.mu.Lock()
 	d.record("ResolveRemoteName", plainName)
 	d.mu.Unlock()
+	if err := d.failOn("ResolveRemoteName"); err != nil {
+		return RemoteNameInfo{}, err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return RemoteNameInfo{}, err
 	}
@@ -459,6 +582,9 @@ func (d *FakeDriver) ForeignEntries(ctx context.Context, parentID string) ([]For
 	d.mu.Lock()
 	d.record("ForeignEntries", parentID)
 	d.mu.Unlock()
+	if err := d.failOn("ForeignEntries"); err != nil {
+		return nil, err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return nil, err
 	}
@@ -470,6 +596,9 @@ func (d *FakeDriver) Space(ctx context.Context) (Space, error) {
 	d.mu.Lock()
 	d.record("Space", "")
 	d.mu.Unlock()
+	if err := d.failOn("Space"); err != nil {
+		return Space{}, err
+	}
 	if err := d.wait(ctx, d.Delay); err != nil {
 		return Space{}, err
 	}
