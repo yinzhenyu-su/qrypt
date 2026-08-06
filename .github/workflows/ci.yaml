@@ -58,6 +58,20 @@ jobs:
             exit 1
           fi
 
+      # Docs for for-user are generated from qrypt.schema.json; fail the
+      # build when the schema changed without regenerating them.
+      - name: Generated docs in sync
+        run: |
+          python3 scripts/gen-config-docs.py
+          python3 scripts/gen-driver-docs.py
+          if ! git diff --quiet -- docs/for-user/; then
+            echo "docs/for-user is stale; re-run:"
+            echo "  python3 scripts/gen-config-docs.py"
+            echo "  python3 scripts/gen-driver-docs.py"
+            git diff --stat docs/for-user/
+            exit 1
+          fi
+
       - name: Test
         run: go test -count=1 ./...
 
