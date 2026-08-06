@@ -123,3 +123,100 @@ When fixing Finder copy issues, avoid solving them only by checking file names.
 Finder depends on a sequence of FUSE semantics. A path should not appear to
 exist unless qrypt has a real backend entry or an in-memory node created by an
 earlier operation in the same mount process.
+
+## Why cross-drive copies write more data to disk than expected
+
+### The two copy paths and their amplification
+
+Copying a file from one netdisk mount to another can go through two very
+different code paths. The total local disk writes (as a multiple of file
+size `S`) differ by 2-3x:
+
+| Copy path | staging | read cache | cache seed | total |
+|---|---|---|---|---|
+| `qrypt fs copy` (direct copy, `control.RunDirectDriverCopy`) | 0 | 0 | 0 | **1xS** (one temp file) |
+| FUSE `cp` / cross-drive `fs sync` (`fs.WriteAt`) | 1xS | 0-1xS | 0-1xS | **2-3xS** |
+
+### Where the extra writes come from
+
+1. **Direct copy still writes one temp file** (`copySourceToTemp` in
+   `internal/control/directcopy.go`). The whole source is streamed into an
+   `os.CreateTemp` file (with `tmp.Sync()`) while md5/sha1/sha256 hashes are
+   computed through an `io.MultiWriter`, then uploaded via `PutSource` and
+   deleted. The temp file exists so a retried upload does not re-read the
+   source netdisk; the hashes require one sequential pass. This is the
+   unavoidable 1x.
+
+2. **FUSE write path writes the staging file** (`staging_write.go`). Every
+   `WriteAt` goes into a local staging file before the upload worker streams
+   it to the destination driver. This 1x is inherent to the
+   write-then-upload model.
+
+3. **Reading the source may write the read cache** (`read_window.go`
+   `StoreChunk` -> `PutChunkAsync`). Unlike cache seeding, the read path has
+   **no large-file skip**: every fetched chunk is persisted even though a
+   one-shot copy will never reuse it. Eviction later reclaims large entries
+   (`read_cache_eviction.go`), but the write has already happened. This is
+   pure amplification for a copy.
+
+4. **Cache seeding writes the staging file again** (`upload_snapshot.go`
+   `seedReadCacheFromStaging` -> `PutLocalFile`). After a successful upload
+   the staging file is copied into cache batch files. Files at or above
+   `readCacheLargeFileBytes` (16 MiB) are skipped, so this is at most 1x for
+   small files.
+
+5. **Upload journal appends** (`upload_journal.go`) write a small record per
+   pending-state transition (created / flushed / failed / committed) and are
+   periodically compacted without fsync. This is negligible in bytes but is
+   the reason the pending count grows during a copy.
+
+### What is already avoided
+
+- **No read-modify-write on staging**: staging is a standalone file written
+  with `pwrite` at arbitrary offsets, so unaligned application writes never
+  trigger a block-level read-modify-write.
+- **No second staging copy**: the upload streams directly from the staging
+  file; it is not copied into an upload buffer.
+- **Large files skip cache seeding** (16 MiB threshold).
+- **Journal compaction** keeps the journal file bounded.
+
+### Why FUSE cannot detect cross-drive copies
+
+A `cp` between two qrypt mounts is, from the FUSE daemon's point of view, a
+plain `open`/`read`/`write`/`flush` sequence. FUSE has no copy operation, so
+the daemon cannot tell that the writes to the destination originated from a
+read of the source.
+
+The only kernel-level copy signal is `FUSE_COPY_FILE_RANGE` (Linux fuse >=
+3.8), and it has three practical caveats:
+
+- macFUSE (macOS) does not support it, so copies on macOS always degrade to
+  read+write.
+- qrypt does not implement a `CopyFileRange` handler, so even on Linux the
+  kernel falls back to read+write.
+- qrypt mounts all drives under one FUSE mount point (a `vfs.Namespace` with
+  `/quark`, `/yun139`, ... as path segments), so a cross-drive copy is
+  actually a same-mount-point copy; if a `CopyFileRange` handler existed, the
+  kernel would deliver it and qrypt could resolve source/destination paths
+  and route cross-mount copies to the direct-copy path.
+
+Heuristics (sequential full read + matching full write + same pid) can flag
+"likely copy" for diagnostics, but they cannot prevent the amplification (the
+writes already happened) and they misclassify sequential readers such as
+media players. Do not use them to switch behavior.
+
+### Explicit copy paths and future optimizations
+
+qrypt already routes explicit copies around the amplification: `qrypt fs
+copy` and the copy task (`pkg/core/copy.go`) call `RunDirectDriverCopy`, the
+driver-level path, regardless of which mounts are involved. The remaining
+2-3x path is only for unlabelled FUSE `cp` and for cross-drive `fs sync`
+(`internal/sync/transfer.go` uses `fs.WriteAt`). Future work, in decreasing
+order of benefit:
+
+1. Stream `fs sync` cross-drive transfers through `RunDirectDriverCopy`
+   instead of `WriteAt` (2-3x -> 1x).
+2. Skip read-cache writes for files at or above `readCacheLargeFileBytes` on
+   the read path, matching the seeding threshold.
+3. On Linux only, implement `CopyFileRange` and route cross-mount copies to
+   the direct-copy path, making FUSE `cp` hit 1x instead of 2-3x.
