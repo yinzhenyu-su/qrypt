@@ -2,6 +2,14 @@
 
 # qrypt
 
+[![CI](https://github.com/yinzhenyu-su/qrypt/actions/workflows/ci.yaml/badge.svg)](https://github.com/yinzhenyu-su/qrypt/actions/workflows/ci.yaml)
+[![Contract Tests](https://github.com/yinzhenyu-su/qrypt/actions/workflows/contract.yaml/badge.svg)](https://github.com/yinzhenyu-su/qrypt/actions/workflows/contract.yaml)
+[![Nightly Quality Gates](https://github.com/yinzhenyu-su/qrypt/actions/workflows/nightly.yaml/badge.svg)](https://github.com/yinzhenyu-su/qrypt/actions/workflows/nightly.yaml)
+[![Go](https://img.shields.io/github/go-mod/go-version/yinzhenyu-su/qrypt)](https://go.dev)
+[![License](https://img.shields.io/github/license/yinzhenyu-su/qrypt)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/yinzhenyu-su/qrypt)](https://github.com/yinzhenyu-su/qrypt/releases)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#requirements)
+
 qrypt turns your cloud drives into one encrypted local folder — mount it, open it, use it like any other drive.
 
 ![Encryption comparison](artifacts/compare.png)
