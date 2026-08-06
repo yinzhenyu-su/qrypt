@@ -159,11 +159,17 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	return v, nil
 }
 
-// Start launches the upload workers and resumes pending uploads. It is
-// idempotent: the first context passed to Start owns the VFS lifecycle, and
-// later calls are no-ops (they must not start a second set of workers or
-// register a second shutdown hook that would double-close internal
-// channels).
+// Start launches the upload workers and resumes pending uploads.
+//
+// Lifecycle ownership: the FIRST context passed to Start owns the VFS
+// lifecycle. Later Start calls are no-ops - they do not start a second set
+// of workers, do not re-run resume (which would double-schedule pending
+// uploads) and do not register a second shutdown hook (which would
+// double-close internal channels). A different context passed to a second
+// Start is ignored: cancelling it does not stop the VFS, and there is no
+// way to transfer or replace ownership. Once Start has been called, the
+// instance runs until the owning context is cancelled; a cancelled instance
+// cannot be restarted by calling Start again - build a new VFS instead.
 func (v *VFS) Start(ctx context.Context) {
 	v.startOnce.Do(func() {
 		for i := 0; i < v.uploadWorkers; i++ {
