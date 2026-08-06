@@ -61,7 +61,8 @@ filename_encoding = "base32"
 }
 
 func TestBuildNamespaceUsesStorageDirs(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remoteA := filepath.Join(tmp, "remote-a")
 	remoteB := filepath.Join(tmp, "remote-b")

@@ -103,7 +103,8 @@ func (d *builderRootDriver) Metrics(context.Context, time.Time) ([]drive.MetricE
 var _ drive.Driver = (*builderRootDriver)(nil)
 
 func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remoteA := filepath.Join(tmp, "remote-a")
 	remoteB := filepath.Join(tmp, "remote-b")
@@ -172,7 +173,8 @@ root_path = "`+remoteB+`"
 }
 
 func TestBuildFileSystemSelectsSingleMount(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remoteA := filepath.Join(tmp, "remote-a")
 	remoteB := filepath.Join(tmp, "remote-b")
@@ -258,7 +260,8 @@ root_path = "`+remoteB+`"
 }
 
 func TestBuildFileSystemUsesResolvedRootID(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	cfg := &config.Config{
 		Storage: config.StorageConfig{

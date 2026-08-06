@@ -265,15 +265,25 @@ func EffectiveCacheDir(cfg *config.Config, runtime RuntimeLayout) string {
 }
 
 func DefaultCacheDir() string {
-	return osutil.ExpandHome("~/.qrypt/qrypt-cache")
+	return filepath.Join(qryptHomeDir(), "qrypt-cache")
 }
 
 func DefaultUploadDir() string {
-	return osutil.ExpandHome("~/.qrypt/qrypt-upload")
+	return filepath.Join(qryptHomeDir(), "qrypt-upload")
 }
 
 func DefaultStateDir() string {
-	return osutil.ExpandHome("~/.qrypt/qrypt-state")
+	return filepath.Join(qryptHomeDir(), "qrypt-state")
+}
+
+// qryptHomeDir returns the qrypt data root. It defaults to ~/.qrypt but can
+// be redirected with QRYPT_HOME so portable installs and test runs never
+// touch the user's real state.
+func qryptHomeDir() string {
+	if home := os.Getenv("QRYPT_HOME"); home != "" {
+		return filepath.Clean(home)
+	}
+	return osutil.ExpandHome("~/.qrypt")
 }
 
 func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
@@ -373,21 +383,25 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		mountUploadDir := filepath.Join(layout.UploadDir, mountCfg.Name)
 		stateDir := driverStateDir(layout, mountCfg.Name)
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 			return nil, nil, err
 		}
 		raw, err := drive.New(mountCfg.Type, params)
 		if err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 			return nil, nil, err
 		}
 		installDriverStateStore(raw, stateDir)
 		if err := raw.Init(ctx); err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, append(drivers, raw))
 			return nil, nil, err
 		}
 		rootID, err := resolveMountRootID(ctx, raw)
 		if err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, append(drivers, raw))
 			return nil, nil, fmt.Errorf("config: mount %s resolve root: %w", mountCfg.Name, err)
 		}
@@ -396,11 +410,13 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		enc := cfg.EncryptionFor(mountCfg.Name)
 		if enc.Password != "" {
 			if err := enc.Validate(); err != nil {
+				closeMounts(mounts)
 				dropAll(ctx, drivers)
 				return nil, nil, err
 			}
 			cp, err := crypt.NewRcloneCipherFromConfig(enc)
 			if err != nil {
+				closeMounts(mounts)
 				dropAll(ctx, drivers)
 				return nil, nil, err
 			}
@@ -412,15 +428,18 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		}
 		uploadDelay, err := config.ParseDuration(upload.UploadDelay)
 		if err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid upload.upload_delay: %w", mountCfg.Name, err)
 		}
 		deleteDelay, err := config.ParseDuration(upload.DeleteDelay)
 		if err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid upload.delete_delay: %w", mountCfg.Name, err)
 		}
 		if upload.UploadWorkers < 0 {
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 			return nil, nil, fmt.Errorf("config: mount %s invalid upload.upload_workers: must be non-negative", mountCfg.Name)
 		}
@@ -437,6 +456,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 			DeleteDelay:   deleteDelay,
 		})
 		if err != nil {
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 			return nil, nil, err
 		}
@@ -452,16 +472,19 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		fs := mounts[0].FS
 		return fs, func() {
 			flushReadCache(fs)
+			closeMounts(mounts)
 			dropAll(ctx, drivers)
 		}, nil
 	}
 	ns, err := vfs.NewNamespace(mounts)
 	if err != nil {
+		closeMounts(mounts)
 		dropAll(ctx, drivers)
 		return nil, nil, err
 	}
 	return ns, func() {
 		flushReadCache(ns)
+		closeMounts(mounts)
 		dropAll(ctx, drivers)
 	}, nil
 }
@@ -487,6 +510,16 @@ func installDriverStateStore(driver drive.Driver, stateDir string) {
 func dropAll(ctx context.Context, drivers []drive.Driver) {
 	for _, drv := range drivers {
 		_ = drv.Drop(ctx)
+	}
+}
+
+// closeMounts stops the background goroutines of VFS instances created so
+// far. buildNamespace error paths call it before dropping drivers: vfs.New
+// already started the read-cache writer, so leaking it would leave a
+// goroutine behind on every failed namespace build.
+func closeMounts(mounts []vfs.Mount) {
+	for _, m := range mounts {
+		_ = m.FS.CloseReadCache()
 	}
 }
 

@@ -15,7 +15,8 @@ import (
 // (timeout <= 0) keeps waiting until queued uploads land, while a bounded
 // wait still reports the pending state.
 func TestWaitFileSystemIdleNoTimeoutWaitsForSlowUpload(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
