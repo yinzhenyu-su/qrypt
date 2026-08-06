@@ -10,7 +10,8 @@ import (
 )
 
 func TestBuildNamespaceUsesPerMountEncryption(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	plainRemote := filepath.Join(tmp, "plain")
 	encryptedRemote := filepath.Join(tmp, "encrypted")
@@ -94,7 +95,8 @@ filename_encoding = "base32"
 }
 
 func TestBuildNamespaceAppliesGlobalEncryptionToMountWithoutEncryption(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	globalRemote := filepath.Join(tmp, "global")
 	encryptedRemote := filepath.Join(tmp, "encrypted")
@@ -173,7 +175,8 @@ filename_encoding = "base32"
 }
 
 func TestBuildNamespaceReadsPlainFilesWhenNoEncryptionConfigured(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	tmp := t.TempDir()
 	plainRemote := filepath.Join(tmp, "plain")
 	if err := os.MkdirAll(plainRemote, 0o755); err != nil {
