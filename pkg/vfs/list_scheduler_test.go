@@ -7,11 +7,10 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 func TestVFSListSchedulerCoalescesListLoads(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +43,7 @@ func TestVFSListSchedulerCoalescesListLoads(t *testing.T) {
 }
 
 func TestVFSListSchedulerTracksDirPrefetchState(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +63,7 @@ func TestVFSListSchedulerTracksDirPrefetchState(t *testing.T) {
 }
 
 func TestVFSListSchedulerUsesStartedPrefetchContext(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +87,7 @@ func TestVFSListSchedulerUsesStartedPrefetchContext(t *testing.T) {
 }
 
 func TestVFSListSchedulerDetectsFreshListCache(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

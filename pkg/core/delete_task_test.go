@@ -2,12 +2,11 @@ package core
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -15,14 +14,11 @@ import (
 func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remote, "a.txt"), []byte("a"), 0o644); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"a.txt": "a", "b.txt": "b", "ok.txt": "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(remote, "b.txt"), []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+	fs, err := vfs.New(raw, vfs.Options{
 		StorageDir:  filepath.Join(t.TempDir(), "cache"),
 		DeleteDelay: time.Hour,
 	})
@@ -62,11 +58,11 @@ func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
 func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remote, "ok.txt"), []byte("ok"), 0o644); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"a.txt": "a", "b.txt": "b", "ok.txt": "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+	fs, err := vfs.New(raw, vfs.Options{
 		StorageDir:  filepath.Join(t.TempDir(), "cache"),
 		DeleteDelay: time.Hour,
 	})
@@ -102,17 +98,17 @@ func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
 func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(remote, "dir", "nested"), 0o755); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{
+		"a.txt":                "a",
+		"b.txt":                "b",
+		"ok.txt":               "ok",
+		"dir/root.txt":         "root",
+		"dir/nested/child.txt": "child",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(remote, "dir", "root.txt"), []byte("root"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(remote, "dir", "nested", "child.txt"), []byte("child"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+	fs, err := vfs.New(raw, vfs.Options{
 		StorageDir:  filepath.Join(t.TempDir(), "cache"),
 		DeleteDelay: time.Hour,
 	})

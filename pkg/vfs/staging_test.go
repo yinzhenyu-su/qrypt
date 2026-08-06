@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 func TestStagingCleanupUploadTempsKeepsPendingStaging(t *testing.T) {
@@ -138,7 +137,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 
 func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	ctx := context.Background()
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +172,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 
 func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	ctx := context.Background()
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +293,7 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	}
 	content := []byte("driver-required-hashes")
 	drv := &snapshotHashDriver{
-		Driver: localfs.New(t.TempDir()),
+		Driver: drive.NewFakeDriver(),
 		hashes: []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1, drive.HashSHA1},
 	}
 	v := &VFS{
@@ -335,7 +334,7 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 
 func TestSnapshotPendingUsesIncrementalHashesForSequentialWrite(t *testing.T) {
 	ctx := context.Background()
-	raw := localfs.New(t.TempDir())
+	raw := drive.NewFakeDriver()
 	if err := raw.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +384,7 @@ func TestSnapshotPendingUsesIncrementalHashesForSequentialWrite(t *testing.T) {
 
 func TestSnapshotPendingFallsBackAfterNonSequentialWrite(t *testing.T) {
 	ctx := context.Background()
-	raw := localfs.New(t.TempDir())
+	raw := drive.NewFakeDriver()
 	if err := raw.Init(ctx); err != nil {
 		t.Fatal(err)
 	}

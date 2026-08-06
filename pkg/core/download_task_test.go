@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -14,11 +14,11 @@ import (
 func TestCreateTaskDownloadFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remote, "source.txt"), []byte("download me"), 0o644); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"source.txt": "download me"}); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +43,11 @@ func TestCreateTaskDownloadFile(t *testing.T) {
 func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remote, "source.txt"), []byte("remote"), 0o644); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"source.txt": "remote", "ok.txt": "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,11 +75,11 @@ func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing
 func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remote, "ok.txt"), []byte("ok"), 0o644); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"source.txt": "remote", "ok.txt": "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,20 +114,18 @@ func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
 func TestCreateTaskDownloadDirectoryRecursive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(remote, "dir", "nested"), 0o755); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"source.txt": "remote", "ok.txt": "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(remote, "dir", "empty"), 0o755); err != nil {
+	if err := raw.Seed(map[string]string{
+		"dir/root.txt":         "root",
+		"dir/nested/child.txt": "child",
+		"dir/empty/":           "",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(remote, "dir", "root.txt"), []byte("root"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(remote, "dir", "nested", "child.txt"), []byte("child"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 type fakeUploadWorkerRuntime struct {
@@ -147,9 +147,8 @@ func TestUploadPendingWithRuntimeExecutesAndReleasesAdmission(t *testing.T) {
 // consuming on ctx.Done, so without the done channel the goroutine would
 // block on the full queue forever).
 func TestUploadQueueBlockingEnqueueExitsOnShutdown(t *testing.T) {
-	remote := filepath.Join(t.TempDir(), "remote")
 	cache := filepath.Join(t.TempDir(), "cache")
-	v, err := New(localfs.New(remote), Options{StorageDir: cache})
+	v, err := New(drive.NewFakeDriver(), Options{StorageDir: cache})
 	if err != nil {
 		t.Fatal(err)
 	}

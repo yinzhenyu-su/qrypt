@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -52,8 +52,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cacheDir := t.TempDir()
-	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20})
+	fs, err := vfs.New(drive.NewFakeDriver(), vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,11 +535,10 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remote, "index.html"), []byte("old content"), 0o644); err != nil {
+	raw := drive.NewFakeDriver()
+	if err := raw.Seed(map[string]string{"index.html": "old content"}); err != nil {
 		t.Fatal(err)
 	}
-	raw := localfs.New(remote)
 	if err := raw.Init(ctx); err != nil {
 		t.Fatal(err)
 	}

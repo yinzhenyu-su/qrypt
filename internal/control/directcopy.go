@@ -52,7 +52,7 @@ type DriverCopyDirResult struct {
 	DurationMS    int64                   `json:"duration_ms"`
 	Error         string                  `json:"error,omitempty"`
 	ErrorCategory string                  `json:"error_category,omitempty"`
-	Retryable      bool                     `json:"retryable,omitempty"`
+	Retryable     bool                    `json:"retryable,omitempty"`
 	Entries       []DriverCopyEntryResult `json:"entries,omitempty"`
 }
 
@@ -65,7 +65,7 @@ type DriverCopyEntryResult struct {
 	Bytes         int64     `json:"bytes,omitempty"`
 	Error         string    `json:"error,omitempty"`
 	ErrorCategory string    `json:"error_category,omitempty"`
-	Retryable      bool      `json:"retryable,omitempty"`
+	Retryable     bool      `json:"retryable,omitempty"`
 	Started       time.Time `json:"started_at,omitempty"`
 	Finished      time.Time `json:"finished_at,omitempty"`
 	Duration      string    `json:"duration,omitempty"`
