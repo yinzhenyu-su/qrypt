@@ -47,14 +47,18 @@ type VFS struct {
 
 	// Domain state is grouped by ownership: each runtime is initialized in
 	// New, mutated only by its domain's code paths, and shut down by the VFS
-	// lifecycle. debug and pathLocks stay top-level because they are
-	// single-state and cross-domain respectively.
-	view      *viewState
-	read      *readState
-	upload    *uploadState
-	delete    *deleteState
-	debug     *activeDebugState
-	pathLocks *pathLockState
+	// lifecycle. activeDebug (single-state) and pathLocks (cross-domain)
+	// stay top-level.
+	view    *viewState
+	read    *readState
+	upload  *uploadState
+	delete  *deleteState
+	listing *listingState
+	// activeDebug tracks in-flight debug operations; it is the debug
+	// domain's only top-level state (read history and upload debug live in
+	// their domains).
+	activeDebug *activeDebugState
+	pathLocks   *pathLockState
 
 	// done is closed when the VFS shuts down (context cancel in Start). The
 	// blocking upload-queue enqueue goroutine selects on it so it cannot
@@ -122,7 +126,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		read:          newReadState(stores.readCacheStore),
 		upload:        newUploadState(stores.uploadStore, opts),
 		delete:        newDeleteState(deleteTasks, opts.DeleteDelay),
-		debug:         newActiveDebugState(),
+		listing:       newListingState(),
+		activeDebug:   newActiveDebugState(),
 		pathLocks:     newPathLockState(),
 	}
 	return v, nil

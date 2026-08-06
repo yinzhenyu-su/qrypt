@@ -67,7 +67,7 @@ func TestWaitWindowTreatsCanceledLoadAsRetryableMiss(t *testing.T) {
 			history: newReadHistoryState(),
 			windows: newReadWindowState(),
 		},
-		debug: newActiveDebugState(),
+		activeDebug: newActiveDebugState(),
 	}
 	load := &windowLoad{
 		fid:  "file",
