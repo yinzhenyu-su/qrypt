@@ -41,7 +41,9 @@ pkg/core
 
 Dependencies should point downward in this list. Provider drivers must not
 import VFS, mount, control, or CLI packages. VFS and mount code must not import
-concrete provider packages.
+concrete provider packages. These rules are enforced automatically by
+`scripts/check-arch.sh` in CI (every PR); when the boundary is violated the
+build fails.
 
 ## Runtime Assembly
 
