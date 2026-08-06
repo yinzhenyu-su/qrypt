@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/fileutil"
+	"github.com/yinzhenyu/qrypt/internal/sync"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -308,11 +309,11 @@ func get(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, f
 }
 
 func countDirFiles(ctx context.Context, fs vfs.FileSystem, path string) (int, error) {
-	snap, err := snapshotVFS(ctx, fs, path)
+	snap, err := sync.SnapshotVFS(ctx, fs, path)
 	if err != nil {
 		return 0, err
 	}
-	return snap.fileCount(), nil
+	return snap.FileCount(), nil
 }
 
 func getDir(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, force bool, bar *progressBar) error {

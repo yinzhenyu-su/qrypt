@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yinzhenyu/qrypt/internal/sync"
 )
 
 // setupSyncPersistTest returns a config + local dir pair whose sync sessions
@@ -22,23 +24,23 @@ func setupSyncPersistTest(t *testing.T) (configPath, remote, local string) {
 func syncPersistDir(t *testing.T, source, destination string) string {
 	t.Helper()
 	// The session key is a pure function of the two descriptors.
-	return filepath.Join(syncPersistRoot(), syncSessionKey(
-		checkTarget{kind: targetLocal, raw: source, localPath: source},
-		checkTarget{kind: targetVFS, raw: destination, vfsPath: destination, mountName: "loc"},
+	return filepath.Join(sync.PersistRoot(), sync.SessionKey(
+		sync.Target{Kind: sync.TargetLocal, Raw: source, LocalPath: source},
+		sync.Target{Kind: sync.TargetVFS, Raw: destination, VFSPath: destination, MountName: "loc"},
 	))
 }
 
-func writeSyncSessionPlan(t *testing.T, source, destination checkTarget, ops []syncPlanEntry) {
+func writeSyncSessionPlan(t *testing.T, source, destination sync.Target, ops []sync.PlanEntry) {
 	t.Helper()
-	dir := filepath.Join(syncPersistRoot(), syncSessionKey(source, destination))
+	dir := filepath.Join(sync.PersistRoot(), sync.SessionKey(source, destination))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan := syncSessionPlan{
+	plan := sync.SessionPlan{
 		Version:     1,
-		Source:      syncTargetDescriptor(source),
-		Destination: syncTargetDescriptor(destination),
-		Flags:       syncSessionFlags{Delete: false, Hash: false, Conflict: "error"},
+		Source:      sync.TargetDescriptor(source),
+		Destination: sync.TargetDescriptor(destination),
+		Flags:       sync.SessionFlags{Delete: false, Hash: false, Conflict: "error"},
 		Ops:         ops,
 	}
 	data, err := json.MarshalIndent(plan, "", "  ")
@@ -50,9 +52,9 @@ func writeSyncSessionPlan(t *testing.T, source, destination checkTarget, ops []s
 	}
 }
 
-func appendSyncState(t *testing.T, dir, path string, action syncAction, ok bool) {
+func appendSyncState(t *testing.T, dir, path string, action sync.Action, ok bool) {
 	t.Helper()
-	entry := syncStateEntry{Op: "done", Path: path, Action: action, OK: ok}
+	entry := sync.StateEntry{Op: "done", Path: path, Action: action, OK: ok}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatal(err)
@@ -104,21 +106,21 @@ func TestFsSyncResumeCompletesInterruptedRun(t *testing.T) {
 	// Hand-craft the interrupted session: plan has all three adds, state
 	// says a.txt finished OK.
 	writeSyncSessionPlan(t,
-		checkTarget{kind: targetLocal, raw: local, localPath: local},
-		checkTarget{kind: targetVFS, raw: "/loc", vfsPath: "/loc", mountName: "loc"},
-		[]syncPlanEntry{
-			{Path: "a.txt", Action: syncAdd, Reason: "missing", SourceSize: 3, Bytes: 3},
-			{Path: "b.txt", Action: syncAdd, Reason: "missing", SourceSize: 3, Bytes: 3},
-			{Path: "c.txt", Action: syncAdd, Reason: "missing", SourceSize: 3, Bytes: 3},
+		sync.Target{Kind: sync.TargetLocal, Raw: local, LocalPath: local},
+		sync.Target{Kind: sync.TargetVFS, Raw: "/loc", VFSPath: "/loc", MountName: "loc"},
+		[]sync.PlanEntry{
+			{Path: "a.txt", Action: sync.ActionAdd, Reason: "missing", SourceSize: 3, Bytes: 3},
+			{Path: "b.txt", Action: sync.ActionAdd, Reason: "missing", SourceSize: 3, Bytes: 3},
+			{Path: "c.txt", Action: sync.ActionAdd, Reason: "missing", SourceSize: 3, Bytes: 3},
 		})
-	appendSyncState(t, syncPersistDir(t, local, "/loc"), "a.txt", syncAdd, true)
+	appendSyncState(t, syncPersistDir(t, local, "/loc"), "a.txt", sync.ActionAdd, true)
 
 	out, _, err := executeCLI(t, "fs", "--config", configPath, "sync", "--resume", "--json", local, "/loc")
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add != 2 || summary.Failed != 0 {
+	if summary.Adds != 2 || summary.Failed != 0 {
 		t.Fatalf("summary = %+v, want 2 adds and no failures", summary)
 	}
 
@@ -148,19 +150,19 @@ func TestFsSyncResumeRetriesFailedOp(t *testing.T) {
 
 	// Session: f.txt marked failed. Resume must retry it.
 	writeSyncSessionPlan(t,
-		checkTarget{kind: targetLocal, raw: local, localPath: local},
-		checkTarget{kind: targetVFS, raw: "/loc", vfsPath: "/loc", mountName: "loc"},
-		[]syncPlanEntry{
-			{Path: "f.txt", Action: syncAdd, Reason: "missing", SourceSize: 10, Bytes: 10},
+		sync.Target{Kind: sync.TargetLocal, Raw: local, LocalPath: local},
+		sync.Target{Kind: sync.TargetVFS, Raw: "/loc", VFSPath: "/loc", MountName: "loc"},
+		[]sync.PlanEntry{
+			{Path: "f.txt", Action: sync.ActionAdd, Reason: "missing", SourceSize: 10, Bytes: 10},
 		})
-	appendSyncState(t, syncPersistDir(t, local, "/loc"), "f.txt", syncAdd, false)
+	appendSyncState(t, syncPersistDir(t, local, "/loc"), "f.txt", sync.ActionAdd, false)
 
 	out, _, err := executeCLI(t, "fs", "--config", configPath, "sync", "--resume", "--json", local, "/loc")
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add != 1 || summary.Failed != 0 {
+	if summary.Adds != 1 || summary.Failed != 0 {
 		t.Fatalf("summary = %+v, want 1 add retried without failure", summary)
 	}
 	got, _, err := executeCLI(t, "fs", "--config", configPath, "cat", "/loc/f.txt")
@@ -188,7 +190,7 @@ func TestFsSyncSessionRemovedOnSuccess(t *testing.T) {
 	if _, _, err := executeCLI(t, "fs", "--config", configPath, "sync", local, "/loc"); err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	entries, err := os.ReadDir(syncPersistRoot())
+	entries, err := os.ReadDir(sync.PersistRoot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +219,7 @@ func TestFsSyncSessionSurvivesFailureAndResumes(t *testing.T) {
 	if err == nil || !errors.As(err, &xe) || xe.Code != ExitPartial {
 		t.Fatalf("partial failure err = %v, want ExitPartial(3)", err)
 	}
-	entries, err := os.ReadDir(syncPersistRoot())
+	entries, err := os.ReadDir(sync.PersistRoot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +245,7 @@ func TestFsSyncSessionSurvivesFailureAndResumes(t *testing.T) {
 		t.Fatalf("resume summary = %+v, want no failures", summary)
 	}
 	// Session dir removed after completion.
-	dir := filepath.Join(syncPersistRoot(), sessionName)
+	dir := filepath.Join(sync.PersistRoot(), sessionName)
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("session dir still exists after resume completion: %v", err)
 	}
@@ -270,41 +272,7 @@ func TestFsSyncDryRunWritesNoSession(t *testing.T) {
 		t.Fatalf("dry-run failed: %v", err)
 	}
 	// dry-run must not create the session store at all.
-	if _, err := os.Stat(syncPersistRoot()); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(sync.PersistRoot()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dry-run created the session store: %v", err)
-	}
-}
-
-// TestSyncPersistKeyIsDeterministic: the same pair always maps to the same
-// key regardless of trailing slash or path spelling.
-func TestSyncPersistKeyIsDeterministic(t *testing.T) {
-	src := func(p string) checkTarget { return checkTarget{kind: targetLocal, localPath: p} }
-	dst := func(p string) checkTarget { return checkTarget{kind: targetVFS, vfsPath: p, mountName: "loc"} }
-	if syncSessionKey(src("/tmp/x"), dst("/loc")) != syncSessionKey(src("/tmp/x/"), dst("/loc/")) {
-		t.Fatal("session key changed with trailing slash")
-	}
-}
-
-// TestSyncPersistMarkDonePersistenceFailure: a journal write failure must
-// surface as an error and must NOT mark the op done in memory, so the
-// session stays consistent with the disk and a resume retries the op.
-func TestSyncPersistMarkDonePersistenceFailure(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "session")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	journal := filepath.Join(dir, "state.jsonl")
-	if err := os.WriteFile(journal, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(journal, 0o444); err != nil {
-		t.Fatal(err)
-	}
-	p := &syncPersist{dir: dir, done: map[string]bool{}}
-	if err := p.markDone("a.txt", syncAdd, nil); err == nil {
-		t.Fatal("markDone on a read-only journal must fail")
-	}
-	if p.isDone("a.txt", syncAdd) {
-		t.Fatal("failed journal write must not mark the op done in memory")
 	}
 }

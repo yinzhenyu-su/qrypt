@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/sync"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -165,11 +166,11 @@ func runDu(cmd *cobra.Command, args []string) error {
 	var files int
 	var bytes int64
 	if entry.IsDir {
-		snap, err := snapshotVFS(ctx, fs, path)
+		snap, err := sync.SnapshotVFS(ctx, fs, path)
 		if err != nil {
 			return err
 		}
-		files = snap.fileCount()
+		files = snap.FileCount()
 		for _, e := range snap {
 			if !e.IsDir {
 				bytes += e.Size
