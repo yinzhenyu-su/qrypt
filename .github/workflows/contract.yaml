@@ -1,0 +1,93 @@
+name: Contract Tests
+
+# Runs the real-netdisk contract suite against a live `qrypt mount` debug
+# server. Never runs on PRs (real provider credentials are required).
+#
+#   manual:  pick the mounts to exercise
+#   nightly: exercises every mount configured in the secret
+#
+# Secrets required (repo/org level):
+#   CONTRACT_CONFIG_TOML_B64 - base64 of a qrypt.toml with real accounts
+#   CONTRACT_MOUNTS_JSON     - e.g. ["p115","quark"]
+on:
+  workflow_dispatch:
+    inputs:
+      mounts:
+        description: 'Comma-separated mounts (e.g. "p115,quark")'
+        required: false
+        type: string
+  schedule:
+    - cron: "0 2 * * *" # 10:00 Asia/Shanghai
+
+concurrency:
+  group: contract
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      mounts: ${{ steps.m.outputs.mounts }}
+    steps:
+      - id: m
+        env:
+          INPUT: ${{ inputs.mounts }}
+          SECRET: ${{ secrets.CONTRACT_MOUNTS_JSON }}
+        run: |
+          if [ -n "${INPUT:-}" ]; then
+            json="[\"$(echo "$INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | paste -sd',' -)\"]"
+            echo "mounts=$json"
+          else
+            test -n "$SECRET" || { echo "no mounts input and CONTRACT_MOUNTS_JSON secret missing"; exit 1; }
+            echo "mounts=$SECRET"
+          fi
+
+  contract:
+    needs: [setup]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mount: ${{ fromJson(needs.setup.outputs.mounts) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install FUSE headers
+        run: sudo apt-get update && sudo apt-get install -y libfuse-dev
+
+      - name: Write contract config
+        env:
+          CONFIG_B64: ${{ secrets.CONTRACT_CONFIG_TOML_B64 }}
+        run: |
+          test -n "$CONFIG_B64" || { echo "CONTRACT_CONFIG_TOML_B64 secret missing"; exit 1; }
+          echo "$CONFIG_B64" | base64 -d > ./qrypt.toml
+
+      - name: Start mount server
+        run: |
+          go build -o /tmp/qrypt ./cmd/qrypt/
+          nohup /tmp/qrypt mount -s /tmp/qrypt.sock >/tmp/qrypt-mount.log 2>&1 &
+
+      - name: Wait for socket
+        run: |
+          for i in $(seq 1 120); do
+            [ -S /tmp/qrypt.sock ] && exit 0
+            sleep 1
+          done
+          echo "mount server did not start:"; cat /tmp/qrypt-mount.log
+          exit 1
+
+      - name: Contract suite: ${{ matrix.mount }}
+        timeout-minutes: 30
+        run: |
+          /tmp/qrypt debug test contract --socket /tmp/qrypt.sock --mount "${{ matrix.mount }}"
+
+      - name: Dump mount server log on failure
+        if: failure()
+        run: cat /tmp/qrypt-mount.log
