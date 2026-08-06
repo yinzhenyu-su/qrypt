@@ -34,6 +34,7 @@ var globalClock = &clock{}
 type clock struct {
 	startMu sync.Mutex
 	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 
 	offsetNS atomic.Int64
 	synced   atomic.Bool
@@ -79,10 +80,16 @@ func (c *clock) now() time.Time {
 
 func (c *clock) start(parent context.Context, cfg NTPConfig) {
 	c.startMu.Lock()
-	defer c.startMu.Unlock()
-	if c.cancel != nil {
-		c.cancel()
-		c.cancel = nil
+	cancel := c.cancel
+	c.cancel = nil
+	c.startMu.Unlock()
+	if cancel != nil {
+		// The previous loop must fully exit before a new one starts, so the
+		// single cancel slot can never orphan a syncLoop. Cancel is
+		// interruptible (queryNTP selects on ctx.Done), so this returns as
+		// soon as the loop stops blocking.
+		cancel()
+		c.wg.Wait()
 	}
 	if !cfg.Enabled {
 		c.synced.Store(false)
@@ -103,17 +110,27 @@ func (c *clock) start(parent context.Context, cfg NTPConfig) {
 		poll = defaultPollInterval
 	}
 	ctx, cancel := context.WithCancel(parent)
+	c.startMu.Lock()
 	c.cancel = cancel
-	go c.syncLoop(ctx, servers, timeout, poll)
+	c.startMu.Unlock()
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.syncLoop(ctx, servers, timeout, poll)
+	}()
 }
 
 func (c *clock) stop() {
 	c.startMu.Lock()
-	defer c.startMu.Unlock()
-	if c.cancel != nil {
-		c.cancel()
-		c.cancel = nil
+	cancel := c.cancel
+	c.cancel = nil
+	c.startMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
+	// Drain: callers (test TestMain) assert no goroutines immediately after
+	// StopNTP, so the loop must be gone by the time this returns.
+	c.wg.Wait()
 }
 
 func (c *clock) syncLoop(ctx context.Context, servers []string, timeout, poll time.Duration) {
@@ -162,8 +179,21 @@ func queryNTP(ctx context.Context, server string, timeout time.Duration) (time.T
 		return time.Time{}, err
 	}
 	resp := make([]byte, 48)
-	if _, err := conn.Read(resp); err != nil {
-		return time.Time{}, err
+	// A blocked UDP read would survive a context cancel until its deadline;
+	// select on ctx.Done so cancellation stops the loop immediately. The
+	// read goroutine exits when conn closes (deferred below).
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := conn.Read(resp)
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			return time.Time{}, err
+		}
+	case <-ctx.Done():
+		return time.Time{}, ctx.Err()
 	}
 	secs := binary.BigEndian.Uint32(resp[40:44])
 	frac := binary.BigEndian.Uint32(resp[44:48])
