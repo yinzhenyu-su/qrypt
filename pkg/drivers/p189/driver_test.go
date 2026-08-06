@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 type countingMD5Source struct {
@@ -537,7 +538,7 @@ func newTestUploadDriver(t *testing.T, serverURL string, store drive.StateStore)
 			return nil, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("test upload request %s: %s body=%q", uri, resp.Status, responseSnippet(raw))
+			return nil, fmt.Errorf("test upload request %s: %s body=%q", uri, resp.Status, util.Snippet(raw))
 		}
 		return raw, nil
 	}

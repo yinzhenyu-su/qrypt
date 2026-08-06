@@ -143,9 +143,9 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 				Status:    resp.StatusCode,
 				Duration:  time.Since(start).String(),
 				Request:   map[string]any{"part_number": meta.Number, "bytes": meta.Size, "headers": headerKeys(req.Header)},
-				Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+				Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 			})
-			err := fmt.Errorf("189: upload part %d: %s body=%q", meta.Number, resp.Status, responseSnippet(raw))
+			err := fmt.Errorf("189: upload part %d: %s body=%q", meta.Number, resp.Status, util.Snippet(raw))
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
 				err = drive.NonRetryable(err)
 			}

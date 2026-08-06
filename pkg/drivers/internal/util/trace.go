@@ -152,7 +152,7 @@ var sensitiveSnippetPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)("fileDownloadUrl"\s*:\s*")[^"]+`),
 	regexp.MustCompile(`(?i)("requestURL"\s*:\s*")[^"]+`),
 	regexp.MustCompile(`(?i)(Cookie:\s*)[^,\s"']+`),
-	regexp.MustCompile(`(?i)(Authorization:\s*)[^,\s"']+`),
+	regexp.MustCompile(`(?i)(Authorization:\s*(?:Bearer\s+)?)[^,\s"']+`),
 	regexp.MustCompile(`(?i)(token=)[^&\s"']+`),
 }
 
