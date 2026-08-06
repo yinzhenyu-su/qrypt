@@ -45,6 +45,9 @@ jobs:
         run: |
           go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run ./...
 
+      - name: Architecture boundaries
+        run: scripts/check-arch.sh
+
       - name: Vulncheck
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
