@@ -171,6 +171,7 @@ type DebugCopyHidden struct {
 }
 
 type DebugReadCache struct {
+	Enabled             bool                 `json:"enabled"`
 	MaxBytes            int64                `json:"max_bytes"`
 	LargeFileThreshold  int64                `json:"large_file_threshold"`
 	ChunkCount          int                  `json:"chunk_count"`

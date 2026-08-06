@@ -433,8 +433,10 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 			drv = crypt.NewDriver(drv, cp, crypt.DriverOptions{ContentDedup: enc.ContentDedup})
 		}
 		maxBytes := readCache.MaxSizeBytes()
-		if maxBytes == 0 {
-			maxBytes = 512 << 20
+		// An unset max_size falls back to the default; an explicit "0"
+		// disables the read cache for this mount (the store short-circuits).
+		if readCache.MaxSize == "" {
+			maxBytes = 2 << 30
 		}
 		uploadDelay, err := config.ParseDuration(upload.UploadDelay)
 		if err != nil {

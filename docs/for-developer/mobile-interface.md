@@ -565,7 +565,7 @@ leave it unchanged. Request shape:
     {"action": "update", "name": "quark",  "type": "quark",  "params": {"cookie": "..."}},
     {"action": "remove", "name": "old"}
   ],
-  "read_cache": {"max_size": "512M"},
+  "read_cache": {"max_size": "2G"},
   "upload": {"upload_delay": "5s", "upload_workers": 4, "default_mount": "quark"}
 }
 ```

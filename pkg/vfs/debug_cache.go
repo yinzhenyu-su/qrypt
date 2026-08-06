@@ -8,7 +8,10 @@ import (
 )
 
 func (c *readCacheStore) debugReadCache() DebugReadCache {
-	snapshot := DebugReadCache{MaxBytes: c.maxSize, LargeFileThreshold: readCacheLargeFileBytes}
+	snapshot := DebugReadCache{Enabled: c.enabled(), MaxBytes: c.maxSize, LargeFileThreshold: readCacheLargeFileBytes}
+	if !c.enabled() {
+		return snapshot
+	}
 	snapshot.WriteQueueLength = len(c.cacheWriteQueue)
 	snapshot.WriteQueueCap = cap(c.cacheWriteQueue)
 	snapshot.WriteQueueBytes = c.cacheWriteBytes.Load()

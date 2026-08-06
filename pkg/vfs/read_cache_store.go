@@ -16,7 +16,17 @@ const (
 	cacheAccessWriteInterval = time.Second
 )
 
+// enabled reports whether the read cache is active. A store constructed
+// with max_size <= 0 is disabled: it never writes chunks, never persists an
+// index, and reports every lookup as a miss.
+func (c *readCacheStore) enabled() bool {
+	return c.maxSize > 0
+}
+
 func (c *readCacheStore) GetChunk(fid string, index int64) ([]byte, bool, error) {
+	if !c.enabled() {
+		return nil, false, nil
+	}
 	fc := c.fileChunks(fid)
 	fc.mu.RLock()
 	info, ok := fc.chunks[index]
@@ -56,10 +66,16 @@ func (c *readCacheStore) GetChunk(fid string, index int64) ([]byte, bool, error)
 	return data, true, nil
 }
 func (c *readCacheStore) GetChunkRange(fid string, index, start, size int64) ([]byte, bool, error) {
+	if !c.enabled() {
+		return nil, false, nil
+	}
 	data, _, ok, err := c.getChunkRange(fid, index, start, size, false)
 	return data, ok, err
 }
 func (c *readCacheStore) GetChunkWithRange(fid string, index, start, size int64) ([]byte, []byte, bool, error) {
+	if !c.enabled() {
+		return nil, nil, false, nil
+	}
 	return c.getChunkRange(fid, index, start, size, true)
 }
 func (c *readCacheStore) getChunkRange(fid string, index, start, size int64, includeChunk bool) ([]byte, []byte, bool, error) {
@@ -147,6 +163,9 @@ func (c *readCacheStore) getChunkRange(fid string, index, start, size int64, inc
 	return data, chunk, true, nil
 }
 func (c *readCacheStore) HasChunk(fid string, index int64) (bool, error) {
+	if !c.enabled() {
+		return false, nil
+	}
 	sh := c.shardFor(fid)
 	sh.mu.RLock()
 	fc := sh.chunks[fid]
@@ -199,6 +218,9 @@ func (c *readCacheStore) PutChunk(fid string, fileSize, index int64, data []byte
 	return nil
 }
 func (c *readCacheStore) putChunk(fid string, fileSize, index int64, data []byte) error {
+	if !c.enabled() {
+		return nil
+	}
 	batch := index / cacheBatchBlocks
 	offset := int64(index%cacheBatchBlocks) * readChunkSize
 	path := c.readBatchPath(fid, batch)
@@ -242,6 +264,9 @@ func (c *readCacheStore) putChunk(fid string, fileSize, index int64, data []byte
 }
 func (c *readCacheStore) PutLocalFile(fid string, fileSize int64, localPath string) error {
 	if fid == "" {
+		return nil
+	}
+	if !c.enabled() {
 		return nil
 	}
 	if err := c.ensureReadCacheDir(); err != nil {
