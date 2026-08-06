@@ -111,7 +111,7 @@ type fsCopyDryRunResult struct {
 	Entries     []string `json:"entries"`
 }
 
-func runFsCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.FileSystem, source, destination string) error {
+func runFsCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.Reader, source, destination string) error {
 	result := fsCopyDryRunResult{Source: source, Destination: destination, DryRun: true}
 	entry, err := fs.Stat(ctx, source)
 	if err != nil {

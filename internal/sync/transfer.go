@@ -10,7 +10,7 @@ import (
 )
 
 // PutFile uploads a local file into the VFS (create, stream in chunks, flush).
-func PutFile(ctx context.Context, fs vfs.FileSystem, localPath, remotePath string) error {
+func PutFile(ctx context.Context, fs vfs.Writer, localPath, remotePath string) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -41,7 +41,7 @@ func PutFile(ctx context.Context, fs vfs.FileSystem, localPath, remotePath strin
 }
 
 // GetFile downloads a VFS file to a local path with an atomic replace.
-func GetFile(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string) error {
+func GetFile(ctx context.Context, fs vfs.Reader, remotePath, localPath string) error {
 	return fileutil.WriteAtomic(localPath, ".qrypt-sync-*", 0o644, true, func(out *os.File) error {
 		rc, err := fs.Read(ctx, remotePath, 0, 0)
 		if err != nil {

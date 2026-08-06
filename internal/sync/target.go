@@ -58,7 +58,7 @@ func CheckContainment(source, destination Target) error {
 // TargetSupportsMTime reports whether the destination backend persists
 // uploaded mtimes. Local destinations always do; virtual destinations
 // depend on the mount driver's CapabilityMtime.
-func TargetSupportsMTime(fs vfs.FileSystem, destination Target) bool {
+func TargetSupportsMTime(fs any, destination Target) bool {
 	if destination.Kind != TargetVFS {
 		return true
 	}
@@ -76,7 +76,7 @@ func TargetSupportsMTime(fs vfs.FileSystem, destination Target) bool {
 
 // EnsureRoot creates the destination root when it does not exist yet, so the
 // sync plan (which excludes the root itself) can place entries in it.
-func EnsureRoot(ctx context.Context, fs vfs.FileSystem, destination Target) error {
+func EnsureRoot(ctx context.Context, fs executorFS, destination Target) error {
 	switch destination.Kind {
 	case TargetVFS:
 		if _, err := fs.Stat(ctx, destination.VFSPath); err == nil {

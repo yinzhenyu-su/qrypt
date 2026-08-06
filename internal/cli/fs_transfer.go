@@ -8,7 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func put(ctx context.Context, fs vfs.FileSystem, localPath, remotePath string) error {
+func put(ctx context.Context, fs vfs.Writer, localPath, remotePath string) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -17,7 +17,7 @@ func put(ctx context.Context, fs vfs.FileSystem, localPath, remotePath string) e
 	return putReader(ctx, fs, f, remotePath)
 }
 
-func putReader(ctx context.Context, fs vfs.FileSystem, reader io.Reader, remotePath string) error {
+func putReader(ctx context.Context, fs vfs.Writer, reader io.Reader, remotePath string) error {
 	if err := fs.Create(ctx, remotePath); err != nil {
 		return err
 	}

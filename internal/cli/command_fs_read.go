@@ -125,7 +125,7 @@ type fsListEntry struct {
 	RemotePath string `json:"remote_path"`
 }
 
-func listEntriesWithRemoteNames(ctx context.Context, fs vfs.FileSystem, dir string, entries []drive.Entry) ([]fsListEntry, error) {
+func listEntriesWithRemoteNames(ctx context.Context, fs vfs.Reader, dir string, entries []drive.Entry) ([]fsListEntry, error) {
 	remoteParent, err := remoteParentPath(ctx, fs, dir)
 	if err != nil {
 		return nil, err
@@ -142,7 +142,7 @@ func listEntriesWithRemoteNames(ctx context.Context, fs vfs.FileSystem, dir stri
 	return output, nil
 }
 
-func remoteParentPath(ctx context.Context, fs vfs.FileSystem, dir string) (string, error) {
+func remoteParentPath(ctx context.Context, fs vfs.Reader, dir string) (string, error) {
 	clean := cleanListPath(dir)
 	if clean == "/" {
 		return "/", nil
@@ -262,7 +262,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	return get(ctx, fs, args[0], localPath, force, false)
 }
 
-func copyRemoteFile(ctx context.Context, fs vfs.FileSystem, remotePath string, out io.Writer) error {
+func copyRemoteFile(ctx context.Context, fs vfs.Reader, remotePath string, out io.Writer) error {
 	rc, err := fs.Read(ctx, remotePath, 0, 0)
 	if err != nil {
 		return err
@@ -273,7 +273,7 @@ func copyRemoteFile(ctx context.Context, fs vfs.FileSystem, remotePath string, o
 	return err
 }
 
-func get(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, force, quiet bool) error {
+func get(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force, quiet bool) error {
 	if info, err := os.Stat(localPath); err == nil {
 		if info.IsDir() {
 			return fmt.Errorf("local destination %q is a directory", localPath)
@@ -308,7 +308,7 @@ func get(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, f
 	return nil
 }
 
-func countDirFiles(ctx context.Context, fs vfs.FileSystem, path string) (int, error) {
+func countDirFiles(ctx context.Context, fs vfs.Reader, path string) (int, error) {
 	snap, err := sync.SnapshotVFS(ctx, fs, path)
 	if err != nil {
 		return 0, err
@@ -316,7 +316,7 @@ func countDirFiles(ctx context.Context, fs vfs.FileSystem, path string) (int, er
 	return snap.FileCount(), nil
 }
 
-func getDir(ctx context.Context, fs vfs.FileSystem, remotePath, localPath string, force bool, bar *progressBar) error {
+func getDir(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force bool, bar *progressBar) error {
 	if info, err := os.Stat(localPath); err == nil {
 		if !info.IsDir() {
 			return fmt.Errorf("local destination %q is not a directory", localPath)

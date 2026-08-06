@@ -6,7 +6,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func pendingFiles(fs vfs.FileSystem) ([]vfs.PendingUpload, error) {
+func pendingFiles(fs any) ([]vfs.PendingUpload, error) {
 	inspector, ok := fs.(vfs.UploadInspector)
 	if !ok {
 		return nil, fmt.Errorf("filesystem does not expose upload state")

@@ -18,13 +18,15 @@ var ErrReadOnly = errors.New("vfs: read-only namespace path")
 var ErrNotFound = drive.ErrNotFound
 var ErrCrossMount = errors.New("vfs: cross-mount rename")
 
-// FileSystem is the common API implemented by a single-drive VFS and a
-// multi-drive Namespace.
-type FileSystem interface {
-	Start(ctx context.Context)
+// Reader is the read-only subset of FileSystem.
+type Reader interface {
 	Stat(ctx context.Context, path string) (drive.Entry, error)
 	List(ctx context.Context, path string) ([]drive.Entry, error)
 	Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error)
+}
+
+// Writer is the write subset of FileSystem.
+type Writer interface {
 	Create(ctx context.Context, path string) error
 	WriteAt(ctx context.Context, path string, data []byte, off int64) (int, error)
 	Flush(ctx context.Context, path string) error
@@ -32,8 +34,30 @@ type FileSystem interface {
 	Remove(ctx context.Context, path string) error
 	RemoveDir(ctx context.Context, path string) error
 	Rename(ctx context.Context, oldPath, newPath string) error
-	RefreshPath(path string)
 	Truncate(ctx context.Context, path string, size int64) error
+}
+
+// Lifecycle starts a filesystem's background workers. It is intentionally
+// separate from FileSystem: constructing a filesystem (New/NewNamespace)
+// does not run anything, and read-only consumers never need to start one.
+type Lifecycle interface {
+	Start(ctx context.Context)
+}
+
+// PathRefresher invalidates the directory listing cache for path so the
+// next List call fetches fresh data from the remote driver. Cache/view
+// control is an optional capability, not a file operation.
+type PathRefresher interface {
+	RefreshPath(path string)
+}
+
+// FileSystem is the common file-operation API implemented by a single-drive
+// VFS and a multi-drive Namespace. Runtime lifecycle (Start) and cache/view
+// control (RefreshPath) live in separate optional interfaces so consumers
+// depend only on the file operations they actually use.
+type FileSystem interface {
+	Reader
+	Writer
 }
 
 type UploadInspector interface {
@@ -44,6 +68,25 @@ type RemoteLister interface {
 	RemoteList(ctx context.Context, path string) ([]drive.Entry, error)
 }
 
+// Optional capability interfaces are grouped by consumer role:
+//
+//	file operations  FileSystem (Reader + Writer), Lifecycle, PathRefresher
+//	runtime caps     UploadInspector, RemoteLister, HashProvider,
+//	                 EncryptedHashProvider, ModTimeWriter, SpaceProvider,
+//	                 MountSpaceProvider
+//	diagnostics      DebugResolver, DebugConsistencyChecker,
+//	                 DebugStagingInspector, DebugMountSnapshotter,
+//	                 DebugSnapshotProvider, RemoteIDResolver,
+//	                 MountHealthChecker, DriverProvider
+//	test control    DebugUploadCancelInjector (in debug_fault.go)
+//
+// Naming convention: *Resolver resolves ids/paths, *Inspector exposes
+// internals read-only, *Provider exposes a value, *Checker reports health,
+// *Snapshotter/ReadCache* control snapshot and cache surfaces. Interfaces
+// stay narrow and are asserted on demand; they are not merged into a single
+// debug interface so fakes and implementations stay small.
+
+// DebugResolver resolves a virtual path to its remote identity.
 type DebugResolver interface {
 	DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error)
 }
@@ -719,3 +762,9 @@ func cleanMountName(name string) string {
 
 var _ FileSystem = (*VFS)(nil)
 var _ FileSystem = (*Namespace)(nil)
+var _ Reader = (*VFS)(nil)
+var _ Writer = (*VFS)(nil)
+var _ Lifecycle = (*VFS)(nil)
+var _ PathRefresher = (*VFS)(nil)
+var _ Lifecycle = (*Namespace)(nil)
+var _ PathRefresher = (*Namespace)(nil)

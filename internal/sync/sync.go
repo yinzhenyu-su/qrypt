@@ -29,11 +29,11 @@ type Request struct {
 // WaitIdle drains asynchronous VFS work (uploads, queued deletes) so the
 // destination is actually synced when Run returns. The CLI passes its
 // filesystem-activity waiter; tests can pass a no-op.
-type WaitIdle func(ctx context.Context, fs vfs.FileSystem) error
+type WaitIdle func(ctx context.Context, fs any) error
 
 // Run performs a sync: snapshot both sides, compare, plan, execute, and
 // manage the resumable session. The filesystem must already be started.
-func Run(ctx context.Context, fs vfs.FileSystem, waitIdle WaitIdle, req Request) (Result, error) {
+func Run(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) (Result, error) {
 	if req.Source.Kind == TargetLocal && req.Destination.Kind == TargetLocal {
 		return Result{}, fmt.Errorf("at least one side must be a virtual path (/MOUNT/...): got %q and %q", req.Source.Raw, req.Destination.Raw)
 	}
@@ -133,7 +133,7 @@ func Run(ctx context.Context, fs vfs.FileSystem, waitIdle WaitIdle, req Request)
 // resume continues an interrupted sync session: it loads the saved plan,
 // skips ops that already finished OK (failed ops are retried) and executes
 // the remainder without re-scanning either tree.
-func resume(ctx context.Context, fs vfs.FileSystem, waitIdle WaitIdle, req Request) (Result, error) {
+func resume(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) (Result, error) {
 	persist, found, err := LoadSession(req.Source, req.Destination)
 	if err != nil {
 		return Result{}, err

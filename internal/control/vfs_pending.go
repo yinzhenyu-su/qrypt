@@ -2,7 +2,7 @@ package control
 
 import "github.com/yinzhenyu/qrypt/pkg/vfs"
 
-func pendingFiles(fs vfs.FileSystem) []vfs.PendingUpload {
+func pendingFiles(fs any) []vfs.PendingUpload {
 	inspector, ok := fs.(vfs.UploadInspector)
 	if !ok {
 		return nil
@@ -10,6 +10,6 @@ func pendingFiles(fs vfs.FileSystem) []vfs.PendingUpload {
 	return inspector.PendingUploads()
 }
 
-func pendingCount(fs vfs.FileSystem) int {
+func pendingCount(fs any) int {
 	return len(pendingFiles(fs))
 }

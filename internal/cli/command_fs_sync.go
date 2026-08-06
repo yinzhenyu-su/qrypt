@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/sync"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func newFsSyncCmd() *cobra.Command {
@@ -74,7 +73,7 @@ func runFsSync(cmd *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	waitIdle := func(ctx context.Context, fs vfs.FileSystem) error {
+	waitIdle := func(ctx context.Context, fs any) error {
 		return waitFileSystemIdle(ctx, fs, 0)
 	}
 	result, err := sync.Run(ctx, fs, waitIdle, req)

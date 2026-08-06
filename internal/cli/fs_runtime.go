@@ -13,7 +13,15 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func(), error) {
+// builtFS is a filesystem the CLI constructed and will start. Every builder
+// path returns a value with the full file-operation surface plus the
+// lifecycle hook, so commands can Start it without type assertions.
+type builtFS interface {
+	vfs.FileSystem
+	vfs.Lifecycle
+}
+
+func openFileSystem(cmd *cobra.Command) (context.Context, builtFS, func(), error) {
 	state, err := commandConfig(cmd)
 	if err != nil {
 		return nil, nil, nil, err
@@ -28,7 +36,7 @@ func openFileSystem(cmd *cobra.Command) (context.Context, vfs.FileSystem, func()
 		stop()
 		return nil, nil, nil, err
 	}
-	var fs vfs.FileSystem
+	var fs builtFS
 	var cleanup func()
 	if selectedMount != "" {
 		fs, cleanup, err = buildFileSystemWithBandwidth(ctx, state.cfg, selectedMount, true, bandwidth)
@@ -76,7 +84,7 @@ func printEntryStat(w io.Writer, entry drive.Entry) {
 	}
 }
 
-func waitFileSystemIdle(ctx context.Context, fs vfs.FileSystem, timeout time.Duration) error {
+func waitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) error {
 	// No deadline (timeout <= 0): wait until the filesystem is idle or the
 	// context is cancelled (Ctrl-C). fs sync uses this because its transfer
 	// size is unbounded; a fixed timeout would report a healthy slow upload
@@ -116,7 +124,7 @@ func commandWaitTimeout(cmd *cobra.Command) time.Duration {
 	return timeout
 }
 
-func fileSystemActivity(fs vfs.FileSystem) (uploads, deleteTimers int) {
+func fileSystemActivity(fs any) (uploads, deleteTimers int) {
 	snapshotter, ok := fs.(vfs.DebugSnapshotProvider)
 	if !ok {
 		return 0, 0
