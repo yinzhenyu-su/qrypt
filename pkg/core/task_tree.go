@@ -27,7 +27,7 @@ type taskTree struct {
 	Files []taskTreeFile
 }
 
-func walkTaskTree(ctx context.Context, fs vfs.FileSystem, rootPath string) (taskTree, error) {
+func walkTaskTree(ctx context.Context, fs vfs.Reader, rootPath string) (taskTree, error) {
 	rootPath = vfs.CleanVirtualPath(rootPath)
 	root, err := fs.Stat(ctx, rootPath)
 	if err != nil {
@@ -44,7 +44,7 @@ func walkTaskTree(ctx context.Context, fs vfs.FileSystem, rootPath string) (task
 	return tree, nil
 }
 
-func walkTaskTreeDir(ctx context.Context, fs vfs.FileSystem, dirPath, rel string, tree *taskTree) error {
+func walkTaskTreeDir(ctx context.Context, fs vfs.Reader, dirPath, rel string, tree *taskTree) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
