@@ -181,9 +181,7 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 		if a.encrypted || b.encrypted {
 			return degrade(fmt.Errorf("hash comparison between encrypted mounts is not supported"))
 		}
-		hasher, ok := fs.(interface {
-			RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error)
-		})
+		hasher, ok := fs.(vfs.HashProvider)
 		if !ok {
 			return degrade(drive.ErrUnsupported)
 		}
@@ -219,9 +217,7 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 		return f, info.Size(), nil
 	}
 
-	hasher, ok := fs.(interface {
-		RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error)
-	})
+	hasher, ok := fs.(vfs.HashProvider)
 	if !ok {
 		return degrade(drive.ErrUnsupported)
 	}
@@ -238,9 +234,7 @@ func compareVFSHashPair(ctx context.Context, fs vfs.FileSystem, a, b checkTarget
 			return false, "", err
 		}
 		defer plain.Close()
-		encrypter, ok := fs.(interface {
-			EncryptedHash(ctx context.Context, path string, plain io.Reader, plainSize int64, algorithm drive.HashAlgorithm) (string, error)
-		})
+		encrypter, ok := fs.(vfs.EncryptedHashProvider)
 		if !ok {
 			return degrade(drive.ErrUnsupported)
 		}

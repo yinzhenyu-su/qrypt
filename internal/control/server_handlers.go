@@ -114,9 +114,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	// Reverse resolve by remote ID.
 	if remoteID := r.URL.Query().Get("remote_id"); remoteID != "" {
-		if ns, ok := s.source.(interface {
-			DebugResolveByRemoteID(ctx context.Context, remoteID string) (*vfs.DebugResolveInfo, string, error)
-		}); ok {
+		if ns, ok := s.source.(vfs.RemoteIDResolver); ok {
 			info, _, err := ns.DebugResolveByRemoteID(r.Context(), remoteID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
@@ -1110,13 +1108,13 @@ func parseSinceQuery(raw string) (time.Time, bool, error) {
 	return t, true, nil
 }
 
-func parseLimitQuery(raw string, def, max int) int {
+func parseLimitQuery(raw string, def, maxLimit int) int {
 	limit := def
 	if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && parsed > 0 {
 		limit = parsed
 	}
-	if limit > max {
-		limit = max
+	if limit > maxLimit {
+		limit = maxLimit
 	}
 	return limit
 }

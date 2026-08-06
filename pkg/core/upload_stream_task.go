@@ -566,9 +566,7 @@ func (c *Core) refreshUploadStreamCloudProgress(ctx context.Context, batch *uplo
 		}
 		batch.mu.Unlock()
 		if dismissRemote {
-			if dismissible, ok := source.(interface {
-				DismissTask(context.Context, string) error
-			}); ok {
+			if dismissible, ok := source.(taskDismisser); ok {
 				_ = dismissible.DismissTask(context.WithoutCancel(ctx), remote.ID)
 			}
 		}

@@ -37,7 +37,7 @@ root_path = "`+remote+`"
 	if !opened.OK || opened.Data == "" {
 		t.Fatalf("OpenJSON = %+v, want ok core id", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	var listed struct {
 		OK   bool    `json:"ok"`
@@ -154,7 +154,7 @@ func TestMobileThumbnailCacheUsesFilePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	localThumb := filepath.Join(tmp, "thumb.jpg")
 	if err := os.WriteFile(localThumb, []byte("thumb"), 0o644); err != nil {
@@ -237,7 +237,7 @@ password = "test-password"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var mounts struct {
 		OK   bool `json:"ok"`
@@ -303,7 +303,7 @@ root_path = "`+remote+`"
 	if !opened.OK || opened.Data == "" {
 		t.Fatalf("OpenImportedJSON = %+v, want core id", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	var info struct {
 		OK   bool `json:"ok"`
@@ -354,7 +354,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	localPath := filepath.Join(tmp, "local.txt")
 	if err := os.WriteFile(localPath, []byte("stable"), 0o644); err != nil {
@@ -398,7 +398,7 @@ root_path = "` + remote + `"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var summary struct {
 		OK   bool `json:"ok"`
@@ -510,7 +510,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var opened struct {
 		OK   bool   `json:"ok"`
@@ -574,7 +574,7 @@ func TestMobileReloadConcurrentWithAPICalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {

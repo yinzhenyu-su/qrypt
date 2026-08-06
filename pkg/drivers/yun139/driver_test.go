@@ -344,7 +344,7 @@ func TestPersonalPostRefreshesAndRetriesOnAuthExpired(t *testing.T) {
 func TestRead(t *testing.T) {
 	downloadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write([]byte("world"))
+		_, _ = w.Write([]byte("world"))
 	}))
 	defer downloadServer.Close()
 
@@ -380,7 +380,7 @@ func TestReadRange(t *testing.T) {
 			t.Errorf("unexpected range: %s", r.Header.Get("Range"))
 		}
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write([]byte("world"))
+		_, _ = w.Write([]byte("world"))
 	}))
 	defer downloadServer.Close()
 

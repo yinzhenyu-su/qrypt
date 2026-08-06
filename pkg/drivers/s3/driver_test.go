@@ -341,7 +341,7 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(data)
+		_, _ = w.Write(data)
 
 	case http.MethodPut:
 		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {

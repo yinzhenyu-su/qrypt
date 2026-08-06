@@ -99,6 +99,57 @@ type DriverProvider interface {
 	Drivers() []NamedDriver
 }
 
+// The interfaces below name optional capabilities a FileSystem may expose.
+// Consumers assert against the named interface instead of an inline anonymous
+// one, so fakes are easy to construct and the capability surface is
+// discoverable in one place.
+
+// HashProvider reports the backend hash of a stored object.
+type HashProvider interface {
+	RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error)
+}
+
+// EncryptedHashProvider computes the hash the plaintext would have when
+// encrypted with the mount's cipher (nonce from the remote header).
+type EncryptedHashProvider interface {
+	EncryptedHash(ctx context.Context, path string, plain io.Reader, plainSize int64, algorithm drive.HashAlgorithm) (string, error)
+}
+
+// ModTimeWriter stamps a backend object's mtime.
+type ModTimeWriter interface {
+	SetModTime(ctx context.Context, path string, modTime time.Time) error
+}
+
+// SpaceProvider reports aggregate backend capacity.
+type SpaceProvider interface {
+	Space(ctx context.Context) (drive.Space, error)
+}
+
+// MountSpaceProvider reports per-mount capacity breakdown.
+type MountSpaceProvider interface {
+	MountSpaces(ctx context.Context) []MountSpace
+}
+
+// DebugSnapshotProvider exposes the filesystem debug snapshot.
+type DebugSnapshotProvider interface {
+	DebugSnapshot() DebugSnapshot
+}
+
+// ReadCacheCleaner drops the read-cache files.
+type ReadCacheCleaner interface {
+	ClearReadCache() error
+}
+
+// ReadCacheFlusher flushes pending read-cache writes.
+type ReadCacheFlusher interface {
+	FlushReadCache() error
+}
+
+// RemoteIDResolver resolves a backend object by its remote id.
+type RemoteIDResolver interface {
+	DebugResolveByRemoteID(ctx context.Context, remoteID string) (*DebugResolveInfo, string, error)
+}
+
 type Mount struct {
 	Name string
 	FS   *VFS

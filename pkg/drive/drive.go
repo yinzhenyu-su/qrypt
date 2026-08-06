@@ -122,6 +122,15 @@ type Driver interface {
 	Metrics(ctx context.Context, since time.Time) ([]MetricEvent, error)
 }
 
+// EncryptedHashProvider is the optional driver extension backing
+// vfs.EncryptedHash: it computes the backend hash the plaintext would have
+// when encrypted with the mount's cipher. Not every backend stores cipher
+// metadata in a way that supports this; absent drivers keep returning
+// ErrUnsupported.
+type EncryptedHashProvider interface {
+	EncryptedHash(ctx context.Context, entry Entry, plain io.Reader, plainSize int64, algorithm HashAlgorithm) (string, error)
+}
+
 // Space describes backend capacity in bytes.
 type Space struct {
 	Total int64

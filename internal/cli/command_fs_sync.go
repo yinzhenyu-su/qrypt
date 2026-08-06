@@ -579,9 +579,7 @@ func syncSetModTime(ctx context.Context, fs vfs.FileSystem, path string, modTime
 	if modTime <= 0 {
 		return nil
 	}
-	setter, ok := fs.(interface {
-		SetModTime(ctx context.Context, path string, modTime time.Time) error
-	})
+	setter, ok := fs.(vfs.ModTimeWriter)
 	if !ok {
 		return nil
 	}

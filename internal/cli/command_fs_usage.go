@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"math"
 
@@ -63,9 +62,7 @@ func runDf(cmd *cobra.Command, args []string) error {
 	}
 
 	// Prefer per-mount breakdown when the filesystem exposes one.
-	if spacer, ok := fs.(interface {
-		MountSpaces(ctx context.Context) []vfs.MountSpace
-	}); ok {
+	if spacer, ok := fs.(vfs.MountSpaceProvider); ok {
 		mounts := spacer.MountSpaces(ctx)
 		if selected != "" {
 			for _, mount := range mounts {
@@ -112,9 +109,7 @@ func runDf(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fallback: single aggregate space (filesystem without per-mount query).
-	spacer, ok := fs.(interface {
-		Space(ctx context.Context) (drive.Space, error)
-	})
+	spacer, ok := fs.(vfs.SpaceProvider)
 	if !ok {
 		return fmt.Errorf("this filesystem does not report space usage")
 	}

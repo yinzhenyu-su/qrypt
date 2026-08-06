@@ -17,6 +17,12 @@ type TaskType = task.Type
 type TaskState = task.State
 type TaskItemFilter = task.ItemFilter
 
+// taskDismisser is the optional task-dismissal capability upload tasks use
+// when their source exposes it (a Core session). Named so fakes are trivial.
+type taskDismisser interface {
+	DismissTask(context.Context, string) error
+}
+
 func (c *Core) newTaskManager() *task.Manager {
 	var sources []task.Source
 	if source, ok := c.fs.(task.Source); ok {
