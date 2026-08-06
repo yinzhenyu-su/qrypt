@@ -35,8 +35,8 @@ func FuzzParseSizeAndDuration(f *testing.F) {
 			t.Fatalf("ParseDuration(%q) = %v, want non-negative", s, d)
 		}
 		// ParseMaxSize must never panic and never return negative.
-		if max := config.ParseMaxSize(s); max < 0 {
-			t.Fatalf("ParseMaxSize(%q) = %d, want non-negative", s, max)
+		if parsedMax := config.ParseMaxSize(s); parsedMax < 0 {
+			t.Fatalf("ParseMaxSize(%q) = %d, want non-negative", s, parsedMax)
 		}
 	})
 }
