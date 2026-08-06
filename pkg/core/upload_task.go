@@ -245,9 +245,7 @@ func (c *Core) waitUploadTaskForPath(ctx context.Context, remotePath string) (ta
 		item := tasks[0]
 		switch item.State {
 		case task.StateSucceeded:
-			if dismissible, ok := source.(interface {
-				DismissTask(context.Context, string) error
-			}); ok {
+			if dismissible, ok := source.(taskDismisser); ok {
 				_ = dismissible.DismissTask(ctx, item.ID)
 			}
 			return item, true, nil

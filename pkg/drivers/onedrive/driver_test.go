@@ -234,7 +234,7 @@ func (m *mockOneDrive) handleDownload(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusPartialContent)
 		}
 	}
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (m *mockOneDrive) handleUploadSession(w http.ResponseWriter, r *http.Request) {
@@ -360,7 +360,7 @@ func (m *mockOneDrive) itemResp(id string, r *http.Request) map[string]any {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func writeGraphError(w http.ResponseWriter, status int, code, message string) {

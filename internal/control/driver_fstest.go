@@ -133,7 +133,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupVFSPath(ctx, fs, dir, true)
+		_ = cleanupVFSPath(ctx, fs, dir, true)
 		return result
 	}
 
@@ -145,7 +145,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupVFSPath(ctx, fs, dir, true)
+		_ = cleanupVFSPath(ctx, fs, dir, true)
 		return result
 	}
 
@@ -157,7 +157,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupVFSPath(ctx, fs, dir, true)
+		_ = cleanupVFSPath(ctx, fs, dir, true)
 		return result
 	}
 

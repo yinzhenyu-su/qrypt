@@ -39,7 +39,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateTaskJSON(opened.Data, `{"type":"move_remote","items":[{"source_path":"/local/old.txt","dest_path":"/local/new.txt"}]}`, 0)
 	var created struct {
@@ -92,7 +92,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateTaskJSON(opened.Data, `{"type":"delete_batch","items":[{"path":"/local/ok.txt"},{"path":"/local/missing.txt"}]}`, 0)
 	var created struct {
@@ -165,7 +165,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateTaskJSON(opened.Data, `{"type":"delete_batch","items":[{"path":"/local/dir"}],"options":{"recursive":true}}`, 0)
 	var created struct {
@@ -252,7 +252,7 @@ upload_delay = "10ms"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateTaskJSON(opened.Data, `{"type":"upload_batch","items":[{"source_path":`+fmt.Sprintf("%q", local)+`,"dest_path":"/local/uploaded.txt"}]}`, 0)
 	var created struct {
@@ -348,7 +348,7 @@ upload_delay = "10ms"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	createRaw := CreateUploadTaskJSON(opened.Data, `{"items":[{"item_id":"stream","dest_path":"/quark/stream.txt","size":11}]}`, 0)
 	var created struct {
@@ -447,7 +447,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	dest := filepath.Join(tmp, "downloads", "remote.txt")
 	raw := CreateTaskJSON(opened.Data, `{"type":"download","items":[{"source_path":"/local/remote.txt","dest_path":`+fmt.Sprintf("%q", dest)+`}]}`, 0)
@@ -501,7 +501,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	dest := filepath.Join(tmp, "downloads", "dir")
 	raw := CreateTaskJSON(opened.Data, `{"type":"download","items":[{"source_path":"/local/dir","dest_path":`+fmt.Sprintf("%q", dest)+`}],"options":{"recursive":true}}`, 0)
@@ -552,7 +552,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	openRaw := OpenTaskEventsJSON(opened.Data, `{"types":["upload_stream_batch"]}`, 0)
 	var openedEvents struct {
@@ -748,7 +748,7 @@ upload_delay = "10ms"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	localPath := filepath.Join(tmp, "local.txt")
 	if err := os.WriteFile(localPath, []byte("local upload"), 0o644); err != nil {
@@ -822,7 +822,7 @@ upload_delay = "10ms"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	raw := UploadLocalFileJSON(coreID, local, "/quark/uploaded.bin", 5000)
 	var result struct {

@@ -37,7 +37,7 @@ type personalItem struct {
 
 type thumbEntry struct {
 	Style string `json:"style"`
-	Url   string `json:"url"`
+	URL   string `json:"url"`
 }
 
 func personalParseTime(s string) time.Time {
@@ -90,7 +90,7 @@ type createResp struct {
 type downloadResp struct {
 	baseResp
 	Data struct {
-		Url    string `json:"url"`
+		URL    string `json:"url"`
 		CDNURL string `json:"cdnUrl"`
 	} `json:"data"`
 }

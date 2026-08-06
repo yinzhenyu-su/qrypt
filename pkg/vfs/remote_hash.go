@@ -47,9 +47,7 @@ func (v *VFS) EncryptedHash(ctx context.Context, path string, plain io.Reader, p
 	if err != nil {
 		return "", err
 	}
-	encrypter, ok := v.driver.(interface {
-		EncryptedHash(ctx context.Context, entry drive.Entry, plain io.Reader, plainSize int64, algorithm drive.HashAlgorithm) (string, error)
-	})
+	encrypter, ok := v.driver.(drive.EncryptedHashProvider)
 	if !ok {
 		return "", drive.ErrUnsupported
 	}

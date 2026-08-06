@@ -37,7 +37,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateDownloadTaskJSON(opened.Data, `{"items":[{"item_id":"one","source_path":"/local/stream.txt"}]}`, 0)
 	var created struct {
@@ -133,7 +133,7 @@ upload_delay = "10ms"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateUploadTaskJSON(opened.Data, `{"items":[{"item_id":"one","dest_path":"/quark/upload.txt","size":13}]}`, 0)
 	var created struct {
@@ -271,7 +271,7 @@ root_path = "`+remote+`"
 	if !opened.OK {
 		t.Fatalf("OpenJSON = %+v, want ok", opened)
 	}
-	defer closeCore(opened.Data)
+	defer func() { _ = closeCore(opened.Data) }()
 
 	raw := CreateUploadTaskJSON(opened.Data, `{"items":[{"item_id":"one","dest_path":"/quark/cancel.txt","size":7}]}`, 0)
 	var created struct {

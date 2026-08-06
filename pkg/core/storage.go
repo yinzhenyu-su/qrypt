@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type StorageUsage struct {
@@ -117,9 +119,7 @@ func (c *Core) ClearReadCache(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	clearer, ok := c.fs.(interface {
-		ClearReadCache() error
-	})
+	clearer, ok := c.fs.(vfs.ReadCacheCleaner)
 	if !ok {
 		return fmt.Errorf("core: read cache clear unavailable")
 	}

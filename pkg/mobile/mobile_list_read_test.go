@@ -35,7 +35,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var listed struct {
 		OK   bool    `json:"ok"`
@@ -124,7 +124,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var openedFile struct {
 		OK   bool   `json:"ok"`
@@ -185,7 +185,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	raw := OpenVirtualFileJSON(coreID, "/quark/video.bin", "passthrough", 0)
 	var opened struct {
@@ -238,7 +238,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var page1 struct {
 		OK   bool `json:"ok"`
@@ -318,7 +318,7 @@ root_path = "`+remote+`"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeCore(coreID)
+	defer func() { _ = closeCore(coreID) }()
 
 	var opened struct {
 		OK   bool   `json:"ok"`

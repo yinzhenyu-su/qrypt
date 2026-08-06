@@ -117,9 +117,7 @@ func commandWaitTimeout(cmd *cobra.Command) time.Duration {
 }
 
 func fileSystemActivity(fs vfs.FileSystem) (uploads, deleteTimers int) {
-	snapshotter, ok := fs.(interface {
-		DebugSnapshot() vfs.DebugSnapshot
-	})
+	snapshotter, ok := fs.(vfs.DebugSnapshotProvider)
 	if !ok {
 		return 0, 0
 	}

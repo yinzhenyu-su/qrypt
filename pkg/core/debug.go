@@ -12,9 +12,7 @@ func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {
 	if c == nil || c.fs == nil {
 		return "", fmt.Errorf("core: closed")
 	}
-	snapshotter, ok := c.fs.(interface {
-		DebugSnapshot() vfs.DebugSnapshot
-	})
+	snapshotter, ok := c.fs.(vfs.DebugSnapshotProvider)
 	if !ok {
 		return "", fmt.Errorf("core: debug snapshot unavailable")
 	}
@@ -25,9 +23,7 @@ func (c *Core) FlushReadCache() error {
 	if c == nil || c.fs == nil {
 		return fmt.Errorf("core: closed")
 	}
-	flusher, ok := c.fs.(interface {
-		FlushReadCache() error
-	})
+	flusher, ok := c.fs.(vfs.ReadCacheFlusher)
 	if !ok {
 		return fmt.Errorf("core: read cache flush unavailable")
 	}

@@ -333,9 +333,7 @@ func (a *adapter) effectiveStatfs() StatfsOptions {
 }
 
 func (a *adapter) autoStatfsSpace() (drive.Space, bool) {
-	querier, ok := a.fs.(interface {
-		Space(context.Context) (drive.Space, error)
-	})
+	querier, ok := a.fs.(vfs.SpaceProvider)
 	if !ok {
 		return drive.Space{}, false
 	}

@@ -260,12 +260,12 @@ func (s staticSource) ListTasks(context.Context, Filter) ([]Task, error) {
 	return append([]Task(nil), s.tasks...), nil
 }
 
-func readTaskEvents(t *testing.T, sub *Subscription, min int) []Event {
+func readTaskEvents(t *testing.T, sub *Subscription, minEvents int) []Event {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var out []Event
-	for len(out) < min {
+	for len(out) < minEvents {
 		events, err := sub.Read(ctx)
 		if err != nil {
 			t.Fatal(err)

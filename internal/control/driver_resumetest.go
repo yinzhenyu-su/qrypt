@@ -82,7 +82,7 @@ func RunVFSResumeTest(ctx context.Context, fs vfs.FileSystem, mount string, size
 	if err != nil {
 		return result
 	}
-	defer cleanupVFSPath(context.WithoutCancel(ctx), fs, dir, true)
+	defer func() { _ = cleanupVFSPath(context.WithoutCancel(ctx), fs, dir, true) }()
 
 	step = fsStep("write")
 	step.Input = map[string]any{"path": file, "bytes": size}
@@ -94,7 +94,7 @@ func RunVFSResumeTest(ctx context.Context, fs vfs.FileSystem, mount string, size
 	if err != nil {
 		return result
 	}
-	defer cleanupVFSPath(context.WithoutCancel(ctx), fs, file, false)
+	defer func() { _ = cleanupVFSPath(context.WithoutCancel(ctx), fs, file, false) }()
 
 	step = fsStep("inject_cancel")
 	start = time.Now()

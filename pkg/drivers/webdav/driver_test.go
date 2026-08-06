@@ -108,7 +108,7 @@ func (s *testWebDAV) handlePropfind(w http.ResponseWriter, r *http.Request, p st
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
 	enc := xml.NewEncoder(w)
-	enc.Encode(multistatus{Responses: responses})
+	_ = enc.Encode(multistatus{Responses: responses})
 }
 
 func (s *testWebDAV) makeResponse(p string, f *testFile) propfindResponse {
@@ -169,7 +169,7 @@ func (s *testWebDAV) handleGet(w http.ResponseWriter, r *http.Request, p string)
 
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	w.WriteHeader(status)
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (s *testWebDAV) handlePut(w http.ResponseWriter, r *http.Request, p string) {

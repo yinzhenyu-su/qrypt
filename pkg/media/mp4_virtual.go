@@ -93,8 +93,8 @@ func (v *MP4FastStartVirtualFile) ReadAt(ctx context.Context, offset int64, leng
 	if length == 0 || offset >= v.size {
 		return []byte{}, nil
 	}
-	if max := v.size - offset; int64(length) > max {
-		length = int(max)
+	if maxLen := v.size - offset; int64(length) > maxLen {
+		length = int(maxLen)
 	}
 
 	out := make([]byte, length)
@@ -112,8 +112,8 @@ func (v *MP4FastStartVirtualFile) ReadAtInto(ctx context.Context, offset int64, 
 	if len(dst) == 0 || offset >= v.size {
 		return 0, nil
 	}
-	if max := v.size - offset; int64(len(dst)) > max {
-		dst = dst[:max]
+	if maxLen := v.size - offset; int64(len(dst)) > maxLen {
+		dst = dst[:maxLen]
 	}
 
 	cursor := offset
@@ -155,8 +155,8 @@ func (v *MP4FastStartVirtualFile) ReadMappings(offset int64, length int) []Virtu
 	if offset < 0 || length <= 0 || offset >= v.size {
 		return nil
 	}
-	if max := v.size - offset; int64(length) > max {
-		length = int(max)
+	if maxLen := v.size - offset; int64(length) > maxLen {
+		length = int(maxLen)
 	}
 
 	var mappings []VirtualReadMapping

@@ -397,7 +397,7 @@ func (d *Driver) getDownloadURL(ctx context.Context, fileID string) (string, err
 	if resp.Data.CDNURL != "" {
 		return resp.Data.CDNURL, nil
 	}
-	return resp.Data.Url, nil
+	return resp.Data.URL, nil
 }
 
 func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {

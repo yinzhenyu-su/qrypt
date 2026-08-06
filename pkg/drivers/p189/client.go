@@ -344,9 +344,9 @@ func (c *client) loginWithPassword(ctx context.Context) error {
 			AppKey      string `json:"appKey"`
 			ClientType  int    `json:"clientType"`
 			IsOauth2    bool   `json:"isOauth2"`
-			ReturnUrl   string `json:"returnUrl"`
+			ReturnURL   string `json:"returnUrl"`
 			MailSuffix  string `json:"mailSuffix"`
-			ParamId     string `json:"paramId"`
+			ParamID     string `json:"paramId"`
 		} `json:"data"`
 	}
 	err = c.doPostWithHeaders(ctx, "https://open.e.189.cn/api/logbox/oauth2/appConf.do", loginHeaders, map[string]string{
@@ -397,14 +397,14 @@ func (c *client) loginWithPassword(ctx context.Context) error {
 		"validateCode":    "",
 		"smsValidateCode": "",
 		"captchaToken":    "",
-		"returnUrl":       appConf.Data.ReturnUrl,
+		"returnUrl":       appConf.Data.ReturnURL,
 		"mailSuffix":      appConf.Data.MailSuffix,
 		"dynamicCheck":    "FALSE",
 		"clientType":      strconv.Itoa(appConf.Data.ClientType),
 		"cb_SaveName":     "3",
 		"isOauth2":        strconv.FormatBool(appConf.Data.IsOauth2),
 		"state":           "",
-		"paramId":         appConf.Data.ParamId,
+		"paramId":         appConf.Data.ParamID,
 	}, &loginResp)
 	if err != nil {
 		return fmt.Errorf("189: login submit: %w", err)
@@ -1051,7 +1051,7 @@ func (c *client) listFiles(ctx context.Context, folderID int64) (folders []Folde
 		}
 		return nil
 	})
-	return
+	return folders, files, err
 }
 
 func parseListFilesBody(body []byte) ([]Folder, []File, int, error) {
@@ -1109,7 +1109,7 @@ func (c *client) getDownloadURL(ctx context.Context, fileID int64) (downloadURL 
 		downloadURL = resp.FileDownloadURL
 		return nil
 	})
-	return
+	return downloadURL, err
 }
 
 func (c *client) createFolder(ctx context.Context, parentID int64, name string) (id int64, err error) {
