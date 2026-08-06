@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 	"io"
 	"math/rand"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,16 +61,6 @@ type client struct {
 }
 
 type p189TraceRequestFieldsKey struct{}
-
-var sensitiveSnippetPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(sessionKey=)[^,\s"']+`),
-	regexp.MustCompile(`(?i)("sessionKey"\s*:\s*")[^"]+`),
-	regexp.MustCompile(`(?i)("downloadUrl"\s*:\s*")[^"]+`),
-	regexp.MustCompile(`(?i)("fileDownloadUrl"\s*:\s*")[^"]+`),
-	regexp.MustCompile(`(?i)("requestURL"\s*:\s*")[^"]+`),
-	regexp.MustCompile(`(?i)(Cookie:\s*)[^,\s"']+`),
-	regexp.MustCompile(`(?i)(token=)[^&\s"']+`),
-}
 
 func newClient(cookie, username, password string) *client {
 	jar, _ := cookiejar.New(nil)
@@ -582,9 +572,9 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		err := fmt.Errorf("189: upload request %s: %s body=%q", uri, resp.Status, responseSnippet(raw))
+		err := fmt.Errorf("189: upload request %s: %s body=%q", uri, resp.Status, util.Snippet(raw))
 		if nonRetryableUploadError(resp.StatusCode, raw) {
 			err = drive.NonRetryable(err)
 		}
@@ -614,18 +604,6 @@ func nonRetryableUploadError(status int, body []byte) bool {
 	s := string(body)
 	return strings.Contains(s, "SliceMd5DoesNotMatch") ||
 		strings.Contains(s, "InvalidPartSize")
-}
-
-func responseSnippet(raw []byte) string {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) > 300 {
-		raw = raw[:300]
-	}
-	snippet := string(raw)
-	for _, pattern := range sensitiveSnippetPatterns {
-		snippet = pattern.ReplaceAllString(snippet, "${1}<masked>")
-	}
-	return snippet
 }
 
 func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string) ([]byte, error) {
@@ -669,9 +647,9 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(query),
-			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
+		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, util.Snippet([]byte(req.URL.String())), resp.Status, util.Snippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
 	event := drive.MetricEvent{
@@ -740,7 +718,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
 		return fmt.Errorf("189: %s: %s", u, resp.Status)
 	}
@@ -836,9 +814,9 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
+		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, util.Snippet([]byte(req.URL.String())), resp.Status, util.Snippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -901,9 +879,9 @@ func (c *client) doReq(req *http.Request, result any) error {
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   request,
-			Response:  map[string]any{"body_snippet": responseSnippet(raw)},
+			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, req.URL, resp.Status, responseSnippet(raw))
+		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, util.Snippet([]byte(req.URL.String())), resp.Status, util.Snippet(raw))
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -932,7 +910,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 	}
 	if result != nil {
 		if err := json.Unmarshal(raw, result); err != nil {
-			return fmt.Errorf("189: decode response from %s: %w (body: %s)", req.URL, err, string(raw[:min(len(raw), 200)]))
+			return fmt.Errorf("189: decode response from %s: %w (body: %s)", util.Snippet([]byte(req.URL.String())), err, util.Snippet(raw))
 		}
 	}
 	return nil

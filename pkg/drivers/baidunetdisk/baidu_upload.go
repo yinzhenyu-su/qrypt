@@ -191,7 +191,7 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("baidu_netdisk: upload part %d status %d: %s", partSeq, resp.StatusCode, string(data))
+		err := fmt.Errorf("baidu_netdisk: upload part %d status %d: %s", partSeq, resp.StatusCode, util.Snippet(data))
 		if uploadIDExpiredResponse(data) {
 			return errBaiduUploadIDExpired
 		}
