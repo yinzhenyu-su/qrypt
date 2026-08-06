@@ -2,6 +2,7 @@ package vfs_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,16 +112,78 @@ func TestNamespaceStartPropagatesLifecycle(t *testing.T) {
 	stopVFS(t, mounts[1].FS)
 }
 
-// TestLifecycleStartAfterNewWithPendingRecovery: Resume is part of Start;
-// a pending upload present before Start must be scheduled exactly once, and
-// cancelling must not panic. This guards the resume-once property of Start
-// against double invocation.
+// TestLifecycleStartResumeOnce: a pending upload persisted before Start must
+// be resumed exactly once, even when Start is invoked twice. First, write
+// and flush through an unstarted VFS so a frozen pending upload lands in the
+// journal; then open a fresh VFS over the same storage, Start it twice and
+// verify the fake driver sees exactly one PutSource.
 func TestLifecycleStartResumeOnce(t *testing.T) {
+	cache := t.TempDir()
+
+	// Generation 1: persist a frozen pending upload without starting workers.
+	first, err := vfs.New(drive.NewFakeDriver(), vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := first.Create(ctx, "/resume.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.WriteAt(ctx, "/resume.txt", []byte("resume me"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Flush(ctx, "/resume.txt"); err != nil {
+		t.Fatal(err)
+	}
+	stopVFS(t, first)
+
+	// Generation 2: the same storage dir resumes the frozen pending.
+	driver := drive.NewFakeDriver()
+	second, err := vfs.New(driver, vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	second.Start(sctx)
+	second.Start(sctx) // must not resume the pending a second time
+	waitNoPending(t, second)
+
+	puts := 0
+	for _, call := range driver.FakeCalls() {
+		if strings.HasPrefix(call, "PutSource:") {
+			puts++
+		}
+	}
+	if puts != 1 {
+		t.Fatalf("uploaded %d time(s), want exactly 1", puts)
+	}
+	stopVFS(t, second)
+}
+
+// TestStartContextOwnership: the first context passed to Start owns the VFS
+// lifecycle. A second Start is a no-op, so cancelling the second context must
+// not stop the workers the first context started. If the second Start ever
+// replaced the lifecycle, the upload below would never drain.
+func TestStartContextOwnership(t *testing.T) {
 	fs := newLifecycleVFS(t)
-	// Seed a pending upload state before Start.
-	ctx, cancel := context.WithCancel(context.Background())
-	fs.Start(ctx)
-	fs.Start(ctx) // double Start must not double-resume
-	cancel()
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	fs.Start(ctx1)
+	fs.Start(ctx2) // ignored; ctx1 owns the lifecycle
+	cancel2()      // must not stop workers started under ctx1
+
+	if err := fs.Create(ctx1, "/alive.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx1, "/alive.txt", []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx1, "/alive.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs) // drains only if the ctx1 workers are still running
+
+	cancel1()
 	stopVFS(t, fs)
 }

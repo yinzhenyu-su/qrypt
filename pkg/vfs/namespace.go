@@ -40,6 +40,11 @@ type Writer interface {
 // Lifecycle starts a filesystem's background workers. It is intentionally
 // separate from FileSystem: constructing a filesystem (New/NewNamespace)
 // does not run anything, and read-only consumers never need to start one.
+//
+// Ownership: the first context passed to Start owns the filesystem's
+// lifecycle; later calls are no-ops and the instance stops when that
+// context is cancelled. A cancelled instance is not restartable - build a
+// new one.
 type Lifecycle interface {
 	Start(ctx context.Context)
 }
