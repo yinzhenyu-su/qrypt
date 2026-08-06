@@ -83,7 +83,7 @@ jobs:
           echo "mount server did not start:"; cat /tmp/qrypt-mount.log
           exit 1
 
-      - name: Contract suite: ${{ matrix.mount }}
+      - name: "Contract suite: ${{ matrix.mount }}"
         timeout-minutes: 30
         run: |
           /tmp/qrypt debug test contract --socket /tmp/qrypt.sock --mount "${{ matrix.mount }}"
