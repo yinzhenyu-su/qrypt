@@ -30,7 +30,7 @@ func stopTestVFS(t testing.TB, fs vfs.FileSystem) {
 // newTestCore builds a Core over a filesystem and registers cleanup that
 // closes it, so the lazily-created task manager (whose runner goroutines
 // derive from the manager context, not the caller's) always shuts down.
-func newTestCore(t *testing.T, fs coreFileSystem) *Core {
+func newTestCore(t *testing.T, fs BuiltFileSystem) *Core {
 	t.Helper()
 	c := &Core{fs: fs}
 	t.Cleanup(func() {
