@@ -217,7 +217,7 @@ func writeRandomVFSFile(ctx context.Context, fs vfs.FileSystem, path string, siz
 	return nil
 }
 
-func waitVFSUploadCanceled(ctx context.Context, fs vfs.FileSystem, mount, path string, timeout time.Duration, timeline *[]FSPendingSample) error {
+func waitVFSUploadCanceled(ctx context.Context, fs any, mount, path string, timeout time.Duration, timeline *[]FSPendingSample) error {
 	start := time.Now()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -243,7 +243,7 @@ func waitVFSUploadCanceled(ctx context.Context, fs vfs.FileSystem, mount, path s
 	}
 }
 
-func uploadCanceled(fs vfs.FileSystem, mount, path string) bool {
+func uploadCanceled(fs any, mount, path string) bool {
 	snapshotter, ok := fs.(vfsDebugSnapshotter)
 	if !ok {
 		for _, pending := range pendingFiles(fs) {
@@ -272,7 +272,7 @@ func uploadCanceled(fs vfs.FileSystem, mount, path string) bool {
 	return false
 }
 
-func resumeOutcome(fs vfs.FileSystem, mount, path string) string {
+func resumeOutcome(fs any, mount, path string) string {
 	snapshotter, ok := fs.(vfsDebugSnapshotter)
 	if !ok {
 		return "completed"
