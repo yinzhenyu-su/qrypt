@@ -395,7 +395,10 @@ func ParseSize(value string) (int64, error) {
 	}
 
 	number, err := strconv.ParseFloat(strings.TrimSpace(upper), 64)
-	if err != nil || number < 0 {
+	if err != nil || number < 0 || math.IsNaN(number) {
+		// ParseFloat accepts "NaN", which slips past the number < 0 check
+		// (NaN compares false) and turns int64(NaN) into an unspecified
+		// value at the call site.
 		return 0, fmt.Errorf("size must be a non-negative number with optional K/M/G/T/P suffix")
 	}
 	bytes := number * float64(multiplier)
