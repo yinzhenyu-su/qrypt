@@ -11,7 +11,7 @@ import (
 )
 
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha1Hex string) string {
-	return uploadsession.UploadSessionKey(parentID, name, size, sha1Hex)
+	return uploadsession.Key(parentID, name, size, sha1Hex)
 }
 
 func (d *Driver) loadUploadSession(key string) (aliyunUploadSession, bool) {
@@ -34,8 +34,8 @@ func (d *Driver) pruneStoredUploadSessions() {
 	d.uploadSessionStore().Prune()
 }
 
-func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[aliyunUploadSession] {
-	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[aliyunUploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.Store[aliyunUploadSession] {
+	return uploadsession.NewStore(uploadsession.StoreOptions[aliyunUploadSession]{
 		Store:      d.stateStore,
 		File:       aliyunUploadSessionStateFile,
 		MaxAge:     aliyunUploadSessionMaxAge,

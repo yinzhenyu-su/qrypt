@@ -165,7 +165,7 @@ func (d *Driver) uploadMultipart(ctx context.Context, parentID, name string, siz
 	if params == nil || params.Bucket == "" || params.Object == "" {
 		return drive.NonRetryable(fmt.Errorf("115: upload oss params missing bucket or object"))
 	}
-	sessionKey := uploadsession.UploadSessionKey(parentID, name, size, strings.ToUpper(sha1Hex))
+	sessionKey := uploadsession.Key(parentID, name, size, strings.ToUpper(sha1Hex))
 	session, resumed := d.loadUploadSession(sessionKey)
 	if resumed {
 		logging.L.InfofEvery("115.upload_resume", time.Second, "[115] upload resume name=%q upload_id=%q completed_parts=%d", name, session.UploadID, len(session.Parts))

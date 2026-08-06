@@ -39,7 +39,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sessionKey := uploadsession.UploadSessionKey(parentPath, name, size, contentMD5, sliceMD5)
+	sessionKey := uploadsession.Key(parentPath, name, size, contentMD5, sliceMD5)
 	session, resumedSession := d.loadUploadSession(sessionKey)
 	uploadID := session.UploadID
 	partsToUpload := append([]int(nil), session.BlockList...)

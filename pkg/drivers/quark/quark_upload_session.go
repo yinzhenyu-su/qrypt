@@ -14,7 +14,7 @@ import (
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, hashData map[string]any) string {
 	md5Hex, _ := hashData["md5"].(string)
 	sha1Hex, _ := hashData["sha1"].(string)
-	return uploadsession.UploadSessionKey(parentID, name, size, md5Hex, sha1Hex)
+	return uploadsession.Key(parentID, name, size, md5Hex, sha1Hex)
 }
 
 func (d *Driver) loadUploadSession(key string) (quarkUploadSession, bool) {
@@ -40,8 +40,8 @@ func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (
 	return state, changed
 }
 
-func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[quarkUploadSession] {
-	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[quarkUploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.Store[quarkUploadSession] {
+	return uploadsession.NewStore(uploadsession.StoreOptions[quarkUploadSession]{
 		Store:      d.stateStore,
 		File:       quarkUploadSessionStateFile,
 		MaxAge:     quarkUploadSessionMaxAge,

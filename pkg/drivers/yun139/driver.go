@@ -222,7 +222,7 @@ func (d *Driver) getLastError() string {
 }
 
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha256Hex string) string {
-	return uploadsession.UploadSessionKey(parentID, name, size, sha256Hex)
+	return uploadsession.Key(parentID, name, size, sha256Hex)
 }
 
 func (d *Driver) loadUploadSession(key string) (yun139UploadSession, bool) {
@@ -245,8 +245,8 @@ func (d *Driver) pruneStoredUploadSessions() {
 	d.uploadSessionStore().Prune()
 }
 
-func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[yun139UploadSession] {
-	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[yun139UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.Store[yun139UploadSession] {
+	return uploadsession.NewStore(uploadsession.StoreOptions[yun139UploadSession]{
 		Store:      d.stateStore,
 		File:       uploadSessionStateFile,
 		MaxAge:     uploadSessionMaxAge,

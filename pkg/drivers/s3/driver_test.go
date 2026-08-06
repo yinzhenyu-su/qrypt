@@ -887,7 +887,7 @@ func TestPutSourceMultipartResumesCompletedPart(t *testing.T) {
 		t.Fatal("expected first upload to fail")
 	}
 
-	sessionKey := uploadsession.UploadSessionKey(d.bucket, "resume.bin", int64(len(content)))
+	sessionKey := uploadsession.Key(d.bucket, "resume.bin", int64(len(content)))
 	session, ok := d.loadUploadSession(sessionKey)
 	if !ok {
 		t.Fatal("expected saved upload session after first part")

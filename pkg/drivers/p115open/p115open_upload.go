@@ -224,7 +224,7 @@ func (d *Driver) ossCallbackOptions(initResp *sdk.UploadInitResp, bodyBytes *[]b
 
 func (d *Driver) uploadMultipart(ctx context.Context, parentID, name string, size int64, sha1Hex string, initResp *sdk.UploadInitResp, bucket *oss.Bucket, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
 	callback, callbackVar := d.callbackOf(initResp)
-	sessionKey := uploadsession.UploadSessionKey(parentID, name, size, strings.ToUpper(sha1Hex))
+	sessionKey := uploadsession.Key(parentID, name, size, strings.ToUpper(sha1Hex))
 	session, resumed := d.loadUploadSession(sessionKey)
 	if resumed {
 		logging.L.InfofEvery("115_open.upload_resume", time.Second, "[115_open] upload resume name=%q upload_id=%q completed_parts=%d", name, session.UploadID, len(session.Parts))

@@ -526,7 +526,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 }
 
 func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key string, size int64, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
-	sessionKey := uploadsession.UploadSessionKey(d.bucket, key, size)
+	sessionKey := uploadsession.Key(d.bucket, key, size)
 	session, resumedSession := d.loadUploadSession(sessionKey)
 	if !resumedSession {
 		start := time.Now()
@@ -791,8 +791,8 @@ func (d *Driver) pruneStoredUploadSessions() {
 	d.uploadSessionStore().Prune()
 }
 
-func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[s3UploadSession] {
-	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[s3UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.Store[s3UploadSession] {
+	return uploadsession.NewStore(uploadsession.StoreOptions[s3UploadSession]{
 		Store:      d.stateStore,
 		File:       s3UploadSessionStateFile,
 		MaxAge:     s3UploadSessionMaxAge,
