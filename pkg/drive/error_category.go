@@ -56,6 +56,12 @@ func ErrorCategory(err error) string {
 		return ErrorCategoryTimeout
 	case errors.Is(err, ErrUnsupported), errors.Is(err, ErrSpaceUnsupported):
 		return ErrorCategoryUnsupported
+	case errors.Is(err, ErrAuth):
+		return ErrorCategoryAuth
+	case errors.Is(err, ErrRateLimit):
+		return ErrorCategoryRateLimit
+	case errors.Is(err, ErrInvalidInput):
+		return ErrorCategoryInvalidRequest
 	case isNetTimeout(err):
 		return ErrorCategoryTimeout
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, os.ErrNotExist):
@@ -84,7 +90,7 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryTimeout
 	case containsAny(msg, "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "no such host", "software caused connection abort", "eof"):
 		return ErrorCategoryNetwork
-	case containsAny(msg, "unauthorized", "invalid token", "token expired", "token refresh", "login", "credential", "authorization", "401", "cookie"):
+	case containsAny(msg, "unauthorized", "invalid token", "token expired", "token refresh", "login", "credential", "authorization", "401", "cookie", "authentication required"):
 		return ErrorCategoryAuth
 	case containsAny(msg, "forbidden", "permission denied", "access denied", "not permitted", "insufficient permission", "403"):
 		return ErrorCategoryPermission
@@ -94,7 +100,7 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryNotFound
 	case containsAny(msg, "already exists", "conflict", "409"):
 		return ErrorCategoryConflict
-	case containsAny(msg, "bad request", "invalid parameter", "invalid request", "malformed", "400"):
+	case containsAny(msg, "bad request", "invalid parameter", "invalid request", "malformed", "400", "invalid input"):
 		return ErrorCategoryInvalidRequest
 	case containsAny(msg, "unsupported", "not supported", "does not support", "not implemented"):
 		return ErrorCategoryUnsupported

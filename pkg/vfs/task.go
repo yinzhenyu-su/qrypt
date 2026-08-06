@@ -3,6 +3,7 @@ package vfs
 import (
 	"context"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"sort"
 	"time"
@@ -303,7 +304,14 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 		Persistent:  true,
 	}
 	if upload.lastError != "" {
-		item.Error = &task.Error{Message: upload.lastError, Retryable: item.Capabilities.Retryable}
+		// Code carries the stable error category (auth, not_found, ...) so
+		// clients can branch without parsing Message text; Message keeps the
+		// full diagnostic detail for humans.
+		item.Error = &task.Error{
+			Code:      drive.ErrorCategoryMessage(upload.lastError),
+			Message:   upload.lastError,
+			Retryable: item.Capabilities.Retryable,
+		}
 	}
 	if !item.UpdatedAt.IsZero() {
 		item.Version = uint64(item.UpdatedAt.UnixNano())

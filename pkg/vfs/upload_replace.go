@@ -92,13 +92,13 @@ func uploadReplacementEntry(upload UploadReplacement) drive.Entry {
 }
 func validateUploadedEntry(entry drive.Entry, name string, size int64) error {
 	if entry.ID == "" {
-		return fmt.Errorf("vfs: upload returned empty entry id")
+		return fmt.Errorf("%w: vfs: upload returned empty entry id", drive.ErrInvalidInput)
 	}
 	if entry.Size != size {
-		return fmt.Errorf("vfs: upload returned size %d, expected %d", entry.Size, size)
+		return fmt.Errorf("%w: vfs: upload returned size %d, expected %d", drive.ErrInvalidInput, entry.Size, size)
 	}
 	if entry.Name != "" && entry.Name != name {
-		return fmt.Errorf("vfs: upload returned name %q, expected %q", entry.Name, name)
+		return fmt.Errorf("%w: vfs: upload returned name %q, expected %q", drive.ErrInvalidInput, entry.Name, name)
 	}
 	return nil
 }

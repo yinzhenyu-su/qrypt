@@ -1072,3 +1072,18 @@ func TestLoadAuthStateStateWinsForLegacyState(t *testing.T) {
 		t.Fatalf("authorization = %q, want legacy state auth", got)
 	}
 }
+
+func TestIsAuthExpiredErrorPrefersSentinel(t *testing.T) {
+	// Stable sentinel wins even when the message text carries no keywords.
+	wrapped := fmt.Errorf("yun139: list auth failed: %w: unexpected payload", drive.ErrAuth)
+	if !isAuthExpiredError(wrapped) {
+		t.Errorf("isAuthExpiredError(%v) = false, want true for drive.ErrAuth", wrapped)
+	}
+	// Legacy text fallback still works for persisted/plain errors.
+	if !isAuthExpiredError(fmt.Errorf("yun139: token expired")) {
+		t.Error("isAuthExpiredError(token expired) = false, want true")
+	}
+	if isAuthExpiredError(fmt.Errorf("yun139: network timeout")) {
+		t.Error("isAuthExpiredError(network timeout) = true, want false")
+	}
+}
