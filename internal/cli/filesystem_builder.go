@@ -5,10 +5,9 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/pkg/core"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-func buildFileSystem(ctx context.Context, configPath string) (vfs.FileSystem, func(), error) {
+func buildFileSystem(ctx context.Context, configPath string) (builtFS, func(), error) {
 	if configPath == "" {
 		return nil, nil, configNotFoundError()
 	}
@@ -19,21 +18,21 @@ func buildFileSystem(ctx context.Context, configPath string) (vfs.FileSystem, fu
 	return buildFileSystemFromConfig(ctx, cfg)
 }
 
-func buildFileSystemFromConfig(ctx context.Context, cfg *config.Config) (vfs.FileSystem, func(), error) {
+func buildFileSystemFromConfig(ctx context.Context, cfg *config.Config) (builtFS, func(), error) {
 	return buildFileSystemFromConfigMount(ctx, cfg, "")
 }
 
-func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mountName string) (vfs.FileSystem, func(), error) {
+func buildFileSystemFromConfigMount(ctx context.Context, cfg *config.Config, mountName string) (builtFS, func(), error) {
 	return buildFileSystemFromConfigMountMode(ctx, cfg, mountName, false)
 }
 
-func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool) (vfs.FileSystem, func(), error) {
+func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool) (builtFS, func(), error) {
 	return buildFileSystemWithBandwidth(ctx, cfg, mountName, forceNamespace, nil)
 }
 
 // buildFileSystemWithBandwidth builds a filesystem with an optional CLI
 // bandwidth override (nil means use the config [bandwidth] section).
-func buildFileSystemWithBandwidth(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool, bandwidth *config.BandwidthLimits) (vfs.FileSystem, func(), error) {
+func buildFileSystemWithBandwidth(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool, bandwidth *config.BandwidthLimits) (builtFS, func(), error) {
 	return core.BuildFileSystem(ctx, cfg, core.Options{
 		MountName:      mountName,
 		ForceNamespace: forceNamespace,

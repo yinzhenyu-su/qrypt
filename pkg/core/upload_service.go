@@ -36,11 +36,18 @@ type UploadBackend interface {
 	MountForPath(path string) string
 }
 
-type VFSUploadBackend struct {
-	fs vfs.FileSystem
+// vfsBackendFS is the surface VFSUploadBackend needs: full file operations
+// plus cache refresh so the upload path invalidates listings it touched.
+type vfsBackendFS interface {
+	vfs.FileSystem
+	vfs.PathRefresher
 }
 
-func NewVFSUploadBackend(fs vfs.FileSystem) VFSUploadBackend {
+type VFSUploadBackend struct {
+	fs vfsBackendFS
+}
+
+func NewVFSUploadBackend(fs vfsBackendFS) VFSUploadBackend {
 	return VFSUploadBackend{fs: fs}
 }
 

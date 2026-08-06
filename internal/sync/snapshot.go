@@ -37,7 +37,7 @@ func (s Snapshot) FileCount() int {
 
 // SnapshotVFS lists every entry under root (files and directories), keyed by
 // slash-separated relative path. The root itself is not included.
-func SnapshotVFS(ctx context.Context, fs vfs.FileSystem, root string) (Snapshot, error) {
+func SnapshotVFS(ctx context.Context, fs vfs.Reader, root string) (Snapshot, error) {
 	result := Snapshot{}
 	var walk func(dir, prefix string) error
 	walk = func(dir, prefix string) error {
@@ -103,7 +103,7 @@ func SnapshotLocal(root string) (Snapshot, error) {
 }
 
 // SnapshotTarget snapshots either side of a sync pair.
-func SnapshotTarget(ctx context.Context, fs vfs.FileSystem, target Target) (Snapshot, error) {
+func SnapshotTarget(ctx context.Context, fs vfs.Reader, target Target) (Snapshot, error) {
 	switch target.Kind {
 	case TargetVFS:
 		return SnapshotVFS(ctx, fs, target.VFSPath)

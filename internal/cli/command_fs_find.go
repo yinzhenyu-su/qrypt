@@ -68,7 +68,7 @@ func runFind(cmd *cobra.Command, args []string) error {
 
 // walkFind recursively lists path, collecting entries whose name contains the
 // (lowercased) needle, case-insensitively.
-func walkFind(ctx context.Context, fs vfs.FileSystem, path, needle string, matches *[]fsFindResult) error {
+func walkFind(ctx context.Context, fs vfs.Reader, path, needle string, matches *[]fsFindResult) error {
 	entries, err := fs.List(ctx, path)
 	if err != nil {
 		return err

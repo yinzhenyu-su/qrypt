@@ -31,7 +31,7 @@ type Options struct {
 }
 
 type Core struct {
-	fs                 vfs.FileSystem
+	fs                 coreFileSystem
 	cleanup            func()
 	configPath         string
 	runtimeLayout      RuntimeLayout
@@ -239,7 +239,16 @@ func DriverSchemaJSON(name string) (string, error) {
 	return marshalJSON(DriverSchema(name))
 }
 
-func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (vfs.FileSystem, func(), error) {
+// coreFileSystem is the filesystem surface the service layer needs: full
+// file operations plus lifecycle (Start) and cache-refresh (RefreshPath)
+// control. The builders always return values that provide all three.
+type coreFileSystem interface {
+	vfs.FileSystem
+	vfs.Lifecycle
+	vfs.PathRefresher
+}
+
+func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (coreFileSystem, func(), error) {
 	if err := config.Validate(cfg); err != nil {
 		return nil, nil, err
 	}
@@ -366,7 +375,7 @@ func ensureRuntimeLayout(layout RuntimeLayout) error {
 	return nil
 }
 
-func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, opts Options) (vfs.FileSystem, func(), error) {
+func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, opts Options) (coreFileSystem, func(), error) {
 	var mounts []vfs.Mount
 	var drivers []drive.Driver
 	for _, mountCfg := range cfg.Mounts {

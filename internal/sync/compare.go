@@ -93,7 +93,7 @@ func CompareTrees(ctx context.Context, source, destination Snapshot, opts Compar
 // autoHash controls degradation: with autoHash, a backend that cannot
 // provide hashes counts as a match (size already compared); without it,
 // missing hash support fails loudly (explicit --hash).
-func CompareHashPair(ctx context.Context, fs vfs.FileSystem, a, b Target, rel string, autoHash bool) (bool, string, error) {
+func CompareHashPair(ctx context.Context, fs vfs.Reader, a, b Target, rel string, autoHash bool) (bool, string, error) {
 	degrade := func(err error) (bool, string, error) {
 		if autoHash && errors.Is(err, drive.ErrUnsupported) {
 			return true, "", nil // backend cannot verify content; assume match (size compared)
