@@ -11,6 +11,7 @@ import (
 
 const (
 	ErrorCategoryAuth           = "auth"
+	ErrorCategoryPermission     = "permission"
 	ErrorCategoryRateLimit      = "rate_limit"
 	ErrorCategoryNetwork        = "network"
 	ErrorCategoryTimeout        = "timeout"
@@ -21,9 +22,26 @@ const (
 	ErrorCategoryLocalIO        = "local_io"
 	ErrorCategoryConsistency    = "consistency"
 	ErrorCategoryUnsupported    = "unsupported"
+	ErrorCategoryPersistence    = "persistence"
 	ErrorCategoryCancelled      = "cancelled"
 	ErrorCategoryUnknown        = "unknown"
 )
+
+// RetryableCategory reports whether retrying the operation is likely to
+// succeed. Transient conditions (network, timeouts, rate limiting, 5xx)
+// are retryable; deterministic failures (auth, permission, not found,
+// conflict, invalid input, unsupported, persistence, consistency) are not.
+// This is the single source of truth for JSON retryable flags, upload
+// backoff decisions, and sync/check error handling — never re-derive it
+// from error strings.
+func RetryableCategory(category string) bool {
+	switch category {
+	case ErrorCategoryNetwork, ErrorCategoryTimeout, ErrorCategoryRemote5xx, ErrorCategoryRateLimit:
+		return true
+	default:
+		return false
+	}
+}
 
 // ErrorCategory returns a stable, low-cardinality category for debug and
 // metrics output. It intentionally preserves the original error elsewhere.
@@ -44,6 +62,8 @@ func ErrorCategory(err error) string {
 		return ErrorCategoryNotFound
 	case errors.Is(err, fs.ErrExist), errors.Is(err, os.ErrExist):
 		return ErrorCategoryConflict
+	case errors.Is(err, fs.ErrPermission), errors.Is(err, os.ErrPermission):
+		return ErrorCategoryPermission
 	case isLocalIO(err):
 		return ErrorCategoryLocalIO
 	}
@@ -64,8 +84,10 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryTimeout
 	case containsAny(msg, "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "no such host", "software caused connection abort", "eof"):
 		return ErrorCategoryNetwork
-	case containsAny(msg, "unauthorized", "forbidden", "permission denied", "access denied", "invalid token", "token expired", "login", "credential", "401", "403"):
+	case containsAny(msg, "unauthorized", "invalid token", "token expired", "login", "credential", "401"):
 		return ErrorCategoryAuth
+	case containsAny(msg, "forbidden", "permission denied", "access denied", "not permitted", "insufficient permission", "403"):
+		return ErrorCategoryPermission
 	case containsAny(msg, "rate limit", "too many requests", "quota exceeded", "429"):
 		return ErrorCategoryRateLimit
 	case containsAny(msg, "not found", "no such file", "no such object", "404"):
@@ -82,6 +104,8 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryRemote5xx
 	case containsAny(msg, "input/output error", "disk full", "no space left", "read-only file system"):
 		return ErrorCategoryLocalIO
+	case containsAny(msg, "journal", "pending", "persist", "state save", "staging write"):
+		return ErrorCategoryPersistence
 	default:
 		return ErrorCategoryUnknown
 	}

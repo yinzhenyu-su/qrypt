@@ -1,6 +1,7 @@
 package core
 
 import (
+	"os"
 	"context"
 	"fmt"
 	"testing"
@@ -18,6 +19,8 @@ func TestClassifyError(t *testing.T) {
 		{name: "permission", err: fmt.Errorf("quark: 403 forbidden"), wantCode: ErrorCodePermission},
 		{name: "not found", err: fmt.Errorf("vfs: not found: /x"), wantCode: ErrorCodeNotFound},
 		{name: "rate limit", err: fmt.Errorf("429 too many requests"), wantCode: ErrorCodeRateLimited, retryable: true},
+		{name: "permission category", err: os.ErrPermission, wantCode: ErrorCodePermission},
+		{name: "persistence", err: fmt.Errorf("pending journal write failed"), wantCode: ErrorCodePersistence},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

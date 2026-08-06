@@ -52,6 +52,7 @@ type DriverCopyDirResult struct {
 	DurationMS    int64                   `json:"duration_ms"`
 	Error         string                  `json:"error,omitempty"`
 	ErrorCategory string                  `json:"error_category,omitempty"`
+	Retryable      bool                     `json:"retryable,omitempty"`
 	Entries       []DriverCopyEntryResult `json:"entries,omitempty"`
 }
 
@@ -64,6 +65,7 @@ type DriverCopyEntryResult struct {
 	Bytes         int64     `json:"bytes,omitempty"`
 	Error         string    `json:"error,omitempty"`
 	ErrorCategory string    `json:"error_category,omitempty"`
+	Retryable      bool      `json:"retryable,omitempty"`
 	Started       time.Time `json:"started_at,omitempty"`
 	Finished      time.Time `json:"finished_at,omitempty"`
 	Duration      string    `json:"duration,omitempty"`
@@ -272,19 +274,20 @@ func RunDirectDriverCopyDirToPath(ctx context.Context, fs CopyFileSystem, source
 	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
 		result.Error = err.Error()
 		result.ErrorCategory = drive.ErrorCategory(err)
+		result.Retryable = drive.RetryableCategory(result.ErrorCategory)
 	}
 	return result
 }
 
 func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopySource, srcPath, dstPath string, overwrite bool, result *DriverCopyDirResult) error {
 	if err := mkdirAllRemote(ctx, fs, dstPath); err != nil {
-		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err)})
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
 		return err
 	}
 	result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "ready", SourcePath: srcPath, DestPath: dstPath})
 	entries, err := fs.List(ctx, srcPath)
 	if err != nil {
-		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err)})
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
 		return err
 	}
 	for _, entry := range entries {
@@ -303,7 +306,7 @@ func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopyS
 				continue
 			} else if !vfs.IsNotFound(err) {
 				result.Failed++
-				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err)})
+				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
 				return err
 			}
 		}
@@ -324,6 +327,7 @@ func copyDirRecursive(ctx context.Context, fs CopyFileSystem, source DriverCopyS
 			entryResult.State = "failed"
 			entryResult.Error = firstCopyError(copyResult)
 			entryResult.ErrorCategory = drive.ErrorCategoryMessage(entryResult.Error)
+			entryResult.Retryable = drive.RetryableCategory(entryResult.ErrorCategory)
 			result.recordEntry(entryResult)
 			return fmt.Errorf("%s", entryResult.Error)
 		}
