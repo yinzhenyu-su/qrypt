@@ -7,9 +7,9 @@ import (
 )
 
 // dirPrefetchState tracks the in-flight directory prefetch worker.
-// Owned by the read domain (readState.dirPrefetch); guarded by its own
-// mutex. Lifecycle: created in newReadState, started/stopped with the
-// VFS context.
+// Owned by the listing domain (listingState.dirPrefetch); guarded by its
+// own mutex. Lifecycle: created in newListingState, started/stopped with
+// the VFS context.
 type dirPrefetchState struct {
 	mu       sync.Mutex
 	inFlight map[string]struct{}

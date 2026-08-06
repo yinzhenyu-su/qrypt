@@ -151,11 +151,19 @@ func (r vfsUploadWorkerRuntime) SendUpload(pending PendingUpload) {
 		// Blocking enqueue must also exit on shutdown: the upload workers
 		// return on ctx.Done, and without this select the goroutine would
 		// block on a full queue forever.
-		go func() {
-			select {
-			case r.v.upload.queue <- pending:
-			case <-r.v.done:
-			}
-		}()
+		go r.enqueueBlocking(pending)
+	}
+}
+
+// enqueueBlocking sends pending to the upload queue, blocking until the
+// record is delivered or the VFS shuts down; returns true when delivered.
+// Spawned as a goroutine by SendUpload when the queue is full, and used
+// directly by tests to assert the shutdown semantics of a blocked enqueue.
+func (r vfsUploadWorkerRuntime) enqueueBlocking(pending PendingUpload) bool {
+	select {
+	case r.v.upload.queue <- pending:
+		return true
+	case <-r.v.done:
+		return false
 	}
 }
