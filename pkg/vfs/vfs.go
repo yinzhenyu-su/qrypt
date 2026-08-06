@@ -64,7 +64,8 @@ type VFS struct {
 	// done is closed when the VFS shuts down (context cancel in Start). The
 	// blocking upload-queue enqueue goroutine selects on it so it cannot
 	// leak after the upload workers have exited.
-	done chan struct{}
+	done      chan struct{}
+	startOnce sync.Once
 
 	deleteDelay time.Duration
 
@@ -134,6 +135,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		encrypted:      opts.Encrypted,
 		testEnabled:    opts.TestEnabled,
 		done:           make(chan struct{}),
+		startOnce:      sync.Once{},
 		view:           view,
 		uploadQueue:    make(chan PendingUpload, 128),
 		deleteTasks:    deleteTasks,
@@ -157,21 +159,28 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	return v, nil
 }
 
+// Start launches the upload workers and resumes pending uploads. It is
+// idempotent: the first context passed to Start owns the VFS lifecycle, and
+// later calls are no-ops (they must not start a second set of workers or
+// register a second shutdown hook that would double-close internal
+// channels).
 func (v *VFS) Start(ctx context.Context) {
-	for i := 0; i < v.uploadWorkers; i++ {
-		go v.uploadWorker(ctx)
-	}
-	v.Resume(ctx)
-	// Graceful stop: when the context is cancelled, stop the upload/delete
-	// timers and close the read-cache writer so no background goroutine
-	// outlives the VFS. Upload workers exit on ctx.Done themselves; the
-	// cache writer only exits when its queue is closed, which CloseReadCache
-	// does and waits for.
-	context.AfterFunc(ctx, func() {
-		close(v.done)
-		v.stopDeleteTimers()
-		v.stopUploadTimers()
-		_ = v.CloseReadCache()
+	v.startOnce.Do(func() {
+		for i := 0; i < v.uploadWorkers; i++ {
+			go v.uploadWorker(ctx)
+		}
+		v.Resume(ctx)
+		// Graceful stop: when the context is cancelled, stop the upload/delete
+		// timers and close the read-cache writer so no background goroutine
+		// outlives the VFS. Upload workers exit on ctx.Done themselves; the
+		// cache writer only exits when its queue is closed, which CloseReadCache
+		// does and waits for.
+		context.AfterFunc(ctx, func() {
+			close(v.done)
+			v.stopDeleteTimers()
+			v.stopUploadTimers()
+			_ = v.CloseReadCache()
+		})
 	})
 }
 
