@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -35,6 +36,13 @@ func initLogger(cfg *config.Config) error {
 
 func initTime(ctx context.Context, loaded *config.Config) error {
 	ntpConfig := timeutil.NTPConfig{Enabled: true}
+	// CLI tests assert command behavior, not clock sync; a real NTP query
+	// performs a DNS round trip that Go's resolver does not abort on
+	// context cancel, which flakes the goleak check on slow runner DNS.
+	// QRYPT_TEST_NTP_DISABLED keeps the test suite off the network.
+	if os.Getenv("QRYPT_TEST_NTP_DISABLED") != "" {
+		ntpConfig.Enabled = false
+	}
 	if loaded != nil {
 		ntpConfig.Enabled = loaded.Time.EffectiveNTPEnabled()
 		ntpConfig.Servers = loaded.Time.NTPServers
