@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -15,12 +15,12 @@ import (
 func TestCreateLocalUploadTaskWaitsStableAndUploads(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	remote := t.TempDir()
+	raw := drive.NewFakeDriver()
 	local := filepath.Join(t.TempDir(), "local.txt")
 	if err := os.WriteFile(local, []byte("local upload"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: 10 * time.Millisecond})
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +43,15 @@ func TestCreateLocalUploadTaskWaitsStableAndUploads(t *testing.T) {
 	if item.Type != task.TypeUploadRemote || item.State != task.StateSucceeded {
 		t.Fatalf("task = %+v, want local upload success", item)
 	}
-	if data, err := os.ReadFile(filepath.Join(remote, "uploaded.txt")); err != nil || string(data) != "local upload" {
-		t.Fatalf("remote upload data = %q err=%v", data, err)
+	entries, err := raw.List(context.Background(), "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "uploaded.txt" {
+		t.Fatalf("remote upload entries = %+v, want uploaded.txt", entries)
+	}
+	if entries[0].Size != int64(len("local upload")) {
+		t.Fatalf("remote upload size = %d, want %d", entries[0].Size, len("local upload"))
 	}
 }
 

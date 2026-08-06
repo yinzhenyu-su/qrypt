@@ -33,7 +33,7 @@ func setupCheckTest(t *testing.T) (configPath, remote, local string) {
 		t.Fatal(err)
 	}
 	configPath = filepath.Join(tmp, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n[mounts.upload]\nupload_delay = \"10ms\"\ndelete_delay = \"10ms\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return configPath, remote, local

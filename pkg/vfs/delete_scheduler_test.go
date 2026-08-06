@@ -5,11 +5,10 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 func TestVFSDeleteSchedulerSchedulesAndClearsFailure(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +35,7 @@ func TestVFSDeleteSchedulerSchedulesAndClearsFailure(t *testing.T) {
 }
 
 func TestVFSDeleteSchedulerCancelsChildDeletes(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +66,7 @@ func TestVFSDeleteSchedulerCancelsChildDeletes(t *testing.T) {
 }
 
 func TestVFSDeleteSchedulerStopsAllTimers(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

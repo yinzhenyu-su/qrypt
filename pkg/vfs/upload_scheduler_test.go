@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func TestVFSUploadSchedulerTracksAndCancelsTimers(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestVFSUploadSchedulerTracksAndCancelsTimers(t *testing.T) {
 }
 
 func TestVFSUploadSchedulerReschedulesExistingTimer(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
+	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
