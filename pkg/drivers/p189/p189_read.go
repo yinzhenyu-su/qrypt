@@ -76,7 +76,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		Request:   map[string]any{"offset": offset, "size": size, "range": req.Header.Get("Range")},
 		Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 	})
-	return nil, fmt.Errorf("189: read: %s body=%q", resp.Status, util.Snippet(raw))
+	return nil, util.HTTPError("189: read", nil, resp, raw)
 }
 
 func (d *Driver) resolveDownloadURL(ctx context.Context, rawURL string) (string, error) {

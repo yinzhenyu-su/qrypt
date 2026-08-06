@@ -574,7 +574,7 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 			Request:   traceRequestFields(form),
 			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		err := fmt.Errorf("189: upload request %s: %s body=%q", uri, resp.Status, util.Snippet(raw))
+		err := util.HTTPError("189: upload request "+uri, nil, resp, raw)
 		if nonRetryableUploadError(resp.StatusCode, raw) {
 			err = drive.NonRetryable(err)
 		}
@@ -649,7 +649,7 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 			Request:   traceRequestFields(query),
 			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		return nil, fmt.Errorf("189: %s %s: %s body=%q", req.Method, util.Snippet([]byte(req.URL.String())), resp.Status, util.Snippet(raw))
+		return nil, util.HTTPError("189", req, resp, raw)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	event := drive.MetricEvent{
@@ -816,7 +816,7 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 			Request:   traceRequestFields(form),
 			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, util.Snippet([]byte(req.URL.String())), resp.Status, util.Snippet(raw))
+		return util.HTTPError("189", req, resp, raw)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -881,7 +881,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 			Request:   request,
 			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 		})
-		return fmt.Errorf("189: %s %s: %s body=%q", req.Method, util.Snippet([]byte(req.URL.String())), resp.Status, util.Snippet(raw))
+		return util.HTTPError("189", req, resp, raw)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {

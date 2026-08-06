@@ -101,7 +101,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
 		Response:  map[string]any{"body_snippet": util.Snippet(raw)},
 	})
-	err = fmt.Errorf("115_open: read: %s body=%q", resp.Status, util.Snippet(raw))
+	err = util.HTTPError("115_open: read", nil, resp, raw)
 	d.setLastError(err.Error())
 	return nil, err
 }

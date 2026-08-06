@@ -154,6 +154,9 @@ var sensitiveSnippetPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(Cookie:\s*)[^,\s"']+`),
 	regexp.MustCompile(`(?i)(Authorization:\s*(?:Bearer\s+)?)[^,\s"']+`),
 	regexp.MustCompile(`(?i)(token=)[^&\s"']+`),
+	// URL userinfo (user:password@) - webdav-style endpoints can embed
+	// credentials in the request URL itself.
+	regexp.MustCompile(`(://)[^/@\s]+@`),
 }
 
 func Snippet(raw []byte) string {
