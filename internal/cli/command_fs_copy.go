@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/sync"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -117,15 +118,15 @@ func runFsCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.FileSystem,
 		return err
 	}
 	if entry.IsDir {
-		snap, err := snapshotVFS(ctx, fs, source)
+		snap, err := sync.SnapshotVFS(ctx, fs, source)
 		if err != nil {
 			return err
 		}
-		result.Files = snap.fileCount()
+		result.Files = snap.FileCount()
 		for _, e := range snap {
 			if !e.IsDir {
 				result.Bytes += e.Size
-				result.Entries = append(result.Entries, joinVFS(source, e.RelPath))
+				result.Entries = append(result.Entries, sync.JoinVFS(source, e.RelPath))
 			}
 		}
 		sort.Strings(result.Entries)

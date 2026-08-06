@@ -6,13 +6,16 @@ import (
 	"errors"
 	"io"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/internal/sync"
+
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func setupCheckTest(t *testing.T) (configPath, remote, local string) {
@@ -83,9 +86,9 @@ func TestFsCheckMissingAndExtraJSON(t *testing.T) {
 		t.Fatalf("check differences err = %v, want ExitMismatch(4)", err)
 	}
 	var result struct {
-		OK           bool             `json:"ok"`
-		FilesChecked int              `json:"files_checked"`
-		Differences  []treeDifference `json:"differences"`
+		OK           bool              `json:"ok"`
+		FilesChecked int               `json:"files_checked"`
+		Differences  []sync.Difference `json:"differences"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("check JSON invalid: %v\n%s", err, out)
@@ -178,7 +181,7 @@ func TestFsCheckDirectionFlipsWithArgumentOrder(t *testing.T) {
 		t.Fatal("expected differences")
 	}
 	var result struct {
-		Differences []treeDifference `json:"differences"`
+		Differences []sync.Difference `json:"differences"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("json: %v\n%s", err, out)
@@ -221,7 +224,7 @@ func TestFsCheckDetectsMtimeDifference(t *testing.T) {
 		t.Fatal("mtime difference must fail the check")
 	}
 	var result struct {
-		Differences []treeDifference `json:"differences"`
+		Differences []sync.Difference `json:"differences"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("json: %v\n%s", err, out)
@@ -271,7 +274,7 @@ func TestFsCheckTwoVFSTreesDetectMtimeAndDirection(t *testing.T) {
 		t.Fatal("two-vfs check with differences must fail")
 	}
 	var result struct {
-		Differences []treeDifference `json:"differences"`
+		Differences []sync.Difference `json:"differences"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("json: %v\n%s", err, out)
@@ -325,8 +328,8 @@ func TestFsCheckDetectsTypeConflict(t *testing.T) {
 		t.Fatalf("type conflict err = %v, want ExitMismatch(4)", err)
 	}
 	var result struct {
-		OK          bool             `json:"ok"`
-		Differences []treeDifference `json:"differences"`
+		OK          bool              `json:"ok"`
+		Differences []sync.Difference `json:"differences"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("unmarshal: %v out=%s", err, out)
@@ -352,16 +355,16 @@ func TestCompareVFSHashPairAutoDegrades(t *testing.T) {
 	// A filesystem without RemoteHash support (drive-layer snapshotter).
 	type noHashFS struct{ vfs.FileSystem }
 	fs := noHashFS{}
-	a := checkTarget{kind: targetVFS, vfsPath: "/loc", mountName: "loc"}
-	b := checkTarget{kind: targetLocal, localPath: t.TempDir()}
+	a := sync.Target{Kind: sync.TargetVFS, VFSPath: "/loc", MountName: "loc"}
+	b := sync.Target{Kind: sync.TargetLocal, LocalPath: t.TempDir()}
 
 	// autoHash (sync default): degrade to match, no error.
-	matched, detail, err := compareVFSHashPair(ctx, fs, a, b, "f.txt", true)
+	matched, detail, err := sync.CompareHashPair(ctx, fs, a, b, "f.txt", true)
 	if err != nil || !matched || detail != "" {
 		t.Fatalf("autoHash = (%v, %q, %v), want (true, \"\", nil)", matched, detail, err)
 	}
 	// forced (--hash / fs check): error surfaces.
-	if _, _, err := compareVFSHashPair(ctx, fs, a, b, "f.txt", false); !errors.Is(err, drive.ErrUnsupported) {
+	if _, _, err := sync.CompareHashPair(ctx, fs, a, b, "f.txt", false); !errors.Is(err, drive.ErrUnsupported) {
 		t.Fatalf("forced err = %v, want ErrUnsupported", err)
 	}
 }
@@ -379,18 +382,18 @@ func (errHashFS) RemoteHash(context.Context, string) (drive.HashAlgorithm, strin
 // outage or permission failure never looks like content equality.
 func TestCompareVFSHashPairNetworkErrorNotDegraded(t *testing.T) {
 	ctx := context.Background()
-	vfsSide := checkTarget{kind: targetVFS, vfsPath: "/loc", mountName: "loc"}
-	localSide := checkTarget{kind: targetLocal, localPath: t.TempDir()}
+	vfsSide := sync.Target{Kind: sync.TargetVFS, VFSPath: "/loc", MountName: "loc"}
+	localSide := sync.Target{Kind: sync.TargetLocal, LocalPath: t.TempDir()}
 
 	for name, args := range map[string]struct {
-		a, b     checkTarget
+		a, b     sync.Target
 		autoHash bool
 	}{
 		"vfs-local autoHash": {vfsSide, localSide, true},
 		"vfs-vfs autoHash":   {vfsSide, vfsSide, true},
 		"forced hash":        {vfsSide, localSide, false},
 	} {
-		_, _, err := compareVFSHashPair(ctx, errHashFS{}, args.a, args.b, "f.txt", args.autoHash)
+		_, _, err := sync.CompareHashPair(ctx, errHashFS{}, args.a, args.b, "f.txt", args.autoHash)
 		if err == nil {
 			t.Fatalf("%s: network error was degraded to a match", name)
 		}
@@ -406,7 +409,7 @@ func TestLocalFileHashMD5(t *testing.T) {
 	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := localFileHash(path, drive.HashMD5)
+	got, err := sync.LocalFileHash(path, drive.HashMD5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +464,7 @@ func TestFsCheckCompareMtimeOnlyDetectsMtimeChange(t *testing.T) {
 		t.Fatal("mtime difference must fail the check")
 	}
 	var result struct {
-		Differences []treeDifference `json:"differences"`
+		Differences []sync.Difference `json:"differences"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("json: %v\n%s", err, out)

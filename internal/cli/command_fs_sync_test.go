@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
 	"strings"
 	"testing"
+
+	"github.com/yinzhenyu/qrypt/internal/sync"
 )
 
 func setupSyncTest(t *testing.T) (configPath, remote, local string) {
@@ -18,9 +21,9 @@ func setupSyncTest(t *testing.T) (configPath, remote, local string) {
 	return configPath, remote, local
 }
 
-func syncSummaryOf(t *testing.T, out string) syncSummary {
+func syncSummaryOf(t *testing.T, out string) sync.Summary {
 	t.Helper()
-	var result syncResult
+	var result sync.Result
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("unmarshal sync result: %v out=%s", err, out)
 	}
@@ -37,7 +40,7 @@ func TestFsSyncIdenticalTreesEmptyPlan(t *testing.T) {
 		t.Fatalf("sync identical failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add != 0 || summary.Update != 0 || summary.Failed != 0 {
+	if summary.Adds != 0 || summary.Update != 0 || summary.Failed != 0 {
 		t.Fatalf("identical trees produced changes: %+v", summary)
 	}
 }
@@ -59,7 +62,7 @@ func TestFsSyncAddsMissingFilesLocalToVFS(t *testing.T) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add < 1 || summary.Failed != 0 {
+	if summary.Adds < 1 || summary.Failed != 0 {
 		t.Fatalf("summary = %+v, want at least one add with no failures", summary)
 	}
 
@@ -149,7 +152,7 @@ func TestFsSyncDryRunWritesNothing(t *testing.T) {
 		t.Fatalf("sync --dry-run failed (exit must be 0): %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add < 1 {
+	if summary.Adds < 1 {
 		t.Fatalf("dry-run summary = %+v, want adds", summary)
 	}
 	// Nothing must have been written to the remote side.
@@ -188,7 +191,7 @@ func TestFsSyncTypeConflictFails(t *testing.T) {
 	}
 	// The JSON ok flag must agree with the exit code (conflicts under the
 	// error policy are not success).
-	var result syncResult
+	var result sync.Result
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
@@ -249,7 +252,7 @@ func TestFsSyncJSONSorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	var result syncResult
+	var result sync.Result
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +289,7 @@ func TestFsSyncPartialFailureExits3(t *testing.T) {
 		t.Fatalf("partial failure err = %v, want ExitPartial(3)", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Failed < 1 || summary.Add < 1 {
+	if summary.Failed < 1 || summary.Adds < 1 {
 		t.Fatalf("summary = %+v, want both a failed item and successful adds", summary)
 	}
 	// The good file must have been synced despite the failure.
@@ -319,7 +322,7 @@ func TestFsSyncVFSToVFS(t *testing.T) {
 		t.Fatalf("vfs->vfs sync failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add < 1 || summary.Failed != 0 {
+	if summary.Adds < 1 || summary.Failed != 0 {
 		t.Fatalf("summary = %+v, want adds with no failures", summary)
 	}
 	got, _, err := executeCLI(t, "fs", "--config", configPath, "cat", "/loc/dst/f.txt")
@@ -354,7 +357,7 @@ func TestFsSyncVFSToVFSConverges(t *testing.T) {
 		t.Fatalf("second sync failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Update != 0 || summary.Add != 0 || summary.Failed != 0 {
+	if summary.Update != 0 || summary.Adds != 0 || summary.Failed != 0 {
 		t.Fatalf("second sync summary = %+v, want convergence (no updates)", summary)
 	}
 }
@@ -380,7 +383,7 @@ func TestFsSyncConvergesOnSecondRun(t *testing.T) {
 		t.Fatalf("second sync failed: %v", err)
 	}
 	summary := syncSummaryOf(t, out)
-	if summary.Add != 0 || summary.Update != 0 || summary.Delete != 0 || summary.Failed != 0 {
+	if summary.Adds != 0 || summary.Update != 0 || summary.Delete != 0 || summary.Failed != 0 {
 		t.Fatalf("second sync not converged: %+v", summary)
 	}
 }
@@ -417,7 +420,7 @@ func TestFsSyncCompareMtimeOnlySkipsSizeOnlyChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mtime-only sync failed: %v", err)
 	}
-	if summary := syncSummaryOf(t, out); summary.Add != 0 || summary.Update != 0 || summary.Delete != 0 || summary.Failed != 0 {
+	if summary := syncSummaryOf(t, out); summary.Adds != 0 || summary.Update != 0 || summary.Delete != 0 || summary.Failed != 0 {
 		t.Fatalf("mtime-only sync summary = %+v, want empty plan", summary)
 	}
 }
