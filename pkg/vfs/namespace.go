@@ -229,6 +229,12 @@ func NewNamespace(mounts []Mount) (*Namespace, error) {
 	return ns, nil
 }
 
+// Start propagates the lifecycle context to every mounted filesystem. Each
+// mount receives the same ctx; per the Lifecycle contract the FIRST Start on
+// any mount owns that mount's lifecycle, so repeated Namespace.Start calls
+// (or a mount that was already started directly) are no-ops. Namespace.Start
+// only propagates - it never replaces or re-owns a mount's lifecycle, and
+// there is no way to stop one mount without cancelling the shared context.
 func (n *Namespace) Start(ctx context.Context) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
