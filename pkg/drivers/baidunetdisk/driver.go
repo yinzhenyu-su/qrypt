@@ -466,7 +466,7 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d: %s", resp.StatusCode, string(data))
+		return fmt.Errorf("http status %d: %s", resp.StatusCode, util.Snippet(data))
 	}
 	return json.Unmarshal(data, out)
 }

@@ -8,10 +8,10 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -60,7 +60,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("onedrive: download status=%d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("onedrive: download status=%d: %s", resp.StatusCode, util.Snippet(body))
 	}
 	rc := resp.Body
 	if d.limiter != nil {

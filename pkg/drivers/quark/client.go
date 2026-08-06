@@ -324,7 +324,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		if resp.StatusCode >= 400 {
 			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
 			c.recordMetric(ctx, event)
-			apiErr := fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, string(bodyBytes))
+			apiErr := fmt.Errorf("API Error (Status %d): %s", resp.StatusCode, util.Snippet(bodyBytes))
 			if resp.StatusCode == http.StatusNotFound {
 				return fmt.Errorf("%w: %v", drive.ErrNotFound, apiErr)
 			}

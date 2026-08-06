@@ -7,10 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -84,7 +84,7 @@ func (d *Driver) putLarge(ctx context.Context, parentID, name string, size int64
 		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 			data, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			err := fmt.Errorf("onedrive: upload part status=%d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+			err := fmt.Errorf("onedrive: upload part status=%d: %s", resp.StatusCode, util.Snippet(data))
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
 				err = drive.NonRetryable(err)
 			}
