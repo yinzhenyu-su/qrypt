@@ -45,9 +45,9 @@ jobs:
         run: |
           if [ -n "${INPUT:-}" ]; then
             json="[\"$(echo "$INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | paste -sd',' -)\"]"
-            echo "mounts=$json"
+            echo "mounts=$json" >> "$GITHUB_OUTPUT"
           elif [ -n "${MOUNTS_VAR:-}" ]; then
-            echo "mounts=$MOUNTS_VAR"
+            echo "mounts=$MOUNTS_VAR" >> "$GITHUB_OUTPUT"
           else
             echo "no mounts input and CONTRACT_MOUNTS_JSON variable missing"
             exit 1
