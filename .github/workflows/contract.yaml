@@ -4,11 +4,17 @@ name: Contract Tests
 # server. Never runs on PRs (real provider credentials are required).
 #
 #   manual:  pick the mounts to exercise
-#   nightly: exercises every mount configured in the secret
+#   nightly: exercises every mount configured in the variable
 #
-# Secrets required (repo/org level):
-#   CONTRACT_CONFIG_TOML_B64 - base64 of a qrypt.toml with real accounts
-#   CONTRACT_MOUNTS_JSON     - e.g. ["p115","quark"]
+# Required configuration (repo/org level):
+#   Secret   CONTRACT_CONFIG_TOML_B64 - base64 of a qrypt.toml with real
+#                                       accounts (never printed; GitHub
+#                                       masks it in logs)
+#   Variable CONTRACT_MOUNTS_JSON     - e.g. ["p115","quark"]
+#
+# The mounts list must be a repository VARIABLE, not a secret: GitHub
+# masks secret-derived job outputs as ***, which breaks fromJson matrix
+# expansion.
 on:
   workflow_dispatch:
     inputs:
@@ -35,14 +41,16 @@ jobs:
       - id: m
         env:
           INPUT: ${{ inputs.mounts }}
-          SECRET: ${{ secrets.CONTRACT_MOUNTS_JSON }}
+          MOUNTS_VAR: ${{ vars.CONTRACT_MOUNTS_JSON }}
         run: |
           if [ -n "${INPUT:-}" ]; then
             json="[\"$(echo "$INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | paste -sd',' -)\"]"
             echo "mounts=$json"
+          elif [ -n "${MOUNTS_VAR:-}" ]; then
+            echo "mounts=$MOUNTS_VAR"
           else
-            test -n "$SECRET" || { echo "no mounts input and CONTRACT_MOUNTS_JSON secret missing"; exit 1; }
-            echo "mounts=$SECRET"
+            echo "no mounts input and CONTRACT_MOUNTS_JSON variable missing"
+            exit 1
           fi
 
   contract:
