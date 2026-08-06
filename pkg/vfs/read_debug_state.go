@@ -7,6 +7,10 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
+// readHistoryState is the bounded read-event ring for debug snapshots.
+// Owned by the read domain (readState.history); mu guards events/pos/
+// count/sequence. Lifecycle: created in newReadState, bounded by
+// debugReadHistoryLimit, reset by debug commands.
 type readHistoryState struct {
 	mu       sync.Mutex
 	events   []drive.MetricEvent // ring buffer; lazily grown toward debugReadHistoryLimit

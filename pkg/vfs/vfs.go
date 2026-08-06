@@ -119,32 +119,11 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		done:          make(chan struct{}),
 		startOnce:     sync.Once{},
 		view:          view,
-		read: &readState{
-			cache:       stores.readCacheStore,
-			history:     newReadHistoryState(),
-			prefetch:    newReadPrefetchState(),
-			slots:       newReadSlotState(),
-			fastPath:    newReadFastPathState(),
-			windows:     newReadWindowState(),
-			dirPrefetch: newDirPrefetchState(),
-			list:        newListState(),
-		},
-		upload: &uploadState{
-			store:    stores.uploadStore,
-			queue:    make(chan PendingUpload, 128),
-			schedule: newUploadScheduleState(),
-			debug:    newUploadDebugState(),
-			faults:   newUploadFaultState(),
-			hashes:   newUploadHashTrackerState(),
-			delay:    opts.UploadDelay,
-			workers:  opts.UploadWorkers,
-		},
-		delete: &deleteState{
-			tasks: deleteTasks,
-			delay: opts.DeleteDelay,
-		},
-		debug:     newActiveDebugState(),
-		pathLocks: newPathLockState(),
+		read:          newReadState(stores.readCacheStore),
+		upload:        newUploadState(stores.uploadStore, opts),
+		delete:        newDeleteState(deleteTasks, opts.DeleteDelay),
+		debug:         newActiveDebugState(),
+		pathLocks:     newPathLockState(),
 	}
 	return v, nil
 }
@@ -174,9 +153,9 @@ func (v *VFS) Start(ctx context.Context) {
 		// does and waits for.
 		context.AfterFunc(ctx, func() {
 			close(v.done)
-			v.stopDeleteTimers()
-			v.stopUploadTimers()
-			_ = v.CloseReadCache()
+			v.delete.Close()
+			v.upload.Close()
+			_ = v.read.Close()
 		})
 	})
 }
@@ -263,7 +242,7 @@ func (v *VFS) ClearReadCache() error {
 }
 
 func (v *VFS) CloseReadCache() error {
-	return v.read.cache.Close()
+	return v.read.Close()
 }
 
 func (v *VFS) Resume(ctx context.Context) {

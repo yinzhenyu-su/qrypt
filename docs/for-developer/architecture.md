@@ -235,6 +235,41 @@ background tasks without a legacy adapter layer.
 VFS should not know provider API details. It should operate on `drive.Entry`
 and optional `drive` capabilities only.
 
+## Upload State Flow
+
+A pending upload moves through stages with explicit state ownership. Each
+stage owns exactly one piece of state and hands it to the next:
+
+1. **Staging** (`staging.go`, `staging_write.go`): `WriteAt`/`Flush` write
+   the local staging file and update the `PendingUpload` record. Ownership:
+   `stagingStore` owns the disk file, `uploadStore` owns the pending record
+   and its journal; the record holds the staging reference.
+2. **Schedule** (`upload_schedule.go`): `enqueueAfter` arms a debounce timer
+   in `uploadScheduleState`. Ownership: the timer; cancelled on reschedule,
+   upload cancel, or shutdown (`uploadState.Close`).
+3. **Worker** (`upload_worker.go`): the timer fires into `uploadState.queue`;
+   a worker admits the record (quiet window, admission) and runs the engine.
+4. **Engine - snapshot** (`upload_engine.go`, `upload_snapshot.go`):
+   `freezeSnapshot` syncs/stats/hashes the staging file into an
+   `uploadSnapshot`, then rechecks the pending record. Ownership: the
+   snapshot freezes staging contents; the record must still be the latest
+   for the path or the upload is skipped (removed/superseded).
+5. **Engine - remote** (`upload_engine.go`): `prepareUploadTarget` decides
+   replace semantics, then `PutSource` streams the snapshot. Failures are
+   recorded via `recordFailure` (permanent vs retryable) and the record
+   decides requeue.
+6. **Replace** (`upload_replace.go`): `replaceUploadedFile` applies an
+   existing-file replacement under the final name.
+7. **Commit/Cleanup** (`upload_commit.go`): `finalizeUpload` seeds the read
+   cache, commits the entry into `viewState.entries`, removes the pending
+   record (`RemoveIfUnchanged` - a moved-on record rolls the upload back
+   via `rollbackUploadedEntry`), then removes the staging file.
+
+The transfer of ownership is checked at each handoff: the record must be
+unchanged (same generation) or the upload is superseded and rolled back;
+staging is only removed once the record is gone; the uploaded entry is only
+committed after the record confirms it.
+
 ## Upload Responsibilities
 
 `pkg/core.UploadService` is the business-level upload boundary for clients,

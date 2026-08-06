@@ -95,11 +95,11 @@ func (r vfsUploadWorkerRuntime) Receive(ctx context.Context) (PendingUpload, boo
 }
 
 func (r vfsUploadWorkerRuntime) StopUploadTimers() {
-	r.v.stopUploadTimers()
+	r.v.upload.Close()
 }
 
 func (r vfsUploadWorkerRuntime) StopDeleteTimers() {
-	r.v.stopDeleteTimers()
+	r.v.delete.Close()
 }
 
 func (r vfsUploadWorkerRuntime) SourceUploadSupported() bool {

@@ -382,3 +382,14 @@ func entryListHasPath(entries []drive.Entry, name, entryID string) bool {
 func (v *VFS) updateOverlay(parentPath string, entries []drive.Entry) {
 	newVFSVisibilityRuntime(v).UpdateRenameOverlay(parentPath, entries)
 }
+
+// stopAll stops every pending delete timer so no delayed delete fires
+// after shutdown. Used by deleteState.Close and the delete scheduler.
+func (s *deleteTaskState) stopAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for path, timer := range s.timers {
+		timer.Stop()
+		delete(s.timers, path)
+	}
+}

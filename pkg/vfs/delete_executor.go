@@ -53,9 +53,6 @@ func (v *VFS) deleteRemoteWithRuntime(ctx context.Context, path string, entry dr
 	runtime.MarkRemoteDeleteComplete(path, entry)
 	runtime.CleanupUploadState(path)
 }
-func (v *VFS) stopDeleteTimers() {
-	newVFSDeleteScheduler(v).StopAll()
-}
 
 type deleteRemoteRuntime interface {
 	BeginRemoteDelete(path string, entry drive.Entry) bool
@@ -160,10 +157,5 @@ func (s vfsDeleteScheduler) CancelChildren(dir string) {
 }
 
 func (s vfsDeleteScheduler) StopAll() {
-	s.v.view.overlay.mu.Lock()
-	defer s.v.view.overlay.mu.Unlock()
-	for path, timer := range s.v.delete.tasks.timers {
-		timer.Stop()
-		delete(s.v.delete.tasks.timers, path)
-	}
+	s.v.delete.tasks.stopAll()
 }
