@@ -137,7 +137,15 @@ not supported.
 | Verify driver CRUD behavior | `debug test crud --mount NAME` |
 | Verify VFS upload behavior | `debug test fs --mount NAME` |
 | Verify resumable upload recovery | `debug test resume --mount NAME` |
+| Run the full contract suite | `debug test contract --socket SOCKET --mount NAME` |
 | Compare performance or regressions | `debug bench ...` |
+
+`debug test contract` runs the complete suite against the named mount
+(auth, contract, crud, fs, instantupload, resume, multipart) and requires a
+running mount server (`qrypt mount -s /tmp/qrypt.sock`). The mount must
+have `test_enabled = true` in its `[[mounts]]` block; unlisted mounts are
+rejected with 403. This is the same suite the Contract Tests CI workflow
+runs nightly against real providers.
 
 Use `collect` first when you are unsure. Use `raw` when you already know which
 endpoint you need. Use `watch` when the issue only appears during a time window,

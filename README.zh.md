@@ -108,6 +108,8 @@ b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
 - [架构概览](docs/for-developer/architecture.md) — 分层设计与规则
 - [驱动开发](docs/for-developer/driver-development.md) — 如何接入新的云盘后端
 - [调试](docs/for-developer/debug.md) — 诊断工具和故障排查
+- [Fuzz 样本管理](docs/for-developer/fuzz-corpus.md) — nightly fuzzing 与回归样本流程
+- [质量门禁](docs/for-developer/quality-gates.md) — CI workflow、覆盖率门禁、contract 矩阵
 
 ## 从源码构建
 

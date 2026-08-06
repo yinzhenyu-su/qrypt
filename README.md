@@ -108,6 +108,8 @@ Extended walkthrough →
 - [Architecture](docs/for-developer/architecture.md) — layer overview and design rules
 - [Driver Development](docs/for-developer/driver-development.md) — how to add a new cloud-drive backend
 - [Debugging](docs/for-developer/debug.md) — diagnostic tools and troubleshooting
+- [Fuzz Corpus](docs/for-developer/fuzz-corpus.md) — nightly fuzzing and regression corpus lifecycle
+- [Quality Gates](docs/for-developer/quality-gates.md) — CI workflows, coverage gate, contract matrix
 - [Developer FAQ](docs/for-developer/faq.md) — recurring implementation issues and fixes
 
 ## Building from Source
