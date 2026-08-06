@@ -17,6 +17,7 @@ const (
 	ErrorCodeLocalIO          ErrorCode = "local_io"
 	ErrorCodeCancelled        ErrorCode = "cancelled"
 	ErrorCodeUnsupported      ErrorCode = "unsupported"
+	ErrorCodePersistence      ErrorCode = "persistence"
 	ErrorCodeUnknown          ErrorCode = "unknown"
 )
 
@@ -56,6 +57,8 @@ func ClassifyErrorMessage(message string) ErrorInfo {
 func errorCode(category, message string) ErrorCode {
 	lower := strings.ToLower(message)
 	switch category {
+	case drive.ErrorCategoryPermission:
+		return ErrorCodePermission
 	case drive.ErrorCategoryAuth:
 		if strings.Contains(lower, "forbidden") || strings.Contains(lower, "permission") || strings.Contains(lower, "access denied") || strings.Contains(lower, "403") {
 			return ErrorCodePermission
@@ -73,16 +76,13 @@ func errorCode(category, message string) ErrorCode {
 		return ErrorCodeCancelled
 	case drive.ErrorCategoryUnsupported:
 		return ErrorCodeUnsupported
+	case drive.ErrorCategoryPersistence:
+		return ErrorCodePersistence
 	default:
 		return ErrorCodeUnknown
 	}
 }
 
 func errorRetryable(category string) bool {
-	switch category {
-	case drive.ErrorCategoryNetwork, drive.ErrorCategoryTimeout, drive.ErrorCategoryRemote5xx, drive.ErrorCategoryRateLimit:
-		return true
-	default:
-		return false
-	}
+	return drive.RetryableCategory(category)
 }
