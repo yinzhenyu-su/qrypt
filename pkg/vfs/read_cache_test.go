@@ -24,7 +24,7 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
@@ -56,7 +56,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 	if err := fs.Create(ctx, "/qrypt.log"); err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs1.FlushReadCache() })
+	t.Cleanup(func() { _ = fs1.CloseReadCache() })
 	rc, err := fs1.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +482,7 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs2.FlushReadCache() })
+	t.Cleanup(func() { _ = fs2.CloseReadCache() })
 	rc, err = fs2.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +510,7 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 
 	rc, err := fs.Read(ctx, "/data.bin", 0, int64(len(data)))
 	if err != nil {
@@ -546,7 +546,7 @@ func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = fs.FlushReadCache() })
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
 	defer stopVFS(t, fs)
 	fs.Start(ctx)
 

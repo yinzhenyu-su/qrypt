@@ -8,7 +8,9 @@
     "version": {
       "description": "Config format version. Currently only \"1\" is recognised.",
       "type": "string",
-      "enum": ["1"],
+      "enum": [
+        "1"
+      ],
       "default": "1",
       "x-taplo": {
         "hidden": true
@@ -148,13 +150,20 @@
           "description": "File-name encryption mode.",
           "type": "string",
           "default": "standard",
-          "enum": ["standard", "off", "obfuscate"]
+          "enum": [
+            "standard",
+            "off",
+            "obfuscate"
+          ]
         },
         "filename_encoding": {
           "description": "Encoding for encrypted file names.",
           "type": "string",
           "default": "base32",
-          "enum": ["base32", "base64"]
+          "enum": [
+            "base32",
+            "base64"
+          ]
         },
         "content_dedup": {
           "description": "When true, enables deterministic encryption so identical plaintext produces identical ciphertext, allowing the backend to deduplicate content (instant upload). May leak content equality to the storage provider.",
@@ -206,9 +215,9 @@
       "description": "Read cache settings.",
       "properties": {
         "max_size": {
-          "description": "Maximum read-cache size (e.g. \"512M\", \"2G\", \"1T\").",
+          "description": "Maximum read-cache size (e.g. \"512M\", \"2G\", \"1T\"). Set to \"0\" to disable the read cache; when unset the default 2G applies.",
           "type": "string",
-          "default": "512M",
+          "default": "2G",
           "pattern": "^\\d+[KMGTP]?$|^\\d+$"
         }
       },
@@ -219,7 +228,7 @@
       "description": "Thumbnail cache settings.",
       "properties": {
         "max_size": {
-          "description": "Maximum thumbnail-cache size (e.g. \"256M\", \"1G\").",
+          "description": "Maximum generated-thumbnail cache size (e.g. \"64M\", \"256M\", \"1G\"). Set to \"0\" to disable thumbnail caching; when unset the default 256M applies.",
           "type": "string",
           "default": "256M",
           "pattern": "^\\d+[KMGTP]?$|^\\d+$"
@@ -291,7 +300,13 @@
           "description": "Minimum log level to emit.",
           "type": "string",
           "default": "info",
-          "enum": ["debug", "info", "warn", "error", "off"]
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error",
+            "off"
+          ]
         },
         "log_file": {
           "description": "Path to the main log file.",
@@ -319,7 +334,18 @@
           "items": {
             "type": "string"
           },
-          "default": ["ntp1.aliyun.com:123", "ntp2.aliyun.com:123", "ntp1.tencent.com:123", "ntp2.tencent.com:123", "ntp1.ntsc.ac.cn:123", "ntp2.ntsc.ac.cn:123", "ntp1.cstnet.cn:123", "0.cn.pool.ntp.org:123", "time.cloudflare.com:123", "time.google.com:123"]
+          "default": [
+            "ntp1.aliyun.com:123",
+            "ntp2.aliyun.com:123",
+            "ntp1.tencent.com:123",
+            "ntp2.tencent.com:123",
+            "ntp1.ntsc.ac.cn:123",
+            "ntp2.ntsc.ac.cn:123",
+            "ntp1.cstnet.cn:123",
+            "0.cn.pool.ntp.org:123",
+            "time.cloudflare.com:123",
+            "time.google.com:123"
+          ]
         },
         "ntp_timeout": {
           "description": "Per-server NTP timeout.",
@@ -363,7 +389,20 @@
         "type": {
           "description": "Backend driver type.",
           "type": "string",
-          "enum": ["localfs", "quark", "yun139", "115", "115_open", "189", "aliyundrive", "baidu_netdisk", "onedrive", "onedrive_app", "webdav", "s3"]
+          "enum": [
+            "localfs",
+            "quark",
+            "yun139",
+            "115",
+            "115_open",
+            "189",
+            "aliyundrive",
+            "baidu_netdisk",
+            "onedrive",
+            "onedrive_app",
+            "webdav",
+            "s3"
+          ]
         },
         "test_enabled": {
           "description": "Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
@@ -391,15 +430,26 @@
           "$ref": "#/definitions/mountUploadConfig"
         }
       },
-      "required": ["name", "type"],
+      "required": [
+        "name",
+        "type"
+      ],
       "allOf": [
         {
           "if": {
-            "properties": { "type": { "const": "aliyundrive" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "aliyundrive"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/aliyundriveParams"
@@ -409,11 +459,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "baidu_netdisk" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "baidu_netdisk"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/baiduNetdiskParams"
@@ -423,11 +481,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "localfs" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "localfs"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/localfsParams"
@@ -437,11 +503,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "quark" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "quark"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/quarkParams"
@@ -451,11 +525,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "115" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "115"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/p115Params"
@@ -465,11 +547,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "115_open" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "115_open"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/p115openParams"
@@ -479,11 +569,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "yun139" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "yun139"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/yun139Params"
@@ -493,11 +591,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "webdav" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "webdav"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/webdavParams"
@@ -507,11 +613,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "onedrive" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "onedrive"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/onedriveParams"
@@ -521,11 +635,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "onedrive_app" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "onedrive_app"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/onedriveAppParams"
@@ -535,11 +657,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "189" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "189"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/p189Params"
@@ -549,11 +679,19 @@
         },
         {
           "if": {
-            "properties": { "type": { "const": "s3" } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "const": "s3"
+              }
+            },
+            "required": [
+              "type"
+            ]
           },
           "then": {
-            "required": ["params"],
+            "required": [
+              "params"
+            ],
             "properties": {
               "params": {
                 "$ref": "#/definitions/s3Params"
@@ -566,11 +704,14 @@
     },
     "localfsParams": {
       "type": "object",
-      "required": ["root_path"],
+      "required": [
+        "root_path"
+      ],
       "properties": {
         "root_path": {
           "description": "Local filesystem root directory path.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-example": "/tmp/qrypt-remote"
         }
       },
@@ -578,17 +719,22 @@
     },
     "aliyundriveParams": {
       "type": "object",
-      "required": ["refresh_token", "drive_id"],
+      "required": [
+        "refresh_token",
+        "drive_id"
+      ],
       "properties": {
         "refresh_token": {
           "description": "Aliyun Drive refresh token for OAuth authentication.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-refresh-token"
         },
         "drive_id": {
           "description": "Aliyun Drive drive ID.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-example": "your-drive-id"
         },
         "root_path": {
@@ -600,13 +746,21 @@
         "order_by": {
           "description": "File listing sort field.",
           "type": "string",
-          "enum": ["name", "size", "updated_at", "created_at"],
+          "enum": [
+            "name",
+            "size",
+            "updated_at",
+            "created_at"
+          ],
           "x-example": "name"
         },
         "order_direction": {
           "description": "Sort direction (ASC or DESC).",
           "type": "string",
-          "enum": ["ASC", "DESC"],
+          "enum": [
+            "ASC",
+            "DESC"
+          ],
           "x-example": "ASC"
         },
         "api_base_url": {
@@ -624,11 +778,14 @@
     },
     "baiduNetdiskParams": {
       "type": "object",
-      "required": ["refresh_token"],
+      "required": [
+        "refresh_token"
+      ],
       "properties": {
         "refresh_token": {
           "description": "Baidu Netdisk refresh token.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-refresh-token"
         },
@@ -647,13 +804,20 @@
           "description": "List ordering field: name, time, or size.",
           "type": "string",
           "default": "name",
-          "enum": ["name", "time", "size"]
+          "enum": [
+            "name",
+            "time",
+            "size"
+          ]
         },
         "order_direction": {
           "description": "List ordering direction: asc or desc.",
           "type": "string",
           "default": "asc",
-          "enum": ["asc", "desc"]
+          "enum": [
+            "asc",
+            "desc"
+          ]
         },
         "use_online_api": {
           "description": "Use OpenList-compatible online token refresh API.",
@@ -700,11 +864,14 @@
     },
     "quarkParams": {
       "type": "object",
-      "required": ["cookie"],
+      "required": [
+        "cookie"
+      ],
       "properties": {
         "cookie": {
           "description": "Quark cloud drive authentication cookie.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "k1=v1; k2=v2"
         },
@@ -729,11 +896,14 @@
     },
     "yun139Params": {
       "type": "object",
-      "required": ["authorization"],
+      "required": [
+        "authorization"
+      ],
       "properties": {
         "authorization": {
           "description": "139 cloud drive authorization token.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-authorization-token"
         },
@@ -753,11 +923,14 @@
     },
     "p115Params": {
       "type": "object",
-      "required": ["cookie"],
+      "required": [
+        "cookie"
+      ],
       "properties": {
         "cookie": {
           "description": "115 cloud drive authentication cookie.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "k1=v1; k2=v2"
         },
@@ -772,11 +945,14 @@
     },
     "p115openParams": {
       "type": "object",
-      "required": ["refresh_token"],
+      "required": [
+        "refresh_token"
+      ],
       "properties": {
         "refresh_token": {
           "description": "115 open platform refresh token (obtained by authorizing an app on open.115.com).",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "eg2t4.<hex>.<hex>"
         },
@@ -802,11 +978,14 @@
     },
     "p189Params": {
       "type": "object",
-      "required": ["cookie"],
+      "required": [
+        "cookie"
+      ],
       "properties": {
         "cookie": {
           "description": "189 cloud drive authentication cookie.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "k1=v1; k2=v2"
         },
@@ -826,21 +1005,28 @@
     },
     "webdavParams": {
       "type": "object",
-      "required": ["url", "username", "password"],
+      "required": [
+        "url",
+        "username",
+        "password"
+      ],
       "properties": {
         "url": {
           "description": "WebDAV server base URL.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "example": "https://nextcloud.example.com/remote.php/dav/files/user"
         },
         "username": {
           "description": "WebDAV authentication username.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-example": "user"
         },
         "password": {
           "description": "WebDAV authentication password or app token.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-password-or-app-token"
         },
@@ -855,11 +1041,14 @@
     },
     "onedriveParams": {
       "type": "object",
-      "required": ["refresh_token"],
+      "required": [
+        "refresh_token"
+      ],
       "properties": {
         "refresh_token": {
           "description": "OneDrive refresh token.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-refresh-token"
         },
@@ -873,7 +1062,12 @@
           "description": "Microsoft cloud region.",
           "type": "string",
           "default": "global",
-          "enum": ["global", "cn", "us", "de"]
+          "enum": [
+            "global",
+            "cn",
+            "us",
+            "de"
+          ]
         },
         "root_path": {
           "description": "OneDrive path used as this mount root.",
@@ -954,15 +1148,28 @@
     },
     "onedriveAppParams": {
       "type": "object",
-      "required": ["client_secret", "tenant_id", "email"],
+      "required": [
+        "client_secret",
+        "tenant_id",
+        "email"
+      ],
       "anyOf": [
-        { "required": ["client_id"] },
-        { "required": ["client_key"] }
+        {
+          "required": [
+            "client_id"
+          ]
+        },
+        {
+          "required": [
+            "client_key"
+          ]
+        }
       ],
       "properties": {
         "client_id": {
           "description": "Microsoft Entra application client ID; mutually exclusive with client_key.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-client-id"
         },
@@ -974,25 +1181,33 @@
         },
         "client_secret": {
           "description": "Microsoft Entra application client secret.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "your-client-secret"
         },
         "tenant_id": {
           "description": "Microsoft Entra tenant ID.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-example": "your-tenant-id"
         },
         "email": {
           "description": "User principal name or email whose drive should be mounted.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-example": "user@example.com"
         },
         "region": {
           "description": "Microsoft cloud region.",
           "type": "string",
           "default": "global",
-          "enum": ["global", "cn", "us", "de"]
+          "enum": [
+            "global",
+            "cn",
+            "us",
+            "de"
+          ]
         },
         "root_path": {
           "description": "OneDrive path used as this mount root.",
@@ -1030,16 +1245,23 @@
     },
     "s3Params": {
       "type": "object",
-      "required": ["bucket", "endpoint", "access_key_id", "secret_access_key"],
+      "required": [
+        "bucket",
+        "endpoint",
+        "access_key_id",
+        "secret_access_key"
+      ],
       "properties": {
         "bucket": {
           "description": "S3 bucket name.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-example": "my-bucket"
         },
         "endpoint": {
           "description": "S3 endpoint URL.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "example": "https://s3.us-east-1.amazonaws.com"
         },
         "region": {
@@ -1050,13 +1272,15 @@
         },
         "access_key_id": {
           "description": "S3 access key ID.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "AKIA..."
         },
         "secret_access_key": {
           "description": "S3 secret access key.",
-          "type": "string", "minLength": 1,
+          "type": "string",
+          "minLength": 1,
           "x-secret": true,
           "x-example": "..."
         },
@@ -1080,7 +1304,10 @@
           "description": "S3 list API version: v1 or v2.",
           "type": "string",
           "default": "v1",
-          "enum": ["v1", "v2"]
+          "enum": [
+            "v1",
+            "v2"
+          ]
         },
         "placeholder": {
           "description": "Placeholder filename for empty directories.",
