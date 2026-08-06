@@ -557,10 +557,13 @@ func (d *FakeDriver) ResolvePath(ctx context.Context, path string) (string, erro
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.nodes[trimmed]; !ok {
+	// Node ids are rootID-prefixed ("0/dir/file"); resolve the trimmed
+	// path against the configured root so non-root paths work.
+	key := d.rootID + "/" + trimmed
+	if _, ok := d.nodes[key]; !ok {
 		return "", fmt.Errorf("%w: fake resolve %q", ErrNotFound, path)
 	}
-	return trimmed, nil
+	return key, nil
 }
 
 // ResolveRemoteName implements Driver: identity for plain names.
