@@ -237,13 +237,23 @@ contract output), route it through the shared redactor — never roll your
 own pattern list:
 
 ```go
-return nil, fmt.Errorf("quark: upload status %d: %s", resp.StatusCode, util.Snippet(body))
+return nil, util.HTTPError("quark: upload", nil, resp, body)
 ```
 
-`util.Snippet` (in `pkg/drivers/internal/util`) truncates at 300 bytes and
-masks tokens, cookies, download URLs and authorization headers; its mask
-patterns are covered by unit tests in that package. A duplicated pattern
-set in a driver is a review failure — extend `util.Snippet` instead.
+`util.Snippet` / `util.HTTPError` (in `internal/util`) truncate at 300 bytes
+and mask tokens, cookies, download URLs, authorization headers and URL
+userinfo; their mask patterns are covered by unit tests in that package. A
+duplicated pattern set in a driver is a review failure — extend `util.Snippet`
+instead.
+
+### Shared driver infrastructure
+
+Cross-cutting HTTP plumbing lives under `internal/util` so drivers do not
+hand-roll the same code: `httpclient` (JSON request construction, response
+body reading, JSON decoding), `uploadsession` (upload session persistence),
+`internal/retry` (exponential backoff) and `internal/httputil` (transport).
+Use these building blocks; keep provider-specific orchestration (auth header
+injection, retry classification, metric reporting) inside the driver.
 
 When a missing object is part of normal path resolution, prefer returning a
 typed error that the VFS/mount layer can distinguish from backend failures.
