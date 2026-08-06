@@ -61,6 +61,13 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+      # PR-stage coverage visibility: non-blocking snapshot of the six
+      # core packages with a highlight on packages changed by this PR.
+      # The hard floor gate runs in nightly only (scripts/coverage.sh).
+      - name: Coverage report (PR snapshot)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/pr-coverage-report.sh "${{ github.event.pull_request.base.sha }}"
+
       # VFS tests exercise the async upload engine (worker shutdown, staging
       # cleanup, journaling); a triple run catches the occasional timing
       # flake before it reaches main.
