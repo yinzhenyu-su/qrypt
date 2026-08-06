@@ -14,8 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 const (
@@ -562,8 +563,8 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[baiduUploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[baiduUploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[baiduUploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[baiduUploadSession]{
 		Store:      d.stateStore,
 		File:       baiduUploadSessionStateFile,
 		MaxAge:     baiduUploadSessionMaxAge,

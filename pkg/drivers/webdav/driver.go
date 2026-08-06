@@ -29,8 +29,8 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/retry"
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 // ─── XML types for PROPFIND responses ────────────────────────────────────

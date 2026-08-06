@@ -22,8 +22,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 // ─── in-memory mock S3 server ─────────────────────────────────────────────
@@ -887,7 +887,7 @@ func TestPutSourceMultipartResumesCompletedPart(t *testing.T) {
 		t.Fatal("expected first upload to fail")
 	}
 
-	sessionKey := util.UploadSessionKey(d.bucket, "resume.bin", int64(len(content)))
+	sessionKey := uploadsession.UploadSessionKey(d.bucket, "resume.bin", int64(len(content)))
 	session, ok := d.loadUploadSession(sessionKey)
 	if !ok {
 		t.Fatal("expected saved upload session after first part")

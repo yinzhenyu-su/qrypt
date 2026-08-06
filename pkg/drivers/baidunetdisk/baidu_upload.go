@@ -17,8 +17,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/retry"
+	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -38,7 +39,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sessionKey := util.UploadSessionKey(parentPath, name, size, contentMD5, sliceMD5)
+	sessionKey := uploadsession.UploadSessionKey(parentPath, name, size, contentMD5, sliceMD5)
 	session, resumedSession := d.loadUploadSession(sessionKey)
 	uploadID := session.UploadID
 	partsToUpload := append([]int(nil), session.BlockList...)

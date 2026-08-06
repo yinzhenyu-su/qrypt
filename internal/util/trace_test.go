@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util"
 )
 
 // Each sensitive pattern must be masked wherever it appears, while plain

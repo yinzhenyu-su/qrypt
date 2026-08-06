@@ -11,7 +11,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )

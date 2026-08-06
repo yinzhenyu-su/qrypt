@@ -3,7 +3,7 @@ package p189
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"io"
 	"net/http"
 	"path"

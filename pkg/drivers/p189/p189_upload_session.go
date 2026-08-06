@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 func (d *Driver) loadUploadSession(key string) (p189UploadSession, bool) {
@@ -25,8 +25,8 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[p189UploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[p189UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[p189UploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[p189UploadSession]{
 		Store:      d.stateStore,
 		File:       p189UploadSessionStateFile,
 		MaxAge:     p189UploadSessionMaxAge,

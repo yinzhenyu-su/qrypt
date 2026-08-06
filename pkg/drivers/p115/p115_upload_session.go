@@ -9,7 +9,7 @@ import (
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
+	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 )
 
 func (s p115UploadSession) uploadParams() *driver115.UploadOSSParams {
@@ -46,8 +46,8 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) uploadSessionStore() *util.UploadSessionStore[p115UploadSession] {
-	return util.NewUploadSessionStore(util.UploadSessionStoreOptions[p115UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[p115UploadSession] {
+	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[p115UploadSession]{
 		Store:      d.stateStore,
 		File:       p115UploadSessionStateFile,
 		MaxAge:     p115UploadSessionMaxAge,

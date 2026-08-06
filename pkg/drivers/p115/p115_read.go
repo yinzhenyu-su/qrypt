@@ -12,8 +12,8 @@ import (
 	"time"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/util"
 )
 
 func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (io.ReadCloser, error) {
