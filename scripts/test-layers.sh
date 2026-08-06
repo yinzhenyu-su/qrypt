@@ -4,6 +4,8 @@
 #
 #   ./scripts/test-layers.sh fast         # default unit suite
 #   ./scripts/test-layers.sh race         # concurrency-heavy packages under -race
+#   ./scripts/test-layers.sh vfs-stability # VFS upload engine flake guard (x3)
+#   ./scripts/test-layers.sh smoke        # localfs mount smoke test
 #   ./scripts/test-layers.sh all          # everything except real-netdisk tests
 #   ./scripts/test-layers.sh integration  # real provider/HTTP contract tests
 #
@@ -91,6 +93,14 @@ case "${1:-fast}" in
       ./internal/control ./internal/logging ./internal/cli \
       ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
     ;;
+  vfs-stability)
+    # The async upload engine (worker shutdown, staging cleanup, journaling)
+    # is timing sensitive; a triple run catches the occasional flake.
+    measure "vfs-stability: go test -count=3 ./pkg/vfs" go test -count=3 ./pkg/vfs/
+    ;;
+  smoke)
+    measure "smoke: localfs" scripts/smoke-localfs.sh
+    ;;
   all)
     measure "all: default suite" go test -count=1 ./...
     measure "all: race vfs+core" go test -race -count=1 ./pkg/vfs ./pkg/core
@@ -112,7 +122,7 @@ case "${1:-fast}" in
     done
     ;;
   *)
-    echo "usage: $0 [fast|race|all|integration <mount>...]" >&2
+    echo "usage: $0 [fast|race|vfs-stability|smoke|all|integration <mount>...]" >&2
     exit 2
     ;;
 esac

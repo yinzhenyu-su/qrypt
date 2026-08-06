@@ -59,7 +59,7 @@ jobs:
         run: scripts/coverage.sh
 
       - name: Race suite
-        run: go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./internal/control ./internal/logging ./internal/cli ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
+        run: scripts/test-layers.sh race
 
       - name: All layers (fast + race + smoke)
         run: scripts/test-layers.sh all
