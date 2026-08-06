@@ -213,7 +213,7 @@ func (s *FSTestStep) finish(start time.Time, err error) {
 	s.OK = true
 }
 
-func waitVFSSmokeIdle(ctx context.Context, fs vfs.FileSystem, mount string, timeout time.Duration, timeline *[]FSPendingSample) error {
+func waitVFSSmokeIdle(ctx context.Context, fs any, mount string, timeout time.Duration, timeline *[]FSPendingSample) error {
 	start := time.Now()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -239,7 +239,7 @@ func waitVFSSmokeIdle(ctx context.Context, fs vfs.FileSystem, mount string, time
 	}
 }
 
-func fsPendingSample(fs vfs.FileSystem, mount string, attempt int, elapsed time.Duration) FSPendingSample {
+func fsPendingSample(fs any, mount string, attempt int, elapsed time.Duration) FSPendingSample {
 	state := fsMountState(fs, mount)
 	sample := FSPendingSample{
 		Attempt:      attempt,
@@ -265,7 +265,7 @@ func fsPendingSample(fs vfs.FileSystem, mount string, attempt int, elapsed time.
 	return sample
 }
 
-func fsMountState(fs vfs.FileSystem, mount string) *FSMountState {
+func fsMountState(fs any, mount string) *FSMountState {
 	state := &FSMountState{Mount: mount}
 	if snapshotter, ok := fs.(vfsDebugSnapshotter); ok {
 		snapshot := snapshotter.DebugSnapshot()
@@ -320,7 +320,7 @@ func debugMountNameMatches(actual, requested string) bool {
 	return actual == requested
 }
 
-func fsFinalMountState(ctx context.Context, fs vfs.FileSystem, mount string) *FSMountState {
+func fsFinalMountState(ctx context.Context, fs any, mount string) *FSMountState {
 	state := fsMountState(fs, mount)
 	inspector, ok := fs.(vfs.DebugStagingInspector)
 	if !ok {

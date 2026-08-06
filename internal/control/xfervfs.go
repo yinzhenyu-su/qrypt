@@ -331,7 +331,7 @@ func waitVFSIdle(ctx context.Context, fs vfs.FileSystem, timeout time.Duration) 
 	}
 }
 
-func cleanupPaths(ctx context.Context, fs vfs.FileSystem, path string) {
+func cleanupPaths(ctx context.Context, fs vfs.Writer, path string) {
 	_ = fs.RemoveDir(ctx, path)
 }
 
