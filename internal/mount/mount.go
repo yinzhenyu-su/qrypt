@@ -173,7 +173,10 @@ func mountOptions(opts Options) []string {
 	if opts.DefaultPermissions {
 		flags = append(flags, "-o", "default_permissions")
 	}
-	if opts.VolumeName != "" {
+	// volname is a macFUSE/WinFsp option; Linux libfuse rejects it with
+	// "unknown option", which would make mounting fail on Linux. The
+	// volume identity on Linux is carried by fsname/subtype above.
+	if opts.VolumeName != "" && runtime.GOOS != "linux" {
 		flags = append(flags, "-o", "volname="+opts.VolumeName)
 	}
 	return flags
