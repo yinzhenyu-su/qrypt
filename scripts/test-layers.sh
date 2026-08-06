@@ -21,17 +21,53 @@ measure() {
   local label="$1"; shift
   local start
   start=$(date +%s)
+  if [ "$1" = "go" ] && [ "$2" = "test" ] && [ "${3:-}" = "-json" ]; then
+    # JSON mode: stream to a temp file so the slowest packages can be
+    # reported afterwards. The grep -q exit code drives the result.
+    local tmp json_ok
+    tmp=$(mktemp)
+    "$@" | tee "$tmp" >/dev/null || true
+    json_ok=0
+    grep -q '"Action":"fail"' "$tmp" && json_ok=1
+    if [ "$json_ok" -ne 0 ]; then
+      printf '== FAILURES in %s ==\n' "$label"
+      awk -F'"' '
+        /"Action":"fail"/ && /"Test":"[^"]+"/ {
+          for (i=1;i<=NF;i++) if ($i=="Test") print "  FAIL " $(i+2)
+        }
+      ' "$tmp" | head -20
+    fi
+    printf '== slowest packages ==\n'
+    awk -F'"' '
+      /"Action":"pass"/ && !/"Test":"/ && /"Package":"[^"]+"/ && /"Elapsed":[0-9.]+/ {
+        pkg=$0; sub(/.*"Package":"/, "", pkg); sub(/".*/, "", pkg)
+        el=$0; sub(/.*"Elapsed":/, "", el); sub(/[^0-9.].*/, "", el)
+        print el, pkg
+      }
+    ' "$tmp" | sort -rn | head -10 | while read -r t p; do
+      printf '  %6.2fs  %s\n' "$t" "$p"
+    done
+    rm -f "$tmp"
+    local end=$(( $(date +%s) - start ))
+    printf '== %s: %ds ==\n' "$label" "$end"
+    if [ "$end" -ge 20 ]; then
+      printf '== WARNING: %s took %ds; see the slowest-package list above ==\n' "$label" "$end"
+    fi
+    exit "$json_ok"
+  fi
   "$@"
   local end=$(( $(date +%s) - start ))
   printf '== %s: %ds ==\n' "$label" "$end"
   if [ "$end" -ge 20 ]; then
-    printf '== WARNING: %s took %ds; if this is fast, consider splitting the slow package ==\n' "$label" "$end"
+    printf '== WARNING: %s took %ds; see the slowest-package list above ==\n' "$label" "$end"
   fi
 }
 
 case "${1:-fast}" in
   fast)
-    measure "fast: go test ./..." go test -count=1 ./...
+    # -json so the per-package wall clock is reported; the slowest 10
+    # packages pinpoint where the fast layer's budget goes.
+    measure "fast: go test -json ./..." go test -json -count=1 ./...
     ;;
   race)
     measure "race: pkg/vfs drive drivers control logging cli core mobile crypt task cmd" \
