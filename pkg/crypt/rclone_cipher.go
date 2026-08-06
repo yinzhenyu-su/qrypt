@@ -176,7 +176,32 @@ func (c *RcloneCipher) EncryptSegment(plaintext string) string {
 	}
 }
 
+// maxSegmentPlainLen keeps one EME segment within the 128-block upper
+// bound (128*16 = 2048 bytes; padding needs one more block of slack).
+const maxSegmentPlainLen = 1000
+
+// segmentSeparator joins encrypted segments. It never appears in base64 or
+// base32 output, so decrypt can split on it unambiguously.
+const segmentSeparator = ";"
+
 func (c *RcloneCipher) encryptSegmentStandard(plaintext string) string {
+	if len(plaintext) <= maxSegmentPlainLen {
+		return c.encryptOneSegment(plaintext)
+	}
+	// Long names are encrypted in segments (matching rclone's behaviour);
+	// a single EME transform would panic past 128 AES blocks.
+	var parts []string
+	for len(plaintext) > maxSegmentPlainLen {
+		parts = append(parts, c.encryptOneSegment(plaintext[:maxSegmentPlainLen]))
+		plaintext = plaintext[maxSegmentPlainLen:]
+	}
+	if len(plaintext) > 0 {
+		parts = append(parts, c.encryptOneSegment(plaintext))
+	}
+	return strings.Join(parts, segmentSeparator)
+}
+
+func (c *RcloneCipher) encryptOneSegment(plaintext string) string {
 	plaintextBytes := []byte(plaintext)
 	paddingLen := 16 - (len(plaintextBytes) % 16)
 	for range paddingLen {
@@ -210,6 +235,22 @@ func (c *RcloneCipher) DecryptSegment(encrypted string) (string, error) {
 }
 
 func (c *RcloneCipher) decryptSegmentStandard(encrypted string) (string, error) {
+	if strings.Contains(encrypted, segmentSeparator) {
+		parts := strings.Split(encrypted, segmentSeparator)
+		var out strings.Builder
+		for _, part := range parts {
+			plain, err := c.decryptOneSegment(part)
+			if err != nil {
+				return "", err
+			}
+			out.WriteString(plain)
+		}
+		return out.String(), nil
+	}
+	return c.decryptOneSegment(encrypted)
+}
+
+func (c *RcloneCipher) decryptOneSegment(encrypted string) (string, error) {
 	for _, enc := range []string{c.filenameEncoding, otherEncoding(c.filenameEncoding)} {
 		plain, err := c.decodeAndDecrypt(encrypted, enc)
 		if err == nil {
