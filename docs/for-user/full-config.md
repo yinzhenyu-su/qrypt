@@ -63,6 +63,14 @@
 |---|---|---|---|
 | `max_size` | string | 2G | Maximum read-cache size (e.g. "512M", "2G", "1T"). Set to `"0"` to disable the read cache for this mount; when unset the default 2G applies. |
 
+## 缩略图缓存
+
+在 `[thumbnail_cache]` 中设置缩略图缓存默认值。生成的缩略图保存在 `thumbnail_cache_dir`（默认 `~/.qrypt/cache/thumbnail`）。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `max_size` | string | 256M | Maximum generated-thumbnail cache size (e.g. "64M", "256M", "1G"). Set to `"0"` to disable thumbnail caching; when unset the default 256M applies. |
+
 ## 上传
 
 在 `[upload]` 中设置上传和删除调度默认值，以及任务上传的默认目标。调度参数可以在 `[mounts.upload]` 中单独覆盖；`default_mount` 和 `default_path` 只支持顶层 `[upload]`。

@@ -86,7 +86,14 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	// stop the workers, and cancel is idempotent.
 	vfsCtx, vfsCancel := context.WithCancel(ctx)
 	fs.Start(vfsCtx)
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: cfg.ThumbnailCache.MaxSizeBytes(), uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, vfsCancel: vfsCancel}
+	// An unset thumbnail_cache.max_size falls back to the default; an
+	// explicit "0" disables thumbnail caching (thumbnail.go short-circuits
+	// on thumbnailMax <= 0).
+	thumbnailMax := cfg.ThumbnailCache.MaxSizeBytes()
+	if cfg.ThumbnailCache.MaxSize == "" {
+		thumbnailMax = 256 << 20
+	}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
