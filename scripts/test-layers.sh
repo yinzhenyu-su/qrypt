@@ -24,6 +24,9 @@ measure() {
   "$@"
   local end=$(( $(date +%s) - start ))
   printf '== %s: %ds ==\n' "$label" "$end"
+  if [ "$end" -ge 20 ]; then
+    printf '== WARNING: %s took %ds; if this is fast, consider splitting the slow package ==\n' "$label" "$end"
+  fi
 }
 
 case "${1:-fast}" in
