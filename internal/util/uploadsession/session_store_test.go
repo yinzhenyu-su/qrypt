@@ -16,9 +16,9 @@ type testUploadSession struct {
 	Metadata  map[string]bool `json:"metadata,omitempty"`
 }
 
-func newTestUploadSessionStore(t *testing.T, maxEntries int) *UploadSessionStore[testUploadSession] {
+func newTestStore(t *testing.T, maxEntries int) *Store[testUploadSession] {
 	t.Helper()
-	return NewUploadSessionStore(UploadSessionStoreOptions[testUploadSession]{
+	return NewStore(StoreOptions[testUploadSession]{
 		Store:      drive.NewFileStateStore(filepath.Join(t.TempDir(), "state")),
 		File:       "upload_sessions.json",
 		MaxAge:     time.Hour,
@@ -41,8 +41,8 @@ func newTestUploadSessionStore(t *testing.T, maxEntries int) *UploadSessionStore
 	})
 }
 
-func TestUploadSessionStoreSaveLoadDelete(t *testing.T) {
-	store := newTestUploadSessionStore(t, 10)
+func TestStoreSaveLoadDelete(t *testing.T) {
+	store := newTestStore(t, 10)
 	store.Save(testUploadSession{
 		Key:       "session-1",
 		UploadID:  "upload-1",
@@ -66,9 +66,9 @@ func TestUploadSessionStoreSaveLoadDelete(t *testing.T) {
 	}
 }
 
-func TestUploadSessionStorePrunesInvalidExpiredAndOverflow(t *testing.T) {
+func TestStorePrunesInvalidExpiredAndOverflow(t *testing.T) {
 	now := time.Now()
-	store := newTestUploadSessionStore(t, 2)
+	store := newTestStore(t, 2)
 
 	sessions, changed := store.PrunedForTest(map[string]testUploadSession{
 		"valid-old": {

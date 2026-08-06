@@ -563,8 +563,8 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[baiduUploadSession] {
-	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[baiduUploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.Store[baiduUploadSession] {
+	return uploadsession.NewStore(uploadsession.StoreOptions[baiduUploadSession]{
 		Store:      d.stateStore,
 		File:       baiduUploadSessionStateFile,
 		MaxAge:     baiduUploadSessionMaxAge,

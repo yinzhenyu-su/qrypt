@@ -7,7 +7,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-type UploadSessionStore[T any] struct {
+type Store[T any] struct {
 	store      drive.StateStore
 	file       string
 	maxAge     time.Duration
@@ -24,7 +24,7 @@ type uploadSessionState[T any] struct {
 	Sessions map[string]T `json:"sessions,omitempty"`
 }
 
-type UploadSessionStoreOptions[T any] struct {
+type StoreOptions[T any] struct {
 	Store      drive.StateStore
 	File       string
 	MaxAge     time.Duration
@@ -36,8 +36,8 @@ type UploadSessionStoreOptions[T any] struct {
 	OnError    func(error)
 }
 
-func NewUploadSessionStore[T any](opts UploadSessionStoreOptions[T]) *UploadSessionStore[T] {
-	return &UploadSessionStore[T]{
+func NewStore[T any](opts StoreOptions[T]) *Store[T] {
+	return &Store[T]{
 		store:      opts.Store,
 		file:       opts.File,
 		maxAge:     opts.MaxAge,
@@ -50,7 +50,7 @@ func NewUploadSessionStore[T any](opts UploadSessionStoreOptions[T]) *UploadSess
 	}
 }
 
-func (s *UploadSessionStore[T]) Load(key string) (T, bool) {
+func (s *Store[T]) Load(key string) (T, bool) {
 	var zero T
 	if s == nil || s.store == nil || key == "" {
 		return zero, false
@@ -66,7 +66,7 @@ func (s *UploadSessionStore[T]) Load(key string) (T, bool) {
 	return session, true
 }
 
-func (s *UploadSessionStore[T]) Save(session T) {
+func (s *Store[T]) Save(session T) {
 	if s == nil || s.store == nil {
 		return
 	}
@@ -86,7 +86,7 @@ func (s *UploadSessionStore[T]) Save(session T) {
 	}
 }
 
-func (s *UploadSessionStore[T]) Delete(key string) {
+func (s *Store[T]) Delete(key string) {
 	if s == nil || s.store == nil || key == "" {
 		return
 	}
@@ -101,7 +101,7 @@ func (s *UploadSessionStore[T]) Delete(key string) {
 	}
 }
 
-func (s *UploadSessionStore[T]) Prune() {
+func (s *Store[T]) Prune() {
 	if s == nil || s.store == nil {
 		return
 	}
@@ -114,13 +114,13 @@ func (s *UploadSessionStore[T]) Prune() {
 	}
 }
 
-func (s *UploadSessionStore[T]) PrunedForTest(state map[string]T, now time.Time) (map[string]T, bool) {
+func (s *Store[T]) PrunedForTest(state map[string]T, now time.Time) (map[string]T, bool) {
 	wrapped := uploadSessionState[T]{Version: 1, Sessions: state}
 	pruned, changed := s.prunedState(wrapped, now)
 	return pruned.Sessions, changed
 }
 
-func (s *UploadSessionStore[T]) loadState() uploadSessionState[T] {
+func (s *Store[T]) loadState() uploadSessionState[T] {
 	state := uploadSessionState[T]{Version: 1, Sessions: map[string]T{}}
 	if s == nil || s.store == nil {
 		return state
@@ -134,7 +134,7 @@ func (s *UploadSessionStore[T]) loadState() uploadSessionState[T] {
 	return state
 }
 
-func (s *UploadSessionStore[T]) saveState(state uploadSessionState[T]) error {
+func (s *Store[T]) saveState(state uploadSessionState[T]) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
@@ -145,7 +145,7 @@ func (s *UploadSessionStore[T]) saveState(state uploadSessionState[T]) error {
 	return s.store.SaveJSON(s.file, state)
 }
 
-func (s *UploadSessionStore[T]) prunedState(state uploadSessionState[T], now time.Time) (uploadSessionState[T], bool) {
+func (s *Store[T]) prunedState(state uploadSessionState[T], now time.Time) (uploadSessionState[T], bool) {
 	state.Version = 1
 	if state.Sessions == nil {
 		state.Sessions = map[string]T{}
@@ -155,28 +155,28 @@ func (s *UploadSessionStore[T]) prunedState(state uploadSessionState[T], now tim
 	return state, changed
 }
 
-func (s *UploadSessionStore[T]) sessionKey(session T) string {
+func (s *Store[T]) sessionKey(session T) string {
 	if s.key == nil {
 		return ""
 	}
 	return s.key(session)
 }
 
-func (s *UploadSessionStore[T]) isValid(key string, session T) bool {
+func (s *Store[T]) isValid(key string, session T) bool {
 	if s.valid == nil {
 		return key != ""
 	}
 	return s.valid(key, session)
 }
 
-func (s *UploadSessionStore[T]) sessionUpdatedAt(session T) time.Time {
+func (s *Store[T]) sessionUpdatedAt(session T) time.Time {
 	if s.updatedAt == nil {
 		return time.Time{}
 	}
 	return s.updatedAt(session)
 }
 
-func (s *UploadSessionStore[T]) report(err error) {
+func (s *Store[T]) report(err error) {
 	if err == nil {
 		return
 	}

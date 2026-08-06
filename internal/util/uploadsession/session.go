@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func UploadSessionKey(parentID, name string, size int64, hashes ...string) string {
+func Key(parentID, name string, size int64, hashes ...string) string {
 	parts := make([]string, 0, 3+len(hashes))
 	parts = append(parts, parentID, name, strconv.FormatInt(size, 10))
 	parts = append(parts, hashes...)

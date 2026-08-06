@@ -10,18 +10,18 @@ type testSession struct {
 	updatedAt time.Time
 }
 
-func TestUploadSessionKeyIsStableAndDelimited(t *testing.T) {
-	got := UploadSessionKey("parent", "name", 12, "sha1")
-	if got != UploadSessionKey("parent", "name", 12, "sha1") {
+func TestKeyIsStableAndDelimited(t *testing.T) {
+	got := Key("parent", "name", 12, "sha1")
+	if got != Key("parent", "name", 12, "sha1") {
 		t.Fatal("upload session key is not stable")
 	}
-	if got == UploadSessionKey("parent\x00name", "", 12, "sha1") {
+	if got == Key("parent\x00name", "", 12, "sha1") {
 		t.Fatal("upload session key should delimit fields")
 	}
-	if got == UploadSessionKey("parent", "name", 13, "sha1") {
+	if got == Key("parent", "name", 13, "sha1") {
 		t.Fatal("upload session key should include size")
 	}
-	if got == UploadSessionKey("parent", "name", 12, "other") {
+	if got == Key("parent", "name", 12, "other") {
 		t.Fatal("upload session key should include hashes")
 	}
 }

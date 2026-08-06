@@ -46,8 +46,8 @@ func (d *Driver) deleteUploadSession(key string) {
 	d.uploadSessionStore().Delete(key)
 }
 
-func (d *Driver) uploadSessionStore() *uploadsession.UploadSessionStore[p115UploadSession] {
-	return uploadsession.NewUploadSessionStore(uploadsession.UploadSessionStoreOptions[p115UploadSession]{
+func (d *Driver) uploadSessionStore() *uploadsession.Store[p115UploadSession] {
+	return uploadsession.NewStore(uploadsession.StoreOptions[p115UploadSession]{
 		Store:      d.stateStore,
 		File:       p115UploadSessionStateFile,
 		MaxAge:     p115UploadSessionMaxAge,
