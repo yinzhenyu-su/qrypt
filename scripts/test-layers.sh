@@ -47,6 +47,22 @@ measure() {
     ' "$tmp" | sort -rn | head -10 | while read -r t p; do
       printf '  %6.2fs  %s\n' "$t" "$p"
     done
+    # CI: write the per-package timings into the step summary so a >20s
+    # regression can be traced without re-running locally. Separate the
+    # layers by job name via the caller-provided label.
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      {
+        echo "### $label"
+        awk -F'"' '
+          /"Action":"pass"/ && !/"Test":"/ && /"Package":"[^"]+"/ && /"Elapsed":[0-9.]+/ {
+            pkg=$0; sub(/.*"Package":"/, "", pkg); sub(/".*/, "", pkg)
+            el=$0; sub(/.*"Elapsed":/, "", el); sub(/[^0-9.].*/, "", el)
+            print "| " pkg " | " el "s |"
+          }
+        ' "$tmp" | sort -t'|' -k3 -rn | head -10
+        echo
+      } >> "$GITHUB_STEP_SUMMARY"
+    fi
     rm -f "$tmp"
     local end=$(( $(date +%s) - start ))
     printf '== %s: %ds ==\n' "$label" "$end"
