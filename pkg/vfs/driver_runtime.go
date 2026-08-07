@@ -39,7 +39,7 @@ func (r vfsDriverRuntime) MutationBackend() mutationBackend {
 	return newDriverMutationBackend(r.v.driver)
 }
 
-func (r vfsDriverRuntime) RemoteMutationBackend() remoteMutationBackend {
+func (r vfsDriverRuntime) RemoteMutationBackend() driverRemoteMutationBackend {
 	return newDriverRemoteMutationBackend(r.v.driver)
 }
 

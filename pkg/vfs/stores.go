@@ -1,137 +1,40 @@
 package vfs
 
 import (
-	"github.com/yinzhenyu/qrypt/internal/logging"
+	"path/filepath"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
-	"hash/fnv"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
-const (
-	cacheBatchBlocks         = 16
-	readCacheIndexVersion    = 1
-	readCacheIndexName       = "index.json"
-	readCacheLargeFileBytes  = 16 << 20
-	readCacheSmallReserveDiv = 4
-	readCacheWriteQueueSize  = 64
-	readCacheWriteBatchLimit = 16
-	readCacheIndexSaveDelay  = 30 * time.Second
-	journalCompactMaxBytes   = 512 << 10
-	journalCompactMaxEntries = 1024
-)
-
-// reserveFraction and minReserveBytes control how much disk space is kept
-// free when capping cache maxSize by available disk space.
 // Type aliases for shared data types (implementations in internal/vfstypes).
 type PendingUpload = vfstypes.PendingUpload
 type UploadReplacement = vfstypes.UploadReplacement
 type UploadStagingStatus = vfstypes.UploadStagingStatus
-type chunkInfo struct {
-	file     string
-	offset   int64
-	size     int64
-	accessAt time.Time
-}
 
-type fileChunks struct {
-	fileSize int64
-	mu       sync.RWMutex
-	chunks   map[int64]chunkInfo
-}
+// readCacheStore aliases the durable read-cache store (internal/readcache).
+type readCacheStore = readcache.Store
 
-type readCacheIndex struct {
-	Version int                           `json:"version"`
-	Files   map[string]readCacheIndexFile `json:"files,omitempty"`
-}
-type readCacheIndexFile struct {
-	Size   int64                          `json:"size,omitempty"`
-	Chunks map[string]readCacheIndexChunk `json:"chunks,omitempty"`
-}
-type readCacheIndexChunk struct {
-	Batch    int64     `json:"batch"`
-	Offset   int64     `json:"offset"`
-	Size     int64     `json:"size"`
-	AccessAt time.Time `json:"access_at"`
-}
-type readCacheWrite struct {
-	fid      string
-	fileSize int64
-	index    int64
-	data     []byte
-	queuedAt time.Time
-}
+// DebugReadCache / DebugReadCacheFile are exported aliases for callers
+// outside pkg/vfs (implementations live in internal/readcache).
+type DebugReadCache = readcache.DebugReadCache
+type DebugReadCacheFile = readcache.DebugReadCacheFile
+
+// readCacheLargeFileBytes marks files that are too large to seed into the
+// read cache from upload staging.
+var readCacheLargeFileBytes int64 = readcache.ReadCacheLargeFileBytes
+
 type Stores struct {
 	*readCacheStore
 	*uploadStore
-}
-type readCacheStore struct {
-	dir     string
-	maxSize int64
-
-	shards        [readCacheShards]readCacheShard
-	readBytes     atomic.Int64
-	lastDiskCheck atomic.Int64 // unix nano
-	stats         cacheStats
-	errMu         sync.Mutex
-	lastGetError  string
-	lastGetAt     time.Time
-	lastPutError  string
-	lastPutAt     time.Time
-
-	cacheWriteQueue     chan readCacheWrite
-	cacheWriteBytes     atomic.Int64
-	cacheWriteWG        sync.WaitGroup
-	cacheWriteWGMu      sync.Mutex
-	cacheWriterWG       sync.WaitGroup
-	cacheWriteMu        sync.Mutex
-	cacheWritesInFlight map[string]struct{}
-	cacheWriteClosed    bool
-	readIndexSaveMu     sync.Mutex
-	readIndexMu         sync.Mutex
-	readIndexDirty      bool
-	readIndexTimer      *time.Timer
-}
-
-// readCacheShards is the number of independent lock domains over the
-// in-memory chunk index. Sharding by file id keeps concurrent reads of
-// different files from contending on a single global lock, and isolates a
-// window-load write (one shard) from reads of other files (other shards).
-const readCacheShards = 16
-
-type readCacheShard struct {
-	mu     sync.RWMutex
-	chunks map[string]*fileChunks
-}
-
-func (c *readCacheStore) shardFor(fid string) *readCacheShard {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(fid))
-	return &c.shards[h.Sum32()%readCacheShards]
-}
-
-type cacheStats struct {
-	hits             atomic.Int64
-	misses           atomic.Int64
-	puts             atomic.Int64
-	evicted          atomic.Int64
-	writeDropped     atomic.Int64
-	lastWriteMS      atomic.Int64
-	maxWriteMS       atomic.Int64
-	lastWriteQueueMS atomic.Int64
-	maxWriteQueueMS  atomic.Int64
 }
 
 func NewStoresInDir(dir string, maxSize int64) (*Stores, error) {
 	return NewStores(dir, filepath.Join(dir, "reading"), maxSize)
 }
 func NewStores(uploadDir, readCacheDir string, maxSize int64) (*Stores, error) {
-	readCache, err := newReadCacheStore(readCacheDir, maxSize)
+	readCache, err := readcache.NewStore(readCacheDir, maxSize)
 	if err != nil {
 		return nil, err
 	}
@@ -144,53 +47,4 @@ func NewStores(uploadDir, readCacheDir string, maxSize int64) (*Stores, error) {
 }
 func newUploadStore(dir string) (*uploadStore, error) {
 	return upload.NewPendingStore(dir)
-}
-func newReadCacheStore(dir string, maxSize int64) (*readCacheStore, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	// Clean up incomplete cache seed files from previous runs. Completed batch
-	// files are reconciled after loading the persistent read-cache index.
-	if entries, err := os.ReadDir(dir); err == nil {
-		var cleaned int
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if strings.HasSuffix(entry.Name(), ".seed") || entry.Name() == readCacheIndexName+".tmp" {
-				_ = os.Remove(filepath.Join(dir, entry.Name()))
-				cleaned++
-			}
-		}
-		if cleaned > 0 {
-			logging.L.Infof("[CACHE] cleaned %d orphaned read cache seed files", cleaned)
-		}
-	}
-	// maxSize <= 0 disables the read cache: no writer goroutine, no write
-	// queue, no index load, and every public method short-circuits. The
-	// directory is still created and orphaned seed files are cleaned so a
-	// previously-enabled mount leaves no debris behind.
-	if maxSize <= 0 {
-		return &readCacheStore{dir: dir}, nil
-	}
-	adjusted, reason := limitByDiskSpace(maxSize, dir)
-	if reason != "" {
-		logging.L.Infof("[CACHE] %s", reason)
-	}
-	store := &readCacheStore{
-		dir:                 dir,
-		maxSize:             adjusted,
-		cacheWriteQueue:     make(chan readCacheWrite, readCacheWriteQueueSize),
-		cacheWritesInFlight: map[string]struct{}{},
-		cacheWriteClosed:    false,
-	}
-	for i := range store.shards {
-		store.shards[i].chunks = map[string]*fileChunks{}
-	}
-	if err := store.loadReadIndex(); err != nil {
-		logging.L.Warnf("[CACHE] load read cache index failed: %v", err)
-	}
-	store.cacheWriterWG.Add(1)
-	go store.runReadCacheWriter()
-	return store, nil
 }

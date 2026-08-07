@@ -6,14 +6,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-type remoteMutationBackend interface {
-	CanWrite() bool
-	List(ctx context.Context, parentID string) ([]drive.Entry, error)
-	PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error)
-	Remove(ctx context.Context, entry drive.Entry) error
-	Rename(ctx context.Context, entry drive.Entry, newName string) error
-}
-
 type driverRemoteMutationBackend struct {
 	driver drive.Driver
 }

@@ -1,4 +1,4 @@
-package vfs
+package readcache
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 // unrelated files; with 16 shards they proceed in parallel.
 func BenchmarkCacheIndexContention(b *testing.B) {
 	const readers = 8
-	c := &readCacheStore{}
+	c := &Store{}
 	for i := range c.shards {
 		c.shards[i].chunks = map[string]*fileChunks{}
 	}
@@ -22,7 +22,7 @@ func BenchmarkCacheIndexContention(b *testing.B) {
 	for r := 0; r < readers; r++ {
 		fid := fmt.Sprintf("reader-%d", r)
 		fc := c.fileChunks(fid)
-		fc.chunks[0] = chunkInfo{file: "x", offset: 0, size: 1, accessAt: nowForTest()}
+		fc.chunks[0] = chunkInfo{file: "x", offset: 0, size: 1, accessAt: time.Now()}
 	}
 	readerFIDs := make([]string, readers)
 	for i := range readerFIDs {
@@ -65,5 +65,3 @@ func BenchmarkCacheIndexContention(b *testing.B) {
 	close(stop)
 	wg.Wait()
 }
-
-func nowForTest() time.Time { return time.Now() }

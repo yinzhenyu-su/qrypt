@@ -8,6 +8,8 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"io"
 	"maps"
 	"os"
@@ -40,12 +42,12 @@ func ResetDebugStartedAt() time.Time {
 }
 
 const (
-	uploadSnapshotStatePreparing  = string(drive.UploadPhasePreparing)
-	uploadSnapshotStateUploading  = string(drive.UploadPhaseUploading)
-	uploadSnapshotStateCommitting = string(drive.UploadPhaseCommitting)
-	uploadSnapshotStateCompleted  = string(drive.UploadPhaseCompleted)
-	uploadSnapshotStateFailed     = "failed"
-	uploadSnapshotStateSuperseded = "superseded"
+	uploadSnapshotStatePreparing  = upload.SnapshotStatePreparing
+	uploadSnapshotStateUploading  = upload.SnapshotStateUploading
+	uploadSnapshotStateCommitting = upload.SnapshotStateCommitting
+	uploadSnapshotStateCompleted  = upload.SnapshotStateCompleted
+	uploadSnapshotStateFailed     = upload.SnapshotStateFailed
+	uploadSnapshotStateSuperseded = upload.SnapshotStateSuperseded
 )
 
 type DebugSnapshot struct {
@@ -66,13 +68,13 @@ type encryptedMarker interface {
 }
 
 type MountSnapshot struct {
-	Identity    MountSnapshotIdentity `json:"identity"`
-	Queues      MountSnapshotQueues   `json:"queues"`
-	Overlay     MountSnapshotOverlay  `json:"overlay"`
-	UploadState MountSnapshotUploads  `json:"upload_state"`
-	Cache       DebugReadCache        `json:"cache"`
-	Events      MountSnapshotEvents   `json:"events"`
-	Runtime     MountSnapshotRuntime  `json:"runtime"`
+	Identity    MountSnapshotIdentity    `json:"identity"`
+	Queues      MountSnapshotQueues      `json:"queues"`
+	Overlay     MountSnapshotOverlay     `json:"overlay"`
+	UploadState MountSnapshotUploads     `json:"upload_state"`
+	Cache       readcache.DebugReadCache `json:"cache"`
+	Events      MountSnapshotEvents      `json:"events"`
+	Runtime     MountSnapshotRuntime     `json:"runtime"`
 }
 
 type MountSnapshotIdentity struct {
@@ -147,46 +149,6 @@ type DebugOverlayOp struct {
 type DebugCopyHidden struct {
 	Dir   string       `json:"dir"`
 	Names []DebugTimer `json:"names"`
-}
-
-type DebugReadCache struct {
-	Enabled             bool                 `json:"enabled"`
-	MaxBytes            int64                `json:"max_bytes"`
-	LargeFileThreshold  int64                `json:"large_file_threshold"`
-	ChunkCount          int                  `json:"chunk_count"`
-	Bytes               int64                `json:"bytes"`
-	LargeFileBytes      int64                `json:"large_file_bytes"`
-	SmallFileBytes      int64                `json:"small_file_bytes"`
-	FileCount           int                  `json:"file_count"`
-	Hits                int64                `json:"hits"`
-	Misses              int64                `json:"misses"`
-	Puts                int64                `json:"puts"`
-	Evicted             int64                `json:"evicted"`
-	LastGetError        string               `json:"last_get_error,omitempty"`
-	LastGetErrorAt      *time.Time           `json:"last_get_error_at,omitempty"`
-	LastPutError        string               `json:"last_put_error,omitempty"`
-	LastPutErrorAt      *time.Time           `json:"last_put_error_at,omitempty"`
-	WriteQueueLength    int                  `json:"write_queue_len"`
-	WriteQueueCap       int                  `json:"write_queue_cap"`
-	WriteQueueBytes     int64                `json:"write_queue_bytes"`
-	WriteQueueMaxBytes  int64                `json:"write_queue_max_bytes"`
-	WriteQueueDropped   int64                `json:"write_queue_dropped"`
-	LastWriteMS         int64                `json:"last_write_ms,omitempty"`
-	MaxWriteMS          int64                `json:"max_write_ms,omitempty"`
-	LastWriteQueueMS    int64                `json:"last_write_queue_ms,omitempty"`
-	MaxWriteQueueMS     int64                `json:"max_write_queue_ms,omitempty"`
-	IndexDirty          bool                 `json:"index_dirty"`
-	IndexFlushScheduled bool                 `json:"index_flush_scheduled"`
-	Files               []DebugReadCacheFile `json:"files,omitempty"`
-	Journal             *DebugJournal        `json:"journal,omitempty"`
-}
-
-type DebugReadCacheFile struct {
-	ID         string `json:"id"`
-	Size       int64  `json:"size,omitempty"`
-	Large      bool   `json:"large,omitempty"`
-	ChunkCount int    `json:"chunk_count"`
-	Bytes      int64  `json:"bytes"`
 }
 
 type DebugStagingReport struct {
@@ -459,87 +421,8 @@ func (r vfsDebugActiveRuntime) Snapshot() []DebugActiveOp {
 	return ops
 }
 
-// --- migrated from debug_cache.go ---
-
-func (c *readCacheStore) debugReadCache() DebugReadCache {
-	snapshot := DebugReadCache{Enabled: c.enabled(), MaxBytes: c.maxSize, LargeFileThreshold: readCacheLargeFileBytes}
-	if !c.enabled() {
-		return snapshot
-	}
-	snapshot.WriteQueueLength = len(c.cacheWriteQueue)
-	snapshot.WriteQueueCap = cap(c.cacheWriteQueue)
-	snapshot.WriteQueueBytes = c.cacheWriteBytes.Load()
-	snapshot.WriteQueueMaxBytes = int64(cap(c.cacheWriteQueue)) * readChunkSize
-	c.readIndexMu.Lock()
-	snapshot.IndexDirty = c.readIndexDirty
-	snapshot.IndexFlushScheduled = c.readIndexTimer != nil
-	c.readIndexMu.Unlock()
-	fileCount := 0
-	for i := range c.shards {
-		sh := &c.shards[i]
-		sh.mu.RLock()
-		fileCount += len(sh.chunks)
-		sh.mu.RUnlock()
-	}
-	snapshot.FileCount = fileCount
-	snapshot.Hits = c.stats.hits.Load()
-	snapshot.Misses = c.stats.misses.Load()
-	snapshot.Puts = c.stats.puts.Load()
-	snapshot.Evicted = c.stats.evicted.Load()
-	snapshot.WriteQueueDropped = c.stats.writeDropped.Load()
-	snapshot.LastWriteMS = c.stats.lastWriteMS.Load()
-	snapshot.MaxWriteMS = c.stats.maxWriteMS.Load()
-	snapshot.LastWriteQueueMS = c.stats.lastWriteQueueMS.Load()
-	snapshot.MaxWriteQueueMS = c.stats.maxWriteQueueMS.Load()
-	snapshot.LastGetError = c.lastGetError
-	if !c.lastGetAt.IsZero() {
-		at := c.lastGetAt
-		snapshot.LastGetErrorAt = &at
-	}
-	snapshot.LastPutError = c.lastPutError
-	if !c.lastPutAt.IsZero() {
-		at := c.lastPutAt
-		snapshot.LastPutErrorAt = &at
-	}
-	for i := range c.shards {
-		sh := &c.shards[i]
-		sh.mu.RLock()
-		for fid, fc := range sh.chunks {
-			fc.mu.RLock()
-			file := DebugReadCacheFile{ID: fid, Size: fc.fileSize}
-			for _, chunk := range fc.chunks {
-				snapshot.ChunkCount++
-				snapshot.Bytes += chunk.size
-				file.ChunkCount++
-				file.Bytes += chunk.size
-			}
-			file.Large = readCacheFileLarge(file.Size, file.Bytes)
-			if file.Large {
-				snapshot.LargeFileBytes += file.Bytes
-			} else {
-				snapshot.SmallFileBytes += file.Bytes
-			}
-			if file.ChunkCount > 0 {
-				snapshot.Files = append(snapshot.Files, file)
-			}
-			fc.mu.RUnlock()
-		}
-		sh.mu.RUnlock()
-	}
-	sort.Slice(snapshot.Files, func(i, j int) bool {
-		return snapshot.Files[i].ID < snapshot.Files[j].ID
-	})
-	return snapshot
-}
-
-func (c *Stores) DebugReadCacheForTest() DebugReadCache {
-	snapshot := c.readCacheStore.debugReadCache()
-	snapshot.Journal = c.uploadStore.DebugJournal()
-	return snapshot
-}
-
 type debugCacheRuntime interface {
-	ReadCache() DebugReadCache
+	ReadCache() readcache.DebugReadCache
 	Journal() *DebugJournal
 }
 
@@ -551,17 +434,25 @@ func newVFSDebugCacheRuntime(v *VFS) vfsDebugCacheRuntime {
 	return vfsDebugCacheRuntime{v: v}
 }
 
-func (r vfsDebugCacheRuntime) ReadCache() DebugReadCache {
-	return r.v.read.cache.debugReadCache()
+func (r vfsDebugCacheRuntime) ReadCache() readcache.DebugReadCache {
+	return r.v.read.cache.DebugSnapshot()
 }
 
 func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
 	return r.v.uploads.Store().DebugJournal()
 }
 
-func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) DebugReadCache {
+func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) readcache.DebugReadCache {
 	snapshot := runtime.ReadCache()
 	snapshot.Journal = runtime.Journal()
+	return snapshot
+}
+
+// DebugReadCacheForTest exposes the read cache debug snapshot with the
+// upload journal attached, for tests.
+func (c *Stores) DebugReadCacheForTest() readcache.DebugReadCache {
+	snapshot := c.readCacheStore.DebugSnapshot()
+	snapshot.Journal = c.uploadStore.DebugJournal()
 	return snapshot
 }
 
@@ -1038,7 +929,7 @@ func (r vfsDebugReadRuntime) NextOpID() string {
 }
 
 func (r vfsDebugReadRuntime) CacheCounters() (hits, misses int64) {
-	return r.v.read.cache.stats.hits.Load(), r.v.read.cache.stats.misses.Load()
+	return r.v.read.cache.Counters()
 }
 
 func (r vfsDebugReadRuntime) AppendEvent(event drive.MetricEvent) {
@@ -1472,7 +1363,7 @@ func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
 	return snapshot
 }
 
-func (v *VFS) debugCacheSnapshot() DebugReadCache {
+func (v *VFS) debugCacheSnapshot() readcache.DebugReadCache {
 	return debugCacheSnapshotWithRuntime(newVFSDebugCacheRuntime(v))
 }
 
@@ -1500,7 +1391,7 @@ func (s MountSnapshot) DriverMetricEvents() []drive.MetricEvent {
 	return s.Events.Driver
 }
 
-func (s MountSnapshot) ReadCacheState() DebugReadCache {
+func (s MountSnapshot) ReadCacheState() readcache.DebugReadCache {
 	return s.Cache
 }
 

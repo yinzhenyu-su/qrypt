@@ -1,4 +1,4 @@
-package vfs
+package readcache
 
 import (
 	"crypto/sha256"
@@ -19,16 +19,23 @@ import (
 
 const (
 	cacheAccessWriteInterval = time.Second
+	readChunkSize            = 1024 * 1024
 )
+
+func durationMillis(d time.Duration) int64 { return d.Milliseconds() }
+
+func chunkKey(fid string, index int64) string {
+	return fid + "\x00" + strconv.FormatInt(index, 10)
+}
 
 // enabled reports whether the read cache is active. A store constructed
 // with max_size <= 0 is disabled: it never writes chunks, never persists an
 // index, and reports every lookup as a miss.
-func (c *readCacheStore) enabled() bool {
+func (c *Store) enabled() bool {
 	return c.maxSize > 0
 }
 
-func (c *readCacheStore) GetChunk(fid string, index int64) ([]byte, bool, error) {
+func (c *Store) GetChunk(fid string, index int64) ([]byte, bool, error) {
 	if !c.enabled() {
 		return nil, false, nil
 	}
@@ -67,23 +74,23 @@ func (c *readCacheStore) GetChunk(fid string, index int64) ([]byte, bool, error)
 		fc.chunks[index] = info
 		fc.mu.Unlock()
 	}
-	c.addHit()
+	c.AddHit()
 	return data, true, nil
 }
-func (c *readCacheStore) GetChunkRange(fid string, index, start, size int64) ([]byte, bool, error) {
+func (c *Store) GetChunkRange(fid string, index, start, size int64) ([]byte, bool, error) {
 	if !c.enabled() {
 		return nil, false, nil
 	}
 	data, _, ok, err := c.getChunkRange(fid, index, start, size, false)
 	return data, ok, err
 }
-func (c *readCacheStore) GetChunkWithRange(fid string, index, start, size int64) ([]byte, []byte, bool, error) {
+func (c *Store) GetChunkWithRange(fid string, index, start, size int64) ([]byte, []byte, bool, error) {
 	if !c.enabled() {
 		return nil, nil, false, nil
 	}
 	return c.getChunkRange(fid, index, start, size, true)
 }
-func (c *readCacheStore) getChunkRange(fid string, index, start, size int64, includeChunk bool) ([]byte, []byte, bool, error) {
+func (c *Store) getChunkRange(fid string, index, start, size int64, includeChunk bool) ([]byte, []byte, bool, error) {
 	if start < 0 || size < 0 {
 		return nil, nil, false, fmt.Errorf("cache: chunk range must be non-negative")
 	}
@@ -103,7 +110,7 @@ func (c *readCacheStore) getChunkRange(fid string, index, start, size int64, inc
 		return nil, nil, false, nil
 	}
 	if start >= info.size {
-		c.addHit()
+		c.AddHit()
 		return nil, nil, true, nil
 	}
 	if size == 0 || start+size > info.size {
@@ -164,10 +171,10 @@ func (c *readCacheStore) getChunkRange(fid string, index, start, size int64, inc
 		fc.chunks[index] = info
 		fc.mu.Unlock()
 	}
-	c.addHit()
+	c.AddHit()
 	return data, chunk, true, nil
 }
-func (c *readCacheStore) HasChunk(fid string, index int64) (bool, error) {
+func (c *Store) HasChunk(fid string, index int64) (bool, error) {
 	if !c.enabled() {
 		return false, nil
 	}
@@ -186,7 +193,7 @@ func (c *readCacheStore) HasChunk(fid string, index int64) (bool, error) {
 	}
 	return true, nil
 }
-func (c *readCacheStore) dropReadChunkIndex(fid string, index int64) {
+func (c *Store) dropReadChunkIndex(fid string, index int64) {
 	sh := c.shardFor(fid)
 	sh.mu.RLock()
 	fc := sh.chunks[fid]
@@ -215,14 +222,14 @@ func (c *readCacheStore) dropReadChunkIndex(fid string, index int64) {
 func isStaleReadCacheError(err error) bool {
 	return os.IsNotExist(err) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
-func (c *readCacheStore) PutChunk(fid string, fileSize, index int64, data []byte) error {
+func (c *Store) PutChunk(fid string, fileSize, index int64, data []byte) error {
 	if err := c.putChunk(fid, fileSize, index, data); err != nil {
 		return err
 	}
 	c.scheduleReadIndexSave()
 	return nil
 }
-func (c *readCacheStore) putChunk(fid string, fileSize, index int64, data []byte) error {
+func (c *Store) putChunk(fid string, fileSize, index int64, data []byte) error {
 	if !c.enabled() {
 		return nil
 	}
@@ -267,7 +274,7 @@ func (c *readCacheStore) putChunk(fid string, fileSize, index int64, data []byte
 	}
 	return nil
 }
-func (c *readCacheStore) PutLocalFile(fid string, fileSize int64, localPath string) error {
+func (c *Store) PutLocalFile(fid string, fileSize int64, localPath string) error {
 	if fid == "" {
 		return nil
 	}
@@ -361,12 +368,12 @@ func (c *readCacheStore) PutLocalFile(fid string, fileSize int64, localPath stri
 	c.scheduleReadIndexSave()
 	return nil
 }
-func (c *readCacheStore) cleanupSeedFiles(files map[string]string) {
+func (c *Store) cleanupSeedFiles(files map[string]string) {
 	for _, tmpPath := range files {
 		_ = os.Remove(tmpPath)
 	}
 }
-func (c *readCacheStore) replaceFileChunks(fid string, fileSize int64, chunks map[int64]chunkInfo) map[string]struct{} {
+func (c *Store) replaceFileChunks(fid string, fileSize int64, chunks map[int64]chunkInfo) map[string]struct{} {
 	var newBytes int64
 	for _, chunk := range chunks {
 		newBytes += chunk.size
@@ -392,7 +399,7 @@ func (c *readCacheStore) replaceFileChunks(fid string, fileSize int64, chunks ma
 	c.readBytes.Add(newBytes - oldBytes)
 	return files
 }
-func (c *readCacheStore) InvalidateFile(fid string) {
+func (c *Store) InvalidateFile(fid string) {
 	sh := c.shardFor(fid)
 	sh.mu.Lock()
 	fc := sh.chunks[fid]
@@ -438,19 +445,25 @@ func isSHA256Hex(s string) bool {
 	}
 	return true
 }
-func (c *readCacheStore) addHit() {
+
+// Counters returns the hit/miss counters.
+func (c *Store) Counters() (hits, misses int64) {
+	return c.stats.hits.Load(), c.stats.misses.Load()
+}
+
+func (c *Store) AddHit() {
 	c.stats.hits.Add(1)
 }
-func (c *readCacheStore) addMiss() {
+func (c *Store) addMiss() {
 	c.stats.misses.Add(1)
 }
-func (c *readCacheStore) addPut() {
+func (c *Store) addPut() {
 	c.stats.puts.Add(1)
 }
-func (c *readCacheStore) addWriteDropped() {
+func (c *Store) addWriteDropped() {
 	c.stats.writeDropped.Add(1)
 }
-func (c *readCacheStore) recordReadCacheWriteTiming(queueMS, writeMS int64) {
+func (c *Store) recordReadCacheWriteTiming(queueMS, writeMS int64) {
 	c.stats.lastWriteQueueMS.Store(queueMS)
 	for {
 		cur := c.stats.maxWriteQueueMS.Load()
@@ -466,7 +479,7 @@ func (c *readCacheStore) recordReadCacheWriteTiming(queueMS, writeMS int64) {
 		}
 	}
 }
-func (c *readCacheStore) setLastGetError(err error) {
+func (c *Store) setLastGetError(err error) {
 	if err == nil {
 		return
 	}
@@ -475,7 +488,7 @@ func (c *readCacheStore) setLastGetError(err error) {
 	c.lastGetAt = timeutil.Now()
 	c.errMu.Unlock()
 }
-func (c *readCacheStore) setLastPutError(err error) {
+func (c *Store) setLastPutError(err error) {
 	if err == nil {
 		return
 	}
@@ -484,7 +497,7 @@ func (c *readCacheStore) setLastPutError(err error) {
 	c.lastPutAt = timeutil.Now()
 	c.errMu.Unlock()
 }
-func (c *readCacheStore) fileChunks(fid string, fileSize ...int64) *fileChunks {
+func (c *Store) fileChunks(fid string, fileSize ...int64) *fileChunks {
 	sh := c.shardFor(fid)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -501,7 +514,7 @@ func (c *readCacheStore) fileChunks(fid string, fileSize ...int64) *fileChunks {
 
 // --- read_cache_index.go ---
 
-func (c *readCacheStore) loadReadIndex() error {
+func (c *Store) loadReadIndex() error {
 	path := c.readIndexPath()
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -572,7 +585,7 @@ func (c *readCacheStore) loadReadIndex() error {
 	}
 	return nil
 }
-func (c *readCacheStore) scheduleReadIndexSave() {
+func (c *Store) scheduleReadIndexSave() {
 	c.readIndexMu.Lock()
 	c.readIndexDirty = true
 	if c.readIndexTimer != nil {
@@ -587,7 +600,7 @@ func (c *readCacheStore) scheduleReadIndexSave() {
 	})
 	c.readIndexMu.Unlock()
 }
-func (c *readCacheStore) FlushReadIndex() error {
+func (c *Store) FlushReadIndex() error {
 	c.readIndexSaveMu.Lock()
 	defer c.readIndexSaveMu.Unlock()
 
@@ -611,7 +624,7 @@ func (c *readCacheStore) FlushReadIndex() error {
 		}
 	}
 }
-func (c *readCacheStore) saveReadIndexNow() error {
+func (c *Store) saveReadIndexNow() error {
 	index := c.readIndexSnapshot()
 	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
@@ -623,7 +636,7 @@ func (c *readCacheStore) saveReadIndexNow() error {
 	}
 	return writeFileAtomic(c.readIndexPath(), data, 0o644)
 }
-func (c *readCacheStore) readIndexSnapshot() readCacheIndex {
+func (c *Store) readIndexSnapshot() readCacheIndex {
 	index := readCacheIndex{Version: readCacheIndexVersion}
 	for i := range c.shards {
 		sh := &c.shards[i]
@@ -656,7 +669,7 @@ func (c *readCacheStore) readIndexSnapshot() readCacheIndex {
 	}
 	return index
 }
-func (c *readCacheStore) cleanupUnindexedReadCacheBatches(referenced map[string]struct{}) int {
+func (c *Store) cleanupUnindexedReadCacheBatches(referenced map[string]struct{}) int {
 	entries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return 0
@@ -677,13 +690,13 @@ func (c *readCacheStore) cleanupUnindexedReadCacheBatches(referenced map[string]
 	}
 	return cleaned
 }
-func (c *readCacheStore) readIndexPath() string {
+func (c *Store) readIndexPath() string {
 	return filepath.Join(c.dir, readCacheIndexName)
 }
-func (c *readCacheStore) readBatchPath(fid string, batch int64) string {
+func (c *Store) readBatchPath(fid string, batch int64) string {
 	return filepath.Join(c.dir, fmt.Sprintf("%s_%d.batch", cacheFileID(fid), batch))
 }
-func (c *readCacheStore) ensureReadCacheDir() error {
+func (c *Store) ensureReadCacheDir() error {
 	return os.MkdirAll(c.dir, 0o755)
 }
 
@@ -731,7 +744,7 @@ func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
 	}
 	return maxSize, ""
 }
-func (c *readCacheStore) evictIfNeeded() error {
+func (c *Store) evictIfNeeded() error {
 	maxSize := c.maxSize
 	if maxSize <= 0 {
 		return nil
@@ -822,12 +835,12 @@ func (c *readCacheStore) evictIfNeeded() error {
 	return nil
 }
 func readCacheFileLarge(fileSize, cachedBytes int64) bool {
-	if fileSize >= readCacheLargeFileBytes {
+	if fileSize >= ReadCacheLargeFileBytes {
 		return true
 	}
-	return fileSize == 0 && cachedBytes >= readCacheLargeFileBytes
+	return fileSize == 0 && cachedBytes >= ReadCacheLargeFileBytes
 }
-func (c *readCacheStore) removeReadChunk(fid string, index int64, expected chunkInfo) bool {
+func (c *Store) removeReadChunk(fid string, index int64, expected chunkInfo) bool {
 	sh := c.shardFor(fid)
 	sh.mu.RLock()
 	fc := sh.chunks[fid]
@@ -859,7 +872,7 @@ func (c *readCacheStore) removeReadChunk(fid string, index int64, expected chunk
 
 // --- read_cache_writer.go ---
 
-func (c *readCacheStore) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
+func (c *Store) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
 	if !c.enabled() {
 		return
 	}
@@ -869,7 +882,7 @@ func (c *readCacheStore) PutChunkAsync(fid string, fileSize, index int64, data [
 	if ok, err := c.HasChunk(fid, index); err != nil || ok {
 		return
 	}
-	writeKey := readChunkKey(fid, index)
+	writeKey := chunkKey(fid, index)
 	copied := make([]byte, len(data))
 	copy(copied, data)
 	c.cacheWriteWGMu.Lock()
@@ -907,7 +920,7 @@ func (c *readCacheStore) PutChunkAsync(fid string, fileSize, index int64, data [
 	c.cacheWriteMu.Unlock()
 	c.cacheWriteWGMu.Unlock()
 }
-func (c *readCacheStore) runReadCacheWriter() {
+func (c *Store) runReadCacheWriter() {
 	defer c.cacheWriterWG.Done()
 	for write := range c.cacheWriteQueue {
 		writes := []readCacheWrite{write}
@@ -926,7 +939,7 @@ func (c *readCacheStore) runReadCacheWriter() {
 		c.handleReadCacheWrites(writes)
 	}
 }
-func (c *readCacheStore) handleReadCacheWrites(writes []readCacheWrite) {
+func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			logging.L.Warnf("[CACHE] async put chunk panic recovered writes=%d panic=%v", len(writes), recovered)
@@ -937,7 +950,7 @@ func (c *readCacheStore) handleReadCacheWrites(writes []readCacheWrite) {
 		c.cacheWriteMu.Lock()
 		for _, write := range writes {
 			c.cacheWriteBytes.Add(-int64(len(write.data)))
-			delete(c.cacheWritesInFlight, readChunkKey(write.fid, write.index))
+			delete(c.cacheWritesInFlight, chunkKey(write.fid, write.index))
 		}
 		c.cacheWriteMu.Unlock()
 	}()
@@ -989,7 +1002,7 @@ func (c *readCacheStore) handleReadCacheWrites(writes []readCacheWrite) {
 		c.scheduleReadIndexSave()
 	}
 }
-func (c *readCacheStore) writeReadCacheChunk(f *os.File, path string, write readCacheWrite) error {
+func (c *Store) writeReadCacheChunk(f *os.File, path string, write readCacheWrite) error {
 	offset := int64(write.index%cacheBatchBlocks) * readChunkSize
 	if _, err := f.WriteAt(write.data, offset); err != nil {
 		return err
@@ -1010,12 +1023,12 @@ func (c *readCacheStore) writeReadCacheChunk(f *os.File, path string, write read
 	c.addPut()
 	return nil
 }
-func (c *readCacheStore) WaitReadCacheWrites() {
+func (c *Store) WaitReadCacheWrites() {
 	c.cacheWriteWGMu.Lock()
 	c.cacheWriteWG.Wait()
 	c.cacheWriteWGMu.Unlock()
 }
-func (c *readCacheStore) FlushReadCache() error {
+func (c *Store) FlushReadCache() error {
 	if !c.enabled() {
 		return nil
 	}
@@ -1024,7 +1037,7 @@ func (c *readCacheStore) FlushReadCache() error {
 	c.cacheWriteWG.Wait()
 	return c.FlushReadIndex()
 }
-func (c *readCacheStore) ClearReadCache() error {
+func (c *Store) ClearReadCache() error {
 	if !c.enabled() {
 		return nil
 	}
@@ -1067,7 +1080,7 @@ func (c *readCacheStore) ClearReadCache() error {
 	}
 	return nil
 }
-func (c *readCacheStore) Close() error {
+func (c *Store) Close() error {
 	if !c.enabled() {
 		return nil
 	}

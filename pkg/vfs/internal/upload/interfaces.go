@@ -33,7 +33,6 @@ type Snapshot struct {
 }
 
 type RemoteOps interface {
-	Stat(ctx context.Context, id string) (drive.Entry, error)
 	List(ctx context.Context, parentID string) ([]drive.Entry, error)
 	PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error)
 	Remove(ctx context.Context, entry drive.Entry) error
@@ -46,6 +45,7 @@ type Observer interface {
 	Event(path, phase string, started time.Time, bytes int64, extra map[string]any)
 	Extra(path, key string, value any)
 	State(path, state string)
+	Uploaded(path string, n int)
 	Finish(path, state, lastErr string)
 	Metadata(path, remoteID string, hashes []string)
 	HealthResult(op string, err error)

@@ -224,7 +224,7 @@ func (r vfsReadRuntime) CacheKey(entry drive.Entry) string {
 }
 
 func (r vfsReadRuntime) AddCacheHit() {
-	r.v.read.cache.addHit()
+	r.v.read.cache.AddHit()
 }
 
 func (r vfsReadRuntime) HotChunk(cacheKey string, index int64) ([]byte, bool) {

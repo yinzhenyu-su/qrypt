@@ -1,11 +1,14 @@
-package vfs
+package upload
 
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"time"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
 )
 
 type uploadTarget struct {
@@ -14,7 +17,7 @@ type uploadTarget struct {
 	AlreadyReplaced bool
 }
 
-func prepareUploadTarget(ctx context.Context, remote remoteMutationBackend, parentID, name, fid, replaceUploadID string) (uploadTarget, error) {
+func prepareUploadTarget(ctx context.Context, remote RemoteOps, parentID, name, fid, replaceUploadID string) (uploadTarget, error) {
 	target := uploadTarget{UploadName: name}
 	if !remote.CanWrite() {
 		return target, nil
@@ -23,7 +26,7 @@ func prepareUploadTarget(ctx context.Context, remote remoteMutationBackend, pare
 	if err != nil {
 		return target, err
 	}
-	tempName := temporaryUploadName(name, fid)
+	tempName := TemporaryUploadName(name, fid)
 	for _, entry := range entries {
 		if entry.IsDir {
 			continue
@@ -50,7 +53,7 @@ func prepareUploadTarget(ctx context.Context, remote remoteMutationBackend, pare
 	}
 	return target, nil
 }
-func replaceUploadedFile(ctx context.Context, remote remoteMutationBackend, uploaded drive.Entry, existing []drive.Entry, finalName string) error {
+func replaceUploadedFile(ctx context.Context, remote RemoteOps, uploaded drive.Entry, existing []drive.Entry, finalName string) error {
 	for _, entry := range existing {
 		logging.L.InfofEvery("vfs.remove_existing_after_upload", time.Second, "[VFS] removing existing file after replacement upload parent=%q name=%q id=%q size=%d", entry.ParentID, entry.Name, entry.ID, entry.Size)
 		if err := remote.Remove(ctx, entry); err != nil {
@@ -62,33 +65,19 @@ func replaceUploadedFile(ctx context.Context, remote remoteMutationBackend, uplo
 	}
 	return nil
 }
-func temporaryUploadName(name, fid string) string {
+func TemporaryUploadName(name, fid string) string {
 	if fid == "" {
 		fid = stagingFID(name)
 	}
 	return ".qrypt-upload-" + fid + "-" + name
 }
-func uploadReplacementID(upload *UploadReplacement) string {
-	if upload == nil {
-		return ""
+func stagingFID(path string) string {
+	path = strings.Trim(vfstypes.CleanVirtualPath(path), "/")
+	if path == "" {
+		return "root"
 	}
-	return upload.ID
-}
-func uploadReplacement(entry drive.Entry) UploadReplacement {
-	return UploadReplacement{
-		ID:       entry.ID,
-		ParentID: entry.ParentID,
-		Name:     entry.Name,
-		Size:     entry.Size,
-	}
-}
-func uploadReplacementEntry(upload UploadReplacement) drive.Entry {
-	return drive.Entry{
-		ID:       upload.ID,
-		ParentID: upload.ParentID,
-		Name:     upload.Name,
-		Size:     upload.Size,
-	}
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_")
+	return replacer.Replace(path)
 }
 func validateUploadedEntry(entry drive.Entry, name string, size int64) error {
 	if entry.ID == "" {

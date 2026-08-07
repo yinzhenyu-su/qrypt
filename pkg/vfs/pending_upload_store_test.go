@@ -50,7 +50,7 @@ func TestUploadStoreAdapterRecordsPendingState(t *testing.T) {
 		t.Fatal("stale pending unexpectedly updated")
 	}
 
-	replaced, ok, err := adapter.RecordReplacementIfUnchanged(failed, UploadReplacement{ID: "uploaded", Name: temporaryUploadName("file.txt", "file"), Size: 5})
+	replaced, ok, err := adapter.RecordReplacementIfUnchanged(failed, UploadReplacement{ID: "uploaded", Name: upload.TemporaryUploadName("file.txt", "file"), Size: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

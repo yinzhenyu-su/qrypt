@@ -1,24 +1,29 @@
 package vfs
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
+)
 
 type fakeDebugCacheRuntime struct {
-	cache   DebugReadCache
-	journal *DebugJournal
+	cache   readcache.DebugReadCache
+	journal *upload.DebugJournal
 }
 
-func (r fakeDebugCacheRuntime) ReadCache() DebugReadCache {
+func (r fakeDebugCacheRuntime) ReadCache() readcache.DebugReadCache {
 	return r.cache
 }
 
-func (r fakeDebugCacheRuntime) Journal() *DebugJournal {
+func (r fakeDebugCacheRuntime) Journal() *upload.DebugJournal {
 	return r.journal
 }
 
 func TestDebugCacheSnapshotUsesRuntime(t *testing.T) {
-	journal := &DebugJournal{Path: "pending.jsonl", PendingCount: 2}
+	journal := &upload.DebugJournal{Path: "pending.jsonl", PendingCount: 2}
 	snapshot := debugCacheSnapshotWithRuntime(fakeDebugCacheRuntime{
-		cache: DebugReadCache{
+		cache: readcache.DebugReadCache{
 			Hits:       3,
 			Misses:     4,
 			ChunkCount: 5,

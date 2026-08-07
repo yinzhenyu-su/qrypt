@@ -1,35 +1,47 @@
-package vfs
+package upload
 
 import (
 	"context"
+	"time"
+
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
-	"time"
 )
 
-type uploadEngine struct {
-	remote   remoteMutationBackend
-	observer vfsUploadObserver
-	pending  upload.Store
-	runtime  vfsUploadRuntime
-	snapshot vfsUploadSnapshotter
-	faults   vfsUploadFaultController
+// EngineDeps wires the upload engine to VFS adapters.
+type EngineDeps struct {
+	Remote   RemoteOps
+	Observer Observer
+	Pending  Store
+	Runtime  Runtime
+	Snapshot Snapshotter
+	Faults   FaultController
 }
 
-func newUploadEngine(v *VFS) uploadEngine {
-	return uploadEngine{
-		remote:   newVFSDriverRuntime(v).RemoteMutationBackend(),
-		observer: newVFSUploadObserver(v),
-		pending:  upload.NewStoreAdapter(v.uploads.Store()),
-		runtime:  newVFSUploadRuntime(v),
-		snapshot: newVFSUploadSnapshotter(v),
-		faults:   newVFSUploadFaultController(v),
+// Engine executes pending uploads against a remote driver, reporting
+// progress through the observer and maintaining the pending store.
+type Engine struct {
+	remote   RemoteOps
+	observer Observer
+	pending  Store
+	runtime  Runtime
+	snapshot Snapshotter
+	faults   FaultController
+}
+
+func NewEngine(deps EngineDeps) *Engine {
+	return &Engine{
+		remote:   deps.Remote,
+		observer: deps.Observer,
+		pending:  deps.Pending,
+		runtime:  deps.Runtime,
+		snapshot: deps.Snapshot,
+		faults:   deps.Faults,
 	}
 }
 
-func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error {
+func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 	observer := e.observer
 	pendingStore := e.pending
 	runtime := e.runtime
@@ -46,10 +58,10 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 	}
 	observer.Extra(pending.Path, "local_path", pending.LocalPath)
 	observer.Extra(pending.Path, "parent_id", pending.ParentID)
-	finishState := uploadSnapshotStateFailed
+	finishState := SnapshotStateFailed
 	finishErr := ""
 	defer func() {
-		if finishState == uploadSnapshotStateCompleted || finishState == uploadSnapshotStateSuperseded {
+		if finishState == SnapshotStateCompleted || finishState == SnapshotStateSuperseded {
 			runtime.ClearUploadHashes(uploadFID)
 		}
 		observer.Finish(pending.Path, finishState, finishErr)
@@ -57,7 +69,7 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 
 	// Freeze the local file into an upload snapshot and confirm the pending
 	// record is still current before touching the remote.
-	observer.State(pending.Path, uploadSnapshotStatePreparing)
+	observer.State(pending.Path, SnapshotStatePreparing)
 	snapshot, ok, err := e.freezeSnapshot(pending)
 	if err != nil {
 		finishErr = err.Error()
@@ -73,7 +85,7 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 	observer.State(pending.Path, "prepare_remote")
 	phaseStart := timeutil.Now()
 	replaceUpload := pending.ReplaceUpload
-	if target, err := prepareUploadTarget(ctx, e.remote, pending.ParentID, pending.Name, pending.FID, uploadReplacementID(replaceUpload)); err != nil {
+	if target, err := prepareUploadTarget(ctx, e.remote, pending.ParentID, pending.Name, pending.FID, UploadReplacementID(replaceUpload)); err != nil {
 		observer.Event(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"error": err.Error()})
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload remote preparation failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
@@ -87,17 +99,17 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 	}
 	var entry drive.Entry
 	if replaceUpload != nil {
-		entry = uploadReplacementEntry(*replaceUpload)
+		entry = UploadReplacementToEntry(*replaceUpload)
 		if alreadyReplaced {
 			entry.Name = pending.Name
 		}
 		uploadName = entry.Name
 		observer.Metadata(pending.Path, entry.ID, nil)
 	} else {
-		observer.State(pending.Path, uploadSnapshotStateUploading)
+		observer.State(pending.Path, SnapshotStateUploading)
 	}
 	source := drive.NewLocalReadOnlyFileSourceWithHashes(snapshot.Path, pending.Size, snapshot.Hashes)
-	progress := uploadObserverProgress{observer: observer, path: pending.Path}
+	progress := observerProgress{observer: observer, path: pending.Path}
 	uploadCtx, uploadProgress, cleanupFault := faults.ApplyCancelFault(ctx, pending, progress, observer)
 	if cleanupFault != nil {
 		defer cleanupFault()
@@ -136,21 +148,21 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 		return err
 	}
 	if len(replaceExisting) > 0 && pending.ReplaceUpload == nil {
-		latest, ok, saveErr := pendingStore.RecordReplacementIfUnchanged(pending, uploadReplacement(entry))
+		latest, ok, saveErr := pendingStore.RecordReplacementIfUnchanged(pending, UploadReplacementFromEntry(entry))
 		if saveErr != nil {
 			finishErr = saveErr.Error()
 			logging.L.Warnf("[VFS] upload replace state save failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, saveErr)
 			return saveErr
 		}
 		if !ok {
-			finishState = uploadSnapshotStateSuperseded
+			finishState = SnapshotStateSuperseded
 			e.rollbackUploadedEntry(ctx, pending, entry)
 			return nil
 		}
 		pending = latest
 	}
-	if latest, ok := pendingStore.UploadByPath(pending.Path); !ok || !sameUploadRecord(latest, pending) {
-		finishState = uploadSnapshotStateSuperseded
+	if latest, ok := pendingStore.UploadByPath(pending.Path); !ok || !SameUploadRecord(latest, pending) {
+		finishState = SnapshotStateSuperseded
 		logging.L.InfofEvery("vfs.upload_stale_committed", time.Second, "[VFS] upload committed stale version; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
 		e.rollbackUploadedEntry(ctx, pending, entry)
 		return nil
@@ -179,7 +191,7 @@ func (e uploadEngine) Execute(ctx context.Context, pending PendingUpload) error 
 // are requeued with the driver retry delay. When the pending record moved
 // on the staging file is dropped. Returns false when the failure could
 // not be recorded (save error or record moved on).
-func (e uploadEngine) recordFailure(pending PendingUpload, err error) bool {
+func (e *Engine) recordFailure(pending PendingUpload, err error) bool {
 	if drive.IsNonRetryable(err) {
 		_, ok, saveErr := e.pending.RecordPermanentFailureIfUnchanged(pending, err)
 		if saveErr != nil {
@@ -205,4 +217,40 @@ func (e uploadEngine) recordFailure(pending PendingUpload, err error) bool {
 		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
 	}
 	return ok
+}
+
+// freezeSnapshot snapshots the pending local file and confirms the pending
+// record is still current. ok=false means the upload was removed or
+// superseded while snapshotting; staging is cleaned and the current pending
+// is requeued if frozen.
+func (e *Engine) freezeSnapshot(pending PendingUpload) (Snapshot, bool, error) {
+	observer := e.observer
+	phaseStart := timeutil.Now()
+	snapshot, err := e.snapshot.SnapshotPending(pending)
+	hashNames := snapshotHashNames(snapshot.Hashes)
+	hashSource := "snapshot"
+	if snapshot.Incremental {
+		hashSource = "incremental"
+	}
+	snapshotExtra := map[string]any{"hashes": hashNames, "hash_source": hashSource}
+	if err != nil {
+		snapshotExtra["error"] = err.Error()
+	}
+	observer.Metadata(pending.Path, "", hashNames)
+	observer.Event(pending.Path, "snapshot_hash", phaseStart, pending.Size, snapshotExtra)
+	if err != nil {
+		logging.L.Warnf("[VFS] upload snapshot failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
+		return Snapshot{}, false, err
+	}
+	if latest, ok := e.pending.UploadByPath(pending.Path); !ok {
+		logging.L.DebugfEvery("vfs.skip_upload_removed_after_snapshot", time.Second, "[VFS] skip upload after snapshot; pending removed op_id=%q path=%q", pending.FID, pending.Path)
+		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
+		return Snapshot{}, false, nil
+	} else if !SameUploadRecord(latest, pending) {
+		logging.L.InfofEvery("vfs.upload_superseded_after_snapshot", time.Second, "[VFS] upload superseded after snapshot op_id=%q path=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.Size, latest.Size)
+		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
+		e.runtime.RequeueIfFrozen(latest)
+		return Snapshot{}, false, nil
+	}
+	return snapshot, true, nil
 }

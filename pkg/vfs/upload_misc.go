@@ -7,16 +7,26 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"hash"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 )
+
+// newUploadEngine builds the upload engine wired to VFS adapters.
+func newUploadEngine(v *VFS) *upload.Engine {
+	return upload.NewEngine(upload.EngineDeps{
+		Remote:   newVFSDriverRuntime(v).RemoteMutationBackend(),
+		Observer: newVFSUploadObserver(v),
+		Pending:  upload.NewStoreAdapter(v.uploads.Store()),
+		Runtime:  newVFSUploadRuntime(v),
+		Snapshot: newVFSUploadSnapshotter(v),
+		Faults:   newVFSUploadFaultController(v),
+	})
+}
 
 // --- upload_fault.go ---
 
@@ -28,7 +38,7 @@ func newVFSUploadFaultController(v *VFS) vfsUploadFaultController {
 	return vfsUploadFaultController{v: v}
 }
 
-func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending PendingUpload, progress drive.UploadProgress, observer vfsUploadObserver) (context.Context, drive.UploadProgress, func()) {
+func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending PendingUpload, progress drive.UploadProgress, observer upload.Observer) (context.Context, drive.UploadProgress, func()) {
 	fault := c.v.matchUploadCancelFault(pending.Path, pending.FID)
 	if fault == nil {
 		return ctx, progress, nil
@@ -149,30 +159,7 @@ func (o vfsUploadObserver) Finish(path, state, lastError string) {
 	o.v.finishUploadSnapshot(path, state, lastError)
 }
 
-type uploadObserverProgress struct {
-	observer vfsUploadObserver
-	path     string
-}
-
-func (p uploadObserverProgress) Phase(phase drive.UploadPhase) {
-	if p.path != "" && phase != "" {
-		p.observer.State(p.path, string(phase))
-	}
-}
-
-func (p uploadObserverProgress) Uploaded(n int64) {
-	if p.path != "" && n > 0 {
-		p.observer.Uploaded(p.path, int(n))
-	}
-}
-
 // --- upload_snapshot.go ---
-
-type uploadSnapshot struct {
-	Path        string
-	Hashes      drive.SourceHashes
-	Incremental bool
-}
 
 type vfsUploadSnapshotter struct {
 	v *VFS
@@ -182,26 +169,26 @@ func newVFSUploadSnapshotter(v *VFS) vfsUploadSnapshotter {
 	return vfsUploadSnapshotter{v: v}
 }
 
-func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (uploadSnapshot, error) {
+func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 	return s.v.snapshotPending(pending)
 }
 
-func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
+func (v *VFS) snapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 	unlock := v.lockPath(pending.Path)
 	defer unlock()
 	if err := v.uploads.Store().SyncStaging(pending.LocalPath); err != nil {
-		return uploadSnapshot{}, err
+		return upload.Snapshot{}, err
 	}
 	info, err := os.Stat(pending.LocalPath)
 	if err != nil {
-		return uploadSnapshot{}, err
+		return upload.Snapshot{}, err
 	}
 	if info.Size() != pending.Size {
-		return uploadSnapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
+		return upload.Snapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	algorithms := v.requiredUploadSnapshotHashes()
 	if hashes, ok := v.hashes.snapshot(pending, algorithms); ok {
-		return uploadSnapshot{
+		return upload.Snapshot{
 			Path:        pending.LocalPath,
 			Hashes:      hashes,
 			Incremental: true,
@@ -209,21 +196,21 @@ func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 	}
 	src, err := os.Open(pending.LocalPath)
 	if err != nil {
-		return uploadSnapshot{}, err
+		return upload.Snapshot{}, err
 	}
 	defer src.Close()
 	hashes, writers, err := newUploadSnapshotHashes(algorithms)
 	if err != nil {
-		return uploadSnapshot{}, err
+		return upload.Snapshot{}, err
 	}
 	if _, err := io.Copy(io.MultiWriter(writers...), src); err != nil {
-		return uploadSnapshot{}, err
+		return upload.Snapshot{}, err
 	}
 	sums := make(drive.SourceHashes, len(hashes))
 	for algorithm, h := range hashes {
 		sums[algorithm] = h.Sum(nil)
 	}
-	return uploadSnapshot{
+	return upload.Snapshot{
 		Path:   pending.LocalPath,
 		Hashes: sums,
 	}, nil
@@ -267,15 +254,6 @@ func newUploadSnapshotHashes(algorithms []drive.HashAlgorithm) (map[drive.HashAl
 	return hashes, writers, nil
 }
 
-func uploadSnapshotHashNames(hashes drive.SourceHashes) []string {
-	names := make([]string, 0, len(hashes))
-	for algorithm := range hashes {
-		names = append(names, string(algorithm))
-	}
-	sort.Strings(names)
-	return names
-}
-
 func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 	cacheKey := v.readCacheKey(entry)
 	if cacheKey == "" || localPath == "" {
@@ -288,40 +266,4 @@ func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 	if err := v.read.cache.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {
 		logging.L.Warnf("[VFS] read cache seed failed id=%q local=%q err=%v", entry.ID, localPath, err)
 	}
-}
-
-// freezeSnapshot snapshots the pending local file and confirms the pending
-// record is still current. ok=false means the upload was removed or
-// superseded while snapshotting; staging is cleaned and the current pending
-// is requeued if frozen.
-func (e uploadEngine) freezeSnapshot(pending PendingUpload) (uploadSnapshot, bool, error) {
-	observer := e.observer
-	phaseStart := timeutil.Now()
-	snapshot, err := e.snapshot.SnapshotPending(pending)
-	hashNames := uploadSnapshotHashNames(snapshot.Hashes)
-	hashSource := "snapshot"
-	if snapshot.Incremental {
-		hashSource = "incremental"
-	}
-	snapshotExtra := map[string]any{"hashes": hashNames, "hash_source": hashSource}
-	if err != nil {
-		snapshotExtra["error"] = err.Error()
-	}
-	observer.Metadata(pending.Path, "", hashNames)
-	observer.Event(pending.Path, "snapshot_hash", phaseStart, pending.Size, snapshotExtra)
-	if err != nil {
-		logging.L.Warnf("[VFS] upload snapshot failed path=%q local=%q err=%v", pending.Path, pending.LocalPath, err)
-		return uploadSnapshot{}, false, err
-	}
-	if latest, ok := e.pending.UploadByPath(pending.Path); !ok {
-		logging.L.DebugfEvery("vfs.skip_upload_removed_after_snapshot", time.Second, "[VFS] skip upload after snapshot; pending removed op_id=%q path=%q", pending.FID, pending.Path)
-		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
-		return uploadSnapshot{}, false, nil
-	} else if !sameUploadRecord(latest, pending) {
-		logging.L.InfofEvery("vfs.upload_superseded_after_snapshot", time.Second, "[VFS] upload superseded after snapshot op_id=%q path=%q old_size=%d new_size=%d", pending.FID, pending.Path, pending.Size, latest.Size)
-		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
-		e.runtime.RequeueIfFrozen(latest)
-		return uploadSnapshot{}, false, nil
-	}
-	return snapshot, true, nil
 }
