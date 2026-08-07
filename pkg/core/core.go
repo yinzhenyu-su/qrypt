@@ -550,8 +550,22 @@ func initRuntimeLogger(cfg *config.Config, layout RuntimeLayout) error {
 	if cfg != nil && strings.TrimSpace(cfg.Logging.LogLevel) != "" {
 		level = cfg.Logging.LogLevel
 	}
-	logFile := filepath.Join(layout.LogDir, "qrypt.log")
-	errFile := filepath.Join(layout.LogDir, "qrypt-error.log")
+	// Explicit log_file/error_file win; otherwise fall back to
+	// <storage.log_dir>/qrypt.log and qrypt-error.log. layout.LogDir is
+	// the expanded storage.log_dir, so the defaults match the config
+	// layer's EffectiveLogFile/EffectiveErrorFile.
+	logFile := ""
+	errFile := ""
+	if cfg != nil {
+		logFile = osutil.ExpandHome(cfg.EffectiveLogFile())
+		errFile = osutil.ExpandHome(cfg.EffectiveErrorFile())
+	}
+	if logFile == "" {
+		logFile = filepath.Join(layout.LogDir, "qrypt.log")
+	}
+	if errFile == "" {
+		errFile = filepath.Join(layout.LogDir, "qrypt-error.log")
+	}
 	newLogger, err := logging.New(level, logFile, errFile, nil)
 	if err != nil {
 		return fmt.Errorf("initialize runtime logging: %w", err)

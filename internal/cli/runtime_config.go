@@ -18,8 +18,8 @@ func initLogger(cfg *config.Config) error {
 		return nil
 	}
 	level := cfg.Logging.LogLevel
-	logFile := osutil.ExpandHome(cfg.Logging.LogFile)
-	errFile := osutil.ExpandHome(cfg.Logging.ErrorFile)
+	logFile := osutil.ExpandHome(cfg.EffectiveLogFile())
+	errFile := osutil.ExpandHome(cfg.EffectiveErrorFile())
 	if level == "" && logFile == "" && errFile == "" {
 		return nil
 	}

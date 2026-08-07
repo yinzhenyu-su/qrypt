@@ -88,8 +88,8 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `log_level` | string | info | Minimum log level to emit. |
-| `log_file` | string | - | Path to the main log file. |
-| `error_file` | string | - | Path to the error log file (falls back to <log_file>-err.log). |
+| `log_file` | string | - | Path to the main log file. When unset, defaults to <storage.log_dir>/qrypt.log. |
+| `error_file` | string | - | Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log. |
 
 ## 时间同步（NTP）
 

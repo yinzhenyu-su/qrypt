@@ -171,6 +171,51 @@ func TestEffectiveMountPointPrefersTopLevel(t *testing.T) {
 	}
 }
 
+func TestEffectiveLogFilesDefaultToStorageLogDir(t *testing.T) {
+	// Unset log_file/error_file with a log_dir: defaults are derived.
+	cfg := &Config{Storage: StorageConfig{LogDir: "/var/log/qrypt"}}
+	if got, want := cfg.EffectiveLogFile(), "/var/log/qrypt/qrypt.log"; got != want {
+		t.Fatalf("EffectiveLogFile = %q, want %q", got, want)
+	}
+	if got, want := cfg.EffectiveErrorFile(), "/var/log/qrypt/qrypt-error.log"; got != want {
+		t.Fatalf("EffectiveErrorFile = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveLogFilesPreferExplicit(t *testing.T) {
+	// Explicit log_file/error_file win over the log_dir default.
+	cfg := &Config{
+		Storage: StorageConfig{LogDir: "/var/log/qrypt"},
+		Logging: LoggingConfig{LogFile: "/tmp/out.log", ErrorFile: "/tmp/err.log"},
+	}
+	if got := cfg.EffectiveLogFile(); got != "/tmp/out.log" {
+		t.Fatalf("EffectiveLogFile = %q, want explicit", got)
+	}
+	if got := cfg.EffectiveErrorFile(); got != "/tmp/err.log" {
+		t.Fatalf("EffectiveErrorFile = %q, want explicit", got)
+	}
+	// Explicit log_file alone: error_file still gets the default.
+	cfg.Logging.ErrorFile = ""
+	if got := cfg.EffectiveErrorFile(); got != "/var/log/qrypt/qrypt-error.log" {
+		t.Fatalf("EffectiveErrorFile = %q, want log_dir default", got)
+	}
+}
+
+func TestEffectiveLogFilesEmptyWithoutLogDir(t *testing.T) {
+	// Neither log_file nor log_dir configured: no file logging (stderr).
+	cfg := &Config{}
+	if got := cfg.EffectiveLogFile(); got != "" {
+		t.Fatalf("EffectiveLogFile = %q, want empty", got)
+	}
+	if got := cfg.EffectiveErrorFile(); got != "" {
+		t.Fatalf("EffectiveErrorFile = %q, want empty", got)
+	}
+	var nilCfg *Config
+	if got := nilCfg.EffectiveLogFile(); got != "" {
+		t.Fatalf("nil EffectiveLogFile = %q, want empty", got)
+	}
+}
+
 func TestLoadLoggingConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	err := os.WriteFile(path, []byte(`
