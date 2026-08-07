@@ -224,6 +224,7 @@ func TestListPaginated(t *testing.T) {
 }
 
 func TestListFailed(t *testing.T) {
+	t.Setenv("QRYPT_TEST_YUN139_RETRY_WAIT", "1ns")
 	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/refresh" {
 			w.Header().Set("Content-Type", "application/xml")

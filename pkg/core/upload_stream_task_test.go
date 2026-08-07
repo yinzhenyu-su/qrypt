@@ -30,6 +30,7 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -135,6 +136,7 @@ func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -174,6 +176,7 @@ func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -206,6 +209,7 @@ func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -247,6 +251,7 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -314,6 +319,7 @@ func TestUploadStreamTaskCancelRemovesUncommittedStaging(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -352,6 +358,7 @@ func TestUploadStreamTaskCancelItemRemovesStaging(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -499,6 +506,7 @@ func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -528,7 +536,7 @@ func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
 
 	// Give the stream task's 500ms poller enough ticks to run its DismissTask
 	// on the succeeded-but-active internal upload.
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// The pending record must have survived the poller dismisses.
 	if pendings := fs.PendingUploads(); len(pendings) != 1 {

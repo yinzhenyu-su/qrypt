@@ -53,7 +53,7 @@ func putSourceCount(d *drive.FakeDriver) int {
 // also observes calls that are still blocked).
 func waitPutSourceCount(t *testing.T, d *drive.FakeDriver, n int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if putSourceCount(d) >= n {
 			return
@@ -145,7 +145,7 @@ func TestUploadCancelDoesNotCommit(t *testing.T) {
 	}
 
 	cancel() // lifecycle ctx; the gated PutSource must abort, not commit
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		_, err := readRemoteFile(t, d, "c.txt")
 		if err != nil {
@@ -367,7 +367,7 @@ func TestDeleteRetryAfterRestoreSkipsNewFile(t *testing.T) {
 // reaches the wanted state (StateFailed or StateScheduled).
 func waitDeleteTaskState(t *testing.T, fs *vfs.VFS, path string, want task.State) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		for _, tk := range fs.Tasks(task.Filter{}) {
 			if tk.Type == task.TypeDeleteRemote && tk.Path == path && tk.State == want {

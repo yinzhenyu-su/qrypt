@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,10 +41,18 @@ const (
 	xYunModuleType = "100"
 	xYunSvcType    = "1"
 
-	httpMaxRetries    = 3
-	personalRetryWait = 500 * time.Millisecond
-	authRefreshSkew   = 15 * 24 * time.Hour
+	httpMaxRetries  = 3
+	authRefreshSkew = 15 * 24 * time.Hour
 )
+
+func personalRetryWait() time.Duration {
+	if v := os.Getenv("QRYPT_TEST_YUN139_RETRY_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 500 * time.Millisecond
+}
 
 var userAPIBaseURL = "https://user-njs.yun.139.com"
 
@@ -324,7 +333,7 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait, 0, false))
+			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait(), 0, false))
 		}
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
@@ -354,7 +363,7 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait, 0, false))
+			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait(), 0, false))
 		}
 		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
