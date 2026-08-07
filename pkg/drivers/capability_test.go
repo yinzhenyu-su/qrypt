@@ -30,6 +30,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityMtime,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
