@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/httputil"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
+	"github.com/yinzhenyu/qrypt/internal/util/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 

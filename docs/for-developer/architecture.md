@@ -45,6 +45,32 @@ concrete provider packages. These rules are enforced automatically by
 `scripts/check-arch.sh` in CI (every PR); when the boundary is violated the
 build fails.
 
+### Internal tool layer
+
+Beneath the layer list sits the internal tool layer, which `pkg/*` packages
+depend on freely (tools have no downward dependencies of their own):
+
+- `internal/config` — configuration model shared by `pkg/core` and `internal/cli`
+- `internal/logging` — logger singleton used across runtime layers
+- `internal/timeutil` — NTP-backed clock (fallback to system time)
+- `internal/retry`, `internal/fileutil` — retry policies, atomic writes
+- `internal/util` — driver HTTP errors, trace redaction
+- `internal/util/httpclient`, `internal/util/httputil`, `internal/util/uploadsession`
+  — driver HTTP plumbing (request/response, transport, upload sessions)
+- `internal/drivecopy` — driver-level direct copy (single-file and directory),
+  shared by the sync executor, `pkg/core`, and the CLI; the debug server calls
+  through the same helpers
+- `internal/contracttest` — the driver contract/benchmark harness (spec
+  registry, fixture, xfer/fstest runners, benchmark reports). The debug server
+  schedules these through the exported `Specs()` registry; the CLI's
+  `debug test`/`debug bench` commands consume the same report types
+
+`internal/control` is the debug-socket HTTP API only. The sync executor must
+not depend on it (rule 4 in `check-arch.sh`); `pkg/core` and `internal/cli`
+are its host and client and may. Driver-level copy logic lives in
+`internal/drivecopy`, contract harnesses in `internal/contracttest` — never
+back in `internal/control`.
+
 ## Runtime Assembly
 
 `pkg/core` is the reusable composition root:

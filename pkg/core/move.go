@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/drivecopy"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
@@ -126,7 +126,7 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 	}), nil
 }
 
-func removeMoveSource(ctx context.Context, source control.DriverCopySource, sourcePath string, isDir bool) error {
+func removeMoveSource(ctx context.Context, source drivecopy.DriverCopySource, sourcePath string, isDir bool) error {
 	info, err := source.DebugResolve(ctx, sourcePath, false)
 	if err != nil {
 		return err

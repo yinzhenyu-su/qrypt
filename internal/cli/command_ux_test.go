@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -243,54 +244,54 @@ listen = "127.0.0.1:19090"
 		t.Fatal("expected debug test without --socket to fail")
 	}
 
-	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "auth", Source: "src"}); err == nil {
+	if err := validateDriverTestRequest(contracttest.DriverTestRequest{Test: "auth", Source: "src"}); err == nil {
 		t.Fatal("expected auth test with --source to fail")
 	}
-	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "fs"}); err == nil || !strings.Contains(err.Error(), "fs test requires --mount") {
+	if err := validateDriverTestRequest(contracttest.DriverTestRequest{Test: "fs"}); err == nil || !strings.Contains(err.Error(), "fs test requires --mount") {
 		t.Fatalf("expected fs test without mount to fail clearly, got %v", err)
 	}
-	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "resume"}); err == nil || !strings.Contains(err.Error(), "resume test requires --mount") {
+	if err := validateDriverTestRequest(contracttest.DriverTestRequest{Test: "resume"}); err == nil || !strings.Contains(err.Error(), "resume test requires --mount") {
 		t.Fatalf("expected resume test without mount to fail clearly, got %v", err)
 	}
-	if err := validateDriverTestRequest(control.DriverTestRequest{Test: "resume", Mount: "mem", Source: "src"}); err == nil ||
+	if err := validateDriverTestRequest(contracttest.DriverTestRequest{Test: "resume", Mount: "mem", Source: "src"}); err == nil ||
 		!strings.Contains(err.Error(), "resume test only supports --mount and --size") {
 		t.Fatalf("expected resume test with source to fail clearly, got %v", err)
 	}
-	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "crud", Samples: 1}); err != nil {
+	if err := validateDriverBenchRequest(contracttest.DriverTestRequest{Test: "crud", Samples: 1}); err != nil {
 		t.Fatalf("expected crud benchmark request to be valid: %v", err)
 	}
-	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "fs", Mount: "mem", Samples: 1}); err != nil {
+	if err := validateDriverBenchRequest(contracttest.DriverTestRequest{Test: "fs", Mount: "mem", Samples: 1}); err != nil {
 		t.Fatalf("expected fs benchmark request to be valid: %v", err)
 	}
-	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "fs", Samples: 1}); err == nil ||
+	if err := validateDriverBenchRequest(contracttest.DriverTestRequest{Test: "fs", Samples: 1}); err == nil ||
 		!strings.Contains(err.Error(), "fs benchmark requires --mount") {
 		t.Fatalf("expected fs benchmark without mount to fail clearly, got %v", err)
 	}
-	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "crud", Samples: 0}); err == nil {
+	if err := validateDriverBenchRequest(contracttest.DriverTestRequest{Test: "crud", Samples: 0}); err == nil {
 		t.Fatal("expected benchmark with zero samples to fail")
 	}
-	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "xfer"}); err == nil ||
+	if err := validateDriverBenchRequest(contracttest.DriverTestRequest{Test: "xfer"}); err == nil ||
 		!strings.Contains(err.Error(), "xfer benchmark requires --source and --dest") {
 		t.Fatalf("expected xfer benchmark without source/dest to fail clearly, got %v", err)
 	}
-	if err := validateDriverBenchRequest(control.DriverTestRequest{Test: "xfer", Source: "src", Dest: "dst", Samples: 1}); err != nil {
+	if err := validateDriverBenchRequest(contracttest.DriverTestRequest{Test: "xfer", Source: "src", Dest: "dst", Samples: 1}); err != nil {
 		t.Fatalf("expected xfer benchmark request to be valid: %v", err)
 	}
 
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
 	currentPath := filepath.Join(dir, "current.json")
-	baseReport := control.BenchmarkReport{
-		SchemaVersion: control.BenchmarkSchemaVersion,
+	baseReport := contracttest.BenchmarkReport{
+		SchemaVersion: contracttest.BenchmarkSchemaVersion,
 		Kind:          "driver_crud_benchmark",
 		Mount:         "mem",
 		Driver:        "memory",
 		Pass:          true,
-		Summary:       control.BenchmarkSummary{TotalCases: 1, PassedCases: 1, EventCount: 2},
+		Summary:       contracttest.BenchmarkSummary{TotalCases: 1, PassedCases: 1, EventCount: 2},
 	}
 	currentReport := baseReport
 	currentReport.Summary.EventCount = 1
-	for path, value := range map[string]control.BenchmarkReport{basePath: baseReport, currentPath: currentReport} {
+	for path, value := range map[string]contracttest.BenchmarkReport{basePath: baseReport, currentPath: currentReport} {
 		body, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)
