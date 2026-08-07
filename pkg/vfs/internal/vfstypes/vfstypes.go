@@ -4,6 +4,11 @@
 // import them without creating cycles.
 package vfstypes
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 // PendingUpload is a file staged for upload but not yet committed.
 type PendingUpload struct {
 	Path          string               `json:"path"`
@@ -39,4 +44,20 @@ type UploadStagingStatus struct {
 	SizeMatches bool   `json:"size_matches"`
 	Error       string `json:"error,omitempty"`
 	Path        string `json:"path,omitempty"`
+}
+
+// CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
+func CleanVirtualPath(path string) string {
+	path = filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(path, "/")))
+	if path == "." {
+		return "/"
+	}
+	return path
+}
+
+// IsPathUnder reports whether path is strictly inside dir (not equal).
+func IsPathUnder(path, dir string) bool {
+	path = CleanVirtualPath(path)
+	dir = CleanVirtualPath(dir)
+	return dir != "/" && len(path) > len(dir) && path[:len(dir)] == dir && path[len(dir)] == '/'
 }

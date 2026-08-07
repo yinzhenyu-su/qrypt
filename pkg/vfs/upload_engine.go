@@ -5,13 +5,14 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"time"
 )
 
 type uploadEngine struct {
 	remote   remoteMutationBackend
 	observer vfsUploadObserver
-	pending  uploadStoreAdapter
+	pending  upload.Store
 	runtime  vfsUploadRuntime
 	snapshot vfsUploadSnapshotter
 	faults   vfsUploadFaultController
@@ -21,7 +22,7 @@ func newUploadEngine(v *VFS) uploadEngine {
 	return uploadEngine{
 		remote:   newVFSDriverRuntime(v).RemoteMutationBackend(),
 		observer: newVFSUploadObserver(v),
-		pending:  newUploadStoreAdapter(v.uploads.store),
+		pending:  upload.NewStoreAdapter(v.uploads.Store()),
 		runtime:  newVFSUploadRuntime(v),
 		snapshot: newVFSUploadSnapshotter(v),
 		faults:   newVFSUploadFaultController(v),

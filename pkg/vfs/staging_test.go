@@ -47,11 +47,11 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldLocal, err := cache.staging.create("old-fid")
+	oldLocal, err := cache.uploadStore.CreateStaging("old-fid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.staging.writeAt(oldLocal, []byte("hello world"), 0); err != nil {
+	if _, err := cache.uploadStore.WriteStagingAt(oldLocal, []byte("hello world"), 0); err != nil {
 		t.Fatal(err)
 	}
 	old := PendingUpload{Path: "/file", FID: "old-fid", ParentID: "0", Name: "file", LocalPath: oldLocal, Size: 11, Frozen: true}
@@ -60,7 +60,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	}
 	v := &VFS{
 		read:      &readState{cache: cache.readCacheStore},
-		uploads:   &UploadService{store: cache.uploadStore},
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
@@ -100,7 +100,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 	}
 	v := &VFS{
 		read:      &readState{cache: cache.readCacheStore},
-		uploads:   &UploadService{store: cache.uploadStore},
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
@@ -122,7 +122,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 	if latest.FID != old.FID || !latest.Frozen || latest.LocalPath != old.LocalPath {
 		t.Fatalf("pending after failed rotation = %+v, want old frozen pending", latest)
 	}
-	entries, err := os.ReadDir(cache.staging.dir)
+	entries, err := os.ReadDir(cache.uploadStore.StagingDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	if err := fs.Create(ctx, "/file"); err != nil {
 		t.Fatal(err)
 	}
-	old, ok := fs.uploads.store.UploadByPath("/file")
+	old, ok := fs.uploads.Store().UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing")
 	}
@@ -158,7 +158,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	if _, err := os.Stat(oldLocal); !os.IsNotExist(err) {
 		t.Fatalf("old mutable staging still exists, err=%v", err)
 	}
-	latest, ok := fs.uploads.store.UploadByPath("/file")
+	latest, ok := fs.uploads.Store().UploadByPath("/file")
 	if !ok {
 		t.Fatal("new pending missing")
 	}
@@ -185,7 +185,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	if err := fs.Flush(ctx, "/file"); err != nil {
 		t.Fatal(err)
 	}
-	old, ok := fs.uploads.store.UploadByPath("/file")
+	old, ok := fs.uploads.Store().UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing")
 	}
@@ -198,7 +198,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	if _, err := os.Stat(old.LocalPath); err != nil {
 		t.Fatalf("old frozen staging removed: %v", err)
 	}
-	latest, ok := fs.uploads.store.UploadByPath("/file")
+	latest, ok := fs.uploads.Store().UploadByPath("/file")
 	if !ok {
 		t.Fatal("new pending missing")
 	}
@@ -213,7 +213,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := cache.staging.create("live-fid")
+	live, err := cache.uploadStore.CreateStaging("live-fid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,15 +248,15 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 	}
 	v := &VFS{
 		read:      &readState{cache: cache.readCacheStore},
-		uploads:   &UploadService{store: cache.uploadStore},
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
-	localPath, err := cache.staging.create("file")
+	localPath, err := cache.uploadStore.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.staging.writeAt(localPath, []byte("snapshot-data"), 0); err != nil {
+	if _, err := cache.uploadStore.WriteStagingAt(localPath, []byte("snapshot-data"), 0); err != nil {
 		t.Fatal(err)
 	}
 	pending := PendingUpload{Path: "/file", FID: "file", LocalPath: localPath, Size: int64(len("snapshot-data"))}
@@ -299,15 +299,15 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	v := &VFS{
 		driver:    drv,
 		read:      &readState{cache: cache.readCacheStore},
-		uploads:   &UploadService{store: cache.uploadStore},
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
-	localPath, err := cache.staging.create("file")
+	localPath, err := cache.uploadStore.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.staging.writeAt(localPath, content, 0); err != nil {
+	if _, err := cache.uploadStore.WriteStagingAt(localPath, content, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -429,7 +429,8 @@ func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 }
 
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
-	v := &VFS{uploads: &UploadService{delay: 10 * time.Millisecond}}
+	store, _ := newUploadStore(t.TempDir())
+	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, newUploadHashTrackerState())}
 
 	small := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold - 1})
 	if small != 10*time.Millisecond {
@@ -446,33 +447,33 @@ func TestUploadAdmissionLargeUploadIsExclusive(t *testing.T) {
 	large := PendingUpload{Path: "/large.bin", Size: largeUploadQuietThreshold}
 
 	var admission uploadAdmission
-	if !admission.tryAcquire(large, 3) {
+	if !admission.TryAcquire(large, 3) {
 		t.Fatal("large upload was not admitted")
 	}
-	if admission.tryAcquire(small, 3) {
+	if admission.TryAcquire(small, 3) {
 		t.Fatal("small upload admitted while large upload is active")
 	}
-	if admission.tryAcquire(large, 3) {
+	if admission.TryAcquire(large, 3) {
 		t.Fatal("second large upload admitted while large upload is active")
 	}
-	admission.release(large)
+	admission.Release(large)
 
 	for i := range 3 {
-		if !admission.tryAcquire(small, 3) {
+		if !admission.TryAcquire(small, 3) {
 			t.Fatalf("small upload %d was not admitted", i+1)
 		}
 	}
-	if admission.tryAcquire(large, 3) {
+	if admission.TryAcquire(large, 3) {
 		t.Fatal("large upload admitted while small uploads are active")
 	}
-	if admission.tryAcquire(small, 3) {
+	if admission.TryAcquire(small, 3) {
 		t.Fatal("small upload admitted above worker count")
 	}
-	admission.release(small)
-	admission.release(small)
-	admission.release(small)
+	admission.Release(small)
+	admission.Release(small)
+	admission.Release(small)
 
-	if !admission.tryAcquire(large, 3) {
+	if !admission.TryAcquire(large, 3) {
 		t.Fatal("large upload was not admitted after small uploads released")
 	}
 }

@@ -163,12 +163,12 @@ func TestVFSDisabledReadCacheFullLifecycle(t *testing.T) {
 	// Wait for the upload worker to finish (pending record gone).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := fs.uploads.store.UploadByPath("/note.txt"); !ok {
+		if _, ok := fs.uploads.Store().UploadByPath("/note.txt"); !ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, ok := fs.uploads.store.UploadByPath("/note.txt"); ok {
+	if _, ok := fs.uploads.Store().UploadByPath("/note.txt"); ok {
 		t.Fatal("upload did not complete with cache disabled")
 	}
 
@@ -198,7 +198,7 @@ func TestVFSDisabledReadCacheFullLifecycle(t *testing.T) {
 	}
 	deadline2 := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline2) {
-		if _, ok := fs.uploads.store.UploadByPath("/note.txt"); !ok {
+		if _, ok := fs.uploads.Store().UploadByPath("/note.txt"); !ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

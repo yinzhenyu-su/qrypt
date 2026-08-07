@@ -39,35 +39,35 @@ func (a uploadStoreWriteAdapter) UpdateUploadTransient(pending PendingUpload) {
 }
 
 func (a uploadStoreWriteAdapter) RemoveStaging(localPath string) error {
-	return a.store.staging.remove(localPath)
+	return a.store.RemoveStaging(localPath)
 }
 
 func (a uploadStoreWriteAdapter) RemoveStagingIfUnreferenced(localPath string) {
-	a.store.removeStagingIfUnreferenced(localPath)
+	a.store.RemoveStagingIfUnreferenced(localPath)
 }
 
 func (a uploadStoreWriteAdapter) CreateStaging(fid string) (string, error) {
-	return a.store.staging.create(fid)
+	return a.store.CreateStaging(fid)
 }
 
 func (a uploadStoreWriteAdapter) WriteStagingAt(localPath string, data []byte, off int64) (int, error) {
-	return a.store.staging.writeAt(localPath, data, off)
+	return a.store.WriteStagingAt(localPath, data, off)
 }
 
 func (a uploadStoreWriteAdapter) FlushStaging(localPath string) error {
-	return a.store.staging.flush(localPath)
+	return a.store.FlushStaging(localPath)
 }
 
 func (a uploadStoreWriteAdapter) SyncStaging(localPath string) error {
-	return a.store.staging.sync(localPath)
+	return a.store.SyncStaging(localPath)
 }
 
 func (a uploadStoreWriteAdapter) StagingSize(localPath string) (int64, error) {
-	return a.store.staging.size(localPath)
+	return a.store.StagingSize(localPath)
 }
 
 func (a uploadStoreWriteAdapter) TruncateStaging(localPath string, size int64) error {
-	return a.store.staging.truncate(localPath, size)
+	return a.store.TruncateStaging(localPath, size)
 }
 
 type vfsUploadWriteHashTracker struct {
@@ -79,19 +79,19 @@ func newVFSUploadWriteHashTracker(v *VFS) vfsUploadWriteHashTracker {
 }
 
 func (t vfsUploadWriteHashTracker) Start(pending PendingUpload) {
-	t.v.uploads.hashes.start(pending, t.v.requiredUploadSnapshotHashes())
+	t.v.hashes.start(pending, t.v.requiredUploadSnapshotHashes())
 }
 
 func (t vfsUploadWriteHashTracker) Write(pending PendingUpload, data []byte, off int64) {
-	t.v.uploads.hashes.write(pending, data, off, t.v.requiredUploadSnapshotHashes())
+	t.v.hashes.write(pending, data, off, t.v.requiredUploadSnapshotHashes())
 }
 
 func (t vfsUploadWriteHashTracker) Dirty(pending PendingUpload) {
-	t.v.uploads.hashes.dirty(pending)
+	t.v.hashes.dirty(pending)
 }
 
 func (t vfsUploadWriteHashTracker) RemoveFID(fid string) {
-	t.v.uploads.hashes.removeFID(fid)
+	t.v.hashes.removeFID(fid)
 }
 
 type uploadWriteRemote interface {
@@ -134,7 +134,7 @@ func newVFSUploadWriteRuntime(v *VFS) vfsUploadWriteRuntime {
 }
 
 func (r vfsUploadWriteRuntime) Store() uploadStoreWriteAdapter {
-	return newUploadStoreWriteAdapter(r.v.uploads.store)
+	return newUploadStoreWriteAdapter(r.v.uploads.Store())
 }
 
 func (r vfsUploadWriteRuntime) HashTracker() vfsUploadWriteHashTracker {

@@ -54,7 +54,7 @@ func TestVFSDebugSnapshotRuntimeCollectsIdentityQueuesAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := newVFSDebugSnapshotRuntime(fs)
-	if err := fs.uploads.store.SaveUpload(PendingUpload{Path: "/pending.txt", FID: "pending", Name: "pending.txt"}); err != nil {
+	if err := fs.uploads.Store().SaveUpload(PendingUpload{Path: "/pending.txt", FID: "pending", Name: "pending.txt"}); err != nil {
 		t.Fatal(err)
 	}
 

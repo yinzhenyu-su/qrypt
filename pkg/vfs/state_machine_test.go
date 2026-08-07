@@ -340,7 +340,7 @@ func TestDeleteRetryAfterRestoreSkipsNewFile(t *testing.T) {
 		t.Fatalf("no delete task for /f.txt: %v", fs.Tasks(task.Filter{}))
 	}
 
-	// Recreate the path: restore must revoke the failed delete (the deleted
+	// Recreate the Path: restore must revoke the failed delete (the deleted
 	// marker is removed), so retrying the stale task is a no-op that cannot
 	// touch the new file.
 	writeAndFlush(t, fs, "/f.txt", "v2")

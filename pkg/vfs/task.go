@@ -2,11 +2,9 @@ package vfs
 
 import (
 	"context"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"sort"
-	"time"
 )
 
 // Tasks returns all upload and delete tasks known to this VFS.
@@ -146,104 +144,55 @@ func (v *VFS) applyTaskAction(ctx context.Context, id string, fn func(vfsTaskSou
 	return ErrNotFound
 }
 
-type uploadTaskRecord struct {
-	id             string
-	mount          string
-	path           string
-	name           string
-	state          string
-	bytesTotal     int64
-	bytesUploaded  int64
-	startedAt      time.Time
-	updatedAt      time.Time
-	completedAt    time.Time
-	retryCount     int
-	lastError      string
-	lastAttemptAt  int64
-	nextAttemptAt  int64
-	parentRemoteID string
-	resultRemoteID string
-	instant        bool
-	localPath      string
-}
-
-func uploadTaskRecordFromSnapshot(upload UploadSnapshot) uploadTaskRecord {
-	record := uploadTaskRecord{
-		id:             upload.OpID,
-		mount:          upload.Mount,
-		path:           upload.Path,
-		name:           upload.Name,
-		state:          upload.State,
-		bytesTotal:     upload.BytesTotal,
-		bytesUploaded:  upload.BytesUploaded,
-		startedAt:      upload.StartedAt,
-		updatedAt:      upload.UpdatedAt,
-		completedAt:    upload.CompletedAt,
-		retryCount:     upload.RetryCount,
-		lastError:      upload.LastError,
-		lastAttemptAt:  upload.LastAttemptAt,
-		nextAttemptAt:  upload.NextAttemptAt,
-		parentRemoteID: upload.ParentRemoteID,
-		resultRemoteID: upload.ResultRemoteID,
-		instant:        upload.Instant,
-	}
-	if upload.Extra != nil {
-		if localPath, ok := upload.Extra["local_path"].(string); ok {
-			record.localPath = localPath
-		}
-	}
-	return record
-}
-
 func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
-	state := taskStateFromUpload(upload.state)
-	updatedAt := upload.updatedAt
+	state := taskStateFromUpload(upload.State)
+	updatedAt := upload.UpdatedAt
 	if updatedAt.IsZero() {
-		updatedAt = timeFromUnixNano(upload.nextAttemptAt)
+		updatedAt = timeFromUnixNano(upload.NextAttemptAt)
 	}
 	if updatedAt.IsZero() {
-		updatedAt = timeFromUnixNano(upload.lastAttemptAt)
+		updatedAt = timeFromUnixNano(upload.LastAttemptAt)
 	}
 	detail := map[string]any{
-		"phase":            upload.state,
-		"parent_remote_id": upload.parentRemoteID,
-		"result_remote_id": upload.resultRemoteID,
-		"instant":          upload.instant,
-		"local_path":       upload.localPath,
+		"phase":            upload.State,
+		"parent_remote_id": upload.ParentRemoteID,
+		"result_remote_id": upload.ResultRemoteID,
+		"instant":          upload.Instant,
+		"local_path":       upload.LocalPath,
 	}
 	item := task.Task{
-		ID:          upload.id,
+		ID:          upload.ID,
 		Type:        task.TypeUploadRemote,
 		State:       state,
 		Scope:       task.ScopeSync,
-		Mount:       upload.mount,
-		Path:        upload.path,
-		Name:        upload.name,
-		StartedAt:   upload.startedAt,
+		Mount:       upload.Mount,
+		Path:        upload.Path,
+		Name:        upload.Name,
+		StartedAt:   upload.StartedAt,
 		UpdatedAt:   updatedAt,
-		CompletedAt: upload.completedAt,
-		RetryCount:  upload.retryCount,
-		NextAttempt: timeFromUnixNano(upload.nextAttemptAt),
+		CompletedAt: upload.CompletedAt,
+		RetryCount:  upload.RetryCount,
+		NextAttempt: timeFromUnixNano(upload.NextAttemptAt),
 		Detail:      compactTaskDetail(detail),
 	}
 	item.Progress = task.Progress{
-		CloudBytesDone:  upload.bytesUploaded,
-		CloudBytesTotal: upload.bytesTotal,
-		Phase:           upload.state,
+		CloudBytesDone:  upload.BytesUploaded,
+		CloudBytesTotal: upload.BytesTotal,
+		Phase:           upload.State,
 	}
 	item.Capabilities = task.Capabilities{
 		Cancelable:  state != task.StateSucceeded && state != task.StateCanceled,
 		Retryable:   state == task.StateFailed || state == task.StateRetryWait,
-		Dismissible: isVFSTaskTerminalState(state) && !upload.completedAt.IsZero(),
+		Dismissible: isVFSTaskTerminalState(state) && !upload.CompletedAt.IsZero(),
 		Persistent:  true,
 	}
-	if upload.lastError != "" {
+	if upload.LastError != "" {
 		// Code carries the stable error category (auth, not_found, ...) so
 		// clients can branch without parsing Message text; Message keeps the
 		// full diagnostic detail for humans.
 		item.Error = &task.Error{
-			Code:      drive.ErrorCategoryMessage(upload.lastError),
-			Message:   upload.lastError,
+			Code:      drive.ErrorCategoryMessage(upload.LastError),
+			Message:   upload.LastError,
 			Retryable: item.Capabilities.Retryable,
 		}
 	}
@@ -304,13 +253,6 @@ func compactTaskDetail(detail map[string]any) map[string]any {
 	return detail
 }
 
-func timeFromUnixNano(v int64) time.Time {
-	if v <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, v)
-}
-
 func sortTasks(tasks []task.Task) {
 	sort.Slice(tasks, func(i, j int) bool {
 		return taskLess(tasks[i], tasks[j])
@@ -350,69 +292,3 @@ func isTaskNotFound(err error) bool {
 // TaskRecords builds upload task records from pending uploads combined with
 // active debug state and history. This is the data source for the VFS task
 // listing; Core can use it via TaskSource without accessing upload internals.
-func (s *UploadService) TaskRecords(pending []PendingUpload) []uploadTaskRecord {
-	active := map[string]uploadTaskRecord{}
-	s.debug.mu.Lock()
-	for path, state := range s.debug.active {
-		active[path] = uploadTaskRecordFromSnapshot(state.upload)
-	}
-	history := make([]uploadTaskRecord, 0, len(s.debug.history))
-	for _, upload := range s.debug.history {
-		history = append(history, uploadTaskRecordFromSnapshot(upload))
-	}
-	s.debug.mu.Unlock()
-
-	timerPaths := map[string]bool{}
-	s.schedule.mu.Lock()
-	for path := range s.schedule.timers {
-		timerPaths[path] = true
-	}
-	s.schedule.mu.Unlock()
-
-	records := make([]uploadTaskRecord, 0, len(pending)+len(active)+len(history))
-	seenPath := map[string]bool{}
-	for _, item := range pending {
-		if upload, ok := active[item.Path]; ok {
-			records = append(records, upload)
-			seenPath[item.Path] = true
-			continue
-		}
-		state := "queued"
-		if item.PermanentFail {
-			state = "failed"
-		} else if timerPaths[item.Path] {
-			state = "scheduled"
-			if item.LastError != "" && item.NextAttemptAt > timeutil.Now().UnixNano() {
-				state = "retry_wait"
-			}
-		}
-		records = append(records, uploadTaskRecord{
-			id:             item.FID,
-			path:           item.Path,
-			name:           item.Name,
-			state:          state,
-			bytesTotal:     item.Size,
-			updatedAt:      timeFromUnixNano(item.UpdatedAt),
-			retryCount:     item.RetryCount,
-			lastError:      item.LastError,
-			lastAttemptAt:  item.LastAttemptAt,
-			nextAttemptAt:  item.NextAttemptAt,
-			parentRemoteID: item.ParentID,
-			localPath:      item.LocalPath,
-		})
-		seenPath[item.Path] = true
-	}
-	for path, upload := range active {
-		if !seenPath[path] {
-			records = append(records, upload)
-		}
-	}
-	records = append(records, history...)
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].updatedAt.Equal(records[j].updatedAt) {
-			return records[i].path < records[j].path
-		}
-		return records[i].updatedAt.After(records[j].updatedAt)
-	})
-	return records
-}

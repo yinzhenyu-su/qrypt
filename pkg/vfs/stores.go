@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
 	"hash/fnv"
 	"os"
@@ -31,10 +32,6 @@ const (
 type PendingUpload = vfstypes.PendingUpload
 type UploadReplacement = vfstypes.UploadReplacement
 type UploadStagingStatus = vfstypes.UploadStagingStatus
-type journalEntry struct {
-	Op string `json:"op"`
-	PendingUpload
-}
 type chunkInfo struct {
 	file     string
 	offset   int64
@@ -72,15 +69,6 @@ type readCacheWrite struct {
 type Stores struct {
 	*readCacheStore
 	*uploadStore
-}
-type uploadStore struct {
-	dir     string
-	staging *stagingStore
-
-	mu        sync.RWMutex
-	journalMu sync.Mutex
-	pending   map[string]PendingUpload
-	idIndex   map[string]string // fid -> path for O(1) PendingByID
 }
 type readCacheStore struct {
 	dir     string
@@ -155,32 +143,7 @@ func NewStores(uploadDir, readCacheDir string, maxSize int64) (*Stores, error) {
 	return &Stores{readCacheStore: readCache, uploadStore: uploads}, nil
 }
 func newUploadStore(dir string) (*uploadStore, error) {
-	staging, err := newStagingStore(filepath.Join(dir, "staging"))
-	if err != nil {
-		return nil, err
-	}
-	if cleaned := staging.cleanupUploadTemps(); cleaned > 0 {
-		logging.L.Infof("[CACHE] cleaned %d orphaned staging upload files", cleaned)
-	}
-	store := &uploadStore{
-		dir:     dir,
-		staging: staging,
-		pending: map[string]PendingUpload{},
-		idIndex: map[string]string{},
-	}
-	entries, err := store.loadJournal()
-	if err != nil {
-		return nil, err
-	}
-	if store.shouldCompactJournal(entries) {
-		if err := store.compactJournal(); err != nil {
-			logging.L.Warnf("[CACHE] compact pending journal failed: %v", err)
-		}
-	}
-	if cleaned := store.sweepUnreferencedStaging(); cleaned > 0 {
-		logging.L.Infof("[CACHE] cleaned %d unreferenced staging files", cleaned)
-	}
-	return store, nil
+	return upload.NewPendingStore(dir)
 }
 func newReadCacheStore(dir string, maxSize int64) (*readCacheStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {

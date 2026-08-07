@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"testing"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"time"
 )
 
@@ -12,8 +14,8 @@ func TestUploadStoreAdapterRecordsPendingState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := newUploadStoreAdapter(store)
-	localPath, err := store.staging.create("file")
+	adapter := upload.NewStoreAdapter(store)
+	localPath, err := store.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +74,8 @@ func TestUploadStoreAdapterCleansStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := newUploadStoreAdapter(store)
-	localPath, err := store.staging.create("file")
+	adapter := upload.NewStoreAdapter(store)
+	localPath, err := store.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,7 @@ func TestUploadStoreAdapterCleansStaging(t *testing.T) {
 		t.Fatalf("unreferenced staging still exists: %v", err)
 	}
 
-	otherPath, err := store.staging.create("other")
+	otherPath, err := store.CreateStaging("other")
 	if err != nil {
 		t.Fatal(err)
 	}

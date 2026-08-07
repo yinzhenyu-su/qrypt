@@ -316,10 +316,10 @@ func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
 
 func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
 	r.v.moveLocalModTime(oldPath, newPath)
-	if err := r.v.uploads.store.RenameUpload(oldPath, pending); err != nil {
+	if err := r.v.uploads.Store().RenameUpload(oldPath, pending); err != nil {
 		return err
 	}
-	r.v.uploads.hashes.renamePath(oldPath, newPath, pending)
+	r.v.hashes.renamePath(oldPath, newPath, pending)
 	return nil
 }
 
@@ -338,18 +338,18 @@ func (r vfsRemoveRuntime) InvalidateReadCache(entry drive.Entry) {
 func (r vfsRemoveRuntime) RemovePendingUpload(path string) error {
 	r.v.cancelUpload(path)
 	r.v.clearLocalModTime(path)
-	if err := r.v.uploads.store.RemoveUpload(path); err != nil {
+	if err := r.v.uploads.Store().RemoveUpload(path); err != nil {
 		return err
 	}
-	r.v.uploads.hashes.removePath(path)
+	r.v.hashes.removePath(path)
 	return nil
 }
 
 func (r vfsRemoveRuntime) RemovePendingUploadsUnder(path string) error {
-	if err := r.v.uploads.store.RemoveUploadsUnder(path); err != nil {
+	if err := r.v.uploads.Store().RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.uploads.hashes.removeUnder(path)
+	r.v.hashes.removeUnder(path)
 	return nil
 }
 
@@ -383,10 +383,10 @@ func (r vfsDirectoryCopyRuntime) ListChildren(ctx context.Context, parentID stri
 
 func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
 	r.v.uploads.CancelChildUploads(path)
-	if err := r.v.uploads.store.RemoveUploadsUnder(path); err != nil {
+	if err := r.v.uploads.Store().RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.uploads.hashes.removeUnder(path)
+	r.v.hashes.removeUnder(path)
 	return nil
 }
 

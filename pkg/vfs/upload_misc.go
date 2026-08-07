@@ -9,54 +9,14 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"hash"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 )
-
-type uploadAdmission struct {
-	mu          sync.Mutex
-	activeSmall int
-	activeLarge bool
-}
-
-func (a *uploadAdmission) tryAcquire(p PendingUpload, workers int) bool {
-	if workers <= 0 {
-		workers = 1
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if isLargeUpload(p) {
-		if a.activeLarge || a.activeSmall > 0 {
-			return false
-		}
-		a.activeLarge = true
-		return true
-	}
-	if a.activeLarge || a.activeSmall >= workers {
-		return false
-	}
-	a.activeSmall++
-	return true
-}
-func (a *uploadAdmission) release(p PendingUpload) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if isLargeUpload(p) {
-		a.activeLarge = false
-		return
-	}
-	if a.activeSmall > 0 {
-		a.activeSmall--
-	}
-}
-func isLargeUpload(p PendingUpload) bool {
-	return p.Size >= largeUploadQuietThreshold
-}
 
 // --- upload_fault.go ---
 
@@ -82,7 +42,7 @@ func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending 
 		cancelOpID: pending.FID,
 		v:          c.v,
 	}
-	observer.Extra(pending.Path, "debug_upload_cancel_fault", fault.id)
+	observer.Extra(pending.Path, "debug_upload_cancel_fault", fault.ID)
 	cleanup := func() {
 		cancelProgress.Close()
 		uploadCancel()
@@ -101,11 +61,11 @@ func newVFSUploadRuntime(v *VFS) vfsUploadRuntime {
 }
 
 func (r vfsUploadRuntime) ClearUploadHashes(fid string) {
-	r.v.uploads.hashes.removeFID(fid)
+	r.v.hashes.removeFID(fid)
 }
 
 func (r vfsUploadRuntime) RetryDelay(retryCount int) time.Duration {
-	return uploadRetryDelay(retryCount, r.v.uploads.delay)
+	return upload.RetryDelay(retryCount, r.v.uploads.DefaultDelay())
 }
 
 func (r vfsUploadRuntime) Requeue(pending PendingUpload) {
@@ -229,7 +189,7 @@ func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (uploadSnap
 func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 	unlock := v.lockPath(pending.Path)
 	defer unlock()
-	if err := v.uploads.store.staging.sync(pending.LocalPath); err != nil {
+	if err := v.uploads.Store().SyncStaging(pending.LocalPath); err != nil {
 		return uploadSnapshot{}, err
 	}
 	info, err := os.Stat(pending.LocalPath)
@@ -240,7 +200,7 @@ func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 		return uploadSnapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	algorithms := v.requiredUploadSnapshotHashes()
-	if hashes, ok := v.uploads.hashes.snapshot(pending, algorithms); ok {
+	if hashes, ok := v.hashes.snapshot(pending, algorithms); ok {
 		return uploadSnapshot{
 			Path:        pending.LocalPath,
 			Hashes:      hashes,

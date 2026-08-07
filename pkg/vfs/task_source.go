@@ -90,10 +90,10 @@ func (s uploadServiceTaskSource) List(filter task.Filter) []task.Task {
 	tasks := make([]task.Task, 0, len(records))
 	seen := map[string]bool{}
 	for _, r := range records {
-		if r.id != "" && seen[r.id] {
+		if r.ID != "" && seen[r.ID] {
 			continue
 		}
-		seen[r.id] = true
+		seen[r.ID] = true
 		item := taskFromUploadRecord(r)
 		if filter.Match(item) {
 			tasks = append(tasks, item)

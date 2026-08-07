@@ -16,18 +16,18 @@ func TestDebugUploadFaultRuntimeOwnsCancelFaultState(t *testing.T) {
 	now := time.Now()
 
 	runtime.PutCancelFault(&debugUploadCancelFault{
-		id:        "expired",
-		path:      "/old.txt",
-		once:      true,
-		createdAt: now.Add(-2 * time.Minute),
-		expiresAt: now.Add(-time.Minute),
+		ID:        "expired",
+		Path:      "/old.txt",
+		Once:      true,
+		CreatedAt: now.Add(-2 * time.Minute),
+		ExpiresAt: now.Add(-time.Minute),
 	})
 	runtime.PutCancelFault(&debugUploadCancelFault{
-		id:        "active",
-		path:      "/file.txt",
-		once:      true,
-		createdAt: now,
-		expiresAt: now.Add(time.Minute),
+		ID:        "active",
+		Path:      "/file.txt",
+		Once:      true,
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Minute),
 	})
 
 	faults := runtime.CancelFaults(now)
@@ -35,10 +35,10 @@ func TestDebugUploadFaultRuntimeOwnsCancelFaultState(t *testing.T) {
 		t.Fatalf("faults = %+v, want only active", faults)
 	}
 	if match := runtime.MatchCancelFault(now, "/missing.txt", ""); match != nil {
-		t.Fatalf("unexpected match for missing path: %+v", match)
+		t.Fatalf("unexpected match for missing Path: %+v", match)
 	}
 	match := runtime.MatchCancelFault(now, "/file.txt", "")
-	if match == nil || match.id != "active" || match.matchedPath != "/file.txt" {
+	if match == nil || match.ID != "active" || match.MatchedPath != "/file.txt" {
 		t.Fatalf("match = %+v, want active matched path", match)
 	}
 

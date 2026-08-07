@@ -338,7 +338,7 @@ func (r vfsListingRuntime) PendingChildren(parentPath string, entries []drive.En
 	for _, entry := range entries {
 		seen[entry.Name] = true
 	}
-	for _, pending := range r.v.uploads.store.PendingUploads() {
+	for _, pending := range r.v.uploads.Store().PendingUploads() {
 		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || r.v.isDeleted(pending.Path) {
 			continue
 		}
