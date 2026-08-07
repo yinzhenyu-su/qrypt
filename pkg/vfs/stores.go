@@ -13,6 +13,11 @@ type PendingUpload = vfstypes.PendingUpload
 type UploadReplacement = vfstypes.UploadReplacement
 type UploadStagingStatus = vfstypes.UploadStagingStatus
 
+// shardedEntryMap aliases the sharded entry map (internal/vfstypes).
+type shardedEntryMap = vfstypes.ShardedEntryMap
+
+var newShardedEntryMap = vfstypes.NewShardedEntryMap
+
 // readCacheStore aliases the durable read-cache store (internal/readcache).
 type readCacheStore = readcache.Store
 
