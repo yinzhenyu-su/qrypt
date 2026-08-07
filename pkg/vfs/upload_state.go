@@ -102,3 +102,99 @@ func (u *UploadService) Close() {
 func (u *UploadService) SetDone(done chan struct{}) {
 	u.done = done
 }
+
+// DebugStateByID returns the upload state string for the given op ID.
+func (u *UploadService) DebugStateByID(id string) (string, bool) {
+	u.debug.mu.Lock()
+	defer u.debug.mu.Unlock()
+	for _, state := range u.debug.active {
+		if state.upload.OpID == id {
+			return state.upload.State, true
+		}
+	}
+	for _, snap := range u.debug.history {
+		if snap.OpID == id {
+			return snap.State, true
+		}
+	}
+	return "", false
+}
+
+// DebugActivePathByID returns the path for an active upload with the given op ID.
+func (u *UploadService) DebugActivePathByID(id string) (string, bool) {
+	u.debug.mu.Lock()
+	defer u.debug.mu.Unlock()
+	for path, state := range u.debug.active {
+		if state.upload.OpID == id {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// --- Store accessors ---
+
+func (s *UploadService) SaveUpload(pending PendingUpload) error { return s.store.SaveUpload(pending) }
+func (s *UploadService) SaveUploadExact(pending PendingUpload) error {
+	return s.store.SaveUploadExact(pending)
+}
+func (s *UploadService) UploadByPath(path string) (PendingUpload, bool) {
+	return s.store.UploadByPath(path)
+}
+func (s *UploadService) PendingByID(id string) (PendingUpload, bool) { return s.store.PendingByID(id) }
+func (s *UploadService) PendingUploads() []PendingUpload             { return s.store.PendingUploads() }
+func (s *UploadService) RemoveUpload(path string) error              { return s.store.RemoveUpload(path) }
+func (s *UploadService) RemoveUploadsUnder(path string) error {
+	return s.store.RemoveUploadsUnder(path)
+}
+func (s *UploadService) RenameUpload(oldPath string, p PendingUpload) error {
+	return s.store.RenameUpload(oldPath, p)
+}
+func (s *UploadService) RemoveStagingIfUnreferenced(localPath string) {
+	s.store.removeStagingIfUnreferenced(localPath)
+}
+
+// --- Hash tracker ---
+
+func (s *UploadService) HashRemovePath(path string)  { s.hashes.removePath(path) }
+func (s *UploadService) HashRemoveUnder(path string) { s.hashes.removeUnder(path) }
+func (s *UploadService) HashRenamePath(oldPath, newPath string, p PendingUpload) {
+	s.hashes.renamePath(oldPath, newPath, p)
+}
+func (s *UploadService) HashStore() *uploadHashTrackerState { return s.hashes }
+
+// --- Admission ---
+
+func (s *UploadService) TryAcquire(p PendingUpload, workers int) bool {
+	return s.admit.tryAcquire(p, workers)
+}
+func (s *UploadService) Release(p PendingUpload) { s.admit.release(p) }
+
+// --- Queue access ---
+
+func (s *UploadService) Queue() chan PendingUpload { return s.queue }
+func (s *UploadService) WorkerCount() int          { return s.workers }
+func (s *UploadService) Store() *uploadStore       { return s.store }
+
+// --- Fault injection ---
+
+func (s *UploadService) FaultsInject(fault *debugUploadCancelFault) {
+	s.faults.mu.Lock()
+	defer s.faults.mu.Unlock()
+	if s.faults.cancelFaults == nil {
+		s.faults.cancelFaults = map[string]*debugUploadCancelFault{}
+	}
+	s.faults.cancelFaults[fault.id] = fault
+}
+
+func (s *UploadService) FaultsRemove(id string) {
+	s.faults.mu.Lock()
+	defer s.faults.mu.Unlock()
+	if s.faults.cancelFaults == nil {
+		s.faults.cancelFaults = map[string]*debugUploadCancelFault{}
+	}
+	delete(s.faults.cancelFaults, id)
+}
+
+func (s *UploadService) Faults() *uploadFaultState     { return s.faults }
+func (s *UploadService) DebugStore() *uploadDebugState { return s.debug }

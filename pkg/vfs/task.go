@@ -461,46 +461,27 @@ func newVFSUploadTaskRuntime(v *VFS) vfsUploadTaskRuntime {
 }
 
 func (r vfsUploadTaskRuntime) Records() []uploadTaskRecord {
-	return r.v.uploadTaskRecords(r.v.uploads.store.PendingUploads())
+	return r.v.uploads.TaskRecords(r.v.uploads.PendingUploads())
 }
 
 func (r vfsUploadTaskRuntime) PendingByID(id string) (PendingUpload, bool) {
-	return r.v.uploads.store.PendingByID(id)
+	return r.v.uploads.PendingByID(id)
 }
 
 func (r vfsUploadTaskRuntime) ActivePathByID(id string) (string, bool) {
-	r.v.uploads.debug.mu.Lock()
-	defer r.v.uploads.debug.mu.Unlock()
-	for path, state := range r.v.uploads.debug.active {
-		if state.upload.OpID == id {
-			return path, true
-		}
-	}
-	return "", false
+	return r.v.uploads.DebugActivePathByID(id)
 }
 
 func (r vfsUploadTaskRuntime) StateByID(id string) (string, bool) {
-	r.v.uploads.debug.mu.Lock()
-	defer r.v.uploads.debug.mu.Unlock()
-	for _, state := range r.v.uploads.debug.active {
-		if state.upload.OpID == id {
-			return state.upload.State, true
-		}
-	}
-	for _, upload := range r.v.uploads.debug.history {
-		if upload.OpID == id {
-			return upload.State, true
-		}
-	}
-	return "", false
+	return r.v.uploads.DebugStateByID(id)
 }
 
 func (r vfsUploadTaskRuntime) CancelAndRemove(path string) error {
 	r.v.cancelUpload(path)
-	if err := r.v.uploads.store.RemoveUpload(path); err != nil {
+	if err := r.v.uploads.RemoveUpload(path); err != nil {
 		return err
 	}
-	r.v.uploads.hashes.removePath(path)
+	r.v.uploads.HashRemovePath(path)
 	return nil
 }
 
@@ -514,10 +495,10 @@ func (r vfsUploadTaskRuntime) Retry(pending PendingUpload) error {
 	pending.PermanentFail = false
 	pending.LastError = ""
 	pending.NextAttemptAt = 0
-	if err := r.v.uploads.store.SaveUploadExact(pending); err != nil {
+	if err := r.v.uploads.SaveUploadExact(pending); err != nil {
 		return err
 	}
-	if latest, ok := r.v.uploads.store.UploadByPath(pending.Path); ok {
+	if latest, ok := r.v.uploads.UploadByPath(pending.Path); ok {
 		pending = latest
 	}
 	r.v.cancelUpload(pending.Path)
@@ -529,24 +510,27 @@ func (r vfsUploadTaskRuntime) RemoveHistoryByID(id string) bool {
 	return r.v.removeUploadHistoryByID(id)
 }
 
-func (v *VFS) uploadTaskRecords(pending []PendingUpload) []uploadTaskRecord {
+// TaskRecords builds upload task records from pending uploads combined with
+// active debug state and history. This is the data source for the VFS task
+// listing; Core can use it via TaskSource without accessing upload internals.
+func (s *UploadService) TaskRecords(pending []PendingUpload) []uploadTaskRecord {
 	active := map[string]uploadTaskRecord{}
-	v.uploads.debug.mu.Lock()
-	for path, state := range v.uploads.debug.active {
+	s.debug.mu.Lock()
+	for path, state := range s.debug.active {
 		active[path] = uploadTaskRecordFromSnapshot(state.upload)
 	}
-	history := make([]uploadTaskRecord, 0, len(v.uploads.debug.history))
-	for _, upload := range v.uploads.debug.history {
+	history := make([]uploadTaskRecord, 0, len(s.debug.history))
+	for _, upload := range s.debug.history {
 		history = append(history, uploadTaskRecordFromSnapshot(upload))
 	}
-	v.uploads.debug.mu.Unlock()
+	s.debug.mu.Unlock()
 
 	timerPaths := map[string]bool{}
-	v.uploads.schedule.mu.Lock()
-	for path := range v.uploads.schedule.timers {
+	s.schedule.mu.Lock()
+	for path := range s.schedule.timers {
 		timerPaths[path] = true
 	}
-	v.uploads.schedule.mu.Unlock()
+	s.schedule.mu.Unlock()
 
 	records := make([]uploadTaskRecord, 0, len(pending)+len(active)+len(history))
 	seenPath := map[string]bool{}
