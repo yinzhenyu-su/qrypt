@@ -960,3 +960,54 @@ func TestDebugSnapshot(t *testing.T) {
 		t.Fatalf("credential_source = %v, want config", snapshot.Extra[drive.DebugExtraCredentialSource])
 	}
 }
+
+func TestS3ServerSideCopy(t *testing.T) {
+	d, _, _ := setupTest(t)
+	ctx := context.Background()
+
+	src, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "src.bin",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("s3 copy")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := d.Copy(ctx, src, "0", "dst.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.Name != "dst.bin" || dst.ID != "dst.bin" {
+		t.Fatalf("copy entry = %+v", dst)
+	}
+	// Source stays, destination reads back identical content.
+	rc, err := d.Read(ctx, src, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcBody, _ := io.ReadAll(rc)
+	rc.Close()
+	rc, err = d.Read(ctx, dst, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	dstBody, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(srcBody) != "s3 copy" || string(dstBody) != "s3 copy" {
+		t.Fatalf("content after copy: src=%q dst=%q", srcBody, dstBody)
+	}
+}
+
+func TestS3CopyRejectsDirectory(t *testing.T) {
+	d, _, _ := setupTest(t)
+	ctx := context.Background()
+	if _, err := d.Mkdir(ctx, "0", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Copy(ctx, drive.Entry{ID: "dir", IsDir: true}, "0", "x"); err == nil {
+		t.Fatal("directory copy should fail")
+	}
+}

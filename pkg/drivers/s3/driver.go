@@ -522,6 +522,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityWriter,
 		drive.CapabilitySourceUploader,
 		drive.CapabilityRemoteNameResolver,
+		drive.CapabilityServerSideCopy,
 	}
 }
 
@@ -654,6 +655,33 @@ func (d *Driver) joinPath(parentID, name string) string {
 		return name
 	}
 	return stdpath.Join(parentID, name)
+}
+
+// Copy implements drive.ServerSideCopier: S3 CopyObject — the provider
+// copies the object without a data round trip through qrypt. Directory
+// copies are rejected per the contract.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	srcKey := d.toS3Key(src.ID)
+	dstKey := d.toS3Key(d.joinPath(dstParentID, dstName))
+	copySource := url.PathEscape(d.bucket + "/" + srcKey)
+	start := time.Now()
+	_, err := d.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(d.bucket),
+		CopySource: aws.String(copySource),
+		Key:        aws.String(dstKey),
+	})
+	d.recordSDK(ctx, "CopyObject", start, map[string]any{"bucket": d.bucket, "src_key": srcKey, "dst_key": dstKey}, err)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("s3: copy %q → %q: %w", src.ID, dstKey, err)
+	}
+	return drive.Entry{
+		ID:       d.joinPath(dstParentID, dstName),
+		ParentID: d.normParent(dstParentID),
+		Name:     dstName,
+	}, nil
 }
 
 func (d *Driver) moveCopy(ctx context.Context, entry drive.Entry, dstParentID, newName string) error {

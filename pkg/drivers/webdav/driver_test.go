@@ -60,6 +60,8 @@ func (s *testWebDAV) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDelete(w, r, p)
 	case "MOVE":
 		s.handleMove(w, r, p)
+	case "COPY":
+		s.handleCopy(w, r, p)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -266,6 +268,34 @@ func (s *testWebDAV) handleMove(w http.ResponseWriter, r *http.Request, p string
 	s.files[dest] = file
 	delete(s.files, p)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCopy implements RFC 4918 COPY: duplicate the source node at the
+// Destination path, keeping the source node.
+func (s *testWebDAV) handleCopy(w http.ResponseWriter, r *http.Request, p string) {
+	destHeader := r.Header.Get("Destination")
+	if destHeader == "" {
+		http.Error(w, "Destination header required", http.StatusBadRequest)
+		return
+	}
+	destURL, err := url.Parse(destHeader)
+	if err != nil {
+		http.Error(w, "Bad Destination header", http.StatusBadRequest)
+		return
+	}
+	dest := cleanPath(destURL.Path)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	file, ok := s.files[p]
+	if !ok {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	clone := *file
+	s.files[dest] = &clone
+	w.WriteHeader(http.StatusCreated)
 }
 
 func cleanPath(p string) string {
@@ -1123,5 +1153,68 @@ func TestWebDAV_ToPathAbsoluteEncodedHref(t *testing.T) {
 				t.Fatalf("toPath(%q) = %q, want %q", tt.href, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWebDAVServerSideCopy(t *testing.T) {
+	ctx := context.Background()
+	drv, ts, _ := setupTest(t)
+
+	// Seed a source file via PutSource.
+	src, err := drv.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     "src.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("webdav copy")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := drv.Copy(ctx, src, "/", "dst.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.Name != "dst.txt" || dst.ParentID != "/" {
+		t.Fatalf("copy entry = %+v", dst)
+	}
+	// The source stays; the destination exists with identical content.
+	entries, err := drv.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawSrc, sawDst := false, false
+	for _, e := range entries {
+		if e.Name == "src.txt" {
+			sawSrc = true
+		}
+		if e.Name == "dst.txt" {
+			sawDst = true
+		}
+	}
+	if !sawSrc || !sawDst {
+		t.Fatalf("listing after copy = %v, want both src.txt and dst.txt", entries)
+	}
+	rc, err := drv.Read(ctx, dst, 0, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "webdav copy" {
+		t.Fatalf("copy content = %q", body)
+	}
+	_ = ts
+}
+
+func TestWebDAVCopyRejectsDirectory(t *testing.T) {
+	ctx := context.Background()
+	drv, _, _ := setupTest(t)
+	if _, err := drv.Mkdir(ctx, "/", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := drv.Copy(ctx, drive.Entry{ID: "/dir", IsDir: true}, "/", "x"); err == nil {
+		t.Fatal("directory copy should fail")
 	}
 }

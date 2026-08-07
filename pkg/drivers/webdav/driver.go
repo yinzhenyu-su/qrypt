@@ -495,6 +495,38 @@ func nonRetryableUploadStatus(status int) bool {
 	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }
 
+// Copy implements drive.ServerSideCopier: WebDAV COPY (RFC 4918 §9.8) with
+// Overwrite: F. The destination must not exist — drivecopy removes any
+// existing destination before calling Copy.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	srcURL := d.resolveURL(src.ID)
+	dstURL := d.childURL(dstParentID, dstName)
+	req, err := d.newRequest(ctx, "COPY", srcURL, nil)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	req.Header.Set("Destination", dstURL)
+	req.Header.Set("Overwrite", "F")
+	start := time.Now()
+	resp, err := d.client.Do(req)
+	d.recordHTTP(ctx, "copy", req, resp, start, nil, err)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("webdav: copy: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return drive.Entry{}, fmt.Errorf("webdav: copy: status %d for %s", resp.StatusCode, src.ID)
+	}
+	return drive.Entry{
+		ID:       d.joinPath(dstParentID, dstName),
+		ParentID: d.relativePath(dstParentID),
+		Name:     dstName,
+	}, nil
+}
+
 // ─── internal helpers ────────────────────────────────────────────────────
 
 // childURL returns the full URL for a child resource in a parent directory.
