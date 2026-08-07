@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -220,5 +221,58 @@ func TestDriverSpace(t *testing.T) {
 	}
 	if space.Free > space.Total {
 		t.Fatalf("free space %d exceeds total space %d", space.Free, space.Total)
+	}
+}
+
+func TestDriverServerSideCopy(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	driver := New(root)
+	if err := driver.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Unix(1_700_000_000, 0)
+	if _, err := driver.Mkdir(ctx, "", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	src, err := driver.PutSource(ctx, drive.UploadRequest{
+		ParentID: "",
+		Name:     "src.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("provider-side copy")),
+		ModTime:  fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !src.ModTime.Equal(fixed) {
+		t.Fatalf("source mtime = %v, want %v", src.ModTime, fixed)
+	}
+	dst, err := driver.Copy(ctx, src, "0", "dst.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.ID != filepath.Join(root, "dst.txt") || dst.Name != "dst.txt" || dst.Size != int64(len("provider-side copy")) {
+		t.Fatalf("copy entry = %+v", dst)
+	}
+	// Content identical.
+	rc, err := driver.Read(ctx, dst, 0, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "provider-side copy" {
+		t.Fatalf("copy content = %q", body)
+	}
+	// mtime preserved (CapabilityMtime + CapabilityServerSideCopy contract).
+	if !dst.ModTime.Equal(fixed) {
+		t.Fatalf("copy mtime = %v, want %v", dst.ModTime, fixed)
+	}
+	// Directory copies are rejected.
+	if _, err := driver.Copy(ctx, drive.Entry{ID: filepath.Join(root, "dir"), IsDir: true}, "0", "x"); err == nil {
+		t.Fatal("directory copy should fail")
 	}
 }

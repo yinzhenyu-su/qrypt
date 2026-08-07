@@ -34,6 +34,22 @@ type RemoteHasher interface {
 	RemoteHash(ctx context.Context, entry Entry) (HashAlgorithm, string, error)
 }
 
+// ServerSideCopier is an optional backend capability: the driver can
+// duplicate a stored object without a data round trip through qrypt
+// (provider-side copy). The copy must be content-identical to the source.
+// Providers that also declare CapabilityMtime must make Copy preserve the
+// source mtime, otherwise sync's mtime comparison would re-copy on every
+// run.
+//
+// This is a file-level operation: copying directories is not part of the
+// contract and should return ErrUnsupported.
+//
+// Implementations do not need to honor overwrite semantics themselves;
+// callers (drivecopy) remove an existing destination before invoking Copy.
+type ServerSideCopier interface {
+	Copy(ctx context.Context, src Entry, dstParentID, dstName string) (Entry, error)
+}
+
 type EntryRawExtraer interface {
 	EntryRawExtra() any
 }

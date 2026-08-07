@@ -20,6 +20,12 @@ const (
 	// time. Sync uses it to decide whether mtime differences require an
 	// update; backends without it fall back to size/hash comparison only.
 	CapabilityMtime Capability = "mtime"
+	// CapabilityServerSideCopy means the driver can duplicate a stored
+	// object provider-side (ServerSideCopier) without downloading and
+	// re-uploading it. When declared together with CapabilityMtime, Copy
+	// must preserve the source mtime so sync converges instead of
+	// re-copying every run.
+	CapabilityServerSideCopy Capability = "server_side_copy"
 )
 
 // Capabilities returns the driver-declared optional behavior in a stable order.

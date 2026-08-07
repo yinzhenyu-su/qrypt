@@ -250,6 +250,28 @@ func RunDirectDriverCopyWithModTime(ctx context.Context, source DriverCopySource
 		appendCopyStep(result, "check_dest_exists", 0, start, nil)
 	}
 
+	// Same-driver server-side copy: when source and destination live on the
+	// same driver instance and it can duplicate provider-side, skip the
+	// download-to-temp-and-reupload round trip entirely (0x local disk).
+	// The modTime stamp does not apply: the provider copy preserves (or
+	// decides) the destination mtime, and the CapabilityMtime +
+	// CapabilityServerSideCopy contract pins that to the source mtime.
+	if dstParent.Drive == src.Drive {
+		if copier, ok := dstParent.Drive.(drive.ServerSideCopier); ok {
+			start := timeutil.Now()
+			destEntry, err := copier.Copy(ctx, src.Entry, dstParent.Info.RemoteID, dstName)
+			appendCopyStep(result, "server_side_copy", src.Info.Size, start, err)
+			appendCopyEvent(result, "server_side_copy", dstParent.Mount, dstParent.Driver, result.DestPath, src.Info.Size, start, nil)
+			if err != nil {
+				return result
+			}
+			result.Bytes = src.Info.Size
+			result.DestEntry = &destEntry
+			result.Pass = true
+			return result
+		}
+	}
+
 	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size)
 	appendCopyStep(result, "read_source_to_temp", tmp.bytes, tmp.started, err)
 	appendCopyEvent(result, "read_source_to_temp", src.Mount, src.Driver, result.SourcePath, tmp.bytes, tmp.started, nil)
