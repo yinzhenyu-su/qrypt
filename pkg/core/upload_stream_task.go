@@ -14,7 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
-const uploadStreamTaskPollInterval = 500 * time.Millisecond
+var UploadStreamTaskPollInterval = 500 * time.Millisecond
 
 type uploadStreamBatch struct {
 	mu             sync.Mutex
@@ -112,7 +112,7 @@ func (c *Core) runUploadStreamTask(ctx context.Context, update task.UpdateFunc, 
 	batch.readyOnce.Do(func() { close(batch.ready) })
 	batch.mu.Unlock()
 	batch.updateTaskSnapshot()
-	ticker := time.NewTicker(uploadStreamTaskPollInterval)
+	ticker := time.NewTicker(UploadStreamTaskPollInterval)
 	defer ticker.Stop()
 	defer c.removeUploadStream(batch.taskID)
 	for {
