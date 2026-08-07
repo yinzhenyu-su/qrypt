@@ -55,7 +55,7 @@ func newVFSVisibilityRuntime(v *VFS) vfsVisibilityRuntime {
 func (r vfsVisibilityRuntime) MarkDeleted(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Lock()
 	r.v.view.overlay.deleted[path] = entry
-	delete(r.v.delete.tasks.failures, path)
+	delete(r.v.deletes.tasks.failures, path)
 	delete(r.v.view.overlay.renameOverlays, path)
 	delete(r.v.view.overlay.restoredDirs, path)
 	r.v.view.overlay.mu.Unlock()
@@ -82,10 +82,10 @@ func (r vfsVisibilityRuntime) RestoreDeletedPath(path string) (drive.Entry, bool
 		return drive.Entry{}, false
 	}
 	delete(r.v.view.overlay.deleted, path)
-	delete(r.v.delete.tasks.failures, path)
-	if timer := r.v.delete.tasks.timers[path]; timer != nil {
+	delete(r.v.deletes.tasks.failures, path)
+	if timer := r.v.deletes.tasks.timers[path]; timer != nil {
 		timer.Stop()
-		delete(r.v.delete.tasks.timers, path)
+		delete(r.v.deletes.tasks.timers, path)
 		logging.L.Infof("[VFS] canceled pending delete for restored path=%q id=%q", path, entry.ID)
 	}
 	if entry.IsDir {
@@ -118,10 +118,10 @@ func (r vfsVisibilityRuntime) RestoreDeletedAncestor(path string) {
 		return
 	}
 	delete(r.v.view.overlay.deleted, restorePath)
-	delete(r.v.delete.tasks.failures, restorePath)
-	if timer := r.v.delete.tasks.timers[restorePath]; timer != nil {
+	delete(r.v.deletes.tasks.failures, restorePath)
+	if timer := r.v.deletes.tasks.timers[restorePath]; timer != nil {
 		timer.Stop()
-		delete(r.v.delete.tasks.timers, restorePath)
+		delete(r.v.deletes.tasks.timers, restorePath)
 		logging.L.Infof("[VFS] canceled pending delete for restored ancestor path=%q id=%q requested=%q", restorePath, entry.ID, path)
 	}
 	r.v.view.overlay.restoredDirs[restorePath] = time.Now().Add(restoredDirTTL)
@@ -139,10 +139,10 @@ func (r vfsVisibilityRuntime) CancelDeletedFile(path string) {
 	entry, ok := r.v.view.overlay.deleted[path]
 	if ok && !entry.IsDir {
 		delete(r.v.view.overlay.deleted, path)
-		delete(r.v.delete.tasks.failures, path)
-		if timer := r.v.delete.tasks.timers[path]; timer != nil {
+		delete(r.v.deletes.tasks.failures, path)
+		if timer := r.v.deletes.tasks.timers[path]; timer != nil {
 			timer.Stop()
-			delete(r.v.delete.tasks.timers, path)
+			delete(r.v.deletes.tasks.timers, path)
 			logging.L.Infof("[VFS] canceled pending delete for recreated file path=%q id=%q", path, entry.ID)
 		}
 	}

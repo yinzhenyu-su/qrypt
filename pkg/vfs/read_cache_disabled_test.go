@@ -224,7 +224,7 @@ func TestVFSDisabledReadCacheFullLifecycle(t *testing.T) {
 	for _, entry := range entries {
 		t.Errorf("disabled read cache left file on disk: %s", entry.Name())
 	}
-	fs.delete.Close()
+	fs.deletes.Close()
 	fs.uploads.Close()
 	_ = fs.read.Close()
 }

@@ -137,7 +137,7 @@ func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRem
 	runtime.InvalidateReadCache(entry)
 	runtime.MarkDeleted(path, entry)
 	runtime.ClearLocalModTime(path)
-	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.delete.delay)
+	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deletes.delay)
 	v.scheduleDelete(path, entry)
 	return nil
 }
@@ -166,7 +166,7 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfs
 	runtime.CancelChildDeletes(path)
 	runtime.MarkDeleted(path, entry)
 	runtime.ClearLocalModTime(path)
-	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.delete.delay)
+	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deletes.delay)
 	v.scheduleDelete(path, entry)
 	return nil
 }

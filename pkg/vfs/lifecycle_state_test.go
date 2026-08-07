@@ -44,7 +44,7 @@ func TestDomainStateInitialized(t *testing.T) {
 		name string
 		ok   bool
 	}{
-		{"read", fs.read != nil}, {"upload", fs.uploads != nil}, {"delete", fs.delete != nil},
+		{"read", fs.read != nil}, {"upload", fs.uploads != nil}, {"delete", fs.deletes != nil},
 		{"listing", fs.listing != nil}, {"activeDebug", fs.activeDebug != nil}, {"pathLocks", fs.pathLocks != nil},
 		{"read.cache", fs.read != nil && fs.read.cache != nil},
 		{"read.history", fs.read != nil && fs.read.history != nil},
@@ -60,7 +60,7 @@ func TestDomainStateInitialized(t *testing.T) {
 		{"upload.debug", fs.uploads != nil && fs.uploads.debug != nil},
 		{"upload.faults", fs.uploads != nil && fs.uploads.faults != nil},
 		{"upload.hashes", fs.uploads != nil && fs.uploads.hashes != nil},
-		{"delete.tasks", fs.delete != nil && fs.delete.tasks != nil},
+		{"delete.tasks", fs.deletes != nil && fs.deletes.tasks != nil},
 	} {
 		if !state.ok {
 			t.Errorf("domain state %s not initialized after New", state.name)
@@ -75,8 +75,8 @@ func TestDomainCloseIdempotent(t *testing.T) {
 	fs := newStateTestVFS(t)
 	fs.uploads.Close()
 	fs.uploads.Close()
-	fs.delete.Close()
-	fs.delete.Close()
+	fs.deletes.Close()
+	fs.deletes.Close()
 	if err := fs.read.Close(); err != nil {
 		t.Fatalf("read.Close: %v", err)
 	}
@@ -157,16 +157,16 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	if err := fs2.Remove(ctx, "/del.txt"); err != nil {
 		t.Fatal(err)
 	}
-	fs2.delete.tasks.mu.Lock()
-	darmed := len(fs2.delete.tasks.timers)
-	fs2.delete.tasks.mu.Unlock()
+	fs2.deletes.tasks.mu.Lock()
+	darmed := len(fs2.deletes.tasks.timers)
+	fs2.deletes.tasks.mu.Unlock()
 	if darmed == 0 {
 		t.Fatal("delete debounce timer not armed after remove")
 	}
-	fs2.delete.Close()
-	fs2.delete.tasks.mu.Lock()
-	dleft := len(fs2.delete.tasks.timers)
-	fs2.delete.tasks.mu.Unlock()
+	fs2.deletes.Close()
+	fs2.deletes.tasks.mu.Lock()
+	dleft := len(fs2.deletes.tasks.timers)
+	fs2.deletes.tasks.mu.Unlock()
 	if dleft != 0 {
 		t.Fatalf("delete.Close left %d timers armed", dleft)
 	}
@@ -213,7 +213,7 @@ func TestUploadQueueEnqueueExitsOnShutdown(t *testing.T) {
 		t.Fatal("enqueue delivered after shutdown")
 	}
 
-	fs.delete.Close()
+	fs.deletes.Close()
 	fs.uploads.Close()
 	_ = fs.read.Close()
 }

@@ -52,7 +52,7 @@ type VFS struct {
 	view    *viewState
 	read    *readState
 	uploads *UploadService
-	delete  *deleteState
+	deletes *DeleteService
 	listing *listingState
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
@@ -126,7 +126,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		view:          view,
 		read:          newReadState(stores.readCacheStore),
 		uploads:       newUploadService(stores.uploadStore, opts, done),
-		delete:        newDeleteState(deleteTasks, opts.DeleteDelay),
+		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
 		listing:       newListingState(),
 		activeDebug:   newActiveDebugState(),
 		pathLocks:     newPathLockState(),
@@ -159,7 +159,7 @@ func (v *VFS) Start(ctx context.Context) {
 		// does and waits for.
 		context.AfterFunc(ctx, func() {
 			close(v.done)
-			v.delete.Close()
+			v.deletes.Close()
 			v.uploads.Close()
 			_ = v.read.Close()
 		})

@@ -99,7 +99,7 @@ func (r vfsUploadWorkerRuntime) StopUploadTimers() {
 }
 
 func (r vfsUploadWorkerRuntime) StopDeleteTimers() {
-	r.v.delete.Close()
+	r.v.deletes.Close()
 }
 
 func (r vfsUploadWorkerRuntime) SourceUploadSupported() bool {

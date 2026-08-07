@@ -14,14 +14,14 @@ func TestVFSDeleteSchedulerSchedulesAndClearsFailure(t *testing.T) {
 	}
 	scheduler := newVFSDeleteScheduler(fs)
 	fs.view.overlay.mu.Lock()
-	fs.delete.tasks.failures["/file.txt"] = "old failure"
+	fs.deletes.tasks.failures["/file.txt"] = "old failure"
 	fs.view.overlay.mu.Unlock()
 
 	fired := make(chan struct{}, 1)
 	scheduler.Schedule("/file.txt", drive.Entry{ID: "file"}, time.Hour, func() { fired <- struct{}{} })
 	fs.view.overlay.mu.Lock()
-	_, timerExists := fs.delete.tasks.timers["/file.txt"]
-	_, failureExists := fs.delete.tasks.failures["/file.txt"]
+	_, timerExists := fs.deletes.tasks.timers["/file.txt"]
+	_, failureExists := fs.deletes.tasks.failures["/file.txt"]
 	fs.view.overlay.mu.Unlock()
 	if !timerExists || failureExists {
 		t.Fatalf("timerExists=%v failureExists=%v, want scheduled without failure", timerExists, failureExists)
@@ -45,16 +45,16 @@ func TestVFSDeleteSchedulerCancelsChildDeletes(t *testing.T) {
 	fs.view.overlay.mu.Lock()
 	fs.view.overlay.deleted["/dir/a.txt"] = drive.Entry{ID: "a"}
 	fs.view.overlay.deleted["/other.txt"] = drive.Entry{ID: "other"}
-	fs.delete.tasks.failures["/dir/a.txt"] = "failed"
+	fs.deletes.tasks.failures["/dir/a.txt"] = "failed"
 	fs.view.overlay.mu.Unlock()
 
 	scheduler.CancelChildren("/dir")
 	fs.view.overlay.mu.Lock()
-	_, childTimer := fs.delete.tasks.timers["/dir/a.txt"]
-	_, otherTimer := fs.delete.tasks.timers["/other.txt"]
+	_, childTimer := fs.deletes.tasks.timers["/dir/a.txt"]
+	_, otherTimer := fs.deletes.tasks.timers["/other.txt"]
 	_, childDeleted := fs.view.overlay.deleted["/dir/a.txt"]
 	_, otherDeleted := fs.view.overlay.deleted["/other.txt"]
-	_, childFailure := fs.delete.tasks.failures["/dir/a.txt"]
+	_, childFailure := fs.deletes.tasks.failures["/dir/a.txt"]
 	fs.view.overlay.mu.Unlock()
 	if childTimer || childDeleted || childFailure {
 		t.Fatalf("child timer=%v deleted=%v failure=%v, want cleared", childTimer, childDeleted, childFailure)
@@ -75,7 +75,7 @@ func TestVFSDeleteSchedulerStopsAllTimers(t *testing.T) {
 	scheduler.Schedule("/b.txt", drive.Entry{ID: "b"}, time.Hour, func() {})
 	scheduler.StopAll()
 	fs.view.overlay.mu.Lock()
-	timerCount := len(fs.delete.tasks.timers)
+	timerCount := len(fs.deletes.tasks.timers)
 	fs.view.overlay.mu.Unlock()
 	if timerCount != 0 {
 		t.Fatalf("timer count = %d, want 0", timerCount)

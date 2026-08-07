@@ -270,7 +270,7 @@ func (r vfsDebugSnapshotRuntime) Queues() MountSnapshotQueues {
 		UploadCap:     cap(r.v.uploads.queue),
 		UploadWorkers: r.v.uploads.workers,
 		UploadDelay:   r.v.uploads.delay.String(),
-		DeleteDelay:   r.v.delete.delay.String(),
+		DeleteDelay:   r.v.deletes.delay.String(),
 	}
 }
 
@@ -309,7 +309,7 @@ func (r vfsDebugSnapshotRuntime) Overlay() debugOverlayRuntimeSnapshot {
 	out := debugOverlayRuntimeSnapshot{}
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	for path := range r.v.delete.tasks.timers {
+	for path := range r.v.deletes.tasks.timers {
 		out.DeleteTimers = append(out.DeleteTimers, DebugTimer{Path: path})
 	}
 	for path, entry := range r.v.view.overlay.deleted {
