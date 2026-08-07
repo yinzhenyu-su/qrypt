@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,7 +32,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &VFS{
-		read:      &readState{cache: cache.readCacheStore},
+		read:      read.NewState(cache.readCacheStore),
 		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
@@ -71,7 +72,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &VFS{
-		read:      &readState{cache: cache.readCacheStore},
+		read:      read.NewState(cache.readCacheStore),
 		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
@@ -219,7 +220,7 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := &VFS{
-		read:      &readState{cache: cache.readCacheStore},
+		read:      read.NewState(cache.readCacheStore),
 		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
@@ -270,7 +271,7 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	}
 	v := &VFS{
 		driver:    drv,
-		read:      &readState{cache: cache.readCacheStore},
+		read:      read.NewState(cache.readCacheStore),
 		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),

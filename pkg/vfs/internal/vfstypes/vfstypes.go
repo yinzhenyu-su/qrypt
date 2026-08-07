@@ -7,6 +7,7 @@ package vfstypes
 import (
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // PendingUpload is a file staged for upload but not yet committed.
@@ -60,4 +61,26 @@ func IsPathUnder(path, dir string) bool {
 	path = CleanVirtualPath(path)
 	dir = CleanVirtualPath(dir)
 	return dir != "/" && len(path) > len(dir) && path[:len(dir)] == dir && path[len(dir)] == '/'
+}
+
+// DebugActiveOp describes one in-flight operation for debug snapshots.
+type DebugActiveOp struct {
+	OpID        string         `json:"op_id"`
+	Kind        string         `json:"kind"`
+	Phase       string         `json:"phase,omitempty"`
+	State       string         `json:"state"`
+	Mount       string         `json:"mount,omitempty"`
+	Path        string         `json:"path,omitempty"`
+	RemoteID    string         `json:"remote_id,omitempty"`
+	Offset      int64          `json:"offset,omitempty"`
+	Requested   int64          `json:"requested_bytes,omitempty"`
+	ChunkIndex  int64          `json:"chunk_index,omitempty"`
+	WindowStart int64          `json:"window_start,omitempty"`
+	WindowEnd   int64          `json:"window_end,omitempty"`
+	Background  bool           `json:"background,omitempty"`
+	WaitFor     string         `json:"wait_for,omitempty"`
+	StartedAt   time.Time      `json:"started_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	AgeMS       int64          `json:"age_ms"`
+	Extra       map[string]any `json:"extra,omitempty"`
 }

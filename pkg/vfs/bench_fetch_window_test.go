@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"bytes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func BenchmarkFetchChunkPerChunkCopy(b *testing.B) {
 		chunks := map[int64][]byte{}
 		remaining := data
 		for index := int64(0); len(remaining) > 0; index++ {
-			chunkSize := readChunkSize
+			chunkSize := read.ChunkSize
 			if len(remaining) < chunkSize {
 				chunkSize = len(remaining)
 			}
@@ -42,7 +43,7 @@ func BenchmarkFetchChunkSharedBacking(b *testing.B) {
 		chunks := map[int64][]byte{}
 		remaining := data
 		for index := int64(0); len(remaining) > 0; index++ {
-			chunkSize := readChunkSize
+			chunkSize := read.ChunkSize
 			if len(remaining) < chunkSize {
 				chunkSize = len(remaining)
 			}
@@ -65,7 +66,7 @@ func BenchmarkFetchChunkPreallocMap(b *testing.B) {
 		chunks := make(map[int64][]byte, 4)
 		remaining := data
 		for index := int64(0); len(remaining) > 0; index++ {
-			chunkSize := readChunkSize
+			chunkSize := read.ChunkSize
 			if len(remaining) < chunkSize {
 				chunkSize = len(remaining)
 			}

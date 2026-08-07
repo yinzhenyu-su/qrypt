@@ -13,6 +13,9 @@ type PendingUpload = vfstypes.PendingUpload
 type UploadReplacement = vfstypes.UploadReplacement
 type UploadStagingStatus = vfstypes.UploadStagingStatus
 
+// DebugActiveOp aliases the in-flight operation descriptor (internal/vfstypes).
+type DebugActiveOp = vfstypes.DebugActiveOp
+
 // shardedEntryMap aliases the sharded entry map (internal/vfstypes).
 type shardedEntryMap = vfstypes.ShardedEntryMap
 

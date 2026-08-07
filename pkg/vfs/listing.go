@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"path/filepath"
 	"sort"
 	"time"
@@ -35,7 +36,7 @@ func (v *VFS) List(ctx context.Context, path string) ([]drive.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if dirPrefetchEnabled(ctx) {
+	if read.DirPrefetchEnabled(ctx) {
 		v.scheduleDirPrefetch(ctx, cleanVirtual(path), entries)
 	}
 	return entries, nil

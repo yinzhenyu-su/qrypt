@@ -263,7 +263,7 @@ func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 		logging.L.DebugfEvery("vfs.read_cache_seed_skip_large", time.Second, "[VFS] skip read cache seed for large upload id=%q size=%d local=%q", entry.ID, entry.Size, localPath)
 		return
 	}
-	if err := v.read.cache.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {
+	if err := v.read.PutLocalFile(cacheKey, entry.Size, localPath); err != nil {
 		logging.L.Warnf("[VFS] read cache seed failed id=%q local=%q err=%v", entry.ID, localPath, err)
 	}
 }

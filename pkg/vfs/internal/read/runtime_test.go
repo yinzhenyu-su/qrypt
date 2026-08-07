@@ -1,4 +1,4 @@
-package vfs
+package read
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
 type fakeReadRuntime struct {
@@ -82,10 +81,7 @@ func (r *fakeReadRuntime) AcquireSlot(context.Context) (func(), error) {
 }
 
 func TestReadChunkRangeWithRuntimeUsesHotChunkFirst(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fs := NewReader(stubHost{}, NewState(nil))
 	runtime := &fakeReadRuntime{cacheKey: "cache", hot: []byte("abcdef"), loadData: []byte("loaded")}
 	data, err := fs.readChunkRangeWithRuntime(context.Background(), drive.Entry{ID: "id", Size: 6, ModTime: time.Now()}, 0, 2, 3, 1, runtime)
 	if err != nil {
@@ -100,10 +96,7 @@ func TestReadChunkRangeWithRuntimeUsesHotChunkFirst(t *testing.T) {
 }
 
 func TestReadChunkRangeWithRuntimePromotesRange(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fs := NewReader(stubHost{}, NewState(nil))
 	runtime := &fakeReadRuntime{cacheKey: "cache", promote: true, rangeData: []byte("abc"), rangeChunk: []byte("abcdef")}
 	data, err := fs.readChunkRangeWithRuntime(context.Background(), drive.Entry{ID: "id", Size: 6, ModTime: time.Now()}, 0, 0, 3, 1, runtime)
 	if err != nil {
@@ -118,10 +111,7 @@ func TestReadChunkRangeWithRuntimePromotesRange(t *testing.T) {
 }
 
 func TestReadChunkRangeWithRuntimeFallsBackToLoadWindow(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fs := NewReader(stubHost{}, NewState(nil))
 	runtime := &fakeReadRuntime{cacheKey: "cache", loadData: []byte("loaded")}
 	data, err := fs.readChunkRangeWithRuntime(context.Background(), drive.Entry{ID: "id", Size: 6, ModTime: time.Now()}, 0, 1, 4, 1, runtime)
 	if err != nil {
@@ -135,14 +125,11 @@ func TestReadChunkRangeWithRuntimeFallsBackToLoadWindow(t *testing.T) {
 	}
 }
 
-func TestVFSReadRuntimeReportsChunkAvailableFromHotChunkAndWindow(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := newVFSReadRuntime(fs)
+func TestStateReportsChunkAvailableFromHotChunkAndWindow(t *testing.T) {
+	reader := NewReader(stubHost{}, NewState(nil))
+	runtime := reader.newRuntime()
 
-	fs.putHotChunk("cache", 1, []byte("hot"))
+	reader.putHotChunk("cache", 1, []byte("hot"))
 	if !runtime.ChunkAvailable("cache", 1) {
 		t.Fatal("hot chunk should be available")
 	}
@@ -153,7 +140,7 @@ func TestVFSReadRuntimeReportsChunkAvailableFromHotChunkAndWindow(t *testing.T) 
 		end:   4,
 		done:  make(chan struct{}),
 	}
-	runtime.BeginWindowLoad("cache:2:4", load)
+	reader.state.beginWindowLoad("cache:2:4", load)
 	if !runtime.ChunkAvailable("cache", 3) {
 		t.Fatal("in-flight window chunk should be available")
 	}
@@ -162,22 +149,18 @@ func TestVFSReadRuntimeReportsChunkAvailableFromHotChunkAndWindow(t *testing.T) 
 	}
 }
 
-func TestVFSReadRuntimeOwnsPrefetchReservationState(t *testing.T) {
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := newVFSReadRuntime(fs)
+func TestStateOwnsPrefetchReservationState(t *testing.T) {
+	state := NewState(nil)
 
-	if !runtime.ReservePrefetch("cache:1:2") {
+	if !state.reservePrefetch("cache:1:2") {
 		t.Fatal("first prefetch reservation should win")
 	}
-	if runtime.ReservePrefetch("cache:1:2") {
+	if state.reservePrefetch("cache:1:2") {
 		t.Fatal("duplicate prefetch reservation should be rejected")
 	}
-	runtime.ReleasePrefetch("cache:1:2")
-	if !runtime.ReservePrefetch("cache:1:2") {
+	state.releasePrefetch("cache:1:2")
+	if !state.reservePrefetch("cache:1:2") {
 		t.Fatal("released prefetch reservation should be reusable")
 	}
-	runtime.ReleasePrefetch("cache:1:2")
+	state.releasePrefetch("cache:1:2")
 }

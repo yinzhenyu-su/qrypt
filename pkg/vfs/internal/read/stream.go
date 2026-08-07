@@ -1,4 +1,4 @@
-package vfs
+package read
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
 )
 
 // StreamReader is the optional streaming surface for sequential downloads.
@@ -18,64 +19,75 @@ type StreamReader interface {
 	ReadStream(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
+type debugReadCloser struct {
+	io.ReadCloser
+	finish func(int64, error)
+}
+
+func (d *debugReadCloser) Close() error {
+	err := d.ReadCloser.Close()
+	d.finish(0, err)
+	return err
+}
+
 // ReadStream opens path for sequential streaming reads. Unlike Read, which
 // reads the entire file into one buffer, ReadStream pulls chunk windows on
 // demand so large downloads (fs sync, media) keep memory bounded by the
 // read window size. Pending local changes are served from staging, matching
 // Read. The returned closer is not safe for concurrent use.
-func (v *VFS) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
+func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
 	var err error
-	defer func() { v.recordHealthResult(drive.HealthOpRead, err) }()
-	path = cleanVirtual(path)
+	defer func() { r.host.RecordHealth(drive.HealthOpRead, err) }()
+	path = CleanVirtualPath(path)
 	started := timeutil.Now()
-	opID := v.nextDebugReadOpID()
-	activeID := v.beginDebugActive(DebugActiveOp{
+	opID := r.host.DebugNextOpID()
+	activeID := r.host.DebugBeginActive(vfstypes.DebugActiveOp{
 		OpID:   opID,
 		Kind:   "vfs_read_stream",
 		Phase:  "resolve",
 		Path:   path,
 		Offset: 0,
 	})
-	if pending, err := v.pendingUpload(path); err == nil {
-		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+	if pending, ok, err := r.pendingUpload(path); err == nil && ok {
+		r.host.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_flush"
 			op.RemoteID = pending.FID
 		})
-		if err := newVFSReadRuntime(v).FlushStaging(pending.LocalPath); err != nil {
-			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
+		if err := r.host.FlushStaging(pending.LocalPath); err != nil {
+			r.host.DebugFinishActive(activeID)
+			r.host.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
-		v.updateDebugActive(activeID, func(op *DebugActiveOp) {
+		r.host.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_open"
 		})
 		rc, err := osutil.OpenRead(pending.LocalPath, 0, 0)
 		if err != nil {
-			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
+			r.host.DebugFinishActive(activeID)
+			r.host.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
-			v.finishDebugActive(activeID)
-			v.recordDebugRead(opID, path, pending.FID, 0, 0, bytes, "staging", 0, 0, 0, started, nil, readErr)
+			r.host.DebugFinishActive(activeID)
+			r.host.DebugRecordRead(opID, path, pending.FID, 0, 0, bytes, "staging", 0, 0, 0, started, nil, readErr)
 		}}, nil
 	}
-	entry, err := v.resolve(ctx, path)
+	entry, err := r.resolve(ctx, path)
 	if err != nil {
-		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, "", 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
+		r.host.DebugFinishActive(activeID)
+		r.host.DebugRecordRead(opID, path, "", 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
-		v.finishDebugActive(activeID)
-		v.recordDebugRead(opID, path, entry.ID, 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
+		r.host.DebugFinishActive(activeID)
+		r.host.DebugRecordRead(opID, path, entry.ID, 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
-	hitsBefore, missesBefore := v.debugCacheCounters()
+	hitsBefore, missesBefore := r.host.DebugCacheCounters()
 	return &chunkedStreamReader{
 		ctx:          drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path}),
-		v:            v,
+		reader:       r,
 		path:         path,
 		entry:        entry,
 		opID:         opID,
@@ -91,7 +103,7 @@ func (v *VFS) ReadStream(ctx context.Context, path string) (io.ReadCloser, error
 // backing memory bounded by the window size rather than the file size.
 type chunkedStreamReader struct {
 	ctx       context.Context
-	v         *VFS
+	reader    *Reader
 	path      string
 	entry     drive.Entry
 	pos       int64
@@ -135,13 +147,13 @@ func (r *chunkedStreamReader) refill() error {
 	if r.entry.Size > 0 && r.pos >= r.entry.Size {
 		return nil
 	}
-	chunkIndex := r.pos / readChunkSize
-	start := r.pos - chunkIndex*readChunkSize
-	want := readChunkSize - start
+	chunkIndex := r.pos / ChunkSize
+	start := r.pos - chunkIndex*ChunkSize
+	want := ChunkSize - start
 	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
 		want = r.entry.Size - r.pos
 	}
-	data, err := r.v.readChunkRange(r.ctx, r.entry, chunkIndex, start, want, readPrefetchChunks)
+	data, err := r.reader.readChunkRange(r.ctx, r.entry, chunkIndex, start, want, PrefetchChunks)
 	if err != nil {
 		return err
 	}
@@ -162,7 +174,7 @@ func (r *chunkedStreamReader) Close() error {
 }
 
 func (r *chunkedStreamReader) finish(bytes int64, readErr error) {
-	r.v.finishDebugActive(r.activeID)
-	hitsAfter, missesAfter := r.v.debugCacheCounters()
-	r.v.recordDebugRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, nil, readErr)
+	r.reader.host.DebugFinishActive(r.activeID)
+	hitsAfter, missesAfter := r.reader.host.DebugCacheCounters()
+	r.reader.host.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, nil, readErr)
 }

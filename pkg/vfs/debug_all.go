@@ -8,6 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"io"
@@ -23,7 +24,7 @@ import (
 
 const DebugSnapshotSchemaVersion = 2
 const uploadSnapshotHistoryLimit = 100
-const debugReadHistoryLimit = 1000
+const debugReadHistoryLimit = read.HistoryLimit
 
 var debugStartedAt = time.Now()
 var debugStartedAtMu sync.RWMutex
@@ -211,29 +212,6 @@ type ConsistencyReport struct {
 	Status           string               `json:"status"`
 	Issue            string               `json:"issue,omitempty"`
 	ForeignEntries   []drive.ForeignEntry `json:"foreign_entries,omitempty"`
-}
-
-// --- migrated from debug_active.go ---
-
-type DebugActiveOp struct {
-	OpID        string         `json:"op_id"`
-	Kind        string         `json:"kind"`
-	Phase       string         `json:"phase,omitempty"`
-	State       string         `json:"state"`
-	Mount       string         `json:"mount,omitempty"`
-	Path        string         `json:"path,omitempty"`
-	RemoteID    string         `json:"remote_id,omitempty"`
-	Offset      int64          `json:"offset,omitempty"`
-	Requested   int64          `json:"requested_bytes,omitempty"`
-	ChunkIndex  int64          `json:"chunk_index,omitempty"`
-	WindowStart int64          `json:"window_start,omitempty"`
-	WindowEnd   int64          `json:"window_end,omitempty"`
-	Background  bool           `json:"background,omitempty"`
-	WaitFor     string         `json:"wait_for,omitempty"`
-	StartedAt   time.Time      `json:"started_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	AgeMS       int64          `json:"age_ms"`
-	Extra       map[string]any `json:"extra,omitempty"`
 }
 
 type DebugActiveMount struct {
@@ -435,7 +413,7 @@ func newVFSDebugCacheRuntime(v *VFS) vfsDebugCacheRuntime {
 }
 
 func (r vfsDebugCacheRuntime) ReadCache() readcache.DebugReadCache {
-	return r.v.read.cache.DebugSnapshot()
+	return r.v.readCacheSnapshot()
 }
 
 func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
@@ -454,6 +432,26 @@ func (c *Stores) DebugReadCacheForTest() readcache.DebugReadCache {
 	snapshot := c.readCacheStore.DebugSnapshot()
 	snapshot.Journal = c.uploadStore.DebugJournal()
 	return snapshot
+}
+
+// debugActiveSlots is the fixed capacity of the active-debug ring. Active
+// operations are short-lived (microseconds), so 128 concurrent ops is a
+// generous bound; when full, Begin returns 0 (tracking skipped).
+const debugActiveSlots = 128
+
+type debugActiveSlot struct {
+	seq atomic.Uint64 // 0 = empty, otherwise the operation sequence occupying the slot
+	mu  sync.RWMutex
+	op  DebugActiveOp
+}
+
+type activeDebugState struct {
+	sequence atomic.Uint64
+	slots    [debugActiveSlots]debugActiveSlot
+}
+
+func newActiveDebugState() *activeDebugState {
+	return &activeDebugState{}
 }
 
 // --- migrated from debug_fault.go ---
@@ -925,68 +923,23 @@ func newVFSDebugReadRuntime(v *VFS) vfsDebugReadRuntime {
 }
 
 func (r vfsDebugReadRuntime) NextOpID() string {
-	return fmt.Sprintf("read-%d", atomic.AddUint64(&r.v.read.history.sequence, 1))
+	return fmt.Sprintf("read-%d", r.v.read.NextSequence())
 }
 
 func (r vfsDebugReadRuntime) CacheCounters() (hits, misses int64) {
-	return r.v.read.cache.Counters()
+	return r.v.readCacheCounters()
 }
 
 func (r vfsDebugReadRuntime) AppendEvent(event drive.MetricEvent) {
-	r.v.read.history.mu.Lock()
-	h := r.v.read.history
-	if h.events == nil {
-		// Grow lazily toward the limit so idle VFS instances do not
-		// preallocate a full ring.
-		size := 64
-		if debugReadHistoryLimit < size {
-			size = debugReadHistoryLimit
-		}
-		h.events = make([]drive.MetricEvent, size)
-	}
-	if h.count == len(h.events) {
-		if len(h.events) < debugReadHistoryLimit {
-			// Ring full but not at the limit yet: double, preserving order.
-			size := len(h.events) * 2
-			if size > debugReadHistoryLimit {
-				size = debugReadHistoryLimit
-			}
-			next := make([]drive.MetricEvent, size)
-			for i := 0; i < h.count; i++ {
-				next[i] = h.events[(h.pos-h.count+i+len(h.events))%len(h.events)]
-			}
-			h.events = next
-			h.pos = h.count
-		}
-	}
-	h.events[h.pos] = event
-	h.pos = (h.pos + 1) % len(h.events)
-	if h.count < len(h.events) {
-		h.count++
-	}
-	r.v.read.history.mu.Unlock()
+	r.v.read.AppendHistory(event)
 }
 
 func (r vfsDebugReadRuntime) History() []drive.MetricEvent {
-	r.v.read.history.mu.Lock()
-	defer r.v.read.history.mu.Unlock()
-	h := r.v.read.history
-	if h.count == 0 {
-		return nil
-	}
-	out := make([]drive.MetricEvent, h.count)
-	for i := 0; i < h.count; i++ {
-		out[i] = h.events[(h.pos-h.count+i+len(h.events))%len(h.events)]
-	}
-	return out
+	return r.v.read.HistorySnapshot()
 }
 
 func (r vfsDebugReadRuntime) ResetHistory() {
-	r.v.read.history.mu.Lock()
-	r.v.read.history.events = nil
-	r.v.read.history.pos = 0
-	r.v.read.history.count = 0
-	r.v.read.history.mu.Unlock()
+	r.v.read.ResetHistory()
 }
 
 // --- migrated from debug_resolve.go ---
@@ -1631,19 +1584,11 @@ func (r vfsDebugSnapshotRuntime) Overlay() debugOverlayRuntimeSnapshot {
 
 func (r vfsDebugSnapshotRuntime) Runtime() debugRuntimeStateSnapshot {
 	out := debugRuntimeStateSnapshot{
-		HotChunkLimit: readHotChunkLimit,
-		RangeHitLimit: readRangeHitLimit,
+		HotChunkLimit: read.HotChunkLimit,
+		RangeHitLimit: read.RangeHitLimit,
 	}
-	r.v.read.windows.mu.Lock()
-	out.WindowLoads = len(r.v.read.windows.loads)
-	r.v.read.windows.mu.Unlock()
-	r.v.read.prefetch.mu.Lock()
-	out.Prefetches = len(r.v.read.prefetch.inFlight)
-	r.v.read.prefetch.mu.Unlock()
+	out.WindowLoads, out.Prefetches, out.RangeHitCount = r.v.read.RuntimeStats()
 	out.HotChunkCount, out.HotChunkBytes = r.v.debugHotChunks()
-	r.v.read.fastPath.rangeHit.mu.Lock()
-	out.RangeHitCount = len(r.v.read.fastPath.rangeHit.hits)
-	r.v.read.fastPath.rangeHit.mu.Unlock()
 	return out
 }
 

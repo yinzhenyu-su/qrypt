@@ -8,6 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,7 @@ type VFS struct {
 	// stay top-level.
 	view    *viewState
 	read    *readState
+	reader  *read.Reader
 	uploads *UploadService
 	deletes *DeleteService
 	listing *listingState
@@ -126,7 +128,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		done:          done,
 		startOnce:     sync.Once{},
 		view:          view,
-		read:          newReadState(stores.readCacheStore),
+		read:          read.NewState(stores.readCacheStore),
 		hashes:        hashes,
 		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
 		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
@@ -134,6 +136,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		activeDebug:   newActiveDebugState(),
 		pathLocks:     newPathLockState(),
 	}
+	v.reader = read.NewReader(newVFSReadHost(v), v.read)
 	return v, nil
 }
 
@@ -243,11 +246,11 @@ func isAppleMetadataName(name string) bool {
 }
 
 func (v *VFS) FlushReadCache() error {
-	return v.read.cache.FlushReadCache()
+	return v.read.FlushReadCache()
 }
 
 func (v *VFS) ClearReadCache() error {
-	return v.read.cache.ClearReadCache()
+	return v.read.ClearReadCache()
 }
 
 func (v *VFS) CloseReadCache() error {
@@ -292,9 +295,9 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 		return
 	}
 	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
-		v.read.cache.InvalidateFile(cacheKey)
+		v.read.InvalidateFile(cacheKey)
 	}
-	v.read.cache.InvalidateFile(entry.ID)
+	v.read.InvalidateFile(entry.ID)
 }
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {

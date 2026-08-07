@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 )
 
 // Benchmarks for the always-on read debug instrumentation.
@@ -16,11 +17,11 @@ import (
 // event (O(limit) per append) under a global mutex shared by all reads.
 
 func benchReadHistoryVFS(prefill int) *VFS {
-	v := &VFS{read: &readState{history: newReadHistoryState()}}
+	v := &VFS{read: read.NewState(nil)}
 	if prefill > 0 {
-		v.read.history.events = make([]drive.MetricEvent, prefill)
-		v.read.history.count = prefill
-		v.read.history.pos = 0 // ring is full; next write wraps to slot 0
+		for i := 0; i < prefill; i++ {
+			v.read.AppendHistory(drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20})
+		}
 	}
 	return v
 }
@@ -38,7 +39,7 @@ func BenchmarkReadHistoryAppendEmpty(b *testing.B) {
 
 // AppendEvent once the history already hit the limit: adds the O(n) tail copy.
 func BenchmarkReadHistoryAppendOverLimit(b *testing.B) {
-	r := newVFSDebugReadRuntime(benchReadHistoryVFS(debugReadHistoryLimit))
+	r := newVFSDebugReadRuntime(benchReadHistoryVFS(read.HistoryLimit))
 	event := drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20}
 	b.ReportAllocs()
 	b.ResetTimer()
