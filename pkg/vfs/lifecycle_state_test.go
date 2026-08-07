@@ -25,6 +25,14 @@ func newStateTestVFS(t *testing.T) *VFS {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Drop cache files before the TempDir cleanup so an uploaded/read
+	// chunk can never race the RemoveAll (this package's internal tests
+	// use CloseReadCache + ClearReadCache; the external vfs_test package
+	// wraps the same pair in stopVFS).
+	t.Cleanup(func() {
+		_ = fs.CloseReadCache()
+		_ = fs.ClearReadCache()
+	})
 	return fs
 }
 
