@@ -46,6 +46,39 @@ func (d *Driver) Mkdir(ctx context.Context, parentID string, name string) (drive
 	return drive.Entry{ID: id, ParentID: parentID, Name: name, IsDir: true}, nil
 }
 
+// Copy implements drive.ServerSideCopier: copies the file server-side
+// via the 115 web API, then renames it in the destination when the caller
+// requests a different name (the SDK's Copy keeps the source name). The
+// final entry is located by listing the target directory.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	dst := d.resolveID(dstParentID)
+	if err := d.recordSDK(ctx, "copy", map[string]any{"id": src.ID, "dst_parent_id": dst}, func() error {
+		return d.cl.Copy(dst, src.ID)
+	}); err != nil {
+		d.setLastError(fmt.Sprintf("115: copy %q: %v", src.ID, err))
+		return drive.Entry{}, err
+	}
+	if src.Name != dstName {
+		entries, err := d.List(ctx, dstParentID)
+		if err != nil {
+			return drive.Entry{}, fmt.Errorf("115: copy locate after copy: %w", err)
+		}
+		for _, e := range entries {
+			if e.Name == src.Name && e.ParentID == dstParentID {
+				if err := d.cl.Rename(e.ID, dstName); err != nil {
+					return drive.Entry{}, fmt.Errorf("115: copy rename %q -> %q: %w", e.ID, dstName, err)
+				}
+				return drive.Entry{ID: e.ID, ParentID: dstParentID, Name: dstName, Size: e.Size, ModTime: time.Now()}, nil
+			}
+		}
+		return drive.Entry{ParentID: dstParentID, Name: dstName, Size: src.Size, ModTime: time.Now()}, fmt.Errorf("115: copy rename: source file %q not found after copy", src.Name)
+	}
+	return drive.Entry{ParentID: dstParentID, Name: dstName, Size: src.Size, ModTime: time.Now()}, nil
+}
+
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
 	dstParentID = d.resolveID(dstParentID)
 	err := d.recordSDK(ctx, "move", map[string]any{"id": entry.ID, "dst_parent_id": dstParentID}, func() error {

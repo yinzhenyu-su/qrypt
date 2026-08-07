@@ -340,6 +340,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 	return []drive.Capability{
 		drive.CapabilityPathResolver,
 		drive.CapabilityRemoteNameResolver,
+		drive.CapabilityServerSideCopy,
 		drive.CapabilitySourceUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityWriter,
