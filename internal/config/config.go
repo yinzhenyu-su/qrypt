@@ -313,6 +313,38 @@ func (c *Config) EffectiveMountPoint() string {
 	return ""
 }
 
+// EffectiveLogFile resolves logging.log_file. When log_file is unset it
+// defaults to <storage.log_dir>/qrypt.log; when no log directory is
+// configured either, it returns "" so callers keep stderr logging.
+func (c *Config) EffectiveLogFile() string {
+	if c == nil {
+		return ""
+	}
+	if f := strings.TrimSpace(c.Logging.LogFile); f != "" {
+		return f
+	}
+	if c.Storage.LogDir == "" {
+		return ""
+	}
+	return filepath.Join(c.Storage.LogDir, "qrypt.log")
+}
+
+// EffectiveErrorFile resolves logging.error_file. When error_file is unset
+// it defaults to <storage.log_dir>/qrypt-error.log; when no log directory
+// is configured either, it returns "" so callers keep stderr logging.
+func (c *Config) EffectiveErrorFile() string {
+	if c == nil {
+		return ""
+	}
+	if f := strings.TrimSpace(c.Logging.ErrorFile); f != "" {
+		return f
+	}
+	if c.Storage.LogDir == "" {
+		return ""
+	}
+	return filepath.Join(c.Storage.LogDir, "qrypt-error.log")
+}
+
 func (c *Config) EffectiveVolumeName() string {
 	if c == nil || c.VolumeName == "" {
 		return "Qrypt"

@@ -309,11 +309,11 @@
           ]
         },
         "log_file": {
-          "description": "Path to the main log file.",
+          "description": "Path to the main log file. When unset, defaults to <storage.log_dir>/qrypt.log.",
           "type": "string"
         },
         "error_file": {
-          "description": "Path to the error log file (falls back to <log_file>-err.log).",
+          "description": "Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log.",
           "type": "string"
         }
       },
