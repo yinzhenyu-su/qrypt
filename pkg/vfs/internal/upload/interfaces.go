@@ -1,7 +1,3 @@
-// Package upload defines the interfaces for the upload subsystem.
-// The concrete implementations live in the parent vfs package;
-// this package exists to document the boundary and enable future
-// extraction of the upload engine and worker.
 package upload
 
 import (
@@ -12,61 +8,40 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
 )
 
-// PendingUpload is an alias for the shared type.
 type PendingUpload = vfstypes.PendingUpload
-
-// UploadReplacement is an alias for the shared type.
 type UploadReplacement = vfstypes.UploadReplacement
 
-// Service is the upload subsystem entry point. VFS's UploadService
-// satisfies this interface.
-type Service interface {
-	// Scheduling
-	Enqueue(p PendingUpload)
-	EnqueueAfter(p PendingUpload, delay time.Duration)
-	CancelUpload(path string)
-	CancelChildUploads(dir string)
-	QuietDelay(p PendingUpload) time.Duration
-
-	// Store
-	PendingUploads() []PendingUpload
-	PendingByID(id string) (PendingUpload, bool)
-	UploadByPath(path string) (PendingUpload, bool)
-	SaveUpload(p PendingUpload) error
-	SaveUploadExact(p PendingUpload) error
-	RemoveUpload(path string) error
-	RemoveUploadsUnder(path string) error
-	RenameUpload(oldPath string, p PendingUpload) error
-
-	// Hash tracking
-	HashRemovePath(path string)
-	HashRemoveUnder(path string)
-	HashRenamePath(oldPath, newPath string, p PendingUpload)
-
-	// Lifecycle
-	Close()
+func UploadReplacementID(u *UploadReplacement) string {
+	if u == nil {
+		return ""
+	}
+	return u.ID
 }
 
-// EngineDeps collects the interfaces the upload engine needs.
-// VFS wires these from its concrete implementations.
-type EngineDeps struct {
-	Remote   RemoteOps
-	Observer EngineObserver
-	Store    EngineStore
-	Runtime  EngineRuntime
-	Faults   FaultController
+func UploadReplacementFromEntry(entry drive.Entry) UploadReplacement {
+	return UploadReplacement{ID: entry.ID, ParentID: entry.ParentID, Name: entry.Name, Size: entry.Size}
 }
 
-// RemoteOps is the driver subset used during upload.
+func UploadReplacementToEntry(u UploadReplacement) drive.Entry {
+	return drive.Entry{ID: u.ID, ParentID: u.ParentID, Name: u.Name, Size: u.Size, IsDir: false}
+}
+
+type Snapshot struct {
+	Path        string
+	Hashes      drive.SourceHashes
+	Incremental bool
+}
+
 type RemoteOps interface {
 	Stat(ctx context.Context, id string) (drive.Entry, error)
+	List(ctx context.Context, parentID string) ([]drive.Entry, error)
 	PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error)
 	Remove(ctx context.Context, entry drive.Entry) error
+	Rename(ctx context.Context, entry drive.Entry, newName string) error
 	CanWrite() bool
 }
 
-// EngineObserver receives lifecycle callbacks from the engine.
-type EngineObserver interface {
+type Observer interface {
 	Start(p PendingUpload)
 	Event(path, phase string, started time.Time, bytes int64, extra map[string]any)
 	Extra(path, key string, value any)
@@ -76,8 +51,7 @@ type EngineObserver interface {
 	HealthResult(op string, err error)
 }
 
-// EngineStore is the pending-upload store subset used by the engine.
-type EngineStore interface {
+type Store interface {
 	UploadByPath(path string) (PendingUpload, bool)
 	RecordReplacementIfUnchanged(p PendingUpload, repl UploadReplacement) (PendingUpload, bool, error)
 	RecordFailureIfUnchanged(p PendingUpload, err error, retryDelay time.Duration) (PendingUpload, bool, error)
@@ -87,8 +61,7 @@ type EngineStore interface {
 	RemoveStagingIfUnreferenced(localPath string)
 }
 
-// EngineRuntime provides VFS-side operations during upload execution.
-type EngineRuntime interface {
+type Runtime interface {
 	ClearUploadHashes(fid string)
 	ModTimeFor(path string) time.Time
 	RetryDelay(retryCount int) time.Duration
@@ -98,7 +71,10 @@ type EngineRuntime interface {
 	CommitUploadedEntry(path string, entry drive.Entry)
 }
 
-// FaultController checks for debug-injected upload cancellations.
+type Snapshotter interface {
+	SnapshotPending(p PendingUpload) (Snapshot, error)
+}
+
 type FaultController interface {
-	ApplyCancelFault(ctx context.Context, p PendingUpload, progress drive.UploadProgress, observer EngineObserver) (uploadCtx context.Context, uploadProgress drive.UploadProgress, cleanup func())
+	ApplyCancelFault(ctx context.Context, p PendingUpload, progress drive.UploadProgress, obs Observer) (uploadCtx context.Context, uploadProgress drive.UploadProgress, cleanup func())
 }
