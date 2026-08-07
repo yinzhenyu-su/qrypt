@@ -19,6 +19,12 @@ type ExecutorDeps struct {
 	Driver  DriverOps
 	Overlay OverlayOps
 	Health  HealthRecorder
+	Upload  CleanupOps
+}
+
+// CleanupOps removes VFS upload state for a remotely deleted path.
+type CleanupOps interface {
+	RemoveUploadState(path string)
 }
 
 // DriverOps is the driver subset used during remote delete.
@@ -31,7 +37,7 @@ type OverlayOps interface {
 	BeginDelete(path, entryID string) bool
 	MarkDeleteActive(path string, entry drive.Entry)
 	MarkDeleteFailed(path string, err error)
-	MarkDeleteComplete(path string)
+	MarkDeleteComplete(path string, entry drive.Entry)
 	CancelDelete(path string)
 }
 
