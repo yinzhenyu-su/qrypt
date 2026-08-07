@@ -23,8 +23,8 @@ func (stubHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
 	return nil, nil
 }
 
-func (stubHost) IsUnavailable(string) bool  { return false }
-func (stubHost) IsDeleted(string) bool      { return false }
+func (stubHost) IsUnavailable(string) bool { return false }
+func (stubHost) IsDeleted(string) bool     { return false }
 
 func (stubHost) FilterDeleted(string, []drive.Entry) []drive.Entry { return nil }
 func (stubHost) LocalChildren(string, []drive.Entry) []drive.Entry { return nil }

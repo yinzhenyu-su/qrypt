@@ -1,7 +1,6 @@
-package vfs
+package readcache
 
 import (
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"testing"
 )
 
@@ -9,18 +8,17 @@ import (
 // every sequential re-read (repeat download, FUSE read) pays os.Open + ReadAt
 // + a fresh 1MB allocation per chunk.
 
-func benchWarmReadCache(b *testing.B, chunks int) *readCacheStore {
+func benchWarmReadCache(b *testing.B, chunks int) *Store {
 	dir := b.TempDir()
-	stores, err := NewStores(dir, dir, 256<<20)
+	store, err := NewStore(dir, 256<<20)
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { _ = stores.readCacheStore.Close() })
-	store := stores.readCacheStore
+	b.Cleanup(func() { _ = store.Close() })
 	fid := "warm-fid"
-	data := make([]byte, read.ChunkSize)
+	data := make([]byte, readChunkSize)
 	for i := 0; i < chunks; i++ {
-		if err := store.PutChunk(fid, int64(chunks)*read.ChunkSize, int64(i), data); err != nil {
+		if err := store.PutChunk(fid, int64(chunks)*readChunkSize, int64(i), data); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -38,7 +36,7 @@ func benchGetChunkRange(b *testing.B, chunks int) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		index := int64(i % chunks)
-		if _, ok, err := store.GetChunkRange(fid, index, 0, read.ChunkSize); err != nil {
+		if _, ok, err := store.GetChunkRange(fid, index, 0, readChunkSize); err != nil {
 			b.Fatal(err)
 		} else if !ok {
 			b.Fatal("chunk not found")

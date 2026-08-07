@@ -1,20 +1,19 @@
-package vfs
+package upload
 
 import (
 	"errors"
 	"os"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 	"time"
 )
 
 func TestUploadStoreAdapterRecordsPendingState(t *testing.T) {
-	store, err := newUploadStore(t.TempDir())
+	store, err := NewPendingStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := upload.NewStoreAdapter(store)
+	adapter := NewStoreAdapter(store)
 	localPath, err := store.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +49,7 @@ func TestUploadStoreAdapterRecordsPendingState(t *testing.T) {
 		t.Fatal("stale pending unexpectedly updated")
 	}
 
-	replaced, ok, err := adapter.RecordReplacementIfUnchanged(failed, UploadReplacement{ID: "uploaded", Name: upload.TemporaryUploadName("file.txt", "file"), Size: 5})
+	replaced, ok, err := adapter.RecordReplacementIfUnchanged(failed, UploadReplacement{ID: "uploaded", Name: TemporaryUploadName("file.txt", "file"), Size: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +69,11 @@ func TestUploadStoreAdapterRecordsPendingState(t *testing.T) {
 }
 
 func TestUploadStoreAdapterCleansStaging(t *testing.T) {
-	store, err := newUploadStore(t.TempDir())
+	store, err := NewPendingStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := upload.NewStoreAdapter(store)
+	adapter := NewStoreAdapter(store)
 	localPath, err := store.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)

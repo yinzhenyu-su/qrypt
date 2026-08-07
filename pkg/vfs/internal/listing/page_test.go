@@ -1,4 +1,4 @@
-package vfs
+package listing
 
 import (
 	"testing"
@@ -16,15 +16,15 @@ func TestPaginateEntriesWithDuplicateNames(t *testing.T) {
 		{Name: "photo.jpg", ID: "id-1"},
 		{Name: "z.txt", ID: "id-9"},
 	}
-	page1 := paginateEntries(entries, "", 2)
+	page1 := PaginateEntries(entries, "", 2)
 	if len(page1.Entries) != 2 || page1.Entries[0].Name != "a.txt" || page1.Entries[1].Name != "photo.jpg" || page1.Entries[1].ID != "id-1" {
 		t.Fatalf("page1 = %+v, want sorted a.txt, photo.jpg(id-1)", page1.Entries)
 	}
-	page2 := paginateEntries(entries, page1.NextCursor, 2)
+	page2 := PaginateEntries(entries, page1.NextCursor, 2)
 	if len(page2.Entries) != 2 || page2.Entries[0].ID != "id-2" || page2.Entries[1].ID != "id-3" {
 		t.Fatalf("page2 = %+v, want photo.jpg(id-2), photo.jpg(id-3)", page2.Entries)
 	}
-	page3 := paginateEntries(entries, page2.NextCursor, 2)
+	page3 := PaginateEntries(entries, page2.NextCursor, 2)
 	if len(page3.Entries) != 1 || page3.Entries[0].Name != "z.txt" || page3.NextCursor != "" {
 		t.Fatalf("page3 = %+v, want only z.txt and no cursor", page3.Entries)
 	}
@@ -49,7 +49,7 @@ func TestPaginateEntriesInvalidCursorStartsFromBeginning(t *testing.T) {
 		{Name: "a.txt", ID: "id-1"},
 		{Name: "b.txt", ID: "id-2"},
 	}
-	page := paginateEntries(entries, "not-a-valid-cursor", 10)
+	page := PaginateEntries(entries, "not-a-valid-cursor", 10)
 	if len(page.Entries) != 2 || page.Entries[0].Name != "a.txt" {
 		t.Fatalf("page = %+v, want full sorted listing from start", page.Entries)
 	}

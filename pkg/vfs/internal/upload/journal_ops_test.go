@@ -1,4 +1,4 @@
-package vfs
+package upload
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ func writeJournalEntry(t *testing.T, path string, op string, pending PendingUplo
 		t.Fatal(err)
 	}
 	defer f.Close()
-	data, err := json.Marshal(journalEntry{Op: op, PendingUpload: pending})
+	data, err := json.Marshal(JournalEntry{Op: op, PendingUpload: pending})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestReplayUploadJournalResetsFailures(t *testing.T) {
 	}
 
 	// Re-loading the journal must show the reset state.
-	store, err := newUploadStore(dir)
+	store, err := NewPendingStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestPruneUploadJournalDropsMissingStaging(t *testing.T) {
 	if pruned != 1 {
 		t.Fatalf("pruned = %d, want 1", pruned)
 	}
-	store, err := newUploadStore(dir)
+	store, err := NewPendingStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestPruneUploadJournalRespectsCleanMarkers(t *testing.T) {
 	}
 
 	// A reload must not see /done.txt as pending either.
-	store, err := newUploadStore(dir)
+	store, err := NewPendingStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

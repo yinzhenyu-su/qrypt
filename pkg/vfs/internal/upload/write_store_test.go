@@ -1,4 +1,4 @@
-package vfs
+package upload
 
 import (
 	"errors"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestUploadStoreWriteAdapterStagesAndRecordsUpload(t *testing.T) {
-	store, err := newUploadStore(t.TempDir())
+	store, err := NewPendingStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,12 +39,6 @@ func TestUploadStoreWriteAdapterStagesAndRecordsUpload(t *testing.T) {
 	if got, ok := adapter.UploadByPath(pending.Path); !ok || got.LocalPath != localPath {
 		t.Fatalf("pending = %+v, ok=%v", got, ok)
 	}
-	if got, err := pendingUploadFromWriteStore(adapter, pending.Path); err != nil || got.LocalPath != localPath {
-		t.Fatalf("pending lookup = %+v err=%v", got, err)
-	}
-	if _, err := pendingUploadFromWriteStore(adapter, "/missing.txt"); err == nil {
-		t.Fatal("missing pending lookup succeeded")
-	}
 	pending.Size = 10
 	adapter.UpdateUploadTransient(pending)
 	if got, ok := adapter.UploadByPath(pending.Path); !ok || got.Size != 10 {
@@ -64,7 +58,7 @@ func TestUploadStoreWriteAdapterStagesAndRecordsUpload(t *testing.T) {
 }
 
 func TestUploadStoreWriteAdapterRemovesUnreferencedStaging(t *testing.T) {
-	store, err := newUploadStore(t.TempDir())
+	store, err := NewPendingStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

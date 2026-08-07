@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-
 )
 
 func TestStateCoalescesListLoads(t *testing.T) {
