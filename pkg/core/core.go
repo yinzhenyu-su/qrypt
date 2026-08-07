@@ -247,13 +247,14 @@ func DriverSchemaJSON(name string) (string, error) {
 }
 
 // BuiltFileSystem is the filesystem surface BuildFileSystem returns: full
-// file operations plus lifecycle (Start) and cache-refresh (RefreshPath)
-// control. Every built filesystem provides all three, so service-layer
-// callers can Start it and invalidate listings without type assertions.
+// file operations plus lifecycle (Start), cache-refresh (RefreshPath),
+// and task-source introspection (TaskSource) so the service layer can
+// aggregate upload and delete activity into the task manager.
 type BuiltFileSystem interface {
 	vfs.FileSystem
 	vfs.Lifecycle
 	vfs.PathRefresher
+	TaskSource() task.Source
 }
 
 func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (BuiltFileSystem, func(), error) {

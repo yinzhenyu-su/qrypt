@@ -514,10 +514,10 @@ func (b *uploadStreamBatch) updateTaskSnapshot() {
 }
 
 func (c *Core) refreshUploadStreamCloudProgress(ctx context.Context, batch *uploadStreamBatch) {
-	source, ok := c.fs.(task.Source)
-	if !ok {
+	if c == nil || c.fs == nil {
 		return
 	}
+	source := c.fs.TaskSource()
 	items := batch.itemsSnapshot()
 	for _, snapshot := range items {
 		if snapshot.DestPath == "" {

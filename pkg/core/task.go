@@ -24,10 +24,7 @@ type taskDismisser interface {
 }
 
 func (c *Core) newTaskManager() *task.Manager {
-	var sources []task.Source
-	if source, ok := c.fs.(task.Source); ok {
-		sources = append(sources, source)
-	}
+	sources := []task.Source{c.fs.TaskSource()}
 	store := c.taskStore()
 	return task.NewManagerWithStore(store, sources...)
 }

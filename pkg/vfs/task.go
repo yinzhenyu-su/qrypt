@@ -9,7 +9,12 @@ import (
 	"time"
 )
 
+// Tasks returns all upload and delete tasks known to this VFS.
 func (v *VFS) Tasks(filter task.Filter) []task.Task {
+	return v.tasks(filter)
+}
+
+func (v *VFS) tasks(filter task.Filter) []task.Task {
 	var tasks []task.Task
 	for _, source := range v.taskSources() {
 		tasks = append(tasks, source.List(filter)...)
@@ -22,17 +27,25 @@ func (v *VFS) Tasks(filter task.Filter) []task.Task {
 }
 
 func (v *VFS) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
+	return v.listTasks(ctx, filter)
+}
+
+func (v *VFS) listTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return v.Tasks(filter), nil
+	return v.tasks(filter), nil
 }
 
 func (v *VFS) GetTask(ctx context.Context, id string) (task.Task, error) {
+	return v.getTask(ctx, id)
+}
+
+func (v *VFS) getTask(ctx context.Context, id string) (task.Task, error) {
 	if err := ctx.Err(); err != nil {
 		return task.Task{}, err
 	}
-	for _, item := range v.Tasks(task.Filter{}) {
+	for _, item := range v.tasks(task.Filter{}) {
 		if item.ID == id {
 			return item, nil
 		}
@@ -41,6 +54,10 @@ func (v *VFS) GetTask(ctx context.Context, id string) (task.Task, error) {
 }
 
 func (v *VFS) CancelTask(ctx context.Context, id string) error {
+	return v.cancelTask(ctx, id)
+}
+
+func (v *VFS) cancelTask(ctx context.Context, id string) error {
 	if err := v.applyTaskAction(ctx, id, func(source vfsTaskSource) error {
 		return source.Cancel(ctx, id)
 	}); err != nil {
@@ -53,6 +70,10 @@ func (v *VFS) CancelTask(ctx context.Context, id string) error {
 }
 
 func (v *VFS) RetryTask(ctx context.Context, id string) error {
+	return v.retryTask(ctx, id)
+}
+
+func (v *VFS) retryTask(ctx context.Context, id string) error {
 	if err := v.applyTaskAction(ctx, id, func(source vfsTaskSource) error {
 		return source.Retry(ctx, id)
 	}); err != nil {
@@ -65,6 +86,10 @@ func (v *VFS) RetryTask(ctx context.Context, id string) error {
 }
 
 func (v *VFS) DismissTask(ctx context.Context, id string) error {
+	return v.dismissTask(ctx, id)
+}
+
+func (v *VFS) dismissTask(ctx context.Context, id string) error {
 	if err := v.applyTaskAction(ctx, id, func(source vfsTaskSource) error {
 		return source.Dismiss(ctx, id)
 	}); err != nil {
@@ -77,6 +102,10 @@ func (v *VFS) DismissTask(ctx context.Context, id string) error {
 }
 
 func (v *VFS) DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error) {
+	return v.dismissFinishedTasks(ctx, filter)
+}
+
+func (v *VFS) dismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error) {
 	removed := 0
 	for _, source := range v.taskSources() {
 		if err := ctx.Err(); err != nil {

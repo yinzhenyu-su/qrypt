@@ -228,10 +228,10 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 }
 
 func (c *Core) waitUploadTaskForPath(ctx context.Context, remotePath string) (task.Task, bool, error) {
-	source, ok := c.fs.(task.Source)
-	if !ok {
+	if c == nil || c.fs == nil {
 		return task.Task{}, false, nil
 	}
+	source := c.fs.TaskSource()
 	ticker := time.NewTicker(uploadTaskPollInterval)
 	defer ticker.Stop()
 	for {
