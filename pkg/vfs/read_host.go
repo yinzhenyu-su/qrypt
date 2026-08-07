@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
 )
@@ -130,7 +131,7 @@ func (v *VFS) debugHotChunks() (int, int64) {
 // Read-prefetch context helpers and priority surface (implementations in
 // internal/read).
 var WithoutReadPrefetch = read.WithoutReadPrefetch
-var WithoutDirPrefetch = read.WithoutDirPrefetch
+var WithoutDirPrefetch = listing.WithoutDirPrefetch
 
 type ReadPriority = read.Priority
 

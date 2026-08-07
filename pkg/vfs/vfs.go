@@ -8,6 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
 	"os"
 	"path/filepath"
@@ -56,6 +57,7 @@ type VFS struct {
 	uploads *UploadService
 	deletes *DeleteService
 	listing *listingState
+	lister  *listing.Lister
 	hashes  *uploadHashTrackerState
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
@@ -132,11 +134,12 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		hashes:        hashes,
 		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
 		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
-		listing:       newListingState(),
+		listing:       listing.NewState(),
 		activeDebug:   newActiveDebugState(),
 		pathLocks:     newPathLockState(),
 	}
 	v.reader = read.NewReader(newVFSReadHost(v), v.read)
+	v.lister = listing.NewLister(newVFSListingHost(v), v.listing)
 	return v, nil
 }
 
@@ -173,7 +176,7 @@ func (v *VFS) Start(ctx context.Context) {
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
-	if !newVFSListScheduler(v).StartDirPrefetch(ctx) {
+	if !v.startDirPrefetch(ctx) {
 		return
 	}
 

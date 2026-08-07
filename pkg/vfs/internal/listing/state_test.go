@@ -1,4 +1,4 @@
-package vfs
+package listing
 
 import (
 	"context"
@@ -7,14 +7,11 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+
 )
 
-func TestVFSListSchedulerCoalescesListLoads(t *testing.T) {
-	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := newVFSListScheduler(fs)
+func TestStateCoalescesListLoads(t *testing.T) {
+	scheduler := NewState()
 
 	load, owner := scheduler.BeginListLoad("/dir", false)
 	if !owner {
@@ -42,32 +39,24 @@ func TestVFSListSchedulerCoalescesListLoads(t *testing.T) {
 	scheduler.FinishListLoad("/dir", next, nil, nil)
 }
 
-func TestVFSListSchedulerTracksDirPrefetchState(t *testing.T) {
-	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := newVFSListScheduler(fs)
+func TestStateTracksDirPrefetchState(t *testing.T) {
+	scheduler := NewState()
 
-	if !scheduler.MarkDirPrefetch("/dir") {
+	if !scheduler.MarkDirPrefetch("/dir", false) {
 		t.Fatal("first mark should schedule prefetch")
 	}
-	if scheduler.MarkDirPrefetch("/dir") {
+	if scheduler.MarkDirPrefetch("/dir", false) {
 		t.Fatal("in-flight mark should be rejected")
 	}
 	scheduler.FinishDirPrefetch("/dir")
 	scheduler.MarkDirPrefetchComplete("/dir")
-	if scheduler.MarkDirPrefetch("/dir") {
+	if scheduler.MarkDirPrefetch("/dir", false) {
 		t.Fatal("recently completed prefetch should be suppressed")
 	}
 }
 
-func TestVFSListSchedulerUsesStartedPrefetchContext(t *testing.T) {
-	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := newVFSListScheduler(fs)
+func TestStateUsesStartedPrefetchContext(t *testing.T) {
+	scheduler := NewState()
 	fallback := context.Background()
 	started, cancel := context.WithCancel(context.Background())
 
@@ -86,21 +75,17 @@ func TestVFSListSchedulerUsesStartedPrefetchContext(t *testing.T) {
 	}
 }
 
-func TestVFSListSchedulerDetectsFreshListCache(t *testing.T) {
-	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := newVFSListScheduler(fs)
-	fs.view.mu.Lock()
-	fs.view.lists["/dir"] = listCacheEntry{expires: time.Now().Add(time.Minute)}
-	fs.view.lists["/old"] = listCacheEntry{expires: time.Now().Add(-time.Minute)}
-	fs.view.mu.Unlock()
+func TestListerDetectsFreshListCache(t *testing.T) {
+	host := stubHost{cache: map[string]listCacheEntry{
+		"/dir": {expires: time.Now().Add(time.Minute)},
+		"/old": {expires: time.Now().Add(-time.Minute)},
+	}}
+	lister := NewLister(host, NewState())
 
-	if !scheduler.HasFreshListCache("/dir") {
+	if !lister.HasFreshListCache("/dir") {
 		t.Fatal("expected fresh cache")
 	}
-	if scheduler.HasFreshListCache("/old") {
+	if lister.HasFreshListCache("/old") {
 		t.Fatal("expected stale cache")
 	}
 }

@@ -1,0 +1,95 @@
+package listing
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+)
+
+type fakeRuntimeHost struct {
+	stubHost
+	children      []drive.Entry
+	childErr      error
+	current       bool
+	committedPath string
+	committed     []drive.Entry
+	committedOK   bool
+	entry         drive.Entry
+	entryOK       bool
+}
+
+func (h *fakeRuntimeHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
+	return h.children, h.childErr
+}
+
+func (h *fakeRuntimeHost) FilterDeleted(string, []drive.Entry) []drive.Entry {
+	return h.children
+}
+
+func (h *fakeRuntimeHost) LocalChildren(string, []drive.Entry) []drive.Entry {
+	return h.children
+}
+
+func (h *fakeRuntimeHost) ApplyLocalModTimeLocked(_ string, entry drive.Entry) drive.Entry {
+	return entry
+}
+
+func (h *fakeRuntimeHost) GetEntry(string) (drive.Entry, bool) {
+	return h.entry, h.entryOK
+}
+
+func (h *fakeRuntimeHost) CommitList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
+	h.committedPath = parentPath
+	h.committed = entries
+	h.committedOK = true
+	return entries
+}
+
+func TestLoadRemoteChildrenWithRuntimeCommitsBackendEntries(t *testing.T) {
+	host := &fakeRuntimeHost{
+		children: []drive.Entry{{ID: "child", Name: "child.txt"}},
+		current:  true,
+		entry:    drive.Entry{ID: "parent", Name: "dir", IsDir: true},
+		entryOK:  true,
+	}
+	lister := NewLister(host, NewState())
+	entries, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", false, lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != "child" {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if !host.committedOK || host.committedPath != "/dir" || len(host.committed) != 1 {
+		t.Fatalf("commit path=%q entries=%+v ok=%v", host.committedPath, host.committed, host.committedOK)
+	}
+}
+
+func TestLoadRemoteChildrenWithRuntimeDiscardsStalePrefetch(t *testing.T) {
+	host := &fakeRuntimeHost{
+		children: []drive.Entry{{ID: "child", Name: "child.txt"}},
+		entry:    drive.Entry{ID: "other", Name: "dir", IsDir: true},
+		entryOK:  true,
+	}
+	lister := NewLister(host, NewState())
+	_, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", true, lister)
+	if err == nil {
+		t.Fatal("expected stale prefetch error")
+	}
+	if host.committedOK {
+		t.Fatalf("stale prefetch committed entries: %+v", host.committed)
+	}
+}
+
+func TestLoadRemoteChildrenWithRuntimeReturnsBackendError(t *testing.T) {
+	wantErr := errors.New("list failed")
+	host := &fakeRuntimeHost{childErr: wantErr}
+	lister := NewLister(host, NewState())
+	_, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", false, lister)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+}

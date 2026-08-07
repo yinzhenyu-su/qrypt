@@ -12,7 +12,6 @@ import (
 )
 
 type readPrefetchContextKey struct{}
-type dirPrefetchContextKey struct{}
 
 func WithoutReadPrefetch(ctx context.Context) context.Context {
 	return context.WithValue(ctx, readPrefetchContextKey{}, true)
@@ -20,15 +19,6 @@ func WithoutReadPrefetch(ctx context.Context) context.Context {
 
 func readPrefetchEnabled(ctx context.Context) bool {
 	disabled, _ := ctx.Value(readPrefetchContextKey{}).(bool)
-	return !disabled
-}
-
-func WithoutDirPrefetch(ctx context.Context) context.Context {
-	return context.WithValue(ctx, dirPrefetchContextKey{}, true)
-}
-
-func DirPrefetchEnabled(ctx context.Context) bool {
-	disabled, _ := ctx.Value(dirPrefetchContextKey{}).(bool)
 	return !disabled
 }
 
