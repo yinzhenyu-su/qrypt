@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os/signal"
+	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/control"
@@ -102,15 +104,33 @@ func newMountCmd() *cobra.Command {
 				logging.L.Errorf("Mount failed: %v", err)
 				return err
 			}
+			// Unmount exactly once on every exit path. The signal path below
+			// calls unmount() explicitly; the deferred call covers panics and
+			// unexpected returns, which would otherwise leave the mount point
+			// behind (the FUSE kernel drops the connection when the process
+			// dies, but the directory and in-flight writes are not cleaned).
+			// sync.Once keeps the two paths from double-unmounting.
+			var unmountOnce sync.Once
+			unmount := func() {
+				unmountOnce.Do(func() {
+					logging.L.Infof("Unmounting %s ...", mountPointExpanded)
+					fmt.Fprintln(cmd.ErrOrStderr(), "Unmounting ...")
+					uctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := mount.NewMounter().Unmount(uctx, session); err != nil {
+						logging.L.Warnf("Unmount failed: %v", err)
+					}
+				})
+			}
+			defer unmount()
 			logging.L.Infof("Mounted at %s. Press Ctrl+C to unmount.", mountPointExpanded)
 			fmt.Fprintf(cmd.ErrOrStderr(), "Mounted at %s. Press Ctrl+C to unmount.\n", mountPointExpanded)
 			if prefetcher, ok := fs.(interface{ StartDirectoryPrefetch(context.Context) }); ok {
 				prefetcher.StartDirectoryPrefetch(ctx)
 			}
 			<-ctx.Done()
-			logging.L.Infof("Unmounting %s ...", mountPointExpanded)
-			fmt.Fprintln(cmd.ErrOrStderr(), "Unmounting ...")
-			return mount.NewMounter().Unmount(ctx, session)
+			unmount()
+			return nil
 		},
 	}
 	withRuntimeConfigFlag(cmd)
