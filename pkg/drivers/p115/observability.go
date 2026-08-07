@@ -14,6 +14,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityResumableUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityPathResolver,
+		drive.CapabilityServerSideCopy,
 	}
 }
 

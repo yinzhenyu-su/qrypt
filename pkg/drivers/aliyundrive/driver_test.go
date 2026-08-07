@@ -834,3 +834,48 @@ func TestDriverRemoteHashFromListMetadata(t *testing.T) {
 		t.Fatalf("RemoteHash = (%s, %s), want (sha1, content_hash)", algorithm, hash)
 	}
 }
+
+func TestServerSideCopyUsesBatchFileCopy(t *testing.T) {
+	var sawURL string
+	var sawBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/batch" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		sawURL = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&sawBody)
+		_ = json.NewEncoder(w).Encode(batchResp{Responses: []batchItemResp{{
+			ID:     "src-fid",
+			Status: 200,
+			Body:   json.RawMessage(`{"file_id":"new-fid"}`),
+		}}})
+	}))
+	defer server.Close()
+
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
+	dst, err := d.Copy(context.Background(), drive.Entry{ID: "src-fid", Name: "src.txt", Size: 4}, "dst-dir", "copied.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawURL != "/v3/batch" {
+		t.Fatalf("batch path = %q", sawURL)
+	}
+	requests, ok := sawBody["requests"].([]any)
+	if !ok || len(requests) != 1 {
+		t.Fatalf("batch requests = %#v", sawBody["requests"])
+	}
+	req := requests[0].(map[string]any)
+	if req["url"] != "/file/copy" {
+		t.Fatalf("batch url = %#v, want /file/copy", req["url"])
+	}
+	if dst.ID != "new-fid" || dst.Name != "copied.txt" {
+		t.Fatalf("copy entry = %+v", dst)
+	}
+}
+
+func TestServerSideCopyRejectsDirectory(t *testing.T) {
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root"})
+	if _, err := d.Copy(context.Background(), drive.Entry{ID: "d", IsDir: true}, "0", "x"); err == nil {
+		t.Fatal("directory copy should fail")
+	}
+}

@@ -2,10 +2,12 @@ package aliyundrive
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -93,4 +95,53 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 		return fmt.Errorf("aliyundrive: remove: %w", err)
 	}
 	return nil
+}
+
+// Copy implements drive.ServerSideCopier: PDS CopyFile via the batch
+// endpoint (same envelope as Move with /file/copy). File copies return the
+// new file_id synchronously; folder copies are async and rejected per the
+// contract (drivecopy copies files only).
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	var resp batchResp
+	body := map[string]any{
+		"requests": []map[string]any{{
+			"headers": map[string]string{"Content-Type": "application/json"},
+			"method":  "POST",
+			"id":      src.ID,
+			"body": map[string]any{
+				"drive_id":          d.driveID,
+				"file_id":           src.ID,
+				"to_drive_id":       d.driveID,
+				"to_parent_file_id": d.resolveID(dstParentID),
+				"auto_rename":       false,
+			},
+			"url": "/file/copy",
+		}},
+		"resource": "file",
+	}
+	if err := d.cl.request(ctx, http.MethodPost, "/v3/batch", body, &resp); err != nil {
+		err = fmt.Errorf("aliyundrive: batch copy drive_id=%q file_id=%q dst_parent_id=%q: %w", d.driveID, src.ID, dstParentID, err)
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
+	if len(resp.Responses) == 0 {
+		err := fmt.Errorf("aliyundrive: batch copy returned no responses")
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
+	item := resp.Responses[0]
+	if item.Status < 200 || item.Status >= 300 {
+		err := util.HTTPError("aliyundrive: batch copy", nil, &http.Response{Status: fmt.Sprintf("%d", item.Status)}, item.Body)
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
+	var copyBody struct {
+		FileID string `json:"file_id"`
+	}
+	_ = json.Unmarshal(item.Body, &copyBody)
+	now := time.Now()
+	return drive.Entry{ID: copyBody.FileID, ParentID: dstParentID, Name: dstName, Size: src.Size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }

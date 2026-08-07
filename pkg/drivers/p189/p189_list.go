@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -86,6 +87,33 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 		return fmt.Errorf("189: invalid id: %w", err)
 	}
 	return d.cl.rename(ctx, id, newName, entry.IsDir)
+}
+
+// Copy implements drive.ServerSideCopier: POST copyFile.action. File
+// copies are synchronous; the API returns the new entry directly.
+// Directory copies are rejected per the contract.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	id, err := strconv.ParseInt(src.ID, 10, 64)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("189: invalid id: %w", err)
+	}
+	if err := d.cl.copyFile(ctx, id, dstParentID, dstName); err != nil {
+		return drive.Entry{}, fmt.Errorf("189: copy: %w", err)
+	}
+	// The copyFile API does not return the new file id; locate by listing.
+	entries, err := d.List(ctx, dstParentID)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("189: copy locate: %w", err)
+	}
+	for _, e := range entries {
+		if e.Name == dstName && e.ID != src.ID {
+			return e, nil
+		}
+	}
+	return drive.Entry{ParentID: dstParentID, Name: dstName, Size: src.Size, ModTime: time.Now()}, nil
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {

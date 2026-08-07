@@ -42,6 +42,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -53,6 +54,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -64,6 +66,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -75,6 +78,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -120,6 +124,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
@@ -132,6 +137,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
+				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,

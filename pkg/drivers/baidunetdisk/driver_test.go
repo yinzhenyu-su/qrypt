@@ -750,3 +750,65 @@ func TestDriverRemoteHashFromListMetadata(t *testing.T) {
 		t.Fatalf("RemoteHash without md5 err = %v, want ErrUnsupported", err)
 	}
 }
+
+func TestServerSideCopyUsesFileManagerCopy(t *testing.T) {
+	ctx := context.Background()
+	var sawMethod, sawOpera, sawFilelist string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			writeJSON(t, w, tokenResp{AccessToken: "access", RefreshToken: "refresh", ExpiresIn: 3600})
+		case "/rest/2.0/xpan/file":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			method := r.Form.Get("method")
+			switch method {
+			case "filemanager":
+				sawMethod = method
+				sawOpera = r.Form.Get("opera")
+				sawFilelist = r.Form.Get("filelist")
+				writeJSON(t, w, map[string]any{"errno": 0})
+			case "list":
+				writeJSON(t, w, listResp{List: []file{
+					{Path: "/Qrypt/copied.txt", IsDir: 0, Size: 4},
+					{Path: "/Qrypt/src.txt", IsDir: 0, Size: 4},
+				}})
+			default:
+				t.Fatalf("unexpected method %s", method)
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	d := New(Options{
+		RefreshToken: "refresh",
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RootPath:     "/Qrypt",
+		OAuthURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL + "/rest/2.0",
+	})
+	dst, err := d.Copy(ctx, drive.Entry{ID: "/Qrypt/src.txt", Name: "src.txt", Size: 4}, "0", "copied.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawMethod != "filemanager" || sawOpera != "copy" {
+		t.Fatalf("filemanager call = %s/%s, want filemanager/copy", sawMethod, sawOpera)
+	}
+	if !strings.Contains(sawFilelist, `/Qrypt/src.txt`) || !strings.Contains(sawFilelist, "copied.txt") {
+		t.Fatalf("filelist = %s", sawFilelist)
+	}
+	if dst.ID != "/Qrypt/copied.txt" || dst.Name != "copied.txt" {
+		t.Fatalf("copy entry = %+v", dst)
+	}
+}
+
+func TestServerSideCopyRejectsDirectory(t *testing.T) {
+	d := New(Options{RefreshToken: "r", ClientID: "c", ClientSecret: "s", RootPath: "/Qrypt"})
+	if _, err := d.Copy(context.Background(), drive.Entry{ID: "/Qrypt/dir", IsDir: true}, "0", "x"); err == nil {
+		t.Fatal("directory copy should fail")
+	}
+}

@@ -30,6 +30,7 @@ const (
 	mkdirURL        = apiBase + "/api/open/file/createFolder.action"
 	renameFileURL   = apiBase + "/api/open/file/renameFile.action"
 	renameFolderURL = apiBase + "/api/open/file/renameFolder.action"
+	copyFileURL     = apiBase + "/api/open/file/copyFile.action"
 	batchTaskURL    = apiBase + "/api/open/batch/createBatchTask.action"
 	uploadInitURL   = uploadBase + "/person/initMultiUpload"
 	uploadDataURL   = uploadBase + "/person/uploadData"
@@ -1103,6 +1104,19 @@ func (c *client) createFolder(ctx context.Context, parentID int64, name string) 
 		return nil
 	})
 	return id, err
+}
+
+// copy copies a file within the same cloud. The API returns no new file id,
+// so callers should list the destination directory to locate the result.
+// Directory copies are not supported.
+func (c *client) copyFile(ctx context.Context, fileID int64, dstParentID, dstName string) error {
+	return c.retryOnAuthError(ctx, func(ctx context.Context) error {
+		return c.doPost(ctx, copyFileURL, map[string]string{
+			"fileId":             strconv.FormatInt(fileID, 10),
+			"destParentFolderId": dstParentID,
+			"destFileName":       dstName,
+		}, nil)
+	})
 }
 
 func (c *client) rename(ctx context.Context, fileID int64, name string, isDir bool) error {

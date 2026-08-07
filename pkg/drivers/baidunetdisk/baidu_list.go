@@ -69,6 +69,34 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return entry, nil
 }
 
+// Copy implements drive.ServerSideCopier: baidu filemanager copy
+// (opera=copy). The destination is a new path under dstParentID with
+// dstName; ondup=fail makes the copy error when a same-named file exists
+// (drivecopy removes any existing destination first). The API does not
+// return the new path, so the copy is located by listing the destination.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	dst := d.resolvePath(dstParentID)
+	err := d.manage(ctx, "copy", []map[string]string{{"path": src.ID, "dest": dst, "newname": dstName}})
+	if err != nil {
+		err = fmt.Errorf("baidu_netdisk: copy %q to %q: %w", src.ID, dst, err)
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
+	entries, err := d.listDir(ctx, dst)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("baidu_netdisk: copy locate: %w", err)
+	}
+	for _, e := range entries {
+		if e.Name == dstName && e.ID != src.ID {
+			return e, nil
+		}
+	}
+	return drive.Entry{ID: dst + "/" + dstName, ParentID: dstParentID, Name: dstName, Size: src.Size}, nil
+}
+
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
 	dst := d.resolvePath(dstParentID)
 	err := d.manage(ctx, "move", []map[string]string{{"path": entry.ID, "dest": dst, "newname": entry.Name}})

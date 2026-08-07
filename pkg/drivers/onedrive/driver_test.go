@@ -35,6 +35,7 @@ type mockOneDrive struct {
 	children map[string][]string
 	nextID   int
 	uploads  map[string]*mockUploadSession
+	copyJobs []string
 }
 
 type mockUploadSession struct {
@@ -61,6 +62,16 @@ func newMockOneDrive() *mockOneDrive {
 
 func (m *mockOneDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/copy-job/") && r.Method == http.MethodGet:
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		jobID := strings.TrimPrefix(r.URL.Path, "/copy-job/")
+		if _, ok := m.items[jobID]; ok {
+			writeJSON(w, map[string]any{"status": "completed"})
+			return
+		}
+		http.NotFound(w, r)
+		return
 	case strings.HasPrefix(r.URL.Path, "/online"):
 		writeJSON(w, map[string]string{"access_token": "access-token", "refresh_token": "refresh-token-2"})
 	case strings.HasSuffix(r.URL.Path, "/oauth2/token"):
@@ -172,6 +183,25 @@ func (m *mockOneDrive) handleItem(w http.ResponseWriter, r *http.Request, rest s
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		id := m.createItem(itemID, body.Name, true, nil)
 		writeJSON(w, m.itemResp(id, r))
+		return
+	}
+	if tail == "copy" && r.Method == http.MethodPost {
+		var body struct {
+			ParentReference struct {
+				ID string `json:"id"`
+			} `json:"parentReference"`
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		src := m.items[itemID]
+		if src == nil {
+			writeGraphError(w, http.StatusNotFound, "itemNotFound", "not found")
+			return
+		}
+		newID := m.createItem(body.ParentReference.ID, body.Name, src.isDir, src.data)
+		m.copyJobs = append(m.copyJobs, newID)
+		w.Header().Set("Location", "http://"+r.Host+"/copy-job/"+url.PathEscape(newID))
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	if tail == "" {
@@ -576,5 +606,50 @@ func TestDriverRemoteHashFromGraphHashes(t *testing.T) {
 	}
 	if _, _, err := driver.RemoteHash(ctx, entries[0]); err != drive.ErrUnsupported {
 		t.Fatalf("RemoteHash without hashes err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestOneDriveServerSideCopy(t *testing.T) {
+	mock := newMockOneDrive()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	d, _ := newTestDriver(t)
+
+	src := drive.Entry{ID: "file-id", ParentID: "docs-id", Name: "hello #1.txt", Size: 11}
+	dst, err := d.Copy(context.Background(), src, "docs-id", "copied.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.ID == "" || dst.ID == src.ID {
+		t.Fatalf("copy entry id = %q, want a new item id", dst.ID)
+	}
+	if dst.Name != "copied.txt" || dst.ParentID != "docs-id" {
+		t.Fatalf("copy entry = %+v", dst)
+	}
+	// The source still exists and the copy has identical content.
+	rc, err := d.Read(context.Background(), src, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcBody, _ := io.ReadAll(rc)
+	rc.Close()
+	rc, err = d.Read(context.Background(), dst, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dstBody, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(srcBody) != "hello world" || string(dstBody) != "hello world" {
+		t.Fatalf("content after copy: src=%q dst=%q", srcBody, dstBody)
+	}
+}
+
+func TestOneDriveCopyRejectsDirectory(t *testing.T) {
+	mock := newMockOneDrive()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	d, _ := newTestDriver(t)
+	if _, err := d.Copy(context.Background(), drive.Entry{ID: "docs-id", IsDir: true}, "root-id", "x"); err == nil {
+		t.Fatal("directory copy should fail")
 	}
 }
