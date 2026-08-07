@@ -114,8 +114,8 @@ func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteComplete(path string, entry driv
 }
 
 func (r vfsDeleteRemoteRuntime) CleanupUploadState(path string) {
-	if err := r.v.upload.store.RemoveUpload(path); err == nil {
-		r.v.upload.hashes.removePath(path)
+	if err := r.v.uploads.store.RemoveUpload(path); err == nil {
+		r.v.uploads.hashes.removePath(path)
 	}
 }
 

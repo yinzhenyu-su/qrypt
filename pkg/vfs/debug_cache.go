@@ -205,7 +205,7 @@ func (r vfsDebugCacheRuntime) ReadCache() DebugReadCache {
 }
 
 func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
-	return r.v.upload.store.debugJournal()
+	return r.v.uploads.store.debugJournal()
 }
 
 func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) DebugReadCache {

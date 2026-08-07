@@ -461,17 +461,17 @@ func newVFSUploadTaskRuntime(v *VFS) vfsUploadTaskRuntime {
 }
 
 func (r vfsUploadTaskRuntime) Records() []uploadTaskRecord {
-	return r.v.uploadTaskRecords(r.v.upload.store.PendingUploads())
+	return r.v.uploadTaskRecords(r.v.uploads.store.PendingUploads())
 }
 
 func (r vfsUploadTaskRuntime) PendingByID(id string) (PendingUpload, bool) {
-	return r.v.upload.store.PendingByID(id)
+	return r.v.uploads.store.PendingByID(id)
 }
 
 func (r vfsUploadTaskRuntime) ActivePathByID(id string) (string, bool) {
-	r.v.upload.debug.mu.Lock()
-	defer r.v.upload.debug.mu.Unlock()
-	for path, state := range r.v.upload.debug.active {
+	r.v.uploads.debug.mu.Lock()
+	defer r.v.uploads.debug.mu.Unlock()
+	for path, state := range r.v.uploads.debug.active {
 		if state.upload.OpID == id {
 			return path, true
 		}
@@ -480,14 +480,14 @@ func (r vfsUploadTaskRuntime) ActivePathByID(id string) (string, bool) {
 }
 
 func (r vfsUploadTaskRuntime) StateByID(id string) (string, bool) {
-	r.v.upload.debug.mu.Lock()
-	defer r.v.upload.debug.mu.Unlock()
-	for _, state := range r.v.upload.debug.active {
+	r.v.uploads.debug.mu.Lock()
+	defer r.v.uploads.debug.mu.Unlock()
+	for _, state := range r.v.uploads.debug.active {
 		if state.upload.OpID == id {
 			return state.upload.State, true
 		}
 	}
-	for _, upload := range r.v.upload.debug.history {
+	for _, upload := range r.v.uploads.debug.history {
 		if upload.OpID == id {
 			return upload.State, true
 		}
@@ -497,10 +497,10 @@ func (r vfsUploadTaskRuntime) StateByID(id string) (string, bool) {
 
 func (r vfsUploadTaskRuntime) CancelAndRemove(path string) error {
 	r.v.cancelUpload(path)
-	if err := r.v.upload.store.RemoveUpload(path); err != nil {
+	if err := r.v.uploads.store.RemoveUpload(path); err != nil {
 		return err
 	}
-	r.v.upload.hashes.removePath(path)
+	r.v.uploads.hashes.removePath(path)
 	return nil
 }
 
@@ -514,10 +514,10 @@ func (r vfsUploadTaskRuntime) Retry(pending PendingUpload) error {
 	pending.PermanentFail = false
 	pending.LastError = ""
 	pending.NextAttemptAt = 0
-	if err := r.v.upload.store.SaveUploadExact(pending); err != nil {
+	if err := r.v.uploads.store.SaveUploadExact(pending); err != nil {
 		return err
 	}
-	if latest, ok := r.v.upload.store.UploadByPath(pending.Path); ok {
+	if latest, ok := r.v.uploads.store.UploadByPath(pending.Path); ok {
 		pending = latest
 	}
 	r.v.cancelUpload(pending.Path)
@@ -531,22 +531,22 @@ func (r vfsUploadTaskRuntime) RemoveHistoryByID(id string) bool {
 
 func (v *VFS) uploadTaskRecords(pending []PendingUpload) []uploadTaskRecord {
 	active := map[string]uploadTaskRecord{}
-	v.upload.debug.mu.Lock()
-	for path, state := range v.upload.debug.active {
+	v.uploads.debug.mu.Lock()
+	for path, state := range v.uploads.debug.active {
 		active[path] = uploadTaskRecordFromSnapshot(state.upload)
 	}
-	history := make([]uploadTaskRecord, 0, len(v.upload.debug.history))
-	for _, upload := range v.upload.debug.history {
+	history := make([]uploadTaskRecord, 0, len(v.uploads.debug.history))
+	for _, upload := range v.uploads.debug.history {
 		history = append(history, uploadTaskRecordFromSnapshot(upload))
 	}
-	v.upload.debug.mu.Unlock()
+	v.uploads.debug.mu.Unlock()
 
 	timerPaths := map[string]bool{}
-	v.upload.schedule.mu.Lock()
-	for path := range v.upload.schedule.timers {
+	v.uploads.schedule.mu.Lock()
+	for path := range v.uploads.schedule.timers {
 		timerPaths[path] = true
 	}
-	v.upload.schedule.mu.Unlock()
+	v.uploads.schedule.mu.Unlock()
 
 	records := make([]uploadTaskRecord, 0, len(pending)+len(active)+len(history))
 	seenPath := map[string]bool{}

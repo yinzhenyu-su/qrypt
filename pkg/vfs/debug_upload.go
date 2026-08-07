@@ -11,7 +11,7 @@ import (
 func (v *VFS) uploadSnapshots(pending []PendingUpload) []UploadSnapshot {
 	active := newVFSDebugUploadRuntime(v).ActiveSnapshots()
 
-	timerPaths := newVFSUploadScheduler(v).TimerPaths()
+	timerPaths := v.uploads.TimerPaths()
 
 	uploads := make([]UploadSnapshot, 0, len(pending)+len(active))
 	seen := map[string]bool{}
@@ -118,19 +118,19 @@ func newVFSDebugUploadRuntime(v *VFS) vfsDebugUploadRuntime {
 
 func (r vfsDebugUploadRuntime) ActiveSnapshots() map[string]UploadSnapshot {
 	active := map[string]UploadSnapshot{}
-	r.v.upload.debug.mu.Lock()
-	for path, state := range r.v.upload.debug.active {
+	r.v.uploads.debug.mu.Lock()
+	for path, state := range r.v.uploads.debug.active {
 		active[path] = cloneUploadSnapshot(state.upload)
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 	return active
 }
 
 func (r vfsDebugUploadRuntime) History() []UploadSnapshot {
-	r.v.upload.debug.mu.Lock()
-	defer r.v.upload.debug.mu.Unlock()
-	out := make([]UploadSnapshot, len(r.v.upload.debug.history))
-	for i, upload := range r.v.upload.debug.history {
+	r.v.uploads.debug.mu.Lock()
+	defer r.v.uploads.debug.mu.Unlock()
+	out := make([]UploadSnapshot, len(r.v.uploads.debug.history))
+	for i, upload := range r.v.uploads.debug.history {
 		out[i] = cloneUploadSnapshot(upload)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -157,14 +157,14 @@ func (r vfsDebugUploadRuntime) RemoveHistoryByID(id string) bool {
 	if id == "" {
 		return false
 	}
-	r.v.upload.debug.mu.Lock()
-	defer r.v.upload.debug.mu.Unlock()
-	for i, upload := range r.v.upload.debug.history {
+	r.v.uploads.debug.mu.Lock()
+	defer r.v.uploads.debug.mu.Unlock()
+	for i, upload := range r.v.uploads.debug.history {
 		if upload.OpID != id {
 			continue
 		}
-		copy(r.v.upload.debug.history[i:], r.v.upload.debug.history[i+1:])
-		r.v.upload.debug.history = r.v.upload.debug.history[:len(r.v.upload.debug.history)-1]
+		copy(r.v.uploads.debug.history[i:], r.v.uploads.debug.history[i+1:])
+		r.v.uploads.debug.history = r.v.uploads.debug.history[:len(r.v.uploads.debug.history)-1]
 		return true
 	}
 	return false
@@ -172,8 +172,8 @@ func (r vfsDebugUploadRuntime) RemoveHistoryByID(id string) bool {
 
 func (r vfsDebugUploadRuntime) StartSnapshot(p PendingUpload) {
 	now := timeutil.Now()
-	r.v.upload.debug.mu.Lock()
-	r.v.upload.debug.active[p.Path] = &uploadSnapshotState{
+	r.v.uploads.debug.mu.Lock()
+	r.v.uploads.debug.active[p.Path] = &uploadSnapshotState{
 		stageStartedAt: now,
 		upload: UploadSnapshot{
 			OpID:           p.FID,
@@ -190,12 +190,12 @@ func (r vfsDebugUploadRuntime) StartSnapshot(p PendingUpload) {
 			ParentRemoteID: p.ParentID,
 		},
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }
 
 func (r vfsDebugUploadRuntime) SetSnapshotState(path, state string) {
-	r.v.upload.debug.mu.Lock()
-	if upload := r.v.upload.debug.active[path]; upload != nil {
+	r.v.uploads.debug.mu.Lock()
+	if upload := r.v.uploads.debug.active[path]; upload != nil {
 		upload.recordStageDuration(timeutil.Now())
 		upload.upload.State = state
 		if state == string(drive.UploadPhaseInstant) {
@@ -203,12 +203,12 @@ func (r vfsDebugUploadRuntime) SetSnapshotState(path, state string) {
 		}
 		upload.upload.UpdatedAt = upload.stageStartedAt
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }
 
 func (r vfsDebugUploadRuntime) FinishSnapshot(path, state, lastError string) {
-	r.v.upload.debug.mu.Lock()
-	if upload := r.v.upload.debug.active[path]; upload != nil {
+	r.v.uploads.debug.mu.Lock()
+	if upload := r.v.uploads.debug.active[path]; upload != nil {
 		now := timeutil.Now()
 		upload.recordStageDuration(now)
 		upload.upload.State = state
@@ -218,19 +218,19 @@ func (r vfsDebugUploadRuntime) FinishSnapshot(path, state, lastError string) {
 		}
 		upload.upload.UpdatedAt = now
 		upload.upload.CompletedAt = upload.upload.UpdatedAt
-		r.v.upload.debug.history = append(r.v.upload.debug.history, upload.upload)
-		if len(r.v.upload.debug.history) > uploadSnapshotHistoryLimit {
-			copy(r.v.upload.debug.history, r.v.upload.debug.history[len(r.v.upload.debug.history)-uploadSnapshotHistoryLimit:])
-			r.v.upload.debug.history = r.v.upload.debug.history[:uploadSnapshotHistoryLimit]
+		r.v.uploads.debug.history = append(r.v.uploads.debug.history, upload.upload)
+		if len(r.v.uploads.debug.history) > uploadSnapshotHistoryLimit {
+			copy(r.v.uploads.debug.history, r.v.uploads.debug.history[len(r.v.uploads.debug.history)-uploadSnapshotHistoryLimit:])
+			r.v.uploads.debug.history = r.v.uploads.debug.history[:uploadSnapshotHistoryLimit]
 		}
-		delete(r.v.upload.debug.active, path)
+		delete(r.v.uploads.debug.active, path)
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }
 
 func (r vfsDebugUploadRuntime) SetSnapshotMetadata(path, resultRemoteID string, hashes []string) {
-	r.v.upload.debug.mu.Lock()
-	if state := r.v.upload.debug.active[path]; state != nil {
+	r.v.uploads.debug.mu.Lock()
+	if state := r.v.uploads.debug.active[path]; state != nil {
 		if resultRemoteID != "" {
 			state.upload.ResultRemoteID = resultRemoteID
 		}
@@ -239,22 +239,22 @@ func (r vfsDebugUploadRuntime) SetSnapshotMetadata(path, resultRemoteID string, 
 		}
 		state.upload.UpdatedAt = timeutil.Now()
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }
 
 func (r vfsDebugUploadRuntime) UpdateSnapshot(path string, n int) {
 	if n <= 0 {
 		return
 	}
-	r.v.upload.debug.mu.Lock()
-	if state := r.v.upload.debug.active[path]; state != nil {
+	r.v.uploads.debug.mu.Lock()
+	if state := r.v.uploads.debug.active[path]; state != nil {
 		state.upload.BytesUploaded += int64(n)
 		if state.upload.BytesTotal >= 0 && state.upload.BytesUploaded > state.upload.BytesTotal {
 			state.upload.BytesUploaded = state.upload.BytesTotal
 		}
 		state.upload.UpdatedAt = timeutil.Now()
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }
 
 func (r vfsDebugUploadRuntime) RecordEvent(path, phase string, start time.Time, bytes int64, extra map[string]any) {
@@ -286,24 +286,24 @@ func (r vfsDebugUploadRuntime) RecordEvent(path, phase string, start time.Time, 
 	if bytes > 0 && duration > 0 {
 		event.Throughput = int64(float64(bytes) / duration.Seconds())
 	}
-	r.v.upload.debug.mu.Lock()
-	if state := r.v.upload.debug.active[path]; state != nil {
+	r.v.uploads.debug.mu.Lock()
+	if state := r.v.uploads.debug.active[path]; state != nil {
 		state.upload.Events = append(state.upload.Events, event)
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }
 
 func (r vfsDebugUploadRuntime) SetSnapshotExtra(path string, key string, value any) {
 	if key == "" {
 		return
 	}
-	r.v.upload.debug.mu.Lock()
-	if state := r.v.upload.debug.active[path]; state != nil {
+	r.v.uploads.debug.mu.Lock()
+	if state := r.v.uploads.debug.active[path]; state != nil {
 		if state.upload.Extra == nil {
 			state.upload.Extra = map[string]any{}
 		}
 		state.upload.Extra[key] = value
 		state.upload.UpdatedAt = timeutil.Now()
 	}
-	r.v.upload.debug.mu.Unlock()
+	r.v.uploads.debug.mu.Unlock()
 }

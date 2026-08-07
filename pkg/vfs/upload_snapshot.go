@@ -36,7 +36,7 @@ func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (uploadSnap
 func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 	unlock := v.lockPath(pending.Path)
 	defer unlock()
-	if err := v.upload.store.staging.sync(pending.LocalPath); err != nil {
+	if err := v.uploads.store.staging.sync(pending.LocalPath); err != nil {
 		return uploadSnapshot{}, err
 	}
 	info, err := os.Stat(pending.LocalPath)
@@ -47,7 +47,7 @@ func (v *VFS) snapshotPending(pending PendingUpload) (uploadSnapshot, error) {
 		return uploadSnapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	algorithms := v.requiredUploadSnapshotHashes()
-	if hashes, ok := v.upload.hashes.snapshot(pending, algorithms); ok {
+	if hashes, ok := v.uploads.hashes.snapshot(pending, algorithms); ok {
 		return uploadSnapshot{
 			Path:        pending.LocalPath,
 			Hashes:      hashes,

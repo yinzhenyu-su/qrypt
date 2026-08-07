@@ -222,7 +222,7 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 	if latest, ok := store.UploadByPath(path); ok {
 		pending = latest
 	}
-	delay := v.upload.delay
+	delay := v.uploads.delay
 	if pending.Size == 0 && delay < zeroByteUploadDebounceDelay {
 		delay = zeroByteUploadDebounceDelay
 	}

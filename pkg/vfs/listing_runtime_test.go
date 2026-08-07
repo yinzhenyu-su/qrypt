@@ -87,7 +87,7 @@ func TestVFSListingRuntimeAddsVisiblePendingChildren(t *testing.T) {
 	}
 	runtime := newVFSListingRuntime(fs)
 	base := []drive.Entry{{ID: "existing", Name: "existing.txt"}}
-	if err := fs.upload.store.SaveUpload(PendingUpload{
+	if err := fs.uploads.store.SaveUpload(PendingUpload{
 		Path:     "/dir/pending.txt",
 		FID:      "pending",
 		ParentID: "dir",
@@ -96,14 +96,14 @@ func TestVFSListingRuntimeAddsVisiblePendingChildren(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.upload.store.SaveUpload(PendingUpload{
+	if err := fs.uploads.store.SaveUpload(PendingUpload{
 		Path: "/other/skip.txt",
 		FID:  "other",
 		Name: "skip.txt",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.upload.store.SaveUpload(PendingUpload{
+	if err := fs.uploads.store.SaveUpload(PendingUpload{
 		Path: "/dir/existing.txt",
 		FID:  "duplicate",
 		Name: "existing.txt",
@@ -111,7 +111,7 @@ func TestVFSListingRuntimeAddsVisiblePendingChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 	newVFSVisibilityRuntime(fs).MarkDeleted("/dir/deleted.txt", drive.Entry{ID: "deleted", Name: "deleted.txt"})
-	if err := fs.upload.store.SaveUpload(PendingUpload{
+	if err := fs.uploads.store.SaveUpload(PendingUpload{
 		Path: "/dir/deleted.txt",
 		FID:  "deleted",
 		Name: "deleted.txt",

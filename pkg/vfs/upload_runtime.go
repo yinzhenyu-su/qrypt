@@ -16,11 +16,11 @@ func newVFSUploadRuntime(v *VFS) vfsUploadRuntime {
 }
 
 func (r vfsUploadRuntime) ClearUploadHashes(fid string) {
-	r.v.upload.hashes.removeFID(fid)
+	r.v.uploads.hashes.removeFID(fid)
 }
 
 func (r vfsUploadRuntime) RetryDelay(retryCount int) time.Duration {
-	return uploadRetryDelay(retryCount, r.v.upload.delay)
+	return uploadRetryDelay(retryCount, r.v.uploads.delay)
 }
 
 func (r vfsUploadRuntime) Requeue(pending PendingUpload) {

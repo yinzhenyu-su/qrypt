@@ -79,19 +79,19 @@ func newVFSUploadWriteHashTracker(v *VFS) vfsUploadWriteHashTracker {
 }
 
 func (t vfsUploadWriteHashTracker) Start(pending PendingUpload) {
-	t.v.upload.hashes.start(pending, t.v.requiredUploadSnapshotHashes())
+	t.v.uploads.hashes.start(pending, t.v.requiredUploadSnapshotHashes())
 }
 
 func (t vfsUploadWriteHashTracker) Write(pending PendingUpload, data []byte, off int64) {
-	t.v.upload.hashes.write(pending, data, off, t.v.requiredUploadSnapshotHashes())
+	t.v.uploads.hashes.write(pending, data, off, t.v.requiredUploadSnapshotHashes())
 }
 
 func (t vfsUploadWriteHashTracker) Dirty(pending PendingUpload) {
-	t.v.upload.hashes.dirty(pending)
+	t.v.uploads.hashes.dirty(pending)
 }
 
 func (t vfsUploadWriteHashTracker) RemoveFID(fid string) {
-	t.v.upload.hashes.removeFID(fid)
+	t.v.uploads.hashes.removeFID(fid)
 }
 
 type uploadWriteRemote interface {
@@ -134,7 +134,7 @@ func newVFSUploadWriteRuntime(v *VFS) vfsUploadWriteRuntime {
 }
 
 func (r vfsUploadWriteRuntime) Store() uploadStoreWriteAdapter {
-	return newUploadStoreWriteAdapter(r.v.upload.store)
+	return newUploadStoreWriteAdapter(r.v.uploads.store)
 }
 
 func (r vfsUploadWriteRuntime) HashTracker() vfsUploadWriteHashTracker {

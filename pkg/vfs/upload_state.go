@@ -6,7 +6,7 @@ import (
 )
 
 // uploadScheduleState tracks the debounce timers for pending uploads.
-// Owned by the upload domain (uploadState.schedule); mu guards timers.
+// Owned by the upload domain (UploadService.schedule); mu guards timers.
 // Lifecycle: created in newUploadState, timers are stopped by Close
 // (VFS shutdown) or when an upload is cancelled/rescheduled.
 type uploadScheduleState struct {
@@ -33,7 +33,7 @@ func newUploadDebugState() *uploadDebugState {
 }
 
 // uploadFaultState registers debug-injected upload cancel faults. Owned
-// by the upload domain (uploadState.faults); mu guards cancelFaults.
+// by the upload domain (UploadService.faults); mu guards cancelFaults.
 // Lifecycle: created in newUploadState, entries are added/removed by
 // debug commands.
 type uploadFaultState struct {
@@ -47,11 +47,11 @@ func newUploadFaultState() *uploadFaultState {
 	}
 }
 
-// uploadState groups the VFS upload-domain state: the persistent store,
+// UploadService groups the VFS upload-domain state: the persistent store,
 // the pending queue, the debounce scheduler, debug snapshots, fault
 // injection, hash tracking and admission. Owned by the upload engine and
 // workers; initialized together in New.
-type uploadState struct {
+type UploadService struct {
 	store    *uploadStore
 	queue    chan PendingUpload
 	schedule *uploadScheduleState
@@ -61,12 +61,13 @@ type uploadState struct {
 	admit    uploadAdmission
 	delay    time.Duration
 	workers  int
+	done     chan struct{}
 }
 
 // newUploadState builds the upload domain state together. store persists
 // pending records and staging ownership; queue is the worker inbox.
-func newUploadState(store *uploadStore, opts Options) *uploadState {
-	return &uploadState{
+func newUploadService(store *uploadStore, opts Options, done chan struct{}) *UploadService {
+	return &UploadService{
 		store:    store,
 		queue:    make(chan PendingUpload, 128),
 		schedule: newUploadScheduleState(),
@@ -75,11 +76,12 @@ func newUploadState(store *uploadStore, opts Options) *uploadState {
 		hashes:   newUploadHashTrackerState(),
 		delay:    opts.UploadDelay,
 		workers:  opts.UploadWorkers,
+		done:     done,
 	}
 }
 
 // stopAll stops every debounce timer so no delayed upload fires after
-// shutdown. Used by uploadState.Close and the upload scheduler.
+// shutdown. Used by UploadService.Close and the upload scheduler.
 func (s *uploadScheduleState) stopAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,6 +93,12 @@ func (s *uploadScheduleState) stopAll() {
 
 // Close stops the upload debounce timers. Called by the VFS lifecycle;
 // worker goroutines exit on the VFS context themselves.
-func (u *uploadState) Close() {
+func (u *UploadService) Close() {
 	u.schedule.stopAll()
+}
+
+// SetDone wires the lifecycle done channel so that blocking enqueue
+// goroutines exit on shutdown. Called by VFS.Start.
+func (u *UploadService) SetDone(done chan struct{}) {
+	u.done = done
 }

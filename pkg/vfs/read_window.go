@@ -297,7 +297,7 @@ func (r vfsReadRuntime) RecordCachedRangeHit(cacheKey string, index, requestSize
 }
 
 func (r vfsReadRuntime) FlushStaging(localPath string) error {
-	return r.v.upload.store.staging.flush(localPath)
+	return r.v.uploads.store.staging.flush(localPath)
 }
 
 func (r vfsReadRuntime) ChunkAvailable(cacheKey string, index int64) bool {

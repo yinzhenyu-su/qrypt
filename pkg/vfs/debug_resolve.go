@@ -209,7 +209,7 @@ func (r vfsDebugResolveRuntime) PendingUpload(path string) (PendingUpload, bool)
 }
 
 func (r vfsDebugResolveRuntime) PendingUploadByRemoteID(remoteID string) (PendingUpload, bool) {
-	for _, pending := range r.v.upload.store.PendingUploads() {
+	for _, pending := range r.v.uploads.store.PendingUploads() {
 		if pending.FID == remoteID {
 			return pending, true
 		}
@@ -265,7 +265,7 @@ func (r vfsDebugResolveRuntime) ForeignEntries(ctx context.Context, parentID str
 }
 
 func (r vfsDebugResolveRuntime) UploadInProgress(path string) bool {
-	for _, upload := range r.v.uploadSnapshots(r.v.upload.store.PendingUploads()) {
+	for _, upload := range r.v.uploadSnapshots(r.v.uploads.store.PendingUploads()) {
 		if upload.Path == path && upload.State == uploadSnapshotStateUploading {
 			return true
 		}

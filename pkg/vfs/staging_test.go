@@ -60,7 +60,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	}
 	v := &VFS{
 		read:      &readState{cache: cache.readCacheStore},
-		upload:    &uploadState{store: cache.uploadStore},
+		uploads:   &UploadService{store: cache.uploadStore},
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
@@ -100,7 +100,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 	}
 	v := &VFS{
 		read:      &readState{cache: cache.readCacheStore},
-		upload:    &uploadState{store: cache.uploadStore},
+		uploads:   &UploadService{store: cache.uploadStore},
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
@@ -144,7 +144,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	if err := fs.Create(ctx, "/file"); err != nil {
 		t.Fatal(err)
 	}
-	old, ok := fs.upload.store.UploadByPath("/file")
+	old, ok := fs.uploads.store.UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing")
 	}
@@ -158,7 +158,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 	if _, err := os.Stat(oldLocal); !os.IsNotExist(err) {
 		t.Fatalf("old mutable staging still exists, err=%v", err)
 	}
-	latest, ok := fs.upload.store.UploadByPath("/file")
+	latest, ok := fs.uploads.store.UploadByPath("/file")
 	if !ok {
 		t.Fatal("new pending missing")
 	}
@@ -185,7 +185,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	if err := fs.Flush(ctx, "/file"); err != nil {
 		t.Fatal(err)
 	}
-	old, ok := fs.upload.store.UploadByPath("/file")
+	old, ok := fs.uploads.store.UploadByPath("/file")
 	if !ok {
 		t.Fatal("old pending missing")
 	}
@@ -198,7 +198,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 	if _, err := os.Stat(old.LocalPath); err != nil {
 		t.Fatalf("old frozen staging removed: %v", err)
 	}
-	latest, ok := fs.upload.store.UploadByPath("/file")
+	latest, ok := fs.uploads.store.UploadByPath("/file")
 	if !ok {
 		t.Fatal("new pending missing")
 	}
@@ -248,7 +248,7 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 	}
 	v := &VFS{
 		read:      &readState{cache: cache.readCacheStore},
-		upload:    &uploadState{store: cache.uploadStore},
+		uploads:   &UploadService{store: cache.uploadStore},
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
@@ -299,7 +299,7 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	v := &VFS{
 		driver:    drv,
 		read:      &readState{cache: cache.readCacheStore},
-		upload:    &uploadState{store: cache.uploadStore},
+		uploads:   &UploadService{store: cache.uploadStore},
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
@@ -429,7 +429,7 @@ func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 }
 
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
-	v := &VFS{upload: &uploadState{delay: 10 * time.Millisecond}}
+	v := &VFS{uploads: &UploadService{delay: 10 * time.Millisecond}}
 
 	small := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold - 1})
 	if small != 10*time.Millisecond {

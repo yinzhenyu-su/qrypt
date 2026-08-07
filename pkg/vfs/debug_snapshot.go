@@ -266,16 +266,16 @@ func (r vfsDebugSnapshotRuntime) Identity(name string) MountSnapshotIdentity {
 
 func (r vfsDebugSnapshotRuntime) Queues() MountSnapshotQueues {
 	return MountSnapshotQueues{
-		UploadLength:  len(r.v.upload.queue),
-		UploadCap:     cap(r.v.upload.queue),
-		UploadWorkers: r.v.upload.workers,
-		UploadDelay:   r.v.upload.delay.String(),
+		UploadLength:  len(r.v.uploads.queue),
+		UploadCap:     cap(r.v.uploads.queue),
+		UploadWorkers: r.v.uploads.workers,
+		UploadDelay:   r.v.uploads.delay.String(),
 		DeleteDelay:   r.v.delete.delay.String(),
 	}
 }
 
 func (r vfsDebugSnapshotRuntime) PendingUploads() []PendingUpload {
-	return r.v.upload.store.PendingUploads()
+	return r.v.uploads.store.PendingUploads()
 }
 
 func (r vfsDebugSnapshotRuntime) DriverSnapshot(ctx context.Context) (drive.DebugSnapshot, bool) {
@@ -292,10 +292,10 @@ func (r vfsDebugSnapshotRuntime) DriverMetrics(ctx context.Context, since time.T
 }
 
 func (r vfsDebugSnapshotRuntime) UploadTimers() []DebugTimer {
-	r.v.upload.schedule.mu.Lock()
-	defer r.v.upload.schedule.mu.Unlock()
-	timers := make([]DebugTimer, 0, len(r.v.upload.schedule.timers))
-	for path := range r.v.upload.schedule.timers {
+	r.v.uploads.schedule.mu.Lock()
+	defer r.v.uploads.schedule.mu.Unlock()
+	timers := make([]DebugTimer, 0, len(r.v.uploads.schedule.timers))
+	for path := range r.v.uploads.schedule.timers {
 		timers = append(timers, DebugTimer{Path: path})
 	}
 	sort.Slice(timers, func(i, j int) bool {

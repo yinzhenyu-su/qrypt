@@ -316,10 +316,10 @@ func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
 
 func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
 	r.v.moveLocalModTime(oldPath, newPath)
-	if err := r.v.upload.store.RenameUpload(oldPath, pending); err != nil {
+	if err := r.v.uploads.store.RenameUpload(oldPath, pending); err != nil {
 		return err
 	}
-	r.v.upload.hashes.renamePath(oldPath, newPath, pending)
+	r.v.uploads.hashes.renamePath(oldPath, newPath, pending)
 	return nil
 }
 
@@ -338,18 +338,18 @@ func (r vfsRemoveRuntime) InvalidateReadCache(entry drive.Entry) {
 func (r vfsRemoveRuntime) RemovePendingUpload(path string) error {
 	r.v.cancelUpload(path)
 	r.v.clearLocalModTime(path)
-	if err := r.v.upload.store.RemoveUpload(path); err != nil {
+	if err := r.v.uploads.store.RemoveUpload(path); err != nil {
 		return err
 	}
-	r.v.upload.hashes.removePath(path)
+	r.v.uploads.hashes.removePath(path)
 	return nil
 }
 
 func (r vfsRemoveRuntime) RemovePendingUploadsUnder(path string) error {
-	if err := r.v.upload.store.RemoveUploadsUnder(path); err != nil {
+	if err := r.v.uploads.store.RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.upload.hashes.removeUnder(path)
+	r.v.uploads.hashes.removeUnder(path)
 	return nil
 }
 
@@ -362,7 +362,7 @@ func (r vfsRemoveRuntime) ClearLocalModTime(path string) {
 }
 
 func (r vfsRemoveRuntime) CancelChildUploads(path string) {
-	r.v.cancelChildUploads(path)
+	r.v.uploads.CancelChildUploads(path)
 }
 
 func (r vfsRemoveRuntime) CancelChildDeletes(path string) {
@@ -382,11 +382,11 @@ func (r vfsDirectoryCopyRuntime) ListChildren(ctx context.Context, parentID stri
 }
 
 func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
-	r.v.cancelChildUploads(path)
-	if err := r.v.upload.store.RemoveUploadsUnder(path); err != nil {
+	r.v.uploads.CancelChildUploads(path)
+	if err := r.v.uploads.store.RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.upload.hashes.removeUnder(path)
+	r.v.uploads.hashes.removeUnder(path)
 	return nil
 }
 

@@ -206,7 +206,7 @@ func newVFSDebugStagingRuntime(v *VFS) vfsDebugStagingRuntime {
 }
 
 func (r vfsDebugStagingRuntime) PendingUploads() []PendingUpload {
-	return r.v.upload.store.PendingUploads()
+	return r.v.uploads.store.PendingUploads()
 }
 
 func (r vfsDebugStagingRuntime) UploadingPaths(pending []PendingUpload) map[string]bool {
@@ -220,7 +220,7 @@ func (r vfsDebugStagingRuntime) UploadingPaths(pending []PendingUpload) map[stri
 }
 
 func (r vfsDebugStagingRuntime) StagingDir() string {
-	return r.v.upload.store.staging.dir
+	return r.v.uploads.store.staging.dir
 }
 
 func (r vfsDebugStagingRuntime) StagingFiles() ([]DebugStagingFile, error) {

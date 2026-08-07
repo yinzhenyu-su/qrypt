@@ -21,7 +21,7 @@ func newUploadEngine(v *VFS) uploadEngine {
 	return uploadEngine{
 		remote:   newVFSDriverRuntime(v).RemoteMutationBackend(),
 		observer: newVFSUploadObserver(v),
-		pending:  newUploadStoreAdapter(v.upload.store),
+		pending:  newUploadStoreAdapter(v.uploads.store),
 		runtime:  newVFSUploadRuntime(v),
 		snapshot: newVFSUploadSnapshotter(v),
 		faults:   newVFSUploadFaultController(v),

@@ -158,7 +158,7 @@ func TestUploadQueueBlockingEnqueueExitsOnShutdown(t *testing.T) {
 	}()
 	// Shrink the queue so the second SendUpload hits the blocking path; no
 	// worker is started, so the slot stays occupied.
-	v.upload.queue = make(chan PendingUpload, 1)
+	v.uploads.queue = make(chan PendingUpload, 1)
 	r := vfsUploadWorkerRuntime{v: v}
 	r.SendUpload(PendingUpload{FID: "a", Path: "/a"})
 	r.SendUpload(PendingUpload{FID: "b", Path: "/b"})

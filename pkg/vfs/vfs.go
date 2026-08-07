@@ -51,7 +51,7 @@ type VFS struct {
 	// stay top-level.
 	view    *viewState
 	read    *readState
-	upload  *uploadState
+	uploads *UploadService
 	delete  *deleteState
 	listing *listingState
 	// activeDebug tracks in-flight debug operations; it is the debug
@@ -113,6 +113,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	overlay, deleteTasks := newDeleteStates()
 	view := newViewState(opts.RootID, now)
 	view.overlay = overlay
+	done := make(chan struct{})
 	v := &VFS{
 		driver:        driver,
 		name:          opts.Name,
@@ -120,11 +121,11 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		rootID:        opts.RootID,
 		encrypted:     opts.Encrypted,
 		testEnabled:   opts.TestEnabled,
-		done:          make(chan struct{}),
+		done:          done,
 		startOnce:     sync.Once{},
 		view:          view,
 		read:          newReadState(stores.readCacheStore),
-		upload:        newUploadState(stores.uploadStore, opts),
+		uploads:       newUploadService(stores.uploadStore, opts, done),
 		delete:        newDeleteState(deleteTasks, opts.DeleteDelay),
 		listing:       newListingState(),
 		activeDebug:   newActiveDebugState(),
@@ -147,7 +148,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 func (v *VFS) Start(ctx context.Context) {
 	v.startOnce.Do(func() {
 		v.ctx = ctx
-		for i := 0; i < v.upload.workers; i++ {
+		for i := 0; i < v.uploads.workers; i++ {
 			go v.uploadWorker(ctx)
 		}
 		v.Resume(ctx)
@@ -159,7 +160,7 @@ func (v *VFS) Start(ctx context.Context) {
 		context.AfterFunc(ctx, func() {
 			close(v.done)
 			v.delete.Close()
-			v.upload.Close()
+			v.uploads.Close()
 			_ = v.read.Close()
 		})
 	})
@@ -251,12 +252,12 @@ func (v *VFS) CloseReadCache() error {
 }
 
 func (v *VFS) Resume(ctx context.Context) {
-	for _, pending := range v.upload.store.PendingUploads() {
+	for _, pending := range v.uploads.store.PendingUploads() {
 		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
 			oldSize := pending.Size
 			pending.Size = info.Size()
 			pending.UpdatedAt = timeutil.Now().UnixNano()
-			if err := v.upload.store.SaveUpload(pending); err != nil {
+			if err := v.uploads.store.SaveUpload(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
 			} else {
 				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
@@ -295,7 +296,7 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 	path = cleanVirtual(path)
-	if pending, ok := v.upload.store.UploadByPath(path); ok {
+	if pending, ok := v.uploads.store.UploadByPath(path); ok {
 		return pending, nil
 	}
 	return PendingUpload{}, fmt.Errorf("vfs: no pending file for %s", path)
