@@ -303,13 +303,8 @@ func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 
 func (v *VFS) lockPath(path string) func() {
 	path = cleanVirtual(path)
-	v.pathLocks.mu.Lock()
-	mu := v.pathLocks.locks[path]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		v.pathLocks.locks[path] = mu
-	}
-	v.pathLocks.mu.Unlock()
+	actual, _ := v.pathLocks.locks.LoadOrStore(path, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
 }

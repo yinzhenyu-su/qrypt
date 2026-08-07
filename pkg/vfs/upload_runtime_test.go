@@ -35,7 +35,7 @@ func TestVFSUploadRuntimeAppliesModTimeAndCommitsEntry(t *testing.T) {
 	fs.view.mu.Unlock()
 	runtime.CommitUploadedEntry(pending.Path, entry)
 	fs.view.mu.RLock()
-	committed, ok := fs.view.entries[pending.Path]
+	committed, ok := fs.view.entries.Get(pending.Path)
 	_, listCached := fs.view.lists["/"]
 	fs.view.mu.RUnlock()
 	if !ok || committed.ID != entry.ID {

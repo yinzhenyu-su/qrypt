@@ -325,7 +325,7 @@ func (r vfsListingRuntime) CommitRemoteList(parentPath string, entries []drive.E
 		childPath := joinVirtual(parentPath, child.Name)
 		child = r.v.applyLocalModTimeLocked(childPath, child)
 		entries[i] = child
-		r.v.view.entries[childPath] = child
+		r.v.view.entries.Set(childPath, child)
 	}
 	r.v.view.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: expires}
 	r.v.view.mu.Unlock()
@@ -360,9 +360,7 @@ func (r vfsListingRuntime) IsCurrentPrefetchDir(path, id string) bool {
 	if r.v.isUnavailable(path) {
 		return false
 	}
-	r.v.view.mu.RLock()
-	entry, ok := r.v.view.entries[path]
-	r.v.view.mu.RUnlock()
+	entry, ok := r.v.view.entries.Get(path)
 	return ok && entry.IsDir && entry.ID == id
 }
 

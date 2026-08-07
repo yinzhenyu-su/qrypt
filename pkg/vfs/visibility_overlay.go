@@ -61,13 +61,9 @@ func (r vfsVisibilityRuntime) MarkDeleted(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Unlock()
 
 	r.v.view.mu.Lock()
-	delete(r.v.view.entries, path)
+	r.v.view.entries.Delete(path)
 	if entry.IsDir {
-		for cachedPath := range r.v.view.entries {
-			if isPathUnder(cachedPath, path) {
-				delete(r.v.view.entries, cachedPath)
-			}
-		}
+		r.v.view.entries.DeleteUnder(path)
 		for cachedPath := range r.v.view.lists {
 			if cachedPath == path || isPathUnder(cachedPath, path) {
 				delete(r.v.view.lists, cachedPath)
@@ -98,7 +94,7 @@ func (r vfsVisibilityRuntime) RestoreDeletedPath(path string) (drive.Entry, bool
 	r.v.view.overlay.mu.Unlock()
 
 	r.v.view.mu.Lock()
-	r.v.view.entries[path] = entry
+	r.v.view.entries.Set(path, entry)
 	r.v.invalidateListLocked(filepath.Dir(path))
 	r.v.view.mu.Unlock()
 	return entry, true
@@ -132,7 +128,7 @@ func (r vfsVisibilityRuntime) RestoreDeletedAncestor(path string) {
 	r.v.view.overlay.mu.Unlock()
 
 	r.v.view.mu.Lock()
-	r.v.view.entries[restorePath] = entry
+	r.v.view.entries.Set(restorePath, entry)
 	r.v.invalidateListLocked(filepath.Dir(restorePath))
 	r.v.view.mu.Unlock()
 }
@@ -208,17 +204,16 @@ func (r vfsVisibilityRuntime) LocalChildren(parentPath string, entries []drive.E
 		path  string
 		entry drive.Entry
 	}
-	r.v.view.mu.RLock()
-	for path, entry := range r.v.view.entries {
+	r.v.view.entries.Range(func(path string, entry drive.Entry) bool {
 		if path == "/" || filepath.Dir(path) != parentPath || seen[entry.Name] {
-			continue
+			return true
 		}
 		local = append(local, struct {
 			path  string
 			entry drive.Entry
 		}{path: path, entry: entry})
-	}
-	r.v.view.mu.RUnlock()
+		return true
+	})
 	for _, item := range local {
 		if seen[item.entry.Name] || r.IsUnavailable(item.path) {
 			continue

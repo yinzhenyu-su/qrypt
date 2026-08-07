@@ -58,7 +58,7 @@ func (r vfsUploadRuntime) SeedReadCache(entry drive.Entry, localPath string) {
 
 func (r vfsUploadRuntime) CommitUploadedEntry(path string, entry drive.Entry) {
 	r.v.view.mu.Lock()
-	r.v.view.entries[path] = entry
+	r.v.view.entries.Set(path, entry)
 	r.v.unhideCopyChild(filepath.Dir(path), entry.Name)
 	r.v.invalidateListLocked(filepath.Dir(path))
 	r.v.view.mu.Unlock()

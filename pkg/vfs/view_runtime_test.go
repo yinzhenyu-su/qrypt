@@ -15,12 +15,12 @@ func TestVFSViewRuntimeRebasesCachedPaths(t *testing.T) {
 	}
 	runtime := newVFSViewRuntime(fs)
 	fs.view.mu.Lock()
-	fs.view.entries["/old/file.txt"] = drive.Entry{ID: "file", Name: "file.txt"}
-	fs.view.entries["/other.txt"] = drive.Entry{ID: "other", Name: "other.txt"}
+	fs.view.entries.Set("/old/file.txt", drive.Entry{ID: "file", Name: "file.txt"})
+	fs.view.entries.Set("/other.txt", drive.Entry{ID: "other", Name: "other.txt"})
 	runtime.RebaseCachedPathsLocked("/old", "/new")
-	_, oldOK := fs.view.entries["/old/file.txt"]
-	_, newOK := fs.view.entries["/new/file.txt"]
-	_, otherOK := fs.view.entries["/other.txt"]
+	_, oldOK := fs.view.entries.Get("/old/file.txt")
+	_, newOK := fs.view.entries.Get("/new/file.txt")
+	_, otherOK := fs.view.entries.Get("/other.txt")
 	fs.view.mu.Unlock()
 	if oldOK || !newOK || !otherOK {
 		t.Fatalf("old=%v new=%v other=%v", oldOK, newOK, otherOK)
@@ -104,7 +104,7 @@ func TestVFSViewRuntimeCommitsEntryLocalModTime(t *testing.T) {
 
 	runtime.CommitEntryLocalModTime("/dir/file.txt", drive.Entry{ID: "file", Name: "file.txt"}, modTime)
 	fs.view.mu.RLock()
-	entry, entryOK := fs.view.entries["/dir/file.txt"]
+	entry, entryOK := fs.view.entries.Get("/dir/file.txt")
 	_, listOK := fs.view.lists["/dir"]
 	fs.view.mu.RUnlock()
 	if !entryOK || !entry.ModTime.Equal(modTime) {

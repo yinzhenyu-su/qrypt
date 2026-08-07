@@ -281,13 +281,13 @@ func (r vfsMutationRuntime) CacheListedChildren(parentPath string, entries []dri
 	r.v.view.mu.Lock()
 	defer r.v.view.mu.Unlock()
 	for _, child := range entries {
-		r.v.view.entries[joinVirtual(parentPath, child.Name)] = child
+		r.v.view.entries.Set(joinVirtual(parentPath, child.Name), child)
 	}
 }
 
 func (r vfsMutationRuntime) CommitMkdir(path string, entry drive.Entry) {
 	r.v.view.mu.Lock()
-	r.v.view.entries[path] = entry
+	r.v.view.entries.Set(path, entry)
 	r.v.markLocalDirLocked(path)
 	r.v.invalidateListLocked(filepath.Dir(path))
 	r.v.view.mu.Unlock()
@@ -297,14 +297,14 @@ func (r vfsMutationRuntime) CommitRemoteRename(oldPath, newPath string, entry dr
 	oldParent := filepath.Dir(oldPath)
 	newParent := filepath.Dir(newPath)
 	r.v.view.mu.Lock()
-	delete(r.v.view.entries, oldPath)
-	delete(r.v.view.entries, newPath)
+	r.v.view.entries.Delete(oldPath)
+	r.v.view.entries.Delete(newPath)
 	r.v.rebaseCachedPathsLocked(oldPath, newPath)
 	r.v.moveLocalModTimeLocked(oldPath, newPath)
 	r.v.invalidateListLocked(oldParent)
 	r.v.invalidateListLocked(newParent)
 	entry = r.v.applyLocalModTimeLocked(newPath, entry)
-	r.v.view.entries[newPath] = entry
+	r.v.view.entries.Set(newPath, entry)
 	r.v.view.mu.Unlock()
 	r.v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
 	return entry
@@ -391,15 +391,16 @@ func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
 }
 
 func (r vfsDirectoryCopyRuntime) PrepareLocalDirectoryCopy(path string, hideNames map[string]time.Time) {
-	r.v.view.mu.Lock()
-	for cachedPath, cachedEntry := range r.v.view.entries {
+	r.v.view.entries.Range(func(cachedPath string, cachedEntry drive.Entry) bool {
 		if filepath.Dir(cachedPath) == path {
 			if _, ok := hideNames[cachedEntry.Name]; !ok && !isAppleMetadataName(cachedEntry.Name) {
 				hideNames[cachedEntry.Name] = time.Now().Add(directoryCopyHideTTL)
 			}
-			delete(r.v.view.entries, cachedPath)
+			r.v.view.entries.Delete(cachedPath)
 		}
-	}
+		return true
+	})
+	r.v.view.mu.Lock()
 	r.v.markLocalDirLocked(path)
 	r.v.invalidateListLocked(path)
 	r.v.view.mu.Unlock()

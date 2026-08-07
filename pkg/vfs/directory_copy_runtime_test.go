@@ -15,16 +15,16 @@ func TestVFSDirectoryCopyRuntimePreparesLocalState(t *testing.T) {
 	}
 	runtime := newVFSDirectoryCopyRuntime(fs)
 	fs.view.mu.Lock()
-	fs.view.entries["/dir"] = drive.Entry{ID: "dir", Name: "dir", IsDir: true}
-	fs.view.entries["/dir/remote.txt"] = drive.Entry{ID: "remote", Name: "remote.txt"}
-	fs.view.entries["/dir/local.txt"] = drive.Entry{ID: "local", Name: "local.txt"}
+	fs.view.entries.Set("/dir", drive.Entry{ID: "dir", Name: "dir", IsDir: true})
+	fs.view.entries.Set("/dir/remote.txt", drive.Entry{ID: "remote", Name: "remote.txt"})
+	fs.view.entries.Set("/dir/local.txt", drive.Entry{ID: "local", Name: "local.txt"})
 	fs.view.lists["/dir"] = listCacheEntry{expires: time.Now().Add(time.Hour)}
 	fs.view.mu.Unlock()
 
 	runtime.PrepareLocalDirectoryCopy("/dir", map[string]time.Time{"remote.txt": time.Now().Add(time.Hour)})
 	fs.view.mu.RLock()
-	_, remoteCached := fs.view.entries["/dir/remote.txt"]
-	_, localCached := fs.view.entries["/dir/local.txt"]
+	_, remoteCached := fs.view.entries.Get("/dir/remote.txt")
+	_, localCached := fs.view.entries.Get("/dir/local.txt")
 	_, listCached := fs.view.lists["/dir"]
 	fs.view.mu.RUnlock()
 	if remoteCached || localCached || listCached {

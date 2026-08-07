@@ -72,6 +72,12 @@ func (c *uploadStore) loadJournal() (int, error) {
 			delete(c.pending, entry.Path)
 		}
 	}
+	// Rebuild fid->path index after journal replay.
+	for _, p := range c.pending {
+		if p.FID != "" {
+			c.idIndex[p.FID] = p.Path
+		}
+	}
 	return entries, scanner.Err()
 }
 func (c *uploadStore) shouldCompactJournal(entries int) bool {
