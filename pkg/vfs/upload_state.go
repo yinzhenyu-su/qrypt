@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
 )
 
 // uploadScheduleState tracks the debounce timers for pending uploads.
@@ -244,3 +245,6 @@ func (s *UploadService) Retry(pending PendingUpload) error {
 func (s *UploadService) RemoveHistoryByID(id string) bool {
 	return s.debug.removeHistoryByID(id)
 }
+
+// Compile-time interface satisfaction check.
+var _ upload.Service = (*UploadService)(nil)

@@ -3,9 +3,11 @@ package vfs
 import (
 	"context"
 	"fmt"
+
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/internal/delete"
 	"path"
 	"sort"
 	"strings"
@@ -226,3 +228,6 @@ func newDeleteService(tasks *deleteTaskState, delay time.Duration) *DeleteServic
 func (d *DeleteService) Close() {
 	d.tasks.stopAll()
 }
+
+// Compile-time interface satisfaction check.
+var _ idelete.Service = (*DeleteService)(nil)
