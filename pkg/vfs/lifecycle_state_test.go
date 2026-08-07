@@ -8,15 +8,18 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// newStateTestVFS builds an unstarted VFS over the fake driver with short
-// debounce delays so both upload and delete timers arm during the test.
+// newStateTestVFS builds an unstarted VFS over the fake driver with stable
+// debounce delays: long enough that the arming check always observes the
+// timer before it can fire (10ms raced on slow -race machines), short
+// enough that the started instances in this file still upload within the
+// wait deadline.
 func newStateTestVFS(t *testing.T) *VFS {
 	t.Helper()
 	fs, err := New(drive.NewFakeDriver(), Options{
 		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
-		UploadDelay:   10 * time.Millisecond,
-		DeleteDelay:   10 * time.Millisecond,
+		UploadDelay:   time.Second,
+		DeleteDelay:   time.Second,
 		UploadWorkers: 1,
 	})
 	if err != nil {
@@ -133,7 +136,7 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	if err := fs2.Flush(ctx, "/del.txt"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, ok := fs2.upload.store.UploadByPath("/del.txt"); !ok {
 			break
