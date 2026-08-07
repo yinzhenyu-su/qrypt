@@ -115,6 +115,17 @@ func (d *directCopyTestDriver) Capabilities() []drive.Capability {
 	return []drive.Capability{drive.CapabilitySourceUploader, drive.CapabilityWriter}
 }
 
+// Copy implements drive.ServerSideCopier for the same-driver routing test.
+func (d *directCopyTestDriver) Copy(_ context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	data, ok := d.files[src.ID]
+	if !ok {
+		return drive.Entry{}, fmt.Errorf("missing file %s", src.ID)
+	}
+	id := dstParentID + "/" + dstName
+	d.files[id] = append([]byte(nil), data...)
+	return drive.Entry{ID: id, ParentID: dstParentID, Name: dstName, Size: int64(len(data))}, nil
+}
+
 func (d *directCopyTestDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
 	return nil, nil
 }
@@ -378,4 +389,59 @@ func findCopyEvent(result *DriverCopyResult, phase string) drive.MetricEvent {
 		}
 	}
 	return drive.MetricEvent{}
+}
+
+// TestRunDirectDriverCopyServerSideSameDriver: when source and destination
+// resolve to the same driver instance and it implements ServerSideCopier,
+// the copy routes through the provider-side step and skips the
+// download-to-temp-and-reupload round trip.
+func TestRunDirectDriverCopyServerSideSameDriver(t *testing.T) {
+	shared := &directCopyTestDriver{driverName: "shared-test", files: map[string][]byte{"src-file": []byte("payload")}}
+	source := directCopyFixture(shared, shared, nil)
+
+	result := RunDirectDriverCopy(context.Background(), source, "/src/file.bin", "/dst/copied.bin", false)
+	if !result.Pass {
+		t.Fatalf("server-side copy pass = false, steps=%#v", result.Steps)
+	}
+	if !hasCopyStep(result, "server_side_copy") {
+		t.Fatalf("expected server_side_copy step, got %#v", result.Steps)
+	}
+	if hasCopyStep(result, "read_source_to_temp") || hasCopyStep(result, "driver_put_source") {
+		t.Fatalf("server-side copy must not download to temp or re-upload: %#v", result.Steps)
+	}
+	if got := string(shared.files["dst-root/copied.bin"]); got != "payload" {
+		t.Fatalf("copied payload = %q, want payload", got)
+	}
+	if result.Bytes != int64(len("payload")) {
+		t.Fatalf("bytes = %d, want %d", result.Bytes, len("payload"))
+	}
+}
+
+// TestRunDirectDriverCopyCrossDriverStillTemp: distinct driver instances
+// fall back to the download-to-temp path even when both implement
+// ServerSideCopier (a provider-side copy only exists within one backend).
+func TestRunDirectDriverCopyCrossDriverStillTemp(t *testing.T) {
+	srcDriver := &directCopyTestDriver{driverName: "src-test", files: map[string][]byte{"src-file": []byte("payload")}}
+	dstDriver := &directCopyTestDriver{driverName: "dst-test", files: map[string][]byte{}}
+	source := directCopyFixture(srcDriver, dstDriver, nil)
+
+	result := RunDirectDriverCopy(context.Background(), source, "/src/file.bin", "/dst/copied.bin", false)
+	if !result.Pass {
+		t.Fatalf("cross-driver copy pass = false, steps=%#v", result.Steps)
+	}
+	if hasCopyStep(result, "server_side_copy") {
+		t.Fatalf("cross-driver copy must not use server_side_copy: %#v", result.Steps)
+	}
+	if !hasCopyStep(result, "read_source_to_temp") || !hasCopyStep(result, "driver_put_source") {
+		t.Fatalf("cross-driver copy missing temp round trip: %#v", result.Steps)
+	}
+}
+
+func hasCopyStep(result *DriverCopyResult, phase string) bool {
+	for _, step := range result.Steps {
+		if step.Phase == phase {
+			return true
+		}
+	}
+	return false
 }

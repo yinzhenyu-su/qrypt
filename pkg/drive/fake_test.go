@@ -203,3 +203,65 @@ func TestFakeSpaceCapability(t *testing.T) {
 		t.Fatalf("space = %+v, want total=100 free=40", sp)
 	}
 }
+
+func TestFakeCopyServerSide(t *testing.T) {
+	d := NewFakeDriver()
+	fixed := time.Unix(1_700_000_000, 0)
+	if _, err := d.PutSource(context.Background(), UploadRequest{
+		ParentID: "0",
+		Name:     "src.bin",
+		Source:   NewBytesReadOnlyFileSource([]byte("server-side copy")),
+		ModTime:  fixed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Mkdir(context.Background(), "0", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	src, err := d.ResolvePath(context.Background(), "/src.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := d.Copy(context.Background(), Entry{ID: src, Name: "src.bin", Size: 16}, "0/dir", "dst.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "0/dir/dst.bin" || entry.Name != "dst.bin" || entry.Size != 16 {
+		t.Fatalf("copy entry = %+v", entry)
+	}
+	if !entry.ModTime.Equal(fixed) {
+		t.Fatalf("copy mtime = %v, want %v (preserved)", entry.ModTime, fixed)
+	}
+	// Content matches the source.
+	rc, err := d.Read(context.Background(), entry, 0, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "server-side copy" {
+		t.Fatalf("copy content = %q", body)
+	}
+}
+
+func TestFakeCopyRejectsDirectoryAndMissingParent(t *testing.T) {
+	d := NewFakeDriver()
+	if _, err := d.Mkdir(context.Background(), "0", "dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Copy(context.Background(), Entry{ID: "0/dir", IsDir: true}, "0", "x"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("directory copy = %v, want ErrUnsupported", err)
+	}
+	if _, err := d.Copy(context.Background(), Entry{ID: "0", Name: "root", IsDir: true}, "0", "y"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("root copy = %v, want ErrUnsupported", err)
+	}
+	if _, err := d.Copy(context.Background(), Entry{ID: "nope", Name: "nope"}, "0", "z"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing source = %v, want ErrNotFound", err)
+	}
+	if _, err := d.Copy(context.Background(), Entry{ID: "0", Name: "root", IsDir: true}, "missing", "w"); err == nil {
+		t.Fatal("missing destination parent should error")
+	}
+}

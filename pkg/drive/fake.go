@@ -42,6 +42,7 @@ type FakeDriver struct {
 	ErrRename    error
 	ErrRemove    error
 	ErrPutSource error
+	ErrCopy      error
 	ErrResolve   error
 	ErrSpace     error
 	// Delay pauses every method (including ctx checks) so timeout and
@@ -431,6 +432,45 @@ func (d *FakeDriver) Rename(ctx context.Context, entry Entry, newName string) er
 	d.nodes[entry.ID].name = newName
 	d.captureLocked()
 	return nil
+}
+
+// Copy implements ServerSideCopier: duplicates a stored file node in
+// memory (no data round trip) and preserves the source mtime. Directory
+// copies are rejected per the ServerSideCopier contract.
+func (d *FakeDriver) Copy(ctx context.Context, src Entry, dstParentID, dstName string) (Entry, error) {
+	d.mu.Lock()
+	d.record("Copy", src.ID)
+	d.mu.Unlock()
+	if err := d.failOn("Copy"); err != nil {
+		return Entry{}, err
+	}
+	if err := d.wait(ctx, d.Delay); err != nil {
+		return Entry{}, err
+	}
+	if err := d.consume(&d.ErrCopy); err != nil {
+		return Entry{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n, ok := d.nodes[src.ID]
+	if !ok {
+		return Entry{}, fmt.Errorf("%w: fake copy source %q", ErrNotFound, src.ID)
+	}
+	if n.isDir {
+		return Entry{}, ErrUnsupported
+	}
+	if _, ok := d.nodes[dstParentID]; !ok {
+		return Entry{}, fmt.Errorf("%w: fake copy destination %q", ErrNotFound, dstParentID)
+	}
+	id := dstParentID + "/" + dstName
+	if _, exists := d.nodes[id]; exists {
+		return Entry{}, fmt.Errorf("%w: fake copy %q exists", fs.ErrExist, id)
+	}
+	d.nextID++
+	data := append([]byte(nil), n.data...)
+	d.nodes[id] = &fakeNode{name: dstName, isDir: false, data: data, modTime: n.modTime, parentID: dstParentID}
+	d.captureLocked()
+	return Entry{ID: id, ParentID: dstParentID, Name: dstName, Size: int64(len(data)), ModTime: n.modTime}, nil
 }
 
 // rekey moves a node (and its subtree) to a new parent, keeping ids

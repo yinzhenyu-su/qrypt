@@ -130,6 +130,61 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	return os.Rename(entry.ID, filepath.Join(d.resolve(dstParentID), filepath.Base(entry.ID)))
 }
 
+// Copy implements drive.ServerSideCopier: duplicates a stored file with an
+// OS-level copy (no data round trip through qrypt) and preserves the source
+// mtime, keeping the CapabilityMtime + CapabilityServerSideCopy contract
+// (sync converges on mtime instead of re-copying every run). Directory
+// copies are rejected per the contract.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return drive.Entry{}, err
+	}
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	dstPath := filepath.Join(d.resolve(dstParentID), dstName)
+	if err := copyFilePreservingMtime(src.ID, dstPath); err != nil {
+		return drive.Entry{}, classifyLocalError(err)
+	}
+	info, err := os.Stat(dstPath)
+	if err != nil {
+		return drive.Entry{}, classifyLocalError(err)
+	}
+	modTime := info.ModTime()
+	return drive.Entry{ID: dstPath, ParentID: d.resolve(dstParentID), Name: dstName, Size: info.Size(), ModTime: modTime, UpdatedAt: modTime}, nil
+}
+
+// copyFilePreservingMtime copies a regular file and stamps the source mtime
+// onto the copy so a server-side copy is indistinguishable from the source
+// in size and timestamp.
+func copyFilePreservingMtime(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		return err
+	}
+	if err := dst.Sync(); err != nil {
+		dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	return os.Chtimes(dstPath, info.ModTime(), info.ModTime())
+}
+
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
 	return os.Rename(entry.ID, filepath.Join(filepath.Dir(entry.ID), newName))
 }
