@@ -40,10 +40,18 @@ func PutFile(ctx context.Context, fs vfs.Writer, localPath, remotePath string) e
 	return fs.Flush(ctx, remotePath)
 }
 
-// GetFile downloads a VFS file to a local path with an atomic replace.
+// GetFile downloads a VFS file to a local path with an atomic replace. It
+// prefers the streaming surface (bounded memory) and falls back to Read for
+// filesystems that only buffer whole files.
 func GetFile(ctx context.Context, fs vfs.Reader, remotePath, localPath string) error {
 	return fileutil.WriteAtomic(localPath, ".qrypt-sync-*", 0o644, true, func(out *os.File) error {
-		rc, err := fs.Read(ctx, remotePath, 0, 0)
+		var rc io.ReadCloser
+		var err error
+		if streamer, ok := fs.(vfs.StreamReader); ok {
+			rc, err = streamer.ReadStream(ctx, remotePath)
+		} else {
+			rc, err = fs.Read(ctx, remotePath, 0, 0)
+		}
 		if err != nil {
 			return err
 		}
