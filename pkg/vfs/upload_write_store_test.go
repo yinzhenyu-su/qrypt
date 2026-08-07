@@ -11,7 +11,7 @@ func TestUploadStoreWriteAdapterStagesAndRecordsUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := newUploadStoreWriteAdapter(store)
+	adapter := store
 	localPath, err := adapter.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestUploadStoreWriteAdapterRemovesUnreferencedStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := newUploadStoreWriteAdapter(store)
+	adapter := store
 	localPath, err := adapter.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)

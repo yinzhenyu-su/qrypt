@@ -9,65 +9,13 @@ import (
 	"sync"
 )
 
-type uploadStoreWriteAdapter struct {
-	store *uploadStore
-}
-
-func newUploadStoreWriteAdapter(store *uploadStore) uploadStoreWriteAdapter {
-	return uploadStoreWriteAdapter{store: store}
-}
-
-func pendingUploadFromWriteStore(store uploadStoreWriteAdapter, path string) (PendingUpload, error) {
+func pendingUploadFromWriteStore(store *uploadStore, path string) (PendingUpload, error) {
 	path = cleanVirtual(path)
 	pending, ok := store.UploadByPath(path)
 	if !ok {
 		return PendingUpload{}, fmt.Errorf("vfs: no pending file for %s", path)
 	}
 	return pending, nil
-}
-
-func (a uploadStoreWriteAdapter) UploadByPath(path string) (PendingUpload, bool) {
-	return a.store.UploadByPath(path)
-}
-
-func (a uploadStoreWriteAdapter) SaveUpload(pending PendingUpload) error {
-	return a.store.SaveUpload(pending)
-}
-
-func (a uploadStoreWriteAdapter) UpdateUploadTransient(pending PendingUpload) {
-	a.store.UpdateUploadTransient(pending)
-}
-
-func (a uploadStoreWriteAdapter) RemoveStaging(localPath string) error {
-	return a.store.RemoveStaging(localPath)
-}
-
-func (a uploadStoreWriteAdapter) RemoveStagingIfUnreferenced(localPath string) {
-	a.store.RemoveStagingIfUnreferenced(localPath)
-}
-
-func (a uploadStoreWriteAdapter) CreateStaging(fid string) (string, error) {
-	return a.store.CreateStaging(fid)
-}
-
-func (a uploadStoreWriteAdapter) WriteStagingAt(localPath string, data []byte, off int64) (int, error) {
-	return a.store.WriteStagingAt(localPath, data, off)
-}
-
-func (a uploadStoreWriteAdapter) FlushStaging(localPath string) error {
-	return a.store.FlushStaging(localPath)
-}
-
-func (a uploadStoreWriteAdapter) SyncStaging(localPath string) error {
-	return a.store.SyncStaging(localPath)
-}
-
-func (a uploadStoreWriteAdapter) StagingSize(localPath string) (int64, error) {
-	return a.store.StagingSize(localPath)
-}
-
-func (a uploadStoreWriteAdapter) TruncateStaging(localPath string, size int64) error {
-	return a.store.TruncateStaging(localPath, size)
 }
 
 type vfsUploadWriteHashTracker struct {
@@ -133,8 +81,8 @@ func newVFSUploadWriteRuntime(v *VFS) vfsUploadWriteRuntime {
 	return vfsUploadWriteRuntime{v: v}
 }
 
-func (r vfsUploadWriteRuntime) Store() uploadStoreWriteAdapter {
-	return newUploadStoreWriteAdapter(r.v.uploads.Store())
+func (r vfsUploadWriteRuntime) Store() *uploadStore {
+	return r.v.uploads.Store()
 }
 
 func (r vfsUploadWriteRuntime) HashTracker() vfsUploadWriteHashTracker {

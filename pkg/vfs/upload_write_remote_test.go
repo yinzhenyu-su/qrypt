@@ -37,7 +37,7 @@ func TestVFSStageExistingUsesUploadWriteRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := newUploadStoreWriteAdapter(fs.uploads.Store())
+	store := fs.uploads.Store()
 	modTime := time.Now().Add(-time.Hour).Truncate(time.Second)
 	remote := &fakeUploadWriteRemote{
 		entry: drive.Entry{ID: "remote", Name: "file.txt", Size: 5, ModTime: modTime},
