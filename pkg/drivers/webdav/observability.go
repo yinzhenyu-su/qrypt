@@ -13,6 +13,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityWriter,
 		drive.CapabilitySourceUploader,
 		drive.CapabilitySpace,
+		drive.CapabilityServerSideCopy,
 	}
 }
 

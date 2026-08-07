@@ -1563,3 +1563,63 @@ func TestDriverSpaceReportsAPIError(t *testing.T) {
 		t.Fatal("Space must surface the API error envelope")
 	}
 }
+
+func TestDriverServerSideCopy(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/copy":
+			calls = append(calls, "copy")
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("copy body: %v", err)
+			}
+			if body["action_type"] != float64(1) || body["to_pdir_fid"] != "dst-dir" {
+				t.Fatalf("copy body = %#v", body)
+			}
+			filelist, ok := body["filelist"].([]any)
+			if !ok || len(filelist) != 1 || filelist[0] != "src-fid" {
+				t.Fatalf("copy filelist = %#v", body["filelist"])
+			}
+			writeJSON(t, w, map[string]any{"status": 200, "code": 0, "data": map[string]any{"task_id": ""}})
+		case "/file/sort":
+			calls = append(calls, "list")
+			writeJSON(t, w, map[string]any{
+				"status":   200,
+				"code":     0,
+				"metadata": map[string]any{"total": 1},
+				"data": map[string]any{
+					"list": []map[string]any{
+						{"fid": "copied-fid", "file_name": "dst.txt", "file": false, "size": 4},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	d := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
+	dst, err := d.Copy(context.Background(), drive.Entry{ID: "src-fid", Name: "src.txt", Size: 4}, "dst-dir", "dst.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dst.ID != "copied-fid" || dst.Name != "dst.txt" {
+		t.Fatalf("copy entry = %+v, want located id", dst)
+	}
+	if len(calls) != 2 || calls[0] != "copy" || calls[1] != "list" {
+		t.Fatalf("calls = %v, want [copy list]", calls)
+	}
+}
+
+func TestDriverServerSideCopyRejectsDirectory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+	d := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
+	if _, err := d.Copy(context.Background(), drive.Entry{ID: "d", IsDir: true}, "0", "x"); err == nil {
+		t.Fatal("directory copy should fail")
+	}
+}

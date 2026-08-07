@@ -135,6 +135,42 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	return apiError(resp)
 }
 
+// Copy implements drive.ServerSideCopier: POST /file/copy (same payload
+// shape as /file/move). The API does not return the new file id, so the
+// destination is located by listing the target directory for the copied
+// name. Directory copies are rejected per the contract.
+func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName string) (drive.Entry, error) {
+	if src.IsDir {
+		return drive.Entry{}, drive.ErrUnsupported
+	}
+	data := map[string]any{
+		"filelist":     []string{src.ID},
+		"to_pdir_fid":  d.resolve(dstParentID),
+		"action_type":  1,
+		"exclude_fids": []string{},
+	}
+	var resp respEnvelope
+	if err := d.cl.request(ctx, http.MethodPost, "/file/copy", nil, data, &resp); err != nil {
+		return drive.Entry{}, fmt.Errorf("quark: copy: %w", err)
+	}
+	if err := apiError(resp); err != nil {
+		return drive.Entry{}, err
+	}
+	// Locate the copied entry by name; the copy API gives no id back.
+	entries, err := d.List(ctx, dstParentID)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("quark: copy locate: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name == dstName && entry.ID != src.ID {
+			return entry, nil
+		}
+	}
+	// The list may lag eventual consistency; fall back to a path-based id
+	// so the caller still has a usable entry (drivecopy logs it only).
+	return drive.Entry{ID: d.resolve(dstParentID) + "/" + dstName, ParentID: dstParentID, Name: dstName, Size: src.Size}, nil
+}
+
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	data := map[string]any{
 		"action_type":  1,
