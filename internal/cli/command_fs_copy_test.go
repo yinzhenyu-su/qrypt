@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/drivecopy"
 )
 
 func TestFsCopyCopiesBetweenMounts(t *testing.T) {
@@ -454,13 +454,13 @@ func TestFsCopyDryRunRecursiveJSON(t *testing.T) {
 }
 
 func TestFsCopyDirErrorPartialExitCode(t *testing.T) {
-	partial := &control.DriverCopyDirResult{Copied: 3, Failed: 1, Error: "one failed"}
+	partial := &drivecopy.DriverCopyDirResult{Copied: 3, Failed: 1, Error: "one failed"}
 	err := fsCopyDirError(partial)
 	var xe *ExitError
 	if !errors.As(err, &xe) || xe.Code != ExitPartial {
 		t.Fatalf("partial failure err = %v, want ExitError{3}", err)
 	}
-	total := &control.DriverCopyDirResult{Copied: 0, Failed: 3, Error: "all failed"}
+	total := &drivecopy.DriverCopyDirResult{Copied: 0, Failed: 3, Error: "all failed"}
 	if err := fsCopyDirError(total); err == nil {
 		t.Fatal("all-failed must return an error")
 	} else if errors.As(err, &xe) {

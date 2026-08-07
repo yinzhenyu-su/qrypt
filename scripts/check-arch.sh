@@ -17,6 +17,11 @@
 #   2. pkg/vfs, internal/mount, internal/control, pkg/core never import a
 #      concrete provider (their tests may use FakeDriver/localfs)
 #   3. pkg/mobile only imports the registration aggregate pkg/drivers/all
+#   4. internal/control is the debug-socket HTTP API only: the sync
+#      executor must not depend on it (it is the pure production path;
+#      pkg/core and internal/cli are the debug server's host/client and
+#      may). Shared driver-level operations live in internal/drivecopy and
+#      contract-test harnesses in internal/contracttest.
 #
 # Runs in CI on every PR; costs milliseconds.
 set -euo pipefail
@@ -45,6 +50,14 @@ done
 while IFS= read -r line; do
   [ -n "$line" ] && note "pkg/mobile imports a non-aggregate driver package: $line"
 done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/drivers/' pkg/mobile -g '!**/*_test.go' 2>/dev/null | grep -v 'pkg/drivers/all' || true)
+
+# 4. internal/control stays a debug-API leaf: production executors may use
+#    internal/drivecopy / internal/contracttest but never the HTTP server.
+for dir in internal/sync; do
+  while IFS= read -r f; do
+    [ -n "$f" ] && note "$dir depends on the debug server package internal/control: $f"
+  done < <(rg -l 'github.com/yinzhenyu/qrypt/internal/control' "$dir" -g '!**/*_test.go' 2>/dev/null || true)
+done
 
 if [ "$fail" -ne 0 ]; then
   echo "== FAIL: architecture boundary violated =="

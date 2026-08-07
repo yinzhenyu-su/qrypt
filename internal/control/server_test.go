@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -382,7 +384,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected filtered driver metrics response: %s", driverMetricsBody)
 	}
 
-	testBody, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "local"})
+	testBody, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +392,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(testBody), "driver lacks capability") {
 		t.Fatalf("unexpected driver test response: %s", testBody)
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount error, got %v", err)
 	}
@@ -413,15 +415,15 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := disabledClient.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+	if _, err := disabledClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
 		t.Fatalf("expected disabled mount test error, got %v", err)
 	}
-	if _, err := disabledClient.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+	if _, err := disabledClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
 		t.Fatalf("expected disabled mount benchmark error, got %v", err)
 	}
-	benchBody, err := client.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "local"})
+	benchBody, err := client.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,16 +433,24 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(benchBody), `"network_probe"`) {
 		t.Fatalf("unexpected driver benchmark response: %s", benchBody)
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/driver/bench", DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
+	if _, err := client.PostJSON(context.Background(), "/v1/driver/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
 		t.Fatal("expected old driver benchmark endpoint to be unavailable")
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+	if _, err := client.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount benchmark error, got %v", err)
 	}
+	rootA, rootB := t.TempDir(), t.TempDir()
+	drvA, drvB := localfs.New(rootA), localfs.New(rootB)
+	if err := drvA.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := drvB.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	xferSource := fakeSnapshotter{drivers: []vfs.NamedDriver{
-		{Name: "local", Driver: newCRUDMemoryDriver(), TestEnabled: true},
-		{Name: "cloud", Driver: newCRUDMemoryDriver(), TestEnabled: true},
+		{Name: "local", Driver: drvA, TestEnabled: true},
+		{Name: "cloud", Driver: drvB, TestEnabled: true},
 	}}
 	xferSocket := testSocketPath(t)
 	xferServer, err := NewServer(xferSocket, xferSource)
@@ -457,7 +467,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xferBenchBody, err := xferClient.PostJSON(context.Background(), "/v1/bench", DriverTestRequest{
+	xferBenchBody, err := xferClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{
 		Test:    "xfer",
 		Source:  "local",
 		Dest:    "cloud",
@@ -474,8 +484,8 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected xfer benchmark response: %s", xferBenchBody)
 	}
 	disabledXferSource := fakeSnapshotter{drivers: []vfs.NamedDriver{
-		{Name: "local", Driver: newCRUDMemoryDriver(), TestEnabled: true},
-		{Name: "cloud", Driver: newCRUDMemoryDriver()},
+		{Name: "local", Driver: drvA, TestEnabled: true},
+		{Name: "cloud", Driver: drvB},
 	}}
 	disabledXferSocket := testSocketPath(t)
 	disabledXferServer, err := NewServer(disabledXferSocket, disabledXferSource)
@@ -492,7 +502,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := disabledXferClient.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{
+	if _, err := disabledXferClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{
 		Test:   "xfer",
 		Source: "local",
 		Dest:   "cloud",
@@ -502,7 +512,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
 		t.Fatal("expected old driver test endpoint to be unavailable")
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/probe/driver", DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
+	if _, err := client.PostJSON(context.Background(), "/v1/probe/driver", contracttest.DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
 		t.Fatal("expected old driver probe endpoint to be unavailable")
 	}
 

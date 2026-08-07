@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/contracttest"
 )
 
 func newDebugTestCmd() *cobra.Command {
@@ -59,7 +59,7 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 }
 
 func runDebugDriverTest(cmd *cobra.Command, test string) error {
-	req := control.DriverTestRequest{Test: strings.ToLower(test)}
+	req := contracttest.DriverTestRequest{Test: strings.ToLower(test)}
 	if flag := cmd.Flags().Lookup("mount"); flag != nil {
 		req.Mount, _ = cmd.Flags().GetString("mount")
 	}
@@ -89,7 +89,7 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	return err
 }
 
-func validateDriverTestRequest(req control.DriverTestRequest) error {
+func validateDriverTestRequest(req contracttest.DriverTestRequest) error {
 	switch req.Test {
 	case "auth", "contract", "crud", "instantupload":
 		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {

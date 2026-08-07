@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
 )
 
@@ -74,7 +74,7 @@ func newDebugBenchCompareCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read current benchmark: %w", err)
 			}
-			report := control.CompareBenchmarkReports(base, current)
+			report := contracttest.CompareBenchmarkReports(base, current)
 			encoder := json.NewEncoder(cmd.OutOrStdout())
 			encoder.SetIndent("", "  ")
 			return encoder.Encode(report)
@@ -86,7 +86,7 @@ func newDebugBenchCompareCmd() *cobra.Command {
 }
 
 func runDebugDriverBench(cmd *cobra.Command, test string) error {
-	req := control.DriverTestRequest{Test: strings.ToLower(test)}
+	req := contracttest.DriverTestRequest{Test: strings.ToLower(test)}
 	if flag := cmd.Flags().Lookup("mount"); flag != nil {
 		req.Mount, _ = cmd.Flags().GetString("mount")
 	}
@@ -123,7 +123,7 @@ func runDebugDriverBench(cmd *cobra.Command, test string) error {
 	return err
 }
 
-func validateDriverBenchRequest(req control.DriverTestRequest) error {
+func validateDriverBenchRequest(req contracttest.DriverTestRequest) error {
 	switch req.Test {
 	case "crud":
 		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {
@@ -167,25 +167,25 @@ func validateDriverBenchRequest(req control.DriverTestRequest) error {
 	return nil
 }
 
-func readBenchmarkReportFile(path string) (control.BenchmarkReport, error) {
+func readBenchmarkReportFile(path string) (contracttest.BenchmarkReport, error) {
 	body, err := os.ReadFile(osutil.ExpandHome(path))
 	if err != nil {
-		return control.BenchmarkReport{}, err
+		return contracttest.BenchmarkReport{}, err
 	}
-	var report control.BenchmarkReport
+	var report contracttest.BenchmarkReport
 	if err := json.Unmarshal(body, &report); err == nil && report.Kind != "" {
 		return report, nil
 	}
-	var reports []control.BenchmarkReport
+	var reports []contracttest.BenchmarkReport
 	if err := json.Unmarshal(body, &reports); err != nil {
-		return control.BenchmarkReport{}, err
+		return contracttest.BenchmarkReport{}, err
 	}
 	switch len(reports) {
 	case 0:
-		return control.BenchmarkReport{}, fmt.Errorf("benchmark report list is empty")
+		return contracttest.BenchmarkReport{}, fmt.Errorf("benchmark report list is empty")
 	case 1:
 		return reports[0], nil
 	default:
-		return control.BenchmarkReport{}, fmt.Errorf("benchmark report list contains %d reports; compare one report at a time", len(reports))
+		return contracttest.BenchmarkReport{}, fmt.Errorf("benchmark report list contains %d reports; compare one report at a time", len(reports))
 	}
 }

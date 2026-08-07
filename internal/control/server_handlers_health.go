@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -31,7 +32,7 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 func runtimeSnapshot() RuntimeResponse {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	rss, rssSource, rssOK := currentProcessRSS()
+	rss, rssSource, rssOK := contracttest.CurrentProcessRSS()
 	return RuntimeResponse{
 		SchemaVersion: vfs.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Now(),

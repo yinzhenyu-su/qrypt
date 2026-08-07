@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/drivecopy"
 	"github.com/yinzhenyu/qrypt/internal/sync"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -36,7 +36,7 @@ func runFsCopy(cmd *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	source, ok := fs.(control.DriverCopySource)
+	source, ok := fs.(drivecopy.DriverCopySource)
 	if !ok {
 		return fmt.Errorf("direct copy requires a filesystem with driver debug resolution")
 	}
@@ -54,7 +54,7 @@ func runFsCopy(cmd *cobra.Command, args []string) error {
 		if dryRun {
 			return runFsCopyDryRun(cmd, ctx, fs, args[0], args[1])
 		}
-		result := control.RunDirectDriverCopyDir(ctx, fs, source, args[0], args[1], force)
+		result := drivecopy.RunDirectDriverCopyDir(ctx, fs, source, args[0], args[1], force)
 		asJSON, _ := cmd.Flags().GetBool("json")
 		if asJSON {
 			if err := writePrettyJSON(cmd.OutOrStdout(), result); err != nil {
@@ -76,7 +76,7 @@ func runFsCopy(cmd *cobra.Command, args []string) error {
 		return runFsCopyDryRun(cmd, ctx, fs, args[0], args[1])
 	}
 
-	result := control.RunDirectDriverCopy(ctx, source, args[0], args[1], force)
+	result := drivecopy.RunDirectDriverCopy(ctx, source, args[0], args[1], force)
 	asJSON, _ := cmd.Flags().GetBool("json")
 	if asJSON {
 		if err := writePrettyJSON(cmd.OutOrStdout(), result); err != nil {
@@ -148,7 +148,7 @@ func runFsCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.Reader, sou
 
 func printFsCopySummary(w interface {
 	Write([]byte) (int, error)
-}, result *control.DriverCopyResult) {
+}, result *drivecopy.DriverCopyResult) {
 	fmt.Fprintf(w, "copied %s -> %s\n", result.SourcePath, result.DestPath)
 	fmt.Fprintf(w, "mounts: %s -> %s\n", result.SourceMount, result.DestMount)
 	fmt.Fprintf(w, "bytes: %d\n", result.Bytes)
@@ -165,13 +165,13 @@ func printFsCopySummary(w interface {
 	}
 }
 
-func fsCopyError(result *control.DriverCopyResult) error {
-	return fmt.Errorf("%s", control.DriverCopyError(result))
+func fsCopyError(result *drivecopy.DriverCopyResult) error {
+	return fmt.Errorf("%s", drivecopy.DriverCopyError(result))
 }
 
 func printFsCopyDirSummary(w interface {
 	Write([]byte) (int, error)
-}, result *control.DriverCopyDirResult) {
+}, result *drivecopy.DriverCopyDirResult) {
 	fmt.Fprintf(w, "copied directory %s -> %s\n", result.SourcePath, result.DestPath)
 	fmt.Fprintf(w, "files copied: %d\n", result.Copied)
 	fmt.Fprintf(w, "files skipped: %d\n", result.Skipped)
@@ -183,7 +183,7 @@ func printFsCopyDirSummary(w interface {
 	}
 }
 
-func fsCopyDirError(result *control.DriverCopyDirResult) error {
+func fsCopyDirError(result *drivecopy.DriverCopyDirResult) error {
 	var err error
 	if result.Error != "" {
 		err = fmt.Errorf("%s", result.Error)

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/drivecopy"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -246,7 +246,7 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 	if entry.IsDir && !spec.Recursive {
 		return copyOneResult{}, fmt.Errorf("core: source %q is a directory; recursive copy is required", item.SourcePath)
 	}
-	source, ok := c.fs.(control.DriverCopySource)
+	source, ok := c.fs.(drivecopy.DriverCopySource)
 	if !ok {
 		return copyOneResult{}, fmt.Errorf("core: copy task requires driver copy support")
 	}
@@ -254,7 +254,7 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 		if spec.expanded {
 			return copyOneResult{}, fmt.Errorf("core: expanded copy item %q is unexpectedly a directory", item.SourcePath)
 		}
-		result := control.RunDirectDriverCopyDirToPath(ctx, c.fs, source, item.SourcePath, item.DestPath, spec.Overwrite)
+		result := drivecopy.RunDirectDriverCopyDirToPath(ctx, c.fs, source, item.SourcePath, item.DestPath, spec.Overwrite)
 		out := copyOneResult{opID: result.OpID, bytes: result.Bytes}
 		if !result.Pass {
 			if result.Error != "" {
@@ -269,13 +269,13 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 		}
 		return out, nil
 	}
-	result := control.RunDirectDriverCopy(ctx, source, item.SourcePath, item.DestPath, spec.Overwrite)
+	result := drivecopy.RunDirectDriverCopy(ctx, source, item.SourcePath, item.DestPath, spec.Overwrite)
 	out := copyOneResult{opID: result.OpID, bytes: result.Bytes}
 	if result.DestEntry != nil {
 		out.remoteID = result.DestEntry.ID
 	}
 	if !result.Pass {
-		return out, fmt.Errorf("%s", control.DriverCopyError(result))
+		return out, fmt.Errorf("%s", drivecopy.DriverCopyError(result))
 	}
 	if spec.DeleteSourceAfterCopy {
 		if err := removeMoveSource(ctx, source, item.SourcePath, false); err != nil {
@@ -358,7 +358,7 @@ func (c *Core) expandCopyTask(ctx context.Context, spec copyTaskSpec) (copyTaskS
 }
 
 func (c *Core) removeCopiedSourceDirs(ctx context.Context, dirs []string, update task.UpdateFunc) error {
-	source, _ := c.fs.(control.DriverCopySource)
+	source, _ := c.fs.(drivecopy.DriverCopySource)
 	for _, dir := range taskTreeDirsDeepestFirst(pathsToTaskTreeDirs(dirs)) {
 		if err := ctx.Err(); err != nil {
 			return err

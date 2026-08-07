@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/internal/drivecopy"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -134,16 +134,16 @@ func CopyFile(ctx context.Context, fs executorFS, rel string, source, destinatio
 	dstPath := JoinVFS(destination.VFSPath, rel)
 	switch {
 	case source.Kind == TargetVFS && destination.Kind == TargetVFS:
-		copier, ok := fs.(control.DriverCopySource)
+		copier, ok := fs.(drivecopy.DriverCopySource)
 		if !ok {
 			return fmt.Errorf("direct copy requires a filesystem with driver debug resolution")
 		}
 		// Propagate the source mtime through the driver copy so a
 		// destination backend that can persist it (CapabilityMtime)
 		// converges on the next run; other backends ignore the stamp.
-		result := control.RunDirectDriverCopyWithModTime(ctx, copier, srcPath, dstPath, true, UnixModTime(sourceModTime))
+		result := drivecopy.RunDirectDriverCopyWithModTime(ctx, copier, srcPath, dstPath, true, UnixModTime(sourceModTime))
 		if !result.Pass {
-			return fmt.Errorf("direct copy: %s", control.DriverCopyError(result))
+			return fmt.Errorf("direct copy: %s", drivecopy.DriverCopyError(result))
 		}
 		return nil
 	case source.Kind == TargetLocal && destination.Kind == TargetVFS:

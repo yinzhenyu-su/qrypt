@@ -3,10 +3,14 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -36,11 +40,88 @@ func newTestServer(t *testing.T, source fakeSnapshotter) (*Server, *Client) {
 	return server, client
 }
 
+// capabilityMissingDriver exposes no capabilities so the scheduler routes
+// it to coded failure / skip runs instead of executing the spec.
+type capabilityMissingDriver struct {
+	drive.UnsupportedOperations
+}
+
+func (capabilityMissingDriver) Init(context.Context) error { return nil }
+func (capabilityMissingDriver) Drop(context.Context) error { return nil }
+func (capabilityMissingDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, drive.ErrUnsupported
+}
+func (capabilityMissingDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, drive.ErrUnsupported
+}
+func (capabilityMissingDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrUnsupported
+}
+func (capabilityMissingDriver) Capabilities() []drive.Capability { return nil }
+func (capabilityMissingDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{Driver: "no-cap", Health: drive.HealthLevelOK}, nil
+}
+func (capabilityMissingDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+// instantUploadStubDriver reports the instant-upload counter in its debug
+// snapshot, which is what the instantupload spec asserts on.
+type instantUploadStubDriver struct {
+	drive.UnsupportedOperations
+	counter int64
+	uploads int
+}
+
+func (d *instantUploadStubDriver) Init(context.Context) error { return nil }
+func (d *instantUploadStubDriver) Drop(context.Context) error { return nil }
+func (d *instantUploadStubDriver) List(context.Context, string) ([]drive.Entry, error) {
+	return nil, fmt.Errorf("list should not be needed")
+}
+func (d *instantUploadStubDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (d *instantUploadStubDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+func (d *instantUploadStubDriver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	return drive.Entry{ID: "dir", ParentID: parentID, Name: name, IsDir: true, ModTime: time.Now()}, nil
+}
+func (d *instantUploadStubDriver) Move(context.Context, drive.Entry, string) error { return nil }
+func (d *instantUploadStubDriver) Rename(context.Context, drive.Entry, string) error {
+	return nil
+}
+func (d *instantUploadStubDriver) Remove(context.Context, drive.Entry) error { return nil }
+func (d *instantUploadStubDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	d.uploads++
+	if d.uploads == 2 {
+		d.counter++
+	}
+	return drive.Entry{ID: req.Name, ParentID: req.ParentID, Name: req.Name, Size: req.Source.Size()}, nil
+}
+func (d *instantUploadStubDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+func (d *instantUploadStubDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{
+		Driver:      "instant-upload-test",
+		Health:      drive.HealthLevelOK,
+		GeneratedAt: time.Now(),
+		Extra:       map[string]any{drive.DebugExtraInstantUploadCount: d.counter},
+	}, nil
+}
+func (d *instantUploadStubDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilityPathResolver, drive.CapabilityWriter, drive.CapabilitySourceUploader}
+}
+func (d *instantUploadStubDriver) ResolvePath(context.Context, string) (string, error) {
+	return "root", nil
+}
+
 // TestDriverTestSpecsRegistered asserts every spec the endpoint accepts has
 // a coherent registration (identity, capability prerequisites, runner).
 func TestDriverTestSpecsRegistered(t *testing.T) {
 	for _, name := range []string{"auth", "crud", "instantupload", "multipart"} {
-		spec, ok := driverTestSpecs[name]
+		spec, ok := contracttest.Specs()[name]
 		if !ok {
 			t.Fatalf("spec %q not registered", name)
 		}
@@ -54,7 +135,7 @@ func TestDriverTestSpecsRegistered(t *testing.T) {
 // spec's required capabilities: explicit mounts get a coded failure run,
 // bulk runs skip the mount with a reason.
 func TestDriverTestCapabilityMatrix(t *testing.T) {
-	d := &noUploaderDriver{crudMemoryDriver: *newCRUDMemoryDriver()}
+	d := &capabilityMissingDriver{}
 	snapshotter := fakeSnapshotter{drivers: []vfs.NamedDriver{{
 		Name:        "local",
 		Driver:      d,
@@ -63,11 +144,11 @@ func TestDriverTestCapabilityMatrix(t *testing.T) {
 	_, client := newTestServer(t, snapshotter)
 
 	// Explicit mount: coded failure run, not an HTTP error.
-	body, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud", Mount: "local"})
+	body, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var runs []TestRun
+	var runs []contracttest.TestRun
 	if err := json.Unmarshal(body, &runs); err != nil {
 		t.Fatalf("unmarshal runs: %v body=%s", err, body)
 	}
@@ -83,7 +164,7 @@ func TestDriverTestCapabilityMatrix(t *testing.T) {
 	}
 
 	// Bulk run: capability-missing mounts are skipped with a reason.
-	body, err = client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "crud"})
+	body, err = client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +183,10 @@ func TestDriverTestCapabilityMatrix(t *testing.T) {
 // and asserts the response is a unified []TestRun with stable fields, so
 // consumers can parse one schema regardless of spec.
 func TestDriverTestUnifiedEnvelope(t *testing.T) {
-	driver := newCRUDMemoryDriver()
+	driver := localfs.New(t.TempDir())
+	if err := driver.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	snapshotter := fakeSnapshotter{drivers: []vfs.NamedDriver{{
 		Name:        "local",
 		Driver:      driver,
@@ -110,13 +194,15 @@ func TestDriverTestUnifiedEnvelope(t *testing.T) {
 	}}}
 	_, client := newTestServer(t, snapshotter)
 
-	// crud, multipart, and auth run against the full memory driver.
-	for _, spec := range []string{"crud", "multipart", "auth"} {
-		body, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: spec, Mount: "local", Size: "64k"})
+	// multipart and auth run against the full driver; crud's rename
+	// semantics assume stable object IDs (covered in contracttest against
+	// the memory driver), so the envelope is validated via the other specs.
+	for _, spec := range []string{"multipart", "auth"} {
+		body, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: spec, Mount: "local", Size: "64k"})
 		if err != nil {
 			t.Fatalf("%s: %v", spec, err)
 		}
-		var runs []TestRun
+		var runs []contracttest.TestRun
 		if err := json.Unmarshal(body, &runs); err != nil {
 			t.Fatalf("%s: unmarshal: %v body=%s", spec, err, body)
 		}
@@ -144,28 +230,27 @@ func TestDriverTestUnifiedEnvelope(t *testing.T) {
 	}
 
 	// auth also reports the driver capability matrix.
-	body, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "auth", Mount: "local"})
+	body, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "auth", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), `"capabilities"`) {
 		t.Fatalf("auth run missing capability matrix: %s", body)
 	}
-	_ = drive.CapabilityWriter
 
 	// instantupload requires a driver reporting the instant-upload counter.
-	instant := &instantUploadTestDriver{rootID: "root", reportCounter: true}
+	instant := &instantUploadStubDriver{}
 	instantSnapshotter := fakeSnapshotter{drivers: []vfs.NamedDriver{{
 		Name:        "local",
 		Driver:      instant,
 		TestEnabled: true,
 	}}}
 	_, instantClient := newTestServer(t, instantSnapshotter)
-	body, err = instantClient.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "instantupload", Mount: "local"})
+	body, err = instantClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "instantupload", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var runs []TestRun
+	var runs []contracttest.TestRun
 	if err := json.Unmarshal(body, &runs); err != nil {
 		t.Fatalf("instantupload: unmarshal: %v body=%s", err, body)
 	}
@@ -174,32 +259,11 @@ func TestDriverTestUnifiedEnvelope(t *testing.T) {
 	}
 }
 
-// TestTestRunJSONStable verifies the unified envelope serializes with the
-// documented field names (stable for storage/alerting consumers).
-func TestTestRunJSONStable(t *testing.T) {
-	tr := TestRun{
-		Spec:     "crud",
-		Mount:    "local",
-		Pass:     true,
-		Steps:    []TestStep{{Operation: "mkdir", OK: true, Duration: "1s", DurationMS: 1000}},
-		Duration: "1s", DurationMS: 1000,
-	}
-	body, err := json.Marshal(tr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"spec"`, `"mount"`, `"pass"`, `"steps"`, `"started_at"`, `"duration_ms"`, `"operation"`, `"ok"`} {
-		if !strings.Contains(string(body), want) {
-			t.Fatalf("TestRun JSON missing %s: %s", want, body)
-		}
-	}
-}
-
 // TestVFSSpecsRegistered asserts the VFS-layer specs (fs, resume) live in the
 // same registry as drive-layer specs, with the RequiresVFS flag set.
 func TestVFSSpecsRegistered(t *testing.T) {
 	for _, name := range []string{"fs", "resume"} {
-		spec, ok := driverTestSpecs[name]
+		spec, ok := contracttest.Specs()[name]
 		if !ok {
 			t.Fatalf("spec %q not registered", name)
 		}
@@ -212,13 +276,17 @@ func TestVFSSpecsRegistered(t *testing.T) {
 // TestVFSSpecRequiresFileSystem verifies the scheduler rejects VFS specs on a
 // source that does not implement FileSystem (drive-layer snapshotters).
 func TestVFSSpecRequiresFileSystem(t *testing.T) {
+	driver := localfs.New(t.TempDir())
+	if err := driver.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	snapshotter := fakeSnapshotter{drivers: []vfs.NamedDriver{{
 		Name:        "local",
-		Driver:      newCRUDMemoryDriver(),
+		Driver:      driver,
 		TestEnabled: true,
 	}}}
 	_, client := newTestServer(t, snapshotter) // fakeSnapshotter: no FileSystem
-	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "fs", Mount: "local"}); err == nil ||
+	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "fs", Mount: "local"}); err == nil ||
 		!strings.Contains(err.Error(), "does not implement FileSystem") {
 		t.Fatalf("expected FileSystem rejection, got %v", err)
 	}
@@ -259,11 +327,11 @@ func TestVFSFSSpecRunsThroughRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := client.PostJSON(context.Background(), "/v1/driver/test", DriverTestRequest{Test: "fs", Mount: "local", Size: "4k"})
+	body, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "fs", Mount: "local", Size: "4k"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var runs []TestRun
+	var runs []contracttest.TestRun
 	if err := json.Unmarshal(body, &runs); err != nil {
 		t.Fatalf("unmarshal: %v body=%s", err, body)
 	}
