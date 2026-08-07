@@ -3,6 +3,8 @@ package vfs
 import (
 	"sync"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 )
 
 // uploadScheduleState tracks the debounce timers for pending uploads.
@@ -30,6 +32,23 @@ func newUploadDebugState() *uploadDebugState {
 	return &uploadDebugState{
 		active: map[string]*uploadSnapshotState{},
 	}
+}
+
+func (d *uploadDebugState) removeHistoryByID(id string) bool {
+	if id == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i, upload := range d.history {
+		if upload.OpID != id {
+			continue
+		}
+		copy(d.history[i:], d.history[i+1:])
+		d.history = d.history[:len(d.history)-1]
+		return true
+	}
+	return false
 }
 
 // uploadFaultState registers debug-injected upload cancel faults. Owned
@@ -198,3 +217,30 @@ func (s *UploadService) FaultsRemove(id string) {
 
 func (s *UploadService) Faults() *uploadFaultState     { return s.faults }
 func (s *UploadService) DebugStore() *uploadDebugState { return s.debug }
+
+// Retry resets a failed pending upload so it re-enters the queue immediately.
+func (s *UploadService) Retry(pending PendingUpload) error {
+	now := timeutil.Now()
+	if qw := s.quietWindow(pending); qw > 0 {
+		pending.UpdatedAt = now.Add(-qw - time.Nanosecond).UnixNano()
+	} else {
+		pending.UpdatedAt = now.UnixNano()
+	}
+	pending.PermanentFail = false
+	pending.LastError = ""
+	pending.NextAttemptAt = 0
+	if err := s.SaveUploadExact(pending); err != nil {
+		return err
+	}
+	if latest, ok := s.UploadByPath(pending.Path); ok {
+		pending = latest
+	}
+	s.CancelUpload(pending.Path)
+	s.EnqueueAfter(pending, 0)
+	return nil
+}
+
+// RemoveHistoryByID removes a completed upload from debug history.
+func (s *UploadService) RemoveHistoryByID(id string) bool {
+	return s.debug.removeHistoryByID(id)
+}

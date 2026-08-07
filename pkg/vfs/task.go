@@ -130,7 +130,7 @@ type vfsTaskSource interface {
 
 func (v *VFS) taskSources() []vfsTaskSource {
 	return []vfsTaskSource{
-		uploadTaskSource{runtime: newVFSUploadTaskRuntime(v)},
+		uploadServiceTaskSource{svc: v.uploads},
 		deleteTaskSource{runtime: newVFSDeleteTaskRuntime(v)},
 	}
 }
@@ -144,101 +144,6 @@ func (v *VFS) applyTaskAction(ctx context.Context, id string, fn func(vfsTaskSou
 		}
 	}
 	return ErrNotFound
-}
-
-type uploadTaskSource struct {
-	runtime uploadTaskRuntime
-}
-
-func (s uploadTaskSource) List(filter task.Filter) []task.Task {
-	uploads := s.runtime.Records()
-	tasks := make([]task.Task, 0, len(uploads))
-	seen := map[string]bool{}
-	for _, upload := range uploads {
-		if upload.id != "" && seen[upload.id] {
-			continue
-		}
-		seen[upload.id] = true
-		item := taskFromUploadRecord(upload)
-		if filter.Match(item) {
-			tasks = append(tasks, item)
-		}
-	}
-	sort.Slice(tasks, func(i, j int) bool {
-		return taskLess(tasks[i], tasks[j])
-	})
-	return tasks
-}
-
-func (s uploadTaskSource) Cancel(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	pending, ok := s.runtime.PendingByID(id)
-	if !ok {
-		return ErrNotFound
-	}
-	return s.runtime.CancelAndRemove(pending.Path)
-}
-
-func (s uploadTaskSource) Retry(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	pending, ok := s.runtime.PendingByID(id)
-	if !ok {
-		return ErrNotFound
-	}
-	return s.runtime.Retry(pending)
-}
-
-func (s uploadTaskSource) Dismiss(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	// A driver reports the upload phase as "completed" before the engine
-	// finishes committing (e.g. waitUploadedFile still polling), so a succeeded
-	// upload can briefly still be marked active with its pending record intact.
-	// Dismissing it must not cancel the upload: cancel-and-remove would drop
-	// the pending record, and the engine would then delete the freshly
-	// uploaded remote file as a "stale version". Drop the history entry when
-	// present; while the task is still active the engine owns it.
-	if state, ok := s.runtime.StateByID(id); ok && state == uploadSnapshotStateCompleted {
-		_ = s.runtime.RemoveHistoryByID(id)
-		return nil
-	}
-	// 1. Pending: cancel + remove from persistent store
-	if pending, ok := s.runtime.PendingByID(id); ok {
-		return s.runtime.CancelAndRemove(pending.Path)
-	}
-	// 2. Active: cancel + remove from persistent store (by path lookup)
-	if path, ok := s.runtime.ActivePathByID(id); ok {
-		return s.runtime.CancelAndRemove(path)
-	}
-	// 3. History: remove from in-memory history
-	if !s.runtime.RemoveHistoryByID(id) {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func (s uploadTaskSource) DismissFinished(ctx context.Context, filter task.Filter) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	removed := 0
-	for _, item := range s.List(filter) {
-		if err := ctx.Err(); err != nil {
-			return removed, err
-		}
-		if !isVFSTaskTerminalState(item.State) || !item.Capabilities.Dismissible {
-			continue
-		}
-		if s.runtime.RemoveHistoryByID(item.ID) {
-			removed++
-		}
-	}
-	return removed, nil
 }
 
 type uploadTaskRecord struct {
@@ -440,74 +345,6 @@ func taskLess(a, b task.Task) bool {
 
 func isTaskNotFound(err error) bool {
 	return err == ErrNotFound || err == task.ErrNotFound
-}
-
-type uploadTaskRuntime interface {
-	Records() []uploadTaskRecord
-	PendingByID(id string) (PendingUpload, bool)
-	ActivePathByID(id string) (string, bool)
-	StateByID(id string) (string, bool)
-	CancelAndRemove(path string) error
-	Retry(pending PendingUpload) error
-	RemoveHistoryByID(id string) bool
-}
-
-type vfsUploadTaskRuntime struct {
-	v *VFS
-}
-
-func newVFSUploadTaskRuntime(v *VFS) vfsUploadTaskRuntime {
-	return vfsUploadTaskRuntime{v: v}
-}
-
-func (r vfsUploadTaskRuntime) Records() []uploadTaskRecord {
-	return r.v.uploads.TaskRecords(r.v.uploads.PendingUploads())
-}
-
-func (r vfsUploadTaskRuntime) PendingByID(id string) (PendingUpload, bool) {
-	return r.v.uploads.PendingByID(id)
-}
-
-func (r vfsUploadTaskRuntime) ActivePathByID(id string) (string, bool) {
-	return r.v.uploads.DebugActivePathByID(id)
-}
-
-func (r vfsUploadTaskRuntime) StateByID(id string) (string, bool) {
-	return r.v.uploads.DebugStateByID(id)
-}
-
-func (r vfsUploadTaskRuntime) CancelAndRemove(path string) error {
-	r.v.cancelUpload(path)
-	if err := r.v.uploads.RemoveUpload(path); err != nil {
-		return err
-	}
-	r.v.uploads.HashRemovePath(path)
-	return nil
-}
-
-func (r vfsUploadTaskRuntime) Retry(pending PendingUpload) error {
-	now := timeutil.Now()
-	if quietWindow := r.v.uploadQuietWindow(pending); quietWindow > 0 {
-		pending.UpdatedAt = now.Add(-quietWindow - time.Nanosecond).UnixNano()
-	} else {
-		pending.UpdatedAt = now.UnixNano()
-	}
-	pending.PermanentFail = false
-	pending.LastError = ""
-	pending.NextAttemptAt = 0
-	if err := r.v.uploads.SaveUploadExact(pending); err != nil {
-		return err
-	}
-	if latest, ok := r.v.uploads.UploadByPath(pending.Path); ok {
-		pending = latest
-	}
-	r.v.cancelUpload(pending.Path)
-	r.v.enqueueAfter(pending, 0)
-	return nil
-}
-
-func (r vfsUploadTaskRuntime) RemoveHistoryByID(id string) bool {
-	return r.v.removeUploadHistoryByID(id)
 }
 
 // TaskRecords builds upload task records from pending uploads combined with
