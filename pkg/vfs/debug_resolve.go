@@ -218,14 +218,17 @@ func (r vfsDebugResolveRuntime) PendingUploadByRemoteID(remoteID string) (Pendin
 }
 
 func (r vfsDebugResolveRuntime) PathByRemoteID(remoteID string) (string, bool) {
-	r.v.view.mu.RLock()
-	defer r.v.view.mu.RUnlock()
-	for path, entry := range r.v.view.entries {
+	var foundPath string
+	var found bool
+	r.v.view.entries.Range(func(path string, entry drive.Entry) bool {
 		if entry.ID == remoteID {
-			return path, true
+			foundPath = path
+			found = true
+			return false
 		}
-	}
-	return "", false
+		return true
+	})
+	return foundPath, found
 }
 
 func (r vfsDebugResolveRuntime) CacheID(entry drive.Entry) string {

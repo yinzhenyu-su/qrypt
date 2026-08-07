@@ -16,8 +16,8 @@ func TestVFSVisibilityRuntimeDeletesAndRestoresPath(t *testing.T) {
 	runtime := newVFSVisibilityRuntime(fs)
 	entry := drive.Entry{ID: "dir", Name: "dir", IsDir: true}
 	fs.view.mu.Lock()
-	fs.view.entries["/dir"] = entry
-	fs.view.entries["/dir/file.txt"] = drive.Entry{ID: "file", Name: "file.txt"}
+	fs.view.entries.Set("/dir", entry)
+	fs.view.entries.Set("/dir/file.txt", drive.Entry{ID: "file", Name: "file.txt"})
 	fs.view.lists["/dir"] = listCacheEntry{expires: time.Now().Add(time.Minute)}
 	fs.view.mu.Unlock()
 
@@ -26,7 +26,7 @@ func TestVFSVisibilityRuntimeDeletesAndRestoresPath(t *testing.T) {
 		t.Fatal("child should be deleted through deleted directory")
 	}
 	fs.view.mu.RLock()
-	_, childCached := fs.view.entries["/dir/file.txt"]
+	_, childCached := fs.view.entries.Get("/dir/file.txt")
 	_, listCached := fs.view.lists["/dir"]
 	fs.view.mu.RUnlock()
 	if childCached || listCached {

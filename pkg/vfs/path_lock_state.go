@@ -7,12 +7,9 @@ import "sync"
 // so it stays top-level on VFS rather than inside a domain runtime.
 // Lifecycle: created in New, entries are released after each operation.
 type pathLockState struct {
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks sync.Map
 }
 
 func newPathLockState() *pathLockState {
-	return &pathLockState{
-		locks: map[string]*sync.Mutex{},
-	}
+	return &pathLockState{}
 }

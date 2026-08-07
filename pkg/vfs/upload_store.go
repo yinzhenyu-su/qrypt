@@ -58,6 +58,9 @@ func (c *uploadStore) SaveUploadExact(p PendingUpload) error {
 func (c *uploadStore) saveUpload(p PendingUpload) error {
 	c.mu.Lock()
 	c.pending[p.Path] = p
+	if p.FID != "" {
+		c.idIndex[p.FID] = p.Path
+	}
 	c.mu.Unlock()
 	return c.appendJournal(journalEntry{Op: "dirty", PendingUpload: p})
 }
@@ -65,6 +68,9 @@ func (c *uploadStore) UpdateUploadTransient(p PendingUpload) {
 	p.UpdatedAt = timeutil.Now().UnixNano()
 	c.mu.Lock()
 	c.pending[p.Path] = p
+	if p.FID != "" {
+		c.idIndex[p.FID] = p.Path
+	}
 	c.mu.Unlock()
 }
 func (c *uploadStore) RecordUploadFailure(path string, err error, retryDelay time.Duration) (PendingUpload, bool, error) {
@@ -191,6 +197,9 @@ func (c *uploadStore) RemoveUpload(path string) error {
 	c.mu.Lock()
 	pending, ok := c.pending[path]
 	delete(c.pending, path)
+	if ok && pending.FID != "" {
+		delete(c.idIndex, pending.FID)
+	}
 	if ok && pending.LocalPath != "" {
 		// Drop the staging file inside the same critical section so a
 		// reader that observes the pending gone also observes the staging
@@ -271,6 +280,9 @@ func (c *uploadStore) RemoveUploadsUnder(dir string) error {
 	for path, pending := range c.pending {
 		if path == dir || isPathUnder(path, dir) {
 			delete(c.pending, path)
+			if pending.FID != "" {
+				delete(c.idIndex, pending.FID)
+			}
 			removed = append(removed, pending)
 		}
 	}
@@ -293,6 +305,9 @@ func (c *uploadStore) RemoveUploadIfUnchanged(p PendingUpload) (bool, error) {
 	current, ok := c.pending[p.Path]
 	if ok && sameUploadRecord(current, p) {
 		delete(c.pending, p.Path)
+		if current.FID != "" {
+			delete(c.idIndex, current.FID)
+		}
 		// Same critical section: remove the staging file (unless another
 		// pending still references it, as rename/replace can reuse one) so
 		// readers never observe a pending gone while its staging lingers.
@@ -327,10 +342,35 @@ func (c *uploadStore) removeStagingLocked(localPath string) {
 		logging.L.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
 	}
 }
+
+// PendingByID returns the pending upload with the given file ID, or false
+// when none matches. The lookup is O(1) via the idIndex map.
+func (c *uploadStore) PendingByID(id string) (PendingUpload, bool) {
+	c.mu.RLock()
+	path, ok := c.idIndex[id]
+	c.mu.RUnlock()
+	if !ok {
+		return PendingUpload{}, false
+	}
+	c.mu.RLock()
+	pending, ok := c.pending[path]
+	c.mu.RUnlock()
+	if !ok || pending.FID != id {
+		return PendingUpload{}, false
+	}
+	return pending, true
+}
+
 func (c *uploadStore) RenameUpload(oldPath string, next PendingUpload) error {
 	c.mu.Lock()
+	if old, ok := c.pending[oldPath]; ok && old.FID != "" {
+		delete(c.idIndex, old.FID)
+	}
 	delete(c.pending, oldPath)
 	c.pending[next.Path] = next
+	if next.FID != "" {
+		c.idIndex[next.FID] = next.Path
+	}
 	c.mu.Unlock()
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()

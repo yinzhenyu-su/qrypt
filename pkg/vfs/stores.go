@@ -105,6 +105,7 @@ type uploadStore struct {
 	mu        sync.RWMutex
 	journalMu sync.Mutex
 	pending   map[string]PendingUpload
+	idIndex   map[string]string // fid -> path for O(1) PendingByID
 }
 type readCacheStore struct {
 	dir     string
@@ -190,6 +191,7 @@ func newUploadStore(dir string) (*uploadStore, error) {
 		dir:     dir,
 		staging: staging,
 		pending: map[string]PendingUpload{},
+		idIndex: map[string]string{},
 	}
 	entries, err := store.loadJournal()
 	if err != nil {

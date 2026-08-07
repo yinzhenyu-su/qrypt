@@ -436,12 +436,7 @@ func (r vfsUploadTaskRuntime) Records() []uploadTaskRecord {
 }
 
 func (r vfsUploadTaskRuntime) PendingByID(id string) (PendingUpload, bool) {
-	for _, pending := range r.v.upload.store.PendingUploads() {
-		if pending.FID == id {
-			return pending, true
-		}
-	}
-	return PendingUpload{}, false
+	return r.v.upload.store.PendingByID(id)
 }
 
 func (r vfsUploadTaskRuntime) ActivePathByID(id string) (string, bool) {

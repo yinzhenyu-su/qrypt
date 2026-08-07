@@ -90,25 +90,25 @@ func newVFSResolveRuntime(v *VFS) vfsResolveRuntime {
 
 func (r vfsResolveRuntime) CachedEntry(path string) (drive.Entry, bool) {
 	path = cleanVirtual(path)
-	r.v.view.mu.RLock()
-	entry, ok := r.v.view.entries[path]
-	r.v.view.mu.RUnlock()
-	return entry, ok
+	return r.v.view.entries.Get(path)
 }
 
 func (r vfsResolveRuntime) CommitResolvedChildren(parentPath, name string, entries []drive.Entry) (drive.Entry, bool) {
 	parentPath = cleanVirtual(parentPath)
-	r.v.view.mu.Lock()
-	defer r.v.view.mu.Unlock()
+	var found drive.Entry
+	var foundOK bool
 	for _, child := range entries {
 		childPath := joinVirtual(parentPath, child.Name)
+		r.v.view.mu.RLock()
 		child = r.v.applyLocalModTimeLocked(childPath, child)
-		r.v.view.entries[childPath] = child
+		r.v.view.mu.RUnlock()
+		r.v.view.entries.Set(childPath, child)
 		if child.Name == name {
-			return child, true
+			found = child
+			foundOK = true
 		}
 	}
-	return drive.Entry{}, false
+	return found, foundOK
 }
 
 func (r vfsResolveRuntime) IsUnavailable(path string) bool {

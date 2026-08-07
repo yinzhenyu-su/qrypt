@@ -10,7 +10,7 @@ import (
 
 type viewState struct {
 	mu           sync.RWMutex
-	entries      map[string]drive.Entry
+	entries      *shardedEntryMap
 	lists        map[string]listCacheEntry
 	localDirs    map[string]time.Time
 	localModTime map[string]time.Time
@@ -19,13 +19,13 @@ type viewState struct {
 
 func newViewState(rootID string, now time.Time) *viewState {
 	view := &viewState{
-		entries:      map[string]drive.Entry{},
+		entries:      newShardedEntryMap(),
 		lists:        map[string]listCacheEntry{},
 		localDirs:    map[string]time.Time{},
 		localModTime: map[string]time.Time{},
 		overlay:      newVisibilityOverlayState(),
 	}
-	view.entries["/"] = drive.Entry{ID: rootID, Name: "/", IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}
+	view.entries.Set("/", drive.Entry{ID: rootID, Name: "/", IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now})
 	return view
 }
 
@@ -40,14 +40,15 @@ func newVFSViewRuntime(v *VFS) vfsViewRuntime {
 func (r vfsViewRuntime) RebaseCachedPathsLocked(oldPath, newPath string) {
 	oldPath = cleanVirtual(oldPath)
 	newPath = cleanVirtual(newPath)
-	for path, entry := range r.v.view.entries {
+	r.v.view.entries.Range(func(path string, entry drive.Entry) bool {
 		if !isPathUnder(path, oldPath) {
-			continue
+			return true
 		}
 		nextPath := joinVirtual(newPath, strings.TrimPrefix(path, oldPath+"/"))
-		delete(r.v.view.entries, path)
-		r.v.view.entries[nextPath] = entry
-	}
+		r.v.view.entries.Delete(path)
+		r.v.view.entries.Set(nextPath, entry)
+		return true
+	})
 }
 
 func (r vfsViewRuntime) MarkLocalDirLocked(path string) {
@@ -127,7 +128,7 @@ func (r vfsViewRuntime) CommitEntryLocalModTime(path string, entry drive.Entry, 
 	path = cleanVirtual(path)
 	entry.ModTime = modTime
 	r.v.view.mu.Lock()
-	r.v.view.entries[path] = entry
+	r.v.view.entries.Set(path, entry)
 	r.SetLocalModTimeLocked(path, modTime)
 	r.InvalidateListLocked(filepath.Dir(path))
 	r.v.view.mu.Unlock()
