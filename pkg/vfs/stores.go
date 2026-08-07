@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -26,36 +27,10 @@ const (
 
 // reserveFraction and minReserveBytes control how much disk space is kept
 // free when capping cache maxSize by available disk space.
-type PendingUpload struct {
-	Path          string               `json:"path"`
-	FID           string               `json:"fid"`
-	ParentID      string               `json:"parent_id"`
-	Name          string               `json:"name"`
-	LocalPath     string               `json:"local_path"`
-	Size          int64                `json:"size"`
-	ModTime       int64                `json:"mod_time,omitempty"`
-	UpdatedAt     int64                `json:"updated_at"`
-	RetryCount    int                  `json:"retry_count,omitempty"`
-	LastError     string               `json:"last_error,omitempty"`
-	PermanentFail bool                 `json:"permanent_fail,omitempty"`
-	LastAttemptAt int64                `json:"last_attempt_at,omitempty"`
-	NextAttemptAt int64                `json:"next_attempt_at,omitempty"`
-	ReplaceUpload *UploadReplacement   `json:"replace_upload,omitempty"`
-	Staging       *UploadStagingStatus `json:"staging,omitempty"`
-	Frozen        bool                 `json:"frozen,omitempty"`
-}
-type UploadReplacement struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parent_id,omitempty"`
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-}
-type UploadStagingStatus struct {
-	Exists      bool   `json:"exists"`
-	Size        int64  `json:"size,omitempty"`
-	SizeMatches bool   `json:"size_matches"`
-	Error       string `json:"error,omitempty"`
-}
+// Type aliases for shared data types (implementations in internal/vfstypes).
+type PendingUpload = vfstypes.PendingUpload
+type UploadReplacement = vfstypes.UploadReplacement
+type UploadStagingStatus = vfstypes.UploadStagingStatus
 type journalEntry struct {
 	Op string `json:"op"`
 	PendingUpload
