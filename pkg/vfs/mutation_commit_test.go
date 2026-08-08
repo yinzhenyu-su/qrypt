@@ -112,7 +112,7 @@ func TestMkdirCommitsExactlyOnceOnRemoteSuccess(t *testing.T) {
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirResult = drive.Entry{ID: "new-id", ParentID: "root", Name: "newdir", IsDir: true}
 
-	entry, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer)
+	entry, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer, fx.committer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestMkdirCommitsNormalizedPath(t *testing.T) {
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirResult = drive.Entry{ID: "new-id", ParentID: "root", Name: "newdir", IsDir: true}
 
-	if _, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir//", fx.backend, fx.committer); err != nil {
+	if _, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir//", fx.backend, fx.committer, fx.committer); err != nil {
 		t.Fatal(err)
 	}
 	if len(fx.committer.committed) != 1 || fx.committer.committed[0] != "/newdir" {
@@ -144,7 +144,7 @@ func TestMkdirNeverCommitsOnRemoteFailure(t *testing.T) {
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirErr = errors.New("remote boom")
 
-	if _, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer); err == nil {
+	if _, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer, fx.committer); err == nil {
 		t.Fatal("want remote mkdir error")
 	}
 	if len(fx.committer.committed) != 0 {
@@ -163,7 +163,7 @@ func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
 		{ID: "dir", ParentID: "root", Name: "newdir", IsDir: true},
 	}
 
-	entry, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer)
+	entry, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer, fx.committer)
 	if err != nil {
 		t.Fatal(err)
 	}

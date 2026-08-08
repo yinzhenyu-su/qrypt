@@ -90,15 +90,16 @@ func TestVFSMutationRuntimeCommitsMkdirAndRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := newVFSMutationRuntime(fs)
+	committer := newVFSViewCommitter(fs)
 	dir := drive.Entry{ID: "dir", ParentID: fs.rootID, Name: "dir", IsDir: true}
-	runtime.CommitMkdir("/dir", dir)
+	committer.CommitMkdir("/dir", dir)
 	if entry, err := fs.Stat(context.Background(), "/dir"); err != nil || entry.ID != "dir" || !entry.IsDir {
 		t.Fatalf("stat mkdir entry=%+v err=%v", entry, err)
 	}
 
 	modTime := time.Unix(1234, 0)
 	fs.setLocalModTime("/dir", modTime)
+	runtime := newVFSMutationRuntime(fs)
 	renamed := runtime.CommitRemoteRename("/dir", "/renamed", drive.Entry{ID: "dir", ParentID: fs.rootID, Name: "renamed", IsDir: true})
 	if renamed.Name != "renamed" || !renamed.ModTime.Equal(modTime) {
 		t.Fatalf("renamed entry = %+v, want local modtime preserved", renamed)

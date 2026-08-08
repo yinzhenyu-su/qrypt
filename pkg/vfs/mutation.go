@@ -51,10 +51,10 @@ func isAlreadyExistsError(err error) bool {
 }
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
-	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSViewCommitter(v))
+	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSViewCommitter(v), newVFSViewCommitter(v))
 }
 
-func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, committer ViewCommitter) (entry drive.Entry, err error) {
+func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, committer viewCommitter, cache listedChildrenCache) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
 		return drive.Entry{}, err
@@ -91,7 +91,7 @@ func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBa
 			return drive.Entry{}, err
 		}
 		logging.L.InfofEvery("vfs.mkdir_already_exists", time.Second, "[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
-		entry, err = findExistingChildDir(ctx, backend, committer, filepath.Dir(path), parent.ID, name)
+		entry, err = findExistingChildDir(ctx, backend, cache, filepath.Dir(path), parent.ID, name)
 		if err != nil {
 			logging.L.Warnf("[VFS] mkdir existing directory resolve failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
 			return drive.Entry{}, err
@@ -102,12 +102,12 @@ func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBa
 	return entry, nil
 }
 
-func findExistingChildDir(ctx context.Context, backend mutationBackend, committer ViewCommitter, parentPath, parentID, name string) (drive.Entry, error) {
+func findExistingChildDir(ctx context.Context, backend mutationBackend, cache listedChildrenCache, parentPath, parentID, name string) (drive.Entry, error) {
 	entries, err := backend.List(ctx, parentID)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	committer.CacheListedChildren(parentPath, entries)
+	cache.CacheListedChildren(parentPath, entries)
 	for _, child := range entries {
 		if child.Name == name && child.IsDir {
 			return child, nil
@@ -119,7 +119,7 @@ func (v *VFS) Remove(ctx context.Context, path string) (err error) {
 	return v.removeWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
 }
 
-func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer ViewCommitter) (err error) {
+func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
@@ -143,7 +143,7 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 	return v.removeDirWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
 }
 
-func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer ViewCommitter) (err error) {
+func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
@@ -257,14 +257,13 @@ func (b driverMutationBackend) Move(ctx context.Context, entry drive.Entry, dstP
 	return b.driver.Move(ctx, entry, dstParentID)
 }
 
-// ViewCommitter is the narrow mutation-commit boundary: it writes the
+// viewCommitter is the narrow mutation-commit boundary: it writes the
 // effective view after a local mutation. The mutation coordinator depends
 // on this interface (never on view.mu/entries/localDirs/lists), so commit
 // semantics are testable against a stub and the view structure can evolve
-// underneath.
-type ViewCommitter interface {
+// underneath. Package-internal: external callers go through the VFS API.
+type viewCommitter interface {
 	CommitMkdir(path string, entry drive.Entry)
-	CacheListedChildren(parentPath string, entries []drive.Entry)
 	// CommitRemove marks a path deleted in the view: the visibility overlay
 	// hides it (and its subtree for directories), the entry cache drops it,
 	// the read cache is invalidated, and local modtime is cleared. The
@@ -277,7 +276,16 @@ type ViewCommitter interface {
 	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
 }
 
-// vfsViewCommitter implements ViewCommitter over the VFS view.
+// listedChildrenCache warms the entry cache with a freshly fetched remote
+// listing. This is query recovery / cache warming, not a mutation commit,
+// so it lives on its own narrow interface rather than widening
+// viewCommitter.
+type listedChildrenCache interface {
+	CacheListedChildren(parentPath string, entries []drive.Entry)
+}
+
+// vfsViewCommitter implements viewCommitter and listedChildrenCache over
+// the VFS view.
 type vfsViewCommitter struct {
 	v *VFS
 }
@@ -308,6 +316,11 @@ func (r vfsViewCommitter) CacheListedChildren(parentPath string, entries []drive
 	}
 }
 
+// Compile-time assertions: the VFS adapter serves both the commit boundary
+// and the cache-warming boundary.
+var _ viewCommitter = vfsViewCommitter{}
+var _ listedChildrenCache = vfsViewCommitter{}
+
 func (r vfsViewCommitter) CommitRemove(path string, entry drive.Entry) {
 	r.v.markDeleted(path, entry)
 	r.v.invalidateReadCache(entry)
@@ -337,28 +350,6 @@ type vfsMutationRuntime struct {
 
 func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
 	return vfsMutationRuntime{v: v}
-}
-
-func (r vfsMutationRuntime) CacheListedChildren(parentPath string, entries []drive.Entry) {
-	r.v.view.mu.Lock()
-	defer r.v.view.mu.Unlock()
-	for _, child := range entries {
-		r.v.view.entries.Set(joinVirtual(parentPath, child.Name), child)
-	}
-}
-
-// CommitMkdir is the mutation-commit entry point for a created directory.
-// It is the canonical shape the mutation coordinator will use for every
-// local mutation (Rename/Remove/UploadCommitted follow the same pattern):
-// write the entry cache, mark derived local state, and invalidate the
-// affected list cache - all under the view lock, so a concurrent reader
-// never observes a half-committed mutation.
-func (r vfsMutationRuntime) CommitMkdir(path string, entry drive.Entry) {
-	r.v.view.mu.Lock()
-	r.v.view.entries.Set(path, entry)
-	r.v.markLocalDirLocked(path)
-	r.v.invalidateListLocked(filepath.Dir(path))
-	r.v.view.mu.Unlock()
 }
 
 func (r vfsMutationRuntime) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry {
