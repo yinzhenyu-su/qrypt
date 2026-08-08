@@ -24,9 +24,12 @@ type Remote interface {
 // reads a finished view through this interface instead of reaching into
 // the overlay's sources. VFS implements it via vfsListingView.
 type View interface {
-	// Overlay / local-state helpers.
-	IsUnavailable(path string) bool
-	GetEntry(path string) (drive.Entry, bool)
+	// CurrentDirectory returns the current visible entry for path, or
+	// ok=false when the path is unavailable (deleted/hidden). Callers
+	// combine the availability check and the identity lookup in one call
+	// (used for list availability and prefetch stale-checks); check
+	// entry.IsDir for directory identity.
+	CurrentDirectory(path string) (drive.Entry, bool)
 
 	// View cache.
 	FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool)

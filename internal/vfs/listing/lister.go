@@ -183,7 +183,7 @@ func (l *Lister) prefetchChildren(ctx context.Context, parentPath, parentID stri
 func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID string, prefetch bool) ([]drive.Entry, error) {
 	parentPath = CleanVirtualPath(parentPath)
 	for {
-		if l.view.IsUnavailable(parentPath) {
+		if _, ok := l.view.CurrentDirectory(parentPath); !ok {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
 		}
 		now := time.Now()
@@ -197,7 +197,7 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 			case <-load.done:
 				if load.err != nil {
 					if load.prefetch && !prefetch && ctx.Err() == nil {
-						if l.view.IsUnavailable(parentPath) {
+						if _, ok := l.view.CurrentDirectory(parentPath); !ok {
 							return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
 						}
 						continue
@@ -243,10 +243,7 @@ func (l *Lister) commitRemoteList(parentPath string, entries []drive.Entry, expi
 // directory a prefetch was started for).
 func (l *Lister) IsCurrentPrefetchDir(path, id string) bool {
 	path = CleanVirtualPath(path)
-	if l.view.IsUnavailable(path) {
-		return false
-	}
-	entry, ok := l.view.GetEntry(path)
+	entry, ok := l.view.CurrentDirectory(path)
 	return ok && entry.IsDir && entry.ID == id
 }
 

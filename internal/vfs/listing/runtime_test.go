@@ -37,8 +37,10 @@ func (h *fakeRuntimeHost) ListChildren(ctx context.Context, _ string) ([]drive.E
 	return h.children, h.childErr
 }
 
-func (h *fakeRuntimeHost) GetEntry(string) (drive.Entry, bool) {
-	return h.entry, h.entryOK
+// CurrentDirectory reports the configured entry as visible (ok=true); the
+// old stubHost.IsUnavailable defaulted to available.
+func (h *fakeRuntimeHost) CurrentDirectory(string) (drive.Entry, bool) {
+	return h.entry, true
 }
 
 func (h *fakeRuntimeHost) ProjectChildren(_ string, entries []drive.Entry) []drive.Entry {
@@ -59,7 +61,6 @@ func TestLoadRemoteChildrenWithRuntimeCommitsBackendEntries(t *testing.T) {
 		children: []drive.Entry{{ID: "child", Name: "child.txt"}},
 		current:  true,
 		entry:    drive.Entry{ID: "parent", Name: "dir", IsDir: true},
-		entryOK:  true,
 	}
 	lister := NewLister(ListerDeps{Remote: host, View: host, State: NewState()})
 	entries, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", false, lister)
@@ -78,7 +79,6 @@ func TestLoadRemoteChildrenWithRuntimeDiscardsStalePrefetch(t *testing.T) {
 	host := &fakeRuntimeHost{
 		children: []drive.Entry{{ID: "child", Name: "child.txt"}},
 		entry:    drive.Entry{ID: "other", Name: "dir", IsDir: true},
-		entryOK:  true,
 	}
 	lister := NewLister(ListerDeps{Remote: host, View: host, State: NewState()})
 	_, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", true, lister)

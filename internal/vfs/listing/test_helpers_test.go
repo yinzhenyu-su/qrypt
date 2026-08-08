@@ -22,11 +22,11 @@ func (stubHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
 	return nil, nil
 }
 
-func (stubHost) IsUnavailable(string) bool { return false }
-
 func (stubHost) UpdateOverlay(string, []drive.Entry) {}
 
-func (stubHost) GetEntry(string) (drive.Entry, bool) { return drive.Entry{}, false }
+// CurrentDirectory reports the path visible (ok=true) with no identity -
+// mirroring the old IsUnavailable=false + GetEntry=(zero,false) pair.
+func (stubHost) CurrentDirectory(string) (drive.Entry, bool) { return drive.Entry{}, true }
 
 func (h stubHost) FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool) {
 	if h.cache == nil {

@@ -72,11 +72,13 @@ func newVFSListingView(v *VFS) vfsListingView {
 	return vfsListingView{v: v}
 }
 
-func (h vfsListingView) IsUnavailable(path string) bool {
-	return h.v.isUnavailable(path)
-}
-
-func (h vfsListingView) GetEntry(path string) (drive.Entry, bool) {
+// CurrentDirectory combines the availability check and the identity lookup:
+// deleted/hidden paths have no current directory identity. Used for list
+// availability and prefetch stale-checks.
+func (h vfsListingView) CurrentDirectory(path string) (drive.Entry, bool) {
+	if h.v.isUnavailable(path) {
+		return drive.Entry{}, false
+	}
 	return h.v.view.entries.Get(path)
 }
 
