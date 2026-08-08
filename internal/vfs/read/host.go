@@ -14,19 +14,30 @@ import (
 )
 
 // Host is the VFS surface the read domain needs: resolution, pending
-// uploads, staging flush, driver reads, and health. Debug bookkeeping is
-// NOT part of the host surface - it lives on the optional ReadObserver so
-// instrumentation never widens the hot-path contract. VFS implements it
-// via vfsReadHost.
+// uploads, staging flush, and driver reads. Health statistics and debug
+// bookkeeping are NOT part of the host surface - they live on the optional
+// HealthRecorder and ReadObserver so the hot-path contract stays narrow.
+// VFS implements it via vfsReadHost.
 type Host interface {
 	Resolve(ctx context.Context, path string) (drive.Entry, error)
 	PendingUpload(path string) (vfstypes.PendingUpload, bool, error)
 	FlushStaging(localPath string) error
-	RecordHealth(op string, err error)
 	ReadCacheKey(entry drive.Entry) string
 	RootID() string
 	DriverRead(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error)
 }
+
+// HealthRecorder receives read-domain health statistics. It is optional:
+// the read domain works without one (a no-op sink), and VFS wires its
+// health tracker through it so statistics never widen the host surface.
+type HealthRecorder interface {
+	RecordResult(op string, err error)
+}
+
+// noopHealth is the default HealthRecorder.
+type noopHealth struct{}
+
+func (noopHealth) RecordResult(string, error) {}
 
 // ReadObserver receives read-domain debug bookkeeping. It is optional: the
 // read domain works without one (a no-op sink), and VFS wires its debug

@@ -18,21 +18,40 @@ import (
 // unexported helpers mirror the old VFS methods.
 type Reader struct {
 	host     Host
-	observer ReadObserver
 	state    *State
+	observer ReadObserver
+	health   HealthRecorder
 }
 
-// NewReader builds a read-domain reader over a Host. The observer is the
-// optional debug sink; nil falls back to a no-op so instrumentation never
-// affects correctness. Keeping the observer an explicit constructor
-// argument (rather than asserting it off the host) lets callers inject a
-// debug sink independently of the host surface and prevents an accidental
-// ReadObserver implementation from enabling diagnostics.
-func NewReader(host Host, state *State, observer ReadObserver) *Reader {
-	if observer == nil {
-		observer = noopObserver{}
+// ReaderDeps is the explicit dependency set for a read-domain reader.
+// Observer and Health are optional: nil values fall back to no-op sinks so
+// instrumentation and statistics never affect correctness. Keeping every
+// dependency in one struct (rather than positional arguments) lets the set
+// grow without reordering call sites.
+type ReaderDeps struct {
+	Host     Host
+	State    *State
+	Observer ReadObserver
+	Health   HealthRecorder
+}
+
+// NewReader builds a read-domain reader from explicit dependencies. The
+// observer and health recorder are injected independently of the host
+// surface, so an accidental implementation on the host cannot silently
+// enable diagnostics or statistics.
+func NewReader(deps ReaderDeps) *Reader {
+	if deps.Observer == nil {
+		deps.Observer = noopObserver{}
 	}
-	return &Reader{host: host, observer: observer, state: state}
+	if deps.Health == nil {
+		deps.Health = noopHealth{}
+	}
+	return &Reader{
+		host:     deps.Host,
+		state:    deps.State,
+		observer: deps.Observer,
+		health:   deps.Health,
+	}
 }
 
 // State returns the read domain state.
@@ -50,7 +69,7 @@ func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error
 // from staging when present and otherwise reading remote chunks through
 // the cache window machinery.
 func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
-	defer func() { r.host.RecordHealth(drive.HealthOpRead, err) }()
+	defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
 	path = CleanVirtualPath(path)
 	started := timeutil.Now()
 	opID := r.observer.DebugNextOpID()

@@ -14,7 +14,7 @@ func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 		normal: make(chan struct{}, 1),
 		high:   make(chan struct{}, 1),
 	}
-	reader := NewReader(stubHost{}, state, nil)
+	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
 
 	releaseHighNormalSlot, err := reader.acquireReadSlot(WithPriority(context.Background(), PriorityHigh))
 	if err != nil {
@@ -41,7 +41,7 @@ func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 }
 
 func TestLoadWindowSlotFailurePropagatesToWaiter(t *testing.T) {
-	reader := NewReader(stubHost{}, NewState(nil), nil)
+	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(nil)})
 	for i := 0; i < cap(reader.state.slots.normal); i++ {
 		reader.state.slots.normal <- struct{}{}
 	}
@@ -55,7 +55,7 @@ func TestLoadWindowSlotFailurePropagatesToWaiter(t *testing.T) {
 
 func TestWaitWindowTreatsCanceledLoadAsRetryableMiss(t *testing.T) {
 	state := NewState(nil)
-	reader := NewReader(stubHost{}, state, nil)
+	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
 	load := &windowLoad{
 		fid:  "file",
 		done: make(chan struct{}),

@@ -28,8 +28,6 @@ func (stubHost) PendingUpload(string) (vfstypes.PendingUpload, bool, error) {
 
 func (stubHost) FlushStaging(string) error { return nil }
 
-func (stubHost) RecordHealth(string, error) {}
-
 func (stubHost) ReadCacheKey(drive.Entry) string { return "" }
 
 func (stubHost) RootID() string { return "" }

@@ -101,7 +101,7 @@ func (h stubHostWithData) DriverRead(ctx context.Context, entry drive.Entry, off
 // TestReaderNilObserverWorks: a nil observer must not change read behavior -
 // the reader falls back to a no-op sink.
 func TestReaderNilObserverWorks(t *testing.T) {
-	r := NewReader(stubHostWithData{stubHost: stubHost{}, data: "hello world"}, NewState(nil), nil)
+	r := NewReader(ReaderDeps{Host: stubHostWithData{stubHost: stubHost{}, data: "hello world"}, State: NewState(nil)})
 	rc, err := r.Read(context.Background(), "/f.txt", 0, 5)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestReaderNilObserverWorks(t *testing.T) {
 // every one of them. A double Close must not re-finish anything.
 func TestObserverReceivesLifecycle(t *testing.T) {
 	obs := &recordingObserver{}
-	r := NewReader(stubHostWithData{stubHost: stubHost{}, data: "0123456789"}, NewState(nil), obs)
+	r := NewReader(ReaderDeps{Host: stubHostWithData{stubHost: stubHost{}, data: "0123456789"}, State: NewState(nil), Observer: obs})
 	rc, err := r.Read(context.Background(), "/f.txt", 0, 4)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestObserverStagingPath(t *testing.T) {
 	obs := &recordingObserver{}
 	host := &stagingHost{data: []byte("payload")}
 	host.path = filepath.Join(t.TempDir(), "staging.bin")
-	r := NewReader(host, NewState(nil), obs)
+	r := NewReader(ReaderDeps{Host: host, State: NewState(nil), Observer: obs})
 	rc, err := r.Read(context.Background(), "/p.txt", 0, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestObserverStagingPath(t *testing.T) {
 func TestObserverErrorPathFinishes(t *testing.T) {
 	obs := &recordingObserver{}
 	host := stubHost{resolveErr: errors.New("not found")}
-	r := NewReader(host, NewState(nil), obs)
+	r := NewReader(ReaderDeps{Host: host, State: NewState(nil), Observer: obs})
 	if _, err := r.Read(context.Background(), "/missing.txt", 0, 4); err == nil {
 		t.Fatal("want resolve error")
 	}
@@ -199,7 +199,7 @@ func TestObserverErrorPathFinishes(t *testing.T) {
 func TestHostWithoutObserverStillObservable(t *testing.T) {
 	obs := &recordingObserver{}
 	host := stubHostWithData{stubHost: stubHost{}, data: "abc"}
-	r := NewReader(host, NewState(nil), obs)
+	r := NewReader(ReaderDeps{Host: host, State: NewState(nil), Observer: obs})
 	rc, err := r.Read(context.Background(), "/f.txt", 0, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestHostWithoutObserverStillObservable(t *testing.T) {
 func TestObserverStreamPath(t *testing.T) {
 	obs := &recordingObserver{}
 	host := stubHostWithData{stubHost: stubHost{}, data: strings.Repeat("x", 3*ChunkSize+10)}
-	r := NewReader(host, NewState(nil), obs)
+	r := NewReader(ReaderDeps{Host: host, State: NewState(nil), Observer: obs})
 	rc, err := r.ReadStream(context.Background(), "/big.bin")
 	if err != nil {
 		t.Fatal(err)

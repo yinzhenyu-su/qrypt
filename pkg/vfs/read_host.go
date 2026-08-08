@@ -42,10 +42,6 @@ func (h vfsReadHost) FlushStaging(localPath string) error {
 	return h.v.uploads.Store().FlushStaging(localPath)
 }
 
-func (h vfsReadHost) RecordHealth(op string, err error) {
-	h.v.recordHealthResult(op, err)
-}
-
 func (h vfsReadHost) ReadCacheKey(entry drive.Entry) string {
 	return h.v.readCacheKey(entry)
 }
@@ -59,9 +55,22 @@ func (h vfsReadHost) DriverRead(ctx context.Context, entry drive.Entry, offset, 
 }
 
 // vfsReadHost adapts only the read host surface; debug instrumentation
-// lives on the separate vfsReadObserver type so the host contract stays
-// free of diagnostic methods (enforced by the assertion below).
+// lives on vfsReadObserver and health statistics on vfsReadHealth, so the
+// host contract stays free of diagnostic methods (enforced below).
 var _ read.Host = vfsReadHost{}
+
+// vfsReadHealth adapts the drive health tracker to read.HealthRecorder.
+// It holds only the tracker - not the whole VFS - so the read adapter
+// carries exactly the dependency it uses.
+type vfsReadHealth struct {
+	tracker *drive.HealthTracker
+}
+
+func (h vfsReadHealth) RecordResult(op string, err error) {
+	h.tracker.RecordResult(op, err)
+}
+
+var _ read.HealthRecorder = vfsReadHealth{}
 
 // vfsReadObserver adapts VFS debug internals to read.ReadObserver. It is a
 // distinct type from vfsReadHost (even though both currently reach into the

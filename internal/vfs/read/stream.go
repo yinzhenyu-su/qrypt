@@ -42,7 +42,7 @@ func (d *debugReadCloser) Close() error {
 // Read. The returned closer is not safe for concurrent use.
 func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
 	var err error
-	defer func() { r.host.RecordHealth(drive.HealthOpRead, err) }()
+	defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
 	path = CleanVirtualPath(path)
 	started := timeutil.Now()
 	opID := r.observer.DebugNextOpID()
