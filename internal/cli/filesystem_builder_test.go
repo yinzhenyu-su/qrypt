@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func testCommand() *cobra.Command {

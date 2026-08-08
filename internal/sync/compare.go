@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // CompareOptions configures the comparison. Hash is called for entries whose

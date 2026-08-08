@@ -14,7 +14,7 @@ import (
 	"github.com/winfsp/cgofuse/fuse"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type adapter struct {

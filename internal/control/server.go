@@ -13,7 +13,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const APIVersion = "v1"

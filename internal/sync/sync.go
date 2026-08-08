@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // ErrNoSession reports that --resume found no resumable session for the

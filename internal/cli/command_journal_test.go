@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func TestInspectJournalCacheReportsPendingProblems(t *testing.T) {

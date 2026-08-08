@@ -10,7 +10,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func watchDebugAI(ctx context.Context, path string, duration, interval time.Duration, eventLimit int, mountNames []string, allMounts bool, onSample func(debugAIWatchSample)) debugAIWatchReport {

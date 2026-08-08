@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const DefaultReadChunkLimit = 4 << 20

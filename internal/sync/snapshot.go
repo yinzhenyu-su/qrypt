@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // Entry is one node of a directory snapshot. Directories are kept as entries

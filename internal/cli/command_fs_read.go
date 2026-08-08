@@ -15,7 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/sync"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func newFsListCmd() *cobra.Command {

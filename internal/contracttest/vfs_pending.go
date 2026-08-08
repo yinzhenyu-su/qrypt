@@ -1,6 +1,6 @@
 package contracttest
 
-import "github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+import "github.com/yinzhenyu/qrypt/pkg/vfs"
 
 func pendingFiles(fs any) []vfs.PendingUpload {
 	inspector, ok := fs.(vfs.UploadInspector)

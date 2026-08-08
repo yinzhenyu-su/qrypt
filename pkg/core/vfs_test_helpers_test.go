@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // stopTestVFS synchronously drops a started VFS's cache files so a test

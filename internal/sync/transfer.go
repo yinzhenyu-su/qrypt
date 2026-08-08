@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/yinzhenyu/qrypt/internal/fileutil"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 // PutFile uploads a local file into the VFS (create, stream in chunks, flush).

@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func stagingStatus(item vfs.PendingUpload) (string, int64) {
