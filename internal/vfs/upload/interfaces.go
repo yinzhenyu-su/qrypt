@@ -67,8 +67,7 @@ type Runtime interface {
 	RetryDelay(retryCount int) time.Duration
 	Requeue(p PendingUpload)
 	RequeueIfFrozen(p PendingUpload)
-	SeedReadCache(entry drive.Entry, localPath string)
-	CommitUploadedEntry(path string, entry drive.Entry)
+	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
 }
 
 type Snapshotter interface {

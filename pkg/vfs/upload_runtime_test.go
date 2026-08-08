@@ -33,7 +33,7 @@ func TestVFSUploadRuntimeAppliesModTimeAndCommitsEntry(t *testing.T) {
 	fs.view.mu.Lock()
 	fs.view.lists["/"] = listCacheEntry{entries: []drive.Entry{{ID: "old", Name: "uploaded.txt"}}, expires: time.Now().Add(time.Hour)}
 	fs.view.mu.Unlock()
-	runtime.CommitUploadedEntry(pending.Path, entry)
+	runtime.CommitUploadedEntry(pending.Path, entry, "")
 	fs.view.mu.RLock()
 	committed, ok := fs.view.entries.Get(pending.Path)
 	_, listCached := fs.view.lists["/"]
@@ -58,7 +58,7 @@ func TestVFSUploadRuntimeSeedsReadCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.SeedReadCache(drive.Entry{ID: "cached-id", Size: int64(len("cached upload")), ModTime: time.Now()}, localPath)
+	runtime.CommitUploadedEntry("/f.txt", drive.Entry{ID: "cached-id", Size: int64(len("cached upload")), ModTime: time.Now()}, localPath)
 	if err := fs.FlushReadCache(); err != nil {
 		t.Fatal(err)
 	}

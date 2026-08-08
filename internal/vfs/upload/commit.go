@@ -32,10 +32,8 @@ func (e *Engine) finalizeUpload(ctx context.Context, pending PendingUpload, entr
 	observer := e.observer
 	pendingStore := e.pending
 	phaseStart := timeutil.Now()
-	e.runtime.SeedReadCache(entry, snapshot.Path)
+	e.runtime.CommitUploadedEntry(pending.Path, entry, snapshot.Path)
 	observer.Event(pending.Path, "cache_seed", phaseStart, pending.Size, map[string]any{"entry_id": entry.ID})
-	phaseStart = timeutil.Now()
-	e.runtime.CommitUploadedEntry(pending.Path, entry)
 	removed, err := pendingStore.RemoveIfUnchanged(pending)
 	pendingCleanupExtra := map[string]any{"removed": removed}
 	if err != nil {

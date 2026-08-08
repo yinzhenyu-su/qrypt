@@ -51,6 +51,8 @@ func (r *recordingViewCommitter) CacheListedChildren(string, []drive.Entry) {
 	r.cached++
 }
 
+func (r *recordingViewCommitter) CommitUploadedEntry(string, drive.Entry, string) {}
+
 // recordingMutationRuntime implements the remaining Rename-time mutation
 // runtime surface.
 type recordingMutationRuntime struct{}

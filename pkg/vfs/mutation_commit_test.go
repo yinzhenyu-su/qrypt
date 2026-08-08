@@ -285,3 +285,42 @@ func TestCommitRemoveWritesViewState(t *testing.T) {
 		t.Errorf("read cache not invalidated by CommitRemove: %+v", after)
 	}
 }
+
+// --- ViewCommitter CommitUploadedEntry coordinator behavior ---
+
+// TestCommitUploadedEntryWritesViewState: a completed upload commit writes
+// the entry, unhides the copy child, invalidates the parent list cache, and
+// seeds the read cache from staging when a staging path is provided.
+func TestCommitUploadedEntryWritesViewState(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	fs.Start(context.Background())
+	t.Cleanup(func() { _ = fs.Close(context.Background()) })
+
+	// Seed a staging file.
+	staging := filepath.Join(t.TempDir(), "up.staging")
+	if err := os.WriteFile(staging, []byte("uploaded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Warm the parent list cache so invalidation is observable.
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-r", Name: "remote.txt", Size: 6}}, time.Now().Add(time.Minute))
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); !ok {
+		t.Fatal("parent list cache not warm before commit")
+	}
+
+	entry := drive.Entry{ID: "up-id", Name: "up.txt", Size: 8, ModTime: time.Now()}
+	newVFSViewCommitter(fs).CommitUploadedEntry("/up.txt", entry, staging)
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := view.Entry("/up.txt"); !ok || got.ID != "up-id" {
+		t.Fatalf("uploaded entry = %+v, ok=%v", got, ok)
+	}
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); ok {
+		t.Error("parent list cache not invalidated by CommitUploadedEntry")
+	}
+	if cache := fs.DebugSnapshot().Mounts[0].ReadCacheState(); cache.Bytes == 0 {
+		t.Error("read cache not seeded by CommitUploadedEntry")
+	}
+}

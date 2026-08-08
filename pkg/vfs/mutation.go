@@ -270,6 +270,11 @@ type ViewCommitter interface {
 	// the read cache is invalidated, and local modtime is cleared. The
 	// delayed remote delete runs later through the delete executor.
 	CommitRemove(path string, entry drive.Entry)
+	// CommitUploadedEntry folds a completed upload into the view: it seeds
+	// the read cache from the staging file (when one exists), writes the
+	// uploaded entry, unhides the copy child, and invalidates the parent
+	// list cache.
+	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
 }
 
 // vfsViewCommitter implements ViewCommitter over the VFS view.
@@ -307,6 +312,17 @@ func (r vfsViewCommitter) CommitRemove(path string, entry drive.Entry) {
 	r.v.markDeleted(path, entry)
 	r.v.invalidateReadCache(entry)
 	r.v.clearLocalModTime(path)
+}
+
+func (r vfsViewCommitter) CommitUploadedEntry(path string, entry drive.Entry, stagingPath string) {
+	if stagingPath != "" {
+		r.v.seedReadCacheFromStaging(entry, stagingPath)
+	}
+	r.v.view.mu.Lock()
+	r.v.view.entries.Set(path, entry)
+	r.v.unhideCopyChild(filepath.Dir(path), entry.Name)
+	r.v.invalidateListLocked(filepath.Dir(path))
+	r.v.view.mu.Unlock()
 }
 
 type mutationRuntime interface {

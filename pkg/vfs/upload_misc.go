@@ -12,7 +12,6 @@ import (
 	"hash"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -107,16 +106,8 @@ func (r vfsUploadRuntime) ApplyUploadModTime(pending PendingUpload, entry drive.
 	return entry
 }
 
-func (r vfsUploadRuntime) SeedReadCache(entry drive.Entry, localPath string) {
-	r.v.seedReadCacheFromStaging(entry, localPath)
-}
-
-func (r vfsUploadRuntime) CommitUploadedEntry(path string, entry drive.Entry) {
-	r.v.view.mu.Lock()
-	r.v.view.entries.Set(path, entry)
-	r.v.unhideCopyChild(filepath.Dir(path), entry.Name)
-	r.v.invalidateListLocked(filepath.Dir(path))
-	r.v.view.mu.Unlock()
+func (r vfsUploadRuntime) CommitUploadedEntry(path string, entry drive.Entry, stagingPath string) {
+	newVFSViewCommitter(r.v).CommitUploadedEntry(path, entry, stagingPath)
 }
 
 type vfsUploadObserver struct {
