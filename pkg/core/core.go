@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -208,6 +209,7 @@ func (c *Core) Close(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	var errs []error
 	// The task manager owns long-running goroutines (stream pollers, batch
 	// runners) whose contexts derive from the manager, not from any
 	// caller-passed context; close it even when no cleanup is registered
@@ -220,14 +222,28 @@ func (c *Core) Close(ctx context.Context) error {
 	if c.vfsCancel != nil {
 		c.vfsCancel()
 	}
-	if c.cleanup == nil {
-		return nil
+	// Wait for the filesystem to finish tearing down (workers, journal and
+	// staging writes, read-cache flush) before releasing external resources.
+	// Cancelling the context only triggers an ASYNCHRONOUS Close via the
+	// Start hook; waiting here gives the same guarantee as an explicit
+	// Close: after Core.Close returns, no filesystem-owned goroutine writes
+	// to the storage directories.
+	if fs := c.fs; fs != nil {
+		if err := fs.Close(ctx); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	_ = c.StopDebugServer(ctx)
+	if c.cleanup == nil {
+		c.fs = nil
+		return errors.Join(errs...)
+	}
+	if err := c.StopDebugServer(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	c.cleanup()
 	c.cleanup = nil
 	c.fs = nil
-	return nil
+	return errors.Join(errs...)
 }
 
 func DriverNames() []string {

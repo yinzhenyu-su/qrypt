@@ -36,16 +36,19 @@ type Writer interface {
 	Truncate(ctx context.Context, path string, size int64) error
 }
 
-// Lifecycle starts a filesystem's background workers. It is intentionally
-// separate from FileSystem: constructing a filesystem (New/NewNamespace)
-// does not run anything, and read-only consumers never need to start one.
+// Lifecycle starts and stops a filesystem's background workers. It is
+// intentionally separate from FileSystem: constructing a filesystem
+// (New/NewNamespace) does not run anything, and read-only consumers never
+// need to start one.
 //
 // Ownership: the first context passed to Start owns the filesystem's
 // lifecycle; later calls are no-ops and the instance stops when that
-// context is cancelled. A cancelled instance is not restartable - build a
-// new one.
+// context is cancelled (which triggers Close) or when Close is called
+// explicitly. A stopped instance is not restartable - build a new one.
+// Close is idempotent and safe to call before Start.
 type Lifecycle interface {
 	Start(ctx context.Context)
+	Close(ctx context.Context) error
 }
 
 // PathRefresher invalidates the directory listing cache for path so the
@@ -240,6 +243,28 @@ func (n *Namespace) Start(ctx context.Context) {
 	for _, fs := range n.mounts {
 		fs.Start(ctx)
 	}
+}
+
+// Close shuts down every mounted filesystem and waits for each one's
+// background workers to finish. It snapshots the mounts under the read
+// lock, so mounts added concurrently after Close starts are not closed
+// (mirroring Start's snapshot semantics). Mounts are closed sequentially;
+// a failing mount does not prevent the remaining mounts from closing.
+// Close is idempotent because each mount's Close is idempotent.
+func (n *Namespace) Close(ctx context.Context) error {
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	for _, fs := range n.mounts {
+		mounts = append(mounts, fs)
+	}
+	n.mu.RUnlock()
+	var errs []error
+	for _, fs := range mounts {
+		if err := fs.Close(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func splitNamespacePath(path string) (string, string, bool) {

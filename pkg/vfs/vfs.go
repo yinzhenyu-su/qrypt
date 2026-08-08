@@ -171,6 +171,12 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 // restart.
 func (v *VFS) Start(ctx context.Context) {
 	v.startOnce.Do(func() {
+		select {
+		case <-v.done:
+			// Already closed: do not start workers on a torn-down instance.
+			return
+		default:
+		}
 		ctx, cancel := context.WithCancel(ctx)
 		v.ctx = ctx
 		v.cancel = cancel
@@ -193,37 +199,51 @@ func (v *VFS) Start(ctx context.Context) {
 
 // Close shuts down the VFS and waits for all background work to finish.
 //
-// It is idempotent: the first call performs the shutdown and later calls
+// It is idempotent: the first call starts the teardown and later calls
 // return the same result. Close can be called before Start (it tears down
 // construction-time resources such as the read-cache writer) and after the
 // owning context was cancelled (the Start hook calls Close itself), and it
-// can race the context-cancel hook safely.
+// can race the context-cancel hook safely. Close-before-Start also makes a
+// later Start a no-op: a torn-down instance never starts workers.
 //
 // Close stops accepting new background work, cancels the lifecycle context
 // (upload workers exit, in-flight remote operations abort), stops
 // upload/delete timers, waits for upload workers and background enqueue
 // goroutines to exit, and closes the read-cache writer, flushing queued
-// writes. After Close returns no VFS-owned goroutine is running. The ctx
-// argument is reserved for future timeout semantics; the current
-// implementation blocks until shutdown completes.
+// writes. Teardown runs in a single background flow: Close returns when it
+// completes, or early with ctx.Err() if ctx is done first - the teardown
+// keeps running and a later Close call waits for it to finish.
 func (v *VFS) Close(ctx context.Context) error {
 	v.closeOnce.Do(func() {
-		if v.cancel != nil {
-			v.cancel()
-		}
-		v.uploads.Close()
-		v.deletes.Close()
-		close(v.done)
-		v.workerWG.Wait()
-		v.uploads.Wait()
-		var errs []error
-		if err := v.read.Close(); err != nil {
-			errs = append(errs, err)
-		}
-		v.closeErr = errors.Join(errs...)
-		close(v.closeDone)
+		go v.teardown()
 	})
-	return v.closeErr
+	select {
+	case <-v.closeDone:
+		return v.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// teardown is the single background flow that releases all VFS resources.
+// It is started once by the first Close call and always runs to completion;
+// Close callers may time out and return early, but teardown is never
+// aborted.
+func (v *VFS) teardown() {
+	if v.cancel != nil {
+		v.cancel()
+	}
+	v.uploads.Close()
+	v.deletes.Close()
+	close(v.done)
+	v.workerWG.Wait()
+	v.uploads.Wait()
+	var errs []error
+	if err := v.read.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	v.closeErr = errors.Join(errs...)
+	close(v.closeDone)
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
