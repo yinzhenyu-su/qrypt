@@ -44,56 +44,67 @@ var paginateEntries = listing.PaginateEntries
 
 type listingState = listing.State
 
-// vfsListingHost adapts VFS internals to listing.Host.
-type vfsListingHost struct {
+// vfsListingRemote adapts VFS internals to listing.Remote: resolution and
+// backend child listing only.
+type vfsListingRemote struct {
 	v *VFS
 }
 
-func newVFSListingHost(v *VFS) vfsListingHost {
-	return vfsListingHost{v: v}
+func newVFSListingRemote(v *VFS) vfsListingRemote {
+	return vfsListingRemote{v: v}
 }
 
-func (h vfsListingHost) Resolve(ctx context.Context, path string) (drive.Entry, error) {
+func (h vfsListingRemote) Resolve(ctx context.Context, path string) (drive.Entry, error) {
 	return h.v.resolve(ctx, path)
 }
 
-func (h vfsListingHost) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
+func (h vfsListingRemote) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	return newVFSDriverRuntime(h.v).ListBackend().ListChildren(ctx, parentID)
 }
 
-func (h vfsListingHost) IsUnavailable(path string) bool {
+// vfsListingView adapts VFS internals to listing.View: the synthesized
+// directory view (overlay + fresh-list cache + pending projection).
+type vfsListingView struct {
+	v *VFS
+}
+
+func newVFSListingView(v *VFS) vfsListingView {
+	return vfsListingView{v: v}
+}
+
+func (h vfsListingView) IsUnavailable(path string) bool {
 	return h.v.isUnavailable(path)
 }
 
-func (h vfsListingHost) IsDeleted(path string) bool {
+func (h vfsListingView) IsDeleted(path string) bool {
 	return h.v.isDeleted(path)
 }
 
-func (h vfsListingHost) FilterDeleted(parentPath string, entries []drive.Entry) []drive.Entry {
+func (h vfsListingView) FilterDeleted(parentPath string, entries []drive.Entry) []drive.Entry {
 	return h.v.filterDeleted(parentPath, entries)
 }
 
-func (h vfsListingHost) LocalChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+func (h vfsListingView) LocalChildren(parentPath string, entries []drive.Entry) []drive.Entry {
 	return h.v.localChildren(parentPath, entries)
 }
 
-func (h vfsListingHost) ApplyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry {
+func (h vfsListingView) ApplyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry {
 	return h.v.applyLocalModTimes(parentPath, entries)
 }
 
-func (h vfsListingHost) ApplyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry {
+func (h vfsListingView) ApplyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry {
 	return h.v.applyLocalModTimeLocked(path, entry)
 }
 
-func (h vfsListingHost) UpdateOverlay(parentPath string, entries []drive.Entry) {
+func (h vfsListingView) UpdateOverlay(parentPath string, entries []drive.Entry) {
 	h.v.updateOverlay(parentPath, entries)
 }
 
-func (h vfsListingHost) GetEntry(path string) (drive.Entry, bool) {
+func (h vfsListingView) GetEntry(path string) (drive.Entry, bool) {
 	return h.v.view.entries.Get(path)
 }
 
-func (h vfsListingHost) FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool) {
+func (h vfsListingView) FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool) {
 	parentPath = cleanVirtual(parentPath)
 	h.v.view.mu.RLock()
 	cached, ok := h.v.view.lists[parentPath]
@@ -106,7 +117,7 @@ func (h vfsListingHost) FreshListCache(parentPath string, now time.Time) ([]driv
 	return h.v.localChildren(parentPath, h.v.filterDeleted(parentPath, entries)), true
 }
 
-func (h vfsListingHost) CommitList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
+func (h vfsListingView) CommitList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
 	parentPath = cleanVirtual(parentPath)
 	h.v.view.mu.Lock()
 	for i, child := range entries {
@@ -119,7 +130,7 @@ func (h vfsListingHost) CommitList(parentPath string, entries []drive.Entry, exp
 	return entries
 }
 
-func (h vfsListingHost) PendingUploads() []vfstypes.PendingUpload {
+func (h vfsListingView) PendingUploads() []vfstypes.PendingUpload {
 	return h.v.uploads.Store().PendingUploads()
 }
 
@@ -173,3 +184,5 @@ func (h vfsListingHealth) RecordResult(op string, err error) {
 }
 
 var _ listing.HealthRecorder = vfsListingHealth{}
+var _ listing.Remote = vfsListingRemote{}
+var _ listing.View = vfsListingView{}

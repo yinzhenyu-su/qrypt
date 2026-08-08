@@ -11,14 +11,20 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// Host is the VFS surface the listing domain needs: resolution, the view
-// overlay and cache, pending uploads. Health statistics are NOT part of the
-// host surface - they live on the optional HealthRecorder so the contract
-// stays narrow. VFS implements it via vfsListingHost.
-type Host interface {
+// Remote is the remote-IO surface the listing domain needs: path
+// resolution and backend child listing. It is separate from View so the
+// listing domain consumes a synthesized directory view without owning the
+// overlay's sources. VFS implements it via vfsListingRemote.
+type Remote interface {
 	Resolve(ctx context.Context, path string) (drive.Entry, error)
 	ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error)
+}
 
+// View is the synthesized directory-view surface: the overlay / local
+// state, the fresh-list cache, and the pending-upload projection. Listing
+// reads a finished view through this interface instead of reaching into
+// the overlay's sources. VFS implements it via vfsListingView.
+type View interface {
 	// Overlay / local-state helpers.
 	IsUnavailable(path string) bool
 	IsDeleted(path string) bool

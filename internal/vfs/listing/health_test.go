@@ -47,7 +47,7 @@ func (h *recordingHealth) lastErr() error {
 // behavior - the lister falls back to a no-op sink.
 func TestNilHealthRecorderWorks(t *testing.T) {
 	host := &fakeRuntimeHost{children: []drive.Entry{{ID: "c1", Name: "a.txt"}}}
-	l := NewLister(ListerDeps{Host: host, State: NewState()})
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState()})
 	entries, err := l.List(context.Background(), "/")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestNilHealthRecorderWorks(t *testing.T) {
 func TestHealthRecordsSuccess(t *testing.T) {
 	health := &recordingHealth{}
 	host := &fakeRuntimeHost{children: []drive.Entry{{ID: "c1", Name: "a.txt"}}}
-	l := NewLister(ListerDeps{Host: host, State: NewState(), Health: health})
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState(), Health: health})
 	if _, err := l.List(context.Background(), "/"); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestHealthRecordsSuccess(t *testing.T) {
 func TestHealthRecordsError(t *testing.T) {
 	health := &recordingHealth{}
 	host := &fakeRuntimeHost{childErr: errors.New("backend boom")}
-	l := NewLister(ListerDeps{Host: host, State: NewState(), Health: health})
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState(), Health: health})
 	if _, err := l.List(context.Background(), "/"); err == nil {
 		t.Fatal("want backend error")
 	}
@@ -100,7 +100,7 @@ func TestHealthRecordsCacheHit(t *testing.T) {
 	host.cache = map[string]listCacheEntry{
 		"/": {entries: []drive.Entry{{ID: "c1", Name: "a.txt"}}, expires: time.Now().Add(time.Minute)},
 	}
-	l := NewLister(ListerDeps{Host: host, State: NewState(), Health: health})
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState(), Health: health})
 	if _, err := l.List(context.Background(), "/"); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestHealthRecordsCacheHit(t *testing.T) {
 func TestHealthPrefetchDoesNotDoubleRecord(t *testing.T) {
 	health := &recordingHealth{}
 	host := &fakeRuntimeHost{children: []drive.Entry{{ID: "c1", Name: "a.txt"}}}
-	l := NewLister(ListerDeps{Host: host, State: NewState(), Health: health})
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState(), Health: health})
 	if _, err := l.List(context.Background(), "/"); err != nil {
 		t.Fatal(err)
 	}

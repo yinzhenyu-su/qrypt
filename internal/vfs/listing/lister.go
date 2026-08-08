@@ -13,9 +13,13 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// Lister implements directory listing on top of a Host and State.
+// Lister implements directory listing on top of Remote, View, and State.
+// Remote carries the remote IO and View the synthesized directory view
+// (overlay + cache + pending), so the lister never reaches into the
+// overlay's sources.
 type Lister struct {
-	host   Host
+	remote Remote
+	view   View
 	state  *State
 	health HealthRecorder
 }
@@ -24,19 +28,20 @@ type Lister struct {
 // is optional: nil falls back to a no-op sink so statistics never affect
 // correctness.
 type ListerDeps struct {
-	Host   Host
+	Remote Remote
+	View   View
 	State  *State
 	Health HealthRecorder
 }
 
 // NewLister builds a lister from explicit dependencies. The health
-// recorder is injected independently of the host surface, so an accidental
-// implementation on the host cannot silently enable statistics.
+// recorder is injected independently of the remote/view surfaces, so an
+// accidental implementation cannot silently enable statistics.
 func NewLister(deps ListerDeps) *Lister {
 	if deps.Health == nil {
 		deps.Health = noopHealth{}
 	}
-	return &Lister{host: deps.Host, state: deps.State, health: deps.Health}
+	return &Lister{remote: deps.Remote, view: deps.View, state: deps.State, health: deps.Health}
 }
 
 // State returns the listing domain state.
@@ -132,7 +137,7 @@ func decodeListPageCursor(cursor string) (listPageCursor, bool) {
 
 // ListNoPrefetch lists a directory without scheduling prefetch.
 func (l *Lister) ListNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {
-	entry, err := l.host.Resolve(ctx, path)
+	entry, err := l.remote.Resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -148,14 +153,14 @@ func (l *Lister) ListNoPrefetch(ctx context.Context, path string) ([]drive.Entry
 // local view.
 func (l *Lister) RemoteList(ctx context.Context, path string) ([]drive.Entry, error) {
 	path = CleanVirtualPath(path)
-	entry, err := l.host.Resolve(ctx, path)
+	entry, err := l.remote.Resolve(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	if !entry.IsDir {
 		return nil, fmt.Errorf("vfs: %s is not a directory", path)
 	}
-	entries, err := l.host.ListChildren(ctx, entry.ID)
+	entries, err := l.remote.ListChildren(ctx, entry.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -170,8 +175,8 @@ func (l *Lister) pendingChildren(parentPath string, entries []drive.Entry) []dri
 	for _, entry := range entries {
 		seen[entry.Name] = true
 	}
-	for _, pending := range l.host.PendingUploads() {
-		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || l.host.IsDeleted(pending.Path) {
+	for _, pending := range l.view.PendingUploads() {
+		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || l.view.IsDeleted(pending.Path) {
 			continue
 		}
 		entries = append(entries, drive.Entry{
@@ -200,11 +205,11 @@ func (l *Lister) prefetchChildren(ctx context.Context, parentPath, parentID stri
 func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID string, prefetch bool) ([]drive.Entry, error) {
 	parentPath = CleanVirtualPath(parentPath)
 	for {
-		if l.host.IsUnavailable(parentPath) {
+		if l.view.IsUnavailable(parentPath) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
 		}
 		now := time.Now()
-		if entries, ok := l.host.FreshListCache(parentPath, now); ok {
+		if entries, ok := l.view.FreshListCache(parentPath, now); ok {
 			return entries, nil
 		}
 
@@ -214,7 +219,7 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 			case <-load.done:
 				if load.err != nil {
 					if load.prefetch && !prefetch && ctx.Err() == nil {
-						if l.host.IsUnavailable(parentPath) {
+						if l.view.IsUnavailable(parentPath) {
 							return nil, fmt.Errorf("%w: %s", ErrNotFound, parentPath)
 						}
 						continue
@@ -222,8 +227,8 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 					return nil, load.err
 				}
 				entries := cloneEntries(load.entries)
-				entries = l.host.ApplyLocalModTimes(parentPath, entries)
-				return l.host.LocalChildren(parentPath, l.host.FilterDeleted(parentPath, entries)), nil
+				entries = l.view.ApplyLocalModTimes(parentPath, entries)
+				return l.view.LocalChildren(parentPath, l.view.FilterDeleted(parentPath, entries)), nil
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -238,7 +243,7 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID string, prefetch bool, l *Lister) ([]drive.Entry, error) {
 	parentPath = CleanVirtualPath(parentPath)
 	now := time.Now()
-	entries, err := l.host.ListChildren(ctx, parentID)
+	entries, err := l.remote.ListChildren(ctx, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -252,23 +257,23 @@ func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID str
 
 func (l *Lister) commitRemoteList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
 	parentPath = CleanVirtualPath(parentPath)
-	l.host.UpdateOverlay(parentPath, entries)
-	entries = l.host.FilterDeleted(parentPath, entries)
+	l.view.UpdateOverlay(parentPath, entries)
+	entries = l.view.FilterDeleted(parentPath, entries)
 	for i, child := range entries {
 		childPath := joinVirtual(parentPath, child.Name)
-		entries[i] = l.host.ApplyLocalModTimeLocked(childPath, child)
+		entries[i] = l.view.ApplyLocalModTimeLocked(childPath, child)
 	}
-	return l.host.LocalChildren(parentPath, l.host.CommitList(parentPath, entries, expires))
+	return l.view.LocalChildren(parentPath, l.view.CommitList(parentPath, entries, expires))
 }
 
 // IsCurrentPrefetchDir reports whether path still resolves to id (the
 // directory a prefetch was started for).
 func (l *Lister) IsCurrentPrefetchDir(path, id string) bool {
 	path = CleanVirtualPath(path)
-	if l.host.IsUnavailable(path) {
+	if l.view.IsUnavailable(path) {
 		return false
 	}
-	entry, ok := l.host.GetEntry(path)
+	entry, ok := l.view.GetEntry(path)
 	return ok && entry.IsDir && entry.ID == id
 }
 
@@ -346,7 +351,7 @@ func (l *Lister) SuppressDirPrefetch(path string) {
 func (l *Lister) HasFreshListCache(path string) bool {
 	path = CleanVirtualPath(path)
 	now := time.Now()
-	_, ok := l.host.FreshListCache(path, now)
+	_, ok := l.view.FreshListCache(path, now)
 	return ok
 }
 

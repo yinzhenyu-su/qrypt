@@ -174,7 +174,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		Health:   vfsReadHealth{tracker: v.healthTracker},
 	})
 	v.lister = listing.NewLister(listing.ListerDeps{
-		Host:   newVFSListingHost(v),
+		Remote: newVFSListingRemote(v),
+		View:   newVFSListingView(v),
 		State:  v.listing,
 		Health: vfsListingHealth{tracker: v.healthTracker},
 	})
