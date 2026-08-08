@@ -7,8 +7,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // Host is the VFS surface the listing domain needs: resolution, the view

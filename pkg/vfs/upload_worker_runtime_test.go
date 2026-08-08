@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 type fakeUploadWorkerRuntime struct {

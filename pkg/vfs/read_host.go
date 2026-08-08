@@ -5,10 +5,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
 	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // StreamReader is the streaming read surface implemented by the VFS.

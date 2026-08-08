@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	idelete "github.com/yinzhenyu/qrypt/internal/vfs/delete"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
-	idelete "github.com/yinzhenyu/qrypt/internal/vfs/delete"
 	"path"
 	"sort"
 	"strings"

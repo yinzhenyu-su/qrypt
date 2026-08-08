@@ -121,9 +121,11 @@ func TestVFSDisabledReadCacheFullLifecycle(t *testing.T) {
 	for _, entry := range entries {
 		t.Errorf("disabled read cache left file on disk: %s", entry.Name())
 	}
-	fs.deletes.Close()
-	fs.uploads.Close()
-	_ = fs.read.Close()
+	// Close synchronously: wait for upload workers and enqueue goroutines so
+	// no background write races the TempDir cleanup.
+	if err := fs.Close(context.Background()); err != nil {
+		t.Errorf("close: %v", err)
+	}
 }
 
 // TestVFSDisabledReadCacheDoesNotWriteChunks: a VFS with CacheMaxBytes=0

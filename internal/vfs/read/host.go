@@ -8,9 +8,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // Host is the VFS surface the read domain needs: resolution, pending

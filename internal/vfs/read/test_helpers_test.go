@@ -5,8 +5,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // stubHost is a no-op Host for unit tests of read-domain logic.

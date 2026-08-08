@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 )
 
 // StreamReader is the optional streaming surface for sequential downloads.

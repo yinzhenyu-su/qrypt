@@ -4,12 +4,13 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
 	"github.com/yinzhenyu/qrypt/internal/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,9 +66,9 @@ type VFS struct {
 	activeDebug *activeDebugState
 	pathLocks   *pathLockState
 
-	// done is closed when the VFS shuts down (context cancel in Start). The
-	// blocking upload-queue enqueue goroutine selects on it so it cannot
-	// leak after the upload workers have exited.
+	// done is closed when the VFS shuts down (Close or context cancel in
+	// Start). The blocking upload-queue enqueue goroutine selects on it so
+	// it cannot leak after the upload workers have exited.
 	done chan struct{}
 	// ctx is the lifecycle context from Start, kept so background tasks
 	// (remote deletes, prefetch) derive from the owning context instead of
@@ -75,6 +76,20 @@ type VFS struct {
 	// background task can observe it.
 	ctx       context.Context
 	startOnce sync.Once
+	// cancel cancels the lifecycle context; Close calls it first so upload
+	// workers exit and in-flight remote operations abort. Nil until Start.
+	cancel context.CancelFunc
+	// workerWG tracks the upload workers started by Start. Close waits for
+	// it so no worker outlives the VFS.
+	workerWG sync.WaitGroup
+	// closeOnce makes Close idempotent; closeErr holds the first Close's
+	// error (nil until the first Close completes) and is safe to read after
+	// any Close call returns.
+	closeOnce sync.Once
+	closeErr  error
+	// closeDone is closed when Close has finished tearing down background
+	// workers; callers and tests can wait on it.
+	closeDone chan struct{}
 }
 
 type overlayOp struct {
@@ -137,6 +152,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		listing:       listing.NewState(),
 		activeDebug:   newActiveDebugState(),
 		pathLocks:     newPathLockState(),
+		closeDone:     make(chan struct{}),
 	}
 	v.reader = read.NewReader(newVFSReadHost(v), v.read)
 	v.lister = listing.NewLister(newVFSListingHost(v), v.listing)
@@ -148,31 +164,66 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 // Lifecycle ownership: the FIRST context passed to Start owns the VFS
 // lifecycle. Later Start calls are no-ops - they do not start a second set
 // of workers, do not re-run resume (which would double-schedule pending
-// uploads) and do not register a second shutdown hook (which would
-// double-close internal channels). A different context passed to a second
-// Start is ignored: cancelling it does not stop the VFS, and there is no
-// way to transfer or replace ownership. Once Start has been called, the
-// instance runs until the owning context is cancelled; a cancelled instance
-// cannot be restarted by calling Start again - build a new VFS instead.
+// uploads) and do not register a second shutdown hook. A different context
+// passed to a second Start is ignored: cancelling it does not stop the
+// VFS. Once Start has been called, the instance runs until Close (or the
+// owning context cancelling, which triggers Close) - build a new VFS to
+// restart.
 func (v *VFS) Start(ctx context.Context) {
 	v.startOnce.Do(func() {
+		ctx, cancel := context.WithCancel(ctx)
 		v.ctx = ctx
+		v.cancel = cancel
 		for i := 0; i < v.uploads.WorkerCount(); i++ {
-			go v.uploadWorker(ctx)
+			v.workerWG.Add(1)
+			go func() {
+				defer v.workerWG.Done()
+				v.uploadWorker(ctx)
+			}()
 		}
 		v.Resume(ctx)
-		// Graceful stop: when the context is cancelled, stop the upload/delete
-		// timers and close the read-cache writer so no background goroutine
-		// outlives the VFS. Upload workers exit on ctx.Done themselves; the
-		// cache writer only exits when its queue is closed, which CloseReadCache
-		// does and waits for.
-		context.AfterFunc(ctx, func() {
-			close(v.done)
-			v.deletes.Close()
-			v.uploads.Close()
-			_ = v.read.Close()
-		})
+		// Graceful stop: when the owning context is cancelled (or Close is
+		// called directly), stop the upload/delete timers, wait for the
+		// upload workers, and close the read-cache writer so no background
+		// goroutine outlives the VFS. Close is idempotent, so an explicit
+		// Close call racing this hook is safe.
+		context.AfterFunc(ctx, func() { _ = v.Close(context.Background()) })
 	})
+}
+
+// Close shuts down the VFS and waits for all background work to finish.
+//
+// It is idempotent: the first call performs the shutdown and later calls
+// return the same result. Close can be called before Start (it tears down
+// construction-time resources such as the read-cache writer) and after the
+// owning context was cancelled (the Start hook calls Close itself), and it
+// can race the context-cancel hook safely.
+//
+// Close stops accepting new background work, cancels the lifecycle context
+// (upload workers exit, in-flight remote operations abort), stops
+// upload/delete timers, waits for upload workers and background enqueue
+// goroutines to exit, and closes the read-cache writer, flushing queued
+// writes. After Close returns no VFS-owned goroutine is running. The ctx
+// argument is reserved for future timeout semantics; the current
+// implementation blocks until shutdown completes.
+func (v *VFS) Close(ctx context.Context) error {
+	v.closeOnce.Do(func() {
+		if v.cancel != nil {
+			v.cancel()
+		}
+		v.uploads.Close()
+		v.deletes.Close()
+		close(v.done)
+		v.workerWG.Wait()
+		v.uploads.Wait()
+		var errs []error
+		if err := v.read.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		v.closeErr = errors.Join(errs...)
+		close(v.closeDone)
+	})
+	return v.closeErr
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 // listingState aliases the listing domain state (internal/listing).

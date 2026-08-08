@@ -258,6 +258,13 @@ type Service struct {
 	delay    time.Duration
 	workers  int
 	done     chan struct{}
+
+	// enqueueMu guards enqueueWG.Add against a concurrent Wait: Close
+	// locks it, marks the service stopped, and waits; sendUpload locks it
+	// before spawning a background enqueue goroutine.
+	enqueueMu sync.Mutex
+	enqueueWG sync.WaitGroup
+	stopped   bool
 }
 
 // NewService builds the upload domain state together.
@@ -375,7 +382,21 @@ func (s *Service) FaultsRemove(id string) {
 
 // --- lifecycle ---
 
-func (s *Service) Close() { s.schedule.StopAll() }
+func (s *Service) Close() {
+	s.schedule.StopAll()
+	s.enqueueMu.Lock()
+	s.stopped = true
+	s.enqueueMu.Unlock()
+}
+
+// Wait blocks until background enqueue goroutines spawned when the upload
+// queue was full have exited. Call after Close so no new goroutines are
+// created; the VFS closes its done channel to wake the stragglers.
+func (s *Service) Wait() {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	s.enqueueWG.Wait()
+}
 
 func (s *Service) SetDone(done chan struct{}) { s.done = done }
 
@@ -495,14 +516,18 @@ func (s *Service) sendUpload(p PendingUpload) {
 		logging.L.DebugfEvery("vfs.Upload_enqueued", time.Second, "[VFS] upload enqueued op_id=%q path=%q size=%d retry=%d", p.FID, p.Path, p.Size, p.RetryCount)
 	default:
 		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background op_id=%q path=%q size=%d", p.FID, p.Path, p.Size)
-		done := s.done
-		if done == nil {
+		s.enqueueMu.Lock()
+		if s.stopped {
+			s.enqueueMu.Unlock()
 			return
 		}
+		s.enqueueWG.Add(1)
+		s.enqueueMu.Unlock()
 		go func() {
+			defer s.enqueueWG.Done()
 			select {
 			case s.queue <- p:
-			case <-done:
+			case <-s.done:
 			}
 		}()
 	}
