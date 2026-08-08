@@ -49,3 +49,38 @@ func TestCommitRemoteChildrenExpiryPassed(t *testing.T) {
 		t.Fatalf("committed expiry %v is not in the future", host.committedExpires)
 	}
 }
+
+// TestProjectChildrenUsedByWaiter: an in-flight waiter projects the owner's
+// fetched snapshot through ProjectChildren - the lister no longer calls the
+// individual projection steps.
+func TestProjectChildrenUsedByWaiter(t *testing.T) {
+	host := &fakeRuntimeHost{
+		children:  []drive.Entry{{ID: "c1", Name: "a.txt"}},
+		listBlock: make(chan struct{}),
+	}
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState()})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := l.List(context.Background(), "/"); err != nil {
+			t.Errorf("owner list: %v", err)
+		}
+	}()
+	// Give the owner time to become the load owner (blocked on the remote
+	// fetch), then add a waiter.
+	time.Sleep(20 * time.Millisecond)
+	waiterDone := make(chan struct{})
+	go func() {
+		defer close(waiterDone)
+		if _, err := l.List(context.Background(), "/"); err != nil {
+			t.Errorf("waiter list: %v", err)
+		}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(host.listBlock)
+	<-done
+	<-waiterDone
+	if host.projectCalls == 0 {
+		t.Fatal("waiter path did not call ProjectChildren")
+	}
+}

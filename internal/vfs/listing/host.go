@@ -28,20 +28,23 @@ type View interface {
 	// Overlay / local-state helpers.
 	IsUnavailable(path string) bool
 	IsDeleted(path string) bool
-	FilterDeleted(parentPath string, entries []drive.Entry) []drive.Entry
-	LocalChildren(parentPath string, entries []drive.Entry) []drive.Entry
-	ApplyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry
 	GetEntry(path string) (drive.Entry, bool)
 
 	// View cache.
 	FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool)
 	// CommitRemoteChildren folds a freshly fetched remote listing into the
-	// synthesized view atomically: rename/delete overlay update, filtering of
-	// invisible remote nodes, local-modtime application, entry/list-cache
-	// commit, and local-children merge - returning the final effective
-	// listing. The listing domain calls this one semantic operation instead
-	// of orchestrating the internal overlay/cache steps.
+	// synthesized view as a single semantic operation: rename/delete overlay
+	// update, filtering of invisible remote nodes, local-modtime
+	// application, entry/list-cache commit, and local-children merge -
+	// returning the final effective listing. The view implementation owns
+	// the ordered protocol (and its locks); the listing domain does not
+	// orchestrate the internal steps.
 	CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry
+	// ProjectChildren applies the CURRENT visibility state to an already
+	// fetched or cached entry snapshot: local modtimes, deleted/hidden
+	// filtering, and local-children merge. It does not update the overlay,
+	// does not touch the list cache, and does not mutate the input slice.
+	ProjectChildren(parentPath string, entries []drive.Entry) []drive.Entry
 
 	// Pending uploads feeding into listings.
 	PendingUploads() []vfstypes.PendingUpload

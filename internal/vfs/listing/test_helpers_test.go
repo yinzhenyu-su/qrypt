@@ -26,12 +26,6 @@ func (stubHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
 func (stubHost) IsUnavailable(string) bool { return false }
 func (stubHost) IsDeleted(string) bool     { return false }
 
-func (stubHost) FilterDeleted(string, []drive.Entry) []drive.Entry { return nil }
-func (stubHost) LocalChildren(string, []drive.Entry) []drive.Entry { return nil }
-func (stubHost) ApplyLocalModTimes(string, []drive.Entry) []drive.Entry {
-	return nil
-}
-
 func (stubHost) UpdateOverlay(string, []drive.Entry) {}
 
 func (stubHost) GetEntry(string) (drive.Entry, bool) { return drive.Entry{}, false }
@@ -50,5 +44,7 @@ func (h stubHost) FreshListCache(parentPath string, now time.Time) ([]drive.Entr
 func (stubHost) CommitRemoteChildren(string, []drive.Entry, time.Time) []drive.Entry {
 	return nil
 }
+
+func (stubHost) ProjectChildren(string, []drive.Entry) []drive.Entry { return nil }
 
 func (stubHost) PendingUploads() []vfstypes.PendingUpload { return nil }

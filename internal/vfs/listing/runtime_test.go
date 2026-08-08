@@ -20,22 +20,30 @@ type fakeRuntimeHost struct {
 	committedOK      bool
 	entry            drive.Entry
 	entryOK          bool
+	// listBlock, when non-nil, blocks ListChildren until closed so tests
+	// can hold the owner of a list load open while waiters arrive.
+	listBlock    chan struct{}
+	projectCalls int
 }
 
-func (h *fakeRuntimeHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
+func (h *fakeRuntimeHost) ListChildren(ctx context.Context, _ string) ([]drive.Entry, error) {
+	if h.listBlock != nil {
+		select {
+		case <-h.listBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return h.children, h.childErr
-}
-
-func (h *fakeRuntimeHost) FilterDeleted(string, []drive.Entry) []drive.Entry {
-	return h.children
-}
-
-func (h *fakeRuntimeHost) LocalChildren(string, []drive.Entry) []drive.Entry {
-	return h.children
 }
 
 func (h *fakeRuntimeHost) GetEntry(string) (drive.Entry, bool) {
 	return h.entry, h.entryOK
+}
+
+func (h *fakeRuntimeHost) ProjectChildren(_ string, entries []drive.Entry) []drive.Entry {
+	h.projectCalls++
+	return entries
 }
 
 func (h *fakeRuntimeHost) CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry {

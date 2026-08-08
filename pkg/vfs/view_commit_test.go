@@ -3,6 +3,7 @@ package vfs
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,4 +169,117 @@ func TestViewCommitRemoteChildrenHidesUnavailable(t *testing.T) {
 			t.Errorf("apple metadata child %s is visible in the committed view", e.Name)
 		}
 	}
+}
+
+// TestProjectChildrenSemantics: ProjectChildren applies the CURRENT
+// visibility state to a snapshot without touching the overlay or cache:
+// deleted/hidden nodes filtered, local children merged, local modtimes
+// overriding remote ones, and the input slice untouched.
+func TestProjectChildrenSemantics(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+
+	if _, err := fs.Mkdir(context.Background(), "/localdir"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(context.Background(), "/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.SetModTime(context.Background(), "/a.txt", time.Unix(1234567890, 0)); err != nil {
+		t.Fatal(err)
+	}
+	fs.setCopyHidden("/", map[string]time.Time{"dir1": time.Now().Add(time.Minute)})
+
+	// A stale snapshot fetched earlier (e.g. an in-flight waiter's copy).
+	snapshot := []drive.Entry{
+		{ID: "id-a", Name: "a.txt", Size: 5},
+		{ID: "id-b", Name: "b.txt", Size: 4},
+		{ID: "id-d", Name: "dir1", IsDir: true},
+	}
+	got := view.ProjectChildren("/", snapshot)
+
+	names := make(map[string]drive.Entry, len(got))
+	for _, e := range got {
+		names[e.Name] = e
+	}
+	if _, ok := names["b.txt"]; ok {
+		t.Error("deleted b.txt visible after projection")
+	}
+	if _, ok := names["dir1"]; ok {
+		t.Error("copy-hidden dir1 visible after projection")
+	}
+	if _, ok := names["localdir"]; !ok {
+		t.Error("local child localdir not merged by projection")
+	}
+	if e := names["a.txt"]; !e.ModTime.Equal(time.Unix(1234567890, 0)) {
+		t.Errorf("a.txt modtime = %v, want local override", e.ModTime)
+	}
+	// Input must be untouched.
+	if len(snapshot) != 3 || snapshot[0].Name != "a.txt" || snapshot[1].Name != "b.txt" {
+		t.Fatalf("input slice mutated by projection: %+v", snapshot)
+	}
+}
+
+// TestProjectChildrenDoesNotTouchCache: projection must not commit or
+// invalidate the fresh-list cache.
+func TestProjectChildrenDoesNotTouchCache(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+
+	// Commit a listing so the cache is warm, then project a different
+	// snapshot: the cache must keep serving the committed listing.
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-a", Name: "a.txt", Size: 5}}, time.Now().Add(time.Minute))
+	_ = view.ProjectChildren("/", []drive.Entry{{ID: "id-x", Name: "x.txt", Size: 1}})
+	if cached, ok := view.FreshListCache("/", time.Now().Add(30*time.Second)); !ok {
+		t.Fatal("projection invalidated the fresh-list cache")
+	} else {
+		for _, e := range cached {
+			if e.Name == "x.txt" {
+				t.Fatal("projection wrote into the fresh-list cache")
+			}
+		}
+	}
+}
+
+// TestOwnerWaiterConcurrentProjection: an owner holding a slow remote fetch
+// while multiple waiters project the snapshot concurrently with view-state
+// mutations must be race-free. The fake driver's Delay makes the owner hold
+// the list load long enough for waiters to pile up.
+func TestOwnerWaiterConcurrentProjection(t *testing.T) {
+	drv := drive.NewFakeDriver(func(d *drive.FakeDriver) { d.Delay = 2 * time.Millisecond })
+	if err := drv.Seed(map[string]string{"a.txt": "alpha", "b.txt": "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := New(drv, Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fs.Start(ctx)
+	defer func() { _ = fs.Close(context.Background()) }()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				_, _ = fs.List(ctx, "/")
+			}
+		}()
+	}
+	// Mutate view state while listings project snapshots.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				_ = fs.SetModTime(ctx, "/a.txt", time.Unix(int64(j), 0))
+				_, _ = fs.Mkdir(ctx, "/d")
+				_ = fs.Remove(ctx, "/d")
+			}
+		}()
+	}
+	wg.Wait()
 }

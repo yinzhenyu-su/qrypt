@@ -226,9 +226,7 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 					}
 					return nil, load.err
 				}
-				entries := cloneEntries(load.entries)
-				entries = l.view.ApplyLocalModTimes(parentPath, entries)
-				return l.view.LocalChildren(parentPath, l.view.FilterDeleted(parentPath, entries)), nil
+				return l.view.ProjectChildren(parentPath, load.entries), nil
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}

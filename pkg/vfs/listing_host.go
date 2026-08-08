@@ -80,18 +80,6 @@ func (h vfsListingView) IsDeleted(path string) bool {
 	return h.v.isDeleted(path)
 }
 
-func (h vfsListingView) FilterDeleted(parentPath string, entries []drive.Entry) []drive.Entry {
-	return h.v.filterDeleted(parentPath, entries)
-}
-
-func (h vfsListingView) LocalChildren(parentPath string, entries []drive.Entry) []drive.Entry {
-	return h.v.localChildren(parentPath, entries)
-}
-
-func (h vfsListingView) ApplyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry {
-	return h.v.applyLocalModTimes(parentPath, entries)
-}
-
 func (h vfsListingView) GetEntry(path string) (drive.Entry, bool) {
 	return h.v.view.entries.Get(path)
 }
@@ -104,9 +92,7 @@ func (h vfsListingView) FreshListCache(parentPath string, now time.Time) ([]driv
 	if !ok || !now.Before(cached.expires) {
 		return nil, false
 	}
-	entries := cloneEntries(cached.entries)
-	entries = h.v.applyLocalModTimes(parentPath, entries)
-	return h.v.localChildren(parentPath, h.v.filterDeleted(parentPath, entries)), true
+	return h.projectChildren(parentPath, cached.entries), true
 }
 
 // CommitRemoteChildren folds a fresh remote listing into the synthesized
@@ -126,7 +112,25 @@ func (h vfsListingView) CommitRemoteChildren(parentPath string, remote []drive.E
 	}
 	h.v.view.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: expires}
 	h.v.view.mu.Unlock()
+	return h.projectChildren(parentPath, entries)
+}
+
+// projectChildren applies the current visibility state to an entry
+// snapshot: local modtimes, deleted/hidden filtering, and local-children
+// merge. Shared by FreshListCache, CommitRemoteChildren, and the in-flight
+// waiter projection (via listing.View.ProjectChildren).
+func (h vfsListingView) projectChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+	// ApplyLocalModTimes writes modtimes in place; clone first so a shared
+	// snapshot (e.g. concurrent waiters projecting the same owner load) is
+	// never mutated and the caller's slice stays untouched.
+	entries = cloneEntries(entries)
+	entries = h.v.applyLocalModTimes(parentPath, entries)
+	entries = h.v.filterDeleted(parentPath, entries)
 	return h.v.localChildren(parentPath, entries)
+}
+
+func (h vfsListingView) ProjectChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+	return h.projectChildren(parentPath, entries)
 }
 
 func (h vfsListingView) PendingUploads() []vfstypes.PendingUpload {
