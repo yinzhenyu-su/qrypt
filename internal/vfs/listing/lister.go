@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -145,7 +145,7 @@ func (l *Lister) ListNoPrefetch(ctx context.Context, path string) ([]drive.Entry
 	if err != nil {
 		return nil, err
 	}
-	entries = l.pendingChildren(path, entries)
+	// Children (via the view projection) already includes pending uploads.
 	return entries, nil
 }
 
@@ -168,28 +168,6 @@ func (l *Lister) RemoteList(ctx context.Context, path string) ([]drive.Entry, er
 		return entries[i].Name < entries[j].Name
 	})
 	return entries, nil
-}
-
-func (l *Lister) pendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
-	seen := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		seen[entry.Name] = true
-	}
-	for _, pending := range l.view.PendingUploads() {
-		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || l.view.IsDeleted(pending.Path) {
-			continue
-		}
-		entries = append(entries, drive.Entry{
-			ID:        pending.FID,
-			ParentID:  pending.ParentID,
-			Name:      pending.Name,
-			Size:      pending.Size,
-			ModTime:   ModTime(pending),
-			UpdatedAt: ModTime(pending),
-		})
-		seen[pending.Name] = true
-	}
-	return entries
 }
 
 // Children lists the (pending-inclusive) children of a directory,
@@ -255,8 +233,9 @@ func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID str
 
 func (l *Lister) commitRemoteList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
 	parentPath = CleanVirtualPath(parentPath)
-	// One atomic view operation: the View implementation owns the overlay,
-	// filtering, modtime, cache, and local-merge steps (and their locks).
+	// One semantic view operation: the View implementation owns the
+	// ordered projection/commit protocol (overlay, filtering, modtime,
+	// cache, local-merge) and its locks; this is not an atomic snapshot.
 	return l.view.CommitRemoteChildren(parentPath, entries, expires)
 }
 
@@ -363,7 +342,7 @@ func joinVirtual(parent, name string) string {
 
 // CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
 func CleanVirtualPath(path string) string {
-	return vfstypes.CleanVirtualPath(path)
+	return filepath.Clean("/" + strings.TrimPrefix(path, "/"))
 }
 
 // ErrNotFound is reported for paths hidden by the overlay.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -24,7 +23,6 @@ func (stubHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
 }
 
 func (stubHost) IsUnavailable(string) bool { return false }
-func (stubHost) IsDeleted(string) bool     { return false }
 
 func (stubHost) UpdateOverlay(string, []drive.Entry) {}
 
@@ -46,5 +44,3 @@ func (stubHost) CommitRemoteChildren(string, []drive.Entry, time.Time) []drive.E
 }
 
 func (stubHost) ProjectChildren(string, []drive.Entry) []drive.Entry { return nil }
-
-func (stubHost) PendingUploads() []vfstypes.PendingUpload { return nil }

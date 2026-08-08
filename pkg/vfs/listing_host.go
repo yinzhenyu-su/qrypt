@@ -2,10 +2,10 @@ package vfs
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -76,10 +76,6 @@ func (h vfsListingView) IsUnavailable(path string) bool {
 	return h.v.isUnavailable(path)
 }
 
-func (h vfsListingView) IsDeleted(path string) bool {
-	return h.v.isDeleted(path)
-}
-
 func (h vfsListingView) GetEntry(path string) (drive.Entry, bool) {
 	return h.v.view.entries.Get(path)
 }
@@ -96,9 +92,11 @@ func (h vfsListingView) FreshListCache(parentPath string, now time.Time) ([]driv
 }
 
 // CommitRemoteChildren folds a fresh remote listing into the synthesized
-// view atomically: rename/delete overlay update, filtering of invisible
-// remote nodes, local-modtime application under the view lock, entry and
-// list-cache commit, and local-children merge. The listing domain never
+// view as a single semantic view operation: rename/delete overlay update,
+// filtering of invisible remote nodes, local-modtime application under the
+// view lock, entry and list-cache commit, and local-children merge. The
+// steps span overlay/cache/local locks, so it is NOT an atomic snapshot -
+// it encapsulates the ordered commit protocol. The listing domain never
 // sees the overlay/cache orchestration or the locks.
 func (h vfsListingView) CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry {
 	parentPath = cleanVirtual(parentPath)
@@ -126,15 +124,53 @@ func (h vfsListingView) projectChildren(parentPath string, entries []drive.Entry
 	entries = cloneEntries(entries)
 	entries = h.v.applyLocalModTimes(parentPath, entries)
 	entries = h.v.filterDeleted(parentPath, entries)
-	return h.v.localChildren(parentPath, entries)
+	entries = h.v.localChildren(parentPath, entries)
+	return h.mergePendingChildren(parentPath, entries)
+}
+
+// mergePendingChildren merges pending upload records into a projected
+// listing: a pending file is visible under its parent unless a remote or
+// local child with the same name already exists or the path is deleted.
+// The pending projection is dynamic - it is recomputed on every read, so a
+// pending record appearing or vanishing never requires cache invalidation.
+func (h vfsListingView) mergePendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
+	parentPath = cleanVirtual(parentPath)
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.Name] = true
+	}
+	for _, pending := range h.v.uploads.Store().PendingUploads() {
+		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || h.v.isDeleted(pending.Path) {
+			continue
+		}
+		modTime := pendingModTime(pending)
+		entries = append(entries, drive.Entry{
+			ID:        pending.FID,
+			ParentID:  pending.ParentID,
+			Name:      pending.Name,
+			Size:      pending.Size,
+			ModTime:   modTime,
+			UpdatedAt: modTime,
+		})
+		seen[pending.Name] = true
+	}
+	return entries
+}
+
+// pendingModTime returns the display mod time for a pending upload (zero
+// when the record has no mtime set).
+func pendingModTime(p PendingUpload) time.Time {
+	if p.ModTime > 0 {
+		return time.Unix(0, p.ModTime)
+	}
+	if p.UpdatedAt > 0 {
+		return time.Unix(0, p.UpdatedAt)
+	}
+	return time.Time{}
 }
 
 func (h vfsListingView) ProjectChildren(parentPath string, entries []drive.Entry) []drive.Entry {
 	return h.projectChildren(parentPath, entries)
-}
-
-func (h vfsListingView) PendingUploads() []vfstypes.PendingUpload {
-	return h.v.uploads.Store().PendingUploads()
 }
 
 // List serves a directory listing (pending-inclusive).

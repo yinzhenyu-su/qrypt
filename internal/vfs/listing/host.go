@@ -7,7 +7,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -27,7 +26,6 @@ type Remote interface {
 type View interface {
 	// Overlay / local-state helpers.
 	IsUnavailable(path string) bool
-	IsDeleted(path string) bool
 	GetEntry(path string) (drive.Entry, bool)
 
 	// View cache.
@@ -45,9 +43,6 @@ type View interface {
 	// filtering, and local-children merge. It does not update the overlay,
 	// does not touch the list cache, and does not mutate the input slice.
 	ProjectChildren(parentPath string, entries []drive.Entry) []drive.Entry
-
-	// Pending uploads feeding into listings.
-	PendingUploads() []vfstypes.PendingUpload
 }
 
 // HealthRecorder receives listing-domain health statistics. It is optional:
@@ -61,12 +56,3 @@ type HealthRecorder interface {
 type noopHealth struct{}
 
 func (noopHealth) RecordResult(string, error) {}
-
-// ModTime returns the display mod time for a pending upload (zero when the
-// record has no mtime set).
-func ModTime(p vfstypes.PendingUpload) time.Time {
-	if p.ModTime > 0 {
-		return time.Unix(0, p.ModTime)
-	}
-	return time.Time{}
-}
