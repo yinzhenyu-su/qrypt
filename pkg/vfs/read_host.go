@@ -86,6 +86,11 @@ func (h vfsReadHost) DebugCacheCounters() (hits, misses int64) {
 	return h.v.debugCacheCounters()
 }
 
+// vfsReadHost implements both the read domain's Host and its optional
+// ReadObserver; the two surfaces stay separate in the read package even
+// though the VFS adapter provides both.
+var _ read.ReadObserver = vfsReadHost{}
+
 // Read serves path content at offset/size, serving pending staging when
 // present.
 func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {

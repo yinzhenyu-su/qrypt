@@ -40,8 +40,8 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 	defer func() { r.host.RecordHealth(drive.HealthOpRead, err) }()
 	path = CleanVirtualPath(path)
 	started := timeutil.Now()
-	opID := r.host.DebugNextOpID()
-	activeID := r.host.DebugBeginActive(vfstypes.DebugActiveOp{
+	opID := r.observer.DebugNextOpID()
+	activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 		OpID:   opID,
 		Kind:   "vfs_read_stream",
 		Phase:  "resolve",
@@ -49,42 +49,42 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 		Offset: 0,
 	})
 	if pending, ok, err := r.pendingUpload(path); err == nil && ok {
-		r.host.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_flush"
 			op.RemoteID = pending.FID
 		})
 		if err := r.host.FlushStaging(pending.LocalPath); err != nil {
-			r.host.DebugFinishActive(activeID)
-			r.host.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
+			r.observer.DebugFinishActive(activeID)
+			r.observer.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
-		r.host.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
+		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_open"
 		})
 		rc, err := osutil.OpenRead(pending.LocalPath, 0, 0)
 		if err != nil {
-			r.host.DebugFinishActive(activeID)
-			r.host.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
+			r.observer.DebugFinishActive(activeID)
+			r.observer.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
 			return nil, err
 		}
 		return &debugReadCloser{ReadCloser: rc, finish: func(bytes int64, readErr error) {
-			r.host.DebugFinishActive(activeID)
-			r.host.DebugRecordRead(opID, path, pending.FID, 0, 0, bytes, "staging", 0, 0, 0, started, nil, readErr)
+			r.observer.DebugFinishActive(activeID)
+			r.observer.DebugRecordRead(opID, path, pending.FID, 0, 0, bytes, "staging", 0, 0, 0, started, nil, readErr)
 		}}, nil
 	}
 	entry, err := r.resolve(ctx, path)
 	if err != nil {
-		r.host.DebugFinishActive(activeID)
-		r.host.DebugRecordRead(opID, path, "", 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
+		r.observer.DebugFinishActive(activeID)
+		r.observer.DebugRecordRead(opID, path, "", 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
 	if entry.IsDir {
 		err := fmt.Errorf("vfs: %s is a directory", path)
-		r.host.DebugFinishActive(activeID)
-		r.host.DebugRecordRead(opID, path, entry.ID, 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
+		r.observer.DebugFinishActive(activeID)
+		r.observer.DebugRecordRead(opID, path, entry.ID, 0, 0, 0, "remote", 0, 0, 0, started, nil, err)
 		return nil, err
 	}
-	hitsBefore, missesBefore := r.host.DebugCacheCounters()
+	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	return &chunkedStreamReader{
 		ctx:          drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path}),
 		reader:       r,
@@ -174,7 +174,7 @@ func (r *chunkedStreamReader) Close() error {
 }
 
 func (r *chunkedStreamReader) finish(bytes int64, readErr error) {
-	r.reader.host.DebugFinishActive(r.activeID)
-	hitsAfter, missesAfter := r.reader.host.DebugCacheCounters()
-	r.reader.host.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, nil, readErr)
+	r.reader.observer.DebugFinishActive(r.activeID)
+	hitsAfter, missesAfter := r.reader.observer.DebugCacheCounters()
+	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, nil, readErr)
 }

@@ -123,7 +123,7 @@ func DebugOperationName(ctx context.Context) string {
 
 // RecordChunkDetail records a per-chunk debug event when ctx carries a
 // debug operation.
-func RecordChunkDetail(host Host, ctx context.Context, entry drive.Entry, phase string, index, start, size, bytes int64, started time.Time, extra map[string]any, err error) {
+func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.Entry, phase string, index, start, size, bytes int64, started time.Time, extra map[string]any, err error) {
 	op, ok := drive.DebugOperationFromContext(ctx)
 	if !ok || op.OpID == "" {
 		return
@@ -135,7 +135,7 @@ func RecordChunkDetail(host Host, ctx context.Context, entry drive.Entry, phase 
 	extra["chunk_offset"] = index * ChunkSize
 	extra["chunk_range_start"] = start
 	extra["chunk_range_size"] = size
-	host.DebugRecordReadDetail(ctx, op.Name, entry.ID, phase, index*ChunkSize+start, size, bytes, started, extra, err)
+	observer.DebugRecordReadDetail(ctx, op.Name, entry.ID, phase, index*ChunkSize+start, size, bytes, started, extra, err)
 }
 
 // CacheLookupExtra annotates extra with the cache lookup source and time.

@@ -14,8 +14,10 @@ import (
 )
 
 // Host is the VFS surface the read domain needs: resolution, pending
-// uploads, staging flush, driver reads, health, and debug bookkeeping.
-// VFS implements it via vfsReadHost.
+// uploads, staging flush, driver reads, and health. Debug bookkeeping is
+// NOT part of the host surface - it lives on the optional ReadObserver so
+// instrumentation never widens the hot-path contract. VFS implements it
+// via vfsReadHost.
 type Host interface {
 	Resolve(ctx context.Context, path string) (drive.Entry, error)
 	PendingUpload(path string) (vfstypes.PendingUpload, bool, error)
@@ -24,8 +26,13 @@ type Host interface {
 	ReadCacheKey(entry drive.Entry) string
 	RootID() string
 	DriverRead(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error)
+}
 
-	// Debug bookkeeping (implemented by the VFS debug layer).
+// ReadObserver receives read-domain debug bookkeeping. It is optional: the
+// read domain works without one (a no-op sink), and VFS wires its debug
+// layer through it. Keeping it separate from Host means debug requirements
+// cannot grow the host surface the hot path depends on.
+type ReadObserver interface {
 	DebugNextOpID() string
 	DebugBeginActive(op vfstypes.DebugActiveOp) uint64
 	DebugUpdateActive(id uint64, fn func(*vfstypes.DebugActiveOp))
@@ -34,6 +41,23 @@ type Host interface {
 	DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error)
 	DebugCacheCounters() (hits, misses int64)
 }
+
+// noopObserver is the default ReadObserver: the read domain is fully
+// functional without a debug sink, and tests that stub only Host get it
+// automatically.
+type noopObserver struct{}
+
+func (noopObserver) DebugNextOpID() string { return "" }
+func (noopObserver) DebugBeginActive(vfstypes.DebugActiveOp) uint64 {
+	return 0
+}
+func (noopObserver) DebugUpdateActive(uint64, func(*vfstypes.DebugActiveOp)) {}
+func (noopObserver) DebugFinishActive(uint64)                                {}
+func (noopObserver) DebugRecordRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
+}
+func (noopObserver) DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
+}
+func (noopObserver) DebugCacheCounters() (hits, misses int64) { return 0, 0 }
 
 // Cache is the durable chunk store subset the read domain uses.
 type Cache interface {
