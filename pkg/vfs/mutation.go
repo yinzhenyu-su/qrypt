@@ -285,6 +285,12 @@ func (r vfsMutationRuntime) CacheListedChildren(parentPath string, entries []dri
 	}
 }
 
+// CommitMkdir is the mutation-commit entry point for a created directory.
+// It is the canonical shape the mutation coordinator will use for every
+// local mutation (Rename/Remove/UploadCommitted follow the same pattern):
+// write the entry cache, mark derived local state, and invalidate the
+// affected list cache - all under the view lock, so a concurrent reader
+// never observes a half-committed mutation.
 func (r vfsMutationRuntime) CommitMkdir(path string, entry drive.Entry) {
 	r.v.view.mu.Lock()
 	r.v.view.entries.Set(path, entry)
