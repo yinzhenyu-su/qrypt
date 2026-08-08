@@ -7,7 +7,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/internal/delete"
+	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/delete"
 )
 
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {

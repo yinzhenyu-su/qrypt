@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"hash"
 	"io"
 	"os"

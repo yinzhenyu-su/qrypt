@@ -13,7 +13,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 type UploadStagingStatus = vfstypes.UploadStagingStatus

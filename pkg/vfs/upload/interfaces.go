@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 type PendingUpload = vfstypes.PendingUpload

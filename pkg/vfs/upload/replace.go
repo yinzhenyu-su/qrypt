@@ -8,7 +8,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 type uploadTarget struct {

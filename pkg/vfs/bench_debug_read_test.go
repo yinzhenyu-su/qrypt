@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
 // Benchmarks for the always-on read debug instrumentation.

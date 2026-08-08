@@ -3,8 +3,8 @@ package vfs
 import (
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 // Type aliases — the implementations live in internal/upload.

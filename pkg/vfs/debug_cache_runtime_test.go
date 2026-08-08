@@ -3,8 +3,8 @@ package vfs
 import (
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
 
 type fakeDebugCacheRuntime struct {

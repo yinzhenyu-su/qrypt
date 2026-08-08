@@ -6,7 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"os"
 	"path/filepath"
 	"testing"

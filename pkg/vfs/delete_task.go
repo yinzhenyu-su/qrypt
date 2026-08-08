@@ -7,7 +7,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
-	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/internal/delete"
+	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/delete"
 	"path"
 	"sort"
 	"strings"

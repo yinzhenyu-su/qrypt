@@ -1,7 +1,7 @@
 // Package vfstypes holds data types shared between the VFS package and its
-// internal sub-packages (upload, delete, cache, debug). These are plain
-// data structs with no dependencies on VFS internals, so sub-packages can
-// import them without creating cycles.
+// sub-packages (upload, delete, readcache, read, listing, debug). These
+// are plain data structs with no dependencies on VFS internals, so
+// sub-packages can import them without creating cycles.
 package vfstypes
 
 import (

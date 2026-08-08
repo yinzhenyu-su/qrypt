@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 )
 
 // Read-domain constants.

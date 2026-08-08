@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
 
 // DebugReadCache is a point-in-time snapshot of the read cache for

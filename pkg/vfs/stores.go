@@ -3,9 +3,9 @@ package vfs
 import (
 	"path/filepath"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/readcache"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/upload"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/internal/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 // Type aliases for shared data types (implementations in internal/vfstypes).
