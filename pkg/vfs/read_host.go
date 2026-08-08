@@ -58,38 +58,51 @@ func (h vfsReadHost) DriverRead(ctx context.Context, entry drive.Entry, offset, 
 	return h.v.driver.Read(ctx, entry, offset, size)
 }
 
-func (h vfsReadHost) DebugNextOpID() string {
-	return h.v.nextDebugReadOpID()
+// vfsReadHost adapts only the read host surface; debug instrumentation
+// lives on the separate vfsReadObserver type so the host contract stays
+// free of diagnostic methods (enforced by the assertion below).
+var _ read.Host = vfsReadHost{}
+
+// vfsReadObserver adapts VFS debug internals to read.ReadObserver. It is a
+// distinct type from vfsReadHost (even though both currently reach into the
+// VFS) so the read host surface cannot grow debug methods by accident.
+type vfsReadObserver struct {
+	v *VFS
 }
 
-func (h vfsReadHost) DebugBeginActive(op vfstypes.DebugActiveOp) uint64 {
-	return h.v.beginDebugActive(op)
+func newVFSReadObserver(v *VFS) vfsReadObserver {
+	return vfsReadObserver{v: v}
 }
 
-func (h vfsReadHost) DebugUpdateActive(id uint64, fn func(*vfstypes.DebugActiveOp)) {
-	h.v.updateDebugActive(id, func(op *DebugActiveOp) { fn(op) })
+func (o vfsReadObserver) DebugNextOpID() string {
+	return o.v.nextDebugReadOpID()
 }
 
-func (h vfsReadHost) DebugFinishActive(id uint64) {
-	h.v.finishDebugActive(id)
+func (o vfsReadObserver) DebugBeginActive(op vfstypes.DebugActiveOp) uint64 {
+	return o.v.beginDebugActive(op)
 }
 
-func (h vfsReadHost) DebugRecordRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
-	h.v.recordDebugRead(opID, path, remoteID, offset, requested, bytes, source, cacheHits, cacheMisses, chunks, started, extra, err)
+func (o vfsReadObserver) DebugUpdateActive(id uint64, fn func(*vfstypes.DebugActiveOp)) {
+	o.v.updateDebugActive(id, func(op *DebugActiveOp) { fn(op) })
 }
 
-func (h vfsReadHost) DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
-	h.v.recordDebugReadDetail(ctx, path, remoteID, phase, offset, requested, bytes, started, extra, err)
+func (o vfsReadObserver) DebugFinishActive(id uint64) {
+	o.v.finishDebugActive(id)
 }
 
-func (h vfsReadHost) DebugCacheCounters() (hits, misses int64) {
-	return h.v.debugCacheCounters()
+func (o vfsReadObserver) DebugRecordRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
+	o.v.recordDebugRead(opID, path, remoteID, offset, requested, bytes, source, cacheHits, cacheMisses, chunks, started, extra, err)
 }
 
-// vfsReadHost implements both the read domain's Host and its optional
-// ReadObserver; the two surfaces stay separate in the read package even
-// though the VFS adapter provides both.
-var _ read.ReadObserver = vfsReadHost{}
+func (o vfsReadObserver) DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
+	o.v.recordDebugReadDetail(ctx, path, remoteID, phase, offset, requested, bytes, started, extra, err)
+}
+
+func (o vfsReadObserver) DebugCacheCounters() (hits, misses int64) {
+	return o.v.debugCacheCounters()
+}
+
+var _ read.ReadObserver = vfsReadObserver{}
 
 // Read serves path content at offset/size, serving pending staging when
 // present.

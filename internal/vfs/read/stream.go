@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
@@ -22,11 +23,15 @@ type StreamReader interface {
 type debugReadCloser struct {
 	io.ReadCloser
 	finish func(int64, error)
+	// once guards finish so a double Close (legal on io.ReadCloser, and
+	// common with defer + explicit close) reports the active operation
+	// exactly once to the observer.
+	once sync.Once
 }
 
 func (d *debugReadCloser) Close() error {
 	err := d.ReadCloser.Close()
-	d.finish(0, err)
+	d.once.Do(func() { d.finish(0, err) })
 	return err
 }
 

@@ -167,7 +167,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		pathLocks:     newPathLockState(),
 		closeDone:     make(chan struct{}),
 	}
-	v.reader = read.NewReader(newVFSReadHost(v), v.read)
+	v.reader = read.NewReader(newVFSReadHost(v), v.read, newVFSReadObserver(v))
 	v.lister = listing.NewLister(newVFSListingHost(v), v.listing)
 	return v, nil
 }

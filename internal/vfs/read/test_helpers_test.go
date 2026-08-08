@@ -8,10 +8,17 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// stubHost is a no-op Host for unit tests of read-domain logic.
-type stubHost struct{}
+// stubHost is a no-op Host for unit tests of read-domain logic. It never
+// implements ReadObserver, so tests pair it with an explicit observer to
+// prove observer injection is constructive.
+type stubHost struct {
+	resolveErr error
+}
 
-func (stubHost) Resolve(context.Context, string) (drive.Entry, error) {
+func (h stubHost) Resolve(context.Context, string) (drive.Entry, error) {
+	if h.resolveErr != nil {
+		return drive.Entry{}, h.resolveErr
+	}
 	return drive.Entry{}, nil
 }
 

@@ -22,15 +22,17 @@ type Reader struct {
 	state    *State
 }
 
-func NewReader(host Host, state *State) *Reader {
-	// Debug bookkeeping is optional: if the host does not implement
-	// ReadObserver, fall back to a no-op sink so the hot path never
-	// branches on nil.
-	obs, _ := host.(ReadObserver)
-	if obs == nil {
-		obs = noopObserver{}
+// NewReader builds a read-domain reader over a Host. The observer is the
+// optional debug sink; nil falls back to a no-op so instrumentation never
+// affects correctness. Keeping the observer an explicit constructor
+// argument (rather than asserting it off the host) lets callers inject a
+// debug sink independently of the host surface and prevents an accidental
+// ReadObserver implementation from enabling diagnostics.
+func NewReader(host Host, state *State, observer ReadObserver) *Reader {
+	if observer == nil {
+		observer = noopObserver{}
 	}
-	return &Reader{host: host, observer: obs, state: state}
+	return &Reader{host: host, observer: observer, state: state}
 }
 
 // State returns the read domain state.

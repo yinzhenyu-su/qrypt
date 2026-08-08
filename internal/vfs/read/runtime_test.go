@@ -81,7 +81,7 @@ func (r *fakeReadRuntime) AcquireSlot(context.Context) (func(), error) {
 }
 
 func TestReadChunkRangeWithRuntimeUsesHotChunkFirst(t *testing.T) {
-	fs := NewReader(stubHost{}, NewState(nil))
+	fs := NewReader(stubHost{}, NewState(nil), nil)
 	runtime := &fakeReadRuntime{cacheKey: "cache", hot: []byte("abcdef"), loadData: []byte("loaded")}
 	data, err := fs.readChunkRangeWithRuntime(context.Background(), drive.Entry{ID: "id", Size: 6, ModTime: time.Now()}, 0, 2, 3, 1, runtime)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestReadChunkRangeWithRuntimeUsesHotChunkFirst(t *testing.T) {
 }
 
 func TestReadChunkRangeWithRuntimePromotesRange(t *testing.T) {
-	fs := NewReader(stubHost{}, NewState(nil))
+	fs := NewReader(stubHost{}, NewState(nil), nil)
 	runtime := &fakeReadRuntime{cacheKey: "cache", promote: true, rangeData: []byte("abc"), rangeChunk: []byte("abcdef")}
 	data, err := fs.readChunkRangeWithRuntime(context.Background(), drive.Entry{ID: "id", Size: 6, ModTime: time.Now()}, 0, 0, 3, 1, runtime)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestReadChunkRangeWithRuntimePromotesRange(t *testing.T) {
 }
 
 func TestReadChunkRangeWithRuntimeFallsBackToLoadWindow(t *testing.T) {
-	fs := NewReader(stubHost{}, NewState(nil))
+	fs := NewReader(stubHost{}, NewState(nil), nil)
 	runtime := &fakeReadRuntime{cacheKey: "cache", loadData: []byte("loaded")}
 	data, err := fs.readChunkRangeWithRuntime(context.Background(), drive.Entry{ID: "id", Size: 6, ModTime: time.Now()}, 0, 1, 4, 1, runtime)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestReadChunkRangeWithRuntimeFallsBackToLoadWindow(t *testing.T) {
 }
 
 func TestStateReportsChunkAvailableFromHotChunkAndWindow(t *testing.T) {
-	reader := NewReader(stubHost{}, NewState(nil))
+	reader := NewReader(stubHost{}, NewState(nil), nil)
 	runtime := reader.newRuntime()
 
 	reader.putHotChunk("cache", 1, []byte("hot"))
