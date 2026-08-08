@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -80,4 +81,97 @@ func TestMkdirConcurrentWithList(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// --- ViewCommitter coordinator behavior (stub-based, no internal maps) ---
+
+// mkdirCoordinatorFS builds a VFS whose mkdir path is driven by injected
+// backend + committer stubs, so tests assert coordinator behavior directly
+// against the ViewCommitter interface.
+type mkdirCoordinatorFixture struct {
+	fs        *VFS
+	backend   *fakeMutationBackend
+	committer *recordingViewCommitter
+}
+
+func newMkdirCoordinatorFixture(t *testing.T) *mkdirCoordinatorFixture {
+	t.Helper()
+	fs := newViewCommitVFS(t) // fake driver with a.txt/b.txt/dir1
+	return &mkdirCoordinatorFixture{
+		fs:        fs,
+		backend:   &fakeMutationBackend{},
+		committer: &recordingViewCommitter{},
+	}
+}
+
+// TestMkdirCommitsExactlyOnceOnRemoteSuccess: a successful remote Mkdir
+// commits the (normalized) path exactly once.
+func TestMkdirCommitsExactlyOnceOnRemoteSuccess(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	fx.backend.mkdirResult = drive.Entry{ID: "new-id", ParentID: "root", Name: "newdir", IsDir: true}
+
+	entry, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "new-id" {
+		t.Fatalf("entry = %+v, want remote result", entry)
+	}
+	if len(fx.committer.committed) != 1 || fx.committer.committed[0] != "/newdir" {
+		t.Fatalf("committed = %+v, want exactly one normalized /newdir", fx.committer.committed)
+	}
+}
+
+// TestMkdirCommitsNormalizedPath: a trailing-slash path commits the
+// normalized form.
+func TestMkdirCommitsNormalizedPath(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	fx.backend.mkdirResult = drive.Entry{ID: "new-id", ParentID: "root", Name: "newdir", IsDir: true}
+
+	if _, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir//", fx.backend, fx.committer); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.committer.committed) != 1 || fx.committer.committed[0] != "/newdir" {
+		t.Fatalf("committed = %+v, want normalized /newdir", fx.committer.committed)
+	}
+}
+
+// TestMkdirNeverCommitsOnRemoteFailure: a failing remote Mkdir must not
+// commit anything.
+func TestMkdirNeverCommitsOnRemoteFailure(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	fx.backend.mkdirErr = errors.New("remote boom")
+
+	if _, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer); err == nil {
+		t.Fatal("want remote mkdir error")
+	}
+	if len(fx.committer.committed) != 0 {
+		t.Fatalf("committed %d times on failure, want 0", len(fx.committer.committed))
+	}
+}
+
+// TestMkdirCommitsOnceAfterAlreadyExistsRecovery: when the remote reports
+// the directory already exists, the coordinator resolves the existing
+// directory (caching its siblings) and still commits exactly once.
+func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	fx.backend.mkdirErr = errors.New("already exists")
+	fx.backend.entries = []drive.Entry{
+		{ID: "file", ParentID: "root", Name: "file.txt"},
+		{ID: "dir", ParentID: "root", Name: "newdir", IsDir: true},
+	}
+
+	entry, err := fx.fs.mkdirWithDeps(context.Background(), "/newdir", fx.backend, fx.committer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entry.IsDir || entry.ID != "dir" {
+		t.Fatalf("entry = %+v, want recovered existing dir", entry)
+	}
+	if len(fx.committer.committed) != 1 || fx.committer.committed[0] != "/newdir" {
+		t.Fatalf("committed = %+v, want exactly one /newdir", fx.committer.committed)
+	}
+	if fx.committer.cached != 1 {
+		t.Fatalf("CacheListedChildren calls = %d, want 1", fx.committer.cached)
+	}
 }

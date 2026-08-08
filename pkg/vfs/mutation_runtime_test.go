@@ -10,7 +10,9 @@ import (
 )
 
 type fakeMutationBackend struct {
-	entries []drive.Entry
+	entries     []drive.Entry
+	mkdirErr    error
+	mkdirResult drive.Entry
 }
 
 func (b *fakeMutationBackend) List(context.Context, string) ([]drive.Entry, error) {
@@ -18,7 +20,7 @@ func (b *fakeMutationBackend) List(context.Context, string) ([]drive.Entry, erro
 }
 
 func (b *fakeMutationBackend) Mkdir(context.Context, string, string) (drive.Entry, error) {
-	return drive.Entry{}, nil
+	return b.mkdirResult, b.mkdirErr
 }
 
 func (b *fakeMutationBackend) Rename(context.Context, drive.Entry, string) error {
@@ -29,17 +31,24 @@ func (b *fakeMutationBackend) Move(context.Context, drive.Entry, string) error {
 	return nil
 }
 
-type recordingMutationRuntime struct {
-	cachedParent string
-	cached       []drive.Entry
+// recordingViewCommitter records ViewCommitter calls (commit + cache) so
+// coordinator tests can assert exactly when and how commits happen.
+type recordingViewCommitter struct {
+	committed []string
+	cached    int
 }
 
-func (r *recordingMutationRuntime) CacheListedChildren(parentPath string, entries []drive.Entry) {
-	r.cachedParent = parentPath
-	r.cached = append([]drive.Entry(nil), entries...)
+func (r *recordingViewCommitter) CommitMkdir(path string, _ drive.Entry) {
+	r.committed = append(r.committed, path)
 }
 
-func (r *recordingMutationRuntime) CommitMkdir(string, drive.Entry) {}
+func (r *recordingViewCommitter) CacheListedChildren(string, []drive.Entry) {
+	r.cached++
+}
+
+// recordingMutationRuntime implements the remaining Rename-time mutation
+// runtime surface.
+type recordingMutationRuntime struct{}
 
 func (r *recordingMutationRuntime) CommitRemoteRename(string, string, drive.Entry) drive.Entry {
 	return drive.Entry{}
@@ -56,16 +65,16 @@ func TestFindExistingChildDirUsesMutationBackendAndCachesChildren(t *testing.T) 
 		{ID: "file", ParentID: "root", Name: "file.txt"},
 		{ID: "dir", ParentID: "root", Name: "dir", IsDir: true},
 	}}
-	runtime := &recordingMutationRuntime{}
-	entry, err := findExistingChildDir(context.Background(), backend, runtime, "/", "root", "dir")
+	committer := &recordingViewCommitter{}
+	entry, err := findExistingChildDir(context.Background(), backend, committer, "/", "root", "dir")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if entry.ID != "dir" || !entry.IsDir {
 		t.Fatalf("entry = %+v, want existing dir", entry)
 	}
-	if runtime.cachedParent != "/" || len(runtime.cached) != 2 {
-		t.Fatalf("cached parent=%q entries=%+v", runtime.cachedParent, runtime.cached)
+	if committer.cached != 1 {
+		t.Fatalf("CacheListedChildren calls = %d, want 1", committer.cached)
 	}
 }
 

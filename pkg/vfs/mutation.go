@@ -51,10 +51,10 @@ func isAlreadyExistsError(err error) bool {
 }
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
-	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v))
+	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSViewCommitter(v))
 }
 
-func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, runtime mutationRuntime) (entry drive.Entry, err error) {
+func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, committer ViewCommitter) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
 		return drive.Entry{}, err
@@ -91,23 +91,23 @@ func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBa
 			return drive.Entry{}, err
 		}
 		logging.L.InfofEvery("vfs.mkdir_already_exists", time.Second, "[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
-		entry, err = findExistingChildDir(ctx, backend, runtime, filepath.Dir(path), parent.ID, name)
+		entry, err = findExistingChildDir(ctx, backend, committer, filepath.Dir(path), parent.ID, name)
 		if err != nil {
 			logging.L.Warnf("[VFS] mkdir existing directory resolve failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
 			return drive.Entry{}, err
 		}
 	}
-	runtime.CommitMkdir(path, entry)
+	committer.CommitMkdir(path, entry)
 	logging.L.InfofEvery("vfs.mkdir_complete", time.Second, "[VFS] mkdir complete path=%q id=%q parent=%q", path, entry.ID, entry.ParentID)
 	return entry, nil
 }
 
-func findExistingChildDir(ctx context.Context, backend mutationBackend, runtime mutationRuntime, parentPath, parentID, name string) (drive.Entry, error) {
+func findExistingChildDir(ctx context.Context, backend mutationBackend, committer ViewCommitter, parentPath, parentID, name string) (drive.Entry, error) {
 	entries, err := backend.List(ctx, parentID)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	runtime.CacheListedChildren(parentPath, entries)
+	committer.CacheListedChildren(parentPath, entries)
 	for _, child := range entries {
 		if child.Name == name && child.IsDir {
 			return child, nil
@@ -261,9 +261,48 @@ func (b driverMutationBackend) Move(ctx context.Context, entry drive.Entry, dstP
 	return b.driver.Move(ctx, entry, dstParentID)
 }
 
-type mutationRuntime interface {
-	CacheListedChildren(parentPath string, entries []drive.Entry)
+// ViewCommitter is the narrow mutation-commit boundary: it writes the
+// effective view after a local mutation. The mutation coordinator depends
+// on this interface (never on view.mu/entries/localDirs/lists), so commit
+// semantics are testable against a stub and the view structure can evolve
+// underneath.
+type ViewCommitter interface {
 	CommitMkdir(path string, entry drive.Entry)
+	CacheListedChildren(parentPath string, entries []drive.Entry)
+}
+
+// vfsViewCommitter implements ViewCommitter over the VFS view.
+type vfsViewCommitter struct {
+	v *VFS
+}
+
+func newVFSViewCommitter(v *VFS) vfsViewCommitter {
+	return vfsViewCommitter{v: v}
+}
+
+// CommitMkdir is the mutation-commit entry point for a created directory.
+// It is the canonical shape the mutation coordinator will use for every
+// local mutation (Rename/Remove/UploadCommitted follow the same pattern):
+// write the entry cache, mark derived local state, and invalidate the
+// affected list cache - all under the view lock, so a concurrent reader
+// never observes a half-committed mutation.
+func (r vfsViewCommitter) CommitMkdir(path string, entry drive.Entry) {
+	r.v.view.mu.Lock()
+	r.v.view.entries.Set(path, entry)
+	r.v.markLocalDirLocked(path)
+	r.v.invalidateListLocked(filepath.Dir(path))
+	r.v.view.mu.Unlock()
+}
+
+func (r vfsViewCommitter) CacheListedChildren(parentPath string, entries []drive.Entry) {
+	r.v.view.mu.Lock()
+	defer r.v.view.mu.Unlock()
+	for _, child := range entries {
+		r.v.view.entries.Set(joinVirtual(parentPath, child.Name), child)
+	}
+}
+
+type mutationRuntime interface {
 	CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry
 	InvalidateReadCache(entry drive.Entry)
 	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
