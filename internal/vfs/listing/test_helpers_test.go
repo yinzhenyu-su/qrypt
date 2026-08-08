@@ -32,10 +32,6 @@ func (stubHost) ApplyLocalModTimes(string, []drive.Entry) []drive.Entry {
 	return nil
 }
 
-func (stubHost) ApplyLocalModTimeLocked(string, drive.Entry) drive.Entry {
-	return drive.Entry{}
-}
-
 func (stubHost) UpdateOverlay(string, []drive.Entry) {}
 
 func (stubHost) GetEntry(string) (drive.Entry, bool) { return drive.Entry{}, false }
@@ -51,6 +47,8 @@ func (h stubHost) FreshListCache(parentPath string, now time.Time) ([]drive.Entr
 	return cached.entries, true
 }
 
-func (h stubHost) CommitList(string, []drive.Entry, time.Time) []drive.Entry { return nil }
+func (stubHost) CommitRemoteChildren(string, []drive.Entry, time.Time) []drive.Entry {
+	return nil
+}
 
 func (stubHost) PendingUploads() []vfstypes.PendingUpload { return nil }

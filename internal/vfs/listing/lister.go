@@ -257,12 +257,9 @@ func loadRemoteChildrenWithRuntime(ctx context.Context, parentPath, parentID str
 
 func (l *Lister) commitRemoteList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
 	parentPath = CleanVirtualPath(parentPath)
-	l.view.UpdateOverlay(parentPath, entries)
-	entries = l.view.FilterDeleted(parentPath, entries)
-	// Local modtimes are applied inside CommitList, which holds the view
-	// lock: the listing domain must not touch shared view state without
-	// the lock the interface cannot expose.
-	return l.view.LocalChildren(parentPath, l.view.CommitList(parentPath, entries, expires))
+	// One atomic view operation: the View implementation owns the overlay,
+	// filtering, modtime, cache, and local-merge steps (and their locks).
+	return l.view.CommitRemoteChildren(parentPath, entries, expires)
 }
 
 // IsCurrentPrefetchDir reports whether path still resolves to id (the

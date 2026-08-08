@@ -92,10 +92,6 @@ func (h vfsListingView) ApplyLocalModTimes(parentPath string, entries []drive.En
 	return h.v.applyLocalModTimes(parentPath, entries)
 }
 
-func (h vfsListingView) UpdateOverlay(parentPath string, entries []drive.Entry) {
-	h.v.updateOverlay(parentPath, entries)
-}
-
 func (h vfsListingView) GetEntry(path string) (drive.Entry, bool) {
 	return h.v.view.entries.Get(path)
 }
@@ -113,8 +109,15 @@ func (h vfsListingView) FreshListCache(parentPath string, now time.Time) ([]driv
 	return h.v.localChildren(parentPath, h.v.filterDeleted(parentPath, entries)), true
 }
 
-func (h vfsListingView) CommitList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
+// CommitRemoteChildren folds a fresh remote listing into the synthesized
+// view atomically: rename/delete overlay update, filtering of invisible
+// remote nodes, local-modtime application under the view lock, entry and
+// list-cache commit, and local-children merge. The listing domain never
+// sees the overlay/cache orchestration or the locks.
+func (h vfsListingView) CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry {
 	parentPath = cleanVirtual(parentPath)
+	h.v.updateOverlay(parentPath, remote)
+	entries := h.v.filterDeleted(parentPath, remote)
 	h.v.view.mu.Lock()
 	for i, child := range entries {
 		childPath := joinVirtual(parentPath, child.Name)
@@ -123,7 +126,7 @@ func (h vfsListingView) CommitList(parentPath string, entries []drive.Entry, exp
 	}
 	h.v.view.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: expires}
 	h.v.view.mu.Unlock()
-	return entries
+	return h.v.localChildren(parentPath, entries)
 }
 
 func (h vfsListingView) PendingUploads() []vfstypes.PendingUpload {

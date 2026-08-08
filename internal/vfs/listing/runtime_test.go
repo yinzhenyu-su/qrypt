@@ -11,14 +11,15 @@ import (
 
 type fakeRuntimeHost struct {
 	stubHost
-	children      []drive.Entry
-	childErr      error
-	current       bool
-	committedPath string
-	committed     []drive.Entry
-	committedOK   bool
-	entry         drive.Entry
-	entryOK       bool
+	children         []drive.Entry
+	childErr         error
+	current          bool
+	committedPath    string
+	committed        []drive.Entry
+	committedExpires time.Time
+	committedOK      bool
+	entry            drive.Entry
+	entryOK          bool
 }
 
 func (h *fakeRuntimeHost) ListChildren(context.Context, string) ([]drive.Entry, error) {
@@ -33,19 +34,16 @@ func (h *fakeRuntimeHost) LocalChildren(string, []drive.Entry) []drive.Entry {
 	return h.children
 }
 
-func (h *fakeRuntimeHost) ApplyLocalModTimeLocked(_ string, entry drive.Entry) drive.Entry {
-	return entry
-}
-
 func (h *fakeRuntimeHost) GetEntry(string) (drive.Entry, bool) {
 	return h.entry, h.entryOK
 }
 
-func (h *fakeRuntimeHost) CommitList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry {
+func (h *fakeRuntimeHost) CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry {
 	h.committedPath = parentPath
-	h.committed = entries
+	h.committed = remote
+	h.committedExpires = expires
 	h.committedOK = true
-	return entries
+	return remote
 }
 
 func TestLoadRemoteChildrenWithRuntimeCommitsBackendEntries(t *testing.T) {

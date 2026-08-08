@@ -31,12 +31,17 @@ type View interface {
 	FilterDeleted(parentPath string, entries []drive.Entry) []drive.Entry
 	LocalChildren(parentPath string, entries []drive.Entry) []drive.Entry
 	ApplyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry
-	UpdateOverlay(parentPath string, entries []drive.Entry)
 	GetEntry(path string) (drive.Entry, bool)
 
 	// View cache.
 	FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool)
-	CommitList(parentPath string, entries []drive.Entry, expires time.Time) []drive.Entry
+	// CommitRemoteChildren folds a freshly fetched remote listing into the
+	// synthesized view atomically: rename/delete overlay update, filtering of
+	// invisible remote nodes, local-modtime application, entry/list-cache
+	// commit, and local-children merge - returning the final effective
+	// listing. The listing domain calls this one semantic operation instead
+	// of orchestrating the internal overlay/cache steps.
+	CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry
 
 	// Pending uploads feeding into listings.
 	PendingUploads() []vfstypes.PendingUpload
