@@ -13,6 +13,8 @@ type fakeMutationBackend struct {
 	entries     []drive.Entry
 	mkdirErr    error
 	mkdirResult drive.Entry
+	renameErr   error
+	moveResult  error
 }
 
 func (b *fakeMutationBackend) List(context.Context, string) ([]drive.Entry, error) {
@@ -24,11 +26,11 @@ func (b *fakeMutationBackend) Mkdir(context.Context, string, string) (drive.Entr
 }
 
 func (b *fakeMutationBackend) Rename(context.Context, drive.Entry, string) error {
-	return nil
+	return b.renameErr
 }
 
 func (b *fakeMutationBackend) Move(context.Context, drive.Entry, string) error {
-	return nil
+	return b.moveResult
 }
 
 // recordingViewCommitter records ViewCommitter calls (commit + cache) so
@@ -36,6 +38,7 @@ func (b *fakeMutationBackend) Move(context.Context, drive.Entry, string) error {
 type recordingViewCommitter struct {
 	committed []string
 	removed   []string
+	renamed   [][2]string
 	cached    int
 }
 
@@ -53,13 +56,14 @@ func (r *recordingViewCommitter) CacheListedChildren(string, []drive.Entry) {
 
 func (r *recordingViewCommitter) CommitUploadedEntry(string, drive.Entry, string) {}
 
+func (r *recordingViewCommitter) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry {
+	r.renamed = append(r.renamed, [2]string{oldPath, newPath})
+	return entry
+}
+
 // recordingMutationRuntime implements the remaining Rename-time mutation
 // runtime surface.
 type recordingMutationRuntime struct{}
-
-func (r *recordingMutationRuntime) CommitRemoteRename(string, string, drive.Entry) drive.Entry {
-	return drive.Entry{}
-}
 
 func (r *recordingMutationRuntime) InvalidateReadCache(drive.Entry) {}
 
@@ -99,8 +103,7 @@ func TestVFSMutationRuntimeCommitsMkdirAndRename(t *testing.T) {
 
 	modTime := time.Unix(1234, 0)
 	fs.setLocalModTime("/dir", modTime)
-	runtime := newVFSMutationRuntime(fs)
-	renamed := runtime.CommitRemoteRename("/dir", "/renamed", drive.Entry{ID: "dir", ParentID: fs.rootID, Name: "renamed", IsDir: true})
+	renamed := newVFSViewCommitter(fs).CommitRemoteRename("/dir", "/renamed", drive.Entry{ID: "dir", ParentID: fs.rootID, Name: "renamed", IsDir: true})
 	if renamed.Name != "renamed" || !renamed.ModTime.Equal(modTime) {
 		t.Fatalf("renamed entry = %+v, want local modtime preserved", renamed)
 	}

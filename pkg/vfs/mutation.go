@@ -167,10 +167,10 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfs
 	return nil
 }
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
-	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v))
+	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v), newVFSViewCommitter(v))
 }
 
-func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutationBackend, runtime mutationRuntime) (err error) {
+func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutationBackend, runtime mutationRuntime, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "rename"); err != nil {
 		return err
@@ -222,7 +222,7 @@ func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backe
 	}
 	entry.Name = newName
 	entry.ParentID = dstParent.ID
-	runtime.CommitRemoteRename(oldPath, newPath, entry)
+	committer.CommitRemoteRename(oldPath, newPath, entry)
 	return nil
 }
 
@@ -274,6 +274,12 @@ type viewCommitter interface {
 	// uploaded entry, unhides the copy child, and invalidates the parent
 	// list cache.
 	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
+	// CommitRemoteRename folds a completed remote rename/move into the
+	// view: it removes the old path (rebasing cached descendants), moves
+	// local modtime, invalidates the affected parent list caches, writes
+	// the new entry, and records the rename overlay so stale backend
+	// listings hide the old name.
+	CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry
 }
 
 // listedChildrenCache warms the entry cache with a freshly fetched remote
@@ -338,21 +344,7 @@ func (r vfsViewCommitter) CommitUploadedEntry(path string, entry drive.Entry, st
 	r.v.view.mu.Unlock()
 }
 
-type mutationRuntime interface {
-	CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry
-	InvalidateReadCache(entry drive.Entry)
-	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
-}
-
-type vfsMutationRuntime struct {
-	v *VFS
-}
-
-func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
-	return vfsMutationRuntime{v: v}
-}
-
-func (r vfsMutationRuntime) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry {
+func (r vfsViewCommitter) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry {
 	oldParent := filepath.Dir(oldPath)
 	newParent := filepath.Dir(newPath)
 	r.v.view.mu.Lock()
@@ -367,6 +359,22 @@ func (r vfsMutationRuntime) CommitRemoteRename(oldPath, newPath string, entry dr
 	r.v.view.mu.Unlock()
 	r.v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
 	return entry
+}
+
+// mutationRuntime is the rename-time local-state surface: pending-store
+// rename and read-cache invalidation. The remote-view commit lives on
+// viewCommitter.
+type mutationRuntime interface {
+	InvalidateReadCache(entry drive.Entry)
+	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
+}
+
+type vfsMutationRuntime struct {
+	v *VFS
+}
+
+func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
+	return vfsMutationRuntime{v: v}
 }
 
 func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
