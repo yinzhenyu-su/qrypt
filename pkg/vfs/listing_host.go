@@ -92,10 +92,6 @@ func (h vfsListingView) ApplyLocalModTimes(parentPath string, entries []drive.En
 	return h.v.applyLocalModTimes(parentPath, entries)
 }
 
-func (h vfsListingView) ApplyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry {
-	return h.v.applyLocalModTimeLocked(path, entry)
-}
-
 func (h vfsListingView) UpdateOverlay(parentPath string, entries []drive.Entry) {
 	h.v.updateOverlay(parentPath, entries)
 }

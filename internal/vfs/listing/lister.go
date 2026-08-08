@@ -259,10 +259,9 @@ func (l *Lister) commitRemoteList(parentPath string, entries []drive.Entry, expi
 	parentPath = CleanVirtualPath(parentPath)
 	l.view.UpdateOverlay(parentPath, entries)
 	entries = l.view.FilterDeleted(parentPath, entries)
-	for i, child := range entries {
-		childPath := joinVirtual(parentPath, child.Name)
-		entries[i] = l.view.ApplyLocalModTimeLocked(childPath, child)
-	}
+	// Local modtimes are applied inside CommitList, which holds the view
+	// lock: the listing domain must not touch shared view state without
+	// the lock the interface cannot expose.
 	return l.view.LocalChildren(parentPath, l.view.CommitList(parentPath, entries, expires))
 }
 

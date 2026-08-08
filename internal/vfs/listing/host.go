@@ -31,7 +31,6 @@ type View interface {
 	FilterDeleted(parentPath string, entries []drive.Entry) []drive.Entry
 	LocalChildren(parentPath string, entries []drive.Entry) []drive.Entry
 	ApplyLocalModTimes(parentPath string, entries []drive.Entry) []drive.Entry
-	ApplyLocalModTimeLocked(path string, entry drive.Entry) drive.Entry
 	UpdateOverlay(parentPath string, entries []drive.Entry)
 	GetEntry(path string) (drive.Entry, bool)
 
