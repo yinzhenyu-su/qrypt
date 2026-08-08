@@ -121,6 +121,16 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	}
 	if opts.RootID == "" {
 		opts.RootID = "0"
+		// Resolve the driver's real root ID when the driver can, matching
+		// what core's resolveMountRootID does in production. Without this,
+		// direct vfs.New callers (tests, tooling) get a rootID that does
+		// not match the driver's parent-ID coordinate system, which breaks
+		// the rename coordinator's cross-directory detection.
+		if drive.HasCapability(driver, drive.CapabilityPathResolver) {
+			if rootID, err := driver.ResolvePath(context.Background(), "/"); err == nil && rootID != "" {
+				opts.RootID = rootID
+			}
+		}
 	}
 	if opts.UploadDelay == 0 {
 		opts.UploadDelay = uploadDebounceDelay

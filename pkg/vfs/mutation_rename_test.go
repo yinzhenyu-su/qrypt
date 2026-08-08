@@ -21,6 +21,14 @@ type renameCoordinatorFixture struct {
 	committer *recordingViewCommitter
 }
 
+// addSubDir places a /sub directory in the view so cross-directory rename
+// targets resolve.
+func (f *renameCoordinatorFixture) addSubDir() {
+	f.fs.view.mu.Lock()
+	f.fs.view.entries.Set("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
+	f.fs.view.mu.Unlock()
+}
+
 func newRenameCoordinatorFixture(t *testing.T) *renameCoordinatorFixture {
 	t.Helper()
 	fs := newViewCommitVFS(t) // fake driver with a.txt/b.txt/dir1
@@ -155,4 +163,144 @@ func TestRenameConcurrentWithListResolve(t *testing.T) {
 		}(i, src)
 	}
 	wg.Wait()
+}
+
+// --- rename/move transactional semantics ---
+
+// TestRenameMoveRollbackOnMoveFailure: when the rename lands but the move
+// fails and the rollback rename succeeds, the coordinator commits nothing.
+func TestRenameMoveRollbackOnMoveFailure(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	// Force a move failure: the source file resolves with a parent that
+	// differs from the destination parent (cross-directory rename).
+	fx.backend.moveErr = errors.New("move boom")
+	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/sub/renamed.txt", fx.backend, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want move error")
+	}
+	if len(fx.committer.renamed) != 0 {
+		t.Fatalf("CommitRemoteRename called %d times after rollback, want 0", len(fx.committer.renamed))
+	}
+	// The rollback rename must have run (rename was called twice: forward
+	// + rollback).
+	if fx.backend.renameCalls != 2 {
+		t.Fatalf("rename calls = %d, want 2 (forward + rollback)", fx.backend.renameCalls)
+	}
+}
+
+// TestRenameMovePartialCommitOnRollbackFailure: when the rename lands, the
+// move fails, AND the rollback also fails, the coordinator must commit the
+// intermediate remote state (old parent + new name) so local and remote do
+// not diverge.
+func TestRenameMovePartialCommitOnRollbackFailure(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	orig := *fx.backend
+	// Make the backend fail only the second Rename (the rollback) and fail
+	// the Move.
+	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}
+	rb.moveErr = errors.New("move boom")
+	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/sub/renamed.txt", rb, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want partial rename/move error")
+	}
+	if len(fx.committer.renamed) != 1 {
+		t.Fatalf("CommitRemoteRename calls = %d, want 1 (intermediate state commit)", len(fx.committer.renamed))
+	}
+	// The committed intermediate path is the OLD parent + new name: the
+	// remote rename landed in the old directory, the move failed, and the
+	// rollback failed, so the actual remote state is /renamed.txt.
+	if fx.committer.renamed[0][0] != "/a.txt" || fx.committer.renamed[0][1] != "/renamed.txt" {
+		t.Fatalf("committed intermediate = %+v, want /a.txt -> /renamed.txt", fx.committer.renamed[0])
+	}
+}
+
+// sequenceBackend fails the Nth Rename call (0-indexed) and forwards the
+// rest to the wrapped backend.
+type sequenceBackend struct {
+	backend      *fakeMutationBackend
+	failRenameOn int
+	moveErr      error
+}
+
+func (b *sequenceBackend) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	return b.backend.List(ctx, parentID)
+}
+func (b *sequenceBackend) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	return b.backend.Mkdir(ctx, parentID, name)
+}
+func (b *sequenceBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+	if b.backend.renameCalls == b.failRenameOn {
+		return errors.New("rollback boom")
+	}
+	return b.backend.Rename(ctx, entry, newName)
+}
+func (b *sequenceBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+	if b.moveErr != nil {
+		return b.moveErr
+	}
+	return b.backend.Move(ctx, entry, dstParentID)
+}
+
+// TestRenameMoveSameNameCrossDirFailureNoCommit: a same-name cross-directory
+// move failure (no rename step) must commit nothing and not roll back.
+func TestRenameMoveSameNameCrossDirFailureNoCommit(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	fx.backend.moveErr = errors.New("move boom")
+	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/sub/a.txt", fx.backend, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want move error")
+	}
+	if len(fx.committer.renamed) != 0 {
+		t.Fatalf("CommitRemoteRename called %d times, want 0", len(fx.committer.renamed))
+	}
+	if fx.backend.renameCalls != 0 {
+		t.Fatalf("rename calls = %d, want 0 (same-name move has no rename step)", fx.backend.renameCalls)
+	}
+}
+
+// TestRenameMoveCrossDirInvalidatesBothParents: a successful cross-directory
+// rename invalidates both parent list caches (old and new).
+func TestRenameMoveCrossDirInvalidatesBothParents(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	fx := newRenameCoordinatorFixture(t)
+	fx.fs = fs
+	fx.addSubDir()
+	view := newVFSListingView(fs)
+
+	// Warm list caches for both parents.
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-a", Name: "a.txt", Size: 5}}, time.Now().Add(time.Minute))
+	view.CommitRemoteChildren("/sub", []drive.Entry{}, time.Now().Add(time.Minute))
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); !ok {
+		t.Fatal("old parent cache not warm")
+	}
+	if _, ok := view.FreshListCache("/sub", time.Now().Add(5*time.Second)); !ok {
+		t.Fatal("new parent cache not warm")
+	}
+
+	if err := fs.renameWithDeps(context.Background(), "/a.txt", "/sub/a.txt", &fakeMutationBackend{}, &recordingMutationRuntime{}, newVFSViewCommitter(fs)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); ok {
+		t.Error("old parent list cache not invalidated")
+	}
+	if _, ok := view.FreshListCache("/sub", time.Now().Add(5*time.Second)); ok {
+		t.Error("new parent list cache not invalidated")
+	}
+}
+
+// TestRenameMoveSameParentInvalidatesOnce: a same-parent rename invalidates
+// the single logical parent (the invalidation is idempotent).
+func TestRenameMoveSameParentInvalidatesOnce(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-a", Name: "a.txt", Size: 5}}, time.Now().Add(time.Minute))
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); !ok {
+		t.Fatal("parent cache not warm")
+	}
+	if err := fs.renameWithDeps(context.Background(), "/a.txt", "/b.txt", &fakeMutationBackend{}, &recordingMutationRuntime{}, newVFSViewCommitter(fs)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); ok {
+		t.Error("parent list cache not invalidated by same-parent rename")
+	}
 }

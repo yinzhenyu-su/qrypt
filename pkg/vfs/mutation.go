@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -206,23 +207,19 @@ func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backe
 	if err != nil {
 		return err
 	}
-	oldParent := filepath.Dir(oldPath)
-	newParent := filepath.Dir(newPath)
-	if filepath.Base(oldPath) != newName {
-		if err := backend.Rename(ctx, entry, newName); err != nil {
-			return err
+	renamed, err := newDriverRemoteRenamer(backend).RenameMove(ctx, entry, dstParent.ID, newName)
+	if err != nil {
+		var partial *renameMovePartialError
+		if errors.As(err, &partial) {
+			// The remote is renamed-but-unmoved: commit that intermediate
+			// state (old parent + new name) so local and remote stay
+			// consistent even though the operation failed.
+			renamed.Name = newName
+			committer.CommitRemoteRename(oldPath, joinVirtual(filepath.Dir(oldPath), newName), renamed)
 		}
-		entry.Name = newName
+		return err
 	}
-	if oldParent != newParent {
-		if err := backend.Move(ctx, entry, dstParent.ID); err != nil {
-			return err
-		}
-		entry.ParentID = dstParent.ID
-	}
-	entry.Name = newName
-	entry.ParentID = dstParent.ID
-	committer.CommitRemoteRename(oldPath, newPath, entry)
+	committer.CommitRemoteRename(oldPath, newPath, renamed)
 	return nil
 }
 
@@ -231,6 +228,68 @@ type mutationBackend interface {
 	Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error)
 	Rename(ctx context.Context, entry drive.Entry, newName string) error
 	Move(ctx context.Context, entry drive.Entry, dstParentID string) error
+}
+
+// renameMovePartialError reports a remote rename/move that partially
+// applied: the name change landed, the parent move failed, and the
+// rollback rename also failed. The coordinator must commit the
+// intermediate remote state (old parent + new name) to the view so local
+// and remote do not diverge.
+type renameMovePartialError struct {
+	RenameErr   error
+	RollbackErr error
+}
+
+func (e *renameMovePartialError) Error() string {
+	return fmt.Sprintf("vfs: rename/move partially applied (move failed: %v; rollback failed: %v)", e.RenameErr, e.RollbackErr)
+}
+
+func (e *renameMovePartialError) Unwrap() error { return e.RenameErr }
+
+// remoteRenamer performs a remote rename/move as one transactional
+// operation: rename first (if the name changes), then move (if the parent
+// changes). A move failure after a successful rename triggers a rollback
+// rename; if the rollback also fails, a renameMovePartialError is
+// returned so the caller commits the intermediate state.
+type remoteRenamer interface {
+	RenameMove(ctx context.Context, entry drive.Entry, dstParentID, newName string) (drive.Entry, error)
+}
+
+type driverRemoteRenamer struct {
+	backend mutationBackend
+}
+
+func newDriverRemoteRenamer(backend mutationBackend) driverRemoteRenamer {
+	return driverRemoteRenamer{backend: backend}
+}
+
+func (r driverRemoteRenamer) RenameMove(ctx context.Context, entry drive.Entry, dstParentID, newName string) (drive.Entry, error) {
+	oldName := entry.Name
+	renamed := false
+	if oldName != newName {
+		if err := r.backend.Rename(ctx, entry, newName); err != nil {
+			return drive.Entry{}, err
+		}
+		entry.Name = newName
+		renamed = true
+	}
+	if entry.ParentID != dstParentID {
+		if err := r.backend.Move(ctx, entry, dstParentID); err != nil {
+			if renamed {
+				rbErr := r.backend.Rename(ctx, entry, oldName)
+				if rbErr == nil {
+					// Rolled back: the remote is back to its original
+					// name and parent, nothing to commit.
+					return drive.Entry{}, err
+				}
+				// Rollback failed: the remote is renamed-but-unmoved.
+				return drive.Entry{}, &renameMovePartialError{RenameErr: err, RollbackErr: rbErr}
+			}
+			return drive.Entry{}, err
+		}
+		entry.ParentID = dstParentID
+	}
+	return entry, nil
 }
 
 type driverMutationBackend struct {
@@ -279,7 +338,7 @@ type viewCommitter interface {
 	// local modtime, invalidates the affected parent list caches, writes
 	// the new entry, and records the rename overlay so stale backend
 	// listings hide the old name.
-	CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry
+	CommitRemoteRename(oldPath, newPath string, entry drive.Entry)
 }
 
 // listedChildrenCache warms the entry cache with a freshly fetched remote
@@ -344,7 +403,7 @@ func (r vfsViewCommitter) CommitUploadedEntry(path string, entry drive.Entry, st
 	r.v.view.mu.Unlock()
 }
 
-func (r vfsViewCommitter) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) drive.Entry {
+func (r vfsViewCommitter) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) {
 	oldParent := filepath.Dir(oldPath)
 	newParent := filepath.Dir(newPath)
 	r.v.view.mu.Lock()
@@ -358,7 +417,6 @@ func (r vfsViewCommitter) CommitRemoteRename(oldPath, newPath string, entry driv
 	r.v.view.entries.Set(newPath, entry)
 	r.v.view.mu.Unlock()
 	r.v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
-	return entry
 }
 
 // mutationRuntime is the rename-time local-state surface: pending-store
