@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // TargetKind classifies one side of a sync as virtual (VFS mount) or local.

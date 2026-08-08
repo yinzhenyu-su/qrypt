@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // TestSetModTimeAppliesToUpload verifies that a SetModTime issued while the

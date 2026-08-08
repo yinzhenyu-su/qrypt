@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func newStreamTestVFS(t *testing.T) vfs.FileSystem {

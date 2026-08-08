@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // FuzzCleanVirtualPath pins the path normalization contract:

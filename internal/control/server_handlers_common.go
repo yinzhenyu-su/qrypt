@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func (s *Server) debugSnapshot(r *http.Request) vfs.DebugSnapshot {

@@ -2,7 +2,7 @@ package vfs_test
 
 import (
 	"context"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 	"os"
 	"path/filepath"
 	"strings"

@@ -12,7 +12,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all" // registers all drivers via their init functions
 	"github.com/yinzhenyu/qrypt/pkg/media"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 type readCancels struct {

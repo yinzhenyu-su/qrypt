@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 type uploadDestination struct {

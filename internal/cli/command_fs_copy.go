@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/drivecopy"
 	"github.com/yinzhenyu/qrypt/internal/sync"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func newFsCopyCmd() *cobra.Command {

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/drivecopy"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // ExecutePlan runs the plan in dependency order: directories before the files

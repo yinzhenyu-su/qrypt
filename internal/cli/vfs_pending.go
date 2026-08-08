@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func pendingFiles(fs any) ([]vfs.PendingUpload, error) {

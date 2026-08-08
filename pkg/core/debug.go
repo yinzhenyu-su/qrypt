@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/qrypt/internal/control"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {

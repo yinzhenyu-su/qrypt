@@ -8,7 +8,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/internal/control"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func addCollectDiagnostics(out *[]debugAIDiagnostic, report debugAIReport) {

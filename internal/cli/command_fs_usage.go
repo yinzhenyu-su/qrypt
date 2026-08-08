@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/sync"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // fsSpaceEntry is one mount's space usage in the machine-readable df output.

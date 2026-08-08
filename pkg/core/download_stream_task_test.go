@@ -9,7 +9,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/task"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func TestCreateTaskDownloadStreamBatchReadsAckAndFinishes(t *testing.T) {

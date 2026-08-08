@@ -14,7 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/osutil"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func (s *Server) handleDriver(w http.ResponseWriter, r *http.Request) {

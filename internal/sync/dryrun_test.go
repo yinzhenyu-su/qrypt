@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 var writeMutations = []string{"PutSource:", "Mkdir:", "Remove:", "Rename:", "Move:"}

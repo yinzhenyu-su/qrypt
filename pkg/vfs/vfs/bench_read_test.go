@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // Download-style read benchmarks. downloadOne currently reads the whole file

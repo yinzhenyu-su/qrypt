@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func TestVFSReadSpansChunks(t *testing.T) {

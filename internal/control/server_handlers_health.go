@@ -18,7 +18,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {

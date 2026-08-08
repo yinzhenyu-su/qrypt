@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 func put(ctx context.Context, fs vfs.Writer, localPath, remotePath string) error {

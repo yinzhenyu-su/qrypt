@@ -13,7 +13,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/contracttest"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfs"
 )
 
 // newTestServer boots a control server on a temp unix socket with the given
