@@ -79,7 +79,7 @@ func TestListerDetectsFreshListCache(t *testing.T) {
 		"/dir": {expires: time.Now().Add(time.Minute)},
 		"/old": {expires: time.Now().Add(-time.Minute)},
 	}}
-	lister := NewLister(host, NewState())
+	lister := NewLister(ListerDeps{Host: host, State: NewState()})
 
 	if !lister.HasFreshListCache("/dir") {
 		t.Fatal("expected fresh cache")

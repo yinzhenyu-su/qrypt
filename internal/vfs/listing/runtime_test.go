@@ -55,7 +55,7 @@ func TestLoadRemoteChildrenWithRuntimeCommitsBackendEntries(t *testing.T) {
 		entry:    drive.Entry{ID: "parent", Name: "dir", IsDir: true},
 		entryOK:  true,
 	}
-	lister := NewLister(host, NewState())
+	lister := NewLister(ListerDeps{Host: host, State: NewState()})
 	entries, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", false, lister)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestLoadRemoteChildrenWithRuntimeDiscardsStalePrefetch(t *testing.T) {
 		entry:    drive.Entry{ID: "other", Name: "dir", IsDir: true},
 		entryOK:  true,
 	}
-	lister := NewLister(host, NewState())
+	lister := NewLister(ListerDeps{Host: host, State: NewState()})
 	_, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", true, lister)
 	if err == nil {
 		t.Fatal("expected stale prefetch error")
@@ -87,7 +87,7 @@ func TestLoadRemoteChildrenWithRuntimeDiscardsStalePrefetch(t *testing.T) {
 func TestLoadRemoteChildrenWithRuntimeReturnsBackendError(t *testing.T) {
 	wantErr := errors.New("list failed")
 	host := &fakeRuntimeHost{childErr: wantErr}
-	lister := NewLister(host, NewState())
+	lister := NewLister(ListerDeps{Host: host, State: NewState()})
 	_, err := loadRemoteChildrenWithRuntime(context.Background(), "/dir", "parent", false, lister)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err = %v, want %v", err, wantErr)

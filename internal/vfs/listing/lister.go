@@ -15,12 +15,28 @@ import (
 
 // Lister implements directory listing on top of a Host and State.
 type Lister struct {
-	host  Host
-	state *State
+	host   Host
+	state  *State
+	health HealthRecorder
 }
 
-func NewLister(host Host, state *State) *Lister {
-	return &Lister{host: host, state: state}
+// ListerDeps is the explicit dependency set for a listing lister. Health
+// is optional: nil falls back to a no-op sink so statistics never affect
+// correctness.
+type ListerDeps struct {
+	Host   Host
+	State  *State
+	Health HealthRecorder
+}
+
+// NewLister builds a lister from explicit dependencies. The health
+// recorder is injected independently of the host surface, so an accidental
+// implementation on the host cannot silently enable statistics.
+func NewLister(deps ListerDeps) *Lister {
+	if deps.Health == nil {
+		deps.Health = noopHealth{}
+	}
+	return &Lister{host: deps.Host, state: deps.State, health: deps.Health}
 }
 
 // State returns the listing domain state.
@@ -29,7 +45,7 @@ func (l *Lister) State() *State { return l.state }
 // List returns the (pending-inclusive) children of path.
 func (l *Lister) List(ctx context.Context, path string) ([]drive.Entry, error) {
 	entries, err := l.ListNoPrefetch(ctx, path)
-	l.host.RecordHealth(drive.HealthOpList, err)
+	l.health.RecordResult(drive.HealthOpList, err)
 	if err != nil {
 		return nil, err
 	}

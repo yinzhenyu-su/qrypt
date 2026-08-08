@@ -12,11 +12,11 @@ import (
 )
 
 // Host is the VFS surface the listing domain needs: resolution, the view
-// overlay and cache, pending uploads, and health. VFS implements it via
-// vfsListingHost.
+// overlay and cache, pending uploads. Health statistics are NOT part of the
+// host surface - they live on the optional HealthRecorder so the contract
+// stays narrow. VFS implements it via vfsListingHost.
 type Host interface {
 	Resolve(ctx context.Context, path string) (drive.Entry, error)
-	RecordHealth(op string, err error)
 	ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error)
 
 	// Overlay / local-state helpers.
@@ -36,6 +36,18 @@ type Host interface {
 	// Pending uploads feeding into listings.
 	PendingUploads() []vfstypes.PendingUpload
 }
+
+// HealthRecorder receives listing-domain health statistics. It is optional:
+// the listing domain works without one (a no-op sink), and VFS wires its
+// health tracker through it so statistics never widen the host surface.
+type HealthRecorder interface {
+	RecordResult(op string, err error)
+}
+
+// noopHealth is the default HealthRecorder.
+type noopHealth struct{}
+
+func (noopHealth) RecordResult(string, error) {}
 
 // ModTime returns the display mod time for a pending upload (zero when the
 // record has no mtime set).

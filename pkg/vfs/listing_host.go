@@ -57,10 +57,6 @@ func (h vfsListingHost) Resolve(ctx context.Context, path string) (drive.Entry, 
 	return h.v.resolve(ctx, path)
 }
 
-func (h vfsListingHost) RecordHealth(op string, err error) {
-	h.v.recordHealthResult(op, err)
-}
-
 func (h vfsListingHost) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	return newVFSDriverRuntime(h.v).ListBackend().ListChildren(ctx, parentID)
 }
@@ -164,3 +160,16 @@ func (v *VFS) startDirPrefetch(ctx context.Context) bool {
 func (v *VFS) scheduleDirPrefetch(ctx context.Context, path string, entries []drive.Entry) {
 	v.lister.ScheduleDirPrefetch(ctx, path, entries)
 }
+
+// vfsListingHealth adapts the drive health tracker to listing.HealthRecorder.
+// It holds only the tracker - not the whole VFS - so the listing adapter
+// carries exactly the dependency it uses.
+type vfsListingHealth struct {
+	tracker *drive.HealthTracker
+}
+
+func (h vfsListingHealth) RecordResult(op string, err error) {
+	h.tracker.RecordResult(op, err)
+}
+
+var _ listing.HealthRecorder = vfsListingHealth{}
