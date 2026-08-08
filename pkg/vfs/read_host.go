@@ -46,10 +46,6 @@ func (h vfsReadHost) ReadCacheKey(entry drive.Entry) string {
 	return h.v.readCacheKey(entry)
 }
 
-func (h vfsReadHost) RootID() string {
-	return h.v.rootID
-}
-
 func (h vfsReadHost) DriverRead(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	return h.v.driver.Read(ctx, entry, offset, size)
 }
