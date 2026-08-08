@@ -228,9 +228,14 @@ func (c *Core) Close(ctx context.Context) error {
 	// Start hook; waiting here gives the same guarantee as an explicit
 	// Close: after Core.Close returns, no filesystem-owned goroutine writes
 	// to the storage directories.
+	//
+	// If the filesystem did not finish (ctx deadline or cancel), DO NOT
+	// clean up external resources while its workers may still write to
+	// them, and keep c.fs so the caller can retry Close later. Teardown
+	// keeps running in the background and a retried Close waits for it.
 	if fs := c.fs; fs != nil {
 		if err := fs.Close(ctx); err != nil {
-			errs = append(errs, err)
+			return errors.Join(append(errs, err)...)
 		}
 	}
 	if c.cleanup == nil {

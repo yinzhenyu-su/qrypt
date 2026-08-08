@@ -72,10 +72,15 @@ type VFS struct {
 	done chan struct{}
 	// ctx is the lifecycle context from Start, kept so background tasks
 	// (remote deletes, prefetch) derive from the owning context instead of
-	// context.Background(). Written once inside startOnce before any
-	// background task can observe it.
-	ctx       context.Context
-	startOnce sync.Once
+	// context.Background(). Written once inside Start before any background
+	// task can observe it.
+	ctx context.Context
+	// lifecycleMu serializes Start/Close state transitions; lifecycle
+	// tracks the current phase. Start registers every worker while holding
+	// the lock and teardown flips the state to closing under it, so a
+	// concurrent Start can never add workers after teardown began waiting.
+	lifecycleMu sync.Mutex
+	lifecycle   lifecycleState
 	// cancel cancels the lifecycle context; Close calls it first so upload
 	// workers exit and in-flight remote operations abort. Nil until Start.
 	cancel context.CancelFunc
@@ -91,6 +96,15 @@ type VFS struct {
 	// workers; callers and tests can wait on it.
 	closeDone chan struct{}
 }
+
+type lifecycleState uint8
+
+const (
+	lifecycleNew lifecycleState = iota
+	lifecycleRunning
+	lifecycleClosing
+	lifecycleClosed
+)
 
 type overlayOp struct {
 	oldPath string
@@ -143,7 +157,6 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		encrypted:     opts.Encrypted,
 		testEnabled:   opts.TestEnabled,
 		done:          done,
-		startOnce:     sync.Once{},
 		view:          view,
 		read:          read.NewState(stores.readCacheStore),
 		hashes:        hashes,
@@ -170,31 +183,46 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 // owning context cancelling, which triggers Close) - build a new VFS to
 // restart.
 func (v *VFS) Start(ctx context.Context) {
-	v.startOnce.Do(func() {
-		select {
-		case <-v.done:
-			// Already closed: do not start workers on a torn-down instance.
-			return
-		default:
-		}
-		ctx, cancel := context.WithCancel(ctx)
-		v.ctx = ctx
-		v.cancel = cancel
-		for i := 0; i < v.uploads.WorkerCount(); i++ {
-			v.workerWG.Add(1)
-			go func() {
-				defer v.workerWG.Done()
-				v.uploadWorker(ctx)
-			}()
-		}
+	v.lifecycleMu.Lock()
+	if v.lifecycle != lifecycleNew {
+		// Already running, or teardown already began/ended: never start a
+		// second set of workers, and never start workers on an instance
+		// being (or already) closed.
+		v.lifecycleMu.Unlock()
+		return
+	}
+	v.lifecycle = lifecycleRunning
+	ctx, cancel := context.WithCancel(ctx)
+	v.ctx = ctx
+	v.cancel = cancel
+	// Register every worker under the lifecycle lock so a concurrent
+	// teardown that flips the state to closing and starts waiting sees a
+	// complete WaitGroup (no Add after Wait).
+	for i := 0; i < v.uploads.WorkerCount(); i++ {
+		v.workerWG.Add(1)
+		go func() {
+			defer v.workerWG.Done()
+			v.uploadWorker(ctx)
+		}()
+	}
+	v.lifecycleMu.Unlock()
+
+	// Resume only while still running: a concurrent Close that already
+	// flipped the state would otherwise receive new scheduled work it no
+	// longer owns. (The upload service's own stopped flag makes the worst
+	// case a discarded timer, never a leak.)
+	v.lifecycleMu.Lock()
+	running := v.lifecycle == lifecycleRunning
+	v.lifecycleMu.Unlock()
+	if running {
 		v.Resume(ctx)
-		// Graceful stop: when the owning context is cancelled (or Close is
-		// called directly), stop the upload/delete timers, wait for the
-		// upload workers, and close the read-cache writer so no background
-		// goroutine outlives the VFS. Close is idempotent, so an explicit
-		// Close call racing this hook is safe.
-		context.AfterFunc(ctx, func() { _ = v.Close(context.Background()) })
-	})
+	}
+	// Graceful stop: when the owning context is cancelled (or Close is
+	// called directly), stop the upload/delete timers, wait for the
+	// upload workers, and close the read-cache writer so no background
+	// goroutine outlives the VFS. Close is idempotent, so an explicit
+	// Close call racing this hook is safe.
+	context.AfterFunc(ctx, func() { _ = v.Close(context.Background()) })
 }
 
 // Close shuts down the VFS and waits for all background work to finish.
@@ -203,8 +231,9 @@ func (v *VFS) Start(ctx context.Context) {
 // return the same result. Close can be called before Start (it tears down
 // construction-time resources such as the read-cache writer) and after the
 // owning context was cancelled (the Start hook calls Close itself), and it
-// can race the context-cancel hook safely. Close-before-Start also makes a
-// later Start a no-op: a torn-down instance never starts workers.
+// can race Start or the context-cancel hook safely: Start and Close are
+// serialized by the lifecycle lock, so Close never tears down under a
+// Start that is still adding workers.
 //
 // Close stops accepting new background work, cancels the lifecycle context
 // (upload workers exit, in-flight remote operations abort), stops
@@ -230,6 +259,31 @@ func (v *VFS) Close(ctx context.Context) error {
 // Close callers may time out and return early, but teardown is never
 // aborted.
 func (v *VFS) teardown() {
+	v.lifecycleMu.Lock()
+	switch v.lifecycle {
+	case lifecycleNew:
+		// Never started: only the construction-time read-cache writer needs
+		// closing; nothing to cancel or wait on.
+		v.lifecycle = lifecycleClosed
+		v.lifecycleMu.Unlock()
+		var errs []error
+		if err := v.read.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		v.closeErr = errors.Join(errs...)
+		close(v.closeDone)
+		return
+	case lifecycleRunning:
+		// Flip to closing under the lock: a concurrent Start sees non-New
+		// and cannot Add workers after we start waiting.
+		v.lifecycle = lifecycleClosing
+		v.lifecycleMu.Unlock()
+	case lifecycleClosing, lifecycleClosed:
+		// closeOnce makes teardown single-flight; this is defensive.
+		v.lifecycleMu.Unlock()
+		return
+	}
+
 	if v.cancel != nil {
 		v.cancel()
 	}
@@ -243,6 +297,9 @@ func (v *VFS) teardown() {
 		errs = append(errs, err)
 	}
 	v.closeErr = errors.Join(errs...)
+	v.lifecycleMu.Lock()
+	v.lifecycle = lifecycleClosed
+	v.lifecycleMu.Unlock()
 	close(v.closeDone)
 }
 

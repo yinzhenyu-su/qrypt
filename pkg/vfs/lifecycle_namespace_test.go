@@ -150,3 +150,83 @@ func TestCloseRacesContextCancel(t *testing.T) {
 		}
 	}
 }
+
+// TestStartCloseConcurrent: Start and Close racing must never produce a
+// worker that outlives teardown - the lifecycle lock serializes the state
+// transitions, so either Start registers its workers before teardown begins
+// waiting or it sees a non-new state and refuses. Run under -race.
+func TestStartCloseConcurrent(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		fs := newCloseTestVFS(t)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			fs.Start(context.Background())
+		}()
+		go func() {
+			defer wg.Done()
+			_ = fs.Close(context.Background())
+		}()
+		wg.Wait()
+		select {
+		case <-fs.closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: teardown did not complete", i)
+		}
+		// Either interleaving is legal (Start-first registers workers that
+		// teardown then drains; Close-first makes Start a no-op). What must
+		// hold: a Start after the race never spawns new workers (a later
+		// Close is idempotent and immediate) and nothing leaks (goleak).
+		fs.Start(context.Background())
+		if err := fs.Close(context.Background()); err != nil {
+			t.Fatalf("iteration %d: Close after concurrent shutdown: %v", i, err)
+		}
+		select {
+		case <-fs.closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: teardown regressed after post-race Start", i)
+		}
+	}
+}
+
+// TestNamespaceCloseVisitsAllMountsOnError: when Close's context is already
+// done, every mount's Close returns early with ctx.Err(), but Namespace
+// still visits every mount and every mount's teardown runs to completion in
+// the background. A retried Close with a live context succeeds.
+func TestNamespaceCloseVisitsAllMountsOnError(t *testing.T) {
+	fsA := newCloseTestVFS(t)
+	fsB := newCloseTestVFS(t)
+	fsC := newCloseTestVFS(t)
+	ns, err := NewNamespace([]Mount{
+		{Name: "a", FS: fsA},
+		{Name: "b", FS: fsB},
+		{Name: "c", FS: fsC},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns.Start(context.Background())
+
+	deadCtx, dcancel := context.WithCancel(context.Background())
+	dcancel()
+	err = ns.Close(deadCtx)
+	if err == nil {
+		t.Fatal("Close with cancelled ctx: want error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close with cancelled ctx: want context.Canceled, got %v", err)
+	}
+
+	// All three mounts must still run teardown to completion.
+	for name, fs := range map[string]*VFS{"a": fsA, "b": fsB, "c": fsC} {
+		select {
+		case <-fs.closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("mount %s teardown did not complete after early-return Close", name)
+		}
+	}
+	if err := ns.Close(context.Background()); err != nil {
+		t.Fatalf("Close after completed teardown: %v", err)
+	}
+}
