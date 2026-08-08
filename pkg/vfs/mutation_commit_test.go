@@ -3,6 +3,8 @@ package vfs
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -173,5 +175,113 @@ func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
 	}
 	if fx.committer.cached != 1 {
 		t.Fatalf("CacheListedChildren calls = %d, want 1", fx.committer.cached)
+	}
+}
+
+// --- ViewCommitter CommitRemove coordinator behavior ---
+
+// TestRemoveCommitsExactlyOnce: a successful local remove commits the
+// (normalized) path exactly once through ViewCommitter.
+func TestRemoveCommitsExactlyOnce(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt", newVFSRemoveRuntime(fx.fs), fx.committer); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.committer.removed) != 1 || fx.committer.removed[0] != "/b.txt" {
+		t.Fatalf("CommitRemove = %+v, want exactly one /b.txt", fx.committer.removed)
+	}
+}
+
+// TestRemoveCommitsNormalizedPath: a trailing-slash path commits the
+// normalized form.
+func TestRemoveCommitsNormalizedPath(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt//", newVFSRemoveRuntime(fx.fs), fx.committer); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.committer.removed) != 1 || fx.committer.removed[0] != "/b.txt" {
+		t.Fatalf("CommitRemove = %+v, want normalized /b.txt", fx.committer.removed)
+	}
+}
+
+// TestRemoveNeverCommitsOnResolveFailure: an unresolvable path must not
+// commit anything.
+func TestRemoveNeverCommitsOnResolveFailure(t *testing.T) {
+	fx := newMkdirCoordinatorFixture(t)
+	if err := fx.fs.removeWithRuntime(context.Background(), "/missing.txt", newVFSRemoveRuntime(fx.fs), fx.committer); err == nil {
+		t.Fatal("want resolve error")
+	}
+	if len(fx.committer.removed) != 0 {
+		t.Fatalf("CommitRemove called %d times on resolve failure, want 0", len(fx.committer.removed))
+	}
+}
+
+// TestRemovePendingDoesNotCommitView: removing a path that only exists as a
+// pending upload goes through the pending-removal path and never touches
+// the view committer.
+func TestRemovePendingDoesNotCommitView(t *testing.T) {
+	fs := newPendingViewVFS(t)
+	ctx := context.Background()
+	if err := fs.Create(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/draft.txt", []byte("d"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.txt"); err != nil {
+		t.Fatal(err)
+	}
+	committer := &recordingViewCommitter{}
+	if err := fs.removeWithRuntime(ctx, "/draft.txt", newVFSRemoveRuntime(fs), committer); err != nil {
+		t.Fatal(err)
+	}
+	if len(committer.removed) != 0 {
+		t.Fatalf("CommitRemove called %d times for a pending upload, want 0", len(committer.removed))
+	}
+	if pending := fs.PendingUploads(); len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none after removal", pending)
+	}
+}
+
+// TestCommitRemoveWritesViewState locks the CommitRemove state surface:
+// the path becomes unavailable (overlay), the entry cache drops it, and
+// the read cache is invalidated.
+func TestCommitRemoveWritesViewState(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	// Warm the entry cache for b.txt.
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-b", Name: "b.txt", Size: 4}}, time.Now().Add(time.Minute))
+	if _, ok := view.Entry("/b.txt"); !ok {
+		t.Fatal("b.txt not cached before remove")
+	}
+	// Warm the read cache for b.txt. The entry must match the remove
+	// commit exactly (same ID + ModTime) so the cache key lines up.
+	modTime := time.Now()
+	entry := drive.Entry{ID: "id-b", Name: "b.txt", Size: 4, ModTime: modTime}
+	staging := filepath.Join(t.TempDir(), "b.staging")
+	if err := os.WriteFile(staging, []byte("beta"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs.seedReadCacheFromStaging(entry, staging)
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
+	if before := fs.DebugSnapshot().Mounts[0].ReadCacheState(); before.Bytes == 0 {
+		t.Fatal("read cache not seeded before remove")
+	}
+
+	newVFSViewCommitter(fs).CommitRemove("/b.txt", entry)
+
+	if !view.IsUnavailable("/b.txt") {
+		t.Error("removed path still available after CommitRemove")
+	}
+	if _, ok := view.Entry("/b.txt"); ok {
+		t.Error("removed path still in entry cache after CommitRemove")
+	}
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
+	if after := fs.DebugSnapshot().Mounts[0].ReadCacheState(); after.Bytes != 0 {
+		t.Errorf("read cache not invalidated by CommitRemove: %+v", after)
 	}
 }

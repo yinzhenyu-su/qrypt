@@ -35,11 +35,16 @@ func (b *fakeMutationBackend) Move(context.Context, drive.Entry, string) error {
 // coordinator tests can assert exactly when and how commits happen.
 type recordingViewCommitter struct {
 	committed []string
+	removed   []string
 	cached    int
 }
 
 func (r *recordingViewCommitter) CommitMkdir(path string, _ drive.Entry) {
 	r.committed = append(r.committed, path)
+}
+
+func (r *recordingViewCommitter) CommitRemove(path string, _ drive.Entry) {
+	r.removed = append(r.removed, path)
 }
 
 func (r *recordingViewCommitter) CacheListedChildren(string, []drive.Entry) {

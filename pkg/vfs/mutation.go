@@ -116,10 +116,10 @@ func findExistingChildDir(ctx context.Context, backend mutationBackend, committe
 	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
 }
 func (v *VFS) Remove(ctx context.Context, path string) (err error) {
-	return v.removeWithRuntime(ctx, path, newVFSRemoveRuntime(v))
+	return v.removeWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
 }
 
-func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime) (err error) {
+func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer ViewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
@@ -134,18 +134,16 @@ func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRem
 	if err != nil {
 		return err
 	}
-	runtime.InvalidateReadCache(entry)
-	runtime.MarkDeleted(path, entry)
-	runtime.ClearLocalModTime(path)
+	committer.CommitRemove(path, entry)
 	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deletes.delay)
 	v.scheduleDelete(path, entry)
 	return nil
 }
 func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
-	return v.removeDirWithRuntime(ctx, path, newVFSRemoveRuntime(v))
+	return v.removeDirWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
 }
 
-func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime) (err error) {
+func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer ViewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
@@ -158,14 +156,12 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfs
 	if !entry.IsDir {
 		return fmt.Errorf("vfs: %s is not a directory", path)
 	}
-	runtime.InvalidateReadCache(entry)
 	runtime.CancelChildUploads(path)
 	if err := runtime.RemovePendingUploadsUnder(path); err != nil {
 		return err
 	}
 	runtime.CancelChildDeletes(path)
-	runtime.MarkDeleted(path, entry)
-	runtime.ClearLocalModTime(path)
+	committer.CommitRemove(path, entry)
 	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deletes.delay)
 	v.scheduleDelete(path, entry)
 	return nil
@@ -269,6 +265,11 @@ func (b driverMutationBackend) Move(ctx context.Context, entry drive.Entry, dstP
 type ViewCommitter interface {
 	CommitMkdir(path string, entry drive.Entry)
 	CacheListedChildren(parentPath string, entries []drive.Entry)
+	// CommitRemove marks a path deleted in the view: the visibility overlay
+	// hides it (and its subtree for directories), the entry cache drops it,
+	// the read cache is invalidated, and local modtime is cleared. The
+	// delayed remote delete runs later through the delete executor.
+	CommitRemove(path string, entry drive.Entry)
 }
 
 // vfsViewCommitter implements ViewCommitter over the VFS view.
@@ -300,6 +301,12 @@ func (r vfsViewCommitter) CacheListedChildren(parentPath string, entries []drive
 	for _, child := range entries {
 		r.v.view.entries.Set(joinVirtual(parentPath, child.Name), child)
 	}
+}
+
+func (r vfsViewCommitter) CommitRemove(path string, entry drive.Entry) {
+	r.v.markDeleted(path, entry)
+	r.v.invalidateReadCache(entry)
+	r.v.clearLocalModTime(path)
 }
 
 type mutationRuntime interface {
@@ -376,10 +383,6 @@ func newVFSRemoveRuntime(v *VFS) vfsRemoveRuntime {
 	return vfsRemoveRuntime{v: v}
 }
 
-func (r vfsRemoveRuntime) InvalidateReadCache(entry drive.Entry) {
-	r.v.invalidateReadCache(entry)
-}
-
 func (r vfsRemoveRuntime) RemovePendingUpload(path string) error {
 	r.v.cancelUpload(path)
 	r.v.clearLocalModTime(path)
@@ -396,14 +399,6 @@ func (r vfsRemoveRuntime) RemovePendingUploadsUnder(path string) error {
 	}
 	r.v.hashes.removeUnder(path)
 	return nil
-}
-
-func (r vfsRemoveRuntime) MarkDeleted(path string, entry drive.Entry) {
-	r.v.markDeleted(path, entry)
-}
-
-func (r vfsRemoveRuntime) ClearLocalModTime(path string) {
-	r.v.clearLocalModTime(path)
 }
 
 func (r vfsRemoveRuntime) CancelChildUploads(path string) {
