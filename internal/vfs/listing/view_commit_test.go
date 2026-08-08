@@ -84,3 +84,24 @@ func TestProjectChildrenUsedByWaiter(t *testing.T) {
 		t.Fatal("waiter path did not call ProjectChildren")
 	}
 }
+
+// TestChildrenIgnoresEntryCacheMiss: Children callers already hold the
+// parentID from resolve; the entry cache may not have the parent yet. A
+// cache miss must NOT be treated as unavailable/NotFound - only the
+// visibility check gates the error. This guards the semantic split between
+// View.IsUnavailable (visibility) and View.Entry (cache identity).
+func TestChildrenIgnoresEntryCacheMiss(t *testing.T) {
+	host := &fakeRuntimeHost{
+		children: []drive.Entry{{ID: "c1", Name: "a.txt"}},
+		// entry deliberately NOT set: Entry("/uncached") is a miss.
+		// IsUnavailable stays false (path is visible).
+	}
+	l := NewLister(ListerDeps{Remote: host, View: host, State: NewState()})
+	entries, err := l.Children(context.Background(), "/uncached", "known-parent-id")
+	if err != nil {
+		t.Fatalf("Children with entry-cache miss returned error: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "a.txt" {
+		t.Fatalf("Children = %+v, want [a.txt]", entries)
+	}
+}

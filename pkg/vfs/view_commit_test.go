@@ -283,3 +283,22 @@ func TestOwnerWaiterConcurrentProjection(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestViewSeparatesVisibilityFromCacheIdentity: the real vfsListingView
+// keeps visibility (IsUnavailable) and cache identity (Entry) independent:
+// an unresolved path is an entry miss but NOT unavailable.
+func TestViewSeparatesVisibilityFromCacheIdentity(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	if view.IsUnavailable("/uncached") {
+		t.Error("visible unresolved path reported unavailable")
+	}
+	if _, ok := view.Entry("/uncached"); ok {
+		t.Error("unresolved path should be an entry-cache miss")
+	}
+	// A resolved+committed child has identity.
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-a", Name: "a.txt", Size: 5}}, time.Now().Add(time.Minute))
+	if _, ok := view.Entry("/a.txt"); !ok {
+		t.Error("committed child should have entry identity")
+	}
+}

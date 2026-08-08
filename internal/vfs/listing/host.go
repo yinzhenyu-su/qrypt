@@ -24,12 +24,14 @@ type Remote interface {
 // reads a finished view through this interface instead of reaching into
 // the overlay's sources. VFS implements it via vfsListingView.
 type View interface {
-	// CurrentDirectory returns the current visible entry for path, or
-	// ok=false when the path is unavailable (deleted/hidden). Callers
-	// combine the availability check and the identity lookup in one call
-	// (used for list availability and prefetch stale-checks); check
-	// entry.IsDir for directory identity.
-	CurrentDirectory(path string) (drive.Entry, bool)
+	// IsUnavailable reports whether path is hidden by the visibility
+	// overlay (deleted/hidden) - independent of the entry cache.
+	IsUnavailable(path string) bool
+	// Entry returns the cached entry identity for path. A miss (ok=false)
+	// means the entry cache has no entry yet - it does NOT mean the path is
+	// unavailable; Children callers already hold the parentID and only need
+	// visibility.
+	Entry(path string) (drive.Entry, bool)
 
 	// View cache.
 	FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool)

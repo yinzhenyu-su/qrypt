@@ -72,13 +72,14 @@ func newVFSListingView(v *VFS) vfsListingView {
 	return vfsListingView{v: v}
 }
 
-// CurrentDirectory combines the availability check and the identity lookup:
-// deleted/hidden paths have no current directory identity. Used for list
-// availability and prefetch stale-checks.
-func (h vfsListingView) CurrentDirectory(path string) (drive.Entry, bool) {
-	if h.v.isUnavailable(path) {
-		return drive.Entry{}, false
-	}
+func (h vfsListingView) IsUnavailable(path string) bool {
+	return h.v.isUnavailable(path)
+}
+
+// Entry returns the cached entry identity. A miss does not mean the path
+// is unavailable - the listing domain separates visibility from cache
+// identity (callers of Children already hold the parentID from resolve).
+func (h vfsListingView) Entry(path string) (drive.Entry, bool) {
 	return h.v.view.entries.Get(path)
 }
 

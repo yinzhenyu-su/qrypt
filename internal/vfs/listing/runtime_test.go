@@ -37,10 +37,10 @@ func (h *fakeRuntimeHost) ListChildren(ctx context.Context, _ string) ([]drive.E
 	return h.children, h.childErr
 }
 
-// CurrentDirectory reports the configured entry as visible (ok=true); the
-// old stubHost.IsUnavailable defaulted to available.
-func (h *fakeRuntimeHost) CurrentDirectory(string) (drive.Entry, bool) {
-	return h.entry, true
+func (h *fakeRuntimeHost) IsUnavailable(string) bool { return false }
+
+func (h *fakeRuntimeHost) Entry(string) (drive.Entry, bool) {
+	return h.entry, h.entryOK
 }
 
 func (h *fakeRuntimeHost) ProjectChildren(_ string, entries []drive.Entry) []drive.Entry {
