@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -44,7 +45,7 @@ func (r vfsDriverRuntime) RemoteMutationBackend() driverRemoteMutationBackend {
 }
 
 func (r vfsDriverRuntime) NamedDriver(name string) NamedDriver {
-	return NamedDriver{Name: name, Driver: r.v.driver, TestEnabled: r.v.testEnabled}
+	return diagnostics.NamedDriver{Name: name, Driver: r.v.driver, TestEnabled: r.v.testEnabled}
 }
 
 func (r vfsDriverRuntime) Encrypted() bool {

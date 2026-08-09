@@ -31,6 +31,8 @@ type DebugActiveMount = diagnostics.DebugActiveMount
 type DebugActiveProvider = diagnostics.DebugActiveProvider
 type MountHealth = diagnostics.MountHealth
 type MountHealthOp = diagnostics.MountHealthOp
+type NamedDriver = diagnostics.NamedDriver
+type DriverProvider = diagnostics.DriverProvider
 
 // DebugSnapshotSchemaVersion aliases the diagnostics schema version.
 const DebugSnapshotSchemaVersion = diagnostics.DebugSnapshotSchemaVersion

@@ -119,18 +119,6 @@ type MountHealthChecker interface {
 
 // NamedDriver pairs a mount name with its underlying drive.Driver.
 // Used by the debug socket to expose driver-level operations.
-type NamedDriver struct {
-	Name        string
-	Driver      drive.Driver
-	TestEnabled bool
-}
-
-// DriverProvider is implemented by VFS and Namespace to expose the
-// underlying driver references for driver-level debugging.
-type DriverProvider interface {
-	Drivers() []NamedDriver
-}
-
 // The interfaces below name optional capabilities a FileSystem may expose.
 // Consumers assert against the named interface instead of an inline anonymous
 // one, so fakes are easy to construct and the capability surface is

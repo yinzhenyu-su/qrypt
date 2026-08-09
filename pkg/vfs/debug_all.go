@@ -367,52 +367,11 @@ func (v *VFS) nextDebugReadOpID() string {
 }
 
 func (v *VFS) recordDebugRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
-	finished := timeutil.Now()
-	if extra == nil {
-		extra = map[string]any{}
-	}
-	extra["source"] = source
-	event := drive.MetricEvent{
-		At: finished, OpID: opID, Kind: "vfs_read", Operation: "read", Phase: "read", State: "completed", OK: true,
-		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
-		Bytes: bytes, CacheHits: cacheHits, CacheMisses: cacheMisses, Chunks: chunks,
-		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
-		Extra: extra,
-	}
-	if bytes > 0 && finished.After(started) {
-		event.Throughput = int64(float64(bytes) / finished.Sub(started).Seconds())
-	}
-	if err != nil {
-		event.State = "failed"
-		event.OK = false
-		event.Error = err.Error()
-		event.ErrorCategory = drive.ErrorCategory(err)
-	}
-	newVFSDebugReadRuntime(v).AppendEvent(event)
+	diagnostics.RecordRead(newVFSDebugReadRuntime(v), opID, path, remoteID, offset, requested, bytes, source, cacheHits, cacheMisses, chunks, started, extra, err)
 }
 
 func (v *VFS) recordDebugReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
-	op, ok := drive.DebugOperationFromContext(ctx)
-	if !ok || op.OpID == "" {
-		return
-	}
-	finished := timeutil.Now()
-	event := drive.MetricEvent{
-		At: finished, ParentOpID: op.OpID, Kind: "vfs_read", Operation: "read", Phase: phase, State: "completed", OK: true,
-		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,
-		Bytes: bytes, StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: durationMillis(finished.Sub(started)),
-		Extra: extra,
-	}
-	if bytes > 0 && finished.After(started) {
-		event.Throughput = int64(float64(bytes) / finished.Sub(started).Seconds())
-	}
-	if err != nil {
-		event.State = "failed"
-		event.OK = false
-		event.Error = err.Error()
-		event.ErrorCategory = drive.ErrorCategory(err)
-	}
-	newVFSDebugReadRuntime(v).AppendEvent(event)
+	diagnostics.RecordReadDetail(newVFSDebugReadRuntime(v), ctx, path, remoteID, phase, offset, requested, bytes, started, extra, err)
 }
 
 func (v *VFS) debugReadHistory() []drive.MetricEvent {
@@ -427,13 +386,6 @@ func (v *VFS) DebugReset(ctx context.Context) error {
 	}
 	newVFSDebugReadRuntime(v).ResetHistory()
 	return nil
-}
-
-func durationMillis(d time.Duration) int64 {
-	if d <= 0 {
-		return 0
-	}
-	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
 type vfsDebugReadRuntime struct {
@@ -1201,7 +1153,7 @@ func (r vfsDebugUploadRuntime) RecordEvent(path, phase string, start time.Time, 
 		OK:         true,
 		Bytes:      bytes,
 		Duration:   duration.String(),
-		DurationMS: durationMillis(duration),
+		DurationMS: diagnostics.DurationMillis(duration),
 		StartedAt:  start,
 		FinishedAt: finished,
 		Extra:      extra,
