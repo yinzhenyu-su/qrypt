@@ -2,7 +2,7 @@ package vfs
 
 import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
+	"github.com/yinzhenyu/qrypt/internal/vfs/scheduler"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
 	"sync"
@@ -19,7 +19,7 @@ type overlayState struct {
 
 type deleteTaskState struct {
 	mu        *sync.Mutex
-	scheduler upload.KeyedScheduler
+	scheduler scheduler.KeyedScheduler
 	active    map[string]drive.Entry
 	failures  map[string]string
 }
@@ -34,7 +34,7 @@ func newDeleteStates() (*overlayState, *deleteTaskState) {
 			copyHiddenChildren: map[string]map[string]time.Time{},
 		}, &deleteTaskState{
 			mu:        mu,
-			scheduler: upload.NewTimeKeyedScheduler(),
+			scheduler: scheduler.NewTimeKeyedScheduler(),
 			active:    map[string]drive.Entry{},
 			failures:  map[string]string{},
 		}

@@ -8,6 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/internal/vfs/scheduler"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -204,6 +205,11 @@ type HashOps interface {
 	RenamePath(oldPath, newPath string, p PendingUpload)
 }
 
+// UploadScheduler is the upload domain's consumer-side scheduling seam
+// (per-path debounce semantics). The shared real implementation lives in
+// internal/vfs/scheduler; tests inject fakes.
+type UploadScheduler = scheduler.KeyedScheduler
+
 // ServiceOptions is the subset of vfs.Options the upload service needs.
 type ServiceOptions struct {
 	UploadDelay   time.Duration
@@ -212,9 +218,9 @@ type ServiceOptions struct {
 	Done          chan struct{}
 	HashOps       HashOps
 	// Scheduler drives the per-path upload debounce timers. When nil, the
-	// real timer-backed scheduler is used; tests inject a fake for
-	// deterministic scheduling without real time.
-	Scheduler KeyedScheduler
+	// real timer-backed scheduler (internal/vfs/scheduler) is used; tests
+	// inject a fake for deterministic scheduling without real time.
+	Scheduler UploadScheduler
 }
 
 // --- service ---
@@ -225,7 +231,7 @@ type ServiceOptions struct {
 type Service struct {
 	store    *PendingStore
 	queue    chan PendingUpload
-	schedule KeyedScheduler
+	schedule UploadScheduler
 	debug    *DebugState
 	faults   *FaultState
 	hashes   HashOps
@@ -245,7 +251,7 @@ type Service struct {
 // NewService builds the upload domain state together.
 func NewService(opts ServiceOptions) *Service {
 	if opts.Scheduler == nil {
-		opts.Scheduler = newTimeKeyedScheduler()
+		opts.Scheduler = scheduler.NewTimeKeyedScheduler()
 	}
 	return &Service{
 		store:    opts.Store,
