@@ -50,6 +50,11 @@ type Fault struct {
 	MatchedPath string
 	Fired       bool
 	FiredAt     time.Time
+	// claimed marks an in-flight once-rule claim; claimGen is the
+	// monotonically increasing token for that claim (never reused, so a
+	// stale Release/Fire from an old claim cannot affect a newer one).
+	claimed  bool
+	claimGen uint64
 }
 
 // Snapshot renders the fault as its read-only DTO.
@@ -89,6 +94,12 @@ type MatchResult struct {
 	MatchedPath string
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
+	// ClaimToken is nonzero only when the matched once-rule was claimed
+	// for this caller. The caller must call Fire(token) to consume the
+	// rule permanently, or Release(token) to return it to armed when the
+	// upload ends without firing (e.g. the bytes/delay threshold was never
+	// reached).
+	ClaimToken uint64
 }
 
 // InjectRequest describes a fault to register.
@@ -179,9 +190,10 @@ func (r *Registry) Faults(now time.Time) []DebugUploadCancelFault {
 
 // Match returns the first rule matching BOTH non-empty path and op_id
 // constraints, pruning expired rules and skipping fired once-rules. The
-// result is an immutable value copy. A once-rule is claimed atomically
-// here: it is removed from the registry so exactly one concurrent caller
-// can ever win it.
+// result is an immutable value copy. A once-rule is claimed (not
+// consumed): exactly one concurrent caller wins the claim, and the rule
+// stays claimed until the winner calls Fire (permanent) or Release
+// (back to armed).
 func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -189,6 +201,9 @@ func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 	for _, fault := range r.faults {
 		if fault.Fired && fault.Once {
 			continue
+		}
+		if fault.Once && fault.claimed {
+			continue // already claimed by another upload
 		}
 		if fault.Path != "" && fault.Path != path {
 			continue
@@ -210,25 +225,52 @@ func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 			ExpiresAt:   fault.ExpiresAt,
 		}
 		if fault.Once {
-			// Atomic claim: remove so no other caller can match it.
-			delete(r.faults, fault.ID)
+			// Claim the rule: while claimed it cannot be matched again.
+			// claimGen never resets, so tokens are never reused.
+			fault.claimed = true
+			fault.claimGen++
+			result.ClaimToken = fault.claimGen
 		}
 		return result, true
 	}
 	return MatchResult{}, false
 }
 
-// MarkFired records a non-once rule as fired (for diagnostics). Once-rules
-// are claimed and removed by Match, so MarkFired on them is a no-op.
+// Fire permanently consumes a once-rule claim (token from Match). After
+// Fire the rule can never match again. Non-once rules are unaffected
+// (they are not claimed); use MarkFired to record their firing state.
+func (r *Registry) Fire(token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, fault := range r.faults {
+		if fault.Once && fault.claimed && fault.claimGen == token {
+			delete(r.faults, fault.ID)
+			return
+		}
+	}
+}
+
+// Release returns a once-rule claim to armed so a later upload can match
+// it again. The token guards against a stale cleanup releasing a claim
+// that was already re-issued to a newer upload.
+func (r *Registry) Release(token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, fault := range r.faults {
+		if fault.Once && fault.claimed && fault.claimGen == token {
+			fault.claimed = false
+			return
+		}
+	}
+}
+
+// MarkFired records a non-once rule as fired (for diagnostics).
 func (r *Registry) MarkFired(id string, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if fault := r.faults[id]; fault != nil {
 		fault.Fired = true
 		fault.FiredAt = now
-		if fault.Once {
-			delete(r.faults, id)
-		}
 	}
 }
 

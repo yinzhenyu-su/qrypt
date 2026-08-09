@@ -106,3 +106,36 @@ func TestNamespaceFaultIDsUniquenessUnderDuplicateRegistrySequences(t *testing.T
 		t.Fatalf("ids collide: %q", a.ID)
 	}
 }
+
+// TestNamespaceFaultRoutingUsesMountKeyNotVFSName: the namespace mount
+// key ("photos") must be used in the fault ID even when VFS.name differs
+// ("backend-a"); clearing via the returned ID must route correctly.
+func TestNamespaceFaultRoutingUsesMountKeyNotVFSName(t *testing.T) {
+	ctx := context.Background()
+	// VFS.name differs from the namespace mount key.
+	backend, err := New(localfs.New(t.TempDir()), Options{Name: "backend-a", StorageDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close(context.Background())
+	ns, err := NewNamespace([]Mount{{Name: "photos", FS: backend}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ns.DebugInjectUploadCancel(ctx, DebugUploadCancelRequest{Path: "/photos/photo.jpg", Phase: "uploading"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := "photos:"
+	if len(result.ID) <= len(wantPrefix) || result.ID[:len(wantPrefix)] != wantPrefix {
+		t.Fatalf("fault id = %q, want mount-key prefix %q (not VFS name)", result.ID, wantPrefix)
+	}
+
+	if err := ns.DebugClearUploadCancel(ctx, result.ID); err != nil {
+		t.Fatalf("clear via mount-key id failed: %v", err)
+	}
+	if got := ns.DebugUploadCancelFaults(ctx); len(got) != 0 {
+		t.Fatalf("faults after clear = %+v, want none", got)
+	}
+}

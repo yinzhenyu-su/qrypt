@@ -280,6 +280,14 @@ func splitNamespacePath(path string) (string, string, bool) {
 	return parts[0], "/" + parts[1], false
 }
 
+// firstVirtualSegment returns the first slash-delimited segment of a
+// virtual path ("" for root).
+func firstVirtualSegment(path string) string {
+	trimmed := strings.TrimPrefix(cleanVirtual(path), "/")
+	name, _, _ := strings.Cut(trimmed, "/")
+	return name
+}
+
 func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	path = cleanVirtual(path)
 	if path == "/" {

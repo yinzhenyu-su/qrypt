@@ -47,6 +47,7 @@ func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending 
 	cancelProgress := &debugUploadCancelProgress{
 		inner:      progress,
 		fault:      fault,
+		claimToken: fault.ClaimToken,
 		cancel:     uploadCancel,
 		cancelPath: pending.Path,
 		cancelOpID: pending.FID,

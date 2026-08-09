@@ -198,7 +198,7 @@ func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancel
 		Phase:      req.Phase,
 		AfterBytes: req.AfterBytes,
 		AfterDelay: req.AfterDelay,
-		Once:       true,
+		Once:       req.Once,
 		Reason:     req.Reason,
 		TTL:        req.TTL,
 	})
@@ -237,6 +237,10 @@ func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req DebugUpload
 	if root || rest == "/" {
 		return DebugUploadCancelResult{}, ErrReadOnly
 	}
+	// The namespace mount key comes from the first path segment (same rule
+	// as n.resolve), never from VFS.name, which is not guaranteed to equal
+	// the mount key.
+	mountKey := cleanMountName(firstVirtualSegment(req.Path))
 	req.Path = rest
 	result, err := mount.DebugInjectUploadCancel(ctx, req)
 	if err != nil {
@@ -244,7 +248,7 @@ func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req DebugUpload
 	}
 	// Opaque namespace-level ID: routes the clear back to the owning
 	// mount and stays unique across mounts (each registry numbers from 1).
-	result.ID = mount.name + ":" + result.ID
+	result.ID = mountKey + ":" + result.ID
 	return result, nil
 }
 
@@ -287,13 +291,10 @@ func (v *VFS) matchUploadCancelFault(path, opID string) (faultinject.MatchResult
 	return v.faults.Match(time.Now(), path, opID)
 }
 
-func (v *VFS) markUploadCancelFaultFired(id string) {
-	v.faults.MarkFired(id, time.Now())
-}
-
 type debugUploadCancelProgress struct {
 	inner       drive.UploadProgress
 	fault       faultinject.MatchResult
+	claimToken  uint64
 	cancel      context.CancelFunc
 	cancelPath  string
 	cancelOpID  string
@@ -334,6 +335,9 @@ func (p *debugUploadCancelProgress) Close() {
 	if p.timer != nil {
 		p.timer.Stop()
 	}
+	// The upload ended without firing: return the once-rule claim to
+	// armed so a later upload can still trigger it.
+	p.v.faults.Release(p.claimToken)
 }
 
 func (p *debugUploadCancelProgress) maybeCancelLocked() {
@@ -364,7 +368,7 @@ func (p *debugUploadCancelProgress) fire() {
 		return
 	}
 	logging.L.Warnf("[VFS] debug upload cancel fired op_id=%q path=%q fault=%q reason=%q", p.cancelOpID, p.cancelPath, p.fault.ID, p.fault.Reason)
-	p.v.markUploadCancelFaultFired(p.fault.ID)
+	p.v.faults.Fire(p.claimToken)
 	p.cancel()
 }
 
