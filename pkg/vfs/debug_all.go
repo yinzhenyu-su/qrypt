@@ -341,7 +341,7 @@ func (p *debugUploadCancelProgress) Close() {
 	// upload truly ended without firing; once released, the rule returns
 	// to armed for a later upload.
 	if !p.cancelFired.Swap(true) {
-		p.v.faults.Release(p.fault.Claim)
+		p.v.faults.Release(p.fault.Handle)
 	}
 }
 
@@ -371,15 +371,14 @@ func (p *debugUploadCancelProgress) maybeCancelLocked() {
 	p.fireLocked()
 }
 
-// fireLocked must be called with p.mu held (or from a caller that holds
-// no lock and has exclusive access). It is the single completion path:
+// fireLocked requires p.mu to be held. It is the single completion path:
 // the registry records the fired state via Complete.
 func (p *debugUploadCancelProgress) fireLocked() {
 	if p.cancelFired.Swap(true) {
 		return // already fired, or closed
 	}
 	logging.L.Warnf("[VFS] debug upload cancel fired op_id=%q path=%q fault=%q reason=%q", p.cancelOpID, p.cancelPath, p.fault.ID, p.fault.Reason)
-	p.v.faults.Complete(p.fault.ID, p.fault.Claim, time.Now())
+	p.v.faults.Complete(p.fault.Handle, time.Now())
 	p.cancel()
 }
 

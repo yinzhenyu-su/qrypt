@@ -79,12 +79,15 @@ func (f *Fault) Snapshot() DebugUploadCancelFault {
 	return s
 }
 
-// Claim identifies a once-rule claim: the rule's ID plus its monotonic
-// token. Fire/Release/Complete look the rule up BY ID first, then verify
-// the token, so two rules with equal local tokens can never interfere.
-type Claim struct {
+// MatchHandle is the completion credential returned by Match: the rule's
+// ID, its monotonic claim token (0 for non-once rules, which are never
+// claimed), and whether the rule is one-shot. Complete/Release look the
+// rule up BY ID first, then verify the token, so two rules with equal
+// local tokens can never interfere.
+type MatchHandle struct {
 	FaultID string
 	Token   uint64
+	Once    bool
 }
 
 // MatchResult is an immutable snapshot of a matched rule. Callers never
@@ -102,11 +105,12 @@ type MatchResult struct {
 	MatchedPath string
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
-	// Claim is nonzero only when the matched once-rule was claimed for
-	// this caller. The caller must call Complete(faultID, claim) to
-	// consume the rule permanently, or Release(claim) to return it to
-	// armed when the upload ends without firing.
-	Claim Claim
+	// Handle is the completion credential for this match. For once-rules
+	// it carries the claim (token); for non-once rules the token is zero
+	// and Once is false. The caller must call Complete(handle) to finish,
+	// or Release(handle) to return a once-claim to armed when the upload
+	// ends without firing.
+	Handle MatchHandle
 }
 
 // InjectRequest describes a fault to register.
@@ -231,33 +235,35 @@ func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 			CreatedAt:   fault.CreatedAt,
 			ExpiresAt:   fault.ExpiresAt,
 		}
+		result.Handle = MatchHandle{FaultID: fault.ID, Once: fault.Once}
 		if fault.Once {
 			// Claim the rule: while claimed it cannot be matched again.
 			// claimGen never resets, so tokens are never reused.
 			fault.claimed = true
 			fault.claimGen++
-			result.Claim = Claim{FaultID: fault.ID, Token: fault.claimGen}
+			result.Handle.Token = fault.claimGen
 		}
 		return result, true
 	}
 	return MatchResult{}, false
 }
 
-// Complete finishes a claim: for once-rules it permanently consumes the
+// Complete finishes a match: for once-rules it permanently consumes the
 // rule (never matchable again); for non-once rules it records Fired/
-// FiredAt while keeping the rule registered. The fault is looked up by
-// ID and the claim token verified, so callers need no knowledge of the
-// registry's state machine.
-func (r *Registry) Complete(faultID string, claim Claim, now time.Time) {
+// FiredAt while keeping the rule registered. The rule is looked up by
+// handle.FaultID, the handle must match the fault's own Once-ness, and
+// for once-rules the claim token must be the current one - a handle from
+// another rule (even with an equal token) can never consume this rule.
+func (r *Registry) Complete(handle MatchHandle, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fault, ok := r.faults[faultID]
+	fault, ok := r.faults[handle.FaultID]
 	if !ok {
 		return
 	}
 	if fault.Once {
-		if fault.claimed && fault.claimGen == claim.Token {
-			delete(r.faults, faultID)
+		if handle.Once && fault.claimed && fault.claimGen == handle.Token {
+			delete(r.faults, handle.FaultID)
 		}
 		return
 	}
@@ -266,13 +272,14 @@ func (r *Registry) Complete(faultID string, claim Claim, now time.Time) {
 }
 
 // Release returns a once-rule claim to armed so a later upload can match
-// it again. The rule is looked up by ID and the token verified, so a
-// stale cleanup can never release a claim re-issued to a newer upload.
-func (r *Registry) Release(claim Claim) {
+// it again. The rule is looked up by handle.FaultID and the token
+// verified, so a stale cleanup can never release a claim re-issued to a
+// newer upload.
+func (r *Registry) Release(handle MatchHandle) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	fault, ok := r.faults[claim.FaultID]
-	if !ok || !fault.Once || !fault.claimed || fault.claimGen != claim.Token {
+	fault, ok := r.faults[handle.FaultID]
+	if !ok || !fault.Once || !handle.Once || !fault.claimed || fault.claimGen != handle.Token {
 		return
 	}
 	fault.claimed = false
