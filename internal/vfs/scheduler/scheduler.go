@@ -38,13 +38,18 @@ type KeyedScheduler interface {
 	Deadlines() map[string]time.Time
 }
 
+// timerHandle is the minimal timer surface the scheduler needs.
+type timerHandle interface {
+	Stop() bool
+}
+
 // scheduledTask is one generation of a key's callback. The task pointer
 // itself is the generation token: a fired callback only deletes state and
 // runs fn when it is still the current task for its key, so a stale
 // callback from a replaced/cancelled generation can never delete the new
 // task's state or execute its own superseded work.
 type scheduledTask struct {
-	timer      *time.Timer
+	timer      timerHandle
 	generation uint64
 	deadline   time.Time
 }
@@ -54,11 +59,23 @@ type timeKeyedScheduler struct {
 	mu      sync.Mutex
 	tasks   map[string]*scheduledTask
 	nextGen uint64
+	// newTimer creates the per-task timer; tests inject a controllable
+	// factory to make firing deterministic (no real-time waits).
+	newTimer func(time.Duration, func()) timerHandle
 }
 
 // NewTimeKeyedScheduler returns a real timer-backed KeyedScheduler.
 func NewTimeKeyedScheduler() KeyedScheduler {
-	return &timeKeyedScheduler{tasks: map[string]*scheduledTask{}}
+	return newScheduler(func(d time.Duration, fn func()) timerHandle {
+		return time.AfterFunc(d, fn)
+	})
+}
+
+func newScheduler(newTimer func(time.Duration, func()) timerHandle) *timeKeyedScheduler {
+	return &timeKeyedScheduler{
+		tasks:    map[string]*scheduledTask{},
+		newTimer: newTimer,
+	}
 }
 
 func (s *timeKeyedScheduler) Schedule(key string, delay time.Duration, fn func()) {
@@ -71,7 +88,7 @@ func (s *timeKeyedScheduler) Schedule(key string, delay time.Duration, fn func()
 	task := &scheduledTask{generation: gen, deadline: time.Now().Add(delay)}
 	// timer is assigned under the lock so a concurrent Cancel can never
 	// observe a task whose timer is still nil.
-	task.timer = time.AfterFunc(delay, func() {
+	task.timer = s.newTimer(delay, func() {
 		s.mu.Lock()
 		if s.tasks[key] != task {
 			// This generation was replaced or cancelled: never run.

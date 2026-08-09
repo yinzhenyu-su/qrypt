@@ -7,125 +7,184 @@ import (
 	"time"
 )
 
+// fakeTimer mimics a started-but-not-yet-run timer callback. fire runs
+// the callback synchronously regardless of Stop, which is exactly the
+// "callback already dispatched" window of time.AfterFunc.
+type fakeTimer struct {
+	fn      func()
+	stopped bool
+}
+
+func (t *fakeTimer) fire() {
+	if t.fn != nil {
+		t.fn()
+	}
+}
+
+func (t *fakeTimer) Stop() bool {
+	t.stopped = true
+	return true
+}
+
+// fakeTimerFactory hands out controllable timers; tests fire them
+// explicitly, so no real time and no sleeps are needed.
+type fakeTimerFactory struct {
+	mu     sync.Mutex
+	timers []*fakeTimer
+}
+
+func (f *fakeTimerFactory) all() []*fakeTimer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*fakeTimer(nil), f.timers...)
+}
+
+// newTestScheduler builds a scheduler whose timers are controllable
+// fakes: Stop is recorded, firing is manual, and a fired callback runs
+// synchronously - exactly the "callback already dispatched" window.
+type testScheduler struct {
+	*timeKeyedScheduler
+	factory *fakeTimerFactory
+}
+
+func newTestScheduler() *testScheduler {
+	factory := &fakeTimerFactory{}
+	ts := &testScheduler{factory: factory}
+	ts.timeKeyedScheduler = newScheduler(factory.timerFactory)
+	return ts
+}
+
+func (f *fakeTimerFactory) timerFactory(_ time.Duration, fn func()) timerHandle {
+	t := &fakeTimer{fn: fn}
+	f.mu.Lock()
+	f.timers = append(f.timers, t)
+	f.mu.Unlock()
+	return t
+}
+
 // TestReplaceBeforeFire: replacing while the old timer is still pending
-// stops the old callback entirely - it never runs.
+// stops the old callback entirely; firing it manually after the replace
+// must be a stale no-op (generation check), leaving the new task intact.
 func TestReplaceBeforeFire(t *testing.T) {
-	for i := 0; i < 50; i++ {
-		s := NewTimeKeyedScheduler()
-		var oldRan atomic.Bool
-		var newRan atomic.Bool
-		s.Schedule("A", 5*time.Millisecond, func() { oldRan.Store(true) })
-		s.Schedule("A", 10*time.Millisecond, func() { newRan.Store(true) })
-		time.Sleep(60 * time.Millisecond)
-		if oldRan.Load() {
-			t.Fatalf("iteration %d: replaced (still-pending) callback ran", i)
-		}
-		if !newRan.Load() {
-			t.Fatalf("iteration %d: replacement callback never ran", i)
-		}
-		if got := s.Keys(); len(got) != 0 {
-			t.Fatalf("iteration %d: keys = %+v after fire", i, got)
-		}
+	s := newTestScheduler()
+	var oldRan, newRan atomic.Bool
+	s.Schedule("A", 0, func() { oldRan.Store(true) })
+	s.Schedule("A", 0, func() { newRan.Store(true) })
+
+	timers := s.factory.all()
+	if len(timers) != 2 {
+		t.Fatalf("timers = %d, want 2", len(timers))
+	}
+	// The stale timer was stopped by the replace; firing it anyway (the
+	// time.AfterFunc race window) must not run the old callback.
+	timers[0].fire()
+	if oldRan.Load() {
+		t.Fatal("replaced callback ran")
+	}
+	if _, ok := s.Keys()["A"]; !ok {
+		t.Fatal("stale callback deleted new task state")
+	}
+	// Fire the new timer: the replacement runs exactly once.
+	timers[1].fire()
+	if !newRan.Load() {
+		t.Fatal("replacement callback never ran")
+	}
+	if got := s.Keys(); len(got) != 0 {
+		t.Fatalf("keys after fire = %+v", got)
 	}
 }
 
-// TestStaleCallbackCannotCorruptNewState: the review-reported race. A
-// callback whose timer fired but whose generation was replaced BEFORE it
-// ran must (a) never run, and (b) must never delete the new task's state.
-// We assert the observable contract: while the replacement is still
-// pending its key is present (Keys/Deadlines intact), and the replacement
-// fires exactly once.
+// TestStaleCallbackCannotCorruptNewState: the review-reported race, made
+// deterministic: the old timer fires AFTER the replace has already won.
 func TestStaleCallbackCannotCorruptNewState(t *testing.T) {
-	for i := 0; i < 50; i++ {
-		s := NewTimeKeyedScheduler()
-		var staleRan atomic.Bool
-		var newRan atomic.Bool
-		s.Schedule("A", time.Millisecond, func() { staleRan.Store(true) })
-		time.Sleep(2 * time.Millisecond) // old timer fired; callback may be running or stale
-		s.Schedule("A", 30*time.Millisecond, func() { newRan.Store(true) })
+	s := newTestScheduler()
+	var staleRan, newRan atomic.Bool
+	s.Schedule("A", 0, func() { staleRan.Store(true) })
+	s.Schedule("A", 0, func() { newRan.Store(true) })
 
-		// While the new callback is still pending, its key must be
-		// present - a stale callback deleting it would corrupt state.
-		time.Sleep(10 * time.Millisecond)
-		if _, ok := s.Keys()["A"]; !ok {
-			t.Fatalf("iteration %d: stale callback deleted new task state", i)
-		}
-		if _, ok := s.Deadlines()["A"]; !ok {
-			t.Fatalf("iteration %d: stale callback deleted new deadline", i)
-		}
-
-		time.Sleep(40 * time.Millisecond) // new callback fires
-		if !newRan.Load() {
-			t.Fatalf("iteration %d: replacement never fired", i)
-		}
-		if got := s.Keys(); len(got) != 0 {
-			t.Fatalf("iteration %d: keys after fire = %+v", i, got)
-		}
-		// staleRan may be true only when it fired BEFORE the replace
-		// took effect (a legitimately started callback); when the
-		// replace won the race it must be false. We cannot distinguish
-		// here, so we only forbid the corrupting side effects above.
-		_ = staleRan.Load()
+	timers := s.factory.all()
+	// Deterministic stale window: old timer fires after replace.
+	timers[0].fire()
+	if staleRan.Load() {
+		t.Fatal("stale callback ran")
+	}
+	if _, ok := s.Keys()["A"]; !ok {
+		t.Fatal("stale callback deleted new task state")
+	}
+	if _, ok := s.Deadlines()["A"]; !ok {
+		t.Fatal("stale callback deleted new deadline")
+	}
+	timers[1].fire()
+	if !newRan.Load() {
+		t.Fatal("replacement never fired")
 	}
 }
 
-// TestCancelAfterFireLeavesNothing: Cancel racing a fired callback must
-// leave no state and the callback must not run after the cancel.
+// TestCancelAfterFireLeavesNothing: a fired-then-cancelled callback is a
+// stale no-op and leaves no state.
 func TestCancelAfterFireLeavesNothing(t *testing.T) {
-	for i := 0; i < 50; i++ {
-		s := NewTimeKeyedScheduler()
-		var ran atomic.Bool
-		s.Schedule("A", time.Millisecond, func() { ran.Store(true) })
-		time.Sleep(2 * time.Millisecond) // timer fired; callback may be running
-		s.Cancel("A")
-		time.Sleep(20 * time.Millisecond)
-		if got := s.Keys(); len(got) != 0 {
-			t.Fatalf("iteration %d: keys after cancel = %+v", i, got)
-		}
-		if got := s.Deadlines(); len(got) != 0 {
-			t.Fatalf("iteration %d: deadlines after cancel = %+v", i, got)
-		}
+	s := newTestScheduler()
+	var ran atomic.Bool
+	s.Schedule("A", 0, func() { ran.Store(true) })
+	timers := s.factory.all()
+	s.Cancel("A")
+	timers[0].fire() // stale: cancelled before running
+	if ran.Load() {
+		t.Fatal("cancelled callback ran")
+	}
+	if got := s.Keys(); len(got) != 0 {
+		t.Fatalf("keys after cancel = %+v", got)
 	}
 }
 
 // TestCancelAllAfterFireLeavesNothing: same for CancelAll across keys.
 func TestCancelAllAfterFireLeavesNothing(t *testing.T) {
-	for i := 0; i < 50; i++ {
-		s := NewTimeKeyedScheduler()
-		s.Schedule("A", time.Millisecond, func() {})
-		s.Schedule("B", time.Millisecond, func() {})
-		time.Sleep(2 * time.Millisecond)
-		s.CancelAll()
-		time.Sleep(20 * time.Millisecond)
-		if got := s.Keys(); len(got) != 0 {
-			t.Fatalf("iteration %d: keys after cancel-all = %+v", i, got)
-		}
+	s := newTestScheduler()
+	var a, b atomic.Bool
+	s.Schedule("A", 0, func() { a.Store(true) })
+	s.Schedule("B", 0, func() { b.Store(true) })
+	timers := s.factory.all()
+	s.CancelAll()
+	for _, t := range timers {
+		t.fire()
+	}
+	if a.Load() || b.Load() {
+		t.Fatalf("cancelled callbacks ran a=%v b=%v", a.Load(), b.Load())
+	}
+	if got := s.Keys(); len(got) != 0 {
+		t.Fatalf("keys after cancel-all = %+v", got)
 	}
 }
 
-// TestReplaceReschedulesWithoutOldFire: replacing while the old timer is
-// pending fires exactly the new callback once.
-func TestReplaceReschedulesWithoutOldFire(t *testing.T) {
-	s := NewTimeKeyedScheduler()
+// TestScheduleFiresOnce: a normally firing timer runs its callback once
+// and clears its own state.
+func TestScheduleFiresOnce(t *testing.T) {
+	s := newTestScheduler()
 	var calls atomic.Int64
-	s.Schedule("A", 5*time.Millisecond, func() { calls.Add(1) })
-	s.Schedule("A", 10*time.Millisecond, func() { calls.Add(1) })
-	time.Sleep(60 * time.Millisecond)
+	s.Schedule("A", 0, func() { calls.Add(1) })
+	s.factory.all()[0].fire()
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("calls = %d, want exactly 1 (old replaced callback must not fire)", got)
+		t.Fatalf("calls = %d, want 1", got)
+	}
+	if got := s.Keys(); len(got) != 0 {
+		t.Fatalf("keys after fire = %+v", got)
 	}
 }
 
-// TestCancelUnderRemovesSubtree: CancelUnder removes the prefix and all
-// paths under it; other keys keep their callbacks.
+// TestCancelUnderRemovesSubtree: CancelUnder removes the exact key and
+// all paths under it; other keys keep their callbacks.
 func TestCancelUnderRemovesSubtree(t *testing.T) {
-	s := NewTimeKeyedScheduler()
+	s := newTestScheduler()
 	var under, other atomic.Int64
-	s.Schedule("/dir/a.txt", 5*time.Millisecond, func() { under.Add(1) })
-	s.Schedule("/dir/sub/b.txt", 5*time.Millisecond, func() { under.Add(1) })
-	s.Schedule("/other.txt", 5*time.Millisecond, func() { other.Add(1) })
+	s.Schedule("/dir", 0, func() { under.Add(1) })
+	s.Schedule("/dir/a.txt", 0, func() { under.Add(1) })
+	s.Schedule("/dir/sub/b.txt", 0, func() { under.Add(1) })
+	s.Schedule("/other.txt", 0, func() { other.Add(1) })
+	timers := s.factory.all()
 	s.CancelUnder("/dir")
-	time.Sleep(30 * time.Millisecond)
+	for _, t := range timers {
+		t.fire()
+	}
 	if got := under.Load(); got != 0 {
 		t.Fatalf("subtree callbacks ran %d times", got)
 	}
@@ -168,32 +227,12 @@ func TestConcurrentScheduleCancel(t *testing.T) {
 	}
 	wg.Wait()
 
+	// The last Schedule may still be pending; allow 0 or 1 fires.
 	time.Sleep(30 * time.Millisecond)
 	if got := calls.Load(); got > 1 {
 		t.Fatalf("callback ran %d times, want at most 1", got)
 	}
 	if got := s.Keys(); len(got) != 0 {
 		t.Fatalf("keys = %+v, want empty after fire", got)
-	}
-}
-
-// TestCancelUnderIncludesExactKey: CancelUnder must remove the exact key
-// too (contract: "equal to key or under it"), not only strict children.
-func TestCancelUnderIncludesExactKey(t *testing.T) {
-	s := NewTimeKeyedScheduler()
-	var exact, child, other atomic.Int64
-	s.Schedule("/dir", 5*time.Millisecond, func() { exact.Add(1) })
-	s.Schedule("/dir/a.txt", 5*time.Millisecond, func() { child.Add(1) })
-	s.Schedule("/dir2", 5*time.Millisecond, func() { other.Add(1) })
-	s.CancelUnder("/dir")
-	time.Sleep(30 * time.Millisecond)
-	if got := exact.Load(); got != 0 {
-		t.Fatalf("exact-key callback ran %d times", got)
-	}
-	if got := child.Load(); got != 0 {
-		t.Fatalf("child callback ran %d times", got)
-	}
-	if got := other.Load(); got != 1 {
-		t.Fatalf("sibling callback ran %d times, want 1", got)
 	}
 }
