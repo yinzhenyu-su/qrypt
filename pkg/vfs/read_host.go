@@ -126,12 +126,6 @@ func (v *VFS) readCacheKey(entry drive.Entry) string {
 }
 
 // readLoadKey returns the window-coalescing key for an entry.
-func (v *VFS) readLoadKey(entry drive.Entry) string {
-	if key := v.readCacheKey(entry); key != "" {
-		return key
-	}
-	return entry.ID
-}
 
 // readCacheSnapshot returns the read cache debug snapshot.
 func (v *VFS) readCacheSnapshot() DebugReadCache {

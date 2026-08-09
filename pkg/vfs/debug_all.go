@@ -1883,10 +1883,6 @@ func (v *VFS) uploadSnapshotHistory() []UploadSnapshot {
 	return newVFSDebugUploadRuntime(v).History()
 }
 
-func (v *VFS) removeUploadHistoryByID(id string) bool {
-	return newVFSDebugUploadRuntime(v).RemoveHistoryByID(id)
-}
-
 func (v *VFS) startUploadSnapshot(p PendingUpload) {
 	newVFSDebugUploadRuntime(v).StartSnapshot(p)
 }

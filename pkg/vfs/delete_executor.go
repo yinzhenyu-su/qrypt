@@ -39,11 +39,7 @@ func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) 
 	idelete.NewExecutor(newVFSDeleteExecutorDeps(v)).Execute(ctx, path, entry)
 }
 
-// vfsDeleteExecutorDeps adapts VFS internals to idelete.ExecutorDeps.
-type vfsDeleteExecutorDeps struct {
-	v *VFS
-}
-
+// newVFSDeleteExecutorDeps adapts VFS internals to idelete.ExecutorDeps.
 func newVFSDeleteExecutorDeps(v *VFS) idelete.ExecutorDeps {
 	return idelete.ExecutorDeps{
 		Driver:  newVFSDriverRuntime(v),

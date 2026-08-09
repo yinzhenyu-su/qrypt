@@ -7,10 +7,6 @@ import (
 )
 
 // dismisser is satisfied by VFS instances that support task dismissal.
-type dismisser interface {
-	DismissTask(ctx context.Context, id string) error
-	DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error)
-}
 
 // Tasks returns all tasks known across all mounts.
 func (n *Namespace) Tasks(filter task.Filter) []task.Task {

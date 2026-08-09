@@ -58,9 +58,7 @@ func (v *recordingView) CommitUploadedEntry(path string, entry drive.Entry, stag
 
 // fakeCommitRuntime implements the upload Runtime surface (minus the view
 // commit, which now lives on UploadView).
-type fakeCommitRuntime struct {
-	fid string
-}
+type fakeCommitRuntime struct{}
 
 func (r *fakeCommitRuntime) ClearUploadHashes(string)      {}
 func (r *fakeCommitRuntime) ModTimeFor(string) time.Time   { return time.Time{} }

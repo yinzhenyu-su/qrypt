@@ -198,14 +198,6 @@ func (v *VFS) suppressDirPrefetch(path string) {
 	v.lister.SuppressDirPrefetch(path)
 }
 
-func (v *VFS) isCurrentPrefetchDir(path, id string) bool {
-	return v.lister.IsCurrentPrefetchDir(path, id)
-}
-
-func (v *VFS) hasFreshListCache(path string) bool {
-	return v.lister.HasFreshListCache(path)
-}
-
 func (v *VFS) startDirPrefetch(ctx context.Context) bool {
 	return v.lister.StartDirPrefetch(ctx)
 }

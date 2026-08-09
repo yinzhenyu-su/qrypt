@@ -184,7 +184,7 @@ func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
 // (normalized) path exactly once through ViewCommitter.
 func TestRemoveCommitsExactlyOnce(t *testing.T) {
 	fx := newMkdirCoordinatorFixture(t)
-	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt", newVFSRemoveRuntime(fx.fs), fx.committer); err != nil {
+	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt", fx.committer); err != nil {
 		t.Fatal(err)
 	}
 	if len(fx.committer.removed) != 1 || fx.committer.removed[0] != "/b.txt" {
@@ -196,7 +196,7 @@ func TestRemoveCommitsExactlyOnce(t *testing.T) {
 // normalized form.
 func TestRemoveCommitsNormalizedPath(t *testing.T) {
 	fx := newMkdirCoordinatorFixture(t)
-	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt//", newVFSRemoveRuntime(fx.fs), fx.committer); err != nil {
+	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt//", fx.committer); err != nil {
 		t.Fatal(err)
 	}
 	if len(fx.committer.removed) != 1 || fx.committer.removed[0] != "/b.txt" {
@@ -208,7 +208,7 @@ func TestRemoveCommitsNormalizedPath(t *testing.T) {
 // commit anything.
 func TestRemoveNeverCommitsOnResolveFailure(t *testing.T) {
 	fx := newMkdirCoordinatorFixture(t)
-	if err := fx.fs.removeWithRuntime(context.Background(), "/missing.txt", newVFSRemoveRuntime(fx.fs), fx.committer); err == nil {
+	if err := fx.fs.removeWithRuntime(context.Background(), "/missing.txt", fx.committer); err == nil {
 		t.Fatal("want resolve error")
 	}
 	if len(fx.committer.removed) != 0 {
@@ -232,7 +232,7 @@ func TestRemovePendingDoesNotCommitView(t *testing.T) {
 		t.Fatal(err)
 	}
 	committer := &recordingViewCommitter{}
-	if err := fs.removeWithRuntime(ctx, "/draft.txt", newVFSRemoveRuntime(fs), committer); err != nil {
+	if err := fs.removeWithRuntime(ctx, "/draft.txt", committer); err != nil {
 		t.Fatal(err)
 	}
 	if len(committer.removed) != 0 {

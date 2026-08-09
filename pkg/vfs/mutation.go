@@ -98,10 +98,10 @@ var _ mutation.MkdirResolver = vfsRenameResolver{}
 var _ mutation.MkdirView = vfsMkdirView{}
 
 func (v *VFS) Remove(ctx context.Context, path string) (err error) {
-	return v.removeWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
+	return v.removeWithRuntime(ctx, path, newVFSViewCommitter(v))
 }
 
-func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer viewCommitter) (err error) {
+func (v *VFS) removeWithRuntime(ctx context.Context, path string, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
@@ -110,15 +110,15 @@ func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRem
 		newVFSRenameResolver(v),
 		committer,
 		newVFSRemoveScheduler(v),
-		newVFSRemoveCleanup(v, runtime),
+		newVFSRemoveCleanup(v),
 	)
 	return coordinator.RemoveFile(ctx, path)
 }
 func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
-	return v.removeDirWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
+	return v.removeDirWithRuntime(ctx, path, newVFSViewCommitter(v))
 }
 
-func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfsRemoveRuntime, committer viewCommitter) (err error) {
+func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
@@ -127,7 +127,7 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfs
 		newVFSRenameResolver(v),
 		committer,
 		newVFSRemoveScheduler(v),
-		newVFSRemoveCleanup(v, runtime),
+		newVFSRemoveCleanup(v),
 	)
 	return coordinator.RemoveDirectory(ctx, path)
 }
@@ -142,14 +142,14 @@ func (r vfsRemoveScheduler) ScheduleDelete(path string, entry drive.Entry) {
 }
 
 // vfsRemoveCleanup adapts the pending-upload removal surface to
-// mutation.RemoveCleanup.
+// mutation.RemoveCleanup. It owns the pending-store/hash cleanup directly
+// (the former vfsRemoveRuntime is inlined here).
 type vfsRemoveCleanup struct {
-	v       *VFS
-	runtime vfsRemoveRuntime
+	v *VFS
 }
 
-func newVFSRemoveCleanup(v *VFS, runtime vfsRemoveRuntime) vfsRemoveCleanup {
-	return vfsRemoveCleanup{v: v, runtime: runtime}
+func newVFSRemoveCleanup(v *VFS) vfsRemoveCleanup {
+	return vfsRemoveCleanup{v: v}
 }
 
 func (r vfsRemoveCleanup) RemovePendingFile(path string) (bool, error) {
@@ -162,9 +162,12 @@ func (r vfsRemoveCleanup) RemovePendingFile(path string) (bool, error) {
 	if _, err := r.v.pendingUpload(path); err != nil {
 		return false, nil
 	}
-	if err := r.runtime.RemovePendingUpload(path); err != nil {
+	r.v.cancelUpload(path)
+	r.v.clearLocalModTime(path)
+	if err := r.v.uploads.Store().RemoveUpload(path); err != nil {
 		return true, err
 	}
+	r.v.hashes.removePath(path)
 	return true, nil
 }
 
@@ -172,11 +175,12 @@ func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
 	// Durable cleanup (pending store + hashes) comes first; timers are
 	// cancelled only after it succeeds, so a failed cleanup never leaves
 	// the directory visible with its upload timers already cancelled.
-	if err := r.runtime.RemovePendingUploadsUnder(path); err != nil {
+	if err := r.v.uploads.Store().RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.runtime.CancelChildUploads(path)
-	r.runtime.CancelChildDeletes(path)
+	r.v.hashes.removeUnder(path)
+	r.v.uploads.CancelChildUploads(path)
+	r.v.cancelChildDeletes(path)
 	return nil
 }
 
@@ -427,40 +431,6 @@ func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending
 	}
 	r.v.hashes.renamePath(oldPath, newPath, pending)
 	return nil
-}
-
-type vfsRemoveRuntime struct {
-	v *VFS
-}
-
-func newVFSRemoveRuntime(v *VFS) vfsRemoveRuntime {
-	return vfsRemoveRuntime{v: v}
-}
-
-func (r vfsRemoveRuntime) RemovePendingUpload(path string) error {
-	r.v.cancelUpload(path)
-	r.v.clearLocalModTime(path)
-	if err := r.v.uploads.Store().RemoveUpload(path); err != nil {
-		return err
-	}
-	r.v.hashes.removePath(path)
-	return nil
-}
-
-func (r vfsRemoveRuntime) RemovePendingUploadsUnder(path string) error {
-	if err := r.v.uploads.Store().RemoveUploadsUnder(path); err != nil {
-		return err
-	}
-	r.v.hashes.removeUnder(path)
-	return nil
-}
-
-func (r vfsRemoveRuntime) CancelChildUploads(path string) {
-	r.v.uploads.CancelChildUploads(path)
-}
-
-func (r vfsRemoveRuntime) CancelChildDeletes(path string) {
-	r.v.cancelChildDeletes(path)
 }
 
 type vfsDirectoryCopyRuntime struct {

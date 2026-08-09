@@ -23,7 +23,6 @@ type recordingObserver struct {
 	updates  []uint64
 	finishes []uint64
 	reads    int
-	nextOpID int
 }
 
 func (o *recordingObserver) DebugNextOpID() string {
