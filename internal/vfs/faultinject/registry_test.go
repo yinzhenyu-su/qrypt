@@ -1,6 +1,7 @@
 package faultinject
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,17 +25,45 @@ func TestRegistryOwnsCancelFaultState(t *testing.T) {
 	if len(faults) != 1 || faults[0].ID != "active" {
 		t.Fatalf("faults = %+v, want only active", faults)
 	}
-	if match := reg.Match(now, "/missing.txt", ""); match != nil {
-		t.Fatalf("unexpected match for missing Path: %+v", match)
+	if _, ok := reg.Match(now, "/missing.txt", ""); ok {
+		t.Fatal("unexpected match for missing Path")
 	}
-	match := reg.Match(now, "/file.txt", "")
-	if match == nil || match.ID != "active" || match.MatchedPath != "/file.txt" {
-		t.Fatalf("match = %+v, want active", match)
+	match, ok := reg.Match(now, "/file.txt", "")
+	if !ok || match.ID != "active" || match.MatchedPath != "/file.txt" {
+		t.Fatalf("match = %+v ok=%v, want active", match, ok)
 	}
+	// Once rules are claimed atomically at Match time.
+	if _, ok := reg.Match(now, "/file.txt", ""); ok {
+		t.Fatal("once-fired fault still matched after claim")
+	}
+}
 
-	reg.MarkFired("active", now)
-	if match := reg.Match(now, "/file.txt", ""); match != nil {
-		t.Fatalf("once-fired fault still matched: %+v", match)
+// TestConcurrentOnceMatchClaimsExactlyOnce: two goroutines racing to match
+// the same once rule - exactly one wins.
+func TestConcurrentOnceMatchClaimsExactlyOnce(t *testing.T) {
+	reg := NewRegistry(0)
+	id, err := reg.Inject(InjectRequest{Path: "/file.txt", Phase: "uploading", Once: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = id
+
+	const workers = 8
+	var wg sync.WaitGroup
+	wins := make(chan string, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if result, ok := reg.Match(time.Now(), "/file.txt", ""); ok {
+				wins <- result.ID
+			}
+		}()
+	}
+	wg.Wait()
+	close(wins)
+	if got := len(wins); got != 1 {
+		t.Fatalf("concurrent once matches = %d, want exactly 1", got)
 	}
 }
 

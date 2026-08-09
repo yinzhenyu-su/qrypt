@@ -74,6 +74,23 @@ func (f *Fault) Snapshot() DebugUploadCancelFault {
 	return s
 }
 
+// MatchResult is an immutable snapshot of a matched rule. Callers never
+// share registry-internal state; once-rules are atomically claimed during
+// Match, so at most one concurrent caller wins a given once rule.
+type MatchResult struct {
+	ID          string
+	Path        string
+	OpID        string
+	Phase       drive.UploadPhase
+	AfterBytes  int64
+	AfterDelay  time.Duration
+	Once        bool
+	Reason      string
+	MatchedPath string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
 // InjectRequest describes a fault to register.
 type InjectRequest struct {
 	Path       string
@@ -162,8 +179,10 @@ func (r *Registry) Faults(now time.Time) []DebugUploadCancelFault {
 
 // Match returns the first rule matching BOTH non-empty path and op_id
 // constraints, pruning expired rules and skipping fired once-rules. The
-// matched path is recorded on the fault. Returns nil when nothing matches.
-func (r *Registry) Match(now time.Time, path, opID string) *Fault {
+// result is an immutable value copy. A once-rule is claimed atomically
+// here: it is removed from the registry so exactly one concurrent caller
+// can ever win it.
+func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pruneExpiredLocked(now)
@@ -177,14 +196,30 @@ func (r *Registry) Match(now time.Time, path, opID string) *Fault {
 		if fault.OpID != "" && fault.OpID != opID {
 			continue
 		}
-		fault.MatchedPath = path
-		return fault
+		result := MatchResult{
+			ID:          fault.ID,
+			Path:        fault.Path,
+			OpID:        fault.OpID,
+			Phase:       fault.Phase,
+			AfterBytes:  fault.AfterBytes,
+			AfterDelay:  fault.AfterDelay,
+			Once:        fault.Once,
+			Reason:      fault.Reason,
+			MatchedPath: path,
+			CreatedAt:   fault.CreatedAt,
+			ExpiresAt:   fault.ExpiresAt,
+		}
+		if fault.Once {
+			// Atomic claim: remove so no other caller can match it.
+			delete(r.faults, fault.ID)
+		}
+		return result, true
 	}
-	return nil
+	return MatchResult{}, false
 }
 
-// MarkFired records a rule as fired; once-rules are removed so they can
-// never match again.
+// MarkFired records a non-once rule as fired (for diagnostics). Once-rules
+// are claimed and removed by Match, so MarkFired on them is a no-op.
 func (r *Registry) MarkFired(id string, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

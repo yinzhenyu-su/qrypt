@@ -238,18 +238,28 @@ func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req DebugUpload
 		return DebugUploadCancelResult{}, ErrReadOnly
 	}
 	req.Path = rest
-	return mount.DebugInjectUploadCancel(ctx, req)
+	result, err := mount.DebugInjectUploadCancel(ctx, req)
+	if err != nil {
+		return result, err
+	}
+	// Opaque namespace-level ID: routes the clear back to the owning
+	// mount and stays unique across mounts (each registry numbers from 1).
+	result.ID = mount.name + ":" + result.ID
+	return result, nil
 }
 
 func (n *Namespace) DebugClearUploadCancel(ctx context.Context, id string) error {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	for _, mount := range n.mounts {
-		if err := mount.DebugClearUploadCancel(ctx, id); err != nil {
-			return err
-		}
+	mountName, faultID, ok := strings.Cut(id, ":")
+	if !ok || mountName == "" {
+		return fmt.Errorf("vfs: invalid fault id %q (expected mount:fault_id)", id)
 	}
-	return nil
+	n.mu.RLock()
+	mount, ok := n.mounts[mountName]
+	n.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("vfs: unknown fault mount %q", mountName)
+	}
+	return mount.DebugClearUploadCancel(ctx, faultID)
 }
 
 func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault {
@@ -258,6 +268,9 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 	var out []DebugUploadCancelFault
 	for name, mount := range n.mounts {
 		for _, fault := range mount.DebugUploadCancelFaults(ctx) {
+			if fault.ID != "" {
+				fault.ID = name + ":" + fault.ID
+			}
 			if fault.Path != "" {
 				fault.Path = "/" + name + cleanVirtual(fault.Path)
 			}
@@ -270,7 +283,7 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 	return out
 }
 
-func (v *VFS) matchUploadCancelFault(path, opID string) *faultinject.Fault {
+func (v *VFS) matchUploadCancelFault(path, opID string) (faultinject.MatchResult, bool) {
 	return v.faults.Match(time.Now(), path, opID)
 }
 
@@ -280,7 +293,7 @@ func (v *VFS) markUploadCancelFaultFired(id string) {
 
 type debugUploadCancelProgress struct {
 	inner       drive.UploadProgress
-	fault       *debugUploadCancelFault
+	fault       faultinject.MatchResult
 	cancel      context.CancelFunc
 	cancelPath  string
 	cancelOpID  string
@@ -324,7 +337,7 @@ func (p *debugUploadCancelProgress) Close() {
 }
 
 func (p *debugUploadCancelProgress) maybeCancelLocked() {
-	if p.fault == nil || p.cancelFired.Load() {
+	if p.fault.ID == "" || p.cancelFired.Load() {
 		return
 	}
 	if p.fault.Phase != "" && p.phase != p.fault.Phase {

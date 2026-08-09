@@ -176,3 +176,24 @@ func TestConcurrentScheduleCancel(t *testing.T) {
 		t.Fatalf("keys = %+v, want empty after fire", got)
 	}
 }
+
+// TestCancelUnderIncludesExactKey: CancelUnder must remove the exact key
+// too (contract: "equal to key or under it"), not only strict children.
+func TestCancelUnderIncludesExactKey(t *testing.T) {
+	s := NewTimeKeyedScheduler()
+	var exact, child, other atomic.Int64
+	s.Schedule("/dir", 5*time.Millisecond, func() { exact.Add(1) })
+	s.Schedule("/dir/a.txt", 5*time.Millisecond, func() { child.Add(1) })
+	s.Schedule("/dir2", 5*time.Millisecond, func() { other.Add(1) })
+	s.CancelUnder("/dir")
+	time.Sleep(30 * time.Millisecond)
+	if got := exact.Load(); got != 0 {
+		t.Fatalf("exact-key callback ran %d times", got)
+	}
+	if got := child.Load(); got != 0 {
+		t.Fatalf("child callback ran %d times", got)
+	}
+	if got := other.Load(); got != 1 {
+		t.Fatalf("sibling callback ran %d times, want 1", got)
+	}
+}

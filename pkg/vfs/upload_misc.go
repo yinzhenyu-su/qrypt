@@ -39,8 +39,8 @@ func newVFSUploadFaultController(v *VFS) vfsUploadFaultController {
 }
 
 func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending PendingUpload, progress drive.UploadProgress, observer upload.Observer) (context.Context, drive.UploadProgress, func()) {
-	fault := c.v.matchUploadCancelFault(pending.Path, pending.FID)
-	if fault == nil {
+	fault, ok := c.v.matchUploadCancelFault(pending.Path, pending.FID)
+	if !ok {
 		return ctx, progress, nil
 	}
 	uploadCtx, uploadCancel := context.WithCancel(ctx)

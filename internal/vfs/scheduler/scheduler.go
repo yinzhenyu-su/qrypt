@@ -99,7 +99,8 @@ func (s *timeKeyedScheduler) CancelUnder(prefix string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for k := range s.tasks {
-		if vfstypes.IsPathUnder(k, prefix) {
+		// Contract: equal to key OR under it.
+		if k == prefix || vfstypes.IsPathUnder(k, prefix) {
 			s.tasks[k].timer.Stop()
 			delete(s.tasks, k)
 		}
