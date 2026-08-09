@@ -86,7 +86,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	journal := fs.DebugSnapshot().Mounts[0].ReadCacheState().Journal
+	journal := fs.DebugSnapshot().Mounts[0].Cache.Journal
 	if journal == nil {
 		t.Fatal("journal debug state is nil")
 	}

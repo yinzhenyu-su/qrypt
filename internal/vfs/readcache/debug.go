@@ -3,8 +3,6 @@ package readcache
 import (
 	"sort"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
 )
 
 // DebugReadCache is a point-in-time snapshot of the read cache for
@@ -38,7 +36,6 @@ type DebugReadCache struct {
 	IndexDirty          bool                 `json:"index_dirty"`
 	IndexFlushScheduled bool                 `json:"index_flush_scheduled"`
 	Files               []DebugReadCacheFile `json:"files,omitempty"`
-	Journal             *upload.DebugJournal `json:"journal,omitempty"`
 }
 
 // DebugReadCacheFile describes one cached file in a DebugReadCache.

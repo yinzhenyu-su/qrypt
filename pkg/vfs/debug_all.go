@@ -73,9 +73,18 @@ type MountSnapshot struct {
 	Queues      MountSnapshotQueues      `json:"queues"`
 	Overlay     MountSnapshotOverlay     `json:"overlay"`
 	UploadState MountSnapshotUploads     `json:"upload_state"`
-	Cache       readcache.DebugReadCache `json:"cache"`
+	Cache       DebugCacheSnapshot       `json:"cache"`
 	Events      MountSnapshotEvents      `json:"events"`
 	Runtime     MountSnapshotRuntime     `json:"runtime"`
+}
+
+// DebugCacheSnapshot aggregates the readcache snapshot with the upload
+// journal. readcache.DebugReadCache is embedded so the JSON shape stays
+// flat (identical to the pre-split output); the composition lives here in
+// pkg/vfs (later: the diagnostics domain), never inside readcache.
+type DebugCacheSnapshot struct {
+	readcache.DebugReadCache
+	Journal *DebugJournal `json:"journal,omitempty"`
 }
 
 type MountSnapshotIdentity struct {
@@ -420,18 +429,20 @@ func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
 	return r.v.uploads.Store().DebugJournal()
 }
 
-func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) readcache.DebugReadCache {
-	snapshot := runtime.ReadCache()
-	snapshot.Journal = runtime.Journal()
-	return snapshot
+func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) DebugCacheSnapshot {
+	return DebugCacheSnapshot{
+		DebugReadCache: runtime.ReadCache(),
+		Journal:        runtime.Journal(),
+	}
 }
 
 // DebugReadCacheForTest exposes the read cache debug snapshot with the
 // upload journal attached, for tests.
-func (c *Stores) DebugReadCacheForTest() readcache.DebugReadCache {
-	snapshot := c.readCacheStore.DebugSnapshot()
-	snapshot.Journal = c.uploadStore.DebugJournal()
-	return snapshot
+func (c *Stores) DebugReadCacheForTest() DebugCacheSnapshot {
+	return DebugCacheSnapshot{
+		DebugReadCache: c.readCacheStore.DebugSnapshot(),
+		Journal:        c.uploadStore.DebugJournal(),
+	}
 }
 
 // debugActiveSlots is the fixed capacity of the active-debug ring. Active
@@ -1316,7 +1327,7 @@ func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
 	return snapshot
 }
 
-func (v *VFS) debugCacheSnapshot() readcache.DebugReadCache {
+func (v *VFS) debugCacheSnapshot() DebugCacheSnapshot {
 	return debugCacheSnapshotWithRuntime(newVFSDebugCacheRuntime(v))
 }
 
@@ -1345,7 +1356,7 @@ func (s MountSnapshot) DriverMetricEvents() []drive.MetricEvent {
 }
 
 func (s MountSnapshot) ReadCacheState() readcache.DebugReadCache {
-	return s.Cache
+	return s.Cache.DebugReadCache
 }
 
 func debugProcess() DebugProcess {
