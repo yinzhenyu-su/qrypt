@@ -79,24 +79,6 @@ func (r *recordingMutationRuntime) RenamePendingUpload(string, string, PendingUp
 	return nil
 }
 
-func TestFindExistingChildDirUsesMutationBackendAndCachesChildren(t *testing.T) {
-	backend := &fakeMutationBackend{entries: []drive.Entry{
-		{ID: "file", ParentID: "root", Name: "file.txt"},
-		{ID: "dir", ParentID: "root", Name: "dir", IsDir: true},
-	}}
-	committer := &recordingViewCommitter{}
-	entry, err := findExistingChildDir(context.Background(), backend, committer, "/", "root", "dir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry.ID != "dir" || !entry.IsDir {
-		t.Fatalf("entry = %+v, want existing dir", entry)
-	}
-	if committer.cached != 1 {
-		t.Fatalf("CacheListedChildren calls = %d, want 1", committer.cached)
-	}
-}
-
 func TestVFSMutationRuntimeCommitsMkdirAndRename(t *testing.T) {
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {

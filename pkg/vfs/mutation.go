@@ -55,67 +55,61 @@ func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err er
 	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSViewCommitter(v), newVFSViewCommitter(v))
 }
 
+// mkdirWithDeps drives directory creation through the mutation mkdir
+// coordinator; the VFS shell keeps the capability gate, health recording,
+// and adapter construction.
 func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, committer viewCommitter, cache listedChildrenCache) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
 		return drive.Entry{}, err
 	}
-	path = cleanVirtual(path)
-	if entry, err := v.resolve(ctx, path); err == nil {
-		if entry.IsDir {
-			logging.L.Debugf("[VFS] mkdir skipped existing directory path=%q id=%q", path, entry.ID)
-			return entry, nil
-		}
-		return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
-	}
-	if entry, ok := v.restoreDeletedPath(path); ok {
-		logging.L.InfofEvery("vfs.mkdir_restored_deleted", time.Second, "[VFS] mkdir restored deleted directory path=%q id=%q", path, entry.ID)
-		return entry, nil
-	}
-	v.restoreDeletedAncestor(filepath.Dir(path))
-	if v.isUnderRestoredDir(path) {
-		if entry, err := v.resolve(ctx, path); err == nil && entry.IsDir {
-			logging.L.InfofEvery("vfs.mkdir_reused_restored", time.Second, "[VFS] mkdir reused restored ancestor path=%q id=%q", path, entry.ID)
-			return entry, nil
-		}
-	}
-	parent, name, err := v.parent(ctx, path)
-	if err != nil {
-		logging.L.Warnf("[VFS] mkdir parent resolve failed path=%q err=%v", path, err)
-		return drive.Entry{}, err
-	}
-	logging.L.InfofEvery("vfs.mkdir_start", time.Second, "[VFS] mkdir start path=%q parent=%q name=%q", path, parent.ID, name)
-	entry, err = backend.Mkdir(ctx, parent.ID, name)
-	if err != nil {
-		if !isAlreadyExistsError(err) {
-			logging.L.Warnf("[VFS] mkdir failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
-			return drive.Entry{}, err
-		}
-		logging.L.InfofEvery("vfs.mkdir_already_exists", time.Second, "[VFS] mkdir already exists; resolving existing directory path=%q parent=%q name=%q", path, parent.ID, name)
-		entry, err = findExistingChildDir(ctx, backend, cache, filepath.Dir(path), parent.ID, name)
-		if err != nil {
-			logging.L.Warnf("[VFS] mkdir existing directory resolve failed path=%q parent=%q name=%q err=%v", path, parent.ID, name, err)
-			return drive.Entry{}, err
-		}
-	}
-	committer.CommitMkdir(path, entry)
-	logging.L.InfofEvery("vfs.mkdir_complete", time.Second, "[VFS] mkdir complete path=%q id=%q parent=%q", path, entry.ID, entry.ParentID)
-	return entry, nil
+	coordinator := mutation.NewMkdirCoordinator(
+		newVFSRenameResolver(v),
+		backend,
+		newVFSMkdirView(v, committer, cache),
+	)
+	return coordinator.Mkdir(ctx, path)
 }
 
-func findExistingChildDir(ctx context.Context, backend mutationBackend, cache listedChildrenCache, parentPath, parentID, name string) (drive.Entry, error) {
-	entries, err := backend.List(ctx, parentID)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	cache.CacheListedChildren(parentPath, entries)
-	for _, child := range entries {
-		if child.Name == name && child.IsDir {
-			return child, nil
-		}
-	}
-	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
+// vfsMkdirView adapts VFS overlay restoration + view commits to
+// mutation.MkdirView. driverMutationBackend already satisfies
+// mutation.MkdirRemote (List/Mkdir); vfsRenameResolver satisfies
+// mutation.MkdirResolver (Resolve/Parent).
+type vfsMkdirView struct {
+	v         *VFS
+	committer viewCommitter
+	cache     listedChildrenCache
 }
+
+func newVFSMkdirView(v *VFS, committer viewCommitter, cache listedChildrenCache) vfsMkdirView {
+	return vfsMkdirView{v: v, committer: committer, cache: cache}
+}
+
+func (r vfsMkdirView) RestoreDeleted(path string) (drive.Entry, bool) {
+	return r.v.restoreDeletedPath(path)
+}
+
+func (r vfsMkdirView) RestoreDeletedAncestor(path string) {
+	r.v.restoreDeletedAncestor(path)
+}
+
+func (r vfsMkdirView) IsUnderRestoredDir(path string) bool {
+	return r.v.isUnderRestoredDir(path)
+}
+
+func (r vfsMkdirView) CommitMkdir(path string, entry drive.Entry) {
+	r.committer.CommitMkdir(path, entry)
+}
+
+func (r vfsMkdirView) CacheListedChildren(parentPath string, entries []drive.Entry) {
+	r.cache.CacheListedChildren(parentPath, entries)
+}
+
+// Compile-time assertions for the mkdir adapters.
+var _ mutation.MkdirRemote = driverMutationBackend{}
+var _ mutation.MkdirResolver = vfsRenameResolver{}
+var _ mutation.MkdirView = vfsMkdirView{}
+
 func (v *VFS) Remove(ctx context.Context, path string) (err error) {
 	return v.removeWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
 }
