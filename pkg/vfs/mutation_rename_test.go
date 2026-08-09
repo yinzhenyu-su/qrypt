@@ -387,3 +387,86 @@ func TestRenameMoveRollbackOnCancelledContext(t *testing.T) {
 		t.Fatalf("CommitRemoteRename called %d times, want 0", len(fx.committer.renamed))
 	}
 }
+
+// TestRenameMovePartialDirOverlayHidesSubtree: with the REAL view
+// committer, a directory partial commit must make the old path and its
+// cached subtree unavailable and surface the new path - not just carry
+// IsDir on a stub.
+func TestRenameMovePartialDirOverlayHidesSubtree(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	fs.view.mu.Lock()
+	fs.view.entries.Set("/d", drive.Entry{ID: "id-d", Name: "d", IsDir: true})
+	fs.view.entries.Set("/d/child.txt", drive.Entry{ID: "id-c", Name: "child.txt"})
+	fs.view.entries.Set("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
+	fs.view.mu.Unlock()
+
+	orig := *&fakeMutationBackend{}
+	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}
+	rb.moveErr = errors.New("move boom")
+
+	if err := fs.renameWithDeps(context.Background(), "/d", "/sub/d2", rb, &recordingMutationRuntime{}, newVFSViewCommitter(fs)); err == nil {
+		t.Fatal("want partial rename/move error")
+	}
+	if !view.IsUnavailable("/d") {
+		t.Error("old path /d still visible after partial dir commit")
+	}
+	if !view.IsUnavailable("/d/child.txt") {
+		t.Error("old subtree /d/child.txt still visible after partial dir commit")
+	}
+	if _, ok := view.Entry("/d2"); !ok {
+		t.Error("intermediate new path /d2 missing from the view")
+	}
+}
+
+// cancelOnMoveBackend cancels the caller's context inside Move, then
+// records whether the rollback Rename receives a still-live context.
+type cancelOnMoveBackend struct {
+	backend     *fakeMutationBackend
+	cancel      context.CancelFunc
+	renameCount int
+	rbCtxErr    error
+}
+
+func (b *cancelOnMoveBackend) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	return b.backend.List(ctx, parentID)
+}
+func (b *cancelOnMoveBackend) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
+	return b.backend.Mkdir(ctx, parentID, name)
+}
+func (b *cancelOnMoveBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+	b.renameCount++
+	if b.renameCount > 1 {
+		// This is the rollback call: capture whether the detached context
+		// is still live.
+		b.rbCtxErr = ctx.Err()
+	}
+	return b.backend.Rename(ctx, entry, newName)
+}
+func (b *cancelOnMoveBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+	b.cancel()
+	return context.Canceled
+}
+
+// TestRenameMoveRollbackGetsLiveContext: the move cancels the caller's
+// context; the rollback rename must still receive a live (detached)
+// context and the operation must not commit.
+func TestRenameMoveRollbackGetsLiveContext(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	backend := &cancelOnMoveBackend{backend: fx.backend, cancel: cancel}
+
+	if err := fx.fs.renameWithDeps(ctx, "/a.txt", "/sub/renamed.txt", backend, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want error")
+	}
+	if backend.renameCount != 2 {
+		t.Fatalf("rename calls = %d, want 2 (forward + rollback)", backend.renameCount)
+	}
+	if backend.rbCtxErr != nil {
+		t.Fatalf("rollback received a cancelled context (%v); WithoutCancel broken", backend.rbCtxErr)
+	}
+	if len(fx.committer.renamed) != 0 {
+		t.Fatalf("CommitRemoteRename called %d times, want 0", len(fx.committer.renamed))
+	}
+}
