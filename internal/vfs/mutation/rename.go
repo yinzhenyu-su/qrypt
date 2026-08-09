@@ -10,14 +10,14 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
-func CleanVirtualPath(path string) string {
+// cleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
+func cleanVirtualPath(path string) string {
 	return vfstypes.CleanVirtualPath(path)
 }
 
 // joinVirtual joins a parent virtual path and a child name.
 func joinVirtual(parent, name string) string {
-	parent = CleanVirtualPath(parent)
+	parent = cleanVirtualPath(parent)
 	if parent == "/" {
 		return "/" + name
 	}
@@ -30,16 +30,20 @@ type Resolver interface {
 	Parent(ctx context.Context, path string) (drive.Entry, string, error)
 }
 
-// PendingRenamer handles the rename of a pending-only upload. It reports
-// whether the path was a pending upload (handled) - when false, the caller
-// proceeds with the remote rename path.
+// PendingRenamer handles the rename of a pending-only upload. IsPending
+// probes the source path WITHOUT touching the destination, so the
+// coordinator can resolve the source first (preserving error precedence
+// and avoiding a useless destination-parent request when the source does
+// not exist). RenamePending performs the local pending rename once the
+// destination parent is resolved.
 type PendingRenamer interface {
+	IsPending(path string) bool
 	RenamePending(
 		ctx context.Context,
 		oldPath, newPath string,
 		parent drive.Entry,
 		name string,
-	) (handled bool, err error)
+	) error
 }
 
 // RenameView is the view surface a rename coordinator commits to.
@@ -71,26 +75,34 @@ func NewCoordinator(resolve Resolver, pending PendingRenamer, view RenameView, r
 }
 
 // Rename renames or moves oldPath to newPath.
+//
+// Order of operations preserves error precedence and avoids side effects:
+// the source is probed/validated FIRST (pending probe, then remote
+// resolve), the destination parent resolves after the source is known to
+// exist, and the read cache is invalidated only once both source and
+// destination are valid.
 func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error {
-	oldPath = CleanVirtualPath(oldPath)
-	newPath = CleanVirtualPath(newPath)
+	oldPath = cleanVirtualPath(oldPath)
+	newPath = cleanVirtualPath(newPath)
 	if oldPath == "/" || newPath == "/" {
 		return fmt.Errorf("vfs: cannot rename root")
 	}
 
-	// Destination parent resolves once and feeds both paths.
-	parent, name, err := c.resolve.Parent(ctx, newPath)
-	if err != nil {
-		return err
-	}
-
-	// Pending-only rename: local state, no remote-view commit.
-	handled, err := c.pending.RenamePending(ctx, oldPath, newPath, parent, name)
-	if err != nil || handled {
-		return err
+	// Pending-only rename: local state, no remote-view commit. The probe
+	// never touches the destination.
+	if c.pending.IsPending(oldPath) {
+		parent, name, err := c.resolve.Parent(ctx, newPath)
+		if err != nil {
+			return err
+		}
+		return c.pending.RenamePending(ctx, oldPath, newPath, parent, name)
 	}
 
 	entry, err := c.resolve.Resolve(ctx, oldPath)
+	if err != nil {
+		return err
+	}
+	parent, name, err := c.resolve.Parent(ctx, newPath)
 	if err != nil {
 		return err
 	}

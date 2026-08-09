@@ -206,21 +206,22 @@ type vfsRenamePending struct{ v *VFS }
 
 func newVFSRenamePending(v *VFS) vfsRenamePending { return vfsRenamePending{v: v} }
 
-func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath string, parent drive.Entry, name string) (bool, error) {
+func (r vfsRenamePending) IsPending(path string) bool {
+	_, err := r.v.pendingUpload(path)
+	return err == nil
+}
+
+func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath string, parent drive.Entry, name string) error {
 	pending, err := r.v.pendingUpload(oldPath)
 	if err != nil {
-		// No pending upload: not our path, let the remote rename run.
-		return false, nil
+		return err
 	}
 	unlockOld := r.v.lockPath(oldPath)
 	defer unlockOld()
 	pending.Path = newPath
 	pending.ParentID = parent.ID
 	pending.Name = name
-	if err := newVFSMutationRuntime(r.v).RenamePendingUpload(oldPath, newPath, pending); err != nil {
-		return true, err
-	}
-	return true, nil
+	return newVFSMutationRuntime(r.v).RenamePendingUpload(oldPath, newPath, pending)
 }
 
 // vfsRenameView adapts the rename view commit; read-cache invalidation
