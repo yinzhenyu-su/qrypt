@@ -111,24 +111,6 @@ type DebugMountSnapshotter interface {
 }
 
 // MountHealth describes recent runtime health for one mount.
-type MountHealth struct {
-	Mount     string                   `json:"mount"`
-	OK        bool                     `json:"ok"`
-	Level     string                   `json:"level,omitempty"`
-	Error     string                   `json:"error,omitempty"`
-	CheckedAt time.Time                `json:"checked_at"`
-	Success   int                      `json:"success"`
-	Errors    int                      `json:"errors"`
-	Ops       map[string]MountHealthOp `json:"ops,omitempty"`
-}
-
-type MountHealthOp struct {
-	Success     int       `json:"success"`
-	Errors      int       `json:"errors"`
-	LastError   string    `json:"last_error,omitempty"`
-	LastErrorAt time.Time `json:"last_error_at,omitempty"`
-}
-
 // MountHealthChecker is implemented by VFS and Namespace to expose
 // per-mount runtime health through the debug socket.
 type MountHealthChecker interface {

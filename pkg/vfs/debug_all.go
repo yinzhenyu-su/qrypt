@@ -294,7 +294,7 @@ func (v *VFS) matchUploadCancelFault(path, opID string) (faultinject.MatchResult
 // --- migrated from debug_health.go ---
 
 func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
-	return []MountHealth{newVFSDebugHealthRuntime(v).MountHealth(ctx, mountName)}, nil
+	return []MountHealth{diagnostics.AssembleHealth(ctx, mountName, newVFSDebugHealthRuntime(v))}, nil
 }
 
 func (v *VFS) Drivers() []NamedDriver {
@@ -348,31 +348,12 @@ func newVFSDebugHealthRuntime(v *VFS) vfsDebugHealthRuntime {
 	return vfsDebugHealthRuntime{v: v}
 }
 
-func (r vfsDebugHealthRuntime) MountHealth(ctx context.Context, mountName string) MountHealth {
-	h := MountHealth{Mount: mountName, CheckedAt: timeutil.Now()}
-	result := r.v.healthTracker.Status()
-	if metrics, err := newVFSDriverRuntime(r.v).Metrics(ctx, timeutil.Now().Add(-drive.DefaultHealthWindow)); err == nil {
-		driverHealth := drive.HealthStatusFromMetrics(metrics, drive.DefaultHealthWindow, drive.DefaultMaxEvents)
-		result = drive.MergeHealthStatus(result, driverHealth)
-	}
-	h.OK = result.OK
-	h.Level = result.Level
-	h.Error = result.Error
-	h.CheckedAt = result.CheckedAt
-	h.Success = result.Success
-	h.Errors = result.Errors
-	if len(result.Ops) > 0 {
-		h.Ops = map[string]MountHealthOp{}
-		for op, status := range result.Ops {
-			h.Ops[op] = MountHealthOp{
-				Success:     status.Success,
-				Errors:      status.Errors,
-				LastError:   status.LastError,
-				LastErrorAt: status.LastErrorAt,
-			}
-		}
-	}
-	return h
+func (r vfsDebugHealthRuntime) Status() drive.HealthTrackerStatus {
+	return r.v.healthTracker.Status()
+}
+
+func (r vfsDebugHealthRuntime) DriverMetrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {
+	return newVFSDriverRuntime(r.v).Metrics(ctx, since)
 }
 
 // --- migrated from debug_read.go ---

@@ -29,6 +29,8 @@ type DebugResolveInfo = diagnostics.DebugResolveInfo
 type ConsistencyReport = diagnostics.ConsistencyReport
 type DebugActiveMount = diagnostics.DebugActiveMount
 type DebugActiveProvider = diagnostics.DebugActiveProvider
+type MountHealth = diagnostics.MountHealth
+type MountHealthOp = diagnostics.MountHealthOp
 
 // DebugSnapshotSchemaVersion aliases the diagnostics schema version.
 const DebugSnapshotSchemaVersion = diagnostics.DebugSnapshotSchemaVersion
