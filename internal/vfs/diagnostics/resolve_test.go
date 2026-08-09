@@ -1,22 +1,27 @@
-package vfs
+package diagnostics
 
 import (
 	"context"
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 type fakeDebugResolveRuntime struct {
-	pendingByID map[string]PendingUpload
+	pendingByID map[string]vfstypes.PendingUpload
 	pathByID    map[string]string
 }
 
-func (r *fakeDebugResolveRuntime) PendingUpload(string) (PendingUpload, bool) {
-	return PendingUpload{}, false
+func (r *fakeDebugResolveRuntime) Resolve(context.Context, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
 }
 
-func (r *fakeDebugResolveRuntime) PendingUploadByRemoteID(remoteID string) (PendingUpload, bool) {
+func (r *fakeDebugResolveRuntime) PendingUpload(string) (vfstypes.PendingUpload, bool) {
+	return vfstypes.PendingUpload{}, false
+}
+
+func (r *fakeDebugResolveRuntime) PendingUploadByRemoteID(remoteID string) (vfstypes.PendingUpload, bool) {
 	pending, ok := r.pendingByID[remoteID]
 	return pending, ok
 }
@@ -50,10 +55,10 @@ func (r *fakeDebugResolveRuntime) UploadInProgress(string) bool { return false }
 
 func TestDebugResolvePathByRemoteIDUsesPendingBeforeView(t *testing.T) {
 	runtime := &fakeDebugResolveRuntime{
-		pendingByID: map[string]PendingUpload{"id": {Path: "/pending.txt", FID: "id"}},
+		pendingByID: map[string]vfstypes.PendingUpload{"id": {Path: "/pending.txt", FID: "id"}},
 		pathByID:    map[string]string{"id": "/cached.txt"},
 	}
-	path, err := debugResolvePathByRemoteID(context.Background(), runtime, "id")
+	path, err := ResolvePathByRemoteID(context.Background(), runtime, "id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +69,7 @@ func TestDebugResolvePathByRemoteIDUsesPendingBeforeView(t *testing.T) {
 
 func TestDebugResolvePathByRemoteIDUsesViewFallback(t *testing.T) {
 	runtime := &fakeDebugResolveRuntime{pathByID: map[string]string{"id": "/cached.txt"}}
-	path, err := debugResolvePathByRemoteID(context.Background(), runtime, "id")
+	path, err := ResolvePathByRemoteID(context.Background(), runtime, "id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +80,7 @@ func TestDebugResolvePathByRemoteIDUsesViewFallback(t *testing.T) {
 
 func TestDebugResolvePathByRemoteIDReportsMissing(t *testing.T) {
 	runtime := &fakeDebugResolveRuntime{}
-	if _, err := debugResolvePathByRemoteID(context.Background(), runtime, "missing"); err == nil {
+	if _, err := ResolvePathByRemoteID(context.Background(), runtime, "missing"); err == nil {
 		t.Fatal("missing remote id resolved")
 	}
 }

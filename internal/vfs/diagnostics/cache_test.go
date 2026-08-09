@@ -1,4 +1,4 @@
-package vfs
+package diagnostics
 
 import (
 	"testing"
@@ -7,22 +7,22 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
 )
 
-type fakeDebugCacheRuntime struct {
+type fakeCacheRuntime struct {
 	cache   readcache.DebugReadCache
 	journal *upload.DebugJournal
 }
 
-func (r fakeDebugCacheRuntime) ReadCache() readcache.DebugReadCache {
+func (r fakeCacheRuntime) ReadCache() readcache.DebugReadCache {
 	return r.cache
 }
 
-func (r fakeDebugCacheRuntime) Journal() *upload.DebugJournal {
+func (r fakeCacheRuntime) Journal() *upload.DebugJournal {
 	return r.journal
 }
 
-func TestDebugCacheSnapshotUsesRuntime(t *testing.T) {
+func TestCacheSnapshotUsesRuntime(t *testing.T) {
 	journal := &upload.DebugJournal{Path: "pending.jsonl", PendingCount: 2}
-	snapshot := debugCacheSnapshotWithRuntime(fakeDebugCacheRuntime{
+	snapshot := CacheSnapshot(fakeCacheRuntime{
 		cache: readcache.DebugReadCache{
 			Hits:       3,
 			Misses:     4,

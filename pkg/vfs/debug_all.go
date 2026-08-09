@@ -2,18 +2,16 @@ package vfs
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"github.com/yinzhenyu/qrypt/internal/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -131,11 +129,7 @@ func debugActiveMountAllowed(mountName string, mountNames []string) bool {
 	return false
 }
 
-type debugCacheRuntime interface {
-	ReadCache() readcache.DebugReadCache
-	Journal() *DebugJournal
-}
-
+// vfsDebugCacheRuntime implements diagnostics.CacheRuntime.
 type vfsDebugCacheRuntime struct {
 	v *VFS
 }
@@ -150,13 +144,6 @@ func (r vfsDebugCacheRuntime) ReadCache() readcache.DebugReadCache {
 
 func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
 	return r.v.uploads.Store().DebugJournal()
-}
-
-func debugCacheSnapshotWithRuntime(runtime debugCacheRuntime) DebugCacheSnapshot {
-	return DebugCacheSnapshot{
-		DebugReadCache: runtime.ReadCache(),
-		Journal:        runtime.Journal(),
-	}
 }
 
 // DebugReadCacheForTest exposes the read cache debug snapshot with the
@@ -563,190 +550,24 @@ func (r vfsDebugReadRuntime) ResetHistory() {
 // --- migrated from debug_resolve.go ---
 
 func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {
-	return v.debugResolveWithRuntime(ctx, path, includeRemoteName, newVFSDebugResolveRuntime(v))
-}
-
-func (v *VFS) debugResolveWithRuntime(ctx context.Context, path string, includeRemoteName bool, runtime debugResolveRuntime) (DebugResolveInfo, error) {
-	path = cleanVirtual(path)
-	info := DebugResolveInfo{
-		Path:      path,
-		Parent:    filepath.Dir(path),
-		PlainName: filepath.Base(path),
-	}
-	resolvedRemoteName := ""
-	if pending, ok := runtime.PendingUpload(path); ok {
-		info.Pending = true
-		info.ParentID = pending.ParentID
-		info.RemoteID = pending.FID
-		info.Size = pending.Size
-		info.CacheID = runtime.CacheID(drive.Entry{ID: pending.FID, Size: pending.Size, ModTime: uploadModTime(pending)})
-	}
-	if entry, err := v.resolve(ctx, path); err == nil {
-		info.RemoteID = entry.ID
-		info.ParentID = entry.ParentID
-		info.IsDir = entry.IsDir
-		info.Size = entry.Size
-		info.CacheID = runtime.CacheID(entry)
-		if remoteName, ok := drive.EntryRemoteName(entry); ok {
-			resolvedRemoteName = remoteName
-		}
-	}
-	info.Encrypted = runtime.Encrypted()
-	if driverSnapshot, ok := runtime.DriverSnapshot(ctx); ok {
-		info.Driver = driverSnapshot.Driver
-		if debugDriverEncrypted(driverSnapshot) {
-			info.Encrypted = true
-		}
-	}
-	if includeRemoteName {
-		if resolvedRemoteName != "" {
-			info.RemoteName = resolvedRemoteName
-		} else if remoteName, ok := runtime.ResolveRemoteName(ctx, info.PlainName); ok {
-			info.RemoteName = remoteName
-		} else {
-			info.RemoteName = info.PlainName
-		}
-	}
-	return info, nil
+	return diagnostics.Resolve(ctx, path, includeRemoteName, newVFSDebugResolveRuntime(v))
 }
 
 func (v *VFS) DebugResolveByRemoteID(ctx context.Context, remoteID string) (DebugResolveInfo, error) {
 	runtime := newVFSDebugResolveRuntime(v)
-	path, err := debugResolvePathByRemoteID(ctx, runtime, remoteID)
+	path, err := diagnostics.ResolvePathByRemoteID(ctx, runtime, remoteID)
 	if err != nil {
 		return DebugResolveInfo{}, err
 	}
-	return v.debugResolveWithRuntime(ctx, path, false, runtime)
+	return diagnostics.Resolve(ctx, path, false, runtime)
 }
 
 func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
-	return v.debugConsistencyWithRuntime(ctx, path, newVFSDebugResolveRuntime(v))
+	return diagnostics.Consistency(ctx, path, newVFSDebugResolveRuntime(v))
 }
 
-func (v *VFS) debugConsistencyWithRuntime(ctx context.Context, path string, runtime debugResolveRuntime) (ConsistencyReport, error) {
-	path = cleanVirtual(path)
-	report := ConsistencyReport{Path: path, Parent: filepath.Dir(path), Name: filepath.Base(path)}
-	expectedKnown := false
-	if pending, ok := runtime.PendingUpload(path); ok {
-		report.Pending = true
-		report.ExpectedSize = pending.Size
-		expectedKnown = true
-	}
-	parent, err := v.resolve(ctx, report.Parent)
-	if err != nil {
-		report.Status = "error"
-		report.Issue = err.Error()
-		return report, nil
-	}
-	entries, err := runtime.RemoteList(ctx, parent.ID)
-	if err != nil {
-		return ConsistencyReport{}, err
-	}
-	if foreign, err := runtime.ForeignEntries(ctx, parent.ID); err != nil {
-		return ConsistencyReport{}, err
-	} else if len(foreign) > 0 {
-		report.ForeignEntries = foreign
-	}
-	for _, entry := range entries {
-		if entry.Name == report.Name {
-			report.RemoteFound = true
-			report.RemoteID = entry.ID
-			report.RemoteSize = entry.Size
-			if !expectedKnown {
-				report.ExpectedSize = entry.Size
-			}
-			report.SizeMatches = entry.Size == report.ExpectedSize
-			break
-		}
-	}
-	report.UploadInProgress = runtime.UploadInProgress(path)
-	switch {
-	case report.Pending && report.RemoteFound && report.SizeMatches:
-		report.Status = "uploaded_pending_cleanup"
-	case report.Pending && report.RemoteFound && !report.SizeMatches:
-		report.Status = "mismatch"
-		report.Issue = "remote size differs from pending size"
-	case report.Pending && !report.RemoteFound:
-		report.Status = "pending"
-	case !report.Pending && report.RemoteFound:
-		report.Status = "ok"
-		report.SizeMatches = true
-	default:
-		report.Status = "missing"
-		report.Issue = "not pending and not found remotely"
-	}
-	return report, nil
-}
-
-func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {
-	mount, rest, root, err := n.resolve(path)
-	if err != nil {
-		return DebugResolveInfo{}, err
-	}
-	if root {
-		return DebugResolveInfo{Path: "/", Parent: "/", PlainName: "/", IsDir: true}, nil
-	}
-	info, err := mount.DebugResolve(ctx, rest, includeRemoteName)
-	if err != nil {
-		return DebugResolveInfo{}, err
-	}
-	mountName := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
-	if idx := strings.Index(mountName, "/"); idx >= 0 {
-		mountName = mountName[:idx]
-	}
-	info.Path = joinVirtual("/"+mountName, strings.TrimPrefix(info.Path, "/"))
-	info.Parent = filepath.Dir(info.Path)
-	info.Mount = mountName
-	return info, nil
-}
-
-func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string) (*DebugResolveInfo, string, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	for name, vfs := range n.mounts {
-		info, err := vfs.DebugResolveByRemoteID(ctx, remoteID)
-		if err == nil {
-			info.Mount = name
-			info.Path = joinVirtual("/"+name, strings.TrimPrefix(info.Path, "/"))
-			info.Parent = filepath.Dir(info.Path)
-			return &info, name, nil
-		}
-	}
-	return nil, "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
-}
-
-func (n *Namespace) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
-	mount, rest, root, err := n.resolve(path)
-	if err != nil {
-		return ConsistencyReport{}, err
-	}
-	if root {
-		return ConsistencyReport{Path: "/", Status: "namespace_root"}, nil
-	}
-	report, err := mount.DebugConsistency(ctx, rest)
-	if err != nil {
-		return ConsistencyReport{}, err
-	}
-	mountName := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
-	if idx := strings.Index(mountName, "/"); idx >= 0 {
-		mountName = mountName[:idx]
-	}
-	report.Path = joinVirtual("/"+mountName, strings.TrimPrefix(report.Path, "/"))
-	report.Parent = filepath.Dir(report.Path)
-	return report, nil
-}
-
-type debugResolveRuntime interface {
-	PendingUpload(path string) (PendingUpload, bool)
-	PendingUploadByRemoteID(remoteID string) (PendingUpload, bool)
-	PathByRemoteID(remoteID string) (string, bool)
-	CacheID(entry drive.Entry) string
-	Encrypted() bool
-	DriverSnapshot(ctx context.Context) (drive.DebugSnapshot, bool)
-	ResolveRemoteName(ctx context.Context, plainName string) (string, bool)
-	RemoteList(ctx context.Context, parentID string) ([]drive.Entry, error)
-	ForeignEntries(ctx context.Context, parentID string) ([]drive.ForeignEntry, error)
-	UploadInProgress(path string) bool
+func (r vfsDebugResolveRuntime) Resolve(ctx context.Context, path string) (drive.Entry, error) {
+	return r.v.resolve(ctx, path)
 }
 
 type vfsDebugResolveRuntime struct {
@@ -827,16 +648,6 @@ func (r vfsDebugResolveRuntime) UploadInProgress(path string) bool {
 	return false
 }
 
-func debugResolvePathByRemoteID(ctx context.Context, runtime debugResolveRuntime, remoteID string) (string, error) {
-	if pending, ok := runtime.PendingUploadByRemoteID(remoteID); ok {
-		return pending.Path, nil
-	}
-	if path, ok := runtime.PathByRemoteID(remoteID); ok {
-		return path, nil
-	}
-	return "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
-}
-
 // --- migrated from debug_snapshot.go ---
 
 func (v *VFS) DebugSnapshot() DebugSnapshot {
@@ -872,82 +683,15 @@ func (v *VFS) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
 }
 
 func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
-	runtime := newVFSDebugSnapshotRuntime(v)
-	snapshot := MountSnapshot{
-		Identity: runtime.Identity(name),
-		Queues:   runtime.Queues(),
-		Overlay: MountSnapshotOverlay{
-			Pending: runtime.PendingUploads(),
-		},
-		Cache: v.debugCacheSnapshot(),
-		Events: MountSnapshotEvents{
-			Reads: v.debugReadHistory(),
-		},
-	}
-	snapshot.UploadState.Active = v.uploadSnapshots(snapshot.Overlay.Pending)
-	snapshot.UploadState.History = v.uploadSnapshotHistory()
-	if driverSnapshot, ok := runtime.DriverSnapshot(context.Background()); ok {
-		snapshot.Identity.Driver = &driverSnapshot
-		snapshot.Identity.DriverName = driverSnapshot.Driver
-		if debugDriverEncrypted(driverSnapshot) {
-			snapshot.Identity.Encrypted = true
-		}
-	}
-	snapshot.Events.Driver = runtime.DriverMetrics(context.Background(), DebugStartedAt())
-	for i := range snapshot.Events.Reads {
-		snapshot.Events.Reads[i].Mount = name
-		snapshot.Events.Reads[i].Driver = snapshot.Identity.DriverName
-	}
-	decorateUpload := func(upload *UploadSnapshot) {
-		upload.Mount = name
-		upload.Driver = snapshot.Identity.DriverName
-		for i := range upload.Events {
-			upload.Events[i].OpID = upload.OpID
-			upload.Events[i].Mount = name
-			upload.Events[i].Driver = snapshot.Identity.DriverName
-			upload.Events[i].Path = upload.Path
-		}
-	}
-	for i := range snapshot.UploadState.Active {
-		decorateUpload(&snapshot.UploadState.Active[i])
-	}
-	for i := range snapshot.UploadState.History {
-		decorateUpload(&snapshot.UploadState.History[i])
-	}
-
-	snapshot.Queues.UploadTimers = runtime.UploadTimers()
-	overlay := runtime.Overlay()
-	snapshot.Queues.DeleteTimers = overlay.DeleteTimers
-	snapshot.Overlay.Deleted = overlay.Deleted
-	snapshot.Overlay.OverlayOps = overlay.OverlayOps
-	snapshot.Overlay.RestoredDirs = overlay.RestoredDirs
-	snapshot.Overlay.CopyHidden = overlay.CopyHidden
-	runtimeState := runtime.Runtime()
-	snapshot.Runtime.WindowLoads = runtimeState.WindowLoads
-	snapshot.Runtime.Prefetches = runtimeState.Prefetches
-	snapshot.Runtime.HotChunkCount = runtimeState.HotChunkCount
-	snapshot.Runtime.HotChunkBytes = runtimeState.HotChunkBytes
-	snapshot.Runtime.HotChunkLimit = runtimeState.HotChunkLimit
-	snapshot.Runtime.RangeHitCount = runtimeState.RangeHitCount
-	snapshot.Runtime.RangeHitLimit = runtimeState.RangeHitLimit
-
-	return snapshot
+	return diagnostics.AssembleMountSnapshot(name, newVFSDebugSnapshotRuntime(v))
 }
 
 func (v *VFS) debugCacheSnapshot() DebugCacheSnapshot {
-	return debugCacheSnapshotWithRuntime(newVFSDebugCacheRuntime(v))
+	return diagnostics.CacheSnapshot(newVFSDebugCacheRuntime(v))
 }
 
 func debugProcess() DebugProcess {
-	return DebugProcess{PID: os.Getpid(), StartedAt: DebugStartedAt()}
-}
-
-func debugDriverEncrypted(snapshot drive.DebugSnapshot) bool {
-	if snapshot.Extra == nil {
-		return false
-	}
-	encrypted, _ := snapshot.Extra["crypt"].(bool)
-	return encrypted
+	return diagnostics.Process(os.Getpid(), DebugStartedAt())
 }
 
 func debugEncrypted(driver drive.Driver) bool {
@@ -1030,24 +774,6 @@ func debugMountNameSet(mountNames []string) map[string]bool {
 	return set
 }
 
-type debugOverlayRuntimeSnapshot struct {
-	DeleteTimers []DebugTimer
-	Deleted      []DebugDeletedEntry
-	OverlayOps   []DebugOverlayOp
-	RestoredDirs []DebugTimer
-	CopyHidden   []DebugCopyHidden
-}
-
-type debugRuntimeStateSnapshot struct {
-	WindowLoads   int
-	Prefetches    int
-	HotChunkCount int
-	HotChunkBytes int64
-	RangeHitCount int
-	HotChunkLimit int
-	RangeHitLimit int
-}
-
 type vfsDebugSnapshotRuntime struct {
 	v *VFS
 }
@@ -1105,9 +831,9 @@ func (r vfsDebugSnapshotRuntime) UploadTimers() []DebugTimer {
 	return timers
 }
 
-func (r vfsDebugSnapshotRuntime) Overlay() debugOverlayRuntimeSnapshot {
+func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 	now := time.Now()
-	out := debugOverlayRuntimeSnapshot{}
+	out := diagnostics.OverlaySnapshot{}
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
 	for path := range r.v.deletes.tasks.scheduler.Keys() {
@@ -1171,8 +897,28 @@ func (r vfsDebugSnapshotRuntime) Overlay() debugOverlayRuntimeSnapshot {
 	return out
 }
 
-func (r vfsDebugSnapshotRuntime) Runtime() debugRuntimeStateSnapshot {
-	out := debugRuntimeStateSnapshot{
+func (r vfsDebugSnapshotRuntime) Cache() DebugCacheSnapshot {
+	return r.v.debugCacheSnapshot()
+}
+
+func (r vfsDebugSnapshotRuntime) ReadHistory() []drive.MetricEvent {
+	return r.v.debugReadHistory()
+}
+
+func (r vfsDebugSnapshotRuntime) UploadSnapshots(pending []PendingUpload) []UploadSnapshot {
+	return r.v.uploadSnapshots(pending)
+}
+
+func (r vfsDebugSnapshotRuntime) UploadHistory() []UploadSnapshot {
+	return r.v.uploadSnapshotHistory()
+}
+
+func (r vfsDebugSnapshotRuntime) StartedAt() time.Time {
+	return DebugStartedAt()
+}
+
+func (r vfsDebugSnapshotRuntime) Runtime() diagnostics.RuntimeSnapshot {
+	out := diagnostics.RuntimeSnapshot{
 		HotChunkLimit: read.HotChunkLimit,
 		RangeHitLimit: read.RangeHitLimit,
 	}
@@ -1194,126 +940,7 @@ func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport
 }
 
 func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {
-	return debugStagingMount(name, path, newVFSDebugStagingRuntime(v))
-}
-
-func debugStagingMount(name, path string, runtime debugStagingRuntime) DebugStagingMount {
-	pending := runtime.PendingUploads()
-	pendingByLocal := map[string]PendingUpload{}
-	var pendingForPath *PendingUpload
-	for _, item := range pending {
-		pendingByLocal[item.LocalPath] = item
-		if path != "" && path != "/" && item.Path == path {
-			p := item
-			pendingForPath = &p
-		}
-	}
-	uploading := runtime.UploadingPaths(pending)
-
-	mount := DebugStagingMount{Mount: name, PendingCount: len(pending)}
-	files, err := runtime.StagingFiles()
-	if err != nil {
-		mount.Orphans = append(mount.Orphans, DebugStagingFile{
-			LocalPath: runtime.StagingDir(),
-			Issue:     err.Error(),
-		})
-		return mount
-	}
-	for _, file := range files {
-		localPath := file.LocalPath
-		mount.Bytes += file.StagingSize
-		mount.StagingCount++
-		if item, ok := pendingByLocal[localPath]; ok {
-			file = mergePendingStagingFile(file, item, uploading[item.Path], path != "" && path != "/" && item.Path == path)
-			if path == "" || path == "/" || item.Path == path {
-				mount.Files = append(mount.Files, file)
-			}
-			continue
-		}
-		file.Pending = false
-		file.Issue = "not_referenced_by_pending"
-		mount.OrphanCount++
-		mount.Orphans = append(mount.Orphans, file)
-	}
-	if pendingForPath != nil {
-		found := false
-		for _, file := range mount.Files {
-			if file.Path == pendingForPath.Path {
-				found = true
-				break
-			}
-		}
-		if !found {
-			mount.Files = append(mount.Files, pendingStagingFile(*pendingForPath, uploading[pendingForPath.Path], true))
-		}
-	} else if path != "" && path != "/" {
-		mount.Files = nil
-	}
-	sort.Slice(mount.Files, func(i, j int) bool { return mount.Files[i].Path < mount.Files[j].Path })
-	sort.Slice(mount.Orphans, func(i, j int) bool { return mount.Orphans[i].LocalPath < mount.Orphans[j].LocalPath })
-	return mount
-}
-
-func mergePendingStagingFile(file DebugStagingFile, pending PendingUpload, uploading, includeHash bool) DebugStagingFile {
-	file.Path = pending.Path
-	file.Pending = true
-	file.PendingSize = pending.Size
-	file.SizeMatches = file.Exists && file.StagingSize == pending.Size
-	file.UploadInProgress = uploading
-	file.LastError = pending.LastError
-	if includeHash && file.Exists {
-		if sum, err := fileSHA256(file.LocalPath); err == nil {
-			file.SHA256 = sum
-		} else {
-			file.Issue = err.Error()
-		}
-	}
-	return file
-}
-
-func pendingStagingFile(pending PendingUpload, uploading, includeHash bool) DebugStagingFile {
-	file := DebugStagingFile{
-		Path:             pending.Path,
-		LocalPath:        pending.LocalPath,
-		Pending:          true,
-		PendingSize:      pending.Size,
-		UploadInProgress: uploading,
-		LastError:        pending.LastError,
-	}
-	info, err := os.Stat(pending.LocalPath)
-	if err != nil {
-		file.Issue = err.Error()
-		return file
-	}
-	file.Exists = true
-	file.StagingSize = info.Size()
-	file.SizeMatches = file.StagingSize == pending.Size
-	file.ModTime = ptrTime(info.ModTime())
-	if includeHash {
-		if sum, err := fileSHA256(pending.LocalPath); err == nil {
-			file.SHA256 = sum
-		} else {
-			file.Issue = err.Error()
-		}
-	}
-	return file
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func ptrTime(t time.Time) *time.Time {
-	return &t
+	return diagnostics.StagingMount(name, path, newVFSDebugStagingRuntime(v))
 }
 
 func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStagingReport, error) {
@@ -1332,7 +959,7 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStaging
 			mountName = mountName[:idx]
 		}
 		item := mount.debugStagingMount(mountName, rest)
-		prefixStagingMountPaths(&item, mountName)
+		diagnostics.PrefixStagingMountPaths(&item, mountName)
 		report.Path = path
 		report.Mounts = []DebugStagingMount{item}
 		return report, nil
@@ -1346,19 +973,11 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStaging
 	sort.Strings(names)
 	for _, name := range names {
 		item := n.mounts[name].debugStagingMount(name, "/")
-		prefixStagingMountPaths(&item, name)
+		diagnostics.PrefixStagingMountPaths(&item, name)
 		report.Mounts = append(report.Mounts, item)
 	}
 	n.mu.RUnlock()
 	return report, nil
-}
-
-func prefixStagingMountPaths(mount *DebugStagingMount, mountName string) {
-	for i := range mount.Files {
-		if mount.Files[i].Path != "" {
-			mount.Files[i].Path = joinVirtual("/"+mountName, strings.TrimPrefix(mount.Files[i].Path, "/"))
-		}
-	}
 }
 
 type debugStagingRuntime interface {
@@ -1411,7 +1030,8 @@ func (r vfsDebugStagingRuntime) StagingFiles() ([]DebugStagingFile, error) {
 			file.Issue = statErr.Error()
 		} else {
 			file.StagingSize = info.Size()
-			file.ModTime = ptrTime(info.ModTime())
+			modTime := info.ModTime()
+			file.ModTime = &modTime
 		}
 		files = append(files, file)
 	}
