@@ -304,3 +304,86 @@ func TestRenameMoveSameParentInvalidatesOnce(t *testing.T) {
 		t.Error("parent list cache not invalidated by same-parent rename")
 	}
 }
+
+// TestRenameMovePartialPreservesEntryMetadata: the intermediate-state
+// commit must carry the full entry - ID, new Name, old ParentID, IsDir,
+// Size, ModTime - not a zeroed stub.
+func TestRenameMovePartialPreservesEntryMetadata(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	orig := *fx.backend
+	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}
+	rb.moveErr = errors.New("move boom")
+
+	modTime := time.Unix(987654321, 0)
+	// Prime the entry cache so resolve returns full metadata.
+	fx.fs.view.mu.Lock()
+	fx.fs.view.entries.Set("/a.txt", drive.Entry{
+		ID: "id-a", ParentID: "parent-a", Name: "a.txt", Size: 42, ModTime: modTime,
+	})
+	fx.fs.view.mu.Unlock()
+
+	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/sub/renamed.txt", rb, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want partial rename/move error")
+	}
+	e := fx.committer.renamedEntry
+	if e.ID != "id-a" {
+		t.Errorf("committed entry ID = %q, want id-a", e.ID)
+	}
+	if e.Name != "renamed.txt" {
+		t.Errorf("committed entry Name = %q, want new name renamed.txt", e.Name)
+	}
+	if e.ParentID != "parent-a" {
+		t.Errorf("committed entry ParentID = %q, want old parent parent-a", e.ParentID)
+	}
+	if e.Size != 42 {
+		t.Errorf("committed entry Size = %d, want 42", e.Size)
+	}
+	if !e.ModTime.Equal(modTime) {
+		t.Errorf("committed entry ModTime = %v, want %v", e.ModTime, modTime)
+	}
+}
+
+// TestRenameMovePartialDirKeepsSubtreeHidden: for a directory rename whose
+// rollback fails, the intermediate commit must keep IsDir=true so the
+// rename overlay hides the old subtree recursively.
+func TestRenameMovePartialDirKeepsSubtreeHidden(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	orig := *fx.backend
+	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}
+	rb.moveErr = errors.New("move boom")
+
+	fx.fs.view.mu.Lock()
+	fx.fs.view.entries.Set("/d", drive.Entry{ID: "id-d", ParentID: "parent", Name: "d", IsDir: true, Size: 0})
+	fx.fs.view.mu.Unlock()
+
+	if err := fx.fs.renameWithDeps(context.Background(), "/d", "/sub/d2", rb, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want partial rename/move error")
+	}
+	if !fx.committer.renamedEntry.IsDir {
+		t.Error("committed intermediate entry lost IsDir; old subtree will not be hidden recursively")
+	}
+}
+
+// TestRenameMoveRollbackOnCancelledContext: when the move reports a
+// cancellation, the rollback still runs on a detached context and the
+// operation reports the move error without committing. (The caller's ctx
+// stays live through resolve; the backend simulates a cancelled move.)
+func TestRenameMoveRollbackOnCancelledContext(t *testing.T) {
+	fx := newRenameCoordinatorFixture(t)
+	fx.addSubDir()
+	fx.backend.moveErr = context.Canceled
+
+	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/sub/renamed.txt", fx.backend, &recordingMutationRuntime{}, fx.committer); err == nil {
+		t.Fatal("want error")
+	}
+	// Rollback ran: the rename ran forward (calls=1) and the detached
+	// rollback rename ran again (calls=2); nothing was committed.
+	if fx.backend.renameCalls != 2 {
+		t.Fatalf("rename calls = %d, want 2 (forward + detached rollback)", fx.backend.renameCalls)
+	}
+	if len(fx.committer.renamed) != 0 {
+		t.Fatalf("CommitRemoteRename called %d times, want 0", len(fx.committer.renamed))
+	}
+}

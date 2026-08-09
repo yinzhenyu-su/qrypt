@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// renameRollbackTimeout bounds the detached rollback rename after a failed
+// move, so a cancelled caller context cannot hang the rollback.
+const renameRollbackTimeout = 10 * time.Second
+
 func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
 	return v.prepareDirectoryCopyWithRuntime(ctx, path, newVFSDirectoryCopyRuntime(v))
 }
@@ -212,9 +216,8 @@ func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backe
 		var partial *renameMovePartialError
 		if errors.As(err, &partial) {
 			// The remote is renamed-but-unmoved: commit that intermediate
-			// state (old parent + new name) so local and remote stay
-			// consistent even though the operation failed.
-			renamed.Name = newName
+			// state (old parent + new name, full entry metadata) so local
+			// and remote stay consistent even though the operation failed.
 			committer.CommitRemoteRename(oldPath, joinVirtual(filepath.Dir(oldPath), newName), renamed)
 		}
 		return err
@@ -236,15 +239,15 @@ type mutationBackend interface {
 // intermediate remote state (old parent + new name) to the view so local
 // and remote do not diverge.
 type renameMovePartialError struct {
-	RenameErr   error
+	MoveErr     error
 	RollbackErr error
 }
 
 func (e *renameMovePartialError) Error() string {
-	return fmt.Sprintf("vfs: rename/move partially applied (move failed: %v; rollback failed: %v)", e.RenameErr, e.RollbackErr)
+	return fmt.Sprintf("vfs: rename/move partially applied (move failed: %v; rollback failed: %v)", e.MoveErr, e.RollbackErr)
 }
 
-func (e *renameMovePartialError) Unwrap() error { return e.RenameErr }
+func (e *renameMovePartialError) Unwrap() error { return e.MoveErr }
 
 // remoteRenamer performs a remote rename/move as one transactional
 // operation: rename first (if the name changes), then move (if the parent
@@ -276,14 +279,22 @@ func (r driverRemoteRenamer) RenameMove(ctx context.Context, entry drive.Entry, 
 	if entry.ParentID != dstParentID {
 		if err := r.backend.Move(ctx, entry, dstParentID); err != nil {
 			if renamed {
-				rbErr := r.backend.Rename(ctx, entry, oldName)
+				// The move may have failed because ctx was cancelled; the
+				// rollback must not inherit that cancellation, so it runs
+				// on a detached context with a short timeout.
+				rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), renameRollbackTimeout)
+				rbErr := r.backend.Rename(rbCtx, entry, oldName)
+				cancel()
 				if rbErr == nil {
 					// Rolled back: the remote is back to its original
 					// name and parent, nothing to commit.
 					return drive.Entry{}, err
 				}
-				// Rollback failed: the remote is renamed-but-unmoved.
-				return drive.Entry{}, &renameMovePartialError{RenameErr: err, RollbackErr: rbErr}
+				// Rollback failed: the remote is renamed-but-unmoved. The
+				// entry already carries the intermediate state - Name is
+				// the new name, ParentID is still the old parent - so the
+				// coordinator can commit exactly what the remote holds.
+				return entry, &renameMovePartialError{MoveErr: err, RollbackErr: rbErr}
 			}
 			return drive.Entry{}, err
 		}

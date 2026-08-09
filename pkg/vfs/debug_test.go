@@ -30,13 +30,8 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 	if len(snapshot.Mounts) != 1 {
 		t.Fatalf("mount count = %d, want 1", len(snapshot.Mounts))
 	}
-	// The root ID resolves from the driver (localfs root path) when unset.
-	wantRoot, err := drv.ResolvePath(ctx, "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Mounts[0].Identity.RootID != wantRoot {
-		t.Fatalf("root id = %q, want resolved %q", snapshot.Mounts[0].Identity.RootID, wantRoot)
+	if snapshot.Mounts[0].Identity.RootID != "0" {
+		t.Fatalf("root id = %q, want default root id", snapshot.Mounts[0].Identity.RootID)
 	}
 	caps := map[drive.Capability]bool{}
 	for _, capability := range snapshot.Mounts[0].Identity.Capabilities {

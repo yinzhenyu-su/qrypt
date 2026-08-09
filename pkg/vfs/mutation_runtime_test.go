@@ -44,7 +44,10 @@ type recordingViewCommitter struct {
 	committed []string
 	removed   []string
 	renamed   [][2]string
-	cached    int
+	// renamedEntry holds the entry passed to the most recent
+	// CommitRemoteRename, so tests can assert the committed metadata.
+	renamedEntry drive.Entry
+	cached       int
 }
 
 func (r *recordingViewCommitter) CommitMkdir(path string, _ drive.Entry) {
@@ -63,6 +66,7 @@ func (r *recordingViewCommitter) CommitUploadedEntry(string, drive.Entry, string
 
 func (r *recordingViewCommitter) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) {
 	r.renamed = append(r.renamed, [2]string{oldPath, newPath})
+	r.renamedEntry = entry
 }
 
 // recordingMutationRuntime implements the remaining Rename-time mutation
