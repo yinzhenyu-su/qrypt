@@ -98,8 +98,12 @@ type PendingStore struct {
 
 	mu        sync.RWMutex
 	journalMu sync.Mutex
-	pending   map[string]PendingUpload
-	idIndex   map[string]string // fid -> path for O(1) PendingByID
+	// txMu serializes the full snapshot -> journal -> memory write
+	// transactions, so a concurrent Save/Remove can never interleave
+	// between a snapshot and its memory apply.
+	txMu    sync.Mutex
+	pending map[string]PendingUpload
+	idIndex map[string]string // fid -> path for O(1) PendingByID
 
 	// journalFail, when non-nil, injects a failure into journal appends;
 	// compactFail injects one into compactions (test-only hooks for
@@ -109,7 +113,8 @@ type PendingStore struct {
 }
 
 type JournalEntry struct {
-	Op string `json:"op"`
+	Op    string   `json:"op"`
+	Paths []string `json:"paths,omitempty"`
 	PendingUpload
 }
 
@@ -310,6 +315,8 @@ func (c *PendingStore) SaveUploadExact(p PendingUpload) error {
 	return c.saveUpload(p)
 }
 func (c *PendingStore) saveUpload(p PendingUpload) error {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	c.mu.Lock()
 	c.pending[p.Path] = p
 	if p.FID != "" {
@@ -328,6 +335,8 @@ func (c *PendingStore) UpdateUploadTransient(p PendingUpload) {
 	c.mu.Unlock()
 }
 func (c *PendingStore) RecordUploadFailure(path string, err error, retryDelay time.Duration) (PendingUpload, bool, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	now := timeutil.Now()
 	c.mu.Lock()
 	pending, ok := c.pending[path]
@@ -352,6 +361,8 @@ func (c *PendingStore) RecordUploadFailure(path string, err error, retryDelay ti
 	return pending, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: pending})
 }
 func (c *PendingStore) RecordUploadReplacementIfUnchanged(p PendingUpload, upload UploadReplacement) (PendingUpload, bool, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	now := timeutil.Now()
 	c.mu.Lock()
 	pending, ok := c.pending[p.Path]
@@ -371,6 +382,8 @@ func (c *PendingStore) RecordUploadReplacementIfUnchanged(p PendingUpload, uploa
 	return pending, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: pending})
 }
 func (c *PendingStore) RecordUploadPermanentFailure(path string, err error) (PendingUpload, bool, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	now := timeutil.Now()
 	c.mu.Lock()
 	pending, ok := c.pending[path]
@@ -396,6 +409,8 @@ func (c *PendingStore) RecordUploadPermanentFailure(path string, err error) (Pen
 // file has not changed since it was enqueued. This prevents an old
 // frozen generation's upload failure from clobbering a newer generation's state.
 func (c *PendingStore) RecordUploadFailureIfUnchanged(p PendingUpload, err error, retryDelay time.Duration) (PendingUpload, bool, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	now := timeutil.Now()
 	c.mu.Lock()
 	current, ok := c.pending[p.Path]
@@ -425,6 +440,8 @@ func (c *PendingStore) RecordUploadFailureIfUnchanged(p PendingUpload, err error
 // RecordUploadPermanentFailureIfUnchanged records a permanent failure only
 // if the pending file has not changed since it was enqueued.
 func (c *PendingStore) RecordUploadPermanentFailureIfUnchanged(p PendingUpload, err error) (PendingUpload, bool, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	now := timeutil.Now()
 	c.mu.Lock()
 	current, ok := c.pending[p.Path]
@@ -448,6 +465,8 @@ func (c *PendingStore) RecordUploadPermanentFailureIfUnchanged(p PendingUpload, 
 	return current, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: current})
 }
 func (c *PendingStore) RemoveUpload(path string) error {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	c.mu.RLock()
 	pending, ok := c.pending[path]
 	c.mu.RUnlock()
@@ -534,6 +553,8 @@ func (c *PendingStore) sweepUnreferencedStaging() int {
 	return cleaned
 }
 func (c *PendingStore) RemoveUploadsUnder(dir string) error {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	dir = cleanVirtual(dir)
 	c.mu.RLock()
 	var removed []PendingUpload
@@ -548,12 +569,14 @@ func (c *PendingStore) RemoveUploadsUnder(dir string) error {
 	}
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()
-	// Write ALL clean intents first: on failure, memory and staging stay
-	// untouched (no partial batch).
+	// Write the whole batch as ONE clean_batch entry: on failure, memory
+	// and staging stay untouched, and replay applies the batch atomically.
+	paths := make([]string, 0, len(removed))
 	for _, pending := range removed {
-		if err := c.appendJournalLocked(JournalEntry{Op: "clean", PendingUpload: PendingUpload{Path: pending.Path}}); err != nil {
-			return err
-		}
+		paths = append(paths, pending.Path)
+	}
+	if err := c.appendCleanBatchLocked(paths); err != nil {
+		return err
 	}
 	c.mu.Lock()
 	for _, pending := range removed {
@@ -576,6 +599,8 @@ func (c *PendingStore) RemoveUploadsUnder(dir string) error {
 	return nil
 }
 func (c *PendingStore) RemoveUploadIfUnchanged(p PendingUpload) (bool, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	c.mu.RLock()
 	current, ok := c.pending[p.Path]
 	c.mu.RUnlock()
@@ -649,6 +674,8 @@ func (c *PendingStore) PendingByID(id string) (PendingUpload, bool) {
 }
 
 func (c *PendingStore) RenameUpload(oldPath string, next PendingUpload) error {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
 	c.mu.Lock()
 	if old, ok := c.pending[oldPath]; ok && old.FID != "" {
 		delete(c.idIndex, old.FID)
@@ -711,6 +738,14 @@ func (c *PendingStore) appendJournal(entry JournalEntry) error {
 	}
 	return nil
 }
+
+// appendCleanBatchLocked persists one clean_batch entry covering all
+// paths, so a directory removal's clean intents are durable in a single
+// append/fsync (no partial batch on replay).
+func (c *PendingStore) appendCleanBatchLocked(paths []string) error {
+	return c.appendJournalLocked(JournalEntry{Op: "clean_batch", Paths: paths})
+}
+
 func (c *PendingStore) appendJournalLocked(entry JournalEntry) error {
 	if c.journalFail != nil {
 		if err := c.journalFail(); err != nil {
@@ -764,6 +799,10 @@ func (c *PendingStore) loadJournal() (int, error) {
 			}
 		case "clean":
 			delete(c.pending, entry.Path)
+		case "clean_batch":
+			for _, p := range entry.Paths {
+				delete(c.pending, p)
+			}
 		}
 	}
 	// Rebuild fid->path index after journal replay.

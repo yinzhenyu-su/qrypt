@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -18,6 +19,8 @@ func newPendingStoreFixture(t *testing.T) *PendingStore {
 	return store
 }
 
+// addPending writes a pending record through the FORMAL API so the dirty
+// journal is durable - replay-based tests depend on it.
 func (c *PendingStore) addPending(t *testing.T, path, fid, local string) {
 	t.Helper()
 	if local != "" {
@@ -25,12 +28,13 @@ func (c *PendingStore) addPending(t *testing.T, path, fid, local string) {
 			t.Fatal(err)
 		}
 	}
-	c.mu.Lock()
-	c.pending[path] = PendingUpload{Path: path, FID: fid, LocalPath: filepath.Join(c.staging.dir, local)}
-	if fid != "" {
-		c.idIndex[fid] = path
+	err := c.SaveUploadExact(PendingUpload{
+		Path: path, FID: fid, Name: path, LocalPath: filepath.Join(c.staging.dir, local),
+		Size: 1, UpdatedAt: 1234567890,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	c.mu.Unlock()
 }
 
 func (c *PendingStore) hasPending(path string) bool {
@@ -61,36 +65,61 @@ func TestRemoveUploadAppendFailureKeepsMemory(t *testing.T) {
 	}
 }
 
-// TestRemoveUploadsUnderBatchFailureKeepsAll: a mid-batch journal failure
-// leaves every pending record and staging file intact.
+// TestRemoveUploadsUnderBatchFailureKeepsAll: a clean_batch append failure
+// leaves every pending record and staging file intact IN MEMORY AND AFTER
+// REPLAY - the whole batch is written as one journal entry, so nothing is
+// partially durable.
 func TestRemoveUploadsUnderBatchFailureKeepsAll(t *testing.T) {
 	store := newPendingStoreFixture(t)
 	store.addPending(t, "/dir/a.txt", "fid-a", "a.staging")
 	store.addPending(t, "/dir/b.txt", "fid-b", "b.staging")
 	store.addPending(t, "/other.txt", "fid-c", "c.staging")
 
-	calls := 0
-	store.journalFail = func() error {
-		calls++
-		if calls == 2 {
-			return errors.New("append boom on second clean")
-		}
-		return nil
-	}
+	store.journalFail = func() error { return errors.New("append boom") }
 	if err := store.RemoveUploadsUnder("/dir"); err == nil {
 		t.Fatal("want batch append error")
 	}
-	if !store.hasPending("/dir/a.txt") {
-		t.Error("first pending lost on mid-batch failure")
-	}
-	if !store.hasPending("/dir/b.txt") {
-		t.Error("second pending lost on mid-batch failure")
+	for _, p := range []string{"/dir/a.txt", "/dir/b.txt", "/other.txt"} {
+		if !store.hasPending(p) {
+			t.Errorf("pending %s lost on batch failure", p)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(store.staging.dir, "a.staging")); err != nil {
-		t.Error("staging a lost on mid-batch failure")
+		t.Error("staging a lost on batch failure")
 	}
 	if _, err := os.Stat(filepath.Join(store.staging.dir, "b.staging")); err != nil {
-		t.Error("staging b lost on mid-batch failure")
+		t.Error("staging b lost on batch failure")
+	}
+	// Replay must also keep everything: nothing was durable.
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/dir/a.txt", "/dir/b.txt", "/other.txt"} {
+		if !reopened.hasPending(p) {
+			t.Errorf("replay lost %s after batch failure", p)
+		}
+	}
+}
+
+// TestRemoveUploadsUnderCleanBatchDurableAcrossReplay: a successful batch
+// removal writes ONE clean_batch entry; a reopened store applies the whole
+// batch (all records gone).
+func TestRemoveUploadsUnderCleanBatchDurableAcrossReplay(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.addPending(t, "/dir/a.txt", "fid-a", "a.staging")
+	store.addPending(t, "/dir/b.txt", "fid-b", "b.staging")
+	if err := store.RemoveUploadsUnder("/dir"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/dir/a.txt", "/dir/b.txt"} {
+		if reopened.hasPending(p) {
+			t.Errorf("replay resurrected %s after clean_batch", p)
+		}
 	}
 }
 
@@ -143,4 +172,65 @@ func TestRemoveUploadSuccessConsistent(t *testing.T) {
 	if reopened.hasPending("/a.txt") {
 		t.Error("reopened store resurrected the removed record")
 	}
+}
+
+// TestConcurrentSaveRemoveSamePath: concurrent Save/Remove of the same path
+// must be race-free and never leave a torn state (txMu serializes the
+// snapshot->journal->memory transactions).
+func TestConcurrentSaveRemoveSamePath(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = store.SaveUploadExact(PendingUpload{
+				Path: "/same.txt", FID: "fid-x", Name: "same.txt", Size: 1, UpdatedAt: 1234567890,
+			})
+		}
+		close(done)
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_ = store.RemoveUpload("/same.txt")
+		}
+	}()
+	wg.Wait()
+}
+
+// TestConcurrentRemoveUploadsUnderAndSave: a subtree removal racing a save
+// under the same subtree is race-free.
+func TestConcurrentRemoveUploadsUnderAndSave(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = store.SaveUploadExact(PendingUpload{
+				Path: "/dir/f.txt", FID: "fid-y", Name: "f.txt", Size: 1, UpdatedAt: 1234567890,
+			})
+		}
+		close(done)
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_ = store.RemoveUploadsUnder("/dir")
+		}
+	}()
+	wg.Wait()
 }

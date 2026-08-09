@@ -153,19 +153,29 @@ func newVFSRemoveCleanup(v *VFS, runtime vfsRemoveRuntime) vfsRemoveCleanup {
 }
 
 func (r vfsRemoveCleanup) RemovePendingFile(path string) (bool, error) {
+	// Take the path lock FIRST and re-check inside it: a pending upload
+	// that completes between a bare probe and the lock would otherwise be
+	// reported as a pending-only remove while the uploaded remote entry is
+	// never committed or scheduled for deletion.
+	unlock := r.v.lockPath(path)
+	defer unlock()
 	if _, err := r.v.pendingUpload(path); err != nil {
 		return false, nil
 	}
-	unlock := r.v.lockPath(path)
-	defer unlock()
-	return true, r.runtime.RemovePendingUpload(path)
+	if err := r.runtime.RemovePendingUpload(path); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
-	r.runtime.CancelChildUploads(path)
+	// Durable cleanup (pending store + hashes) comes first; timers are
+	// cancelled only after it succeeds, so a failed cleanup never leaves
+	// the directory visible with its upload timers already cancelled.
 	if err := r.runtime.RemovePendingUploadsUnder(path); err != nil {
 		return err
 	}
+	r.runtime.CancelChildUploads(path)
 	r.runtime.CancelChildDeletes(path)
 	return nil
 }
