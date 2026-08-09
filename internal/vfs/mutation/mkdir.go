@@ -2,9 +2,9 @@ package mutation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -52,12 +52,19 @@ func NewMkdirCoordinator(resolve MkdirResolver, remote MkdirRemote, view MkdirVi
 func (c *MkdirCoordinator) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
 	path = cleanVirtualPath(path)
 
-	// Already exists (or is a file): report as-is.
-	if entry, err := c.resolve.Resolve(ctx, path); err == nil {
+	// Already exists (or is a file): report as-is. Only a not-found
+	// result proceeds to create; any other resolve error (cancel, auth,
+	// network, server) returns unchanged WITHOUT touching the overlay or
+	// issuing a write.
+	entry, err := c.resolve.Resolve(ctx, path)
+	switch {
+	case err == nil:
 		if entry.IsDir {
 			return entry, nil
 		}
 		return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
+	case !errors.Is(err, drive.ErrNotFound):
+		return drive.Entry{}, err
 	}
 
 	// Recreate a path that is currently marked deleted.
@@ -68,16 +75,24 @@ func (c *MkdirCoordinator) Mkdir(ctx context.Context, path string) (drive.Entry,
 	// path under a just-restored directory may already exist remotely.
 	c.view.RestoreDeletedAncestor(filepath.Dir(path))
 	if c.view.IsUnderRestoredDir(path) {
-		if entry, err := c.resolve.Resolve(ctx, path); err == nil && entry.IsDir {
-			return entry, nil
+		entry, err := c.resolve.Resolve(ctx, path)
+		switch {
+		case err == nil:
+			if entry.IsDir {
+				return entry, nil
+			}
+			return drive.Entry{}, fmt.Errorf("vfs: %s exists and is not a directory", path)
+		case !errors.Is(err, drive.ErrNotFound):
+			return drive.Entry{}, err
 		}
+		// ErrNotFound: continue creating below.
 	}
 
 	parent, name, err := c.resolve.Parent(ctx, path)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	entry, err := c.remote.Mkdir(ctx, parent.ID, name)
+	entry, err = c.remote.Mkdir(ctx, parent.ID, name)
 	if err != nil {
 		if !isAlreadyExistsError(err) {
 			return drive.Entry{}, err
@@ -108,14 +123,7 @@ func (c *MkdirCoordinator) findExistingChildDir(ctx context.Context, parentPath,
 }
 
 // isAlreadyExistsError reports whether a remote mkdir error means the
-// target already exists.
+// target already exists, via the drive-level conflict classification.
 func isAlreadyExistsError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "already exists") ||
-		strings.Contains(text, "file exists") ||
-		strings.Contains(text, "同名冲突") ||
-		strings.Contains(text, "已存在")
+	return drive.ErrorCategory(err) == drive.ErrorCategoryConflict
 }

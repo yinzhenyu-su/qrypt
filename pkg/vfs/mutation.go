@@ -7,7 +7,6 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/vfs/mutation"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -38,17 +37,6 @@ func (v *VFS) prepareDirectoryCopyWithRuntime(ctx context.Context, path string, 
 	}
 	runtime.PrepareLocalDirectoryCopy(path, hideNames)
 	return nil
-}
-
-func isAlreadyExistsError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "already exists") ||
-		strings.Contains(text, "file exists") ||
-		strings.Contains(text, "同名冲突") ||
-		strings.Contains(text, "已存在")
 }
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {

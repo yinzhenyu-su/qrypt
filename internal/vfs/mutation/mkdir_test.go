@@ -3,6 +3,7 @@ package mutation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -12,9 +13,12 @@ import (
 type mkdirFixture struct {
 	resolveEntry drive.Entry
 	resolveErr   error
-	parentEntry  drive.Entry
-	parentName   string
-	parentErr    error
+	// resolveErrs, when set, is consumed one error per Resolve call
+	// (overrides resolveErr); used for call-indexed second-resolve tests.
+	resolveErrs []error
+	parentEntry drive.Entry
+	parentName  string
+	parentErr   error
 
 	listEntries []drive.Entry
 	listErr     error
@@ -32,6 +36,11 @@ type mkdirFixture struct {
 
 func (f *mkdirFixture) Resolve(_ context.Context, _ string) (drive.Entry, error) {
 	f.order = append(f.order, "resolve")
+	if len(f.resolveErrs) > 0 {
+		err := f.resolveErrs[0]
+		f.resolveErrs = f.resolveErrs[1:]
+		return drive.Entry{}, err
+	}
 	return f.resolveEntry, f.resolveErr
 }
 
@@ -81,8 +90,9 @@ func (f *mkdirFixture) coordinator() *MkdirCoordinator {
 
 func newMkdirFixture() *mkdirFixture {
 	return &mkdirFixture{
-		// By default the target does not exist yet (resolve fails).
-		resolveErr:  errors.New("not found"),
+		// By default the target does not exist yet (resolve reports the
+		// stable not-found sentinel).
+		resolveErr:  drive.ErrNotFound,
 		parentEntry: drive.Entry{ID: "parent"},
 		parentName:  "newdir",
 		mkdirResult: drive.Entry{ID: "new-id", ParentID: "parent", Name: "newdir", IsDir: true},
@@ -198,5 +208,87 @@ func TestMkdirOrder(t *testing.T) {
 		if fx.order[i] != want[i] {
 			t.Fatalf("order[%d] = %q, want %q (full %v)", i, fx.order[i], want[i], fx.order)
 		}
+	}
+}
+
+// TestMkdirNonNotFoundResolveHasNoSideEffects: a resolve error that is NOT
+// not-found (cancel/auth/network) returns immediately with zero overlay,
+// parent, mkdir, or commit calls.
+func TestMkdirNonNotFoundResolveHasNoSideEffects(t *testing.T) {
+	fx := newMkdirFixture()
+	fx.resolveErr = errors.New("auth failed")
+	if _, err := fx.coordinator().Mkdir(context.Background(), "/newdir"); err == nil {
+		t.Fatal("want resolve error")
+	}
+	for _, step := range fx.order {
+		switch step {
+		case "restore", "restore_ancestor", "under_restored", "parent", "remote_mkdir", "commit":
+			t.Fatalf("unexpected %q after non-not-found resolve", step)
+		}
+	}
+}
+
+// TestMkdirWrappedNotFoundProceeds: a WRAPPED drive.ErrNotFound still
+// classifies as not-found and proceeds to create.
+func TestMkdirWrappedNotFoundProceeds(t *testing.T) {
+	fx := newMkdirFixture()
+	fx.resolveErr = fmt.Errorf("backend: %w", drive.ErrNotFound)
+	entry, err := fx.coordinator().Mkdir(context.Background(), "/newdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "new-id" {
+		t.Fatalf("entry = %+v, want created", entry)
+	}
+}
+
+// TestMkdirRestoredAncestorNonNotFoundReturns: the second resolve (after
+// restoring a deleted ancestor) returning a non-not-found error aborts
+// with zero mkdir/commit side effects.
+func TestMkdirRestoredAncestorNonNotFoundReturns(t *testing.T) {
+	fx := newMkdirFixture()
+	fx.underRestored = true
+	fx.resolveErrs = []error{drive.ErrNotFound, errors.New("auth failed")}
+	if _, err := fx.coordinator().Mkdir(context.Background(), "/newdir"); err == nil {
+		t.Fatal("want second resolve error")
+	}
+	for _, step := range fx.order {
+		if step == "remote_mkdir" || step == "commit" {
+			t.Fatalf("unexpected %q after second-resolve error", step)
+		}
+	}
+}
+
+// TestMkdirRestoredAncestorFindsFile: the second resolve under a restored
+// ancestor finding a plain file reports exists-not-directory.
+func TestMkdirRestoredAncestorFindsFile(t *testing.T) {
+	fx := newMkdirFixture()
+	fx.underRestored = true
+	// First resolve: not found. Second resolve: succeeds with a plain file.
+	fx.resolveErr = nil
+	fx.resolveErrs = []error{drive.ErrNotFound}
+	fx.resolveEntry = drive.Entry{ID: "file-id", Name: "newdir"}
+	if _, err := fx.coordinator().Mkdir(context.Background(), "/newdir"); err == nil {
+		t.Fatal("want exists-not-directory error")
+	}
+	for _, step := range fx.order {
+		if step == "remote_mkdir" || step == "commit" {
+			t.Fatalf("unexpected %q when restored ancestor holds a file", step)
+		}
+	}
+}
+
+// TestMkdirRestoredAncestorNotFoundProceeds: the second resolve under a
+// restored ancestor reporting not-found continues to create.
+func TestMkdirRestoredAncestorNotFoundProceeds(t *testing.T) {
+	fx := newMkdirFixture()
+	fx.underRestored = true
+	fx.resolveErrs = []error{drive.ErrNotFound, drive.ErrNotFound}
+	entry, err := fx.coordinator().Mkdir(context.Background(), "/newdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "new-id" {
+		t.Fatalf("entry = %+v, want created", entry)
 	}
 }
