@@ -44,14 +44,7 @@ func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending 
 		return ctx, progress, nil
 	}
 	uploadCtx, uploadCancel := context.WithCancel(ctx)
-	cancelProgress := &debugUploadCancelProgress{
-		inner:      progress,
-		fault:      fault,
-		cancel:     uploadCancel,
-		cancelPath: pending.Path,
-		cancelOpID: pending.FID,
-		v:          c.v,
-	}
+	cancelProgress := c.v.faults.NewProgress(fault, progress, uploadCancel)
 	observer.Extra(pending.Path, "debug_upload_cancel_fault", fault.ID)
 	cleanup := func() {
 		cancelProgress.Close()

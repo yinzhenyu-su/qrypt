@@ -3,7 +3,6 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
@@ -18,7 +17,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -291,95 +289,6 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 
 func (v *VFS) matchUploadCancelFault(path, opID string) (faultinject.MatchResult, bool) {
 	return v.faults.Match(time.Now(), path, opID)
-}
-
-type debugUploadCancelProgress struct {
-	inner       drive.UploadProgress
-	fault       faultinject.MatchResult
-	cancel      context.CancelFunc
-	cancelPath  string
-	cancelOpID  string
-	v           *VFS
-	mu          sync.Mutex
-	bytes       int64
-	phase       drive.UploadPhase
-	timer       *time.Timer
-	timerArmed  bool
-	cancelFired atomic.Bool
-}
-
-func (p *debugUploadCancelProgress) Phase(phase drive.UploadPhase) {
-	if p.inner != nil {
-		p.inner.Phase(phase)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.phase = phase
-	p.maybeCancelLocked()
-}
-
-func (p *debugUploadCancelProgress) Uploaded(n int64) {
-	if p.inner != nil {
-		p.inner.Uploaded(n)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if n > 0 {
-		p.bytes += n
-	}
-	p.maybeCancelLocked()
-}
-
-func (p *debugUploadCancelProgress) Close() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.timer != nil {
-		p.timer.Stop()
-	}
-	// Swap marks the progress as finished (also blocks a late timer
-	// callback from firing after Close). Only release the claim when the
-	// upload truly ended without firing; once released, the rule returns
-	// to armed for a later upload.
-	if !p.cancelFired.Swap(true) {
-		p.v.faults.Release(p.fault.Handle)
-	}
-}
-
-func (p *debugUploadCancelProgress) maybeCancelLocked() {
-	if p.fault.ID == "" || p.cancelFired.Load() {
-		return
-	}
-	if p.fault.Phase != "" && p.phase != p.fault.Phase {
-		return
-	}
-	if p.fault.AfterBytes > 0 && p.bytes < p.fault.AfterBytes {
-		return
-	}
-	if p.fault.AfterDelay > 0 {
-		if p.timerArmed {
-			return
-		}
-		p.timerArmed = true
-		p.timer = time.AfterFunc(p.fault.AfterDelay, func() {
-			// fireLocked is serialized against Close/Phase/Uploaded.
-			p.mu.Lock()
-			p.fireLocked()
-			p.mu.Unlock()
-		})
-		return
-	}
-	p.fireLocked()
-}
-
-// fireLocked requires p.mu to be held. It is the single completion path:
-// the registry records the fired state via Complete.
-func (p *debugUploadCancelProgress) fireLocked() {
-	if p.cancelFired.Swap(true) {
-		return // already fired, or closed
-	}
-	logging.L.Warnf("[VFS] debug upload cancel fired op_id=%q path=%q fault=%q reason=%q", p.cancelOpID, p.cancelPath, p.fault.ID, p.fault.Reason)
-	p.v.faults.Complete(p.fault.Handle, time.Now())
-	p.cancel()
 }
 
 // --- migrated from debug_health.go ---
