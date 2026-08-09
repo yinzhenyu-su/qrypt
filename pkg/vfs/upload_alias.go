@@ -3,6 +3,7 @@ package vfs
 import (
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
 	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 )
@@ -13,8 +14,8 @@ type uploadStore = upload.PendingStore
 type uploadTaskRecord = upload.UploadTaskRecord
 type UploadSnapshot = upload.UploadSnapshot
 type uploadSnapshotState = upload.SnapshotState
-type debugUploadCancelFault = upload.CancelFault
-type DebugUploadCancelFault = upload.DebugUploadCancelFault
+type debugUploadCancelFault = faultinject.Fault
+type DebugUploadCancelFault = faultinject.DebugUploadCancelFault
 type uploadAdmission = upload.Admission
 type DebugJournal = upload.DebugJournal
 type DebugJournalPath = upload.DebugJournalPath

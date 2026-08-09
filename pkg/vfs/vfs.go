@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
 	"github.com/yinzhenyu/qrypt/internal/vfs/observe"
 	"github.com/yinzhenyu/qrypt/internal/vfs/read"
@@ -65,6 +66,7 @@ type VFS struct {
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
 	activeDebug *observe.ActiveStore
+	faults      *faultinject.Registry
 	pathLocks   *pathLockState
 
 	// done is closed when the VFS shuts down (Close or context cancel in
@@ -165,6 +167,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
 		listing:       listing.NewState(),
 		activeDebug:   observe.NewActiveStore(opts.Name),
+		faults:        faultinject.NewRegistry(0),
 		pathLocks:     newPathLockState(),
 		closeDone:     make(chan struct{}),
 	}

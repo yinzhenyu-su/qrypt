@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"github.com/yinzhenyu/qrypt/internal/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
@@ -170,9 +171,7 @@ func (c *Stores) DebugReadCacheForTest() DebugCacheSnapshot {
 // debugActiveSlots is the fixed capacity of the active-debug ring. Active
 // operations are short-lived (microseconds), so 128 concurrent ops is a
 // generous bound; when full, Begin returns 0 (tracking skipped).
-// --- migrated from debug_fault.go ---
-
-const debugUploadCancelDefaultTTL = 10 * time.Minute
+// --- fault injection (registry lives in internal/vfs/faultinject) ---
 
 type DebugUploadCancelInjector interface {
 	DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancelRequest) (DebugUploadCancelResult, error)
@@ -197,27 +196,16 @@ type DebugUploadCancelResult struct {
 	Matched string `json:"matched,omitempty"`
 }
 
-var debugUploadCancelID uint64
-
 func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancelRequest) (DebugUploadCancelResult, error) {
 	select {
 	case <-ctx.Done():
 		return DebugUploadCancelResult{}, ctx.Err()
 	default:
 	}
-	if req.Path == "" && req.OpID == "" {
-		return DebugUploadCancelResult{}, fmt.Errorf("vfs: debug upload cancel requires path or op_id")
-	}
 	if req.Phase == "" && req.AfterBytes <= 0 && req.AfterDelay <= 0 {
 		req.Phase = drive.UploadPhaseUploading
 	}
-	if req.TTL <= 0 {
-		req.TTL = debugUploadCancelDefaultTTL
-	}
-	now := time.Now()
-	id := fmt.Sprintf("upload-cancel-%d", atomic.AddUint64(&debugUploadCancelID, 1))
-	fault := &debugUploadCancelFault{
-		ID:         id,
+	id, err := v.faults.Inject(faultinject.InjectRequest{
 		Path:       cleanVirtual(req.Path),
 		OpID:       req.OpID,
 		Phase:      req.Phase,
@@ -225,10 +213,11 @@ func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancel
 		AfterDelay: req.AfterDelay,
 		Once:       true,
 		Reason:     req.Reason,
-		CreatedAt:  now,
-		ExpiresAt:  now.Add(req.TTL),
+		TTL:        req.TTL,
+	})
+	if err != nil {
+		return DebugUploadCancelResult{}, err
 	}
-	newVFSDebugUploadFaultRuntime(v).PutCancelFault(fault)
 	return DebugUploadCancelResult{ID: id, Armed: true}, nil
 }
 
@@ -238,8 +227,7 @@ func (v *VFS) DebugClearUploadCancel(ctx context.Context, id string) error {
 		return ctx.Err()
 	default:
 	}
-	newVFSDebugUploadFaultRuntime(v).ClearCancelFault(id)
-	return nil
+	return v.faults.Clear(id)
 }
 
 func (v *VFS) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault {
@@ -248,7 +236,7 @@ func (v *VFS) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFa
 		return nil
 	default:
 	}
-	return newVFSDebugUploadFaultRuntime(v).CancelFaults(time.Now())
+	return v.faults.Faults(time.Now())
 }
 
 func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancelRequest) (DebugUploadCancelResult, error) {
@@ -295,12 +283,12 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 	return out
 }
 
-func (v *VFS) matchUploadCancelFault(path, opID string) *debugUploadCancelFault {
-	return newVFSDebugUploadFaultRuntime(v).MatchCancelFault(time.Now(), path, opID)
+func (v *VFS) matchUploadCancelFault(path, opID string) *faultinject.Fault {
+	return v.faults.Match(time.Now(), path, opID)
 }
 
 func (v *VFS) markUploadCancelFaultFired(id string) {
-	newVFSDebugUploadFaultRuntime(v).MarkCancelFaultFired(id, time.Now())
+	v.faults.MarkFired(id, time.Now())
 }
 
 type debugUploadCancelProgress struct {
@@ -378,92 +366,6 @@ func (p *debugUploadCancelProgress) fire() {
 	logging.L.Warnf("[VFS] debug upload cancel fired op_id=%q path=%q fault=%q reason=%q", p.cancelOpID, p.cancelPath, p.fault.ID, p.fault.Reason)
 	p.v.markUploadCancelFaultFired(p.fault.ID)
 	p.cancel()
-}
-
-type vfsDebugUploadFaultRuntime struct {
-	v *VFS
-}
-
-func newVFSDebugUploadFaultRuntime(v *VFS) vfsDebugUploadFaultRuntime {
-	return vfsDebugUploadFaultRuntime{v: v}
-}
-
-func (r vfsDebugUploadFaultRuntime) PutCancelFault(fault *debugUploadCancelFault) {
-	if fault == nil || fault.ID == "" {
-		return
-	}
-	r.v.uploads.Faults().Mu.Lock()
-	defer r.v.uploads.Faults().Mu.Unlock()
-	if r.v.uploads.Faults().CancelFaults == nil {
-		r.v.uploads.Faults().CancelFaults = map[string]*debugUploadCancelFault{}
-	}
-	r.v.uploads.Faults().CancelFaults[fault.ID] = fault
-}
-
-func (r vfsDebugUploadFaultRuntime) ClearCancelFault(id string) {
-	r.v.uploads.Faults().Mu.Lock()
-	defer r.v.uploads.Faults().Mu.Unlock()
-	if id == "" {
-		r.v.uploads.Faults().CancelFaults = map[string]*debugUploadCancelFault{}
-		return
-	}
-	delete(r.v.uploads.Faults().CancelFaults, id)
-}
-
-func (r vfsDebugUploadFaultRuntime) CancelFaults(now time.Time) []DebugUploadCancelFault {
-	r.v.uploads.Faults().Mu.Lock()
-	defer r.v.uploads.Faults().Mu.Unlock()
-	r.pruneExpiredCancelFaultsLocked(now)
-	out := make([]DebugUploadCancelFault, 0, len(r.v.uploads.Faults().CancelFaults))
-	for _, fault := range r.v.uploads.Faults().CancelFaults {
-		out = append(out, fault.Snapshot())
-	}
-	return out
-}
-
-func (r vfsDebugUploadFaultRuntime) MatchCancelFault(now time.Time, path, opID string) *debugUploadCancelFault {
-	r.v.uploads.Faults().Mu.Lock()
-	defer r.v.uploads.Faults().Mu.Unlock()
-	r.pruneExpiredCancelFaultsLocked(now)
-	for _, fault := range r.v.uploads.Faults().CancelFaults {
-		if fault.Fired && fault.Once {
-			continue
-		}
-		if fault.Path != "" && fault.Path != path {
-			continue
-		}
-		if fault.OpID != "" && fault.OpID != opID {
-			continue
-		}
-		fault.MatchedPath = path
-		return fault
-	}
-	return nil
-}
-
-func (r vfsDebugUploadFaultRuntime) MarkCancelFaultFired(id string, now time.Time) {
-	if id == "" {
-		return
-	}
-	r.v.uploads.Faults().Mu.Lock()
-	defer r.v.uploads.Faults().Mu.Unlock()
-	fault, ok := r.v.uploads.Faults().CancelFaults[id]
-	if !ok {
-		return
-	}
-	fault.Fired = true
-	fault.FiredAt = now
-	if fault.Once {
-		delete(r.v.uploads.Faults().CancelFaults, id)
-	}
-}
-
-func (r vfsDebugUploadFaultRuntime) pruneExpiredCancelFaultsLocked(now time.Time) {
-	for id, fault := range r.v.uploads.Faults().CancelFaults {
-		if !fault.ExpiresAt.IsZero() && now.After(fault.ExpiresAt) {
-			delete(r.v.uploads.Faults().CancelFaults, id)
-		}
-	}
 }
 
 // --- migrated from debug_health.go ---

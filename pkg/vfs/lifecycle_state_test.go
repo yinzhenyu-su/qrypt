@@ -54,7 +54,7 @@ func TestDomainStateInitialized(t *testing.T) {
 		{"upload.queue", fs.uploads != nil && fs.uploads.Queue() != nil},
 		{"upload.schedule", fs.uploads != nil && fs.uploads.ScheduledDeadlines() != nil},
 		{"upload.debug", fs.uploads != nil && fs.uploads.DebugState() != nil},
-		{"upload.faults", fs.uploads != nil && fs.uploads.Faults() != nil},
+		{"upload.faults", fs.faults != nil},
 		{"upload.hashes", fs.uploads != nil && fs.hashes != nil},
 		{"delete.tasks", fs.deletes != nil && fs.deletes.tasks != nil},
 	} {

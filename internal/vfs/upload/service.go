@@ -48,14 +48,6 @@ func (d *DebugState) RemoveHistoryByID(id string) bool {
 	return false
 }
 
-// FaultState registers debug-injected upload cancel faults.
-type FaultState struct {
-	Mu           sync.Mutex
-	CancelFaults map[string]*CancelFault
-}
-
-func NewFaultState() *FaultState { return &FaultState{CancelFaults: map[string]*CancelFault{}} }
-
 type UploadSnapshot struct {
 	OpID           string              `json:"op_id"`
 	Mount          string              `json:"mount,omitempty"`
@@ -102,59 +94,6 @@ func (s *SnapshotState) RecordStageDuration(now time.Time) {
 	s.StageDurations[s.Upload.State] += now.Sub(s.StageStartedAt)
 	s.Upload.StageDurations[s.Upload.State] = s.StageDurations[s.Upload.State].String()
 	s.StageStartedAt = now
-}
-
-type DebugUploadCancelFault struct {
-	ID          string            `json:"id"`
-	Path        string            `json:"path,omitempty"`
-	OpID        string            `json:"op_id,omitempty"`
-	Phase       drive.UploadPhase `json:"phase,omitempty"`
-	AfterBytes  int64             `json:"after_bytes,omitempty"`
-	AfterDelay  string            `json:"after_delay,omitempty"`
-	Once        bool              `json:"once"`
-	Reason      string            `json:"reason,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	ExpiresAt   time.Time         `json:"expires_at,omitempty"`
-	MatchedPath string            `json:"matched_path,omitempty"`
-	Fired       bool              `json:"fired"`
-	FiredAt     time.Time         `json:"fired_at,omitempty"`
-}
-
-type CancelFault struct {
-	ID          string
-	Path        string
-	OpID        string
-	Phase       drive.UploadPhase
-	AfterBytes  int64
-	AfterDelay  time.Duration
-	Once        bool
-	Reason      string
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	MatchedPath string
-	Fired       bool
-	FiredAt     time.Time
-}
-
-func (f *CancelFault) Snapshot() DebugUploadCancelFault {
-	s := DebugUploadCancelFault{
-		ID:          f.ID,
-		Path:        f.Path,
-		OpID:        f.OpID,
-		Phase:       f.Phase,
-		AfterBytes:  f.AfterBytes,
-		Once:        f.Once,
-		Reason:      f.Reason,
-		CreatedAt:   f.CreatedAt,
-		ExpiresAt:   f.ExpiresAt,
-		MatchedPath: f.MatchedPath,
-		Fired:       f.Fired,
-		FiredAt:     f.FiredAt,
-	}
-	if f.AfterDelay > 0 {
-		s.AfterDelay = f.AfterDelay.String()
-	}
-	return s
 }
 
 // Admission limits concurrent uploads: one large at a time, or many small.
@@ -226,14 +165,14 @@ type ServiceOptions struct {
 // --- service ---
 
 // Service groups the upload-domain state: the persistent store, the pending
-// queue, the debounce scheduler, debug snapshots, fault injection, hash
-// tracking and admission.
+// queue, the debounce scheduler, debug snapshots, hash tracking and
+// admission. Fault injection lives in internal/vfs/faultinject; the
+// engine consumes it through the FaultController interface.
 type Service struct {
 	store    *PendingStore
 	queue    chan PendingUpload
 	schedule UploadScheduler
 	debug    *DebugState
-	faults   *FaultState
 	hashes   HashOps
 	admit    Admission
 	delay    time.Duration
@@ -258,7 +197,6 @@ func NewService(opts ServiceOptions) *Service {
 		queue:    make(chan PendingUpload, 128),
 		schedule: opts.Scheduler,
 		debug:    NewDebugState(),
-		faults:   NewFaultState(),
 		hashes:   opts.HashOps,
 		delay:    opts.UploadDelay,
 		workers:  opts.UploadWorkers,
@@ -342,27 +280,6 @@ func (s *Service) DebugActivePathByID(id string) (string, bool) {
 }
 
 func (s *Service) DebugState() *DebugState { return s.debug }
-func (s *Service) Faults() *FaultState     { return s.faults }
-
-// --- fault injection ---
-
-func (s *Service) FaultsInject(fault *CancelFault) {
-	s.faults.Mu.Lock()
-	defer s.faults.Mu.Unlock()
-	if s.faults.CancelFaults == nil {
-		s.faults.CancelFaults = map[string]*CancelFault{}
-	}
-	s.faults.CancelFaults[fault.ID] = fault
-}
-
-func (s *Service) FaultsRemove(id string) {
-	s.faults.Mu.Lock()
-	defer s.faults.Mu.Unlock()
-	if s.faults.CancelFaults == nil {
-		s.faults.CancelFaults = map[string]*CancelFault{}
-	}
-	delete(s.faults.CancelFaults, id)
-}
 
 // --- lifecycle ---
 
