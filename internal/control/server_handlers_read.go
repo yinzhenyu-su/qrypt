@@ -130,7 +130,7 @@ func readMemoryMounts(snapshot vfs.DebugSnapshot, q url.Values, since time.Time,
 			Mount:       mount.Identity.Name,
 			Driver:      mount.Identity.DriverName,
 			Runtime:     mount.Runtime,
-			Cache:       mount.ReadCacheState(),
+			Cache:       mount.Cache,
 			PhaseCounts: phaseCounts,
 			RecentReads: reads,
 		})

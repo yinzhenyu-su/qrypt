@@ -69,13 +69,13 @@ type encryptedMarker interface {
 }
 
 type MountSnapshot struct {
-	Identity    MountSnapshotIdentity    `json:"identity"`
-	Queues      MountSnapshotQueues      `json:"queues"`
-	Overlay     MountSnapshotOverlay     `json:"overlay"`
-	UploadState MountSnapshotUploads     `json:"upload_state"`
-	Cache       DebugCacheSnapshot       `json:"cache"`
-	Events      MountSnapshotEvents      `json:"events"`
-	Runtime     MountSnapshotRuntime     `json:"runtime"`
+	Identity    MountSnapshotIdentity `json:"identity"`
+	Queues      MountSnapshotQueues   `json:"queues"`
+	Overlay     MountSnapshotOverlay  `json:"overlay"`
+	UploadState MountSnapshotUploads  `json:"upload_state"`
+	Cache       DebugCacheSnapshot    `json:"cache"`
+	Events      MountSnapshotEvents   `json:"events"`
+	Runtime     MountSnapshotRuntime  `json:"runtime"`
 }
 
 // DebugCacheSnapshot aggregates the readcache snapshot with the upload
