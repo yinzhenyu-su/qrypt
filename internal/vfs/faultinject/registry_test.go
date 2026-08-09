@@ -281,3 +281,73 @@ func TestCompleteHandleTable(t *testing.T) {
 		}
 	})
 }
+
+// TestMatchDeterministicPriority: overlapping rules resolve by
+// specificity (path+op_id > op_id > path) and ties by newest first.
+func TestMatchDeterministicPriority(t *testing.T) {
+	reg := NewRegistry(0)
+	// Same path, three specificity levels.
+	if _, err := reg.Inject(InjectRequest{Path: "/f.txt", AfterBytes: 1, Once: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Inject(InjectRequest{OpID: "fid-1", AfterBytes: 1, Once: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Inject(InjectRequest{Path: "/f.txt", OpID: "fid-1", AfterBytes: 1, Once: false}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	// Both path and opID match: the combined rule must win.
+	match, ok := reg.Match(now, "/f.txt", "fid-1")
+	if !ok {
+		t.Fatal("match failed")
+	}
+	if match.Path != "/f.txt" || match.OpID != "fid-1" {
+		t.Fatalf("combined rule should win, got path=%q op_id=%q", match.Path, match.OpID)
+	}
+	// Only opID matches: the opID rule must win (more specific than path).
+	match, ok = reg.Match(now, "/other.txt", "fid-1")
+	if !ok {
+		t.Fatal("op-id match failed")
+	}
+	if match.OpID != "fid-1" || match.Path != "" {
+		t.Fatalf("op-id rule should win, got path=%q op_id=%q", match.Path, match.OpID)
+	}
+	// Only path matches: the path rule must win.
+	match, ok = reg.Match(now, "/f.txt", "fid-other")
+	if !ok {
+		t.Fatal("path match failed")
+	}
+	if match.Path != "/f.txt" || match.OpID != "" {
+		t.Fatalf("path rule should win, got path=%q op_id=%q", match.Path, match.OpID)
+	}
+}
+
+// TestMatchDeterministicTieBreaksNewestFirst: two same-specificity rules
+// - the newest-injected one wins, regardless of map iteration order.
+func TestMatchDeterministicTieBreaksNewestFirst(t *testing.T) {
+	reg := NewRegistry(0)
+	olderID, err := reg.Inject(InjectRequest{Path: "/f.txt", AfterBytes: 1, Once: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ensure distinct CreatedAt timestamps for the tie-break.
+	time.Sleep(2 * time.Millisecond)
+	newerID, err := reg.Inject(InjectRequest{Path: "/f.txt", AfterBytes: 1, Once: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ { // repeatedly, to defeat accidental map order
+		match, ok := reg.Match(time.Now(), "/f.txt", "")
+		if !ok {
+			t.Fatalf("iteration %d: match failed", i)
+		}
+		if match.ID != newerID {
+			t.Fatalf("iteration %d: got %s, want newest %s", i, match.ID, olderID)
+		}
+		if match.ID == olderID {
+			t.Fatalf("older rule won")
+		}
+	}
+	_ = olderID
+}

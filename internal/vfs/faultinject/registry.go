@@ -199,16 +199,32 @@ func (r *Registry) Faults(now time.Time) []DebugUploadCancelFault {
 	return out
 }
 
-// Match returns the first rule matching BOTH non-empty path and op_id
-// constraints, pruning expired rules and skipping fired once-rules. The
-// result is an immutable value copy. A once-rule is claimed (not
-// consumed): exactly one concurrent caller wins the claim, and the rule
-// stays claimed until the winner calls Fire (permanent) or Release
-// (back to armed).
+// matchScore ranks a rule's specificity: path+op_id beats op_id beats
+// path alone. Deterministic, independent of map iteration order.
+func matchScore(fault *Fault) int {
+	switch {
+	case fault.Path != "" && fault.OpID != "":
+		return 3
+	case fault.OpID != "":
+		return 2
+	default:
+		return 1 // path only
+	}
+}
+
+// Match returns the rule matching BOTH non-empty path and op_id
+// constraints, pruning expired rules and skipping fired once-rules. When
+// several rules match, the most specific wins (path+op_id > op_id >
+// path); ties break by newest CreatedAt. The result is an immutable
+// value copy. A once-rule is claimed (not consumed): exactly one
+// concurrent caller wins the claim, and the rule stays claimed until the
+// winner calls Complete (permanent) or Release (back to armed).
 func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pruneExpiredLocked(now)
+	var best *Fault
+	bestScore := 0
 	for _, fault := range r.faults {
 		if fault.Fired && fault.Once {
 			continue
@@ -222,30 +238,37 @@ func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 		if fault.OpID != "" && fault.OpID != opID {
 			continue
 		}
-		result := MatchResult{
-			ID:          fault.ID,
-			Path:        fault.Path,
-			OpID:        fault.OpID,
-			Phase:       fault.Phase,
-			AfterBytes:  fault.AfterBytes,
-			AfterDelay:  fault.AfterDelay,
-			Once:        fault.Once,
-			Reason:      fault.Reason,
-			MatchedPath: path,
-			CreatedAt:   fault.CreatedAt,
-			ExpiresAt:   fault.ExpiresAt,
+		score := matchScore(fault)
+		if best == nil || score > bestScore || (score == bestScore && fault.CreatedAt.After(best.CreatedAt)) {
+			best = fault
+			bestScore = score
 		}
-		result.Handle = MatchHandle{FaultID: fault.ID, Once: fault.Once}
-		if fault.Once {
-			// Claim the rule: while claimed it cannot be matched again.
-			// claimGen never resets, so tokens are never reused.
-			fault.claimed = true
-			fault.claimGen++
-			result.Handle.Token = fault.claimGen
-		}
-		return result, true
 	}
-	return MatchResult{}, false
+	if best == nil {
+		return MatchResult{}, false
+	}
+	result := MatchResult{
+		ID:          best.ID,
+		Path:        best.Path,
+		OpID:        best.OpID,
+		Phase:       best.Phase,
+		AfterBytes:  best.AfterBytes,
+		AfterDelay:  best.AfterDelay,
+		Once:        best.Once,
+		Reason:      best.Reason,
+		MatchedPath: path,
+		CreatedAt:   best.CreatedAt,
+		ExpiresAt:   best.ExpiresAt,
+	}
+	result.Handle = MatchHandle{FaultID: best.ID, Once: best.Once}
+	if best.Once {
+		// Claim the rule: while claimed it cannot be matched again.
+		// claimGen never resets, so tokens are never reused.
+		best.claimed = true
+		best.claimGen++
+		result.Handle.Token = best.claimGen
+	}
+	return result, true
 }
 
 // Complete finishes a match: for once-rules it permanently consumes the
