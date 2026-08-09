@@ -15,6 +15,7 @@ type EngineDeps struct {
 	Observer Observer
 	Pending  Store
 	Runtime  Runtime
+	View     UploadView
 	Snapshot Snapshotter
 	Faults   FaultController
 }
@@ -26,6 +27,7 @@ type Engine struct {
 	observer Observer
 	pending  Store
 	runtime  Runtime
+	view     UploadView
 	snapshot Snapshotter
 	faults   FaultController
 }
@@ -36,6 +38,7 @@ func NewEngine(deps EngineDeps) *Engine {
 		observer: deps.Observer,
 		pending:  deps.Pending,
 		runtime:  deps.Runtime,
+		view:     deps.View,
 		snapshot: deps.Snapshot,
 		faults:   deps.Faults,
 	}

@@ -67,6 +67,13 @@ type Runtime interface {
 	RetryDelay(retryCount int) time.Duration
 	Requeue(p PendingUpload)
 	RequeueIfFrozen(p PendingUpload)
+}
+
+// UploadView is the view surface a completed upload commits to: it seeds
+// the read cache from the staging file (when one exists) and folds the
+// uploaded entry into the effective view. Separate from Runtime so the
+// view commit is an explicit narrow dependency.
+type UploadView interface {
 	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
 }
 

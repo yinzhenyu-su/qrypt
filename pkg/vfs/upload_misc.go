@@ -22,6 +22,7 @@ func newUploadEngine(v *VFS) *upload.Engine {
 		Observer: newVFSUploadObserver(v),
 		Pending:  upload.NewStoreAdapter(v.uploads.Store()),
 		Runtime:  newVFSUploadRuntime(v),
+		View:     newVFSViewCommitter(v),
 		Snapshot: newVFSUploadSnapshotter(v),
 		Faults:   newVFSUploadFaultController(v),
 	})
@@ -104,10 +105,6 @@ func (r vfsUploadRuntime) ApplyUploadModTime(pending PendingUpload, entry drive.
 		r.v.setLocalModTime(pending.Path, modTime)
 	}
 	return entry
-}
-
-func (r vfsUploadRuntime) CommitUploadedEntry(path string, entry drive.Entry, stagingPath string) {
-	newVFSViewCommitter(r.v).CommitUploadedEntry(path, entry, stagingPath)
 }
 
 type vfsUploadObserver struct {
