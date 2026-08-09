@@ -162,11 +162,14 @@ func (r vfsRemoveCleanup) RemovePendingFile(path string) (bool, error) {
 	if _, err := r.v.pendingUpload(path); err != nil {
 		return false, nil
 	}
-	r.v.cancelUpload(path)
-	r.v.clearLocalModTime(path)
+	// Durable store commit FIRST; timer/hash/modtime cleanup runs only
+	// after it succeeds, so a failed commit never leaves the path half
+	// cleaned.
 	if err := r.v.uploads.Store().RemoveUpload(path); err != nil {
 		return true, err
 	}
+	r.v.cancelUpload(path)
+	r.v.clearLocalModTime(path)
 	r.v.hashes.removePath(path)
 	return true, nil
 }
@@ -446,10 +449,13 @@ func (r vfsDirectoryCopyRuntime) ListChildren(ctx context.Context, parentID stri
 }
 
 func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
-	r.v.uploads.CancelChildUploads(path)
+	// Durable store commit first; timer/hash cleanup runs only after it
+	// succeeds, so a failed commit never leaves the children's timers
+	// cancelled while their pendings are still visible.
 	if err := r.v.uploads.Store().RemoveUploadsUnder(path); err != nil {
 		return err
 	}
+	r.v.uploads.CancelChildUploads(path)
 	r.v.hashes.removeUnder(path)
 	return nil
 }

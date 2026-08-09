@@ -113,8 +113,9 @@ type PendingStore struct {
 }
 
 type JournalEntry struct {
-	Op    string   `json:"op"`
-	Paths []string `json:"paths,omitempty"`
+	Op      string   `json:"op"`
+	OldPath string   `json:"old_path,omitempty"`
+	Paths   []string `json:"paths,omitempty"`
 	PendingUpload
 }
 
@@ -317,13 +318,18 @@ func (c *PendingStore) SaveUploadExact(p PendingUpload) error {
 func (c *PendingStore) saveUpload(p PendingUpload) error {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
+	// Journal commit FIRST: memory is only touched after the update is
+	// durable, so an append failure leaves no record behind.
+	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: p}); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.pending[p.Path] = p
 	if p.FID != "" {
 		c.idIndex[p.FID] = p.Path
 	}
 	c.mu.Unlock()
-	return c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: p})
+	return nil
 }
 func (c *PendingStore) UpdateUploadTransient(p PendingUpload) {
 	p.UpdatedAt = timeutil.Now().UnixNano()
@@ -338,71 +344,85 @@ func (c *PendingStore) RecordUploadFailure(path string, err error, retryDelay ti
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
 	now := timeutil.Now()
-	c.mu.Lock()
+	c.mu.RLock()
 	pending, ok := c.pending[path]
-	if ok {
-		pending.RetryCount++
-		if err != nil {
-			pending.LastError = err.Error()
-		}
-		pending.LastAttemptAt = now.UnixNano()
-		if retryDelay > 0 {
-			pending.NextAttemptAt = now.Add(retryDelay).UnixNano()
-		} else {
-			pending.NextAttemptAt = 0
-		}
-		pending.UpdatedAt = now.UnixNano()
-		c.pending[path] = pending
-	}
-	c.mu.Unlock()
 	if !ok {
+		c.mu.RUnlock()
 		return PendingUpload{}, false, nil
 	}
-	return pending, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: pending})
+	next := pending
+	next.RetryCount++
+	if err != nil {
+		next.LastError = err.Error()
+	}
+	next.LastAttemptAt = now.UnixNano()
+	if retryDelay > 0 {
+		next.NextAttemptAt = now.Add(retryDelay).UnixNano()
+	} else {
+		next.NextAttemptAt = 0
+	}
+	next.UpdatedAt = now.UnixNano()
+	c.mu.RUnlock()
+	// Journal commit FIRST: on failure the old state stays in memory.
+	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
+		return pending, true, err
+	}
+	c.mu.Lock()
+	c.pending[path] = next
+	c.mu.Unlock()
+	return next, true, nil
 }
 func (c *PendingStore) RecordUploadReplacementIfUnchanged(p PendingUpload, upload UploadReplacement) (PendingUpload, bool, error) {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
 	now := timeutil.Now()
-	c.mu.Lock()
+	c.mu.RLock()
 	pending, ok := c.pending[p.Path]
-	if ok && sameUploadRecord(pending, p) {
-		pending.ReplaceUpload = &upload
-		pending.LastError = ""
-		pending.NextAttemptAt = 0
-		pending.UpdatedAt = now.UnixNano()
-		c.pending[p.Path] = pending
-	} else {
-		ok = false
-	}
-	c.mu.Unlock()
-	if !ok {
+	if !ok || !sameUploadRecord(pending, p) {
+		c.mu.RUnlock()
 		return PendingUpload{}, false, nil
 	}
-	return pending, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: pending})
+	next := pending
+	next.ReplaceUpload = &upload
+	next.LastError = ""
+	next.NextAttemptAt = 0
+	next.UpdatedAt = now.UnixNano()
+	c.mu.RUnlock()
+	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
+		return pending, true, err
+	}
+	c.mu.Lock()
+	c.pending[p.Path] = next
+	c.mu.Unlock()
+	return next, true, nil
 }
 func (c *PendingStore) RecordUploadPermanentFailure(path string, err error) (PendingUpload, bool, error) {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
 	now := timeutil.Now()
-	c.mu.Lock()
+	c.mu.RLock()
 	pending, ok := c.pending[path]
-	if ok {
-		pending.RetryCount++
-		if err != nil {
-			pending.LastError = err.Error()
-		}
-		pending.PermanentFail = true
-		pending.LastAttemptAt = now.UnixNano()
-		pending.NextAttemptAt = 0
-		pending.UpdatedAt = now.UnixNano()
-		c.pending[path] = pending
-	}
-	c.mu.Unlock()
 	if !ok {
+		c.mu.RUnlock()
 		return PendingUpload{}, false, nil
 	}
-	return pending, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: pending})
+	next := pending
+	next.RetryCount++
+	if err != nil {
+		next.LastError = err.Error()
+	}
+	next.PermanentFail = true
+	next.LastAttemptAt = now.UnixNano()
+	next.NextAttemptAt = 0
+	next.UpdatedAt = now.UnixNano()
+	c.mu.RUnlock()
+	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
+		return pending, true, err
+	}
+	c.mu.Lock()
+	c.pending[path] = next
+	c.mu.Unlock()
+	return next, true, nil
 }
 
 // RecordUploadFailureIfUnchanged records a failure only if the pending
@@ -412,29 +432,32 @@ func (c *PendingStore) RecordUploadFailureIfUnchanged(p PendingUpload, err error
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
 	now := timeutil.Now()
-	c.mu.Lock()
+	c.mu.RLock()
 	current, ok := c.pending[p.Path]
-	if ok && sameUploadRecord(current, p) {
-		current.RetryCount++
-		if err != nil {
-			current.LastError = err.Error()
-		}
-		current.LastAttemptAt = now.UnixNano()
-		if retryDelay > 0 {
-			current.NextAttemptAt = now.Add(retryDelay).UnixNano()
-		} else {
-			current.NextAttemptAt = 0
-		}
-		current.UpdatedAt = now.UnixNano()
-		c.pending[p.Path] = current
-	} else {
-		ok = false
-	}
-	c.mu.Unlock()
-	if !ok {
+	if !ok || !sameUploadRecord(current, p) {
+		c.mu.RUnlock()
 		return PendingUpload{}, false, nil
 	}
-	return current, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: current})
+	next := current
+	next.RetryCount++
+	if err != nil {
+		next.LastError = err.Error()
+	}
+	next.LastAttemptAt = now.UnixNano()
+	if retryDelay > 0 {
+		next.NextAttemptAt = now.Add(retryDelay).UnixNano()
+	} else {
+		next.NextAttemptAt = 0
+	}
+	next.UpdatedAt = now.UnixNano()
+	c.mu.RUnlock()
+	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
+		return current, true, err
+	}
+	c.mu.Lock()
+	c.pending[p.Path] = next
+	c.mu.Unlock()
+	return next, true, nil
 }
 
 // RecordUploadPermanentFailureIfUnchanged records a permanent failure only
@@ -443,26 +466,29 @@ func (c *PendingStore) RecordUploadPermanentFailureIfUnchanged(p PendingUpload, 
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
 	now := timeutil.Now()
-	c.mu.Lock()
+	c.mu.RLock()
 	current, ok := c.pending[p.Path]
-	if ok && sameUploadRecord(current, p) {
-		current.RetryCount++
-		if err != nil {
-			current.LastError = err.Error()
-		}
-		current.PermanentFail = true
-		current.LastAttemptAt = now.UnixNano()
-		current.NextAttemptAt = 0
-		current.UpdatedAt = now.UnixNano()
-		c.pending[p.Path] = current
-	} else {
-		ok = false
-	}
-	c.mu.Unlock()
-	if !ok {
+	if !ok || !sameUploadRecord(current, p) {
+		c.mu.RUnlock()
 		return PendingUpload{}, false, nil
 	}
-	return current, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: current})
+	next := current
+	next.RetryCount++
+	if err != nil {
+		next.LastError = err.Error()
+	}
+	next.PermanentFail = true
+	next.LastAttemptAt = now.UnixNano()
+	next.NextAttemptAt = 0
+	next.UpdatedAt = now.UnixNano()
+	c.mu.RUnlock()
+	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
+		return current, true, err
+	}
+	c.mu.Lock()
+	c.pending[p.Path] = next
+	c.mu.Unlock()
+	return next, true, nil
 }
 func (c *PendingStore) RemoveUpload(path string) error {
 	c.txMu.Lock()
@@ -676,6 +702,13 @@ func (c *PendingStore) PendingByID(id string) (PendingUpload, bool) {
 func (c *PendingStore) RenameUpload(oldPath string, next PendingUpload) error {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
+	// Journal commit FIRST, as ONE transactional "rename" entry: replay
+	// deletes the old path and sets the new path atomically, so a
+	// crash between the old clean and the new dirty intents can never
+	// resurrect the old name.
+	if err := c.appendJournal(JournalEntry{Op: "rename", OldPath: oldPath, PendingUpload: next}); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	if old, ok := c.pending[oldPath]; ok && old.FID != "" {
 		delete(c.idIndex, old.FID)
@@ -686,15 +719,7 @@ func (c *PendingStore) RenameUpload(oldPath string, next PendingUpload) error {
 		c.idIndex[next.FID] = next.Path
 	}
 	c.mu.Unlock()
-	c.journalMu.Lock()
-	defer c.journalMu.Unlock()
-	if err := c.appendJournalLocked(JournalEntry{Op: "clean", PendingUpload: PendingUpload{Path: oldPath}}); err != nil {
-		return err
-	}
-	if err := c.appendJournalLocked(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
-		return err
-	}
-	return c.compactJournalLocked()
+	return nil
 }
 func sameUploadRecord(a, b PendingUpload) bool {
 	return a.Path == b.Path &&
@@ -803,6 +828,9 @@ func (c *PendingStore) loadJournal() (int, error) {
 			for _, p := range entry.Paths {
 				delete(c.pending, p)
 			}
+		case "rename":
+			delete(c.pending, entry.OldPath)
+			c.pending[entry.Path] = entry.PendingUpload
 		}
 	}
 	// Rebuild fid->path index after journal replay.

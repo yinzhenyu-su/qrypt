@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // newPendingStoreFixture builds a store with a few pending uploads and
@@ -233,4 +235,185 @@ func TestConcurrentRemoveUploadsUnderAndSave(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// ---- write-ahead fault/replay consistency (journal commit -> memory apply) ----
+
+// TestSaveDirtyAppendFailureLeavesNoRecord: a failed dirty append must not
+// touch memory, and a reopened store must see nothing either.
+func TestSaveDirtyAppendFailureLeavesNoRecord(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.journalFail = func() error { return errors.New("append boom") }
+	err := store.SaveUploadExact(PendingUpload{Path: "/a.txt", FID: "fid-a", Name: "a.txt", Size: 1, UpdatedAt: 1234567890})
+	if err == nil {
+		t.Fatal("want append error")
+	}
+	if store.hasPending("/a.txt") {
+		t.Error("memory got the record despite append failure")
+	}
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.hasPending("/a.txt") {
+		t.Error("replay resurrected a record whose append failed")
+	}
+}
+
+// TestRecordFailureAppendFailureKeepsOldState: a failed failure-state append
+// must leave the old pending record (and its old retry count) intact.
+func TestRecordFailureAppendFailureKeepsOldState(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.addPending(t, "/a.txt", "fid-a", "a.staging")
+	store.journalFail = func() error { return errors.New("append boom") }
+	pending, ok, err := store.RecordUploadFailure("/a.txt", errors.New("boom"), time.Second)
+	if err == nil {
+		t.Fatal("want append error")
+	}
+	if !ok {
+		t.Fatal("pending record should still exist")
+	}
+	if pending.RetryCount != 0 || pending.LastError != "" {
+		t.Errorf("old state clobbered: retry=%d err=%q", pending.RetryCount, pending.LastError)
+	}
+	current, ok := store.UploadByPath("/a.txt")
+	if !ok || current.RetryCount != 0 || current.LastError != "" {
+		t.Errorf("memory state clobbered: %+v", current)
+	}
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, ok := reopened.UploadByPath("/a.txt"); !ok || current.RetryCount != 0 {
+		t.Errorf("replay clobbered state: %+v", current)
+	}
+}
+
+// TestRecordFailureIfUnchangedAppendFailureKeepsOldState: same invariant for
+// the IfUnchanged variant.
+func TestRecordFailureIfUnchangedAppendFailureKeepsOldState(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.addPending(t, "/a.txt", "fid-a", "a.staging")
+	pending, _ := store.UploadByPath("/a.txt")
+	store.journalFail = func() error { return errors.New("append boom") }
+	_, ok, err := store.RecordUploadFailureIfUnchanged(pending, errors.New("boom"), time.Second)
+	if err == nil {
+		t.Fatal("want append error")
+	}
+	if !ok {
+		t.Fatal("pending record should still exist")
+	}
+	current, ok := store.UploadByPath("/a.txt")
+	if !ok || current.RetryCount != 0 || current.LastError != "" {
+		t.Errorf("memory state clobbered: %+v", current)
+	}
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, ok := reopened.UploadByPath("/a.txt"); !ok || current.RetryCount != 0 {
+		t.Errorf("replay clobbered state: %+v", current)
+	}
+}
+
+// TestRenameAppendFailureKeepsOld: a failed rename journal append must leave
+// the old path present and the new path absent, in memory and on replay.
+func TestRenameAppendFailureKeepsOld(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.addPending(t, "/old.txt", "fid-old", "old.staging")
+	store.journalFail = func() error { return errors.New("append boom") }
+	err := store.RenameUpload("/old.txt", PendingUpload{Path: "/new.txt", FID: "fid-new", Name: "new.txt", Size: 1, UpdatedAt: 1234567890})
+	if err == nil {
+		t.Fatal("want append error")
+	}
+	if !store.hasPending("/old.txt") {
+		t.Error("old path lost on rename append failure")
+	}
+	if store.hasPending("/new.txt") {
+		t.Error("new path appeared on rename append failure")
+	}
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.hasPending("/old.txt") {
+		t.Error("replay lost old path after rename append failure")
+	}
+	if reopened.hasPending("/new.txt") {
+		t.Error("replay showed new path after rename append failure")
+	}
+}
+
+// TestRenameDurableAcrossReplay: a successful rename must be identical in the
+// current store and a reopened store.
+func TestRenameDurableAcrossReplay(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.addPending(t, "/old.txt", "fid-old", "old.staging")
+	next := PendingUpload{Path: "/new.txt", FID: "fid-new", Name: "new.txt", Size: 1, UpdatedAt: 1234567890}
+	if err := store.RenameUpload("/old.txt", next); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reopened.UploadByPath("/new.txt"); !ok || got.FID != "fid-new" {
+		t.Errorf("replay rename result: %+v ok=%v", got, ok)
+	}
+	if reopened.hasPending("/old.txt") {
+		t.Error("replay resurrected old path after rename")
+	}
+	// journal must contain exactly one rename entry (no clean+dirty pair)
+	data, err := os.ReadFile(reopened.journalPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "\"rename\""); got != 1 {
+		t.Errorf("rename journal entries = %d, want 1", got)
+	}
+}
+
+// TestConcurrentSaveRemoveMatchesReplay: after concurrent Save/Remove races
+// settle, the live PendingUploads must equal the reopened store's set - not
+// just be race-free.
+func TestConcurrentSaveRemoveMatchesReplay(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = store.SaveUploadExact(PendingUpload{
+				Path: "/same.txt", FID: "fid-x", Name: "same.txt", Size: 1, UpdatedAt: 1234567890,
+			})
+		}
+		close(done)
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_ = store.RemoveUpload("/same.txt")
+		}
+	}()
+	wg.Wait()
+	reopened, err := NewPendingStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := store.PendingUploads()
+	afterReplay := reopened.PendingUploads()
+	if len(live) != len(afterReplay) {
+		t.Fatalf("live %d pending vs replay %d", len(live), len(afterReplay))
+	}
+	for _, p := range live {
+		if r, ok := reopened.UploadByPath(p.Path); !ok || !sameUploadRecord(p, r) {
+			t.Errorf("path %s: live %+v vs replay %+v", p.Path, p, r)
+		}
+	}
 }
