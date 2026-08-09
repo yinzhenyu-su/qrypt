@@ -9,6 +9,7 @@ import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
+	"github.com/yinzhenyu/qrypt/internal/vfs/observe"
 	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"os"
@@ -63,7 +64,7 @@ type VFS struct {
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
-	activeDebug *activeDebugState
+	activeDebug *observe.ActiveStore
 	pathLocks   *pathLockState
 
 	// done is closed when the VFS shuts down (Close or context cancel in
@@ -163,7 +164,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
 		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
 		listing:       listing.NewState(),
-		activeDebug:   newActiveDebugState(),
+		activeDebug:   observe.NewActiveStore(opts.Name),
 		pathLocks:     newPathLockState(),
 		closeDone:     make(chan struct{}),
 	}
