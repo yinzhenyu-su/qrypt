@@ -35,7 +35,9 @@ func (e *PartialError) Error() string {
 	return fmt.Sprintf("vfs: rename/move partially applied (move failed: %v; rollback failed: %v)", e.MoveErr, e.RollbackErr)
 }
 
-func (e *PartialError) Unwrap() error { return e.MoveErr }
+func (e *PartialError) Unwrap() []error {
+	return []error{e.MoveErr, e.RollbackErr}
+}
 
 // RemoteRenamer performs a remote rename/move as one transactional
 // operation: rename first (if the name changes), then move (if the parent

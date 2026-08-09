@@ -2,7 +2,6 @@ package vfs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/vfs/mutation"
@@ -172,55 +171,75 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
 	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v), newVFSViewCommitter(v))
 }
 
+// renameWithDeps drives the rename through the mutation coordinator; the
+// VFS shell keeps the capability gate and health recording, and builds the
+// adapters.
 func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutationBackend, runtime mutationRuntime, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "rename"); err != nil {
 		return err
 	}
-	oldPath = cleanVirtual(oldPath)
-	newPath = cleanVirtual(newPath)
-	if oldPath == "/" || newPath == "/" {
-		return fmt.Errorf("vfs: cannot rename root")
-	}
+	coordinator := mutation.NewCoordinator(
+		newVFSRenameResolver(v),
+		newVFSRenamePending(v),
+		newVFSRenameView(committer, runtime),
+		mutation.NewRemoteRenamer(backend),
+	)
+	return coordinator.Rename(ctx, oldPath, newPath)
+}
 
-	if pending, err := v.pendingUpload(oldPath); err == nil {
-		unlockOld := v.lockPath(oldPath)
-		defer unlockOld()
-		parent, name, err := v.parent(ctx, newPath)
-		if err != nil {
-			return err
-		}
-		pending.Path = newPath
-		pending.ParentID = parent.ID
-		pending.Name = name
-		if err := runtime.RenamePendingUpload(oldPath, newPath, pending); err != nil {
-			return err
-		}
-		return nil
-	}
+// vfsRenameResolver adapts VFS resolution to mutation.Resolver.
+type vfsRenameResolver struct{ v *VFS }
 
-	entry, err := v.resolve(ctx, oldPath)
+func newVFSRenameResolver(v *VFS) vfsRenameResolver { return vfsRenameResolver{v: v} }
+
+func (r vfsRenameResolver) Resolve(ctx context.Context, path string) (drive.Entry, error) {
+	return r.v.resolve(ctx, path)
+}
+
+func (r vfsRenameResolver) Parent(ctx context.Context, path string) (drive.Entry, string, error) {
+	return r.v.parent(ctx, path)
+}
+
+// vfsRenamePending adapts the pending-upload rename to mutation.PendingRenamer.
+type vfsRenamePending struct{ v *VFS }
+
+func newVFSRenamePending(v *VFS) vfsRenamePending { return vfsRenamePending{v: v} }
+
+func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath string, parent drive.Entry, name string) (bool, error) {
+	pending, err := r.v.pendingUpload(oldPath)
 	if err != nil {
-		return err
+		// No pending upload: not our path, let the remote rename run.
+		return false, nil
 	}
-	runtime.InvalidateReadCache(entry)
-	dstParent, newName, err := v.parent(ctx, newPath)
-	if err != nil {
-		return err
+	unlockOld := r.v.lockPath(oldPath)
+	defer unlockOld()
+	pending.Path = newPath
+	pending.ParentID = parent.ID
+	pending.Name = name
+	if err := newVFSMutationRuntime(r.v).RenamePendingUpload(oldPath, newPath, pending); err != nil {
+		return true, err
 	}
-	renamed, err := mutation.NewRemoteRenamer(backend).RenameMove(ctx, entry, dstParent.ID, newName)
-	if err != nil {
-		var partial *mutation.PartialError
-		if errors.As(err, &partial) {
-			// The remote is renamed-but-unmoved: commit that intermediate
-			// state (old parent + new name, full entry metadata) so local
-			// and remote stay consistent even though the operation failed.
-			committer.CommitRemoteRename(oldPath, joinVirtual(filepath.Dir(oldPath), newName), renamed)
-		}
-		return err
-	}
-	committer.CommitRemoteRename(oldPath, newPath, renamed)
-	return nil
+	return true, nil
+}
+
+// vfsRenameView adapts the rename view commit; read-cache invalidation
+// stays on the rename-time runtime, the view commit on the committer.
+type vfsRenameView struct {
+	committer viewCommitter
+	runtime   mutationRuntime
+}
+
+func newVFSRenameView(committer viewCommitter, runtime mutationRuntime) vfsRenameView {
+	return vfsRenameView{committer: committer, runtime: runtime}
+}
+
+func (r vfsRenameView) InvalidateReadCache(entry drive.Entry) {
+	r.runtime.InvalidateReadCache(entry)
+}
+
+func (r vfsRenameView) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) {
+	r.committer.CommitRemoteRename(oldPath, newPath, entry)
 }
 
 type mutationBackend interface {

@@ -138,20 +138,18 @@ func TestRenameMovePartialErrorCarriesEntry(t *testing.T) {
 // TestRenameMoveRollbackUsesLiveContext: the move cancels the caller's
 // context; the rollback must still receive a live (detached) context.
 func TestRenameMoveRollbackUsesLiveContext(t *testing.T) {
-	remote := &stubRemote{moveErr: context.Canceled}
 	ctx, cancel := context.WithCancel(context.Background())
-	remote = &stubRemote{
-		moveErr: context.Canceled,
-	}
-	r := NewRemoteRenamer(remote)
-	// cancel inside move: simulate by wrapping.
-	wrapped := &cancelMoveRemote{inner: remote, cancel: cancel}
-	r = NewRemoteRenamer(wrapped)
+	inner := &stubRemote{}
+	wrapped := &cancelMoveRemote{inner: inner, cancel: cancel}
+	r := NewRemoteRenamer(wrapped)
 	if _, err := r.RenameMove(ctx, newEntry(), "parent-b", "b.txt"); err == nil {
 		t.Fatal("want move error")
 	}
 	if wrapped.rbCtxErr != nil {
 		t.Fatalf("rollback received cancelled context (%v); WithoutCancel broken", wrapped.rbCtxErr)
+	}
+	if inner.renames != 2 {
+		t.Fatalf("rename calls = %d, want 2 (forward + rollback)", inner.renames)
 	}
 }
 
@@ -164,11 +162,13 @@ type cancelMoveRemote struct {
 }
 
 func (c *cancelMoveRemote) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	c.inner.renames++
-	if c.inner.renames > 1 {
+	if c.inner.renames > 0 {
+		// Second call (the rollback): record whether the detached context
+		// is still live. Only this layer counts.
 		c.rbCtxErr = ctx.Err()
 	}
-	return c.inner.Rename(ctx, entry, newName)
+	c.inner.renames++
+	return nil
 }
 
 func (c *cancelMoveRemote) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
