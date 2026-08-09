@@ -32,15 +32,15 @@ func TestRegistryOwnsCancelFaultState(t *testing.T) {
 	if !ok || match.ID != "active" || match.MatchedPath != "/file.txt" {
 		t.Fatalf("match = %+v ok=%v, want active", match, ok)
 	}
-	if match.ClaimToken == 0 {
-		t.Fatal("once match must carry a claim token")
+	if match.Claim.FaultID == "" || match.Claim.Token == 0 {
+		t.Fatal("once match must carry a claim", match.Claim)
 	}
 	// While claimed, the same rule cannot be matched again.
 	if _, ok := reg.Match(now, "/file.txt", ""); ok {
 		t.Fatal("once fault still matched while claimed")
 	}
 	// Firing consumes the rule permanently.
-	reg.Fire(match.ClaimToken)
+	reg.Complete(match.ID, match.Claim, now)
 	if _, ok := reg.Match(now, "/file.txt", ""); ok {
 		t.Fatal("fired once fault still matched")
 	}
@@ -78,7 +78,7 @@ func TestConcurrentOnceMatchClaimsExactlyOnce(t *testing.T) {
 		t.Fatalf("concurrent once matches = %d, want exactly 1", count)
 	}
 	// The winner can release the claim so a later upload can retry.
-	reg.Release(claimed.ClaimToken)
+	reg.Release(claimed.Claim)
 	if _, ok := reg.Match(time.Now(), "/file.txt", ""); !ok {
 		t.Fatal("released once fault should be matchable again")
 	}
@@ -95,12 +95,12 @@ func TestOnceClaimReleaseReclaims(t *testing.T) {
 	if !ok {
 		t.Fatal("first match failed")
 	}
-	reg.Release(first.ClaimToken)
+	reg.Release(first.Claim)
 	second, ok := reg.Match(time.Now(), "/file.txt", "")
-	if !ok || second.ClaimToken == 0 {
+	if !ok || second.Claim.FaultID == "" {
 		t.Fatal("released rule not matchable again")
 	}
-	reg.Fire(second.ClaimToken)
+	reg.Complete(second.ID, second.Claim, time.Now())
 	if _, ok := reg.Match(time.Now(), "/file.txt", ""); ok {
 		t.Fatal("fired rule still matchable")
 	}
@@ -117,17 +117,17 @@ func TestOnceClaimStaleReleaseDoesNotAffectNewClaim(t *testing.T) {
 	if !ok {
 		t.Fatal("first match failed")
 	}
-	reg.Release(first.ClaimToken) // upload A ends without firing
+	reg.Release(first.Claim) // upload A ends without firing
 	second, ok := reg.Match(time.Now(), "/file.txt", "")
 	if !ok {
 		t.Fatal("second match failed")
 	}
-	// Upload A's cleanup runs late with its old token: must NOT release B.
-	reg.Release(first.ClaimToken)
+	// Upload A's cleanup runs late with its old claim: must NOT release B.
+	reg.Release(first.Claim)
 	if _, ok := reg.Match(time.Now(), "/file.txt", ""); ok {
 		t.Fatal("stale release un-claimed upload B's claim")
 	}
-	reg.Fire(second.ClaimToken)
+	reg.Complete(second.ID, second.Claim, time.Now())
 }
 
 // TestRepeatedFaultMatchesMultipleTimes: a non-once fault can be matched
@@ -142,16 +142,78 @@ func TestRepeatedFaultMatchesMultipleTimes(t *testing.T) {
 		if !ok {
 			t.Fatalf("match %d failed", i)
 		}
-		if match.ClaimToken != 0 {
-			t.Fatalf("non-once match must carry no claim token, got %d", match.ClaimToken)
+		if match.Claim.FaultID != "" || match.Claim.Token != 0 {
+			t.Fatalf("non-once match must carry no claim, got %+v", match.Claim)
 		}
-		reg.MarkFired(match.ID, time.Now())
+		reg.Complete(match.ID, match.Claim, time.Now())
 	}
 	if got := reg.Faults(time.Now()); len(got) != 1 {
 		t.Fatalf("repeated fault should stay registered, got %+v", got)
 	}
 	if got := reg.Faults(time.Now()); !got[0].Fired {
-		t.Fatal("repeated fault should show fired after MarkFired")
+		t.Fatal("repeated fault should show fired after Complete")
+	}
+}
+
+// TestConcurrentClaimsOnDistinctFaultsDoNotInterfere: two once-rules both
+// claimed with the SAME local token (each starts at 1) must be completed
+// independently - completing A never consumes B and vice versa.
+func TestConcurrentClaimsOnDistinctFaultsDoNotInterfere(t *testing.T) {
+	reg := NewRegistry(0)
+	if _, err := reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Inject(InjectRequest{Path: "/b.txt", AfterBytes: 1, Once: true}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	a, ok := reg.Match(now, "/a.txt", "")
+	if !ok {
+		t.Fatal("match a failed")
+	}
+	b, ok := reg.Match(now, "/b.txt", "")
+	if !ok {
+		t.Fatal("match b failed")
+	}
+	if a.Claim.FaultID == b.Claim.FaultID || a.Claim.Token != b.Claim.Token {
+		t.Fatalf("claims must differ in fault id (tokens may collide): a=%+v b=%+v", a.Claim, b.Claim)
+	}
+
+	// Completing A must NOT consume B.
+	reg.Complete(a.ID, a.Claim, now)
+	if _, ok := reg.Match(now, "/b.txt", ""); ok {
+		t.Fatal("completing A interfered with B (B no longer matchable)")
+	}
+	// Completing B with A's claim must fail (wrong fault id).
+	reg.Complete(b.ID, a.Claim, now)
+	if _, ok := reg.Match(now, "/b.txt", ""); ok {
+		t.Fatal("completing B with A's claim consumed B")
+	}
+	reg.Complete(b.ID, b.Claim, now)
+	if _, ok := reg.Match(now, "/b.txt", ""); ok {
+		t.Fatal("B still matchable after its own completion")
+	}
+}
+
+// TestCompleteNonOnceRecordsFired: Complete on a non-once rule records
+// Fired/FiredAt and keeps the rule registered.
+func TestCompleteNonOnceRecordsFired(t *testing.T) {
+	reg := NewRegistry(0)
+	if _, err := reg.Inject(InjectRequest{Path: "/file.txt", AfterBytes: 1, Once: false}); err != nil {
+		t.Fatal(err)
+	}
+	match, ok := reg.Match(time.Now(), "/file.txt", "")
+	if !ok {
+		t.Fatal("match failed")
+	}
+	now := time.Now()
+	reg.Complete(match.ID, match.Claim, now)
+	faults := reg.Faults(now)
+	if len(faults) != 1 {
+		t.Fatalf("faults = %+v, want registered", faults)
+	}
+	if !faults[0].Fired || faults[0].FiredAt.IsZero() {
+		t.Fatalf("fault should show fired state: %+v", faults[0])
 	}
 }
 

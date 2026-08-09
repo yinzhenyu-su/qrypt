@@ -172,9 +172,11 @@ type DebugUploadCancelRequest struct {
 	Phase      drive.UploadPhase `json:"phase,omitempty"`
 	AfterBytes int64             `json:"after_bytes,omitempty"`
 	AfterDelay time.Duration     `json:"after_delay,omitempty"`
-	Once       bool              `json:"once"`
-	Reason     string            `json:"reason,omitempty"`
-	TTL        time.Duration     `json:"ttl,omitempty"`
+	// Once controls one-shot behavior; nil (or omitted) defaults to TRUE
+	// for compatibility with clients that never set it.
+	Once   *bool         `json:"once,omitempty"`
+	Reason string        `json:"reason,omitempty"`
+	TTL    time.Duration `json:"ttl,omitempty"`
 }
 
 type DebugUploadCancelResult struct {
@@ -198,7 +200,7 @@ func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancel
 		Phase:      req.Phase,
 		AfterBytes: req.AfterBytes,
 		AfterDelay: req.AfterDelay,
-		Once:       req.Once,
+		Once:       req.Once == nil || *req.Once,
 		Reason:     req.Reason,
 		TTL:        req.TTL,
 	})
@@ -294,7 +296,6 @@ func (v *VFS) matchUploadCancelFault(path, opID string) (faultinject.MatchResult
 type debugUploadCancelProgress struct {
 	inner       drive.UploadProgress
 	fault       faultinject.MatchResult
-	claimToken  uint64
 	cancel      context.CancelFunc
 	cancelPath  string
 	cancelOpID  string
@@ -335,9 +336,13 @@ func (p *debugUploadCancelProgress) Close() {
 	if p.timer != nil {
 		p.timer.Stop()
 	}
-	// The upload ended without firing: return the once-rule claim to
-	// armed so a later upload can still trigger it.
-	p.v.faults.Release(p.claimToken)
+	// Swap marks the progress as finished (also blocks a late timer
+	// callback from firing after Close). Only release the claim when the
+	// upload truly ended without firing; once released, the rule returns
+	// to armed for a later upload.
+	if !p.cancelFired.Swap(true) {
+		p.v.faults.Release(p.fault.Claim)
+	}
 }
 
 func (p *debugUploadCancelProgress) maybeCancelLocked() {
@@ -356,19 +361,25 @@ func (p *debugUploadCancelProgress) maybeCancelLocked() {
 		}
 		p.timerArmed = true
 		p.timer = time.AfterFunc(p.fault.AfterDelay, func() {
-			p.fire()
+			// fireLocked is serialized against Close/Phase/Uploaded.
+			p.mu.Lock()
+			p.fireLocked()
+			p.mu.Unlock()
 		})
 		return
 	}
-	p.fire()
+	p.fireLocked()
 }
 
-func (p *debugUploadCancelProgress) fire() {
-	if !p.cancelFired.CompareAndSwap(false, true) {
-		return
+// fireLocked must be called with p.mu held (or from a caller that holds
+// no lock and has exclusive access). It is the single completion path:
+// the registry records the fired state via Complete.
+func (p *debugUploadCancelProgress) fireLocked() {
+	if p.cancelFired.Swap(true) {
+		return // already fired, or closed
 	}
 	logging.L.Warnf("[VFS] debug upload cancel fired op_id=%q path=%q fault=%q reason=%q", p.cancelOpID, p.cancelPath, p.fault.ID, p.fault.Reason)
-	p.v.faults.Fire(p.claimToken)
+	p.v.faults.Complete(p.fault.ID, p.fault.Claim, time.Now())
 	p.cancel()
 }
 
