@@ -100,6 +100,12 @@ type PendingStore struct {
 	journalMu sync.Mutex
 	pending   map[string]PendingUpload
 	idIndex   map[string]string // fid -> path for O(1) PendingByID
+
+	// journalFail, when non-nil, injects a failure into journal appends;
+	// compactFail injects one into compactions (test-only hooks for
+	// write-ahead fault injection).
+	journalFail func() error
+	compactFail func() error
 }
 
 type JournalEntry struct {
@@ -442,31 +448,37 @@ func (c *PendingStore) RecordUploadPermanentFailureIfUnchanged(p PendingUpload, 
 	return current, true, c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: current})
 }
 func (c *PendingStore) RemoveUpload(path string) error {
-	c.mu.Lock()
+	c.mu.RLock()
 	pending, ok := c.pending[path]
-	delete(c.pending, path)
-	if ok && pending.FID != "" {
-		delete(c.idIndex, pending.FID)
-	}
-	if ok && pending.LocalPath != "" {
-		// Drop the staging file inside the same critical section so a
-		// reader that observes the pending gone also observes the staging
-		// gone; an async removal would leave a cleanup window that test
-		// TempDir teardown can race.
-		if err := c.staging.remove(pending.LocalPath); err != nil {
-			logging.L.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
-		}
-	}
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	if !ok {
 		return nil
 	}
+	// Write-ahead: persist the clean intent BEFORE mutating memory, so a
+	// journal failure leaves pending/idIndex/staging untouched.
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()
 	if err := c.appendJournalLocked(JournalEntry{Op: "clean", PendingUpload: PendingUpload{Path: path}}); err != nil {
 		return err
 	}
-	return c.compactJournalLocked()
+	// Apply in memory; the staging file drops after the record is gone.
+	c.mu.Lock()
+	delete(c.pending, path)
+	if pending.FID != "" {
+		delete(c.idIndex, pending.FID)
+	}
+	if pending.LocalPath != "" {
+		if err := c.staging.remove(pending.LocalPath); err != nil {
+			logging.L.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
+		}
+	}
+	c.mu.Unlock()
+	// Compact is maintenance: the clean intent is already durable, so a
+	// compact failure is logged, not reported as an uncommitted delete.
+	if err := c.compactJournalLocked(); err != nil {
+		logging.L.Warnf("[CACHE] journal compact failed after remove path=%q err=%v", path, err)
+	}
+	return nil
 }
 
 // removeStagingIfUnreferenced removes a staging file only when no current
@@ -523,56 +535,83 @@ func (c *PendingStore) sweepUnreferencedStaging() int {
 }
 func (c *PendingStore) RemoveUploadsUnder(dir string) error {
 	dir = cleanVirtual(dir)
-	c.mu.Lock()
+	c.mu.RLock()
 	var removed []PendingUpload
 	for path, pending := range c.pending {
 		if path == dir || isPathUnder(path, dir) {
-			delete(c.pending, path)
-			if pending.FID != "" {
-				delete(c.idIndex, pending.FID)
-			}
 			removed = append(removed, pending)
 		}
 	}
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	if len(removed) == 0 {
 		return nil
 	}
 	c.journalMu.Lock()
 	defer c.journalMu.Unlock()
+	// Write ALL clean intents first: on failure, memory and staging stay
+	// untouched (no partial batch).
 	for _, pending := range removed {
-		_ = c.staging.remove(pending.LocalPath)
 		if err := c.appendJournalLocked(JournalEntry{Op: "clean", PendingUpload: PendingUpload{Path: pending.Path}}); err != nil {
 			return err
 		}
 	}
-	return c.compactJournalLocked()
+	c.mu.Lock()
+	for _, pending := range removed {
+		delete(c.pending, pending.Path)
+		if pending.FID != "" {
+			delete(c.idIndex, pending.FID)
+		}
+	}
+	c.mu.Unlock()
+	for _, pending := range removed {
+		if pending.LocalPath != "" {
+			if err := c.staging.remove(pending.LocalPath); err != nil {
+				logging.L.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
+			}
+		}
+	}
+	if err := c.compactJournalLocked(); err != nil {
+		logging.L.Warnf("[CACHE] journal compact failed after subtree remove dir=%q err=%v", dir, err)
+	}
+	return nil
 }
 func (c *PendingStore) RemoveUploadIfUnchanged(p PendingUpload) (bool, error) {
-	c.mu.Lock()
+	c.mu.RLock()
 	current, ok := c.pending[p.Path]
+	c.mu.RUnlock()
+	if !ok || !sameUploadRecord(current, p) {
+		return false, nil
+	}
+	c.journalMu.Lock()
+	defer c.journalMu.Unlock()
+	// Write-ahead before any memory mutation.
+	if err := c.appendJournalLocked(JournalEntry{Op: "clean", PendingUpload: PendingUpload{Path: p.Path}}); err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	current, ok = c.pending[p.Path]
 	if ok && sameUploadRecord(current, p) {
 		delete(c.pending, p.Path)
 		if current.FID != "" {
 			delete(c.idIndex, current.FID)
 		}
-		// Same critical section: remove the staging file (unless another
-		// pending still references it, as rename/replace can reuse one) so
-		// readers never observe a pending gone while its staging lingers.
+		// Drop the staging file (unless another pending still references
+		// it, as rename/replace can reuse one) so readers never observe a
+		// pending gone while its staging lingers.
 		c.removeStagingLocked(p.LocalPath)
 	} else {
 		ok = false
 	}
 	c.mu.Unlock()
 	if !ok {
+		// The record moved while appending; the clean intent is harmless.
 		return false, nil
 	}
-	c.journalMu.Lock()
-	defer c.journalMu.Unlock()
-	if err := c.appendJournalLocked(JournalEntry{Op: "clean", PendingUpload: PendingUpload{Path: p.Path}}); err != nil {
-		return false, err
+	// Compact is maintenance; the clean intent is already durable.
+	if err := c.compactJournalLocked(); err != nil {
+		logging.L.Warnf("[CACHE] journal compact failed after remove path=%q err=%v", p.Path, err)
 	}
-	return true, c.compactJournalLocked()
+	return true, nil
 }
 
 // removeStagingLocked removes a staging file unless another pending still
@@ -673,6 +712,11 @@ func (c *PendingStore) appendJournal(entry JournalEntry) error {
 	return nil
 }
 func (c *PendingStore) appendJournalLocked(entry JournalEntry) error {
+	if c.journalFail != nil {
+		if err := c.journalFail(); err != nil {
+			return err
+		}
+	}
 	f, err := os.OpenFile(c.journalPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -772,6 +816,11 @@ func (c *PendingStore) compactJournal() error {
 	return c.compactJournalLocked()
 }
 func (c *PendingStore) compactJournalLocked() error {
+	if c.compactFail != nil {
+		if err := c.compactFail(); err != nil {
+			return err
+		}
+	}
 	tmp := c.journalPath() + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
