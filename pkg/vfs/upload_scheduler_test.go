@@ -18,19 +18,31 @@ func TestVFSUploadSchedulerTracksAndCancelsTimers(t *testing.T) {
 	s.EnqueueAfter(PendingUpload{Path: "/other.txt", FID: "other"}, time.Hour)
 	defer s.Close()
 
-	paths := s.TimerPaths()
-	if !paths["/dir/a.txt"] || !paths["/dir/sub/b.txt"] || !paths["/other.txt"] {
+	paths := s.ScheduledDeadlines()
+	if _, ok := paths["/dir/a.txt"]; !ok {
+		t.Fatalf("timer paths = %+v", paths)
+	}
+	if _, ok := paths["/dir/sub/b.txt"]; !ok {
+		t.Fatalf("timer paths = %+v", paths)
+	}
+	if _, ok := paths["/other.txt"]; !ok {
 		t.Fatalf("timer paths = %+v", paths)
 	}
 
 	s.CancelChildUploads("/dir")
-	paths = s.TimerPaths()
-	if paths["/dir/a.txt"] || paths["/dir/sub/b.txt"] || !paths["/other.txt"] {
+	paths = s.ScheduledDeadlines()
+	if _, ok := paths["/dir/a.txt"]; ok {
+		t.Fatalf("timer paths after cancel children = %+v", paths)
+	}
+	if _, ok := paths["/dir/sub/b.txt"]; ok {
+		t.Fatalf("timer paths after cancel children = %+v", paths)
+	}
+	if _, ok := paths["/other.txt"]; !ok {
 		t.Fatalf("timer paths after cancel children = %+v", paths)
 	}
 
 	s.CancelUpload("/other.txt")
-	if paths = s.TimerPaths(); len(paths) != 0 {
+	if paths = s.ScheduledDeadlines(); len(paths) != 0 {
 		t.Fatalf("timer paths after cancel = %+v", paths)
 	}
 }
@@ -45,8 +57,11 @@ func TestVFSUploadSchedulerReschedulesExistingTimer(t *testing.T) {
 	s.EnqueueAfter(PendingUpload{Path: "/file.txt", FID: "new"}, time.Hour)
 	defer s.Close()
 
-	paths := s.TimerPaths()
-	if len(paths) != 1 || !paths["/file.txt"] {
+	paths := s.ScheduledDeadlines()
+	if len(paths) != 1 {
+		t.Fatalf("timer paths = %+v", paths)
+	}
+	if _, ok := paths["/file.txt"]; !ok {
 		t.Fatalf("timer paths = %+v", paths)
 	}
 }

@@ -97,10 +97,7 @@ func (r vfsDeleteOverlayOps) CancelDelete(path string) {
 	defer r.v.view.overlay.mu.Unlock()
 	delete(r.v.deletes.tasks.active, path)
 	delete(r.v.deletes.tasks.failures, path)
-	if timer := r.v.deletes.tasks.timers[path]; timer != nil {
-		timer.Stop()
-		delete(r.v.deletes.tasks.timers, path)
-	}
+	r.v.deletes.tasks.scheduler.Cancel(path)
 	delete(r.v.view.overlay.deleted, path)
 }
 
@@ -124,30 +121,25 @@ func newVFSDeleteScheduler(v *VFS) vfsDeleteScheduler {
 
 func (s vfsDeleteScheduler) Schedule(path string, entry drive.Entry, delay time.Duration, fire func()) {
 	s.v.view.overlay.mu.Lock()
-	defer s.v.view.overlay.mu.Unlock()
 	delete(s.v.deletes.tasks.failures, path)
-	if timer := s.v.deletes.tasks.timers[path]; timer != nil {
-		timer.Stop()
-	}
-	s.v.deletes.tasks.timers[path] = time.AfterFunc(delay, func() {
-		s.v.view.overlay.mu.Lock()
-		delete(s.v.deletes.tasks.timers, path)
-		s.v.view.overlay.mu.Unlock()
-		fire()
-	})
+	s.v.view.overlay.mu.Unlock()
+	s.v.deletes.tasks.scheduler.Schedule(path, delay, fire)
 }
 
 func (s vfsDeleteScheduler) CancelChildren(dir string) {
 	dir = cleanVirtual(dir)
+	removed := []string{}
+	for path := range s.v.deletes.tasks.scheduler.Keys() {
+		if isPathUnder(path, dir) {
+			removed = append(removed, path)
+		}
+	}
+	s.v.deletes.tasks.scheduler.CancelUnder(dir)
 	s.v.view.overlay.mu.Lock()
 	defer s.v.view.overlay.mu.Unlock()
-	for path, timer := range s.v.deletes.tasks.timers {
-		if isPathUnder(path, dir) {
-			timer.Stop()
-			delete(s.v.deletes.tasks.timers, path)
-			delete(s.v.view.overlay.deleted, path)
-			delete(s.v.deletes.tasks.failures, path)
-		}
+	for _, path := range removed {
+		delete(s.v.view.overlay.deleted, path)
+		delete(s.v.deletes.tasks.failures, path)
 	}
 }
 

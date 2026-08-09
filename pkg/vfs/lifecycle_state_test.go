@@ -52,7 +52,7 @@ func TestDomainStateInitialized(t *testing.T) {
 		{"listing.states", fs.listing != nil && fs.listing.StatesReady()},
 		{"upload.store", fs.uploads != nil && fs.uploads.Store() != nil},
 		{"upload.queue", fs.uploads != nil && fs.uploads.Queue() != nil},
-		{"upload.schedule", fs.uploads != nil && fs.uploads.Schedule() != nil},
+		{"upload.schedule", fs.uploads != nil && fs.uploads.ScheduledDeadlines() != nil},
 		{"upload.debug", fs.uploads != nil && fs.uploads.DebugState() != nil},
 		{"upload.faults", fs.uploads != nil && fs.uploads.Faults() != nil},
 		{"upload.hashes", fs.uploads != nil && fs.hashes != nil},
@@ -110,16 +110,12 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	if err := fs.Flush(ctx, "/a.txt"); err != nil {
 		t.Fatal(err)
 	}
-	fs.uploads.Schedule().Mu.Lock()
-	armed := len(fs.uploads.Schedule().Timers)
-	fs.uploads.Schedule().Mu.Unlock()
+	armed := len(fs.uploads.ScheduledDeadlines())
 	if armed == 0 {
 		t.Fatal("upload debounce timer not armed after write")
 	}
 	fs.uploads.Close()
-	fs.uploads.Schedule().Mu.Lock()
-	left := len(fs.uploads.Schedule().Timers)
-	fs.uploads.Schedule().Mu.Unlock()
+	left := len(fs.uploads.ScheduledDeadlines())
 	if left != 0 {
 		t.Fatalf("upload.Close left %d timers armed", left)
 	}
@@ -153,16 +149,12 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	if err := fs2.Remove(ctx, "/del.txt"); err != nil {
 		t.Fatal(err)
 	}
-	fs2.deletes.tasks.mu.Lock()
-	darmed := len(fs2.deletes.tasks.timers)
-	fs2.deletes.tasks.mu.Unlock()
+	darmed := len(fs2.deletes.tasks.scheduler.Keys())
 	if darmed == 0 {
 		t.Fatal("delete debounce timer not armed after remove")
 	}
 	fs2.deletes.Close()
-	fs2.deletes.tasks.mu.Lock()
-	dleft := len(fs2.deletes.tasks.timers)
-	fs2.deletes.tasks.mu.Unlock()
+	dleft := len(fs2.deletes.tasks.scheduler.Keys())
 	if dleft != 0 {
 		t.Fatalf("delete.Close left %d timers armed", dleft)
 	}

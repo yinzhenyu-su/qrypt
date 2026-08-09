@@ -19,35 +19,6 @@ const (
 
 // --- state holders ---
 
-// ScheduleState tracks the debounce timers for pending uploads.
-type ScheduleState struct {
-	Mu     sync.Mutex
-	Timers map[string]*time.Timer
-}
-
-func NewScheduleState() *ScheduleState { return &ScheduleState{Timers: map[string]*time.Timer{}} }
-
-func (s *ScheduleState) StopAll() {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	for path, timer := range s.Timers {
-		timer.Stop()
-		delete(s.Timers, path)
-	}
-}
-
-func (s *ScheduleState) Stop() { s.StopAll() }
-
-func (s *ScheduleState) TimerPaths() map[string]bool {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	paths := map[string]bool{}
-	for p := range s.Timers {
-		paths[p] = true
-	}
-	return paths
-}
-
 // DebugState keeps the bounded ring of upload snapshots for diagnostics.
 type DebugState struct {
 	Mu      sync.Mutex
@@ -240,6 +211,10 @@ type ServiceOptions struct {
 	Store         *PendingStore
 	Done          chan struct{}
 	HashOps       HashOps
+	// Scheduler drives the per-path upload debounce timers. When nil, the
+	// real timer-backed scheduler is used; tests inject a fake for
+	// deterministic scheduling without real time.
+	Scheduler KeyedScheduler
 }
 
 // --- service ---
@@ -250,7 +225,7 @@ type ServiceOptions struct {
 type Service struct {
 	store    *PendingStore
 	queue    chan PendingUpload
-	schedule *ScheduleState
+	schedule KeyedScheduler
 	debug    *DebugState
 	faults   *FaultState
 	hashes   HashOps
@@ -269,10 +244,13 @@ type Service struct {
 
 // NewService builds the upload domain state together.
 func NewService(opts ServiceOptions) *Service {
+	if opts.Scheduler == nil {
+		opts.Scheduler = newTimeKeyedScheduler()
+	}
 	return &Service{
 		store:    opts.Store,
 		queue:    make(chan PendingUpload, 128),
-		schedule: NewScheduleState(),
+		schedule: opts.Scheduler,
 		debug:    NewDebugState(),
 		faults:   NewFaultState(),
 		hashes:   opts.HashOps,
@@ -323,10 +301,10 @@ func (s *Service) Queue() chan PendingUpload { return s.queue }
 func (s *Service) SetQueue(q chan PendingUpload) { s.queue = q }
 func (s *Service) WorkerCount() int              { return s.workers }
 func (s *Service) Store() *PendingStore          { return s.store }
-func (s *Service) Schedule() *ScheduleState      { return s.schedule }
 
-// TimerPaths returns a snapshot of paths with active schedule timers.
-func (s *Service) TimerPaths() map[string]bool { return s.schedule.TimerPaths() }
+// ScheduledDeadlines returns the pending upload-debounce deadlines per
+// path (debug/diagnostics surface).
+func (s *Service) ScheduledDeadlines() map[string]time.Time { return s.schedule.Deadlines() }
 
 // --- debug state ---
 
@@ -383,7 +361,7 @@ func (s *Service) FaultsRemove(id string) {
 // --- lifecycle ---
 
 func (s *Service) Close() {
-	s.schedule.StopAll()
+	s.schedule.CancelAll()
 	s.enqueueMu.Lock()
 	s.stopped = true
 	s.enqueueMu.Unlock()
@@ -472,42 +450,20 @@ func (s *Service) EnqueueAfter(p PendingUpload, delay time.Duration) {
 }
 
 func (s *Service) CancelUpload(path string) {
-	path = cleanVirtual(path)
-	s.schedule.Mu.Lock()
-	if timer := s.schedule.Timers[path]; timer != nil {
-		timer.Stop()
-		delete(s.schedule.Timers, path)
-	}
-	s.schedule.Mu.Unlock()
+	s.schedule.Cancel(cleanVirtual(path))
 }
 
 func (s *Service) CancelChildUploads(dir string) {
-	dir = cleanVirtual(dir)
-	s.schedule.Mu.Lock()
-	for path, timer := range s.schedule.Timers {
-		if path == dir || isPathUnder(path, dir) {
-			timer.Stop()
-			delete(s.schedule.Timers, path)
-		}
-	}
-	s.schedule.Mu.Unlock()
+	s.schedule.CancelUnder(cleanVirtual(dir))
 }
 
 func (s *Service) scheduleUpload(p PendingUpload, delay time.Duration) {
-	s.schedule.Mu.Lock()
-	if timer := s.schedule.Timers[p.Path]; timer != nil {
-		timer.Stop()
+	if s.schedule.Keys()[p.Path] {
 		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload op_id=%q path=%q size=%d delay=%s", p.FID, p.Path, p.Size, delay)
 	} else {
 		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload op_id=%q path=%q size=%d delay=%s", p.FID, p.Path, p.Size, delay)
 	}
-	s.schedule.Timers[p.Path] = time.AfterFunc(delay, func() {
-		s.schedule.Mu.Lock()
-		delete(s.schedule.Timers, p.Path)
-		s.schedule.Mu.Unlock()
-		s.sendUpload(p)
-	})
-	s.schedule.Mu.Unlock()
+	s.schedule.Schedule(p.Path, delay, func() { s.sendUpload(p) })
 }
 
 func (s *Service) sendUpload(p PendingUpload) {
@@ -612,12 +568,7 @@ func (s *Service) TaskRecords(pending []PendingUpload) []UploadTaskRecord {
 	}
 	s.debug.Mu.Unlock()
 
-	timerPaths := map[string]bool{}
-	s.schedule.Mu.Lock()
-	for path := range s.schedule.Timers {
-		timerPaths[path] = true
-	}
-	s.schedule.Mu.Unlock()
+	timerPaths := s.schedule.Keys()
 
 	records := make([]UploadTaskRecord, 0, len(pending)+len(active)+len(history))
 	seenPath := map[string]bool{}

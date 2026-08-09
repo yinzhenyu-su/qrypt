@@ -59,7 +59,7 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 	snapshot.WriteQueueMaxBytes = int64(cap(c.cacheWriteQueue)) * readChunkSize
 	c.readIndexMu.Lock()
 	snapshot.IndexDirty = c.readIndexDirty
-	snapshot.IndexFlushScheduled = c.readIndexTimer != nil
+	snapshot.IndexFlushScheduled = c.debounce.Armed()
 	c.readIndexMu.Unlock()
 	fileCount := 0
 	for i := range c.shards {

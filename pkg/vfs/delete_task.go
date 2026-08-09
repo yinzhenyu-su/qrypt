@@ -205,7 +205,7 @@ func (r vfsDeleteTaskRuntime) deleteStateLocked(path string) (task.State, string
 	if _, ok := r.v.deletes.tasks.active[path]; ok {
 		return task.StateRunning, "delete"
 	}
-	if _, ok := r.v.deletes.tasks.timers[path]; ok {
+	if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
 		return task.StateScheduled, "scheduled"
 	}
 	return task.StateFailed, "failed"

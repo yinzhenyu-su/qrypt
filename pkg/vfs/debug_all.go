@@ -1192,11 +1192,10 @@ func (r vfsDebugSnapshotRuntime) DriverMetrics(ctx context.Context, since time.T
 }
 
 func (r vfsDebugSnapshotRuntime) UploadTimers() []DebugTimer {
-	r.v.uploads.Schedule().Mu.Lock()
-	defer r.v.uploads.Schedule().Mu.Unlock()
-	timers := make([]DebugTimer, 0, len(r.v.uploads.Schedule().Timers))
-	for path := range r.v.uploads.Schedule().Timers {
-		timers = append(timers, DebugTimer{Path: path})
+	deadlines := r.v.uploads.ScheduledDeadlines()
+	timers := make([]DebugTimer, 0, len(deadlines))
+	for path, deadline := range deadlines {
+		timers = append(timers, DebugTimer{Path: path, Deadline: deadline})
 	}
 	sort.Slice(timers, func(i, j int) bool {
 		return timers[i].Path < timers[j].Path
@@ -1209,7 +1208,7 @@ func (r vfsDebugSnapshotRuntime) Overlay() debugOverlayRuntimeSnapshot {
 	out := debugOverlayRuntimeSnapshot{}
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	for path := range r.v.deletes.tasks.timers {
+	for path := range r.v.deletes.tasks.scheduler.Keys() {
 		out.DeleteTimers = append(out.DeleteTimers, DebugTimer{Path: path})
 	}
 	for path, entry := range r.v.view.overlay.deleted {
@@ -1522,7 +1521,7 @@ func (r vfsDebugStagingRuntime) StagingFiles() ([]DebugStagingFile, error) {
 func (v *VFS) uploadSnapshots(pending []PendingUpload) []UploadSnapshot {
 	active := newVFSDebugUploadRuntime(v).ActiveSnapshots()
 
-	timerPaths := v.uploads.TimerPaths()
+	timerPaths := v.uploads.ScheduledDeadlines()
 
 	uploads := make([]UploadSnapshot, 0, len(pending)+len(active))
 	seen := map[string]bool{}
@@ -1535,7 +1534,7 @@ func (v *VFS) uploadSnapshots(pending []PendingUpload) []UploadSnapshot {
 		state := "queued"
 		if item.PermanentFail {
 			state = "failed"
-		} else if timerPaths[item.Path] {
+		} else if _, ok := timerPaths[item.Path]; ok {
 			state = "scheduled"
 			if item.LastError != "" && item.NextAttemptAt > timeutil.Now().UnixNano() {
 				state = "retry_wait"

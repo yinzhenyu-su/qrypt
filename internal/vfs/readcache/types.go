@@ -87,7 +87,7 @@ type Store struct {
 	readIndexSaveMu     sync.Mutex
 	readIndexMu         sync.Mutex
 	readIndexDirty      bool
-	readIndexTimer      *time.Timer
+	debounce            Debouncer
 }
 
 // readCacheShards is the number of independent lock domains over the
@@ -146,7 +146,7 @@ func NewStore(dir string, maxSize int64) (*Store, error) {
 		}
 	}
 	if maxSize <= 0 {
-		return &Store{dir: dir}, nil
+		return &Store{dir: dir, debounce: newTimeDebouncer()}, nil
 	}
 	adjusted, reason := limitByDiskSpace(maxSize, dir)
 	if reason != "" {
@@ -158,6 +158,7 @@ func NewStore(dir string, maxSize int64) (*Store, error) {
 		cacheWriteQueue:     make(chan readCacheWrite, readCacheWriteQueueSize),
 		cacheWritesInFlight: map[string]struct{}{},
 		cacheWriteClosed:    false,
+		debounce:            newTimeDebouncer(),
 	}
 	for i := range store.shards {
 		store.shards[i].chunks = map[string]*fileChunks{}

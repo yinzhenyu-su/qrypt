@@ -588,17 +588,13 @@ func (c *Store) loadReadIndex() error {
 func (c *Store) scheduleReadIndexSave() {
 	c.readIndexMu.Lock()
 	c.readIndexDirty = true
-	if c.readIndexTimer != nil {
-		c.readIndexMu.Unlock()
-		return
-	}
-	c.readIndexTimer = time.AfterFunc(readCacheIndexSaveDelay, func() {
+	c.readIndexMu.Unlock()
+	c.debounce.Arm(readCacheIndexSaveDelay, func() {
 		if err := c.FlushReadIndex(); err != nil {
 			c.setLastPutError(err)
 			logging.L.Warnf("[CACHE] save read cache index failed: %v", err)
 		}
 	})
-	c.readIndexMu.Unlock()
 }
 func (c *Store) FlushReadIndex() error {
 	c.readIndexSaveMu.Lock()
@@ -607,10 +603,7 @@ func (c *Store) FlushReadIndex() error {
 	var lastErr error
 	for {
 		c.readIndexMu.Lock()
-		if c.readIndexTimer != nil {
-			c.readIndexTimer.Stop()
-			c.readIndexTimer = nil
-		}
+		c.debounce.Cancel()
 		if !c.readIndexDirty {
 			c.readIndexMu.Unlock()
 			return lastErr
@@ -1046,10 +1039,7 @@ func (c *Store) ClearReadCache() error {
 	c.cacheWriteWG.Wait()
 
 	c.readIndexMu.Lock()
-	if c.readIndexTimer != nil {
-		c.readIndexTimer.Stop()
-		c.readIndexTimer = nil
-	}
+	c.debounce.Cancel()
 	c.readIndexDirty = false
 	c.readIndexMu.Unlock()
 
