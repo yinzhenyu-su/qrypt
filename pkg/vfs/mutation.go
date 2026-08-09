@@ -3,7 +3,6 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/vfs/mutation"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
@@ -107,20 +106,13 @@ func (v *VFS) removeWithRuntime(ctx context.Context, path string, runtime vfsRem
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
 	}
-	path = cleanVirtual(path)
-	if _, err := v.pendingUpload(path); err == nil {
-		unlock := v.lockPath(path)
-		defer unlock()
-		return runtime.RemovePendingUpload(path)
-	}
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
-		return err
-	}
-	committer.CommitRemove(path, entry)
-	logging.L.Infof("[VFS] remove queued path=%q id=%q dir=%t delay=%s", path, entry.ID, entry.IsDir, v.deletes.delay)
-	v.scheduleDelete(path, entry)
-	return nil
+	coordinator := mutation.NewRemoveCoordinator(
+		newVFSRenameResolver(v),
+		committer,
+		newVFSRemoveScheduler(v),
+		newVFSRemoveCleanup(v, runtime),
+	)
+	return coordinator.RemoveFile(ctx, path)
 }
 func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 	return v.removeDirWithRuntime(ctx, path, newVFSRemoveRuntime(v), newVFSViewCommitter(v))
@@ -131,24 +123,58 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, runtime vfs
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
 	}
-	path = cleanVirtual(path)
-	entry, err := v.resolve(ctx, path)
-	if err != nil {
+	coordinator := mutation.NewRemoveCoordinator(
+		newVFSRenameResolver(v),
+		committer,
+		newVFSRemoveScheduler(v),
+		newVFSRemoveCleanup(v, runtime),
+	)
+	return coordinator.RemoveDirectory(ctx, path)
+}
+
+// vfsRemoveScheduler adapts the VFS delayed delete to mutation.DeleteScheduler.
+type vfsRemoveScheduler struct{ v *VFS }
+
+func newVFSRemoveScheduler(v *VFS) vfsRemoveScheduler { return vfsRemoveScheduler{v: v} }
+
+func (r vfsRemoveScheduler) ScheduleDelete(path string, entry drive.Entry) {
+	r.v.scheduleDelete(path, entry)
+}
+
+// vfsRemoveCleanup adapts the pending-upload removal surface to
+// mutation.RemoveCleanup.
+type vfsRemoveCleanup struct {
+	v       *VFS
+	runtime vfsRemoveRuntime
+}
+
+func newVFSRemoveCleanup(v *VFS, runtime vfsRemoveRuntime) vfsRemoveCleanup {
+	return vfsRemoveCleanup{v: v, runtime: runtime}
+}
+
+func (r vfsRemoveCleanup) RemovePendingFile(path string) (bool, error) {
+	if _, err := r.v.pendingUpload(path); err != nil {
+		return false, nil
+	}
+	unlock := r.v.lockPath(path)
+	defer unlock()
+	return true, r.runtime.RemovePendingUpload(path)
+}
+
+func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
+	r.runtime.CancelChildUploads(path)
+	if err := r.runtime.RemovePendingUploadsUnder(path); err != nil {
 		return err
 	}
-	if !entry.IsDir {
-		return fmt.Errorf("vfs: %s is not a directory", path)
-	}
-	runtime.CancelChildUploads(path)
-	if err := runtime.RemovePendingUploadsUnder(path); err != nil {
-		return err
-	}
-	runtime.CancelChildDeletes(path)
-	committer.CommitRemove(path, entry)
-	logging.L.Infof("[VFS] remove dir queued path=%q id=%q delay=%s", path, entry.ID, v.deletes.delay)
-	v.scheduleDelete(path, entry)
+	r.runtime.CancelChildDeletes(path)
 	return nil
 }
+
+// Compile-time assertions for the remove adapters.
+var _ mutation.RemoveResolver = vfsRenameResolver{}
+var _ mutation.RemoveCleanup = vfsRemoveCleanup{}
+var _ mutation.DeleteScheduler = vfsRemoveScheduler{}
+
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
 	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v), newVFSViewCommitter(v))
 }
