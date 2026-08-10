@@ -356,7 +356,7 @@ func sourceSliceMD5Hex(ctx context.Context, source drive.ReadOnlyFileSource, siz
 	defer body.Close()
 	buf := make([]byte, sliceLen)
 	n, err := body.ReadAt(buf, 0)
-	if err != nil && !(err == io.EOF && int64(n) == sliceLen) {
+	if err != nil && (err != io.EOF || int64(n) != sliceLen) {
 		return "", fmt.Errorf("189: slice hash source read: %w", err)
 	}
 	if int64(n) != sliceLen {

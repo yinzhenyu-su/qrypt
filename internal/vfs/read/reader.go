@@ -169,10 +169,7 @@ func (r *Reader) readRange(ctx context.Context, entry drive.Entry, offset, size 
 	}
 	pos := offset
 	end, endKnown := readEnd(offset, size, entry.Size)
-	for {
-		if endKnown && pos >= end {
-			break
-		}
+	for !endKnown || pos < end {
 		chunkIndex := pos / ChunkSize
 		chunkStart := chunkIndex * ChunkSize
 		start := pos - chunkStart

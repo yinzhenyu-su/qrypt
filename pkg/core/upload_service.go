@@ -170,7 +170,7 @@ func (s *UploadService) ResolveDestination(ctx context.Context, destPath, fallba
 	if s == nil {
 		return "", fmt.Errorf("core: closed")
 	}
-	resolved, err := s.resolver.Resolve(destPath, fallbackName)
+	resolved, err := s.resolver.resolve(destPath, fallbackName)
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +186,7 @@ func (s *UploadService) PreviewDestination(destPath, fallbackName string) (strin
 	if s == nil {
 		return "", fmt.Errorf("core: closed")
 	}
-	resolved, err := s.resolver.Resolve(destPath, fallbackName)
+	resolved, err := s.resolver.resolve(destPath, fallbackName)
 	if err != nil {
 		return "", err
 	}

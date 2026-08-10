@@ -141,7 +141,8 @@ func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 			"is_dir":    record.entry.IsDir,
 		}),
 	}
-	if record.state == task.StateFailed {
+	switch record.state {
+	case task.StateFailed:
 		item.Progress.ItemsDone = 1
 		item.Progress.ItemsFailed = 1
 		message := record.errorText
@@ -149,7 +150,7 @@ func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 			message = "remote delete did not complete"
 		}
 		item.Error = &task.Error{Message: message, Retryable: true}
-	} else if record.state == task.StateRunning {
+	case task.StateRunning:
 		item.Progress.ItemsDone = 0
 	}
 	return item

@@ -8,40 +8,37 @@ semantics stay in `pkg/vfs`, and platform mount details stay in
 ## Layers
 
 ```text
+Mobile app
+  -> pkg/mobile (gomobile-safe API, sessions, handles, JSON envelopes)
+  -> pkg/core (reusable business engine and runtime composition root)
+  -> pkg/vfs (provider-independent filesystem semantics)
+  -> pkg/drive (backend contracts and capability model)
+
 cmd/qrypt
-  minimal executable entry point
-
-internal/cli
-  configuration and commands
-
-internal/control
-  debug socket HTTP API over runtime snapshots
-
-internal/mount
-  FUSE callback adapter, platform mount lifecycle
-
-pkg/vfs
-  provider-independent filesystem semantics
-
-pkg/crypt
-  rclone-compatible encryption wrapper around drive.Driver
-
-pkg/drive
-  backend contracts, optional capability model, registry
+  -> internal/cli (commands and desktop runtime integration)
+  -> pkg/core / pkg/vfs
 
 pkg/drivers/<name>
-  provider-specific API clients and metadata mapping
+  -> pkg/drive
 
 pkg/drivers/all
-  bundled driver registration set
+  bundled driver registration imported by client composition roots
 
-pkg/core
-  reusable runtime assembly for CLI, mobile, and future clients
+internal/mount
+  FUSE callback adapter and platform mount lifecycle over pkg/vfs
+
+internal/control
+  debug socket HTTP API hosted by pkg/core or internal/cli
+
+pkg/crypt
+  rclone-compatible encryption wrapper around pkg/drive.Driver
 ```
 
-Dependencies should point downward in this list. Provider drivers must not
-import VFS, mount, control, or CLI packages. VFS and mount code must not import
-concrete provider packages. These rules are enforced automatically by
+Arrows show compile-time dependency direction. In particular, `pkg/mobile`
+depends on `pkg/core`; they are not peer layers, and `pkg/core` never depends
+on `pkg/mobile`. Provider drivers must not import VFS, mount, control, or CLI
+packages. VFS and mount code must not import concrete provider packages. These
+rules are enforced automatically by
 `scripts/check-arch.sh` in CI (every PR); when the boundary is violated the
 build fails.
 
@@ -113,8 +110,9 @@ full diagnostics surface on both `*VFS` and `*Namespace`
 4. Install bandwidth limiting into drivers that support it, then optionally wrap with `pkg/crypt`.
 5. Build one `pkg/vfs.VFS` per configured mount.
 6. Combine mounts into `pkg/vfs.Namespace`.
-7. Pass the resulting `vfs.FileSystem` to FUSE, CLI commands, mobile bindings,
-   or future clients.
+7. Expose filesystem and business operations to clients. `pkg/mobile` calls
+   this Core API and adapts it for gomobile; desktop CLI/FUSE paths may also use
+   the constructed `vfs.FileSystem` where appropriate.
 
 This keeps construction policy out of VFS and keeps provider details out of the
 mount layer.

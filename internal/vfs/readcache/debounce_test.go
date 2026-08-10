@@ -96,7 +96,9 @@ func TestStoreDebouncerSurvivesRepeatedFlush(t *testing.T) {
 	store.debounce = fake
 
 	store.scheduleReadIndexSave()
-	store.FlushReadIndex()
+	if err := store.FlushReadIndex(); err != nil {
+		t.Fatal(err)
+	}
 	if fake.Armed() {
 		t.Fatal("flush left debouncer armed")
 	}

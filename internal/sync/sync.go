@@ -126,7 +126,7 @@ func Run(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) (Re
 			persist.Close()
 		}
 	}
-	result.OK = result.Summary.Failed == 0 && !(result.Summary.Conflict > 0 && req.Conflict == "error")
+	result.OK = result.Summary.Failed == 0 && (result.Summary.Conflict <= 0 || req.Conflict != "error")
 	return result, nil
 }
 
@@ -165,7 +165,7 @@ func resume(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) 
 	if err := waitIdle(ctx, fs); err != nil {
 		return result, err
 	}
-	result.OK = result.Summary.Failed == 0 && !(result.Summary.Conflict > 0 && persist.Flags().Conflict == "error")
+	result.OK = result.Summary.Failed == 0 && (result.Summary.Conflict <= 0 || persist.Flags().Conflict != "error")
 	if !persist.TransferPending() {
 		persist.Remove()
 	}

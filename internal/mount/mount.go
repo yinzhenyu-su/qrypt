@@ -193,7 +193,7 @@ func isDriveLetter(mountPoint string) bool {
 		return false
 	}
 	c := mountPoint[0]
-	if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') {
+	if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
 		return false
 	}
 	if mountPoint[1] != ':' {

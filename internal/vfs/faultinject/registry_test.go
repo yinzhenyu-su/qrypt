@@ -224,7 +224,9 @@ func TestCompleteHandleTable(t *testing.T) {
 
 	t.Run("correct id and token consumes", func(t *testing.T) {
 		reg := NewRegistry(0)
-		reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true})
+		if _, err := reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true}); err != nil {
+			t.Fatal(err)
+		}
 		r := matchPath(t, reg, "/a.txt")
 		reg.Complete(r.Handle, now)
 		if releaseAndRematch(t, reg, "/a.txt", r.Handle) {
@@ -234,8 +236,12 @@ func TestCompleteHandleTable(t *testing.T) {
 
 	t.Run("wrong id same token does not consume", func(t *testing.T) {
 		reg := NewRegistry(0)
-		reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true})
-		reg.Inject(InjectRequest{Path: "/b.txt", AfterBytes: 1, Once: true})
+		if _, err := reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reg.Inject(InjectRequest{Path: "/b.txt", AfterBytes: 1, Once: true}); err != nil {
+			t.Fatal(err)
+		}
 		a := matchPath(t, reg, "/a.txt")
 		b := matchPath(t, reg, "/b.txt")
 		if a.Handle.Token != b.Handle.Token {
@@ -250,7 +256,9 @@ func TestCompleteHandleTable(t *testing.T) {
 
 	t.Run("stale token does not consume", func(t *testing.T) {
 		reg := NewRegistry(0)
-		reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true})
+		if _, err := reg.Inject(InjectRequest{Path: "/a.txt", AfterBytes: 1, Once: true}); err != nil {
+			t.Fatal(err)
+		}
 		first := matchPath(t, reg, "/a.txt")
 		reg.Release(first.Handle)
 		second := matchPath(t, reg, "/a.txt")
@@ -266,7 +274,9 @@ func TestCompleteHandleTable(t *testing.T) {
 
 	t.Run("non-once empty handle records fired", func(t *testing.T) {
 		reg := NewRegistry(0)
-		reg.Inject(InjectRequest{Path: "/rep.txt", AfterBytes: 1, Once: false})
+		if _, err := reg.Inject(InjectRequest{Path: "/rep.txt", AfterBytes: 1, Once: false}); err != nil {
+			t.Fatal(err)
+		}
 		r := matchPath(t, reg, "/rep.txt")
 		if r.Handle.Once {
 			t.Fatal("non-once match must not set Once")

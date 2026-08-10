@@ -421,7 +421,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		}, nil
 	}
 
-	var uploadBody io.Reader = drive.NewUploadProgressReader(req.Progress, body)
+	var uploadBody = drive.NewUploadProgressReader(req.Progress, body)
 	if d.limiter != nil {
 		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
 	}
@@ -566,7 +566,7 @@ func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key str
 			return d.resumedUploadSessionError(resumedSession, sessionKey, err)
 		}
 		reader := io.NewSectionReader(body, part.Offset, part.Size)
-		var uploadBody io.Reader = drive.NewUploadProgressReader(progress, reader)
+		var uploadBody = drive.NewUploadProgressReader(progress, reader)
 		if d.limiter != nil {
 			uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
 		}

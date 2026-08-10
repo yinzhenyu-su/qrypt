@@ -23,13 +23,6 @@ func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {
 	return diagnostics.StagingMount(name, path, newVFSDebugStagingRuntime(v))
 }
 
-type debugStagingRuntime interface {
-	PendingUploads() []PendingUpload
-	UploadingPaths(pending []PendingUpload) map[string]bool
-	StagingDir() string
-	StagingFiles() ([]DebugStagingFile, error)
-}
-
 type vfsDebugStagingRuntime struct {
 	v *VFS
 }

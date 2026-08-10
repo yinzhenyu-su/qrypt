@@ -157,7 +157,8 @@ func parseAtomBytes(data []byte, offset, end int) (byteAtom, error) {
 	typ := string(data[offset+4 : offset+8])
 	size := int(size32)
 	headerSize := atomHeaderSize
-	if size32 == 1 {
+	switch size32 {
+	case 1:
 		if offset+extendedAtomHeaderSize > end {
 			return byteAtom{}, fmt.Errorf("media: short extended atom header in %q", typ)
 		}
@@ -167,7 +168,7 @@ func parseAtomBytes(data []byte, offset, end int) (byteAtom, error) {
 		}
 		size = int(size64)
 		headerSize = extendedAtomHeaderSize
-	} else if size32 == 0 {
+	case 0:
 		size = end - offset
 	}
 	if size < headerSize || offset+size > end {
