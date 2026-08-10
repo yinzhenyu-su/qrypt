@@ -15,11 +15,12 @@ import (
 // cross-mount remote-ID lookup). The aggregation logic itself lives in
 // internal/vfs/diagnostics.
 
-// sortedMounts copies the mount list under the namespace read lock (in
-// stable name order) so callers can run potentially slow per-mount
-// queries without holding the lock - management/close never wait on
-// driver I/O.
-func (n *Namespace) sortedMounts() []Mount {
+// debugSortedMounts copies the mount list under the namespace read lock
+// (in stable name order) so debug adapters can run potentially slow
+// per-mount queries without holding the lock - management/close never
+// wait on driver I/O. Private: this is a diagnostics helper, not a
+// Namespace business API.
+func (n *Namespace) debugSortedMounts() []Mount {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	names := make([]string, 0, len(n.mounts))
@@ -102,7 +103,7 @@ func (n *Namespace) DebugClearUploadCancel(ctx context.Context, id string) error
 
 func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault {
 	var out []DebugUploadCancelFault
-	for _, m := range n.sortedMounts() {
+	for _, m := range n.debugSortedMounts() {
 		name, mount := m.Name, m.FS
 		for _, fault := range mount.DebugUploadCancelFaults(ctx) {
 			if fault.ID != "" {
@@ -122,7 +123,7 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 
 func (n *Namespace) Drivers() []NamedDriver {
 	var result []NamedDriver
-	for _, m := range n.sortedMounts() {
+	for _, m := range n.debugSortedMounts() {
 		result = append(result, newVFSDriverRuntime(m.FS).NamedDriver(m.Name))
 	}
 	return result
@@ -140,7 +141,7 @@ func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]MountH
 		return vfs.MountHealth(ctx, mountName)
 	}
 	var results []MountHealth
-	for _, m := range n.sortedMounts() {
+	for _, m := range n.debugSortedMounts() {
 		health, _ := m.FS.MountHealth(ctx, m.Name)
 		results = append(results, health...)
 	}
@@ -175,7 +176,7 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 	// close operations never wait on them.
 	var found *DebugResolveInfo
 	var foundName string
-	for _, m := range n.sortedMounts() {
+	for _, m := range n.debugSortedMounts() {
 		info, err := m.FS.DebugResolveByRemoteID(ctx, remoteID)
 		if err != nil {
 			continue
@@ -226,7 +227,7 @@ func (n *Namespace) DebugSnapshot() DebugSnapshot {
 		Kind:          "namespace",
 		Process:       debugProcess(),
 	}
-	for _, m := range n.sortedMounts() {
+	for _, m := range n.debugSortedMounts() {
 		snapshot.Mounts = append(snapshot.Mounts, m.FS.debugMountSnapshot(m.Name))
 	}
 	return snapshot
@@ -242,19 +243,14 @@ func (n *Namespace) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
 		Kind:          "namespace",
 		Process:       debugProcess(),
 	}
-	names := debugMountNameSet(mountNames)
-	n.mu.RLock()
-	matched := make([]string, 0, len(names))
-	for name := range names {
-		if _, ok := n.mounts[name]; ok {
-			matched = append(matched, name)
+	// Copy the mount list under the lock, then run the per-mount
+	// snapshots (driver metrics, cache, uploads) AFTER releasing it.
+	selected := debugMountNameSet(mountNames)
+	for _, mount := range n.debugSortedMounts() {
+		if selected[mount.Name] {
+			snapshot.Mounts = append(snapshot.Mounts, mount.FS.debugMountSnapshot(mount.Name))
 		}
 	}
-	sort.Strings(matched)
-	for _, name := range matched {
-		snapshot.Mounts = append(snapshot.Mounts, n.mounts[name].debugMountSnapshot(name))
-	}
-	n.mu.RUnlock()
 	return snapshot
 }
 
@@ -298,7 +294,7 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStaging
 		return report, nil
 	}
 
-	for _, m := range n.sortedMounts() {
+	for _, m := range n.debugSortedMounts() {
 		item := m.FS.debugStagingMount(m.Name, "/")
 		diagnostics.PrefixStagingMountPaths(&item, m.Name)
 		report.Mounts = append(report.Mounts, item)

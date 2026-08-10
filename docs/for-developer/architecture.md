@@ -71,6 +71,37 @@ are its host and client and may. Driver-level copy logic lives in
 `internal/drivecopy`, contract harnesses in `internal/contracttest` — never
 back in `internal/control`.
 
+### VFS domain packages (`internal/vfs/*`)
+
+`pkg/vfs` is the public facade (VFS/Namespace API, capability + health
+gates, thin runtime adapters and exported DTO aliases). Its implementation
+lives in `internal/vfs` sub-packages, one per domain; `pkg/vfs` wires them
+together and never holds domain runtime state:
+
+- `vfstypes` — shared types and path helpers
+- `upload` — upload engine, persistent pending store (write-ahead journal),
+  and per-path debounce scheduling via the injected `KeyedScheduler`
+- `readcache` — durable read-chunk cache, index persistence (debounced via
+  the injected `Debouncer`), read/write queues; no other vfs-domain imports
+- `delete` — delayed remote delete executor
+- `read` — read domain (window/coalescing/chunk cache) and bounded
+  read-event history
+- `listing` — list domain (directory cache, prefetch, effective view)
+- `mutation` — Rename/Mkdir/Remove coordinator use cases with per-use-case
+  narrow interfaces
+- `observe` — active-op tracking state (no Debug* query API)
+- `faultinject` — cancel-injection rule registry (claim/release/fire state
+  machine) plus the per-upload `Progress` applicator
+- `diagnostics` — read-only DTOs and cross-domain aggregation (cache,
+  staging, resolve/consistency, snapshot, health, read events, drivers)
+- `scheduler` — neutral real-time keyed scheduler shared by upload and
+  delete; deterministic fake timers in tests
+
+Capability contracts are enforced at compile time: `pkg/vfs` asserts the
+full diagnostics surface on both `*VFS` and `*Namespace`
+(`namespace_diagnostics_test.go`), and `internal/drivecopy` asserts
+`DriverCopySource` on `*Namespace`.
+
 ## Runtime Assembly
 
 `pkg/core` is the reusable composition root:
