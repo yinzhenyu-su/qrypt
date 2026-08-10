@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -49,6 +50,14 @@ func openFileSystem(cmd *cobra.Command) (context.Context, builtFS, func(), error
 	}
 	fs.Start(ctx)
 	return ctx, fs, func() {
+		// Shut down in dependency order: wait for the filesystem's workers
+		// (journal/staging writes, read-cache flush) to finish BEFORE
+		// cleaning up external resources, then stop the signal context.
+		// Cancelling first would make Close asynchronous and let cleanup
+		// race the still-running workers.
+		if err := fs.Close(context.Background()); err != nil {
+			logging.L.Warnf("[CLI] filesystem close: %v", err)
+		}
 		cleanup()
 		stop()
 	}, nil

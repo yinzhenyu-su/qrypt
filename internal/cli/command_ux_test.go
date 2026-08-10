@@ -124,7 +124,8 @@ func TestDebugCollectDiagnosticsPendingJournalDuplicates(t *testing.T) {
 		Cache: &control.CacheResponse{
 			Mounts: []control.DebugCacheMountStatus{{
 				Mount: "cloud",
-				Cache: vfs.DebugReadCache{
+				Cache: vfs.DebugCacheSnapshot{
+					DebugReadCache: vfs.DebugReadCache{},
 					Journal: &vfs.DebugJournal{
 						Path:               "/tmp/pending.jsonl",
 						Exists:             true,

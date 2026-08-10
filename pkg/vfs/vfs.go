@@ -4,9 +4,14 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
+	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
+	"github.com/yinzhenyu/qrypt/internal/vfs/observe"
+	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"os"
 	"path/filepath"
@@ -51,26 +56,58 @@ type VFS struct {
 	// stay top-level.
 	view    *viewState
 	read    *readState
-	upload  *uploadState
-	delete  *deleteState
+	reader  *read.Reader
+	uploads *UploadService
+	deletes *DeleteService
 	listing *listingState
+	lister  *listing.Lister
+	hashes  *uploadHashTrackerState
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
-	activeDebug *activeDebugState
+	activeDebug *observe.ActiveStore
+	faults      *faultinject.Registry
 	pathLocks   *pathLockState
 
-	// done is closed when the VFS shuts down (context cancel in Start). The
-	// blocking upload-queue enqueue goroutine selects on it so it cannot
-	// leak after the upload workers have exited.
+	// done is closed when the VFS shuts down (Close or context cancel in
+	// Start). The blocking upload-queue enqueue goroutine selects on it so
+	// it cannot leak after the upload workers have exited.
 	done chan struct{}
 	// ctx is the lifecycle context from Start, kept so background tasks
 	// (remote deletes, prefetch) derive from the owning context instead of
-	// context.Background(). Written once inside startOnce before any
-	// background task can observe it.
-	ctx       context.Context
-	startOnce sync.Once
+	// context.Background(). Written once inside Start before any background
+	// task can observe it.
+	ctx context.Context
+	// lifecycleMu serializes Start/Close state transitions; lifecycle
+	// tracks the current phase. Start registers every worker while holding
+	// the lock and teardown flips the state to closing under it, so a
+	// concurrent Start can never add workers after teardown began waiting.
+	lifecycleMu sync.Mutex
+	lifecycle   lifecycleState
+	// cancel cancels the lifecycle context; Close calls it first so upload
+	// workers exit and in-flight remote operations abort. Nil until Start.
+	cancel context.CancelFunc
+	// workerWG tracks the upload workers started by Start. Close waits for
+	// it so no worker outlives the VFS.
+	workerWG sync.WaitGroup
+	// closeOnce makes Close idempotent; closeErr holds the first Close's
+	// error (nil until the first Close completes) and is safe to read after
+	// any Close call returns.
+	closeOnce sync.Once
+	closeErr  error
+	// closeDone is closed when Close has finished tearing down background
+	// workers; callers and tests can wait on it.
+	closeDone chan struct{}
 }
+
+type lifecycleState uint8
+
+const (
+	lifecycleNew lifecycleState = iota
+	lifecycleRunning
+	lifecycleClosing
+	lifecycleClosed
+)
 
 type overlayOp struct {
 	oldPath string
@@ -113,6 +150,8 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	overlay, deleteTasks := newDeleteStates()
 	view := newViewState(opts.RootID, now)
 	view.overlay = overlay
+	done := make(chan struct{})
+	hashes := newUploadHashTrackerState()
 	v := &VFS{
 		driver:        driver,
 		name:          opts.Name,
@@ -120,16 +159,30 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		rootID:        opts.RootID,
 		encrypted:     opts.Encrypted,
 		testEnabled:   opts.TestEnabled,
-		done:          make(chan struct{}),
-		startOnce:     sync.Once{},
+		done:          done,
 		view:          view,
-		read:          newReadState(stores.readCacheStore),
-		upload:        newUploadState(stores.uploadStore, opts),
-		delete:        newDeleteState(deleteTasks, opts.DeleteDelay),
-		listing:       newListingState(),
-		activeDebug:   newActiveDebugState(),
+		read:          read.NewState(stores.readCacheStore),
+		hashes:        hashes,
+		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
+		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
+		listing:       listing.NewState(),
+		activeDebug:   observe.NewActiveStore(opts.Name),
+		faults:        faultinject.NewRegistry(0),
 		pathLocks:     newPathLockState(),
+		closeDone:     make(chan struct{}),
 	}
+	v.reader = read.NewReader(read.ReaderDeps{
+		Host:     newVFSReadHost(v),
+		State:    v.read,
+		Observer: newVFSReadObserver(v),
+		Health:   vfsReadHealth{tracker: v.healthTracker},
+	})
+	v.lister = listing.NewLister(listing.ListerDeps{
+		Remote: newVFSListingRemote(v),
+		View:   newVFSListingView(v),
+		State:  v.listing,
+		Health: vfsListingHealth{tracker: v.healthTracker},
+	})
 	return v, nil
 }
 
@@ -138,35 +191,134 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 // Lifecycle ownership: the FIRST context passed to Start owns the VFS
 // lifecycle. Later Start calls are no-ops - they do not start a second set
 // of workers, do not re-run resume (which would double-schedule pending
-// uploads) and do not register a second shutdown hook (which would
-// double-close internal channels). A different context passed to a second
-// Start is ignored: cancelling it does not stop the VFS, and there is no
-// way to transfer or replace ownership. Once Start has been called, the
-// instance runs until the owning context is cancelled; a cancelled instance
-// cannot be restarted by calling Start again - build a new VFS instead.
+// uploads) and do not register a second shutdown hook. A different context
+// passed to a second Start is ignored: cancelling it does not stop the
+// VFS. Once Start has been called, the instance runs until Close (or the
+// owning context cancelling, which triggers Close) - build a new VFS to
+// restart.
 func (v *VFS) Start(ctx context.Context) {
-	v.startOnce.Do(func() {
-		v.ctx = ctx
-		for i := 0; i < v.upload.workers; i++ {
-			go v.uploadWorker(ctx)
-		}
+	v.lifecycleMu.Lock()
+	if v.lifecycle != lifecycleNew {
+		// Already running, or teardown already began/ended: never start a
+		// second set of workers, and never start workers on an instance
+		// being (or already) closed.
+		v.lifecycleMu.Unlock()
+		return
+	}
+	v.lifecycle = lifecycleRunning
+	ctx, cancel := context.WithCancel(ctx)
+	v.ctx = ctx
+	v.cancel = cancel
+	// Register every worker under the lifecycle lock so a concurrent
+	// teardown that flips the state to closing and starts waiting sees a
+	// complete WaitGroup (no Add after Wait).
+	for i := 0; i < v.uploads.WorkerCount(); i++ {
+		v.workerWG.Add(1)
+		go func() {
+			defer v.workerWG.Done()
+			v.uploadWorker(ctx)
+		}()
+	}
+	v.lifecycleMu.Unlock()
+
+	// Resume only while still running: a concurrent Close that already
+	// flipped the state would otherwise receive new scheduled work it no
+	// longer owns. (The upload service's own stopped flag makes the worst
+	// case a discarded timer, never a leak.)
+	v.lifecycleMu.Lock()
+	running := v.lifecycle == lifecycleRunning
+	v.lifecycleMu.Unlock()
+	if running {
 		v.Resume(ctx)
-		// Graceful stop: when the context is cancelled, stop the upload/delete
-		// timers and close the read-cache writer so no background goroutine
-		// outlives the VFS. Upload workers exit on ctx.Done themselves; the
-		// cache writer only exits when its queue is closed, which CloseReadCache
-		// does and waits for.
-		context.AfterFunc(ctx, func() {
-			close(v.done)
-			v.delete.Close()
-			v.upload.Close()
-			_ = v.read.Close()
-		})
+	}
+	// Graceful stop: when the owning context is cancelled (or Close is
+	// called directly), stop the upload/delete timers, wait for the
+	// upload workers, and close the read-cache writer so no background
+	// goroutine outlives the VFS. Close is idempotent, so an explicit
+	// Close call racing this hook is safe.
+	context.AfterFunc(ctx, func() { _ = v.Close(context.Background()) })
+}
+
+// Close shuts down the VFS and waits for all background work to finish.
+//
+// It is idempotent: the first call starts the teardown and later calls
+// return the same result. Close can be called before Start (it tears down
+// construction-time resources such as the read-cache writer) and after the
+// owning context was cancelled (the Start hook calls Close itself), and it
+// can race Start or the context-cancel hook safely: Start and Close are
+// serialized by the lifecycle lock, so Close never tears down under a
+// Start that is still adding workers.
+//
+// Close stops accepting new background work, cancels the lifecycle context
+// (upload workers exit, in-flight remote operations abort), stops
+// upload/delete timers, waits for upload workers and background enqueue
+// goroutines to exit, and closes the read-cache writer, flushing queued
+// writes. Teardown runs in a single background flow: Close returns when it
+// completes, or early with ctx.Err() if ctx is done first - the teardown
+// keeps running and a later Close call waits for it to finish.
+func (v *VFS) Close(ctx context.Context) error {
+	v.closeOnce.Do(func() {
+		go v.teardown()
 	})
+	select {
+	case <-v.closeDone:
+		return v.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// teardown is the single background flow that releases all VFS resources.
+// It is started once by the first Close call and always runs to completion;
+// Close callers may time out and return early, but teardown is never
+// aborted.
+func (v *VFS) teardown() {
+	v.lifecycleMu.Lock()
+	switch v.lifecycle {
+	case lifecycleNew:
+		// Never started: only the construction-time read-cache writer needs
+		// closing; nothing to cancel or wait on.
+		v.lifecycle = lifecycleClosed
+		v.lifecycleMu.Unlock()
+		var errs []error
+		if err := v.read.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		v.closeErr = errors.Join(errs...)
+		close(v.closeDone)
+		return
+	case lifecycleRunning:
+		// Flip to closing under the lock: a concurrent Start sees non-New
+		// and cannot Add workers after we start waiting.
+		v.lifecycle = lifecycleClosing
+		v.lifecycleMu.Unlock()
+	case lifecycleClosing, lifecycleClosed:
+		// closeOnce makes teardown single-flight; this is defensive.
+		v.lifecycleMu.Unlock()
+		return
+	}
+
+	if v.cancel != nil {
+		v.cancel()
+	}
+	v.uploads.Close()
+	v.deletes.Close()
+	close(v.done)
+	v.workerWG.Wait()
+	v.uploads.Wait()
+	var errs []error
+	if err := v.read.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	v.closeErr = errors.Join(errs...)
+	v.lifecycleMu.Lock()
+	v.lifecycle = lifecycleClosed
+	v.lifecycleMu.Unlock()
+	close(v.closeDone)
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
-	if !newVFSListScheduler(v).StartDirPrefetch(ctx) {
+	if !v.startDirPrefetch(ctx) {
 		return
 	}
 
@@ -239,11 +391,11 @@ func isAppleMetadataName(name string) bool {
 }
 
 func (v *VFS) FlushReadCache() error {
-	return v.read.cache.FlushReadCache()
+	return v.read.FlushReadCache()
 }
 
 func (v *VFS) ClearReadCache() error {
-	return v.read.cache.ClearReadCache()
+	return v.read.ClearReadCache()
 }
 
 func (v *VFS) CloseReadCache() error {
@@ -251,12 +403,12 @@ func (v *VFS) CloseReadCache() error {
 }
 
 func (v *VFS) Resume(ctx context.Context) {
-	for _, pending := range v.upload.store.PendingUploads() {
+	for _, pending := range v.uploads.Store().PendingUploads() {
 		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
 			oldSize := pending.Size
 			pending.Size = info.Size()
 			pending.UpdatedAt = timeutil.Now().UnixNano()
-			if err := v.upload.store.SaveUpload(pending); err != nil {
+			if err := v.uploads.Store().SaveUpload(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
 			} else {
 				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
@@ -288,14 +440,14 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 		return
 	}
 	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
-		v.read.cache.InvalidateFile(cacheKey)
+		v.read.InvalidateFile(cacheKey)
 	}
-	v.read.cache.InvalidateFile(entry.ID)
+	v.read.InvalidateFile(entry.ID)
 }
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 	path = cleanVirtual(path)
-	if pending, ok := v.upload.store.UploadByPath(path); ok {
+	if pending, ok := v.uploads.Store().UploadByPath(path); ok {
 		return pending, nil
 	}
 	return PendingUpload{}, fmt.Errorf("vfs: no pending file for %s", path)

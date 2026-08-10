@@ -203,7 +203,7 @@ func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
 				sawDriverTiming = true
 			}
 		case "fetch_chunk", "wait_chunk_load":
-			t.Fatalf("read debug event still uses removed chunk load phase: %+v", event)
+			t.Fatalf("read debug event still uses removed chunk load Phase: %+v", event)
 		}
 	}
 	if !sawWindow {

@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -79,7 +80,7 @@ func (r *fakeUploadWorkerRuntime) SendUpload(PendingUpload) {}
 func TestUploadPendingWithRuntimeCleansRemovedPending(t *testing.T) {
 	pending := PendingUpload{Path: "/file.txt", FID: "old", LocalPath: "/tmp/old"}
 	runtime := &fakeUploadWorkerRuntime{supported: true}
-	if err := uploadPendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
+	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.removed) != 1 || runtime.removed[0] != pending.LocalPath {
@@ -94,7 +95,7 @@ func TestUploadPendingWithRuntimeRequeuesFrozenSupersededUpload(t *testing.T) {
 	pending := PendingUpload{Path: "/file.txt", FID: "old", LocalPath: "/tmp/old", Frozen: true}
 	latest := PendingUpload{Path: "/file.txt", FID: "new", LocalPath: "/tmp/new", Frozen: true}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: latest, latestOK: true}
-	if err := uploadPendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
+	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.removed) != 1 || runtime.removed[0] != pending.LocalPath {
@@ -108,7 +109,7 @@ func TestUploadPendingWithRuntimeRequeuesFrozenSupersededUpload(t *testing.T) {
 func TestUploadPendingWithRuntimeDelaysForQuietWindow(t *testing.T) {
 	pending := PendingUpload{Path: "/file.txt", FID: "same", LocalPath: "/tmp/file"}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: pending, latestOK: true, quietDelay: 2 * time.Second}
-	if err := uploadPendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
+	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.requeueDelays) != 1 || runtime.requeueDelays[0] != 2*time.Second {
@@ -122,7 +123,7 @@ func TestUploadPendingWithRuntimeDelaysForQuietWindow(t *testing.T) {
 func TestUploadPendingWithRuntimeDelaysWhenAdmissionUnavailable(t *testing.T) {
 	pending := PendingUpload{Path: "/file.txt", FID: "same", LocalPath: "/tmp/file"}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: pending, latestOK: true, quietWindow: 3 * time.Second}
-	if err := uploadPendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
+	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.requeueDelays) != 1 || runtime.requeueDelays[0] != 3*time.Second {
@@ -133,7 +134,7 @@ func TestUploadPendingWithRuntimeDelaysWhenAdmissionUnavailable(t *testing.T) {
 func TestUploadPendingWithRuntimeExecutesAndReleasesAdmission(t *testing.T) {
 	pending := PendingUpload{Path: "/file.txt", FID: "same", LocalPath: "/tmp/file"}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: pending, latestOK: true, acquire: true}
-	if err := uploadPendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
+	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.executed != 1 || runtime.released != 1 {
@@ -158,7 +159,7 @@ func TestUploadQueueBlockingEnqueueExitsOnShutdown(t *testing.T) {
 	}()
 	// Shrink the queue so the second SendUpload hits the blocking path; no
 	// worker is started, so the slot stays occupied.
-	v.upload.queue = make(chan PendingUpload, 1)
+	v.uploads.SetQueue(make(chan PendingUpload, 1))
 	r := vfsUploadWorkerRuntime{v: v}
 	r.SendUpload(PendingUpload{FID: "a", Path: "/a"})
 	r.SendUpload(PendingUpload{FID: "b", Path: "/b"})
@@ -167,7 +168,7 @@ func TestUploadQueueBlockingEnqueueExitsOnShutdown(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if err := goleak.Find(goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/pkg/vfs.(*readCacheStore).runReadCacheWriter")); err == nil {
+		if err := goleak.Find(goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/internal/vfs/readcache.(*Store).runReadCacheWriter")); err == nil {
 			return
 		}
 		if time.Now().After(deadline) {

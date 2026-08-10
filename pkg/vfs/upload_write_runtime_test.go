@@ -13,7 +13,7 @@ func TestVFSUploadWriteRuntimeOwnsWriteAdapters(t *testing.T) {
 	}
 	runtime := newVFSUploadWriteRuntime(fs)
 
-	if _, ok := any(runtime.Store()).(uploadStoreWriteAdapter); !ok {
+	if runtime.Store() == nil {
 		t.Fatal("expected upload write store")
 	}
 	if _, ok := any(runtime.HashTracker()).(vfsUploadWriteHashTracker); !ok {

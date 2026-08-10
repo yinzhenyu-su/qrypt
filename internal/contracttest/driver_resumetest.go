@@ -111,7 +111,6 @@ func RunVFSResumeTest(ctx context.Context, fs vfs.FileSystem, mount string, size
 			Path:       file,
 			Phase:      drive.UploadPhaseUploading,
 			AfterBytes: afterBytes,
-			Once:       true,
 			Reason:     "debug_resume_test",
 		})
 		if err == nil {

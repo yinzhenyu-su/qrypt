@@ -2,19 +2,21 @@ package vfs
 
 import (
 	"context"
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/internal/logging"
+	idelete "github.com/yinzhenyu/qrypt/internal/vfs/delete"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
-	if v.delete.delay <= 0 {
+	if v.deletes.delay <= 0 {
 		logging.L.Infof("[VFS] delete remote now path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(v.lifecycleContext(), path, entry)
 		return
 	}
-	newVFSDeleteScheduler(v).Schedule(path, entry, v.delete.delay, func() {
+	newVFSDeleteScheduler(v).Schedule(path, entry, v.deletes.delay, func() {
 		logging.L.Infof("[VFS] delete timer fired path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
 		v.deleteRemote(v.lifecycleContext(), path, entry)
 	})
@@ -34,76 +36,53 @@ func (v *VFS) cancelChildDeletes(dir string) {
 	newVFSDeleteScheduler(v).CancelChildren(dir)
 }
 func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) {
-	v.deleteRemoteWithRuntime(ctx, path, entry, newVFSDeleteRemoteRuntime(v))
+	idelete.NewExecutor(newVFSDeleteExecutorDeps(v)).Execute(ctx, path, entry)
 }
 
-func (v *VFS) deleteRemoteWithRuntime(ctx context.Context, path string, entry drive.Entry, runtime deleteRemoteRuntime) {
-	if !runtime.BeginRemoteDelete(path, entry) {
-		logging.L.Infof("[VFS] delete remote skipped path=%q id=%q", path, entry.ID)
-		return
+// newVFSDeleteExecutorDeps adapts VFS internals to idelete.ExecutorDeps.
+func newVFSDeleteExecutorDeps(v *VFS) idelete.ExecutorDeps {
+	return idelete.ExecutorDeps{
+		Driver:  newVFSDriverRuntime(v),
+		Overlay: vfsDeleteOverlayOps{v: v},
+		Health:  v.healthTracker,
+		Upload:  vfsDeleteUploadCleanup{v: v},
 	}
-	err := runtime.RemoveRemote(ctx, entry)
-	runtime.RecordDeleteHealth(err)
-	if err != nil {
-		logging.L.Warnf("[VFS] delete remote failed path=%q id=%q dir=%t err=%v", path, entry.ID, entry.IsDir, err)
-		runtime.MarkRemoteDeleteFailed(path, err)
-		return
-	}
-	logging.L.Infof("[VFS] delete remote complete path=%q id=%q dir=%t", path, entry.ID, entry.IsDir)
-	runtime.MarkRemoteDeleteComplete(path, entry)
-	runtime.CleanupUploadState(path)
 }
 
-type deleteRemoteRuntime interface {
-	BeginRemoteDelete(path string, entry drive.Entry) bool
-	RemoveRemote(ctx context.Context, entry drive.Entry) error
-	RecordDeleteHealth(err error)
-	MarkRemoteDeleteFailed(path string, err error)
-	MarkRemoteDeleteComplete(path string, entry drive.Entry)
-	CleanupUploadState(path string)
-}
-
-type vfsDeleteRemoteRuntime struct {
+type vfsDeleteOverlayOps struct {
 	v *VFS
 }
 
-func newVFSDeleteRemoteRuntime(v *VFS) vfsDeleteRemoteRuntime {
-	return vfsDeleteRemoteRuntime{v: v}
-}
-
-func (r vfsDeleteRemoteRuntime) BeginRemoteDelete(path string, entry drive.Entry) bool {
+func (r vfsDeleteOverlayOps) BeginDelete(path string, entryID string) bool {
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
 	current, ok := r.v.view.overlay.deleted[path]
-	if !ok || current.ID != entry.ID {
+	if !ok || current.ID != entryID {
 		return false
 	}
-	r.v.delete.tasks.active[path] = entry
-	delete(r.v.delete.tasks.failures, path)
 	return true
 }
 
-func (r vfsDeleteRemoteRuntime) RemoveRemote(ctx context.Context, entry drive.Entry) error {
-	return newVFSDriverRuntime(r.v).Remove(ctx, entry)
-}
-
-func (r vfsDeleteRemoteRuntime) RecordDeleteHealth(err error) {
-	r.v.healthTracker.RecordResult(drive.HealthOpDelete, err)
-}
-
-func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteFailed(path string, err error) {
+func (r vfsDeleteOverlayOps) MarkDeleteActive(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	delete(r.v.delete.tasks.active, path)
+	r.v.deletes.tasks.active[path] = entry
+	delete(r.v.deletes.tasks.failures, path)
+}
+
+func (r vfsDeleteOverlayOps) MarkDeleteFailed(path string, err error) {
+	r.v.view.overlay.mu.Lock()
+	defer r.v.view.overlay.mu.Unlock()
+	delete(r.v.deletes.tasks.active, path)
 	if err != nil {
-		r.v.delete.tasks.failures[path] = err.Error()
+		r.v.deletes.tasks.failures[path] = err.Error()
 	}
 }
 
-func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteComplete(path string, entry drive.Entry) {
+func (r vfsDeleteOverlayOps) MarkDeleteComplete(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Lock()
-	delete(r.v.delete.tasks.active, path)
-	delete(r.v.delete.tasks.failures, path)
+	delete(r.v.deletes.tasks.active, path)
+	delete(r.v.deletes.tasks.failures, path)
 	delete(r.v.view.overlay.deleted, path)
 	delete(r.v.view.overlay.restoredDirs, path)
 	r.v.view.overlay.mu.Unlock()
@@ -113,9 +92,22 @@ func (r vfsDeleteRemoteRuntime) MarkRemoteDeleteComplete(path string, entry driv
 	r.v.view.mu.Unlock()
 }
 
-func (r vfsDeleteRemoteRuntime) CleanupUploadState(path string) {
-	if err := r.v.upload.store.RemoveUpload(path); err == nil {
-		r.v.upload.hashes.removePath(path)
+func (r vfsDeleteOverlayOps) CancelDelete(path string) {
+	r.v.view.overlay.mu.Lock()
+	defer r.v.view.overlay.mu.Unlock()
+	delete(r.v.deletes.tasks.active, path)
+	delete(r.v.deletes.tasks.failures, path)
+	r.v.deletes.tasks.scheduler.Cancel(path)
+	delete(r.v.view.overlay.deleted, path)
+}
+
+type vfsDeleteUploadCleanup struct {
+	v *VFS
+}
+
+func (r vfsDeleteUploadCleanup) RemoveUploadState(path string) {
+	if err := r.v.uploads.Store().RemoveUpload(path); err == nil {
+		r.v.hashes.removePath(path)
 	}
 }
 
@@ -129,33 +121,28 @@ func newVFSDeleteScheduler(v *VFS) vfsDeleteScheduler {
 
 func (s vfsDeleteScheduler) Schedule(path string, entry drive.Entry, delay time.Duration, fire func()) {
 	s.v.view.overlay.mu.Lock()
-	defer s.v.view.overlay.mu.Unlock()
-	delete(s.v.delete.tasks.failures, path)
-	if timer := s.v.delete.tasks.timers[path]; timer != nil {
-		timer.Stop()
-	}
-	s.v.delete.tasks.timers[path] = time.AfterFunc(delay, func() {
-		s.v.view.overlay.mu.Lock()
-		delete(s.v.delete.tasks.timers, path)
-		s.v.view.overlay.mu.Unlock()
-		fire()
-	})
+	delete(s.v.deletes.tasks.failures, path)
+	s.v.view.overlay.mu.Unlock()
+	s.v.deletes.tasks.scheduler.Schedule(path, delay, fire)
 }
 
 func (s vfsDeleteScheduler) CancelChildren(dir string) {
 	dir = cleanVirtual(dir)
+	removed := []string{}
+	for path := range s.v.deletes.tasks.scheduler.Keys() {
+		if isPathUnder(path, dir) {
+			removed = append(removed, path)
+		}
+	}
+	s.v.deletes.tasks.scheduler.CancelUnder(dir)
 	s.v.view.overlay.mu.Lock()
 	defer s.v.view.overlay.mu.Unlock()
-	for path, timer := range s.v.delete.tasks.timers {
-		if isPathUnder(path, dir) {
-			timer.Stop()
-			delete(s.v.delete.tasks.timers, path)
-			delete(s.v.view.overlay.deleted, path)
-			delete(s.v.delete.tasks.failures, path)
-		}
+	for _, path := range removed {
+		delete(s.v.view.overlay.deleted, path)
+		delete(s.v.deletes.tasks.failures, path)
 	}
 }
 
 func (s vfsDeleteScheduler) StopAll() {
-	s.v.delete.tasks.stopAll()
+	s.v.deletes.tasks.stopAll()
 }

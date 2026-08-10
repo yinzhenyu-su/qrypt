@@ -44,23 +44,19 @@ func TestDomainStateInitialized(t *testing.T) {
 		name string
 		ok   bool
 	}{
-		{"read", fs.read != nil}, {"upload", fs.upload != nil}, {"delete", fs.delete != nil},
+		{"read", fs.read != nil}, {"upload", fs.uploads != nil}, {"delete", fs.deletes != nil},
 		{"listing", fs.listing != nil}, {"activeDebug", fs.activeDebug != nil}, {"pathLocks", fs.pathLocks != nil},
-		{"read.cache", fs.read != nil && fs.read.cache != nil},
-		{"read.history", fs.read != nil && fs.read.history != nil},
-		{"read.prefetch", fs.read != nil && fs.read.prefetch != nil},
-		{"read.slots", fs.read != nil && fs.read.slots != nil},
-		{"read.fastPath", fs.read != nil && fs.read.fastPath != nil},
-		{"read.windows", fs.read != nil && fs.read.windows != nil},
-		{"listing.list", fs.listing != nil && fs.listing.list != nil},
-		{"listing.dirPrefetch", fs.listing != nil && fs.listing.dirPrefetch != nil},
-		{"upload.store", fs.upload != nil && fs.upload.store != nil},
-		{"upload.queue", fs.upload != nil && fs.upload.queue != nil},
-		{"upload.schedule", fs.upload != nil && fs.upload.schedule != nil},
-		{"upload.debug", fs.upload != nil && fs.upload.debug != nil},
-		{"upload.faults", fs.upload != nil && fs.upload.faults != nil},
-		{"upload.hashes", fs.upload != nil && fs.upload.hashes != nil},
-		{"delete.tasks", fs.delete != nil && fs.delete.tasks != nil},
+		{"read.cache", fs.read != nil && fs.read.Cache() != nil},
+		{"read.history", fs.read != nil && fs.read.History() != nil},
+		{"read.runtime", fs.read != nil && fs.read.StatesReady()},
+		{"listing.states", fs.listing != nil && fs.listing.StatesReady()},
+		{"upload.store", fs.uploads != nil && fs.uploads.Store() != nil},
+		{"upload.queue", fs.uploads != nil && fs.uploads.Queue() != nil},
+		{"upload.schedule", fs.uploads != nil && fs.uploads.ScheduledDeadlines() != nil},
+		{"upload.debug", fs.uploads != nil && fs.uploads.DebugState() != nil},
+		{"upload.faults", fs.faults != nil},
+		{"upload.hashes", fs.uploads != nil && fs.hashes != nil},
+		{"delete.tasks", fs.deletes != nil && fs.deletes.tasks != nil},
 	} {
 		if !state.ok {
 			t.Errorf("domain state %s not initialized after New", state.name)
@@ -73,10 +69,10 @@ func TestDomainStateInitialized(t *testing.T) {
 // safe - no panic, no double-close error, no leak.
 func TestDomainCloseIdempotent(t *testing.T) {
 	fs := newStateTestVFS(t)
-	fs.upload.Close()
-	fs.upload.Close()
-	fs.delete.Close()
-	fs.delete.Close()
+	fs.uploads.Close()
+	fs.uploads.Close()
+	fs.deletes.Close()
+	fs.deletes.Close()
 	if err := fs.read.Close(); err != nil {
 		t.Fatalf("read.Close: %v", err)
 	}
@@ -114,16 +110,12 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	if err := fs.Flush(ctx, "/a.txt"); err != nil {
 		t.Fatal(err)
 	}
-	fs.upload.schedule.mu.Lock()
-	armed := len(fs.upload.schedule.timers)
-	fs.upload.schedule.mu.Unlock()
+	armed := len(fs.uploads.ScheduledDeadlines())
 	if armed == 0 {
 		t.Fatal("upload debounce timer not armed after write")
 	}
-	fs.upload.Close()
-	fs.upload.schedule.mu.Lock()
-	left := len(fs.upload.schedule.timers)
-	fs.upload.schedule.mu.Unlock()
+	fs.uploads.Close()
+	left := len(fs.uploads.ScheduledDeadlines())
 	if left != 0 {
 		t.Fatalf("upload.Close left %d timers armed", left)
 	}
@@ -146,27 +138,23 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := fs2.upload.store.UploadByPath("/del.txt"); !ok {
+		if _, ok := fs2.uploads.Store().UploadByPath("/del.txt"); !ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, ok := fs2.upload.store.UploadByPath("/del.txt"); ok {
+	if _, ok := fs2.uploads.Store().UploadByPath("/del.txt"); ok {
 		t.Fatalf("upload did not complete before delete check")
 	}
 	if err := fs2.Remove(ctx, "/del.txt"); err != nil {
 		t.Fatal(err)
 	}
-	fs2.delete.tasks.mu.Lock()
-	darmed := len(fs2.delete.tasks.timers)
-	fs2.delete.tasks.mu.Unlock()
+	darmed := len(fs2.deletes.tasks.scheduler.Keys())
 	if darmed == 0 {
 		t.Fatal("delete debounce timer not armed after remove")
 	}
-	fs2.delete.Close()
-	fs2.delete.tasks.mu.Lock()
-	dleft := len(fs2.delete.tasks.timers)
-	fs2.delete.tasks.mu.Unlock()
+	fs2.deletes.Close()
+	dleft := len(fs2.deletes.tasks.scheduler.Keys())
 	if dleft != 0 {
 		t.Fatalf("delete.Close left %d timers armed", dleft)
 	}
@@ -184,13 +172,13 @@ func TestUploadQueueEnqueueExitsOnShutdown(t *testing.T) {
 	// space appears.
 	alive := newStateTestVFS(t)
 	aliveRuntime := newVFSUploadWorkerRuntime(alive)
-	for i := 0; i < cap(alive.upload.queue); i++ {
-		alive.upload.queue <- PendingUpload{Path: "/fill", FID: "fill"}
+	for i := 0; i < cap(alive.uploads.Queue()); i++ {
+		alive.uploads.Queue() <- PendingUpload{Path: "/fill", FID: "fill"}
 	}
 	delivered := make(chan bool, 1)
 	go func() { delivered <- aliveRuntime.enqueueBlocking(PendingUpload{Path: "/waited", FID: "waited"}) }()
 	time.Sleep(20 * time.Millisecond) // let it park on the full queue
-	<-alive.upload.queue              // make room; no worker races for it
+	<-alive.uploads.Queue()           // make room; no worker races for it
 	select {
 	case ok := <-delivered:
 		if !ok {
@@ -205,15 +193,15 @@ func TestUploadQueueEnqueueExitsOnShutdown(t *testing.T) {
 	// satisfiable. No worker is running, so the assertion is deterministic.
 	fs := newStateTestVFS(t)
 	runtime := newVFSUploadWorkerRuntime(fs)
-	for i := 0; i < cap(fs.upload.queue); i++ {
-		fs.upload.queue <- PendingUpload{Path: "/fill", FID: "fill"}
+	for i := 0; i < cap(fs.uploads.Queue()); i++ {
+		fs.uploads.Queue() <- PendingUpload{Path: "/fill", FID: "fill"}
 	}
 	close(fs.done)
 	if runtime.enqueueBlocking(PendingUpload{Path: "/blocked", FID: "blocked"}) {
 		t.Fatal("enqueue delivered after shutdown")
 	}
 
-	fs.delete.Close()
-	fs.upload.Close()
+	fs.deletes.Close()
+	fs.uploads.Close()
 	_ = fs.read.Close()
 }

@@ -19,7 +19,7 @@ func benchVFSWithPendingUploads(b *testing.B, pending int) *VFS {
 	}
 	for i := 0; i < pending; i++ {
 		path := fmt.Sprintf("/pending-%d.txt", i)
-		if err := fs.upload.store.SaveUpload(PendingUpload{Path: path, FID: fmt.Sprintf("fid-%d", i), Name: fmt.Sprintf("pending-%d.txt", i), LocalPath: path}); err != nil {
+		if err := fs.uploads.Store().SaveUpload(PendingUpload{Path: path, FID: fmt.Sprintf("fid-%d", i), Name: fmt.Sprintf("pending-%d.txt", i), LocalPath: path}); err != nil {
 			b.Fatal(err)
 		}
 	}
