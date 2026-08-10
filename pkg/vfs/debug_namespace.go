@@ -14,6 +14,25 @@ import (
 // per-mount diagnostics (path routing, mount filtering, name decoration,
 // cross-mount remote-ID lookup). The aggregation logic itself lives in
 // internal/vfs/diagnostics.
+
+// sortedMounts copies the mount list under the namespace read lock (in
+// stable name order) so callers can run potentially slow per-mount
+// queries without holding the lock - management/close never wait on
+// driver I/O.
+func (n *Namespace) sortedMounts() []Mount {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	names := make([]string, 0, len(n.mounts))
+	for name := range n.mounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	mounts := make([]Mount, 0, len(names))
+	for _, name := range names {
+		mounts = append(mounts, Mount{Name: name, FS: n.mounts[name]})
+	}
+	return mounts
+}
 func (n *Namespace) DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugActiveMount, error) {
 	n.mu.RLock()
 	names := make([]string, 0, len(n.mounts))
@@ -82,10 +101,9 @@ func (n *Namespace) DebugClearUploadCancel(ctx context.Context, id string) error
 }
 
 func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	var out []DebugUploadCancelFault
-	for name, mount := range n.mounts {
+	for _, m := range n.sortedMounts() {
+		name, mount := m.Name, m.FS
 		for _, fault := range mount.DebugUploadCancelFaults(ctx) {
 			if fault.ID != "" {
 				fault.ID = name + ":" + fault.ID
@@ -103,39 +121,27 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 }
 
 func (n *Namespace) Drivers() []NamedDriver {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	var result []NamedDriver
-	names := make([]string, 0, len(n.mounts))
-	for name := range n.mounts {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		fs := n.mounts[name]
-		result = append(result, newVFSDriverRuntime(fs).NamedDriver(name))
+	for _, m := range n.sortedMounts() {
+		result = append(result, newVFSDriverRuntime(m.FS).NamedDriver(m.Name))
 	}
 	return result
 }
 
 func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	if mountName != "" {
-		vfs, ok := n.mounts[cleanMountName(mountName)]
+		key := cleanMountName(mountName)
+		n.mu.RLock()
+		vfs, ok := n.mounts[key]
+		n.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("vfs: mount %q not found", mountName)
 		}
 		return vfs.MountHealth(ctx, mountName)
 	}
 	var results []MountHealth
-	names := make([]string, 0, len(n.mounts))
-	for name := range n.mounts {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		health, _ := n.mounts[name].MountHealth(ctx, name)
+	for _, m := range n.sortedMounts() {
+		health, _ := m.FS.MountHealth(ctx, m.Name)
 		results = append(results, health...)
 	}
 	return results, nil
@@ -167,22 +173,29 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 	// Copy the mount list under the read lock, then release it before the
 	// (potentially slow) per-mount remote-ID queries, so management and
 	// close operations never wait on them.
-	n.mu.RLock()
-	mounts := make([]Mount, 0, len(n.mounts))
-	for name, fs := range n.mounts {
-		mounts = append(mounts, Mount{Name: name, FS: fs})
-	}
-	n.mu.RUnlock()
-	for _, m := range mounts {
+	var found *DebugResolveInfo
+	var foundName string
+	for _, m := range n.sortedMounts() {
 		info, err := m.FS.DebugResolveByRemoteID(ctx, remoteID)
-		if err == nil {
-			info.Mount = m.Name
-			info.Path = joinVirtual("/"+m.Name, strings.TrimPrefix(info.Path, "/"))
-			info.Parent = filepath.Dir(info.Path)
-			return &info, m.Name, nil
+		if err != nil {
+			continue
 		}
+		if found != nil {
+			// Different drivers can legitimately reuse IDs (e.g. "0" or
+			// "root"); refuse to guess which mount the caller meant.
+			return nil, "", fmt.Errorf(
+				"vfs: remote ID %q is ambiguous across mounts %q and %q; specify a mount", remoteID, foundName, m.Name)
+		}
+		info.Mount = m.Name
+		info.Path = joinVirtual("/"+m.Name, strings.TrimPrefix(info.Path, "/"))
+		info.Parent = filepath.Dir(info.Path)
+		found = &info
+		foundName = m.Name
 	}
-	return nil, "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
+	if found == nil {
+		return nil, "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
+	}
+	return found, foundName, nil
 }
 
 func (n *Namespace) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
@@ -213,16 +226,9 @@ func (n *Namespace) DebugSnapshot() DebugSnapshot {
 		Kind:          "namespace",
 		Process:       debugProcess(),
 	}
-	n.mu.RLock()
-	names := make([]string, 0, len(n.mounts))
-	for name := range n.mounts {
-		names = append(names, name)
+	for _, m := range n.sortedMounts() {
+		snapshot.Mounts = append(snapshot.Mounts, m.FS.debugMountSnapshot(m.Name))
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		snapshot.Mounts = append(snapshot.Mounts, n.mounts[name].debugMountSnapshot(name))
-	}
-	n.mu.RUnlock()
 	return snapshot
 }
 
@@ -292,17 +298,10 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStaging
 		return report, nil
 	}
 
-	n.mu.RLock()
-	names := make([]string, 0, len(n.mounts))
-	for name := range n.mounts {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		item := n.mounts[name].debugStagingMount(name, "/")
-		diagnostics.PrefixStagingMountPaths(&item, name)
+	for _, m := range n.sortedMounts() {
+		item := m.FS.debugStagingMount(m.Name, "/")
+		diagnostics.PrefixStagingMountPaths(&item, m.Name)
 		report.Mounts = append(report.Mounts, item)
 	}
-	n.mu.RUnlock()
 	return report, nil
 }
