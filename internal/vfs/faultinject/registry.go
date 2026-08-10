@@ -50,6 +50,10 @@ type Fault struct {
 	MatchedPath string
 	Fired       bool
 	FiredAt     time.Time
+	// Order is the registry-wide injection sequence. Same-specificity
+	// matches break ties by Order (newest wins) - strictly deterministic,
+	// never dependent on timestamps or map iteration.
+	Order uint64
 	// claimed marks an in-flight once-rule claim; claimGen is the
 	// monotonically increasing token for that claim (never reused, so a
 	// stale Release/Fire from an old claim cannot affect a newer one).
@@ -153,7 +157,8 @@ func (r *Registry) Inject(req InjectRequest) (string, error) {
 	if req.TTL <= 0 {
 		req.TTL = r.defaultTTL
 	}
-	id := fmt.Sprintf("upload-cancel-%d", r.sequence.Add(1))
+	seq := r.sequence.Add(1)
+	id := fmt.Sprintf("upload-cancel-%d", seq)
 	fault := &Fault{
 		ID:         id,
 		Path:       req.Path,
@@ -165,6 +170,7 @@ func (r *Registry) Inject(req InjectRequest) (string, error) {
 		Reason:     req.Reason,
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(req.TTL),
+		Order:      seq,
 	}
 	r.mu.Lock()
 	r.faults[id] = fault
@@ -239,7 +245,7 @@ func (r *Registry) Match(now time.Time, path, opID string) (MatchResult, bool) {
 			continue
 		}
 		score := matchScore(fault)
-		if best == nil || score > bestScore || (score == bestScore && fault.CreatedAt.After(best.CreatedAt)) {
+		if best == nil || score > bestScore || (score == bestScore && fault.Order > best.Order) {
 			best = fault
 			bestScore = score
 		}

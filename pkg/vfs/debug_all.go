@@ -435,6 +435,64 @@ func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyRep
 	return diagnostics.Consistency(ctx, path, newVFSDebugResolveRuntime(v))
 }
 
+func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return DebugResolveInfo{}, err
+	}
+	if root {
+		return DebugResolveInfo{Path: "/", Parent: "/", PlainName: "/", IsDir: true}, nil
+	}
+	info, err := mount.DebugResolve(ctx, rest, includeRemoteName)
+	if err != nil {
+		return DebugResolveInfo{}, err
+	}
+	mountName := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
+	if idx := strings.Index(mountName, "/"); idx >= 0 {
+		mountName = mountName[:idx]
+	}
+	info.Path = joinVirtual("/"+mountName, strings.TrimPrefix(info.Path, "/"))
+	info.Parent = filepath.Dir(info.Path)
+	info.Mount = mountName
+	return info, nil
+}
+
+func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string) (*DebugResolveInfo, string, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for name, vfs := range n.mounts {
+		info, err := vfs.DebugResolveByRemoteID(ctx, remoteID)
+		if err == nil {
+			info.Mount = name
+			info.Path = joinVirtual("/"+name, strings.TrimPrefix(info.Path, "/"))
+			info.Parent = filepath.Dir(info.Path)
+			return &info, name, nil
+		}
+	}
+	return nil, "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
+}
+
+func (n *Namespace) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return ConsistencyReport{}, err
+	}
+	if root {
+		return ConsistencyReport{Path: "/", Status: "namespace_root"}, nil
+	}
+	report, err := mount.DebugConsistency(ctx, rest)
+	if err != nil {
+		return ConsistencyReport{}, err
+	}
+	mountName := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
+	if idx := strings.Index(mountName, "/"); idx >= 0 {
+		mountName = mountName[:idx]
+	}
+	report.Path = joinVirtual("/"+mountName, strings.TrimPrefix(report.Path, "/"))
+	report.Parent = filepath.Dir(report.Path)
+	return report, nil
+}
+
 func (r vfsDebugResolveRuntime) Resolve(ctx context.Context, path string) (drive.Entry, error) {
 	return r.v.resolve(ctx, path)
 }

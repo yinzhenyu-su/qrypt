@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -127,7 +128,7 @@ func (p *Progress) fireLocked() {
 	}
 	p.fired = true
 	logging.L.Warnf("[VFS] debug upload cancel fired fault=%q path=%q op_id=%q reason=%q", p.result.ID, p.result.Path, p.result.OpID, p.result.Reason)
-	p.reg.Complete(p.result.Handle, time.Now())
+	p.reg.Complete(p.result.Handle, timeutil.Now())
 	if p.cancel != nil {
 		p.cancel()
 	}

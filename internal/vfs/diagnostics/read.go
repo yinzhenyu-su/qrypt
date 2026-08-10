@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -19,7 +21,7 @@ type ReadRuntime interface {
 // RecordRead appends one completed vfs_read metric event (the read path's
 // debug observer). Pure orchestration: no VFS internals.
 func RecordRead(runtime ReadRuntime, opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
-	finished := time.Now()
+	finished := timeutil.Now()
 	if extra == nil {
 		extra = map[string]any{}
 	}
@@ -50,7 +52,7 @@ func RecordReadDetail(runtime ReadRuntime, ctx context.Context, path, remoteID, 
 	if !ok || op.OpID == "" {
 		return
 	}
-	finished := time.Now()
+	finished := timeutil.Now()
 	event := drive.MetricEvent{
 		At: finished, ParentOpID: op.OpID, Kind: "vfs_read", Operation: "read", Phase: phase, State: "completed", OK: true,
 		Path: path, RemoteID: remoteID, Offset: offset, Requested: requested,

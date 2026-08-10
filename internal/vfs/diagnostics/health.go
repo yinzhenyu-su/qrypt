@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/timeutil"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -37,9 +39,10 @@ type HealthRuntime interface {
 // AssembleHealth builds one mount's health report: tracker status merged
 // with driver metrics over the default window.
 func AssembleHealth(ctx context.Context, mountName string, runtime HealthRuntime) MountHealth {
-	h := MountHealth{Mount: mountName, CheckedAt: time.Now()}
+	now := timeutil.Now()
+	h := MountHealth{Mount: mountName, CheckedAt: now}
 	result := runtime.Status()
-	if metrics, err := runtime.DriverMetrics(ctx, time.Now().Add(-drive.DefaultHealthWindow)); err == nil {
+	if metrics, err := runtime.DriverMetrics(ctx, now.Add(-drive.DefaultHealthWindow)); err == nil {
 		driverHealth := drive.HealthStatusFromMetrics(metrics, drive.DefaultHealthWindow, drive.DefaultMaxEvents)
 		result = drive.MergeHealthStatus(result, driverHealth)
 	}
