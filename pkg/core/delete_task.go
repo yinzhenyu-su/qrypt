@@ -109,13 +109,17 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 		succeededNow := succeeded
 		activePaths = taskActivePaths(active)
 		resultSnapshot := compactItemResults(results)
-		mu.Unlock()
+		// The progress update runs UNDER the same lock that took the
+		// counters, so concurrent workers publish monotonic progress:
+		// a stale (lower) counter snapshot can never overwrite a newer
+		// one (update order == counter order).
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.ItemsDone = doneNow
 			taskItem.Progress.ItemsFailed = doneNow - succeededNow
 			taskItem.Result.Items = resultSnapshot
 			taskItem.Detail["active_paths"] = activePaths
 		})
+		mu.Unlock()
 	}
 	fileEnd := spec.DirStart
 	if fileEnd <= 0 || fileEnd > len(items) {
