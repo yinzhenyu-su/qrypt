@@ -24,8 +24,8 @@ func (r vfsDebugCacheRuntime) Journal() *DebugJournal {
 // upload journal attached, for tests.
 func (c *Stores) DebugReadCacheForTest() DebugCacheSnapshot {
 	return DebugCacheSnapshot{
-		DebugReadCache: c.readCacheStore.DebugSnapshot(),
-		Journal:        c.uploadStore.DebugJournal(),
+		DebugReadCache: c.DebugSnapshot(),
+		Journal:        c.DebugJournal(),
 	}
 }
 

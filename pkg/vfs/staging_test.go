@@ -20,11 +20,11 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldLocal, err := cache.uploadStore.CreateStaging("old-fid")
+	oldLocal, err := cache.CreateStaging("old-fid")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.uploadStore.WriteStagingAt(oldLocal, []byte("hello world"), 0); err != nil {
+	if _, err := cache.WriteStagingAt(oldLocal, []byte("hello world"), 0); err != nil {
 		t.Fatal(err)
 	}
 	old := PendingUpload{Path: "/file", FID: "old-fid", ParentID: "0", Name: "file", LocalPath: oldLocal, Size: 11, Frozen: true}
@@ -95,7 +95,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 	if latest.FID != old.FID || !latest.Frozen || latest.LocalPath != old.LocalPath {
 		t.Fatalf("pending after failed rotation = %+v, want old frozen pending", latest)
 	}
-	entries, err := os.ReadDir(cache.uploadStore.StagingDir())
+	entries, err := os.ReadDir(cache.StagingDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	live, err := cache.uploadStore.CreateStaging("live-fid")
+	live, err := cache.CreateStaging("live-fid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,11 +225,11 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
-	localPath, err := cache.uploadStore.CreateStaging("file")
+	localPath, err := cache.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.uploadStore.WriteStagingAt(localPath, []byte("snapshot-data"), 0); err != nil {
+	if _, err := cache.WriteStagingAt(localPath, []byte("snapshot-data"), 0); err != nil {
 		t.Fatal(err)
 	}
 	pending := PendingUpload{Path: "/file", FID: "file", LocalPath: localPath, Size: int64(len("snapshot-data"))}
@@ -276,11 +276,11 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 		pathLocks: newPathLockState(),
 		view:      newViewState("0", time.Now()),
 	}
-	localPath, err := cache.uploadStore.CreateStaging("file")
+	localPath, err := cache.CreateStaging("file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.uploadStore.WriteStagingAt(localPath, content, 0); err != nil {
+	if _, err := cache.WriteStagingAt(localPath, content, 0); err != nil {
 		t.Fatal(err)
 	}
 

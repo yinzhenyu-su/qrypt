@@ -80,9 +80,9 @@ func NewState() *State {
 	}
 }
 
-// BeginListLoad returns the in-flight load for parentPath, or registers a
+// beginListLoad returns the in-flight load for parentPath, or registers a
 // new one and reports ownership.
-func (s *State) BeginListLoad(parentPath string, prefetch bool) (*listLoad, bool) {
+func (s *State) beginListLoad(parentPath string, prefetch bool) (*listLoad, bool) {
 	s.list.loadMu.Lock()
 	defer s.list.loadMu.Unlock()
 	if load := s.list.loads[parentPath]; load != nil {

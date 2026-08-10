@@ -66,12 +66,12 @@ func randomString(n int) string {
 
 func encodeURIComponent(s string) string {
 	r := url.QueryEscape(s)
-	r = strings.Replace(r, "+", "%20", -1)
-	r = strings.Replace(r, "%21", "!", -1)
-	r = strings.Replace(r, "%27", "'", -1)
-	r = strings.Replace(r, "%28", "(", -1)
-	r = strings.Replace(r, "%29", ")", -1)
-	r = strings.Replace(r, "%2A", "*", -1)
+	r = strings.ReplaceAll(r, "+", "%20")
+	r = strings.ReplaceAll(r, "%21", "!")
+	r = strings.ReplaceAll(r, "%27", "'")
+	r = strings.ReplaceAll(r, "%28", "(")
+	r = strings.ReplaceAll(r, "%29", ")")
+	r = strings.ReplaceAll(r, "%2A", "*")
 	return r
 }
 

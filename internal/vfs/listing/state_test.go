@@ -12,11 +12,11 @@ import (
 func TestStateCoalescesListLoads(t *testing.T) {
 	scheduler := NewState()
 
-	load, owner := scheduler.BeginListLoad("/dir", false)
+	load, owner := scheduler.beginListLoad("/dir", false)
 	if !owner {
 		t.Fatal("first load should own")
 	}
-	waiter, owner := scheduler.BeginListLoad("/dir", true)
+	waiter, owner := scheduler.beginListLoad("/dir", true)
 	if owner {
 		t.Fatal("second load should wait")
 	}
@@ -31,7 +31,7 @@ func TestStateCoalescesListLoads(t *testing.T) {
 		t.Fatalf("waiter err = %v, want %v", waiter.err, wantErr)
 	}
 
-	next, owner := scheduler.BeginListLoad("/dir", false)
+	next, owner := scheduler.beginListLoad("/dir", false)
 	if !owner || next == load {
 		t.Fatalf("next load owner=%v next==load=%v", owner, next == load)
 	}

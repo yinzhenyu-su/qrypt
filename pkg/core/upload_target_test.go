@@ -4,7 +4,7 @@ import "testing"
 
 func TestUploadDestinationResolverResolvesRelativePathUnderDefault(t *testing.T) {
 	resolver := NewUploadDestinationResolver("cloud", "/Inbox")
-	got, err := resolver.Resolve("photos/a.jpg", "")
+	got, err := resolver.resolve("photos/a.jpg", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -15,7 +15,7 @@ func TestUploadDestinationResolverResolvesRelativePathUnderDefault(t *testing.T)
 
 func TestUploadDestinationResolverPreservesAbsolutePath(t *testing.T) {
 	resolver := NewUploadDestinationResolver("cloud", "/Inbox")
-	got, err := resolver.Resolve("/other/path.txt", "")
+	got, err := resolver.resolve("/other/path.txt", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestUploadDestinationResolverPreservesAbsolutePath(t *testing.T) {
 
 func TestUploadDestinationResolverRequiresDefaultForRelativePath(t *testing.T) {
 	resolver := NewUploadDestinationResolver("", "")
-	_, err := resolver.Resolve("relative.txt", "")
+	_, err := resolver.resolve("relative.txt", "")
 	if err == nil {
 		t.Fatal("Resolve relative without default err = nil, want error")
 	}

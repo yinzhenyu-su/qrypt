@@ -445,7 +445,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 			return nil, nil, fmt.Errorf("config: mount %s resolve root: %w", mountCfg.Name, err)
 		}
 		drivers = append(drivers, raw)
-		var drv drive.Driver = drive.WrapBandwidthLimitedDriver(raw, limiter)
+		var drv = drive.WrapBandwidthLimitedDriver(raw, limiter)
 		enc := cfg.EncryptionFor(mountCfg.Name)
 		if enc.Password != "" {
 			if err := enc.Validate(); err != nil {

@@ -39,7 +39,7 @@ func (c *Core) ResolveUploadDestination(destPath, fallbackName string) (string, 
 	return service.PreviewDestination(destPath, fallbackName)
 }
 
-func (r UploadDestinationResolver) Resolve(destPath, fallbackName string) (uploadDestination, error) {
+func (r UploadDestinationResolver) resolve(destPath, fallbackName string) (uploadDestination, error) {
 	destPath = strings.TrimSpace(destPath)
 	if strings.HasPrefix(destPath, "/") {
 		return uploadDestination{Path: vfs.CleanVirtualPath(destPath)}, nil

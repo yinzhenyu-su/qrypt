@@ -55,7 +55,7 @@ func renderDriverExample(name string, params []drive.ParamDef) string {
 		if p.Secret {
 			secret = " [secret]"
 		}
-		b.WriteString(fmt.Sprintf("#   %s%s: %s\n", p.Name, secret, p.Description))
+		fmt.Fprintf(&b, "#   %s%s: %s\n", p.Name, secret, p.Description)
 	}
 	b.WriteString("#   [mounts.params]\n")
 	for _, p := range params {
@@ -73,7 +73,7 @@ func renderDriverExample(name string, params []drive.ParamDef) string {
 				val = val[:3] + strings.Repeat("*", len(val)-5) + val[len(val)-2:]
 			}
 		}
-		b.WriteString(fmt.Sprintf("#   %s = %s\n", p.Name, val))
+		fmt.Fprintf(&b, "#   %s = %s\n", p.Name, val)
 	}
 	return b.String()
 }

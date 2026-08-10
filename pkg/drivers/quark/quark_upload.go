@@ -330,11 +330,11 @@ func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string
 	xmlBody.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <CompleteMultipartUpload>`)
 	for i, etag := range etags {
-		xmlBody.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&xmlBody, `
 <Part>
 <PartNumber>%d</PartNumber>
 <ETag>%s</ETag>
-</Part>`, i+1, etag))
+</Part>`, i+1, etag)
 	}
 	xmlBody.WriteString(`
 </CompleteMultipartUpload>`)

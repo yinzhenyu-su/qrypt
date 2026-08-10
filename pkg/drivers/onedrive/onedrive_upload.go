@@ -27,7 +27,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 }
 
 func (d *Driver) putSmall(ctx context.Context, parentID, name string, size int64, body io.Reader, progress drive.UploadProgress) (drive.Entry, error) {
-	var uploadBody io.Reader = drive.NewUploadProgressReader(progress, body)
+	var uploadBody = drive.NewUploadProgressReader(progress, body)
 	if d.limiter != nil {
 		uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
 	}
@@ -65,7 +65,7 @@ func (d *Driver) putLarge(ctx context.Context, parentID, name string, size int64
 			partSize = remaining
 		}
 		reader := io.NewSectionReader(body, offset, partSize)
-		var uploadBody io.Reader = drive.NewUploadProgressReader(progress, reader)
+		var uploadBody = drive.NewUploadProgressReader(progress, reader)
 		if d.limiter != nil {
 			uploadBody = d.limiter.LimitUpload(ctx, uploadBody)
 		}

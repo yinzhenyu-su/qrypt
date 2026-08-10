@@ -203,6 +203,8 @@ func NewState(cache Cache) *State {
 func (s *State) Cache() Cache { return s.cache }
 
 // History returns the read-event ring for debug snapshots.
+//
+//nolint:revive // debug handle asserted in pkg/vfs lifecycle tests; the concrete type stays internal
 func (s *State) History() *historyState { return s.history }
 
 // Close stops the durable read-cache writer and waits for pending writes.
@@ -390,7 +392,7 @@ func (s *State) RuntimeStats() (windowLoads, prefetches, rangeHits int) {
 	s.fastPath.rangeHit.mu.Lock()
 	rangeHits = len(s.fastPath.rangeHit.hits)
 	s.fastPath.rangeHit.mu.Unlock()
-	return
+	return windowLoads, prefetches, rangeHits
 }
 
 // FlushReadCache flushes the durable read cache.

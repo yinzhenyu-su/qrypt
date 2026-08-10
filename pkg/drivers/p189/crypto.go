@@ -46,20 +46,21 @@ func b64toHex(a string) string {
 		m := string(a[i])
 		if m != "=" {
 			v := strings.Index(b64map, m)
-			if e == 0 {
+			switch e {
+			case 0:
 				e = 1
 				d += fmt.Sprintf("%x", v>>2)
 				c = 3 & v
-			} else if e == 1 {
+			case 1:
 				e = 2
 				d += fmt.Sprintf("%x", c<<2|v>>4)
 				c = 15 & v
-			} else if e == 2 {
+			case 2:
 				e = 3
 				d += fmt.Sprintf("%x", c)
 				d += fmt.Sprintf("%x", v>>2)
 				c = 3 & v
-			} else {
+			default:
 				e = 0
 				d += fmt.Sprintf("%x", c<<2|v>>4)
 				d += fmt.Sprintf("%x", 15&v)

@@ -78,7 +78,9 @@ func TestHealthRecordsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.ReadFull(rc, make([]byte, 4))
+	if _, err := io.ReadFull(rc, make([]byte, 4)); err != nil {
+		t.Fatal(err)
+	}
 	rc.Close()
 	if n := health.count(); n != 1 {
 		t.Fatalf("health records = %d, want 1", n)

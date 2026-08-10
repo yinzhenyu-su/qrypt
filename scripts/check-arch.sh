@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Architecture boundary gate. Layer direction:
+# Architecture boundary gate. Arrows show compile-time dependencies:
 #
-#   pkg/drivers (concrete providers)
-#        |
-#        v
-#   pkg/drive (interfaces + FakeDriver)
-#        |
-#        v
-#   pkg/vfs -> internal/mount / internal/control
-#        |
-#        v
-#   internal/cli, pkg/mobile, pkg/core
+#   pkg/mobile -> pkg/core -> pkg/vfs -> pkg/drive
+#                      |                    ^
+#                      v                    |
+#              internal/control      pkg/drivers
+#
+#   cmd/qrypt -> internal/cli -> pkg/core / pkg/vfs
+#   internal/mount -> pkg/vfs
+#
+#   pkg/mobile and internal/cli import pkg/drivers/all only to register the
+#   bundled concrete providers; pkg/core remains provider-independent.
 #
 # Rules enforced here (production code, except where noted):
 #   1. pkg/drivers never imports vfs / mount / control / cli (tests included)

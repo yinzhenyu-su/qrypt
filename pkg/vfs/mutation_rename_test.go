@@ -401,7 +401,7 @@ func TestRenameMovePartialDirOverlayHidesSubtree(t *testing.T) {
 	fs.view.entries.Set("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
 	fs.view.mu.Unlock()
 
-	orig := *&fakeMutationBackend{}
+	orig := fakeMutationBackend{}
 	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}
 	rb.moveErr = errors.New("move boom")
 

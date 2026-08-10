@@ -21,14 +21,14 @@ func ParseXferSize(value string) int64 {
 	}
 	var multiplier int64 = 1
 	last := value[len(value)-1]
-	switch {
-	case last == 'k' || last == 'K':
+	switch last {
+	case 'k', 'K':
 		multiplier = 1 << 10
 		value = value[:len(value)-1]
-	case last == 'm' || last == 'M':
+	case 'm', 'M':
 		multiplier = 1 << 20
 		value = value[:len(value)-1]
-	case last == 'g' || last == 'G':
+	case 'g', 'G':
 		multiplier = 1 << 30
 		value = value[:len(value)-1]
 	}

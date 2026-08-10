@@ -14,7 +14,6 @@ type uploadStore = upload.PendingStore
 type uploadTaskRecord = upload.UploadTaskRecord
 type UploadSnapshot = upload.UploadSnapshot
 type uploadSnapshotState = upload.SnapshotState
-type debugUploadCancelFault = faultinject.Fault
 type DebugUploadCancelFault = faultinject.DebugUploadCancelFault
 type uploadAdmission = upload.Admission
 type DebugJournal = upload.DebugJournal

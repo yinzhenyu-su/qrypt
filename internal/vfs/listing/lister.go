@@ -191,7 +191,7 @@ func (l *Lister) listChildrenWithMode(ctx context.Context, parentPath, parentID 
 			return entries, nil
 		}
 
-		load, owner := l.state.BeginListLoad(parentPath, prefetch)
+		load, owner := l.state.beginListLoad(parentPath, prefetch)
 		if !owner {
 			select {
 			case <-load.done:
