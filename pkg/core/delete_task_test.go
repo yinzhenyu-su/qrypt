@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -133,5 +134,65 @@ func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
 	}
 	if _, err := c.Stat(ctx, "/dir"); err == nil {
 		t.Fatal("deleted directory is still visible")
+	}
+}
+
+// TestDeleteBatchTerminalSnapshotConsistent: once a terminal state is
+// observable, the progress and result must form one consistent snapshot:
+// ItemsDone + ItemsFailed == ItemsTotal, Result.Items matches, and
+// CompletedAt is set. Run many times to defeat the concurrent-publish
+// interleaving (regression: workers published progress updates outside
+// the counter lock, so a stale ItemsDone could win).
+func TestDeleteBatchTerminalSnapshotConsistent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw := drive.NewFakeDriver()
+	seed := map[string]string{}
+	for run := 0; run < 50; run++ {
+		for i := 0; i < 8; i++ {
+			seed[fmt.Sprintf("r%d-f%d.txt", run, i)] = "x"
+		}
+	}
+	if err := raw.Seed(seed); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(raw, vfs.Options{
+		StorageDir:  filepath.Join(t.TempDir(), "cache"),
+		DeleteDelay: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+
+	for run := 0; run < 50; run++ {
+		var items []task.Item
+		for i := 0; i < 8; i++ {
+			items = append(items, task.Item{Path: fmt.Sprintf("/r%d-f%d.txt", run, i)})
+		}
+		item, err := c.CreateTask(ctx, task.Request{
+			Type:    task.TypeDeleteBatch,
+			Items:   items,
+			Options: task.Options{Concurrency: 4},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item = waitCoreTask(t, c, item.ID)
+		if item.State != task.StateSucceeded {
+			t.Fatalf("run %d: state = %s, want succeeded", run, item.State)
+		}
+		if item.Progress.ItemsDone+item.Progress.ItemsFailed != item.Progress.ItemsTotal {
+			t.Fatalf("run %d: done(%d)+failed(%d) != total(%d)", run,
+				item.Progress.ItemsDone, item.Progress.ItemsFailed, item.Progress.ItemsTotal)
+		}
+		if len(item.Result.Items) != int(item.Progress.ItemsTotal) {
+			t.Fatalf("run %d: result items = %d, want %d", run, len(item.Result.Items), item.Progress.ItemsTotal)
+		}
+		if item.CompletedAt.IsZero() {
+			t.Fatalf("run %d: CompletedAt not set on terminal state", run)
+		}
 	}
 }

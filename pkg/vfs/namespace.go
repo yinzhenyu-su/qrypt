@@ -36,16 +36,19 @@ type Writer interface {
 	Truncate(ctx context.Context, path string, size int64) error
 }
 
-// Lifecycle starts a filesystem's background workers. It is intentionally
-// separate from FileSystem: constructing a filesystem (New/NewNamespace)
-// does not run anything, and read-only consumers never need to start one.
+// Lifecycle starts and stops a filesystem's background workers. It is
+// intentionally separate from FileSystem: constructing a filesystem
+// (New/NewNamespace) does not run anything, and read-only consumers never
+// need to start one.
 //
 // Ownership: the first context passed to Start owns the filesystem's
 // lifecycle; later calls are no-ops and the instance stops when that
-// context is cancelled. A cancelled instance is not restartable - build a
-// new one.
+// context is cancelled (which triggers Close) or when Close is called
+// explicitly. A stopped instance is not restartable - build a new one.
+// Close is idempotent and safe to call before Start.
 type Lifecycle interface {
 	Start(ctx context.Context)
+	Close(ctx context.Context) error
 }
 
 // PathRefresher invalidates the directory listing cache for path so the
@@ -108,24 +111,6 @@ type DebugMountSnapshotter interface {
 }
 
 // MountHealth describes recent runtime health for one mount.
-type MountHealth struct {
-	Mount     string                   `json:"mount"`
-	OK        bool                     `json:"ok"`
-	Level     string                   `json:"level,omitempty"`
-	Error     string                   `json:"error,omitempty"`
-	CheckedAt time.Time                `json:"checked_at"`
-	Success   int                      `json:"success"`
-	Errors    int                      `json:"errors"`
-	Ops       map[string]MountHealthOp `json:"ops,omitempty"`
-}
-
-type MountHealthOp struct {
-	Success     int       `json:"success"`
-	Errors      int       `json:"errors"`
-	LastError   string    `json:"last_error,omitempty"`
-	LastErrorAt time.Time `json:"last_error_at,omitempty"`
-}
-
 // MountHealthChecker is implemented by VFS and Namespace to expose
 // per-mount runtime health through the debug socket.
 type MountHealthChecker interface {
@@ -134,18 +119,6 @@ type MountHealthChecker interface {
 
 // NamedDriver pairs a mount name with its underlying drive.Driver.
 // Used by the debug socket to expose driver-level operations.
-type NamedDriver struct {
-	Name        string
-	Driver      drive.Driver
-	TestEnabled bool
-}
-
-// DriverProvider is implemented by VFS and Namespace to expose the
-// underlying driver references for driver-level debugging.
-type DriverProvider interface {
-	Drivers() []NamedDriver
-}
-
 // The interfaces below name optional capabilities a FileSystem may expose.
 // Consumers assert against the named interface instead of an inline anonymous
 // one, so fakes are easy to construct and the capability surface is
@@ -242,6 +215,28 @@ func (n *Namespace) Start(ctx context.Context) {
 	}
 }
 
+// Close shuts down every mounted filesystem and waits for each one's
+// background workers to finish. It snapshots the mounts under the read
+// lock, so mounts added concurrently after Close starts are not closed
+// (mirroring Start's snapshot semantics). Mounts are closed sequentially;
+// a failing mount does not prevent the remaining mounts from closing.
+// Close is idempotent because each mount's Close is idempotent.
+func (n *Namespace) Close(ctx context.Context) error {
+	n.mu.RLock()
+	mounts := make([]*VFS, 0, len(n.mounts))
+	for _, fs := range n.mounts {
+		mounts = append(mounts, fs)
+	}
+	n.mu.RUnlock()
+	var errs []error
+	for _, fs := range mounts {
+		if err := fs.Close(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func splitNamespacePath(path string) (string, string, bool) {
 	path = cleanVirtual(path)
 	if path == "/" {
@@ -253,6 +248,14 @@ func splitNamespacePath(path string) (string, string, bool) {
 		return parts[0], "/", false
 	}
 	return parts[0], "/" + parts[1], false
+}
+
+// firstVirtualSegment returns the first slash-delimited segment of a
+// virtual path ("" for root).
+func firstVirtualSegment(path string) string {
+	trimmed := strings.TrimPrefix(cleanVirtual(path), "/")
+	name, _, _ := strings.Cut(trimmed, "/")
+	return name
 }
 
 func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {

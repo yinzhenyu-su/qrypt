@@ -3,6 +3,7 @@ package vfs
 import (
 	"context"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ import (
 func BenchmarkCacheConcurrentMixedReads(b *testing.B) {
 	const files = 64
 	const readers = 8
-	const windowBytes = readChunkSize * 4
+	const windowBytes = read.ChunkSize * 4
 
 	fs, err := New(localfs.New(b.TempDir()), Options{StorageDir: b.TempDir()})
 	if err != nil {
@@ -42,7 +43,7 @@ func BenchmarkCacheConcurrentMixedReads(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		_, _ = readAllLimited(rc, windowBytes)
+		_, _ = read.ReadAllLimited(rc, windowBytes)
 		_ = rc.Close()
 	}
 
@@ -71,7 +72,7 @@ func BenchmarkCacheConcurrentMixedReads(b *testing.B) {
 				writerErr = err
 				return
 			}
-			_, _ = readAllLimited(rc, windowBytes)
+			_, _ = read.ReadAllLimited(rc, windowBytes)
 			_ = rc.Close()
 			tick++
 			time.Sleep(time.Microsecond * 50)
@@ -87,11 +88,11 @@ func BenchmarkCacheConcurrentMixedReads(b *testing.B) {
 			go func(r int) {
 				defer gwg.Done()
 				p := writePath[(i+r)%files]
-				rc, err := fs.Read(ctx, p, 0, readChunkSize)
+				rc, err := fs.Read(ctx, p, 0, read.ChunkSize)
 				if err != nil {
 					return
 				}
-				_, _ = readAllLimited(rc, readChunkSize)
+				_, _ = read.ReadAllLimited(rc, read.ChunkSize)
 				_ = rc.Close()
 			}(r)
 		}

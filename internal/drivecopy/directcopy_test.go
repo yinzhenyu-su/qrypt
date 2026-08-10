@@ -14,6 +14,10 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+// Namespace must satisfy the full driver-copy source surface (resolve +
+// snapshot), which CLI copy/sync depends on.
+var _ DriverCopySource = (*vfs.Namespace)(nil)
+
 type directCopyTestSource struct {
 	drivers  []vfs.NamedDriver
 	resolves map[string]vfs.DebugResolveInfo

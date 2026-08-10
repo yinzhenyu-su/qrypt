@@ -121,7 +121,6 @@ func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
 		Path:       "/resume-debug.bin",
 		Phase:      drive.UploadPhaseUploading,
 		AfterBytes: 1,
-		Once:       true,
 		Reason:     "test",
 	})
 	if err != nil {

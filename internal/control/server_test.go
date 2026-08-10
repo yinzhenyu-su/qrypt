@@ -230,7 +230,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				LastError:  "boom",
 			}}},
 			Queues: vfs.MountSnapshotQueues{UploadLength: 2, UploadCap: 128},
-			Cache: vfs.DebugReadCache{
+			Cache: vfs.DebugCacheSnapshot{DebugReadCache: vfs.DebugReadCache{
 				MaxBytes:           1024,
 				ChunkCount:         1,
 				Bytes:              512,
@@ -239,7 +239,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 				WriteQueueBytes:    128,
 				WriteQueueMaxBytes: 1024,
 				Files:              []vfs.DebugReadCacheFile{{ID: "fid", ChunkCount: 1, Bytes: 512}, {ID: "cache-id", ChunkCount: 1, Bytes: 7}},
-			},
+			}},
 			Runtime: vfs.MountSnapshotRuntime{
 				HotChunkCount: 2,
 				HotChunkBytes: 2 * osutil.MiB,

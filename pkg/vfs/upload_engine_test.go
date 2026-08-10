@@ -27,7 +27,7 @@ func TestUploadEngineExecutesPendingUpload(t *testing.T) {
 	if err := fs.Flush(ctx, "/engine.txt"); err != nil {
 		t.Fatal(err)
 	}
-	fs.upload.Close()
+	fs.uploads.Close()
 	pending := fs.PendingUploads()
 	if len(pending) != 1 {
 		t.Fatalf("pending uploads = %d, want 1", len(pending))

@@ -152,8 +152,8 @@ type StagingResponse struct {
 }
 
 type DebugCacheMountStatus struct {
-	Mount string             `json:"mount"`
-	Cache vfs.DebugReadCache `json:"cache"`
+	Mount string                 `json:"mount"`
+	Cache vfs.DebugCacheSnapshot `json:"cache"`
 }
 
 type ConsistencyResponse struct {
@@ -233,7 +233,7 @@ type ReadMemoryMount struct {
 	Mount       string                   `json:"mount"`
 	Driver      string                   `json:"driver,omitempty"`
 	Runtime     vfs.MountSnapshotRuntime `json:"runtime"`
-	Cache       vfs.DebugReadCache       `json:"cache"`
+	Cache       vfs.DebugCacheSnapshot   `json:"cache"`
 	PhaseCounts map[string]int           `json:"phase_counts,omitempty"`
 	RecentReads []drive.MetricEvent      `json:"recent_reads,omitempty"`
 }

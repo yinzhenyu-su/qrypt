@@ -8,7 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
 
-func TestVFSRemoveRuntimeRemovesPendingUpload(t *testing.T) {
+func TestVFSRemoveCleanupRemovesPendingUpload(t *testing.T) {
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -19,16 +19,20 @@ func TestVFSRemoveRuntimeRemovesPendingUpload(t *testing.T) {
 	if len(fs.PendingUploads()) != 1 {
 		t.Fatalf("pending count = %d, want 1", len(fs.PendingUploads()))
 	}
-	runtime := newVFSRemoveRuntime(fs)
-	if err := runtime.RemovePendingUpload("/pending.txt"); err != nil {
+	cleanup := newVFSRemoveCleanup(fs)
+	handled, err := cleanup.RemovePendingFile("/pending.txt")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("RemovePendingFile did not handle the pending path")
 	}
 	if pending := fs.PendingUploads(); len(pending) != 0 {
 		t.Fatalf("pending = %+v, want none", pending)
 	}
 }
 
-func TestVFSRemoveRuntimeRemovesPendingUploadsUnderDirectory(t *testing.T) {
+func TestVFSRemoveCleanupRemovesPendingUploadsUnderDirectory(t *testing.T) {
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +46,8 @@ func TestVFSRemoveRuntimeRemovesPendingUploadsUnderDirectory(t *testing.T) {
 	if err := fs.Create(context.Background(), "/other.txt"); err != nil {
 		t.Fatal(err)
 	}
-	runtime := newVFSRemoveRuntime(fs)
-	if err := runtime.RemovePendingUploadsUnder("/dir"); err != nil {
+	cleanup := newVFSRemoveCleanup(fs)
+	if err := cleanup.PrepareDirectory("/dir"); err != nil {
 		t.Fatal(err)
 	}
 	pending := fs.PendingUploads()

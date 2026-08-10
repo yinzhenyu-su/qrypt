@@ -19,7 +19,7 @@ func TestCreateTaskSameMountMoveRenamesPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "old.txt"), []byte("same mount"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), RootID: remote})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestCreateTaskMoveRemoteRenamesPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "old.txt"), []byte("create task move"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), RootID: remote})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +86,11 @@ func TestCreateTaskCrossQryptMountCopiesThenDeletesSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(srcRemote, "file.txt"), []byte("cross mount"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "src-cache")})
+	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "src-cache"), RootID: srcRemote})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "dst-cache")})
+	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "dst-cache"), RootID: dstRemote})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,11 +126,11 @@ func TestCreateTaskCrossQryptMountRejectsDirectoryWithoutRecursive(t *testing.T)
 	if err := os.Mkdir(filepath.Join(srcRemote, "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "src-cache")})
+	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "src-cache"), RootID: srcRemote})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "dst-cache")})
+	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "dst-cache"), RootID: dstRemote})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,11 +166,11 @@ func TestCreateTaskCrossQryptMountMovesDirectoryToRenamedDestination(t *testing.
 	if err := os.WriteFile(filepath.Join(srcRemote, "dir", "nested", "file.txt"), []byte("move dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "src-cache")})
+	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "src-cache"), RootID: srcRemote})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "dst-cache")})
+	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "dst-cache"), RootID: dstRemote})
 	if err != nil {
 		t.Fatal(err)
 	}

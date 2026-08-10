@@ -17,6 +17,6 @@ import (
 // asserted (they must exit on context cancellation).
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m,
-		goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/pkg/vfs.(*readCacheStore).runReadCacheWriter"),
+		goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/internal/vfs/readcache.(*Store).runReadCacheWriter"),
 	)
 }

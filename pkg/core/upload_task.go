@@ -170,7 +170,9 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 				bytesNow := bytesDone
 				activePaths = taskActivePaths(active)
 				resultSnapshot := compactItemResults(results)
-				mu.Unlock()
+				// Publish under the same lock that took the counters, so
+				// concurrent workers emit monotonic progress (update order
+				// == counter order; a stale snapshot can never win).
 				update(func(taskItem *task.Task) {
 					taskItem.Progress.ItemsDone = doneNow
 					taskItem.Progress.ItemsFailed = doneNow - succeededNow
@@ -179,6 +181,7 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 					taskItem.Result.Items = resultSnapshot
 					taskItem.Detail["active_paths"] = activePaths
 				})
+				mu.Unlock()
 			}
 		}()
 	}
@@ -228,10 +231,10 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 }
 
 func (c *Core) waitUploadTaskForPath(ctx context.Context, remotePath string) (task.Task, bool, error) {
-	source, ok := c.fs.(task.Source)
-	if !ok {
+	if c == nil || c.fs == nil {
 		return task.Task{}, false, nil
 	}
+	source := c.fs.TaskSource()
 	ticker := time.NewTicker(uploadTaskPollInterval)
 	defer ticker.Stop()
 	for {

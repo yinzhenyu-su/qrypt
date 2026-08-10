@@ -208,7 +208,9 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 			if cacheID == "" {
 				cacheID = info.RemoteID
 			}
-			cache := filterReadCacheFile(mount.ReadCacheState(), cacheID)
+			filtered := filterReadCacheFile(mount.Cache.DebugReadCache, cacheID)
+			cache := mount.Cache
+			cache.DebugReadCache = filtered
 			writeJSON(w, CacheResponse{
 				SchemaVersion: snapshot.SchemaVersion,
 				GeneratedAt:   snapshot.GeneratedAt,
@@ -223,7 +225,7 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 	}
 	var mounts []DebugCacheMountStatus
 	for _, mount := range snapshot.Mounts {
-		mounts = append(mounts, DebugCacheMountStatus{Mount: mount.Identity.Name, Cache: mount.ReadCacheState()})
+		mounts = append(mounts, DebugCacheMountStatus{Mount: mount.Identity.Name, Cache: mount.Cache})
 	}
 	sort.Slice(mounts, func(i, j int) bool { return mounts[i].Mount < mounts[j].Mount })
 	writeJSON(w, CacheResponse{

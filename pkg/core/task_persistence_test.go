@@ -139,11 +139,11 @@ func TestCorePersistsCrossMountSingleMoveButNotSameMountMove(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(srcRemote, "same.txt"), []byte("same"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(tmp, "src-cache")})
+	srcFS, err := vfs.New(localfs.New(srcRemote), vfs.Options{StorageDir: filepath.Join(tmp, "src-cache"), RootID: srcRemote})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(tmp, "dst-cache")})
+	dstFS, err := vfs.New(localfs.New(dstRemote), vfs.Options{StorageDir: filepath.Join(tmp, "dst-cache"), RootID: dstRemote})
 	if err != nil {
 		t.Fatal(err)
 	}

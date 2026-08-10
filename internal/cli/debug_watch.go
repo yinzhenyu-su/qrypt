@@ -103,7 +103,7 @@ func watchMountSummaries(state *vfs.DebugSnapshot, staging *control.StagingRespo
 			stagingByMount[item.Mount] = item
 		}
 	}
-	cacheByMount := map[string]vfs.DebugReadCache{}
+	cacheByMount := map[string]vfs.DebugCacheSnapshot{}
 	if cache != nil {
 		for _, item := range cache.Mounts {
 			cacheByMount[item.Mount] = item.Cache

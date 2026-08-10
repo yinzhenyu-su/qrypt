@@ -477,7 +477,10 @@ func TestVFSRenameUploadedFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	// RootID must match the localfs root (as resolveMountRootID does in
+	// production) so the rename coordinator's parent-ID comparison is in
+	// one coordinate system.
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, RootID: remote})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +513,10 @@ func TestVFSRenameUploadUpload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
-	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	// RootID must match the localfs root (as resolveMountRootID does in
+	// production) so the rename coordinator's parent-ID comparison is in
+	// one coordinate system.
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay, RootID: remote})
 	if err != nil {
 		t.Fatal(err)
 	}

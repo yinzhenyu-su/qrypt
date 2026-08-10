@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/internal/vfs/scheduler"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
 	"sync"
@@ -17,10 +18,10 @@ type overlayState struct {
 }
 
 type deleteTaskState struct {
-	mu       *sync.Mutex
-	timers   map[string]*time.Timer
-	active   map[string]drive.Entry
-	failures map[string]string
+	mu        *sync.Mutex
+	scheduler scheduler.KeyedScheduler
+	active    map[string]drive.Entry
+	failures  map[string]string
 }
 
 func newDeleteStates() (*overlayState, *deleteTaskState) {
@@ -32,10 +33,10 @@ func newDeleteStates() (*overlayState, *deleteTaskState) {
 			restoredDirs:       map[string]time.Time{},
 			copyHiddenChildren: map[string]map[string]time.Time{},
 		}, &deleteTaskState{
-			mu:       mu,
-			timers:   map[string]*time.Timer{},
-			active:   map[string]drive.Entry{},
-			failures: map[string]string{},
+			mu:        mu,
+			scheduler: scheduler.NewTimeKeyedScheduler(),
+			active:    map[string]drive.Entry{},
+			failures:  map[string]string{},
 		}
 }
 
@@ -55,7 +56,7 @@ func newVFSVisibilityRuntime(v *VFS) vfsVisibilityRuntime {
 func (r vfsVisibilityRuntime) MarkDeleted(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Lock()
 	r.v.view.overlay.deleted[path] = entry
-	delete(r.v.delete.tasks.failures, path)
+	delete(r.v.deletes.tasks.failures, path)
 	delete(r.v.view.overlay.renameOverlays, path)
 	delete(r.v.view.overlay.restoredDirs, path)
 	r.v.view.overlay.mu.Unlock()
@@ -82,10 +83,9 @@ func (r vfsVisibilityRuntime) RestoreDeletedPath(path string) (drive.Entry, bool
 		return drive.Entry{}, false
 	}
 	delete(r.v.view.overlay.deleted, path)
-	delete(r.v.delete.tasks.failures, path)
-	if timer := r.v.delete.tasks.timers[path]; timer != nil {
-		timer.Stop()
-		delete(r.v.delete.tasks.timers, path)
+	delete(r.v.deletes.tasks.failures, path)
+	if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
+		r.v.deletes.tasks.scheduler.Cancel(path)
 		logging.L.Infof("[VFS] canceled pending delete for restored path=%q id=%q", path, entry.ID)
 	}
 	if entry.IsDir {
@@ -118,10 +118,9 @@ func (r vfsVisibilityRuntime) RestoreDeletedAncestor(path string) {
 		return
 	}
 	delete(r.v.view.overlay.deleted, restorePath)
-	delete(r.v.delete.tasks.failures, restorePath)
-	if timer := r.v.delete.tasks.timers[restorePath]; timer != nil {
-		timer.Stop()
-		delete(r.v.delete.tasks.timers, restorePath)
+	delete(r.v.deletes.tasks.failures, restorePath)
+	if _, ok := r.v.deletes.tasks.scheduler.Keys()[restorePath]; ok {
+		r.v.deletes.tasks.scheduler.Cancel(restorePath)
 		logging.L.Infof("[VFS] canceled pending delete for restored ancestor path=%q id=%q requested=%q", restorePath, entry.ID, path)
 	}
 	r.v.view.overlay.restoredDirs[restorePath] = time.Now().Add(restoredDirTTL)
@@ -139,10 +138,9 @@ func (r vfsVisibilityRuntime) CancelDeletedFile(path string) {
 	entry, ok := r.v.view.overlay.deleted[path]
 	if ok && !entry.IsDir {
 		delete(r.v.view.overlay.deleted, path)
-		delete(r.v.delete.tasks.failures, path)
-		if timer := r.v.delete.tasks.timers[path]; timer != nil {
-			timer.Stop()
-			delete(r.v.delete.tasks.timers, path)
+		delete(r.v.deletes.tasks.failures, path)
+		if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
+			r.v.deletes.tasks.scheduler.Cancel(path)
 			logging.L.Infof("[VFS] canceled pending delete for recreated file path=%q id=%q", path, entry.ID)
 		}
 	}
@@ -381,10 +379,5 @@ func (v *VFS) updateOverlay(parentPath string, entries []drive.Entry) {
 // stopAll stops every pending delete timer so no delayed delete fires
 // after shutdown. Used by deleteState.Close and the delete scheduler.
 func (s *deleteTaskState) stopAll() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for path, timer := range s.timers {
-		timer.Stop()
-		delete(s.timers, path)
-	}
+	s.scheduler.CancelAll()
 }

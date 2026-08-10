@@ -46,7 +46,15 @@ func newMountCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer cleanup()
+			defer func() {
+				// Shut down in dependency order: the unmount defer runs first
+				// (stops new FUSE requests), then wait for the filesystem's
+				// workers to finish, then clean up external resources.
+				if err := fs.Close(context.Background()); err != nil {
+					logging.L.Warnf("[CLI] filesystem close: %v", err)
+				}
+				cleanup()
+			}()
 			fs.Start(ctx)
 
 			if debugListen != "" {

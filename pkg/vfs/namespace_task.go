@@ -7,12 +7,13 @@ import (
 )
 
 // dismisser is satisfied by VFS instances that support task dismissal.
-type dismisser interface {
-	DismissTask(ctx context.Context, id string) error
-	DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error)
+
+// Tasks returns all tasks known across all mounts.
+func (n *Namespace) Tasks(filter task.Filter) []task.Task {
+	return n.tasks(filter)
 }
 
-func (n *Namespace) Tasks(filter task.Filter) []task.Task {
+func (n *Namespace) tasks(filter task.Filter) []task.Task {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	var tasks []task.Task
@@ -21,7 +22,7 @@ func (n *Namespace) Tasks(filter task.Filter) []task.Task {
 		if !ok {
 			continue
 		}
-		for _, item := range fs.Tasks(mountFilter) {
+		for _, item := range fs.tasks(mountFilter) {
 			item = namespaceTask(name, item)
 			if filter.Match(item) {
 				tasks = append(tasks, item)
@@ -36,15 +37,23 @@ func (n *Namespace) Tasks(filter task.Filter) []task.Task {
 }
 
 func (n *Namespace) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
+	return n.listTasks(ctx, filter)
+}
+
+func (n *Namespace) listTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return n.Tasks(filter), nil
+	return n.tasks(filter), nil
 }
 
 // dismisser is satisfied by VFS instances that support task dismissal.
 
 func (n *Namespace) DismissTask(ctx context.Context, id string) error {
+	return n.dismissTask(ctx, id)
+}
+
+func (n *Namespace) dismissTask(ctx context.Context, id string) error {
 	mount, rest, ok := splitNamespaceTaskID(id)
 	if !ok {
 		return task.ErrNotFound
@@ -55,14 +64,14 @@ func (n *Namespace) DismissTask(ctx context.Context, id string) error {
 	if !ok {
 		return task.ErrNotFound
 	}
-	dismissible, ok := interface{}(fs).(dismisser)
-	if !ok {
-		return task.ErrNotFound
-	}
-	return dismissible.DismissTask(ctx, rest)
+	return fs.dismissTask(ctx, rest)
 }
 
 func (n *Namespace) DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error) {
+	return n.dismissFinishedTasks(ctx, filter)
+}
+
+func (n *Namespace) dismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	removed := 0
@@ -71,11 +80,7 @@ func (n *Namespace) DismissFinishedTasks(ctx context.Context, filter task.Filter
 		if !ok {
 			continue
 		}
-		dismissible, ok := interface{}(fs).(dismisser)
-		if !ok {
-			continue
-		}
-		n, err := dismissible.DismissFinishedTasks(ctx, mountFilter)
+		n, err := fs.dismissFinishedTasks(ctx, mountFilter)
 		if err != nil {
 			return removed, err
 		}
@@ -85,10 +90,14 @@ func (n *Namespace) DismissFinishedTasks(ctx context.Context, filter task.Filter
 }
 
 func (n *Namespace) GetTask(ctx context.Context, id string) (task.Task, error) {
+	return n.getTask(ctx, id)
+}
+
+func (n *Namespace) getTask(ctx context.Context, id string) (task.Task, error) {
 	if err := ctx.Err(); err != nil {
 		return task.Task{}, err
 	}
-	for _, item := range n.Tasks(task.Filter{}) {
+	for _, item := range n.tasks(task.Filter{}) {
 		if item.ID == id {
 			return item, nil
 		}
@@ -135,14 +144,22 @@ func splitNamespaceTaskID(id string) (string, string, bool) {
 }
 
 func (n *Namespace) CancelTask(ctx context.Context, id string) error {
+	return n.cancelTask(ctx, id)
+}
+
+func (n *Namespace) cancelTask(ctx context.Context, id string) error {
 	return n.applyTaskAction(ctx, id, func(fs *VFS, localID string) error {
-		return fs.CancelTask(ctx, localID)
+		return fs.cancelTask(ctx, localID)
 	})
 }
 
 func (n *Namespace) RetryTask(ctx context.Context, id string) error {
+	return n.retryTask(ctx, id)
+}
+
+func (n *Namespace) retryTask(ctx context.Context, id string) error {
 	return n.applyTaskAction(ctx, id, func(fs *VFS, localID string) error {
-		return fs.RetryTask(ctx, localID)
+		return fs.retryTask(ctx, localID)
 	})
 }
 
