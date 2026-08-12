@@ -54,3 +54,54 @@ func TestPaginateEntriesInvalidCursorStartsFromBeginning(t *testing.T) {
 		t.Fatalf("page = %+v, want full sorted listing from start", page.Entries)
 	}
 }
+
+func TestPaginateEntriesDirectoriesFirstCaseInsensitive(t *testing.T) {
+	// Directories sort before files regardless of name; names compare
+	// case-insensitively so paged order matches the mobile app's local sort.
+	entries := []drive.Entry{
+		{Name: "b.txt", ID: "id-f1"},
+		{Name: "A dir", ID: "id-d1", IsDir: true},
+		{Name: "B.txt", ID: "id-f2"},
+		{Name: "a.txt", ID: "id-f3"},
+		{Name: "b dir", ID: "id-d2", IsDir: true},
+	}
+	page1 := PaginateEntries(entries, "", 3)
+	names := func(page ListPageResult) []string {
+		var out []string
+		for _, e := range page.Entries {
+			out = append(out, e.Name)
+		}
+		return out
+	}
+	got := names(page1)
+	want := []string{"A dir", "b dir", "a.txt"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("page1 = %v, want %v (dirs first, case-insensitive)", got, want)
+		}
+	}
+	page2 := PaginateEntries(entries, page1.NextCursor, 3)
+	got2 := names(page2)
+	want2 := []string{"B.txt", "b.txt"}
+	for i := range want2 {
+		if got2[i] != want2[i] {
+			t.Fatalf("page2 = %v, want %v", got2, want2)
+		}
+	}
+	if page2.NextCursor != "" {
+		t.Fatalf("page2.NextCursor = %q, want empty", page2.NextCursor)
+	}
+	// No entry may be dropped or duplicated across the pages.
+	seen := map[string]int{}
+	for _, name := range append(got, got2...) {
+		seen[name]++
+	}
+	if len(seen) != len(entries) {
+		t.Fatalf("collected %d unique entries, want %d: %v", len(seen), len(entries), seen)
+	}
+	for name, count := range seen {
+		if count != 1 {
+			t.Fatalf("entry %q collected %d times, want 1", name, count)
+		}
+	}
+}
