@@ -67,4 +67,20 @@ func TestEncryptedDriverRoundTrip(t *testing.T) {
 	if string(data) != "aaaaaaaaaaaaaaaa" {
 		t.Fatalf("unexpected encrypted read data: %q", data)
 	}
+
+	rawRC, err := fs.ReadRaw(ctx, "/secret.txt", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawRC.Close()
+	rawData, err := io.ReadAll(rawRC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(rawData, []byte(crypt.FileMagic)) {
+		t.Fatal("raw read did not return encrypted file header")
+	}
+	if bytes.Contains(rawData, bytes.Repeat([]byte("a"), 16)) {
+		t.Fatal("raw read returned plaintext")
+	}
 }

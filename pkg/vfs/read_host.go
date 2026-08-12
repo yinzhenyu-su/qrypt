@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -114,6 +115,30 @@ var _ read.ReadObserver = vfsReadObserver{}
 // present.
 func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
 	return v.reader.Read(ctx, path, offset, size)
+}
+
+type rawReadableDriver interface {
+	ReadRaw(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error)
+}
+
+// ReadRaw opens the backend byte stream for path without read-cache or
+// wrapper-level transforms. On encrypted mounts this returns ciphertext.
+func (v *VFS) ReadRaw(ctx context.Context, path string, offset, size int64) (rc io.ReadCloser, err error) {
+	defer func() { v.recordHealthResult(drive.HealthOpRead, err) }()
+	if offset < 0 || size < 0 {
+		return nil, fmt.Errorf("vfs: raw read offset and size must be non-negative")
+	}
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if entry.IsDir {
+		return nil, fmt.Errorf("vfs: %s is a directory", cleanVirtual(path))
+	}
+	if raw, ok := v.driver.(rawReadableDriver); ok {
+		return raw.ReadRaw(ctx, entry, offset, size)
+	}
+	return v.driver.Read(ctx, entry, offset, size)
 }
 
 // ReadStream opens path for sequential streaming reads (bounded memory).

@@ -460,14 +460,83 @@ func (s *directUploadSource) computeHashes(ctx context.Context) error {
 	for _, item := range hashes {
 		writers = append(writers, item.hash)
 	}
-	if _, err := io.Copy(io.MultiWriter(writers...), reader); err != nil {
+	written, err := io.Copy(io.MultiWriter(writers...), reader)
+	if err != nil {
 		return err
+	}
+	if written != s.size {
+		return fmt.Errorf("core: upload source size mismatch: read %d, expected %d", written, s.size)
 	}
 	s.hashes = drive.SourceHashes{}
 	for _, item := range hashes {
 		s.hashes[item.algorithm] = item.hash.Sum(nil)
 	}
+	if err := s.verifyRandomAccess(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *directUploadSource) verifyRandomAccess(ctx context.Context) error {
+	if s.size == 0 {
+		return nil
+	}
+	file, err := s.Open(ctx)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hashes := []struct {
+		algorithm drive.HashAlgorithm
+		hash      hash.Hash
+	}{
+		{drive.HashMD5, md5.New()},
+		{drive.HashSHA1, sha1.New()},
+		{drive.HashSHA256, sha256.New()},
+	}
+	buf := make([]byte, uploadCopyChunkSize)
+	var off int64
+	for off < s.size {
+		want := int64(len(buf))
+		if remaining := s.size - off; remaining < want {
+			want = remaining
+		}
+		n, err := file.ReadAt(buf[:want], off)
+		if err != nil && !(errors.Is(err, io.EOF) && int64(n) == want) {
+			return fmt.Errorf("core: upload source random access read at %d: %w", off, err)
+		}
+		if int64(n) != want {
+			return fmt.Errorf("core: upload source random access short read at %d: read %d, expected %d", off, n, want)
+		}
+		for _, item := range hashes {
+			if _, err := item.hash.Write(buf[:n]); err != nil {
+				return err
+			}
+		}
+		off += int64(n)
+	}
+	for _, item := range hashes {
+		got := item.hash.Sum(nil)
+		want, ok := s.hashes[item.algorithm]
+		if !ok {
+			continue
+		}
+		if !equalBytes(got, want) {
+			return fmt.Errorf("core: upload source random access mismatch for %s; source opener must honor requested offsets", item.algorithm)
+		}
+	}
+	return nil
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := range a {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
 }
 
 type directUploadFile struct {

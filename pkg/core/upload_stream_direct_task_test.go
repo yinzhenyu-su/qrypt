@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,12 +163,57 @@ func TestCreateTaskUploadStreamDirectNonResumableCleansPartialAndRetries(t *test
 	}
 }
 
+func TestCreateTaskUploadStreamDirectRejectsBadOffsetSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	payload := make([]byte, 2*uploadCopyChunkSize+123)
+	for i := range payload {
+		payload[i] = byte((i*31 + i/251) % 256)
+	}
+	c.SetUploadSourceProvider(badOffsetUploadSourceProvider{data: payload})
+
+	item, err := c.CreateTask(ctx, task.Request{
+		Type: task.TypeUploadStreamDirect,
+		Items: []task.Item{{
+			ItemID:     "item",
+			SourcePath: "token",
+			DestPath:   "/bad-offset.bin",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = waitCoreTask(t, c, item.ID)
+	if item.State != task.StateFailed {
+		t.Fatalf("task = %+v, want failed", item)
+	}
+	if len(item.Result.Items) != 1 || item.Result.Items[0].Error == nil || !strings.Contains(item.Result.Items[0].Error.Message, "source opener must honor requested offsets") {
+		t.Fatalf("task result = %+v, want offset validation failure", item.Result.Items)
+	}
+	if drv.putSourceCount() != 0 {
+		t.Fatalf("PutSource calls = %d, want 0", drv.putSourceCount())
+	}
+}
+
 type directUploadTestDriver struct {
 	drive.UnsupportedOperations
 	mu        sync.Mutex
 	data      []byte
 	sha1Hex   string
 	putSource int
+}
+
+type badOffsetUploadSourceProvider struct {
+	data []byte
 }
 
 type flakyDirectUploadSourceProvider struct {
@@ -200,6 +246,13 @@ func (p *flakyDirectUploadSourceProvider) OpenUploadSource(ctx context.Context, 
 		return failingReadCloser{Reader: bytes.NewReader(data[:len(data)/2])}, nil
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (p badOffsetUploadSourceProvider) OpenUploadSource(ctx context.Context, _ string, _ int64) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(p.data)), nil
 }
 
 type failingReadCloser struct {
@@ -270,4 +323,10 @@ func (d *directUploadTestDriver) sourceSHA1() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.sha1Hex
+}
+
+func (d *directUploadTestDriver) putSourceCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.putSource
 }

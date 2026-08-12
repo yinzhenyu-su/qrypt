@@ -275,6 +275,16 @@ func (c *Store) putChunk(fid string, fileSize, index int64, data []byte) error {
 	return nil
 }
 func (c *Store) PutLocalFile(fid string, fileSize int64, localPath string) error {
+	f, err := os.Open(localPath)
+	if err != nil {
+		c.setLastPutError(err)
+		return err
+	}
+	defer f.Close()
+	return c.PutReader(fid, fileSize, f)
+}
+
+func (c *Store) PutReader(fid string, fileSize int64, r io.Reader) error {
 	if fid == "" {
 		return nil
 	}
@@ -285,12 +295,6 @@ func (c *Store) PutLocalFile(fid string, fileSize int64, localPath string) error
 		c.setLastPutError(err)
 		return err
 	}
-	f, err := os.Open(localPath)
-	if err != nil {
-		c.setLastPutError(err)
-		return err
-	}
-	defer f.Close()
 
 	now := time.Now()
 	cacheID := cacheFileID(fid)
@@ -298,7 +302,7 @@ func (c *Store) PutLocalFile(fid string, fileSize int64, localPath string) error
 	tempFiles := map[string]string{}
 	buf := make([]byte, readChunkSize)
 	for index := int64(0); ; index++ {
-		n, readErr := f.Read(buf)
+		n, readErr := r.Read(buf)
 		if n > 0 {
 			batch := index / cacheBatchBlocks
 			offset := int64(index%cacheBatchBlocks) * readChunkSize

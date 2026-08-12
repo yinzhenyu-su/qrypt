@@ -210,6 +210,15 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	}{Reader: reader, Closer: rc}, nil
 }
 
+// ReadRaw returns the encrypted backend bytes for entry. It intentionally
+// bypasses content decryption while still using the already-resolved entry.
+func (d *Driver) ReadRaw(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	if offset < 0 || size < 0 {
+		return nil, errors.New("crypt: raw read offset and size must be non-negative")
+	}
+	return d.raw.Read(ctx, entry, offset, size)
+}
+
 func (d *Driver) readAll(ctx context.Context, entry drive.Entry) (io.ReadCloser, error) {
 	rc, err := d.raw.Read(ctx, entry, 0, 0)
 	if err != nil {

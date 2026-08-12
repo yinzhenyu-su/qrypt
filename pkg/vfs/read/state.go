@@ -1,6 +1,7 @@
 package read
 
 import (
+	"io"
 	"sync"
 	"sync/atomic"
 
@@ -424,6 +425,14 @@ func (s *State) PutLocalFile(fid string, fileSize int64, localPath string) error
 		return nil
 	}
 	return s.cache.PutLocalFile(fid, fileSize, localPath)
+}
+
+// PutReader seeds the cache from reader content.
+func (s *State) PutReader(fid string, fileSize int64, r io.Reader) error {
+	if s.cache == nil {
+		return nil
+	}
+	return s.cache.PutReader(fid, fileSize, r)
 }
 
 // DebugSnapshot returns the read cache debug snapshot.

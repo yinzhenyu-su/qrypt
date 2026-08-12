@@ -16,14 +16,18 @@ import (
 //
 // On Android the implementation maps token to
 // ContentResolver.openAssetFileDescriptor(uri, "r") and seeks to offset.
+//
+// Read returns a freshly allocated byte slice instead of filling a caller
+// buffer: gobind passes []byte method arguments to Java one-way, so bytes
+// written into a caller-supplied buffer would never reach Go.
 type UploadSourceOpener interface {
 	// Open opens the source identified by token at the given byte offset and
 	// returns a handle for subsequent Read/Close calls. The handle stays
 	// valid until Close is called.
 	Open(token string, offset int64) (int64, error)
-	// Read reads up to len(dst) bytes from the open handle into dst, starting
-	// at the current position. 0 with nil error signals end of stream.
-	Read(handle int64, dst []byte) (int, error)
+	// Read reads up to size bytes from the open handle, starting at the
+	// current position. An empty slice signals end of stream.
+	Read(handle int64, size int) ([]byte, error)
 	// Close releases the handle.
 	Close(handle int64) error
 }
@@ -53,6 +57,25 @@ func SetUploadSourceOpenerJSON(opener UploadSourceOpener) string {
 	registry.mu.Unlock()
 	for _, s := range sessions {
 		s.applyUploadSourceProvider(opener)
+	}
+	return resultJSON(true, nil)
+}
+
+// ClearUploadSourceOpenerJSON removes the app-provided source opener from all
+// current and future sessions. Direct uploads then fall back to qrypt-readable
+// local filesystem paths.
+func ClearUploadSourceOpenerJSON() string {
+	uploadSourceMu.Lock()
+	uploadSourceOpener = nil
+	uploadSourceMu.Unlock()
+	registry.mu.Lock()
+	sessions := make([]*session, 0, len(registry.sessions))
+	for _, s := range registry.sessions {
+		sessions = append(sessions, s)
+	}
+	registry.mu.Unlock()
+	for _, s := range sessions {
+		s.applyUploadSourceProvider(nil)
 	}
 	return resultJSON(true, nil)
 }
@@ -104,13 +127,17 @@ func (r *mobileSourceReader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, io.EOF
 	}
-	n, err := r.opener.Read(r.handle, p)
+	data, err := r.opener.Read(r.handle, len(p))
 	if err != nil {
-		return n, wrapError(err)
+		return 0, wrapError(err)
 	}
-	if n == 0 {
+	if len(data) == 0 {
 		return 0, io.EOF
 	}
+	if len(data) > len(p) {
+		return 0, fmt.Errorf("mobile: upload source read returned %d bytes for requested %d", len(data), len(p))
+	}
+	n := copy(p, data)
 	return n, nil
 }
 
