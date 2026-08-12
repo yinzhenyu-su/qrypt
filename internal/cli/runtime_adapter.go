@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
@@ -42,7 +43,7 @@ func (cliRuntime) DefaultCacheDir() string {
 }
 
 func (cliRuntime) DebugReportSchemaVersion() int {
-	return debugAIReportSchemaVersion
+	return clidebug.DebugAIReportSchemaVersion
 }
 
 func (cliRuntime) ExitError(code int, err error) error {

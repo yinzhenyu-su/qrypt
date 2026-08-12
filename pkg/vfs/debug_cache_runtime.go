@@ -1,7 +1,6 @@
 package vfs
 
 import (
-	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
@@ -20,15 +19,6 @@ func (r vfsDebugCacheRuntime) ReadCache() readcache.DebugReadCache {
 
 func (r vfsDebugCacheRuntime) Journal() *upload.DebugJournal {
 	return r.v.uploads.Store().DebugJournal()
-}
-
-// debugReadCacheForTest exposes the read cache debug snapshot with the
-// upload journal attached, for tests.
-func (c *stores) debugReadCacheForTest() diagnostics.DebugCacheSnapshot {
-	return diagnostics.DebugCacheSnapshot{
-		DebugReadCache: c.DebugSnapshot(),
-		Journal:        c.DebugJournal(),
-	}
 }
 
 // debugActiveSlots is the fixed capacity of the active-debug ring. Active

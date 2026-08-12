@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -10,13 +9,6 @@ import (
 func commandUsageError(cmd *cobra.Command, format string, args ...any) error {
 	message := fmt.Sprintf(format, args...)
 	return usageErrorf("%s\n\nUsage:\n  %s", message, cmd.UseLine())
-}
-
-func noArgs(cmd *cobra.Command, args []string) error {
-	if len(args) != 0 {
-		return commandUsageError(cmd, "unexpected argument %q", args[0])
-	}
-	return nil
 }
 
 func commandGroupArgs(hints map[string]string) cobra.PositionalArgs {
@@ -29,45 +21,6 @@ func commandGroupArgs(hints map[string]string) cobra.PositionalArgs {
 		}
 		return usageErrorf("unknown command %q for %q\n\nRun '%s --help' to see available commands.", args[0], cmd.CommandPath(), cmd.CommandPath())
 	}
-}
-
-func exactNamedArgs(names ...string) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if len(args) == len(names) {
-			return nil
-		}
-		switch {
-		case len(args) < len(names):
-			return commandUsageError(cmd, "missing %s", strings.Join(names[len(args):], " and "))
-		default:
-			return commandUsageError(cmd, "too many arguments: %s", strings.Join(args[len(names):], " "))
-		}
-	}
-}
-
-func maxArgs(n int) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if len(args) <= n {
-			return nil
-		}
-		return commandUsageError(cmd, "too many arguments: %s", strings.Join(args[n:], " "))
-	}
-}
-
-func rangeArgs(minArgs, maxArgs int) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if len(args) >= minArgs && len(args) <= maxArgs {
-			return nil
-		}
-		if len(args) < minArgs {
-			return commandUsageError(cmd, "missing arguments: expected %d to %d, got %d", minArgs, maxArgs, len(args))
-		}
-		return commandUsageError(cmd, "too many arguments: expected %d to %d, got %d", minArgs, maxArgs, len(args))
-	}
-}
-
-func showHelp(cmd *cobra.Command, _ []string) error {
-	return cmd.Help()
 }
 
 func installFlagErrorHelp(cmd *cobra.Command) {

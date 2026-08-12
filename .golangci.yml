@@ -49,11 +49,17 @@ linters:
           - staticcheck
         text: "SA4006"
 
-      # internal/vfs/{read,upload} re-export the historical pkg/vfs-level
+      # pkg/vfs/{read,upload} re-export the historical pkg/vfs-level
       # names (upload.UploadSnapshot, read.ReadObserver, ...) verbatim and
       # pkg/vfs aliases them back for API compatibility; the stutter is
-      # intentional, so renaming would only churn call sites.
-      - path: internal/vfs/(read|upload)/.*\.go
+      # intentional, so renaming would only churn call sites. The same
+      # applies to internal/cli/debug, which kept the historical cli
+      # package's Debug* symbol names through the subcommand split.
+      - path: pkg/vfs/(read|upload)/.*\.go
+        linters:
+          - revive
+        text: "stutters"
+      - path: internal/cli/debug/.*\.go
         linters:
           - revive
         text: "stutters"
