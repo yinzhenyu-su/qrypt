@@ -126,14 +126,6 @@ func waitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) erro
 	}
 }
 
-func commandWaitTimeout(cmd *cobra.Command) time.Duration {
-	if cmd.Flag("wait-timeout") == nil {
-		return 30 * time.Second
-	}
-	timeout, _ := cmd.Flags().GetDuration("wait-timeout")
-	return timeout
-}
-
 func fileSystemActivity(fs any) (uploads, deleteTimers int) {
 	snapshotter, ok := fs.(diagnostics.DebugSnapshotProvider)
 	if !ok {
