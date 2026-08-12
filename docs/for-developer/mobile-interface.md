@@ -676,7 +676,10 @@ ReadLogJSON(coreID, name, offset, length)
 
 `DebugSnapshotJSON` includes a `mobile_handles` object reporting the number of
 open file, virtual file, download, upload stream, and task event handles for
-the session — useful for diagnosing handle leaks. `ThumbnailCacheUsageJSON`
+the session — useful for diagnosing handle leaks. It also includes
+`task_persistence`: `degraded=true` means task history could not be written
+reliably; it does not mean the file operation represented by the task failed.
+`ThumbnailCacheUsageJSON`
 returns `{"bytes": N}`; `RefreshPathJSON` returns `{"refreshed": true}`.
 
 ## Performance

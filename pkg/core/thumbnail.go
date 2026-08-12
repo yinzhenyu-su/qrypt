@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 type ThumbnailInfo struct {
@@ -175,11 +176,14 @@ func writeThumbnailMeta(path string, meta thumbnailMeta) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	return util.WriteAtomicWithOptions(path, util.AtomicWriteOptions{
+		Pattern: ".meta.json-*",
+		Mode:    0o600,
+		Replace: true,
+	}, func(file *os.File) error {
+		_, err := file.Write(raw)
 		return err
-	}
-	return os.Rename(tmp, path)
+	})
 }
 
 func copyFileAtomic(ctx context.Context, srcPath, dstPath string, perm os.FileMode) error {
@@ -188,22 +192,14 @@ func copyFileAtomic(ctx context.Context, srcPath, dstPath string, perm os.FileMo
 		return err
 	}
 	defer src.Close()
-	tmp := dstPath + ".tmp"
-	dst, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
+	return util.WriteAtomicWithOptions(dstPath, util.AtomicWriteOptions{
+		Pattern: ".thumbnail-*",
+		Mode:    perm,
+		Replace: true,
+	}, func(dst *os.File) error {
+		_, err := io.Copy(dst, contextReader{ctx: ctx, r: src})
 		return err
-	}
-	_, copyErr := io.Copy(dst, contextReader{ctx: ctx, r: src})
-	closeErr := dst.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmp)
-		return copyErr
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmp)
-		return closeErr
-	}
-	return os.Rename(tmp, dstPath)
+	})
 }
 
 type thumbnailCacheEntry struct {

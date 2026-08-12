@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -34,7 +34,7 @@ func (c *Core) createDeleteTask(ctx context.Context, req task.Request) (task.Tas
 		return task.Task{}, err
 	}
 	items := spec.Items
-	now := timeutil.Now()
+	now := util.Now()
 	firstPath := items[0].Path
 	taskType := req.Type
 	if taskType == task.TypeDeleteRemote && len(items) > 1 {
@@ -272,7 +272,7 @@ func deleteTaskPaths(items []task.Item) []string {
 func newDeleteTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "delete-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "delete-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "delete-" + hex.EncodeToString(b[:])
 }

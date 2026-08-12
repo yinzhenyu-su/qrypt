@@ -5,14 +5,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 func (v *VFS) beginDebugActive(op vfstypes.DebugActiveOp) uint64 {
 	return v.activeDebug.Begin(op)
 }
 
-func (v *VFS) updateDebugActive(opID uint64, fn func(*DebugActiveOp)) {
+func (v *VFS) updateDebugActive(opID uint64, fn func(*debugActiveOp)) {
 	v.activeDebug.Update(opID, fn)
 }
 
@@ -20,7 +21,7 @@ func (v *VFS) finishDebugActive(opID uint64) {
 	v.activeDebug.Finish(opID)
 }
 
-func (v *VFS) DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugActiveMount, error) {
+func (v *VFS) DebugActiveOps(ctx context.Context, mountNames []string) ([]diagnostics.DebugActiveMount, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -29,10 +30,10 @@ func (v *VFS) DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugA
 	if !debugActiveMountAllowed(v.name, mountNames) {
 		return nil, nil
 	}
-	return []DebugActiveMount{{Mount: v.name, Ops: v.debugActiveOps()}}, nil
+	return []diagnostics.DebugActiveMount{{Mount: v.name, Ops: v.debugActiveOps()}}, nil
 }
 
-func (v *VFS) debugActiveOps() []DebugActiveOp {
+func (v *VFS) debugActiveOps() []debugActiveOp {
 	ops := v.activeDebug.Snapshot()
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].StartedAt.Equal(ops[j].StartedAt) {

@@ -6,3 +6,5 @@ dist/
 draft
 
 .code-auditor/
+
+.reasonix

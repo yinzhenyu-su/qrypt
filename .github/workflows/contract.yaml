@@ -77,9 +77,17 @@ jobs:
           test -n "$CONFIG_B64" || { echo "CONTRACT_CONFIG_TOML_B64 secret missing"; exit 1; }
           echo "$CONFIG_B64" | base64 -d > ./qrypt.toml
 
+      - name: Build metadata
+        run: |
+          version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          commit="$(git rev-parse --short HEAD)"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
+          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${version} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${dirty}" >> "$GITHUB_ENV"
+
       - name: Start mount server
         run: |
-          go build -o /tmp/qrypt ./cmd/qrypt/
+          go build -ldflags="${QRYPT_LDFLAGS}" -o /tmp/qrypt ./cmd/qrypt/
           nohup /tmp/qrypt mount -s /tmp/qrypt.sock >/tmp/qrypt-mount.log 2>&1 &
 
       - name: Wait for socket

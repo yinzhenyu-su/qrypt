@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"io"
 	"math/rand"
 	"net/http"
@@ -573,9 +572,9 @@ func (c *client) uploadRequest(ctx context.Context, uri string, form map[string]
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+			Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 		})
-		err := util.HTTPError("189: upload request "+uri, nil, resp, raw)
+		err := drive.HTTPError("189: upload request "+uri, nil, resp, raw)
 		if nonRetryableUploadError(resp.StatusCode, raw) {
 			err = drive.NonRetryable(err)
 		}
@@ -648,9 +647,9 @@ func (c *client) doGetRaw(ctx context.Context, u string, query map[string]string
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(query),
-			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+			Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 		})
-		return nil, util.HTTPError("189", req, resp, raw)
+		return nil, drive.HTTPError("189", req, resp, raw)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	event := drive.MetricEvent{
@@ -719,7 +718,7 @@ func (c *client) doPostWithHeaders(ctx context.Context, u string, headers map[st
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+			Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 		})
 		return fmt.Errorf("189: %s: %s", u, resp.Status)
 	}
@@ -815,9 +814,9 @@ func (c *client) doPost(ctx context.Context, u string, form map[string]string, r
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   traceRequestFields(form),
-			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+			Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 		})
-		return util.HTTPError("189", req, resp, raw)
+		return drive.HTTPError("189", req, resp, raw)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -880,9 +879,9 @@ func (c *client) doReq(req *http.Request, result any) error {
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   request,
-			Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+			Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 		})
-		return util.HTTPError("189", req, resp, raw)
+		return drive.HTTPError("189", req, resp, raw)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -911,7 +910,7 @@ func (c *client) doReq(req *http.Request, result any) error {
 	}
 	if result != nil {
 		if err := json.Unmarshal(raw, result); err != nil {
-			return fmt.Errorf("189: decode response from %s: %w (body: %s)", util.Snippet([]byte(req.URL.String())), err, util.Snippet(raw))
+			return fmt.Errorf("189: decode response from %s: %w (body: %s)", drive.Snippet([]byte(req.URL.String())), err, drive.Snippet(raw))
 		}
 	}
 	return nil

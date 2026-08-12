@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/internal/util"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -389,10 +389,10 @@ func (d *Driver) ossComplete(ctx context.Context, pre *upPreResp, etags []string
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "oss_complete",
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    responseStatus(resp),
 			Duration:  time.Since(start).String(),
-			Request:   map[string]any{"headers": util.HeaderKeys(req.Header)},
+			Request:   map[string]any{"headers": driverutil.HeaderKeys(req.Header)},
 			Error:     errorString(err),
 		})
 		if err != nil {
@@ -494,10 +494,10 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "oss_upload_part",
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    responseStatus(resp),
 			Duration:  ossDur.String(),
-			Request:   map[string]any{"part_number": partNumber, "bytes": length, "headers": util.HeaderKeys(req.Header)},
+			Request:   map[string]any{"part_number": partNumber, "bytes": length, "headers": driverutil.HeaderKeys(req.Header)},
 			Error:     errorString(err),
 		})
 		if err != nil {
@@ -584,7 +584,7 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 }
 
 func ossRetryDelay(attempt int) time.Duration {
-	return retry.ExponentialBackoffWithOptions(attempt, ossRetryBaseDelay, 2*time.Minute, false)
+	return util.ExponentialBackoffWithOptions(attempt, ossRetryBaseDelay, 2*time.Minute, false)
 }
 
 func apiError(resp respEnvelope) error {

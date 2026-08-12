@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/retry"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 // Copy implements drive.ServerSideCopier: Microsoft Graph driveItem: copy
@@ -114,7 +114,7 @@ func (d *Driver) waitForCopyJob(ctx context.Context, location string) error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("onedrive: copy job timed out: %s", string(respBody))
 		}
-		if err := retry.WaitExponential(ctx, attempt); err != nil {
+		if err := util.WaitExponential(ctx, attempt); err != nil {
 			return err
 		}
 		attempt++

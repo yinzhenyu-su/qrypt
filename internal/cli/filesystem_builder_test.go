@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 func testCommand() *cobra.Command {
@@ -222,7 +222,7 @@ root_path = "`+remoteB+`"
 	fs.Start(ctx)
 
 	snapshotter, ok := fs.(interface {
-		DebugSnapshot() vfs.DebugSnapshot
+		DebugSnapshot() diagnostics.DebugSnapshot
 	})
 	if !ok {
 		t.Fatal("selected filesystem does not expose debug snapshot")

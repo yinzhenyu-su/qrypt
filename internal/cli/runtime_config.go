@@ -7,10 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/config"
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func initLogger(cfg *config.Config) error {
@@ -18,8 +17,8 @@ func initLogger(cfg *config.Config) error {
 		return nil
 	}
 	level := cfg.Logging.LogLevel
-	logFile := osutil.ExpandHome(cfg.EffectiveLogFile())
-	errFile := osutil.ExpandHome(cfg.EffectiveErrorFile())
+	logFile := util.ExpandHome(cfg.EffectiveLogFile())
+	errFile := util.ExpandHome(cfg.EffectiveErrorFile())
 	if level == "" && logFile == "" && errFile == "" {
 		return nil
 	}
@@ -35,7 +34,7 @@ func initLogger(cfg *config.Config) error {
 }
 
 func initTime(ctx context.Context, loaded *config.Config) error {
-	ntpConfig := timeutil.NTPConfig{Enabled: true}
+	ntpConfig := util.NTPConfig{Enabled: true}
 	if loaded != nil {
 		ntpConfig.Enabled = loaded.Time.EffectiveNTPEnabled()
 		ntpConfig.Servers = loaded.Time.NTPServers
@@ -58,7 +57,7 @@ func initTime(ctx context.Context, loaded *config.Config) error {
 	if os.Getenv("QRYPT_TEST_NTP_DISABLED") != "" {
 		ntpConfig.Enabled = false
 	}
-	timeutil.StartNTP(ctx, ntpConfig)
+	util.StartNTP(ctx, ntpConfig)
 	return nil
 }
 

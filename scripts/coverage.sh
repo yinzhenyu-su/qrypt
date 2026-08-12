@@ -18,14 +18,14 @@ declare -A FLOOR=(
   [pkg/vfs]=75
   [pkg/core]=72
   [pkg/drive]=62
-  [internal/sync]=79
-  [internal/config]=74
+  [pkg/syncer]=79
+  [pkg/config]=74
   [pkg/crypt]=79
 )
 
 pkg_total() { # $1 = profile, $2 = package path prefix
   local profile=$1 prefix=$2
-  if [ "$prefix" = "internal/sync" ]; then
+  if [ "$prefix" = "pkg/syncer" ]; then
     # profile covers only sync via -coverpkg, so the global total is ours.
     go tool cover -func="$profile" | tail -1 | awk '{print $NF}' | tr -d '%'
   else
@@ -35,9 +35,9 @@ pkg_total() { # $1 = profile, $2 = package path prefix
 
 run_one() { # $1 = package, $2 = profile
   local pkg=$1 profile=$2
-  if [ "$pkg" = "internal/sync" ]; then
-    go test -coverpkg=./internal/sync/ -coverprofile="$profile" \
-      ./internal/cli/ ./internal/sync/ >/dev/null 2>&1
+  if [ "$pkg" = "pkg/syncer" ]; then
+    go test -coverpkg=./pkg/syncer/ -coverprofile="$profile" \
+      ./internal/cli/ ./pkg/syncer/ >/dev/null 2>&1
   else
     go test -coverprofile="$profile" "./$pkg" >/dev/null 2>&1
   fi

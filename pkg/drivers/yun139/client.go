@@ -19,11 +19,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
-	"github.com/yinzhenyu/qrypt/internal/util/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httpclient"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const (
@@ -101,7 +101,7 @@ type client struct {
 	onAuthorizationUpdate func(authorization string)
 	mu                    sync.RWMutex
 	tokenExpiry           time.Time
-	metrics               *util.Buffer
+	metrics               *driverutil.Buffer
 }
 
 func newClient(authorization string) *client {
@@ -109,7 +109,7 @@ func newClient(authorization string) *client {
 		httpClient:     httputil.NewClient(60*time.Second, 30*time.Second),
 		authorization:  authorization,
 		authRefreshURL: "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do",
-		metrics:        util.NewBuffer(500),
+		metrics:        driverutil.NewBuffer(500),
 	}
 }
 
@@ -200,7 +200,7 @@ func (c *client) refreshToken(ctx context.Context) error {
 	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: "token_refresh",
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
 		Error:     errorString(err),
@@ -285,10 +285,10 @@ func (c *client) ensurePersonalCloudHost() error {
 	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
-		Request:   util.BodyFields(routeData),
+		Request:   driverutil.BodyFields(routeData),
 		Error:     errorString(err),
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait(), 0, false))
+			time.Sleep(util.ExponentialBackoffWithOptions(attempt, personalRetryWait(), 0, false))
 		}
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
@@ -363,7 +363,7 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			time.Sleep(retry.ExponentialBackoffWithOptions(attempt, personalRetryWait(), 0, false))
+			time.Sleep(util.ExponentialBackoffWithOptions(attempt, personalRetryWait(), 0, false))
 		}
 		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
@@ -462,10 +462,10 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 	c.recordMetric(ctx, drive.MetricEvent{
 		Operation: path,
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
-		Request:   util.BodyFields(bodyData),
+		Request:   driverutil.BodyFields(bodyData),
 		Error:     errorString(err),
 	})
 	if err != nil {
@@ -479,15 +479,15 @@ func (c *client) postOnce(ctx context.Context, baseURL, path string, bodyData in
 		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: path,
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    resp.StatusCode,
-			Response:  map[string]any{"body_snippet": util.Snippet(respBody)},
+			Response:  map[string]any{"body_snippet": drive.Snippet(respBody)},
 		})
-		return util.HTTPError("yun139: non-JSON response", req, resp, respBody)
+		return drive.HTTPError("yun139: non-JSON response", req, resp, respBody)
 	}
 	var base baseResp
 	if err := json.Unmarshal(respBody, &base); err == nil && !base.Success && isAuthExpiredMessage(base.Message) {
-		return fmt.Errorf("yun139: %s auth failed: %w: %s", path, drive.ErrAuth, util.Snippet([]byte(base.Message)))
+		return fmt.Errorf("yun139: %s auth failed: %w: %s", path, drive.ErrAuth, drive.Snippet([]byte(base.Message)))
 	}
 	if result == nil {
 		return nil

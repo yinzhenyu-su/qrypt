@@ -3,9 +3,9 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"io"
 	"os"
 	"path/filepath"
@@ -61,7 +61,7 @@ func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upl
 	if err != nil {
 		return err
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	pending := PendingUpload{Path: path, FID: fid, ParentID: parent.ID, Name: name, LocalPath: localPath, ModTime: now.UnixNano()}
 	if err := store.SaveUpload(pending); err != nil {
 		_ = store.RemoveStaging(localPath)
@@ -99,7 +99,7 @@ func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, st
 		_ = store.RemoveStaging(localPath)
 		return PendingUpload{}, err
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	pending := PendingUpload{
 		Path:      path,
 		FID:       fid,
@@ -181,7 +181,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	if writtenEnd := off + int64(n); writtenEnd > pending.Size {
 		pending.Size = writtenEnd
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	pending.ModTime = now.UnixNano()
 	store.UpdateUploadTransient(pending)
 	v.setLocalModTime(path, now)
@@ -213,7 +213,7 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 	pending.Size = size
 	pending.Frozen = true
 	if pending.ModTime == 0 {
-		now := timeutil.Now()
+		now := util.Now()
 		pending.ModTime = now.UnixNano()
 		v.setLocalModTime(path, now)
 	}
@@ -264,7 +264,7 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 	}
 	hashes.Dirty(pending)
 	pending.Size = size
-	now := timeutil.Now()
+	now := util.Now()
 	pending.ModTime = now.UnixNano()
 	v.setLocalModTime(path, now)
 	if entry, err := v.resolve(ctx, path); err == nil && !entry.IsDir {
@@ -312,7 +312,7 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 		}
 	}
 	size, _ := store.StagingSize(localPath)
-	modTime := timeutil.Now()
+	modTime := util.Now()
 	if entry, err := remote.Resolve(ctx, path); err == nil && !entry.ModTime.IsZero() {
 		modTime = entry.ModTime
 	}

@@ -2,6 +2,12 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
+	cliconfig "github.com/yinzhenyu/qrypt/internal/cli/config"
+	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
+	clidriver "github.com/yinzhenyu/qrypt/internal/cli/driver"
+	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
+	climount "github.com/yinzhenyu/qrypt/internal/cli/mount"
+	cliversion "github.com/yinzhenyu/qrypt/internal/cli/version"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all" // registers all drivers via their init functions
 )
 
@@ -30,12 +36,12 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 		},
 	}
 
-	cmd.AddCommand(newMountCmd())
-	cmd.AddCommand(newConfigCmd())
-	cmd.AddCommand(newDriverCmd())
-	cmd.AddCommand(newFsCmd())
-	cmd.AddCommand(newDebugCmd())
-	cmd.AddCommand(newVersionCmd(build))
+	cmd.AddCommand(climount.NewCommand(cliRuntime{}))
+	cmd.AddCommand(cliconfig.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clidriver.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clifs.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clidebug.NewCommand(cliRuntime{}))
+	cmd.AddCommand(cliversion.NewCommand(cliRuntime{}, build))
 	installFlagErrorHelp(cmd)
 
 	return cmd

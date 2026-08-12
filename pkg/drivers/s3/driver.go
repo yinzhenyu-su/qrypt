@@ -24,9 +24,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
 // Driver implements drive.Driver (plus Writer, SourceUploader, Debugger, and
@@ -59,7 +59,7 @@ type Driver struct {
 	client     *s3.Client
 	limiter    *drive.BandwidthLimiter
 	stateStore drive.StateStore
-	metrics    *util.Buffer
+	metrics    *driverutil.Buffer
 }
 
 // Options configures a new S3 driver.
@@ -253,7 +253,7 @@ func New(opts Options) *Driver {
 		secretKey:    opts.SecretAccessKey,
 		sessionToken: opts.SessionToken,
 		signExpire:   opts.SignURLExpire,
-		metrics:      util.NewBuffer(500),
+		metrics:      driverutil.NewBuffer(500),
 	}
 }
 

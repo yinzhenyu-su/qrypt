@@ -4,16 +4,16 @@ import (
 	"context"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
-func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
-	return []MountHealth{diagnostics.AssembleHealth(ctx, mountName, newVFSDebugHealthRuntime(v))}, nil
+func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]diagnostics.MountHealth, error) {
+	return []diagnostics.MountHealth{diagnostics.AssembleHealth(ctx, mountName, newVFSDebugHealthRuntime(v))}, nil
 }
 
-func (v *VFS) Drivers() []NamedDriver {
-	return []NamedDriver{newVFSDriverRuntime(v).NamedDriver(v.name)}
+func (v *VFS) Drivers() []diagnostics.NamedDriver {
+	return []diagnostics.NamedDriver{newVFSDriverRuntime(v).NamedDriver(v.name)}
 }
 
 type vfsDebugHealthRuntime struct {

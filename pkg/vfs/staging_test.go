@@ -6,7 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
-	"github.com/yinzhenyu/qrypt/internal/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +16,7 @@ import (
 )
 
 func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
-	cache, err := NewStoresInDir(t.TempDir(), 0)
+	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 }
 
 func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
-	cache, err := NewStoresInDir(t.TempDir(), 0)
+	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 
 func TestSweepUnreferencedStaging(t *testing.T) {
 	dir := t.TempDir()
-	cache, err := NewStoresInDir(dir, 0)
+	cache, err := newStoresInDir(dir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stagingDir, "note.txt"), []byte("z"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewStoresInDir(dir, 0); err != nil {
+	if _, err := newStoresInDir(dir, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(live); err != nil {
@@ -215,7 +215,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 }
 
 func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
-	cache, err := NewStoresInDir(t.TempDir(), 0)
+	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 }
 
 func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
-	cache, err := NewStoresInDir(t.TempDir(), 0)
+	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

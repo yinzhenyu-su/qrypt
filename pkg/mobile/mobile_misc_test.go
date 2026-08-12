@@ -78,7 +78,10 @@ root_path = "`+remote+`"
 	var snapshot struct {
 		OK   bool `json:"ok"`
 		Data struct {
-			Kind string `json:"kind"`
+			Kind            string `json:"kind"`
+			TaskPersistence struct {
+				Degraded bool `json:"degraded"`
+			} `json:"task_persistence"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(DebugSnapshotJSON(opened.Data)), &snapshot); err != nil {
@@ -86,6 +89,9 @@ root_path = "`+remote+`"
 	}
 	if !snapshot.OK || snapshot.Data.Kind == "" {
 		t.Fatalf("DebugSnapshotJSON = %+v, want snapshot", snapshot)
+	}
+	if snapshot.Data.TaskPersistence.Degraded {
+		t.Fatalf("task persistence unexpectedly degraded: %+v", snapshot.Data.TaskPersistence)
 	}
 	if raw := FlushReadCacheJSON(opened.Data); !strings.Contains(raw, `"ok":true`) {
 		t.Fatalf("FlushReadCacheJSON = %s, want ok", raw)

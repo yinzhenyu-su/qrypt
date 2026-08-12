@@ -4,39 +4,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 )
 
-type DebugUploadCancelInjector interface {
-	DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancelRequest) (DebugUploadCancelResult, error)
-	DebugClearUploadCancel(ctx context.Context, id string) error
-	DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault
-}
-
-type DebugUploadCancelRequest struct {
-	Path       string            `json:"path,omitempty"`
-	OpID       string            `json:"op_id,omitempty"`
-	Phase      drive.UploadPhase `json:"phase,omitempty"`
-	AfterBytes int64             `json:"after_bytes,omitempty"`
-	AfterDelay time.Duration     `json:"after_delay,omitempty"`
-	// Once controls one-shot behavior; nil (or omitted) defaults to TRUE
-	// for compatibility with clients that never set it.
-	Once   *bool         `json:"once,omitempty"`
-	Reason string        `json:"reason,omitempty"`
-	TTL    time.Duration `json:"ttl,omitempty"`
-}
-
-type DebugUploadCancelResult struct {
-	ID      string `json:"id"`
-	Armed   bool   `json:"armed"`
-	Matched string `json:"matched,omitempty"`
-}
-
-func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancelRequest) (DebugUploadCancelResult, error) {
+func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req faultinject.DebugUploadCancelRequest) (faultinject.DebugUploadCancelResult, error) {
 	select {
 	case <-ctx.Done():
-		return DebugUploadCancelResult{}, ctx.Err()
+		return faultinject.DebugUploadCancelResult{}, ctx.Err()
 	default:
 	}
 	if req.Phase == "" && req.AfterBytes <= 0 && req.AfterDelay <= 0 {
@@ -53,9 +28,9 @@ func (v *VFS) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancel
 		TTL:        req.TTL,
 	})
 	if err != nil {
-		return DebugUploadCancelResult{}, err
+		return faultinject.DebugUploadCancelResult{}, err
 	}
-	return DebugUploadCancelResult{ID: id, Armed: true}, nil
+	return faultinject.DebugUploadCancelResult{ID: id, Armed: true}, nil
 }
 
 func (v *VFS) DebugClearUploadCancel(ctx context.Context, id string) error {
@@ -67,7 +42,7 @@ func (v *VFS) DebugClearUploadCancel(ctx context.Context, id string) error {
 	return v.faults.Clear(id)
 }
 
-func (v *VFS) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault {
+func (v *VFS) DebugUploadCancelFaults(ctx context.Context) []faultinject.DebugUploadCancelFault {
 	select {
 	case <-ctx.Done():
 		return nil

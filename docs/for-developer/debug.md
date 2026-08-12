@@ -367,7 +367,7 @@ Common endpoints:
 
 | Endpoint | Purpose | Size notes |
 | --- | --- | --- |
-| `/v1/health` | Debug socket health | Small |
+| `/v1/health` | Debug socket health, including task-journal persistence status | Small |
 | `/v1/runtime` | Go runtime and memory summary | Small |
 | `/v1/debug/reset` | Reset debug epoch and clear VFS read history | Small |
 | `/v1/debug/stacks` | Goroutine stack dump | Text, can be large |

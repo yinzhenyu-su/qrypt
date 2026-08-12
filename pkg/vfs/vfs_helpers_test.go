@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 }
 func activeUploadCount(fs vfs.FileSystem) int {
 	snapshotter, ok := fs.(interface {
-		DebugSnapshot() vfs.DebugSnapshot
+		DebugSnapshot() diagnostics.DebugSnapshot
 	})
 	if !ok {
 		return 0
@@ -48,7 +49,7 @@ func waitForCondition(t *testing.T, ok func() bool) {
 	}
 	t.Fatal("condition was not met before deadline")
 }
-func singleMountHealth(t *testing.T, fs *vfs.VFS) vfs.MountHealth {
+func singleMountHealth(t *testing.T, fs *vfs.VFS) diagnostics.MountHealth {
 	t.Helper()
 	health, err := fs.MountHealth(context.Background(), "test")
 	if err != nil {
@@ -59,7 +60,7 @@ func singleMountHealth(t *testing.T, fs *vfs.VFS) vfs.MountHealth {
 	}
 	return health[0]
 }
-func assertHealthOp(t *testing.T, health vfs.MountHealth, op string, success, failures int) {
+func assertHealthOp(t *testing.T, health diagnostics.MountHealth, op string, success, failures int) {
 	t.Helper()
 	got, ok := health.Ops[op]
 	if !ok {

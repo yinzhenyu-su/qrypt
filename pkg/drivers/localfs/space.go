@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
-	total, free, err := osutil.DiskFree(d.root)
+	total, free, err := util.DiskFree(d.root)
 	if err != nil {
 		return drive.Space{}, fmt.Errorf("localfs: diskfree root: %w", err)
 	}

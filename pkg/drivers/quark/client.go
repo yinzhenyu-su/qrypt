@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
-	"github.com/yinzhenyu/qrypt/internal/util/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httpclient"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const (
@@ -45,7 +45,7 @@ type client struct {
 	metaSem        chan struct{}
 	ossSem         chan struct{}
 	onCookieUpdate func(cookie string)
-	metrics        *util.Buffer
+	metrics        *driverutil.Buffer
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -68,7 +68,7 @@ func newClient(cookie string, opts clientOptions) *client {
 		mgmtSem:        make(chan struct{}, 500),
 		metaSem:        make(chan struct{}, 500),
 		ossSem:         make(chan struct{}, ossMaxConcurrent),
-		metrics:        util.NewBuffer(500),
+		metrics:        driverutil.NewBuffer(500),
 	}
 }
 
@@ -248,18 +248,18 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
 				Method:    req.Method,
-				URL:       util.URL(req.URL),
+				URL:       driverutil.URL(req.URL),
 				Duration:  time.Since(httpStart).String(),
 				Attempt:   attempt + 1,
 				Retry:     attempt > 0,
-				Request:   util.MergeRequest(util.RequestFields(query), util.BodyFields(body)),
+				Request:   driverutil.MergeRequest(driverutil.RequestFields(query), driverutil.BodyFields(body)),
 				Error:     err.Error(),
 			})
 			if attempt < httpMaxRetries && retryableHTTPError(err) {
 				if cerr := ctx.Err(); cerr != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
-				time.Sleep(retry.ExponentialBackoff(attempt))
+				time.Sleep(util.ExponentialBackoff(attempt))
 				continue
 			}
 			return fmt.Errorf("request failed: %w", err)
@@ -270,12 +270,12 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			c.recordMetric(ctx, drive.MetricEvent{
 				Operation: path,
 				Method:    req.Method,
-				URL:       util.URL(req.URL),
+				URL:       driverutil.URL(req.URL),
 				Status:    resp.StatusCode,
 				Duration:  time.Since(httpStart).String(),
 				Attempt:   attempt + 1,
 				Retry:     attempt > 0,
-				Request:   util.MergeRequest(util.RequestFields(query), util.BodyFields(body)),
+				Request:   driverutil.MergeRequest(driverutil.RequestFields(query), driverutil.BodyFields(body)),
 				Error:     readErr.Error(),
 			})
 			return fmt.Errorf("read response failed: %w", readErr)
@@ -283,12 +283,12 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		event := drive.MetricEvent{
 			Operation: path,
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    resp.StatusCode,
 			Duration:  time.Since(httpStart).String(),
 			Attempt:   attempt + 1,
 			Retry:     attempt > 0,
-			Request:   util.MergeRequest(util.RequestFields(query), util.BodyFields(body)),
+			Request:   driverutil.MergeRequest(driverutil.RequestFields(query), driverutil.BodyFields(body)),
 			Response:  map[string]any{"bytes": len(bodyBytes)},
 		}
 		for _, cookie := range resp.Cookies() {
@@ -298,21 +298,21 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt < httpMaxRetries {
 			c.recordMetric(ctx, event)
-			time.Sleep(retry.ExponentialBackoff(attempt))
+			time.Sleep(util.ExponentialBackoff(attempt))
 			continue
 		}
 		if result != nil {
 			if err := httpclient.DecodeJSON(bodyBytes, result); err != nil {
 				event.Error = err.Error()
-				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
+				event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": drive.Snippet(bodyBytes)}
 				c.recordMetric(ctx, event)
 				return fmt.Errorf("parse response failed: %w", err)
 			}
 		}
 		if resp.StatusCode >= 400 {
-			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": util.Snippet(bodyBytes)}
+			event.Response = map[string]any{"bytes": len(bodyBytes), "body_snippet": drive.Snippet(bodyBytes)}
 			c.recordMetric(ctx, event)
-			return util.HTTPError("quark", req, resp, bodyBytes)
+			return drive.HTTPError("quark", req, resp, bodyBytes)
 		}
 		c.recordMetric(ctx, event)
 		return nil

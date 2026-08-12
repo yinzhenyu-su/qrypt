@@ -28,9 +28,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 // ─── XML types for PROPFIND responses ────────────────────────────────────
@@ -77,7 +77,7 @@ func (e webdavStatusError) Error() string {
 
 const webdavRequestMaxAttempts = 3
 
-var webdavRetryWait = retry.Wait
+var webdavRetryWait = util.Wait
 
 // ─── Driver ──────────────────────────────────────────────────────────────
 
@@ -94,7 +94,7 @@ type Driver struct {
 	password string
 	client   *http.Client
 	limiter  *drive.BandwidthLimiter
-	metrics  *util.Buffer
+	metrics  *driverutil.Buffer
 }
 
 // Options for creating a new WebDAV driver.
@@ -171,7 +171,7 @@ func New(opts Options) *Driver {
 				DisableCompression: false,
 			},
 		},
-		metrics: util.NewBuffer(500),
+		metrics: driverutil.NewBuffer(500),
 	}
 }
 
@@ -244,7 +244,7 @@ func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, erro
 //
 // If size > 0, it reads exactly size bytes starting at offset.
 // If size == 0, it reads from offset to EOF — matching the convention
-// used by the VFS layer and localfs/osutil.OpenRead.
+// used by the VFS layer and localfs/util.OpenRead.
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	if entry.Size > 0 && offset >= entry.Size {
 		return io.NopCloser(bytes.NewReader(nil)), nil
@@ -722,7 +722,7 @@ func (d *Driver) move(ctx context.Context, srcURL, destURL string) error {
 	req.Header.Set("Overwrite", "F")
 	start := time.Now()
 	resp, err := d.client.Do(req)
-	d.recordHTTP(ctx, "move", req, resp, start, map[string]any{"headers": util.HeaderKeys(req.Header)}, err)
+	d.recordHTTP(ctx, "move", req, resp, start, map[string]any{"headers": driverutil.HeaderKeys(req.Header)}, err)
 	if err != nil {
 		return fmt.Errorf("webdav: move: %w", err)
 	}
@@ -749,7 +749,7 @@ func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Req
 	event := drive.MetricEvent{
 		Operation: operation,
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Duration:  time.Since(start).String(),
 		Request:   request,
 	}

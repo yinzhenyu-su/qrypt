@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -538,7 +537,7 @@ func newTestUploadDriver(t *testing.T, serverURL string, store drive.StateStore)
 			return nil, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("test upload request %s: %s body=%q", uri, resp.Status, util.Snippet(raw))
+			return nil, fmt.Errorf("test upload request %s: %s body=%q", uri, resp.Status, drive.Snippet(raw))
 		}
 		return raw, nil
 	}

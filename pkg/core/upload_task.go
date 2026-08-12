@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const uploadTaskPollInterval = 500 * time.Millisecond
@@ -31,7 +31,7 @@ func (c *Core) createUploadTask(ctx context.Context, req task.Request) (task.Tas
 		return task.Task{}, err
 	}
 	items := spec.Items
-	now := timeutil.Now()
+	now := util.Now()
 	first := items[0]
 	taskType := req.Type
 	if taskType == task.TypeUploadRemote && len(items) > 1 {
@@ -317,7 +317,7 @@ func uploadTaskDetailItems(items []task.Item) []map[string]string {
 func newUploadTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "upload-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "upload-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "upload-" + hex.EncodeToString(b[:])
 }

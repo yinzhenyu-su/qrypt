@@ -3,7 +3,7 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"sync"
 	"testing"
 	"time"

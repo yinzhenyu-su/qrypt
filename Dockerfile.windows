@@ -22,8 +22,14 @@ RUN go mod download
 COPY . .
 
 ARG TARGETOS=windows TARGETARCH=amd64
+ARG VERSION=dev
+ARG COMMIT=
+ARG BUILD_TIME=
+ARG DIRTY=false
 RUN CC=x86_64-w64-mingw32-gcc GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=1 \
-    go build -ldflags="-s -w" -o /qrypt-windows-amd64.exe ./cmd/qrypt/
+    go build \
+    -ldflags="-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${VERSION} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${COMMIT} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${BUILD_TIME} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${DIRTY}" \
+    -o /qrypt-windows-amd64.exe ./cmd/qrypt/
 
 FROM scratch
 COPY --from=build /qrypt-windows-amd64.exe /qrypt-windows-amd64.exe

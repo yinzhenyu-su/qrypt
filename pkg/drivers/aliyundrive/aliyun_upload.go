@@ -14,8 +14,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -228,7 +228,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "upload_part",
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    responseStatus(resp),
 			Duration:  time.Since(start).String(),
 			Request:   map[string]any{"part_number": part.PartNumber, "bytes": length},

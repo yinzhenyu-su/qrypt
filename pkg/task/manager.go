@@ -60,6 +60,20 @@ func NewManagerWithStore(store Store, sources ...Source) *Manager {
 	}
 }
 
+// PersistenceError reports whether the manager's store has lost durability.
+// Task execution results remain available in memory; callers must not treat
+// this as proof that the underlying business operation failed.
+func (m *Manager) PersistenceError() error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	health, ok := m.store.(PersistenceHealth)
+	if !ok {
+		return nil
+	}
+	return health.PersistenceError()
+}
+
 func (m *Manager) AddSource(source Source) {
 	if source == nil {
 		return

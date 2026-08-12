@@ -1,9 +1,9 @@
 package vfs
 
 import (
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/vfs/scheduler"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/scheduler"
 	"path/filepath"
 	"sync"
 	"time"

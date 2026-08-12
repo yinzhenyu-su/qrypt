@@ -3,8 +3,8 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/vfs/mutation"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
 	"path/filepath"
 	"time"
 )

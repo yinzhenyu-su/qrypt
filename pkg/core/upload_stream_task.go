@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 var UploadStreamTaskPollInterval = 500 * time.Millisecond
@@ -63,7 +63,7 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 	if err != nil {
 		return task.Task{}, err
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	first := batch.items[0]
 	item := task.Task{
 		ID:        batch.taskID,
@@ -713,7 +713,7 @@ func (c *Core) removeUploadStream(taskID string) {
 func newUploadStreamTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "upload-stream-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "upload-stream-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "upload-stream-" + hex.EncodeToString(b[:])
 }

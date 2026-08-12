@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
 )
 
 func setupUsageTest(t *testing.T) string {
@@ -57,7 +59,7 @@ func TestFsDfJSON(t *testing.T) {
 		t.Fatalf("df failed: %v", err)
 	}
 	var result struct {
-		Mounts []fsSpaceEntry `json:"mounts"`
+		Mounts []clifs.SpaceEntry `json:"mounts"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("df JSON invalid: %v\n%s", err, out)
@@ -106,7 +108,7 @@ func TestFsDuJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("du failed: %v", err)
 	}
-	var result fsDiskUsageResult
+	var result clifs.DiskUsageResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("du JSON invalid: %v\n%s", err, out)
 	}
@@ -247,7 +249,7 @@ secret_access_key = "y"
 		t.Fatalf("df --json failed: %v", err)
 	}
 	var result struct {
-		Mounts []fsSpaceEntry `json:"mounts"`
+		Mounts []clifs.SpaceEntry `json:"mounts"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("df JSON invalid: %v\n%s", err, out)
@@ -255,7 +257,7 @@ secret_access_key = "y"
 	if len(result.Mounts) != 2 {
 		t.Fatalf("df mounts = %d, want 2 (failing mount must not be dropped)", len(result.Mounts))
 	}
-	byName := map[string]fsSpaceEntry{}
+	byName := map[string]clifs.SpaceEntry{}
 	for _, m := range result.Mounts {
 		byName[m.Name] = m
 	}
@@ -273,7 +275,7 @@ func TestFsDuSingleFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("du on a file failed: %v", err)
 	}
-	var result fsDiskUsageResult
+	var result clifs.DiskUsageResult
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("du JSON invalid: %v\n%s", err, out)
 	}
@@ -303,7 +305,7 @@ func TestFsFindJSONIncludesFullPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find --json failed: %v", err)
 	}
-	var results []fsFindResult
+	var results []clifs.FindResult
 	if err := json.Unmarshal([]byte(out), &results); err != nil {
 		t.Fatalf("find JSON invalid: %v\n%s", err, out)
 	}

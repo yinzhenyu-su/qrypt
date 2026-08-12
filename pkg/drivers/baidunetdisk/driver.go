@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/httpclient"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httpclient"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
 const (
@@ -62,7 +62,7 @@ type Driver struct {
 	lastErrorMu        sync.Mutex
 	lastError          string
 	instantUploadCount int64
-	metrics            *util.Buffer
+	metrics            *driverutil.Buffer
 }
 
 var errBaiduUploadIDExpired = errors.New("baidu_netdisk: uploadid expired")
@@ -219,7 +219,7 @@ func New(opts Options) *Driver {
 		useOnlineAPI:       opts.UseOnlineAPI,
 		downloadUA:         downloadUA,
 		tokenSource:        "config",
-		metrics:            util.NewBuffer(500),
+		metrics:            driverutil.NewBuffer(500),
 	}
 }
 
@@ -329,7 +329,7 @@ func (d *Driver) recordHTTP(ctx context.Context, operation string, req *http.Req
 	event := drive.MetricEvent{
 		Operation: operation,
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Duration:  time.Since(start).String(),
 		Request:   request,
 	}
@@ -467,7 +467,7 @@ func (d *Driver) requestToken(ctx context.Context, method, rawURL string, body i
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return util.HTTPError("baidu_netdisk: token", req, resp, data)
+		return drive.HTTPError("baidu_netdisk: token", req, resp, data)
 	}
 	return httpclient.DecodeJSON(data, out)
 }

@@ -19,7 +19,13 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /usr/local/bin/qrypt ./cmd/qrypt/
+ARG VERSION=dev
+ARG COMMIT=
+ARG BUILD_TIME=
+ARG DIRTY=false
+RUN CGO_ENABLED=1 go build \
+    -ldflags="-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${VERSION} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${COMMIT} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${BUILD_TIME} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${DIRTY}" \
+    -o /usr/local/bin/qrypt ./cmd/qrypt/
 
 # ---- Runtime stage ----
 FROM alpine:3.21

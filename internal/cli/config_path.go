@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/config"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 type commandConfigState struct {
@@ -53,7 +53,7 @@ func prepareConfig(cmd *cobra.Command, _ []string) error {
 	if configPath == "" {
 		configPath = findConfigPath()
 	} else {
-		configPath = osutil.ExpandHome(configPath)
+		configPath = util.ExpandHome(configPath)
 	}
 	if flag := cmd.Flag("config"); flag != nil {
 		if err := flag.Value.Set(configPath); err != nil {
@@ -105,7 +105,7 @@ func commandConfigPath(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	configPath = osutil.ExpandHome(configPath)
+	configPath = util.ExpandHome(configPath)
 	if configPath == "" {
 		configPath = findConfigPath()
 	}

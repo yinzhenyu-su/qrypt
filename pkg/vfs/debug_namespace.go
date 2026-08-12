@@ -3,8 +3,9 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // Namespace diagnostics adapters: namespace-level orchestration of the
 // per-mount diagnostics (path routing, mount filtering, name decoration,
 // cross-mount remote-ID lookup). The aggregation logic itself lives in
-// internal/vfs/diagnostics.
+// pkg/vfs/diagnostics.
 
 // debugSortedMounts copies the mount list under the namespace read lock
 // (in stable name order) so debug adapters can run potentially slow
@@ -34,7 +35,7 @@ func (n *Namespace) debugSortedMounts() []Mount {
 	}
 	return mounts
 }
-func (n *Namespace) DebugActiveOps(ctx context.Context, mountNames []string) ([]DebugActiveMount, error) {
+func (n *Namespace) DebugActiveOps(ctx context.Context, mountNames []string) ([]diagnostics.DebugActiveMount, error) {
 	n.mu.RLock()
 	names := make([]string, 0, len(n.mounts))
 	for name := range n.mounts {
@@ -49,28 +50,28 @@ func (n *Namespace) DebugActiveOps(ctx context.Context, mountNames []string) ([]
 	}
 	n.mu.RUnlock()
 
-	out := make([]DebugActiveMount, 0, len(mounts))
+	out := make([]diagnostics.DebugActiveMount, 0, len(mounts))
 	for i, mount := range mounts {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		out = append(out, DebugActiveMount{Mount: names[i], Ops: mount.debugActiveOps()})
+		out = append(out, diagnostics.DebugActiveMount{Mount: names[i], Ops: mount.debugActiveOps()})
 	}
 	return out, nil
 }
 
-func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req DebugUploadCancelRequest) (DebugUploadCancelResult, error) {
+func (n *Namespace) DebugInjectUploadCancel(ctx context.Context, req faultinject.DebugUploadCancelRequest) (faultinject.DebugUploadCancelResult, error) {
 	if req.Path == "" {
-		return DebugUploadCancelResult{}, fmt.Errorf("vfs: namespace debug upload cancel requires path")
+		return faultinject.DebugUploadCancelResult{}, fmt.Errorf("vfs: namespace debug upload cancel requires path")
 	}
 	mount, rest, root, err := n.resolve(req.Path)
 	if err != nil {
-		return DebugUploadCancelResult{}, err
+		return faultinject.DebugUploadCancelResult{}, err
 	}
 	if root || rest == "/" {
-		return DebugUploadCancelResult{}, ErrReadOnly
+		return faultinject.DebugUploadCancelResult{}, ErrReadOnly
 	}
 	// The namespace mount key comes from the first path segment (same rule
 	// as n.resolve), never from VFS.name, which is not guaranteed to equal
@@ -101,8 +102,8 @@ func (n *Namespace) DebugClearUploadCancel(ctx context.Context, id string) error
 	return mount.DebugClearUploadCancel(ctx, faultID)
 }
 
-func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCancelFault {
-	var out []DebugUploadCancelFault
+func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []faultinject.DebugUploadCancelFault {
+	var out []faultinject.DebugUploadCancelFault
 	for _, m := range n.debugSortedMounts() {
 		name, mount := m.Name, m.FS
 		for _, fault := range mount.DebugUploadCancelFaults(ctx) {
@@ -121,15 +122,15 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []DebugUploadCa
 	return out
 }
 
-func (n *Namespace) Drivers() []NamedDriver {
-	var result []NamedDriver
+func (n *Namespace) Drivers() []diagnostics.NamedDriver {
+	var result []diagnostics.NamedDriver
 	for _, m := range n.debugSortedMounts() {
 		result = append(result, newVFSDriverRuntime(m.FS).NamedDriver(m.Name))
 	}
 	return result
 }
 
-func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]MountHealth, error) {
+func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]diagnostics.MountHealth, error) {
 	if mountName != "" {
 		key := cleanMountName(mountName)
 		n.mu.RLock()
@@ -140,7 +141,7 @@ func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]MountH
 		}
 		return vfs.MountHealth(ctx, mountName)
 	}
-	var results []MountHealth
+	var results []diagnostics.MountHealth
 	for _, m := range n.debugSortedMounts() {
 		health, _ := m.FS.MountHealth(ctx, m.Name)
 		results = append(results, health...)
@@ -148,17 +149,17 @@ func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]MountH
 	return results, nil
 }
 
-func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {
+func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (diagnostics.DebugResolveInfo, error) {
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
-		return DebugResolveInfo{}, err
+		return diagnostics.DebugResolveInfo{}, err
 	}
 	if root {
-		return DebugResolveInfo{Path: "/", Parent: "/", PlainName: "/", IsDir: true}, nil
+		return diagnostics.DebugResolveInfo{Path: "/", Parent: "/", PlainName: "/", IsDir: true}, nil
 	}
 	info, err := mount.DebugResolve(ctx, rest, includeRemoteName)
 	if err != nil {
-		return DebugResolveInfo{}, err
+		return diagnostics.DebugResolveInfo{}, err
 	}
 	mountName := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
 	if idx := strings.Index(mountName, "/"); idx >= 0 {
@@ -170,11 +171,11 @@ func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemote
 	return info, nil
 }
 
-func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string) (*DebugResolveInfo, string, error) {
+func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string) (*diagnostics.DebugResolveInfo, string, error) {
 	// Copy the mount list under the read lock, then release it before the
 	// (potentially slow) per-mount remote-ID queries, so management and
 	// close operations never wait on them.
-	var found *DebugResolveInfo
+	var found *diagnostics.DebugResolveInfo
 	var foundName string
 	for _, m := range n.debugSortedMounts() {
 		info, err := m.FS.DebugResolveByRemoteID(ctx, remoteID)
@@ -199,17 +200,17 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 	return found, foundName, nil
 }
 
-func (n *Namespace) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
+func (n *Namespace) DebugConsistency(ctx context.Context, path string) (diagnostics.ConsistencyReport, error) {
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
-		return ConsistencyReport{}, err
+		return diagnostics.ConsistencyReport{}, err
 	}
 	if root {
-		return ConsistencyReport{Path: "/", Status: "namespace_root"}, nil
+		return diagnostics.ConsistencyReport{Path: "/", Status: "namespace_root"}, nil
 	}
 	report, err := mount.DebugConsistency(ctx, rest)
 	if err != nil {
-		return ConsistencyReport{}, err
+		return diagnostics.ConsistencyReport{}, err
 	}
 	mountName := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
 	if idx := strings.Index(mountName, "/"); idx >= 0 {
@@ -220,10 +221,10 @@ func (n *Namespace) DebugConsistency(ctx context.Context, path string) (Consiste
 	return report, nil
 }
 
-func (n *Namespace) DebugSnapshot() DebugSnapshot {
-	snapshot := DebugSnapshot{
-		SchemaVersion: DebugSnapshotSchemaVersion,
-		GeneratedAt:   timeutil.Now(),
+func (n *Namespace) DebugSnapshot() diagnostics.DebugSnapshot {
+	snapshot := diagnostics.DebugSnapshot{
+		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+		GeneratedAt:   util.Now(),
 		Kind:          "namespace",
 		Process:       debugProcess(),
 	}
@@ -233,13 +234,13 @@ func (n *Namespace) DebugSnapshot() DebugSnapshot {
 	return snapshot
 }
 
-func (n *Namespace) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
+func (n *Namespace) DebugSnapshotForMounts(mountNames []string) diagnostics.DebugSnapshot {
 	if len(mountNames) == 0 {
 		return n.DebugSnapshot()
 	}
-	snapshot := DebugSnapshot{
-		SchemaVersion: DebugSnapshotSchemaVersion,
-		GeneratedAt:   timeutil.Now(),
+	snapshot := diagnostics.DebugSnapshot{
+		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+		GeneratedAt:   util.Now(),
 		Kind:          "namespace",
 		Process:       debugProcess(),
 	}
@@ -272,16 +273,16 @@ func (n *Namespace) DebugReset(ctx context.Context) error {
 	return nil
 }
 
-func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStagingReport, error) {
+func (n *Namespace) DebugStaging(ctx context.Context, path string) (diagnostics.DebugStagingReport, error) {
 	path = cleanVirtual(path)
-	report := DebugStagingReport{}
+	report := diagnostics.DebugStagingReport{}
 	if path != "/" {
 		mount, rest, root, err := n.resolve(path)
 		if err != nil {
-			return DebugStagingReport{}, err
+			return diagnostics.DebugStagingReport{}, err
 		}
 		if root {
-			return DebugStagingReport{Path: path}, nil
+			return diagnostics.DebugStagingReport{Path: path}, nil
 		}
 		mountName := strings.Trim(strings.TrimPrefix(path, "/"), "/")
 		if idx := strings.Index(mountName, "/"); idx >= 0 {
@@ -290,7 +291,7 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (DebugStaging
 		item := mount.debugStagingMount(mountName, rest)
 		diagnostics.PrefixStagingMountPaths(&item, mountName)
 		report.Path = path
-		report.Mounts = []DebugStagingMount{item}
+		report.Mounts = []diagnostics.DebugStagingMount{item}
 		return report, nil
 	}
 

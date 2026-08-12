@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const (
@@ -28,7 +28,7 @@ const (
 	rawJSONMaxAttempts = 3
 )
 
-var aliyunRetryWait = retry.Wait
+var aliyunRetryWait = util.Wait
 
 type client struct {
 	httpClient *http.Client
@@ -42,7 +42,7 @@ type client struct {
 	deviceID     string
 	signature    string
 	onRefresh    func(accessToken, refreshToken string)
-	metrics      *util.Buffer
+	metrics      *driverutil.Buffer
 }
 
 type clientOptions struct {
@@ -69,7 +69,7 @@ func newClient(refreshToken string, opts clientOptions) *client {
 		apiBaseURL:   apiBaseURL,
 		authURL:      authURL,
 		refreshToken: refreshToken,
-		metrics:      util.NewBuffer(500),
+		metrics:      driverutil.NewBuffer(500),
 	}
 }
 
@@ -257,9 +257,9 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Duration:  time.Since(start).String(),
-			Request:   util.BodyFields(body),
+			Request:   driverutil.BodyFields(body),
 			Error:     err.Error(),
 		})
 		return err
@@ -270,10 +270,10 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 		c.recordMetric(ctx, drive.MetricEvent{
 			Operation: req.URL.Path,
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
-			Request:   util.BodyFields(body),
+			Request:   driverutil.BodyFields(body),
 			Error:     err.Error(),
 		})
 		return err
@@ -281,16 +281,16 @@ func (c *client) rawJSONOnce(ctx context.Context, method, url, accessToken strin
 	event := drive.MetricEvent{
 		Operation: req.URL.Path,
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    resp.StatusCode,
 		Duration:  time.Since(start).String(),
-		Request:   util.BodyFields(body),
+		Request:   driverutil.BodyFields(body),
 		Response:  map[string]any{"bytes": len(respBody)},
 	}
 	var apiErr apiError
 	_ = json.Unmarshal(respBody, &apiErr)
 	if resp.StatusCode >= 400 || apiErr.Code != "" {
-		event.Response = map[string]any{"bytes": len(respBody), "body_snippet": util.Snippet(respBody)}
+		event.Response = map[string]any{"bytes": len(respBody), "body_snippet": drive.Snippet(respBody)}
 		c.recordMetric(ctx, event)
 		return &apiStatusError{status: resp.StatusCode, code: apiErr.Code, message: apiErr.Message}
 	}

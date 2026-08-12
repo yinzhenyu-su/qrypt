@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/config"
-	"github.com/yinzhenyu/qrypt/internal/control"
-	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -322,7 +322,7 @@ func qryptHomeDir() string {
 	if home := os.Getenv("QRYPT_HOME"); home != "" {
 		return filepath.Clean(home)
 	}
-	return osutil.ExpandHome("~/.qrypt")
+	return util.ExpandHome("~/.qrypt")
 }
 
 func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
@@ -330,24 +330,24 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 	if cfg != nil {
 		storage = cfg.Storage
 	}
-	readCacheDir := osutil.ExpandHome(storage.ReadCacheDir)
+	readCacheDir := util.ExpandHome(storage.ReadCacheDir)
 	if readCacheDir == "" {
 		readCacheDir = filepath.Join(DefaultCacheDir(), "read")
 	}
-	thumbnailDir := osutil.ExpandHome(storage.ThumbnailCacheDir)
+	thumbnailDir := util.ExpandHome(storage.ThumbnailCacheDir)
 	if thumbnailDir == "" {
 		thumbnailDir = filepath.Join(DefaultCacheDir(), "thumbnail")
 	}
-	uploadDir := osutil.ExpandHome(storage.UploadDir)
+	uploadDir := util.ExpandHome(storage.UploadDir)
 	if uploadDir == "" {
 		uploadDir = DefaultUploadDir()
 	}
-	stateDir := osutil.ExpandHome(storage.StateDir)
+	stateDir := util.ExpandHome(storage.StateDir)
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	logDir := osutil.ExpandHome(storage.LogDir)
-	tmpDir := osutil.ExpandHome(storage.TmpDir)
+	logDir := util.ExpandHome(storage.LogDir)
+	tmpDir := util.ExpandHome(storage.TmpDir)
 	layout := RuntimeLayout{
 		ReadCacheDir: readCacheDir,
 		ThumbnailDir: thumbnailDir,
@@ -362,33 +362,33 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 
 func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 	if override.RootDir != "" {
-		base.RootDir = osutil.ExpandHome(override.RootDir)
+		base.RootDir = util.ExpandHome(override.RootDir)
 	}
 	if override.ConfigDir != "" {
-		base.ConfigDir = osutil.ExpandHome(override.ConfigDir)
+		base.ConfigDir = util.ExpandHome(override.ConfigDir)
 	}
 	if override.ReadCacheDir != "" {
-		base.ReadCacheDir = osutil.ExpandHome(override.ReadCacheDir)
+		base.ReadCacheDir = util.ExpandHome(override.ReadCacheDir)
 	}
 	if override.ThumbnailDir != "" {
-		base.ThumbnailDir = osutil.ExpandHome(override.ThumbnailDir)
+		base.ThumbnailDir = util.ExpandHome(override.ThumbnailDir)
 	}
 	if override.UploadDir != "" {
-		base.UploadDir = osutil.ExpandHome(override.UploadDir)
+		base.UploadDir = util.ExpandHome(override.UploadDir)
 	}
 	if override.StateDir != "" {
-		base.StateDir = osutil.ExpandHome(override.StateDir)
+		base.StateDir = util.ExpandHome(override.StateDir)
 	}
 	if override.DriverDir != "" {
-		base.DriverDir = osutil.ExpandHome(override.DriverDir)
+		base.DriverDir = util.ExpandHome(override.DriverDir)
 	} else if override.StateDir != "" {
 		base.DriverDir = filepath.Join(base.StateDir, "driver")
 	}
 	if override.LogDir != "" {
-		base.LogDir = osutil.ExpandHome(override.LogDir)
+		base.LogDir = util.ExpandHome(override.LogDir)
 	}
 	if override.TmpDir != "" {
-		base.TmpDir = osutil.ExpandHome(override.TmpDir)
+		base.TmpDir = util.ExpandHome(override.TmpDir)
 	}
 	return base
 }
@@ -579,8 +579,8 @@ func initRuntimeLogger(cfg *config.Config, layout RuntimeLayout) error {
 	logFile := ""
 	errFile := ""
 	if cfg != nil {
-		logFile = osutil.ExpandHome(cfg.EffectiveLogFile())
-		errFile = osutil.ExpandHome(cfg.EffectiveErrorFile())
+		logFile = util.ExpandHome(cfg.EffectiveLogFile())
+		errFile = util.ExpandHome(cfg.EffectiveErrorFile())
 	}
 	if logFile == "" {
 		logFile = filepath.Join(layout.LogDir, "qrypt.log")

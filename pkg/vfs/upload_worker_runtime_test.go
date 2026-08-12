@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
 
 type fakeUploadWorkerRuntime struct {
@@ -168,7 +168,7 @@ func TestUploadQueueBlockingEnqueueExitsOnShutdown(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if err := goleak.Find(goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/internal/vfs/readcache.(*Store).runReadCacheWriter")); err == nil {
+		if err := goleak.Find(goleak.IgnoreTopFunction("github.com/yinzhenyu/qrypt/pkg/vfs/readcache.(*Store).runReadCacheWriter")); err == nil {
 			return
 		}
 		if time.Now().After(deadline) {

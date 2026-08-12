@@ -1,4 +1,4 @@
-package vfs_test
+package vfs
 
 import (
 	"errors"
@@ -7,16 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func TestCacheRecordUploadPermanentFailure(t *testing.T) {
-	cache, err := vfs.NewStoresInDir(t.TempDir(), 10<<20)
+	cache, err := newStoresInDir(t.TempDir(), 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending := vfs.PendingUpload{
+	pending := PendingUpload{
 		Path:      "/video.mp4",
 		FID:       "video.mp4",
 		ParentID:  "root",
@@ -77,7 +75,7 @@ func TestCacheCompactsDuplicatePendingJournalOnLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
+	cache, err := newStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +97,7 @@ func TestCacheCompactsDuplicatePendingJournalOnLoad(t *testing.T) {
 
 func TestCacheCompactsPendingJournalDuringAppend(t *testing.T) {
 	cacheDir := t.TempDir()
-	cache, err := vfs.NewStoresInDir(cacheDir, 10<<20)
+	cache, err := newStoresInDir(cacheDir, 10<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +109,7 @@ func TestCacheCompactsPendingJournalDuringAppend(t *testing.T) {
 	if err := os.WriteFile(localPath, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pending := vfs.PendingUpload{
+	pending := PendingUpload{
 		Path:      "/draft.txt",
 		FID:       "draft.txt",
 		ParentID:  "root",

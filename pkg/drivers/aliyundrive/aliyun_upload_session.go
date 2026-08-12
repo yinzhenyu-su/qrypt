@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
 func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha1Hex string) string {

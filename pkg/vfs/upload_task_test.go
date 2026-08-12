@@ -5,6 +5,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 	"strings"
 	"testing"
 	"time"
@@ -117,7 +118,7 @@ func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
 	if _, err := fs.WriteAt(ctx, "/resume-debug.bin", content, 0); err != nil {
 		t.Fatal(err)
 	}
-	result, err := fs.DebugInjectUploadCancel(ctx, vfs.DebugUploadCancelRequest{
+	result, err := fs.DebugInjectUploadCancel(ctx, faultinject.DebugUploadCancelRequest{
 		Path:       "/resume-debug.bin",
 		Phase:      drive.UploadPhaseUploading,
 		AfterBytes: 1,
@@ -163,10 +164,10 @@ func TestVFSUploadRetryUsesGrowingBackoff(t *testing.T) {
 	defer stopVFS(t, fs)
 	fs.Start(ctx)
 
-	if _, err := fs.WriteAt(ctx, "/retry.txt", []byte("data"), 0); err != nil {
+	if _, err := fs.WriteAt(ctx, "/util.txt", []byte("data"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.Flush(ctx, "/retry.txt"); err != nil {
+	if err := fs.Flush(ctx, "/util.txt"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -190,10 +191,10 @@ func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
 	}
 	defer stopVFS(t, first)
 	first.Start(firstCtx)
-	if _, err := first.WriteAt(firstCtx, "/resume-retry.txt", []byte("data"), 0); err != nil {
+	if _, err := first.WriteAt(firstCtx, "/resume-util.txt", []byte("data"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Flush(firstCtx, "/resume-retry.txt"); err != nil {
+	if err := first.Flush(firstCtx, "/resume-util.txt"); err != nil {
 		t.Fatal(err)
 	}
 	waitForCondition(t, func() bool {

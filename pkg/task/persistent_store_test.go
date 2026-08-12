@@ -1,6 +1,8 @@
 package task
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -152,5 +154,58 @@ func TestPersistentStoreJournalsOnlyDurableStateChanges(t *testing.T) {
 	}
 	if len(got.Task.Result.Items) != 1 || got.Task.Result.Items[0].Error == nil {
 		t.Fatalf("replayed result = %+v, want failed item with error", got.Task.Result.Items)
+	}
+}
+
+func TestPersistentStoreReportsStickyPersistenceFailure(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "tasks")
+	path := filepath.Join(parent, "tasks.jsonl")
+	store, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte("blocks directory creation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	item := store.PutManaged(ManagedTask{Task: Task{
+		ID:    "persistent",
+		State: StateRunning,
+		Capabilities: Capabilities{
+			Persistent: true,
+		},
+	}})
+	if item.ID != "persistent" {
+		t.Fatalf("in-memory task = %+v", item)
+	}
+	if err := store.PersistenceError(); !errors.Is(err, ErrPersistence) {
+		t.Fatalf("PersistenceError() = %v, want ErrPersistence", err)
+	}
+
+	store.PutManaged(ManagedTask{Task: Task{ID: "memory-only"}})
+	if err := store.PersistenceError(); !errors.Is(err, ErrPersistence) {
+		t.Fatalf("PersistenceError() cleared after memory-only write: %v", err)
+	}
+}
+
+func TestManagerReportsStorePersistenceFailure(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "tasks")
+	store, err := NewPersistentStore(filepath.Join(parent, "tasks.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte("blocks directory creation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManagerWithStore(store)
+	manager.store.PutManaged(ManagedTask{Task: Task{
+		ID:           "persistent",
+		State:        StateRunning,
+		Capabilities: Capabilities{Persistent: true},
+	}})
+	if err := manager.PersistenceError(); !errors.Is(err, ErrPersistence) {
+		t.Fatalf("PersistenceError() = %v, want ErrPersistence", err)
 	}
 }

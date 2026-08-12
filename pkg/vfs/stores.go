@@ -3,45 +3,38 @@ package vfs
 import (
 	"path/filepath"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/readcache"
-	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
-// Type aliases for shared data types (implementations in internal/vfstypes).
+// Type aliases for shared data types (implementations in pkg/vfs/vfstypes).
 type PendingUpload = vfstypes.PendingUpload
-type UploadReplacement = vfstypes.UploadReplacement
-type UploadStagingStatus = vfstypes.UploadStagingStatus
 
-// DebugActiveOp aliases the in-flight operation descriptor (internal/vfstypes).
-type DebugActiveOp = vfstypes.DebugActiveOp
+// debugActiveOp aliases the in-flight operation descriptor (pkg/vfs/vfstypes).
+type debugActiveOp = vfstypes.DebugActiveOp
 
-// shardedEntryMap aliases the sharded entry map (internal/vfstypes).
+// shardedEntryMap aliases the sharded entry map (pkg/vfs/vfstypes).
 type shardedEntryMap = vfstypes.ShardedEntryMap
 
 var newShardedEntryMap = vfstypes.NewShardedEntryMap
 
-// readCacheStore aliases the durable read-cache store (internal/readcache).
+// readCacheStore aliases the durable read-cache store (pkg/vfs/readcache).
 type readCacheStore = readcache.Store
-
-// DebugReadCache / DebugReadCacheFile are exported aliases for callers
-// outside pkg/vfs (implementations live in internal/readcache).
-type DebugReadCache = readcache.DebugReadCache
-type DebugReadCacheFile = readcache.DebugReadCacheFile
 
 // readCacheLargeFileBytes marks files that are too large to seed into the
 // read cache from upload staging.
 var readCacheLargeFileBytes int64 = readcache.ReadCacheLargeFileBytes
 
-type Stores struct {
+type stores struct {
 	*readCacheStore
 	*uploadStore
 }
 
-func NewStoresInDir(dir string, maxSize int64) (*Stores, error) {
-	return NewStores(dir, filepath.Join(dir, "reading"), maxSize)
+func newStoresInDir(dir string, maxSize int64) (*stores, error) {
+	return newStores(dir, filepath.Join(dir, "reading"), maxSize)
 }
-func NewStores(uploadDir, readCacheDir string, maxSize int64) (*Stores, error) {
+func newStores(uploadDir, readCacheDir string, maxSize int64) (*stores, error) {
 	readCache, err := readcache.NewStore(readCacheDir, maxSize)
 	if err != nil {
 		return nil, err
@@ -51,7 +44,7 @@ func NewStores(uploadDir, readCacheDir string, maxSize int64) (*Stores, error) {
 		_ = readCache.Close()
 		return nil, err
 	}
-	return &Stores{readCacheStore: readCache, uploadStore: uploads}, nil
+	return &stores{readCacheStore: readCache, uploadStore: uploads}, nil
 }
 func newUploadStore(dir string) (*uploadStore, error) {
 	return upload.NewPendingStore(dir)

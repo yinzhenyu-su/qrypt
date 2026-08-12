@@ -19,9 +19,9 @@ import (
 	"golang.org/x/time/rate"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const defaultAppVer = "35.6.0.3"
@@ -40,7 +40,7 @@ type Driver struct {
 	limiter          *rate.Limiter
 	bandwidthLimiter *drive.BandwidthLimiter
 	httpClient       *http.Client
-	metrics          *util.Buffer
+	metrics          *driverutil.Buffer
 	stateStore       drive.StateStore
 	cookieSource     string
 	cookieUpdated    time.Time
@@ -125,7 +125,7 @@ func New(opts Options) *Driver {
 		rootPath:     opts.RootPath,
 		cookies:      opts.Cookie,
 		limitRate:    opts.LimitRate,
-		metrics:      util.NewBuffer(500),
+		metrics:      driverutil.NewBuffer(500),
 		cookieSource: "config",
 	}
 }

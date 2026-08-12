@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/internal/sync"
+	"github.com/yinzhenyu/qrypt/pkg/syncer"
 )
 
 func setupSyncTest(t *testing.T) (configPath, remote, local string) {

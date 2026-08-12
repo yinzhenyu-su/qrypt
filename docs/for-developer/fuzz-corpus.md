@@ -41,7 +41,7 @@ qrypt 用 Go 原生 property fuzzing 加固可靠性敏感逻辑。失败输入�
 | 包 | Fuzzer | 样本数 | 对应问题 |
 |---|---|---|---|
 | `pkg/crypt` | `FuzzCipherSegmentRoundtrip` | 1 | 长文件名在 `eme.Transform` 128 块上限处 panic → 分段加密 |
-| `internal/config` | `FuzzParseSizeAndDuration` | 1 | `ParseSize("nAn")` 接受 NaN → `int64(NaN)` 未定义行为 |
+| `pkg/config` | `FuzzParseSizeAndDuration` | 1 | `ParseSize("nAn")` 接受 NaN → `int64(NaN)` 未定义行为 |
 
 ## 新增 fuzzer 的规则
 

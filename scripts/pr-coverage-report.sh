@@ -18,12 +18,12 @@ declare -A PKGS=(
   [pkg/vfs]=pkg/vfs
   [pkg/core]=pkg/core
   [pkg/drive]=pkg/drive
-  [internal/sync]=internal/sync
-  [internal/config]=internal/config
+  [pkg/syncer]=pkg/syncer
+  [pkg/config]=pkg/config
   [pkg/crypt]=pkg/crypt
 )
 # coverpkg-measured packages (measured through other packages' tests).
-declare -A COVERPKG=([internal/sync]=1)
+declare -A COVERPKG=([pkg/syncer]=1)
 
 git fetch --quiet origin "$base" 2>/dev/null || true
 
@@ -67,5 +67,5 @@ fi
 
 # Always print for the workflow log too.
 echo "== core package coverage snapshot =="
-printf '%s\n' "$out" | grep -E "pkg/vfs|pkg/core|pkg/drive|internal/sync|internal/config|pkg/crypt" || true
+printf '%s\n' "$out" | grep -E "pkg/vfs|pkg/core|pkg/drive|pkg/syncer|pkg/config|pkg/crypt" || true
 echo "changed in this PR: ${changed[*]:-none}"
