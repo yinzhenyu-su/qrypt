@@ -80,24 +80,38 @@ func (l *Lister) ListPage(ctx context.Context, path string, cursor string, limit
 	return PaginateEntries(entries, cursor, limit), nil
 }
 
+// nameLess orders entries for deterministic listings: directories first,
+// then case-insensitive name, then raw name and id as stable tie-breakers.
+// The mobile app sorts locally the same way, so paged (server-ordered)
+// listings and locally re-sorted listings show identical order.
+func nameLess(a, b drive.Entry) bool {
+	if a.IsDir != b.IsDir {
+		return a.IsDir
+	}
+	la, lb := strings.ToLower(a.Name), strings.ToLower(b.Name)
+	if la != lb {
+		return la < lb
+	}
+	if a.Name != b.Name {
+		return a.Name < b.Name
+	}
+	return a.ID < b.ID
+}
+
 // PaginateEntries returns a deterministic slice of a listing.
 func PaginateEntries(entries []drive.Entry, cursor string, limit int) ListPageResult {
 	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].Name != entries[j].Name {
-			return entries[i].Name < entries[j].Name
-		}
-		return entries[i].ID < entries[j].ID
+		return nameLess(entries[i], entries[j])
 	})
 	start := 0
 	if cursor != "" {
 		if c, ok := decodeListPageCursor(cursor); ok {
-			// Skip everything before (name, id) so entries that share a name
-			// with the cursor are not dropped on the next page.
+			// Skip everything up to and including the cursor entry so entries
+			// that share a name with the cursor are not dropped on the next
+			// page. The search must use the same ordering as nameLess.
+			cursorEntry := drive.Entry{Name: c.Name, ID: c.ID, IsDir: c.IsDir}
 			start = sort.Search(len(entries), func(i int) bool {
-				if entries[i].Name != c.Name {
-					return entries[i].Name > c.Name
-				}
-				return entries[i].ID > c.ID
+				return nameLess(cursorEntry, entries[i])
 			})
 		}
 	}
@@ -105,22 +119,24 @@ func PaginateEntries(entries []drive.Entry, cursor string, limit int) ListPageRe
 		last := entries[start+limit-1]
 		return ListPageResult{
 			Entries:    entries[start : start+limit],
-			NextCursor: encodeListPageCursor(last.Name, last.ID),
+			NextCursor: encodeListPageCursor(last.Name, last.ID, last.IsDir),
 		}
 	}
 	return ListPageResult{Entries: entries[start:]}
 }
 
 // listPageCursor is the opaque cursor value returned in NextCursor.
-// Encoding both name and id keeps paging correct when a directory contains
-// entries that share the same name.
+// Encoding name, id, and is_dir keeps paging correct under the
+// directories-first ordering when a directory contains entries that share
+// the same name.
 type listPageCursor struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
+	Name  string `json:"name"`
+	ID    string `json:"id"`
+	IsDir bool   `json:"is_dir,omitempty"`
 }
 
-func encodeListPageCursor(name, id string) string {
-	raw, err := json.Marshal(listPageCursor{Name: name, ID: id})
+func encodeListPageCursor(name, id string, isDir bool) string {
+	raw, err := json.Marshal(listPageCursor{Name: name, ID: id, IsDir: isDir})
 	if err != nil {
 		return ""
 	}
@@ -165,7 +181,7 @@ func (l *Lister) RemoteList(ctx context.Context, path string) ([]drive.Entry, er
 		return nil, err
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name < entries[j].Name
+		return nameLess(entries[i], entries[j])
 	})
 	return entries, nil
 }
