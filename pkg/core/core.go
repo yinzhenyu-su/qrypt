@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,8 +28,13 @@ type Options struct {
 	MountName      string
 	ForceNamespace bool
 	ReadChunkLimit int
+	UploadSources  UploadSourceProvider
 	// Bandwidth overrides the config [bandwidth] section when set (CLI flags).
 	Bandwidth *config.BandwidthLimits
+}
+
+type UploadSourceProvider interface {
+	OpenUploadSource(ctx context.Context, token string, offset int64) (io.ReadCloser, error)
 }
 
 type Core struct {
@@ -44,6 +50,7 @@ type Core struct {
 	defaultUploadPath  string
 	debugServer        *control.Server
 	tasks              *task.Manager
+	uploadSources      UploadSourceProvider
 	vfsCancel          context.CancelFunc
 	streamsMu          sync.Mutex
 	downloadStreams    map[string]*downloadStreamBatch
@@ -94,7 +101,7 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	if cfg.ThumbnailCache.MaxSize == "" {
 		thumbnailMax = 256 << 20
 	}
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, vfsCancel: vfsCancel}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {

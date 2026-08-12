@@ -22,6 +22,7 @@ type uploadStreamBatch struct {
 	items          []*uploadStreamItem
 	byID           map[string]*uploadStreamItem
 	bytesTotal     int64
+	channel        string
 	conflictPolicy string
 	update         task.UpdateFunc
 	ready          chan struct{}
@@ -36,6 +37,7 @@ type uploadStreamItem struct {
 	DestPath     string
 	Name         string
 	RelativePath string
+	SourceToken  string
 	Size         int64
 	Written      int64
 	CloudWritten int64
@@ -370,6 +372,7 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 		taskID:         newUploadStreamTaskID(),
 		byID:           map[string]*uploadStreamItem{},
 		conflictPolicy: conflictPolicy,
+		channel:        "staging",
 		ready:          make(chan struct{}),
 		done:           make(chan struct{}),
 	}
@@ -450,6 +453,7 @@ func (b *uploadStreamBatch) detailItems() []map[string]any {
 			"dest_path":     item.DestPath,
 			"name":          item.Name,
 			"relative_path": item.RelativePath,
+			"source_path":   item.SourceToken,
 			"size":          item.Size,
 		})
 	}
@@ -579,11 +583,16 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 	}
 	itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal, phase, active := b.summaryLocked()
 	results := b.resultItemsLocked()
+	stagingBytesTotal := b.bytesTotal
+	if b.channel == "direct" {
+		stagingBytesDone = 0
+		stagingBytesTotal = 0
+	}
 	b.update(func(taskItem *task.Task) {
 		taskItem.Progress.ItemsDone = itemsDone
 		taskItem.Progress.ItemsFailed = itemsFailed
 		taskItem.Progress.StagingBytesDone = stagingBytesDone
-		taskItem.Progress.StagingBytesTotal = b.bytesTotal
+		taskItem.Progress.StagingBytesTotal = stagingBytesTotal
 		taskItem.Progress.CloudBytesDone = cloudBytesDone
 		taskItem.Progress.CloudBytesTotal = cloudBytesTotal
 		taskItem.Progress.Phase = phase

@@ -577,6 +577,17 @@ func TestWebDAV_Put(t *testing.T) {
 	}
 }
 
+func TestWebDAVCapabilitiesAllowDirectSourceUpload(t *testing.T) {
+	drv, _, _ := setupTest(t)
+	if !drive.HasCapability(drv, drive.CapabilitySourceUploader) ||
+		!drive.HasCapability(drv, drive.CapabilityWriter) {
+		t.Fatalf("webdav capabilities = %+v, want source uploader and writer for direct upload", drv.Capabilities())
+	}
+	if drive.HasCapability(drv, drive.CapabilityResumableUploader) {
+		t.Fatalf("webdav capabilities = %+v, should not claim resumable direct upload", drv.Capabilities())
+	}
+}
+
 func TestWebDAV_Remove(t *testing.T) {
 	drv, ts, _ := setupTest(t)
 	ctx := context.Background()

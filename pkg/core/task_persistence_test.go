@@ -120,6 +120,146 @@ func TestCorePersistsSingleUploadBatchTaskHistory(t *testing.T) {
 	}
 }
 
+func TestCoreRecoversInterruptedDirectUploadTask(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	sourcePath := filepath.Join(tmp, "source.txt")
+	payload := []byte("recover direct upload")
+	if err := os.WriteFile(sourcePath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{
+		StorageDir:  filepath.Join(tmp, "cache"),
+		UploadDelay: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	store, err := task.NewPersistentStore(filepath.Join(stateDir, "tasks", "tasks.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutManaged(task.ManagedTask{Task: task.Task{
+		ID:    "direct-recover",
+		Type:  task.TypeUploadStreamDirect,
+		State: task.StateRunning,
+		Path:  "/recovered.txt",
+		Name:  "recovered.txt",
+		Capabilities: task.Capabilities{
+			Cancelable: true,
+			Persistent: true,
+		},
+		Detail: map[string]any{
+			"channel": "direct",
+			"phase":   "uploading",
+			"items": []map[string]any{{
+				"item_id":     "item",
+				"source_path": sourcePath,
+				"dest_path":   "/recovered.txt",
+				"name":        "recovered.txt",
+				"size":        int64(len(payload)),
+			}},
+		},
+	}})
+
+	recovered := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
+	t.Cleanup(func() {
+		if err := recovered.Close(context.Background()); err != nil {
+			t.Logf("core close: %v", err)
+		}
+	})
+	item := waitCoreTask(t, recovered, "direct-recover")
+	if item.State != task.StateSucceeded || item.Type != task.TypeUploadStreamDirect {
+		t.Fatalf("recovered task = %+v, want succeeded direct task", item)
+	}
+	if got := drv.uploadedData(); string(got) != string(payload) {
+		t.Fatalf("uploaded data = %q, want %q", got, payload)
+	}
+
+	reopened := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
+	got, err := reopened.GetTask(ctx, "direct-recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != task.StateSucceeded || got.Error != nil {
+		t.Fatalf("replayed recovered task = %+v", got)
+	}
+}
+
+func TestCoreRecoversInterruptedDirectUploadTaskWithLocalFSDirect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	stateDir := filepath.Join(tmp, "state")
+	sourcePath := filepath.Join(tmp, "source.txt")
+	payload := []byte("recover localfs direct upload")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		StorageDir:  filepath.Join(tmp, "cache"),
+		UploadDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	store, err := task.NewPersistentStore(filepath.Join(stateDir, "tasks", "tasks.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutManaged(task.ManagedTask{Task: task.Task{
+		ID:    "direct-fallback-recover",
+		Type:  task.TypeUploadStreamDirect,
+		State: task.StateRunning,
+		Path:  "/fallback-recovered.txt",
+		Name:  "fallback-recovered.txt",
+		Capabilities: task.Capabilities{
+			Cancelable: true,
+			Persistent: true,
+		},
+		Detail: map[string]any{
+			"channel": "direct",
+			"phase":   "uploading",
+			"items": []map[string]any{{
+				"item_id":     "item",
+				"source_path": sourcePath,
+				"dest_path":   "/fallback-recovered.txt",
+				"name":        "fallback-recovered.txt",
+				"size":        int64(len(payload)),
+			}},
+		},
+	}})
+
+	recovered := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
+	t.Cleanup(func() {
+		if err := recovered.Close(context.Background()); err != nil {
+			t.Logf("core close: %v", err)
+		}
+	})
+	item := waitCoreTask(t, recovered, "direct-fallback-recover")
+	if item.State != task.StateSucceeded {
+		t.Fatalf("recovered localfs direct task = %+v, want succeeded", item)
+	}
+	if got := item.Result.Items[0].Phase; got != "direct" {
+		t.Fatalf("recovered localfs phase = %q, want direct", got)
+	}
+	data, err := os.ReadFile(filepath.Join(remote, "fallback-recovered.txt"))
+	if err != nil || string(data) != string(payload) {
+		t.Fatalf("remote data = %q err=%v, want %q", data, err, payload)
+	}
+}
+
 func TestCorePersistsCrossMountSingleMoveButNotSameMountMove(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -27,6 +27,17 @@ func TestDriverInitRequiresExistingDirectory(t *testing.T) {
 	}
 }
 
+func TestDriverCapabilitiesAllowDirectSourceUpload(t *testing.T) {
+	driver := New(t.TempDir())
+	if !drive.HasCapability(driver, drive.CapabilitySourceUploader) ||
+		!drive.HasCapability(driver, drive.CapabilityWriter) {
+		t.Fatalf("localfs capabilities = %+v, want source uploader and writer for direct upload", driver.Capabilities())
+	}
+	if drive.HasCapability(driver, drive.CapabilityResumableUploader) {
+		t.Fatalf("localfs capabilities = %+v, should not claim resumable direct upload", driver.Capabilities())
+	}
+}
+
 func TestDriverFileOperations(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

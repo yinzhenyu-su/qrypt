@@ -304,6 +304,40 @@ func (m *Manager) RetryTask(ctx context.Context, id string) error {
 	return fmt.Errorf("%w: %q", ErrNotFound, id)
 }
 
+func (m *Manager) RecoverTask(ctx context.Context, id string, run RunFunc) (Task, bool, error) {
+	if id == "" {
+		return Task{}, false, fmt.Errorf("task: id required")
+	}
+	if run == nil {
+		return Task{}, false, fmt.Errorf("task: recover run function required")
+	}
+	if err := ctx.Err(); err != nil {
+		return Task{}, false, err
+	}
+	if _, ok := m.store.GetManaged(id); !ok {
+		return Task{}, false, nil
+	}
+	runCtx, cancel := context.WithCancel(m.ctx)
+	managed, ok := m.store.UpdateManaged(id, func(managed *ManagedTask) {
+		managed.Run = run
+		managed.Cancel = cancel
+		managed.Task.State = StateQueued
+		managed.Task.Error = nil
+		managed.Task.CompletedAt = time.Time{}
+		managed.Task.Capabilities.Cancelable = true
+		managed.Task.Capabilities.Retryable = false
+		managed.Task.Capabilities.Dismissible = false
+	})
+	if !ok {
+		cancel()
+		return Task{}, false, nil
+	}
+	m.broadcastTaskUpdated(managed.Task)
+	m.wg.Add(1)
+	go m.run(runCtx, id)
+	return managed.Task, true, nil
+}
+
 func (m *Manager) DismissTask(ctx context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("task: id required")

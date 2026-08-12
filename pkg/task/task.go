@@ -13,6 +13,7 @@ const (
 	TypeUploadRemote        Type = "upload_remote"
 	TypeUploadBatch         Type = "upload_batch"
 	TypeUploadStreamBatch   Type = "upload_stream_batch"
+	TypeUploadStreamDirect  Type = "upload_stream_direct"
 	TypeDownload            Type = "download"
 	TypeDownloadStreamBatch Type = "download_stream_batch"
 	TypeDeleteRemote        Type = "delete_remote"

@@ -145,6 +145,22 @@ func CreateUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	return resultJSON(item, err)
 }
 
+func CreateDirectUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	var req task.Request
+	if err := json.Unmarshal([]byte(requestRaw), &req); err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	req.Type = task.TypeUploadStreamDirect
+	ctx, cancel := s.timeoutContext(deadlineMS)
+	defer cancel()
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
+	return resultJSON(item, err)
+}
+
 func CreateLocalUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
