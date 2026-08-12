@@ -178,13 +178,15 @@ func JoinRemotePath(parent, name string) string {
 }
 
 func NewCatCmd(rt cliruntime.Runtime) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:               "cat REMOTE",
 		Short:             "Write a remote file to stdout",
 		Args:              cliruntime.ExactNamedArgs(rt, "REMOTE"),
 		RunE:              runCat(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 	}
+	cmd.Flags().Bool("raw", false, "read backend bytes without decryption or read-cache transforms")
+	return cmd
 }
 
 func runCat(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
@@ -195,7 +197,17 @@ func runCat(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		}
 		defer cleanup()
 
-		rc, err := fs.Read(ctx, args[0], 0, 0)
+		raw, _ := cmd.Flags().GetBool("raw")
+		var rc io.ReadCloser
+		if raw {
+			reader, ok := fs.(vfs.RawReader)
+			if !ok {
+				return fmt.Errorf("fs cat --raw: raw read unsupported by filesystem")
+			}
+			rc, err = reader.ReadRaw(ctx, args[0], 0, 0)
+		} else {
+			rc, err = fs.Read(ctx, args[0], 0, 0)
+		}
 		if err != nil {
 			return err
 		}

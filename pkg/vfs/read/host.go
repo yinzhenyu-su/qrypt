@@ -82,6 +82,7 @@ type Cache interface {
 	ClearReadCache() error
 	InvalidateFile(fid string)
 	PutLocalFile(fid string, fileSize int64, localPath string) error
+	PutReader(fid string, fileSize int64, r io.Reader) error
 	GetChunkRange(fid string, index, start, size int64) ([]byte, bool, error)
 	GetChunkWithRange(fid string, index, start, size int64) ([]byte, []byte, bool, error)
 	HasChunk(fid string, index int64) (bool, error)

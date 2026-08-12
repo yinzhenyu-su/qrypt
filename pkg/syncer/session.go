@@ -68,11 +68,15 @@ type Session struct {
 	lock *os.File
 }
 
-// PersistRoot returns the directory that holds all sync sessions. The
-// QRYPT_SYNC_DIR override lets tests isolate sessions from the real config.
+// PersistRoot returns the directory that holds all sync sessions.
+// QRYPT_SYNC_DIR is the narrow override for sync tests and tools. QRYPT_HOME
+// redirects the whole qrypt data root, matching core's runtime defaults.
 func PersistRoot() string {
 	if dir := os.Getenv("QRYPT_SYNC_DIR"); dir != "" {
 		return dir
+	}
+	if home := os.Getenv("QRYPT_HOME"); home != "" {
+		return filepath.Join(home, "qrypt-sync")
 	}
 	return filepath.Join(util.ExpandHome("~/.qrypt"), "qrypt-sync")
 }

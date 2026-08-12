@@ -111,6 +111,17 @@ func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (
 	return mount.Read(ctx, rest, offset, size)
 }
 
+func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if root {
+		return nil, fmt.Errorf("vfs: cannot read namespace root")
+	}
+	return mount.ReadRaw(ctx, rest, offset, size)
+}
+
 func (n *Namespace) RefreshPath(path string) {
 	mount, rest, _, err := n.resolve(path)
 	if err != nil || mount == nil {

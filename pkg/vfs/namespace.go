@@ -24,6 +24,12 @@ type Reader interface {
 	Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error)
 }
 
+// RawReader reads the backend bytes for a virtual path without higher-level
+// transforms such as crypt decryption or read-cache staging.
+type RawReader interface {
+	ReadRaw(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error)
+}
+
 // Writer is the write subset of FileSystem.
 type Writer interface {
 	Create(ctx context.Context, path string) error

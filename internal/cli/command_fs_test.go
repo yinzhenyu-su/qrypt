@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -154,6 +155,40 @@ filename_encoding = "base32"
 	if rawName == "secret.txt" {
 		t.Fatal("expected encrypted backend filename")
 	}
+	rawData, err := os.ReadFile(filepath.Join(remote, rawName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(rawData, []byte(crypt.FileMagic)) {
+		t.Fatal("expected encrypted backend file data")
+	}
+
+	var catOut bytes.Buffer
+	root = NewRootCommand()
+	root.SetOut(&catOut)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "cat", "/encrypted/secret.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs cat: %v", err)
+	}
+	if catOut.String() != "secret data" {
+		t.Fatalf("fs cat output = %q, want plaintext", catOut.String())
+	}
+
+	var rawCatOut bytes.Buffer
+	root = NewRootCommand()
+	root.SetOut(&rawCatOut)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "cat", "--raw", "/encrypted/secret.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs cat --raw: %v", err)
+	}
+	if !bytes.Equal(rawCatOut.Bytes(), rawData) {
+		t.Fatal("fs cat --raw output differs from backend ciphertext")
+	}
+	if bytes.Contains(rawCatOut.Bytes(), []byte("secret data")) {
+		t.Fatal("fs cat --raw leaked plaintext")
+	}
 
 	var out bytes.Buffer
 	root = NewRootCommand()
@@ -238,6 +273,114 @@ filename_encoding = "base32"
 	}
 	if entries[0].RemotePath != "/encrypted/"+rawDir+"/"+rawChild {
 		t.Fatalf("nested remote_path = %q, want %q", entries[0].RemotePath, "/encrypted/"+rawDir+"/"+rawChild)
+	}
+}
+
+func TestFSCatRawUsesMatchedMountEncryption(t *testing.T) {
+	tmp := t.TempDir()
+	plainRemote := filepath.Join(tmp, "plain")
+	encryptedRemote := filepath.Join(tmp, "encrypted")
+	if err := os.MkdirAll(plainRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(encryptedRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = "`+filepath.Join(tmp, "mnt")+`"
+[storage]
+read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
+upload_dir = "`+filepath.Join(tmp, "upload")+`"
+state_dir = "`+filepath.Join(tmp, "state")+`"
+
+[upload]
+upload_delay = "10ms"
+delete_delay = "10ms"
+
+[[mounts]]
+name = "plain"
+type = "localfs"
+[mounts.params]
+root_path = "`+plainRemote+`"
+
+[[mounts]]
+name = "encrypted"
+type = "localfs"
+[mounts.params]
+root_path = "`+encryptedRemote+`"
+[mounts.encryption]
+password = "encrypted-pass"
+salt = "encrypted-salt"
+filename_encryption = "standard"
+filename_encoding = "base32"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plainLocal := filepath.Join(tmp, "plain.txt")
+	secretLocal := filepath.Join(tmp, "secret.txt")
+	if err := os.WriteFile(plainLocal, []byte("plain data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretLocal, []byte("secret data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, item := range []struct {
+		local  string
+		remote string
+	}{
+		{local: plainLocal, remote: "/plain/same.txt"},
+		{local: secretLocal, remote: "/encrypted/same.txt"},
+	} {
+		root := NewRootCommand()
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"fs", "--config", configPath, "put", "--wait-timeout", "5s", item.local, item.remote})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("fs put %s: %v", item.remote, err)
+		}
+	}
+
+	var plainRaw bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&plainRaw)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "cat", "--raw", "/plain/same.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs cat --raw plain: %v", err)
+	}
+	if plainRaw.String() != "plain data" {
+		t.Fatalf("plain raw output = %q, want plaintext from plain mount", plainRaw.String())
+	}
+
+	encryptedEntries, err := os.ReadDir(encryptedRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encryptedEntries) != 1 {
+		t.Fatalf("encrypted backend entries = %d, want 1", len(encryptedEntries))
+	}
+	encryptedData, err := os.ReadFile(filepath.Join(encryptedRemote, encryptedEntries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(encryptedData, []byte(crypt.FileMagic)) {
+		t.Fatal("encrypted backend did not store ciphertext")
+	}
+	var encryptedRaw bytes.Buffer
+	root = NewRootCommand()
+	root.SetOut(&encryptedRaw)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "--config", configPath, "cat", "--raw", "/encrypted/same.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs cat --raw encrypted: %v", err)
+	}
+	if !bytes.Equal(encryptedRaw.Bytes(), encryptedData) {
+		t.Fatal("encrypted raw output differs from matched mount backend bytes")
+	}
+	if bytes.Contains(encryptedRaw.Bytes(), []byte("secret data")) {
+		t.Fatal("encrypted raw output used decrypted stream")
 	}
 }
 

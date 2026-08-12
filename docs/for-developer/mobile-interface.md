@@ -686,6 +686,7 @@ ProbeMP4JSON(coreID, path, deadlineMS)
 
 ```text
 SetUploadSourceOpenerJSON(opener)
+ClearUploadSourceOpenerJSON()
 SetScopedFSBackendJSON(backend)
 ClearScopedFSBackendJSON()
 UploadLocalFileJSON(coreID, localPath, remotePath, deadlineMS)

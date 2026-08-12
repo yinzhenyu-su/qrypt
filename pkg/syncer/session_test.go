@@ -18,6 +18,18 @@ func TestSessionKeyIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestPersistRootUsesQryptHome(t *testing.T) {
+	home := useTestQryptHome(t)
+	if got, want := PersistRoot(), filepath.Join(home, "qrypt-sync"); got != want {
+		t.Fatalf("PersistRoot = %q, want %q", got, want)
+	}
+	override := filepath.Join(t.TempDir(), "sync-only")
+	t.Setenv("QRYPT_SYNC_DIR", override)
+	if got := PersistRoot(); got != override {
+		t.Fatalf("PersistRoot with QRYPT_SYNC_DIR = %q, want %q", got, override)
+	}
+}
+
 // TestMarkDonePersistenceFailure: a journal write failure must surface as an
 // error and must NOT mark the op done in memory, so the session stays
 // consistent with the disk and a resume retries the op.

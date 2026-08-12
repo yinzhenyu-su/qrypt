@@ -249,6 +249,26 @@ func (v *VFS) seedReadCacheFromStaging(entry drive.Entry, localPath string) {
 	}
 }
 
+func (v *VFS) seedReadCacheFromSource(ctx context.Context, entry drive.Entry, source drive.ReadOnlyFileSource) {
+	cacheKey := v.readCacheKey(entry)
+	if cacheKey == "" || source == nil {
+		return
+	}
+	if entry.Size >= readCacheLargeFileBytes {
+		logging.L.DebugfEvery("vfs.read_cache_seed_source_skip_large", time.Second, "[VFS] skip read cache seed for large direct upload id=%q size=%d", entry.ID, entry.Size)
+		return
+	}
+	reader, err := source.Open(ctx)
+	if err != nil {
+		logging.L.Warnf("[VFS] direct upload read cache source open failed id=%q err=%v", entry.ID, err)
+		return
+	}
+	defer reader.Close()
+	if err := v.read.PutReader(cacheKey, entry.Size, reader); err != nil {
+		logging.L.Warnf("[VFS] direct upload read cache seed failed id=%q err=%v", entry.ID, err)
+	}
+}
+
 // --- upload_worker.go ---
 
 func (v *VFS) uploadWorker(ctx context.Context) {

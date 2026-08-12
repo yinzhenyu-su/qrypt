@@ -67,6 +67,7 @@ func TestDryRunCausesNoRemoteMutation(t *testing.T) {
 // and the executor copies files into the VFS), proving the dry-run
 // assertion above is sensitive rather than vacuously green.
 func TestNonDryRunMutatesBackend(t *testing.T) {
+	useTestQryptHome(t)
 	src := t.TempDir()
 	writeTestFile(t, filepath.Join(src, "a.txt"), "aaa")
 

@@ -76,6 +76,7 @@ func (v *VFS) UploadSource(ctx context.Context, path string, req SourceUploadReq
 		entry = replaced
 	}
 	newVFSViewCommitter(v).CommitUploadedEntry(path, entry, "")
+	v.seedReadCacheFromSource(context.WithoutCancel(ctx), entry, req.Source)
 	return entry, nil
 }
 
