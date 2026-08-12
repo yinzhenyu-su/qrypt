@@ -136,6 +136,12 @@ Sources may also implement `drive.HashProvider`. Drivers that need full-file
 hashes for instant upload or provider APIs should call `drive.SourceHash` first
 and only scan the source when the required hash metadata is unavailable.
 
+Declare `CapabilitySourceUploader` and `CapabilityWriter` when `PutSource` can
+stream from a `ReadOnlyFileSource` into the backend. This is enough for direct
+upload tasks to bypass qrypt staging. Add `CapabilityResumableUploader` only
+when the driver persists provider upload session state and can continue an
+interrupted source upload instead of restarting from byte zero.
+
 Drivers that can skip network upload when hashes are available before streaming
 should implement `drive.UploadHashRequirements`. The crypt wrapper uses this to
 precompute encrypted-content hashes only when `content_dedup` is enabled and the

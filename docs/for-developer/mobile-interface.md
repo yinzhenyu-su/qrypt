@@ -218,6 +218,7 @@ Pick the upload entry point that matches the source of the data:
 | API | Input source | Behavior | Task visible / events |
 | --- | --- | --- | --- |
 | `CreateUploadTaskJSON` | app input stream (SAF `content://` on Android, security-scoped on iOS) | creates `upload_stream_batch`; app writes chunks | yes |
+| `CreateDirectUploadTaskJSON` | reopenable source token; with the current gomobile wrapper this is a qrypt-readable local path unless the embedding app wires a custom source provider | creates `upload_stream_direct`; qrypt reads the source directly, hashes first, then uploads without staging when supported | yes |
 | `CreateLocalUploadTaskJSON` | stable local filesystem path | creates a user-scope `upload_remote`/`upload_batch` task; waits for stability when `wait_stable` | yes |
 | `UploadLocalFileJSON` | stable local filesystem path | convenience wrapper that streams the file into an `upload_stream_batch` task and returns after staging | yes |
 | `CreateTaskJSON(type="upload_batch")` | qrypt-readable local paths | generic task API | yes |
@@ -233,6 +234,18 @@ Use `CreateUploadTaskJSON` when the app owns the input stream. On Android this
 is usually a SAF/content URI InputStream. On iOS this can be a security-scoped
 file or provider stream.
 
+Use `CreateDirectUploadTaskJSON` when qrypt can reopen the source later from a
+stable token. In the current `pkg/mobile` JSON wrapper, `source_path` is opened
+as a local filesystem path by default. Android SAF/content URI support requires
+the embedding native bridge to provide a `core.UploadSourceProvider` that maps
+the token back to `ContentResolver.openInputStream(uri)` and can reopen after
+skipping to the requested offset. qrypt reads the source once to compute upload
+hashes for instant upload, then reopens it for cloud upload. If the destination
+driver supports source upload, qrypt uploads directly without qrypt staging.
+Drivers that also advertise resumable source upload can continue an interrupted
+provider upload; non-resumable direct drivers, such as localfs and generic
+WebDAV, restart the direct upload from the beginning after interruption.
+
 Create the task:
 
 ```json
@@ -240,6 +253,7 @@ Create the task:
   "items": [
     {
       "item_id": "local-1",
+      "source_path": "/app/private/cache/a.jpg",
       "dest_path": "/drive/photos/a.jpg",
       "size": 123456
     }
@@ -254,8 +268,9 @@ overrides the default target. When the default target is used, qrypt attempts to
 create `default_path` itself if missing, but it does not create missing parent
 directories.
 
-`CreateUploadTaskJSON` always creates an app-stream upload task, so the app does
-not need to pass a task type for this flow.
+`CreateUploadTaskJSON` always creates an app-stream staging upload task, and
+`CreateDirectUploadTaskJSON` always creates a direct upload task, so the app
+does not need to pass a task type for either flow.
 
 Then write each item:
 
@@ -281,6 +296,13 @@ qrypt records `waiting_input` and `resume_offset`. The app can reopen the item,
 skip the input stream to `resume_offset`, and continue writing.
 Use `PauseUploadItemJSON(handleID)` only when the app intentionally drops the
 current handle but wants to resume later without marking an error.
+
+Direct upload tasks do not use `OpenUploadItemJSON` / `WriteUploadItem`.
+Instead, the app creates the task with `source_path`, keeps the source permission
+valid until completion, and follows task events. Direct task result items use
+`cloud_bytes_*` for upload progress and keep `staging_bytes_*` at zero. If a
+future driver lacks source upload entirely, qrypt can still fall back to staging
+and report `phase=queued_upload`.
 
 Use `UploadLocalFileJSON` only when qrypt can read a stable local filesystem
 path directly. It streams the file into an `upload_stream_batch` task, returns
@@ -412,6 +434,7 @@ Use `CreateTaskJSON` for UI-created file operations:
 
 ```text
 upload_stream_batch     app input stream -> qrypt/dest_path
+upload_stream_direct    app source token -> qrypt/dest_path
 download_stream_batch   qrypt source_path -> app output stream
 move_remote             qrypt source_path -> qrypt dest_path
 ```
@@ -445,7 +468,9 @@ Stream task items expose row capabilities:
 
 Use `CancelTaskItemJSON` for active or waiting stream items. For
 `upload_stream_batch`, canceling an unfinished item removes that item's qrypt
-staging data. Non-stream tasks currently use whole-task cancellation.
+staging data. For `upload_stream_direct`, the item cancel marks the direct row
+canceled; if the task has fallen back to staging, the fallback upload is cleaned
+up by the staging path. Non-stream tasks currently use whole-task cancellation.
 
 For top-level task rows, use capabilities directly:
 
@@ -620,6 +645,7 @@ UploadLocalFileJSON(coreID, localPath, remotePath, deadlineMS)
 WaitLocalFileStableJSON(coreID, localPath, optionsJSON, deadlineMS)
 CreateLocalUploadTaskJSON(coreID, requestJSON, deadlineMS)
 CreateUploadTaskJSON(coreID, requestJSON, deadlineMS)
+CreateDirectUploadTaskJSON(coreID, requestJSON, deadlineMS)
 OpenUploadItemJSON(coreID, taskID, itemID, deadlineMS)
 WriteUploadItem(handleID, data, deadlineMS)
 CommitUploadItemJSON(handleID, deadlineMS)

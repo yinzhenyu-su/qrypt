@@ -774,6 +774,62 @@ upload_delay = "10ms"
 	}
 }
 
+func TestMobileCreateDirectUploadTaskJSON(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(tmp, "direct-source.bin")
+	content := []byte("mobile direct upload")
+	if err := os.WriteFile(local, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[mounts]]
+name = "quark"
+type = "localfs"
+[mounts.params]
+root_path = "`+remote+`"
+
+[upload]
+upload_delay = "10ms"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeCore(coreID) }()
+
+	raw := CreateDirectUploadTaskJSON(coreID, `{"items":[{"item_id":"direct","source_path":`+fmt.Sprintf("%q", local)+`,"dest_path":"/quark/direct.bin","size":`+fmt.Sprintf("%d", len(content))+`}]}`, 0)
+	var created struct {
+		OK   bool       `json:"ok"`
+		Data mobileTask `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &created); err != nil {
+		t.Fatal(err)
+	}
+	if !created.OK || created.Data.ID == "" {
+		t.Fatalf("CreateDirectUploadTaskJSON = %s, want task", raw)
+	}
+	if created.Data.Type != "upload_stream_direct" {
+		t.Fatalf("task type = %q, want upload_stream_direct", created.Data.Type)
+	}
+	item := waitMobileTaskState(t, coreID, created.Data.ID, "succeeded")
+	if item.Progress.StagingBytesDone != 0 || item.Progress.StagingBytesTotal != 0 {
+		t.Fatalf("task progress = %+v, want no user-visible staging bytes", item.Progress)
+	}
+	if len(item.Result.Items) != 1 || item.Result.Items[0].Phase != "direct" {
+		t.Fatalf("task result = %+v, want direct result", item.Result.Items)
+	}
+	if data, err := os.ReadFile(filepath.Join(remote, "direct.bin")); err != nil || string(data) != string(content) {
+		t.Fatalf("remote data = %q err=%v, want %q", data, err, content)
+	}
+}
+
 func TestMobileErrorsAreClassified(t *testing.T) {
 	raw := ListJSON("missing", "/", 0)
 	if !strings.Contains(raw, `"ok":false`) || !strings.Contains(raw, `"code":"unknown"`) {

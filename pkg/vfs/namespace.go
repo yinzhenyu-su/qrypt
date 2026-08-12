@@ -75,6 +75,18 @@ type RemoteLister interface {
 	RemoteList(ctx context.Context, path string) ([]drive.Entry, error)
 }
 
+type SourceUploadRequest struct {
+	Source   drive.ReadOnlyFileSource
+	Progress drive.UploadProgress
+	ModTime  time.Time
+}
+
+type SourceUploader interface {
+	SupportsSourceUpload(path string) bool
+	SupportsResumableSourceUpload(path string) bool
+	UploadSource(ctx context.Context, path string, req SourceUploadRequest) (drive.Entry, error)
+}
+
 // Optional public capability interfaces are grouped by consumer role:
 //
 //	file operations  FileSystem (Reader + Writer), Lifecycle, PathRefresher

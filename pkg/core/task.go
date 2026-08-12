@@ -26,7 +26,9 @@ type taskDismisser interface {
 func (c *Core) newTaskManager() *task.Manager {
 	sources := []task.Source{c.fs.TaskSource()}
 	store := c.taskStore()
-	return task.NewManagerWithStore(store, sources...)
+	manager := task.NewManagerWithStore(store, sources...)
+	c.recoverUploadStreamDirectTasks(context.Background(), manager)
+	return manager
 }
 
 func (c *Core) taskStore() task.Store {
@@ -176,6 +178,8 @@ func (c *Core) CreateTask(ctx context.Context, req task.Request) (task.Task, err
 		return c.createUploadTask(ctx, req)
 	case task.TypeUploadStreamBatch:
 		return c.createUploadStreamTask(ctx, req)
+	case task.TypeUploadStreamDirect:
+		return c.createUploadStreamDirectTask(ctx, req)
 	case task.TypeDownload:
 		return c.createDownloadTask(ctx, req)
 	case task.TypeDownloadStreamBatch:

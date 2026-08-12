@@ -347,8 +347,9 @@ returns the default directory that UploadService should create before uploading.
 
 UploadService writes through `UploadBackend`. The default `VFSUploadBackend`
 wraps the internal `vfs.FileSystem` API so it can reuse staging, retry,
-instant-upload hashes, and driver capabilities. A future backend can target a
-driver upload fast path directly without changing mobile or task callers.
+instant-upload hashes, and driver capabilities. Direct upload stream tasks use
+the VFS `SourceUploader` fast path when the destination driver can stream a
+`drive.ReadOnlyFileSource`; otherwise they can still fall back to staging.
 
 UploadService is not a FUSE entry point: clients should not copy files into a
 mounted qrypt directory to create upload tasks. FUSE and upload tasks share
