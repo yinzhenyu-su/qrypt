@@ -85,6 +85,25 @@ qrypt driver schema baidu
 Keep provider-specific options in `[[mounts]].params`. Do not add top-level
 config fields unless the setting applies to all drivers.
 
+### Platform-authorized directory drivers
+
+`pkg/drivers/scopedfs` is the bundled driver for user-authorized local/provider
+directories on mobile platforms. It is intentionally not Android-specific:
+
+- Android apps map `root_token` to a persisted SAF tree URI.
+- iOS apps map `root_token` to security-scoped bookmark data.
+- The driver depends only on a registered `scopedfs.Backend`; platform APIs stay
+  in the mobile app or `pkg/mobile` adapter.
+
+Do not import Android, iOS, gomobile, or app UI packages from a driver. If a
+platform needs a new operation shape, add it behind the scopedfs backend
+adapter instead of coupling `pkg/core` or `pkg/vfs` to that platform.
+
+`scopedfs` declares writer and source-upload support, so direct upload tasks can
+write into authorized directories without qrypt staging. It does not declare
+mtime or resumable upload because common SAF/File Provider backends cannot
+guarantee those semantics consistently.
+
 ## Required Interface
 
 Every driver must implement `drive.Driver`:

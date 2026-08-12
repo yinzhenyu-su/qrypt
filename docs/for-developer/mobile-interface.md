@@ -126,6 +126,46 @@ On Android, driver state and upload sessions should stay under app-private
 `cacheDir`. iOS should map the same runtime classes to app-private Documents,
 Library, Caches, or tmp directories according to its storage policy.
 
+## Platform-Authorized Directories
+
+Use the bundled `scopedfs` driver when the app wants to expose a user-authorized
+directory as a qrypt mount.
+
+```toml
+[[mounts]]
+name = "phone"
+type = "scopedfs"
+
+[mounts.params]
+root_token = "<app-owned grant token>"
+root_id = "root"
+```
+
+`root_token` is opaque to qrypt. Android apps should map it to a persisted SAF
+tree URI obtained from `ACTION_OPEN_DOCUMENT_TREE` and
+`takePersistableUriPermission`. iOS apps should map it to stored
+security-scoped bookmark data created from a Document Picker folder URL.
+
+Before opening a config containing `type = "scopedfs"`, install the platform
+backend:
+
+```text
+SetScopedFSBackendJSON(backend)
+OpenJSON(configPath, runtimeJSON)
+```
+
+The backend implements directory operations with platform APIs:
+
+| Platform | Backend mapping |
+| --- | --- |
+| Android | SAF `ContentResolver` / `DocumentsContract` |
+| iOS | security-scoped `URL` plus `FileManager` / file handles |
+
+`scopedfs` supports normal browse/read/write/remove/rename and direct upload
+without qrypt staging. It does not advertise resumable source upload or mtime
+writing, so interrupted direct uploads restart from byte zero and VFS uses the
+same temporary-name cleanup path as other non-resumable direct drivers.
+
 ## Recommended Flows
 
 ### Open qrypt
@@ -235,16 +275,20 @@ is usually a SAF/content URI InputStream. On iOS this can be a security-scoped
 file or provider stream.
 
 Use `CreateDirectUploadTaskJSON` when qrypt can reopen the source later from a
-stable token. In the current `pkg/mobile` JSON wrapper, `source_path` is opened
-as a local filesystem path by default. Android SAF/content URI support requires
-the embedding native bridge to provide a `core.UploadSourceProvider` that maps
-the token back to `ContentResolver.openInputStream(uri)` and can reopen after
-skipping to the requested offset. qrypt reads the source once to compute upload
-hashes for instant upload, then reopens it for cloud upload. If the destination
-driver supports source upload, qrypt uploads directly without qrypt staging.
+stable token. `source_path` in the item JSON is the source token. On Android,
+call `SetUploadSourceOpenerJSON` once (it applies to all open and future
+sessions) with an implementation of the `UploadSourceOpener` interface that
+maps the token back to `ContentResolver.openAssetFileDescriptor(uri, "r")`
+and seeks to the requested offset. On iOS, map the token to a security-scoped
+bookmark or file-provider URL, call `startAccessingSecurityScopedResource`,
+open the file, seek, and close/stop access when qrypt closes the handle. Without
+a custom opener, `source_path` is opened as a local filesystem path by default.
+qrypt reads the source once to compute upload hashes for instant upload, then
+reopens it (at the requested offset) for cloud upload. If the destination driver
+supports source upload, qrypt uploads directly without qrypt staging.
 Drivers that also advertise resumable source upload can continue an interrupted
-provider upload; non-resumable direct drivers, such as localfs and generic
-WebDAV, restart the direct upload from the beginning after interruption.
+provider upload; non-resumable direct drivers, such as scopedfs, localfs, and
+generic WebDAV, restart the direct upload from the beginning after interruption.
 
 Create the task:
 
@@ -641,6 +685,9 @@ ProbeMP4JSON(coreID, path, deadlineMS)
 ### Uploads
 
 ```text
+SetUploadSourceOpenerJSON(opener)
+SetScopedFSBackendJSON(backend)
+ClearScopedFSBackendJSON()
 UploadLocalFileJSON(coreID, localPath, remotePath, deadlineMS)
 WaitLocalFileStableJSON(coreID, localPath, optionsJSON, deadlineMS)
 CreateLocalUploadTaskJSON(coreID, requestJSON, deadlineMS)

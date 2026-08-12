@@ -200,6 +200,9 @@ func openWithRuntime(configPath string, runtime core.RuntimeLayout) (string, err
 	registry.mu.Lock()
 	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime, ctx: ctx, cancel: cancel}
 	registry.mu.Unlock()
+	if opener := currentUploadSourceOpener(); opener != nil {
+		registry.sessions[id].applyUploadSourceProvider(opener)
+	}
 	return id, nil
 }
 
@@ -245,6 +248,9 @@ func OpenImportedJSON(runtimeRaw string) string {
 	registry.mu.Lock()
 	registry.sessions[id] = &session{core: c, configPath: configPath, runtime: runtime, ctx: ctx, cancel: cancel}
 	registry.mu.Unlock()
+	if opener := currentUploadSourceOpener(); opener != nil {
+		registry.sessions[id].applyUploadSourceProvider(opener)
+	}
 	return resultJSON(id, nil)
 }
 
