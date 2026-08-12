@@ -68,11 +68,12 @@ func (v *VFS) UploadSource(ctx context.Context, path string, req SourceUploadReq
 		return drive.Entry{}, err
 	}
 	if len(replaceExisting) > 0 || uploadName != name {
-		if err := v.replaceSourceUploadedEntry(ctx, entry, replaceExisting, name); err != nil {
+		replaced, replaceErr := v.replaceSourceUploadedEntry(ctx, entry, replaceExisting, name)
+		if replaceErr != nil {
 			_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
-			return drive.Entry{}, err
+			return drive.Entry{}, replaceErr
 		}
-		entry.Name = name
+		entry = replaced
 	}
 	newVFSViewCommitter(v).CommitUploadedEntry(path, entry, "")
 	return entry, nil
@@ -92,18 +93,35 @@ func (v *VFS) sourceUploadExisting(ctx context.Context, parentID, name string) (
 	return existing, nil
 }
 
-func (v *VFS) replaceSourceUploadedEntry(ctx context.Context, entry drive.Entry, existing []drive.Entry, finalName string) error {
+func (v *VFS) replaceSourceUploadedEntry(ctx context.Context, entry drive.Entry, existing []drive.Entry, finalName string) (drive.Entry, error) {
 	for _, old := range existing {
 		if err := v.driver.Remove(ctx, old); err != nil {
-			return err
+			return drive.Entry{}, err
 		}
 	}
 	if entry.Name != finalName {
 		if err := v.driver.Rename(ctx, entry, finalName); err != nil {
-			return err
+			return drive.Entry{}, err
+		}
+		if refreshed, ok := v.findSourceUploadedEntry(ctx, entry.ParentID, finalName); ok {
+			return refreshed, nil
 		}
 	}
-	return nil
+	entry.Name = finalName
+	return entry, nil
+}
+
+func (v *VFS) findSourceUploadedEntry(ctx context.Context, parentID, name string) (drive.Entry, bool) {
+	entries, err := v.driver.List(ctx, parentID)
+	if err != nil {
+		return drive.Entry{}, false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir && entry.Name == name {
+			return entry, true
+		}
+	}
+	return drive.Entry{}, false
 }
 
 func (v *VFS) removeSourceUploadTemporaryFiles(ctx context.Context, parentID, finalName string) {

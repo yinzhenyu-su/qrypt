@@ -11,6 +11,18 @@ import (
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/p189"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/s3"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/scopedfs"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/yun139"
 )
+
+type ScopedFSBackend = scopedfs.Backend
+type ScopedFSWriteHandle = scopedfs.WriteHandle
+
+func RegisterScopedFSBackend(name string, backend ScopedFSBackend) error {
+	return scopedfs.RegisterBackend(name, backend)
+}
+
+func UnregisterScopedFSBackend(name string) {
+	scopedfs.UnregisterBackend(name)
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/p115open"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/s3"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/scopedfs"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/yun139"
 )
@@ -155,6 +156,16 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityWriter,
 			},
 		},
+		{
+			name: "scopedfs",
+			drv:  mustScopedFS(t),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilitySourceUploader,
+				drive.CapabilityWriter,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -168,4 +179,13 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustScopedFS(t *testing.T) drive.Driver {
+	t.Helper()
+	drv, err := scopedfs.New(scopedfs.Options{Backend: "capability-test", RootToken: "grant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return drv
 }
