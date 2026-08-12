@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"go.uber.org/goleak"
 )
 
@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 	// the goleak check on slow runner DNS (see initTime).
 	os.Setenv("QRYPT_TEST_NTP_DISABLED", "1")
 	code := m.Run()
-	timeutil.StopNTP()
+	util.StopNTP()
 	if err := goleak.Find(
 		goleak.IgnoreAnyFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),
 	); err != nil {

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -134,7 +133,7 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	}
 	item := resp.Responses[0]
 	if item.Status < 200 || item.Status >= 300 {
-		err := util.HTTPError("aliyundrive: batch copy", nil, &http.Response{Status: fmt.Sprintf("%d", item.Status)}, item.Body)
+		err := drive.HTTPError("aliyundrive: batch copy", nil, &http.Response{Status: fmt.Sprintf("%d", item.Status)}, item.Body)
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}

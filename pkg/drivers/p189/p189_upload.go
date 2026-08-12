@@ -15,9 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -144,9 +143,9 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 				Status:    resp.StatusCode,
 				Duration:  time.Since(start).String(),
 				Request:   map[string]any{"part_number": meta.Number, "bytes": meta.Size, "headers": headerKeys(req.Header)},
-				Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+				Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 			})
-			err := util.HTTPError(fmt.Sprintf("189: upload part %d", meta.Number), nil, resp, raw)
+			err := drive.HTTPError(fmt.Sprintf("189: upload part %d", meta.Number), nil, resp, raw)
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
 				err = drive.NonRetryable(err)
 			}

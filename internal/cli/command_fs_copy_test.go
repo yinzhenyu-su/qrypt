@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/internal/drivecopy"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/drivecopy"
 )
 
 func TestFsCopyCopiesBetweenMounts(t *testing.T) {

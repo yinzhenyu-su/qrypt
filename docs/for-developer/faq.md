@@ -99,7 +99,7 @@ memory for Finder compatibility. They are not uploaded to the remote drive.
 ### Regression Tests
 
 Keep tests focused on filesystem semantics rather than one Finder version.
-Relevant tests live in `internal/mount/mount_test.go` and should cover:
+Relevant tests live in `pkg/mount/mount_test.go` and should cover:
 
 - Missing AppleDouble lookup returns `ENOENT`.
 - Ignored `.DS_Store` supports write, read, offset write, truncate, and rename
@@ -113,7 +113,7 @@ Relevant tests live in `internal/mount/mount_test.go` and should cover:
 Run:
 
 ```sh
-go test ./internal/mount
+go test ./pkg/mount
 go test ./...
 ```
 
@@ -147,7 +147,7 @@ size `S`) differ by 2-3x:
 ### Where the extra writes come from
 
 1. **Direct copy still writes one temp file** (`copySourceToTemp` in
-   `internal/control/directcopy.go`). The whole source is streamed into an
+   `pkg/control/directcopy.go`). The whole source is streamed into an
    `os.CreateTemp` file (with `tmp.Sync()`) while md5/sha1/sha256 hashes are
    computed through an `io.MultiWriter`, then uploaded via `PutSource` and
    deleted. The temp file exists so a retried upload does not re-read the
@@ -218,7 +218,7 @@ qrypt already routes explicit copies around the amplification: `qrypt fs
 copy` and the copy task (`pkg/core/copy.go`) call `RunDirectDriverCopy`, the
 driver-level path, regardless of which mounts are involved. The remaining
 2-3x path is only for unlabelled FUSE `cp` and for cross-drive `fs sync`
-(`internal/sync/transfer.go` uses `fs.WriteAt`). Future work, in decreasing
+(`pkg/syncer/transfer.go` uses `fs.WriteAt`). Future work, in decreasing
 order of benefit:
 
 1. Stream `fs sync` cross-drive transfers through `RunDirectDriverCopy`

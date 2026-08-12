@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 )
 
 const (
@@ -71,7 +71,7 @@ type Driver struct {
 
 	client  *http.Client
 	limiter *drive.BandwidthLimiter
-	metrics *util.Buffer
+	metrics *driverutil.Buffer
 }
 
 type Options struct {
@@ -262,7 +262,7 @@ func New(opts Options) *Driver {
 		chunkSize:        chunkSize,
 		disableDiskUsage: opts.DisableDiskUsage,
 		client:           client,
-		metrics:          util.NewBuffer(500),
+		metrics:          driverutil.NewBuffer(500),
 	}
 }
 

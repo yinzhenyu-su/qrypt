@@ -6,53 +6,53 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
-	"github.com/yinzhenyu/qrypt/internal/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
-func (v *VFS) DebugSnapshot() DebugSnapshot {
-	return DebugSnapshot{
-		SchemaVersion: DebugSnapshotSchemaVersion,
-		GeneratedAt:   timeutil.Now(),
+func (v *VFS) DebugSnapshot() diagnostics.DebugSnapshot {
+	return diagnostics.DebugSnapshot{
+		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+		GeneratedAt:   util.Now(),
 		Kind:          "vfs",
 		Process:       debugProcess(),
-		Mounts:        []MountSnapshot{v.debugMountSnapshot(v.name)},
+		Mounts:        []diagnostics.MountSnapshot{v.debugMountSnapshot(v.name)},
 	}
 }
 
-func (v *VFS) DebugSnapshotForMounts(mountNames []string) DebugSnapshot {
+func (v *VFS) DebugSnapshotForMounts(mountNames []string) diagnostics.DebugSnapshot {
 	if len(mountNames) == 0 {
 		return v.DebugSnapshot()
 	}
 	names := debugMountNameSet(mountNames)
 	if !names[v.name] {
-		return DebugSnapshot{
-			SchemaVersion: DebugSnapshotSchemaVersion,
-			GeneratedAt:   timeutil.Now(),
+		return diagnostics.DebugSnapshot{
+			SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+			GeneratedAt:   util.Now(),
 			Kind:          "vfs",
 			Process:       debugProcess(),
 		}
 	}
-	return DebugSnapshot{
-		SchemaVersion: DebugSnapshotSchemaVersion,
-		GeneratedAt:   timeutil.Now(),
+	return diagnostics.DebugSnapshot{
+		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+		GeneratedAt:   util.Now(),
 		Kind:          "vfs",
 		Process:       debugProcess(),
-		Mounts:        []MountSnapshot{v.debugMountSnapshot(v.name)},
+		Mounts:        []diagnostics.MountSnapshot{v.debugMountSnapshot(v.name)},
 	}
 }
 
-func (v *VFS) debugMountSnapshot(name string) MountSnapshot {
+func (v *VFS) debugMountSnapshot(name string) diagnostics.MountSnapshot {
 	return diagnostics.AssembleMountSnapshot(name, newVFSDebugSnapshotRuntime(v))
 }
 
-func (v *VFS) debugCacheSnapshot() DebugCacheSnapshot {
+func (v *VFS) debugCacheSnapshot() diagnostics.DebugCacheSnapshot {
 	return diagnostics.CacheSnapshot(newVFSDebugCacheRuntime(v))
 }
 
-func debugProcess() DebugProcess {
+func debugProcess() diagnostics.DebugProcess {
 	return diagnostics.Process(os.Getpid(), DebugStartedAt())
 }
 
@@ -80,9 +80,9 @@ func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
 	return vfsDebugSnapshotRuntime{v: v}
 }
 
-func (r vfsDebugSnapshotRuntime) Identity(name string) MountSnapshotIdentity {
+func (r vfsDebugSnapshotRuntime) Identity(name string) diagnostics.MountSnapshotIdentity {
 	driverRuntime := newVFSDriverRuntime(r.v)
-	return MountSnapshotIdentity{
+	return diagnostics.MountSnapshotIdentity{
 		Name:         name,
 		RootID:       r.v.rootID,
 		Capabilities: driverRuntime.Capabilities(),
@@ -90,8 +90,8 @@ func (r vfsDebugSnapshotRuntime) Identity(name string) MountSnapshotIdentity {
 	}
 }
 
-func (r vfsDebugSnapshotRuntime) Queues() MountSnapshotQueues {
-	return MountSnapshotQueues{
+func (r vfsDebugSnapshotRuntime) Queues() diagnostics.MountSnapshotQueues {
+	return diagnostics.MountSnapshotQueues{
 		UploadLength:  len(r.v.uploads.Queue()),
 		UploadCap:     cap(r.v.uploads.Queue()),
 		UploadWorkers: r.v.uploads.WorkerCount(),
@@ -117,11 +117,11 @@ func (r vfsDebugSnapshotRuntime) DriverMetrics(ctx context.Context, since time.T
 	return metrics
 }
 
-func (r vfsDebugSnapshotRuntime) UploadTimers() []DebugTimer {
+func (r vfsDebugSnapshotRuntime) UploadTimers() []diagnostics.DebugTimer {
 	deadlines := r.v.uploads.ScheduledDeadlines()
-	timers := make([]DebugTimer, 0, len(deadlines))
+	timers := make([]diagnostics.DebugTimer, 0, len(deadlines))
 	for path, deadline := range deadlines {
-		timers = append(timers, DebugTimer{Path: path, Deadline: deadline})
+		timers = append(timers, diagnostics.DebugTimer{Path: path, Deadline: deadline})
 	}
 	sort.Slice(timers, func(i, j int) bool {
 		return timers[i].Path < timers[j].Path
@@ -135,10 +135,10 @@ func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
 	for path := range r.v.deletes.tasks.scheduler.Keys() {
-		out.DeleteTimers = append(out.DeleteTimers, DebugTimer{Path: path})
+		out.DeleteTimers = append(out.DeleteTimers, diagnostics.DebugTimer{Path: path})
 	}
 	for path, entry := range r.v.view.overlay.deleted {
-		out.Deleted = append(out.Deleted, DebugDeletedEntry{
+		out.Deleted = append(out.Deleted, diagnostics.DebugDeletedEntry{
 			Path:  path,
 			ID:    entry.ID,
 			Name:  entry.Name,
@@ -147,7 +147,7 @@ func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 		})
 	}
 	for _, op := range r.v.view.overlay.renameOverlays {
-		out.OverlayOps = append(out.OverlayOps, DebugOverlayOp{
+		out.OverlayOps = append(out.OverlayOps, diagnostics.DebugOverlayOp{
 			OldPath: op.oldPath,
 			NewPath: op.newPath,
 			EntryID: op.entryID,
@@ -160,15 +160,15 @@ func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 		if now.After(deadline) {
 			continue
 		}
-		out.RestoredDirs = append(out.RestoredDirs, DebugTimer{Path: path, Deadline: deadline})
+		out.RestoredDirs = append(out.RestoredDirs, diagnostics.DebugTimer{Path: path, Deadline: deadline})
 	}
 	for dir, names := range r.v.view.overlay.copyHiddenChildren {
-		item := DebugCopyHidden{Dir: dir}
+		item := diagnostics.DebugCopyHidden{Dir: dir}
 		for name, deadline := range names {
 			if now.After(deadline) {
 				continue
 			}
-			item.Names = append(item.Names, DebugTimer{Path: name, Deadline: deadline})
+			item.Names = append(item.Names, diagnostics.DebugTimer{Path: name, Deadline: deadline})
 		}
 		sort.Slice(item.Names, func(i, j int) bool {
 			return item.Names[i].Path < item.Names[j].Path
@@ -195,7 +195,7 @@ func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 	return out
 }
 
-func (r vfsDebugSnapshotRuntime) Cache() DebugCacheSnapshot {
+func (r vfsDebugSnapshotRuntime) Cache() diagnostics.DebugCacheSnapshot {
 	return r.v.debugCacheSnapshot()
 }
 
@@ -203,11 +203,11 @@ func (r vfsDebugSnapshotRuntime) ReadHistory() []drive.MetricEvent {
 	return r.v.debugReadHistory()
 }
 
-func (r vfsDebugSnapshotRuntime) UploadSnapshots(pending []PendingUpload) []UploadSnapshot {
+func (r vfsDebugSnapshotRuntime) UploadSnapshots(pending []PendingUpload) []uploadSnapshot {
 	return r.v.uploadSnapshots(pending)
 }
 
-func (r vfsDebugSnapshotRuntime) UploadHistory() []UploadSnapshot {
+func (r vfsDebugSnapshotRuntime) UploadHistory() []uploadSnapshot {
 	return r.v.uploadSnapshotHistory()
 }
 

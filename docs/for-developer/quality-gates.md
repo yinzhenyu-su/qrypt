@@ -32,7 +32,7 @@ gh workflow run "Nightly Quality Gates"
   floor 是刻意行为：改 `FLOOR` map 并提交说明。
 - **PR 快照**（`scripts/pr-coverage-report.sh`，ci.yaml 中仅 PR 运行）：
   非阻塞，把六包覆盖率和"本 PR 有变更"的包写进 PR summary，便于在
-  合并前观察趋势。`internal/sync` 用 `-coverpkg` 对 CLI 集成测试口径
+  合并前观察趋势。`pkg/syncer` 用 `-coverpkg` 对 CLI 集成测试口径
   （单包 ~15% 是假象）。
 
 ## Contract 矩阵（两层）
@@ -60,7 +60,7 @@ gh workflow run "Nightly Quality Gates"
 - nightly fuzz 失败时 `**/testdata/fuzz/**` 上传为 `fuzz-corpus`
   artifact；按 [fuzz-corpus.md](fuzz-corpus.md) 下载并提交最小复现样本，
   之后每次 `go test ./...` 自动回归。
-- 已保留样本：`pkg/crypt`（EME 分段 panic）、`internal/config`
+- 已保留样本：`pkg/crypt`（EME 分段 panic）、`pkg/config`
   （ParseSize NaN）。
 
 ## 本地等价命令

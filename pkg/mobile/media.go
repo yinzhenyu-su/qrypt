@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/core"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/media"
 )
 

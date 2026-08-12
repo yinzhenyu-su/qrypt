@@ -8,7 +8,7 @@ This guide describes how to add a cloud-drive backend to qrypt.
 - `pkg/vfs` owns filesystem behavior: path resolution, read cache, staged
   writes, pending journal recovery, and upload scheduling.
 - `pkg/crypt` wraps any driver with rclone-compatible encryption.
-- `internal/mount` translates FUSE callbacks into VFS calls.
+- `pkg/mount` translates FUSE callbacks into VFS calls.
 - `pkg/drivers/<name>` is the only place that should know provider API
   details.
 
@@ -237,26 +237,26 @@ contract output), route it through the shared redactor — never roll your
 own pattern list:
 
 ```go
-return nil, util.HTTPError("quark: upload", nil, resp, body)
+return nil, drive.HTTPError("quark: upload", nil, resp, body)
 ```
 
-`util.Snippet` / `util.HTTPError` (in `internal/util`) truncate at 300 bytes
+`drive.Snippet` / `drive.HTTPError` (in `pkg/drive`) truncate at 300 bytes
 and mask tokens, cookies, download URLs, authorization headers and URL
 userinfo; their mask patterns are covered by unit tests in that package. A
-duplicated pattern set in a driver is a review failure — extend `util.Snippet`
+duplicated pattern set in a driver is a review failure — extend `drive.Snippet`
 instead.
 
 ### Stable error sentinels
 
 Errors crossing layer boundaries must be classifiable with `errors.Is` /
-`errors.As` — never by parsing text. `util.HTTPError` already wraps the
+`errors.As` — never by parsing text. `drive.HTTPError` already wraps the
 right sentinel from the HTTP status (401 → `drive.ErrAuth`, 404 →
 `drive.ErrNotFound`, 429 → `drive.ErrRateLimit`, 400 →
 `drive.ErrInvalidInput`), so most driver errors get it for free. For
 non-HTTP failures, wrap the sentinel yourself:
 
 ```go
-return fmt.Errorf("quark: %s auth failed: %w: %s", op, drive.ErrAuth, util.Snippet([]byte(msg)))
+return fmt.Errorf("quark: %s auth failed: %w: %s", op, drive.ErrAuth, drive.Snippet([]byte(msg)))
 ```
 
 Sentinels: `drive.ErrAuth` (credential expired/rejected → refresh and
@@ -268,10 +268,11 @@ wrap `drive.NonRetryable` for deterministic failures.
 
 ### Shared driver infrastructure
 
-Cross-cutting HTTP plumbing lives under `internal/util` so drivers do not
-hand-roll the same code: `httpclient` (JSON request construction, response
-body reading, JSON decoding), `uploadsession` (upload session persistence),
-`internal/retry` (exponential backoff) and `internal/httputil` (transport).
+Cross-cutting HTTP plumbing lives under `pkg/drivers/internal/driverutil` so drivers do not
+hand-roll the same code: trace buffers and metric field helpers, `httpclient`
+(JSON request construction, response body reading, JSON decoding),
+`uploadsession` (upload session persistence), `pkg/util` (exponential
+backoff) and `internal/httputil` (transport).
 Use these building blocks; keep provider-specific orchestration (auth header
 injection, retry classification, metric reporting) inside the driver.
 

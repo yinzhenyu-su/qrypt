@@ -3,21 +3,18 @@ package vfs
 import (
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/faultinject"
-	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
-// Type aliases — the implementations live in internal/upload.
-type UploadService = upload.Service
+// Internal aliases keep the VFS adaptation concise without exporting upload
+// runtime implementation types from the public filesystem package.
+type uploadService = upload.Service
 type uploadStore = upload.PendingStore
 type uploadTaskRecord = upload.UploadTaskRecord
-type UploadSnapshot = upload.UploadSnapshot
+type uploadSnapshot = upload.UploadSnapshot
 type uploadSnapshotState = upload.SnapshotState
-type DebugUploadCancelFault = faultinject.DebugUploadCancelFault
 type uploadAdmission = upload.Admission
-type DebugJournal = upload.DebugJournal
-type DebugJournalPath = upload.DebugJournalPath
 
 // vfsHashOps adapts the vfs hash tracker to upload.HashOps.
 type vfsHashOps struct{ h *uploadHashTrackerState }
@@ -33,7 +30,7 @@ func (w vfsHashOps) RenamePath(oldPath, newPath string, p vfstypes.PendingUpload
 }
 
 // newUploadService builds the upload service wired to VFS state.
-func newUploadService(store *uploadStore, opts Options, done chan struct{}, hashes *uploadHashTrackerState) *UploadService {
+func newUploadService(store *uploadStore, opts Options, done chan struct{}, hashes *uploadHashTrackerState) *uploadService {
 	return upload.NewService(upload.ServiceOptions{
 		UploadDelay:   opts.UploadDelay,
 		UploadWorkers: opts.UploadWorkers,
@@ -51,13 +48,10 @@ func (v *VFS) PendingUploads() []PendingUpload {
 	return v.uploads.PendingUploads()
 }
 
-var ReplayUploadJournal = upload.ReplayUploadJournal
-var PruneUploadJournal = upload.PruneUploadJournal
-
 var largeUploadQuietThreshold int64 = upload.LargeUploadQuietThreshold
 var largeUploadQuietDelay = upload.LargeUploadQuietDelay
 
-// VFS wrapper methods delegating to UploadService. These exist for
+// VFS wrapper methods delegating to uploadService. These exist for
 // backward compatibility with internal callers; the upload schedule
 // implementation lives in internal/upload.
 

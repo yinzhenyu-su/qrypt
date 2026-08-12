@@ -5,10 +5,11 @@ import (
 	"io"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/listing"
-	"github.com/yinzhenyu/qrypt/internal/vfs/read"
-	"github.com/yinzhenyu/qrypt/internal/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 // StreamReader is the streaming read surface implemented by the VFS.
@@ -88,7 +89,7 @@ func (o vfsReadObserver) DebugBeginActive(op vfstypes.DebugActiveOp) uint64 {
 }
 
 func (o vfsReadObserver) DebugUpdateActive(id uint64, fn func(*vfstypes.DebugActiveOp)) {
-	o.v.updateDebugActive(id, func(op *DebugActiveOp) { fn(op) })
+	o.v.updateDebugActive(id, func(op *debugActiveOp) { fn(op) })
 }
 
 func (o vfsReadObserver) DebugFinishActive(id uint64) {
@@ -128,7 +129,7 @@ func (v *VFS) readCacheKey(entry drive.Entry) string {
 // readLoadKey returns the window-coalescing key for an entry.
 
 // readCacheSnapshot returns the read cache debug snapshot.
-func (v *VFS) readCacheSnapshot() DebugReadCache {
+func (v *VFS) readCacheSnapshot() readcache.DebugReadCache {
 	return v.read.DebugSnapshot()
 }
 

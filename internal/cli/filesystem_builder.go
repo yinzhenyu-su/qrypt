@@ -3,7 +3,7 @@ package cli
 import (
 	"context"
 
-	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 )
 

@@ -50,6 +50,15 @@ func (c *Core) taskManager() (*task.Manager, error) {
 	return c.tasks, nil
 }
 
+// TaskPersistenceError reports a degraded task journal without conflating it
+// with the result of the file operation represented by a task.
+func (c *Core) TaskPersistenceError() error {
+	if c == nil || c.tasks == nil {
+		return nil
+	}
+	return c.tasks.PersistenceError()
+}
+
 func (c *Core) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
 	manager, err := c.taskManager()
 	if err != nil {

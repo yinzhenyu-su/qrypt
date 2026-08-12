@@ -7,6 +7,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 )
 
 // TestNamespaceFaultRoutingAcrossMounts: namespace-level fault IDs are
@@ -30,11 +31,11 @@ func TestNamespaceFaultRoutingAcrossMounts(t *testing.T) {
 	}
 
 	// Inject one fault per mount.
-	alphaResult, err := ns.DebugInjectUploadCancel(ctx, DebugUploadCancelRequest{Path: "/alpha/file.txt", Phase: "uploading"})
+	alphaResult, err := ns.DebugInjectUploadCancel(ctx, faultinject.DebugUploadCancelRequest{Path: "/alpha/file.txt", Phase: "uploading"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	betaResult, err := ns.DebugInjectUploadCancel(ctx, DebugUploadCancelRequest{Path: "/beta/other.txt", Phase: "uploading"})
+	betaResult, err := ns.DebugInjectUploadCancel(ctx, faultinject.DebugUploadCancelRequest{Path: "/beta/other.txt", Phase: "uploading"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,11 +95,11 @@ func TestNamespaceFaultIDsUniquenessUnderDuplicateRegistrySequences(t *testing.T
 		t.Fatal(err)
 	}
 
-	a, err := ns.DebugInjectUploadCancel(ctx, DebugUploadCancelRequest{Path: "/alpha/f.txt", AfterBytes: 1})
+	a, err := ns.DebugInjectUploadCancel(ctx, faultinject.DebugUploadCancelRequest{Path: "/alpha/f.txt", AfterBytes: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := ns.DebugInjectUploadCancel(ctx, DebugUploadCancelRequest{Path: "/beta/g.txt", AfterBytes: 1})
+	b, err := ns.DebugInjectUploadCancel(ctx, faultinject.DebugUploadCancelRequest{Path: "/beta/g.txt", AfterBytes: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestNamespaceFaultRoutingUsesMountKeyNotVFSName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ns.DebugInjectUploadCancel(ctx, DebugUploadCancelRequest{Path: "/photos/photo.jpg", Phase: "uploading"})
+	result, err := ns.DebugInjectUploadCancel(ctx, faultinject.DebugUploadCancelRequest{Path: "/photos/photo.jpg", Phase: "uploading"})
 	if err != nil {
 		t.Fatal(err)
 	}

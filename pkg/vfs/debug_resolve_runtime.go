@@ -3,24 +3,24 @@ package vfs
 import (
 	"context"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
-func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error) {
+func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (diagnostics.DebugResolveInfo, error) {
 	return diagnostics.Resolve(ctx, path, includeRemoteName, newVFSDebugResolveRuntime(v))
 }
 
-func (v *VFS) DebugResolveByRemoteID(ctx context.Context, remoteID string) (DebugResolveInfo, error) {
+func (v *VFS) DebugResolveByRemoteID(ctx context.Context, remoteID string) (diagnostics.DebugResolveInfo, error) {
 	runtime := newVFSDebugResolveRuntime(v)
 	path, err := diagnostics.ResolvePathByRemoteID(ctx, runtime, remoteID)
 	if err != nil {
-		return DebugResolveInfo{}, err
+		return diagnostics.DebugResolveInfo{}, err
 	}
 	return diagnostics.Resolve(ctx, path, false, runtime)
 }
 
-func (v *VFS) DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error) {
+func (v *VFS) DebugConsistency(ctx context.Context, path string) (diagnostics.ConsistencyReport, error) {
 	return diagnostics.Consistency(ctx, path, newVFSDebugResolveRuntime(v))
 }
 

@@ -3,7 +3,6 @@ package aliyundrive
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -317,7 +316,7 @@ func (d *Driver) batch(ctx context.Context, srcID, dstID, path string) error {
 	if item.Status >= 200 && item.Status < 300 {
 		return nil
 	}
-	err := util.HTTPError(fmt.Sprintf("aliyundrive: batch %s", path), nil, &http.Response{Status: fmt.Sprintf("%d", item.Status)}, item.Body)
+	err := drive.HTTPError(fmt.Sprintf("aliyundrive: batch %s", path), nil, &http.Response{Status: fmt.Sprintf("%d", item.Status)}, item.Body)
 	d.setLastError(err)
 	return err
 }

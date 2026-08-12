@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	idelete "github.com/yinzhenyu/qrypt/internal/vfs/delete"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
+	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/delete"
 	"path"
 	"sort"
 	"strings"
@@ -172,7 +172,7 @@ func newVFSDeleteTaskRuntime(v *VFS) vfsDeleteTaskRuntime {
 }
 
 func (r vfsDeleteTaskRuntime) Records() []deleteTaskRecord {
-	now := timeutil.Now()
+	now := util.Now()
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
 	records := make([]deleteTaskRecord, 0, len(r.v.view.overlay.deleted))

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 func (v *VFS) debugCacheCounters() (hits, misses int64) {

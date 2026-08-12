@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -44,7 +44,7 @@ func (c *Core) createDownloadTask(ctx context.Context, req task.Request) (task.T
 	if err != nil {
 		return task.Task{}, err
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	first := task.Item{SourcePath: vfs.CleanVirtualPath(req.Items[0].SourcePath), DestPath: filepath.Clean(req.Items[0].DestPath)}
 	if first.SourcePath == "/" && req.Items[0].Path != "" {
 		first.SourcePath = vfs.CleanVirtualPath(req.Items[0].Path)
@@ -456,7 +456,7 @@ func downloadTaskDetailItems(items []task.Item) []map[string]string {
 func newDownloadTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "download-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "download-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "download-" + hex.EncodeToString(b[:])
 }

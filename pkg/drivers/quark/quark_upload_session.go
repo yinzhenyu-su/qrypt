@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )

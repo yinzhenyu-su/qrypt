@@ -20,6 +20,12 @@ func DebugSnapshotJSON(coreID string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	snapshot["mobile_handles"] = mobileHandleCounts(coreID)
+	taskPersistence := map[string]any{"degraded": false}
+	if err := withCoreErr(s, func(c *core.Core) error { return c.TaskPersistenceError() }); err != nil {
+		taskPersistence["degraded"] = true
+		taskPersistence["error"] = err.Error()
+	}
+	snapshot["task_persistence"] = taskPersistence
 	return resultJSON(snapshot, nil)
 }
 

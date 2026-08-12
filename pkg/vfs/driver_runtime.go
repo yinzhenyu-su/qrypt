@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 type vfsDriverRuntime struct {
@@ -44,7 +44,7 @@ func (r vfsDriverRuntime) RemoteMutationBackend() driverRemoteMutationBackend {
 	return newDriverRemoteMutationBackend(r.v.driver)
 }
 
-func (r vfsDriverRuntime) NamedDriver(name string) NamedDriver {
+func (r vfsDriverRuntime) NamedDriver(name string) diagnostics.NamedDriver {
 	return diagnostics.NamedDriver{Name: name, Driver: r.v.driver, TestEnabled: r.v.testEnabled}
 }
 

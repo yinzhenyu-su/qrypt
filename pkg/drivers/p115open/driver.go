@@ -18,9 +18,9 @@ import (
 	sdk "github.com/OpenListTeam/115-sdk-go"
 	"golang.org/x/time/rate"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 // downloadUserAgent is the User-Agent used to request download URLs and fetch
@@ -42,7 +42,7 @@ type Driver struct {
 	rootPath           string
 	limitRate          float64
 	limiter            *rate.Limiter
-	metrics            *util.Buffer
+	metrics            *driverutil.Buffer
 	stateStore         drive.StateStore
 	accessToken        string
 	refreshToken       string
@@ -135,7 +135,7 @@ func New(opts Options) *Driver {
 		refreshToken:       opts.RefreshToken,
 		configRefreshToken: opts.RefreshToken,
 		tokenSource:        "config",
-		metrics:            util.NewBuffer(500),
+		metrics:            driverutil.NewBuffer(500),
 	}
 }
 

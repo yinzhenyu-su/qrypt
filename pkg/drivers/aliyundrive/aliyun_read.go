@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -53,7 +53,7 @@ func (d *Driver) readWithDownloadURL(ctx context.Context, entry drive.Entry, off
 	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    responseStatus(httpResp),
 		Duration:  time.Since(start).String(),
 		Request:   map[string]any{"range": req.Header.Get("Range")},

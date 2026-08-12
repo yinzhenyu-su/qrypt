@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yinzhenyu/qrypt/internal/drivecopy"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 type moveTaskSpec struct {
@@ -40,7 +40,7 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 		return task.Task{}, fmt.Errorf("core: move source and destination are the same")
 	}
 
-	now := timeutil.Now()
+	now := util.Now()
 	item := task.Task{
 		ID:        newMoveTaskID(),
 		Type:      task.TypeMoveRemote,
@@ -126,7 +126,7 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 	}), nil
 }
 
-func removeMoveSource(ctx context.Context, source drivecopy.DriverCopySource, sourcePath string, isDir bool) error {
+func removeMoveSource(ctx context.Context, source diagnostics.DriverCopySource, sourcePath string, isDir bool) error {
 	info, err := source.DebugResolve(ctx, sourcePath, false)
 	if err != nil {
 		return err
@@ -192,7 +192,7 @@ func splitMoveNamespacePath(p string) (string, string, bool) {
 func newMoveTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "move-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "move-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "move-" + hex.EncodeToString(b[:])
 }

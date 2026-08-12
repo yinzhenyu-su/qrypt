@@ -64,7 +64,7 @@ func TestCoreCloseWaitsForFilesystemWorkers(t *testing.T) {
 // TestCoreCloseTimeoutDoesNotCleanup: when the filesystem does not finish
 // tearing down within Core.Close's context, Core must NOT release external
 // resources (workers may still write journal/staging/cache) and must keep
-// c.fs so the caller can retry. A retried Close waits for the background
+// c.fs so the caller can util. A retried Close waits for the background
 // teardown and then runs cleanup exactly once.
 func TestCoreCloseTimeoutDoesNotCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

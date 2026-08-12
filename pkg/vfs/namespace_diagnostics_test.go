@@ -6,14 +6,16 @@ import (
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 )
 
 // Compile-time: Namespace keeps the full diagnostics capability surface
 // that drivecopy and CLI rely on.
 var (
-	_ DebugResolver           = (*Namespace)(nil)
-	_ RemoteIDResolver        = (*Namespace)(nil)
-	_ DebugConsistencyChecker = (*Namespace)(nil)
+	_ diagnostics.DebugResolver           = (*Namespace)(nil)
+	_ diagnostics.RemoteIDResolver        = (*Namespace)(nil)
+	_ diagnostics.DebugConsistencyChecker = (*Namespace)(nil)
 )
 
 // TestNamespaceDebugResolveAdapters: namespace resolve adapters must
@@ -86,24 +88,24 @@ func TestNamespaceDebugResolveByRemoteIDAmbiguity(t *testing.T) {
 var (
 	// RemoteIDResolver is namespace-scoped (returns the owning mount), so
 	// the single-mount VFS does not implement it.
-	_ DebugResolver             = (*VFS)(nil)
-	_ DebugConsistencyChecker   = (*VFS)(nil)
-	_ DebugStagingInspector     = (*VFS)(nil)
-	_ DebugMountSnapshotter     = (*VFS)(nil)
-	_ DebugSnapshotProvider     = (*VFS)(nil)
-	_ MountHealthChecker        = (*VFS)(nil)
-	_ DriverProvider            = (*VFS)(nil)
-	_ DebugActiveProvider       = (*VFS)(nil)
-	_ DebugUploadCancelInjector = (*VFS)(nil)
+	_ diagnostics.DebugResolver             = (*VFS)(nil)
+	_ diagnostics.DebugConsistencyChecker   = (*VFS)(nil)
+	_ diagnostics.DebugStagingInspector     = (*VFS)(nil)
+	_ diagnostics.DebugMountSnapshotter     = (*VFS)(nil)
+	_ diagnostics.DebugSnapshotProvider     = (*VFS)(nil)
+	_ diagnostics.MountHealthChecker        = (*VFS)(nil)
+	_ diagnostics.DriverProvider            = (*VFS)(nil)
+	_ diagnostics.DebugActiveProvider       = (*VFS)(nil)
+	_ faultinject.DebugUploadCancelInjector = (*VFS)(nil)
 
-	_ DebugResolver             = (*Namespace)(nil)
-	_ RemoteIDResolver          = (*Namespace)(nil)
-	_ DebugConsistencyChecker   = (*Namespace)(nil)
-	_ DebugStagingInspector     = (*Namespace)(nil)
-	_ DebugMountSnapshotter     = (*Namespace)(nil)
-	_ DebugSnapshotProvider     = (*Namespace)(nil)
-	_ MountHealthChecker        = (*Namespace)(nil)
-	_ DriverProvider            = (*Namespace)(nil)
-	_ DebugActiveProvider       = (*Namespace)(nil)
-	_ DebugUploadCancelInjector = (*Namespace)(nil)
+	_ diagnostics.DebugResolver             = (*Namespace)(nil)
+	_ diagnostics.RemoteIDResolver          = (*Namespace)(nil)
+	_ diagnostics.DebugConsistencyChecker   = (*Namespace)(nil)
+	_ diagnostics.DebugStagingInspector     = (*Namespace)(nil)
+	_ diagnostics.DebugMountSnapshotter     = (*Namespace)(nil)
+	_ diagnostics.DebugSnapshotProvider     = (*Namespace)(nil)
+	_ diagnostics.MountHealthChecker        = (*Namespace)(nil)
+	_ diagnostics.DriverProvider            = (*Namespace)(nil)
+	_ diagnostics.DebugActiveProvider       = (*Namespace)(nil)
+	_ faultinject.DebugUploadCancelInjector = (*Namespace)(nil)
 )

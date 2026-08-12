@@ -9,7 +9,7 @@ import (
 // TestIsNotFound covers the sentinel-only contract: only errors wrapping
 // ErrNotFound are classified as missing. Bare "not found" text without the
 // sentinel is deliberately not matched — drivers must wrap drive.ErrNotFound
-// (util.HTTPError does this automatically for 404 responses).
+// (drive.HTTPError does this automatically for 404 responses).
 func TestIsNotFound(t *testing.T) {
 	tests := []struct {
 		name string

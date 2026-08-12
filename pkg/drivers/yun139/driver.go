@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -27,7 +27,7 @@ type partMeta struct {
 
 const (
 	uploadPartConcurrency = 1
-	quotaSizeUnit         = osutil.MiB
+	quotaSizeUnit         = util.MiB
 )
 
 type Driver struct {
@@ -365,7 +365,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	d.cl.recordMetric(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    responseStatus(resp),
 		Duration:  time.Since(start).String(),
 		Request:   map[string]any{"range": req.Header.Get("Range")},
@@ -787,7 +787,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			d.cl.recordMetric(uploadCtx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
-				URL:       util.URL(req.URL),
+				URL:       driverutil.URL(req.URL),
 				Status:    responseStatus(resp),
 				Duration:  time.Since(httpStart).String(),
 				Request:   map[string]any{"part_number": up.partNumber, "bytes": req.ContentLength},
@@ -818,10 +818,10 @@ func nonRetryableUploadStatus(status int) bool {
 }
 
 func calcPartSize(fileSize int64) int64 {
-	if fileSize/osutil.GiB > 30 {
-		return 512 * osutil.MiB
+	if fileSize/util.GiB > 30 {
+		return 512 * util.MiB
 	}
-	return 100 * osutil.MiB
+	return 100 * util.MiB
 }
 
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {

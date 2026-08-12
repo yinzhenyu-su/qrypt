@@ -3,7 +3,7 @@
 qrypt is organized as a small set of layers with one-way dependencies. The
 main rule is that cloud-drive details stay below `pkg/drive`, filesystem
 semantics stay in `pkg/vfs`, and platform mount details stay in
-`internal/mount`.
+`pkg/mount`.
 
 ## Layers
 
@@ -24,10 +24,10 @@ pkg/drivers/<name>
 pkg/drivers/all
   bundled driver registration imported by client composition roots
 
-internal/mount
+pkg/mount
   FUSE callback adapter and platform mount lifecycle over pkg/vfs
 
-internal/control
+pkg/control
   debug socket HTTP API hosted by pkg/core or internal/cli
 
 pkg/crypt
@@ -42,37 +42,42 @@ rules are enforced automatically by
 `scripts/check-arch.sh` in CI (every PR); when the boundary is violated the
 build fails.
 
-### Internal tool layer
+### Reusable Support Packages
 
-Beneath the layer list sits the internal tool layer, which `pkg/*` packages
-depend on freely (tools have no downward dependencies of their own):
+Reusable support packages live in `pkg` when public packages need them. These
+packages should remain narrow and avoid depending on higher runtime layers:
 
-- `internal/config` — configuration model shared by `pkg/core` and `internal/cli`
-- `internal/logging` — logger singleton used across runtime layers
-- `internal/timeutil` — NTP-backed clock (fallback to system time)
-- `internal/retry`, `internal/fileutil` — retry policies, atomic writes
-- `internal/util` — driver HTTP errors, trace redaction
-- `internal/util/httpclient`, `internal/util/httputil`, `internal/util/uploadsession`
+- `pkg/config` — configuration model shared by `pkg/core` and `internal/cli`
+- `pkg/logging` — logger singleton used across runtime layers
+- `pkg/util` — filesystem, OS, size-formatting, and NTP-backed time helpers;
+  files use `fileutil_`, `osutil_`, and `timeutil_` prefixes to keep the
+  utility domains visible
+- `pkg/util` — retry policies
+- `pkg/drive` — driver contracts plus shared HTTP error classification and
+  redacted diagnostic snippets
+- `pkg/drivers/internal/driverutil` — driver trace buffers and metric field
+  helpers
+- `pkg/drivers/internal/driverutil/httpclient`, `pkg/drivers/internal/driverutil/httputil`, `pkg/drivers/internal/driverutil/uploadsession`
   — driver HTTP plumbing (request/response, transport, upload sessions)
-- `internal/drivecopy` — driver-level direct copy (single-file and directory),
+- `pkg/vfs/drivecopy` — driver-level direct copy (single-file and directory),
   shared by the sync executor, `pkg/core`, and the CLI; the debug server calls
   through the same helpers
-- `internal/contracttest` — the driver contract/benchmark harness (spec
+- `pkg/contracttest` — the driver contract/benchmark harness (spec
   registry, fixture, xfer/fstest runners, benchmark reports). The debug server
   schedules these through the exported `Specs()` registry; the CLI's
   `debug test`/`debug bench` commands consume the same report types
 
-`internal/control` is the debug-socket HTTP API only. The sync executor must
-not depend on it (rule 4 in `check-arch.sh`); `pkg/core` and `internal/cli`
+`pkg/control` is the debug-socket HTTP API only. The sync executor must
+not depend on it (rule 5 in `check-arch.sh`); `pkg/core` and `internal/cli`
 are its host and client and may. Driver-level copy logic lives in
-`internal/drivecopy`, contract harnesses in `internal/contracttest` — never
-back in `internal/control`.
+`pkg/vfs/drivecopy`, contract harnesses in `pkg/contracttest` — never
+back in `pkg/control`.
 
-### VFS domain packages (`internal/vfs/*`)
+### VFS domain packages (`pkg/vfs/*`)
 
-`pkg/vfs` is the public facade (VFS/Namespace API, capability + health
-gates, thin runtime adapters and exported DTO aliases). Its implementation
-lives in `internal/vfs` sub-packages, one per domain; `pkg/vfs` wires them
+`pkg/vfs` is the public filesystem facade (VFS/Namespace API and stable file
+capabilities). Its implementation
+lives in `pkg/vfs` sub-packages, one per domain; `pkg/vfs` wires them
 together and never holds domain runtime state:
 
 - `vfstypes` — shared types and path helpers
@@ -88,15 +93,19 @@ together and never holds domain runtime state:
   narrow interfaces
 - `observe` — active-op tracking state (no Debug* query API)
 - `faultinject` — cancel-injection rule registry (claim/release/fire state
-  machine) plus the per-upload `Progress` applicator
+  machine), control/test capability DTOs, plus the per-upload
+  `Progress` applicator; fault-injection types are not re-exported by the
+  `pkg/vfs` facade
 - `diagnostics` — read-only DTOs and cross-domain aggregation (cache,
-  staging, resolve/consistency, snapshot, health, read events, drivers)
+  staging, resolve/consistency, snapshot, health, read events, drivers), plus
+  the capability interfaces consumed by control, CLI and test tools;
+  diagnostics DTOs live in `pkg/vfs/diagnostics`
 - `scheduler` — neutral real-time keyed scheduler shared by upload and
   delete; deterministic fake timers in tests
 
 Capability contracts are enforced at compile time: `pkg/vfs` asserts the
 full diagnostics surface on both `*VFS` and `*Namespace`
-(`namespace_diagnostics_test.go`), and `internal/drivecopy` asserts
+(`namespace_diagnostics_test.go`), and `pkg/vfs/drivecopy` asserts
 `DriverCopySource` on `*Namespace`.
 
 ## Runtime Assembly
@@ -347,7 +356,7 @@ VFS/driver state but remain separate protocol adapters.
 
 ## Mount Responsibilities
 
-`internal/mount` translates FUSE callbacks into `vfs.FileSystem` calls and
+`pkg/mount` translates FUSE callbacks into `vfs.FileSystem` calls and
 contains platform mount/unmount behavior. FUSE operation files are grouped by
 behavior:
 

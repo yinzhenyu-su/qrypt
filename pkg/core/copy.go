@@ -9,10 +9,11 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/yinzhenyu/qrypt/internal/drivecopy"
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/drivecopy"
 )
 
 type copyTaskSpec struct {
@@ -40,7 +41,7 @@ func (c *Core) createCopyTask(ctx context.Context, req task.Request) (task.Task,
 	if err != nil {
 		return task.Task{}, err
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	first := spec.OriginalItems[0]
 	if len(spec.Items) > 0 {
 		first = spec.Items[0]
@@ -249,7 +250,7 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 	if entry.IsDir && !spec.Recursive {
 		return copyOneResult{}, fmt.Errorf("core: source %q is a directory; recursive copy is required", item.SourcePath)
 	}
-	source, ok := c.fs.(drivecopy.DriverCopySource)
+	source, ok := c.fs.(diagnostics.DriverCopySource)
 	if !ok {
 		return copyOneResult{}, fmt.Errorf("core: copy task requires driver copy support")
 	}
@@ -361,7 +362,7 @@ func (c *Core) expandCopyTask(ctx context.Context, spec copyTaskSpec) (copyTaskS
 }
 
 func (c *Core) removeCopiedSourceDirs(ctx context.Context, dirs []string, update task.UpdateFunc) error {
-	source, _ := c.fs.(drivecopy.DriverCopySource)
+	source, _ := c.fs.(diagnostics.DriverCopySource)
 	for _, dir := range taskTreeDirsDeepestFirst(pathsToTaskTreeDirs(dirs)) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -406,7 +407,7 @@ func copyTaskDetailItems(items []task.Item) []map[string]string {
 func newCopyTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "copy-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "copy-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "copy-" + hex.EncodeToString(b[:])
 }

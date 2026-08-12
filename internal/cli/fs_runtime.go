@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yinzhenyu/qrypt/internal/config"
-	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 // builtFS is a filesystem the CLI constructed and will start. Every builder
@@ -134,7 +135,7 @@ func commandWaitTimeout(cmd *cobra.Command) time.Duration {
 }
 
 func fileSystemActivity(fs any) (uploads, deleteTimers int) {
-	snapshotter, ok := fs.(vfs.DebugSnapshotProvider)
+	snapshotter, ok := fs.(diagnostics.DebugSnapshotProvider)
 	if !ok {
 		return 0, 0
 	}

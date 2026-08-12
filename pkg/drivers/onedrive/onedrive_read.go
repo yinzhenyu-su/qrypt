@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -60,7 +59,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, util.HTTPError("onedrive: download", nil, resp, body)
+		return nil, drive.HTTPError("onedrive: download", nil, resp, body)
 	}
 	rc := resp.Body
 	if d.limiter != nil {

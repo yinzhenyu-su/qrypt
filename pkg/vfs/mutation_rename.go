@@ -2,8 +2,8 @@ package vfs
 
 import (
 	"context"
-	"github.com/yinzhenyu/qrypt/internal/vfs/mutation"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
 )
 
 func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutationBackend, runtime mutationRuntime, committer viewCommitter) (err error) {

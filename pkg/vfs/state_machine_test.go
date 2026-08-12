@@ -161,7 +161,7 @@ func TestUploadCancelDoesNotCommit(t *testing.T) {
 
 // TestRecoveredPendingFailsAgainThenSucceeds: a pending upload persisted in
 // the journal, recovered by a fresh instance, fails again on its first
-// attempt, and then succeeds on retry. The fault counter lives on the
+// attempt, and then succeeds on util. The fault counter lives on the
 // shared driver, so it survives across the two VFS instances.
 func TestRecoveredPendingFailsAgainThenSucceeds(t *testing.T) {
 	d := drive.NewFakeDriver()

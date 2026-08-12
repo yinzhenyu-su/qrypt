@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const timeFormat = "2006-01-02 15:04:05"

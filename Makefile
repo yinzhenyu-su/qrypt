@@ -17,11 +17,16 @@ DIST_DIR ?= dist
 IMAGE ?= qrypt
 DOCKER_BUILDX_CACHE_FROM ?=
 DOCKER_BUILDX_CACHE_TO   ?=
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || true)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
+LDFLAGS ?= -s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=$(VERSION) -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=$(COMMIT) -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=$(BUILD_TIME) -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=$(DIRTY)
 
 .PHONY: build dist mkdist clean
 
 build: mkdist
-	$(GO) build -ldflags="-s -w" -o $(DIST_DIR)/qrypt ./cmd/qrypt/
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/qrypt ./cmd/qrypt/
 
 dist: mkdist linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 	@echo "--- all platforms ---"
@@ -34,6 +39,7 @@ mkdist:
 
 linux/amd64: mkdist
 	docker buildx build $(DOCKER_BUILDX_CACHE_FROM) $(DOCKER_BUILDX_CACHE_TO) \
+		--build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_TIME="$(BUILD_TIME)" --build-arg DIRTY="$(DIRTY)" \
 		--platform linux/amd64 --load -t $(IMAGE):amd64 .
 	docker create --name qrypt-linux-amd64 $(IMAGE):amd64
 	docker cp qrypt-linux-amd64:/usr/local/bin/qrypt $(DIST_DIR)/qrypt-linux-amd64
@@ -41,6 +47,7 @@ linux/amd64: mkdist
 
 linux/arm64: mkdist
 	docker buildx build $(DOCKER_BUILDX_CACHE_FROM) $(DOCKER_BUILDX_CACHE_TO) \
+		--build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_TIME="$(BUILD_TIME)" --build-arg DIRTY="$(DIRTY)" \
 		--platform linux/arm64 --load -t $(IMAGE):arm64 .
 	docker create --name qrypt-linux-arm64 $(IMAGE):arm64
 	docker cp qrypt-linux-arm64:/usr/local/bin/qrypt $(DIST_DIR)/qrypt-linux-arm64
@@ -49,7 +56,7 @@ linux/arm64: mkdist
 # ── Windows (Docker + mingw-w64) ────────────────────────────────────
 
 windows/amd64: mkdist
-	docker build -f Dockerfile.windows -t $(IMAGE):windows .
+	docker build -f Dockerfile.windows --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg BUILD_TIME="$(BUILD_TIME)" --build-arg DIRTY="$(DIRTY)" -t $(IMAGE):windows .
 	docker create --name qrypt-win --entrypoint /qrypt-windows-amd64.exe $(IMAGE):windows
 	docker cp qrypt-win:/qrypt-windows-amd64.exe $(DIST_DIR)/qrypt-windows-amd64.exe
 	docker rm qrypt-win
@@ -57,16 +64,16 @@ windows/amd64: mkdist
 # ── Windows arm64 (nocgo, pure Go cross-compile) ────────────────────
 
 windows/arm64: mkdist
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="-s -w" \
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags nocgo -ldflags="$(LDFLAGS)" \
 		-o $(DIST_DIR)/qrypt-windows-arm64.exe ./cmd/qrypt/
 
 # ── macOS (native) ──────────────────────────────────────────────────
 
 darwin/amd64: mkdist
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="-s -w" -o $(DIST_DIR)/qrypt-darwin-amd64 ./cmd/qrypt/
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/qrypt-darwin-amd64 ./cmd/qrypt/
 
 darwin/arm64: mkdist
-	GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="-s -w" -o $(DIST_DIR)/qrypt-darwin-arm64 ./cmd/qrypt/
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/qrypt-darwin-arm64 ./cmd/qrypt/
 
 # ── Container registry ──────────────────────────────────────────────
 

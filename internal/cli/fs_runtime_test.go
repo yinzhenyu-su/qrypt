@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/config"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 )
 
 // TestWaitFileSystemIdleNoTimeoutWaitsForSlowUpload: an unbounded idle wait

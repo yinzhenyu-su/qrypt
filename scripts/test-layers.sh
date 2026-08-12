@@ -88,9 +88,9 @@ case "${1:-fast}" in
     measure "fast: go test -json ./..." go test -json -count=1 ./...
     ;;
   race)
-    measure "race: pkg/vfs drive drivers contracttest drivecopy control logging cli core mobile crypt task cmd" \
+    measure "race: pkg/vfs drive drivers contracttest drivecopy control logging mount syncer cli core mobile crypt task cmd" \
       go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... \
-      ./internal/contracttest ./internal/drivecopy ./internal/control ./internal/logging ./internal/cli \
+      ./pkg/contracttest ./pkg/vfs/drivecopy ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli \
       ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
     ;;
   vfs-stability)

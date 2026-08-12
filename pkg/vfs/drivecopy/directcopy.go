@@ -1,0 +1,657 @@
+package drivecopy
+
+import (
+	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
+	"fmt"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"io"
+	"os"
+	pathpkg "path"
+	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"time"
+)
+
+// TransferStep records one phase of a direct driver copy.
+type TransferStep struct {
+	Phase         string `json:"phase"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Duration      string `json:"duration"`
+	DurationMS    int64  `json:"duration_ms"`
+	Bytes         int64  `json:"bytes,omitempty"`
+}
+
+// cacheMountName resolves which mount owns a virtual path in a namespace
+// snapshot (single-mount snapshots return the only mount).
+func cacheMountName(snapshot diagnostics.DebugSnapshot, path string) string {
+	if snapshot.Kind != "namespace" {
+		if len(snapshot.Mounts) == 1 {
+			return snapshot.Mounts[0].Identity.Name
+		}
+		return ""
+	}
+	path = strings.Trim(strings.TrimPrefix(path, "/"), "/")
+	if idx := strings.Index(path, "/"); idx >= 0 {
+		return path[:idx]
+	}
+	return path
+}
+
+var debugOperationSequence atomic.Uint64
+
+func newDebugOperationID(prefix string) string {
+	return prefix + "-" + strconv.FormatUint(debugOperationSequence.Add(1), 10)
+}
+
+func durationMillis(d time.Duration) int64 {
+	return d.Milliseconds()
+}
+
+type DriverCopyResult struct {
+	OpID        string              `json:"op_id"`
+	SourcePath  string              `json:"source_path"`
+	DestPath    string              `json:"dest_path"`
+	SourceMount string              `json:"source_mount"`
+	DestMount   string              `json:"dest_mount"`
+	SourceType  string              `json:"source_type,omitempty"`
+	DestType    string              `json:"dest_type,omitempty"`
+	Pass        bool                `json:"pass"`
+	Bytes       int64               `json:"bytes"`
+	Started     time.Time           `json:"started_at"`
+	Finished    time.Time           `json:"finished_at"`
+	Duration    string              `json:"duration"`
+	DurationMS  int64               `json:"duration_ms"`
+	Steps       []TransferStep      `json:"steps"`
+	Timeline    []drive.MetricEvent `json:"timeline,omitempty"`
+	DestEntry   *drive.Entry        `json:"dest_entry,omitempty"`
+}
+
+type DriverCopyDirResult struct {
+	OpID          string                  `json:"op_id"`
+	SourcePath    string                  `json:"source_path"`
+	DestPath      string                  `json:"dest_path"`
+	Pass          bool                    `json:"pass"`
+	Copied        int                     `json:"copied"`
+	Skipped       int                     `json:"skipped"`
+	Failed        int                     `json:"failed"`
+	Bytes         int64                   `json:"bytes"`
+	Started       time.Time               `json:"started_at"`
+	Finished      time.Time               `json:"finished_at"`
+	Duration      string                  `json:"duration"`
+	DurationMS    int64                   `json:"duration_ms"`
+	Error         string                  `json:"error,omitempty"`
+	ErrorCategory string                  `json:"error_category,omitempty"`
+	Retryable     bool                    `json:"retryable,omitempty"`
+	Entries       []DriverCopyEntryResult `json:"entries,omitempty"`
+}
+
+type DriverCopyEntryResult struct {
+	OpID          string    `json:"op_id,omitempty"`
+	Kind          string    `json:"kind"`
+	State         string    `json:"state"`
+	SourcePath    string    `json:"source_path"`
+	DestPath      string    `json:"dest_path"`
+	Bytes         int64     `json:"bytes,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	ErrorCategory string    `json:"error_category,omitempty"`
+	Retryable     bool      `json:"retryable,omitempty"`
+	Started       time.Time `json:"started_at,omitempty"`
+	Finished      time.Time `json:"finished_at,omitempty"`
+	Duration      string    `json:"duration,omitempty"`
+	DurationMS    int64     `json:"duration_ms,omitempty"`
+}
+
+type copyResolvedPath struct {
+	Path      string
+	Mount     string
+	Driver    string
+	Info      diagnostics.DebugResolveInfo
+	Drive     drive.Driver
+	Entry     drive.Entry
+	IsMissing bool
+}
+
+type directCopyProgress struct {
+	current        drive.UploadPhase
+	currentStarted time.Time
+	stageDurations map[string]time.Duration
+	bytesUploaded  int64
+}
+
+type copyFileSystem interface {
+	Stat(ctx context.Context, path string) (drive.Entry, error)
+	List(ctx context.Context, path string) ([]drive.Entry, error)
+	Mkdir(ctx context.Context, path string) (drive.Entry, error)
+}
+
+func RunDirectDriverCopy(ctx context.Context, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyResult {
+	return RunDirectDriverCopyWithModTime(ctx, source, srcPath, dstPath, overwrite, time.Time{})
+}
+
+// RunDirectDriverCopyWithModTime is RunDirectDriverCopy with an optional
+// mtime to stamp on the uploaded destination file (zero value leaves the
+// backend default). The mtime propagates through PutSource's
+// UploadRequest.ModTime, which localfs persists via Chtimes and other
+// backends ignore.
+func RunDirectDriverCopyWithModTime(ctx context.Context, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, modTime time.Time) *DriverCopyResult {
+	result := &DriverCopyResult{
+		OpID:       newDebugOperationID("copy"),
+		SourcePath: vfs.CleanVirtualPath(srcPath),
+		DestPath:   vfs.CleanVirtualPath(dstPath),
+		Started:    util.Now(),
+		Steps:      make([]TransferStep, 0, 8),
+	}
+	defer func() {
+		result.Finished = util.Now()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
+		if !result.Pass {
+			return
+		}
+		for _, step := range result.Steps {
+			if !step.OK {
+				result.Pass = false
+				return
+			}
+		}
+	}()
+
+	drivers := source.Drivers()
+
+	start := util.Now()
+	src, err := resolveCopyPath(ctx, source, drivers, result.SourcePath)
+	appendCopyStep(result, "resolve_source", 0, start, err)
+	if err != nil {
+		return result
+	}
+	result.SourceMount = src.Mount
+	result.SourceType = src.Driver
+	if src.Info.IsDir {
+		appendCopyStep(result, "validate_source", 0, util.Now(), fmt.Errorf("source is a directory"))
+		return result
+	}
+	if src.Info.Pending {
+		appendCopyStep(result, "validate_source", 0, util.Now(), fmt.Errorf("source has pending local changes; flush/upload it before direct copy"))
+		return result
+	}
+	if src.Info.RemoteID == "" {
+		appendCopyStep(result, "validate_source", 0, util.Now(), fmt.Errorf("source not found: %s", result.SourcePath))
+		return result
+	}
+
+	dstParentPath, dstName := splitDestPath(result.DestPath)
+	if dstName == "" || dstName == "/" {
+		appendCopyStep(result, "validate_dest", 0, util.Now(), fmt.Errorf("dest must include a file name"))
+		return result
+	}
+	start = util.Now()
+	dstParent, err := resolveCopyPath(ctx, source, drivers, dstParentPath)
+	appendCopyStep(result, "resolve_dest_parent", 0, start, err)
+	if err != nil {
+		return result
+	}
+	result.DestMount = dstParent.Mount
+	result.DestType = dstParent.Driver
+	if !dstParent.Info.IsDir {
+		appendCopyStep(result, "validate_dest_parent", 0, util.Now(), fmt.Errorf("dest parent is not a directory: %s", dstParentPath))
+		return result
+	}
+	if result.SourceMount == "" || result.DestMount == "" {
+		appendCopyStep(result, "validate_mounts", 0, util.Now(), fmt.Errorf("source and dest mounts are required"))
+		return result
+	}
+
+	if !drive.HasCapability(dstParent.Drive, drive.CapabilitySourceUploader) {
+		appendCopyStep(result, "capability_check", 0, util.Now(), fmt.Errorf("dest driver does not implement SourceUploader"))
+		return result
+	}
+	dstHasWriter := drive.HasCapability(dstParent.Drive, drive.CapabilityWriter)
+
+	start = util.Now()
+	existing, err := resolveCopyPath(ctx, source, drivers, result.DestPath)
+	if err == nil && !existing.IsMissing && existing.Info.RemoteID != "" {
+		if !overwrite {
+			appendCopyStep(result, "check_dest_exists", 0, start, fmt.Errorf("dest already exists: %s", result.DestPath))
+			return result
+		}
+		appendCopyStep(result, "check_dest_exists", 0, start, nil)
+		if !dstHasWriter {
+			appendCopyStep(result, "remove_existing", 0, util.Now(), fmt.Errorf("dest exists and driver does not implement Writer"))
+			return result
+		}
+		start := util.Now()
+		err = dstParent.Drive.Remove(ctx, existing.Entry)
+		appendCopyStep(result, "remove_existing", 0, start, err)
+		appendCopyEvent(result, "remove_existing", dstParent.Mount, dstParent.Driver, result.DestPath, 0, start, nil)
+		if err != nil {
+			return result
+		}
+	} else if err != nil && !vfs.IsNotFound(err) {
+		appendCopyStep(result, "check_dest_exists", 0, start, err)
+		return result
+	} else {
+		appendCopyStep(result, "check_dest_exists", 0, start, nil)
+	}
+
+	// Same-driver server-side copy: when source and destination live on the
+	// same driver instance and it can duplicate provider-side, skip the
+	// download-to-temp-and-reupload round trip entirely (0x local disk).
+	// The modTime stamp does not apply: the provider copy preserves (or
+	// decides) the destination mtime, and the CapabilityMtime +
+	// CapabilityServerSideCopy contract pins that to the source mtime.
+	if dstParent.Drive == src.Drive {
+		if copier, ok := dstParent.Drive.(drive.ServerSideCopier); ok {
+			start := util.Now()
+			destEntry, err := copier.Copy(ctx, src.Entry, dstParent.Info.RemoteID, dstName)
+			appendCopyStep(result, "server_side_copy", src.Info.Size, start, err)
+			appendCopyEvent(result, "server_side_copy", dstParent.Mount, dstParent.Driver, result.DestPath, src.Info.Size, start, nil)
+			if err != nil {
+				return result
+			}
+			result.Bytes = src.Info.Size
+			result.DestEntry = &destEntry
+			result.Pass = true
+			return result
+		}
+	}
+
+	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size)
+	appendCopyStep(result, "read_source_to_temp", tmp.bytes, tmp.started, err)
+	appendCopyEvent(result, "read_source_to_temp", src.Mount, src.Driver, result.SourcePath, tmp.bytes, tmp.started, nil)
+	defer cleanup()
+	if err != nil {
+		return result
+	}
+	result.Bytes = tmp.bytes
+
+	progress := &directCopyProgress{}
+	start = util.Now()
+	destEntry, err := dstParent.Drive.PutSource(ctx, drive.UploadRequest{
+		ParentID: dstParent.Info.RemoteID,
+		Name:     dstName,
+		Source:   drive.NewLocalReadOnlyFileSourceWithHashes(tmp.path, tmp.bytes, hashes),
+		Progress: progress,
+		ModTime:  modTime,
+	})
+	progress.finish()
+	extra := map[string]any{
+		"bytes_uploaded":  progress.bytesUploaded,
+		"stage_durations": progress.stageDurationStrings(),
+	}
+	if destEntry.ID != "" {
+		extra["entry_id"] = destEntry.ID
+	}
+	if err != nil {
+		extra["error"] = err.Error()
+	}
+	appendCopyStep(result, "driver_put_source", tmp.bytes, start, err)
+	appendCopyEvent(result, "driver_put_source", dstParent.Mount, dstParent.Driver, result.DestPath, tmp.bytes, start, extra)
+	if err != nil {
+		return result
+	}
+
+	result.DestEntry = &destEntry
+	result.Pass = true
+	return result
+}
+
+func RunDirectDriverCopyDir(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstParentPath string, overwrite bool) *DriverCopyDirResult {
+	return RunDirectDriverCopyDirToPath(ctx, fs, source, srcPath, pathpkg.Join(vfs.CleanVirtualPath(dstParentPath), pathpkg.Base(vfs.CleanVirtualPath(srcPath))), overwrite)
+}
+
+func RunDirectDriverCopyDirToPath(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyDirResult {
+	started := util.Now()
+	result := &DriverCopyDirResult{
+		OpID:       newDebugOperationID("copydir"),
+		SourcePath: vfs.CleanVirtualPath(srcPath),
+		DestPath:   vfs.CleanVirtualPath(dstPath),
+		Started:    started,
+		Entries:    []DriverCopyEntryResult{},
+	}
+	defer func() {
+		result.Finished = util.Now()
+		duration := result.Finished.Sub(result.Started)
+		result.Duration = duration.String()
+		result.DurationMS = durationMillis(duration)
+		result.Pass = result.Error == "" && result.Failed == 0
+	}()
+	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
+		result.Error = err.Error()
+		result.ErrorCategory = drive.ErrorCategory(err)
+		result.Retryable = drive.RetryableCategory(result.ErrorCategory)
+	}
+	return result
+}
+
+func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, result *DriverCopyDirResult) error {
+	if err := mkdirAllRemote(ctx, fs, dstPath); err != nil {
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
+		return err
+	}
+	result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "ready", SourcePath: srcPath, DestPath: dstPath})
+	entries, err := fs.List(ctx, srcPath)
+	if err != nil {
+		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
+		return err
+	}
+	for _, entry := range entries {
+		childSrc := pathpkg.Join(srcPath, entry.Name)
+		childDst := pathpkg.Join(dstPath, entry.Name)
+		if entry.IsDir {
+			if err := copyDirRecursive(ctx, fs, source, childSrc, childDst, overwrite, result); err != nil {
+				return err
+			}
+			continue
+		}
+		if !overwrite {
+			if _, err := fs.Stat(ctx, childDst); err == nil {
+				result.Skipped++
+				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "skipped", SourcePath: childSrc, DestPath: childDst})
+				continue
+			} else if !vfs.IsNotFound(err) {
+				result.Failed++
+				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
+				return err
+			}
+		}
+		copyResult := RunDirectDriverCopy(ctx, source, childSrc, childDst, overwrite)
+		entryResult := DriverCopyEntryResult{
+			OpID:       copyResult.OpID,
+			Kind:       "file",
+			SourcePath: childSrc,
+			DestPath:   childDst,
+			Bytes:      copyResult.Bytes,
+			Started:    copyResult.Started,
+			Finished:   copyResult.Finished,
+			Duration:   copyResult.Duration,
+			DurationMS: copyResult.DurationMS,
+		}
+		if !copyResult.Pass {
+			result.Failed++
+			entryResult.State = "failed"
+			entryResult.Error = firstCopyError(copyResult)
+			entryResult.ErrorCategory = drive.ErrorCategoryMessage(entryResult.Error)
+			entryResult.Retryable = drive.RetryableCategory(entryResult.ErrorCategory)
+			result.recordEntry(entryResult)
+			return fmt.Errorf("%s", entryResult.Error)
+		}
+		result.Copied++
+		result.Bytes += copyResult.Bytes
+		entryResult.State = "copied"
+		result.recordEntry(entryResult)
+	}
+	return nil
+}
+
+func mkdirAllRemote(ctx context.Context, fs copyFileSystem, dir string) error {
+	dir = vfs.CleanVirtualPath(dir)
+	if dir == "/" {
+		return nil
+	}
+	current := "/"
+	for _, part := range splitCleanPath(dir) {
+		current = pathpkg.Join(current, part)
+		entry, err := fs.Stat(ctx, current)
+		if err == nil {
+			if !entry.IsDir {
+				return fmt.Errorf("remote destination %q exists and is not a directory", current)
+			}
+			continue
+		}
+		if !vfs.IsNotFound(err) {
+			return err
+		}
+		if _, err := fs.Mkdir(ctx, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func splitCleanPath(path string) []string {
+	path = strings.Trim(vfs.CleanVirtualPath(path), "/")
+	if path == "" {
+		return nil
+	}
+	return strings.Split(path, "/")
+}
+
+func (r *DriverCopyDirResult) recordEntry(entry DriverCopyEntryResult) {
+	now := util.Now()
+	if entry.Started.IsZero() {
+		entry.Started = now
+	}
+	if entry.Finished.IsZero() {
+		entry.Finished = now
+	}
+	if entry.Duration == "" {
+		duration := entry.Finished.Sub(entry.Started)
+		entry.Duration = duration.String()
+		entry.DurationMS = durationMillis(duration)
+	}
+	r.Entries = append(r.Entries, entry)
+}
+
+func firstCopyError(result *DriverCopyResult) string {
+	for _, step := range result.Steps {
+		if !step.OK && step.Error != "" {
+			return step.Phase + ": " + step.Error
+		}
+	}
+	return "copy failed"
+}
+
+func DriverCopyError(result *DriverCopyResult) string {
+	return firstCopyError(result)
+}
+
+type tempCopy struct {
+	path    string
+	bytes   int64
+	started time.Time
+}
+
+func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry drive.Entry, expectedSize int64) (tempCopy, func(), drive.SourceHashes, error) {
+	start := util.Now()
+	cleanup := func() {}
+	rc, err := srcDriver.Read(ctx, srcEntry, 0, 0)
+	if err != nil {
+		return tempCopy{started: start}, cleanup, nil, err
+	}
+	defer rc.Close()
+
+	tmp, err := os.CreateTemp("", "qrypt-direct-copy-*")
+	if err != nil {
+		return tempCopy{started: start}, cleanup, nil, err
+	}
+	tmpPath := tmp.Name()
+	cleanup = func() { _ = os.Remove(tmpPath) }
+
+	md5Hash := md5.New()
+	sha1Hash := sha1.New()
+	sha256Hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(tmp, md5Hash, sha1Hash, sha256Hash), rc)
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	switch {
+	case copyErr != nil:
+		return tempCopy{path: tmpPath, bytes: written, started: start}, cleanup, nil, copyErr
+	case syncErr != nil:
+		return tempCopy{path: tmpPath, bytes: written, started: start}, cleanup, nil, syncErr
+	case closeErr != nil:
+		return tempCopy{path: tmpPath, bytes: written, started: start}, cleanup, nil, closeErr
+	case expectedSize > 0 && written != expectedSize:
+		return tempCopy{path: tmpPath, bytes: written, started: start}, cleanup, nil, fmt.Errorf("source read size mismatch: got %d bytes, want %d", written, expectedSize)
+	}
+	return tempCopy{path: tmpPath, bytes: written, started: start}, cleanup, drive.SourceHashes{
+		drive.HashMD5:    md5Hash.Sum(nil),
+		drive.HashSHA1:   sha1Hash.Sum(nil),
+		drive.HashSHA256: sha256Hash.Sum(nil),
+	}, nil
+}
+
+func resolveCopyPath(ctx context.Context, source diagnostics.DriverCopySource, drivers []diagnostics.NamedDriver, virtualPath string) (copyResolvedPath, error) {
+	virtualPath = vfs.CleanVirtualPath(virtualPath)
+	info, err := source.DebugResolve(ctx, virtualPath, false)
+	if err != nil {
+		return copyResolvedPath{}, err
+	}
+	snapshot := source.DebugSnapshot()
+	mountName := info.Mount
+	if mountName == "" {
+		mountName = cacheMountName(snapshot, virtualPath)
+	}
+	if mountName == "" && len(drivers) == 1 {
+		mountName = drivers[0].Name
+	}
+	driver := findNamedDriver(drivers, mountName)
+	if driver == nil {
+		return copyResolvedPath{}, fmt.Errorf("mount %q not found", mountName)
+	}
+	missing := info.RemoteID == ""
+	if missing {
+		return copyResolvedPath{Path: virtualPath, Mount: mountName, Driver: info.Driver, Info: info, Drive: driver, IsMissing: true}, nil
+	}
+	if info.Driver == "" {
+		if snap, err := driver.DebugSnapshot(ctx); err == nil {
+			info.Driver = snap.Driver
+		}
+	}
+	return copyResolvedPath{
+		Path:   virtualPath,
+		Mount:  mountName,
+		Driver: info.Driver,
+		Info:   info,
+		Drive:  driver,
+		Entry: drive.Entry{
+			ID:       info.RemoteID,
+			ParentID: info.ParentID,
+			Name:     info.PlainName,
+			IsDir:    info.IsDir,
+			Size:     info.Size,
+		},
+	}, nil
+}
+
+func findNamedDriver(drivers []diagnostics.NamedDriver, name string) drive.Driver {
+	for _, item := range drivers {
+		if item.Name == name {
+			return item.Driver
+		}
+	}
+	return nil
+}
+
+func splitDestPath(path string) (string, string) {
+	path = vfs.CleanVirtualPath(path)
+	return vfs.CleanVirtualPath(pathpkg.Dir(path)), pathpkg.Base(path)
+}
+
+func appendCopyStep(result *DriverCopyResult, phase string, bytes int64, start time.Time, err error) {
+	step := TransferStep{Phase: phase}
+	duration := util.Now().Sub(start)
+	step.Duration = duration.String()
+	step.DurationMS = durationMillis(duration)
+	if err != nil {
+		step.OK = false
+		step.Error = err.Error()
+		step.ErrorCategory = drive.ErrorCategory(err)
+	} else {
+		step.OK = true
+	}
+	step.Bytes = bytes
+	result.Steps = append(result.Steps, step)
+}
+
+func appendCopyEvent(result *DriverCopyResult, phase, mount, driver, path string, bytes int64, start time.Time, extra map[string]any) {
+	if start.IsZero() {
+		return
+	}
+	finished := util.Now()
+	duration := finished.Sub(start)
+	event := drive.MetricEvent{
+		OpID:       result.OpID,
+		At:         finished,
+		Kind:       "transfer",
+		Operation:  "copy",
+		Phase:      phase,
+		State:      "completed",
+		OK:         true,
+		Mount:      mount,
+		Driver:     driver,
+		Path:       path,
+		Bytes:      bytes,
+		Duration:   duration.String(),
+		DurationMS: durationMillis(duration),
+		StartedAt:  start,
+		FinishedAt: finished,
+		Extra:      extra,
+	}
+	if errValue, ok := extra["error"].(string); ok && errValue != "" {
+		event.State = "failed"
+		event.OK = false
+		event.Error = errValue
+		event.ErrorCategory = drive.ErrorCategoryMessage(errValue)
+	}
+	if bytes > 0 && duration > 0 {
+		event.Throughput = int64(float64(bytes) / duration.Seconds())
+	}
+	result.Timeline = append(result.Timeline, event)
+}
+
+func (p *directCopyProgress) Phase(phase drive.UploadPhase) {
+	now := util.Now()
+	if p.current != "" {
+		if p.stageDurations == nil {
+			p.stageDurations = map[string]time.Duration{}
+		}
+		p.stageDurations[string(p.current)] += now.Sub(p.currentStarted)
+	}
+	p.current = phase
+	p.currentStarted = now
+}
+
+func (p *directCopyProgress) Uploaded(n int64) {
+	if n > 0 {
+		p.bytesUploaded += n
+	}
+}
+
+func (p *directCopyProgress) finish() {
+	if p.current == "" {
+		return
+	}
+	now := util.Now()
+	if p.stageDurations == nil {
+		p.stageDurations = map[string]time.Duration{}
+	}
+	p.stageDurations[string(p.current)] += now.Sub(p.currentStarted)
+	p.current = ""
+}
+
+func (p *directCopyProgress) stageDurationStrings() map[string]string {
+	if len(p.stageDurations) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(p.stageDurations))
+	for key := range p.stageDurations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		out[key] = p.stageDurations[key].String()
+	}
+	return out
+}

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/yinzhenyu/qrypt/internal/sync"
+	"github.com/yinzhenyu/qrypt/pkg/syncer"
 
 	"os"
 	"path/filepath"

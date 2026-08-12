@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 type Driver struct {
@@ -107,7 +107,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	rc, err := osutil.OpenRead(entry.ID, offset, size)
+	rc, err := util.OpenRead(entry.ID, offset, size)
 	if err != nil {
 		return nil, classifyLocalError(fmt.Errorf("localfs: open %s: %w", entry.ID, err))
 	}

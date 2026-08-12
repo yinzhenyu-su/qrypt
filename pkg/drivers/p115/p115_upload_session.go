@@ -8,8 +8,8 @@ import (
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 func (s p115UploadSession) uploadParams() *driver115.UploadOSSParams {

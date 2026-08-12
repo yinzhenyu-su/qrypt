@@ -12,10 +12,14 @@ import (
 )
 
 type PersistentStore struct {
-	mu    sync.Mutex
-	path  string
-	inner *MemoryStore
+	mu             sync.Mutex
+	path           string
+	inner          *MemoryStore
+	persistenceMu  sync.RWMutex
+	persistenceErr error
 }
+
+var ErrPersistence = errors.New("task: persistence failed")
 
 type taskJournalEntry struct {
 	Op   string `json:"op"`
@@ -56,7 +60,7 @@ func (s *PersistentStore) UpdateManaged(id string, fn func(*ManagedTask)) (Manag
 		// 在 store 锁内先写 journal、后提交内存:重开/replay 时不会读到
 		// 早于最新状态的记录(消除任务终态的内存可见性与持久化之间的窗口)。
 		if changed && mt.Task.Capabilities.Persistent {
-			_ = s.append(taskJournalEntry{Op: "update", ID: id, Task: mt.Task})
+			s.recordPersistenceError(s.append(taskJournalEntry{Op: "update", ID: id, Task: mt.Task}))
 		}
 	})
 	return managed, ok
@@ -71,7 +75,7 @@ func (s *PersistentStore) UpdateManagedInPlace(id string, fn func(*ManagedTask))
 		// 与 UpdateManaged 一致:store 锁内先写 journal、后提交内存,
 		// 消除重开/replay 读到滞后状态的窗口。
 		if changed && mt.Task.Capabilities.Persistent {
-			_ = s.append(taskJournalEntry{Op: "update", ID: id, Task: mt.Task})
+			s.recordPersistenceError(s.append(taskJournalEntry{Op: "update", ID: id, Task: mt.Task}))
 		}
 	}) {
 		return false
@@ -112,7 +116,7 @@ func (s *PersistentStore) DismissManaged(id string) bool {
 	if !s.inner.DismissManaged(id) {
 		return false
 	}
-	_ = s.append(taskJournalEntry{Op: "dismiss", ID: id})
+	s.recordPersistenceError(s.append(taskJournalEntry{Op: "dismiss", ID: id}))
 	return true
 }
 
@@ -188,7 +192,28 @@ func (s *PersistentStore) persistTask(item Task) {
 	if !item.Capabilities.Persistent {
 		return
 	}
-	_ = s.append(taskJournalEntry{Op: "update", ID: item.ID, Task: item})
+	s.recordPersistenceError(s.append(taskJournalEntry{Op: "update", ID: item.ID, Task: item}))
+}
+
+// PersistenceError returns the latest journal write error. Once degraded, a
+// store remains degraded for its lifetime because a later successful append
+// cannot reconstruct a record that was already lost.
+func (s *PersistentStore) PersistenceError() error {
+	if s == nil {
+		return nil
+	}
+	s.persistenceMu.RLock()
+	defer s.persistenceMu.RUnlock()
+	return s.persistenceErr
+}
+
+func (s *PersistentStore) recordPersistenceError(err error) {
+	if err == nil {
+		return
+	}
+	s.persistenceMu.Lock()
+	s.persistenceErr = fmt.Errorf("%w: %w", ErrPersistence, err)
+	s.persistenceMu.Unlock()
 }
 
 func (s *PersistentStore) append(entry taskJournalEntry) error {

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
 
 func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -78,7 +78,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Duration:  time.Since(start).String(),
 			Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
 			Error:     err.Error(),
@@ -90,7 +90,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",
 			Method:    req.Method,
-			URL:       util.URL(req.URL),
+			URL:       driverutil.URL(req.URL),
 			Status:    resp.StatusCode,
 			Duration:  time.Since(start).String(),
 			Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
@@ -106,13 +106,13 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 	d.metrics.Record(ctx, drive.MetricEvent{
 		Operation: "download",
 		Method:    req.Method,
-		URL:       util.URL(req.URL),
+		URL:       driverutil.URL(req.URL),
 		Status:    resp.StatusCode,
 		Duration:  time.Since(start).String(),
 		Request:   map[string]any{"id": e.ID, "offset": offset, "size": size, "range": req.Header.Get("Range")},
-		Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+		Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 	})
-	err = util.HTTPError("115: read", nil, resp, raw)
+	err = drive.HTTPError("115: read", nil, resp, raw)
 	d.setLastError(err.Error())
 	return nil, err
 }

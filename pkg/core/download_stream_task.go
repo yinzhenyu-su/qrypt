@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -60,7 +60,7 @@ func (c *Core) createDownloadStreamTask(ctx context.Context, req task.Request) (
 	if err != nil {
 		return task.Task{}, err
 	}
-	now := timeutil.Now()
+	now := util.Now()
 	first := batch.items[0]
 	item := task.Task{
 		ID:        batch.taskID,
@@ -570,7 +570,7 @@ func cloneTaskError(err *task.Error) *task.Error {
 func newDownloadStreamTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "download-stream-" + strconv.FormatInt(timeutil.Now().UnixNano(), 36)
+		return "download-stream-" + strconv.FormatInt(util.Now().UnixNano(), 36)
 	}
 	return "download-stream-" + hex.EncodeToString(b[:])
 }

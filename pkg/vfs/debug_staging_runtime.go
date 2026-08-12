@@ -6,20 +6,20 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
-func (v *VFS) DebugStaging(ctx context.Context, path string) (DebugStagingReport, error) {
+func (v *VFS) DebugStaging(ctx context.Context, path string) (diagnostics.DebugStagingReport, error) {
 	path = cleanVirtual(path)
 	mount := v.debugStagingMount(v.name, path)
-	report := DebugStagingReport{Mounts: []DebugStagingMount{mount}}
+	report := diagnostics.DebugStagingReport{Mounts: []diagnostics.DebugStagingMount{mount}}
 	if path != "" && path != "/" {
 		report.Path = path
 	}
 	return report, nil
 }
 
-func (v *VFS) debugStagingMount(name, path string) DebugStagingMount {
+func (v *VFS) debugStagingMount(name, path string) diagnostics.DebugStagingMount {
 	return diagnostics.StagingMount(name, path, newVFSDebugStagingRuntime(v))
 }
 
@@ -49,19 +49,19 @@ func (r vfsDebugStagingRuntime) StagingDir() string {
 	return r.v.uploads.Store().StagingDir()
 }
 
-func (r vfsDebugStagingRuntime) StagingFiles() ([]DebugStagingFile, error) {
+func (r vfsDebugStagingRuntime) StagingFiles() ([]diagnostics.DebugStagingFile, error) {
 	entries, err := os.ReadDir(r.StagingDir())
 	if err != nil {
 		return nil, err
 	}
-	files := make([]DebugStagingFile, 0, len(entries))
+	files := make([]diagnostics.DebugStagingFile, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".staging") {
 			continue
 		}
 		localPath := filepath.Join(r.StagingDir(), entry.Name())
 		info, statErr := entry.Info()
-		file := DebugStagingFile{LocalPath: localPath, Exists: statErr == nil}
+		file := diagnostics.DebugStagingFile{LocalPath: localPath, Exists: statErr == nil}
 		if statErr != nil {
 			file.Issue = statErr.Error()
 		} else {

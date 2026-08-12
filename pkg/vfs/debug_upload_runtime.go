@@ -5,17 +5,17 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/internal/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
-func (v *VFS) uploadSnapshots(pending []PendingUpload) []UploadSnapshot {
+func (v *VFS) uploadSnapshots(pending []PendingUpload) []uploadSnapshot {
 	active := newVFSDebugUploadRuntime(v).ActiveSnapshots()
 
 	timerPaths := v.uploads.ScheduledDeadlines()
 
-	uploads := make([]UploadSnapshot, 0, len(pending)+len(active))
+	uploads := make([]uploadSnapshot, 0, len(pending)+len(active))
 	seen := map[string]bool{}
 	for _, item := range pending {
 		if upload, ok := active[item.Path]; ok {
@@ -28,11 +28,11 @@ func (v *VFS) uploadSnapshots(pending []PendingUpload) []UploadSnapshot {
 			state = "failed"
 		} else if _, ok := timerPaths[item.Path]; ok {
 			state = "scheduled"
-			if item.LastError != "" && item.NextAttemptAt > timeutil.Now().UnixNano() {
+			if item.LastError != "" && item.NextAttemptAt > util.Now().UnixNano() {
 				state = "retry_wait"
 			}
 		}
-		uploads = append(uploads, UploadSnapshot{
+		uploads = append(uploads, uploadSnapshot{
 			OpID:           item.FID,
 			Path:           item.Path,
 			Name:           item.Name,
@@ -58,7 +58,7 @@ func (v *VFS) uploadSnapshots(pending []PendingUpload) []UploadSnapshot {
 	return uploads
 }
 
-func (v *VFS) uploadSnapshotHistory() []UploadSnapshot {
+func (v *VFS) uploadSnapshotHistory() []uploadSnapshot {
 	return newVFSDebugUploadRuntime(v).History()
 }
 
@@ -98,8 +98,8 @@ func newVFSDebugUploadRuntime(v *VFS) vfsDebugUploadRuntime {
 	return vfsDebugUploadRuntime{v: v}
 }
 
-func (r vfsDebugUploadRuntime) ActiveSnapshots() map[string]UploadSnapshot {
-	active := map[string]UploadSnapshot{}
+func (r vfsDebugUploadRuntime) ActiveSnapshots() map[string]uploadSnapshot {
+	active := map[string]uploadSnapshot{}
 	r.v.uploads.DebugState().Mu.Lock()
 	for path, state := range r.v.uploads.DebugState().Active {
 		active[path] = cloneUploadSnapshot(state.Upload)
@@ -108,10 +108,10 @@ func (r vfsDebugUploadRuntime) ActiveSnapshots() map[string]UploadSnapshot {
 	return active
 }
 
-func (r vfsDebugUploadRuntime) History() []UploadSnapshot {
+func (r vfsDebugUploadRuntime) History() []uploadSnapshot {
 	r.v.uploads.DebugState().Mu.Lock()
 	defer r.v.uploads.DebugState().Mu.Unlock()
-	out := make([]UploadSnapshot, len(r.v.uploads.DebugState().History))
+	out := make([]uploadSnapshot, len(r.v.uploads.DebugState().History))
 	for i, upload := range r.v.uploads.DebugState().History {
 		out[i] = cloneUploadSnapshot(upload)
 	}
@@ -127,7 +127,7 @@ func (r vfsDebugUploadRuntime) History() []UploadSnapshot {
 // cloneUploadSnapshot deep-copies the slice and map fields that are mutated
 // under the upload debug lock, so snapshot consumers can read their copy
 // outside the lock without racing the upload pipeline.
-func cloneUploadSnapshot(u UploadSnapshot) UploadSnapshot {
+func cloneUploadSnapshot(u uploadSnapshot) uploadSnapshot {
 	u.Events = append([]drive.MetricEvent(nil), u.Events...)
 	u.Hashes = append([]string(nil), u.Hashes...)
 	u.Extra = maps.Clone(u.Extra)
@@ -153,11 +153,11 @@ func (r vfsDebugUploadRuntime) RemoveHistoryByID(id string) bool {
 }
 
 func (r vfsDebugUploadRuntime) StartSnapshot(p PendingUpload) {
-	now := timeutil.Now()
+	now := util.Now()
 	r.v.uploads.DebugState().Mu.Lock()
 	r.v.uploads.DebugState().Active[p.Path] = &uploadSnapshotState{
 		StageStartedAt: now,
-		Upload: UploadSnapshot{
+		Upload: uploadSnapshot{
 			OpID:           p.FID,
 			Path:           p.Path,
 			Name:           p.Name,
@@ -178,7 +178,7 @@ func (r vfsDebugUploadRuntime) StartSnapshot(p PendingUpload) {
 func (r vfsDebugUploadRuntime) SetSnapshotState(path, state string) {
 	r.v.uploads.DebugState().Mu.Lock()
 	if upload := r.v.uploads.DebugState().Active[path]; upload != nil {
-		upload.RecordStageDuration(timeutil.Now())
+		upload.RecordStageDuration(util.Now())
 		upload.Upload.State = state
 		if state == string(drive.UploadPhaseInstant) {
 			upload.Upload.Instant = true
@@ -191,7 +191,7 @@ func (r vfsDebugUploadRuntime) SetSnapshotState(path, state string) {
 func (r vfsDebugUploadRuntime) FinishSnapshot(path, state, lastError string) {
 	r.v.uploads.DebugState().Mu.Lock()
 	if upload := r.v.uploads.DebugState().Active[path]; upload != nil {
-		now := timeutil.Now()
+		now := util.Now()
 		upload.RecordStageDuration(now)
 		upload.Upload.State = state
 		upload.Upload.LastError = lastError
@@ -219,7 +219,7 @@ func (r vfsDebugUploadRuntime) SetSnapshotMetadata(path, resultRemoteID string, 
 		if len(hashes) > 0 {
 			state.Upload.Hashes = append([]string(nil), hashes...)
 		}
-		state.Upload.UpdatedAt = timeutil.Now()
+		state.Upload.UpdatedAt = util.Now()
 	}
 	r.v.uploads.DebugState().Mu.Unlock()
 }
@@ -234,7 +234,7 @@ func (r vfsDebugUploadRuntime) UpdateSnapshot(path string, n int) {
 		if state.Upload.BytesTotal >= 0 && state.Upload.BytesUploaded > state.Upload.BytesTotal {
 			state.Upload.BytesUploaded = state.Upload.BytesTotal
 		}
-		state.Upload.UpdatedAt = timeutil.Now()
+		state.Upload.UpdatedAt = util.Now()
 	}
 	r.v.uploads.DebugState().Mu.Unlock()
 }
@@ -243,7 +243,7 @@ func (r vfsDebugUploadRuntime) RecordEvent(path, phase string, start time.Time, 
 	if phase == "" || start.IsZero() {
 		return
 	}
-	finished := timeutil.Now()
+	finished := util.Now()
 	duration := finished.Sub(start)
 	event := drive.MetricEvent{
 		At:         finished,
@@ -285,7 +285,7 @@ func (r vfsDebugUploadRuntime) SetSnapshotExtra(path string, key string, value a
 			state.Upload.Extra = map[string]any{}
 		}
 		state.Upload.Extra[key] = value
-		state.Upload.UpdatedAt = timeutil.Now()
+		state.Upload.UpdatedAt = util.Now()
 	}
 	r.v.uploads.DebugState().Mu.Unlock()
 }

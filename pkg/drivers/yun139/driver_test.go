@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/osutil"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 type countingHashSource struct {
@@ -495,8 +495,8 @@ func TestSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if space.Total != 40*osutil.GiB || space.Free != 39984*osutil.MiB {
-		t.Fatalf("space = %+v, want total=%d free=%d", space, 40*osutil.GiB, 39984*osutil.MiB)
+	if space.Total != 40*util.GiB || space.Free != 39984*util.MiB {
+		t.Fatalf("space = %+v, want total=%d free=%d", space, 40*util.GiB, 39984*util.MiB)
 	}
 	if gotBody.UserDomainID != "domain-1" {
 		t.Fatalf("userDomainId = %q, want domain-1", gotBody.UserDomainID)

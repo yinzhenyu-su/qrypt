@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/internal/sync"
+	"github.com/yinzhenyu/qrypt/pkg/syncer"
 )
 
 // setupSyncPersistTest returns a config + local dir pair whose sync sessions

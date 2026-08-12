@@ -13,7 +13,7 @@ budget="${1:-30s}"
 declare -A FUZZERS=(
   [pkg/vfs]=FuzzCleanVirtualPath
   [pkg/crypt]=FuzzCipherSegmentRoundtrip
-  [internal/config]=FuzzParseSizeAndDuration
+  [pkg/config]=FuzzParseSizeAndDuration
   [pkg/drive]=FuzzErrorCategoryMessage
 )
 

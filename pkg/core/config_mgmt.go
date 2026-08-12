@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yinzhenyu/qrypt/internal/config"
-	"github.com/yinzhenyu/qrypt/internal/logging"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 // ConfigSummary is a settings-UI friendly view of the current qrypt.toml.

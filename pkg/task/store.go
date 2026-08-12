@@ -18,6 +18,13 @@ type Store interface {
 	ForEachManaged(fn func(ManagedTask))
 }
 
+// PersistenceHealth is implemented by stores that can report a loss of
+// durability. The error is sticky for the store lifetime: a later successful
+// write cannot prove that an earlier missing journal record was harmless.
+type PersistenceHealth interface {
+	PersistenceError() error
+}
+
 type ManagedTask struct {
 	Task   Task
 	Run    RunFunc

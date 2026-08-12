@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/internal/retry"
-	"github.com/yinzhenyu/qrypt/internal/util"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -192,7 +192,7 @@ func (d *Driver) uploadSlice(ctx context.Context, progress drive.UploadProgress,
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := util.HTTPError(fmt.Sprintf("baidu_netdisk: upload part %d", partSeq), nil, resp, data)
+		err := drive.HTTPError(fmt.Sprintf("baidu_netdisk: upload part %d", partSeq), nil, resp, data)
 		if uploadIDExpiredResponse(data) {
 			return errBaiduUploadIDExpired
 		}
@@ -233,7 +233,7 @@ func (d *Driver) request(ctx context.Context, method, rawURL string, params, for
 		if err != nil {
 			lastErr = err
 			if attempt < 2 {
-				if waitErr := retry.Wait(ctx, attempt); waitErr != nil {
+				if waitErr := util.Wait(ctx, attempt); waitErr != nil {
 					return waitErr
 				}
 			}
@@ -272,7 +272,7 @@ func (d *Driver) doRequest(ctx context.Context, method, rawURL string, params, f
 	}
 	start := time.Now()
 	resp, err := d.httpClient.Do(req)
-	request := util.MergeRequest(util.RequestFields(params), util.RequestFields(form))
+	request := driverutil.MergeRequest(driverutil.RequestFields(params), driverutil.RequestFields(form))
 	d.recordHTTP(ctx, u.Path, req, resp, start, request, err)
 	if err != nil {
 		return err
@@ -283,7 +283,7 @@ func (d *Driver) doRequest(ctx context.Context, method, rawURL string, params, f
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return util.HTTPError("baidu_netdisk: upload session", nil, resp, data)
+		return drive.HTTPError("baidu_netdisk: upload session", nil, resp, data)
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {

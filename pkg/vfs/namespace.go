@@ -75,54 +75,16 @@ type RemoteLister interface {
 	RemoteList(ctx context.Context, path string) ([]drive.Entry, error)
 }
 
-// Optional capability interfaces are grouped by consumer role:
+// Optional public capability interfaces are grouped by consumer role:
 //
 //	file operations  FileSystem (Reader + Writer), Lifecycle, PathRefresher
 //	runtime caps     UploadInspector, RemoteLister, HashProvider,
 //	                 EncryptedHashProvider, ModTimeWriter, SpaceProvider,
 //	                 MountSpaceProvider
-//	diagnostics      DebugResolver, DebugConsistencyChecker,
-//	                 DebugStagingInspector, DebugMountSnapshotter,
-//	                 DebugSnapshotProvider, RemoteIDResolver,
-//	                 MountHealthChecker, DriverProvider
 //	test control    DebugUploadCancelInjector (in debug_fault.go)
 //
-// Naming convention: *Resolver resolves ids/paths, *Inspector exposes
-// internals read-only, *Provider exposes a value, *Checker reports health,
-// *Snapshotter/ReadCache* control snapshot and cache surfaces. Interfaces
-// stay narrow and are asserted on demand; they are not merged into a single
-// debug interface so fakes and implementations stay small.
-
-// DebugResolver resolves a virtual path to its remote identity.
-type DebugResolver interface {
-	DebugResolve(ctx context.Context, path string, includeRemoteName bool) (DebugResolveInfo, error)
-}
-
-type DebugConsistencyChecker interface {
-	DebugConsistency(ctx context.Context, path string) (ConsistencyReport, error)
-}
-
-type DebugStagingInspector interface {
-	DebugStaging(ctx context.Context, path string) (DebugStagingReport, error)
-}
-
-type DebugMountSnapshotter interface {
-	DebugSnapshotForMounts(mountNames []string) DebugSnapshot
-}
-
-// MountHealth describes recent runtime health for one mount.
-// MountHealthChecker is implemented by VFS and Namespace to expose
-// per-mount runtime health through the debug socket.
-type MountHealthChecker interface {
-	MountHealth(ctx context.Context, mountName string) ([]MountHealth, error)
-}
-
-// NamedDriver pairs a mount name with its underlying drive.Driver.
-// Used by the debug socket to expose driver-level operations.
-// The interfaces below name optional capabilities a FileSystem may expose.
-// Consumers assert against the named interface instead of an inline anonymous
-// one, so fakes are easy to construct and the capability surface is
-// discoverable in one place.
+// Diagnostics-only capabilities live in pkg/vfs/diagnostics so they do
+// not become part of the stable filesystem API.
 
 // HashProvider reports the backend hash of a stored object.
 type HashProvider interface {
@@ -150,11 +112,6 @@ type MountSpaceProvider interface {
 	MountSpaces(ctx context.Context) []MountSpace
 }
 
-// DebugSnapshotProvider exposes the filesystem debug snapshot.
-type DebugSnapshotProvider interface {
-	DebugSnapshot() DebugSnapshot
-}
-
 // ReadCacheCleaner drops the read-cache files.
 type ReadCacheCleaner interface {
 	ClearReadCache() error
@@ -163,11 +120,6 @@ type ReadCacheCleaner interface {
 // ReadCacheFlusher flushes pending read-cache writes.
 type ReadCacheFlusher interface {
 	FlushReadCache() error
-}
-
-// RemoteIDResolver resolves a backend object by its remote id.
-type RemoteIDResolver interface {
-	DebugResolveByRemoteID(ctx context.Context, remoteID string) (*DebugResolveInfo, string, error)
 }
 
 type Mount struct {

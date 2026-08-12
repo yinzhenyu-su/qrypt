@@ -179,11 +179,27 @@ jobs:
 
       - run: mkdir -p dist
 
+      - name: Build metadata
+        run: |
+          version="${{ inputs.version || github.ref_name }}"
+          commit="$(git rev-parse --short HEAD)"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
+          echo "QRYPT_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "QRYPT_COMMIT=${commit}" >> "$GITHUB_ENV"
+          echo "QRYPT_BUILD_TIME=${build_time}" >> "$GITHUB_ENV"
+          echo "QRYPT_DIRTY=${dirty}" >> "$GITHUB_ENV"
+          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${version} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${dirty}" >> "$GITHUB_ENV"
+
       - name: Build ${{ matrix.target }} with Docker
         if: matrix.kind == 'linux-docker'
         run: |
           docker buildx build \
             --platform ${{ matrix.platform }} \
+            --build-arg VERSION="${QRYPT_VERSION}" \
+            --build-arg COMMIT="${QRYPT_COMMIT}" \
+            --build-arg BUILD_TIME="${QRYPT_BUILD_TIME}" \
+            --build-arg DIRTY="${QRYPT_DIRTY}" \
             --cache-from type=gha,scope=qrypt-${{ matrix.target }} \
             --cache-to type=gha,mode=max,scope=qrypt-${{ matrix.target }} \
             --load \
@@ -195,7 +211,7 @@ jobs:
       - name: Build ${{ matrix.target }}
         if: matrix.kind == 'windows-go'
         run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.goarch }} go build -tags nocgo -ldflags="-s -w" \
+          CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.goarch }} go build -tags nocgo -ldflags="${QRYPT_LDFLAGS}" \
             -o dist/${{ matrix.output }} ./cmd/qrypt/
 
       - name: Package ${{ matrix.target }}
@@ -236,14 +252,26 @@ jobs:
 
       - run: mkdir -p dist
 
+      - name: Build metadata
+        run: |
+          version="${{ inputs.version || github.ref_name }}"
+          commit="$(git rev-parse --short HEAD)"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
+          echo "QRYPT_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "QRYPT_COMMIT=${commit}" >> "$GITHUB_ENV"
+          echo "QRYPT_BUILD_TIME=${build_time}" >> "$GITHUB_ENV"
+          echo "QRYPT_DIRTY=${dirty}" >> "$GITHUB_ENV"
+          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${version} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${dirty}" >> "$GITHUB_ENV"
+
       - name: Build darwin/amd64
         run: |
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="-s -w" \
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="${QRYPT_LDFLAGS}" \
             -o dist/qrypt-darwin-amd64 ./cmd/qrypt/
 
       - name: Build darwin/arm64
         run: |
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="-s -w" \
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="${QRYPT_LDFLAGS}" \
             -o dist/qrypt-darwin-arm64 ./cmd/qrypt/
 
       - name: Package darwin binaries

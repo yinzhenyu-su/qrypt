@@ -19,7 +19,7 @@ func (v *VFS) TaskSource() task.Source {
 // It delegates to service-level task sources: uploadServiceTaskSource
 // and deleteTaskSource.
 type vfsTaskSourceAdapter struct {
-	uploads *UploadService
+	uploads *uploadService
 	deletes deleteTaskSource
 }
 
@@ -80,9 +80,9 @@ func (a *vfsTaskSourceAdapter) apply(id string, fn func(vfsTaskSource) error) er
 	return ErrNotFound
 }
 
-// uploadServiceTaskSource implements vfsTaskSource backed by *UploadService.
+// uploadServiceTaskSource implements vfsTaskSource backed by *uploadService.
 type uploadServiceTaskSource struct {
-	svc *UploadService
+	svc *uploadService
 }
 
 func (s uploadServiceTaskSource) List(filter task.Filter) []task.Task {

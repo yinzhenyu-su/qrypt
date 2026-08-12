@@ -5,8 +5,8 @@ import (
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
-	"github.com/yinzhenyu/qrypt/internal/logging"
-	"github.com/yinzhenyu/qrypt/internal/util/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const p115OpenUploadSessionStateFile = "115_open_upload_sessions.json"

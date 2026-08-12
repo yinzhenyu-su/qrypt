@@ -3,7 +3,6 @@ package p189
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/internal/util"
 	"io"
 	"net/http"
 	"path"
@@ -74,9 +73,9 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		URL:       traceURL(req.URL),
 		Status:    resp.StatusCode,
 		Request:   map[string]any{"offset": offset, "size": size, "range": req.Header.Get("Range")},
-		Response:  map[string]any{"body_snippet": util.Snippet(raw)},
+		Response:  map[string]any{"body_snippet": drive.Snippet(raw)},
 	})
-	return nil, util.HTTPError("189: read", nil, resp, raw)
+	return nil, drive.HTTPError("189: read", nil, resp, raw)
 }
 
 func (d *Driver) resolveDownloadURL(ctx context.Context, rawURL string) (string, error) {

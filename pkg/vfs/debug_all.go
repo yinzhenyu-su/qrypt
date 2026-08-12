@@ -1,9 +1,9 @@
 package vfs
 
 import (
-	"github.com/yinzhenyu/qrypt/internal/timeutil"
-	"github.com/yinzhenyu/qrypt/internal/vfs/read"
-	"github.com/yinzhenyu/qrypt/internal/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"sync"
 	"time"
 )
@@ -23,7 +23,7 @@ func DebugStartedAt() time.Time {
 func ResetDebugStartedAt() time.Time {
 	debugStartedAtMu.Lock()
 	defer debugStartedAtMu.Unlock()
-	debugStartedAt = timeutil.Now()
+	debugStartedAt = util.Now()
 	return debugStartedAt
 }
 

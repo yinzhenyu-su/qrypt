@@ -4,15 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yinzhenyu/qrypt/internal/control"
+	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 func (c *Core) DebugSnapshotJSON(ctx context.Context) (string, error) {
 	if c == nil || c.fs == nil {
 		return "", fmt.Errorf("core: closed")
 	}
-	snapshotter, ok := c.fs.(vfs.DebugSnapshotProvider)
+	snapshotter, ok := c.fs.(diagnostics.DebugSnapshotProvider)
 	if !ok {
 		return "", fmt.Errorf("core: debug snapshot unavailable")
 	}
@@ -45,6 +46,7 @@ func (c *Core) StartDebugServer(ctx context.Context, listen string) error {
 	if err != nil {
 		return err
 	}
+	server.SetTaskPersistenceHealth(c)
 	if err := server.Start(ctx); err != nil {
 		return err
 	}
