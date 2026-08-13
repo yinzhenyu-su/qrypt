@@ -105,8 +105,11 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
-			c.Close(context.Background())
-			return nil, err
+			// A previous process may still hold the debug socket (e.g. a
+			// sticky service restarted after the app was relaunched). Debug
+			// is a diagnostics-only surface: log and continue with a working
+			// core instead of failing the whole open.
+			logging.L.Warnf("core: debug server on %s failed: %v (continuing without debug server)", cfg.Debug.EffectiveListen(), err)
 		}
 	}
 	return c, nil
