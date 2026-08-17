@@ -19,6 +19,23 @@ type fixedSpaceDriver struct {
 	space drive.Space
 }
 
+type blockingSpaceDriver struct {
+	fixedSpaceDriver
+	name    string
+	entered chan<- string
+	release <-chan struct{}
+}
+
+func (d blockingSpaceDriver) Space(ctx context.Context) (drive.Space, error) {
+	d.entered <- d.name
+	select {
+	case <-d.release:
+		return d.space, nil
+	case <-ctx.Done():
+		return drive.Space{}, ctx.Err()
+	}
+}
+
 func (d fixedSpaceDriver) Init(context.Context) error { return nil }
 func (d fixedSpaceDriver) Drop(context.Context) error { return nil }
 func (d fixedSpaceDriver) List(context.Context, string) ([]drive.Entry, error) {
@@ -258,6 +275,52 @@ func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 	}
 	if space.Free != spaceA.Free+spaceB.Free {
 		t.Fatalf("free space = %d, want %d", space.Free, spaceA.Free+spaceB.Free)
+	}
+}
+
+func TestNamespaceSpaceQueriesMountsConcurrently(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	newFS := func(name string) *vfs.VFS {
+		fs, err := vfs.New(blockingSpaceDriver{
+			fixedSpaceDriver: fixedSpaceDriver{space: drive.Space{Total: 100, Free: 50}},
+			name:             name,
+			entered:          entered,
+			release:          release,
+		}, vfs.Options{StorageDir: filepath.Join(t.TempDir(), name)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fs
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "a", FS: newFS("a")}, {Name: "b", FS: newFS("b")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ns.Close(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ns.Space(ctx)
+		done <- err
+	}()
+	seen := map[string]bool{}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for len(seen) < 2 {
+		select {
+		case name := <-entered:
+			seen[name] = true
+		case <-timer.C:
+			close(release)
+			t.Fatal("namespace space queries were serialized")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

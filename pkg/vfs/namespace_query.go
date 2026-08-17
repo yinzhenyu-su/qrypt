@@ -5,6 +5,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // MountSpace pairs a mount name with its space usage. Err is set when the
@@ -39,11 +40,17 @@ func (n *Namespace) MountSpaces(ctx context.Context) []MountSpace {
 	}
 	n.mu.RUnlock()
 
-	results := make([]MountSpace, 0, len(mounts))
+	results := make([]MountSpace, len(mounts))
+	var wg sync.WaitGroup
 	for i, mount := range mounts {
-		space, err := mount.Space(ctx)
-		results = append(results, MountSpace{Name: names[i], Space: space, Err: err})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			space, err := mount.Space(ctx)
+			results[i] = MountSpace{Name: names[i], Space: space, Err: err}
+		}()
 	}
+	wg.Wait()
 	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	return results
 }
@@ -56,18 +63,28 @@ func (n *Namespace) Space(ctx context.Context) (drive.Space, error) {
 	}
 	n.mu.RUnlock()
 
+	results := make([]MountSpace, len(mounts))
+	var wg sync.WaitGroup
+	for i, mount := range mounts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i].Space, results[i].Err = mount.Space(ctx)
+		}()
+	}
+	wg.Wait()
+
 	var total drive.Space
 	var firstErr error
-	for _, mount := range mounts {
-		space, err := mount.Space(ctx)
-		if err != nil {
+	for _, result := range results {
+		if result.Err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = result.Err
 			}
 			continue
 		}
-		total.Total += space.Total
-		total.Free += space.Free
+		total.Total += result.Space.Total
+		total.Free += result.Space.Free
 	}
 	if total.Total == 0 && total.Free == 0 && firstErr != nil {
 		return drive.Space{}, firstErr

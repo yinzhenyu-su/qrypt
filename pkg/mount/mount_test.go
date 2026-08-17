@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ type stubFS struct {
 type stubSpaceFS struct {
 	stubFS
 	space      drive.Space
+	mu         sync.Mutex
 	spaceCalls int
 }
 
@@ -68,8 +70,16 @@ type blockingReadFS struct {
 func (stubFS) Start(context.Context) {}
 
 func (s *stubSpaceFS) Space(context.Context) (drive.Space, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.spaceCalls++
 	return s.space, nil
+}
+
+func (s *stubSpaceFS) SpaceCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spaceCalls
 }
 
 func (s stubFS) IsReadOnlyPath(path string) bool {
@@ -277,18 +287,38 @@ func TestAdapterStatfsUsesAutomaticSpace(t *testing.T) {
 	if errc := ad.Statfs("/", &stat); errc != 0 {
 		t.Fatalf("Statfs err = %d, want 0", errc)
 	}
-	if stat.Blocks != (3<<40)/4096 {
-		t.Fatalf("Statfs blocks = %d, want %d", stat.Blocks, (3<<40)/4096)
+	if stat.Blocks != (512<<30)/4096 {
+		t.Fatalf("initial Statfs blocks = %d, want immediate default %d", stat.Blocks, (512<<30)/4096)
 	}
-	if stat.Bavail != (2<<40)/4096 {
-		t.Fatalf("Statfs available blocks = %d, want %d", stat.Bavail, (2<<40)/4096)
+	deadline := time.Now().Add(time.Second)
+	for stat.Blocks != (3<<40)/4096 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		if errc := ad.Statfs("/", &stat); errc != 0 {
+			t.Fatalf("refreshed Statfs err = %d, want 0", errc)
+		}
 	}
-	if errc := ad.Statfs("/", &stat); errc != 0 {
-		t.Fatalf("second Statfs err = %d, want 0", errc)
+	if stat.Blocks != (3<<40)/4096 || stat.Bavail != (2<<40)/4096 {
+		t.Fatalf("refreshed Statfs = blocks %d available %d, want %d/%d", stat.Blocks, stat.Bavail, (3<<40)/4096, (2<<40)/4096)
 	}
-	if fs.spaceCalls != 1 {
-		t.Fatalf("Space calls = %d, want cached single call", fs.spaceCalls)
+	if calls := fs.SpaceCalls(); calls != 1 {
+		t.Fatalf("Space calls = %d, want cached single call", calls)
 	}
+}
+
+func TestAdapterInitSignalsReady(t *testing.T) {
+	ad := newAdapter(stubFS{}, StatfsOptions{})
+	select {
+	case <-ad.ready:
+		t.Fatal("adapter reported ready before FUSE Init")
+	default:
+	}
+	ad.Init()
+	select {
+	case <-ad.ready:
+	case <-time.After(time.Second):
+		t.Fatal("adapter did not report ready after FUSE Init")
+	}
+	ad.Init()
 }
 
 func TestAdapterShutdownCancelsActiveRead(t *testing.T) {
