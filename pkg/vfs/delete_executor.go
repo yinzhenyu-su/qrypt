@@ -27,8 +27,8 @@ func (v *VFS) scheduleDelete(path string, entry drive.Entry) {
 // during construction in tests). Background tasks derive from it so a VFS
 // shutdown cancels in-flight remote operations.
 func (v *VFS) lifecycleContext() context.Context {
-	if v.ctx != nil {
-		return v.ctx
+	if p := v.ctx.Load(); p != nil {
+		return *p
 	}
 	return context.Background()
 }
@@ -83,7 +83,7 @@ func (r vfsDeleteOverlayOps) MarkDeleteComplete(path string, entry drive.Entry) 
 	r.v.view.overlay.mu.Lock()
 	delete(r.v.deletes.tasks.active, path)
 	delete(r.v.deletes.tasks.failures, path)
-	delete(r.v.view.overlay.deleted, path)
+	r.v.view.overlay.removeDeleted(path)
 	delete(r.v.view.overlay.restoredDirs, path)
 	r.v.view.overlay.mu.Unlock()
 
@@ -98,7 +98,7 @@ func (r vfsDeleteOverlayOps) CancelDelete(path string) {
 	delete(r.v.deletes.tasks.active, path)
 	delete(r.v.deletes.tasks.failures, path)
 	r.v.deletes.tasks.scheduler.Cancel(path)
-	delete(r.v.view.overlay.deleted, path)
+	r.v.view.overlay.removeDeleted(path)
 }
 
 type vfsDeleteUploadCleanup struct {
@@ -138,7 +138,7 @@ func (s vfsDeleteScheduler) CancelChildren(dir string) {
 	s.v.view.overlay.mu.Lock()
 	defer s.v.view.overlay.mu.Unlock()
 	for _, path := range removed {
-		delete(s.v.view.overlay.deleted, path)
+		s.v.view.overlay.removeDeleted(path)
 		delete(s.v.deletes.tasks.failures, path)
 	}
 }

@@ -2,7 +2,6 @@ package vfs
 
 import (
 	"context"
-	"strings"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -79,9 +78,6 @@ func (n *Namespace) CapabilitiesForPath(ctx context.Context, path string) (Capab
 	if root {
 		return CapabilityInfo{Path: "/", Root: true, CanList: true}, nil
 	}
-	name := cleanMountName(strings.Trim(strings.TrimPrefix(path, "/"), "/"))
-	if i := strings.Index(name, "/"); i >= 0 {
-		name = name[:i]
-	}
+	name := cleanMountName(firstVirtualSegment(path))
 	return mount.capabilitiesForPath(ctx, rest, name, path, rest == "/")
 }
