@@ -2,17 +2,128 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+var (
+	parallelInitProbeMu sync.Mutex
+	parallelInitProbe   *initProbe
+)
+
+type initProbe struct {
+	entered chan string
+	release chan struct{}
+}
+
+type initProbeDriver struct {
+	drive.UnsupportedOperations
+	name  string
+	probe *initProbe
+}
+
+func init() {
+	drive.Register("core-parallel-init-test", func(params drive.Params) (drive.Driver, error) {
+		parallelInitProbeMu.Lock()
+		probe := parallelInitProbe
+		parallelInitProbeMu.Unlock()
+		if probe == nil {
+			return nil, fmt.Errorf("parallel init probe is not configured")
+		}
+		return &initProbeDriver{name: params["name"], probe: probe}, nil
+	}, drive.ParamDef{Name: "name", Required: true})
+}
+
+func (d *initProbeDriver) Init(ctx context.Context) error {
+	d.probe.entered <- d.name
+	select {
+	case <-d.probe.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (d *initProbeDriver) Drop(context.Context) error { return nil }
+
+func (d *initProbeDriver) List(context.Context, string) ([]drive.Entry, error) { return nil, nil }
+
+func (d *initProbeDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, drive.ErrUnsupported
+}
+
+func (d *initProbeDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+
+func (d *initProbeDriver) Capabilities() []drive.Capability { return nil }
+
+func (d *initProbeDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{}, nil
+}
+
+func (d *initProbeDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+func TestBuildFileSystemInitializesMountsConcurrently(t *testing.T) {
+	probe := &initProbe{entered: make(chan string, 2), release: make(chan struct{})}
+	parallelInitProbeMu.Lock()
+	parallelInitProbe = probe
+	parallelInitProbeMu.Unlock()
+	defer func() {
+		parallelInitProbeMu.Lock()
+		parallelInitProbe = nil
+		parallelInitProbeMu.Unlock()
+	}()
+
+	tmp := t.TempDir()
+	cfg := &config.Config{Mounts: []config.MountConfig{
+		{Name: "first", Type: "core-parallel-init-test", Params: config.ParamMap{"name": "first"}},
+		{Name: "second", Type: "core-parallel-init-test", Params: config.ParamMap{"name": "second"}},
+	}}
+	type buildResult struct {
+		fs      BuiltFileSystem
+		cleanup func()
+		err     error
+	}
+	built := make(chan buildResult, 1)
+	go func() {
+		fs, cleanup, err := BuildFileSystem(context.Background(), cfg, Options{Runtime: testRuntimeLayout(tmp)})
+		built <- buildResult{fs: fs, cleanup: cleanup, err: err}
+	}()
+
+	seen := map[string]bool{}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for len(seen) < 2 {
+		select {
+		case name := <-probe.entered:
+			seen[name] = true
+		case <-timer.C:
+			close(probe.release)
+			t.Fatal("mount initialization was serialized")
+		}
+	}
+	close(probe.release)
+	result := <-built
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	result.cleanup()
+}
 
 func testRuntimeLayout(tmp string) RuntimeLayout {
 	return RuntimeLayout{

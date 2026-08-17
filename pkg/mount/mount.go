@@ -89,6 +89,8 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 	go func() {
 		result <- host.Mount(opts.MountPoint, mountOpts)
 	}()
+	readyTimer := time.NewTimer(opts.ReadyTimeout)
+	defer readyTimer.Stop()
 
 	select {
 	case <-ctx.Done():
@@ -101,7 +103,9 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 			return nil, fmt.Errorf("mount: failed to mount %s", opts.MountPoint)
 		}
 		return session, nil
-	case <-time.After(opts.ReadyTimeout):
+	case <-ad.ready:
+		return session, nil
+	case <-readyTimer.C:
 		return session, nil
 	}
 }

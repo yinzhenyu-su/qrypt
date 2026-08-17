@@ -415,110 +415,58 @@ func ensureRuntimeLayout(layout RuntimeLayout) error {
 	return nil
 }
 
+type mountBuildResult struct {
+	mount  vfs.Mount
+	driver drive.Driver
+	err    error
+}
+
 func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, opts Options) (BuiltFileSystem, func(), error) {
-	var mounts []vfs.Mount
-	var drivers []drive.Driver
+	var mountConfigs []config.MountConfig
 	for _, mountCfg := range cfg.Mounts {
 		if opts.MountName != "" && mountCfg.Name != opts.MountName {
 			continue
 		}
-		params := drive.Params{}
-		for key, value := range mountCfg.Params {
-			params[key] = value
-		}
-		readCache := cfg.ReadCacheFor(mountCfg.Name)
-		upload := cfg.UploadFor(mountCfg.Name)
-		mountReadCacheDir := filepath.Join(layout.ReadCacheDir, mountCfg.Name)
-		mountUploadDir := filepath.Join(layout.UploadDir, mountCfg.Name)
-		stateDir := driverStateDir(layout, mountCfg.Name)
-		if err := os.MkdirAll(stateDir, 0o700); err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, drivers)
-			return nil, nil, err
-		}
-		raw, err := drive.New(mountCfg.Type, params)
-		if err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, drivers)
-			return nil, nil, err
-		}
-		installDriverStateStore(raw, stateDir)
-		if err := raw.Init(ctx); err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, append(drivers, raw))
-			return nil, nil, err
-		}
-		rootID, err := resolveMountRootID(ctx, raw)
-		if err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, append(drivers, raw))
-			return nil, nil, fmt.Errorf("config: mount %s resolve root: %w", mountCfg.Name, err)
-		}
-		drivers = append(drivers, raw)
-		var drv = drive.WrapBandwidthLimitedDriver(raw, limiter)
-		enc := cfg.EncryptionFor(mountCfg.Name)
-		if enc.Password != "" {
-			if err := enc.Validate(); err != nil {
-				closeMounts(mounts)
-				dropAll(ctx, drivers)
-				return nil, nil, err
-			}
-			cp, err := crypt.NewRcloneCipherFromConfig(enc)
-			if err != nil {
-				closeMounts(mounts)
-				dropAll(ctx, drivers)
-				return nil, nil, err
-			}
-			drv = crypt.NewDriver(drv, cp, crypt.DriverOptions{ContentDedup: enc.ContentDedup})
-		}
-		maxBytes := readCache.MaxSizeBytes()
-		// An unset max_size falls back to the default; an explicit "0"
-		// disables the read cache for this mount (the store short-circuits).
-		if readCache.MaxSize == "" {
-			maxBytes = 2 << 30
-		}
-		uploadDelay, err := config.ParseDuration(upload.UploadDelay)
-		if err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid upload.upload_delay: %w", mountCfg.Name, err)
-		}
-		deleteDelay, err := config.ParseDuration(upload.DeleteDelay)
-		if err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid upload.delete_delay: %w", mountCfg.Name, err)
-		}
-		if upload.UploadWorkers < 0 {
-			closeMounts(mounts)
-			dropAll(ctx, drivers)
-			return nil, nil, fmt.Errorf("config: mount %s invalid upload.upload_workers: must be non-negative", mountCfg.Name)
-		}
-		fs, err := vfs.New(drv, vfs.Options{
-			Name:          mountCfg.Name,
-			ReadCacheDir:  mountReadCacheDir,
-			UploadDir:     mountUploadDir,
-			CacheMaxBytes: maxBytes,
-			RootID:        rootID,
-			Encrypted:     enc.Password != "",
-			TestEnabled:   mountCfg.TestEnabled,
-			UploadDelay:   uploadDelay,
-			UploadWorkers: upload.UploadWorkers,
-			DeleteDelay:   deleteDelay,
-		})
-		if err != nil {
-			closeMounts(mounts)
-			dropAll(ctx, drivers)
-			return nil, nil, err
-		}
-		mounts = append(mounts, vfs.Mount{Name: mountCfg.Name, FS: fs})
+		mountConfigs = append(mountConfigs, mountCfg)
 	}
-	if len(mounts) == 0 {
+	if len(mountConfigs) == 0 {
 		if opts.MountName != "" {
 			return nil, nil, fmt.Errorf("config: mount %q not found", opts.MountName)
 		}
 		return nil, nil, fmt.Errorf("config: no mounts selected")
 	}
+
+	results := make([]mountBuildResult, len(mountConfigs))
+	var wg sync.WaitGroup
+	for i, mountCfg := range mountConfigs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = buildMount(ctx, cfg, layout, limiter, mountCfg)
+		}()
+	}
+	wg.Wait()
+
+	mounts := make([]vfs.Mount, 0, len(results))
+	drivers := make([]drive.Driver, 0, len(results))
+	var buildErr error
+	for _, result := range results {
+		if result.driver != nil {
+			drivers = append(drivers, result.driver)
+		}
+		if result.err != nil && buildErr == nil {
+			buildErr = result.err
+		}
+		if result.mount.FS != nil {
+			mounts = append(mounts, result.mount)
+		}
+	}
+	if buildErr != nil {
+		closeMounts(mounts)
+		dropAll(ctx, drivers)
+		return nil, nil, buildErr
+	}
+
 	if opts.MountName != "" && !opts.ForceNamespace {
 		fs := mounts[0].FS
 		return fs, func() {
@@ -538,6 +486,90 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		closeMounts(mounts)
 		dropAll(ctx, drivers)
 	}, nil
+}
+
+func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, mountCfg config.MountConfig) (result mountBuildResult) {
+	params := drive.Params{}
+	for key, value := range mountCfg.Params {
+		params[key] = value
+	}
+	readCache := cfg.ReadCacheFor(mountCfg.Name)
+	upload := cfg.UploadFor(mountCfg.Name)
+	mountReadCacheDir := filepath.Join(layout.ReadCacheDir, mountCfg.Name)
+	mountUploadDir := filepath.Join(layout.UploadDir, mountCfg.Name)
+	stateDir := driverStateDir(layout, mountCfg.Name)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		result.err = err
+		return result
+	}
+	raw, err := drive.New(mountCfg.Type, params)
+	if err != nil {
+		result.err = err
+		return result
+	}
+	result.driver = raw
+	installDriverStateStore(raw, stateDir)
+	if err := raw.Init(ctx); err != nil {
+		result.err = err
+		return result
+	}
+	rootID, err := resolveMountRootID(ctx, raw)
+	if err != nil {
+		result.err = fmt.Errorf("config: mount %s resolve root: %w", mountCfg.Name, err)
+		return result
+	}
+	var drv = drive.WrapBandwidthLimitedDriver(raw, limiter)
+	enc := cfg.EncryptionFor(mountCfg.Name)
+	if enc.Password != "" {
+		if err := enc.Validate(); err != nil {
+			result.err = err
+			return result
+		}
+		cp, err := crypt.NewRcloneCipherFromConfig(enc)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		drv = crypt.NewDriver(drv, cp, crypt.DriverOptions{ContentDedup: enc.ContentDedup})
+	}
+	maxBytes := readCache.MaxSizeBytes()
+	// An unset max_size falls back to the default; an explicit "0"
+	// disables the read cache for this mount (the store short-circuits).
+	if readCache.MaxSize == "" {
+		maxBytes = 2 << 30
+	}
+	uploadDelay, err := config.ParseDuration(upload.UploadDelay)
+	if err != nil {
+		result.err = fmt.Errorf("config: mount %s invalid upload.upload_delay: %w", mountCfg.Name, err)
+		return result
+	}
+	deleteDelay, err := config.ParseDuration(upload.DeleteDelay)
+	if err != nil {
+		result.err = fmt.Errorf("config: mount %s invalid upload.delete_delay: %w", mountCfg.Name, err)
+		return result
+	}
+	if upload.UploadWorkers < 0 {
+		result.err = fmt.Errorf("config: mount %s invalid upload.upload_workers: must be non-negative", mountCfg.Name)
+		return result
+	}
+	fs, err := vfs.New(drv, vfs.Options{
+		Name:          mountCfg.Name,
+		ReadCacheDir:  mountReadCacheDir,
+		UploadDir:     mountUploadDir,
+		CacheMaxBytes: maxBytes,
+		RootID:        rootID,
+		Encrypted:     enc.Password != "",
+		TestEnabled:   mountCfg.TestEnabled,
+		UploadDelay:   uploadDelay,
+		UploadWorkers: upload.UploadWorkers,
+		DeleteDelay:   deleteDelay,
+	})
+	if err != nil {
+		result.err = err
+		return result
+	}
+	result.mount = vfs.Mount{Name: mountCfg.Name, FS: fs}
+	return result
 }
 
 func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error) {

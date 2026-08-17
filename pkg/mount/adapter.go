@@ -30,6 +30,8 @@ type adapter struct {
 	nextFH              uint64
 	nextOp              atomic.Uint64
 	stopping            atomic.Bool
+	ready               chan struct{}
+	readyOnce           sync.Once
 	trace               fuseTracer
 	statfs              StatfsOptions
 	statfsAuto          statfsAutoCache
@@ -142,9 +144,12 @@ type StatfsOptions struct {
 const statfsAutoSpaceTTL = 60 * time.Second
 
 type statfsAutoCache struct {
-	space     drive.Space
-	expiresAt time.Time
+	space      drive.Space
+	expiresAt  time.Time
+	refreshing bool
 }
+
+const statfsAutoRetryDelay = 5 * time.Second
 
 func (s StatfsOptions) withDefaults() StatfsOptions {
 	if s.TotalSpace <= 0 {
@@ -177,6 +182,7 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 		fs:                  fs,
 		ctx:                 ctx,
 		cancel:              cancel,
+		ready:               make(chan struct{}),
 		handles:             map[uint64]fuseHandle{},
 		ignoredApple:        map[string]ignoredAppleNode{},
 		xattrs:              map[string]map[string][]byte{},
@@ -209,6 +215,7 @@ func (a *adapter) shutdown() {
 
 func (a *adapter) Init() {
 	logging.L.Infof("[FUSE] Init pid=%d", os.Getpid())
+	a.readyOnce.Do(func() { close(a.ready) })
 }
 
 func (a *adapter) Destroy() {
@@ -339,24 +346,31 @@ func (a *adapter) autoStatfsSpace() (drive.Space, bool) {
 	}
 	now := time.Now()
 	a.mu.Lock()
+	space := a.statfsAuto.space
 	if now.Before(a.statfsAuto.expiresAt) {
-		space := a.statfsAuto.space
 		a.mu.Unlock()
-		return space, true
+		return space, space.Total > 0 || space.Free > 0
+	}
+	if !a.statfsAuto.refreshing {
+		a.statfsAuto.refreshing = true
+		go a.refreshAutoStatfsSpace(querier)
 	}
 	a.mu.Unlock()
+	return space, space.Total > 0 || space.Free > 0
+}
 
-	space, err := querier.Space(context.Background())
-	if err != nil {
-		return drive.Space{}, false
-	}
+func (a *adapter) refreshAutoStatfsSpace(querier vfs.SpaceProvider) {
+	space, err := querier.Space(a.ctx)
+	now := time.Now()
 	a.mu.Lock()
-	a.statfsAuto = statfsAutoCache{
-		space:     space,
-		expiresAt: now.Add(statfsAutoSpaceTTL),
+	a.statfsAuto.refreshing = false
+	if err == nil {
+		a.statfsAuto.space = space
+		a.statfsAuto.expiresAt = now.Add(statfsAutoSpaceTTL)
+	} else {
+		a.statfsAuto.expiresAt = now.Add(statfsAutoRetryDelay)
 	}
 	a.mu.Unlock()
-	return space, true
 }
 
 func blocksForBytes(bytes int64, blockSize uint64) uint64 {
