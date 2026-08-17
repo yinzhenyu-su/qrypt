@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -75,9 +76,9 @@ type VFS struct {
 	done chan struct{}
 	// ctx is the lifecycle context from Start, kept so background tasks
 	// (remote deletes, prefetch) derive from the owning context instead of
-	// context.Background(). Written once inside Start before any background
-	// task can observe it.
-	ctx context.Context
+	// context.Background(). Stored atomically in Start: background tasks
+	// (e.g. delayed-delete timers) read it without holding lifecycleMu.
+	ctx atomic.Pointer[context.Context]
 	// lifecycleMu serializes Start/Close state transitions; lifecycle
 	// tracks the current phase. Start registers every worker while holding
 	// the lock and teardown flips the state to closing under it, so a
@@ -207,7 +208,7 @@ func (v *VFS) Start(ctx context.Context) {
 	}
 	v.lifecycle = lifecycleRunning
 	ctx, cancel := context.WithCancel(ctx)
-	v.ctx = ctx
+	v.ctx.Store(&ctx)
 	v.cancel = cancel
 	// Register every worker under the lifecycle lock so a concurrent
 	// teardown that flips the state to closing and starts waiting sees a
@@ -454,9 +455,5 @@ func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 }
 
 func (v *VFS) lockPath(path string) func() {
-	path = cleanVirtual(path)
-	actual, _ := v.pathLocks.locks.LoadOrStore(path, &sync.Mutex{})
-	mu := actual.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	return v.pathLocks.lock(cleanVirtual(path))
 }

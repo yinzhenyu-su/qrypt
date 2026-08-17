@@ -334,8 +334,7 @@ func (r vfsUploadWorkerRuntime) RequeueAfter(pending PendingUpload, delay time.D
 }
 
 func (r vfsUploadWorkerRuntime) QuietDelay(pending PendingUpload) time.Duration {
-	d := r.v.uploadQuietDelay(pending)
-	return d
+	return r.v.uploadQuietDelay(pending)
 }
 
 func (r vfsUploadWorkerRuntime) QuietWindow(pending PendingUpload) time.Duration {

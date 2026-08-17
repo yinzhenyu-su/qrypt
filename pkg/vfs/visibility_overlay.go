@@ -15,6 +15,13 @@ type overlayState struct {
 	renameOverlays     map[string]overlayOp
 	restoredDirs       map[string]time.Time
 	copyHiddenChildren map[string]map[string]time.Time
+	// deletedDirs indexes the directory entries of the deleted map so
+	// IsDeleted can walk the O(depth) ancestor chain instead of scanning
+	// every overlay entry. renameHiddenDirs does the same for recursive
+	// rename overlays (keyed by oldPath). Both are maintained by the
+	// set/remove helpers below, always with mu held.
+	deletedDirs      map[string]struct{}
+	renameHiddenDirs map[string]struct{}
 }
 
 type deleteTaskState struct {
@@ -32,6 +39,8 @@ func newDeleteStates() (*overlayState, *deleteTaskState) {
 			renameOverlays:     map[string]overlayOp{},
 			restoredDirs:       map[string]time.Time{},
 			copyHiddenChildren: map[string]map[string]time.Time{},
+			deletedDirs:        map[string]struct{}{},
+			renameHiddenDirs:   map[string]struct{}{},
 		}, &deleteTaskState{
 			mu:        mu,
 			scheduler: scheduler.NewTimeKeyedScheduler(),
@@ -53,11 +62,85 @@ func newVFSVisibilityRuntime(v *VFS) vfsVisibilityRuntime {
 	return vfsVisibilityRuntime{v: v}
 }
 
+// --- overlay map maintenance helpers (callers must hold overlay.mu) ---
+
+func (o *overlayState) setDeleted(path string, entry drive.Entry) {
+	o.deleted[path] = entry
+	if entry.IsDir {
+		o.deletedDirs[path] = struct{}{}
+	} else {
+		delete(o.deletedDirs, path)
+	}
+}
+
+func (o *overlayState) removeDeleted(path string) {
+	delete(o.deleted, path)
+	delete(o.deletedDirs, path)
+}
+
+func (o *overlayState) setRenameOverlay(op overlayOp) {
+	o.renameOverlays[op.oldPath] = op
+	if op.isDir {
+		o.renameHiddenDirs[op.oldPath] = struct{}{}
+	} else {
+		delete(o.renameHiddenDirs, op.oldPath)
+	}
+}
+
+func (o *overlayState) removeRenameOverlay(path string) {
+	delete(o.renameOverlays, path)
+	delete(o.renameHiddenDirs, path)
+}
+
+// isDeletedPath reports whether path itself is deleted or lives under a
+// deleted directory. Exact hits are O(1); directory shadowing walks the
+// ancestor chain (O(depth)) instead of scanning every overlay entry.
+func (o *overlayState) isDeletedPath(path string) bool {
+	if _, ok := o.deleted[path]; ok {
+		return true
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		if _, ok := o.deletedDirs[dir]; ok {
+			return true
+		}
+		if dir == "/" || dir == "." {
+			return false
+		}
+	}
+}
+
+func (o *overlayState) isRenameHiddenPath(path string) bool {
+	if _, ok := o.renameOverlays[path]; ok {
+		return true
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		if _, ok := o.renameHiddenDirs[dir]; ok {
+			return true
+		}
+		if dir == "/" || dir == "." {
+			return false
+		}
+	}
+}
+
+// deepestDeletedAncestor returns the deepest deleted directory at or above
+// path (matching the longest-match semantics of the former full scan).
+func (o *overlayState) deepestDeletedAncestor(path string) (string, drive.Entry, bool) {
+	for dir := path; ; dir = filepath.Dir(dir) {
+		if entry, ok := o.deleted[dir]; ok && entry.IsDir {
+			return dir, entry, true
+		}
+		if dir == "/" || dir == "." {
+			return "", drive.Entry{}, false
+		}
+	}
+}
+
 func (r vfsVisibilityRuntime) MarkDeleted(path string, entry drive.Entry) {
 	r.v.view.overlay.mu.Lock()
-	r.v.view.overlay.deleted[path] = entry
+	r.v.view.overlay.setDeleted(path, entry)
 	delete(r.v.deletes.tasks.failures, path)
-	delete(r.v.view.overlay.renameOverlays, path)
+	r.v.view.overlay.removeRenameOverlay(path)
 	delete(r.v.view.overlay.restoredDirs, path)
 	r.v.view.overlay.mu.Unlock()
 
@@ -82,8 +165,8 @@ func (r vfsVisibilityRuntime) RestoreDeletedPath(path string) (drive.Entry, bool
 		r.v.view.overlay.mu.Unlock()
 		return drive.Entry{}, false
 	}
-	delete(r.v.view.overlay.deleted, path)
 	delete(r.v.deletes.tasks.failures, path)
+	r.v.view.overlay.removeDeleted(path)
 	if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
 		r.v.deletes.tasks.scheduler.Cancel(path)
 		logging.L.Infof("[VFS] canceled pending delete for restored path=%q id=%q", path, entry.ID)
@@ -103,21 +186,12 @@ func (r vfsVisibilityRuntime) RestoreDeletedPath(path string) (drive.Entry, bool
 func (r vfsVisibilityRuntime) RestoreDeletedAncestor(path string) {
 	path = cleanVirtual(path)
 	r.v.view.overlay.mu.Lock()
-	var restorePath string
-	var entry drive.Entry
-	for deletedPath, deletedEntry := range r.v.view.overlay.deleted {
-		if deletedEntry.IsDir && (path == deletedPath || isPathUnder(path, deletedPath)) {
-			if restorePath == "" || len(deletedPath) > len(restorePath) {
-				restorePath = deletedPath
-				entry = deletedEntry
-			}
-		}
-	}
-	if restorePath == "" {
+	restorePath, entry, ok := r.v.view.overlay.deepestDeletedAncestor(path)
+	if !ok {
 		r.v.view.overlay.mu.Unlock()
 		return
 	}
-	delete(r.v.view.overlay.deleted, restorePath)
+	r.v.view.overlay.removeDeleted(restorePath)
 	delete(r.v.deletes.tasks.failures, restorePath)
 	if _, ok := r.v.deletes.tasks.scheduler.Keys()[restorePath]; ok {
 		r.v.deletes.tasks.scheduler.Cancel(restorePath)
@@ -137,7 +211,7 @@ func (r vfsVisibilityRuntime) CancelDeletedFile(path string) {
 	r.v.view.overlay.mu.Lock()
 	entry, ok := r.v.view.overlay.deleted[path]
 	if ok && !entry.IsDir {
-		delete(r.v.view.overlay.deleted, path)
+		r.v.view.overlay.removeDeleted(path)
 		delete(r.v.deletes.tasks.failures, path)
 		if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
 			r.v.deletes.tasks.scheduler.Cancel(path)
@@ -155,12 +229,7 @@ func (r vfsVisibilityRuntime) IsDeleted(path string) bool {
 	path = cleanVirtual(path)
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	for deletedPath, entry := range r.v.view.overlay.deleted {
-		if path == deletedPath || (entry.IsDir && isPathUnder(path, deletedPath)) {
-			return true
-		}
-	}
-	return false
+	return r.v.view.overlay.isDeletedPath(path)
 }
 
 func (r vfsVisibilityRuntime) IsUnderRestoredDir(path string) bool {
@@ -227,11 +296,11 @@ func (r vfsVisibilityRuntime) AddRenameOverlay(oldPath, newPath, entryID string,
 	newPath = cleanVirtual(newPath)
 	r.v.suppressDirPrefetch(oldPath)
 	r.v.view.overlay.mu.Lock()
-	r.v.view.overlay.renameOverlays[oldPath] = overlayOp{oldPath: oldPath, newPath: newPath, entryID: entryID, isDir: recursive}
+	r.v.view.overlay.setRenameOverlay(overlayOp{oldPath: oldPath, newPath: newPath, entryID: entryID, isDir: recursive})
 	if recursive {
 		for key, op := range r.v.view.overlay.renameOverlays {
 			if key != oldPath && isPathUnder(op.oldPath, oldPath) {
-				delete(r.v.view.overlay.renameOverlays, key)
+				r.v.view.overlay.removeRenameOverlay(key)
 			}
 		}
 	}
@@ -242,12 +311,7 @@ func (r vfsVisibilityRuntime) IsHidden(path string) bool {
 	path = cleanVirtual(path)
 	r.v.view.overlay.mu.Lock()
 	defer r.v.view.overlay.mu.Unlock()
-	for _, op := range r.v.view.overlay.renameOverlays {
-		if path == op.oldPath || (op.isDir && isPathUnder(path, op.oldPath)) {
-			return true
-		}
-	}
-	return false
+	return r.v.view.overlay.isRenameHiddenPath(path)
 }
 
 func (r vfsVisibilityRuntime) UpdateRenameOverlay(parentPath string, entries []drive.Entry) {
@@ -262,10 +326,10 @@ func (r vfsVisibilityRuntime) UpdateRenameOverlay(parentPath string, entries []d
 			op.newSeen = entryListHasPath(entries, filepath.Base(op.newPath), op.entryID)
 		}
 		if op.oldGone && op.newSeen {
-			delete(r.v.view.overlay.renameOverlays, key)
+			r.v.view.overlay.removeRenameOverlay(key)
 			continue
 		}
-		r.v.view.overlay.renameOverlays[key] = op
+		r.v.view.overlay.setRenameOverlay(op)
 	}
 }
 

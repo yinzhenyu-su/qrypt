@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"io"
@@ -11,37 +12,37 @@ import (
 func (n *Namespace) FlushReadCache() error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	var lastErr error
+	var errs []error
 	for _, fs := range n.mounts {
 		if err := fs.FlushReadCache(); err != nil {
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 func (n *Namespace) ClearReadCache() error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	var lastErr error
+	var errs []error
 	for _, fs := range n.mounts {
 		if err := fs.ClearReadCache(); err != nil {
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 func (n *Namespace) CloseReadCache() error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	var lastErr error
+	var errs []error
 	for _, fs := range n.mounts {
 		if err := fs.CloseReadCache(); err != nil {
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 func (n *Namespace) StartDirectoryPrefetch(ctx context.Context) {

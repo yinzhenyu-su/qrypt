@@ -46,12 +46,15 @@ func (r vfsRenamePending) IsPending(path string) bool {
 }
 
 func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath string, parent drive.Entry, name string) error {
+	// Take the path lock FIRST and re-read the pending inside it: a pending
+	// read before the lock could be stale by the time we mutate it (e.g. the
+	// frozen generation was rotated), committing an outdated FID/LocalPath.
+	unlockOld := r.v.lockPath(oldPath)
+	defer unlockOld()
 	pending, err := r.v.pendingUpload(oldPath)
 	if err != nil {
 		return err
 	}
-	unlockOld := r.v.lockPath(oldPath)
-	defer unlockOld()
 	pending.Path = newPath
 	pending.ParentID = parent.ID
 	pending.Name = name

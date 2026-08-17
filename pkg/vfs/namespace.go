@@ -188,9 +188,11 @@ func (n *Namespace) Start(ctx context.Context) {
 // Close shuts down every mounted filesystem and waits for each one's
 // background workers to finish. It snapshots the mounts under the read
 // lock, so mounts added concurrently after Close starts are not closed
-// (mirroring Start's snapshot semantics). Mounts are closed sequentially;
-// a failing mount does not prevent the remaining mounts from closing.
-// Close is idempotent because each mount's Close is idempotent.
+// (mirroring Start's snapshot semantics). Mounts are closed concurrently:
+// every mount gets the full ctx budget, so a slow or timing-out mount
+// cannot starve the others' teardown or mask their errors. A failing mount
+// does not prevent the remaining mounts from closing. Close is idempotent
+// because each mount's Close is idempotent.
 func (n *Namespace) Close(ctx context.Context) error {
 	n.mu.RLock()
 	mounts := make([]*VFS, 0, len(n.mounts))
@@ -198,9 +200,20 @@ func (n *Namespace) Close(ctx context.Context) error {
 		mounts = append(mounts, fs)
 	}
 	n.mu.RUnlock()
-	var errs []error
+	errCh := make(chan error, len(mounts))
+	var wg sync.WaitGroup
 	for _, fs := range mounts {
-		if err := fs.Close(ctx); err != nil {
+		wg.Add(1)
+		go func(fs *VFS) {
+			defer wg.Done()
+			errCh <- fs.Close(ctx)
+		}(fs)
+	}
+	wg.Wait()
+	close(errCh)
+	var errs []error
+	for err := range errCh {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -229,12 +242,10 @@ func firstVirtualSegment(path string) string {
 }
 
 func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
-	path = cleanVirtual(path)
-	if path == "/" {
+	name, rest, root := splitNamespacePath(path)
+	if root {
 		return nil, "/", true, nil
 	}
-	trimmed := strings.TrimPrefix(path, "/")
-	name, rest, _ := strings.Cut(trimmed, "/")
 	name = cleanMountName(name)
 	n.mu.RLock()
 	mount := n.mounts[name]
@@ -242,10 +253,7 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	if mount == nil {
 		return nil, "", false, fmt.Errorf("%w: unknown mount %q", ErrNotFound, name)
 	}
-	if rest == "" {
-		return mount, "/", false, nil
-	}
-	return mount, "/" + rest, false, nil
+	return mount, rest, false, nil
 }
 
 func (n *Namespace) rootEntries() []drive.Entry {

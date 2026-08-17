@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 func (v *VFS) SupportsSourceUpload(string) bool {
@@ -70,7 +71,12 @@ func (v *VFS) UploadSource(ctx context.Context, path string, req SourceUploadReq
 	if len(replaceExisting) > 0 || uploadName != name {
 		replaced, replaceErr := v.replaceSourceUploadedEntry(ctx, entry, replaceExisting, name)
 		if replaceErr != nil {
-			_ = v.driver.Remove(context.WithoutCancel(ctx), entry)
+			// Rollback of the freshly uploaded entry: a failure here leaves
+			// an orphaned (possibly temporary-named) object on the remote,
+			// so surface it in the logs.
+			if rmErr := v.driver.Remove(context.WithoutCancel(ctx), entry); rmErr != nil {
+				logging.L.Warnf("[VFS] rollback remove failed after replace error path=%q name=%q id=%q err=%v rollback_err=%v", path, name, entry.ID, replaceErr, rmErr)
+			}
 			return drive.Entry{}, replaceErr
 		}
 		entry = replaced
@@ -128,6 +134,7 @@ func (v *VFS) findSourceUploadedEntry(ctx context.Context, parentID, name string
 func (v *VFS) removeSourceUploadTemporaryFiles(ctx context.Context, parentID, finalName string) {
 	entries, err := v.driver.List(ctx, parentID)
 	if err != nil {
+		logging.L.Warnf("[VFS] list for temporary cleanup failed parent=%q name=%q err=%v", parentID, finalName, err)
 		return
 	}
 	prefix := sourceUploadTemporaryPrefix(finalName)

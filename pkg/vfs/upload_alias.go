@@ -60,5 +60,3 @@ func (v *VFS) enqueueAfter(p PendingUpload, d time.Duration)   { v.uploads.Enque
 func (v *VFS) cancelUpload(path string)                        { v.uploads.CancelUpload(path) }
 func (v *VFS) uploadQuietDelay(p PendingUpload) time.Duration  { return v.uploads.QuietDelay(p) }
 func (v *VFS) uploadQuietWindow(p PendingUpload) time.Duration { return v.uploads.QuietWindow(p) }
-
-var _ = upload.Service{} // keep import used

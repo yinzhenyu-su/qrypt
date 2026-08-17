@@ -291,30 +291,41 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 	if err != nil {
 		return err
 	}
+	// From here on, every error path must drop the staging file so failed
+	// stages do not leave orphans in the upload directory.
+	dropStaging := func() { _ = store.RemoveStaging(localPath) }
+	modTime := util.Now()
 	if entry, err := remote.Resolve(ctx, path); err == nil && !entry.IsDir {
+		if !entry.ModTime.IsZero() {
+			modTime = entry.ModTime
+		}
 		rc, err := remote.Read(ctx, entry)
 		if err != nil {
+			dropStaging()
 			return err
 		}
 		f, err := os.OpenFile(localPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
 			rc.Close()
+			dropStaging()
 			return err
 		}
 		_, copyErr := io.Copy(f, rc)
 		closeErr := f.Close()
 		rc.Close()
 		if copyErr != nil {
+			dropStaging()
 			return copyErr
 		}
 		if closeErr != nil {
+			dropStaging()
 			return closeErr
 		}
 	}
-	size, _ := store.StagingSize(localPath)
-	modTime := util.Now()
-	if entry, err := remote.Resolve(ctx, path); err == nil && !entry.ModTime.IsZero() {
-		modTime = entry.ModTime
+	size, err := store.StagingSize(localPath)
+	if err != nil {
+		dropStaging()
+		return err
 	}
 	pending := PendingUpload{
 		Path:      path,
@@ -326,6 +337,7 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 		ModTime:   modTime.UnixNano(),
 	}
 	if err := store.SaveUpload(pending); err != nil {
+		dropStaging()
 		return err
 	}
 	logging.L.InfofEvery("vfs.existing_file_staged", time.Second, "[VFS] existing file staged op_id=%q path=%q parent=%q name=%q size=%d local=%q", pending.FID, path, parent.ID, name, size, localPath)
