@@ -124,6 +124,10 @@ Finder depends on a sequence of FUSE semantics. A path should not appear to
 exist unless qrypt has a real backend entry or an in-memory node created by an
 earlier operation in the same mount process.
 
+### macOS 26.6.1 regression
+
+macOS 26.6.1 后，Finder 在 qrypt 挂载点复制文件报 EEXIST/-48。它在创建空文件、处理扩展属性后中止并删除，尚未执行 Write/Upload，与 upload_delay 无关。旧版 qrypt 在新系统失败且 macFUSE 未更新，表明是系统兼容性变化。Darwin 启用 auto_xattr 可绕过故障路径，AppleDouble 仍由 qrypt 控制。
+
 ## Why cross-drive copies write more data to disk than expected
 
 > **TL;DR**: FUSE does not let the daemon distinguish a copy read from a
