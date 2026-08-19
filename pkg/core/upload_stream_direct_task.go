@@ -674,7 +674,7 @@ func (s *directUploadSource) verifyRandomAccessSamples(ctx context.Context, samp
 	for _, sample := range samples {
 		buf := make([]byte, len(sample.data))
 		n, err := file.ReadAt(buf, sample.offset)
-		if err != nil && !(errors.Is(err, io.EOF) && n == len(buf)) {
+		if err != nil && (!errors.Is(err, io.EOF) || n != len(buf)) {
 			return fmt.Errorf("core: upload source random access read at %d: %w", sample.offset, err)
 		}
 		if n != len(buf) {
