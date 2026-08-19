@@ -12,6 +12,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 var UploadStreamTaskPollInterval = 500 * time.Millisecond
@@ -30,6 +31,9 @@ type uploadStreamBatch struct {
 	done           chan struct{}
 	doneOnce       sync.Once
 	canceled       bool
+	autoRetry      bool
+	retryCount     int
+	nextAttempt    time.Time
 }
 
 type uploadStreamItem struct {
@@ -39,6 +43,7 @@ type uploadStreamItem struct {
 	RelativePath string
 	SourceToken  string
 	Size         int64
+	SourceRead   int64
 	Written      int64
 	CloudWritten int64
 	CloudTotal   int64
@@ -106,6 +111,146 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runUploadStreamTask(runCtx, update, batch)
 	}), nil
+}
+
+func (c *Core) recoverUploadStreamTasks(ctx context.Context, manager *task.Manager) {
+	if c == nil || manager == nil {
+		return
+	}
+	tasks, err := manager.ListTasks(ctx, task.Filter{Types: []task.Type{task.TypeUploadStreamBatch}})
+	if err != nil {
+		return
+	}
+	for _, item := range tasks {
+		if !c.isRecoverableUploadStreamTask(item) {
+			continue
+		}
+		batch, err := c.uploadStreamBatchFromTask(ctx, item)
+		if err != nil {
+			continue
+		}
+		c.putUploadStream(batch)
+		if _, ok, err := manager.RecoverTask(ctx, item.ID, func(runCtx context.Context, update task.UpdateFunc) error {
+			return c.runUploadStreamTask(runCtx, update, batch)
+		}); err != nil || !ok {
+			c.removeUploadStream(batch.taskID)
+		}
+	}
+}
+
+func (c *Core) isRecoverableUploadStreamTask(item task.Task) bool {
+	if item.Type != task.TypeUploadStreamBatch {
+		return false
+	}
+	if item.State == task.StateFailed && item.Error != nil && item.Error.Code == "interrupted" {
+		return true
+	}
+	if item.State != task.StateFailed && item.State != task.StatePartialFailed {
+		return false
+	}
+	inspector, ok := c.fs.(vfs.UploadInspector)
+	if !ok {
+		return false
+	}
+	mutablePaths := map[string]bool{}
+	for _, pending := range inspector.PendingUploads() {
+		if !pending.Frozen {
+			mutablePaths[pending.Path] = true
+		}
+	}
+	details, ok := directUploadDetailItems(item.Detail["items"])
+	if !ok {
+		return false
+	}
+	for _, detail := range details {
+		if mutablePaths[directUploadDetailString(detail, "dest_path")] {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*uploadStreamBatch, error) {
+	detailItems, ok := directUploadDetailItems(item.Detail["items"])
+	if !ok || len(detailItems) == 0 {
+		return nil, fmt.Errorf("core: upload stream task %q missing items", item.ID)
+	}
+	conflictPolicy, _ := item.Detail["conflict_policy"].(string)
+	if conflictPolicy == "" {
+		conflictPolicy = "overwrite"
+	}
+	pendingByPath := map[string]vfs.PendingUpload{}
+	if inspector, ok := c.fs.(vfs.UploadInspector); ok {
+		for _, pending := range inspector.PendingUploads() {
+			pendingByPath[pending.Path] = pending
+		}
+	}
+	previous := make(map[string]task.ItemResult, len(item.Result.Items))
+	for _, result := range item.Result.Items {
+		previous[result.ItemID] = result
+	}
+	batch := &uploadStreamBatch{
+		taskID:         item.ID,
+		byID:           map[string]*uploadStreamItem{},
+		conflictPolicy: conflictPolicy,
+		channel:        "staging",
+		ready:          make(chan struct{}),
+		done:           make(chan struct{}),
+	}
+	for i, detail := range detailItems {
+		itemID := directUploadDetailString(detail, "item_id")
+		if itemID == "" {
+			itemID = "item-" + strconv.Itoa(i+1)
+		}
+		destPath := directUploadDetailString(detail, "dest_path")
+		if destPath == "" {
+			return nil, fmt.Errorf("core: upload stream task %q item %q missing dest_path", item.ID, itemID)
+		}
+		size := directUploadDetailInt64(detail, "size")
+		streamItem := &uploadStreamItem{
+			ID:           itemID,
+			DestPath:     destPath,
+			Name:         directUploadDetailString(detail, "name"),
+			RelativePath: directUploadDetailString(detail, "relative_path"),
+			Size:         size,
+			State:        task.StateWaitingInput,
+		}
+		if prior, ok := previous[itemID]; ok && prior.State == task.StateSucceeded {
+			streamItem.State = task.StateSucceeded
+			streamItem.RemoteID = prior.RemoteID
+			streamItem.CloudWritten = prior.CloudBytesDone
+			streamItem.CloudTotal = prior.CloudBytesTotal
+			streamItem.CloudPhase = prior.Phase
+		} else if pending, ok := pendingByPath[destPath]; ok {
+			streamItem.Written = pending.Size
+			if streamItem.Size == 0 && pending.Size > 0 {
+				streamItem.Size = pending.Size
+			}
+			if pending.Frozen {
+				streamItem.State = task.StateRunning
+				streamItem.CloudPhase = "queued_upload"
+				streamItem.CloudTotal = streamItem.Size
+			}
+		} else if remote, err := c.fs.Stat(ctx, destPath); err == nil && !remote.IsDir && remote.Size == streamItem.Size {
+			// A prior process may have lost the parent stream-task update after
+			// the VFS child upload committed and cleaned its pending staging.
+			// Reconcile the visible remote result instead of asking for source
+			// bytes that qrypt already uploaded.
+			streamItem.State = task.StateSucceeded
+			streamItem.Written = streamItem.Size
+			streamItem.CloudWritten = remote.Size
+			streamItem.CloudTotal = remote.Size
+			streamItem.CloudPhase = "completed"
+			streamItem.RemoteID = remote.ID
+		}
+		batch.items = append(batch.items, streamItem)
+		batch.byID[itemID] = streamItem
+		batch.bytesTotal += streamItem.Size
+	}
+	batch.mu.Lock()
+	batch.closeDoneIfTerminalLocked()
+	batch.mu.Unlock()
+	return batch, nil
 }
 
 func (c *Core) runUploadStreamTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
@@ -190,6 +335,43 @@ func (c *Core) OpenUploadStreamItem(ctx context.Context, taskID, itemID string) 
 		}
 	}
 	return &UploadStreamItemHandle{core: c, batch: batch, itemID: itemID}, nil
+}
+
+// CommitStagedUploadItem freezes and queues an already complete staging item.
+// It deliberately does not reopen the app source: callers use this when all
+// input bytes reached qrypt but the previous commit was interrupted.
+func (c *Core) CommitStagedUploadItem(ctx context.Context, taskID, itemID string) error {
+	batch := c.getUploadStream(taskID)
+	if batch == nil {
+		return fmt.Errorf("core: upload stream task %q not active", taskID)
+	}
+	select {
+	case <-batch.ready:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	batch.mu.Lock()
+	item := batch.byID[itemID]
+	if item == nil {
+		batch.mu.Unlock()
+		return fmt.Errorf("core: upload stream item %q not found", itemID)
+	}
+	if item.State != task.StateWaitingInput {
+		state := item.State
+		batch.mu.Unlock()
+		return fmt.Errorf("core: upload stream item %q is %s", itemID, state)
+	}
+	if item.Written != item.Size {
+		written, size := item.Written, item.Size
+		batch.mu.Unlock()
+		return fmt.Errorf("core: upload stream item %q staging incomplete: wrote %d of %d bytes", itemID, written, size)
+	}
+	batch.mu.Unlock()
+	handle, err := c.OpenUploadStreamItem(ctx, taskID, itemID)
+	if err != nil {
+		return err
+	}
+	return handle.Commit(ctx)
 }
 
 func (h *UploadStreamItemHandle) Write(ctx context.Context, data []byte) (int, error) {
@@ -471,6 +653,8 @@ func (b *uploadStreamBatch) resultItemsLocked() []task.ItemResult {
 			Phase:             uploadStreamItemPhase(item),
 			Error:             cloneTaskError(item.Error),
 			RemoteID:          item.RemoteID,
+			SourceBytesDone:   item.SourceRead,
+			SourceBytesTotal:  item.Size,
 			CloudBytesDone:    item.CloudWritten,
 			CloudBytesTotal:   item.CloudTotal,
 			StagingBytesDone:  item.Written,
@@ -504,7 +688,8 @@ func uploadStreamItemPhase(item *uploadStreamItem) string {
 
 func uploadStreamItemCapabilities(item *uploadStreamItem) task.ItemCapabilities {
 	return task.ItemCapabilities{
-		OpenInput: item.State == task.StateWaitingInput,
+		OpenInput:   item.State == task.StateWaitingInput && item.Written != item.Size,
+		CommitInput: item.State == task.StateWaitingInput && item.Written == item.Size,
 		Cancelable: item.State != task.StateSucceeded &&
 			item.State != task.StateFailed &&
 			item.State != task.StateCanceled,
@@ -582,17 +767,38 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 		return
 	}
 	itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal, phase, active := b.summaryLocked()
+	waitingInput := false
+	if b.channel == "staging" {
+		for _, item := range b.items {
+			if item.State == task.StateWaitingInput {
+				waitingInput = true
+				break
+			}
+		}
+	}
 	results := b.resultItemsLocked()
 	stagingBytesTotal := b.bytesTotal
+	var sourceBytesDone, sourceBytesTotal int64
 	if b.channel == "direct" {
 		stagingBytesDone = 0
 		stagingBytesTotal = 0
+		for _, item := range b.items {
+			sourceBytesDone += item.SourceRead
+			sourceBytesTotal += item.Size
+		}
 	}
 	b.update(func(taskItem *task.Task) {
+		if waitingInput && len(active) == 0 {
+			taskItem.State = task.StateWaitingInput
+		} else if taskItem.State == task.StateWaitingInput {
+			taskItem.State = task.StateRunning
+		}
 		taskItem.Progress.ItemsDone = itemsDone
 		taskItem.Progress.ItemsFailed = itemsFailed
 		taskItem.Progress.StagingBytesDone = stagingBytesDone
 		taskItem.Progress.StagingBytesTotal = stagingBytesTotal
+		taskItem.Progress.SourceBytesDone = sourceBytesDone
+		taskItem.Progress.SourceBytesTotal = sourceBytesTotal
 		taskItem.Progress.CloudBytesDone = cloudBytesDone
 		taskItem.Progress.CloudBytesTotal = cloudBytesTotal
 		taskItem.Progress.Phase = phase
@@ -619,7 +825,13 @@ func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingByte
 			itemsDone++
 			itemsFailed++
 		case task.StateRunning:
-			phase = "upload"
+			phase = item.CloudPhase
+			if phase == "" {
+				phase = "upload"
+			}
+			active = append(active, item.DestPath)
+		case task.StateRetryWait:
+			phase = string(task.StateRetryWait)
 			active = append(active, item.DestPath)
 		}
 	}
@@ -654,6 +866,9 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 		return nil
 	}
 	message := fmt.Sprintf("upload stream failed for %d of %d items", itemsFailed, len(b.items))
+	if len(results) == 1 && results[0].Error != nil && results[0].Error.Message != "" {
+		message = results[0].Error.Message
+	}
 	update(func(taskItem *task.Task) {
 		taskItem.Progress.CurrentPath = ""
 		taskItem.Detail["active_paths"] = []string{}

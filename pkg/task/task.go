@@ -68,6 +68,8 @@ type Task struct {
 }
 
 type Progress struct {
+	SourceBytesDone    int64  `json:"source_bytes_done,omitempty"`
+	SourceBytesTotal   int64  `json:"source_bytes_total,omitempty"`
 	CloudBytesDone     int64  `json:"cloud_bytes_done,omitempty"`
 	CloudBytesTotal    int64  `json:"cloud_bytes_total,omitempty"`
 	StagingBytesDone   int64  `json:"staging_bytes_done,omitempty"`
@@ -126,6 +128,8 @@ type ItemResult struct {
 	Phase              string           `json:"phase,omitempty"`
 	Error              *Error           `json:"error,omitempty"`
 	RemoteID           string           `json:"remote_id,omitempty"`
+	SourceBytesDone    int64            `json:"source_bytes_done,omitempty"`
+	SourceBytesTotal   int64            `json:"source_bytes_total,omitempty"`
 	CloudBytesDone     int64            `json:"cloud_bytes_done,omitempty"`
 	CloudBytesTotal    int64            `json:"cloud_bytes_total,omitempty"`
 	StagingBytesDone   int64            `json:"staging_bytes_done,omitempty"`
@@ -139,9 +143,10 @@ type ItemResult struct {
 }
 
 type ItemCapabilities struct {
-	OpenInput  bool `json:"open_input,omitempty"`
-	OpenOutput bool `json:"open_output,omitempty"`
-	Cancelable bool `json:"cancelable,omitempty"`
+	OpenInput   bool `json:"open_input,omitempty"`
+	CommitInput bool `json:"commit_input,omitempty"`
+	OpenOutput  bool `json:"open_output,omitempty"`
+	Cancelable  bool `json:"cancelable,omitempty"`
 }
 
 type Request struct {

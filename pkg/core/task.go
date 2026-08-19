@@ -27,6 +27,7 @@ func (c *Core) newTaskManager() *task.Manager {
 	sources := []task.Source{c.fs.TaskSource()}
 	store := c.taskStore()
 	manager := task.NewManagerWithStore(store, sources...)
+	c.recoverUploadStreamTasks(context.Background(), manager)
 	c.recoverUploadStreamDirectTasks(context.Background(), manager)
 	return manager
 }
