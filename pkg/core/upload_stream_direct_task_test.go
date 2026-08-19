@@ -163,6 +163,82 @@ func TestCreateTaskUploadStreamDirectNonResumableCleansPartialAndRetries(t *test
 	}
 }
 
+func TestCreateTaskUploadStreamDirectAutoRetryKeepsTaskID(t *testing.T) {
+	oldBase, oldMax := DirectUploadRetryBaseDelay, DirectUploadRetryMaxDelay
+	DirectUploadRetryBaseDelay = time.Millisecond
+	DirectUploadRetryMaxDelay = 5 * time.Millisecond
+	t.Cleanup(func() {
+		DirectUploadRetryBaseDelay = oldBase
+		DirectUploadRetryMaxDelay = oldMax
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	payload := []byte("persistent automatic retry")
+	provider := &flakyDirectUploadSourceProvider{data: payload, failSecondOpen: true}
+	c.SetUploadSourceProvider(provider)
+
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:   task.TypeUploadStreamDirect,
+		Detail: map[string]any{"auto_retry": true, "auto_upload_item_id": "logical-1"},
+		Items: []task.Item{{
+			ItemID:     "logical-1",
+			SourcePath: "token",
+			DestPath:   "/auto-retry.txt",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := waitCoreTask(t, c, created.ID)
+	if finished.ID != created.ID || finished.State != task.StateSucceeded {
+		t.Fatalf("task = %+v, want same task id succeeded", finished)
+	}
+	if finished.RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", finished.RetryCount)
+	}
+	if finished.Detail["auto_upload_item_id"] != "logical-1" {
+		t.Fatalf("task detail = %+v, want logical id", finished.Detail)
+	}
+	if finished.Progress.SourceBytesDone != int64(len(payload)) || finished.Progress.SourceBytesTotal != int64(len(payload)) {
+		t.Fatalf("source progress = %+v, want complete", finished.Progress)
+	}
+}
+
+func TestCreateTaskUploadStreamDirectContentURIRequiresOpener(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:  task.TypeUploadStreamDirect,
+		Items: []task.Item{{ItemID: "item", SourcePath: "content://downloads/1", DestPath: "/missing.txt", Size: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := waitCoreTask(t, c, created.ID)
+	if finished.State != task.StateFailed || finished.Error == nil || !strings.Contains(finished.Error.Message, "source opener unavailable") {
+		t.Fatalf("task = %+v, want explicit opener error", finished)
+	}
+}
+
 func TestCreateTaskUploadStreamDirectRejectsBadOffsetSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

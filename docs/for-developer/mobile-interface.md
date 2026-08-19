@@ -282,9 +282,12 @@ maps the token back to `ContentResolver.openAssetFileDescriptor(uri, "r")`
 and seeks to the requested offset. On iOS, map the token to a security-scoped
 bookmark or file-provider URL, call `startAccessingSecurityScopedResource`,
 open the file, seek, and close/stop access when qrypt closes the handle. Without
-a custom opener, `source_path` is opened as a local filesystem path by default.
-qrypt reads the source once to compute upload hashes for instant upload, then
-reopens it (at the requested offset) for cloud upload. If the destination driver
+a custom opener, plain filesystem paths are opened locally; URI-like tokens fail
+with an explicit opener-unavailable error instead of being treated as paths.
+qrypt reads the source once to compute upload hashes and reports this as
+`hashing` with `source_bytes_done/total`. It then checks a few source offsets
+against samples captured during that pass (without a second full read) before
+reopening it for cloud upload. If the destination driver
 supports source upload, qrypt uploads directly without qrypt staging.
 Drivers that also advertise resumable source upload can continue an interrupted
 provider upload; non-resumable direct drivers, such as scopedfs, localfs, and
@@ -294,6 +297,10 @@ Create the task:
 
 ```json
 {
+  "detail": {
+    "auto_retry": true,
+    "auto_upload_item_id": "stable-logical-id"
+  },
   "items": [
     {
       "item_id": "local-1",
@@ -304,6 +311,12 @@ Create the task:
   ]
 }
 ```
+
+`detail.auto_retry=true` keeps the same persistent task and item IDs across
+retryable failures. The task enters `retry_wait`, persists `retry_count` and
+`next_attempt_at`, and retries with exponential backoff capped at five minutes.
+Embedding apps should use a durable `auto_upload_item_id` to reconcile a task
+after process death before creating another one.
 
 If `[upload]` config sets `default_mount`, `dest_path` may be omitted or passed
 as a relative path. qrypt resolves it under
@@ -338,6 +351,11 @@ FailUploadItemJSON(handleID, code, message)
 
 qrypt records `waiting_input` and `resume_offset`. The app can reopen the item,
 skip the input stream to `resume_offset`, and continue writing.
+When the complete source already reached staging, the item instead exposes
+`capabilities.commit_input=true`; call
+`CommitStagedUploadItemJSON(coreID, taskID, itemID, deadlineMS)` to freeze and
+queue that staging file without reopening the source. This also works after
+qrypt reconstructs an interrupted staging task from its pending journal.
 Use `PauseUploadItemJSON(handleID)` only when the app intentionally drops the
 current handle but wants to resume later without marking an error.
 

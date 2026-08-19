@@ -84,6 +84,21 @@ func CommitUploadItemJSON(handleID string, deadlineMS int) string {
 	return resultJSON(nil, commitUploadItem(handleID, deadlineMS))
 }
 
+// CommitStagedUploadItemJSON commits a complete qrypt staging item without
+// asking the embedding app to reopen its original source URI.
+func CommitStagedUploadItemJSON(coreID, taskID, itemID string, deadlineMS int) string {
+	s, err := getSession(coreID)
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	ctx, cancel := s.timeoutContext(deadlineMS)
+	defer cancel()
+	err = withCoreErr(s, func(c *core.Core) error {
+		return c.CommitStagedUploadItem(ctx, taskID, itemID)
+	})
+	return resultJSON(nil, wrapError(err))
+}
+
 func FailUploadItemJSON(handleID, code, message string) string {
 	return resultJSON(nil, failUploadItem(handleID, code, message))
 }

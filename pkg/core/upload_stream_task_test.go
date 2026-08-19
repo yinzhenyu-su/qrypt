@@ -76,6 +76,102 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 	}
 }
 
+func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
+	payload := []byte("already staged")
+
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:  task.TypeUploadStreamBatch,
+		Items: []task.Item{{ItemID: "item", DestPath: "/staged.txt", Size: int64(len(payload))}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := c.OpenUploadStreamItem(ctx, created.ID, "item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := handle.Write(ctx, payload); err != nil || n != len(payload) {
+		t.Fatalf("write n=%d err=%v", n, err)
+	}
+	if err := handle.Fail("interrupted", "commit was interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := c.GetTask(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.State != task.StateWaitingInput {
+		t.Fatalf("task state = %s, want waiting_input", waiting.State)
+	}
+	items, err := c.ListTaskItems(ctx, created.ID, task.ItemFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].Capabilities.CommitInput || items[0].Capabilities.OpenInput {
+		t.Fatalf("item capabilities = %+v, want commit without input", items)
+	}
+	if err := c.CommitStagedUploadItem(ctx, created.ID, "item"); err != nil {
+		t.Fatal(err)
+	}
+	finished := waitCoreTask(t, c, created.ID)
+	if finished.State != task.StateSucceeded {
+		t.Fatalf("task = %+v, want succeeded", finished)
+	}
+	if data, err := os.ReadFile(filepath.Join(remote, "staged.txt")); err != nil || string(data) != string(payload) {
+		t.Fatalf("remote data = %q err=%v", data, err)
+	}
+}
+
+func TestCommitIncompleteStagingStillRequiresSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:  task.TypeUploadStreamBatch,
+		Items: []task.Item{{ItemID: "item", DestPath: "/partial.txt", Size: 10}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := c.OpenUploadStreamItem(ctx, created.ID, "item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Write(ctx, []byte("part")); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Fail("interrupted", "input interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := c.ListTaskItems(ctx, created.ID, task.ItemFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].Capabilities.OpenInput || items[0].Capabilities.CommitInput {
+		t.Fatalf("item capabilities = %+v, want source input", items)
+	}
+	if err := c.CommitStagedUploadItem(ctx, created.ID, "item"); err == nil {
+		t.Fatal("commit incomplete staging succeeded")
+	}
+}
+
 func TestCreateTaskUploadStreamBatchUsesDefaultDestination(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

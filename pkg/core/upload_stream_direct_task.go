@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha1"
@@ -12,13 +13,22 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+var (
+	DirectUploadRetryBaseDelay = 3 * time.Second
+	DirectUploadRetryMaxDelay  = 5 * time.Minute
+)
+
+const directUploadOffsetSampleSize = 4 * 1024
 
 type directUploadBackend interface {
 	SupportsSourceUpload(path string) bool
@@ -48,6 +58,7 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 		return task.Task{}, err
 	}
 	batch.channel = "direct"
+	batch.autoRetry = directUploadDetailBool(req.Detail, "auto_retry")
 	for i, reqItem := range req.Items {
 		if reqItem.SourcePath == "" {
 			return task.Task{}, fmt.Errorf("core: direct upload stream item requires source_path")
@@ -56,6 +67,14 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 	}
 	now := util.Now()
 	first := batch.items[0]
+	detail := make(map[string]any, len(req.Detail)+4)
+	for key, value := range req.Detail {
+		detail[key] = value
+	}
+	detail["items"] = batch.detailItems()
+	detail["channel"] = "direct"
+	detail["conflict_policy"] = batch.conflictPolicy
+	detail["phase"] = "queued"
 	item := task.Task{
 		ID:        batch.taskID,
 		Type:      task.TypeUploadStreamDirect,
@@ -67,6 +86,7 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 		UpdatedAt: now,
 		Progress: task.Progress{
 			ItemsTotal:        int64(len(batch.items)),
+			SourceBytesTotal:  batch.bytesTotal,
 			CloudBytesTotal:   batch.bytesTotal,
 			StagingBytesTotal: 0,
 		},
@@ -75,12 +95,7 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 			Persistent:  true,
 			Dismissible: true,
 		},
-		Detail: map[string]any{
-			"items":           batch.detailItems(),
-			"channel":         "direct",
-			"conflict_policy": batch.conflictPolicy,
-			"phase":           "queued",
-		},
+		Detail: detail,
 		Result: task.Result{Items: batch.resultItemsLocked()},
 	}
 	destMount, _, _ := moveMounts(first.DestPath, first.DestPath, c.fs)
@@ -145,6 +160,9 @@ func (c *Core) uploadStreamDirectBatchFromTask(item task.Task) (*uploadStreamBat
 		byID:           map[string]*uploadStreamItem{},
 		channel:        "direct",
 		conflictPolicy: conflictPolicy,
+		autoRetry:      directUploadDetailBool(item.Detail, "auto_retry"),
+		retryCount:     item.RetryCount,
+		nextAttempt:    item.NextAttempt,
 		ready:          make(chan struct{}),
 		done:           make(chan struct{}),
 	}
@@ -221,6 +239,11 @@ func directUploadDetailInt64(detail map[string]any, key string) int64 {
 	}
 }
 
+func directUploadDetailBool(detail map[string]any, key string) bool {
+	value, _ := detail[key].(bool)
+	return value
+}
+
 func (c *Core) runUploadStreamDirectTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
 	batch.mu.Lock()
 	batch.update = update
@@ -232,16 +255,102 @@ func (c *Core) runUploadStreamDirectTask(ctx context.Context, update task.Update
 		if snapshot.State == task.StateSucceeded {
 			continue
 		}
-		if err := c.uploadStreamDirectItem(ctx, batch, snapshot.ID); err != nil && ctx.Err() != nil {
-			batch.markCanceled(ctx.Err())
-			batch.updateTaskSnapshot()
-			return ctx.Err()
+		for {
+			if err := waitDirectUploadRetry(ctx, update, batch); err != nil {
+				batch.markCanceled(err)
+				batch.updateTaskSnapshot()
+				return err
+			}
+			err := c.uploadStreamDirectItem(ctx, batch, snapshot.ID)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				batch.markCanceled(ctx.Err())
+				batch.updateTaskSnapshot()
+				return ctx.Err()
+			}
+			if !batch.autoRetry {
+				break
+			}
+			batch.scheduleDirectUploadRetry(update, snapshot.ID, err)
 		}
 	}
 	batch.mu.Lock()
 	batch.closeDoneIfTerminalLocked()
 	batch.mu.Unlock()
 	return batch.finishTask(update)
+}
+
+func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
+	batch.mu.Lock()
+	next := batch.nextAttempt
+	batch.mu.Unlock()
+	if next.IsZero() || !time.Now().Before(next) {
+		return nil
+	}
+	update(func(item *task.Task) {
+		item.State = task.StateRetryWait
+		item.NextAttempt = next
+		item.Progress.Phase = string(task.StateRetryWait)
+		if item.Detail != nil {
+			item.Detail["phase"] = string(task.StateRetryWait)
+		}
+	})
+	timer := time.NewTimer(time.Until(next))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
+	batch.mu.Lock()
+	batch.nextAttempt = time.Time{}
+	batch.mu.Unlock()
+	update(func(item *task.Task) {
+		item.State = task.StateRunning
+		item.NextAttempt = time.Time{}
+		item.Error = nil
+	})
+	return nil
+}
+
+func (b *uploadStreamBatch) scheduleDirectUploadRetry(update task.UpdateFunc, itemID string, err error) {
+	b.mu.Lock()
+	b.retryCount++
+	b.nextAttempt = time.Now().Add(directUploadRetryDelay(b.retryCount))
+	if item := b.byID[itemID]; item != nil {
+		item.State = task.StateRetryWait
+		item.CloudPhase = string(task.StateRetryWait)
+		item.Error = &task.Error{Message: err.Error(), Retryable: true}
+		item.SourceRead = 0
+		item.CloudWritten = 0
+		item.CloudTotal = 0
+	}
+	retryCount := b.retryCount
+	next := b.nextAttempt
+	b.updateTaskSnapshotLocked()
+	b.mu.Unlock()
+	update(func(item *task.Task) {
+		item.State = task.StateRetryWait
+		item.RetryCount = retryCount
+		item.NextAttempt = next
+		item.Error = &task.Error{Message: err.Error(), Retryable: true}
+	})
+}
+
+func directUploadRetryDelay(attempt int) time.Duration {
+	delay := DirectUploadRetryBaseDelay
+	for i := 1; i < attempt && delay < DirectUploadRetryMaxDelay; i++ {
+		if delay > DirectUploadRetryMaxDelay/2 {
+			return DirectUploadRetryMaxDelay
+		}
+		delay *= 2
+	}
+	if delay > DirectUploadRetryMaxDelay {
+		return DirectUploadRetryMaxDelay
+	}
+	return delay
 }
 
 func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBatch, itemID string) error {
@@ -258,10 +367,20 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	item.State = task.StateRunning
 	item.CloudPhase = "hashing"
 	item.Error = nil
+	item.SourceRead = 0
+	item.CloudWritten = 0
+	item.CloudTotal = 0
 	batch.updateTaskSnapshotLocked()
 	batch.mu.Unlock()
 
-	source := c.newDirectUploadSource(token, size)
+	source := c.newDirectUploadSource(token, size, func(n int64) {
+		batch.mu.Lock()
+		if current := batch.byID[itemID]; current != nil {
+			current.SourceRead = n
+		}
+		batch.updateTaskSnapshotLocked()
+		batch.mu.Unlock()
+	})
 	if err := source.computeHashes(ctx); err != nil {
 		c.failUploadStreamDirectItem(batch, itemID, err)
 		return err
@@ -269,6 +388,7 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	batch.mu.Lock()
 	if current := batch.byID[itemID]; current != nil {
 		current.CloudPhase = "uploading"
+		current.CloudTotal = current.Size
 	}
 	batch.updateTaskSnapshotLocked()
 	batch.mu.Unlock()
@@ -414,16 +534,25 @@ type directUploadSource struct {
 	token    string
 	size     int64
 	hashes   drive.SourceHashes
+	progress func(int64)
 }
 
-func (c *Core) newDirectUploadSource(token string, size int64) *directUploadSource {
+func (c *Core) newDirectUploadSource(token string, size int64, progress ...func(int64)) *directUploadSource {
 	c.streamsMu.Lock()
 	provider := c.uploadSources
 	c.streamsMu.Unlock()
 	if provider == nil {
-		provider = localUploadSourceProvider{}
+		if strings.Contains(token, "://") {
+			provider = unavailableUploadSourceProvider{}
+		} else {
+			provider = localUploadSourceProvider{}
+		}
 	}
-	return &directUploadSource{provider: provider, token: token, size: size}
+	var report func(int64)
+	if len(progress) > 0 {
+		report = progress[0]
+	}
+	return &directUploadSource{provider: provider, token: token, size: size, progress: report}
 }
 
 func (s *directUploadSource) Size() int64 {
@@ -456,13 +585,30 @@ func (s *directUploadSource) computeHashes(ctx context.Context) error {
 		{drive.HashSHA1, sha1.New()},
 		{drive.HashSHA256, sha256.New()},
 	}
-	writers := make([]io.Writer, 0, len(hashes))
-	for _, item := range hashes {
-		writers = append(writers, item.hash)
-	}
-	written, err := io.Copy(io.MultiWriter(writers...), reader)
-	if err != nil {
-		return err
+	samples := newDirectUploadSamples(s.size)
+	buf := make([]byte, uploadCopyChunkSize)
+	var written int64
+	for {
+		n, readErr := reader.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			for _, item := range hashes {
+				if _, err := item.hash.Write(chunk); err != nil {
+					return err
+				}
+			}
+			samples.capture(written, chunk)
+			written += int64(n)
+			if s.progress != nil {
+				s.progress(written)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
 	}
 	if written != s.size {
 		return fmt.Errorf("core: upload source size mismatch: read %d, expected %d", written, s.size)
@@ -471,13 +617,52 @@ func (s *directUploadSource) computeHashes(ctx context.Context) error {
 	for _, item := range hashes {
 		s.hashes[item.algorithm] = item.hash.Sum(nil)
 	}
-	if err := s.verifyRandomAccess(ctx); err != nil {
+	if err := s.verifyRandomAccessSamples(ctx, samples); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *directUploadSource) verifyRandomAccess(ctx context.Context) error {
+type directUploadSample struct {
+	offset int64
+	data   []byte
+}
+
+type directUploadSamples []directUploadSample
+
+func newDirectUploadSamples(size int64) directUploadSamples {
+	if size <= 0 {
+		return nil
+	}
+	sampleSize := min(int64(directUploadOffsetSampleSize), size)
+	offsets := []int64{0, max(int64(0), size/2-sampleSize/2), max(int64(0), size-sampleSize)}
+	seen := map[int64]bool{}
+	out := make(directUploadSamples, 0, len(offsets))
+	for _, offset := range offsets {
+		if seen[offset] {
+			continue
+		}
+		seen[offset] = true
+		length := min(sampleSize, size-offset)
+		out = append(out, directUploadSample{offset: offset, data: make([]byte, int(length))})
+	}
+	return out
+}
+
+func (s directUploadSamples) capture(chunkOffset int64, chunk []byte) {
+	chunkEnd := chunkOffset + int64(len(chunk))
+	for i := range s {
+		sampleStart := s[i].offset
+		sampleEnd := sampleStart + int64(len(s[i].data))
+		start := max(chunkOffset, sampleStart)
+		end := min(chunkEnd, sampleEnd)
+		if start < end {
+			copy(s[i].data[int(start-sampleStart):int(end-sampleStart)], chunk[int(start-chunkOffset):int(end-chunkOffset)])
+		}
+	}
+}
+
+func (s *directUploadSource) verifyRandomAccessSamples(ctx context.Context, samples directUploadSamples) error {
 	if s.size == 0 {
 		return nil
 	}
@@ -486,57 +671,20 @@ func (s *directUploadSource) verifyRandomAccess(ctx context.Context) error {
 		return err
 	}
 	defer file.Close()
-	hashes := []struct {
-		algorithm drive.HashAlgorithm
-		hash      hash.Hash
-	}{
-		{drive.HashMD5, md5.New()},
-		{drive.HashSHA1, sha1.New()},
-		{drive.HashSHA256, sha256.New()},
-	}
-	buf := make([]byte, uploadCopyChunkSize)
-	var off int64
-	for off < s.size {
-		want := int64(len(buf))
-		if remaining := s.size - off; remaining < want {
-			want = remaining
+	for _, sample := range samples {
+		buf := make([]byte, len(sample.data))
+		n, err := file.ReadAt(buf, sample.offset)
+		if err != nil && !(errors.Is(err, io.EOF) && n == len(buf)) {
+			return fmt.Errorf("core: upload source random access read at %d: %w", sample.offset, err)
 		}
-		n, err := file.ReadAt(buf[:want], off)
-		if err != nil && !(errors.Is(err, io.EOF) && int64(n) == want) {
-			return fmt.Errorf("core: upload source random access read at %d: %w", off, err)
+		if n != len(buf) {
+			return fmt.Errorf("core: upload source random access short read at %d: read %d, expected %d", sample.offset, n, len(buf))
 		}
-		if int64(n) != want {
-			return fmt.Errorf("core: upload source random access short read at %d: read %d, expected %d", off, n, want)
-		}
-		for _, item := range hashes {
-			if _, err := item.hash.Write(buf[:n]); err != nil {
-				return err
-			}
-		}
-		off += int64(n)
-	}
-	for _, item := range hashes {
-		got := item.hash.Sum(nil)
-		want, ok := s.hashes[item.algorithm]
-		if !ok {
-			continue
-		}
-		if !equalBytes(got, want) {
-			return fmt.Errorf("core: upload source random access mismatch for %s; source opener must honor requested offsets", item.algorithm)
+		if !bytes.Equal(buf, sample.data) {
+			return fmt.Errorf("core: upload source random access mismatch at %d; source opener must honor requested offsets", sample.offset)
 		}
 	}
 	return nil
-}
-
-func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var diff byte
-	for i := range a {
-		diff |= a[i] ^ b[i]
-	}
-	return diff == 0
 }
 
 type directUploadFile struct {
@@ -612,6 +760,12 @@ func (f *directUploadFile) Close() error {
 }
 
 type localUploadSourceProvider struct{}
+
+type unavailableUploadSourceProvider struct{}
+
+func (unavailableUploadSourceProvider) OpenUploadSource(context.Context, string, int64) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("core: upload source opener unavailable")
+}
 
 func (localUploadSourceProvider) OpenUploadSource(ctx context.Context, token string, offset int64) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {

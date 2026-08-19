@@ -191,6 +191,202 @@ func TestCoreRecoversInterruptedDirectUploadTask(t *testing.T) {
 	}
 }
 
+func TestCoreRecoversCompleteMutableStagingWithoutSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		StorageDir:  filepath.Join(tmp, "cache"),
+		UploadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	payload := []byte("complete mutable staging")
+	if err := fs.Create(ctx, "/recovered-staging.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := fs.WriteAt(ctx, "/recovered-staging.txt", payload, 0); err != nil || n != len(payload) {
+		t.Fatalf("write staging n=%d err=%v", n, err)
+	}
+	store, err := task.NewPersistentStore(filepath.Join(stateDir, "tasks", "tasks.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutManaged(task.ManagedTask{Task: task.Task{
+		ID:    "staging-recover",
+		Type:  task.TypeUploadStreamBatch,
+		State: task.StateFailed,
+		Path:  "/recovered-staging.txt",
+		Name:  "recovered-staging.txt",
+		Capabilities: task.Capabilities{
+			Cancelable: true,
+			Persistent: true,
+		},
+		Error: &task.Error{Code: "upload_error", Message: "legacy commit failure", Retryable: true},
+		Detail: map[string]any{
+			"channel": "staging",
+			"phase":   "staging",
+			"items": []map[string]any{{
+				"item_id":   "item",
+				"dest_path": "/recovered-staging.txt",
+				"name":      "recovered-staging.txt",
+				"size":      int64(len(payload)),
+			}},
+		},
+	}})
+
+	recovered := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
+	t.Cleanup(func() { _ = recovered.Close(context.Background()) })
+	if _, err := recovered.GetTask(ctx, "staging-recover"); err != nil {
+		t.Fatal(err)
+	}
+	var items []task.ItemResult
+	deadline := time.Now().Add(5 * time.Second)
+	for len(items) == 0 && time.Now().Before(deadline) {
+		items, err = recovered.ListTaskItems(ctx, "staging-recover", task.ItemFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(items) != 1 || !items[0].Capabilities.CommitInput || items[0].ResumeOffset != int64(len(payload)) {
+		t.Fatalf("recovered items = %+v, want complete staging commit capability", items)
+	}
+	if err := recovered.CommitStagedUploadItem(ctx, "staging-recover", "item"); err != nil {
+		t.Fatal(err)
+	}
+	finished := waitCoreTask(t, recovered, "staging-recover")
+	if finished.State != task.StateSucceeded {
+		t.Fatalf("recovered task = %+v, want succeeded", finished)
+	}
+	if data, err := os.ReadFile(filepath.Join(remote, "recovered-staging.txt")); err != nil || string(data) != string(payload) {
+		t.Fatalf("remote data = %q err=%v", data, err)
+	}
+}
+
+func TestCoreReconcilesCompletedStagingUploadAfterPendingCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	remoteDir := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remoteDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("already committed remotely")
+	if err := os.WriteFile(filepath.Join(remoteDir, "completed.txt"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remoteDir), vfs.Options{StorageDir: filepath.Join(tmp, "cache")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	store, err := task.NewPersistentStore(filepath.Join(stateDir, "tasks", "tasks.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutManaged(task.ManagedTask{Task: task.Task{
+		ID:    "staging-completed-reconcile",
+		Type:  task.TypeUploadStreamBatch,
+		State: task.StateRunning,
+		Path:  "/completed.txt",
+		Name:  "completed.txt",
+		Capabilities: task.Capabilities{
+			Cancelable: true,
+			Persistent: true,
+		},
+		Detail: map[string]any{
+			"channel": "staging",
+			"items": []map[string]any{{
+				"item_id":   "item",
+				"dest_path": "/completed.txt",
+				"name":      "completed.txt",
+				"size":      int64(len(payload)),
+			}},
+		},
+	}})
+
+	recovered := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
+	t.Cleanup(func() { _ = recovered.Close(context.Background()) })
+	finished := waitCoreTask(t, recovered, "staging-completed-reconcile")
+	if finished.State != task.StateSucceeded || finished.Progress.ItemsDone != 1 {
+		t.Fatalf("reconciled task = %+v, want succeeded", finished)
+	}
+	items, err := recovered.ListTaskItems(ctx, finished.ID, task.ItemFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].State != task.StateSucceeded || items[0].CloudBytesDone != int64(len(payload)) {
+		t.Fatalf("reconciled items = %+v, want completed remote item", items)
+	}
+}
+
+func TestCoreRecoversDirectUploadRetryWaitWithSameTaskID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	sourcePath := filepath.Join(tmp, "source.txt")
+	payload := []byte("recover retry wait")
+	if err := os.WriteFile(sourcePath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(tmp, "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	store, err := task.NewPersistentStore(filepath.Join(stateDir, "tasks", "tasks.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutManaged(task.ManagedTask{Task: task.Task{
+		ID:          "direct-retry-recover",
+		Type:        task.TypeUploadStreamDirect,
+		State:       task.StateRetryWait,
+		RetryCount:  4,
+		NextAttempt: time.Now().Add(10 * time.Millisecond),
+		Path:        "/recovered.txt",
+		Name:        "recovered.txt",
+		Capabilities: task.Capabilities{
+			Cancelable: true,
+			Persistent: true,
+		},
+		Detail: map[string]any{
+			"channel":             "direct",
+			"phase":               "retry_wait",
+			"auto_retry":          true,
+			"auto_upload_item_id": "logical-recover",
+			"items": []map[string]any{{
+				"item_id":     "logical-recover",
+				"source_path": sourcePath,
+				"dest_path":   "/recovered.txt",
+				"name":        "recovered.txt",
+				"size":        int64(len(payload)),
+			}},
+		},
+	}})
+
+	recovered := &Core{fs: fs, runtimeLayout: RuntimeLayout{StateDir: stateDir}}
+	t.Cleanup(func() { _ = recovered.Close(context.Background()) })
+	item := waitCoreTask(t, recovered, "direct-retry-recover")
+	if item.State != task.StateSucceeded || item.ID != "direct-retry-recover" || item.RetryCount != 4 {
+		t.Fatalf("recovered task = %+v, want same id/retry count succeeded", item)
+	}
+}
+
 func TestCoreRecoversInterruptedDirectUploadTaskWithLocalFSDirect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
