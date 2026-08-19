@@ -161,6 +161,11 @@ func mountOptions(opts Options) []string {
 	if runtime.GOOS == "darwin" {
 		flags = append(flags,
 			"-o", "defer_permissions",
+			// Let macFUSE store extended attributes in AppleDouble files. Finder
+			// otherwise aborts a newly-created file with EEXIST on macOS 26.6.1.
+			// AppleDouble filtering remains in the adapter so NoAppleDouble keeps
+			// controlling whether those files reach the backing drive.
+			"-o", "auto_xattr",
 			"-o", "fsname=qrypt",
 			"-o", "subtype=qrypt",
 			"-o", "iosize=1048576",
