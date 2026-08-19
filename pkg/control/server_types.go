@@ -5,6 +5,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
@@ -32,6 +33,17 @@ type PendingResponse struct {
 	SchemaVersion int                 `json:"schema_version"`
 	GeneratedAt   time.Time           `json:"generated_at"`
 	Pending       []vfs.PendingUpload `json:"pending"`
+}
+
+type TasksResponse struct {
+	SchemaVersion int         `json:"schema_version"`
+	GeneratedAt   time.Time   `json:"generated_at"`
+	Tasks         []DebugTask `json:"tasks"`
+}
+
+type DebugTask struct {
+	Task  task.Task         `json:"task"`
+	Items []task.ItemResult `json:"items"`
 }
 
 type UploadsResponse struct {

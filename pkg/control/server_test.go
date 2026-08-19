@@ -16,6 +16,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
@@ -27,6 +28,34 @@ import (
 type fakeSnapshotter struct {
 	snapshot diagnostics.DebugSnapshot
 	drivers  []diagnostics.NamedDriver
+}
+
+type fakeTaskDebugger struct {
+	tasks []task.Task
+	items map[string][]task.ItemResult
+}
+
+func (f fakeTaskDebugger) ListTasks(_ context.Context, filter task.Filter) ([]task.Task, error) {
+	var out []task.Task
+	for _, item := range f.tasks {
+		if filter.Match(item) {
+			out = append(out, item)
+		}
+		if filter.Limit > 0 && len(out) >= filter.Limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f fakeTaskDebugger) ListTaskItems(_ context.Context, taskID string, filter task.ItemFilter) ([]task.ItemResult, error) {
+	var out []task.ItemResult
+	for _, item := range f.items[taskID] {
+		if filter.Match(item) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 func (f fakeSnapshotter) DebugSnapshot() diagnostics.DebugSnapshot {
@@ -669,6 +698,48 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if !resetSource.resetCalled || !strings.Contains(string(resetBody), `"vfs_reads"`) ||
 		!strings.Contains(string(resetBody), `"debug_started_at"`) {
 		t.Fatalf("unexpected reset response: called=%v body=%s", resetSource.resetCalled, resetBody)
+	}
+}
+
+func TestServerExposesTasksWithItemsAndFilters(t *testing.T) {
+	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.SetTaskDebugger(fakeTaskDebugger{
+		tasks: []task.Task{{
+			ID: "upload-1", Type: task.TypeUploadStreamBatch, State: task.StateWaitingInput,
+			Detail: map[string]any{"recovered_from_journal": true},
+		}, {
+			ID: "download-1", Type: task.TypeDownload, State: task.StateSucceeded,
+		}},
+		items: map[string][]task.ItemResult{
+			"upload-1": {{ItemID: "item-1", DestPath: "/photos/a.jpg", State: task.StateWaitingInput, ResumeOffset: 7}},
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+	client, err := NewClient(server.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.Get(context.Background(), "/v1/tasks?type=upload_stream_batch&state=waiting_input&limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response TasksResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Tasks) != 1 || response.Tasks[0].Task.ID != "upload-1" || len(response.Tasks[0].Items) != 1 {
+		t.Fatalf("unexpected tasks response: %s", body)
+	}
+	if response.Tasks[0].Items[0].ResumeOffset != 7 {
+		t.Fatalf("missing item progress: %s", body)
 	}
 }
 

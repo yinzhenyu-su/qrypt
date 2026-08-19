@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
@@ -30,6 +31,11 @@ type taskPersistenceHealth interface {
 	TaskPersistenceError() error
 }
 
+type taskDebugger interface {
+	ListTasks(context.Context, task.Filter) ([]task.Task, error)
+	ListTaskItems(context.Context, string, task.ItemFilter) ([]task.ItemResult, error)
+}
+
 type Server struct {
 	socketPath string
 	endpoint   string
@@ -37,9 +43,17 @@ type Server struct {
 	address    string
 	source     Snapshotter
 	taskHealth taskPersistenceHealth
+	taskDebug  taskDebugger
 	server     *http.Server
 	listener   net.Listener
 	stop       context.CancelFunc
+}
+
+// SetTaskDebugger attaches the application task journal to the local debug API.
+func (s *Server) SetTaskDebugger(debugger taskDebugger) {
+	if s != nil {
+		s.taskDebug = debugger
+	}
 }
 
 // SetTaskPersistenceHealth attaches application-level task persistence health
@@ -98,6 +112,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/debug/reset", s.handleDebugReset)
 	mux.HandleFunc("/v1/state", s.handleState)
 	mux.HandleFunc("/v1/pending", s.handlePending)
+	mux.HandleFunc("/v1/tasks", s.handleTasks)
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/ops", s.handleOps)
 	mux.HandleFunc("/v1/reads", s.handleReads)

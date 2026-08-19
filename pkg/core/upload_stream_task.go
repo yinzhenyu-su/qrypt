@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -34,6 +35,7 @@ type uploadStreamBatch struct {
 	autoRetry      bool
 	retryCount     int
 	nextAttempt    time.Time
+	recovered      bool
 }
 
 type uploadStreamItem struct {
@@ -52,6 +54,10 @@ type uploadStreamItem struct {
 	Open         bool
 	State        task.State
 	Error        *task.Error
+	Recovery     string
+	PendingFID   string
+	CloudTaskID  string
+	CloudState   task.State
 }
 
 type UploadStreamItemHandle struct {
@@ -196,6 +202,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 		channel:        "staging",
 		ready:          make(chan struct{}),
 		done:           make(chan struct{}),
+		recovered:      true,
 	}
 	for i, detail := range detailItems {
 		itemID := directUploadDetailString(detail, "item_id")
@@ -216,17 +223,21 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			State:        task.StateWaitingInput,
 		}
 		if prior, ok := previous[itemID]; ok && prior.State == task.StateSucceeded {
+			streamItem.Recovery = "persisted_result"
 			streamItem.State = task.StateSucceeded
 			streamItem.RemoteID = prior.RemoteID
 			streamItem.CloudWritten = prior.CloudBytesDone
 			streamItem.CloudTotal = prior.CloudBytesTotal
 			streamItem.CloudPhase = prior.Phase
 		} else if pending, ok := pendingByPath[destPath]; ok {
+			streamItem.PendingFID = pending.FID
+			streamItem.Recovery = "staging_available"
 			streamItem.Written = pending.Size
 			if streamItem.Size == 0 && pending.Size > 0 {
 				streamItem.Size = pending.Size
 			}
 			if pending.Frozen {
+				streamItem.Recovery = "pending_upload"
 				streamItem.State = task.StateRunning
 				streamItem.CloudPhase = "queued_upload"
 				streamItem.CloudTotal = streamItem.Size
@@ -242,7 +253,11 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			streamItem.CloudTotal = remote.Size
 			streamItem.CloudPhase = "completed"
 			streamItem.RemoteID = remote.ID
+			streamItem.Recovery = "remote_size_match"
+		} else {
+			streamItem.Recovery = "source_required"
 		}
+		logging.L.Infof("[TASK] recovered staging upload task=%s item=%s reason=%s", item.ID, itemID, streamItem.Recovery)
 		batch.items = append(batch.items, streamItem)
 		batch.byID[itemID] = streamItem
 		batch.bytesTotal += streamItem.Size
@@ -642,6 +657,28 @@ func (b *uploadStreamBatch) detailItems() []map[string]any {
 	return out
 }
 
+func (b *uploadStreamBatch) recoveryItemsLocked() []map[string]any {
+	if !b.recovered {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(b.items))
+	for _, item := range b.items {
+		detail := map[string]any{
+			"item_id": item.ID,
+			"reason":  item.Recovery,
+		}
+		if item.PendingFID != "" {
+			detail["pending_fid"] = item.PendingFID
+		}
+		if item.CloudTaskID != "" {
+			detail["cloud_task_id"] = item.CloudTaskID
+			detail["cloud_task_state"] = item.CloudState
+		}
+		out = append(out, detail)
+	}
+	return out
+}
+
 func (b *uploadStreamBatch) resultItemsLocked() []task.ItemResult {
 	out := make([]task.ItemResult, 0, len(b.items))
 	for _, item := range b.items {
@@ -725,6 +762,8 @@ func (c *Core) refreshUploadStreamCloudProgress(ctx context.Context, batch *uplo
 		batch.mu.Lock()
 		item := batch.byID[snapshot.ID]
 		if item != nil {
+			item.CloudTaskID = remote.ID
+			item.CloudState = remote.State
 			item.CloudWritten = remote.Progress.CloudBytesDone
 			item.CloudTotal = remote.Progress.CloudBytesTotal
 			item.CloudPhase = remote.Progress.Phase
@@ -808,6 +847,10 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 		}
 		taskItem.Detail["phase"] = phase
 		taskItem.Detail["active_paths"] = active
+		if b.recovered {
+			taskItem.Detail["recovered_from_journal"] = true
+			taskItem.Detail["recovery_items"] = b.recoveryItemsLocked()
+		}
 		taskItem.Result.Items = results
 	})
 }
