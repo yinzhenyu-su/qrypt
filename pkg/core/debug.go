@@ -47,6 +47,7 @@ func (c *Core) StartDebugServer(ctx context.Context, listen string) error {
 		return err
 	}
 	server.SetTaskPersistenceHealth(c)
+	server.SetTaskDebugger(c)
 	if err := server.Start(ctx); err != nil {
 		return err
 	}

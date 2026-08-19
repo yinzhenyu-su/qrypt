@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,6 +262,13 @@ func TestCoreRecoversCompleteMutableStagingWithoutSource(t *testing.T) {
 	if len(items) != 1 || !items[0].Capabilities.CommitInput || items[0].ResumeOffset != int64(len(payload)) {
 		t.Fatalf("recovered items = %+v, want complete staging commit capability", items)
 	}
+	recoveredTask, err := recovered.GetTask(ctx, "staging-recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredTask.Detail["recovered_from_journal"] != true || !strings.Contains(fmt.Sprint(recoveredTask.Detail["recovery_items"]), "staging_available") {
+		t.Fatalf("missing staging recovery diagnostics: %+v", recoveredTask.Detail)
+	}
 	if err := recovered.CommitStagedUploadItem(ctx, "staging-recover", "item"); err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +337,9 @@ func TestCoreReconcilesCompletedStagingUploadAfterPendingCleanup(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].State != task.StateSucceeded || items[0].CloudBytesDone != int64(len(payload)) {
 		t.Fatalf("reconciled items = %+v, want completed remote item", items)
+	}
+	if !strings.Contains(fmt.Sprint(finished.Detail["recovery_items"]), "remote_size_match") {
+		t.Fatalf("missing remote reconciliation diagnostics: %+v", finished.Detail)
 	}
 }
 
