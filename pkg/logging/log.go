@@ -14,6 +14,10 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// logTimeFormat renders a local-time timestamp with a numeric UTC offset
+// (e.g. 2006-01-02 15:04:05.000 +08:00), so the zone is explicit.
+const logTimeFormat = "2006-01-02 15:04:05.000 -07:00"
+
 var sensitivePatterns = []struct {
 	pattern *regexp.Regexp
 	replace string
@@ -207,7 +211,7 @@ func (l *Logger) logf(level Level, format string, v ...interface{}) {
 	}
 	msg := sanitize(fmt.Sprintf(format, v...))
 	now := util.Now()
-	ts := now.Format("2006-01-02 15:04:05.000")
+	ts := now.Format(logTimeFormat)
 	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 
 	l.mu.Lock()
@@ -235,7 +239,7 @@ func (l *Logger) logfEvery(level Level, key string, interval time.Duration, form
 	sampleNow := time.Now()
 	now := util.Now()
 	msg := sanitize(fmt.Sprintf(format, v...))
-	ts := now.Format("2006-01-02 15:04:05.000")
+	ts := now.Format(logTimeFormat)
 
 	l.mu.Lock()
 	if level < l.level {
@@ -298,7 +302,7 @@ func (l *Logger) logEveryFunc(level Level, key string, interval time.Duration, m
 	if suppressed > 0 {
 		msg = fmt.Sprintf("%s (suppressed=%d)", msg, suppressed)
 	}
-	ts := now.Format("2006-01-02 15:04:05.000")
+	ts := now.Format(logTimeFormat)
 	line := fmt.Sprintf("[%s] %s %s\n", ts, level.String(), msg)
 
 	l.mu.Lock()
