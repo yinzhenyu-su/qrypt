@@ -1,8 +1,8 @@
-package cli
+package buildinfo
 
 import "testing"
 
-func TestCurrentBuildInfoUsesInjectedValues(t *testing.T) {
+func TestCurrentUsesInjectedValues(t *testing.T) {
 	oldVersion, oldCommit, oldTime, oldDirty := buildVersion, buildCommit, buildTime, buildDirty
 	t.Cleanup(func() {
 		buildVersion, buildCommit, buildTime, buildDirty = oldVersion, oldCommit, oldTime, oldDirty
@@ -12,8 +12,8 @@ func TestCurrentBuildInfoUsesInjectedValues(t *testing.T) {
 	buildTime = "2026-08-12T09:10:11Z"
 	buildDirty = "true"
 
-	info := currentBuildInfo()
+	info := Current()
 	if info.Version != buildVersion || info.Commit != buildCommit || info.BuildTime != buildTime || !info.Dirty {
-		t.Fatalf("currentBuildInfo() = %+v", info)
+		t.Fatalf("Current() = %+v", info)
 	}
 }

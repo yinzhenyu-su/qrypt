@@ -764,7 +764,9 @@ func TestServerExposesHTTPListenEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `"ok": true`) {
+	if !strings.Contains(string(body), `"ok": true`) ||
+		!strings.Contains(string(body), `"version"`) ||
+		!strings.Contains(string(body), `"api": "v1"`) {
 		t.Fatalf("unexpected health response: %s", body)
 	}
 }
