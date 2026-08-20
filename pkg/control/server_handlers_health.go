@@ -20,6 +20,8 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+
+	"github.com/yinzhenyu/qrypt/pkg/buildinfo"
 )
 
 func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
@@ -394,8 +396,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			taskPersistence.Error = err.Error()
 		}
 	}
+	build := buildinfo.Current()
 	writeJSON(w, HealthResponse{
 		API:             APIVersion,
+		Version:         build.Version,
+		Commit:          build.Commit,
+		BuildTime:       build.BuildTime,
 		OK:              true,
 		Timestamp:       time.Now(),
 		PID:             os.Getpid(),

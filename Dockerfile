@@ -24,7 +24,7 @@ ARG COMMIT=
 ARG BUILD_TIME=
 ARG DIRTY=false
 RUN CGO_ENABLED=1 go build \
-    -ldflags="-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${VERSION} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${COMMIT} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${BUILD_TIME} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${DIRTY}" \
+    -ldflags="-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${VERSION} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${COMMIT} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${BUILD_TIME} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${DIRTY}" \
     -o /usr/local/bin/qrypt ./cmd/qrypt/
 
 # ---- Runtime stage ----

@@ -14,6 +14,9 @@ import (
 
 type HealthResponse struct {
 	API             string                `json:"api"`
+	Version         string                `json:"version"`
+	Commit          string                `json:"commit,omitempty"`
+	BuildTime       string                `json:"build_time,omitempty"`
 	OK              bool                  `json:"ok"`
 	Timestamp       time.Time             `json:"timestamp"`
 	PID             int                   `json:"pid"`

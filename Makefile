@@ -21,7 +21,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || true)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
-LDFLAGS ?= -s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=$(VERSION) -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=$(COMMIT) -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=$(BUILD_TIME) -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=$(DIRTY)
+LDFLAGS ?= -s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=$(VERSION) -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=$(COMMIT) -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=$(BUILD_TIME) -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=$(DIRTY)
 
 .PHONY: build dist mkdist clean
 

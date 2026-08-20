@@ -5,17 +5,10 @@ import (
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
+	buildinfo "github.com/yinzhenyu/qrypt/pkg/buildinfo"
 )
 
-type BuildInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit,omitempty"`
-	BuildTime string `json:"build_time,omitempty"`
-	Dirty     bool   `json:"dirty,omitempty"`
-	GoVersion string `json:"go_version"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-}
+type BuildInfo = buildinfo.Info
 
 func NewCommand(rt cliruntime.Runtime, info BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
