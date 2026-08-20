@@ -67,10 +67,10 @@ func TestRestoreDeletedAncestorPicksDeepest(t *testing.T) {
 	fs.markDeleted("/x/y", drive.Entry{ID: "y", IsDir: true})
 	fs.restoreDeletedAncestor("/x/y/z.txt")
 	fs.view.overlay.mu.Lock()
-	_, yRestored := fs.view.overlay.deleted["/x/y"]
+	_, yStillDeleted := fs.view.overlay.deleted["/x/y"]
 	_, xStillDeleted := fs.view.overlay.deleted["/x"]
 	fs.view.overlay.mu.Unlock()
-	if yRestored {
+	if yStillDeleted {
 		t.Error("deepest ancestor /x/y should be restored")
 	}
 	if !xStillDeleted {
