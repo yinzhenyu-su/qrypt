@@ -19,9 +19,9 @@ func TestVFSDebugSnapshotRuntimeCollectsSortedOverlayState(t *testing.T) {
 	newVFSDeleteScheduler(fs).Schedule("/z.txt", drive.Entry{ID: "z"}, time.Hour, func() {})
 	newVFSDeleteScheduler(fs).Schedule("/a.txt", drive.Entry{ID: "a"}, time.Hour, func() {})
 	fs.view.overlay.mu.Lock()
-	fs.view.overlay.deleted["/z.txt"] = drive.Entry{ID: "z", Name: "z.txt"}
-	fs.view.overlay.deleted["/a.txt"] = drive.Entry{ID: "a", Name: "a.txt"}
-	fs.view.overlay.renameOverlays["/old"] = overlayOp{oldPath: "/old", newPath: "/new", entryID: "id"}
+	fs.view.overlay.setDeleted("/z.txt", drive.Entry{ID: "z", Name: "z.txt"})
+	fs.view.overlay.setDeleted("/a.txt", drive.Entry{ID: "a", Name: "a.txt"})
+	fs.view.overlay.setRenameOverlay(overlayOp{oldPath: "/old", newPath: "/new", entryID: "id"})
 	fs.view.overlay.restoredDirs["/restored"] = future
 	fs.view.overlay.restoredDirs["/expired"] = past
 	fs.view.overlay.copyHiddenChildren["/dir"] = map[string]time.Time{"b.txt": future, "a.txt": future, "old.txt": past}

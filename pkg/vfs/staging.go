@@ -292,8 +292,13 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 		return err
 	}
 	// From here on, every error path must drop the staging file so failed
-	// stages do not leave orphans in the upload directory.
-	dropStaging := func() { _ = store.RemoveStaging(localPath) }
+	// stages do not leave orphans in the upload directory. A failed cleanup
+	// still leaves an orphan, so surface it in the logs.
+	dropStaging := func() {
+		if err := store.RemoveStaging(localPath); err != nil {
+			logging.L.Warnf("[VFS] remove staging file failed op_id=%q path=%q err=%v", fid, path, err)
+		}
+	}
 	modTime := util.Now()
 	if entry, err := remote.Resolve(ctx, path); err == nil && !entry.IsDir {
 		if !entry.ModTime.IsZero() {

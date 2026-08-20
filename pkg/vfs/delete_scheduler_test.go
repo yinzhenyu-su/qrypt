@@ -43,8 +43,8 @@ func TestVFSDeleteSchedulerCancelsChildDeletes(t *testing.T) {
 	scheduler.Schedule("/dir/a.txt", drive.Entry{ID: "a"}, time.Hour, func() {})
 	scheduler.Schedule("/other.txt", drive.Entry{ID: "other"}, time.Hour, func() {})
 	fs.view.overlay.mu.Lock()
-	fs.view.overlay.deleted["/dir/a.txt"] = drive.Entry{ID: "a"}
-	fs.view.overlay.deleted["/other.txt"] = drive.Entry{ID: "other"}
+	fs.view.overlay.setDeleted("/dir/a.txt", drive.Entry{ID: "a"})
+	fs.view.overlay.setDeleted("/other.txt", drive.Entry{ID: "other"})
 	fs.deletes.tasks.failures["/dir/a.txt"] = "failed"
 	fs.view.overlay.mu.Unlock()
 

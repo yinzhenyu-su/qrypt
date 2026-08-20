@@ -5,6 +5,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/scheduler"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -99,7 +100,7 @@ func (o *overlayState) isDeletedPath(path string) bool {
 	if _, ok := o.deleted[path]; ok {
 		return true
 	}
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+	for dir := parentVirtualPath(path); ; dir = parentVirtualPath(dir) {
 		if _, ok := o.deletedDirs[dir]; ok {
 			return true
 		}
@@ -113,7 +114,7 @@ func (o *overlayState) isRenameHiddenPath(path string) bool {
 	if _, ok := o.renameOverlays[path]; ok {
 		return true
 	}
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+	for dir := parentVirtualPath(path); ; dir = parentVirtualPath(dir) {
 		if _, ok := o.renameHiddenDirs[dir]; ok {
 			return true
 		}
@@ -126,7 +127,7 @@ func (o *overlayState) isRenameHiddenPath(path string) bool {
 // deepestDeletedAncestor returns the deepest deleted directory at or above
 // path (matching the longest-match semantics of the former full scan).
 func (o *overlayState) deepestDeletedAncestor(path string) (string, drive.Entry, bool) {
-	for dir := path; ; dir = filepath.Dir(dir) {
+	for dir := path; ; dir = parentVirtualPath(dir) {
 		if entry, ok := o.deleted[dir]; ok && entry.IsDir {
 			return dir, entry, true
 		}
@@ -134,6 +135,18 @@ func (o *overlayState) deepestDeletedAncestor(path string) (string, drive.Entry,
 			return "", drive.Entry{}, false
 		}
 	}
+}
+
+// parentVirtualPath returns the parent of a slash-absolute virtual path
+// without allocation (callers guarantee cleanVirtual-normalized input).
+func parentVirtualPath(path string) string {
+	if path == "/" {
+		return "/"
+	}
+	if i := strings.LastIndexByte(path, '/'); i > 0 {
+		return path[:i]
+	}
+	return "/"
 }
 
 func (r vfsVisibilityRuntime) MarkDeleted(path string, entry drive.Entry) {

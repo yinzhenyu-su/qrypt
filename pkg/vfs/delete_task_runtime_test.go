@@ -16,9 +16,9 @@ func TestVFSDeleteTaskRuntimeBuildsRecordsFromDeleteState(t *testing.T) {
 	}
 	runtime := newVFSDeleteTaskRuntime(fs)
 	fs.view.overlay.mu.Lock()
-	fs.view.overlay.deleted["/scheduled.txt"] = drive.Entry{ID: "scheduled", Name: "scheduled.txt"}
-	fs.view.overlay.deleted["/running.txt"] = drive.Entry{ID: "running", Name: "running.txt"}
-	fs.view.overlay.deleted["/failed.txt"] = drive.Entry{ID: "failed", Name: "failed.txt"}
+	fs.view.overlay.setDeleted("/scheduled.txt", drive.Entry{ID: "scheduled", Name: "scheduled.txt"})
+	fs.view.overlay.setDeleted("/running.txt", drive.Entry{ID: "running", Name: "running.txt"})
+	fs.view.overlay.setDeleted("/failed.txt", drive.Entry{ID: "failed", Name: "failed.txt"})
 	fs.deletes.tasks.scheduler.Schedule("/scheduled.txt", time.Hour, func() {})
 	fs.deletes.tasks.active["/running.txt"] = drive.Entry{ID: "running", Name: "running.txt"}
 	fs.deletes.tasks.failures["/failed.txt"] = "remote failed"
