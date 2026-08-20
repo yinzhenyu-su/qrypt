@@ -81,7 +81,7 @@ func TestRestoreDeletedAncestorPicksDeepest(t *testing.T) {
 func TestIsHiddenUsesRenameDirIndex(t *testing.T) {
 	fs := newOverlayTestVFS(t)
 	hidden := func(path string) bool { return newVFSVisibilityRuntime(fs).IsHidden(path) }
-	fs.addOverlay("/old", "/new", "id1", true)          // recursive
+	fs.addOverlay("/old", "/new", "id1", true)           // recursive
 	fs.addOverlay("/file.txt", "/ren.txt", "id2", false) // file op
 
 	cases := map[string]bool{
@@ -125,12 +125,12 @@ func BenchmarkIsDeletedManyOverlays(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	for i := 0; i < 5000; i++ {
+	for i := range 5000 {
 		fs.markDeleted("/files/f"+strconv.Itoa(i)+".txt", drive.Entry{ID: "f"})
 	}
 	fs.markDeleted("/gone/dir", drive.Entry{ID: "d", IsDir: true})
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if fs.isDeleted("/alive/path/file.txt") {
 			b.Fatal("unexpected delete")
 		}
