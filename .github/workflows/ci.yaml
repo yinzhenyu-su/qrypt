@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache: true
 
       - name: Install FUSE headers
@@ -170,7 +170,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: matrix.kind == 'windows-go'
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Docker Buildx
@@ -189,7 +189,7 @@ jobs:
           echo "QRYPT_COMMIT=${commit}" >> "$GITHUB_ENV"
           echo "QRYPT_BUILD_TIME=${build_time}" >> "$GITHUB_ENV"
           echo "QRYPT_DIRTY=${dirty}" >> "$GITHUB_ENV"
-          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${version} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${dirty}" >> "$GITHUB_ENV"
+          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}" >> "$GITHUB_ENV"
 
       - name: Build ${{ matrix.target }} with Docker
         if: matrix.kind == 'linux-docker'
@@ -243,7 +243,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.6"
           cache: true
 
       - name: Install macFUSE
@@ -262,7 +262,7 @@ jobs:
           echo "QRYPT_COMMIT=${commit}" >> "$GITHUB_ENV"
           echo "QRYPT_BUILD_TIME=${build_time}" >> "$GITHUB_ENV"
           echo "QRYPT_DIRTY=${dirty}" >> "$GITHUB_ENV"
-          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/internal/cli.buildVersion=${version} -X github.com/yinzhenyu/qrypt/internal/cli.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/internal/cli.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/internal/cli.buildDirty=${dirty}" >> "$GITHUB_ENV"
+          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}" >> "$GITHUB_ENV"
 
       - name: Build darwin/amd64
         run: |
