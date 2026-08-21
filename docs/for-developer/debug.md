@@ -13,6 +13,42 @@ Secrets are masked by the driver and config layers, but local paths, filenames,
 remote IDs, and short error messages may still be sensitive. Please review any
 bundle before sharing it.
 
+## Run One Test With A Temporary Mount
+
+Use `scripts/mount-debug-test.sh` when you need to run one `debug test` against
+a real qrypt mount from the current checkout, but do not need to keep the mount
+running for interactive investigation. This is useful for repeatable driver and
+VFS regression checks such as `batchupload`, `batchmove`, and `fs`: the script
+builds qrypt, creates an isolated temporary mount point and debug socket, waits
+for both to become ready, runs the selected test, then unmounts and removes the
+temporary local files. For valid test arguments, standard output contains only
+the `qrypt debug test` result, so it can be captured or compared directly.
+
+The selected mount must exist in the config and have `test_enabled = true`.
+The script supports single-mount tests only; use the normal `qrypt mount` and
+`qrypt debug test xfer` commands when testing transfers between two mounts. Use
+the manual workflow later in this guide when the mount must remain available
+for `collect`, `watch`, raw endpoints, or an interactive reproduction.
+
+Run a test with the repository `qrypt.toml`:
+
+```sh
+./scripts/mount-debug-test.sh quark-test batchmove --count 50 --size 4k
+```
+
+Pass a different config before the mount name:
+
+```sh
+./scripts/mount-debug-test.sh --config ./path/to/qrypt.toml quark-test fs --size 30m
+```
+
+List all available test cases or inspect the wrapper options:
+
+```sh
+./scripts/mount-debug-test.sh quark-test --help
+./scripts/mount-debug-test.sh --help
+```
+
 ## Mental Model
 
 There are three layers worth keeping separate:
