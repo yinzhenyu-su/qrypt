@@ -70,12 +70,13 @@ type TestRun struct {
 	ResidualTimeline []CRUDVisibilitySample `json:"residual_timeline,omitempty"`
 	Metrics          []drive.MetricEvent    `json:"metrics,omitempty"`
 	MetricsTruncated bool                   `json:"metrics_truncated,omitempty"`
+	CleanupFailed    bool                   `json:"cleanup_failed,omitempty"`
 	RetryCommand     string                 `json:"retry_command,omitempty"`
 	Started          time.Time              `json:"started_at"`
 	Finished         time.Time              `json:"finished_at"`
 	Duration         string                 `json:"duration"`
 	DurationMS       int64                  `json:"duration_ms"`
-	Read             *MountedReadDetails    `json:"read,omitempty"`
+	Read             *MountedReadTestResult `json:"read,omitempty"`
 }
 
 // TestEnv carries the objects a spec runner may need, resolved once by the
@@ -280,16 +281,11 @@ func fromBatchTestResult(r BatchTestResult) TestRun {
 }
 
 func fromMountedReadTestResult(r MountedReadTestResult) TestRun {
-	details := &MountedReadDetails{
-		MountPoint: r.MountPoint, VirtualPath: r.VirtualPath, Size: r.Size,
-		BlockSize: r.BlockSize, CacheMode: r.CacheMode, Samples: r.Samples,
-		Measurements: r.Measurements, Summary: r.Summary,
-	}
 	tr := TestRun{
 		Spec: "read", Mount: r.Mount, Pass: r.Pass, Metrics: r.Metrics,
-		MetricsTruncated: r.MetricsTruncated,
+		MetricsTruncated: r.MetricsTruncated, CleanupFailed: r.CleanupFailed,
 		RetryCommand:     r.RetryCommand, Started: r.Started, Finished: r.Finished,
-		Duration: r.Duration, DurationMS: r.DurationMS, Read: details,
+		Duration: r.Duration, DurationMS: r.DurationMS, Read: &r,
 	}
 	tr.Steps = make([]TestStep, len(r.Steps))
 	for i, s := range r.Steps {

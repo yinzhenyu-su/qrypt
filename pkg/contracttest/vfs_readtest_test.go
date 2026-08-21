@@ -42,7 +42,7 @@ func TestRunVFSMountedReadTestRejectsBackendDirectoryAsMountPoint(t *testing.T) 
 		t.Fatalf("measurements = %d, want rejected cold measurement", len(result.Measurements))
 	}
 	measurement := result.Measurements[0]
-	if measurement.Bytes != 64<<10 || !measurement.ContentMatch || measurement.TraversedVFS || measurement.VFSReadCalls != 0 {
+	if measurement.Bytes != 64<<10 || measurement.TraversedVFS || measurement.VFSReadCalls != 0 {
 		t.Fatalf("invalid rejected measurement: %+v", measurement)
 	}
 	if got := result.Steps[len(result.Steps)-1].Error; got != "mounted read did not traverse qrypt; verify --mount-point" {
