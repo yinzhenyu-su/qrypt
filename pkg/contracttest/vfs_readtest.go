@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,8 +40,6 @@ type MountedReadTestResult struct {
 	DurationMS       int64                    `json:"duration_ms"`
 	RetryCommand     string                   `json:"retry_command,omitempty"`
 }
-
-
 
 type MountedReadMeasurement struct {
 	Mode           string             `json:"mode"`
@@ -148,21 +147,24 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		return result
 	}
 
+	defer func() {
+		cleanupStarted := time.Now()
+		cleanupErr := cleanupMountedReadFixture(context.WithoutCancel(ctx), fs, file, dir, mount)
+		step := fsStep("cleanup")
+		step.finish(cleanupStarted, cleanupErr)
+		result.Steps = append(result.Steps, step)
+		result.CleanupFailed = cleanupErr != nil
+	}()
+
+	prepareStarted := time.Now()
 	expectedHash, err := createMountedReadFixture(ctx, fs, file, dir, mount, size)
 	step = fsStep("prepare")
 	step.Input = map[string]any{"path": file, "bytes": size}
-	step.finish(result.Started, err)
+	step.finish(prepareStarted, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		cleanupMountedReadFixture(ctx, fs, file, dir, mount)
 		return result
 	}
-	cleaned := false
-	defer func() {
-		if !cleaned {
-			_ = cleanupMountedReadFixture(context.WithoutCancel(ctx), fs, file, dir, mount)
-		}
-	}()
 
 	for sample := 1; sample <= samples; sample++ {
 		if cacheMode == "cold" || cacheMode == "both" {
@@ -213,13 +215,6 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			}
 		}
 	}
-	cleanupStarted := time.Now()
-	cleanupErr := cleanupMountedReadFixture(context.WithoutCancel(ctx), fs, file, dir, mount)
-	step = fsStep("cleanup")
-	step.finish(cleanupStarted, cleanupErr)
-	result.Steps = append(result.Steps, step)
-	cleaned = cleanupErr == nil
-	result.CleanupFailed = !cleaned
 	return result
 }
 
@@ -347,6 +342,11 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		}
 	}
 	finished := time.Now()
+	if windowBytes > 0 {
+		if bps := bytesPerSecond(windowBytes, finished.Sub(windowStarted)); bps > measurement.PeakWindowBPS {
+			measurement.PeakWindowBPS = bps
+		}
+	}
 	measurement.DurationMicros = finished.Sub(started).Microseconds()
 	measurement.EndToEndBPS = bytesPerSecond(measurement.Bytes, finished.Sub(started))
 	if !firstByteAt.IsZero() && measurement.Bytes > firstReadBytes {
@@ -355,16 +355,16 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		measurement.SteadyBPS = measurement.EndToEndBPS
 	}
 	measurement.ReadLatency = mountedReadLatency(callLatencies)
-	gotHash := hex.EncodeToString(hash.Sum(nil))
-	if gotHash != expectedHash {
-		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
-	}
 	after := fsMountState(fs, mount)
 	measurement.CacheHits = after.CacheHits - before.CacheHits
 	measurement.CacheMisses = after.CacheMisses - before.CacheMisses
 	totalCacheLookups := measurement.CacheHits + measurement.CacheMisses
 	if totalCacheLookups > 0 {
 		measurement.CacheHitRate = float64(measurement.CacheHits) / float64(totalCacheLookups)
+	}
+	gotHash := hex.EncodeToString(hash.Sum(nil))
+	if gotHash != expectedHash {
+		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
 	}
 	return measurement, started, nil
 }
@@ -452,32 +452,49 @@ func failedFSStep(operation string, err error) FSTestStep {
 
 func cleanupMountedReadFixture(ctx context.Context, fs vfs.FileSystem, file, dir, mount string) error {
 	var errs []error
-	maxRetries := 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		err := fs.Remove(ctx, file)
-		if err == nil {
-			break
-		}
-		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no such file") {
-			errs = append(errs, fmt.Errorf("remove file (attempt %d): %w", attempt+1, err))
-		}
-	}
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		err := fs.RemoveDir(ctx, dir)
-		if err == nil {
-			break
-		}
-		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "not empty") {
-			errs = append(errs, fmt.Errorf("remove dir (attempt %d): %w", attempt+1, err))
-		}
+	if err := retryMountedReadCleanup(ctx, "remove file", func() error {
+		return fs.Remove(ctx, file)
+	}); err != nil {
+		errs = append(errs, err)
 	}
 	if idleErr := waitVFSSmokeIdle(ctx, fs, mount, 2*time.Minute, nil); idleErr != nil {
-		errs = append(errs, fmt.Errorf("wait idle: %w", idleErr))
+		errs = append(errs, fmt.Errorf("wait for file removal: %w", idleErr))
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("cleanup errors: %v", errs)
+	if err := retryMountedReadCleanup(ctx, "remove directory", func() error {
+		return fs.RemoveDir(ctx, dir)
+	}); err != nil {
+		errs = append(errs, err)
 	}
-	return nil
+	if idleErr := waitVFSSmokeIdle(ctx, fs, mount, 2*time.Minute, nil); idleErr != nil {
+		errs = append(errs, fmt.Errorf("wait for directory removal: %w", idleErr))
+	}
+	return errors.Join(errs...)
+}
+
+func retryMountedReadCleanup(ctx context.Context, operation string, fn func() error) error {
+	const (
+		maxRetries = 3
+		retryDelay = 100 * time.Millisecond
+	)
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := fn()
+		if err == nil || vfs.IsNotFound(err) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		lastErr = fmt.Errorf("%s (attempt %d/%d): %w", operation, attempt, maxRetries, err)
+		if attempt == maxRetries {
+			break
+		}
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(lastErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
 
 func mountedReadEvents(fs vfs.FileSystem, mount, path string, since time.Time) ([]drive.MetricEvent, bool) {
