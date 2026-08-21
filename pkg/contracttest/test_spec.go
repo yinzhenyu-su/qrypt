@@ -55,28 +55,36 @@ type TestStep struct {
 // scheduling context (spec, mount, capability matrix, skip reason) plus the
 // step trace, residual objects, and driver metrics.
 type TestRun struct {
-	Spec             string                 `json:"spec"`
-	Mount            string                 `json:"mount"`
-	Driver           string                 `json:"driver,omitempty"`
-	Pass             bool                   `json:"pass"`
-	Skipped          bool                   `json:"skipped,omitempty"`
-	SkipReason       string                 `json:"skip_reason,omitempty"`
-	Error            string                 `json:"error,omitempty"`
-	ErrorCategory    string                 `json:"error_category,omitempty"`
-	Capabilities     []drive.Capability     `json:"capabilities,omitempty"`
-	Requires         []drive.Capability     `json:"requires,omitempty"`
-	Steps            []TestStep             `json:"steps"`
-	Residual         []CRUDTestArtifact     `json:"residual,omitempty"`
-	ResidualTimeline []CRUDVisibilitySample `json:"residual_timeline,omitempty"`
-	Metrics          []drive.MetricEvent    `json:"metrics,omitempty"`
-	MetricsTruncated bool                   `json:"metrics_truncated,omitempty"`
-	CleanupFailed    bool                   `json:"cleanup_failed,omitempty"`
-	RetryCommand     string                 `json:"retry_command,omitempty"`
-	Started          time.Time              `json:"started_at"`
-	Finished         time.Time              `json:"finished_at"`
-	Duration         string                 `json:"duration"`
-	DurationMS       int64                  `json:"duration_ms"`
-	Read             *MountedReadTestResult `json:"read,omitempty"`
+	Spec             string                  `json:"spec"`
+	Mount            string                  `json:"mount"`
+	Driver           string                  `json:"driver,omitempty"`
+	Pass             bool                    `json:"pass"`
+	Skipped          bool                    `json:"skipped,omitempty"`
+	SkipReason       string                  `json:"skip_reason,omitempty"`
+	Error            string                  `json:"error,omitempty"`
+	ErrorCategory    string                  `json:"error_category,omitempty"`
+	Capabilities     []drive.Capability      `json:"capabilities,omitempty"`
+	Requires         []drive.Capability      `json:"requires,omitempty"`
+	Steps            []TestStep              `json:"steps"`
+	Residual         []CRUDTestArtifact      `json:"residual,omitempty"`
+	ResidualTimeline []CRUDVisibilitySample  `json:"residual_timeline,omitempty"`
+	Metrics          []drive.MetricEvent     `json:"metrics,omitempty"`
+	MetricsTruncated bool                    `json:"metrics_truncated,omitempty"`
+	CleanupFailed    bool                    `json:"cleanup_failed,omitempty"`
+	RetryCommand     string                  `json:"retry_command,omitempty"`
+	Started          time.Time               `json:"started_at"`
+	Finished         time.Time               `json:"finished_at"`
+	Duration         string                  `json:"duration"`
+	DurationMS       int64                   `json:"duration_ms"`
+	Read             *MountedReadTestDetails `json:"read,omitempty"`
+}
+
+// MountedReadTestDetails contains the read-specific result fields that are
+// not already represented by the unified TestRun envelope.
+type MountedReadTestDetails struct {
+	OpID         string                   `json:"op_id"`
+	Measurements []MountedReadMeasurement `json:"measurements"`
+	Summary      MountedReadSummary       `json:"summary"`
 }
 
 // TestEnv carries the objects a spec runner may need, resolved once by the
@@ -284,8 +292,9 @@ func fromMountedReadTestResult(r MountedReadTestResult) TestRun {
 	tr := TestRun{
 		Spec: "read", Mount: r.Mount, Pass: r.Pass, Metrics: r.Metrics,
 		MetricsTruncated: r.MetricsTruncated, CleanupFailed: r.CleanupFailed,
-		RetryCommand:     r.RetryCommand, Started: r.Started, Finished: r.Finished,
-		Duration: r.Duration, DurationMS: r.DurationMS, Read: &r,
+		RetryCommand: r.RetryCommand, Started: r.Started, Finished: r.Finished,
+		Duration: r.Duration, DurationMS: r.DurationMS,
+		Read: &MountedReadTestDetails{OpID: r.OpID, Measurements: r.Measurements, Summary: r.Summary},
 	}
 	tr.Steps = make([]TestStep, len(r.Steps))
 	for i, s := range r.Steps {
