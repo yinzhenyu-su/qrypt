@@ -165,10 +165,30 @@ func TestStateOwnsPrefetchReservationState(t *testing.T) {
 	state.releasePrefetch("cache:1:2")
 }
 
+func TestStateConfirmsSequentialReadOnlyAfterCrossingChunkBoundary(t *testing.T) {
+	state := NewState(nil)
+	if state.observeSequentialRead("cache", 0, ChunkSize) {
+		t.Fatal("first chunk should not confirm sequential access")
+	}
+	if !state.observeSequentialRead("cache", ChunkSize, 16) {
+		t.Fatal("contiguous read into the next chunk should confirm sequential access")
+	}
+	if !state.observeSequentialRead("cache", ChunkSize+16, 16) {
+		t.Fatal("contiguous read should retain sequential access")
+	}
+	if state.observeSequentialRead("cache", 128, 16) {
+		t.Fatal("offset jump should reset sequential access")
+	}
+}
+
 func TestClearReadCacheClearsInMemoryFastPaths(t *testing.T) {
 	state := NewState(nil)
 	state.putHotChunk("cache", 1, []byte("hot"))
 	state.recordCachedRangeHit("cache", 1, ChunkSize)
+	state.observeSequentialRead("cache", 0, ChunkSize)
+	if !state.observeSequentialRead("cache", ChunkSize, 16) {
+		t.Fatal("test setup did not confirm sequential read")
+	}
 
 	if err := state.ClearReadCache(); err != nil {
 		t.Fatal(err)
@@ -178,5 +198,8 @@ func TestClearReadCacheClearsInMemoryFastPaths(t *testing.T) {
 	}
 	if count, bytes := state.HotChunkStats(); count != 0 || bytes != 0 {
 		t.Fatalf("hot chunk stats = %d/%d, want zero", count, bytes)
+	}
+	if state.observeSequentialRead("cache", ChunkSize+16, 16) {
+		t.Fatal("sequential read state survived ClearReadCache")
 	}
 }
