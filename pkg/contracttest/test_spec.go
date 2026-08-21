@@ -12,18 +12,24 @@ import (
 // DriverTestRequest is the JSON body for the /v1/driver/test and
 // /v1/driver/benchmark endpoints.
 type DriverTestRequest struct {
-	Test           string `json:"test"`
-	Mount          string `json:"mount,omitempty"`
-	Source         string `json:"source,omitempty"`
-	Dest           string `json:"dest,omitempty"`
-	Size           string `json:"size,omitempty"`
-	Count          int    `json:"count,omitempty"`
-	VFS            bool   `json:"vfs,omitempty"`
-	Samples        int    `json:"samples,omitempty"`
-	SampleInterval string `json:"sample_interval,omitempty"`
-	MountPoint     string `json:"mount_point,omitempty"`
-	BlockSize      string `json:"block_size,omitempty"`
-	CacheMode      string `json:"cache_mode,omitempty"`
+	Test               string `json:"test"`
+	Mount              string `json:"mount,omitempty"`
+	Source             string `json:"source,omitempty"`
+	Dest               string `json:"dest,omitempty"`
+	Size               string `json:"size,omitempty"`
+	Count              int    `json:"count,omitempty"`
+	VFS                bool   `json:"vfs,omitempty"`
+	Samples            int    `json:"samples,omitempty"`
+	SampleInterval     string `json:"sample_interval,omitempty"`
+	MountPoint         string `json:"mount_point,omitempty"`
+	BlockSize          string `json:"block_size,omitempty"`
+	CacheMode          string `json:"cache_mode,omitempty"`
+	ReadPattern        string `json:"read_pattern,omitempty"`
+	SeekCount          int    `json:"seek_count,omitempty"`
+	SeekSize           string `json:"seek_size,omitempty"`
+	SeekScenario       string `json:"seek_scenario,omitempty"`
+	SeekWarmup         int    `json:"seek_warmup_chunks,omitempty"`
+	SeekOverlapTimeout string `json:"seek_overlap_timeout,omitempty"`
 }
 
 // Specs returns the registered test specs (identity, capability
@@ -82,9 +88,11 @@ type TestRun struct {
 // MountedReadTestDetails contains the read-specific result fields that are
 // not already represented by the unified TestRun envelope.
 type MountedReadTestDetails struct {
-	OpID         string                   `json:"op_id"`
-	Measurements []MountedReadMeasurement `json:"measurements"`
-	Summary      MountedReadSummary       `json:"summary"`
+	OpID             string                   `json:"op_id"`
+	Measurements     []MountedReadMeasurement `json:"measurements,omitempty"`
+	Summary          MountedReadSummary       `json:"summary"`
+	SeekMeasurements []MountedSeekMeasurement `json:"seek_measurements,omitempty"`
+	SeekSummary      *MountedSeekSummary      `json:"seek_summary,omitempty"`
 }
 
 // TestEnv carries the objects a spec runner may need, resolved once by the
@@ -294,7 +302,10 @@ func fromMountedReadTestResult(r MountedReadTestResult) TestRun {
 		MetricsTruncated: r.MetricsTruncated, CleanupFailed: r.CleanupFailed,
 		RetryCommand: r.RetryCommand, Started: r.Started, Finished: r.Finished,
 		Duration: r.Duration, DurationMS: r.DurationMS,
-		Read: &MountedReadTestDetails{OpID: r.OpID, Measurements: r.Measurements, Summary: r.Summary},
+		Read: &MountedReadTestDetails{
+			OpID: r.OpID, Measurements: r.Measurements, Summary: r.Summary,
+			SeekMeasurements: r.SeekMeasurements, SeekSummary: r.SeekSummary,
+		},
 	}
 	tr.Steps = make([]TestStep, len(r.Steps))
 	for i, s := range r.Steps {

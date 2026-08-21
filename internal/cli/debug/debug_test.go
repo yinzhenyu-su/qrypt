@@ -178,11 +178,29 @@ func TestValidateDriverTestRequest(t *testing.T) {
 	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem"}); err == nil || !strings.Contains(err.Error(), "requires --mount-point") {
 		t.Fatalf("expected read test without mount point to fail clearly, got %v", err)
 	}
-	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", Size: "64m", BlockSize: "1m", CacheMode: "both", Samples: 2}); err != nil {
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", Size: "64m", BlockSize: "1m", CacheMode: "both", ReadPattern: "both", Samples: 2, SeekCount: 4, SeekSize: "1m", SeekScenario: "prefetch", SeekWarmup: 2, SeekOverlapTimeout: "2s"}); err != nil {
 		t.Fatalf("expected valid read request, got %v", err)
 	}
 	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "invalid", Samples: 1}); err == nil {
 		t.Fatal("expected invalid read cache mode to fail")
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "both", ReadPattern: "random", Samples: 1}); err == nil {
+		t.Fatal("expected invalid read pattern to fail")
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "both", ReadPattern: "seek", Samples: 1, SeekCount: contracttest.MaxMountedSeekCount + 1}); err == nil {
+		t.Fatal("expected excessive seek count to fail")
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "both", ReadPattern: "seek", Samples: 1, SeekSize: "17m"}); err == nil {
+		t.Fatal("expected excessive seek size to fail")
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "both", ReadPattern: "seek", Samples: 1, SeekScenario: "parallel"}); err == nil {
+		t.Fatal("expected invalid seek scenario to fail")
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "both", ReadPattern: "seek", Samples: 1, SeekWarmup: contracttest.MaxMountedSeekWarmupChunks + 1}); err == nil {
+		t.Fatal("expected excessive seek warmup to fail")
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "both", ReadPattern: "seek", Samples: 1, SeekOverlapTimeout: "50ms"}); err == nil {
+		t.Fatal("expected short seek overlap timeout to fail")
 	}
 	for _, test := range []string{"batchupload", "batchmove"} {
 		if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: test}); err == nil || !strings.Contains(err.Error(), "requires --mount") {

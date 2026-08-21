@@ -77,6 +77,10 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		IgnoreAppleXattr:    opts.NoAppleXattr,
 	})
 	host := fuse.NewFileSystemHost(ad)
+	// qrypt's adapter and VFS synchronize their mutable state internally, so
+	// macFUSE may safely run reads of the same vnode concurrently. Without this
+	// capability, one slow remote read blocks a seek on another file handle.
+	host.SetCapNodeRWLock(true)
 	session := &Session{
 		ID:         opts.MountPoint,
 		MountPoint: opts.MountPoint,

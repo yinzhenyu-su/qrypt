@@ -124,6 +124,13 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
 	windowChunks := readWindowChunks(size)
+	if readPrefetchEnabled(ctx) && windowChunks == 1 && offset%ChunkSize != 0 {
+		// An unaligned FUSE seek usually asks for only a small slice of a chunk.
+		// Start the adjacent window before the foreground miss completes so a
+		// caller that crosses the boundary does not pay a second remote RTT. Keep
+		// aligned sequential reads on the normal merged-prefetch path below.
+		r.prefetchWindow(readCtx, entry, offset/ChunkSize+1, windowChunks)
+	}
 	data, startChunk, endChunk, err := r.readRange(readCtx, entry, offset, size, windowChunks)
 	hitsAfter, missesAfter := r.observer.DebugCacheCounters()
 	if err != nil {

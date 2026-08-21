@@ -21,7 +21,7 @@ const (
 	RangePromoteHits         = 2
 	SequentialLimit          = 1024
 	SequentialPrefetchChunks = 2
-	HistoryLimit             = 1000
+	HistoryLimit             = 2048
 )
 
 // windowLoad coalesces concurrent reads of the same cache window.

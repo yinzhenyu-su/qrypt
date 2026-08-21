@@ -37,7 +37,8 @@ Run a test with the repository `qrypt.toml`:
 
 ```sh
 ./scripts/mount-debug-test.sh quark-test batchmove --count 50 --size 4k
-./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both
+./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
+./scripts/mount-debug-test.sh quark-test read --size 256m --cache-mode cold --pattern seek --seek-scenario prefetch
 ```
 
 Pass a different config before the mount name:
@@ -228,14 +229,14 @@ To measure the complete mounted-file read path, including the OS filesystem,
 FUSE/macFUSE adapter, VFS read cache and remote driver, run:
 
 ```sh
-./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both
+./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
 ```
 
 The wrapper supplies its temporary mount point automatically. When invoking
 qrypt directly, pass the real FUSE mount directory explicitly:
 
 ```sh
-go run ./cmd/qrypt debug test read --socket /tmp/qrypt.sock --mount quark-test --mount-point /Volumes/qrypt --size 256m --block-size 1m --samples 3 --cache-mode both
+go run ./cmd/qrypt debug test read --socket /tmp/qrypt.sock --mount quark-test --mount-point /Volumes/qrypt --size 256m --block-size 1m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
 ```
 
 The test creates and uploads a deterministic temporary file before timing,
@@ -251,6 +252,50 @@ path bypasses qrypt (for example, when `--mount-point` names the backing
 directory instead of the FUSE mount). `metrics_truncated` marks a measurement
 whose phase-level history exceeded the bounded runtime history. The test does
 not use a fixed network-speed threshold.
+
+`--pattern sequential` preserves the full-file test above and remains the
+default. `--pattern seek` opens the mounted file, seeks to widely spaced
+offsets, and loads `--seek-size` bytes at each offset;
+`--pattern both` runs both patterns. Seek output separates the local seek call
+(`seek_us`) from the following data load (`seek_load_us`) and their combined
+latency (`seek_total_us`). `seek_summary` reports cold/warm P50, P95, P99, max,
+and load throughput. Cold probes clear qrypt's read cache before every offset;
+warm probes read the same offset immediately after it has been primed. The
+result also requires `vfs_offset_match=true`, proving that the measured FUSE
+read reached qrypt at the requested seek offset. The defaults are 10 probes of
+1 MiB each, with a maximum of 32 probes.
+
+Use `--seek-scenario` to control the load present when each seek starts:
+
+- `isolated` is the default baseline and issues no intentional competing read.
+- `prefetch` first reads sequential chunks on the same file descriptor, waits
+  until qrypt reports an active background prefetch for that file, then seeks
+  on that descriptor.
+- `concurrent` starts a bounded sequential read on a second file descriptor,
+  waits until qrypt reports its active chunk load or resulting prefetch, then
+  seeks on the first descriptor.
+
+For example:
+
+```sh
+./scripts/mount-debug-test.sh quark-test read \
+  --size 256m --cache-mode cold --pattern seek \
+  --seek-scenario concurrent --seek-warmup-chunks 2 \
+  --seek-overlap-timeout 2s
+```
+
+The loaded range and seek target are kept apart so the competing request does
+not pre-warm the bytes being measured. The test synchronizes against qrypt's
+active-operation state instead of sleeping for a fixed interval. Every loaded
+scenario reports `overlap`, `overlap_wait_us`, `active_kind`, `active_offset`,
+and `active_requested`; it fails if no matching in-flight request is observed
+within `--seek-overlap-timeout`. Every probe waits for its reads and prefetches
+to become idle before its events are collected; the wait is excluded from
+`seek_load_us`. This prevents old work from satisfying the next overlap check,
+repopulating a newly cleared cache, or being attributed to the following
+measurement. `chunks_touched` distinguishes aligned single-chunk loads from
+cross-chunk loads. Compare `isolated`, `prefetch`, and `concurrent` runs with the
+same size, cache mode, probe count, and seek size.
 
 If the issue is about interrupted uploads or resumable upload sessions, run:
 
@@ -538,8 +583,13 @@ signed upload URLs, encrypted request blobs, or full response bodies.
   50, maximum 100) and `--size` (default 4 KiB per file, maximum 1 MiB).
 - `debug test read` requires `--mount-point`. It accepts `--size` (default
   256 MiB, maximum 2 GiB), `--block-size` (default 1 MiB), `--samples` (default
-  1, maximum 10), and `--cache-mode cold|warm|both` (default `both`). It creates
-  and removes a temporary remote file of the requested size.
+  1, maximum 10), `--cache-mode cold|warm|both` (default `both`),
+  `--pattern sequential|seek|both` (default `sequential`), `--seek-count`
+  (default 10, maximum 32), `--seek-size` (default 1 MiB, maximum 16 MiB),
+  `--seek-scenario isolated|prefetch|concurrent` (default `isolated`),
+  `--seek-warmup-chunks` (default 2, maximum 16), and
+  `--seek-overlap-timeout` (default 2s, range 100ms to 30s). It creates and
+  removes a temporary remote file of the requested size.
 - `debug test resume --size` has the same size format. It intentionally cancels
   one upload attempt through the VFS debug fault injector, then waits for normal
   retry or resumable-upload recovery.
