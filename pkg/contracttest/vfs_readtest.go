@@ -27,15 +27,10 @@ type MountedReadTestResult struct {
 	OpID             string                   `json:"op_id"`
 	Mount            string                   `json:"mount"`
 	Pass             bool                     `json:"pass"`
-	MountPoint       string                   `json:"mount_point"`
-	VirtualPath      string                   `json:"virtual_path"`
-	Size             int64                    `json:"size"`
-	BlockSize        int64                    `json:"block_size"`
-	CacheMode        string                   `json:"cache_mode"`
-	Samples          int                      `json:"samples"`
 	Measurements     []MountedReadMeasurement `json:"measurements"`
 	Summary          MountedReadSummary       `json:"summary"`
 	Steps            []FSTestStep             `json:"steps"`
+	CleanupFailed    bool                     `json:"cleanup_failed,omitempty"`
 	Metrics          []drive.MetricEvent      `json:"metrics,omitempty"`
 	MetricsTruncated bool                     `json:"metrics_truncated,omitempty"`
 	Started          time.Time                `json:"started_at"`
@@ -45,16 +40,7 @@ type MountedReadTestResult struct {
 	RetryCommand     string                   `json:"retry_command,omitempty"`
 }
 
-type MountedReadDetails struct {
-	MountPoint   string                   `json:"mount_point"`
-	VirtualPath  string                   `json:"virtual_path"`
-	Size         int64                    `json:"size"`
-	BlockSize    int64                    `json:"block_size"`
-	CacheMode    string                   `json:"cache_mode"`
-	Samples      int                      `json:"samples"`
-	Measurements []MountedReadMeasurement `json:"measurements"`
-	Summary      MountedReadSummary       `json:"summary"`
-}
+
 
 type MountedReadMeasurement struct {
 	Mode           string             `json:"mode"`
@@ -70,11 +56,10 @@ type MountedReadMeasurement struct {
 	ReadLatency    MountedReadLatency `json:"read_latency_us"`
 	CacheHits      int64              `json:"cache_hits"`
 	CacheMisses    int64              `json:"cache_misses"`
+	CacheHitRate   float64            `json:"cache_hit_rate"`
 	VFSReadCalls   int                `json:"vfs_read_calls"`
 	TraversedVFS   bool               `json:"traversed_vfs"`
 	OSCacheControl string             `json:"os_cache_control"`
-	SHA256         string             `json:"sha256"`
-	ContentMatch   bool               `json:"content_match"`
 }
 
 type MountedReadLatency struct {
@@ -129,8 +114,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		optionErr = fmt.Errorf("read test cache mode must be cold, warm, or both")
 	}
 	result := &MountedReadTestResult{
-		OpID: newDebugOperationID("read"), Mount: mount, MountPoint: req.MountPoint,
-		Size: size, BlockSize: blockSize, CacheMode: cacheMode, Samples: samples,
+		OpID: newDebugOperationID("read"), Mount: mount,
 		Started: time.Now(), Steps: make([]FSTestStep, 0, 4+samples*2),
 		RetryCommand: fmt.Sprintf("qrypt debug test read --mount %s --mount-point PATH --size %d --block-size %d --cache-mode %s --samples %d --socket PATH", mount, size, blockSize, cacheMode, samples),
 	}
@@ -152,7 +136,6 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	basePath := fsTestBasePath(fs, mount)
 	dir := basePath + "/__qrypt_read_test_" + randomSuffix(6)
 	file := dir + "/data.bin"
-	result.VirtualPath = file
 	mountedFile, err := mountedTestPath(req.MountPoint, file)
 	if optionErr != nil {
 		err = optionErr
@@ -236,6 +219,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	step.finish(cleanupStarted, cleanupErr)
 	result.Steps = append(result.Steps, step)
 	cleaned = cleanupErr == nil
+	result.CleanupFailed = !cleaned
 	return result
 }
 
@@ -371,13 +355,16 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		measurement.SteadyBPS = measurement.EndToEndBPS
 	}
 	measurement.ReadLatency = mountedReadLatency(callLatencies)
-	measurement.SHA256 = hex.EncodeToString(hash.Sum(nil))
-	measurement.ContentMatch = measurement.SHA256 == expectedHash
+	gotHash := hex.EncodeToString(hash.Sum(nil))
+	if gotHash != expectedHash {
+		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
+	}
 	after := fsMountState(fs, mount)
 	measurement.CacheHits = after.CacheHits - before.CacheHits
 	measurement.CacheMisses = after.CacheMisses - before.CacheMisses
-	if !measurement.ContentMatch {
-		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
+	totalCacheLookups := measurement.CacheHits + measurement.CacheMisses
+	if totalCacheLookups > 0 {
+		measurement.CacheHitRate = float64(measurement.CacheHits) / float64(totalCacheLookups)
 	}
 	return measurement, started, nil
 }
@@ -452,7 +439,7 @@ func bytesPerSecond(bytes int64, duration time.Duration) int64 {
 func mountedReadStep(measurement MountedReadMeasurement, err error) FSTestStep {
 	step := fsStep(measurement.Mode + "_read")
 	step.Input = map[string]any{"sample": measurement.Sample}
-	step.Actual = map[string]any{"bytes": measurement.Bytes, "ttfb_us": measurement.TTFBMicros, "end_to_end_bps": measurement.EndToEndBPS, "peak_1s_bps": measurement.PeakWindowBPS, "vfs_read_calls": measurement.VFSReadCalls, "traversed_vfs": measurement.TraversedVFS, "content_match": measurement.ContentMatch}
+	step.Actual = map[string]any{"bytes": measurement.Bytes, "open_us": measurement.OpenMicros, "ttfb_us": measurement.TTFBMicros, "end_to_end_bps": measurement.EndToEndBPS, "steady_bps": measurement.SteadyBPS, "peak_1s_bps": measurement.PeakWindowBPS, "read_calls": measurement.ReadCalls, "vfs_read_calls": measurement.VFSReadCalls, "traversed_vfs": measurement.TraversedVFS, "cache_hit_rate": measurement.CacheHitRate}
 	step.finish(time.Now().Add(-time.Duration(measurement.DurationMicros)*time.Microsecond), err)
 	return step
 }
@@ -464,13 +451,33 @@ func failedFSStep(operation string, err error) FSTestStep {
 }
 
 func cleanupMountedReadFixture(ctx context.Context, fs vfs.FileSystem, file, dir, mount string) error {
-	if err := fs.Remove(ctx, file); err != nil {
-		return err
+	var errs []error
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := fs.Remove(ctx, file)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no such file") {
+			errs = append(errs, fmt.Errorf("remove file (attempt %d): %w", attempt+1, err))
+		}
 	}
-	if err := fs.RemoveDir(ctx, dir); err != nil {
-		return err
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := fs.RemoveDir(ctx, dir)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "not empty") {
+			errs = append(errs, fmt.Errorf("remove dir (attempt %d): %w", attempt+1, err))
+		}
 	}
-	return waitVFSSmokeIdle(ctx, fs, mount, 2*time.Minute, nil)
+	if idleErr := waitVFSSmokeIdle(ctx, fs, mount, 2*time.Minute, nil); idleErr != nil {
+		errs = append(errs, fmt.Errorf("wait idle: %w", idleErr))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("cleanup errors: %v", errs)
+	}
+	return nil
 }
 
 func mountedReadEvents(fs vfs.FileSystem, mount, path string, since time.Time) ([]drive.MetricEvent, bool) {
