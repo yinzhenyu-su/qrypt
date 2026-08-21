@@ -267,6 +267,43 @@ func TestVFSReadWaitsForInFlightPrefetchWindow(t *testing.T) {
 	}
 }
 
+func TestVFSReadStartsAdjacentPrefetchBeforeForegroundMissCompletes(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("p"), 3*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	foregroundEntered, releaseForeground := drv.blockRead(0)
+	prefetchEntered, releasePrefetch := drv.blockRead(testReadChunkSize)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	readDone := make(chan error, 1)
+	go func() {
+		rc, err := fs.Read(ctx, "/data.bin", testReadChunkSize/2, 16)
+		if err == nil {
+			_ = rc.Close()
+		}
+		readDone <- err
+	}()
+	select {
+	case <-foregroundEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("foreground window did not start")
+	}
+	select {
+	case <-prefetchEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("adjacent prefetch did not overlap foreground miss")
+	}
+	releaseForeground()
+	releasePrefetch()
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVFSActiveOpsExposeBlockedPrefetchAndWaiter(t *testing.T) {
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("x"), 3*testReadChunkSize)

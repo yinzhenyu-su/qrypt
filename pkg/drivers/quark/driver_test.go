@@ -201,6 +201,73 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 	}
 }
 
+func TestDriverDownloadURLCoalescesConcurrentMisses(t *testing.T) {
+	var calls int
+	var callsMu sync.Mutex
+	requestEntered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsMu.Lock()
+		calls++
+		callsMu.Unlock()
+		requestEntered <- struct{}{}
+		<-release
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			url, _, err := driver.downloadURL(context.Background(), "fid-1")
+			if err == nil && url != "https://download.test/file.bin" {
+				err = fmt.Errorf("download URL = %q", url)
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	select {
+	case <-requestEntered:
+	case <-time.After(time.Second):
+		t.Fatal("download URL request did not start")
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	if calls != 1 {
+		t.Fatalf("download URL calls = %d, want 1", calls)
+	}
+}
+
+func TestDriverInvalidateURLDoesNotDeleteNewerValue(t *testing.T) {
+	driver := New("k=v", Options{})
+	driver.setURL("fid-1", "https://download.test/fresh")
+	driver.invalidateURL("fid-1", "https://download.test/stale")
+	if url, ok := driver.getURL("fid-1"); !ok || url != "https://download.test/fresh" {
+		t.Fatalf("cached URL = %q/%t, want fresh/true", url, ok)
+	}
+	driver.invalidateURL("fid-1", "https://download.test/fresh")
+	if _, ok := driver.getURL("fid-1"); ok {
+		t.Fatal("matching stale URL was not invalidated")
+	}
+}
+
 func TestDriverReadRefreshesURLAfterForbidden(t *testing.T) {
 	var apiCalls int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

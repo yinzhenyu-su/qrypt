@@ -49,3 +49,5 @@ require (
 )
 
 tool golang.org/x/mobile/cmd/gobind
+
+replace github.com/winfsp/cgofuse => ./third_party/cgofuse

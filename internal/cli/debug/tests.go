@@ -3,6 +3,7 @@ package debug
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
@@ -58,7 +59,13 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 		cmd.Flags().String("mount-point", "", "actual FUSE mount directory")
 		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
 		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
+		cmd.Flags().String("pattern", "sequential", "read pattern: sequential, seek, or both")
 		cmd.Flags().Int("samples", 1, fmt.Sprintf("number of read samples (max %d)", contracttest.MaxMountedReadTestSamples))
+		cmd.Flags().Int("seek-count", contracttest.DefaultMountedSeekCount, fmt.Sprintf("number of seek probes per sample (max %d)", contracttest.MaxMountedSeekCount))
+		cmd.Flags().Duration("seek-overlap-timeout", contracttest.DefaultMountedSeekOverlapTimeout, "maximum wait for an in-flight read to overlap a seek")
+		cmd.Flags().String("seek-scenario", "isolated", "seek scenario: isolated, prefetch, or concurrent")
+		cmd.Flags().String("seek-size", "", "bytes loaded after each seek, or k/m/g suffix (default 1m)")
+		cmd.Flags().Int("seek-warmup-chunks", contracttest.DefaultMountedSeekWarmupChunks, fmt.Sprintf("1 MiB sequential chunks used to create read load (max %d)", contracttest.MaxMountedSeekWarmupChunks))
 		cmd.Flags().String("size", "", "generated test file size in bytes, or k/m/g suffix (default 256m)")
 	}
 	if test == "" || test == "xfer" {
@@ -101,8 +108,27 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("cache-mode"); flag != nil {
 		req.CacheMode, _ = cmd.Flags().GetString("cache-mode")
 	}
+	if flag := cmd.Flags().Lookup("pattern"); flag != nil {
+		req.ReadPattern, _ = cmd.Flags().GetString("pattern")
+	}
 	if flag := cmd.Flags().Lookup("samples"); flag != nil {
 		req.Samples, _ = cmd.Flags().GetInt("samples")
+	}
+	if flag := cmd.Flags().Lookup("seek-count"); flag != nil {
+		req.SeekCount, _ = cmd.Flags().GetInt("seek-count")
+	}
+	if flag := cmd.Flags().Lookup("seek-overlap-timeout"); flag != nil {
+		value, _ := cmd.Flags().GetDuration("seek-overlap-timeout")
+		req.SeekOverlapTimeout = value.String()
+	}
+	if flag := cmd.Flags().Lookup("seek-scenario"); flag != nil {
+		req.SeekScenario, _ = cmd.Flags().GetString("seek-scenario")
+	}
+	if flag := cmd.Flags().Lookup("seek-size"); flag != nil {
+		req.SeekSize, _ = cmd.Flags().GetString("seek-size")
+	}
+	if flag := cmd.Flags().Lookup("seek-warmup-chunks"); flag != nil {
+		req.SeekWarmup, _ = cmd.Flags().GetInt("seek-warmup-chunks")
 	}
 	if err := ValidateDriverTestRequest(req); err != nil {
 		return err
@@ -133,7 +159,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --size, --block-size, --cache-mode, and --samples")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")
@@ -156,10 +182,41 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		if req.Samples < 1 || req.Samples > contracttest.MaxMountedReadTestSamples {
 			return fmt.Errorf("read test --samples must be between 1 and %d", contracttest.MaxMountedReadTestSamples)
 		}
+		if req.SeekCount < 0 || req.SeekCount > contracttest.MaxMountedSeekCount {
+			return fmt.Errorf("read test --seek-count must be between 0 and %d", contracttest.MaxMountedSeekCount)
+		}
+		if req.SeekWarmup < 0 || req.SeekWarmup > contracttest.MaxMountedSeekWarmupChunks {
+			return fmt.Errorf("read test --seek-warmup-chunks must be between 0 and %d", contracttest.MaxMountedSeekWarmupChunks)
+		}
+		if req.SeekOverlapTimeout != "" {
+			timeout, err := time.ParseDuration(req.SeekOverlapTimeout)
+			if err != nil || timeout < 100*time.Millisecond || timeout > 30*time.Second {
+				return fmt.Errorf("read test --seek-overlap-timeout must be between 100ms and 30s")
+			}
+		}
+		if req.SeekSize != "" {
+			seekSize := contracttest.ParseXferSize(req.SeekSize)
+			if seekSize < 1 || seekSize > 16<<20 {
+				return fmt.Errorf("read test --seek-size must be between 1 and %d bytes", 16<<20)
+			}
+			if req.Size != "" && seekSize > contracttest.ParseXferSize(req.Size) {
+				return fmt.Errorf("read test --seek-size must not exceed --size")
+			}
+		}
 		switch strings.ToLower(strings.TrimSpace(req.CacheMode)) {
 		case "cold", "warm", "both":
 		default:
 			return fmt.Errorf("read test --cache-mode must be cold, warm, or both")
+		}
+		switch strings.ToLower(strings.TrimSpace(req.ReadPattern)) {
+		case "", "sequential", "seek", "both":
+		default:
+			return fmt.Errorf("read test --pattern must be sequential, seek, or both")
+		}
+		switch strings.ToLower(strings.TrimSpace(req.SeekScenario)) {
+		case "", "isolated", "prefetch", "concurrent":
+		default:
+			return fmt.Errorf("read test --seek-scenario must be isolated, prefetch, or concurrent")
 		}
 	case "batchmove", "batchupload":
 		if req.Source != "" || req.Dest != "" || req.VFS {

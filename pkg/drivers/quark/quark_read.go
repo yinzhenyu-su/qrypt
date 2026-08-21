@@ -18,15 +18,17 @@ import (
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	start := time.Now()
+	var staleURL string
 	for urlAttempt := 0; urlAttempt < 2; urlAttempt++ {
 		if urlAttempt > 0 {
-			d.invalidateURL(entry.ID)
+			d.invalidateURL(entry.ID, staleURL)
 		}
 		downloadURL, urlCacheHit, err := d.downloadURL(ctx, entry.ID)
 		if err != nil {
 			logging.L.DebugfEvery("quark.read_url.error", time.Second, "[QUARK] ReadURL fid=%q offset=%d size=%d err=%v dur=%s", entry.ID, offset, size, err, time.Since(start))
 			return nil, err
 		}
+		staleURL = downloadURL
 		logging.L.DebugfEvery("quark.read_url", time.Second, "[QUARK] ReadURL fid=%q offset=%d size=%d refresh=%t dur=%s", entry.ID, offset, size, urlAttempt > 0, time.Since(start))
 
 		resp, err := d.downloadRange(ctx, entry.ID, downloadURL, urlCacheHit, offset, size)
@@ -152,8 +154,12 @@ func (d *Driver) setURL(fid, url string) {
 	d.urlCache.Store(fid, cachedURL{url: url, expiry: time.Now().Add(10 * time.Minute)})
 }
 
-func (d *Driver) invalidateURL(fid string) {
-	d.urlCache.Delete(fid)
+func (d *Driver) invalidateURL(fid, staleURL string) {
+	value, ok := d.urlCache.Load(fid)
+	if !ok || value.(cachedURL).url != staleURL {
+		return
+	}
+	d.urlCache.CompareAndDelete(fid, value)
 }
 
 func (d *Driver) downloadURL(ctx context.Context, fid string) (string, bool, error) {
@@ -162,27 +168,38 @@ func (d *Driver) downloadURL(ctx context.Context, fid string) (string, bool, err
 		return url, true, nil
 	}
 	started := time.Now()
-	var resp downResp
-	if err := d.cl.request(ctx, http.MethodPost, "/file/download", nil, map[string]any{
-		"fids": []string{fid},
-	}, &resp); err != nil {
-		err = fmt.Errorf("quark: get download url: %w", err)
+	value, err, _ := d.urlFetch.Do(fid, func() (any, error) {
+		if url, ok := d.getURL(fid); ok {
+			return downloadURLResult{url: url, cacheHit: true}, nil
+		}
+		var resp downResp
+		if err := d.cl.request(ctx, http.MethodPost, "/file/download", nil, map[string]any{
+			"fids": []string{fid},
+		}, &resp); err != nil {
+			return nil, fmt.Errorf("quark: get download url: %w", err)
+		}
+		if err := apiError(resp.respEnvelope); err != nil {
+			return nil, err
+		}
+		if len(resp.Data) == 0 {
+			return nil, fmt.Errorf("quark: no download url found")
+		}
+		url := resp.Data[0].DownloadURL
+		d.setURL(fid, url)
+		return downloadURLResult{url: url}, nil
+	})
+	if err != nil {
 		d.recordDownloadURLMetric(ctx, fid, "", false, started, err)
 		return "", false, err
 	}
-	if err := apiError(resp.respEnvelope); err != nil {
-		d.recordDownloadURLMetric(ctx, fid, "", false, started, err)
-		return "", false, err
-	}
-	if len(resp.Data) == 0 {
-		err := fmt.Errorf("quark: no download url found")
-		d.recordDownloadURLMetric(ctx, fid, "", false, started, err)
-		return "", false, err
-	}
-	url := resp.Data[0].DownloadURL
-	d.setURL(fid, url)
-	d.recordDownloadURLMetric(ctx, fid, url, false, started, nil)
-	return url, false, nil
+	result := value.(downloadURLResult)
+	d.recordDownloadURLMetric(ctx, fid, result.url, result.cacheHit, started, nil)
+	return result.url, result.cacheHit, nil
+}
+
+type downloadURLResult struct {
+	url      string
+	cacheHit bool
 }
 
 func (d *Driver) recordDownloadURLMetric(ctx context.Context, fid, rawURL string, cacheHit bool, started time.Time, err error) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -117,6 +118,7 @@ type Driver struct {
 	drive.UnsupportedOperations
 	cl                 *client
 	urlCache           sync.Map
+	urlFetch           singleflight.Group
 	cookie             string
 	rootPath           string
 	rootID             string
