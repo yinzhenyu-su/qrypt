@@ -95,6 +95,7 @@ SOCKET="$WORKDIR/qrypt.sock"
 MOUNT_LOG="$WORKDIR/mount.log"
 MOUNT_PID=""
 mkdir -p "$MOUNT_POINT"
+export QRYPT_HOME="$WORKDIR/runtime"
 
 is_mounted() {
   if command -v mountpoint >/dev/null 2>&1; then
@@ -160,8 +161,14 @@ while :; do
   sleep 0.2
 done
 
+TEST_MOUNT_ARGS=()
+if [ "$TEST_NAME" = "read" ]; then
+  TEST_MOUNT_ARGS=(--mount-point "$MOUNT_POINT")
+fi
+
 "$BINARY" debug test "$TEST_NAME" \
   --config "$CONFIG" \
   --socket "$SOCKET" \
   --mount "$MOUNT_NAME" \
+  "${TEST_MOUNT_ARGS[@]}" \
   "$@"

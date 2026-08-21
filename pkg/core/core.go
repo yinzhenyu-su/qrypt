@@ -314,23 +314,23 @@ func EffectiveCacheDir(cfg *config.Config, runtime RuntimeLayout) string {
 }
 
 func DefaultCacheDir() string {
-	return filepath.Join(qryptHomeDir(), "qrypt-cache")
+	return filepath.Join(qryptHomeDir(), "cache")
 }
 
 func DefaultUploadDir() string {
-	return filepath.Join(qryptHomeDir(), "qrypt-upload")
+	return filepath.Join(qryptHomeDir(), "upload")
 }
 
 func DefaultStateDir() string {
-	return filepath.Join(qryptHomeDir(), "qrypt-state")
+	return filepath.Join(qryptHomeDir(), "state")
 }
 
 // qryptHomeDir returns the qrypt data root. It defaults to ~/.qrypt but can
 // be redirected with QRYPT_HOME so portable installs and test runs never
 // touch the user's real state.
 func qryptHomeDir() string {
-	if home := os.Getenv("QRYPT_HOME"); home != "" {
-		return filepath.Clean(home)
+	if home := strings.TrimSpace(os.Getenv("QRYPT_HOME")); home != "" {
+		return filepath.Clean(util.ExpandHome(home))
 	}
 	return util.ExpandHome("~/.qrypt")
 }
@@ -340,25 +340,44 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 	if cfg != nil {
 		storage = cfg.Storage
 	}
+	workDir := ""
+	if home := strings.TrimSpace(os.Getenv("QRYPT_HOME")); home != "" {
+		// QRYPT_HOME is the process-wide isolation/portable-install override;
+		// no configured child directory may escape it.
+		storage = config.StorageConfig{}
+		workDir = filepath.Clean(util.ExpandHome(home))
+	} else {
+		workDir = util.ExpandHome(storage.WorkDir)
+		if workDir == "" {
+			workDir = qryptHomeDir()
+		}
+	}
 	readCacheDir := util.ExpandHome(storage.ReadCacheDir)
 	if readCacheDir == "" {
-		readCacheDir = filepath.Join(DefaultCacheDir(), "read")
+		readCacheDir = filepath.Join(workDir, "cache", "read")
 	}
 	thumbnailDir := util.ExpandHome(storage.ThumbnailCacheDir)
 	if thumbnailDir == "" {
-		thumbnailDir = filepath.Join(DefaultCacheDir(), "thumbnail")
+		thumbnailDir = filepath.Join(workDir, "cache", "thumbnail")
 	}
 	uploadDir := util.ExpandHome(storage.UploadDir)
 	if uploadDir == "" {
-		uploadDir = DefaultUploadDir()
+		uploadDir = filepath.Join(workDir, "upload")
 	}
 	stateDir := util.ExpandHome(storage.StateDir)
 	if stateDir == "" {
-		stateDir = DefaultStateDir()
+		stateDir = filepath.Join(workDir, "state")
 	}
 	logDir := util.ExpandHome(storage.LogDir)
+	if logDir == "" {
+		logDir = filepath.Join(workDir, "logs")
+	}
 	tmpDir := util.ExpandHome(storage.TmpDir)
+	if tmpDir == "" {
+		tmpDir = filepath.Join(workDir, "tmp")
+	}
 	layout := RuntimeLayout{
+		RootDir:      workDir,
 		ReadCacheDir: readCacheDir,
 		ThumbnailDir: thumbnailDir,
 		UploadDir:    uploadDir,
@@ -615,9 +634,9 @@ func initRuntimeLogger(cfg *config.Config, layout RuntimeLayout) error {
 		level = cfg.Logging.LogLevel
 	}
 	// Explicit log_file/error_file win; otherwise fall back to
-	// <storage.log_dir>/qrypt.log and qrypt-error.log. layout.LogDir is
-	// the expanded storage.log_dir, so the defaults match the config
-	// layer's EffectiveLogFile/EffectiveErrorFile.
+	// <storage.log_dir>/qrypt.log and qrypt-error.log. layout.LogDir is the
+	// expanded explicit log directory or the directory derived from work_dir,
+	// so the defaults match the config layer's effective log paths.
 	logFile := ""
 	errFile := ""
 	if cfg != nil {

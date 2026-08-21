@@ -164,3 +164,19 @@ func TestStateOwnsPrefetchReservationState(t *testing.T) {
 	}
 	state.releasePrefetch("cache:1:2")
 }
+
+func TestClearReadCacheClearsInMemoryFastPaths(t *testing.T) {
+	state := NewState(nil)
+	state.putHotChunk("cache", 1, []byte("hot"))
+	state.recordCachedRangeHit("cache", 1, ChunkSize)
+
+	if err := state.ClearReadCache(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.hotChunk("cache", 1); ok {
+		t.Fatal("hot chunk survived ClearReadCache")
+	}
+	if count, bytes := state.HotChunkStats(); count != 0 || bytes != 0 {
+		t.Fatalf("hot chunk stats = %d/%d, want zero", count, bytes)
+	}
+}

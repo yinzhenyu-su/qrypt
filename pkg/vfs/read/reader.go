@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -725,6 +726,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	}
 
 	go func() {
+		started := time.Now()
 		activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 			Kind:        "vfs_prefetch",
 			Phase:       "acquire_slot",
@@ -741,6 +743,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		releaseSlot, err := r.acquireReadSlot(prefetchCtx)
 		if err != nil {
 			load.err = err
+			RecordChunkDetail(r.observer, prefetchCtx, entry, "prefetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, 0, started, nil, err)
 			r.observer.DebugFinishActive(activeID)
 			close(load.done)
 			r.state.endWindowLoad(key)
@@ -758,5 +761,6 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		}()
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
 		load.data, load.extra, load.err = r.fetchChunkWindow(prefetchCtx, entry, startIndex, endIndex)
+		RecordChunkDetail(r.observer, prefetchCtx, entry, "prefetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, load.extra, load.err)
 	}()
 }

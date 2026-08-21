@@ -48,12 +48,18 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `read_cache_dir` | string | - | Root directory for read cache files. |
-| `thumbnail_cache_dir` | string | - | Root directory for generated thumbnail cache files. |
-| `upload_dir` | string | - | Root directory for upload staging and pending journal files. |
-| `state_dir` | string | - | Root directory for persistent driver and runtime state. |
-| `log_dir` | string | - | Root directory for runtime logs when log files are not explicitly configured. |
-| `tmp_dir` | string | - | Root directory for temporary runtime files. |
+| `work_dir` | string | `~/.qrypt` | 所有运行数据的根目录；未单独配置的子目录会从这里派生。 |
+| `read_cache_dir` | string | `<work_dir>/cache/read` | 读取缓存目录的可选覆盖。 |
+| `thumbnail_cache_dir` | string | `<work_dir>/cache/thumbnail` | 缩略图缓存目录的可选覆盖。 |
+| `upload_dir` | string | `<work_dir>/upload` | 上传 staging 和 pending journal 目录的可选覆盖。 |
+| `state_dir` | string | `<work_dir>/state` | 驱动及运行状态目录的可选覆盖。 |
+| `log_dir` | string | `<work_dir>/logs` | 运行日志目录的可选覆盖。 |
+| `tmp_dir` | string | `<work_dir>/tmp` | 临时文件目录的可选覆盖。 |
+
+环境变量 `QRYPT_HOME` 用于便携运行和测试隔离。设置后它优先于
+`storage.work_dir` 及所有子目录覆盖，所有运行数据（包括 sync 会话）
+都会写入该目录；未设置时才使用 `storage.work_dir`，最终回退到 `~/.qrypt`。
+sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 
 ## 读取缓存
 
@@ -65,7 +71,7 @@
 
 ## 缩略图缓存
 
-在 `[thumbnail_cache]` 中设置缩略图缓存默认值。生成的缩略图保存在 `thumbnail_cache_dir`（默认 `~/.qrypt/cache/thumbnail`）。
+在 `[thumbnail_cache]` 中设置缩略图缓存默认值。生成的缩略图保存在 `thumbnail_cache_dir`（默认 `<work_dir>/cache/thumbnail`）。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -88,8 +94,8 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `log_level` | string | info | Minimum log level to emit. |
-| `log_file` | string | - | Path to the main log file. When unset, defaults to <storage.log_dir>/qrypt.log. |
-| `error_file` | string | - | Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log. |
+| `log_file` | string | - | 主日志路径；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。 |
+| `error_file` | string | - | 错误日志路径；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。 |
 
 ## 时间同步（NTP）
 

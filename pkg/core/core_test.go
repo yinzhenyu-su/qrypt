@@ -137,6 +137,72 @@ func testRuntimeLayout(tmp string) RuntimeLayout {
 	}
 }
 
+func TestNewStorageLayoutDerivesChildrenFromWorkDir(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "qrypt")
+	cfg := &config.Config{Storage: config.StorageConfig{
+		WorkDir:      workDir,
+		ReadCacheDir: filepath.Join(workDir, "custom-read"),
+	}}
+
+	layout := NewStorageLayout(cfg, RuntimeLayout{})
+
+	if layout.RootDir != workDir {
+		t.Fatalf("root dir = %q, want %q", layout.RootDir, workDir)
+	}
+	wants := map[string]string{
+		"read":      filepath.Join(workDir, "custom-read"),
+		"thumbnail": filepath.Join(workDir, "cache", "thumbnail"),
+		"upload":    filepath.Join(workDir, "upload"),
+		"state":     filepath.Join(workDir, "state"),
+		"driver":    filepath.Join(workDir, "state", "driver"),
+		"logs":      filepath.Join(workDir, "logs"),
+		"tmp":       filepath.Join(workDir, "tmp"),
+	}
+	gots := map[string]string{
+		"read": layout.ReadCacheDir, "thumbnail": layout.ThumbnailDir,
+		"upload": layout.UploadDir, "state": layout.StateDir,
+		"driver": layout.DriverDir, "logs": layout.LogDir, "tmp": layout.TmpDir,
+	}
+	for name, want := range wants {
+		if got := gots[name]; got != want {
+			t.Fatalf("%s dir = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestNewStorageLayoutQryptHomeOverridesConfiguredPaths(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "portable")
+	t.Setenv("QRYPT_HOME", home)
+	cfg := &config.Config{Storage: config.StorageConfig{
+		WorkDir:      "/configured/work",
+		ReadCacheDir: "/configured/cache",
+		UploadDir:    "/configured/upload",
+		StateDir:     "/configured/state",
+		LogDir:       "/configured/logs",
+		TmpDir:       "/configured/tmp",
+	}}
+
+	layout := NewStorageLayout(cfg, RuntimeLayout{})
+
+	wants := map[string]string{
+		"root": home, "read": filepath.Join(home, "cache", "read"),
+		"thumbnail": filepath.Join(home, "cache", "thumbnail"),
+		"upload":    filepath.Join(home, "upload"), "state": filepath.Join(home, "state"),
+		"driver": filepath.Join(home, "state", "driver"), "logs": filepath.Join(home, "logs"),
+		"tmp": filepath.Join(home, "tmp"),
+	}
+	gots := map[string]string{
+		"root": layout.RootDir, "read": layout.ReadCacheDir, "thumbnail": layout.ThumbnailDir,
+		"upload": layout.UploadDir, "state": layout.StateDir, "driver": layout.DriverDir,
+		"logs": layout.LogDir, "tmp": layout.TmpDir,
+	}
+	for name, want := range wants {
+		if got := gots[name]; got != want {
+			t.Fatalf("%s dir = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -20,13 +20,12 @@ func TestSessionKeyIsDeterministic(t *testing.T) {
 
 func TestPersistRootUsesQryptHome(t *testing.T) {
 	home := useTestQryptHome(t)
-	if got, want := PersistRoot(), filepath.Join(home, "qrypt-sync"); got != want {
+	if got, want := PersistRoot(), filepath.Join(home, "sync"); got != want {
 		t.Fatalf("PersistRoot = %q, want %q", got, want)
 	}
-	override := filepath.Join(t.TempDir(), "sync-only")
-	t.Setenv("QRYPT_SYNC_DIR", override)
-	if got := PersistRoot(); got != override {
-		t.Fatalf("PersistRoot with QRYPT_SYNC_DIR = %q, want %q", got, override)
+	workDir := filepath.Join(t.TempDir(), "work")
+	if got, want := persistRoot(workDir), filepath.Join(workDir, "sync"); got != want {
+		t.Fatalf("persistRoot = %q, want %q", got, want)
 	}
 }
 
@@ -57,7 +56,7 @@ func TestMarkDonePersistenceFailure(t *testing.T) {
 // TestSessionLifecycleRoundTrip exercises the full session state machine:
 // create, progress, failed ops, reload, flag persistence and removal.
 func TestSessionLifecycleRoundTrip(t *testing.T) {
-	t.Setenv("QRYPT_SYNC_DIR", filepath.Join(t.TempDir(), "sync"))
+	useTestQryptHome(t)
 	src := Target{Kind: TargetLocal, LocalPath: "/tmp/src"}
 	dst := Target{Kind: TargetVFS, VFSPath: "/dest", MountName: "loc"}
 	ops := []PlanEntry{
@@ -127,7 +126,7 @@ func TestSessionLifecycleRoundTrip(t *testing.T) {
 // TestPruneExpiredReapsIdleSessions: a closed session older than the TTL is
 // dropped; a session with a live lock survives even when old.
 func TestPruneExpiredReapsIdleSessions(t *testing.T) {
-	t.Setenv("QRYPT_SYNC_DIR", filepath.Join(t.TempDir(), "sync"))
+	useTestQryptHome(t)
 	src := Target{Kind: TargetLocal, LocalPath: "/tmp/src"}
 	dst := Target{Kind: TargetVFS, VFSPath: "/dest", MountName: "loc"}
 

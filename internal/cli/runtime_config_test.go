@@ -6,7 +6,43 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/config"
 )
+
+func TestApplyQryptHomeOverride(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runtime")
+	t.Setenv("QRYPT_HOME", root)
+	cfg := &config.Config{
+		Storage: config.StorageConfig{
+			ReadCacheDir: "/configured/cache", UploadDir: "/configured/upload",
+			StateDir: "/configured/state", LogDir: "/configured/logs",
+		},
+		Logging: config.LoggingConfig{LogFile: "/configured/qrypt.log", ErrorFile: "/configured/qrypt-error.log"},
+	}
+
+	applyQryptHomeOverride(cfg)
+
+	wantStorage := config.StorageConfig{}
+	if cfg.Storage != wantStorage {
+		t.Fatalf("storage = %+v, want %+v", cfg.Storage, wantStorage)
+	}
+	if cfg.Logging.LogFile != "" || cfg.Logging.ErrorFile != "" {
+		t.Fatalf("explicit logging paths were not isolated: %+v", cfg.Logging)
+	}
+}
+
+func TestApplyQryptHomeOverrideDoesNothingWhenUnset(t *testing.T) {
+	t.Setenv("QRYPT_HOME", "")
+	want := config.StorageConfig{ReadCacheDir: "/configured/cache"}
+	cfg := &config.Config{Storage: want}
+
+	applyQryptHomeOverride(cfg)
+
+	if cfg.Storage != want {
+		t.Fatalf("storage = %+v, want unchanged %+v", cfg.Storage, want)
+	}
+}
 
 func TestMountConfigFromConfig(t *testing.T) {
 	tmp := t.TempDir()

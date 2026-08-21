@@ -177,33 +177,38 @@
       "type": "object",
       "description": "Runtime storage directories.",
       "properties": {
+        "work_dir": {
+          "description": "Root directory for all runtime data. Unset child directories are derived below this path.",
+          "type": "string",
+          "default": "~/.qrypt"
+        },
         "read_cache_dir": {
-          "description": "Root directory for read cache files.",
+          "description": "Optional override for read cache files. Defaults to <work_dir>/cache/read.",
           "type": "string",
           "default": ""
         },
         "thumbnail_cache_dir": {
-          "description": "Root directory for generated thumbnail cache files.",
+          "description": "Optional override for generated thumbnail cache files. Defaults to <work_dir>/cache/thumbnail.",
           "type": "string",
           "default": ""
         },
         "upload_dir": {
-          "description": "Root directory for upload staging and pending journal files.",
+          "description": "Optional override for upload staging and pending journal files. Defaults to <work_dir>/upload.",
           "type": "string",
           "default": ""
         },
         "state_dir": {
-          "description": "Root directory for persistent driver and runtime state.",
+          "description": "Optional override for persistent driver and runtime state. Defaults to <work_dir>/state.",
           "type": "string",
           "default": ""
         },
         "log_dir": {
-          "description": "Root directory for runtime logs when log files are not explicitly configured.",
+          "description": "Optional override for runtime logs. Defaults to <work_dir>/logs.",
           "type": "string",
           "default": ""
         },
         "tmp_dir": {
-          "description": "Root directory for temporary runtime files.",
+          "description": "Optional override for temporary runtime files. Defaults to <work_dir>/tmp.",
           "type": "string",
           "default": ""
         }
@@ -309,11 +314,11 @@
           ]
         },
         "log_file": {
-          "description": "Path to the main log file. When unset, defaults to <storage.log_dir>/qrypt.log.",
+          "description": "Path to the main log file. When unset, defaults to <storage.log_dir>/qrypt.log or <storage.work_dir>/logs/qrypt.log.",
           "type": "string"
         },
         "error_file": {
-          "description": "Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log.",
+          "description": "Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log or <storage.work_dir>/logs/qrypt-error.log.",
           "type": "string"
         }
       },

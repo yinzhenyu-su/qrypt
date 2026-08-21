@@ -182,6 +182,16 @@ func TestEffectiveLogFilesDefaultToStorageLogDir(t *testing.T) {
 	}
 }
 
+func TestEffectiveLogFilesDefaultToWorkDir(t *testing.T) {
+	cfg := &Config{Storage: StorageConfig{WorkDir: "/var/lib/qrypt"}}
+	if got, want := cfg.EffectiveLogFile(), "/var/lib/qrypt/logs/qrypt.log"; got != want {
+		t.Fatalf("EffectiveLogFile = %q, want %q", got, want)
+	}
+	if got, want := cfg.EffectiveErrorFile(), "/var/lib/qrypt/logs/qrypt-error.log"; got != want {
+		t.Fatalf("EffectiveErrorFile = %q, want %q", got, want)
+	}
+}
+
 func TestEffectiveLogFilesPreferExplicit(t *testing.T) {
 	// Explicit log_file/error_file win over the log_dir default.
 	cfg := &Config{

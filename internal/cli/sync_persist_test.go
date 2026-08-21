@@ -11,12 +11,11 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/syncer"
 )
 
-// setupSyncPersistTest returns a config + local dir pair whose sync sessions
-// are isolated under a temp QRYPT_SYNC_DIR.
+// setupSyncPersistTest returns a config + local dir pair. TestMain redirects
+// HOME, so persisted sync sessions cannot reach the user's real directory.
 func setupSyncPersistTest(t *testing.T) (configPath, remote, local string) {
 	t.Helper()
 	configPath, remote, local = setupSyncTest(t)
-	t.Setenv("QRYPT_SYNC_DIR", filepath.Join(t.TempDir(), "qrypt-sync"))
 	return configPath, remote, local
 }
 

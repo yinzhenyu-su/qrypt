@@ -12,6 +12,21 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
+func applyQryptHomeOverride(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("QRYPT_HOME")) == "" {
+		return
+	}
+	// NewStorageLayout resolves QRYPT_HOME. Clear every explicit child path
+	// here so the environment override cannot leak logs or other runtime data
+	// back into paths from the config file.
+	cfg.Storage = config.StorageConfig{}
+	cfg.Logging.LogFile = ""
+	cfg.Logging.ErrorFile = ""
+}
+
 func initLogger(cfg *config.Config) error {
 	if cfg == nil {
 		return nil

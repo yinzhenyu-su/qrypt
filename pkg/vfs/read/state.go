@@ -404,8 +404,16 @@ func (s *State) FlushReadCache() error {
 	return s.cache.FlushReadCache()
 }
 
-// ClearReadCache clears the durable read cache.
+// ClearReadCache clears durable and in-memory read-cache entries.
 func (s *State) ClearReadCache() error {
+	s.fastPath.hot.mu.Lock()
+	s.fastPath.hot.chunks = map[string][]byte{}
+	s.fastPath.hot.lru = nil
+	s.fastPath.hot.mu.Unlock()
+	s.fastPath.rangeHit.mu.Lock()
+	s.fastPath.rangeHit.hits = map[string]int{}
+	s.fastPath.rangeHit.lru = nil
+	s.fastPath.rangeHit.mu.Unlock()
 	if s.cache == nil {
 		return nil
 	}

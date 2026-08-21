@@ -52,7 +52,7 @@ type StateEntry struct {
 
 // Session owns the on-disk state for one SOURCE→DESTINATION pair:
 //
-//	~/.qrypt/qrypt-sync/<key>/
+//	~/.qrypt/sync/<key>/
 //	├── plan.json    # immutable plan, written once via atomic rename
 //	├── state.jsonl  # append-only progress journal, one op per line
 //	└── .lock        # flock guard against concurrent runs
@@ -68,17 +68,19 @@ type Session struct {
 	lock *os.File
 }
 
-// PersistRoot returns the directory that holds all sync sessions.
-// QRYPT_SYNC_DIR is the narrow override for sync tests and tools. QRYPT_HOME
-// redirects the whole qrypt data root, matching core's runtime defaults.
+// PersistRoot returns the default directory that holds all sync sessions.
 func PersistRoot() string {
-	if dir := os.Getenv("QRYPT_SYNC_DIR"); dir != "" {
-		return dir
+	return persistRoot("")
+}
+
+func persistRoot(workDir string) string {
+	if workDir == "" {
+		workDir = os.Getenv("QRYPT_HOME")
 	}
-	if home := os.Getenv("QRYPT_HOME"); home != "" {
-		return filepath.Join(home, "qrypt-sync")
+	if workDir == "" {
+		workDir = util.ExpandHome("~/.qrypt")
 	}
-	return filepath.Join(util.ExpandHome("~/.qrypt"), "qrypt-sync")
+	return filepath.Join(filepath.Clean(util.ExpandHome(workDir)), "sync")
 }
 
 // TargetDescriptor canonicalizes one sync side so the session key is stable
@@ -109,7 +111,11 @@ func stateKey(path string, action Action) string {
 // NewSession creates or resets the session for a fresh run and takes an
 // exclusive lock so two processes cannot race the same pair.
 func NewSession(source, destination Target, flags SessionFlags, ops []PlanEntry) (*Session, error) {
-	dir := filepath.Join(PersistRoot(), SessionKey(source, destination))
+	return newSession(PersistRoot(), source, destination, flags, ops)
+}
+
+func newSession(root string, source, destination Target, flags SessionFlags, ops []PlanEntry) (*Session, error) {
+	dir := filepath.Join(root, SessionKey(source, destination))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create sync session: %w", err)
 	}
@@ -146,7 +152,11 @@ func NewSession(source, destination Target, flags SessionFlags, ops []PlanEntry)
 // LoadSession opens an existing session for resume. It returns found=false
 // when no session exists for this pair.
 func LoadSession(source, destination Target) (*Session, bool, error) {
-	dir := filepath.Join(PersistRoot(), SessionKey(source, destination))
+	return loadSession(PersistRoot(), source, destination)
+}
+
+func loadSession(root string, source, destination Target) (*Session, bool, error) {
+	dir := filepath.Join(root, SessionKey(source, destination))
 	if _, err := os.Stat(dir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
@@ -336,7 +346,10 @@ func (p *Session) Remove() {
 // have been idle beyond the TTL. Called on fresh runs; resume sessions are
 // untouched.
 func PruneExpired() {
-	root := PersistRoot()
+	pruneExpired(PersistRoot())
+}
+
+func pruneExpired(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return

@@ -21,8 +21,11 @@ running for interactive investigation. This is useful for repeatable driver and
 VFS regression checks such as `batchupload`, `batchmove`, and `fs`: the script
 builds qrypt, creates an isolated temporary mount point and debug socket, waits
 for both to become ready, runs the selected test, then unmounts and removes the
-temporary local files. For valid test arguments, standard output contains only
-the `qrypt debug test` result, so it can be captured or compared directly.
+temporary local files. Read caches, thumbnail caches, upload staging, driver
+state, logs, and temporary data are also redirected below that temporary
+directory instead of using the config's `[storage]` paths. For valid test
+arguments, standard output contains only the `qrypt debug test` result, so it
+can be captured or compared directly.
 
 The selected mount must exist in the config and have `test_enabled = true`.
 The script supports single-mount tests only; use the normal `qrypt mount` and
@@ -34,6 +37,7 @@ Run a test with the repository `qrypt.toml`:
 
 ```sh
 ./scripts/mount-debug-test.sh quark-test batchmove --count 50 --size 4k
+./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both
 ```
 
 Pass a different config before the mount name:
@@ -172,6 +176,7 @@ not supported.
 | Verify driver credentials | `debug test auth --mount NAME` |
 | Verify driver CRUD behavior | `debug test crud --mount NAME` |
 | Verify VFS upload behavior | `debug test fs --mount NAME` |
+| Measure full mounted-file read latency and throughput | `debug test read --mount NAME --mount-point PATH` |
 | Verify same-directory batch upload caching | `debug test batchupload --mount NAME` |
 | Measure same-mount batch moves | `debug test batchmove --mount NAME` |
 | Verify resumable upload recovery | `debug test resume --mount NAME` |
@@ -218,6 +223,34 @@ available, more than one parent-cache miss fails the test. `batchmove` first
 uploads the source batch and waits for it to become idle, then measures only
 the sequential VFS `Rename` calls before verifying the empty source and the
 destination data. Both tests clean their randomized temporary directories.
+
+To measure the complete mounted-file read path, including the OS filesystem,
+FUSE/macFUSE adapter, VFS read cache and remote driver, run:
+
+```sh
+./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both
+```
+
+The wrapper supplies its temporary mount point automatically. When invoking
+qrypt directly, pass the real FUSE mount directory explicitly:
+
+```sh
+go run ./cmd/qrypt debug test read --socket /tmp/qrypt.sock --mount quark-test --mount-point /Volumes/qrypt --size 256m --block-size 1m --samples 3 --cache-mode both
+```
+
+The test creates and uploads a deterministic temporary file before timing,
+then reads it with `os.Open` through the supplied mount point. Setup and cleanup
+are excluded from the read measurements. `cold` clears qrypt's durable and
+in-memory read caches; every measured read requests OS cache bypass/drop where
+supported, while `warm` keeps qrypt's read-cache state from the preceding read.
+`both` reports both modes. Each measurement includes open and time-to-first-byte
+latency, total and steady throughput, peak throughput over a one-second window,
+data-bearing read-call latency percentiles, cache hit/miss deltas, VFS read-call
+count, byte count, and content-hash validation. The test fails when the supplied
+path bypasses qrypt (for example, when `--mount-point` names the backing
+directory instead of the FUSE mount). `metrics_truncated` marks a measurement
+whose phase-level history exceeded the bounded runtime history. The test does
+not use a fixed network-speed threshold.
 
 If the issue is about interrupted uploads or resumable upload sessions, run:
 
@@ -503,6 +536,10 @@ signed upload URLs, encrypted request blobs, or full response bodies.
   consume upload time and provider bandwidth.
 - `debug test batchupload` and `debug test batchmove` accept `--count` (default
   50, maximum 100) and `--size` (default 4 KiB per file, maximum 1 MiB).
+- `debug test read` requires `--mount-point`. It accepts `--size` (default
+  256 MiB, maximum 2 GiB), `--block-size` (default 1 MiB), `--samples` (default
+  1, maximum 10), and `--cache-mode cold|warm|both` (default `both`). It creates
+  and removes a temporary remote file of the requested size.
 - `debug test resume --size` has the same size format. It intentionally cancels
   one upload attempt through the VFS debug fault injector, then waits for normal
   retry or resumable-upload recovery.

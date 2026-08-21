@@ -33,6 +33,7 @@ func buildFileSystemFromConfigMountMode(ctx context.Context, cfg *config.Config,
 // buildFileSystemWithBandwidth builds a filesystem with an optional CLI
 // bandwidth override (nil means use the config [bandwidth] section).
 func buildFileSystemWithBandwidth(ctx context.Context, cfg *config.Config, mountName string, forceNamespace bool, bandwidth *config.BandwidthLimits) (builtFS, func(), error) {
+	applyQryptHomeOverride(cfg)
 	return core.BuildFileSystem(ctx, cfg, core.Options{
 		MountName:      mountName,
 		ForceNamespace: forceNamespace,

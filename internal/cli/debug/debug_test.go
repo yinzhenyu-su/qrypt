@@ -175,6 +175,15 @@ func TestValidateDriverTestRequest(t *testing.T) {
 		!strings.Contains(err.Error(), "resume test only supports --mount and --size") {
 		t.Fatalf("expected resume test with source to fail clearly, got %v", err)
 	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem"}); err == nil || !strings.Contains(err.Error(), "requires --mount-point") {
+		t.Fatalf("expected read test without mount point to fail clearly, got %v", err)
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", Size: "64m", BlockSize: "1m", CacheMode: "both", Samples: 2}); err != nil {
+		t.Fatalf("expected valid read request, got %v", err)
+	}
+	if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: "read", Mount: "mem", MountPoint: "/tmp/mount", CacheMode: "invalid", Samples: 1}); err == nil {
+		t.Fatal("expected invalid read cache mode to fail")
+	}
 	for _, test := range []string{"batchupload", "batchmove"} {
 		if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: test}); err == nil || !strings.Contains(err.Error(), "requires --mount") {
 			t.Fatalf("expected %s without mount to fail clearly, got %v", test, err)
