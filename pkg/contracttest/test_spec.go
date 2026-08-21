@@ -21,6 +21,9 @@ type DriverTestRequest struct {
 	VFS            bool   `json:"vfs,omitempty"`
 	Samples        int    `json:"samples,omitempty"`
 	SampleInterval string `json:"sample_interval,omitempty"`
+	MountPoint     string `json:"mount_point,omitempty"`
+	BlockSize      string `json:"block_size,omitempty"`
+	CacheMode      string `json:"cache_mode,omitempty"`
 }
 
 // Specs returns the registered test specs (identity, capability
@@ -66,11 +69,13 @@ type TestRun struct {
 	Residual         []CRUDTestArtifact     `json:"residual,omitempty"`
 	ResidualTimeline []CRUDVisibilitySample `json:"residual_timeline,omitempty"`
 	Metrics          []drive.MetricEvent    `json:"metrics,omitempty"`
+	MetricsTruncated bool                   `json:"metrics_truncated,omitempty"`
 	RetryCommand     string                 `json:"retry_command,omitempty"`
 	Started          time.Time              `json:"started_at"`
 	Finished         time.Time              `json:"finished_at"`
 	Duration         string                 `json:"duration"`
 	DurationMS       int64                  `json:"duration_ms"`
+	Read             *MountedReadDetails    `json:"read,omitempty"`
 }
 
 // TestEnv carries the objects a spec runner may need, resolved once by the
@@ -130,6 +135,14 @@ var driverTestSpecs = map[string]TestSpec{
 		RequiresVFS: true,
 		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
 			return fromFSTestResult("fs", *RunVFSSmokeTest(env.Ctx, env.FileSys, mount, ParseXferSize(env.Req.Size)))
+		},
+	},
+	"read": {
+		Name:        "read",
+		Requires:    []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
+		RequiresVFS: true,
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromMountedReadTestResult(*RunVFSMountedReadTest(env.Ctx, env.FileSys, mount, env.Req))
 		},
 	},
 	"contract": {
@@ -254,6 +267,29 @@ func fromBatchTestResult(r BatchTestResult) TestRun {
 		Spec: r.Spec, Mount: r.Mount, Pass: r.Pass, Metrics: r.Metrics,
 		RetryCommand: r.RetryCommand, Started: r.Started, Finished: r.Finished,
 		Duration: r.Duration, DurationMS: r.DurationMS,
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Operation, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
+
+func fromMountedReadTestResult(r MountedReadTestResult) TestRun {
+	details := &MountedReadDetails{
+		MountPoint: r.MountPoint, VirtualPath: r.VirtualPath, Size: r.Size,
+		BlockSize: r.BlockSize, CacheMode: r.CacheMode, Samples: r.Samples,
+		Measurements: r.Measurements, Summary: r.Summary,
+	}
+	tr := TestRun{
+		Spec: "read", Mount: r.Mount, Pass: r.Pass, Metrics: r.Metrics,
+		MetricsTruncated: r.MetricsTruncated,
+		RetryCommand:     r.RetryCommand, Started: r.Started, Finished: r.Finished,
+		Duration: r.Duration, DurationMS: r.DurationMS, Read: details,
 	}
 	tr.Steps = make([]TestStep, len(r.Steps))
 	for i, s := range r.Steps {

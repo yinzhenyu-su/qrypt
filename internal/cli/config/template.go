@@ -99,17 +99,12 @@ negative_timeout = "0s"
 # ── Logging ───────────────────────────────────────────────────────
 [logging]
 log_level = "info"
-# log_file  = "~/.qrypt/qrypt.log"
-# error_file = "~/.qrypt/qrypt-error.log"
+# log_file  = "~/.qrypt/logs/qrypt.log"
+# error_file = "~/.qrypt/logs/qrypt-error.log"
 
-# ── Runtime storage directories (empty = platform defaults) ─────
+# ── Runtime storage root ─────────────────────────────────────────
 [storage]
-read_cache_dir = ""
-thumbnail_cache_dir = ""
-upload_dir  = ""
-state_dir      = ""
-log_dir        = ""
-tmp_dir        = ""
+work_dir = "~/.qrypt"
 
 # ── Time source (NTP first, system clock fallback) ────────────────
 [time]

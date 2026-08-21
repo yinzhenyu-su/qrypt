@@ -220,13 +220,11 @@ func DebugCacheTargets(rt cliruntime.Runtime, cacheDir string, cfg *config.Confi
 		}
 		return []DebugCacheTarget{{Name: "default", Dir: util.ExpandHome(cacheDir)}}, nil
 	}
-	baseStorageDir := cfg.Storage.UploadDir
+	baseStorageDir := core.NewStorageLayout(cfg, core.RuntimeLayout{}).UploadDir
 	if cacheDir != "" {
 		baseStorageDir = cacheDir
 	}
-	if baseStorageDir == "" {
-		baseStorageDir = core.DefaultUploadDir()
-	} else {
+	if baseStorageDir != "" {
 		baseStorageDir = util.ExpandHome(baseStorageDir)
 	}
 	if len(cfg.Mounts) == 0 {

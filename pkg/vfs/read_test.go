@@ -544,6 +544,16 @@ func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
 	waitForCondition(t, func() bool {
 		return drv.readCount(testReadChunkSize) == 1
 	})
+
+	waitForCondition(t, func() bool {
+		var prefetches int
+		for _, event := range fs.DebugSnapshot().Mounts[0].ReadEvents() {
+			if event.Phase == "prefetch_window" {
+				prefetches++
+			}
+		}
+		return prefetches == 1
+	})
 }
 
 func TestVFSReadWithoutPrefetchSkipsAdjacentChunk(t *testing.T) {

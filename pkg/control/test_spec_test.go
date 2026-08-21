@@ -263,7 +263,7 @@ func TestDriverTestUnifiedEnvelope(t *testing.T) {
 // TestVFSSpecsRegistered asserts the VFS-layer specs live in the
 // same registry as drive-layer specs, with the RequiresVFS flag set.
 func TestVFSSpecsRegistered(t *testing.T) {
-	for _, name := range []string{"batchmove", "batchupload", "fs", "resume"} {
+	for _, name := range []string{"batchmove", "batchupload", "fs", "read", "resume"} {
 		spec, ok := contracttest.Specs()[name]
 		if !ok {
 			t.Fatalf("spec %q not registered", name)
@@ -364,6 +364,51 @@ func TestVFSSpecsRunThroughRegistry(t *testing.T) {
 		if strings.HasPrefix(req.Test, "batch") && len(r.Metrics) == 0 {
 			t.Fatalf("%s run has no batch metrics", req.Test)
 		}
+	}
+}
+
+func TestMountedReadSpecRejectsBackendDirectoryThroughServer(t *testing.T) {
+	root := t.TempDir()
+	driver := localfs.New(root)
+	if err := driver.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vfs.New(driver, vfs.Options{
+		Name: "local", StorageDir: filepath.Join(t.TempDir(), "cache"), TestEnabled: true,
+		UploadDelay: time.Millisecond, DeleteDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	v.Start(ctx)
+	t.Cleanup(cancel)
+	t.Cleanup(func() { stopVFS(t, v) })
+
+	server, err := NewServer(testSocketPath(t), v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close(context.Background()) })
+	client, err := NewClient(server.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{
+		Test: "read", Mount: "local", MountPoint: root, Size: "64k", BlockSize: "4k", CacheMode: "both", Samples: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs []contracttest.TestRun
+	if err := json.Unmarshal(body, &runs); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if len(runs) != 1 || runs[0].Pass || runs[0].Read == nil || len(runs[0].Read.Measurements) != 1 || runs[0].Read.Measurements[0].TraversedVFS {
+		t.Fatalf("unexpected mounted read run: %+v", runs)
 	}
 }
 

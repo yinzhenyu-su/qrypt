@@ -24,6 +24,7 @@ func NewTestCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "fs", "Run a VFS filesystem smoke test")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "instantupload", "Run an instant-upload driver test")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "multipart", "Run a multipart/chunked upload driver test")))
+	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "read", "Measure a complete read through a mounted filesystem")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "resume", "Run a VFS resumable-upload test")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "xfer", "Run a transfer driver test")))
 	return cmd
@@ -44,7 +45,7 @@ func newDebugTestCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Comma
 }
 
 func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
-	if test == "" || test == "auth" || test == "batchmove" || test == "batchupload" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "resume" || test == "multipart" {
+	if test == "" || test == "auth" || test == "batchmove" || test == "batchupload" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "read" || test == "resume" || test == "multipart" {
 		cmd.Flags().String("mount", "", "mount name for the single-mount test")
 	}
 	if test == "fs" || test == "resume" || test == "batchmove" || test == "batchupload" {
@@ -52,6 +53,13 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 	}
 	if test == "batchmove" || test == "batchupload" {
 		cmd.Flags().Int("count", 0, fmt.Sprintf("number of files (default %d, max %d)", contracttest.DefaultBatchTestCount, contracttest.MaxBatchTestCount))
+	}
+	if test == "read" {
+		cmd.Flags().String("mount-point", "", "actual FUSE mount directory")
+		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
+		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
+		cmd.Flags().Int("samples", 1, fmt.Sprintf("number of read samples (max %d)", contracttest.MaxMountedReadTestSamples))
+		cmd.Flags().String("size", "", "generated test file size in bytes, or k/m/g suffix (default 256m)")
 	}
 	if test == "" || test == "xfer" {
 		cmd.Flags().String("source", "", "source mount for xfer test")
@@ -84,6 +92,18 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("vfs"); flag != nil {
 		req.VFS, _ = cmd.Flags().GetBool("vfs")
 	}
+	if flag := cmd.Flags().Lookup("mount-point"); flag != nil {
+		req.MountPoint, _ = cmd.Flags().GetString("mount-point")
+	}
+	if flag := cmd.Flags().Lookup("block-size"); flag != nil {
+		req.BlockSize, _ = cmd.Flags().GetString("block-size")
+	}
+	if flag := cmd.Flags().Lookup("cache-mode"); flag != nil {
+		req.CacheMode, _ = cmd.Flags().GetString("cache-mode")
+	}
+	if flag := cmd.Flags().Lookup("samples"); flag != nil {
+		req.Samples, _ = cmd.Flags().GetInt("samples")
+	}
 	if err := ValidateDriverTestRequest(req); err != nil {
 		return err
 	}
@@ -110,6 +130,36 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("%s test requires --mount\n\nExample:\n  qrypt debug test %s --mount cloud --socket /tmp/qrypt.sock", req.Test, req.Test)
+		}
+	case "read":
+		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
+			return fmt.Errorf("read test only supports --mount, --mount-point, --size, --block-size, --cache-mode, and --samples")
+		}
+		if req.Mount == "" {
+			return fmt.Errorf("read test requires --mount")
+		}
+		if strings.TrimSpace(req.MountPoint) == "" {
+			return fmt.Errorf("read test requires --mount-point")
+		}
+		if req.Size != "" {
+			size := contracttest.ParseXferSize(req.Size)
+			if size < 1 || size > contracttest.MaxMountedReadTestSize {
+				return fmt.Errorf("read test --size must be between 1 and %d bytes", contracttest.MaxMountedReadTestSize)
+			}
+		}
+		if req.BlockSize != "" {
+			blockSize := contracttest.ParseXferSize(req.BlockSize)
+			if blockSize < 1 || blockSize > 16<<20 {
+				return fmt.Errorf("read test --block-size must be between 1 and %d bytes", 16<<20)
+			}
+		}
+		if req.Samples < 1 || req.Samples > contracttest.MaxMountedReadTestSamples {
+			return fmt.Errorf("read test --samples must be between 1 and %d", contracttest.MaxMountedReadTestSamples)
+		}
+		switch strings.ToLower(strings.TrimSpace(req.CacheMode)) {
+		case "cold", "warm", "both":
+		default:
+			return fmt.Errorf("read test --cache-mode must be cold, warm, or both")
 		}
 	case "batchmove", "batchupload":
 		if req.Source != "" || req.Dest != "" || req.VFS {

@@ -73,6 +73,12 @@ func TestGeneratedConfigPassesValidation(t *testing.T) {
 	if err := qconfig.Validate(cfg); err != nil {
 		t.Fatal(err)
 	}
+	if cfg.Storage.WorkDir != "~/.qrypt" {
+		t.Fatalf("generated storage work_dir = %q", cfg.Storage.WorkDir)
+	}
+	if cfg.Storage.ReadCacheDir != "" || cfg.Storage.ThumbnailCacheDir != "" || cfg.Storage.UploadDir != "" || cfg.Storage.StateDir != "" || cfg.Storage.LogDir != "" || cfg.Storage.TmpDir != "" {
+		t.Fatalf("generated config should derive storage children from work_dir: %+v", cfg.Storage)
+	}
 }
 
 func TestConfigInitCreatesValidStarter(t *testing.T) {

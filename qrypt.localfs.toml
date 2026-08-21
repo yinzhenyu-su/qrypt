@@ -7,13 +7,10 @@ total_space = "1T"
 free_space = "800G"
 
 [storage]
-read_cache_dir = "/tmp/qrypt-cache/read"
-upload_dir = "/tmp/qrypt-upload"
-state_dir = "/tmp/qrypt-state"
+work_dir = "/tmp/qrypt"
 
 [logging]
 log_level = "info"
-log_file = "/tmp/qrypt.log"
 
 [bandwidth]
 download = ""

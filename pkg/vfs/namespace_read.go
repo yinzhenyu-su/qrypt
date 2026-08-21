@@ -33,6 +33,17 @@ func (n *Namespace) ClearReadCache() error {
 	return errors.Join(errs...)
 }
 
+func (n *Namespace) ClearReadCacheForMount(name string) error {
+	name = cleanMountName(name)
+	n.mu.RLock()
+	mount, ok := n.mounts[name]
+	n.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("vfs: unknown mount %q", name)
+	}
+	return mount.ClearReadCache()
+}
+
 func (n *Namespace) CloseReadCache() error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()

@@ -18,6 +18,7 @@ var ErrNoSession = errors.New("sync: no resumable sync session")
 type Request struct {
 	Source      Target
 	Destination Target
+	WorkDir     string
 	DryRun      bool
 	Delete      bool
 	Hash        bool
@@ -97,9 +98,10 @@ func Run(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) (Re
 
 	result.DryRun = req.DryRun
 	if !req.DryRun {
+		root := persistRoot(req.WorkDir)
 		// A fresh run supersedes any interrupted session for this pair.
-		PruneExpired()
-		persist, err := NewSession(req.Source, req.Destination, SessionFlags{
+		pruneExpired(root)
+		persist, err := newSession(root, req.Source, req.Destination, SessionFlags{
 			Delete: req.Delete, Hash: forceHash, Conflict: req.Conflict,
 		}, plan)
 		if err != nil {
@@ -134,7 +136,7 @@ func Run(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) (Re
 // skips ops that already finished OK (failed ops are retried) and executes
 // the remainder without re-scanning either tree.
 func resume(ctx context.Context, fs executorFS, waitIdle WaitIdle, req Request) (Result, error) {
-	persist, found, err := LoadSession(req.Source, req.Destination)
+	persist, found, err := loadSession(persistRoot(req.WorkDir), req.Source, req.Destination)
 	if err != nil {
 		return Result{}, err
 	}

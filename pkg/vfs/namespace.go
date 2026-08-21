@@ -135,6 +135,11 @@ type ReadCacheCleaner interface {
 	ClearReadCache() error
 }
 
+// MountReadCacheCleaner drops read-cache entries for one named mount.
+type MountReadCacheCleaner interface {
+	ClearReadCacheForMount(name string) error
+}
+
 // ReadCacheFlusher flushes pending read-cache writes.
 type ReadCacheFlusher interface {
 	FlushReadCache() error

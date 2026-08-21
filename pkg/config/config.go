@@ -85,6 +85,7 @@ func (p *ParamMap) UnmarshalTOML(data any) error {
 }
 
 type StorageConfig struct {
+	WorkDir           string `toml:"work_dir"`
 	ReadCacheDir      string `toml:"read_cache_dir"`
 	ThumbnailCacheDir string `toml:"thumbnail_cache_dir"`
 	UploadDir         string `toml:"upload_dir"`
@@ -294,8 +295,7 @@ func (c *Config) EffectiveMountPoint() string {
 }
 
 // EffectiveLogFile resolves logging.log_file. When log_file is unset it
-// defaults to <storage.log_dir>/qrypt.log; when no log directory is
-// configured either, it returns "" so callers keep stderr logging.
+// defaults to <storage.log_dir>/qrypt.log, or <storage.work_dir>/logs/qrypt.log.
 func (c *Config) EffectiveLogFile() string {
 	if c == nil {
 		return ""
@@ -303,15 +303,16 @@ func (c *Config) EffectiveLogFile() string {
 	if f := strings.TrimSpace(c.Logging.LogFile); f != "" {
 		return f
 	}
-	if c.Storage.LogDir == "" {
+	logDir := effectiveStorageLogDir(c.Storage)
+	if logDir == "" {
 		return ""
 	}
-	return filepath.Join(c.Storage.LogDir, "qrypt.log")
+	return filepath.Join(logDir, "qrypt.log")
 }
 
 // EffectiveErrorFile resolves logging.error_file. When error_file is unset
-// it defaults to <storage.log_dir>/qrypt-error.log; when no log directory
-// is configured either, it returns "" so callers keep stderr logging.
+// it defaults to <storage.log_dir>/qrypt-error.log, or
+// <storage.work_dir>/logs/qrypt-error.log.
 func (c *Config) EffectiveErrorFile() string {
 	if c == nil {
 		return ""
@@ -319,10 +320,21 @@ func (c *Config) EffectiveErrorFile() string {
 	if f := strings.TrimSpace(c.Logging.ErrorFile); f != "" {
 		return f
 	}
-	if c.Storage.LogDir == "" {
+	logDir := effectiveStorageLogDir(c.Storage)
+	if logDir == "" {
 		return ""
 	}
-	return filepath.Join(c.Storage.LogDir, "qrypt-error.log")
+	return filepath.Join(logDir, "qrypt-error.log")
+}
+
+func effectiveStorageLogDir(storage StorageConfig) string {
+	if storage.LogDir != "" {
+		return storage.LogDir
+	}
+	if storage.WorkDir != "" {
+		return filepath.Join(storage.WorkDir, "logs")
+	}
+	return ""
 }
 
 func (c *Config) EffectiveVolumeName() string {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
+	"github.com/yinzhenyu/qrypt/pkg/core"
 	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
 )
 
@@ -61,6 +62,7 @@ func runSync(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		req := syncer.Request{
 			Source:      ResolveCheckTarget(state.Cfg, args[0]),
 			Destination: ResolveCheckTarget(state.Cfg, args[1]),
+			WorkDir:     core.NewStorageLayout(state.Cfg, core.RuntimeLayout{}).RootDir,
 			DryRun:      dryRun,
 			Delete:      getBoolFlag(cmd, "delete"),
 			Hash:        getBoolFlag(cmd, "hash"),

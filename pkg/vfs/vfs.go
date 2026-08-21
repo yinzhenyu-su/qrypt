@@ -401,6 +401,13 @@ func (v *VFS) ClearReadCache() error {
 	return v.read.ClearReadCache()
 }
 
+func (v *VFS) ClearReadCacheForMount(name string) error {
+	if name != "" && cleanMountName(name) != cleanMountName(v.name) {
+		return fmt.Errorf("vfs: unknown mount %q", name)
+	}
+	return v.ClearReadCache()
+}
+
 func (v *VFS) CloseReadCache() error {
 	return v.read.Close()
 }
