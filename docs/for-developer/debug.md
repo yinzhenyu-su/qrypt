@@ -136,6 +136,8 @@ not supported.
 | Verify driver credentials | `debug test auth --mount NAME` |
 | Verify driver CRUD behavior | `debug test crud --mount NAME` |
 | Verify VFS upload behavior | `debug test fs --mount NAME` |
+| Verify same-directory batch upload caching | `debug test batchupload --mount NAME` |
+| Measure same-mount batch moves | `debug test batchmove --mount NAME` |
 | Verify resumable upload recovery | `debug test resume --mount NAME` |
 | Run the full contract suite | `debug test contract --socket SOCKET --mount NAME` |
 | Compare performance or regressions | `debug bench ...` |
@@ -165,6 +167,21 @@ go run ./cmd/qrypt debug test fs --socket /tmp/qrypt.sock --mount quark-test --s
 `debug test fs` creates temporary files through the VFS, writes data, flushes,
 waits for upload, reads back, and removes the test data. It writes to the
 selected mount, so use it only when temporary remote writes are acceptable.
+
+For small-file and move workloads, run:
+
+```sh
+go run ./cmd/qrypt debug test batchupload --socket /tmp/qrypt.sock --mount quark-test --count 50 --size 4k
+go run ./cmd/qrypt debug test batchmove --socket /tmp/qrypt.sock --mount quark-test --count 50 --size 4k
+```
+
+`batchupload` writes and flushes every file through VFS, waits for the upload
+queue to become idle, verifies the directory and sampled content, and reports
+the parent-directory cache miss/hit/shared counts. When upload history is
+available, more than one parent-cache miss fails the test. `batchmove` first
+uploads the source batch and waits for it to become idle, then measures only
+the sequential VFS `Rename` calls before verifying the empty source and the
+destination data. Both tests clean their randomized temporary directories.
 
 If the issue is about interrupted uploads or resumable upload sessions, run:
 
@@ -448,6 +465,8 @@ signed upload URLs, encrypted request blobs, or full response bodies.
   destination mounts to opt in.
 - `debug test fs --size` accepts bytes or `k`, `m`, `g` suffixes. Large values
   consume upload time and provider bandwidth.
+- `debug test batchupload` and `debug test batchmove` accept `--count` (default
+  50, maximum 100) and `--size` (default 4 KiB per file, maximum 1 MiB).
 - `debug test resume --size` has the same size format. It intentionally cancels
   one upload attempt through the VFS debug fault injector, then waits for normal
   retry or resumable-upload recovery.

@@ -12,6 +12,7 @@ import (
 // EngineDeps wires the upload engine to VFS adapters.
 type EngineDeps struct {
 	Remote   RemoteOps
+	Targets  *TargetIndex
 	Observer Observer
 	Pending  Store
 	Runtime  Runtime
@@ -24,6 +25,7 @@ type EngineDeps struct {
 // progress through the observer and maintaining the pending store.
 type Engine struct {
 	remote   RemoteOps
+	targets  *TargetIndex
 	observer Observer
 	pending  Store
 	runtime  Runtime
@@ -33,8 +35,13 @@ type Engine struct {
 }
 
 func NewEngine(deps EngineDeps) *Engine {
+	targets := deps.Targets
+	if targets == nil {
+		targets = NewTargetIndex(DefaultTargetIndexTTL)
+	}
 	return &Engine{
-		remote:   deps.Remote,
+		remote:   indexedRemoteOps{RemoteOps: deps.Remote, index: targets},
+		targets:  targets,
 		observer: deps.Observer,
 		pending:  deps.Pending,
 		runtime:  deps.Runtime,
@@ -88,17 +95,19 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 	observer.State(pending.Path, "prepare_remote")
 	phaseStart := util.Now()
 	replaceUpload := pending.ReplaceUpload
-	if target, err := prepareUploadTarget(ctx, e.remote, pending.ParentID, pending.Name, pending.FID, UploadReplacementID(replaceUpload)); err != nil {
+	target, lease, cacheInfo, err := e.targets.prepare(ctx, e.remote, pending.ParentID, pending.Name, pending.FID, UploadReplacementID(replaceUpload))
+	if err != nil {
 		observer.Event(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"error": err.Error()})
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload remote preparation failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
 		return err
 	} else {
+		defer e.targets.release(lease)
 		uploadName = target.UploadName
 		replaceExisting = target.ReplaceExisting
 		alreadyReplaced = target.AlreadyReplaced
 		needsReplace = !alreadyReplaced && (replaceUpload != nil || len(replaceExisting) > 0)
-		observer.Event(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"upload_name": uploadName, "replace_existing": len(replaceExisting), "replace_resume": replaceUpload != nil, "already_replaced": target.AlreadyReplaced})
+		observer.Event(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"upload_name": uploadName, "replace_existing": len(replaceExisting), "replace_resume": replaceUpload != nil, "already_replaced": target.AlreadyReplaced, "parent_cache": cacheInfo.status, "parent_cache_age": cacheInfo.age.String()})
 	}
 	var entry drive.Entry
 	if replaceUpload != nil {

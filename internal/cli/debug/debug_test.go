@@ -175,6 +175,17 @@ func TestValidateDriverTestRequest(t *testing.T) {
 		!strings.Contains(err.Error(), "resume test only supports --mount and --size") {
 		t.Fatalf("expected resume test with source to fail clearly, got %v", err)
 	}
+	for _, test := range []string{"batchupload", "batchmove"} {
+		if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: test}); err == nil || !strings.Contains(err.Error(), "requires --mount") {
+			t.Fatalf("expected %s without mount to fail clearly, got %v", test, err)
+		}
+		if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: test, Mount: "mem", Count: 4, Size: "4k"}); err != nil {
+			t.Fatalf("expected valid %s request, got %v", test, err)
+		}
+		if err := ValidateDriverTestRequest(contracttest.DriverTestRequest{Test: test, Mount: "mem", Count: contracttest.MaxBatchTestCount + 1}); err == nil {
+			t.Fatalf("expected oversized %s count to fail", test)
+		}
+	}
 }
 
 func TestValidateDriverBenchRequest(t *testing.T) {

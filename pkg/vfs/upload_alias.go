@@ -15,6 +15,11 @@ type uploadTaskRecord = upload.UploadTaskRecord
 type uploadSnapshot = upload.UploadSnapshot
 type uploadSnapshotState = upload.SnapshotState
 type uploadAdmission = upload.Admission
+type uploadTargetIndex = upload.TargetIndex
+
+func newUploadTargetIndex() *uploadTargetIndex {
+	return upload.NewTargetIndex(upload.DefaultTargetIndexTTL)
+}
 
 // vfsHashOps adapts the vfs hash tracker to upload.HashOps.
 type vfsHashOps struct{ h *uploadHashTrackerState }

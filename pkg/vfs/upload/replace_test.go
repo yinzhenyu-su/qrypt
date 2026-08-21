@@ -3,6 +3,7 @@ package upload
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -44,10 +45,13 @@ func TestPrepareUploadTarget(t *testing.T) {
 			{ID: "stale-temp", ParentID: "root", Name: TemporaryUploadName("file.txt", "fid"), Size: 3},
 		},
 	}
-	target, err := prepareUploadTarget(context.Background(), remote, "root", "file.txt", "fid", "")
+	index := NewTargetIndex(time.Minute)
+	indexed := indexedRemoteOps{RemoteOps: remote, index: index}
+	target, lease, _, err := index.prepare(context.Background(), indexed, "root", "file.txt", "fid", "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	index.release(lease)
 	if target.UploadName != TemporaryUploadName("file.txt", "fid") || len(target.ReplaceExisting) != 1 || target.ReplaceExisting[0].ID != "existing" {
 		t.Fatalf("target = %+v, want temp replacement target", target)
 	}

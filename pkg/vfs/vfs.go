@@ -55,14 +55,15 @@ type VFS struct {
 	// New, mutated only by its domain's code paths, and shut down by the VFS
 	// lifecycle. activeDebug (single-state) and pathLocks (cross-domain)
 	// stay top-level.
-	view    *viewState
-	read    *readState
-	reader  *read.Reader
-	uploads *uploadService
-	deletes *DeleteService
-	listing *listingState
-	lister  *listing.Lister
-	hashes  *uploadHashTrackerState
+	view          *viewState
+	read          *readState
+	reader        *read.Reader
+	uploads       *uploadService
+	uploadTargets *uploadTargetIndex
+	deletes       *DeleteService
+	listing       *listingState
+	lister        *listing.Lister
+	hashes        *uploadHashTrackerState
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
@@ -165,6 +166,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		read:          read.NewState(stores.readCacheStore),
 		hashes:        hashes,
 		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
+		uploadTargets: newUploadTargetIndex(),
 		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
 		listing:       listing.NewState(),
 		activeDebug:   observe.NewActiveStore(opts.Name),

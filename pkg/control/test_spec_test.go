@@ -260,10 +260,10 @@ func TestDriverTestUnifiedEnvelope(t *testing.T) {
 	}
 }
 
-// TestVFSSpecsRegistered asserts the VFS-layer specs (fs, resume) live in the
+// TestVFSSpecsRegistered asserts the VFS-layer specs live in the
 // same registry as drive-layer specs, with the RequiresVFS flag set.
 func TestVFSSpecsRegistered(t *testing.T) {
-	for _, name := range []string{"fs", "resume"} {
+	for _, name := range []string{"batchmove", "batchupload", "fs", "resume"} {
 		spec, ok := contracttest.Specs()[name]
 		if !ok {
 			t.Fatalf("spec %q not registered", name)
@@ -293,16 +293,19 @@ func TestVFSSpecRequiresFileSystem(t *testing.T) {
 	}
 }
 
-// TestVFSFSSpecRunsThroughRegistry drives the fs spec through the real
+// TestVFSSpecsRunThroughRegistry drives the VFS specs through the real
 // server with a genuine VFS namespace (localfs mount) and asserts the
 // unified envelope, including pass and residual-free cleanup.
-func TestVFSFSSpecRunsThroughRegistry(t *testing.T) {
+func TestVFSSpecsRunThroughRegistry(t *testing.T) {
 	root := t.TempDir()
 	driver := localfs.New(root)
 	if err := driver.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	v, err := vfs.New(driver, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), TestEnabled: true})
+	v, err := vfs.New(driver, vfs.Options{
+		StorageDir: filepath.Join(t.TempDir(), "cache"), TestEnabled: true,
+		UploadDelay: time.Millisecond, DeleteDelay: time.Millisecond,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,29 +331,39 @@ func TestVFSFSSpecRunsThroughRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "fs", Mount: "local", Size: "4k"})
-	if err != nil {
-		t.Fatal(err)
+	requests := []contracttest.DriverTestRequest{
+		{Test: "fs", Mount: "local", Size: "4k"},
+		{Test: "batchupload", Mount: "local", Count: 4, Size: "64"},
+		{Test: "batchmove", Mount: "local", Count: 4, Size: "64"},
 	}
-	var runs []contracttest.TestRun
-	if err := json.Unmarshal(body, &runs); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, body)
-	}
-	if len(runs) != 1 {
-		t.Fatalf("got %d runs, want 1", len(runs))
-	}
-	r := runs[0]
-	if r.Spec != "fs" || r.Mount != "local" {
-		t.Fatalf("run identity wrong: %+v", r)
-	}
-	if !r.Pass {
-		t.Fatalf("fs run failed: %+v", r)
-	}
-	if len(r.Steps) == 0 {
-		t.Fatalf("fs run has no steps")
-	}
-	if r.Started.IsZero() || r.Finished.IsZero() || r.Duration == "" {
-		t.Fatalf("fs run missing timing: %+v", r)
+	for _, req := range requests {
+		body, err := client.PostJSON(context.Background(), "/v1/driver/test", req)
+		if err != nil {
+			t.Fatalf("%s: %v", req.Test, err)
+		}
+		var runs []contracttest.TestRun
+		if err := json.Unmarshal(body, &runs); err != nil {
+			t.Fatalf("%s: unmarshal: %v body=%s", req.Test, err, body)
+		}
+		if len(runs) != 1 {
+			t.Fatalf("%s: got %d runs, want 1", req.Test, len(runs))
+		}
+		r := runs[0]
+		if r.Spec != req.Test || r.Mount != "local" {
+			t.Fatalf("%s: run identity wrong: %+v", req.Test, r)
+		}
+		if !r.Pass {
+			t.Fatalf("%s run failed: %+v", req.Test, r)
+		}
+		if len(r.Steps) == 0 {
+			t.Fatalf("%s run has no steps", req.Test)
+		}
+		if r.Started.IsZero() || r.Finished.IsZero() || r.Duration == "" {
+			t.Fatalf("%s run missing timing: %+v", req.Test, r)
+		}
+		if strings.HasPrefix(req.Test, "batch") && len(r.Metrics) == 0 {
+			t.Fatalf("%s run has no batch metrics", req.Test)
+		}
 	}
 }
 
