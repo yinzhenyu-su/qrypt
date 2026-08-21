@@ -181,7 +181,7 @@ qrypt debug collect --mount NAME
 
 跨挂载传输问题应同时提供源路径和 `--dest`；报告会分别收集两端路径状态、读取/上传历史和挂载能力。
 
-driver 和 VFS 测试通过 `debug test` 显式执行，`TEST` 可为 `auth`、`crud`、`instantupload`、`multipart`、`fs`、`resume` 或 `xfer`。这些测试只会使用在 `[[mounts]]` 中设置了 `test_enabled = true` 的挂载；`xfer` 要求 source 和 dest 都启用。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`fs` 会检查 VFS 写入、上传、读取和清理流程；`resume` 会故意取消一次上传，用来确认断点续传或重试恢复是否正常。`multipart` 会上传一个 34 MiB 的伪随机文件（可用 `--size` 调整）并逐字节读回校验，覆盖分片/块上传路径——普通 CRUD 测试的小文件不会触达这部分。注意读回校验受网盘下载速度影响：在限速的网盘上（如 115 非会员，约 100 KB/s）34 MiB 全量读回可能耗时数分钟，建议先跑小 `--size` 验证或按需调整。所有测试共享同一套测试目录生命周期（建目录、列表可见性退避重试、清理后残留扫描），失败时 `residual` 字段会列出残留远端对象便于人工清理。
+driver 和 VFS 测试通过 `debug test` 显式执行，`TEST` 可为 `auth`、`batchupload`、`batchmove`、`crud`、`instantupload`、`multipart`、`fs`、`resume` 或 `xfer`。这些测试只会使用在 `[[mounts]]` 中设置了 `test_enabled = true` 的挂载；`xfer` 要求 source 和 dest 都启用。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`fs` 会检查 VFS 写入、上传、读取和清理流程；`batchupload` 会在同一父目录批量写入小文件，并检查目录解析缓存是否复用；`batchmove` 会先等待这些文件上传完成，再通过 VFS `Rename` 将它们从源目录逐个移动到目标目录。两个批量测试都支持 `--count`（默认 50，最大 100）和 `--size`（默认 4 KiB，最大 1 MiB）。`resume` 会故意取消一次上传，用来确认断点续传或重试恢复是否正常。`multipart` 会上传一个 34 MiB 的伪随机文件（可用 `--size` 调整）并逐字节读回校验，覆盖分片/块上传路径——普通 CRUD 测试的小文件不会触达这部分。注意读回校验受网盘下载速度影响：在限速的网盘上（如 115 非会员，约 100 KB/s）34 MiB 全量读回可能耗时数分钟，建议先跑小 `--size` 验证或按需调整。所有测试都会使用带随机后缀的临时目录并在结束时清理。
 
 离线 journal 检查使用 `fs journal`，可传配置文件或明确的缓存目录。
 

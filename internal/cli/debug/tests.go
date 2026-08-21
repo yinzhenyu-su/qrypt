@@ -17,6 +17,8 @@ func NewTestCmd(rt cliruntime.Runtime) *cobra.Command {
 		RunE:  cliruntime.ShowHelp,
 	}
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "auth", "Run a read-only auth driver test")))
+	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "batchmove", "Move a batch of uploaded files through VFS")))
+	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "batchupload", "Upload a batch of small files through VFS")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "crud", "Run a CRUD driver test")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "contract", "Run the driver behavioral contract suite")))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugTestCaseCmd(rt, "fs", "Run a VFS filesystem smoke test")))
@@ -42,11 +44,14 @@ func newDebugTestCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Comma
 }
 
 func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
-	if test == "" || test == "auth" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "resume" || test == "multipart" {
-		cmd.Flags().String("mount", "", "mount name for auth, contract, crud, fs, instantupload, resume, or multipart tests")
+	if test == "" || test == "auth" || test == "batchmove" || test == "batchupload" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "resume" || test == "multipart" {
+		cmd.Flags().String("mount", "", "mount name for the single-mount test")
 	}
-	if test == "fs" || test == "resume" {
+	if test == "fs" || test == "resume" || test == "batchmove" || test == "batchupload" {
 		cmd.Flags().String("size", "", "test size in bytes, or k/m/g suffix")
+	}
+	if test == "batchmove" || test == "batchupload" {
+		cmd.Flags().Int("count", 0, fmt.Sprintf("number of files (default %d, max %d)", contracttest.DefaultBatchTestCount, contracttest.MaxBatchTestCount))
 	}
 	if test == "" || test == "xfer" {
 		cmd.Flags().String("source", "", "source mount for xfer test")
@@ -73,6 +78,9 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("size"); flag != nil {
 		req.Size, _ = cmd.Flags().GetString("size")
 	}
+	if flag := cmd.Flags().Lookup("count"); flag != nil {
+		req.Count, _ = cmd.Flags().GetInt("count")
+	}
 	if flag := cmd.Flags().Lookup("vfs"); flag != nil {
 		req.VFS, _ = cmd.Flags().GetBool("vfs")
 	}
@@ -93,18 +101,34 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 	switch req.Test {
 	case "auth", "contract", "crud", "instantupload":
-		if req.Source != "" || req.Dest != "" || req.Size != "" || req.VFS {
+		if req.Source != "" || req.Dest != "" || req.Size != "" || req.Count != 0 || req.VFS {
 			return fmt.Errorf("%s test only supports --mount", req.Test)
 		}
 	case "fs", "resume":
-		if req.Source != "" || req.Dest != "" || req.VFS {
+		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
 			return fmt.Errorf("%s test only supports --mount and --size", req.Test)
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("%s test requires --mount\n\nExample:\n  qrypt debug test %s --mount cloud --socket /tmp/qrypt.sock", req.Test, req.Test)
 		}
+	case "batchmove", "batchupload":
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			return fmt.Errorf("%s test only supports --mount, --count, and --size", req.Test)
+		}
+		if req.Mount == "" {
+			return fmt.Errorf("%s test requires --mount\n\nExample:\n  qrypt debug test %s --mount cloud --count 50 --size 4k --socket /tmp/qrypt.sock", req.Test, req.Test)
+		}
+		if req.Count < 0 || req.Count > contracttest.MaxBatchTestCount {
+			return fmt.Errorf("%s test --count must be between 1 and %d", req.Test, contracttest.MaxBatchTestCount)
+		}
+		if req.Size != "" {
+			size := contracttest.ParseXferSize(req.Size)
+			if size < 1 || size > contracttest.MaxBatchTestSize {
+				return fmt.Errorf("%s test --size must be between 1 and %d bytes", req.Test, contracttest.MaxBatchTestSize)
+			}
+		}
 	case "xfer":
-		if req.Mount != "" {
+		if req.Mount != "" || req.Count != 0 {
 			return fmt.Errorf("xfer test uses --source and --dest, not --mount\n\nExample:\n  qrypt debug test xfer --source local --dest cloud --socket /tmp/qrypt.sock")
 		}
 		if req.Source == "" || req.Dest == "" {

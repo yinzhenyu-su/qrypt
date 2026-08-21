@@ -17,6 +17,7 @@ type DriverTestRequest struct {
 	Source         string `json:"source,omitempty"`
 	Dest           string `json:"dest,omitempty"`
 	Size           string `json:"size,omitempty"`
+	Count          int    `json:"count,omitempty"`
 	VFS            bool   `json:"vfs,omitempty"`
 	Samples        int    `json:"samples,omitempty"`
 	SampleInterval string `json:"sample_interval,omitempty"`
@@ -74,7 +75,7 @@ type TestRun struct {
 
 // TestEnv carries the objects a spec runner may need, resolved once by the
 // scheduler per request. Driver-layer specs use Driver; VFS-layer specs
-// (fs, resume) use FileSys.
+// (fs, resume, batchupload, batchmove) use FileSys.
 type TestEnv struct {
 	Ctx     context.Context
 	Req     DriverTestRequest
@@ -143,6 +144,20 @@ var driverTestSpecs = map[string]TestSpec{
 		RequiresVFS: true,
 		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
 			return fromResumeTestResult(*RunVFSResumeTest(env.Ctx, env.FileSys, mount, ParseXferSize(env.Req.Size)))
+		},
+	},
+	"batchupload": {
+		Name:        "batchupload",
+		RequiresVFS: true,
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromBatchTestResult(*RunVFSBatchUploadTest(env.Ctx, env.FileSys, mount, env.Req.Count, ParseXferSize(env.Req.Size)))
+		},
+	},
+	"batchmove": {
+		Name:        "batchmove",
+		RequiresVFS: true,
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			return fromBatchTestResult(*RunVFSBatchMoveTest(env.Ctx, env.FileSys, mount, env.Req.Count, ParseXferSize(env.Req.Size)))
 		},
 	},
 }
@@ -222,6 +237,23 @@ func fromFSTestResult(spec string, r FSTestResult) TestRun {
 		Finished:     r.Finished,
 		Duration:     r.Duration,
 		DurationMS:   r.DurationMS,
+	}
+	tr.Steps = make([]TestStep, len(r.Steps))
+	for i, s := range r.Steps {
+		tr.Steps[i] = TestStep{
+			Operation: s.Operation, OK: s.OK,
+			Error: s.Error, ErrorCategory: s.ErrorCategory,
+			Duration: s.Duration, DurationMS: s.DurationMS,
+		}
+	}
+	return tr
+}
+
+func fromBatchTestResult(r BatchTestResult) TestRun {
+	tr := TestRun{
+		Spec: r.Spec, Mount: r.Mount, Pass: r.Pass, Metrics: r.Metrics,
+		RetryCommand: r.RetryCommand, Started: r.Started, Finished: r.Finished,
+		Duration: r.Duration, DurationMS: r.DurationMS,
 	}
 	tr.Steps = make([]TestStep, len(r.Steps))
 	for i, s := range r.Steps {

@@ -15,6 +15,7 @@ type countingUploadDriver struct {
 	drive.UnsupportedOperations
 	mu          sync.Mutex
 	uploads     int
+	listCalls   int
 	last        []byte
 	entries     map[string]drive.Entry
 	removed     []string
@@ -131,6 +132,7 @@ func (d *countingUploadDriver) Drop(context.Context) error { return nil }
 func (d *countingUploadDriver) List(_ context.Context, parentID string) ([]drive.Entry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.listCalls++
 	var entries []drive.Entry
 	for _, entry := range d.entries {
 		if entry.ParentID == parentID {
@@ -138,6 +140,16 @@ func (d *countingUploadDriver) List(_ context.Context, parentID string) ([]drive
 		}
 	}
 	return entries, nil
+}
+func (d *countingUploadDriver) resetListCount() {
+	d.mu.Lock()
+	d.listCalls = 0
+	d.mu.Unlock()
+}
+func (d *countingUploadDriver) listCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.listCalls
 }
 func (d *countingUploadDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
 	return nil, io.EOF

@@ -17,16 +17,10 @@ type uploadTarget struct {
 	AlreadyReplaced bool
 }
 
-func prepareUploadTarget(ctx context.Context, remote RemoteOps, parentID, name, fid, replaceUploadID string) (uploadTarget, error) {
+func prepareUploadTargetFromEntries(entries []drive.Entry, name, fid, replaceUploadID string) (uploadTarget, []drive.Entry) {
 	target := uploadTarget{UploadName: name}
-	if !remote.CanWrite() {
-		return target, nil
-	}
-	entries, err := remote.List(ctx, parentID)
-	if err != nil {
-		return target, err
-	}
 	tempName := TemporaryUploadName(name, fid)
+	var stale []drive.Entry
 	for _, entry := range entries {
 		if entry.IsDir {
 			continue
@@ -42,16 +36,13 @@ func prepareUploadTarget(ctx context.Context, remote RemoteOps, parentID, name, 
 			if replaceUploadID != "" && entry.ID == replaceUploadID {
 				continue
 			}
-			logging.L.InfofEvery("vfs.remove_stale_temp_upload", time.Second, "[VFS] removing stale temporary upload parent=%q name=%q id=%q size=%d", parentID, tempName, entry.ID, entry.Size)
-			if err := remote.Remove(ctx, entry); err != nil {
-				return target, err
-			}
+			stale = append(stale, entry)
 		}
 	}
 	if len(target.ReplaceExisting) > 0 {
 		target.UploadName = tempName
 	}
-	return target, nil
+	return target, stale
 }
 func replaceUploadedFile(ctx context.Context, remote RemoteOps, uploaded drive.Entry, existing []drive.Entry, finalName string) error {
 	for _, entry := range existing {

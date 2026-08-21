@@ -19,6 +19,7 @@ import (
 func newUploadEngine(v *VFS) *upload.Engine {
 	return upload.NewEngine(upload.EngineDeps{
 		Remote:   newVFSDriverRuntime(v).RemoteMutationBackend(),
+		Targets:  v.uploadTargets,
 		Observer: newVFSUploadObserver(v),
 		Pending:  upload.NewStoreAdapter(v.uploads.Store()),
 		Runtime:  newVFSUploadRuntime(v),

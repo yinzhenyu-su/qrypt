@@ -296,3 +296,34 @@ func TestVFSUploadWorkersRunConcurrently(t *testing.T) {
 	close(drv.release)
 	waitNoPending(t, fs)
 }
+
+func TestVFSUploadWorkersShareParentTargetIndex(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &countingUploadDriver{}
+	fs, err := vfs.New(drv, vfs.Options{
+		StorageDir:    t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		UploadDelay:   testUploadDelay,
+		UploadWorkers: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+
+	for _, path := range []string{"/one.txt", "/two.txt", "/three.txt"} {
+		if _, err := fs.WriteAt(ctx, path, []byte(path), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.Flush(ctx, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drv.resetListCount()
+	fs.Start(ctx)
+	waitNoPending(t, fs)
+	if got := drv.listCount(); got != 1 {
+		t.Fatalf("upload target List calls = %d, want 1", got)
+	}
+}
