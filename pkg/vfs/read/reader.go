@@ -131,6 +131,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, WindowExtra(windowChunks), err)
 		return nil, err
 	}
+	sequential := r.state.observeSequentialRead(r.host.ReadCacheKey(entry), offset, int64(len(data)))
 	if readPrefetchEnabled(ctx) {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
@@ -138,9 +139,10 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 				"start_chunk":   startChunk,
 				"end_chunk":     endChunk,
 				"window_chunks": windowChunks,
+				"sequential":    sequential,
 			}
 		})
-		r.PrefetchAdjacentChunks(readCtx, entry, endChunk, windowChunks)
+		r.PrefetchAdjacentChunks(readCtx, entry, endChunk, windowChunks, sequential)
 	}
 	var chunks int64
 	if len(data) > 0 {
@@ -668,11 +670,24 @@ func (r *Reader) acquireReadSlot(ctx context.Context) (func(), error) {
 
 // --- prefetch ---
 
-func (r *Reader) PrefetchAdjacentChunks(ctx context.Context, entry drive.Entry, endChunk int64, windowChunks int) {
+func (r *Reader) PrefetchAdjacentChunks(ctx context.Context, entry drive.Entry, endChunk int64, windowChunks int, sequential bool) {
 	if windowChunks <= 0 {
 		return
 	}
-	r.prefetchWindow(ctx, entry, endChunk+1, windowChunks)
+	windows := 1
+	prefetchChunks := windowChunks
+	if windowChunks == 1 {
+		// Keep the foreground miss to one chunk for TTFB, then fill the
+		// bounded prefetch slots so sequential FUSE reads pipeline remote GETs.
+		windows = PrefetchLimit
+		if sequential {
+			prefetchChunks = SequentialPrefetchChunks
+		}
+	}
+	for i := 0; i < windows; i++ {
+		startIndex := endChunk + 1 + int64(i*prefetchChunks)
+		r.prefetchWindow(ctx, entry, startIndex, prefetchChunks)
+	}
 }
 
 func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startIndex int64, count int) {
@@ -686,8 +701,8 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	if cacheKey == "" {
 		return
 	}
-	maxEndIndex := startIndex + int64(count) - 1
-	for startIndex <= maxEndIndex {
+	plannedEndIndex := startIndex + int64(count) - 1
+	for startIndex <= plannedEndIndex {
 		if entry.Size > 0 && startIndex*ChunkSize >= entry.Size {
 			return
 		}
@@ -697,6 +712,13 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		}
 		break
 	}
+	if startIndex > plannedEndIndex {
+		return
+	}
+	// Preserve the requested window size when cached or in-flight chunks at
+	// its head were skipped. This keeps sequential prefetches at 2 MiB instead
+	// of shrinking them to a 1 MiB Range request.
+	maxEndIndex := startIndex + int64(count) - 1
 	endIndex := startIndex
 	for endIndex <= maxEndIndex {
 		if entry.Size > 0 && endIndex*ChunkSize >= entry.Size {

@@ -252,8 +252,11 @@ func TestVFSReadWaitsForInFlightPrefetchWindow(t *testing.T) {
 		return drv.readCount(testReadChunkSize) == 1
 	})
 	prefetchReads := drv.readCount(testReadChunkSize)
-	if got := drv.readCount(2 * testReadChunkSize); got != 0 {
-		t.Fatalf("window-covered chunk read count = %d, want 0", got)
+	waitForCondition(t, func() bool {
+		return drv.readCount(2*testReadChunkSize) == 1
+	})
+	if got := drv.readCount(2 * testReadChunkSize); got != 1 {
+		t.Fatalf("lookahead chunk read count = %d, want 1", got)
 	}
 	release()
 	if err := <-readDone; err != nil {
@@ -525,10 +528,12 @@ func TestVFSReadRejectsDriverOverread(t *testing.T) {
 	}
 }
 
-func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
+func TestVFSReadPrefetchesAdjacentChunksConcurrently(t *testing.T) {
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("e"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
+	firstEntered, releaseFirst := drv.blockRead(testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(2 * testReadChunkSize)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -541,9 +546,18 @@ func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
 	}
 	_ = rc.Close()
 
-	waitForCondition(t, func() bool {
-		return drv.readCount(testReadChunkSize) == 1
-	})
+	select {
+	case <-firstEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first prefetch did not start")
+	}
+	select {
+	case <-secondEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second prefetch did not start concurrently")
+	}
+	releaseFirst()
+	releaseSecond()
 
 	waitForCondition(t, func() bool {
 		var prefetches int
@@ -552,8 +566,146 @@ func TestVFSReadPrefetchesAdjacentChunk(t *testing.T) {
 				prefetches++
 			}
 		}
-		return prefetches == 1
+		return prefetches == 2
 	})
+}
+
+func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("s"), 6*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	firstEntered, releaseFirst := drv.blockRead(2 * testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(4 * testReadChunkSize)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	rc, err := fs.Read(vfs.WithoutReadPrefetch(ctx), "/data.bin", 0, testReadChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	rc, err = fs.Read(ctx, "/data.bin", testReadChunkSize, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first merged prefetch did not start")
+	}
+	select {
+	case <-secondEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second merged prefetch did not start concurrently")
+	}
+	if got := drv.readSize(2 * testReadChunkSize); got != 2*testReadChunkSize {
+		t.Fatalf("first sequential prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	}
+	if got := drv.readSize(4 * testReadChunkSize); got != 2*testReadChunkSize {
+		t.Fatalf("second sequential prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	}
+	releaseFirst()
+	releaseSecond()
+	waitForCondition(t, func() bool {
+		var prefetches int
+		for _, event := range fs.DebugSnapshot().Mounts[0].ReadEvents() {
+			if event.Phase == "prefetch_window" {
+				prefetches++
+			}
+		}
+		return prefetches == 2
+	})
+}
+
+func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("h"), 7*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	firstEntered, releaseFirst := drv.blockRead(3 * testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(5 * testReadChunkSize)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	for _, offset := range []int64{2 * testReadChunkSize, 0} {
+		rc, err := fs.Read(vfs.WithoutReadPrefetch(ctx), "/data.bin", offset, testReadChunkSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rc.Close()
+	}
+	rc, err := fs.Read(ctx, "/data.bin", testReadChunkSize, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("shifted merged prefetch did not start")
+	}
+	select {
+	case <-secondEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second shifted prefetch did not start concurrently")
+	}
+	if got := drv.readSize(3 * testReadChunkSize); got != 2*testReadChunkSize {
+		t.Fatalf("shifted sequential prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	}
+	if got := drv.readSize(5 * testReadChunkSize); got != 2*testReadChunkSize {
+		t.Fatalf("second shifted prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	}
+	releaseFirst()
+	releaseSecond()
+	waitForCondition(t, func() bool {
+		var prefetches int
+		for _, event := range fs.DebugSnapshot().Mounts[0].ReadEvents() {
+			if event.Phase == "prefetch_window" {
+				prefetches++
+			}
+		}
+		return prefetches == 2
+	})
+}
+
+func TestVFSOffsetJumpKeepsSingleChunkPrefetch(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("j"), 6*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	rc, err := fs.Read(vfs.WithoutReadPrefetch(ctx), "/data.bin", 0, testReadChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	rc, err = fs.Read(ctx, "/data.bin", 2*testReadChunkSize, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	waitForCondition(t, func() bool {
+		return drv.readCount(3*testReadChunkSize) == 1 && drv.readCount(4*testReadChunkSize) == 1
+	})
+	if got := drv.readSize(3 * testReadChunkSize); got != testReadChunkSize {
+		t.Fatalf("first jump prefetch size = %d, want %d", got, testReadChunkSize)
+	}
+	if got := drv.readSize(4 * testReadChunkSize); got != testReadChunkSize {
+		t.Fatalf("second jump prefetch size = %d, want %d", got, testReadChunkSize)
+	}
 }
 
 func TestVFSReadWithoutPrefetchSkipsAdjacentChunk(t *testing.T) {

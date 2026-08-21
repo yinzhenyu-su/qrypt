@@ -11,15 +11,17 @@ import (
 
 // Read-domain constants.
 const (
-	ChunkSize        = 1024 * 1024
-	PrefetchLimit    = 2
-	PrefetchChunks   = 8
-	MaxConcurrency   = 8
-	HighReserve      = 2
-	HotChunkLimit    = 16
-	RangeHitLimit    = 1024
-	RangePromoteHits = 2
-	HistoryLimit     = 1000
+	ChunkSize                = 1024 * 1024
+	PrefetchLimit            = 2
+	PrefetchChunks           = 8
+	MaxConcurrency           = 8
+	HighReserve              = 2
+	HotChunkLimit            = 16
+	RangeHitLimit            = 1024
+	RangePromoteHits         = 2
+	SequentialLimit          = 1024
+	SequentialPrefetchChunks = 2
+	HistoryLimit             = 1000
 )
 
 // windowLoad coalesces concurrent reads of the same cache window.
@@ -97,6 +99,25 @@ type prefetchState struct {
 	mu       sync.Mutex
 	inFlight map[string]struct{}
 	sem      chan struct{}
+}
+
+type sequentialRead struct {
+	end       int64
+	lastChunk int64
+	confirmed bool
+}
+
+// sequentialState tracks recent per-file access patterns. It is only a
+// prefetch hint: concurrent or jumping readers reset the hint without
+// affecting read correctness.
+type sequentialState struct {
+	mu    sync.Mutex
+	reads map[string]sequentialRead
+	order []string
+}
+
+func newSequentialState() *sequentialState {
+	return &sequentialState{reads: map[string]sequentialRead{}}
 }
 
 func newPrefetchState() *prefetchState {
@@ -181,6 +202,7 @@ type State struct {
 	cache    Cache
 	history  *historyState
 	prefetch *prefetchState
+	sequence *sequentialState
 	slots    *slotState
 	fastPath *fastPathState
 	windows  *windowState
@@ -194,10 +216,44 @@ func NewState(cache Cache) *State {
 		cache:    cache,
 		history:  newHistoryState(),
 		prefetch: newPrefetchState(),
+		sequence: newSequentialState(),
 		slots:    newSlotState(),
 		fastPath: newFastPathState(),
 		windows:  newWindowState(),
 	}
+}
+
+func (s *State) observeSequentialRead(cacheKey string, offset, size int64) bool {
+	if cacheKey == "" || offset < 0 || size <= 0 {
+		return false
+	}
+	end := offset + size
+	if end < offset {
+		return false
+	}
+	lastChunk := (end - 1) / ChunkSize
+
+	s.sequence.mu.Lock()
+	defer s.sequence.mu.Unlock()
+	previous, exists := s.sequence.reads[cacheKey]
+	confirmed := exists && previous.confirmed && offset == previous.end
+	if exists && offset == previous.end && offset/ChunkSize > previous.lastChunk {
+		confirmed = true
+	}
+	if !exists {
+		s.sequence.order = append(s.sequence.order, cacheKey)
+	}
+	s.sequence.reads[cacheKey] = sequentialRead{
+		end:       end,
+		lastChunk: lastChunk,
+		confirmed: confirmed,
+	}
+	for len(s.sequence.order) > SequentialLimit {
+		oldest := s.sequence.order[0]
+		s.sequence.order = s.sequence.order[1:]
+		delete(s.sequence.reads, oldest)
+	}
+	return confirmed
 }
 
 // Cache returns the durable chunk store (nil when disabled).
@@ -414,6 +470,10 @@ func (s *State) ClearReadCache() error {
 	s.fastPath.rangeHit.hits = map[string]int{}
 	s.fastPath.rangeHit.lru = nil
 	s.fastPath.rangeHit.mu.Unlock()
+	s.sequence.mu.Lock()
+	s.sequence.reads = map[string]sequentialRead{}
+	s.sequence.order = nil
+	s.sequence.mu.Unlock()
 	if s.cache == nil {
 		return nil
 	}
@@ -453,5 +513,5 @@ func (s *State) DebugSnapshot() readcache.DebugReadCache {
 
 // StatesReady reports whether the runtime sub-states are initialized.
 func (s *State) StatesReady() bool {
-	return s != nil && s.prefetch != nil && s.slots != nil && s.fastPath != nil && s.windows != nil
+	return s != nil && s.prefetch != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil
 }
