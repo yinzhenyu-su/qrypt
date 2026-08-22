@@ -1,7 +1,6 @@
 package media
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -111,50 +110,340 @@ func readAtom(ctx context.Context, readAt ReadAtFunc, offset, fileSize int64) (a
 	return atom{typ: typ, offset: offset, size: size, headerSize: headerSize}, nil
 }
 
+// maxChunkPatchPasses bounds the delta fixed-point iteration. Each pass is a
+// cheap metadata rescan (no output is built); the converting-table set can
+// only grow, so the sequence stabilizes within a few passes.
+const maxChunkPatchPasses = 8
+
+// patchChunkOffsets shifts every chunk offset inside the moov atom by delta
+// and returns the patched moov. data must be an exclusively owned buffer: when
+// no chunk table needs the stco→co64 conversion the patch happens in place and
+// data itself is returned.
+//
+// Converting stco to co64 grows the moov, which grows the shift itself. That
+// fixed point is resolved analytically — each pass recomputes conversion
+// decisions and the resulting size from metadata only — so the moov bytes are
+// written exactly once at the end.
 func patchChunkOffsets(data []byte, delta int64) ([]byte, error) {
-	currentDelta := delta
-	for i := 0; i < 8; i++ {
-		patched, err := rewriteChunkOffsets(data, 0, len(data), currentDelta)
-		if err != nil {
-			return nil, err
-		}
-		if int64(len(patched)) == currentDelta {
-			return patched, nil
-		}
-		currentDelta = int64(len(patched))
+	var tables []chunkTable
+	if err := scanChunkTables(data, 0, len(data), &tables); err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("media: chunk offset rewrite did not converge")
+
+	cur := delta
+	converged := false
+	for i := 0; i < maxChunkPatchPasses; i++ {
+		growth := int64(0)
+		for j := range tables {
+			t := &tables[j]
+			t.converts = !t.isCo64 && cur >= 0 && t.maxEntryValue+uint64(cur) > math.MaxUint32
+			if t.converts {
+				growth += int64(t.count) * 4
+			}
+		}
+		total := int64(len(data)) + growth
+		if total == cur {
+			converged = true
+			break
+		}
+		cur = total
+	}
+	if !converged {
+		return nil, fmt.Errorf("media: chunk offset rewrite did not converge")
+	}
+
+	converts := false
+	for j := range tables {
+		if tables[j].converts {
+			converts = true
+			break
+		}
+	}
+	if !converts {
+		return data, patchChunkTablesInPlace(data, tables, cur)
+	}
+
+	out := make([]byte, cur)
+	cursor := tableCursor{tables: tables}
+	written, err := writePatchedAtoms(out, 0, data, 0, len(data), cur, &cursor)
+	if err != nil {
+		return nil, err
+	}
+	if written != len(out) {
+		return nil, fmt.Errorf("media: chunk offset rewrite produced %d bytes, want %d", written, len(out))
+	}
+	return out, nil
 }
 
-func rewriteChunkOffsets(data []byte, start, end int, delta int64) ([]byte, error) {
-	var out bytes.Buffer
+// chunkTable records one stco/co64 atom found during the scan. offset is the
+// atom's absolute position within the source buffer.
+type chunkTable struct {
+	offset        int
+	entriesOffset int
+	isCo64        bool
+	count         int
+	maxEntryValue uint64
+	converts      bool
+}
+
+func scanChunkTables(data []byte, start, end int, tables *[]chunkTable) error {
+	parsed := false
 	for offset := start; offset+atomHeaderSize <= end; {
 		a, err := parseAtomBytes(data, offset, end)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		rewritten, err := rewriteChunkOffsetAtom(data[offset:offset+a.size], a, delta)
-		if err != nil {
-			return nil, err
+		parsed = true
+		switch a.typ {
+		case atomTypeSTCO, atomTypeCO64:
+			t, err := parseChunkTable(data[offset:offset+a.size], a)
+			if err != nil {
+				return err
+			}
+			t.offset = offset
+			*tables = append(*tables, t)
+		default:
+			childStart := a.headerSize
+			if a.typ == atomTypeMeta {
+				childStart += 4
+			}
+			if isContainerAtom(a.typ) && childStart < a.size {
+				if err := scanChunkTables(data, offset+childStart, offset+a.size, tables); err != nil {
+					return err
+				}
+			}
 		}
-		out.Write(rewritten)
 		offset += a.size
 	}
-	if out.Len() == 0 && start < end {
-		return nil, fmt.Errorf("media: invalid trailing atom data")
+	if !parsed && start < end {
+		return fmt.Errorf("media: invalid trailing atom data")
 	}
-	return out.Bytes(), nil
+	return nil
 }
 
+func parseChunkTable(atom []byte, a byteAtom) (chunkTable, error) {
+	co64 := a.typ == atomTypeCO64
+	name, entrySize := "stco", 4
+	if co64 {
+		name, entrySize = "co64", 8
+	}
+	entriesOffset := a.headerSize + 8
+	if len(atom) < entriesOffset {
+		return chunkTable{}, fmt.Errorf("media: short %s atom", name)
+	}
+	count := int(binary.BigEndian.Uint32(atom[a.headerSize+4 : entriesOffset]))
+	if int64(len(atom)) < int64(entriesOffset)+int64(count)*int64(entrySize) {
+		return chunkTable{}, fmt.Errorf("media: truncated %s entries", name)
+	}
+	t := chunkTable{entriesOffset: entriesOffset, isCo64: co64, count: count}
+	for i, pos := 0, entriesOffset; i < count; i, pos = i+1, pos+entrySize {
+		v := uint64(binary.BigEndian.Uint32(atom[pos : pos+4]))
+		if co64 {
+			v = binary.BigEndian.Uint64(atom[pos : pos+8])
+		}
+		if v > t.maxEntryValue {
+			t.maxEntryValue = v
+		}
+	}
+	return t, nil
+}
+
+// patchChunkTablesInPlace applies delta to every recorded table directly in
+// data. All values are validated before any byte is written.
+func patchChunkTablesInPlace(data []byte, tables []chunkTable, delta int64) error {
+	for i := range tables {
+		t := &tables[i]
+		pos := t.offset + t.entriesOffset
+		if t.isCo64 {
+			if delta < 0 {
+				return fmt.Errorf("media: negative co64 delta %d", delta)
+			}
+			add := uint64(delta)
+			for j := 0; j < t.count; j, pos = j+1, pos+8 {
+				v := binary.BigEndian.Uint64(data[pos : pos+8])
+				if v > math.MaxUint64-add {
+					return fmt.Errorf("media: co64 offset overflow: value=%d delta=%d", v, delta)
+				}
+			}
+			continue
+		}
+		for j := 0; j < t.count; j, pos = j+1, pos+4 {
+			if int64(binary.BigEndian.Uint32(data[pos:pos+4]))+delta < 0 {
+				return fmt.Errorf("media: stco offset underflow: value=%d delta=%d",
+					binary.BigEndian.Uint32(data[pos:pos+4]), delta)
+			}
+		}
+	}
+	add := uint64(delta)
+	for i := range tables {
+		t := &tables[i]
+		pos := t.offset + t.entriesOffset
+		if t.isCo64 {
+			for j := 0; j < t.count; j, pos = j+1, pos+8 {
+				v := binary.BigEndian.Uint64(data[pos : pos+8])
+				binary.BigEndian.PutUint64(data[pos:pos+8], v+add)
+			}
+			continue
+		}
+		for j := 0; j < t.count; j, pos = j+1, pos+4 {
+			v := binary.BigEndian.Uint32(data[pos : pos+4])
+			binary.BigEndian.PutUint32(data[pos:pos+4], v+uint32(delta))
+		}
+	}
+	return nil
+}
+
+// tableCursor hands the precomputed conversion decisions to the writer in the
+// same order the scan discovered them.
+type tableCursor struct {
+	tables []chunkTable
+	next   int
+}
+
+// writePatchedAtoms writes the [start,end) region of data into out beginning
+// at pos, shifting chunk offsets by delta and emitting converted tables as
+// co64. Every source byte is copied exactly once; container sizes are fixed
+// up after their children are written. It returns the new write position.
+func writePatchedAtoms(out []byte, pos int, data []byte, start, end int, delta int64, cursor *tableCursor) (int, error) {
+	pos0 := pos
+	for offset := start; offset+atomHeaderSize <= end; {
+		a, err := parseAtomBytes(data, offset, end)
+		if err != nil {
+			return pos, err
+		}
+		switch a.typ {
+		case atomTypeSTCO, atomTypeCO64:
+			t := cursor.tables[cursor.next]
+			cursor.next++
+			w, err := writeChunkTable(out[pos:], data[offset:offset+a.size], a, t, delta)
+			if err != nil {
+				return pos, err
+			}
+			pos += w
+		default:
+			childStart := a.headerSize
+			isMeta := a.typ == atomTypeMeta
+			if isMeta {
+				childStart += 4
+			}
+			if !isContainerAtom(a.typ) || childStart >= a.size {
+				pos += copy(out[pos:], data[offset:offset+a.size])
+				offset += a.size
+				continue
+			}
+			headerPos := pos
+			pos += a.headerSize
+			copy(out[headerPos:pos], data[offset:offset+a.headerSize])
+			if isMeta {
+				pos += copy(out[pos:], data[offset+a.headerSize:offset+childStart])
+			}
+			pos, err = writePatchedAtoms(out, pos, data, offset+childStart, offset+a.size, delta, cursor)
+			if err != nil {
+				return headerPos, err
+			}
+			size := pos - headerPos
+			if a.headerSize == extendedAtomHeaderSize {
+				binary.BigEndian.PutUint32(out[headerPos:headerPos+4], 1)
+				binary.BigEndian.PutUint64(out[headerPos+8:headerPos+16], uint64(size))
+			} else {
+				if int64(size) > math.MaxUint32 {
+					return headerPos, fmt.Errorf("media: rewritten atom %q too large", a.typ)
+				}
+				binary.BigEndian.PutUint32(out[headerPos:headerPos+4], uint32(size))
+			}
+		}
+		offset += a.size
+	}
+	if pos == pos0 && start < end {
+		return pos, fmt.Errorf("media: invalid trailing atom data")
+	}
+	return pos, nil
+}
+
+// writeChunkTable patches one chunk table into dst, converting it from stco
+// to co64 when the scan decided it no longer fits uint32. It returns the
+// number of bytes written.
+func writeChunkTable(dst []byte, src []byte, a byteAtom, t chunkTable, delta int64) (int, error) {
+	if !t.converts {
+		n := copy(dst, src)
+		if a.typ == atomTypeCO64 {
+			if delta < 0 {
+				return 0, fmt.Errorf("media: negative co64 delta %d", delta)
+			}
+			add := uint64(delta)
+			for j, pos := 0, t.entriesOffset; j < t.count; j, pos = j+1, pos+8 {
+				v := binary.BigEndian.Uint64(src[pos : pos+8])
+				if v > math.MaxUint64-add {
+					return 0, fmt.Errorf("media: co64 offset overflow: value=%d delta=%d", v, delta)
+				}
+				binary.BigEndian.PutUint64(dst[pos:pos+8], v+add)
+			}
+			return n, nil
+		}
+		for j, pos := 0, t.entriesOffset; j < t.count; j, pos = j+1, pos+4 {
+			v := int64(binary.BigEndian.Uint32(src[pos:pos+4])) + delta
+			if v < 0 {
+				return 0, fmt.Errorf("media: stco offset underflow: value=%d delta=%d", v-delta, delta)
+			}
+			binary.BigEndian.PutUint32(dst[pos:pos+4], uint32(v))
+		}
+		return n, nil
+	}
+
+	size := a.size + 4*t.count
+	if a.headerSize == atomHeaderSize && int64(size) > math.MaxUint32 {
+		return 0, fmt.Errorf("media: rewritten atom %q too large", atomTypeCO64)
+	}
+	copy(dst[:a.headerSize], src[:a.headerSize])
+	if a.headerSize == extendedAtomHeaderSize {
+		binary.BigEndian.PutUint32(dst[0:4], 1)
+		binary.BigEndian.PutUint64(dst[8:16], uint64(size))
+	} else {
+		binary.BigEndian.PutUint32(dst[0:4], uint32(size))
+	}
+	copy(dst[4:8], "co64")
+	copy(dst[a.headerSize:a.headerSize+4], src[a.headerSize:a.headerSize+4])
+	binary.BigEndian.PutUint32(dst[a.headerSize+4:a.headerSize+8], uint32(t.count))
+	for j, sp, dp := 0, t.entriesOffset, t.entriesOffset; j < t.count; j, sp, dp = j+1, sp+4, dp+8 {
+		v := int64(binary.BigEndian.Uint32(src[sp:sp+4])) + delta
+		if v < 0 {
+			return 0, fmt.Errorf("media: stco offset underflow: value=%d delta=%d", v-delta, delta)
+		}
+		binary.BigEndian.PutUint64(dst[dp:dp+8], uint64(v))
+	}
+	return size, nil
+}
+
+// atomType compares box type names without the allocation of string([]byte).
+type atomType [4]byte
+
+var (
+	atomTypeSTCO = atomType{'s', 't', 'c', 'o'}
+	atomTypeCO64 = atomType{'c', 'o', '6', '4'}
+	atomTypeMeta = atomType{'m', 'e', 't', 'a'}
+	atomTypeMoov = atomType{'m', 'o', 'o', 'v'}
+	atomTypeTrak = atomType{'t', 'r', 'a', 'k'}
+	atomTypeMdia = atomType{'m', 'd', 'i', 'a'}
+	atomTypeMinf = atomType{'m', 'i', 'n', 'f'}
+	atomTypeStbl = atomType{'s', 't', 'b', 'l'}
+	atomTypeEdts = atomType{'e', 'd', 't', 's'}
+	atomTypeUdta = atomType{'u', 'd', 't', 'a'}
+)
+
+func (t atomType) String() string { return string(t[:]) }
+
+// byteAtom is a parsed atom header. size counts the whole atom, headerSize is
+// 8, or 16 for extended-size atoms.
 type byteAtom struct {
-	typ        string
+	typ        atomType
 	size       int
 	headerSize int
 }
 
 func parseAtomBytes(data []byte, offset, end int) (byteAtom, error) {
 	size32 := binary.BigEndian.Uint32(data[offset : offset+4])
-	typ := string(data[offset+4 : offset+8])
+	var typ atomType
+	copy(typ[:], data[offset+4:offset+8])
 	size := int(size32)
 	headerSize := atomHeaderSize
 	switch size32 {
@@ -177,106 +466,12 @@ func parseAtomBytes(data []byte, offset, end int) (byteAtom, error) {
 	return byteAtom{typ: typ, size: size, headerSize: headerSize}, nil
 }
 
-func rewriteChunkOffsetAtom(atom []byte, a byteAtom, delta int64) ([]byte, error) {
-	switch a.typ {
-	case "stco":
-		return rewriteSTCO(atom, delta)
-	case "co64":
-		return rewriteCO64(atom, delta)
-	}
-	childStart := a.headerSize
-	if a.typ == "meta" {
-		childStart += 4
-	}
-	if !isContainerAtom(a.typ) || childStart >= len(atom) {
-		return append([]byte(nil), atom...), nil
-	}
-	children, err := rewriteChunkOffsets(atom, childStart, len(atom), delta)
-	if err != nil {
-		return nil, err
-	}
-	payload := append([]byte(nil), atom[a.headerSize:childStart]...)
-	payload = append(payload, children...)
-	return makeAtom(a.typ, payload)
-}
-
-func isContainerAtom(typ string) bool {
+func isContainerAtom(typ atomType) bool {
 	switch typ {
-	case "moov", "trak", "mdia", "minf", "stbl", "edts", "udta", "meta":
+	case atomTypeMoov, atomTypeTrak, atomTypeMdia, atomTypeMinf,
+		atomTypeStbl, atomTypeEdts, atomTypeUdta, atomTypeMeta:
 		return true
 	default:
 		return false
 	}
-}
-
-func rewriteSTCO(atom []byte, delta int64) ([]byte, error) {
-	if len(atom) < 16 {
-		return nil, fmt.Errorf("media: short stco atom")
-	}
-	count := int(binary.BigEndian.Uint32(atom[12:16]))
-	if len(atom) < 16+count*4 {
-		return nil, fmt.Errorf("media: truncated stco entries")
-	}
-	values := make([]uint64, count)
-	convert := false
-	for i, pos := 0, 16; i < count; i, pos = i+1, pos+4 {
-		value := int64(binary.BigEndian.Uint32(atom[pos : pos+4]))
-		patched := value + delta
-		if patched < 0 {
-			return nil, fmt.Errorf("media: stco offset underflow: value=%d delta=%d", value, delta)
-		}
-		if patched > int64(math.MaxUint32) {
-			convert = true
-		}
-		values[i] = uint64(patched)
-	}
-	if convert {
-		payload := make([]byte, 8+count*8)
-		copy(payload[0:4], atom[8:12])
-		binary.BigEndian.PutUint32(payload[4:8], uint32(count))
-		for i, pos := 0, 8; i < count; i, pos = i+1, pos+8 {
-			binary.BigEndian.PutUint64(payload[pos:pos+8], values[i])
-		}
-		return makeAtom("co64", payload)
-	}
-	out := append([]byte(nil), atom...)
-	for i, pos := 0, 16; i < count; i, pos = i+1, pos+4 {
-		binary.BigEndian.PutUint32(out[pos:pos+4], uint32(values[i]))
-	}
-	return out, nil
-}
-
-func rewriteCO64(atom []byte, delta int64) ([]byte, error) {
-	if len(atom) < 16 {
-		return nil, fmt.Errorf("media: short co64 atom")
-	}
-	count := int(binary.BigEndian.Uint32(atom[12:16]))
-	if len(atom) < 16+count*8 {
-		return nil, fmt.Errorf("media: truncated co64 entries")
-	}
-	if delta < 0 {
-		return nil, fmt.Errorf("media: negative co64 delta %d", delta)
-	}
-	out := append([]byte(nil), atom...)
-	add := uint64(delta)
-	for i, pos := 0, 16; i < count; i, pos = i+1, pos+8 {
-		value := binary.BigEndian.Uint64(out[pos : pos+8])
-		if value > math.MaxUint64-add {
-			return nil, fmt.Errorf("media: co64 offset overflow: value=%d delta=%d", value, delta)
-		}
-		binary.BigEndian.PutUint64(out[pos:pos+8], value+add)
-	}
-	return out, nil
-}
-
-func makeAtom(typ string, payload []byte) ([]byte, error) {
-	size := atomHeaderSize + len(payload)
-	if uint64(size) > math.MaxUint32 {
-		return nil, fmt.Errorf("media: rewritten atom %q too large", typ)
-	}
-	out := make([]byte, size)
-	binary.BigEndian.PutUint32(out[0:4], uint32(size))
-	copy(out[4:8], typ)
-	copy(out[8:], payload)
-	return out, nil
 }
