@@ -68,8 +68,12 @@ func (f *fakeTimerFactory) timerFactory(_ time.Duration, fn func()) timerHandle 
 func TestReplaceBeforeFire(t *testing.T) {
 	s := newTestScheduler()
 	var oldRan, newRan atomic.Bool
-	s.Schedule("A", 0, func() { oldRan.Store(true) })
-	s.Schedule("A", 0, func() { newRan.Store(true) })
+	if replaced := s.Schedule("A", 0, func() { oldRan.Store(true) }); replaced {
+		t.Fatal("first schedule reported a replacement")
+	}
+	if replaced := s.Schedule("A", 0, func() { newRan.Store(true) }); !replaced {
+		t.Fatal("second schedule did not report the displaced callback")
+	}
 
 	timers := s.factory.all()
 	if len(timers) != 2 {
@@ -92,6 +96,37 @@ func TestReplaceBeforeFire(t *testing.T) {
 	if got := s.Keys(); len(got) != 0 {
 		t.Fatalf("keys after fire = %+v", got)
 	}
+}
+
+func TestScheduleAfterFireDoesNotReportReplacement(t *testing.T) {
+	s := newTestScheduler()
+	s.Schedule("A", 0, func() {})
+	s.factory.all()[0].fire()
+	if replaced := s.Schedule("A", 0, func() {}); replaced {
+		t.Fatal("schedule after the previous callback fired reported a replacement")
+	}
+}
+
+func TestScheduleWhilePreviousCallbackRunsDoesNotReportReplacement(t *testing.T) {
+	s := newTestScheduler()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	s.Schedule("A", 0, func() {
+		close(started)
+		<-release
+	})
+	done := make(chan struct{})
+	go func() {
+		s.factory.all()[0].fire()
+		close(done)
+	}()
+	<-started
+
+	if replaced := s.Schedule("A", 0, func() {}); replaced {
+		t.Fatal("running callback reported as displaced")
+	}
+	close(release)
+	<-done
 }
 
 // TestStaleCallbackCannotCorruptNewState: the review-reported race, made

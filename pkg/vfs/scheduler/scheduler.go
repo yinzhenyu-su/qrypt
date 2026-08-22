@@ -23,9 +23,10 @@ import (
 // everything.
 type KeyedScheduler interface {
 	// Schedule replaces any pending callback for key and fires fn after
-	// delay. A callback that was replaced or cancelled is guaranteed not
-	// to run (generation-checked).
-	Schedule(key string, delay time.Duration, fn func())
+	// delay. It reports whether a still-pending callback was displaced. A
+	// callback that was replaced or cancelled is guaranteed not to run
+	// (generation-checked).
+	Schedule(key string, delay time.Duration, fn func()) bool
 	// Cancel removes the pending callback for key (no-op when none).
 	Cancel(key string)
 	// CancelUnder removes all keys equal to key or under it.
@@ -78,12 +79,13 @@ func newScheduler(newTimer func(time.Duration, func()) timerHandle) *timeKeyedSc
 	}
 }
 
-func (s *timeKeyedScheduler) Schedule(key string, delay time.Duration, fn func()) {
+func (s *timeKeyedScheduler) Schedule(key string, delay time.Duration, fn func()) bool {
 	s.mu.Lock()
 	gen := s.nextGen
 	s.nextGen++
-	if t := s.tasks[key]; t != nil {
-		t.timer.Stop()
+	old := s.tasks[key]
+	if old != nil {
+		old.timer.Stop()
 	}
 	task := &scheduledTask{generation: gen, deadline: time.Now().Add(delay)}
 	// timer is assigned under the lock so a concurrent Cancel can never
@@ -101,6 +103,7 @@ func (s *timeKeyedScheduler) Schedule(key string, delay time.Duration, fn func()
 	})
 	s.tasks[key] = task
 	s.mu.Unlock()
+	return old != nil
 }
 
 func (s *timeKeyedScheduler) Cancel(key string) {
