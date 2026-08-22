@@ -171,12 +171,17 @@ type Service struct {
 	store    *PendingStore
 	queue    chan PendingUpload
 	schedule UploadScheduler
-	debug    *DebugState
-	hashes   HashOps
-	admit    Admission
-	delay    time.Duration
-	workers  int
-	done     chan struct{}
+	// scheduledMu keeps the upload generation paired with each scheduler
+	// task. Schedule replaces both under this lock, so a displaced timer's
+	// staging ownership can be retired exactly once.
+	scheduledMu sync.Mutex
+	scheduled   map[string]*scheduledUpload
+	debug       *DebugState
+	hashes      HashOps
+	admit       Admission
+	delay       time.Duration
+	workers     int
+	done        chan struct{}
 
 	// enqueueMu guards enqueueWG.Add against a concurrent Wait: Close
 	// locks it, marks the service stopped, and waits; sendUpload locks it
@@ -186,20 +191,25 @@ type Service struct {
 	stopped   bool
 }
 
+type scheduledUpload struct {
+	pending PendingUpload
+}
+
 // NewService builds the upload domain state together.
 func NewService(opts ServiceOptions) *Service {
 	if opts.Scheduler == nil {
 		opts.Scheduler = scheduler.NewTimeKeyedScheduler()
 	}
 	return &Service{
-		store:    opts.Store,
-		queue:    make(chan PendingUpload, 128),
-		schedule: opts.Scheduler,
-		debug:    NewDebugState(),
-		hashes:   opts.HashOps,
-		delay:    opts.UploadDelay,
-		workers:  opts.UploadWorkers,
-		done:     opts.Done,
+		store:     opts.Store,
+		queue:     make(chan PendingUpload, 128),
+		schedule:  opts.Scheduler,
+		scheduled: map[string]*scheduledUpload{},
+		debug:     NewDebugState(),
+		hashes:    opts.HashOps,
+		delay:     opts.UploadDelay,
+		workers:   opts.UploadWorkers,
+		done:      opts.Done,
 	}
 }
 
@@ -283,7 +293,15 @@ func (s *Service) DebugState() *DebugState { return s.debug }
 // --- lifecycle ---
 
 func (s *Service) Close() {
+	s.scheduledMu.Lock()
 	s.schedule.CancelAll()
+	// Do not retire cancelled tasks here: a callback may already own its
+	// generation even though CancelAll can no longer see its timer. Current
+	// pending staging remains journal-owned; an older unreferenced generation
+	// in the replace-before-next-flush window is reclaimed by the startup
+	// sweep when the store is opened again.
+	clear(s.scheduled)
+	s.scheduledMu.Unlock()
 	s.enqueueMu.Lock()
 	s.stopped = true
 	s.enqueueMu.Unlock()
@@ -372,20 +390,52 @@ func (s *Service) EnqueueAfter(p PendingUpload, delay time.Duration) {
 }
 
 func (s *Service) CancelUpload(path string) {
-	s.schedule.Cancel(cleanVirtual(path))
+	path = cleanVirtual(path)
+	s.scheduledMu.Lock()
+	s.schedule.Cancel(path)
+	delete(s.scheduled, path)
+	s.scheduledMu.Unlock()
 }
 
 func (s *Service) CancelChildUploads(dir string) {
-	s.schedule.CancelUnder(cleanVirtual(dir))
+	dir = cleanVirtual(dir)
+	s.scheduledMu.Lock()
+	s.schedule.CancelUnder(dir)
+	for path := range s.scheduled {
+		if path == dir || isPathUnder(path, dir) {
+			delete(s.scheduled, path)
+		}
+	}
+	s.scheduledMu.Unlock()
 }
 
 func (s *Service) scheduleUpload(p PendingUpload, delay time.Duration) {
-	if s.schedule.Keys()[p.Path] {
+	task := &scheduledUpload{pending: p}
+	s.scheduledMu.Lock()
+	old := s.scheduled[p.Path]
+	replaced := s.schedule.Schedule(p.Path, delay, func() {
+		s.scheduledMu.Lock()
+		if s.scheduled[p.Path] == task {
+			delete(s.scheduled, p.Path)
+		}
+		s.scheduledMu.Unlock()
+		s.sendUpload(p)
+	})
+	s.scheduled[p.Path] = task
+	s.scheduledMu.Unlock()
+
+	if replaced {
 		logging.L.DebugfEvery("vfs.reschedule_upload", time.Second, "[VFS] reschedule upload op_id=%q path=%q size=%d delay=%s", p.FID, p.Path, p.Size, delay)
 	} else {
 		logging.L.DebugfEvery("vfs.schedule_upload", time.Second, "[VFS] schedule upload op_id=%q path=%q size=%d delay=%s", p.FID, p.Path, p.Size, delay)
 	}
-	s.schedule.Schedule(p.Path, delay, func() { s.sendUpload(p) })
+	if replaced && old != nil && !sameStagingGeneration(old.pending, p) {
+		s.store.RemoveStagingIfUnreferenced(old.pending.LocalPath)
+	}
+}
+
+func sameStagingGeneration(a, b PendingUpload) bool {
+	return a.FID == b.FID && a.LocalPath == b.LocalPath
 }
 
 func (s *Service) sendUpload(p PendingUpload) {
