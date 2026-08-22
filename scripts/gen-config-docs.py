@@ -7,6 +7,46 @@ import os
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "qrypt.schema.json")
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "..", "docs", "for-user", "full-config.md")
 
+STORAGE_DOC_OVERRIDES = {
+    "work_dir": {
+        "default": "`~/.qrypt`",
+        "description": "所有运行数据的根目录；未单独配置的子目录会从这里派生。",
+    },
+    "read_cache_dir": {
+        "default": "`<work_dir>/cache/read`",
+        "description": "读取缓存目录的可选覆盖。",
+    },
+    "thumbnail_cache_dir": {
+        "default": "`<work_dir>/cache/thumbnail`",
+        "description": "缩略图缓存目录的可选覆盖。",
+    },
+    "upload_dir": {
+        "default": "`<work_dir>/upload`",
+        "description": "上传 staging 和 pending journal 目录的可选覆盖。",
+    },
+    "state_dir": {
+        "default": "`<work_dir>/state`",
+        "description": "驱动及运行状态目录的可选覆盖。",
+    },
+    "log_dir": {
+        "default": "`<work_dir>/logs`",
+        "description": "运行日志目录的可选覆盖。",
+    },
+    "tmp_dir": {
+        "default": "`<work_dir>/tmp`",
+        "description": "临时文件目录的可选覆盖。",
+    },
+}
+
+LOGGING_DOC_OVERRIDES = {
+    "log_file": {
+        "description": "主日志路径；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。",
+    },
+    "error_file": {
+        "description": "错误日志路径；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。",
+    },
+}
+
 
 def load_schema():
     with open(SCHEMA_PATH) as f:
@@ -21,7 +61,7 @@ def fmt_default(v):
     return str(v)
 
 
-def build_field_rows(props, skip_encryption=False, skip_cache=False):
+def build_field_rows(props, skip_encryption=False, skip_cache=False, doc_overrides=None):
     rows = []
     rows.append("| 参数 | 类型 | 默认值 | 说明 |")
     rows.append("|---|---|---|---|")
@@ -33,10 +73,11 @@ def build_field_rows(props, skip_encryption=False, skip_cache=False):
         if name == "type":
             continue
         t = prop.get("type", "string")
-        default_val = fmt_default(prop.get("default"))
+        override = (doc_overrides or {}).get(name, {})
+        default_val = override.get("default", fmt_default(prop.get("default")))
         if not default_val:
             default_val = "-"
-        desc = prop.get("description", "")
+        desc = override.get("description", prop.get("description", ""))
         rows.append(f"| `{name}` | {t} | {default_val} | {desc} |")
     return "\n".join(rows)
 
@@ -117,7 +158,14 @@ def generate():
         "当移动端或其他宿主传入 runtime layout 时，这些目录会被运行时布局覆盖。"
     )
     sections.append("")
-    sections.append(build_field_rows(storage_props))
+    sections.append(build_field_rows(storage_props, doc_overrides=STORAGE_DOC_OVERRIDES))
+    sections.append("")
+    sections.append(
+        "环境变量 `QRYPT_HOME` 用于便携运行和测试隔离。设置后它优先于\n"
+        "`storage.work_dir` 及所有子目录覆盖，所有运行数据（包括 sync 会话）\n"
+        "都会写入该目录；未设置时才使用 `storage.work_dir`，最终回退到 `~/.qrypt`。\n"
+        "sync 会话固定保存在有效工作目录的 `sync/` 子目录。"
+    )
     sections.append("")
 
     read_cache = defs.get("readCacheConfig", {})
@@ -139,7 +187,7 @@ def generate():
     sections.append(
         "在 `[thumbnail_cache]` 中设置缩略图缓存默认值。"
         "生成的缩略图保存在 `thumbnail_cache_dir`"
-        "（默认 `~/.qrypt/cache/thumbnail`）。"
+        "（默认 `<work_dir>/cache/thumbnail`）。"
     )
     sections.append("")
     sections.append(build_field_rows(thumbnail_props))
@@ -162,7 +210,7 @@ def generate():
     log_props = log.get("properties", {})
     sections.append("## 日志")
     sections.append("")
-    sections.append("\n".join(build_field_rows(log_props).split("\n")))
+    sections.append("\n".join(build_field_rows(log_props, doc_overrides=LOGGING_DOC_OVERRIDES).split("\n")))
     sections.append("")
 
     time = defs.get("timeConfig", {})
