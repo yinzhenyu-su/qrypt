@@ -55,7 +55,7 @@ func NewPendingStore(dir string) (*PendingStore, error) {
 			logging.L.Warnf("[CACHE] compact pending journal failed: %v", err)
 		}
 	}
-	if cleaned := store.sweepUnreferencedStaging(); cleaned > 0 {
+	if cleaned := store.sweepUnreferencedStaging(0); cleaned > 0 {
 		logging.L.Infof("[CACHE] cleaned %d unreferenced staging files", cleaned)
 	}
 	return store, nil
@@ -550,9 +550,27 @@ func (c *PendingStore) RemoveStagingIfUnreferenced(localPath string) {
 	}
 }
 
+// liveStagingMinAge is how recently a staging file may have been modified
+// before the live sweep treats it as unreferenced garbage. The window covers
+// the gap between staging-file creation and pending-record registration (and
+// any content copy in between), so a file being staged right now is never
+// swept out from under its writer.
+const liveStagingMinAge = time.Minute
+
+// SweepUnreferencedStaging deletes staging files that no pending upload
+// refers to and reports how many were removed. Unlike the startup sweep in
+// NewPendingStore it runs while uploads are live, so it skips files modified
+// within liveStagingMinAge; in-flight uploads are safe regardless because
+// their records stay in the store until finalize removes them.
+func (c *PendingStore) SweepUnreferencedStaging() int {
+	return c.sweepUnreferencedStaging(liveStagingMinAge)
+}
+
 // sweepUnreferencedStaging deletes staging files no pending refers to.
 // Generations superseded before a crash are otherwise leaked forever.
-func (c *PendingStore) sweepUnreferencedStaging() int {
+// Entries modified within minAge are skipped; pass 0 to sweep regardless of
+// age (safe only before the store serves traffic).
+func (c *PendingStore) sweepUnreferencedStaging(minAge time.Duration) int {
 	c.mu.RLock()
 	referenced := make(map[string]struct{}, len(c.pending))
 	for _, p := range c.pending {
@@ -563,10 +581,19 @@ func (c *PendingStore) sweepUnreferencedStaging() int {
 	if err != nil {
 		return 0
 	}
+	var cutoff time.Time
+	if minAge > 0 {
+		cutoff = util.Now().Add(-minAge)
+	}
 	var cleaned int
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".staging") {
 			continue
+		}
+		if minAge > 0 {
+			if info, err := entry.Info(); err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
 		}
 		path := filepath.Join(c.staging.dir, entry.Name())
 		if _, ok := referenced[filepath.Clean(path)]; ok {

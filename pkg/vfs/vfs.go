@@ -29,6 +29,10 @@ const restoredDirTTL = 60 * time.Second
 const directoryCopyHideTTL = 10 * time.Minute
 const localCreateLookupTTL = 2 * time.Minute
 
+// defaultStagingSweepInterval is how often the live staging sweeper removes
+// files no pending upload refers to.
+const defaultStagingSweepInterval = time.Minute
+
 type Options struct {
 	Name          string
 	StorageDir    string
@@ -71,6 +75,11 @@ type VFS struct {
 	faults        *faultinject.Registry
 	pathLocks     *pathLockState
 	invalidations invalidationState
+
+	// stagingSweepInterval controls the live sweep cadence for unreferenced
+	// staging files (see sweepStagingLoop). Zero means
+	// defaultStagingSweepInterval; tests shrink it for fast cleanup.
+	stagingSweepInterval time.Duration
 
 	// done is closed when the VFS shuts down (Close or context cancel in
 	// Start). The blocking upload-queue enqueue goroutine selects on it so
@@ -223,6 +232,11 @@ func (v *VFS) Start(ctx context.Context) {
 			v.uploadWorker(ctx)
 		}()
 	}
+	v.workerWG.Add(1)
+	go func() {
+		defer v.workerWG.Done()
+		v.sweepStagingLoop(ctx)
+	}()
 	v.lifecycleMu.Unlock()
 
 	// Resume only while still running: a concurrent Close that already
