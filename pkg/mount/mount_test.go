@@ -67,6 +67,26 @@ type blockingReadFS struct {
 	entered chan struct{}
 }
 
+type invalidationStubFS struct {
+	stubFS
+	listener     func(string)
+	unsubscribed bool
+}
+
+func (s *invalidationStubFS) SubscribeInvalidations(listener func(string)) func() {
+	s.listener = listener
+	return func() {
+		s.unsubscribed = true
+		s.listener = nil
+	}
+}
+
+func (s *invalidationStubFS) emitInvalidation(path string) {
+	if s.listener != nil {
+		s.listener(path)
+	}
+}
+
 func (stubFS) Start(context.Context) {}
 
 func (s *stubSpaceFS) Space(context.Context) (drive.Space, error) {
@@ -204,6 +224,115 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}
+	}
+}
+
+func TestMountInvalidationPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		goos string
+		path string
+		want []string
+	}{
+		{name: "unix nested", goos: "darwin", path: "/dir/file.bin", want: []string{"/dir/file.bin", "/dir"}},
+		{name: "unix root child", goos: "linux", path: "/file.bin", want: []string{"/file.bin", "/"}},
+		{name: "windows", goos: "windows", path: "/dir/file.bin", want: []string{"/dir/file.bin"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mountInvalidationPaths(tc.path, tc.goos)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("paths = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSubscribeInvalidationsNotifiesAndUnsubscribes(t *testing.T) {
+	fs := &invalidationStubFS{}
+	type notification struct {
+		path   string
+		action uint32
+	}
+	notifications := make(chan notification, 4)
+	stop := subscribeInvalidations(fs, func(path string, action uint32) bool {
+		notifications <- notification{path: path, action: action}
+		return true
+	})
+
+	fs.emitInvalidation("/dir/file.bin")
+	wantPaths := mountInvalidationPaths("/dir/file.bin", runtime.GOOS)
+	for i, wantPath := range wantPaths {
+		var got notification
+		select {
+		case got = <-notifications:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for notification[%d] path=%q", i, wantPath)
+		}
+		if got.path != wantPath {
+			t.Fatalf("notification[%d].path = %q, want %q", i, got.path, wantPath)
+		}
+		wantAction := uint32(fuse.NOTIFY_CREATE | fuse.NOTIFY_TRUNCATE)
+		if got.action != wantAction {
+			t.Fatalf("notification[%d].action = %#x, want %#x", i, got.action, wantAction)
+		}
+	}
+
+	stop()
+	stop()
+	if !fs.unsubscribed {
+		t.Fatal("invalidation source was not unsubscribed")
+	}
+	fs.emitInvalidation("/ignored.bin")
+	select {
+	case got := <-notifications:
+		t.Fatalf("notification after unsubscribe = %+v", got)
+	default:
+	}
+}
+
+func TestSubscribeInvalidationsDoesNotBlockPublisherAndCloseWaitsForNotify(t *testing.T) {
+	fs := &invalidationStubFS{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	stop := subscribeInvalidations(fs, func(string, uint32) bool {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return true
+	})
+
+	published := make(chan struct{})
+	go func() {
+		fs.emitInvalidation("/slow.bin")
+		close(published)
+	}()
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("invalidation publisher blocked on notify")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("notify worker did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("unsubscribe returned while notify was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("unsubscribe did not finish after notify returned")
 	}
 }
 

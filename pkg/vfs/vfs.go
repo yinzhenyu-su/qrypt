@@ -67,9 +67,10 @@ type VFS struct {
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
-	activeDebug *observe.ActiveStore
-	faults      *faultinject.Registry
-	pathLocks   *pathLockState
+	activeDebug   *observe.ActiveStore
+	faults        *faultinject.Registry
+	pathLocks     *pathLockState
+	invalidations invalidationState
 
 	// done is closed when the VFS shuts down (Close or context cancel in
 	// Start). The blocking upload-queue enqueue goroutine selects on it so

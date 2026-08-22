@@ -21,6 +21,11 @@ func TestUploadEngineExecutesPendingUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var invalidated []string
+	unsubscribe := fs.SubscribeInvalidations(func(path string) {
+		invalidated = append(invalidated, path)
+	})
+	t.Cleanup(unsubscribe)
 	if _, err := fs.WriteAt(ctx, "/engine.txt", []byte("engine upload"), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +46,9 @@ func TestUploadEngineExecutesPendingUpload(t *testing.T) {
 	}
 	if pending := fs.PendingUploads(); len(pending) != 0 {
 		t.Fatalf("pending uploads after engine = %+v, want none", pending)
+	}
+	if len(invalidated) != 1 || invalidated[0] != "/engine.txt" {
+		t.Fatalf("invalidations = %v, want exactly one /engine.txt", invalidated)
 	}
 	history := fs.DebugSnapshot().Mounts[0].HistoricalUploads()
 	if len(history) != 1 || history[0].State != string(drive.UploadPhaseCompleted) {

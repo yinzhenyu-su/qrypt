@@ -33,10 +33,11 @@ type Options struct {
 }
 
 type Session struct {
-	ID         string
-	MountPoint string
-	host       *fuse.FileSystemHost
-	adapter    *adapter
+	ID                       string
+	MountPoint               string
+	host                     *fuse.FileSystemHost
+	adapter                  *adapter
+	unsubscribeInvalidations func()
 }
 
 type Mounter interface {
@@ -87,6 +88,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		host:       host,
 		adapter:    ad,
 	}
+	session.unsubscribeInvalidations = subscribeInvalidations(fs, host.Notify)
 
 	mountOpts := mountOptions(opts)
 	result := make(chan bool, 1)
@@ -98,11 +100,13 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 
 	select {
 	case <-ctx.Done():
+		session.unsubscribeInvalidations()
 		ad.shutdown()
 		host.Unmount()
 		return nil, ctx.Err()
 	case ok := <-result:
 		if !ok {
+			session.unsubscribeInvalidations()
 			host.Unmount()
 			return nil, fmt.Errorf("mount: failed to mount %s", opts.MountPoint)
 		}
@@ -120,6 +124,9 @@ func (FuseMounter) Unmount(ctx context.Context, session *Session) error {
 	}
 	start := time.Now()
 	logging.L.Infof("[FUSE] unmount start mount=%q", session.MountPoint)
+	if session.unsubscribeInvalidations != nil {
+		session.unsubscribeInvalidations()
+	}
 	if session.adapter != nil {
 		stepStart := time.Now()
 		session.adapter.shutdown()

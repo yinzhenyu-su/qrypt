@@ -18,15 +18,24 @@ import (
 // newUploadEngine builds the upload engine wired to VFS adapters.
 func newUploadEngine(v *VFS) *upload.Engine {
 	return upload.NewEngine(upload.EngineDeps{
-		Remote:   newVFSDriverRuntime(v).RemoteMutationBackend(),
-		Targets:  v.uploadTargets,
-		Observer: newVFSUploadObserver(v),
-		Pending:  upload.NewStoreAdapter(v.uploads.Store()),
-		Runtime:  newVFSUploadRuntime(v),
-		View:     newVFSViewCommitter(v),
-		Snapshot: newVFSUploadSnapshotter(v),
-		Faults:   newVFSUploadFaultController(v),
+		Remote:        newVFSDriverRuntime(v).RemoteMutationBackend(),
+		Targets:       v.uploadTargets,
+		Observer:      newVFSUploadObserver(v),
+		Pending:       upload.NewStoreAdapter(v.uploads.Store()),
+		Runtime:       newVFSUploadRuntime(v),
+		View:          newVFSViewCommitter(v),
+		Invalidations: vfsUploadInvalidations{v: v},
+		Snapshot:      newVFSUploadSnapshotter(v),
+		Faults:        newVFSUploadFaultController(v),
 	})
+}
+
+type vfsUploadInvalidations struct {
+	v *VFS
+}
+
+func (i vfsUploadInvalidations) InvalidatePath(path string) {
+	i.v.emitInvalidation(path)
 }
 
 // --- upload_fault.go ---

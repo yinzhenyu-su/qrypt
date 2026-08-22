@@ -64,6 +64,15 @@ type PathRefresher interface {
 	RefreshPath(path string)
 }
 
+// InvalidationSource publishes paths whose cached kernel view is stale after
+// a mutation completed outside the originating kernel request, such as an
+// asynchronous upload. Synchronous FUSE operations already update the kernel
+// view as part of their response. Subscribers must return promptly. The
+// returned function removes the subscription and is safe to call repeatedly.
+type InvalidationSource interface {
+	SubscribeInvalidations(func(path string)) func()
+}
+
 // FileSystem is the common file-operation API implemented by a single-drive
 // VFS and a multi-drive Namespace. Runtime lifecycle (Start) and cache/view
 // control (RefreshPath) live in separate optional interfaces so consumers
@@ -95,7 +104,8 @@ type SourceUploader interface {
 
 // Optional public capability interfaces are grouped by consumer role:
 //
-//	file operations  FileSystem (Reader + Writer), Lifecycle, PathRefresher
+//	file operations  FileSystem (Reader + Writer), Lifecycle, PathRefresher,
+//	                 InvalidationSource
 //	runtime caps     UploadInspector, RemoteLister, HashProvider,
 //	                 EncryptedHashProvider, ModTimeWriter, SpaceProvider,
 //	                 MountSpaceProvider
@@ -296,3 +306,5 @@ var _ Lifecycle = (*VFS)(nil)
 var _ PathRefresher = (*VFS)(nil)
 var _ Lifecycle = (*Namespace)(nil)
 var _ PathRefresher = (*Namespace)(nil)
+var _ InvalidationSource = (*VFS)(nil)
+var _ InvalidationSource = (*Namespace)(nil)

@@ -36,6 +36,7 @@ package fuse
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__linux__)
 
@@ -129,6 +130,7 @@ static struct fuse_context *(*pfn_fuse_get_context)(void);
 static int (*pfn_fuse_opt_parse)(struct fuse_args *args, void *data,
     const struct fuse_opt opts[], fuse_opt_proc_t proc);
 static void (*pfn_fuse_opt_free_args)(struct fuse_args *args);
+static int (*pfn_fuse_invalidate_path)(struct fuse *fuse, const char *path);
 
 static inline int inl_fuse_main_real(int argc, char *argv[],
     const struct fuse_operations *ops, size_t opsize, void *data)
@@ -204,6 +206,9 @@ static void *cgofuse_init_fuse(void)
 	CGOFUSE_GET_API(fuse_get_context);
 	CGOFUSE_GET_API(fuse_opt_parse);
 	CGOFUSE_GET_API(fuse_opt_free_args);
+	// Path invalidation is optional because older FUSE implementations do not
+	// export it. A missing symbol must not prevent the filesystem from mounting.
+	*(void **)&pfn_fuse_invalidate_path = dlsym(h, "fuse_invalidate_path");
 
 	return h;
 
@@ -787,6 +792,14 @@ static int hostNotify(struct fuse *fuse, const char *path, uint32_t action)
 	if (0 == pfn_fsp_fuse_notify)
 		return 0;
 	return 0 == pfn_fsp_fuse_notify(fsp_fuse_env(), fuse, path, action);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__linux__)
+	(void)action;
+	if (0 == pfn_fuse_invalidate_path)
+		return 0;
+	int result = pfn_fuse_invalidate_path(fuse, path);
+	// FUSE documents -ENOENT as "nothing cached", which already satisfies the
+	// invalidation request and must not be reported as a notification failure.
+	return 0 == result || -ENOENT == result;
 #else
 	return 0;
 #endif
