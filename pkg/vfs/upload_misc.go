@@ -297,6 +297,30 @@ func (v *VFS) uploadPending(ctx context.Context, pending PendingUpload) error {
 	return upload.PendingWithRuntime(ctx, pending, newVFSUploadWorkerRuntime(v), v.uploads.WorkerCount(), v.uploads.DefaultDelay())
 }
 
+// sweepStagingLoop periodically deletes staging files that no pending upload
+// refers to. Generations replaced after their flush (a rewritten file
+// supersedes the previous generation's debounce timer, so that generation
+// never reaches a worker) have no code path that would clean their staging;
+// without this loop they would survive until process restart.
+func (v *VFS) sweepStagingLoop(ctx context.Context) {
+	interval := v.stagingSweepInterval
+	if interval <= 0 {
+		interval = defaultStagingSweepInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if cleaned := v.uploads.Store().SweepUnreferencedStaging(); cleaned > 0 {
+				logging.L.Infof("[CACHE] swept %d unreferenced staging files", cleaned)
+			}
+		}
+	}
+}
+
 // vfsUploadWorkerRuntime adapts VFS internals to upload.WorkerRuntime.
 type vfsUploadWorkerRuntime struct {
 	v *VFS
