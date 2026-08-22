@@ -77,6 +77,12 @@ type UploadView interface {
 	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
 }
 
+// InvalidationSink publishes a path after its pending upload has been removed
+// and the committed entry is the only identity visible to readers.
+type InvalidationSink interface {
+	InvalidatePath(path string)
+}
+
 type Snapshotter interface {
 	SnapshotPending(p PendingUpload) (Snapshot, error)
 }

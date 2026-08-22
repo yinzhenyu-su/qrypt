@@ -57,6 +57,11 @@ func TestUploadSourceSeedsReadCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = fs.CloseReadCache() })
+	var invalidated []string
+	unsubscribe := fs.SubscribeInvalidations(func(path string) {
+		invalidated = append(invalidated, path)
+	})
+	t.Cleanup(unsubscribe)
 
 	content := []byte("direct upload cache seed")
 	entry, err := fs.UploadSource(context.Background(), "/direct.txt", SourceUploadRequest{
@@ -90,6 +95,9 @@ func TestUploadSourceSeedsReadCache(t *testing.T) {
 	}
 	if entry.ID == "" {
 		t.Fatal("uploaded entry has empty id")
+	}
+	if len(invalidated) != 1 || invalidated[0] != "/direct.txt" {
+		t.Fatalf("invalidations = %v, want exactly one /direct.txt", invalidated)
 	}
 }
 

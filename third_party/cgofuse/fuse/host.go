@@ -836,8 +836,9 @@ func (host *FileSystemHost) Unmount() bool {
 	return 0 != c_hostUnmount(host.fuse, mntp)
 }
 
-// Notify notifies the operating system about a file change.
-// The action is a combination of the fuse.NOTIFY_* constants.
+// Notify notifies the operating system about a file change. On Windows the
+// action is a combination of the fuse.NOTIFY_* constants. On Unix systems the
+// path's cached inode and attributes are invalidated and action is ignored.
 func (host *FileSystemHost) Notify(path string, action uint32) bool {
 	if nil == host.fuse {
 		return false

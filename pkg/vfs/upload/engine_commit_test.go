@@ -56,6 +56,17 @@ func (v *recordingView) CommitUploadedEntry(path string, entry drive.Entry, stag
 	v.staging = stagingPath
 }
 
+type recordingInvalidations struct {
+	paths           []string
+	pendingAtNotify bool
+	store           *PendingStore
+}
+
+func (r *recordingInvalidations) InvalidatePath(path string) {
+	r.paths = append(r.paths, path)
+	_, r.pendingAtNotify = r.store.UploadByPath(path)
+}
+
 // fakeCommitRuntime implements the upload Runtime surface (minus the view
 // commit, which now lives on UploadView).
 type fakeCommitRuntime struct{}
@@ -88,14 +99,16 @@ func TestFinalizeUploadCommitsViaView(t *testing.T) {
 	}
 
 	view := &recordingView{}
+	invalidations := &recordingInvalidations{store: store}
 	e := NewEngine(EngineDeps{
-		Remote:   &fakeCommitRemote{},
-		Observer: &fakeCommitObserver{},
-		Pending:  NewStoreAdapter(store),
-		Runtime:  &fakeCommitRuntime{},
-		View:     view,
-		Snapshot: &fakeCommitSnapshot{},
-		Faults:   &fakeCommitFaults{},
+		Remote:        &fakeCommitRemote{},
+		Observer:      &fakeCommitObserver{},
+		Pending:       NewStoreAdapter(store),
+		Runtime:       &fakeCommitRuntime{},
+		View:          view,
+		Invalidations: invalidations,
+		Snapshot:      &fakeCommitSnapshot{},
+		Faults:        &fakeCommitFaults{},
 	})
 
 	state, text, err := e.finalizeUpload(context.Background(), pending, drive.Entry{ID: "remote-up", Name: "up.txt", Size: 4}, Snapshot{Path: staging}, time.Now())
@@ -114,5 +127,11 @@ func TestFinalizeUploadCommitsViaView(t *testing.T) {
 	// The pending record is gone.
 	if _, ok := store.UploadByPath("/up.txt"); ok {
 		t.Fatal("pending record still present after finalize")
+	}
+	if len(invalidations.paths) != 1 || invalidations.paths[0] != "/up.txt" {
+		t.Fatalf("invalidations = %v, want exactly one /up.txt", invalidations.paths)
+	}
+	if invalidations.pendingAtNotify {
+		t.Fatal("invalidation was published before the pending record was removed")
 	}
 }

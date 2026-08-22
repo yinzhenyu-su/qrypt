@@ -49,6 +49,9 @@ func (e *Engine) finalizeUpload(ctx context.Context, pending PendingUpload, entr
 		e.rollbackUploadedEntry(ctx, pending, entry)
 		return SnapshotStateSuperseded, "", nil
 	}
+	if e.invalidations != nil {
+		e.invalidations.InvalidatePath(pending.Path)
+	}
 	phaseStart = util.Now()
 	stagingErr := pendingStore.RemoveStaging(pending.LocalPath)
 	stagingExtra := map[string]any{}

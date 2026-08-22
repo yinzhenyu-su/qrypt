@@ -11,27 +11,29 @@ import (
 
 // EngineDeps wires the upload engine to VFS adapters.
 type EngineDeps struct {
-	Remote   RemoteOps
-	Targets  *TargetIndex
-	Observer Observer
-	Pending  Store
-	Runtime  Runtime
-	View     UploadView
-	Snapshot Snapshotter
-	Faults   FaultController
+	Remote        RemoteOps
+	Targets       *TargetIndex
+	Observer      Observer
+	Pending       Store
+	Runtime       Runtime
+	View          UploadView
+	Invalidations InvalidationSink
+	Snapshot      Snapshotter
+	Faults        FaultController
 }
 
 // Engine executes pending uploads against a remote driver, reporting
 // progress through the observer and maintaining the pending store.
 type Engine struct {
-	remote   RemoteOps
-	targets  *TargetIndex
-	observer Observer
-	pending  Store
-	runtime  Runtime
-	view     UploadView
-	snapshot Snapshotter
-	faults   FaultController
+	remote        RemoteOps
+	targets       *TargetIndex
+	observer      Observer
+	pending       Store
+	runtime       Runtime
+	view          UploadView
+	invalidations InvalidationSink
+	snapshot      Snapshotter
+	faults        FaultController
 }
 
 func NewEngine(deps EngineDeps) *Engine {
@@ -40,14 +42,15 @@ func NewEngine(deps EngineDeps) *Engine {
 		targets = NewTargetIndex(DefaultTargetIndexTTL)
 	}
 	return &Engine{
-		remote:   indexedRemoteOps{RemoteOps: deps.Remote, index: targets},
-		targets:  targets,
-		observer: deps.Observer,
-		pending:  deps.Pending,
-		runtime:  deps.Runtime,
-		view:     deps.View,
-		snapshot: deps.Snapshot,
-		faults:   deps.Faults,
+		remote:        indexedRemoteOps{RemoteOps: deps.Remote, index: targets},
+		targets:       targets,
+		observer:      deps.Observer,
+		pending:       deps.Pending,
+		runtime:       deps.Runtime,
+		view:          deps.View,
+		invalidations: deps.Invalidations,
+		snapshot:      deps.Snapshot,
+		faults:        deps.Faults,
 	}
 }
 
