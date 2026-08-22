@@ -21,9 +21,13 @@ func TestFlushRetiresGenerationDisplacedBeforeTimerFire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = fs.Close(context.Background()) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	fs.Start(ctx)
+	defer func() {
+		cancel()
+		_ = fs.Close(context.Background())
+	}()
 
-	ctx := context.Background()
 	if err := fs.Create(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}

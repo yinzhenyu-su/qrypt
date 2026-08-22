@@ -101,6 +101,12 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 
 	// Upload debounce timer arms on flush, stops on Close.
 	fs := newStateTestVFS(t)
+	uploadCtx, uploadCancel := context.WithCancel(context.Background())
+	fs.Start(uploadCtx)
+	defer func() {
+		uploadCancel()
+		_ = fs.Close(context.Background())
+	}()
 	if err := fs.Create(ctx, "/a.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +163,36 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	dleft := len(fs2.deletes.tasks.scheduler.Keys())
 	if dleft != 0 {
 		t.Fatalf("delete.Close left %d timers armed", dleft)
+	}
+}
+
+func TestFlushBeforeStartDefersUploadSchedulingToResume(t *testing.T) {
+	ctx := context.Background()
+	fs := newStateTestVFS(t)
+	if err := fs.Create(ctx, "/pending.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/pending.txt", []byte("pending"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/pending.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(fs.uploads.ScheduledDeadlines()); got != 0 {
+		t.Fatalf("Flush before Start armed %d upload timers, want 0", got)
+	}
+	if got := len(fs.uploads.Queue()); got != 0 {
+		t.Fatalf("Flush before Start enqueued %d uploads, want 0", got)
+	}
+
+	startCtx, cancel := context.WithCancel(context.Background())
+	fs.Start(startCtx)
+	defer func() {
+		cancel()
+		_ = fs.Close(context.Background())
+	}()
+	if got := len(fs.uploads.ScheduledDeadlines()); got != 1 {
+		t.Fatalf("Start Resume armed %d upload timers, want 1", got)
 	}
 }
 

@@ -60,8 +60,28 @@ var largeUploadQuietDelay = upload.LargeUploadQuietDelay
 // backward compatibility with internal callers; the upload schedule
 // implementation lives in internal/upload.
 
-func (v *VFS) enqueue(p PendingUpload)                         { v.uploads.Enqueue(p) }
-func (v *VFS) enqueueAfter(p PendingUpload, d time.Duration)   { v.uploads.EnqueueAfter(p, d) }
+func (v *VFS) enqueue(p PendingUpload) {
+	if v.uploadSchedulingEnabled() {
+		v.uploads.Enqueue(p)
+	}
+}
+func (v *VFS) enqueueAfter(p PendingUpload, d time.Duration) bool {
+	if !v.uploadSchedulingEnabled() {
+		return false
+	}
+	v.uploads.EnqueueAfter(p, d)
+	return true
+}
+
+// uploadSchedulingEnabled keeps construction-time writes durable but idle.
+// Start.Resume is the single scheduling entrypoint for pending records created
+// before workers exist; otherwise a debounce timer can enqueue a generation
+// before Start and Resume can enqueue the same generation again.
+func (v *VFS) uploadSchedulingEnabled() bool {
+	v.lifecycleMu.Lock()
+	defer v.lifecycleMu.Unlock()
+	return v.lifecycle == lifecycleRunning
+}
 func (v *VFS) cancelUpload(path string)                        { v.uploads.CancelUpload(path) }
 func (v *VFS) uploadQuietDelay(p PendingUpload) time.Duration  { return v.uploads.QuietDelay(p) }
 func (v *VFS) uploadQuietWindow(p PendingUpload) time.Duration { return v.uploads.QuietWindow(p) }
