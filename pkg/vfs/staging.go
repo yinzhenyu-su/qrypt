@@ -227,8 +227,11 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 	if pending.Size == 0 && delay < zeroByteUploadDebounceDelay {
 		delay = zeroByteUploadDebounceDelay
 	}
-	logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q delay=%s", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, delay)
-	v.enqueueAfter(pending, delay)
+	if v.enqueueAfter(pending, delay) {
+		logging.L.InfofEvery("vfs.flush_queued", time.Second, "[VFS] flush queued upload op_id=%q path=%q name=%q size=%d local=%q delay=%s", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, delay)
+	} else {
+		logging.L.InfofEvery("vfs.flush_deferred", time.Second, "[VFS] flush deferred upload until Start op_id=%q path=%q name=%q size=%d local=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath)
+	}
 	return nil
 }
 
