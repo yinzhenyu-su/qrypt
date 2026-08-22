@@ -59,6 +59,9 @@ func NewMP4FastStartVirtualFileInto(ctx context.Context, size int64, readAt Read
 	if int64(len(moov)) != probe.MoovSize {
 		return nil, fmt.Errorf("media: short moov read")
 	}
+	// ReadAtFunc does not transfer ownership of its result. Keep the source
+	// immutable when patchChunkOffsets takes ownership and rewrites in place.
+	moov = append([]byte(nil), moov...)
 	moov, err = patchChunkOffsets(moov, probe.MoovSize)
 	if err != nil {
 		return nil, err
