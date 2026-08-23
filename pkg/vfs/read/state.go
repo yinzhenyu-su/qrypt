@@ -25,7 +25,7 @@ const (
 	// 预取不能占满所有普通读取槽位，否则多个文件同时访问时会影响前台读取。
 	PrefetchLimit = max(1, min(4, MaxConcurrency-HighReserve))
 	// HotChunkLimit 是单个 VFS 实例保留在内存热缓存中的最大块数量。
-	HotChunkLimit = 64
+	HotChunkLimit = 96
 	// RangeHitLimit 是范围命中统计允许保留的最大条目数量。
 	RangeHitLimit = 1024
 	// RangePromoteHits 是把重复范围访问提升为热缓存访问所需的命中次数，
