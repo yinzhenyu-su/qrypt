@@ -132,7 +132,7 @@ func patchChunkOffsets(data []byte, delta int64) ([]byte, error) {
 
 	cur := delta
 	converged := false
-	for i := 0; i < maxChunkPatchPasses; i++ {
+	for range maxChunkPatchPasses {
 		growth := int64(0)
 		for j := range tables {
 			t := &tables[j]

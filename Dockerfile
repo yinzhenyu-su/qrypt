@@ -9,7 +9,7 @@
 #   docker buildx build --platform linux/arm64 -t qrypt .
 
 # ---- Build stage ----
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 RUN apk add --no-cache fuse-dev gcc musl-dev
 

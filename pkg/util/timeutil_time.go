@@ -120,11 +120,9 @@ func (c *clock) start(parent context.Context, cfg NTPConfig) {
 	c.startMu.Lock()
 	c.cancel = cancel
 	c.startMu.Unlock()
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
+	c.wg.Go(func() {
 		c.syncLoop(ctx, servers, timeout, poll)
-	}()
+	})
 }
 
 func (c *clock) stop() {

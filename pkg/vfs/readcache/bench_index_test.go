@@ -19,7 +19,7 @@ func BenchmarkCacheIndexContention(b *testing.B) {
 		c.shards[i].chunks = map[string]*fileChunks{}
 	}
 	// Seed: each reader file has one cached chunk.
-	for r := 0; r < readers; r++ {
+	for r := range readers {
 		fid := fmt.Sprintf("reader-%d", r)
 		fc := c.fileChunks(fid)
 		fc.chunks[0] = chunkInfo{file: "x", offset: 0, size: 1, accessAt: time.Now()}
@@ -31,9 +31,7 @@ func BenchmarkCacheIndexContention(b *testing.B) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		var n int
 		for {
 			select {
@@ -45,13 +43,13 @@ func BenchmarkCacheIndexContention(b *testing.B) {
 			_ = c.fileChunks(fid)
 			n++
 		}
-	}()
+	})
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var gwg sync.WaitGroup
-		for r := 0; r < readers; r++ {
+		for r := range readers {
 			gwg.Add(1)
 			go func(r int) {
 				defer gwg.Done()

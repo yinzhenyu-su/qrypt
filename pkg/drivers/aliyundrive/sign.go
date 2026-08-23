@@ -75,10 +75,15 @@ func privateKeyFromHex(value string) (*ecdsa.PrivateKey, error) {
 	if x == nil || y == nil {
 		return nil, fmt.Errorf("aliyundrive: invalid device private key")
 	}
-	return &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{Curve: curve, X: x, Y: y},
-		D:         new(big.Int).SetBytes(raw),
-	}, nil
+	publicKey := ecdsa.PublicKey{Curve: curve}
+	//lint:ignore SA1019 secp256k1 is a custom curve; ecc requires the raw coordinates.
+	publicKey.X = x
+	//lint:ignore SA1019 secp256k1 is a custom curve; ecc requires the raw coordinates.
+	publicKey.Y = y
+	privateKey := &ecdsa.PrivateKey{PublicKey: publicKey}
+	//lint:ignore SA1019 secp256k1 is a custom curve; ecc requires the raw scalar.
+	privateKey.D = new(big.Int).SetBytes(raw)
+	return privateKey, nil
 }
 
 func signatureFor(privateKey *ecdsa.PrivateKey, deviceID, userID string) (string, error) {
@@ -92,8 +97,11 @@ func signatureFor(privateKey *ecdsa.PrivateKey, deviceID, userID string) (string
 }
 
 func publicKeyHex(publicKey *ecdsa.PublicKey) string {
-	//lint:ignore SA1019 the aliyun device protocol serializes the raw 64-byte coordinates (X||Y); PublicKey.Bytes is unavailable on ecdsa keys and reading the coordinates is read-only
-	return hex.EncodeToString(append(pad32(publicKey.X), pad32(publicKey.Y)...))
+	//lint:ignore SA1019 the aliyun device protocol serializes raw coordinates (X||Y).
+	x := publicKey.X
+	//lint:ignore SA1019 the aliyun device protocol serializes raw coordinates (X||Y).
+	y := publicKey.Y
+	return hex.EncodeToString(append(pad32(x), pad32(y)...))
 }
 
 func pad32(value *big.Int) []byte {

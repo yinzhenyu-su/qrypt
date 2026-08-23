@@ -3,7 +3,7 @@
 # Build: docker build -f Dockerfile.windows -t qrypt:windows .
 # Extract: docker create --name qrypt-win qrypt:windows && docker cp qrypt-win:/qrypt-windows-amd64.exe ./dist/ && docker rm qrypt-win
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-mingw-w64-x86-64 git ca-certificates

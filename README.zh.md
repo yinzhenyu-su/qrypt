@@ -32,7 +32,7 @@
 | 依赖           | macOS                          | Linux                 | Windows                       |
 | -------------- | ------------------------------ | --------------------- | ----------------------------- |
 | FUSE           | [macFUSE](https://macfuse.io/) | libfuse（通常已预装） | [WinFsp](https://winfsp.dev/) |
-| Go（源码构建） | 1.26+                          | 1.26+                 | 1.26+                         |
+| Go（源码构建） | 1.27+                          | 1.27+                 | 1.27+                         |
 
 `fs` 命令（list、cat、get、put）不需要 FUSE，只有 `mount` 需要。
 配置文件会自动查找，配置文件放在标准路径时可以省略 `--config` 参数（见[命令行参考](docs/for-user/cli.md)）。
@@ -113,7 +113,7 @@ b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
 
 ## 从源码构建
 
-需要 Go 1.26+ 和 FUSE 头文件（Linux 上为 libfuse-dev，macOS 上为 macFUSE）。
+需要 Go 1.27+ 和 FUSE 头文件（Linux 上为 libfuse-dev，macOS 上为 macFUSE）。
 
 ```
 git clone https://github.com/yinzhenyu-su/qrypt.git

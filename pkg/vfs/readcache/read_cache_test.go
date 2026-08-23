@@ -257,7 +257,7 @@ func TestReadCacheEvictionPrefersLargeChunksWhenLargePoolOverBudget(t *testing.T
 	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk); err != nil {
 		t.Fatal(err)
 	}
-	for i := int64(0); i < 5; i++ {
+	for i := range int64(5) {
 		if err := cache.PutChunk(largeKey, 20<<20, i, chunk); err != nil {
 			t.Fatal(err)
 		}
@@ -269,7 +269,7 @@ func TestReadCacheEvictionPrefersLargeChunksWhenLargePoolOverBudget(t *testing.T
 		t.Fatal("small-file chunk was evicted while large-file pool was over budget")
 	}
 	var largeChunks int
-	for i := int64(0); i < 5; i++ {
+	for i := range int64(5) {
 		if _, ok, err := cache.GetChunk(largeKey, i); err != nil {
 			t.Fatal(err)
 		} else if ok {
@@ -291,7 +291,7 @@ func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
 		t.Fatal(err)
 	}
 	largeChunkCount := int64(17*1024*1024/readChunkSize + 1)
-	for i := int64(0); i < largeChunkCount; i++ {
+	for i := range largeChunkCount {
 		if err := cache.PutChunk(legacyLargeKey, 0, i, chunk); err != nil {
 			t.Fatal(err)
 		}
@@ -303,7 +303,7 @@ func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
 		t.Fatal("small-file chunk was evicted before unknown-size large cached file")
 	}
 	var largeChunks int
-	for i := int64(0); i < largeChunkCount; i++ {
+	for i := range largeChunkCount {
 		if _, ok, err := cache.GetChunk(legacyLargeKey, i); err != nil {
 			t.Fatal(err)
 		} else if ok {

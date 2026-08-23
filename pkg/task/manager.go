@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -463,11 +464,11 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) broadcastTaskUpdated(item Task) {
-	m.broadcast(Event{Type: EventTaskUpdated, TaskID: item.ID, Task: taskPtr(cloneTask(item))})
+	m.broadcast(Event{Type: EventTaskUpdated, TaskID: item.ID, Task: new(cloneTask(item))})
 }
 
 func (m *Manager) broadcastTaskRemoved(item Task) {
-	m.broadcast(Event{Type: EventTaskRemoved, TaskID: item.ID, Task: taskPtr(cloneTask(item))})
+	m.broadcast(Event{Type: EventTaskRemoved, TaskID: item.ID, Task: new(cloneTask(item))})
 }
 
 func (m *Manager) broadcast(event Event) {
@@ -492,10 +493,6 @@ func (m *Manager) broadcast(event Event) {
 			}
 		}
 	}
-}
-
-func taskPtr(item Task) *Task {
-	return &item
 }
 
 func isTerminalState(state State) bool {
@@ -545,9 +542,7 @@ func sortTasks(tasks []Task) {
 func cloneTask(item Task) Task {
 	if item.Detail != nil {
 		detail := make(map[string]any, len(item.Detail))
-		for key, value := range item.Detail {
-			detail[key] = value
-		}
+		maps.Copy(detail, item.Detail)
 		item.Detail = detail
 	}
 	if item.Error != nil {

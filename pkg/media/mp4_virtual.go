@@ -216,17 +216,11 @@ func copyFromBytes(dst []byte, source []byte, offset int64, length int) int {
 	if offset >= int64(len(source)) || length <= 0 {
 		return 0
 	}
-	end := offset + int64(length)
-	if end > int64(len(source)) {
-		end = int64(len(source))
-	}
+	end := min(offset+int64(length), int64(len(source)))
 	return copy(dst, source[offset:end])
 }
 
 func segmentLength(cursor int64, remaining int, segmentEnd int64) int {
-	n := segmentEnd - cursor
-	if n > int64(remaining) {
-		n = int64(remaining)
-	}
+	n := min(segmentEnd-cursor, int64(remaining))
 	return int(n)
 }

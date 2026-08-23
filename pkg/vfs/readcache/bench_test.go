@@ -17,7 +17,7 @@ func benchWarmReadCache(b *testing.B, chunks int) *Store {
 	b.Cleanup(func() { _ = store.Close() })
 	fid := "warm-fid"
 	data := make([]byte, readChunkSize)
-	for i := 0; i < chunks; i++ {
+	for i := range chunks {
 		if err := store.PutChunk(fid, int64(chunks)*readChunkSize, int64(i), data); err != nil {
 			b.Fatal(err)
 		}

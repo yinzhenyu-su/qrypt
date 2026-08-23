@@ -15,11 +15,12 @@ func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha1Hex str
 }
 
 func (d *Driver) loadUploadSession(key string) (aliyunUploadSession, bool) {
-	session, ok := d.uploadSessionStore().Load(key)
-	if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
-	}
-	return session, ok
+	return d.uploadSessionStore().LoadAs(key, func(session aliyunUploadSession) aliyunUploadSession {
+		if session.CompletedParts == nil {
+			session.CompletedParts = map[int]bool{}
+		}
+		return session
+	})
 }
 
 func (d *Driver) saveUploadSession(session aliyunUploadSession) {
