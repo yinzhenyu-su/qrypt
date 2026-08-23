@@ -83,33 +83,33 @@ func mountPointFromLoadedConfig(cfg *config.Config) (string, error) {
 	if mountPoint := cfg.EffectiveMountPoint(); mountPoint != "" {
 		return mountPoint, nil
 	}
-	return "", fmt.Errorf("mount point not specified (set mount_point in the config or pass --mount-point)")
+	return "", fmt.Errorf("mount point not specified (set [mount].mount_point in the config or pass --mount-point)")
 }
 
 type cliMountConfig struct {
-	VolumeName         string
-	ReadOnly           bool
-	AllowOther         bool
-	DefaultPermissions bool
-	NoAppleDouble      bool
-	NoAppleXattr       bool
-	AttrTimeout        time.Duration
-	AttrTimeoutSet     bool
-	EntryTimeout       time.Duration
-	EntryTimeoutSet    bool
-	NegativeTimeout    time.Duration
-	TotalSpace         int64
-	FreeSpace          int64
-	Logging            config.LoggingConfig
+	VolumeName          string
+	ReadOnly            bool
+	AllowOther          bool
+	DefaultPermissions  bool
+	IgnoreAppleMetadata bool
+	DelegateAppleXattr  bool
+	AttrTimeout         time.Duration
+	AttrTimeoutSet      bool
+	EntryTimeout        time.Duration
+	EntryTimeoutSet     bool
+	NegativeTimeout     time.Duration
+	TotalSpace          int64
+	FreeSpace           int64
+	Logging             config.LoggingConfig
 }
 
 func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
-		VolumeName:      "Qrypt",
-		NoAppleDouble:   true,
-		AttrTimeout:     time.Second,
-		EntryTimeout:    time.Second,
-		NegativeTimeout: 0,
+		VolumeName:          "Qrypt",
+		IgnoreAppleMetadata: true,
+		AttrTimeout:         time.Second,
+		EntryTimeout:        time.Second,
+		NegativeTimeout:     0,
 	}
 	if configPath == "" {
 		return mountConfig, nil
@@ -123,38 +123,38 @@ func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 
 func mountConfigFromLoadedConfig(cfg *config.Config) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
-		VolumeName:      "Qrypt",
-		NoAppleDouble:   true,
-		AttrTimeout:     time.Second,
-		EntryTimeout:    time.Second,
-		NegativeTimeout: 0,
+		VolumeName:          "Qrypt",
+		IgnoreAppleMetadata: true,
+		AttrTimeout:         time.Second,
+		EntryTimeout:        time.Second,
+		NegativeTimeout:     0,
 	}
 	if cfg == nil {
 		return mountConfig, nil
 	}
 	mountConfig.VolumeName = cfg.EffectiveVolumeName()
-	mountConfig.ReadOnly = cfg.ReadOnly
-	mountConfig.AllowOther = cfg.AllowOther
-	mountConfig.DefaultPermissions = cfg.DefaultPermissions
-	mountConfig.NoAppleDouble = cfg.EffectiveNoAppleDouble()
-	mountConfig.NoAppleXattr = cfg.EffectiveNoAppleXattr()
-	attrTimeout, err := config.ParseDuration(cfg.AttrTimeout)
+	mountConfig.ReadOnly = cfg.EffectiveReadOnly()
+	mountConfig.AllowOther = cfg.EffectiveAllowOther()
+	mountConfig.DefaultPermissions = cfg.EffectiveDefaultPermissions()
+	mountConfig.IgnoreAppleMetadata = cfg.EffectiveIgnoreAppleMetadata()
+	mountConfig.DelegateAppleXattr = cfg.EffectiveDelegateAppleXattr()
+	attrTimeout, err := config.ParseDuration(cfg.EffectiveAttrTimeout())
 	if err != nil {
 		return mountConfig, fmt.Errorf("config: invalid attr_timeout: %w", err)
 	}
-	if strings.TrimSpace(cfg.AttrTimeout) != "" {
+	if strings.TrimSpace(cfg.EffectiveAttrTimeout()) != "" {
 		mountConfig.AttrTimeout = attrTimeout
 		mountConfig.AttrTimeoutSet = true
 	}
-	entryTimeout, err := config.ParseDuration(cfg.EntryTimeout)
+	entryTimeout, err := config.ParseDuration(cfg.EffectiveEntryTimeout())
 	if err != nil {
 		return mountConfig, fmt.Errorf("config: invalid entry_timeout: %w", err)
 	}
-	if strings.TrimSpace(cfg.EntryTimeout) != "" {
+	if strings.TrimSpace(cfg.EffectiveEntryTimeout()) != "" {
 		mountConfig.EntryTimeout = entryTimeout
 		mountConfig.EntryTimeoutSet = true
 	}
-	negativeTimeout, err := config.ParseDuration(cfg.NegativeTimeout)
+	negativeTimeout, err := config.ParseDuration(cfg.EffectiveNegativeTimeout())
 	if err != nil {
 		return mountConfig, fmt.Errorf("config: invalid negative_timeout: %w", err)
 	}

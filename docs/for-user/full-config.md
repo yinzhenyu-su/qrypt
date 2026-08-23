@@ -2,14 +2,17 @@
 
 本文档为 qrypt 全部配置项的参考说明，由 `qrypt.schema.json` 自动生成。
 
-## 全局设置
+## `[mount]`
+
+挂载相关配置集中在 `[mount]` 下。
+旧的顶层写法仍兼容，但建议只用这一节。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `mount_point` | string | ~/Qrypt | FUSE mount point (e.g. ~/Qrypt). |
 | `volume_name` | string | Qrypt | Volume label shown in the OS file manager. |
-| `no_apple_double` | boolean | true | Skip writing Apple Double (._) metadata files on macOS. |
-| `no_apple_xattr` | boolean | false | Ignore com.apple.* extended attributes on macOS. |
+| `ignore_apple_metadata` | boolean | true | Do not sync Apple Double (._) metadata files to the backend on macOS. |
+| `delegate_apple_xattr` | boolean | false | Delegate com.apple.* extended attributes to macFUSE on macOS. |
 | `read_only` | boolean | false | Mount the filesystem read-only. |
 | `allow_other` | boolean | false | Allow other local users to access the FUSE mount. |
 | `default_permissions` | boolean | false | Ask the kernel to enforce mode/uid/gid permissions. |

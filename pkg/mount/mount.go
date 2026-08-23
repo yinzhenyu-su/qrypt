@@ -13,23 +13,23 @@ import (
 )
 
 type Options struct {
-	MountPoint         string
-	ReadOnly           bool
-	AllowOther         bool
-	DefaultPermissions bool
-	VolumeName         string
-	NoAppleDouble      bool
-	NoAppleXattr       bool
-	AttrTimeout        time.Duration
-	AttrTimeoutSet     bool
-	EntryTimeout       time.Duration
-	EntryTimeoutSet    bool
-	NegativeTimeout    time.Duration
-	TotalSpace         int64
-	FreeSpace          int64
-	Foreground         bool
-	ReadyTimeout       time.Duration
-	UnmountOnError     bool
+	MountPoint          string
+	ReadOnly            bool
+	AllowOther          bool
+	DefaultPermissions  bool
+	VolumeName          string
+	IgnoreAppleMetadata bool
+	DelegateAppleXattr  bool
+	AttrTimeout         time.Duration
+	AttrTimeoutSet      bool
+	EntryTimeout        time.Duration
+	EntryTimeoutSet     bool
+	NegativeTimeout     time.Duration
+	TotalSpace          int64
+	FreeSpace           int64
+	Foreground          bool
+	ReadyTimeout        time.Duration
+	UnmountOnError      bool
 }
 
 type Session struct {
@@ -74,8 +74,8 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		},
 		ReadOnly:            opts.ReadOnly,
 		AllowOther:          opts.AllowOther,
-		IgnoreAppleMetadata: opts.NoAppleDouble,
-		IgnoreAppleXattr:    opts.NoAppleXattr,
+		IgnoreAppleMetadata: opts.IgnoreAppleMetadata,
+		DelegateAppleXattr:  opts.DelegateAppleXattr,
 	})
 	host := fuse.NewFileSystemHost(ad)
 	// qrypt's adapter and VFS synchronize their mutable state internally, so
@@ -174,9 +174,9 @@ func mountOptions(opts Options) []string {
 			"-o", "defer_permissions",
 			// Let macFUSE store extended attributes in AppleDouble files. Finder
 			// otherwise aborts a newly-created file with EEXIST on macOS 26.6.1.
-			// AppleDouble filtering remains in the adapter so NoAppleDouble keeps
+			// AppleDouble filtering remains in the adapter so IgnoreAppleMetadata keeps
 			// controlling whether those files reach the backing drive.
-			"-o", "auto_xattr",
+			// "-o", "auto_xattr",
 			"-o", "fsname=qrypt",
 			"-o", "subtype=qrypt",
 			"-o", "iosize=1048576",

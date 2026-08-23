@@ -16,6 +16,9 @@
         "hidden": true
       }
     },
+    "mount": {
+      "$ref": "#/definitions/mountOptionsConfig"
+    },
     "mount_point": {
       "description": "FUSE mount point (e.g. ~/Qrypt).",
       "type": "string",
@@ -378,6 +381,75 @@
           "description": "Upload speed cap (e.g. \"2Mbps\", empty = unlimited).",
           "type": "string",
           "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "mountOptionsConfig": {
+      "type": "object",
+      "description": "Mount runtime options.",
+      "properties": {
+        "mount_point": {
+          "description": "FUSE mount point (e.g. ~/Qrypt).",
+          "type": "string",
+          "default": "~/Qrypt"
+        },
+        "volume_name": {
+          "description": "Volume label shown in the OS file manager.",
+          "type": "string",
+          "default": "Qrypt"
+        },
+        "ignore_apple_metadata": {
+          "description": "Do not sync Apple Double (._) metadata files to the backend on macOS.",
+          "type": "boolean",
+          "default": true
+        },
+        "delegate_apple_xattr": {
+          "description": "Delegate com.apple.* extended attributes to macFUSE on macOS.",
+          "type": "boolean",
+          "default": false
+        },
+        "read_only": {
+          "description": "Mount the filesystem read-only.",
+          "type": "boolean",
+          "default": false
+        },
+        "allow_other": {
+          "description": "Allow other local users to access the FUSE mount.",
+          "type": "boolean",
+          "default": false
+        },
+        "default_permissions": {
+          "description": "Ask the kernel to enforce mode/uid/gid permissions.",
+          "type": "boolean",
+          "default": false
+        },
+        "attr_timeout": {
+          "description": "FUSE attribute cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+          "type": "string",
+          "default": "1s"
+        },
+        "entry_timeout": {
+          "description": "FUSE entry cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+          "type": "string",
+          "default": "1s"
+        },
+        "negative_timeout": {
+          "description": "FUSE negative lookup cache timeout (e.g. \"0s\", \"1s\").",
+          "type": "string",
+          "default": "0s"
+        },
+        "total_space": {
+          "description": "Total capacity reported to the OS (e.g. \"1T\", \"500G\").",
+          "type": "string",
+          "default": "1T",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+        },
+        "free_space": {
+          "description": "Free space reported to the OS (e.g. \"800G\").",
+          "type": "string",
+          "default": "800G",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$"
         }
       },
       "additionalProperties": false

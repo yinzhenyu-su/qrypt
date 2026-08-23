@@ -42,7 +42,7 @@ type adapter struct {
 	cachedUID           uint32
 	cachedGID           uint32
 	ignoreAppleMetadata bool
-	ignoreAppleXattr    bool
+	delegateAppleXattr  bool
 }
 
 // activeOpsSlots is the fixed capacity of the per-op active-operation ring.
@@ -180,7 +180,7 @@ type adapterOptions struct {
 	ReadOnly            bool
 	AllowOther          bool
 	IgnoreAppleMetadata bool
-	IgnoreAppleXattr    bool
+	DelegateAppleXattr  bool
 }
 
 func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
@@ -199,7 +199,7 @@ func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 		readOnly:            opts.ReadOnly,
 		allowOther:          opts.AllowOther,
 		ignoreAppleMetadata: opts.IgnoreAppleMetadata,
-		ignoreAppleXattr:    opts.IgnoreAppleXattr,
+		delegateAppleXattr:  opts.DelegateAppleXattr,
 	}
 }
 
