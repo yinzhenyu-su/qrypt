@@ -40,6 +40,7 @@ qrypt 需要一个配置文件来知道挂载到哪里、接入哪些云盘。
 创建一个名为 `qrypt.toml` 的文件，写入以下内容：
 
 ```toml
+[mount]
 mount_point = "~/Qrypt"
 
 [[mounts]]
@@ -66,7 +67,7 @@ filename_encoding = "base32"
 
 每个配置项的含义：
 
-- `mount_point` —— 文件管理器里看到的挂载目录，所有云盘都会出现在这个文件夹里
+- `[mount].mount_point` —— 文件管理器里看到的挂载目录，所有云盘都会出现在这个文件夹里
 - `[[mounts]]` —— 每条 mounts 配置对应一个云盘服务，可以写多条
 - `name` —— 这个云盘在挂载点下的子目录名称
 - `type` —— 云盘类型，这里是 `localfs`（本地目录）

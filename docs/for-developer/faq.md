@@ -4,7 +4,7 @@ This page records recurring implementation issues and the reasoning behind the
 current fixes. It is meant to help contributors find the right layer to inspect
 before making changes.
 
-## Finder copy fails when `no_apple_double = true`
+## Finder copy fails when `ignore_apple_metadata = true`
 
 ### Symptom
 
@@ -18,16 +18,16 @@ On macOS, copying a directory with Finder may fail with a generic message such
 as "The operation can't be completed" when:
 
 ```toml
-no_apple_double = true
+ignore_apple_metadata = true
 ```
 
 The same copy may work when:
 
 ```toml
-no_apple_double = false
+ignore_apple_metadata = false
 ```
 
-Changing `no_apple_xattr` may not affect this failure.
+Changing `delegate_apple_xattr` may not affect this failure.
 
 ### Why This Happens
 
@@ -39,7 +39,7 @@ probe, update, read, and remove Apple metadata paths such as:
 - `.Spotlight-V100`
 - `.fseventsd`
 
-When `no_apple_double = true`, qrypt should hide or ignore those metadata files
+When `ignore_apple_metadata = true`, qrypt should hide or ignore those metadata files
 without changing the behavior Finder expects from the filesystem.
 
 A subtle failure mode is returning "exists" for an AppleDouble path that Finder
@@ -75,26 +75,27 @@ Important signs:
 
 - `Getattr` for a missing `._*` path should return `ENOENT`.
 - `.DS_Store` and `._*` writes should not reach the remote driver when
-  `no_apple_double = true`.
+  `ignore_apple_metadata = true`.
 - Finder may remove and recreate the destination directory after an earlier
   failure. That can be a symptom, not the root cause.
-- If `no_apple_double = false` works, compare whether the failure is specific to
+- If `ignore_apple_metadata = false` works, compare whether the failure is specific to
   the ignored Apple metadata path.
 
-### About `no_apple_xattr`
+### About `delegate_apple_xattr`
 
-`no_apple_xattr` controls extended attributes such as:
+`delegate_apple_xattr` controls whether Apple-specific extended attributes
+such as:
 
 - `com.apple.FinderInfo`
 - `com.apple.quarantine`
 - `com.apple.metadata:*`
 
-It is separate from `no_apple_double`.
+It is separate from `ignore_apple_metadata`.
 
-The mount layer should not tell Finder that `Setxattr` succeeded and then make
-the same attribute unreadable in the same mount process unless the option
-explicitly ignores it. When `no_apple_xattr = false`, qrypt keeps xattrs in
-memory for Finder compatibility. They are not uploaded to the remote drive.
+When `delegate_apple_xattr = true`, qrypt returns `ENOTSUP` for those xattrs so
+macFUSE can handle them locally through AppleDouble. When
+`delegate_apple_xattr = false`, qrypt keeps xattrs in memory for Finder
+compatibility. In either case, they are not uploaded to the remote drive.
 
 ### Regression Tests
 
@@ -108,7 +109,7 @@ Relevant tests live in `pkg/mount/mount_test.go` and should cover:
   needed.
 - Ignored metadata time updates do not touch the backend.
 - xattrs can be set, read, listed, removed, renamed, and removed with their
-  subtree when `no_apple_xattr = false`.
+  subtree when `delegate_apple_xattr = false`.
 
 Run:
 

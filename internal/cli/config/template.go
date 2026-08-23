@@ -81,19 +81,16 @@ func renderDriverExample(name string, params []drive.ParamDef) string {
 const configTemplate = `#:schema ./qrypt.schema.json
 version = "1"
 
-# FUSE mount point (expanded with ~)
+# ── Mount ────────────────────────────────────────────────────────
+[mount]
 mount_point = "~/Qrypt"
-
-# Volume name shown in the OS file manager
 volume_name = "Qrypt"
-
-# ── FUSE mount options ────────────────────────────────────────────
 # read_only       = false
 # allow_other     = false
-no_apple_double  = true
-no_apple_xattr   = true
-attr_timeout     = "1s"
-entry_timeout    = "1s"
+ignore_apple_metadata = true
+delegate_apple_xattr = true
+attr_timeout = "1s"
+entry_timeout = "1s"
 negative_timeout = "0s"
 
 # ── Logging ───────────────────────────────────────────────────────

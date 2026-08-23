@@ -245,7 +245,7 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	for _, want := range []string{"defer_permissions", "auto_xattr", "fsname=qrypt", "subtype=qrypt", "iosize=1048576"} {
+	for _, want := range []string{"defer_permissions", "fsname=qrypt", "subtype=qrypt", "iosize=1048576"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}
@@ -385,8 +385,8 @@ func TestMountOptionsAllowDisablingMetadataTimeouts(t *testing.T) {
 	}
 }
 
-func TestMountOptionsDoNotUseMacFUSENoAppleDouble(t *testing.T) {
-	opts := mountOptions(Options{NoAppleDouble: true})
+func TestMountOptionsDoNotUseMacFUSEIgnoreAppleMetadata(t *testing.T) {
+	opts := mountOptions(Options{IgnoreAppleMetadata: true})
 	if hasMountOption(opts, "noappledouble") {
 		t.Fatalf("mount options %v should not pass macFUSE noappledouble", opts)
 	}
@@ -669,17 +669,17 @@ func TestAdapterXattrsRenameAndRemove(t *testing.T) {
 	}
 }
 
-func TestAdapterNoAppleXattrIgnoresAppleXattrs(t *testing.T) {
-	ad := newAdapterWithOptions(stubFS{}, adapterOptions{IgnoreAppleXattr: true})
+func TestAdapterDelegateAppleXattrDelegatesAppleXattrs(t *testing.T) {
+	ad := newAdapterWithOptions(stubFS{}, adapterOptions{DelegateAppleXattr: true})
 
-	if errc := ad.Setxattr("/", "com.apple.FinderInfo", []byte("ignored"), 0); errc != 0 {
-		t.Fatalf("Setxattr FinderInfo err = %d, want 0", errc)
+	if errc := ad.Setxattr("/", "com.apple.FinderInfo", []byte("ignored"), 0); errc != -fuse.ENOTSUP {
+		t.Fatalf("Setxattr FinderInfo err = %d, want ENOTSUP", errc)
 	}
-	if errc, got := ad.Getxattr("/", "com.apple.ResourceFork"); errc != -fuse.ENOATTR || len(got) != 0 {
-		t.Fatalf("Getxattr ResourceFork err=%d len=%d, want ENOATTR/0", errc, len(got))
+	if errc, got := ad.Getxattr("/", "com.apple.ResourceFork"); errc != -fuse.ENOTSUP || len(got) != 0 {
+		t.Fatalf("Getxattr ResourceFork err=%d len=%d, want ENOTSUP/0", errc, len(got))
 	}
-	if errc := ad.Removexattr("/", "com.apple.quarantine"); errc != 0 {
-		t.Fatalf("Removexattr quarantine err = %d, want 0", errc)
+	if errc := ad.Removexattr("/", "com.apple.quarantine"); errc != -fuse.ENOTSUP {
+		t.Fatalf("Removexattr quarantine err = %d, want ENOTSUP", errc)
 	}
 	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
 		t.Fatalf("Setxattr user.foo err = %d, want 0", errc)
@@ -689,12 +689,12 @@ func TestAdapterNoAppleXattrIgnoresAppleXattrs(t *testing.T) {
 	}
 }
 
-func TestAdapterNoAppleXattrStillPreparesFinderDirectoryCopy(t *testing.T) {
+func TestAdapterDelegateAppleXattrStillPreparesFinderDirectoryCopy(t *testing.T) {
 	fs := &copyPrepareFS{}
-	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleXattr: true})
+	ad := newAdapterWithOptions(fs, adapterOptions{DelegateAppleXattr: true})
 
-	if errc := ad.Setxattr("/copied", "com.apple.finder.copy.source", []byte("source"), 0); errc != 0 {
-		t.Fatalf("Setxattr copy source err = %d, want 0", errc)
+	if errc := ad.Setxattr("/copied", "com.apple.finder.copy.source", []byte("source"), 0); errc != -fuse.ENOTSUP {
+		t.Fatalf("Setxattr copy source err = %d, want ENOTSUP", errc)
 	}
 	if got := strings.Join(fs.prepared, ","); got != "/copied" {
 		t.Fatalf("prepared = %q, want /copied", got)
@@ -739,7 +739,7 @@ func TestAdapterMknodCreatesRegularFile(t *testing.T) {
 	}
 }
 
-func TestAdapterNoAppleDoubleIgnoresAppleMetadata(t *testing.T) {
+func TestAdapterIgnoreAppleMetadataIgnoresAppleMetadata(t *testing.T) {
 	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
 		"/folder": {ID: "folder", Name: "folder", IsDir: true},
 	}}}
@@ -829,7 +829,7 @@ func TestAdapterNoAppleDoubleIgnoresAppleMetadata(t *testing.T) {
 	}
 }
 
-func TestAdapterNoAppleDoubleCreatesMissingRealParentForMetadataFile(t *testing.T) {
+func TestAdapterIgnoreAppleMetadataCreatesMissingRealParentForMetadataFile(t *testing.T) {
 	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
 		"/_nuxt": {ID: "_nuxt", Name: "_nuxt", IsDir: true},
 	}}}
@@ -846,7 +846,7 @@ func TestAdapterNoAppleDoubleCreatesMissingRealParentForMetadataFile(t *testing.
 	}
 }
 
-func TestAdapterNoAppleDoubleMissingMetadataLookupReturnsNotFound(t *testing.T) {
+func TestAdapterIgnoreAppleMetadataMissingMetadataLookupReturnsNotFound(t *testing.T) {
 	ad := newAdapterWithOptions(stubFS{entries: map[string]drive.Entry{
 		"/":      {ID: "root", Name: "", IsDir: true},
 		"/_nuxt": {ID: "_nuxt", Name: "_nuxt", IsDir: true},
@@ -864,7 +864,7 @@ func TestAdapterNoAppleDoubleMissingMetadataLookupReturnsNotFound(t *testing.T) 
 	}
 }
 
-func TestAdapterNoAppleDoubleBypassesReadOnlyRootMetadata(t *testing.T) {
+func TestAdapterIgnoreAppleMetadataBypassesReadOnlyRootMetadata(t *testing.T) {
 	ad := newAdapterWithOptions(stubFS{
 		readOnly: map[string]bool{"/.DS_Store": true},
 	}, adapterOptions{IgnoreAppleMetadata: true})
@@ -880,7 +880,7 @@ func TestAdapterNoAppleDoubleBypassesReadOnlyRootMetadata(t *testing.T) {
 	}
 }
 
-func TestAdapterNoAppleDoubleUtimensDoesNotTouchBackend(t *testing.T) {
+func TestAdapterIgnoreAppleMetadataUtimensDoesNotTouchBackend(t *testing.T) {
 	fs := &metadataRouteFS{}
 	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
 	times := []fuse.Timespec{
@@ -896,7 +896,7 @@ func TestAdapterNoAppleDoubleUtimensDoesNotTouchBackend(t *testing.T) {
 	}
 }
 
-func TestAdapterNoAppleDoubleFalseUploadsAppleMetadata(t *testing.T) {
+func TestAdapterIgnoreAppleMetadataFalseUploadsAppleMetadata(t *testing.T) {
 	fs := &createRouteFS{}
 	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: false})
 

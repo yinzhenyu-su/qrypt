@@ -17,8 +17,8 @@ func (a *adapter) hasIgnoredAppleMetadata(path string) bool {
 	return a.ignoreAppleMetadata && a.hasIgnoredApple(path)
 }
 
-func (a *adapter) shouldIgnoreAppleXattr(name string) bool {
-	return a.ignoreAppleXattr && strings.HasPrefix(strings.ToLower(name), "com.apple.")
+func (a *adapter) shouldDelegateAppleXattr(name string) bool {
+	return a.delegateAppleXattr && strings.HasPrefix(strings.ToLower(name), "com.apple.")
 }
 
 func (a *adapter) hasIgnoredApple(path string) bool {

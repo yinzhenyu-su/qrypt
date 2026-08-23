@@ -18,9 +18,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	for name, value := range map[string]string{
-		"attr_timeout":     cfg.AttrTimeout,
-		"entry_timeout":    cfg.EntryTimeout,
-		"negative_timeout": cfg.NegativeTimeout,
+		"attr_timeout":     cfg.EffectiveAttrTimeout(),
+		"entry_timeout":    cfg.EffectiveEntryTimeout(),
+		"negative_timeout": cfg.EffectiveNegativeTimeout(),
 	} {
 		if _, err := ParseDuration(value); err != nil {
 			return fmt.Errorf("config: invalid %s: %w", name, err)

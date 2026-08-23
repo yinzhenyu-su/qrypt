@@ -16,30 +16,46 @@ import (
 )
 
 type Config struct {
-	Version            string          `toml:"version"`
-	MountPoint         string          `toml:"mount_point"`
-	VolumeName         string          `toml:"volume_name"`
-	ReadOnly           bool            `toml:"read_only"`
-	AllowOther         bool            `toml:"allow_other"`
-	DefaultPermissions bool            `toml:"default_permissions"`
-	NoAppleDouble      *bool           `toml:"no_apple_double"`
-	NoAppleXattr       *bool           `toml:"no_apple_xattr"`
-	AttrTimeout        string          `toml:"attr_timeout"`
-	EntryTimeout       string          `toml:"entry_timeout"`
-	NegativeTimeout    string          `toml:"negative_timeout"`
-	TotalSpace         string          `toml:"total_space"`
-	FreeSpace          string          `toml:"free_space"`
-	Logging            LoggingConfig   `toml:"logging"`
-	Debug              DebugConfig     `toml:"debug"`
-	Time               TimeConfig      `toml:"time"`
-	Bandwidth          BandwidthConfig `toml:"bandwidth"`
-	Storage            StorageConfig   `toml:"storage"`
-	ReadCache          ReadCacheConfig `toml:"read_cache"`
-	ThumbnailCache     ReadCacheConfig `toml:"thumbnail_cache"`
-	Upload             UploadConfig    `toml:"upload"`
-	Encryption         crypt.Config    `toml:"encryption"`
-	Defaults           Defaults        `toml:"defaults"`
-	Mounts             []MountConfig   `toml:"mounts"`
+	Version             string          `toml:"version"`
+	Mount               MountOptions    `toml:"mount"`
+	MountPoint          string          `toml:"mount_point"`
+	VolumeName          string          `toml:"volume_name"`
+	ReadOnly            bool            `toml:"read_only"`
+	AllowOther          bool            `toml:"allow_other"`
+	DefaultPermissions  bool            `toml:"default_permissions"`
+	IgnoreAppleMetadata *bool           `toml:"ignore_apple_metadata"`
+	DelegateAppleXattr  *bool           `toml:"delegate_apple_xattr"`
+	AttrTimeout         string          `toml:"attr_timeout"`
+	EntryTimeout        string          `toml:"entry_timeout"`
+	NegativeTimeout     string          `toml:"negative_timeout"`
+	TotalSpace          string          `toml:"total_space"`
+	FreeSpace           string          `toml:"free_space"`
+	Logging             LoggingConfig   `toml:"logging"`
+	Debug               DebugConfig     `toml:"debug"`
+	Time                TimeConfig      `toml:"time"`
+	Bandwidth           BandwidthConfig `toml:"bandwidth"`
+	Storage             StorageConfig   `toml:"storage"`
+	ReadCache           ReadCacheConfig `toml:"read_cache"`
+	ThumbnailCache      ReadCacheConfig `toml:"thumbnail_cache"`
+	Upload              UploadConfig    `toml:"upload"`
+	Encryption          crypt.Config    `toml:"encryption"`
+	Defaults            Defaults        `toml:"defaults"`
+	Mounts              []MountConfig   `toml:"mounts"`
+}
+
+type MountOptions struct {
+	MountPoint          string `toml:"mount_point"`
+	VolumeName          string `toml:"volume_name"`
+	ReadOnly            *bool  `toml:"read_only"`
+	AllowOther          *bool  `toml:"allow_other"`
+	DefaultPermissions  *bool  `toml:"default_permissions"`
+	IgnoreAppleMetadata *bool  `toml:"ignore_apple_metadata"`
+	DelegateAppleXattr  *bool  `toml:"delegate_apple_xattr"`
+	AttrTimeout         string `toml:"attr_timeout"`
+	EntryTimeout        string `toml:"entry_timeout"`
+	NegativeTimeout     string `toml:"negative_timeout"`
+	TotalSpace          string `toml:"total_space"`
+	FreeSpace           string `toml:"free_space"`
 }
 
 type Defaults struct {
@@ -288,6 +304,9 @@ func (c *Config) EffectiveMountPoint() string {
 	if c == nil {
 		return ""
 	}
+	if c.Mount.MountPoint != "" {
+		return c.Mount.MountPoint
+	}
 	if c.MountPoint != "" {
 		return c.MountPoint
 	}
@@ -338,35 +357,121 @@ func effectiveStorageLogDir(storage StorageConfig) string {
 }
 
 func (c *Config) EffectiveVolumeName() string {
-	if c == nil || c.VolumeName == "" {
+	if c == nil {
 		return "Qrypt"
 	}
-	return c.VolumeName
+	if c.Mount.VolumeName != "" {
+		return c.Mount.VolumeName
+	}
+	if c.VolumeName != "" {
+		return c.VolumeName
+	}
+	return "Qrypt"
 }
 
-func (c *Config) EffectiveNoAppleDouble() bool {
-	if c == nil || c.NoAppleDouble == nil {
+func (c *Config) EffectiveIgnoreAppleMetadata() bool {
+	if c == nil {
 		return true
 	}
-	return *c.NoAppleDouble
+	if c.Mount.IgnoreAppleMetadata != nil {
+		return *c.Mount.IgnoreAppleMetadata
+	}
+	if c.IgnoreAppleMetadata != nil {
+		return *c.IgnoreAppleMetadata
+	}
+	return true
 }
 
-func (c *Config) EffectiveNoAppleXattr() bool {
-	if c == nil || c.NoAppleXattr == nil {
+func (c *Config) EffectiveDelegateAppleXattr() bool {
+	if c == nil {
 		return false
 	}
-	return *c.NoAppleXattr
+	if c.Mount.DelegateAppleXattr != nil {
+		return *c.Mount.DelegateAppleXattr
+	}
+	if c.DelegateAppleXattr != nil {
+		return *c.DelegateAppleXattr
+	}
+	return false
+}
+
+func (c *Config) EffectiveReadOnly() bool {
+	if c == nil {
+		return false
+	}
+	if c.Mount.ReadOnly != nil {
+		return *c.Mount.ReadOnly
+	}
+	return c.ReadOnly
+}
+
+func (c *Config) EffectiveAllowOther() bool {
+	if c == nil {
+		return false
+	}
+	if c.Mount.AllowOther != nil {
+		return *c.Mount.AllowOther
+	}
+	return c.AllowOther
+}
+
+func (c *Config) EffectiveDefaultPermissions() bool {
+	if c == nil {
+		return false
+	}
+	if c.Mount.DefaultPermissions != nil {
+		return *c.Mount.DefaultPermissions
+	}
+	return c.DefaultPermissions
+}
+
+func (c *Config) EffectiveAttrTimeout() string {
+	if c == nil {
+		return ""
+	}
+	if c.Mount.AttrTimeout != "" {
+		return c.Mount.AttrTimeout
+	}
+	return c.AttrTimeout
+}
+
+func (c *Config) EffectiveEntryTimeout() string {
+	if c == nil {
+		return ""
+	}
+	if c.Mount.EntryTimeout != "" {
+		return c.Mount.EntryTimeout
+	}
+	return c.EntryTimeout
+}
+
+func (c *Config) EffectiveNegativeTimeout() string {
+	if c == nil {
+		return ""
+	}
+	if c.Mount.NegativeTimeout != "" {
+		return c.Mount.NegativeTimeout
+	}
+	return c.NegativeTimeout
 }
 
 func (c *Config) EffectiveSpaceBytes() (int64, int64, error) {
 	if c == nil {
 		return 0, 0, nil
 	}
-	total, err := ParseSize(c.TotalSpace)
+	totalValue := c.TotalSpace
+	if c.Mount.TotalSpace != "" {
+		totalValue = c.Mount.TotalSpace
+	}
+	total, err := ParseSize(totalValue)
 	if err != nil {
 		return 0, 0, fmt.Errorf("config: invalid total_space: %w", err)
 	}
-	free, err := ParseSize(c.FreeSpace)
+	freeValue := c.FreeSpace
+	if c.Mount.FreeSpace != "" {
+		freeValue = c.Mount.FreeSpace
+	}
+	free, err := ParseSize(freeValue)
 	if err != nil {
 		return 0, 0, fmt.Errorf("config: invalid free_space: %w", err)
 	}

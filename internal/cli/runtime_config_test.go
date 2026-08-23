@@ -48,12 +48,13 @@ func TestMountConfigFromConfig(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
+[mount]
 volume_name = "Qrypt Dev"
 read_only = true
 allow_other = true
 default_permissions = true
-no_apple_double = false
-no_apple_xattr = true
+ignore_apple_metadata = false
+delegate_apple_xattr = true
 attr_timeout = "1500ms"
 entry_timeout = "2s"
 negative_timeout = "250ms"
@@ -84,11 +85,11 @@ log_file = "`+filepath.Join(tmp, "qrypt.log")+`"
 	if !mountConfig.DefaultPermissions {
 		t.Fatal("expected default_permissions to be enabled")
 	}
-	if mountConfig.NoAppleDouble {
-		t.Fatal("expected no_apple_double to be disabled")
+	if mountConfig.IgnoreAppleMetadata {
+		t.Fatal("expected ignore_apple_metadata to be disabled")
 	}
-	if !mountConfig.NoAppleXattr {
-		t.Fatal("expected no_apple_xattr to be enabled")
+	if !mountConfig.DelegateAppleXattr {
+		t.Fatal("expected delegate_apple_xattr to be enabled")
 	}
 	if mountConfig.AttrTimeout != 1500*time.Millisecond {
 		t.Fatalf("unexpected attr timeout: %s", mountConfig.AttrTimeout)
@@ -121,11 +122,11 @@ func TestMountConfigFromConfigDefaults(t *testing.T) {
 	if mountConfig.VolumeName != "Qrypt" {
 		t.Fatalf("unexpected default volume name: %q", mountConfig.VolumeName)
 	}
-	if !mountConfig.NoAppleDouble {
-		t.Fatal("expected no_apple_double to default to true")
+	if !mountConfig.IgnoreAppleMetadata {
+		t.Fatal("expected ignore_apple_metadata to default to true")
 	}
-	if mountConfig.NoAppleXattr {
-		t.Fatal("expected no_apple_xattr to default to false")
+	if mountConfig.DelegateAppleXattr {
+		t.Fatal("expected delegate_apple_xattr to default to false")
 	}
 	if mountConfig.ReadOnly {
 		t.Fatal("expected read_only to default to false")
