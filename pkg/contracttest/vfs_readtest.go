@@ -1125,7 +1125,8 @@ func mountedVFSReadCalls(events []drive.MetricEvent) int {
 
 func mountedVFSReadAtOffset(events []drive.MetricEvent, offset int64) bool {
 	for _, event := range events {
-		if event.Kind == "vfs_read" && event.Phase == "read" && event.Bytes > 0 && event.Offset == offset {
+		if event.Kind == "vfs_read" && event.Phase == "read" && event.Bytes > 0 &&
+			event.Offset <= offset && offset-event.Offset < event.Bytes {
 			return true
 		}
 	}

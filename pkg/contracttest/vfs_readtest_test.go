@@ -201,6 +201,10 @@ func TestMountedVFSReadAtOffsetRequiresMatchingDataRead(t *testing.T) {
 	if !mountedVFSReadAtOffset(events, 64) {
 		t.Fatal("matching VFS read offset was not detected")
 	}
+	aligned := []drive.MetricEvent{{Kind: "vfs_read", Phase: "read", Offset: 48, Bytes: 32}}
+	if !mountedVFSReadAtOffset(aligned, 64) {
+		t.Fatal("read covering an aligned-down seek offset was not detected")
+	}
 }
 
 func TestMeasureMountedSeekReportsLoadLatencyAndValidatesContent(t *testing.T) {

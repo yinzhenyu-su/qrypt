@@ -119,6 +119,8 @@ type Driver struct {
 	cl                 *client
 	urlCache           sync.Map
 	urlFetch           singleflight.Group
+	downloadWarmup     singleflight.Group
+	downloadWarmupDone sync.Map
 	cookie             string
 	rootPath           string
 	rootID             string
