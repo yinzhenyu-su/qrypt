@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
@@ -40,16 +38,27 @@ func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 	defer releaseHighSlot()
 }
 
-func TestLoadWindowSlotFailurePropagatesToWaiter(t *testing.T) {
+func TestLowPriorityReadWaitsForSlotAndHonorsCancellation(t *testing.T) {
 	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(nil)})
 	for i := 0; i < cap(reader.state.slots.normal); i++ {
 		reader.state.slots.normal <- struct{}{}
 	}
 
-	ctx := WithPriority(context.Background(), PriorityLow)
-	entry := drive.Entry{ID: "file", Name: "file.bin", Size: ChunkSize, ModTime: time.Unix(1, 0)}
-	if _, err := reader.loadWindow(ctx, entry, 0, 1); err == nil || err.Error() != "vfs: read slots full" {
-		t.Fatalf("loadWindow err = %v, want read slots full", err)
+	ctx, cancel := context.WithCancel(WithPriority(context.Background(), PriorityLow))
+	result := make(chan error, 1)
+	go func() {
+		_, err := reader.acquireReadSlot(ctx)
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		t.Fatalf("low-priority read returned before slot release: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	cancel()
+	if err := <-result; err != context.Canceled {
+		t.Fatalf("acquireReadSlot err = %v, want context canceled", err)
 	}
 }
 

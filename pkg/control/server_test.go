@@ -20,6 +20,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
@@ -277,9 +278,9 @@ func TestServerExposesStateAndPending(t *testing.T) {
 			Runtime: diagnostics.MountSnapshotRuntime{
 				HotChunkCount: 2,
 				HotChunkBytes: 2 * util.MiB,
-				HotChunkLimit: 64,
+				HotChunkLimit: vfsread.HotChunkLimit,
 				RangeHitCount: 3,
-				RangeHitLimit: 1024,
+				RangeHitLimit: vfsread.RangeHitLimit,
 			},
 		}},
 	}, drivers: []diagnostics.NamedDriver{{

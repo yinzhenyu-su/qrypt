@@ -191,7 +191,7 @@ func (c *client) request(ctx context.Context, method, path string, query map[str
 
 	var lastErr error
 	for _, base := range bases {
-		err := c.doRequest(ctx, method, base, path, query, body, result)
+		err := c.doRequest(ctx, method, base, path, query, body, result, "")
 		if err == nil {
 			return nil
 		}
@@ -204,7 +204,15 @@ func (c *client) request(ctx context.Context, method, path string, query map[str
 	return lastErr
 }
 
-func (c *client) doRequest(ctx context.Context, method, baseURL, path string, query map[string]string, body, result any) error {
+// requestWithCookie sends an API request with a fixed cookie snapshot. This is
+// required when the response contains a signed download URL: the URL is bound
+// to the cookie used to obtain it, while the response may rotate __puus.
+func (c *client) requestWithCookie(ctx context.Context, method, path string, query map[string]string, body, result any, cookieSnapshot string) error {
+	base := c.baseURL
+	return c.doRequest(ctx, method, base, path, query, body, result, cookieSnapshot)
+}
+
+func (c *client) doRequest(ctx context.Context, method, baseURL, path string, query map[string]string, body, result any, cookieSnapshot string) error {
 	start := time.Now()
 	defer func() {
 		logging.L.Infof("[QUARK] API %s %s dur=%s", method, path, time.Since(start))
@@ -236,7 +244,11 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		if err != nil {
 			return fmt.Errorf("create request failed: %w", err)
 		}
-		req.Header.Set("Cookie", c.cookieValue())
+		requestCookie := cookieSnapshot
+		if requestCookie == "" {
+			requestCookie = c.cookieValue()
+		}
+		req.Header.Set("Cookie", requestCookie)
 		req.Header.Set("Origin", "https://pan.quark.cn")
 		req.Header.Set("Referer", defaultReferer)
 		req.Header.Set("User-Agent", defaultUserAgent)
@@ -320,10 +332,29 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 	return fmt.Errorf("max retries exceeded")
 }
 
-func (c *client) doDownload(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Cookie", c.cookieValue())
-	req.Header.Set("User-Agent", defaultUserAgent)
-	req.Header.Set("Referer", defaultReferer)
+func (c *client) doDownload(req *http.Request, cookieSnapshot string) (*http.Response, error) {
+	if cookieSnapshot == "" {
+		cookieSnapshot = c.cookieValue()
+	}
+	req.Header.Set("Cookie", cookieSnapshot)
+	// Quark's CDN applies different policies to browser-like download
+	// requests. Keep the API client UA above, but make the signed CDN request
+	// match the request used by the official web client/kuake_cli.
+	req.Header.Set("User-Agent", downloadChromeUA)
+	req.Header.Set("Referer", defaultReferer+"/")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Priority", "u=0, i")
+	req.Header.Set("Sec-Ch-Ua", `"Chromium";v="146", "Google Chrome";v="146", "Not_A Brand";v="24"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Dest", "iframe")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
 	return c.downloadClient.Do(req)
 }
 

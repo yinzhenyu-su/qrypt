@@ -165,6 +165,41 @@ func TestStateOwnsPrefetchReservationState(t *testing.T) {
 	state.releasePrefetch("cache:1:2")
 }
 
+func TestStateAdaptivePrefetchLimitProtectsForegroundReads(t *testing.T) {
+	state := NewState(nil)
+	if got := state.adaptivePrefetchLimit(false); got != PrefetchLimit {
+		t.Fatalf("idle prefetch limit = %d, want %d", got, PrefetchLimit)
+	}
+	if got := state.adaptivePrefetchLimit(true); got != PrefetchLimit {
+		t.Fatalf("idle sequential prefetch limit = %d, want %d", got, PrefetchLimit)
+	}
+	for i := 0; i <= (MaxConcurrency-HighReserve)/2; i++ {
+		state.beginForegroundRead("cache")
+	}
+	if got := state.adaptivePrefetchLimit(true); got != 1 {
+		t.Fatalf("busy sequential prefetch limit = %d, want 1", got)
+	}
+}
+
+func TestStateCancelPrefetchCancelsOnlyRegisteredTask(t *testing.T) {
+	state := NewState(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	state.registerPrefetch("cache", "cache:1:1", cancel)
+	state.cancelPrefetch("other")
+	select {
+	case <-ctx.Done():
+		t.Fatal("prefetch for another file was canceled")
+	default:
+	}
+	state.cancelPrefetch("cache")
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("registered prefetch was not canceled")
+	}
+	state.unregisterPrefetch("cache", "cache:1:1")
+}
+
 func TestStateConfirmsSequentialReadOnlyAfterCrossingChunkBoundary(t *testing.T) {
 	state := NewState(nil)
 	if state.observeSequentialRead("cache", 0, ChunkSize) {

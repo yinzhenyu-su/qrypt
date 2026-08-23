@@ -144,5 +144,6 @@ type createDirResp struct {
 
 type cachedURL struct {
 	url    string
+	cookie string
 	expiry time.Time
 }
