@@ -19,6 +19,13 @@ type StreamReader interface {
 	ReadStream(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
+// ContextReader is implemented by bounded sequential streams that can apply
+// a context to the next refill. It lets mobile cancel one blocked read while
+// keeping the stream handle usable.
+type ContextReader interface {
+	ReadContext(context.Context, []byte) (int, error)
+}
+
 type debugReadCloser struct {
 	io.ReadCloser
 	finish func(int64, error)
@@ -32,6 +39,13 @@ func (d *debugReadCloser) Close() error {
 	err := d.ReadCloser.Close()
 	d.once.Do(func() { d.finish(0, err) })
 	return err
+}
+
+func (d *debugReadCloser) ReadContext(ctx context.Context, p []byte) (int, error) {
+	if reader, ok := d.ReadCloser.(ContextReader); ok {
+		return reader.ReadContext(ctx, p)
+	}
+	return d.Read(p)
 }
 
 // ReadStream opens path for sequential streaming reads. Unlike Read, which
@@ -125,11 +139,15 @@ type chunkedStreamReader struct {
 }
 
 func (r *chunkedStreamReader) Read(p []byte) (int, error) {
+	return r.ReadContext(r.ctx, p)
+}
+
+func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, error) {
 	if r.closed {
 		return 0, io.EOF
 	}
 	if r.bufPos >= len(r.buf) {
-		if err := r.refill(); err != nil {
+		if err := r.refill(ctx); err != nil {
 			return 0, err
 		}
 		if r.bufPos >= len(r.buf) {
@@ -145,7 +163,7 @@ func (r *chunkedStreamReader) Read(p []byte) (int, error) {
 
 // refill loads the chunk containing r.pos. A short or empty chunk ends the
 // stream (the file has no more data), matching readRange's stop condition.
-func (r *chunkedStreamReader) refill() error {
+func (r *chunkedStreamReader) refill(ctx context.Context) error {
 	r.buf = nil
 	r.bufPos = 0
 	if r.entry.Size > 0 && r.pos >= r.entry.Size {
@@ -157,7 +175,7 @@ func (r *chunkedStreamReader) refill() error {
 	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
 		want = r.entry.Size - r.pos
 	}
-	data, err := r.reader.readChunkRange(r.ctx, r.entry, chunkIndex, start, want, PrefetchChunks)
+	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, PrefetchChunks)
 	if err != nil {
 		return err
 	}

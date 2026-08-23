@@ -16,6 +16,9 @@ import (
 // StreamReader is the streaming read surface implemented by the VFS.
 type StreamReader = read.StreamReader
 
+// ContextReader is the optional per-read cancellation surface for streams.
+type ContextReader = read.ContextReader
+
 // readState aliases the read domain state (internal/read).
 type readState = read.State
 

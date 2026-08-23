@@ -30,8 +30,8 @@ func DebugSnapshotJSON(coreID string) string {
 }
 
 func mobileHandleCounts(coreID string) map[string]int {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
 	counts := map[string]int{}
 	for _, handle := range registry.files {
 		if handle.coreID == coreID {

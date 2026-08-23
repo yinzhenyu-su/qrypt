@@ -288,6 +288,30 @@ type BuiltFileSystem interface {
 	TaskSource() task.Source
 }
 
+// ReadStream opens a bounded-memory sequential reader when the filesystem
+// provides the optional streaming surface.
+func (c *Core) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
+	if c == nil || c.fs == nil {
+		return nil, fmt.Errorf("core: closed")
+	}
+	streamer, ok := c.fs.(vfs.StreamReader)
+	if !ok {
+		return nil, fmt.Errorf("core: sequential read stream unsupported")
+	}
+	return streamer.ReadStream(ctx, path)
+}
+
+// ReleaseReadSession forgets access-pattern state associated with a mobile
+// or mounted open-file handle.
+func (c *Core) ReleaseReadSession(sessionID uint64) {
+	if c == nil || c.fs == nil {
+		return
+	}
+	if releaser, ok := c.fs.(interface{ ReleaseReadSession(uint64) }); ok {
+		releaser.ReleaseReadSession(sessionID)
+	}
+}
+
 func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (BuiltFileSystem, func(), error) {
 	if err := config.Validate(cfg); err != nil {
 		return nil, nil, err

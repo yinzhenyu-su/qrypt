@@ -8,6 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/media"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
 func ProbeMP4JSON(coreID, path string, deadlineMS int) string {
@@ -43,7 +44,7 @@ func openVirtualFile(coreID, path, mode string, deadlineMS int) (virtualOpenResu
 		return virtualOpenResult{}, wrapError(err)
 	}
 	registry.mu.Lock()
-	registry.virtuals[id] = &virtualHandle{coreID: coreID, file: file}
+	registry.virtuals[id] = &virtualHandle{coreID: coreID, file: file, readSession: nextReadSessionID()}
 	registry.mu.Unlock()
 	return virtualOpenResult{Handle: id, Info: file.Info()}, nil
 }
@@ -54,6 +55,9 @@ func OpenVirtualFileJSON(coreID, path, mode string, deadlineMS int) string {
 }
 
 func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int, error) {
+	if offset < 0 {
+		return 0, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
+	}
 	if len(dst) == 0 {
 		return 0, nil
 	}
@@ -61,8 +65,16 @@ func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, deadlineMS
 	if err != nil {
 		return 0, wrapError(err)
 	}
-	ctx, done := handle.reads.begin(deadlineMS)
+	ctx, done, concurrent, accessID, _, err := handle.reads.begin(deadlineMS)
+	if err != nil {
+		return 0, wrapError(err)
+	}
 	defer done()
+	ctx = vfsread.WithAccessHint(ctx, vfsread.AccessHint{
+		SessionID:  handle.readSession,
+		RequestID:  accessID,
+		Concurrent: concurrent,
+	})
 	info := handle.file.Info()
 	started := time.Now()
 	n, err := handle.file.ReadAtInto(ctx, offset, dst)
@@ -124,6 +136,13 @@ func closeVirtualFile(handleID string) error {
 		return wrapError(fmt.Errorf("mobile: unknown virtual file handle %q", handleID))
 	}
 	handle.reads.cancelAll()
+	s, err := getSession(handle.coreID)
+	if err == nil {
+		_ = withCoreErr(s, func(c *core.Core) error {
+			c.ReleaseReadSession(handle.readSession)
+			return nil
+		})
+	}
 	return wrapError(handle.file.Close())
 }
 
