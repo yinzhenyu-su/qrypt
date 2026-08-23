@@ -123,6 +123,22 @@ func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (
 	return mount.Read(ctx, rest, offset, size)
 }
 
+// ReadStream opens a bounded-memory sequential reader for a mounted path.
+func (n *Namespace) ReadStream(ctx context.Context, path string) (io.ReadCloser, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if root {
+		return nil, fmt.Errorf("vfs: cannot stream namespace root")
+	}
+	streamer, ok := any(mount).(StreamReader)
+	if !ok {
+		return nil, fmt.Errorf("vfs: sequential read stream unsupported")
+	}
+	return streamer.ReadStream(ctx, rest)
+}
+
 // ReleaseReadSession forwards open-file lifecycle cleanup to every mounted
 // VFS. Session identifiers are process-wide, so at most one mount owns it.
 func (n *Namespace) ReleaseReadSession(sessionID uint64) {

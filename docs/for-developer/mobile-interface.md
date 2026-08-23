@@ -686,13 +686,37 @@ RefreshPathJSON(coreID, path)
 ```text
 OpenFileJSON(coreID, path, optionsJSON)
 ReadAtInto(handleID, offset, dst, deadlineMS)
+ReadAtIntoWithRequest(handleID, requestID, offset, dst, deadlineMS)
+ReadAtBatchIntoJSON(handleID, offsetsJSON, dst, slotSize, deadlineMS)
 CancelFileReadJSON(handleID)
+CancelFileReadRequestJSON(handleID, requestID)
+OpenFileStreamJSON(coreID, path, optionsJSON)
+ReadFileStreamInto(handleID, dst, deadlineMS)
+CloseFileJSON(handleID)
 OpenVirtualFileJSON(coreID, path, mode, deadlineMS)
 ReadVirtualFileAtInto(handleID, offset, dst, deadlineMS)
 CancelVirtualReadJSON(handleID)
 CloseVirtualFileJSON(handleID)
-CloseFileJSON(handleID)
 ```
+
+`ReadAtInto` attaches an internal open-handle access hint to every read. The
+VFS can therefore distinguish contiguous reads, seeks, and overlapping reads
+without requiring the mobile caller to manage VFS state. Use
+`ReadAtIntoWithRequest` when a caller-owned positive request ID is needed for
+`CancelFileReadRequestJSON`; the ID is a cancellation token, not the internal
+VFS sequence number.
+
+`ReadAtBatchIntoJSON` accepts a JSON array of offsets and writes each result to
+`dst[i*slotSize:(i+1)*slotSize]`. It is intended for a small number of
+independent media ranges (up to 64); the returned `data` array contains the
+actual byte count for each slot. The byte payload still uses the direct
+`[]byte` binding and is not base64 encoded.
+
+`OpenFileStreamJSON` plus `ReadFileStreamInto` is the sequential path. It keeps
+the read window bounded and serializes reads on the handle. `deadline_ms` on
+open bounds stream creation; the same option on `ReadFileStreamInto` bounds
+that refill. Close the handle with `CloseFileJSON`, or use
+`CancelFileReadJSON` for an in-flight refill.
 
 ### Media
 
@@ -776,8 +800,9 @@ returns `{"bytes": N}`; `RefreshPathJSON` returns `{"refreshed": true}`.
 
 ## Performance
 
-The Go side of the mobile interface is already near its practical limit, so
-performance work belongs mostly in the client, not in qrypt.
+The Go side of the mobile interface is already lightweight; performance work
+belongs mostly in buffer sizing and the client call pattern, while qrypt now
+also exposes stream and batch paths for high-call-rate workloads.
 
 Measured on Apple M1 Pro (localfs, 16 MiB file):
 
@@ -816,11 +841,10 @@ These would change the communication model and are only worth pursuing with
 real throughput requirements on a specific flow:
 
 - **Bulk read API**: one call returns a whole file/large chunk in a single
-Go-allocated `[]byte` (one JNI round trip). Fits small files, thumbnails, and
-import flows; unsuitable for seek-heavy playback.
-- **Guaranteed read-fill**: make `ReadAtInto` loop internally until the buffer
-is full or EOF, removing short-read handling from the client. Reduces client
-logic, not call count.
+  Go-allocated `[]byte` (one JNI round trip). Fits small files, thumbnails, and
+  import flows; unsuitable for seek-heavy playback. `ReadAtBatchIntoJSON` already
+  covers fixed-size multi-range reads without changing the buffer ownership
+  model.
 - **Native direct memory**: bypass gomobile with a custom JNI binding and
 direct `ByteBuffer`s to avoid copies entirely. Highest throughput, highest
 maintenance cost — only for extreme cases.
