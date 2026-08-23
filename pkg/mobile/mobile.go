@@ -6,9 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
@@ -19,88 +17,40 @@ import (
 
 type readCancels struct {
 	mu     sync.Mutex
-	active map[uint64]struct {
+	active []struct {
 		ctx    context.Context
 		cancel context.CancelFunc
 	}
-	next atomic.Uint64
 }
 
 // begin registers an in-flight read so CancelFileReadJSON /
 // CancelVirtualReadJSON can abort it. The returned done function unregisters
 // the read when it finishes. Future reads are unaffected by a cancel.
-func (r *readCancels) begin(timeoutMS int) (context.Context, func(), bool, uint64, uint64, error) {
-	return r.beginRequest(timeoutMS, 0)
-}
-
-// beginRequest registers a read. requestID may be supplied by the caller so
-// that one in-flight read can be canceled without affecting its siblings.
-func (r *readCancels) beginRequest(timeoutMS int, cancelID uint64) (context.Context, func(), bool, uint64, uint64, error) {
+func (r *readCancels) begin(timeoutMS int) (context.Context, func()) {
 	ctx, cancel := core.TimeoutContext(timeoutMS)
-	if cancelID&(uint64(1)<<63) != 0 {
-		cancel()
-		return nil, nil, false, 0, 0, fmt.Errorf("mobile: read request ID is reserved")
-	}
-	// Access IDs are always monotonic and independent from the optional
-	// caller-owned cancellation token. This keeps a caller token from making
-	// VFS sequential-read state look stale.
-	accessID := (uint64(1) << 63) | r.next.Add(1)
-	if cancelID == 0 {
-		cancelID = accessID
-	}
 	r.mu.Lock()
-	if r.active == nil {
-		r.active = make(map[uint64]struct {
-			ctx    context.Context
-			cancel context.CancelFunc
-		})
-	}
-	if _, exists := r.active[cancelID]; exists {
-		r.mu.Unlock()
-		cancel()
-		return nil, nil, false, 0, 0, fmt.Errorf("mobile: read request %d is already active", cancelID)
-	}
-	concurrent := len(r.active) > 0
-	r.active[cancelID] = struct {
+	r.active = append(r.active, struct {
 		ctx    context.Context
 		cancel context.CancelFunc
-	}{ctx: ctx, cancel: cancel}
+	}{ctx: ctx, cancel: cancel})
 	r.mu.Unlock()
 	done := func() {
 		r.mu.Lock()
-		item, ok := r.active[cancelID]
-		if ok && item.ctx == ctx {
-			delete(r.active, cancelID)
+		for i, item := range r.active {
+			if item.ctx == ctx {
+				r.active = append(r.active[:i], r.active[i+1:]...)
+				break
+			}
 		}
 		r.mu.Unlock()
-		cancel()
 	}
-	return ctx, done, concurrent, accessID, cancelID, nil
-}
-
-func (r *readCancels) cancel(requestID uint64) bool {
-	r.mu.Lock()
-	item, ok := r.active[requestID]
-	if ok {
-		delete(r.active, requestID)
-	}
-	r.mu.Unlock()
-	if ok {
-		item.cancel()
-	}
-	return ok
+	return ctx, done
 }
 
 func (r *readCancels) cancelAll() {
 	r.mu.Lock()
-	active := make([]struct {
-		ctx    context.Context
-		cancel context.CancelFunc
-	}, 0, len(r.active))
-	for id, item := range r.active {
-		active = append(active, item)
-		delete(r.active, id)
-	}
+	active := r.active
+	r.active = nil
 	r.mu.Unlock()
 	for _, item := range active {
 		item.cancel()
@@ -161,79 +111,18 @@ func withCoreErr(s *session, fn func(*core.Core) error) error {
 	return fn(s.core)
 }
 
-type cancelableStream struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-	once   sync.Once
-}
-
-func (s *cancelableStream) ReadContext(ctx context.Context, dst []byte) (int, error) {
-	if reader, ok := s.ReadCloser.(vfs.ContextReader); ok {
-		return reader.ReadContext(ctx, dst)
-	}
-	return s.Read(dst)
-}
-
-func (s *cancelableStream) Close() error {
-	s.once.Do(s.cancel)
-	return s.ReadCloser.Close()
-}
-
-func openFileStream(s *session, path string, priority vfs.ReadPriority, deadlineMS int) (io.ReadCloser, error) {
-	openCtx, openCancel := s.timeoutContext(deadlineMS)
-	defer openCancel()
-	streamCtx, streamCancel := context.WithCancel(s.ctx)
-	streamCtx = vfs.WithReadPriority(streamCtx, priority)
-	resultCh := make(chan struct {
-		stream io.ReadCloser
-		err    error
-	}, 1)
-	go func() {
-		stream, err := withCore(s, func(c *core.Core) (io.ReadCloser, error) {
-			return c.ReadStream(streamCtx, path)
-		})
-		resultCh <- struct {
-			stream io.ReadCloser
-			err    error
-		}{stream: stream, err: err}
-	}()
-	select {
-	case result := <-resultCh:
-		if result.err != nil {
-			streamCancel()
-			return nil, result.err
-		}
-		return &cancelableStream{ReadCloser: result.stream, cancel: streamCancel}, nil
-	case <-openCtx.Done():
-		streamCancel()
-		go func() {
-			result := <-resultCh
-			if result.stream != nil {
-				_ = result.stream.Close()
-			}
-		}()
-		return nil, openCtx.Err()
-	}
-}
-
 type fileHandle struct {
 	coreID       string
 	path         string
 	size         int64
 	readPriority vfs.ReadPriority
-	readSession  uint64
 	reads        readCancels
-	stream       io.ReadCloser
-	streamReader vfs.ContextReader
-	streamMu     sync.Mutex
-	streamClosed bool
 }
 
 type virtualHandle struct {
-	coreID      string
-	file        media.VirtualFile
-	readSession uint64
-	reads       readCancels
+	coreID string
+	file   media.VirtualFile
+	reads  readCancels
 }
 
 type downloadStreamHandle struct {
@@ -268,7 +157,7 @@ type runtimeJSON struct {
 }
 
 var registry = struct {
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	sessions    map[string]*session
 	files       map[string]*fileHandle
 	virtuals    map[string]*virtualHandle
@@ -283,8 +172,6 @@ var registry = struct {
 	taskUploads: map[string]*uploadStreamItemHandle{},
 	taskEvents:  map[string]*taskEventHandle{},
 }
-
-var readSessionCounter atomic.Uint64
 
 func openCore(configPath, runtimeRaw string) (string, error) {
 	runtime, err := parseRuntimeJSON(runtimeRaw)
@@ -433,12 +320,6 @@ func collectCoreHandlesLocked(coreID string) coreHandles {
 	for id, handle := range registry.files {
 		if handle.coreID == coreID {
 			handle.reads.cancelAll()
-			if handle.stream != nil {
-				handle.streamMu.Lock()
-				handle.streamClosed = true
-				handles.streams = append(handles.streams, handle.stream)
-				handle.streamMu.Unlock()
-			}
 			delete(registry.files, id)
 		}
 	}
@@ -470,7 +351,6 @@ func collectCoreHandlesLocked(coreID string) coreHandles {
 }
 
 type coreHandles struct {
-	streams     []io.Closer
 	virtuals    []*virtualHandle
 	downloads   []*core.DownloadStreamItemHandle
 	taskUploads []*core.UploadStreamItemHandle
@@ -478,9 +358,6 @@ type coreHandles struct {
 }
 
 func closeCollectedHandles(handles coreHandles) {
-	for _, stream := range handles.streams {
-		_ = stream.Close()
-	}
 	for _, file := range handles.virtuals {
 		file.reads.cancelAll()
 		_ = file.file.Close()
@@ -515,8 +392,8 @@ func DriverSchemaJSON(name string) string {
 }
 
 func getSession(coreID string) (*session, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	s := registry.sessions[coreID]
 	if s == nil {
 		return nil, fmt.Errorf("mobile: unknown core %q", coreID)
@@ -525,8 +402,8 @@ func getSession(coreID string) (*session, error) {
 }
 
 func getFile(handleID string) (*fileHandle, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	handle := registry.files[handleID]
 	if handle == nil {
 		return nil, fmt.Errorf("mobile: unknown file handle %q", handleID)
@@ -535,8 +412,8 @@ func getFile(handleID string) (*fileHandle, error) {
 }
 
 func getVirtualFile(handleID string) (*virtualHandle, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	handle := registry.virtuals[handleID]
 	if handle == nil {
 		return nil, fmt.Errorf("mobile: unknown virtual file handle %q", handleID)
@@ -545,8 +422,8 @@ func getVirtualFile(handleID string) (*virtualHandle, error) {
 }
 
 func getDownloadStream(handleID string) (*downloadStreamHandle, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	handle := registry.downloads[handleID]
 	if handle == nil {
 		return nil, fmt.Errorf("mobile: unknown download stream handle %q", handleID)
@@ -566,8 +443,8 @@ func takeDownloadStream(handleID string) (*downloadStreamHandle, error) {
 }
 
 func getUploadStreamItem(handleID string) (*uploadStreamItemHandle, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	handle := registry.taskUploads[handleID]
 	if handle == nil {
 		return nil, fmt.Errorf("mobile: unknown upload stream item handle %q", handleID)
@@ -587,8 +464,8 @@ func takeUploadStreamItem(handleID string) (*uploadStreamItemHandle, error) {
 }
 
 func getTaskEvent(handleID string) (*taskEventHandle, error) {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
 	handle := registry.taskEvents[handleID]
 	if handle == nil {
 		return nil, fmt.Errorf("mobile: unknown task events handle %q", handleID)
@@ -613,12 +490,4 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
-}
-
-func nextReadSessionID() uint64 {
-	id := readSessionCounter.Add(1)
-	if id == 0 {
-		id = readSessionCounter.Add(1)
-	}
-	return id
 }
