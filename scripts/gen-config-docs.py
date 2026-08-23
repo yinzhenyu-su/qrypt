@@ -93,46 +93,12 @@ def generate():
     sections.append("本文档为 qrypt 全部配置项的参考说明，由 `qrypt.schema.json` 自动生成。")
     sections.append("")
 
-    global_keys = [
-        "mount_point", "volume_name", "no_apple_double",
-        "no_apple_xattr", "read_only", "allow_other", "default_permissions",
-    ]
-    rows = []
-    rows.append("| 参数 | 类型 | 默认值 | 说明 |")
-    rows.append("|---|---|---|---|")
-    for key in global_keys:
-        prop = props.get(key)
-        if not prop:
-            continue
-        t = prop.get("type", "string")
-        default_val = fmt_default(prop.get("default"))
-        desc = prop.get("description", "")
-        rows.append(f"| `{key}` | {t} | {default_val} | {desc} |")
-    sections.append("## 全局设置")
+    mount_props = defs.get("mountOptionsConfig", {}).get("properties", {})
+    sections.append("## `[mount]`")
     sections.append("")
-    sections.append("\n".join(rows))
+    sections.append("挂载相关配置集中在 `[mount]` 下。旧的顶层写法仍兼容，但建议只用这一节。")
     sections.append("")
-
-    fuse_keys = [
-        "attr_timeout", "entry_timeout", "negative_timeout",
-        "total_space", "free_space",
-    ]
-    rows = []
-    rows.append("| 参数 | 类型 | 默认值 | 说明 |")
-    rows.append("|---|---|---|---|")
-    for key in fuse_keys:
-        prop = props.get(key)
-        if not prop:
-            continue
-        t = prop.get("type", "string")
-        default_val = fmt_default(prop.get("default"))
-        desc = prop.get("description", "")
-        rows.append(f"| `{key}` | {t} | {default_val} | {desc} |")
-    sections.append("## FUSE 参数")
-    sections.append("")
-    sections.append("控制 FUSE 内核驱动的缓存行为和文件系统容量显示。")
-    sections.append("")
-    sections.append("\n".join(rows))
+    sections.append(build_field_rows(mount_props))
     sections.append("")
 
     enc = defs.get("encryptionConfig", {})
