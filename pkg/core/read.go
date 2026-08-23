@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const DefaultReadChunkLimit = 4 << 20
@@ -64,20 +62,4 @@ func (c *Core) ReadAtInto(ctx context.Context, path string, offset int64, dst []
 		return n, nil
 	}
 	return n, err
-}
-
-func readAtNoPrefetch(c *Core, path string, ctx context.Context, offset int64, length int) ([]byte, error) {
-	limit := DefaultReadChunkLimit
-	if length > limit {
-		limit = length
-	}
-	return c.ReadAt(vfs.WithoutReadPrefetch(ctx), path, offset, length, limit)
-}
-
-func readAtIntoNoPrefetch(c *Core, path string, ctx context.Context, offset int64, dst []byte) (int, error) {
-	limit := DefaultReadChunkLimit
-	if len(dst) > limit {
-		limit = len(dst)
-	}
-	return c.ReadAtInto(vfs.WithoutReadPrefetch(ctx), path, offset, dst, limit)
 }

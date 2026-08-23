@@ -123,6 +123,16 @@ func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (
 	return mount.Read(ctx, rest, offset, size)
 }
 
+// ReleaseReadSession forwards open-file lifecycle cleanup to every mounted
+// VFS. Session identifiers are process-wide, so at most one mount owns it.
+func (n *Namespace) ReleaseReadSession(sessionID uint64) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, mount := range n.mounts {
+		mount.ReleaseReadSession(sessionID)
+	}
+}
+
 func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {

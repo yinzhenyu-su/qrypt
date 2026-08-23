@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
 func TestVFSReadSpansChunks(t *testing.T) {
@@ -657,6 +658,44 @@ func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 		}
 		return prefetches == 2
 	})
+}
+
+func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("a"), 10*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 16 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	first := vfsread.WithAccessHint(vfs.WithoutReadPrefetch(ctx), vfsread.AccessHint{SessionID: 1, RequestID: 1})
+	rc, err := fs.Read(first, "/data.bin", 0, testReadChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	second := vfsread.WithAccessHint(ctx, vfsread.AccessHint{SessionID: 1, RequestID: 2})
+	rc, err = fs.Read(second, "/data.bin", testReadChunkSize, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	waitForCondition(t, func() bool {
+		for index := int64(2); index < 2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks); index += vfsread.SequentialPrefetchChunks {
+			if drv.readCount(index*testReadChunkSize) != 1 {
+				return false
+			}
+		}
+		return true
+	})
+	for index := int64(2); index < 2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks); index += vfsread.SequentialPrefetchChunks {
+		if got := drv.readSize(index * testReadChunkSize); got != vfsread.SequentialPrefetchChunks*testReadChunkSize {
+			t.Fatalf("adaptive prefetch at chunk %d = %d, want %d", index, got, vfsread.SequentialPrefetchChunks*testReadChunkSize)
+		}
+	}
 }
 
 func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {

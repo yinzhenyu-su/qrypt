@@ -105,6 +105,18 @@ type sequentialRead struct {
 	end       int64
 	lastChunk int64
 	confirmed bool
+	requestID uint64
+}
+
+type sequentialKey struct {
+	cacheKey string
+	session  uint64
+}
+
+type accessDecision struct {
+	sequential bool
+	stale      bool
+	adaptive   bool
 }
 
 // sequentialState tracks recent per-file access patterns. It is only a
@@ -112,12 +124,12 @@ type sequentialRead struct {
 // affecting read correctness.
 type sequentialState struct {
 	mu    sync.Mutex
-	reads map[string]sequentialRead
-	order []string
+	reads map[sequentialKey]sequentialRead
+	order []sequentialKey
 }
 
 func newSequentialState() *sequentialState {
-	return &sequentialState{reads: map[string]sequentialRead{}}
+	return &sequentialState{reads: map[sequentialKey]sequentialRead{}}
 }
 
 func newPrefetchState() *prefetchState {
@@ -224,36 +236,82 @@ func NewState(cache Cache) *State {
 }
 
 func (s *State) observeSequentialRead(cacheKey string, offset, size int64) bool {
+	return s.observeReadAccess(cacheKey, AccessHint{}, offset, size).sequential
+}
+
+func (s *State) observeReadAccess(cacheKey string, hint AccessHint, offset, size int64) accessDecision {
+	adaptive := hint.SessionID != 0 && hint.RequestID != 0
 	if cacheKey == "" || offset < 0 || size <= 0 {
-		return false
+		return accessDecision{adaptive: adaptive}
 	}
 	end := offset + size
 	if end < offset {
-		return false
+		return accessDecision{adaptive: adaptive}
 	}
 	lastChunk := (end - 1) / ChunkSize
+	key := sequentialKey{cacheKey: cacheKey}
+	if adaptive {
+		key.session = hint.SessionID
+	}
 
 	s.sequence.mu.Lock()
 	defer s.sequence.mu.Unlock()
-	previous, exists := s.sequence.reads[cacheKey]
-	confirmed := exists && previous.confirmed && offset == previous.end
-	if exists && offset == previous.end && offset/ChunkSize > previous.lastChunk {
+	previous, exists := s.sequence.reads[key]
+	if adaptive && exists && hint.RequestID <= previous.requestID {
+		return accessDecision{stale: true, adaptive: true}
+	}
+	confirmed := !hint.Concurrent && exists && previous.confirmed && offset == previous.end
+	if !hint.Concurrent && exists && offset == previous.end && offset/ChunkSize > previous.lastChunk {
 		confirmed = true
 	}
 	if !exists {
-		s.sequence.order = append(s.sequence.order, cacheKey)
+		s.sequence.order = append(s.sequence.order, key)
 	}
-	s.sequence.reads[cacheKey] = sequentialRead{
+	s.sequence.reads[key] = sequentialRead{
 		end:       end,
 		lastChunk: lastChunk,
 		confirmed: confirmed,
+		requestID: hint.RequestID,
 	}
 	for len(s.sequence.order) > SequentialLimit {
 		oldest := s.sequence.order[0]
 		s.sequence.order = s.sequence.order[1:]
 		delete(s.sequence.reads, oldest)
 	}
-	return confirmed
+	return accessDecision{sequential: confirmed, adaptive: adaptive}
+}
+
+func (s *State) readAccessCurrent(cacheKey string, hint AccessHint) bool {
+	if cacheKey == "" || hint.SessionID == 0 || hint.RequestID == 0 {
+		return true
+	}
+	s.sequence.mu.Lock()
+	defer s.sequence.mu.Unlock()
+	current, ok := s.sequence.reads[sequentialKey{cacheKey: cacheKey, session: hint.SessionID}]
+	return ok && current.requestID == hint.RequestID
+}
+
+// ReleaseReadSession drops access-pattern hints for a closed open-file
+// handle. In-flight reads remain valid; only future prefetch decisions lose
+// the retired session history.
+func (s *State) ReleaseReadSession(sessionID uint64) {
+	if sessionID == 0 {
+		return
+	}
+	s.sequence.mu.Lock()
+	defer s.sequence.mu.Unlock()
+	for key := range s.sequence.reads {
+		if key.session == sessionID {
+			delete(s.sequence.reads, key)
+		}
+	}
+	order := s.sequence.order[:0]
+	for _, key := range s.sequence.order {
+		if key.session != sessionID {
+			order = append(order, key)
+		}
+	}
+	s.sequence.order = order
 }
 
 // Cache returns the durable chunk store (nil when disabled).
@@ -471,7 +529,7 @@ func (s *State) ClearReadCache() error {
 	s.fastPath.rangeHit.lru = nil
 	s.fastPath.rangeHit.mu.Unlock()
 	s.sequence.mu.Lock()
-	s.sequence.reads = map[string]sequentialRead{}
+	s.sequence.reads = map[sequentialKey]sequentialRead{}
 	s.sequence.order = nil
 	s.sequence.mu.Unlock()
 	if s.cache == nil {

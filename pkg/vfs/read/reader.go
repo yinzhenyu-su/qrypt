@@ -57,6 +57,12 @@ func NewReader(deps ReaderDeps) *Reader {
 // State returns the read domain state.
 func (r *Reader) State() *State { return r.state }
 
+// ReleaseReadSession forgets access-pattern hints for a closed open-file
+// handle. It does not cancel foreground reads or already useful cache fills.
+func (r *Reader) ReleaseReadSession(sessionID uint64) {
+	r.state.ReleaseReadSession(sessionID)
+}
+
 func (r *Reader) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	return r.host.Resolve(ctx, path)
 }
@@ -124,7 +130,13 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
 	windowChunks := readWindowChunks(size)
-	if readPrefetchEnabled(ctx) && windowChunks == 1 && offset%ChunkSize != 0 {
+	cacheKey := r.host.ReadCacheKey(entry)
+	hint, hinted := AccessHintFromContext(ctx)
+	decision := accessDecision{}
+	if hinted {
+		decision = r.state.observeReadAccess(cacheKey, hint, offset, size)
+	}
+	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && windowChunks == 1 && offset%ChunkSize != 0 {
 		// An unaligned FUSE seek usually asks for only a small slice of a chunk.
 		// Start the adjacent window before the foreground miss completes so a
 		// caller that crosses the boundary does not pay a second remote RTT. Keep
@@ -138,18 +150,23 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, WindowExtra(windowChunks), err)
 		return nil, err
 	}
-	sequential := r.state.observeSequentialRead(r.host.ReadCacheKey(entry), offset, int64(len(data)))
-	if readPrefetchEnabled(ctx) {
+	if !hinted {
+		decision = r.state.observeReadAccess(cacheKey, AccessHint{}, offset, int64(len(data)))
+	} else if !r.state.readAccessCurrent(cacheKey, hint) {
+		decision.stale = true
+	}
+	if readPrefetchEnabled(ctx) && !decision.stale {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
 				"start_chunk":   startChunk,
 				"end_chunk":     endChunk,
 				"window_chunks": windowChunks,
-				"sequential":    sequential,
+				"sequential":    decision.sequential,
+				"adaptive":      decision.adaptive,
 			}
 		})
-		r.PrefetchAdjacentChunks(readCtx, entry, endChunk, windowChunks, sequential)
+		r.PrefetchAdjacentChunks(readCtx, entry, endChunk, windowChunks, decision.sequential)
 	}
 	var chunks int64
 	if len(data) > 0 {

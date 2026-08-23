@@ -22,6 +22,27 @@ func readPrefetchEnabled(ctx context.Context) bool {
 	return !disabled
 }
 
+// AccessHint identifies one open-file read stream. It is optional: callers
+// without a stable handle keep the legacy per-file access tracking.
+type AccessHint struct {
+	SessionID  uint64
+	RequestID  uint64
+	Concurrent bool
+}
+
+type accessHintContextKey struct{}
+
+// WithAccessHint attaches an open-file read hint to ctx.
+func WithAccessHint(ctx context.Context, hint AccessHint) context.Context {
+	return context.WithValue(ctx, accessHintContextKey{}, hint)
+}
+
+// AccessHintFromContext returns the open-file read hint attached to ctx.
+func AccessHintFromContext(ctx context.Context) (AccessHint, bool) {
+	hint, ok := ctx.Value(accessHintContextKey{}).(AccessHint)
+	return hint, ok && hint.SessionID != 0 && hint.RequestID != 0
+}
+
 // Priority controls how read slots are allocated under contention.
 type Priority int
 

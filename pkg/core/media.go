@@ -29,10 +29,10 @@ func (c *Core) OpenVirtualFile(ctx context.Context, path, mode string) (media.Vi
 		return nil, fmt.Errorf("core: %s is a directory", path)
 	}
 	readAt := func(ctx context.Context, offset int64, length int) ([]byte, error) {
-		return readAtNoPrefetch(c, path, ctx, offset, length)
+		return c.ReadAt(ctx, path, offset, length, DefaultReadChunkLimit)
 	}
 	readAtInto := func(ctx context.Context, offset int64, dst []byte) (int, error) {
-		return readAtIntoNoPrefetch(c, path, ctx, offset, dst)
+		return c.ReadAtInto(ctx, path, offset, dst, DefaultReadChunkLimit)
 	}
 	return media.NewVirtualFileInto(ctx, mode, item.Size, readAt, readAtInto)
 }

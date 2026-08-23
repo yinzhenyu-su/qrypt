@@ -181,6 +181,60 @@ func TestStateConfirmsSequentialReadOnlyAfterCrossingChunkBoundary(t *testing.T)
 	}
 }
 
+func TestStateTracksSequentialReadsPerSession(t *testing.T) {
+	state := NewState(nil)
+	first := AccessHint{SessionID: 1, RequestID: 1}
+	second := AccessHint{SessionID: 2, RequestID: 1}
+	if state.observeReadAccess("cache", first, 0, ChunkSize).sequential {
+		t.Fatal("first session confirmed too early")
+	}
+	if state.observeReadAccess("cache", second, 4*ChunkSize, ChunkSize).sequential {
+		t.Fatal("second session confirmed too early")
+	}
+	first.RequestID++
+	if !state.observeReadAccess("cache", first, ChunkSize, 16).sequential {
+		t.Fatal("first session did not confirm its own contiguous read")
+	}
+	second.RequestID++
+	if !state.observeReadAccess("cache", second, 5*ChunkSize, 16).sequential {
+		t.Fatal("second session was disturbed by the first session")
+	}
+}
+
+func TestStateTreatsConcurrentAndStaleSessionReadsConservatively(t *testing.T) {
+	state := NewState(nil)
+	state.observeReadAccess("cache", AccessHint{SessionID: 1, RequestID: 1}, 0, ChunkSize)
+	decision := state.observeReadAccess("cache", AccessHint{SessionID: 1, RequestID: 2, Concurrent: true}, ChunkSize, 16)
+	if decision.sequential || decision.stale {
+		t.Fatalf("concurrent decision = %+v, want current non-sequential", decision)
+	}
+	decision = state.observeReadAccess("cache", AccessHint{SessionID: 1, RequestID: 1}, 0, ChunkSize)
+	if !decision.stale {
+		t.Fatal("late request should not replace newer access state")
+	}
+	if state.readAccessCurrent("cache", AccessHint{SessionID: 1, RequestID: 1}) {
+		t.Fatal("older request should not remain current")
+	}
+	if !state.readAccessCurrent("cache", AccessHint{SessionID: 1, RequestID: 2}) {
+		t.Fatal("latest request should remain current")
+	}
+}
+
+func TestStateReleaseReadSessionClearsItsHistory(t *testing.T) {
+	state := NewState(nil)
+	hint := AccessHint{SessionID: 7, RequestID: 1}
+	state.observeReadAccess("cache", hint, 0, ChunkSize)
+	hint.RequestID++
+	if !state.observeReadAccess("cache", hint, ChunkSize, 16).sequential {
+		t.Fatal("test setup did not confirm sequential access")
+	}
+	state.ReleaseReadSession(hint.SessionID)
+	hint.RequestID++
+	if state.observeReadAccess("cache", hint, ChunkSize+16, 16).sequential {
+		t.Fatal("released session retained sequential history")
+	}
+}
+
 func TestClearReadCacheClearsInMemoryFastPaths(t *testing.T) {
 	state := NewState(nil)
 	state.putHotChunk("cache", 1, []byte("hot"))
