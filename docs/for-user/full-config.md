@@ -4,8 +4,7 @@
 
 ## `[mount]`
 
-挂载相关配置集中在 `[mount]` 下。
-旧的顶层写法仍兼容，但建议只用这一节。
+挂载相关配置集中在 `[mount]` 下。旧的顶层写法仍兼容，但建议只用这一节。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -16,13 +15,6 @@
 | `read_only` | boolean | false | Mount the filesystem read-only. |
 | `allow_other` | boolean | false | Allow other local users to access the FUSE mount. |
 | `default_permissions` | boolean | false | Ask the kernel to enforce mode/uid/gid permissions. |
-
-## FUSE 参数
-
-控制 FUSE 内核驱动的缓存行为和文件系统容量显示。
-
-| 参数 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
 | `attr_timeout` | string | 1s | FUSE attribute cache timeout (e.g. "1s", "500ms", "0s"). |
 | `entry_timeout` | string | 1s | FUSE entry cache timeout (e.g. "1s", "500ms", "0s"). |
 | `negative_timeout` | string | 0s | FUSE negative lookup cache timeout (e.g. "0s", "1s"). |
