@@ -784,6 +784,63 @@ func TestVFSOffsetJumpKeepsSingleChunkPrefetch(t *testing.T) {
 	}
 }
 
+func TestVFSHandleOffsetJumpSkipsSpeculativePrefetch(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("j"), 6*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	first := vfsread.WithAccessHint(vfs.WithoutReadPrefetch(ctx), vfsread.AccessHint{SessionID: 1, RequestID: 1})
+	rc, err := fs.Read(first, "/data.bin", 0, testReadChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	second := vfsread.WithAccessHint(ctx, vfsread.AccessHint{SessionID: 1, RequestID: 2})
+	rc, err = fs.Read(second, "/data.bin", 2*testReadChunkSize, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	if got := drv.readCount(2 * testReadChunkSize); got != 1 {
+		t.Fatalf("jump foreground read count = %d, want 1", got)
+	}
+	if got := drv.readCount(3*testReadChunkSize) + drv.readCount(4*testReadChunkSize); got != 0 {
+		t.Fatalf("jump speculative reads = %d, want 0", got)
+	}
+}
+
+func TestVFSHandleUnalignedSeekLoadsTouchedChunksTogether(t *testing.T) {
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("u"), 4*testReadChunkSize)
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	ctx = vfsread.WithAccessHint(ctx, vfsread.AccessHint{SessionID: 1, RequestID: 1})
+	rc, err := fs.Read(ctx, "/data.bin", testReadChunkSize/2, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	if got := drv.readCount(0); got != 1 {
+		t.Fatalf("unaligned seek foreground read count = %d, want 1", got)
+	}
+	if got := drv.readSize(0); got != 2*testReadChunkSize {
+		t.Fatalf("unaligned seek range size = %d, want %d", got, 2*testReadChunkSize)
+	}
+}
+
 func TestVFSReadWithoutPrefetchSkipsAdjacentChunk(t *testing.T) {
 	ctx := vfs.WithoutReadPrefetch(context.Background())
 	data := bytes.Repeat([]byte("e"), 3*testReadChunkSize)

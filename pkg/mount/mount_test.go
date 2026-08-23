@@ -245,7 +245,7 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	for _, want := range []string{"defer_permissions", "fsname=qrypt", "subtype=qrypt", "iosize=1048576"} {
+	for _, want := range []string{"defer_permissions", "fsname=qrypt", "subtype=qrypt", "iosize=4194304"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -128,11 +129,12 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 	}))
 	defer api.Close()
 
-	var downloadCalls int
+	var downloadCalls, actualCalls int
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		downloadCalls++
-		if downloadCalls == 1 {
+		actualCalls++
+		if actualCalls == 1 {
 			return nil, &net.DNSError{Name: req.URL.Host, Err: "no such host"}
 		}
 		if got := req.Header.Get("Range"); got != "bytes=4-8" {
@@ -320,6 +322,39 @@ func TestDriverReadRefreshesURLAfterForbidden(t *testing.T) {
 	}
 	if downloadCalls != 2 {
 		t.Fatalf("download calls = %d, want 2", downloadCalls)
+	}
+}
+
+func TestDriverReadWarmsDownloadConnectionOnce(t *testing.T) {
+	driver := New("k=v", Options{})
+	driver.setURL("fid-1", "https://download.test/file.bin")
+	var ranges []string
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		ranges = append(ranges, req.Header.Get("Range"))
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("hello")),
+			Request:    req,
+		}, nil
+	})
+
+	for _, offset := range []int64{4, 9} {
+		rc, err := driver.Read(context.Background(), drive.Entry{ID: "fid-1", Name: "file.bin", Size: 2 << 20}, offset, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data, err := io.ReadAll(rc); err != nil || string(data) != "hello" {
+			t.Fatalf("read at %d = %q/%v, want hello/nil", offset, data, err)
+		}
+		_ = rc.Close()
+	}
+
+	if got, want := ranges, []string{"bytes=0-0", "bytes=4-1048579", "bytes=9-1048584"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("download ranges = %v, want %v", got, want)
+	}
+	if got := metricCount(driver.cl.metricEvents(time.Time{}), "download_warmup"); got != 1 {
+		t.Fatalf("download warmup metrics = %d, want 1", got)
 	}
 }
 

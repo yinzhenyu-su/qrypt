@@ -2,6 +2,7 @@ package quark
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,10 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+var errDownloadURLExpired = errors.New("quark: download url expired")
+
+const downloadWarmupMinSize = 512 * 1024
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	start := time.Now()
@@ -30,6 +35,11 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		}
 		staleURL = downloadURL
 		logging.L.DebugfEvery("quark.read_url", time.Second, "[QUARK] ReadURL fid=%q offset=%d size=%d refresh=%t dur=%s", entry.ID, offset, size, urlAttempt > 0, time.Since(start))
+		if urlAttempt == 0 && size >= downloadWarmupMinSize {
+			if err := d.warmDownloadConnection(ctx, entry.ID, downloadURL); errors.Is(err, errDownloadURLExpired) {
+				continue
+			}
+		}
 
 		resp, err := d.downloadRange(ctx, entry.ID, downloadURL, urlCacheHit, offset, size)
 		if err != nil {
@@ -58,6 +68,66 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		}, nil
 	}
 	return nil, fmt.Errorf("quark: read: download url refresh failed")
+}
+
+// warmDownloadConnection establishes the CDN connection before the first
+// user-visible Range request. Quark's first request to a signed download URL
+// can include DNS/TCP/TLS setup and a slow cold CDN path; a one-byte Range
+// keeps that cost out of the first seek. Warmup is best effort except for a
+// 403, which means the URL must be refreshed before reading.
+func (d *Driver) warmDownloadConnection(ctx context.Context, fid, downloadURL string) error {
+	if _, ok := d.downloadWarmupDone.Load(downloadURL); ok {
+		return nil
+	}
+	_, err, _ := d.downloadWarmup.Do(downloadURL, func() (any, error) {
+		if _, ok := d.downloadWarmupDone.Load(downloadURL); ok {
+			return nil, nil
+		}
+		warmCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(warmCtx, http.MethodGet, downloadURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Range", "bytes=0-0")
+		started := time.Now()
+		resp, err := d.cl.doDownload(req)
+		event := drive.MetricEvent{
+			Operation: "download_warmup",
+			Method:    req.Method,
+			URL:       driverutil.URL(req.URL),
+			Status:    responseStatus(resp),
+			Duration:  time.Since(started).String(),
+			Attempt:   1,
+			RemoteID:  fid,
+			Requested: 1,
+			Request: map[string]any{
+				"range":    req.Header.Get("Range"),
+				"url_host": req.URL.Host,
+			},
+			Response: map[string]any{},
+			Error:    errorString(err),
+		}
+		if resp != nil {
+			event.Response["content_length"] = resp.ContentLength
+			event.Response["content_range"] = resp.Header.Get("Content-Range")
+		}
+		d.cl.recordMetric(ctx, event)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusForbidden {
+			return nil, errDownloadURLExpired
+		}
+		if resp.StatusCode != http.StatusPartialContent {
+			return nil, fmt.Errorf("quark: download warmup: unexpected status %d", resp.StatusCode)
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
+		d.downloadWarmupDone.Store(downloadURL, struct{}{})
+		return nil, nil
+	})
+	return err
 }
 
 func (d *Driver) downloadRange(ctx context.Context, fid, downloadURL string, urlCacheHit bool, offset, size int64) (*http.Response, error) {
@@ -160,6 +230,7 @@ func (d *Driver) invalidateURL(fid, staleURL string) {
 		return
 	}
 	d.urlCache.CompareAndDelete(fid, value)
+	d.downloadWarmupDone.Delete(staleURL)
 }
 
 func (d *Driver) downloadURL(ctx context.Context, fid string) (string, bool, error) {

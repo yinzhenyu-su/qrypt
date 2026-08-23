@@ -179,7 +179,7 @@ func mountOptions(opts Options) []string {
 			// "-o", "auto_xattr",
 			"-o", "fsname=qrypt",
 			"-o", "subtype=qrypt",
-			"-o", "iosize=1048576",
+			"-o", "iosize=4194304",
 		)
 	}
 	if runtime.GOOS == "windows" {

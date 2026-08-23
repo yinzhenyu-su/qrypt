@@ -129,18 +129,25 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	})
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
-	windowChunks := readWindowChunks(size)
+	windowChunks := readWindowChunks(offset, size)
 	cacheKey := r.host.ReadCacheKey(entry)
 	hint, hinted := AccessHintFromContext(ctx)
 	decision := accessDecision{}
 	if hinted {
 		decision = r.state.observeReadAccess(cacheKey, hint, offset, size)
+		if !decision.stale && !hint.Concurrent && decision.discontinuous &&
+			offset%ChunkSize != 0 && size > 0 && size <= ChunkSize {
+			// macOS FUSE commonly begins a seek with a small aligned-down
+			// request. Fetch both touched chunks in one Range request so the
+			// seek pays one CDN response-header delay instead of two.
+			windowChunks = 2
+		}
 	}
-	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && windowChunks == 1 && offset%ChunkSize != 0 {
-		// An unaligned FUSE seek usually asks for only a small slice of a chunk.
-		// Start the adjacent window before the foreground miss completes so a
-		// caller that crosses the boundary does not pay a second remote RTT. Keep
-		// aligned sequential reads on the normal merged-prefetch path below.
+	firstWindowPrefetch := (!hinted && offset%ChunkSize != 0) || (hinted && offset == 0)
+	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
+		// Warm the first lookahead window for a new file stream. Non-zero
+		// offsets are treated as seeks until contiguous access is observed, so
+		// random probes do not trigger speculative network reads.
 		r.prefetchWindow(readCtx, entry, offset/ChunkSize+1, windowChunks)
 	}
 	data, startChunk, endChunk, err := r.readRange(readCtx, entry, offset, size, windowChunks)
@@ -155,7 +162,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	} else if !r.state.readAccessCurrent(cacheKey, hint) {
 		decision.stale = true
 	}
-	if readPrefetchEnabled(ctx) && !decision.stale {
+	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
@@ -451,8 +458,16 @@ func sliceChunkRange(data []byte, start, size int64) []byte {
 	return data[start:stop]
 }
 
-func readWindowChunks(requestSize int64) int {
+func readWindowChunks(offset, requestSize int64) int {
 	if requestSize > 0 && requestSize <= ChunkSize {
+		// A large unaligned read that crosses a chunk boundary is cheaper as
+		// one aligned two-chunk Range request than two independent requests.
+		// Keep small boundary reads on the one-chunk path to avoid fetching a
+		// disproportionate amount of data for metadata/thumbnail probes.
+		if offset >= 0 && offset%ChunkSize != 0 &&
+			offset%ChunkSize+requestSize > ChunkSize && requestSize >= ChunkSize/2 {
+			return 2
+		}
 		return 1
 	}
 	return PrefetchChunks

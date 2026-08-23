@@ -16,7 +16,7 @@ const (
 	PrefetchChunks           = 8
 	MaxConcurrency           = 8
 	HighReserve              = 2
-	HotChunkLimit            = 16
+	HotChunkLimit            = 64
 	RangeHitLimit            = 1024
 	RangePromoteHits         = 2
 	SequentialLimit          = 1024
@@ -114,9 +114,10 @@ type sequentialKey struct {
 }
 
 type accessDecision struct {
-	sequential bool
-	stale      bool
-	adaptive   bool
+	sequential    bool
+	stale         bool
+	adaptive      bool
+	discontinuous bool
 }
 
 // sequentialState tracks recent per-file access patterns. It is only a
@@ -260,6 +261,7 @@ func (s *State) observeReadAccess(cacheKey string, hint AccessHint, offset, size
 	if adaptive && exists && hint.RequestID <= previous.requestID {
 		return accessDecision{stale: true, adaptive: true}
 	}
+	discontinuous := !exists || offset != previous.end
 	confirmed := !hint.Concurrent && exists && previous.confirmed && offset == previous.end
 	if !hint.Concurrent && exists && offset == previous.end && offset/ChunkSize > previous.lastChunk {
 		confirmed = true
@@ -278,7 +280,7 @@ func (s *State) observeReadAccess(cacheKey string, hint AccessHint, offset, size
 		s.sequence.order = s.sequence.order[1:]
 		delete(s.sequence.reads, oldest)
 	}
-	return accessDecision{sequential: confirmed, adaptive: adaptive}
+	return accessDecision{sequential: confirmed, adaptive: adaptive, discontinuous: discontinuous}
 }
 
 func (s *State) readAccessCurrent(cacheKey string, hint AccessHint) bool {
