@@ -35,19 +35,19 @@ type deleteTaskState struct {
 func newDeleteStates() (*overlayState, *deleteTaskState) {
 	mu := &sync.Mutex{}
 	return &overlayState{
-			mu:                 mu,
-			deleted:            map[string]drive.Entry{},
-			renameOverlays:     map[string]overlayOp{},
-			restoredDirs:       map[string]time.Time{},
-			copyHiddenChildren: map[string]map[string]time.Time{},
-			deletedDirs:        map[string]struct{}{},
-			renameHiddenDirs:   map[string]struct{}{},
-		}, &deleteTaskState{
-			mu:        mu,
-			scheduler: scheduler.NewTimeKeyedScheduler(),
-			active:    map[string]drive.Entry{},
-			failures:  map[string]string{},
-		}
+		mu:                 mu,
+		deleted:            map[string]drive.Entry{},
+		renameOverlays:     map[string]overlayOp{},
+		restoredDirs:       map[string]time.Time{},
+		copyHiddenChildren: map[string]map[string]time.Time{},
+		deletedDirs:        map[string]struct{}{},
+		renameHiddenDirs:   map[string]struct{}{},
+	}, &deleteTaskState{
+		mu:        mu,
+		scheduler: scheduler.NewTimeKeyedScheduler(),
+		active:    map[string]drive.Entry{},
+		failures:  map[string]string{},
+	}
 }
 
 func newVisibilityOverlayState() *overlayState {
