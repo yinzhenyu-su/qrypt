@@ -15,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
 type adapter struct {
@@ -63,11 +64,17 @@ type ignoredAppleNode struct {
 }
 
 type fuseHandle struct {
-	path     string
-	flags    int
-	entry    drive.Entry
-	hasEntry bool
+	path          string
+	flags         int
+	entry         drive.Entry
+	hasEntry      bool
+	readSessionID uint64
+	readRequests  uint64
+	activeReads   int
+	released      bool
 }
+
+var nextReadSessionID atomic.Uint64
 
 type activeFuseOp struct {
 	Op    string
@@ -318,10 +325,70 @@ func (a *adapter) handleEntry(fh uint64) (drive.Entry, bool) {
 	return handle.entry, true
 }
 
-func (a *adapter) releaseHandle(fh uint64) {
+func (a *adapter) beginHandleRead(fh uint64) (vfsread.AccessHint, func() uint64) {
+	if fh == 0 {
+		return vfsread.AccessHint{}, func() uint64 { return 0 }
+	}
 	a.mu.Lock()
-	delete(a.handles, fh)
+	handle, ok := a.handles[fh]
+	if !ok || handle.released {
+		a.mu.Unlock()
+		return vfsread.AccessHint{}, func() uint64 { return 0 }
+	}
+	if handle.readSessionID == 0 {
+		handle.readSessionID = nextReadSessionID.Add(1)
+	}
+	handle.readRequests++
+	handle.activeReads++
+	hint := vfsread.AccessHint{
+		SessionID:  handle.readSessionID,
+		RequestID:  handle.readRequests,
+		Concurrent: handle.activeReads > 1,
+	}
+	a.handles[fh] = handle
 	a.mu.Unlock()
+	return hint, func() uint64 {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		current, ok := a.handles[fh]
+		if !ok || current.readSessionID != hint.SessionID {
+			return 0
+		}
+		if current.activeReads > 0 {
+			current.activeReads--
+		}
+		if current.released && current.activeReads == 0 {
+			delete(a.handles, fh)
+			return current.readSessionID
+		}
+		a.handles[fh] = current
+		return 0
+	}
+}
+
+func (a *adapter) releaseHandle(fh uint64) uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	handle, ok := a.handles[fh]
+	if !ok {
+		return 0
+	}
+	if handle.activeReads > 0 {
+		handle.released = true
+		a.handles[fh] = handle
+		return 0
+	}
+	delete(a.handles, fh)
+	return handle.readSessionID
+}
+
+func (a *adapter) releaseReadSession(sessionID uint64) {
+	if sessionID == 0 {
+		return
+	}
+	if releaser, ok := a.fs.(interface{ ReleaseReadSession(uint64) }); ok {
+		releaser.ReleaseReadSession(sessionID)
+	}
 }
 
 func (a *adapter) effectiveStatfs() StatfsOptions {

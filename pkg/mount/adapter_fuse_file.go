@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
 func (a *adapter) Open(path string, flags int) (int, uint64) {
@@ -141,6 +142,11 @@ func (a *adapter) Read(path string, buff []byte, ofst int64, fh uint64) int {
 		result = a.readIgnoredApple(path, buff, ofst)
 		return result
 	}
+	hint, finishRead := a.beginHandleRead(fh)
+	defer func() { a.releaseReadSession(finishRead()) }()
+	if hint.SessionID != 0 {
+		ctx = vfsread.WithAccessHint(ctx, hint)
+	}
 	rc, err := a.fs.Read(ctx, path, ofst, int64(len(buff)))
 	if err != nil {
 		result = -fuse.EIO
@@ -235,7 +241,7 @@ func (a *adapter) Fsync(path string, datasync bool, fh uint64) int {
 func (a *adapter) Release(path string, fh uint64) int {
 	start := time.Now()
 	defer func() { a.trace.log("Release", path, "fh=%d dur=%s", fh, time.Since(start)) }()
-	a.releaseHandle(fh)
+	a.releaseReadSession(a.releaseHandle(fh))
 	return 0
 }
 

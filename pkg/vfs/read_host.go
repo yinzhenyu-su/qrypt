@@ -117,6 +117,12 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 	return v.reader.Read(ctx, path, offset, size)
 }
 
+// ReleaseReadSession forgets adaptive read hints for a closed open-file
+// handle. It leaves completed and in-flight cache fills intact.
+func (v *VFS) ReleaseReadSession(sessionID uint64) {
+	v.reader.ReleaseReadSession(sessionID)
+}
+
 type rawReadableDriver interface {
 	ReadRaw(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error)
 }

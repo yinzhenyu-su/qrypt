@@ -15,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
 type stubFS struct {
@@ -65,6 +66,13 @@ type failingListFS struct {
 type blockingReadFS struct {
 	stubFS
 	entered chan struct{}
+}
+
+type readHintFS struct {
+	stubFS
+	mu       sync.Mutex
+	hints    []vfsread.AccessHint
+	released []uint64
 }
 
 type invalidationStubFS struct {
@@ -142,6 +150,23 @@ func (s blockingReadFS) Read(ctx context.Context, path string, offset, size int6
 	close(s.entered)
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func (s *readHintFS) Read(ctx context.Context, _ string, _, _ int64) (io.ReadCloser, error) {
+	hint, ok := vfsread.AccessHintFromContext(ctx)
+	if !ok {
+		return nil, errors.New("missing read access hint")
+	}
+	s.mu.Lock()
+	s.hints = append(s.hints, hint)
+	s.mu.Unlock()
+	return io.NopCloser(strings.NewReader("x")), nil
+}
+
+func (s *readHintFS) ReleaseReadSession(sessionID uint64) {
+	s.mu.Lock()
+	s.released = append(s.released, sessionID)
+	s.mu.Unlock()
 }
 
 func (stubFS) Read(context.Context, string, int64, int64) (io.ReadCloser, error) {
@@ -484,6 +509,58 @@ func TestAdapterShutdownCancelsActiveRead(t *testing.T) {
 	}
 	if active := ad.activeOpsSnapshot(); len(active) != 0 {
 		t.Fatalf("active ops after read returned = %#v, want empty", active)
+	}
+}
+
+func TestAdapterPassesStableReadSessionAndReleasesIt(t *testing.T) {
+	fs := &readHintFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/file.txt": {ID: "file-id", Name: "file.txt", Size: 2},
+	}}}
+	ad := newAdapter(fs, StatfsOptions{})
+	errno, fh := ad.Open("/file.txt", 0)
+	if errno != 0 {
+		t.Fatalf("Open errno = %d", errno)
+	}
+	if got := ad.Read("/file.txt", make([]byte, 1), 0, fh); got != 1 {
+		t.Fatalf("first Read = %d, want 1", got)
+	}
+	if got := ad.Read("/file.txt", make([]byte, 1), 1, fh); got != 1 {
+		t.Fatalf("second Read = %d, want 1", got)
+	}
+	ad.Release("/file.txt", fh)
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.hints) != 2 {
+		t.Fatalf("hints = %v, want two", fs.hints)
+	}
+	if fs.hints[0].SessionID == 0 || fs.hints[1].SessionID != fs.hints[0].SessionID {
+		t.Fatalf("session ids = %d/%d, want one non-zero session", fs.hints[0].SessionID, fs.hints[1].SessionID)
+	}
+	if fs.hints[0].RequestID != 1 || fs.hints[1].RequestID != 2 {
+		t.Fatalf("request ids = %d/%d, want 1/2", fs.hints[0].RequestID, fs.hints[1].RequestID)
+	}
+	if len(fs.released) != 1 || fs.released[0] != fs.hints[0].SessionID {
+		t.Fatalf("released = %v, want session %d", fs.released, fs.hints[0].SessionID)
+	}
+}
+
+func TestAdapterDefersReadSessionReleaseUntilConcurrentReadsFinish(t *testing.T) {
+	ad := newAdapter(stubFS{}, StatfsOptions{})
+	fh := ad.nextHandle("/file.txt")
+	first, finishFirst := ad.beginHandleRead(fh)
+	second, finishSecond := ad.beginHandleRead(fh)
+	if first.Concurrent || !second.Concurrent {
+		t.Fatalf("concurrent flags = %v/%v, want false/true", first.Concurrent, second.Concurrent)
+	}
+	if session := ad.releaseHandle(fh); session != 0 {
+		t.Fatalf("Release returned active session %d", session)
+	}
+	if session := finishSecond(); session != 0 {
+		t.Fatalf("second completion released session with first active: %d", session)
+	}
+	if session := finishFirst(); session != first.SessionID {
+		t.Fatalf("last completion released session %d, want %d", session, first.SessionID)
 	}
 }
 
