@@ -12,8 +12,8 @@ const chunkCopyWindowSize = 4 << 20 // 4MB window = 4 chunks of 1MB
 func BenchmarkFetchChunkPerChunkCopy(b *testing.B) {
 	data := bytes.Repeat([]byte{0xAB}, chunkCopyWindowSize)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		chunks := map[int64][]byte{}
 		remaining := data
 		for index := int64(0); len(remaining) > 0; index++ {
@@ -37,8 +37,8 @@ func BenchmarkFetchChunkPerChunkCopy(b *testing.B) {
 func BenchmarkFetchChunkSharedBacking(b *testing.B) {
 	data := bytes.Repeat([]byte{0xAB}, chunkCopyWindowSize)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		chunks := map[int64][]byte{}
 		remaining := data
 		for index := int64(0); len(remaining) > 0; index++ {
@@ -60,8 +60,8 @@ func BenchmarkFetchChunkSharedBacking(b *testing.B) {
 func BenchmarkFetchChunkPreallocMap(b *testing.B) {
 	data := bytes.Repeat([]byte{0xAB}, chunkCopyWindowSize)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		chunks := make(map[int64][]byte, 4)
 		remaining := data
 		for index := int64(0); len(remaining) > 0; index++ {
