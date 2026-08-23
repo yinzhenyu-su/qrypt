@@ -86,6 +86,39 @@ func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
 	}
 }
 
+func TestVFSReadAllLargeBinaryPreservesEveryChunk(t *testing.T) {
+	ctx := context.Background()
+	data := make([]byte, 8<<20)
+	for i := range data {
+		data[i] = byte(i*31 + i/int(vfsread.ChunkSize))
+	}
+	drv := newCountingReadDriver(data)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.CloseReadCache() })
+
+	rc, err := fs.Read(ctx, "/data.bin", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		for offset := 0; offset < len(data); offset += int(vfsread.ChunkSize) {
+			end := min(offset+int(vfsread.ChunkSize), len(data))
+			if !bytes.Equal(got[offset:end], data[offset:end]) {
+				t.Fatalf("chunk mismatch at offset %d", offset)
+			}
+		}
+		t.Fatalf("large read length = %d, want %d", len(got), len(data))
+	}
+}
+
 func TestVFSReadClampsDriverReadToEntrySize(t *testing.T) {
 	ctx := context.Background()
 	data := []byte("small")
@@ -616,10 +649,12 @@ func TestVFSReadPrefetchesAdjacentChunksConcurrently(t *testing.T) {
 
 func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 	ctx := context.Background()
-	data := bytes.Repeat([]byte("s"), 6*testReadChunkSize)
+	firstPrefetchChunk := int64(2)
+	secondPrefetchChunk := firstPrefetchChunk + int64(vfsread.SequentialPrefetchChunks)
+	data := bytes.Repeat([]byte("s"), int((secondPrefetchChunk+int64(vfsread.SequentialPrefetchChunks))*testReadChunkSize))
 	drv := newCountingReadDriver(data)
-	firstEntered, releaseFirst := drv.blockRead(2 * testReadChunkSize)
-	secondEntered, releaseSecond := drv.blockRead(4 * testReadChunkSize)
+	firstEntered, releaseFirst := drv.blockRead(firstPrefetchChunk * testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(secondPrefetchChunk * testReadChunkSize)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -647,11 +682,12 @@ func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("second merged prefetch did not start concurrently")
 	}
-	if got := drv.readSize(2 * testReadChunkSize); got != 2*testReadChunkSize {
-		t.Fatalf("first sequential prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	prefetchSize := int64(vfsread.SequentialPrefetchChunks) * testReadChunkSize
+	if got := drv.readSize(firstPrefetchChunk * testReadChunkSize); got != prefetchSize {
+		t.Fatalf("first sequential prefetch size = %d, want %d", got, prefetchSize)
 	}
-	if got := drv.readSize(4 * testReadChunkSize); got != 2*testReadChunkSize {
-		t.Fatalf("second sequential prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	if got := drv.readSize(secondPrefetchChunk * testReadChunkSize); got != prefetchSize {
+		t.Fatalf("second sequential prefetch size = %d, want %d", got, prefetchSize)
 	}
 	releaseFirst()
 	releaseSecond()
@@ -668,7 +704,7 @@ func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 
 func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
 	ctx := context.Background()
-	data := bytes.Repeat([]byte("a"), 10*testReadChunkSize)
+	data := bytes.Repeat([]byte("a"), int((2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks))*testReadChunkSize))
 	drv := newCountingReadDriver(data)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 16 << 20})
 	if err != nil {
@@ -706,10 +742,12 @@ func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
 
 func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
 	ctx := context.Background()
-	data := bytes.Repeat([]byte("h"), 7*testReadChunkSize)
+	firstPrefetchChunk := int64(3)
+	secondPrefetchChunk := firstPrefetchChunk + int64(vfsread.SequentialPrefetchChunks)
+	data := bytes.Repeat([]byte("h"), int((secondPrefetchChunk+int64(vfsread.SequentialPrefetchChunks))*testReadChunkSize))
 	drv := newCountingReadDriver(data)
-	firstEntered, releaseFirst := drv.blockRead(3 * testReadChunkSize)
-	secondEntered, releaseSecond := drv.blockRead(5 * testReadChunkSize)
+	firstEntered, releaseFirst := drv.blockRead(firstPrefetchChunk * testReadChunkSize)
+	secondEntered, releaseSecond := drv.blockRead(secondPrefetchChunk * testReadChunkSize)
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -739,11 +777,12 @@ func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("second shifted prefetch did not start concurrently")
 	}
-	if got := drv.readSize(3 * testReadChunkSize); got != 2*testReadChunkSize {
-		t.Fatalf("shifted sequential prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	prefetchSize := int64(vfsread.SequentialPrefetchChunks) * testReadChunkSize
+	if got := drv.readSize(firstPrefetchChunk * testReadChunkSize); got != prefetchSize {
+		t.Fatalf("shifted sequential prefetch size = %d, want %d", got, prefetchSize)
 	}
-	if got := drv.readSize(5 * testReadChunkSize); got != 2*testReadChunkSize {
-		t.Fatalf("second shifted prefetch size = %d, want %d", got, 2*testReadChunkSize)
+	if got := drv.readSize(secondPrefetchChunk * testReadChunkSize); got != prefetchSize {
+		t.Fatalf("second shifted prefetch size = %d, want %d", got, prefetchSize)
 	}
 	releaseFirst()
 	releaseSecond()
