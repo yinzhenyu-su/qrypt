@@ -10,11 +10,12 @@ import (
 )
 
 func (d *Driver) loadUploadSession(key string) (p189UploadSession, bool) {
-	session, ok := d.uploadSessionStore().Load(key)
-	if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
-	}
-	return session, ok
+	return d.uploadSessionStore().LoadAs(key, func(session p189UploadSession) p189UploadSession {
+		if session.CompletedParts == nil {
+			session.CompletedParts = map[int]bool{}
+		}
+		return session
+	})
 }
 
 func (d *Driver) saveUploadSession(session p189UploadSession) {

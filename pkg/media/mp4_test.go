@@ -179,10 +179,7 @@ func bytesReadAt(data []byte) ReadAtFunc {
 		if offset >= int64(len(data)) {
 			return []byte{}, io.EOF
 		}
-		end := offset + int64(length)
-		if end > int64(len(data)) {
-			end = int64(len(data))
-		}
+		end := min(offset+int64(length), int64(len(data)))
 		return data[offset:end], nil
 	}
 }

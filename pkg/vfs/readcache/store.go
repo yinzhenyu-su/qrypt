@@ -716,18 +716,12 @@ func limitByDiskSpace(maxSize int64, dir string) (int64, string) {
 	if err != nil {
 		return maxSize, ""
 	}
-	reserve := int64(float64(avail) * diskReserveFraction)
-	if reserve < diskMinReserveBytes {
-		reserve = diskMinReserveBytes
-	}
+	reserve := max(int64(float64(avail)*diskReserveFraction), diskMinReserveBytes)
 	ceiling := avail - reserve
 	if ceiling <= 0 {
 		// Disk space is already below the reserve threshold.  Keep
 		// eviction working by setting a small floor instead of 0.
-		floor := int64(64 << 20)
-		if avail/4 < floor {
-			floor = avail / 4
-		}
+		floor := min(avail/4, int64(64<<20))
 		if floor < 1 {
 			floor = 1
 		}

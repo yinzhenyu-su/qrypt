@@ -122,7 +122,7 @@ func TestPersistentStoreJournalsOnlyDurableStateChanges(t *testing.T) {
 	}})
 
 	// Progress-only ticks must not journal.
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		store.UpdateManaged("batch", func(mt *ManagedTask) {
 			mt.Task.Progress.CloudBytesDone += 1 << 20
 		})

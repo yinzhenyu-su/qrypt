@@ -66,6 +66,18 @@ func (s *Store[T]) Load(key string) (T, bool) {
 	return session, true
 }
 
+// LoadAs loads a session and maps it to the representation needed by a
+// caller. The generic method keeps the store's persistence type separate from
+// driver-specific load normalization.
+func (s *Store[T]) LoadAs[U any](key string, mapFn func(T) U) (U, bool) {
+	session, ok := s.Load(key)
+	if !ok {
+		var zero U
+		return zero, false
+	}
+	return mapFn(session), true
+}
+
 func (s *Store[T]) Save(session T) {
 	if s == nil || s.store == nil {
 		return
