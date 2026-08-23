@@ -1,6 +1,7 @@
 package read
 
 import (
+	"context"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -11,17 +12,31 @@ import (
 
 // Read-domain constants.
 const (
-	ChunkSize                = 1024 * 1024
-	PrefetchLimit            = 2
-	PrefetchChunks           = 8
-	MaxConcurrency           = 8
-	HighReserve              = 2
-	HotChunkLimit            = 64
-	RangeHitLimit            = 1024
-	RangePromoteHits         = 2
-	SequentialLimit          = 1024
-	SequentialPrefetchChunks = 2
-	HistoryLimit             = 2048
+	// ChunkSize 是 VFS 读取、缓存和预取使用的基础文件块大小。
+	ChunkSize = 512 * 1024
+	// PrefetchChunks 是普通读取首次或非连续读取使用的预取块数量。
+	PrefetchChunks = 6
+	// MaxConcurrency 是 VFS 读取任务允许占用的并发槽位总数。
+	MaxConcurrency = 64
+	// HighReserve 根据总并发数自动计算，为高优先级读取预留约四分之一的槽位，
+	// 同时保证总并发数大于 1 时至少保留一个槽位。
+	HighReserve = max(0, min(max(1, MaxConcurrency/4), MaxConcurrency-1))
+	// PrefetchLimit 根据普通读取槽位自动计算，并限制单个文件的预取窗口上限。
+	// 预取不能占满所有普通读取槽位，否则多个文件同时访问时会影响前台读取。
+	PrefetchLimit = max(1, min(4, MaxConcurrency-HighReserve))
+	// HotChunkLimit 是单个 VFS 实例保留在内存热缓存中的最大块数量。
+	HotChunkLimit = 64
+	// RangeHitLimit 是范围命中统计允许保留的最大条目数量。
+	RangeHitLimit = 1024
+	// RangePromoteHits 是把重复范围访问提升为热缓存访问所需的命中次数，
+	// 不超过范围命中统计的容量。
+	RangePromoteHits = min(2, RangeHitLimit)
+	// SequentialLimit 是单个文件访问序列跟踪允许保留的最大记录数量。
+	SequentialLimit = 1024
+	// SequentialPrefetchChunks 根据普通预取块数自动计算，确认顺序读取后每次预取的块数量。
+	SequentialPrefetchChunks = max(1, PrefetchChunks*2)
+	// HistoryLimit 是读取调试事件环形缓冲区保留的最大事件数量。
+	HistoryLimit = 2
 )
 
 // windowLoad coalesces concurrent reads of the same cache window.
@@ -96,9 +111,11 @@ func newFastPathState() *fastPathState {
 
 // prefetchState tracks in-flight window prefetches.
 type prefetchState struct {
-	mu       sync.Mutex
-	inFlight map[string]struct{}
-	sem      chan struct{}
+	mu              sync.Mutex
+	inFlight        map[string]struct{}
+	cancels         map[string]map[string]context.CancelFunc
+	sem             chan struct{}
+	foregroundReads atomic.Int32
 }
 
 type sequentialRead struct {
@@ -136,6 +153,7 @@ func newSequentialState() *sequentialState {
 func newPrefetchState() *prefetchState {
 	return &prefetchState{
 		inFlight: map[string]struct{}{},
+		cancels:  map[string]map[string]context.CancelFunc{},
 		sem:      make(chan struct{}, PrefetchLimit),
 	}
 }
@@ -471,6 +489,63 @@ func (s *State) releasePrefetch(key string) {
 	<-s.prefetch.sem
 	s.prefetch.mu.Lock()
 	delete(s.prefetch.inFlight, key)
+	s.prefetch.mu.Unlock()
+}
+
+func (s *State) beginForegroundRead(cacheKey string) {
+	if cacheKey != "" {
+		s.prefetch.foregroundReads.Add(1)
+	}
+}
+
+func (s *State) endForegroundRead(cacheKey string) {
+	if cacheKey != "" {
+		s.prefetch.foregroundReads.Add(-1)
+	}
+}
+
+// adaptivePrefetchLimit keeps a small lookahead during active foreground
+// reads and allows a wider pipeline when the reader is otherwise idle.
+func (s *State) adaptivePrefetchLimit(sequential bool) int {
+	limit := PrefetchLimit
+	if s.prefetch.foregroundReads.Load() > int32(max(1, (MaxConcurrency-HighReserve)/2)) {
+		return 1
+	}
+	// Keep the configured pipeline for both initial and confirmed sequential
+	// reads while the foreground is idle. The sequential flag is retained in
+	// the API for future bandwidth-aware policies.
+	_ = sequential
+	return limit
+}
+
+func (s *State) registerPrefetch(cacheKey, key string, cancel context.CancelFunc) {
+	s.prefetch.mu.Lock()
+	defer s.prefetch.mu.Unlock()
+	if s.prefetch.cancels[cacheKey] == nil {
+		s.prefetch.cancels[cacheKey] = map[string]context.CancelFunc{}
+	}
+	s.prefetch.cancels[cacheKey][key] = cancel
+}
+
+func (s *State) unregisterPrefetch(cacheKey, key string) {
+	s.prefetch.mu.Lock()
+	defer s.prefetch.mu.Unlock()
+	if tasks := s.prefetch.cancels[cacheKey]; tasks != nil {
+		delete(tasks, key)
+		if len(tasks) == 0 {
+			delete(s.prefetch.cancels, cacheKey)
+		}
+	}
+}
+
+// cancelPrefetch cancels only speculative reads for one file. Foreground
+// reads use their caller context and are never canceled by a seek elsewhere.
+func (s *State) cancelPrefetch(cacheKey string) {
+	s.prefetch.mu.Lock()
+	tasks := s.prefetch.cancels[cacheKey]
+	for _, cancel := range tasks {
+		cancel()
+	}
 	s.prefetch.mu.Unlock()
 }
 

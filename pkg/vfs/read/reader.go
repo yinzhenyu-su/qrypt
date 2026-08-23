@@ -131,10 +131,17 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
 	windowChunks := readWindowChunks(offset, size)
 	cacheKey := r.host.ReadCacheKey(entry)
+	r.state.beginForegroundRead(cacheKey)
+	defer r.state.endForegroundRead(cacheKey)
 	hint, hinted := AccessHintFromContext(ctx)
 	decision := accessDecision{}
 	if hinted {
 		decision = r.state.observeReadAccess(cacheKey, hint, offset, size)
+		if !decision.stale && !hint.Concurrent && decision.discontinuous {
+			// A seek makes the old lookahead irrelevant. Cancel it before the
+			// target load competes for bandwidth and read slots.
+			r.state.cancelPrefetch(cacheKey)
+		}
 		if !decision.stale && !hint.Concurrent && decision.discontinuous &&
 			offset%ChunkSize != 0 && size > 0 && size <= ChunkSize {
 			// macOS FUSE commonly begins a seek with a small aligned-down
@@ -695,8 +702,8 @@ func (r *Reader) acquireReadSlot(ctx context.Context) (func(), error) {
 		select {
 		case r.state.slots.normal <- struct{}{}:
 			return func() { <-r.state.slots.normal }, nil
-		default:
-			return nil, fmt.Errorf("vfs: read slots full")
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 	select {
@@ -718,7 +725,7 @@ func (r *Reader) PrefetchAdjacentChunks(ctx context.Context, entry drive.Entry, 
 	if windowChunks == 1 {
 		// Keep the foreground miss to one chunk for TTFB, then fill the
 		// bounded prefetch slots so sequential FUSE reads pipeline remote GETs.
-		windows = PrefetchLimit
+		windows = r.state.adaptivePrefetchLimit(sequential)
 		if sequential {
 			prefetchChunks = SequentialPrefetchChunks
 		}
@@ -778,10 +785,12 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	}
 	prefetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	prefetchCtx = WithPriority(prefetchCtx, PriorityLow)
+	r.state.registerPrefetch(cacheKey, key, cancel)
 
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, done: make(chan struct{})}
 	if _, exists := r.state.beginWindowLoad(key, load); exists {
 		r.state.releasePrefetch(key)
+		r.state.unregisterPrefetch(cacheKey, key)
 		cancel()
 		return
 	}
@@ -809,6 +818,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			close(load.done)
 			r.state.endWindowLoad(key)
 			r.state.releasePrefetch(key)
+			r.state.unregisterPrefetch(cacheKey, key)
 			cancel()
 			return
 		}
@@ -818,6 +828,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			close(load.done)
 			r.state.endWindowLoad(key)
 			r.state.releasePrefetch(key)
+			r.state.unregisterPrefetch(cacheKey, key)
 			cancel()
 		}()
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })

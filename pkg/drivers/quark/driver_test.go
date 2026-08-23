@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -137,6 +138,15 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 		if actualCalls == 1 {
 			return nil, &net.DNSError{Name: req.URL.Host, Err: "no such host"}
 		}
+		if got := req.Header.Get("User-Agent"); got != downloadChromeUA {
+			t.Fatalf("download user-agent = %q, want Chrome UA", got)
+		}
+		if got := req.Header.Get("Referer"); got != "https://pan.quark.cn/" {
+			t.Fatalf("download referer = %q, want trailing slash", got)
+		}
+		if got := req.Header.Get("Accept"); got != "*/*" {
+			t.Fatalf("download accept = %q, want */*", got)
+		}
 		if got := req.Header.Get("Range"); got != "bytes=4-8" {
 			t.Fatalf("range = %q, want bytes=4-8", got)
 		}
@@ -203,6 +213,164 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 	}
 }
 
+func TestDriverDownloadUsesCookieSnapshotAfterRotation(t *testing.T) {
+	var apiCalls int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Cookie"); got != "__puus=old" {
+			t.Fatalf("download URL request cookie = %q, want old snapshot", got)
+		}
+		apiCalls++
+		w.Header().Add("Set-Cookie", "__puus=new; Path=/")
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	driver := New("__puus=old", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.InstallStateStore(store)
+	var downloadCalls int
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		downloadCalls++
+		if got := req.Header.Get("Cookie"); got != "__puus=old" {
+			t.Fatalf("CDN request cookie = %q, want URL snapshot", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("hello")),
+			Request:    req,
+		}, nil
+	})
+
+	for range 2 {
+		rc, err := driver.Read(context.Background(), drive.Entry{ID: "fid-1", Name: "file.bin", Size: 100}, 0, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "hello" {
+			t.Fatalf("body = %q, want hello", data)
+		}
+	}
+
+	if apiCalls != 1 {
+		t.Fatalf("download URL calls = %d, want 1", apiCalls)
+	}
+	if downloadCalls != 2 {
+		t.Fatalf("CDN download calls = %d, want 2", downloadCalls)
+	}
+	if got := driver.cl.cookieValue(); got != "__puus=new" {
+		t.Fatalf("current cookie = %q, want rotated cookie", got)
+	}
+	var state cookieState
+	if err := store.LoadJSON("quark_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Cookie != "__puus=new" {
+		t.Fatalf("state cookie = %q, want rotated cookie", state.Cookie)
+	}
+}
+
+func TestDriverParallelDownloadAssemblesRangeParts(t *testing.T) {
+	const total = int64(24 * 1024 * 1024)
+	data := make([]byte, total)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	driver := New("k=v", Options{})
+	var mu sync.Mutex
+	var ranges []string
+	active := 0
+	maxActive := 0
+	entered := make(chan struct{}, 3)
+	release := make(chan struct{})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		value := req.Header.Get("Range")
+		var start, end int64
+		if _, err := fmt.Sscanf(value, "bytes=%d-%d", &start, &end); err != nil {
+			return nil, fmt.Errorf("parse range %q: %w", value, err)
+		}
+		mu.Lock()
+		ranges = append(ranges, value)
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		entered <- struct{}{}
+		<-release
+		body := append([]byte(nil), data[start:end+1]...)
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+
+	type downloadResult struct {
+		rc  io.ReadCloser
+		err error
+	}
+	result := make(chan downloadResult, 1)
+	go func() {
+		rc, err := driver.downloadParallel(context.Background(), "fid-1", "https://download.test/file.bin", "k=v", false, 0, total)
+		result <- downloadResult{rc: rc, err: err}
+	}()
+	for range 3 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("parallel range workers did not start")
+		}
+	}
+	close(release)
+	item := <-result
+	rc, err := item.rc, item.err
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("assembled data differs: got=%d want=%d", len(got), len(data))
+	}
+	if len(ranges) != 3 {
+		t.Fatalf("range request count = %d, want 3: %v", len(ranges), ranges)
+	}
+	wantRanges := []string{
+		"bytes=0-8388607",
+		"bytes=8388608-16777215",
+		"bytes=16777216-25165823",
+	}
+	slices.Sort(ranges)
+	slices.Sort(wantRanges)
+	if !slices.Equal(ranges, wantRanges) {
+		t.Fatalf("range requests = %v, want %v", ranges, wantRanges)
+	}
+	if maxActive < 2 {
+		t.Fatalf("max concurrent range requests = %d, want at least 2", maxActive)
+	}
+}
+
 func TestDriverDownloadURLCoalescesConcurrentMisses(t *testing.T) {
 	var calls int
 	var callsMu sync.Mutex
@@ -230,9 +398,9 @@ func TestDriverDownloadURLCoalescesConcurrentMisses(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			url, _, err := driver.downloadURL(context.Background(), "fid-1")
-			if err == nil && url != "https://download.test/file.bin" {
-				err = fmt.Errorf("download URL = %q", url)
+			result, err := driver.downloadURL(context.Background(), "fid-1")
+			if err == nil && result.url != "https://download.test/file.bin" {
+				err = fmt.Errorf("download URL = %q", result.url)
 			}
 			results <- err
 		}()

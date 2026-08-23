@@ -182,10 +182,10 @@ func TestMountedSeekOffsetsAreDistinctAndSpanFile(t *testing.T) {
 }
 
 func TestMountedSeekChunksTouched(t *testing.T) {
-	if got := mountedSeekChunksTouched(2<<20, 1<<20); got != 1 {
+	if got := mountedSeekChunksTouched(2*vfsread.ChunkSize, vfsread.ChunkSize); got != 1 {
 		t.Fatalf("aligned chunks = %d, want 1", got)
 	}
-	if got := mountedSeekChunksTouched((2<<20)+(512<<10), 1<<20); got != 2 {
+	if got := mountedSeekChunksTouched(2*vfsread.ChunkSize+vfsread.ChunkSize/2, vfsread.ChunkSize); got != 2 {
 		t.Fatalf("unaligned chunks = %d, want 2", got)
 	}
 }
@@ -237,8 +237,8 @@ func TestMeasureMountedSeekReportsLoadLatencyAndValidatesContent(t *testing.T) {
 
 func TestMountedSeekWarmupOffsetsAvoidTargetAndEachOther(t *testing.T) {
 	const (
-		fileSize     = int64(64 << 20)
-		targetOffset = int64(32 << 20)
+		fileSize     = int64(256 << 20)
+		targetOffset = int64(128 << 20)
 		targetSize   = int64(1 << 20)
 		warmupChunks = 2
 	)

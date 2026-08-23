@@ -1,12 +1,14 @@
 package vfs_test
 
 import (
+	"time"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
-	"time"
+	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
-const testReadChunkSize = 1024 * 1024
+const testReadChunkSize = vfsread.ChunkSize
 const testUploadDelay = 10 * time.Millisecond
 
 var _ drive.Driver = (*localfs.Driver)(nil)

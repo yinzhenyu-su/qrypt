@@ -62,7 +62,7 @@ func BenchmarkVFSReadWholeFile(b *testing.B) {
 	}
 }
 
-// Same bytes, read in 1 MiB windowed calls (memory bounded per window).
+// Same bytes, read in bounded windowed calls (memory bounded per window).
 func BenchmarkVFSReadWindowed(b *testing.B) {
 	fs := benchReadFS(b)
 	warmReadCache(b, fs)
