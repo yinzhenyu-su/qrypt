@@ -488,6 +488,7 @@
             "onedrive",
             "onedrive_app",
             "webdav",
+            "sftp",
             "s3"
           ]
         },
@@ -694,6 +695,28 @@
             "properties": {
               "params": {
                 "$ref": "#/definitions/webdavParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "sftp"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/sftpParams"
               }
             }
           }
@@ -1147,6 +1170,60 @@
           "x-example": "/qrypt"
         }
       },
+      "additionalProperties": false
+    },
+    "sftpParams": {
+      "type": "object",
+      "required": [
+        "address",
+        "username"
+      ],
+      "properties": {
+        "address": {
+          "description": "SFTP server address, including port.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "sftp.example.com:22"
+        },
+        "username": {
+          "description": "SFTP username.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "user"
+        },
+        "password": {
+          "description": "SFTP password; use password or private_key.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "your-password"
+        },
+        "private_key": {
+          "description": "Path to or PEM-encoded SSH private key; use private_key or password.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "~/.ssh/id_ed25519"
+        },
+        "passphrase": {
+          "description": "SSH private key passphrase.",
+          "type": "string",
+          "x-secret": true
+        },
+        "known_hosts": {
+          "description": "Optional OpenSSH known_hosts file used to verify the SFTP server host key; when omitted, ~/.ssh/known_hosts is used if present.",
+          "type": "string",
+          "x-example": "~/.ssh/known_hosts"
+        },
+        "root_path": {
+          "description": "Remote directory used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/data/qrypt"
+        }
+      },
+      "anyOf": [
+        {"required": ["address", "username", "password"]},
+        {"required": ["address", "username", "private_key"]}
+      ],
       "additionalProperties": false
     },
     "onedriveParams": {

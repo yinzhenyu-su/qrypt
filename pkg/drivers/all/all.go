@@ -12,6 +12,7 @@ import (
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/s3"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/scopedfs"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/sftp"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/yun139"
 )
