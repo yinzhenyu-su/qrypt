@@ -274,7 +274,13 @@ func runGet(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 }
 
 func copyRemoteFile(ctx context.Context, fs vfs.Reader, remotePath string, out io.Writer) error {
-	rc, err := fs.Read(ctx, remotePath, 0, 0)
+	var rc io.ReadCloser
+	var err error
+	if streamer, ok := fs.(vfs.StreamReader); ok {
+		rc, err = streamer.ReadStream(ctx, remotePath)
+	} else {
+		rc, err = fs.Read(ctx, remotePath, 0, 0)
+	}
 	if err != nil {
 		return err
 	}

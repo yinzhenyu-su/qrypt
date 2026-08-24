@@ -168,7 +168,7 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	old, err := Open(ctx, Options{ConfigPath: configPath})
+	old, err := Open(ctx, Options{ConfigPath: configPath, Runtime: testRuntimeLayout(tmp)})
 	if err != nil {
 		t.Fatal(err)
 	}
