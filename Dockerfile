@@ -15,6 +15,7 @@ RUN apk add --no-cache fuse-dev gcc musl-dev
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/cgofuse/go.mod third_party/cgofuse/go.mod
 RUN go mod download
 
 COPY . .
