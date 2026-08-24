@@ -10,16 +10,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 budget="${1:-30s}"
-declare -A FUZZERS=(
-  [pkg/vfs]=FuzzCleanVirtualPath
-  [pkg/crypt]=FuzzCipherSegmentRoundtrip
-  [pkg/config]=FuzzParseSizeAndDuration
-  [pkg/drive]=FuzzErrorCategoryMessage
+FUZZERS=(
+  "pkg/vfs:FuzzCleanVirtualPath"
+  "pkg/crypt:FuzzCipherSegmentRoundtrip"
+  "pkg/crypt:FuzzRcloneConfigObscureRoundtrip"
+  "pkg/config:FuzzParseSizeAndDuration"
+  "pkg/drive:FuzzErrorCategoryMessage"
+  "pkg/syncer:FuzzParseCompareMode"
+  "pkg/media:FuzzPassthroughVirtualFileBounds"
 )
 
 failed=0
-for pkg in "${!FUZZERS[@]}"; do
-  fn=${FUZZERS[$pkg]}
+for fuzzer in "${FUZZERS[@]}"; do
+  IFS=: read -r pkg fn <<< "$fuzzer"
   echo "== fuzz $pkg/$fn ($budget) =="
   if ! go test -run='^$' -fuzz="$fn" -fuzztime="$budget" "./$pkg"; then
     echo "!! fuzzer $pkg/$fn found a failure; corpus saved under $pkg/testdata/fuzz/$fn"
