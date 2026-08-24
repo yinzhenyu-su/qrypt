@@ -3,10 +3,11 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
@@ -80,8 +81,8 @@ func BenchmarkCacheConcurrentMixedReads(b *testing.B) {
 	}()
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		var gwg sync.WaitGroup
 		for r := 0; r < readers; r++ {
 			gwg.Add(1)
