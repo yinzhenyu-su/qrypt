@@ -126,14 +126,16 @@ func TestBuildFileSystemInitializesMountsConcurrently(t *testing.T) {
 }
 
 func testRuntimeLayout(tmp string) RuntimeLayout {
+	root := filepath.Join(tmp, "storage")
 	return RuntimeLayout{
-		ConfigDir:    filepath.Join(tmp, "runtime", "config"),
-		ReadCacheDir: filepath.Join(tmp, "cache", "read"),
-		ThumbnailDir: filepath.Join(tmp, "cache", "thumbnail"),
-		UploadDir:    filepath.Join(tmp, "runtime", "upload"),
-		StateDir:     filepath.Join(tmp, "runtime", "state"),
-		LogDir:       filepath.Join(tmp, "runtime", "logs"),
-		TmpDir:       filepath.Join(tmp, "cache", "tmp"),
+		RootDir:      root,
+		ConfigDir:    filepath.Join(root, "runtime", "config"),
+		ReadCacheDir: filepath.Join(root, "cache", "read"),
+		ThumbnailDir: filepath.Join(root, "cache", "thumbnail"),
+		UploadDir:    filepath.Join(root, "runtime", "upload"),
+		StateDir:     filepath.Join(root, "runtime", "state"),
+		LogDir:       filepath.Join(root, "runtime", "logs"),
+		TmpDir:       filepath.Join(root, "cache", "tmp"),
 	}
 }
 
