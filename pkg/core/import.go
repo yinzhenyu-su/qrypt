@@ -144,8 +144,8 @@ func (c *Core) ReadLog(name string, offset int64, length int) ([]byte, error) {
 	if length == 0 {
 		return []byte{}, nil
 	}
-	if length > DefaultReadChunkLimit {
-		return nil, fmt.Errorf("core: log length %d exceeds limit %d", length, DefaultReadChunkLimit)
+	if length > c.readLimit(0) {
+		return nil, fmt.Errorf("core: log length %d exceeds limit %d", length, c.readLimit(0))
 	}
 	path := filepath.Join(c.runtimeLayout.LogDir, filepath.Base(filepath.Clean(name)))
 	file, err := os.Open(path)

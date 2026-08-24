@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/yinzhenyu/qrypt/pkg/limits"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -21,7 +22,7 @@ import (
 // data. It matches DefaultReadChunkLimit so ReadAtInto never needs a custom
 // limit, and it is large enough that a big file is read in a few dozen calls
 // instead of one whole-file materialization.
-const downloadReadBufferSize = 4 << 20
+const downloadReadBufferSize = limits.DefaultDownloadBufferBytes
 
 type downloadTaskSpec struct {
 	Items       []task.Item
@@ -279,7 +280,7 @@ func (c *Core) downloadOne(ctx context.Context, item task.Item, spec downloadTas
 		// window-sized pieces. ReadAtInto disables prefetch, which is correct
 		// for a sequential download (window coalescing still drives one fetch
 		// per window).
-		buf := make([]byte, downloadReadBufferSize)
+		buf := make([]byte, min(downloadReadBufferSize, c.readLimit(0)))
 		var off int64
 		for off < entry.Size {
 			n, err := c.ReadAtInto(ctx, item.SourcePath, off, buf, 0)

@@ -51,6 +51,7 @@ type Core struct {
 	debugServer        *control.Server
 	tasks              *task.Manager
 	uploadSources      UploadSourceProvider
+	readChunkLimit     int
 	vfsCancel          context.CancelFunc
 	streamsMu          sync.Mutex
 	downloadStreams    map[string]*downloadStreamBatch
@@ -101,7 +102,11 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	if cfg.ThumbnailCache.MaxSize == "" {
 		thumbnailMax = 256 << 20
 	}
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, vfsCancel: vfsCancel}
+	readChunkLimit := opts.ReadChunkLimit
+	if readChunkLimit <= 0 {
+		readChunkLimit = DefaultReadChunkLimit
+	}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
