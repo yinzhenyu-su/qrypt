@@ -330,8 +330,8 @@ func BenchmarkPatchChunkOffsetsInPlace(b *testing.B) {
 	original := benchMoov(1<<16, false)
 	moov := make([]byte, len(original))
 	b.SetBytes(int64(len(original)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		b.StopTimer()
 		copy(moov, original)
 		b.StartTimer()
@@ -344,8 +344,8 @@ func BenchmarkPatchChunkOffsetsInPlace(b *testing.B) {
 func BenchmarkPatchChunkOffsetsConvert(b *testing.B) {
 	moov := benchMoov(1<<16, true)
 	b.SetBytes(int64(len(moov)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if _, err := patchChunkOffsets(moov, int64(len(moov))); err != nil {
 			b.Fatal(err)
 		}

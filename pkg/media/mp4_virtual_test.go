@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"testing"
+
+	"github.com/yinzhenyu/qrypt/pkg/limits"
 )
 
 func TestMP4FastStartVirtualFileReadsVirtualLayout(t *testing.T) {
@@ -108,14 +110,15 @@ func TestVirtualAutoMediaFallsBackToPassthrough(t *testing.T) {
 }
 
 func TestMP4FastStartVirtualFileReadsLargeMoovInChunks(t *testing.T) {
-	moov := atomBytes("moov", atomBytes("free", bytes.Repeat([]byte{0}, 4<<20)))
+	const testMoovPayloadSize = limits.DefaultReadRequestBytes + 1
+	moov := atomBytes("moov", atomBytes("free", bytes.Repeat([]byte{0}, testMoovPayloadSize)))
 	raw := appendAtoms(
 		atomBytes("ftyp", []byte("isom")),
 		atomBytes("mdat", []byte("payload")),
 		moov,
 	)
 	readAt := func(ctx context.Context, offset int64, length int) ([]byte, error) {
-		if length > 4<<20 {
+		if length > limits.DefaultReadRequestBytes {
 			return nil, fmt.Errorf("read limit: %d", length)
 		}
 		return bytesReadAt(raw)(ctx, offset, length)
