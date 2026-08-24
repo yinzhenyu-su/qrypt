@@ -109,6 +109,9 @@
     "logging": {
       "$ref": "#/definitions/loggingConfig"
     },
+    "debug": {
+      "$ref": "#/definitions/debugConfig"
+    },
     "time": {
       "$ref": "#/definitions/timeConfig"
     },
@@ -323,6 +326,23 @@
         "error_file": {
           "description": "Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log or <storage.work_dir>/logs/qrypt-error.log.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "debugConfig": {
+      "type": "object",
+      "description": "Runtime debug server settings.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the HTTP debug server.",
+          "type": "boolean",
+          "default": false
+        },
+        "listen": {
+          "description": "Address where the HTTP debug server listens.",
+          "type": "string",
+          "default": "127.0.0.1:19090"
         }
       },
       "additionalProperties": false

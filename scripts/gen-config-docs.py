@@ -47,6 +47,12 @@ LOGGING_DOC_OVERRIDES = {
     },
 }
 
+DEBUG_DOC_OVERRIDES = {
+    "listen": {
+        "description": "HTTP 调试入口监听地址；未设置时使用 `127.0.0.1:19090`。",
+    },
+}
+
 
 def load_schema():
     with open(SCHEMA_PATH) as f:
@@ -177,6 +183,15 @@ def generate():
     sections.append("## 日志")
     sections.append("")
     sections.append("\n".join(build_field_rows(log_props, doc_overrides=LOGGING_DOC_OVERRIDES).split("\n")))
+    sections.append("")
+
+    debug = defs.get("debugConfig", {})
+    debug_props = debug.get("properties", {})
+    sections.append("## 调试服务")
+    sections.append("")
+    sections.append("在 `[debug]` 中启用运行时 HTTP 调试入口。")
+    sections.append("")
+    sections.append(build_field_rows(debug_props, doc_overrides=DEBUG_DOC_OVERRIDES))
     sections.append("")
 
     time = defs.get("timeConfig", {})
