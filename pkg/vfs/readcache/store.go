@@ -19,7 +19,7 @@ import (
 
 const (
 	cacheAccessWriteInterval = time.Second
-	readChunkSize            = 1024 * 1024
+	readChunkSize            = 512 * 1024
 )
 
 func durationMillis(d time.Duration) int64 { return d.Milliseconds() }
