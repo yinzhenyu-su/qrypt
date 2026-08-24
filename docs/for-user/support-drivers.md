@@ -9,17 +9,17 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | 驱动类型 | 名称 | 必填参数 |
 |---|---|---|
 | `localfs` | 本地目录 | `root_path` |
-| `aliyundrive` | 阿里云盘 | `refresh_token`, `drive_id` |
+| `aliyundrive` | 阿里云盘 | `refresh_token` + `drive_id` |
 | `baidu_netdisk` | 百度网盘 | `refresh_token` |
 | `onedrive` | OneDrive | `refresh_token` |
-| `onedrive_app` | OneDrive 应用权限 | `client_secret`, `tenant_id`, `email` |
+| `onedrive_app` | OneDrive 应用权限 | `client_id` 或 `client_key` |
 | `quark` | 夸克网盘 | `cookie` |
 | `yun139` | 天翼云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
 | `115_open` | 115 云盘（开放平台） | `refresh_token` |
-| `189` | 天翼云盘 189 | `cookie` |
-| `webdav` | WebDAV | `url`, `username`, `password` |
-| `s3` | Amazon S3 / 兼容 S3 | `bucket`, `endpoint`, `access_key_id`, `secret_access_key` |
+| `189` | 天翼云盘 189 | `cookie` 或 `username` + `password` |
+| `webdav` | WebDAV | `url` + `username` + `password` |
+| `s3` | Amazon S3 / 兼容 S3 | `bucket` + `endpoint` + `access_key_id` + `secret_access_key` |
 
 
 ## localfs
@@ -153,11 +153,12 @@ OneDrive 应用权限。
 
 ```toml
 [mounts.params]
-# client_id = "your-client-id"
+# 认证方式任选其一：`client_id` 或 `client_key`
+client_id = "your-client-id"
 # client_key = "your-client-id"
-client_secret = "your-client-secret"
-tenant_id = "your-tenant-id"
-email = "user@example.com"
+# client_secret = "your-client-secret"
+# tenant_id = "your-tenant-id"
+# email = "user@example.com"
 # region = "global"
 # root_path = "/qrypt"
 # api_base_url = "https://graph.microsoft.com"
@@ -167,13 +168,15 @@ email = "user@example.com"
 # disable_disk_usage = false
 ```
 
+必填条件：`client_id` 或 `client_key`。
+
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `client_id` | string (secret) | 否 | Microsoft Entra application client ID; mutually exclusive with client_key |
-| `client_key` | string (secret) | 否 | Alias for client_id |
-| `client_secret` | string (secret) | 是 | Microsoft Entra application client secret |
-| `tenant_id` | string | 是 | Microsoft Entra tenant ID |
-| `email` | string | 是 | User principal name or email whose drive should be mounted |
+| `client_id` | string (secret) | 条件 | Microsoft Entra application client ID; mutually exclusive with client_key |
+| `client_key` | string (secret) | 条件 | Alias for client_id |
+| `client_secret` | string (secret) | 否 | Microsoft Entra application client secret |
+| `tenant_id` | string | 否 | Microsoft Entra tenant ID |
+| `email` | string | 否 | User principal name or email whose drive should be mounted |
 | `region` | string | 否 | Microsoft cloud region，默认 `global` |
 | `root_path` | string | 否 | OneDrive path used as this mount root，默认 `/` |
 | `api_base_url` | string | 否 | Custom Microsoft Graph API base URL |
@@ -271,14 +274,21 @@ refresh_token = "eg2t4.<hex>.<hex>"
 
 ```toml
 [mounts.params]
+# 认证方式任选其一：`cookie` 或 `username` + `password`
 cookie = "k1=v1; k2=v2"
+# username = "18912345678"
+# password = "your-password"
 # root_path = "/qrypt"
 # root_id = "-11"
 ```
 
+必填条件：`cookie` 或 `username` + `password`。
+
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `cookie` | string (secret) | 是 | 189 cloud drive authentication cookie |
+| `cookie` | string (secret) | 条件 | 189 cloud drive authentication cookie |
+| `username` | string | 条件 | 189 cloud drive account (phone number) |
+| `password` | string (secret) | 条件 | 189 cloud drive password |
 | `root_path` | string | 否 | Virtual root path on the drive，默认 `/` |
 | `root_id` | string | 否 | Pre-resolved folder ID (skips root_path resolution) |
 
