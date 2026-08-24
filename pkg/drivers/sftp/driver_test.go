@@ -122,7 +122,11 @@ func TestLiveSFTPCRUD(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	defer driver.Drop(ctx)
+	defer func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	}()
 
 	directory, err := driver.Mkdir(ctx, "/", "qa-dir")
 	if err != nil {
