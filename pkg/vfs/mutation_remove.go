@@ -87,7 +87,7 @@ func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
 	}
 	r.v.hashes.removeUnder(path)
 	r.v.uploads.CancelChildUploads(path)
-	r.v.cancelChildDeletes(path)
+	r.v.takeoverChildDeletes(path)
 	return nil
 }
 
