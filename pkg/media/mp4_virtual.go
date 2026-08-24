@@ -3,6 +3,8 @@ package media
 import (
 	"context"
 	"fmt"
+
+	"github.com/yinzhenyu/qrypt/pkg/limits"
 )
 
 type MP4FastStartNotNeededError struct {
@@ -22,6 +24,8 @@ type MP4FastStartVirtualFile struct {
 	readAt           ReadAtFunc
 	readAtInto       ReadAtIntoFunc
 }
+
+const virtualReadChunkSize = limits.DefaultMetadataReadChunkBytes
 
 func NewMP4FastStartVirtualFile(ctx context.Context, size int64, readAt ReadAtFunc) (*MP4FastStartVirtualFile, error) {
 	return NewMP4FastStartVirtualFileInto(ctx, size, readAt, readAtIntoFromReadAt(readAt))
@@ -45,14 +49,14 @@ func NewMP4FastStartVirtualFileInto(ctx context.Context, size int64, readAt Read
 		return nil, fmt.Errorf("media: mp4 atom too large")
 	}
 
-	ftyp, err := readAt(ctx, probe.FtypOffset, int(probe.FtypSize))
+	ftyp, err := readRange(ctx, readAt, probe.FtypOffset, int(probe.FtypSize))
 	if err != nil {
 		return nil, fmt.Errorf("media: read ftyp: %w", err)
 	}
 	if int64(len(ftyp)) != probe.FtypSize {
 		return nil, fmt.Errorf("media: short ftyp read")
 	}
-	moov, err := readAt(ctx, probe.MoovOffset, int(probe.MoovSize))
+	moov, err := readRange(ctx, readAt, probe.MoovOffset, int(probe.MoovSize))
 	if err != nil {
 		return nil, fmt.Errorf("media: read moov: %w", err)
 	}
@@ -75,6 +79,26 @@ func NewMP4FastStartVirtualFileInto(ctx context.Context, size int64, readAt Read
 		readAt:           readAt,
 		readAtInto:       readAtInto,
 	}, nil
+}
+
+func readRange(ctx context.Context, readAt ReadAtFunc, offset int64, length int) ([]byte, error) {
+	data := make([]byte, length)
+	for written := 0; written < length; {
+		want := min(length-written, virtualReadChunkSize)
+		chunk, err := readAt(ctx, offset+int64(written), want)
+		if err != nil {
+			return nil, err
+		}
+		if len(chunk) == 0 {
+			return nil, fmt.Errorf("media: empty read at %d", offset+int64(written))
+		}
+		if len(chunk) > want {
+			return nil, fmt.Errorf("media: read returned %d bytes, want at most %d", len(chunk), want)
+		}
+		copy(data[written:], chunk)
+		written += len(chunk)
+	}
+	return data, nil
 }
 
 func (v *MP4FastStartVirtualFile) Info() VirtualFileInfo {

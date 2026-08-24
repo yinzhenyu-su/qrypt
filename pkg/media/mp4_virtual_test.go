@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 )
 
@@ -103,6 +104,30 @@ func TestVirtualAutoMediaFallsBackToPassthrough(t *testing.T) {
 	want := []VirtualReadMapping{{VirtualOffset: 2, Length: 4, Source: "passthrough", SourceOffset: 2}}
 	if !readMappingsEqual(mappings, want) {
 		t.Fatalf("ReadMappings = %+v, want %+v", mappings, want)
+	}
+}
+
+func TestMP4FastStartVirtualFileReadsLargeMoovInChunks(t *testing.T) {
+	moov := atomBytes("moov", atomBytes("free", bytes.Repeat([]byte{0}, 4<<20)))
+	raw := appendAtoms(
+		atomBytes("ftyp", []byte("isom")),
+		atomBytes("mdat", []byte("payload")),
+		moov,
+	)
+	readAt := func(ctx context.Context, offset int64, length int) ([]byte, error) {
+		if length > 4<<20 {
+			return nil, fmt.Errorf("read limit: %d", length)
+		}
+		return bytesReadAt(raw)(ctx, offset, length)
+	}
+
+	vf, err := NewMP4FastStartVirtualFile(context.Background(), int64(len(raw)), readAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vf.Close()
+	if got := vf.Info().Mode; got != VirtualModeMP4FastStart {
+		t.Fatalf("mode = %q, want %q", got, VirtualModeMP4FastStart)
 	}
 }
 
