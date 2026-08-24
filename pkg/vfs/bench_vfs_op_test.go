@@ -16,8 +16,8 @@ func BenchmarkVFSStatCached(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if _, err := fs.Stat(context.Background(), "/file-0.txt"); err != nil {
 			b.Fatal(err)
 		}
@@ -30,8 +30,8 @@ func BenchmarkDebugActiveTracking(b *testing.B) {
 	fs := benchVFS(b, 1)
 	op := debugActiveOp{Kind: "vfs_read", Phase: "resolve", Path: "/file-0.txt", Offset: 0, Requested: 4096}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		id := fs.beginDebugActive(op)
 		fs.updateDebugActive(id, func(o *debugActiveOp) { o.Phase = "read_range" })
 		fs.finishDebugActive(id)

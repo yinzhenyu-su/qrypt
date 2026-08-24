@@ -31,8 +31,8 @@ func BenchmarkReadHistoryAppendEmpty(b *testing.B) {
 	r := newVFSDebugReadRuntime(benchReadHistoryVFS(0))
 	event := drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		r.AppendEvent(event)
 	}
 }
@@ -42,8 +42,8 @@ func BenchmarkReadHistoryAppendOverLimit(b *testing.B) {
 	r := newVFSDebugReadRuntime(benchReadHistoryVFS(read.HistoryLimit))
 	event := drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		r.AppendEvent(event)
 	}
 }
@@ -55,8 +55,8 @@ func BenchmarkRecordDebugReadDetail(b *testing.B) {
 	ctx := context.Background()
 	started := time.Now()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		v.recordDebugReadDetail(ctx, "/data.bin", "fid", "fetch_window", 0, 1<<20, 1<<20, started, map[string]any{"chunk_index": int64(0)}, nil)
 	}
 }

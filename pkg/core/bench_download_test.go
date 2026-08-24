@@ -61,8 +61,8 @@ func BenchmarkDownloadWholeFileRead(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		rc, err := c.Read(ctx, path, 0, benchDownloadSize)
 		if err != nil {
 			b.Fatal(err)
@@ -81,8 +81,8 @@ func BenchmarkDownloadWindowedRead(b *testing.B) {
 	defer cancel()
 	buf := make([]byte, downloadReadBufferSize)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		var off int64
 		for off < benchDownloadSize {
 			n, err := c.ReadAtInto(ctx, path, off, buf, 0)

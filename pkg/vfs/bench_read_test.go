@@ -49,8 +49,8 @@ func BenchmarkVFSReadWholeFile(b *testing.B) {
 	warmReadCache(b, fs)
 	ctx := context.Background()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		rc, err := fs.Read(ctx, "/data.bin", 0, benchReadSize)
 		if err != nil {
 			b.Fatal(err)
@@ -69,8 +69,8 @@ func BenchmarkVFSReadWindowed(b *testing.B) {
 	ctx := context.Background()
 	const window = 1 << 20
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		var off int64
 		for off < benchReadSize {
 			rc, err := fs.Read(ctx, "/data.bin", off, window)
