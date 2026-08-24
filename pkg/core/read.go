@@ -4,9 +4,21 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/yinzhenyu/qrypt/pkg/limits"
 )
 
-const DefaultReadChunkLimit = 4 << 20
+const DefaultReadChunkLimit = limits.DefaultReadRequestBytes
+
+func (c *Core) readLimit(limit int) int {
+	if limit > 0 {
+		return limit
+	}
+	if c != nil && c.readChunkLimit > 0 {
+		return c.readChunkLimit
+	}
+	return DefaultReadChunkLimit
+}
 
 func (c *Core) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
 	if c == nil || c.fs == nil {
@@ -25,9 +37,7 @@ func (c *Core) ReadAt(ctx context.Context, path string, offset int64, length int
 	if length == 0 {
 		return []byte{}, nil
 	}
-	if limit <= 0 {
-		limit = DefaultReadChunkLimit
-	}
+	limit = c.readLimit(limit)
 	if length > limit {
 		return nil, fmt.Errorf("core: read length %d exceeds limit %d", length, limit)
 	}
@@ -46,9 +56,7 @@ func (c *Core) ReadAtInto(ctx context.Context, path string, offset int64, dst []
 	if len(dst) == 0 {
 		return 0, nil
 	}
-	if limit <= 0 {
-		limit = DefaultReadChunkLimit
-	}
+	limit = c.readLimit(limit)
 	if len(dst) > limit {
 		return 0, fmt.Errorf("core: read length %d exceeds limit %d", len(dst), limit)
 	}

@@ -581,6 +581,10 @@ func TestCoreReadAtLimit(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := &Core{fs: fs, cleanup: cleanup}
+	c.readChunkLimit = 4
+	if _, err := c.ReadAt(ctx, "/quark/file.txt", 0, 5, 0); err == nil {
+		t.Fatal("expected configured default limit error")
+	}
 	if _, err := c.ReadAt(ctx, "/quark/file.txt", 0, 5, 4); err == nil {
 		t.Fatal("expected limit error")
 	}
