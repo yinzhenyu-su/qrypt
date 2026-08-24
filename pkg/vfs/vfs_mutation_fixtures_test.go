@@ -17,6 +17,14 @@ type countingRemoveDriver struct {
 	mkdirs      []string
 	failRemoves int
 }
+
+type blockingRemoveDriver struct {
+	*countingRemoveDriver
+	childStarted chan struct{}
+	releaseChild chan struct{}
+	childOnce    sync.Once
+	releaseOnce  sync.Once
+}
 type staleMkdirListDriver struct {
 	drive.UnsupportedOperations
 	mu           sync.Mutex
@@ -95,6 +103,18 @@ func newCountingRemoveDriver() *countingRemoveDriver {
 		"b":   {ID: "b", ParentID: "sub", Name: "b.txt"},
 	}}
 }
+
+func newBlockingRemoveDriver() *blockingRemoveDriver {
+	return &blockingRemoveDriver{
+		countingRemoveDriver: newCountingRemoveDriver(),
+		childStarted:         make(chan struct{}),
+		releaseChild:         make(chan struct{}),
+	}
+}
+
+func (d *blockingRemoveDriver) release() {
+	d.releaseOnce.Do(func() { close(d.releaseChild) })
+}
 func (d *countingRemoveDriver) Init(context.Context) error { return nil }
 func (d *countingRemoveDriver) Drop(context.Context) error { return nil }
 func (d *countingRemoveDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
@@ -140,6 +160,14 @@ func (d *countingRemoveDriver) Remove(_ context.Context, entry drive.Entry) erro
 		}
 	}
 	return nil
+}
+
+func (d *blockingRemoveDriver) Remove(ctx context.Context, entry drive.Entry) error {
+	if entry.ID == "b" {
+		d.childOnce.Do(func() { close(d.childStarted) })
+		<-d.releaseChild
+	}
+	return d.countingRemoveDriver.Remove(ctx, entry)
 }
 func (d *countingRemoveDriver) removedIDs() []string {
 	d.mu.Lock()

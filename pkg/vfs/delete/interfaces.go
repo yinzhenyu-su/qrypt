@@ -16,10 +16,11 @@ type Service interface {
 
 // ExecutorDeps collects the interfaces the delete executor needs.
 type ExecutorDeps struct {
-	Driver  DriverOps
-	Overlay OverlayOps
-	Health  HealthRecorder
-	Upload  CleanupOps
+	Driver                   DriverOps
+	Overlay                  OverlayOps
+	Health                   HealthRecorder
+	Upload                   CleanupOps
+	WaitForDescendantDeletes func(context.Context, string) error
 }
 
 // CleanupOps removes VFS upload state for a remotely deleted path.

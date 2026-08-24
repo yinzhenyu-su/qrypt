@@ -30,6 +30,8 @@ type deleteTaskState struct {
 	scheduler scheduler.KeyedScheduler
 	active    map[string]drive.Entry
 	failures  map[string]string
+	takeovers map[string]struct{}
+	changed   chan struct{}
 }
 
 func newDeleteStates() (*overlayState, *deleteTaskState) {
@@ -47,6 +49,8 @@ func newDeleteStates() (*overlayState, *deleteTaskState) {
 		scheduler: scheduler.NewTimeKeyedScheduler(),
 		active:    map[string]drive.Entry{},
 		failures:  map[string]string{},
+		takeovers: map[string]struct{}{},
+		changed:   make(chan struct{}),
 	}
 }
 
@@ -179,6 +183,7 @@ func (r vfsVisibilityRuntime) RestoreDeletedPath(path string) (drive.Entry, bool
 		return drive.Entry{}, false
 	}
 	delete(r.v.deletes.tasks.failures, path)
+	r.v.deletes.tasks.clearTakeoverLocked(path)
 	r.v.view.overlay.removeDeleted(path)
 	if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
 		r.v.deletes.tasks.scheduler.Cancel(path)
@@ -206,6 +211,7 @@ func (r vfsVisibilityRuntime) RestoreDeletedAncestor(path string) {
 	}
 	r.v.view.overlay.removeDeleted(restorePath)
 	delete(r.v.deletes.tasks.failures, restorePath)
+	r.v.deletes.tasks.clearTakeoverLocked(restorePath)
 	if _, ok := r.v.deletes.tasks.scheduler.Keys()[restorePath]; ok {
 		r.v.deletes.tasks.scheduler.Cancel(restorePath)
 		logging.L.Infof("[VFS] canceled pending delete for restored ancestor path=%q id=%q requested=%q", restorePath, entry.ID, path)
@@ -454,7 +460,25 @@ func (v *VFS) updateOverlay(parentPath string, entries []drive.Entry) {
 }
 
 // stopAll stops every pending delete timer so no delayed delete fires
-// after shutdown. Used by deleteState.Close and the delete scheduler.
+// after shutdown. Used by DeleteService.Close and the delete scheduler.
 func (s *deleteTaskState) stopAll() {
 	s.scheduler.CancelAll()
+}
+
+func (s *deleteTaskState) notifyChangedLocked() {
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+func (s *deleteTaskState) clearTakeoverLocked(path string) {
+	changed := false
+	for takeover := range s.takeovers {
+		if takeover == path || isPathUnder(takeover, path) {
+			delete(s.takeovers, takeover)
+			changed = true
+		}
+	}
+	if changed {
+		s.notifyChangedLocked()
+	}
 }

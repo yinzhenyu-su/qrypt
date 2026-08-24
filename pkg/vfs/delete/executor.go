@@ -26,7 +26,13 @@ func (e *Executor) Execute(ctx context.Context, path string, entry drive.Entry) 
 		return
 	}
 	overlay.MarkDeleteActive(path, entry)
-	err := e.deps.Driver.Remove(ctx, entry)
+	var err error
+	if entry.IsDir && e.deps.WaitForDescendantDeletes != nil {
+		err = e.deps.WaitForDescendantDeletes(ctx, path)
+	}
+	if err == nil {
+		err = e.deps.Driver.Remove(ctx, entry)
+	}
 	e.deps.Health.RecordResult(drive.HealthOpDelete, err)
 	if err != nil {
 		logging.L.Warnf("[VFS] delete remote failed path=%q id=%q dir=%t err=%v", path, entry.ID, entry.IsDir, err)

@@ -43,6 +43,49 @@ func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
 	}
 }
 
+func TestVFSDirectoryDeleteWaitsForActiveChildDelete(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := newBlockingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{
+		StorageDir:    t.TempDir(),
+		CacheMaxBytes: 10 << 20,
+		DeleteDelay:   10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+	defer drv.release()
+	fs.Start(ctx)
+
+	if err := fs.Remove(ctx, "/dir/sub/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drv.childStarted:
+	case <-time.After(time.Second):
+		t.Fatal("child remote delete did not start")
+	}
+
+	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("remote deletes before child completion = %v, want none", removed)
+	}
+
+	drv.release()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && len(drv.removedIDs()) < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if removed := drv.removedIDs(); len(removed) != 2 {
+		t.Fatalf("remote deletes after child completion = %v, want [b dir]", removed)
+	}
+}
+
 func TestVFSDeleteTasksExposeScheduledDeletes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
