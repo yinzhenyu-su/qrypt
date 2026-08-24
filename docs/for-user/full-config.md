@@ -92,6 +92,15 @@ sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 | `log_file` | string | - | 主日志路径；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。 |
 | `error_file` | string | - | 错误日志路径；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。 |
 
+## 调试服务
+
+在 `[debug]` 中启用运行时 HTTP 调试入口。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | boolean | false | Enable the HTTP debug server. |
+| `listen` | string | 127.0.0.1:19090 | HTTP 调试入口监听地址；未设置时使用 `127.0.0.1:19090`。 |
+
 ## 时间同步（NTP）
 
 qrypt 依赖精确的系统时间进行文件操作。当系统时间可能不准确时（如嵌入式设备或刚开机），建议启用 NTP。
