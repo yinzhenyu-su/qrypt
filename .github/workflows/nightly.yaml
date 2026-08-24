@@ -44,7 +44,12 @@ jobs:
           if-no-files-found: ignore
 
   gate:
+    name: Nightly gate (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [coverage, race, regression]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -56,10 +61,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfuse-dev
 
       - name: Coverage gate
+        if: matrix.name == 'coverage'
         run: scripts/coverage.sh
 
       - name: Race suite
+        if: matrix.name == 'race'
         run: scripts/test-layers.sh race
 
-      - name: All layers (fast + race + smoke)
-        run: scripts/test-layers.sh all
+      - name: Regression suite
+        if: matrix.name == 'regression'
+        run: |
+          scripts/test-layers.sh fast
+          scripts/test-layers.sh smoke

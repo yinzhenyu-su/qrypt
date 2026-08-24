@@ -22,7 +22,16 @@ permissions:
 
 jobs:
   check:
+    name: Check (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: static
+          - name: fast
+          - name: race
+          - name: stability
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -34,67 +43,58 @@ jobs:
       - name: Install FUSE headers
         run: sudo apt-get update && sudo apt-get install -y libfuse-dev
 
-      - name: Vet
-        run: go vet ./...
+      - name: Cache CI tools
+        if: matrix.name == 'static'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ github.workspace }}/.cache/qrypt-tools
+          key: qrypt-tools-${{ runner.os }}-${{ hashFiles('tools.go') }}
 
-      - name: Staticcheck
+      - name: Install CI tools
+        if: matrix.name == 'static'
+        env:
+          QRYPT_TOOLS_DIR: ${{ github.workspace }}/.cache/qrypt-tools
+        run: scripts/install-ci-tools.sh
+
+      - name: Static checks
+        if: matrix.name == 'static'
+        env:
+          QRYPT_TOOLS_DIR: ${{ github.workspace }}/.cache/qrypt-tools
         run: |
-          go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
-
-      - name: Golangci-lint
-        run: |
-          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1 run ./...
-
-      - name: Architecture boundaries
-        run: scripts/check-arch.sh
-
-      - name: Vulncheck
-        run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-
-      - name: Format
-        run: |
+          go vet ./...
+          "$QRYPT_TOOLS_DIR/staticcheck" ./...
+          "$QRYPT_TOOLS_DIR/golangci-lint" run ./...
+          scripts/check-arch.sh
+          "$QRYPT_TOOLS_DIR/govulncheck" ./...
           unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "gofmt needed on:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      # Docs for for-user are generated from qrypt.schema.json; fail the
-      # build when the schema changed without regenerating them.
-      - name: Generated docs in sync
-        run: |
+          test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
           python3 scripts/gen-config-docs.py
           python3 scripts/gen-driver-docs.py
           if ! git diff --quiet -- docs/for-user/; then
-            echo "docs/for-user is stale; re-run:"
-            echo "  python3 scripts/gen-config-docs.py"
-            echo "  python3 scripts/gen-driver-docs.py"
+            echo "docs/for-user is stale; re-run the generators"
             git diff --stat docs/for-user/
             exit 1
           fi
 
-      # All test layers delegate to scripts/test-layers.sh so the package
-      # lists live in exactly one place; CI only prepares the environment
-      # and displays results.
-      - name: Fast suite (unit tests)
+      - name: Fast suite
+        if: matrix.name == 'fast'
         run: scripts/test-layers.sh fast
 
       - name: Race suite
+        if: matrix.name == 'race'
         run: scripts/test-layers.sh race
 
-      - name: VFS stability (x3)
-        run: scripts/test-layers.sh vfs-stability
-
-      - name: Localfs smoke
-        run: scripts/test-layers.sh smoke
+      - name: VFS stability and smoke
+        if: matrix.name == 'stability'
+        run: |
+          scripts/test-layers.sh vfs-stability
+          scripts/test-layers.sh smoke
 
       # PR-stage coverage visibility: non-blocking snapshot of the six
       # core packages with a highlight on packages changed by this PR.
       # The hard floor gate runs in nightly only (scripts/coverage.sh).
       - name: Coverage report (PR snapshot)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && matrix.name == 'static'
         run: bash scripts/pr-coverage-report.sh "${{ github.event.pull_request.base.sha }}"
 
   update-changelog:
