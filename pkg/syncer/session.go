@@ -11,7 +11,6 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -197,7 +196,7 @@ func lockSession(dir string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockSessionFile(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("another sync is already running for this source/destination")
 	}
