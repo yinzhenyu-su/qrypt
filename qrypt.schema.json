@@ -29,16 +29,6 @@
       "type": "string",
       "default": "Qrypt"
     },
-    "no_apple_double": {
-      "description": "Skip writing Apple Double (._) metadata files on macOS.",
-      "type": "boolean",
-      "default": true
-    },
-    "no_apple_xattr": {
-      "description": "Ignore com.apple.* extended attributes on macOS.",
-      "type": "boolean",
-      "default": false
-    },
     "read_only": {
       "description": "Mount the filesystem read-only.",
       "type": "boolean",
