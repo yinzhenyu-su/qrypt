@@ -73,7 +73,6 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 			return drive.Entry{}, err
 		}
 		remoteSize = 0
-		resumed = false
 		session.CompletedParts = map[int]bool{}
 	}
 	for part := range session.CompletedParts {

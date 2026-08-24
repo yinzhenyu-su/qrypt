@@ -14,7 +14,7 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `onedrive` | OneDrive | `refresh_token` |
 | `onedrive_app` | OneDrive 应用权限 | `client_id` 或 `client_key` |
 | `quark` | 夸克网盘 | `cookie` |
-| `yun139` | 天翼云盘 | `authorization` |
+| `yun139` | 移动云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
 | `115_open` | 115 云盘（开放平台） | `refresh_token` |
 | `189` | 天翼云盘 189 | `cookie` 或 `username` + `password` |
@@ -211,7 +211,7 @@ cookie = "k1=v1; k2=v2"
 
 ## yun139
 
-天翼云盘。
+移动云盘。
 
 ```toml
 [mounts.params]

@@ -104,7 +104,9 @@ func (s *mockSFTPServer) serveConnection(t *testing.T, connection net.Conn) {
 	go ssh.DiscardRequests(requests)
 	for newChannel := range channels {
 		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "mock sftp only accepts sessions")
+			if err := newChannel.Reject(ssh.UnknownChannelType, "mock sftp only accepts sessions"); err != nil {
+				t.Logf("reject unsupported SSH channel: %v", err)
+			}
 			continue
 		}
 		channel, channelRequests, err := newChannel.Accept()
@@ -143,7 +145,11 @@ func TestMockSFTPCRUD(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { driver.Drop(ctx) })
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
 	space, err := driver.Space(ctx)
 	if err != nil {
 		t.Fatalf("Space() = %v", err)
@@ -209,7 +215,11 @@ func TestMockSFTPBandwidthLimiter(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { driver.Drop(ctx) })
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
 }
 
 func TestMockSFTPMetricsCaptureOperationsAndBandwidth(t *testing.T) {
@@ -219,7 +229,11 @@ func TestMockSFTPMetricsCaptureOperationsAndBandwidth(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { driver.Drop(ctx) })
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
 	if _, err := driver.Space(ctx); err != nil {
 		t.Fatalf("Space() = %v", err)
 	}
@@ -276,7 +290,11 @@ func TestMockSFTPRejectsPathsOutsideRoot(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { driver.Drop(ctx) })
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
 
 	if _, err := driver.Mkdir(ctx, "/tmp", "escape"); !errors.Is(err, drive.ErrInvalidInput) {
 		t.Fatalf("Mkdir outside root error = %v, want drive.ErrInvalidInput", err)
@@ -324,7 +342,11 @@ func TestMockSFTPFailedUploadLeavesNoPartialFile(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { driver.Drop(ctx) })
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
 
 	if _, err := driver.PutSource(ctx, drive.UploadRequest{ParentID: "/", Name: "partial.bin", Source: failingUploadSource{}}); err == nil {
 		t.Fatal("PutSource returned nil error for failed upload")
@@ -349,7 +371,11 @@ func TestMockSFTPResumesCompletedPartsFromState(t *testing.T) {
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { driver.Drop(ctx) })
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
 
 	data := append(bytes.Repeat([]byte("a"), sftpUploadPartSize), []byte("tail")...)
 	source := drive.NewBytesReadOnlyFileSource(data)
