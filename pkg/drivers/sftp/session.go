@@ -3,6 +3,7 @@ package sftp
 import (
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
@@ -52,8 +53,19 @@ func (d *Driver) pruneUploadSessions() {
 }
 
 func (d *Driver) uploadSessionStore() *uploadsession.Store[sftpUploadSession] {
+	d.uploadSessionMu.Lock()
+	defer d.uploadSessionMu.Unlock()
+	if d.uploadSessions != nil {
+		return d.uploadSessions
+	}
+	d.uploadSessions = newUploadSessionStore(d.stateStore)
+	return d.uploadSessions
+}
+
+func newUploadSessionStore(stateStore drive.StateStore) *uploadsession.Store[sftpUploadSession] {
 	return uploadsession.NewStore(uploadsession.StoreOptions[sftpUploadSession]{
-		Store:      d.stateStore,
+		Store:      stateStore,
+		Async:      true,
 		File:       sftpUploadSessionStateFile,
 		MaxAge:     sftpUploadSessionMaxAge,
 		MaxEntries: sftpUploadSessionMaxEntries,
@@ -68,6 +80,16 @@ func (d *Driver) uploadSessionStore() *uploadsession.Store[sftpUploadSession] {
 		},
 		Touch: func(session *sftpUploadSession, now time.Time) {
 			session.SavedAt = now
+		},
+		Clone: func(session sftpUploadSession) sftpUploadSession {
+			clone := session
+			if session.CompletedParts != nil {
+				clone.CompletedParts = make(map[int]bool, len(session.CompletedParts))
+				for part, completed := range session.CompletedParts {
+					clone.CompletedParts[part] = completed
+				}
+			}
+			return clone
 		},
 	})
 }

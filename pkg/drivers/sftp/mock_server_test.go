@@ -204,6 +204,37 @@ func TestMockSFTPCRUD(t *testing.T) {
 	}
 }
 
+func TestMockSFTPReconnectsAfterConnectionLoss(t *testing.T) {
+	server := newMockSFTPServer(t)
+	driver := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})
+	ctx := context.Background()
+	if err := driver.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
+
+	driver.mu.RLock()
+	client, connection := driver.client, driver.connection
+	driver.mu.RUnlock()
+	if client == nil || connection == nil {
+		t.Fatal("driver initialized without an active connection")
+	}
+	if err := client.Close(); err != nil {
+		t.Logf("close mock SFTP client: %v", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Logf("close mock SSH connection: %v", err)
+	}
+
+	if _, err := driver.List(ctx, "/"); err != nil {
+		t.Fatalf("List() after connection loss = %v, want automatic reconnect", err)
+	}
+}
+
 func TestMockSFTPBandwidthLimiter(t *testing.T) {
 	server := newMockSFTPServer(t)
 	driver := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})

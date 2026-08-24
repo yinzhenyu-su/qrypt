@@ -1,7 +1,9 @@
 package uploadsession
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,8 +20,14 @@ type testUploadSession struct {
 
 func newTestStore(t *testing.T, maxEntries int) *Store[testUploadSession] {
 	t.Helper()
+	return newTestStoreInDir(t, t.TempDir(), maxEntries)
+}
+
+func newTestStoreInDir(t *testing.T, stateDir string, maxEntries int) *Store[testUploadSession] {
+	t.Helper()
 	return NewStore(StoreOptions[testUploadSession]{
-		Store:      drive.NewFileStateStore(filepath.Join(t.TempDir(), "state")),
+		Store:      drive.NewFileStateStore(filepath.Join(stateDir, "state")),
+		Async:      true,
 		File:       "upload_sessions.json",
 		MaxAge:     time.Hour,
 		MaxEntries: maxEntries,
@@ -63,6 +71,34 @@ func TestStoreSaveLoadDelete(t *testing.T) {
 	store.Delete("session-1")
 	if _, ok := store.Load("session-1"); ok {
 		t.Fatal("expected deleted upload session to be absent")
+	}
+}
+
+func TestStoreConcurrentSavesPreserveAllSessions(t *testing.T) {
+	stateDir := t.TempDir()
+	store := newTestStoreInDir(t, stateDir, 128)
+	t.Cleanup(store.Close)
+	const count = 64
+	var group sync.WaitGroup
+	group.Add(count)
+	for i := 0; i < count; i++ {
+		go func(index int) {
+			defer group.Done()
+			key := fmt.Sprintf("session-%d", index)
+			store.Save(testUploadSession{Key: key, UploadID: key, Completed: map[int]bool{0: true}})
+		}(i)
+	}
+	group.Wait()
+	store.Flush()
+
+	store.Close()
+	reloaded := newTestStoreInDir(t, stateDir, 128)
+	t.Cleanup(reloaded.Close)
+	for i := 0; i < count; i++ {
+		key := fmt.Sprintf("session-%d", i)
+		if _, ok := reloaded.Load(key); !ok {
+			t.Fatalf("session %q was lost during concurrent saves", key)
+		}
 	}
 }
 
