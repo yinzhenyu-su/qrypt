@@ -58,7 +58,11 @@ func TestGetLargeLocalFilePreservesEveryChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.CloseReadCache()
+	defer func() {
+		if err := fs.CloseReadCache(); err != nil {
+			t.Errorf("close read cache: %v", err)
+		}
+	}()
 	fs.Start(ctx)
 
 	dest := filepath.Join(t.TempDir(), "large.downloaded.bin")
