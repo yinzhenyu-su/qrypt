@@ -14,15 +14,16 @@ DRIVER_META = {
     "onedrive":      {"name": "OneDrive",                "type": "onedrive"},
     "onedriveApp":   {"name": "OneDrive 应用权限",      "type": "onedrive_app"},
     "quark":         {"name": "夸克网盘",                "type": "quark"},
-    "yun139":        {"name": "天翼云盘",                "type": "yun139"},
+    "yun139":        {"name": "移动云盘",                "type": "yun139"},
     "p115":          {"name": "115 云盘",                "type": "115"},
     "p115open":      {"name": "115 云盘（开放平台）",   "type": "115_open"},
     "p189":          {"name": "天翼云盘 189",            "type": "189"},
     "webdav":        {"name": "WebDAV",                  "type": "webdav"},
+    "sftp":          {"name": "SFTP",                    "type": "sftp"},
     "s3":            {"name": "Amazon S3 / 兼容 S3",     "type": "s3"},
 }
 
-DRIVER_ORDER = ["localfs", "aliyundrive", "baiduNetdisk", "onedrive", "onedriveApp", "quark", "yun139", "p115", "p115open", "p189", "webdav", "s3"]
+DRIVER_ORDER = ["localfs", "aliyundrive", "baiduNetdisk", "onedrive", "onedriveApp", "quark", "yun139", "p115", "p115open", "p189", "webdav", "sftp", "s3"]
 
 # Optional per-driver notes rendered right after the driver heading.
 DRIVER_INTRO = {

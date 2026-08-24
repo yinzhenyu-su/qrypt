@@ -14,6 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/s3"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/scopedfs"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/sftp"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/webdav"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/yun139"
 )
@@ -153,6 +154,19 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "sftp",
+			drv:  sftp.New(sftp.Options{Address: "host:22", Username: "user", Password: "password"}),
+			want: []drive.Capability{
+				drive.CapabilityMtime,
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityResumableUploader,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
 				drive.CapabilityWriter,
 			},
 		},

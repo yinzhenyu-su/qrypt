@@ -19,6 +19,7 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `115_open` | 115 云盘（开放平台） | `refresh_token` |
 | `189` | 天翼云盘 189 | `cookie` 或 `username` + `password` |
 | `webdav` | WebDAV | `url` + `username` + `password` |
+| `sftp` | SFTP | `address` + `username` + `password` 或 `address` + `username` + `private_key` |
 | `s3` | Amazon S3 / 兼容 S3 | `bucket` + `endpoint` + `access_key_id` + `secret_access_key` |
 
 
@@ -312,6 +313,35 @@ password = "your-password-or-app-token"
 | `username` | string | 是 | WebDAV authentication username |
 | `password` | string (secret) | 是 | WebDAV authentication password or app token |
 | `root_path` | string | 否 | Optional path under the WebDAV base URL used as this mount root，默认 `/` |
+
+---
+
+## sftp
+
+SFTP。
+
+```toml
+[mounts.params]
+# 认证方式任选其一：`address` + `username` + `password` 或 `address` + `username` + `private_key`
+address = "sftp.example.com:22"
+username = "user"
+password = "your-password"
+# private_key = "~/.ssh/id_ed25519"
+# known_hosts = "~/.ssh/known_hosts"
+# root_path = "/data/qrypt"
+```
+
+必填条件：`address` + `username` + `password` 或 `address` + `username` + `private_key`。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `address` | string | 条件 | SFTP server address, including port |
+| `username` | string | 条件 | SFTP username |
+| `password` | string (secret) | 条件 | SFTP password; use password or private_key |
+| `private_key` | string (secret) | 条件 | Path to or PEM-encoded SSH private key; use private_key or password |
+| `passphrase` | string (secret) | 否 | SSH private key passphrase |
+| `known_hosts` | string | 否 | Optional OpenSSH known_hosts file used to verify the SFTP server host key; when omitted, ~/.ssh/known_hosts is used if present |
+| `root_path` | string | 否 | Remote directory used as this mount root，默认 `/` |
 
 ---
 
