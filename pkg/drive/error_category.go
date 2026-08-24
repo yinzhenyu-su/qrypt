@@ -88,7 +88,7 @@ func ErrorCategoryMessage(message string) string {
 		return ErrorCategoryCancelled
 	case containsAny(msg, "deadline exceeded", "timeout", "timed out", "i/o timeout"):
 		return ErrorCategoryTimeout
-	case containsAny(msg, "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "no such host", "software caused connection abort", "eof"):
+	case containsAny(msg, "connection lost", "connection reset", "connection refused", "broken pipe", "no route to host", "network is unreachable", "temporary failure", "no such host", "software caused connection abort", "eof"):
 		return ErrorCategoryNetwork
 	case containsAny(msg, "unauthorized", "invalid token", "token expired", "token refresh", "login", "credential", "authorization", "401", "cookie", "authentication required"):
 		return ErrorCategoryAuth

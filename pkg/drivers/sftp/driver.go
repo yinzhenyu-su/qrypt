@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -27,6 +29,9 @@ type Driver struct {
 	limiter                                                                   *drive.BandwidthLimiter
 	metrics                                                                   *driverutil.Buffer
 	mu                                                                        sync.RWMutex
+	sessionMu                                                                 sync.Mutex
+	uploadSessionMu                                                           sync.Mutex
+	uploadSessions                                                            *uploadsession.Store[sftpUploadSession]
 }
 
 type Options struct {
@@ -74,33 +79,52 @@ func (d *Driver) Init(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	auth, err := d.authMethod()
+	d.sessionMu.Lock()
+	defer d.sessionMu.Unlock()
+	connection, client, err := d.connect(ctx)
 	if err != nil {
-		return fmt.Errorf("sftp: parse authentication: %w", err)
-	}
-	hostKeyCallback, err := d.hostKeyCallback()
-	if err != nil {
-		return fmt.Errorf("sftp: configure host key verification: %w", err)
-	}
-	config := &ssh.ClientConfig{User: d.username, Auth: []ssh.AuthMethod{auth}, HostKeyCallback: hostKeyCallback, Timeout: 10 * time.Second}
-	connection, err := ssh.Dial("tcp", d.address, config)
-	if err != nil {
-		return fmt.Errorf("sftp: connect %s: %w", d.address, err)
-	}
-	client, err := sftp.NewClient(connection)
-	if err != nil {
-		connection.Close()
-		return fmt.Errorf("sftp: create client: %w", err)
-	}
-	if _, err := client.Stat(d.rootPath); err != nil {
-		client.Close()
-		connection.Close()
-		return fmt.Errorf("sftp: stat root %q: %w", d.rootPath, classifyError(err))
+		return err
 	}
 	d.mu.Lock()
 	d.connection, d.client = connection, client
 	d.mu.Unlock()
 	return nil
+}
+
+const (
+	connectTimeout       = 10 * time.Second
+	reconnectAttempts    = 3
+	reconnectBaseBackoff = 100 * time.Millisecond
+)
+
+func (d *Driver) connect(ctx context.Context) (*ssh.Client, *sftp.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	auth, err := d.authMethod()
+	if err != nil {
+		return nil, nil, fmt.Errorf("sftp: parse authentication: %w", err)
+	}
+	hostKeyCallback, err := d.hostKeyCallback()
+	if err != nil {
+		return nil, nil, fmt.Errorf("sftp: configure host key verification: %w", err)
+	}
+	config := &ssh.ClientConfig{User: d.username, Auth: []ssh.AuthMethod{auth}, HostKeyCallback: hostKeyCallback, Timeout: connectTimeout}
+	connection, err := ssh.Dial("tcp", d.address, config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sftp: connect %s: %w", d.address, err)
+	}
+	client, err := sftp.NewClient(connection)
+	if err != nil {
+		_ = connection.Close()
+		return nil, nil, fmt.Errorf("sftp: create client: %w", err)
+	}
+	if _, err := client.Stat(d.rootPath); err != nil {
+		_ = client.Close()
+		_ = connection.Close()
+		return nil, nil, fmt.Errorf("sftp: stat root %q: %w", d.rootPath, classifyError(err))
+	}
+	return connection, client, nil
 }
 
 func (d *Driver) hostKeyCallback() (ssh.HostKeyCallback, error) {
@@ -122,6 +146,14 @@ func (d *Driver) hostKeyCallback() (ssh.HostKeyCallback, error) {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
+	d.uploadSessionMu.Lock()
+	uploadSessions := d.uploadSessions
+	d.uploadSessionMu.Unlock()
+	if uploadSessions != nil {
+		uploadSessions.Close()
+	}
+	d.sessionMu.Lock()
+	defer d.sessionMu.Unlock()
 	d.mu.Lock()
 	client, connection := d.client, d.connection
 	d.client, d.connection = nil, nil
@@ -130,13 +162,21 @@ func (d *Driver) Drop(ctx context.Context) error {
 		_ = client.Close()
 	}
 	if connection != nil {
-		return connection.Close()
+		if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
 	}
 	return nil
 }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.uploadSessionMu.Lock()
+	if d.uploadSessions != nil {
+		d.uploadSessions.Close()
+	}
 	d.stateStore = store
+	d.uploadSessions = newUploadSessionStore(store)
+	d.uploadSessionMu.Unlock()
 	d.pruneUploadSessions()
 }
 
@@ -189,7 +229,71 @@ func (d *Driver) getClient(ctx context.Context) (*sftp.Client, error) {
 	if client == nil {
 		return nil, fmt.Errorf("sftp: driver is not initialized")
 	}
-	return client, nil
+	if _, err := client.Stat(d.rootPath); err == nil {
+		return client, nil
+	} else if !isConnectionFailure(err) {
+		return nil, fmt.Errorf("sftp: session health check: %w", classifyError(err))
+	} else if reconnected, reconnectErr := d.reconnect(ctx, client); reconnectErr == nil {
+		return reconnected, nil
+	} else {
+		return nil, reconnectErr
+	}
+}
+
+func (d *Driver) reconnect(ctx context.Context, failed *sftp.Client) (*sftp.Client, error) {
+	d.sessionMu.Lock()
+	defer d.sessionMu.Unlock()
+
+	d.mu.RLock()
+	current := d.client
+	d.mu.RUnlock()
+	if current == nil {
+		return nil, fmt.Errorf("sftp: driver is not initialized")
+	}
+	if current != failed {
+		return current, nil
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < reconnectAttempts; attempt++ {
+		if attempt > 0 {
+			delay := reconnectBaseBackoff << (attempt - 1)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		connection, client, err := d.connect(ctx)
+		if err == nil {
+			d.mu.Lock()
+			oldClient, oldConnection := d.client, d.connection
+			d.connection, d.client = connection, client
+			d.mu.Unlock()
+			if oldClient != nil {
+				_ = oldClient.Close()
+			}
+			if oldConnection != nil {
+				_ = oldConnection.Close()
+			}
+			return client, nil
+		}
+		lastErr = err
+		if !isConnectionFailure(err) {
+			break
+		}
+	}
+	return nil, fmt.Errorf("sftp: reconnect after connection loss: %w", lastErr)
+}
+
+func isConnectionFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	category := drive.ErrorCategory(err)
+	return (drive.RetryableCategory(category) && (category == drive.ErrorCategoryNetwork || category == drive.ErrorCategoryTimeout)) || drive.ErrorCategoryMessage(err.Error()) == drive.ErrorCategoryNetwork
 }
 
 func classifyError(err error) error {

@@ -2,6 +2,7 @@ package uploadsession
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -16,7 +17,20 @@ type Store[T any] struct {
 	valid      func(string, T) bool
 	updatedAt  func(T) time.Time
 	touch      func(*T, time.Time)
+	clone      func(T) T
 	onError    func(error)
+	async      bool
+
+	mu             sync.Mutex
+	state          uploadSessionState[T]
+	loaded         bool
+	pending        *pendingWrite[T]
+	nextVersion    uint64
+	writtenVersion uint64
+	workerStarted  bool
+	closed         bool
+	cond           *sync.Cond
+	workerDone     chan struct{}
 }
 
 type uploadSessionState[T any] struct {
@@ -33,11 +47,18 @@ type StoreOptions[T any] struct {
 	Valid      func(string, T) bool
 	UpdatedAt  func(T) time.Time
 	Touch      func(*T, time.Time)
+	Clone      func(T) T
 	OnError    func(error)
+	Async      bool
+}
+
+type pendingWrite[T any] struct {
+	version uint64
+	state   uploadSessionState[T]
 }
 
 func NewStore[T any](opts StoreOptions[T]) *Store[T] {
-	return &Store[T]{
+	store := &Store[T]{
 		store:      opts.Store,
 		file:       opts.File,
 		maxAge:     opts.MaxAge,
@@ -46,8 +67,13 @@ func NewStore[T any](opts StoreOptions[T]) *Store[T] {
 		valid:      opts.Valid,
 		updatedAt:  opts.UpdatedAt,
 		touch:      opts.Touch,
+		clone:      opts.Clone,
 		onError:    opts.OnError,
+		async:      opts.Async,
 	}
+	store.cond = sync.NewCond(&store.mu)
+	store.workerDone = make(chan struct{})
+	return store
 }
 
 func (s *Store[T]) Load(key string) (T, bool) {
@@ -55,11 +81,10 @@ func (s *Store[T]) Load(key string) (T, bool) {
 	if s == nil || s.store == nil || key == "" {
 		return zero, false
 	}
-	state, changed := s.prunedState(s.loadState(), time.Now())
-	if changed {
-		_ = s.saveState(state)
-	}
-	session, ok := state.Sessions[key]
+	s.mu.Lock()
+	s.ensureLoadedLocked()
+	session, ok := s.state.Sessions[key]
+	s.mu.Unlock()
 	if !ok || !s.isValid(key, session) {
 		return zero, false
 	}
@@ -86,44 +111,79 @@ func (s *Store[T]) Save(session T) {
 	if key == "" {
 		return
 	}
+	s.mu.Lock()
+	s.ensureLoadedLocked()
 	if s.touch != nil {
 		s.touch(&session, time.Now())
 	}
-	state := s.loadState()
-	state.Version = 1
-	state.Sessions[key] = session
-	state, _ = s.prunedState(state, time.Now())
-	if err := s.saveState(state); err != nil {
-		s.report(err)
-	}
+	s.state.Sessions[key] = session
+	s.state, _ = s.prunedState(s.state, time.Now())
+	s.enqueueLocked()
+	s.mu.Unlock()
 }
 
 func (s *Store[T]) Delete(key string) {
 	if s == nil || s.store == nil || key == "" {
 		return
 	}
-	state, _ := s.prunedState(s.loadState(), time.Now())
-	if _, ok := state.Sessions[key]; !ok {
+	s.mu.Lock()
+	s.ensureLoadedLocked()
+	if _, ok := s.state.Sessions[key]; !ok {
+		s.mu.Unlock()
 		return
 	}
-	delete(state.Sessions, key)
-	state.Version = 1
-	if err := s.saveState(state); err != nil {
-		s.report(err)
-	}
+	delete(s.state.Sessions, key)
+	version := s.enqueueLocked()
+	s.mu.Unlock()
+	s.waitForVersion(version)
 }
 
 func (s *Store[T]) Prune() {
 	if s == nil || s.store == nil {
 		return
 	}
-	state, changed := s.prunedState(s.loadState(), time.Now())
+	s.mu.Lock()
+	s.ensureLoadedLocked()
+	var changed bool
+	s.state, changed = s.prunedState(s.state, time.Now())
 	if !changed {
+		s.mu.Unlock()
 		return
 	}
-	if err := s.saveState(state); err != nil {
-		s.report(err)
+	version := s.enqueueLocked()
+	s.mu.Unlock()
+	s.waitForVersion(version)
+}
+
+func (s *Store[T]) Flush() {
+	if s == nil || s.store == nil {
+		return
 	}
+	s.mu.Lock()
+	s.ensureLoadedLocked()
+	version := s.nextVersion
+	s.mu.Unlock()
+	s.waitForVersion(version)
+}
+
+func (s *Store[T]) Close() {
+	if s == nil || s.store == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	if !s.workerStarted {
+		s.mu.Unlock()
+		return
+	}
+	s.cond.Broadcast()
+	done := s.workerDone
+	s.mu.Unlock()
+	<-done
 }
 
 func (s *Store[T]) PrunedForTest(state map[string]T, now time.Time) (map[string]T, bool) {
@@ -144,6 +204,94 @@ func (s *Store[T]) loadState() uploadSessionState[T] {
 		state.Sessions = map[string]T{}
 	}
 	return state
+}
+
+func (s *Store[T]) ensureLoadedLocked() {
+	if s.loaded {
+		return
+	}
+	s.state = s.loadState()
+	var changed bool
+	s.state, changed = s.prunedState(s.state, time.Now())
+	s.loaded = true
+	if changed {
+		s.enqueueLocked()
+	}
+}
+
+func (s *Store[T]) enqueueLocked() uint64 {
+	s.nextVersion++
+	version := s.nextVersion
+	if !s.async {
+		if err := s.saveState(s.stateSnapshotLocked()); err != nil {
+			s.report(err)
+		}
+		s.writtenVersion = version
+		return version
+	}
+	if s.closed {
+		if err := s.saveState(s.stateSnapshotLocked()); err != nil {
+			s.report(err)
+		}
+		s.writtenVersion = version
+		return version
+	}
+	if !s.workerStarted {
+		s.workerStarted = true
+		go s.writeLoop()
+	}
+	s.pending = &pendingWrite[T]{version: version, state: s.stateSnapshotLocked()}
+	s.cond.Signal()
+	return version
+}
+
+func (s *Store[T]) stateSnapshotLocked() uploadSessionState[T] {
+	snapshot := uploadSessionState[T]{Version: s.state.Version, Sessions: make(map[string]T, len(s.state.Sessions))}
+	for key, session := range s.state.Sessions {
+		if s.clone != nil {
+			session = s.clone(session)
+		}
+		snapshot.Sessions[key] = session
+	}
+	return snapshot
+}
+
+func (s *Store[T]) waitForVersion(version uint64) {
+	if version == 0 || s == nil || s.store == nil {
+		return
+	}
+	s.mu.Lock()
+	for s.writtenVersion < version && !s.closed {
+		s.cond.Wait()
+	}
+	s.mu.Unlock()
+}
+
+func (s *Store[T]) writeLoop() {
+	defer close(s.workerDone)
+	for {
+		s.mu.Lock()
+		for s.pending == nil && !s.closed {
+			s.cond.Wait()
+		}
+		if s.pending == nil && s.closed {
+			s.mu.Unlock()
+			return
+		}
+		pending := s.pending
+		s.pending = nil
+		s.mu.Unlock()
+
+		err := s.saveState(pending.state)
+
+		s.mu.Lock()
+		if pending.version > s.writtenVersion {
+			s.writtenVersion = pending.version
+		}
+		s.cond.Broadcast()
+		s.mu.Unlock()
+		s.report(err)
+	}
 }
 
 func (s *Store[T]) saveState(state uploadSessionState[T]) error {
