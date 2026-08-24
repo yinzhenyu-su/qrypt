@@ -75,13 +75,5 @@ gh workflow run "Nightly Quality Gates"
 ## 版本固定策略
 
 为保证同一提交在不同时间得到相同结果，CI 的全部质量工具和 GitHub
-Action 都固定版本：
-
-- `staticcheck@v0.7.0`、`golangci-lint@v1.64.8`、`govulncheck@v1.6.0`
-  （`go run module@version` 精确固定）
-- 所有 GitHub Action 用 commit SHA 固定，行尾注释标明对应 tag
-  （如 `actions/checkout@3d3c42e… # v7`），升级时改 SHA + 注释
-- 严禁引入 `@latest` 或未固定的 tag
-
+Action 都固定版本。
 工具版本升级是刻意行为：更新版本号/SHA 并提交，让 CI 结果可追溯。
-
