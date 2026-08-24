@@ -416,7 +416,7 @@ func retryableOneDriveError(ctx context.Context, err error) bool {
 func nonRetryableUploadError(err error) bool {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
-		return apiErr.Status >= 400 && apiErr.Status < 500 && apiErr.Status != http.StatusRequestTimeout && apiErr.Status != http.StatusTooManyRequests
+		return httputil.IsNonRetryableClientStatus(apiErr.Status)
 	}
 	return false
 }

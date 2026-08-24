@@ -26,6 +26,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
@@ -455,7 +456,7 @@ func nonRetryableUploadError(err error) bool {
 	var responseErr interface{ HTTPStatusCode() int }
 	if errors.As(err, &responseErr) {
 		status := responseErr.HTTPStatusCode()
-		return status >= 400 && status < 500 && status != 408 && status != 429
+		return httputil.IsNonRetryableClientStatus(status)
 	}
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {

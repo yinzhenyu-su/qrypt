@@ -12,6 +12,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -814,7 +815,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 }
 
 func nonRetryableUploadStatus(status int) bool {
-	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+	return httputil.IsNonRetryableClientStatus(status)
 }
 
 func calcPartSize(fileSize int64) int64 {

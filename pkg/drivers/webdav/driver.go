@@ -30,6 +30,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
@@ -492,7 +493,7 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 }
 
 func nonRetryableUploadStatus(status int) bool {
-	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+	return httputil.IsNonRetryableClientStatus(status)
 }
 
 // Copy implements drive.ServerSideCopier: WebDAV COPY (RFC 4918 §9.8) with
