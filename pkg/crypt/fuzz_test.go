@@ -34,3 +34,22 @@ func FuzzCipherSegmentRoundtrip(f *testing.F) {
 		}
 	})
 }
+
+func FuzzRcloneConfigObscureRoundtrip(f *testing.F) {
+	for _, value := range []string{"", "password", "中文\x00secret", strings.Repeat("x", 256)} {
+		f.Add(value)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		obscured, err := crypt.ObscureRcloneConfigValue(value)
+		if err != nil {
+			t.Fatalf("obscure %q: %v", value, err)
+		}
+		revealed, err := crypt.RevealRcloneConfigValue(obscured)
+		if err != nil {
+			t.Fatalf("reveal obscured value: %v", err)
+		}
+		if revealed != value {
+			t.Fatalf("roundtrip mismatch: got %q, want %q", revealed, value)
+		}
+	})
+}
