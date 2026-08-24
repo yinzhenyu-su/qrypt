@@ -53,6 +53,22 @@ def fmt_type(params_def, param_name, prop):
     return prop.get("type", "string")
 
 
+def required_alternatives(param_def):
+    alternatives = param_def.get("anyOf")
+    if alternatives:
+        return [option.get("required", []) for option in alternatives]
+    return [param_def.get("required", [])]
+
+
+def format_required(alternatives):
+    parts = [
+        " + ".join(f"`{name}`" for name in alternative)
+        for alternative in alternatives
+        if alternative
+    ]
+    return " 或 ".join(parts)
+
+
 def build_driver_list_table(defs):
     """Build the driver overview table."""
     rows = []
@@ -63,7 +79,7 @@ def build_driver_list_table(defs):
         def_name = f"{key}Params"
         if def_name not in defs:
             continue
-        required = ", ".join(f"`{r}`" for r in defs[def_name].get("required", []))
+        required = format_required(required_alternatives(defs[def_name]))
         rows.append(f"| `{meta['type']}` | {meta['name']} | {required} |")
     return "\n".join(rows)
 
@@ -81,7 +97,9 @@ def build_driver_section(defs, key):
     def_name = f"{key}Params"
     param_def = defs[def_name]
     props = param_def.get("properties", {})
-    required_set = set(param_def.get("required", []))
+    alternatives = required_alternatives(param_def)
+    required_set = set(alternatives[0]) if len(alternatives) == 1 else set()
+    conditional_set = set().union(*(set(alternative) for alternative in alternatives))
 
     intro = DRIVER_INTRO.get(key, "")
     if intro:
@@ -89,9 +107,11 @@ def build_driver_section(defs, key):
 
 
     example_lines = ["[mounts.params]"]
+    if len(alternatives) > 1:
+        example_lines.append(f"# 认证方式任选其一：{format_required(alternatives)}")
     for pname, prop in props.items():
         prop_type = prop.get("type", "string")
-        if pname in required_set:
+        if pname in required_set or (len(alternatives) > 1 and pname in alternatives[0]):
             val = prop.get("x-example", prop.get("example", "..."))
             example_lines.append(f'{pname} = {toml_value(val, prop_type)}')
         else:
@@ -104,7 +124,10 @@ def build_driver_section(defs, key):
     table_rows.append("| 参数 | 类型 | 必填 | 说明 |")
     table_rows.append("|---|---|---|---|")
     for pname, prop in props.items():
-        is_required = "是" if pname in required_set else "否"
+        if len(alternatives) > 1:
+            is_required = "条件" if pname in conditional_set else "否"
+        else:
+            is_required = "是" if pname in required_set else "否"
         t = fmt_type(param_def, pname, prop)
         type_str = t
         if prop.get("x-secret"):
@@ -115,6 +138,8 @@ def build_driver_section(defs, key):
             desc += f"，默认 `{default_val}`"
         table_rows.append(f"| `{pname}` | {type_str} | {is_required} | {desc} |")
     param_table = "\n".join(table_rows)
+    if len(alternatives) > 1:
+        param_table = f"必填条件：{format_required(alternatives)}。\n\n{param_table}"
 
     return f"""---
 

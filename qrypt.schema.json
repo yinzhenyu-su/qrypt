@@ -1065,9 +1065,6 @@
     },
     "p189Params": {
       "type": "object",
-      "required": [
-        "cookie"
-      ],
       "properties": {
         "cookie": {
           "description": "189 cloud drive authentication cookie.",
@@ -1075,6 +1072,19 @@
           "minLength": 1,
           "x-secret": true,
           "x-example": "k1=v1; k2=v2"
+        },
+        "username": {
+          "description": "189 cloud drive account (phone number).",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "18912345678"
+        },
+        "password": {
+          "description": "189 cloud drive password.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-password"
         },
         "root_path": {
           "description": "Virtual root path on the drive.",
@@ -1088,6 +1098,19 @@
           "x-example": "-11"
         }
       },
+      "anyOf": [
+        {
+          "required": [
+            "cookie"
+          ]
+        },
+        {
+          "required": [
+            "username",
+            "password"
+          ]
+        }
+      ],
       "additionalProperties": false
     },
     "webdavParams": {
