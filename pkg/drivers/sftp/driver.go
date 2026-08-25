@@ -25,6 +25,7 @@ type Driver struct {
 	address, username, password, privateKey, passphrase, knownHosts, rootPath string
 	client                                                                    *sftp.Client
 	connection                                                                *ssh.Client
+	readDir                                                                   func(context.Context, *sftp.Client, string) ([]os.FileInfo, error)
 	stateStore                                                                drive.StateStore
 	limiter                                                                   *drive.BandwidthLimiter
 	metrics                                                                   *driverutil.Buffer
@@ -67,7 +68,11 @@ func New(opts Options) *Driver {
 	if root == "." || root == "" {
 		root = "/"
 	}
-	return &Driver{address: opts.Address, username: opts.Username, password: opts.Password, privateKey: opts.PrivateKey, passphrase: opts.Passphrase, knownHosts: opts.KnownHosts, rootPath: root, metrics: driverutil.NewBuffer(500)}
+	return &Driver{address: opts.Address, username: opts.Username, password: opts.Password, privateKey: opts.PrivateKey, passphrase: opts.Passphrase, knownHosts: opts.KnownHosts, rootPath: root, metrics: driverutil.NewBuffer(500), readDir: readDirContext}
+}
+
+func readDirContext(ctx context.Context, client *sftp.Client, parent string) ([]os.FileInfo, error) {
+	return client.ReadDirContext(ctx, parent)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {

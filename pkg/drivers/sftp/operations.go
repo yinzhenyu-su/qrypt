@@ -22,7 +22,15 @@ func (d *Driver) List(ctx context.Context, parentID string) (entries []drive.Ent
 	if err != nil {
 		return nil, err
 	}
-	items, err := client.ReadDirContext(ctx, parent)
+	items, err := d.readDir(ctx, client, parent)
+	if err != nil && isConnectionFailure(err) {
+		client, reconnectErr := d.reconnect(ctx, client)
+		if reconnectErr == nil {
+			items, err = d.readDir(ctx, client, parent)
+		} else {
+			err = reconnectErr
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sftp: list %q: %w", parent, classifyError(err))
 	}
