@@ -100,7 +100,7 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 			continue
 		}
 		partStarted := time.Now()
-		partErr := uploadSFTPPart(ctx, d.limiter, client, session.RemotePath, source, start, length)
+		partErr := d.uploadSFTPPart(ctx, client, session.RemotePath, source, start, length)
 		partBytes := length
 		if partErr != nil {
 			partBytes = 0
@@ -178,7 +178,18 @@ func sftpUploadPartEnd(part int, partSize, size int64) int64 {
 	return end
 }
 
-func uploadSFTPPart(ctx context.Context, limiter *drive.BandwidthLimiter, client *sftp.Client, remotePath string, source drive.ReadOnlyFile, offset, size int64) error {
+func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remotePath string, source drive.ReadOnlyFile, offset, size int64) error {
+	partCtx, cancel := context.WithTimeout(ctx, sftpUploadPartTimeout)
+	defer cancel()
+	unblock := make(chan struct{})
+	defer close(unblock)
+	go func() {
+		select {
+		case <-partCtx.Done():
+			d.closeIfUnresponsive(client)
+		case <-unblock:
+		}
+	}()
 	if _, err := source.Seek(offset, io.SeekStart); err != nil {
 		return fmt.Errorf("seek source to %d: %w", offset, err)
 	}
@@ -190,10 +201,10 @@ func uploadSFTPPart(ctx context.Context, limiter *drive.BandwidthLimiter, client
 		_ = file.Close()
 		return fmt.Errorf("seek remote staging file to %d: %w", offset, err)
 	}
-	body := limiter.LimitUpload(ctx, io.LimitReader(source, size))
-	written, err := io.CopyN(file, contextReader{ctx: ctx, reader: body}, size)
+	body := d.limiter.LimitUpload(partCtx, io.LimitReader(source, size))
+	written, err := io.CopyN(file, contextReader{ctx: partCtx, reader: body}, size)
 	if err == nil {
-		err = ctx.Err()
+		err = partCtx.Err()
 	}
 	closeErr := file.Close()
 	if err != nil {

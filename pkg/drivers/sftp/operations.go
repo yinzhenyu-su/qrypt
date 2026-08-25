@@ -18,6 +18,8 @@ const sftpOperationTimeout = 15 * time.Second
 
 const sftpReadSize = 32 * 1024
 
+const sftpUploadPartTimeout = 5 * time.Minute
+
 func (d *Driver) List(ctx context.Context, parentID string) (entries []drive.Entry, err error) {
 	started := time.Now()
 	defer func() { d.recordOperation(ctx, "list", parentID, started, int64(len(entries)), err) }()
@@ -32,7 +34,7 @@ func (d *Driver) List(ctx context.Context, parentID string) (entries []drive.Ent
 		return nil, err
 	}
 	items, err := d.readDir(opCtx, client, parent)
-	if err != nil && isConnectionFailure(err) {
+	if err != nil && isConnectionFailure(err) && opCtx.Err() == nil {
 		client, reconnectErr := d.reconnect(opCtx, client)
 		if reconnectErr == nil {
 			items, err = d.readDir(opCtx, client, parent)
@@ -95,7 +97,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		return nil, err
 	}
 	reader := newContextReadCloser(readCtx, contextReader{ctx: readCtx, reader: file}, file, func() {
-		d.closeConnection(client)
+		d.closeIfUnresponsive(client)
 	})
 	reader.cancel = cancelRead
 	var result io.ReadCloser
@@ -124,7 +126,7 @@ func (d *Driver) openFile(ctx context.Context, client *sftp.Client, name string)
 	case result := <-result:
 		return result.file, result.err
 	case <-ctx.Done():
-		d.closeConnection(client)
+		d.closeIfUnresponsive(client)
 		return nil, ctx.Err()
 	}
 }
@@ -145,7 +147,7 @@ func (d *Driver) seekFile(ctx context.Context, client *sftp.Client, file *sftp.F
 	case result := <-result:
 		return result.offset, result.err
 	case <-ctx.Done():
-		d.closeConnection(client)
+		d.closeIfUnresponsive(client)
 		return 0, ctx.Err()
 	}
 }

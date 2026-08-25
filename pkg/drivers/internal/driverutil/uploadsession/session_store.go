@@ -21,17 +21,18 @@ type Store[T any] struct {
 	onError    func(error)
 	async      bool
 
-	mu             sync.Mutex
-	state          uploadSessionState[T]
-	loaded         bool
-	pending        *pendingWrite[T]
-	nextVersion    uint64
-	writtenVersion uint64
-	workerStarted  bool
-	closed         bool
-	processedErr   error
-	cond           *sync.Cond
-	workerDone     chan struct{}
+	mu               sync.Mutex
+	state            uploadSessionState[T]
+	loaded           bool
+	pending          *pendingWrite[T]
+	nextVersion      uint64
+	writtenVersion   uint64
+	persistedVersion uint64
+	workerStarted    bool
+	closed           bool
+	processedErr     error
+	cond             *sync.Cond
+	workerDone       chan struct{}
 }
 
 type uploadSessionState[T any] struct {
@@ -239,6 +240,9 @@ func (s *Store[T]) enqueueLocked() uint64 {
 		}
 		s.writtenVersion = version
 		s.processedErr = err
+		if err == nil {
+			s.persistedVersion = version
+		}
 		return version
 	}
 	if s.closed {
@@ -248,6 +252,9 @@ func (s *Store[T]) enqueueLocked() uint64 {
 		}
 		s.writtenVersion = version
 		s.processedErr = err
+		if err == nil {
+			s.persistedVersion = version
+		}
 		return version
 	}
 	if !s.workerStarted {
@@ -279,6 +286,9 @@ func (s *Store[T]) waitForVersion(version uint64) error {
 		s.cond.Wait()
 	}
 	err := s.processedErr
+	if s.persistedVersion >= version {
+		err = nil
+	}
 	s.mu.Unlock()
 	return err
 }
@@ -303,6 +313,9 @@ func (s *Store[T]) writeLoop() {
 		s.mu.Lock()
 		if pending.version > s.writtenVersion {
 			s.writtenVersion = pending.version
+		}
+		if err == nil && pending.version > s.persistedVersion {
+			s.persistedVersion = pending.version
 		}
 		s.processedErr = err
 		s.cond.Broadcast()

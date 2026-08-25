@@ -97,9 +97,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 const (
-	connectTimeout       = 10 * time.Second
-	reconnectAttempts    = 3
-	reconnectBaseBackoff = 100 * time.Millisecond
+	connectTimeout         = 10 * time.Second
+	reconnectAttempts      = 3
+	reconnectBaseBackoff   = 100 * time.Millisecond
+	connectionProbeTimeout = 2 * time.Second
 )
 
 func (d *Driver) connect(ctx context.Context) (*ssh.Client, *sftp.Client, error) {
@@ -246,6 +247,14 @@ func (d *Driver) getClient(ctx context.Context) (*sftp.Client, error) {
 }
 
 func (d *Driver) statClient(ctx context.Context, client *sftp.Client, name string) (os.FileInfo, error) {
+	info, err := statWithContext(ctx, client, name)
+	if err != nil && ctx.Err() != nil {
+		d.closeIfUnresponsive(client)
+	}
+	return info, err
+}
+
+func statWithContext(ctx context.Context, client *sftp.Client, name string) (os.FileInfo, error) {
 	result := make(chan struct {
 		info os.FileInfo
 		err  error
@@ -261,9 +270,22 @@ func (d *Driver) statClient(ctx context.Context, client *sftp.Client, name strin
 	case result := <-result:
 		return result.info, result.err
 	case <-ctx.Done():
-		d.closeConnection(client)
 		return nil, ctx.Err()
 	}
+}
+
+// closeIfUnresponsive closes the shared connection only after a probe confirms it is dead; a slow-but-alive link must not be torn down as collateral damage of a single operation's timeout.
+func (d *Driver) closeIfUnresponsive(client *sftp.Client) {
+	if !d.connectionAlive(client) {
+		d.closeConnection(client)
+	}
+}
+
+func (d *Driver) connectionAlive(client *sftp.Client) bool {
+	probeCtx, cancel := context.WithTimeout(context.Background(), connectionProbeTimeout)
+	defer cancel()
+	info, err := statWithContext(probeCtx, client, d.rootPath)
+	return err == nil && info != nil
 }
 
 func (d *Driver) closeConnection(client *sftp.Client) {
