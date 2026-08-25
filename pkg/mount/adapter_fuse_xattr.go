@@ -6,9 +6,6 @@ func (a *adapter) Getxattr(path string, name string) (int, []byte) {
 	errc := -fuse.ENOATTR
 	valueLen := 0
 	defer func() { a.trace.log("Getxattr", path, "name=%q len=%d err=%d", name, valueLen, errc) }()
-	if a.shouldDelegateAppleXattr(name) {
-		return -fuse.ENOTSUP, nil
-	}
 	value, ok := a.getXattr(path, name)
 	if !ok {
 		return errc, nil
@@ -21,9 +18,6 @@ func (a *adapter) Getxattr(path string, name string) (int, []byte) {
 func (a *adapter) Removexattr(path string, name string) int {
 	errc := 0
 	defer func() { a.trace.log("Removexattr", path, "name=%q err=%d", name, errc) }()
-	if a.shouldDelegateAppleXattr(name) {
-		return -fuse.ENOTSUP
-	}
 	a.removeXattr(path, name)
 	return 0
 }
@@ -32,9 +26,6 @@ func (a *adapter) Listxattr(path string, fill func(name string) bool) int {
 	errc := 0
 	defer func() { a.trace.log("Listxattr", path, "err=%d", errc) }()
 	for _, name := range a.listXattrs(path) {
-		if a.shouldDelegateAppleXattr(name) {
-			continue
-		}
 		if !fill(name) {
 			break
 		}
@@ -60,9 +51,6 @@ func (a *adapter) Setxattr(path string, name string, value []byte, flags int) in
 			}
 			a.trace.log("PrepareDirectoryCopy", path, "xattr=%q err=0", name)
 		}
-	}
-	if a.shouldDelegateAppleXattr(name) {
-		return -fuse.ENOTSUP
 	}
 	a.setXattr(path, name, value)
 	return errc

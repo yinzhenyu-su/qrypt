@@ -409,15 +409,28 @@
           "type": "string",
           "default": "Qrypt"
         },
-        "ignore_apple_metadata": {
-          "description": "Do not sync Apple Double (._) metadata files to the backend on macOS.",
-          "type": "boolean",
-          "default": true
-        },
-        "delegate_apple_xattr": {
-          "description": "Delegate com.apple.* extended attributes to macFUSE on macOS.",
-          "type": "boolean",
-          "default": false
+        "options": {
+          "description": "Platform-specific FUSE mount options. Each item is passed as one -o value, such as auto_xattr or iosize=4194304.",
+          "type": "object",
+          "examples": [
+            {
+              "darwin": [
+                "defer_permissions",
+                "auto_xattr",
+                "iosize=4194304"
+              ],
+              "windows": [
+                "FileInfoTimeout=1000"
+              ]
+            }
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         },
         "read_only": {
           "description": "Mount the filesystem read-only.",

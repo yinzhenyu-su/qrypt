@@ -85,13 +85,13 @@ version = "1"
 [mount]
 mount_point = "~/Qrypt"
 volume_name = "Qrypt"
-# read_only       = false
-# allow_other     = false
-ignore_apple_metadata = true
-delegate_apple_xattr = true
+# read_only = false
 attr_timeout = "1s"
 entry_timeout = "1s"
 negative_timeout = "0s"
+
+[mount.options]
+darwin = ["defer_permissions", "auto_xattr", "iosize=4194304"]
 
 # ── Logging ───────────────────────────────────────────────────────
 [logging]

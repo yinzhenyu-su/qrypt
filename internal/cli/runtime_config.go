@@ -87,29 +87,28 @@ func mountPointFromLoadedConfig(cfg *config.Config) (string, error) {
 }
 
 type cliMountConfig struct {
-	VolumeName          string
-	ReadOnly            bool
-	AllowOther          bool
-	DefaultPermissions  bool
-	IgnoreAppleMetadata bool
-	DelegateAppleXattr  bool
-	AttrTimeout         time.Duration
-	AttrTimeoutSet      bool
-	EntryTimeout        time.Duration
-	EntryTimeoutSet     bool
-	NegativeTimeout     time.Duration
-	TotalSpace          int64
-	FreeSpace           int64
-	Logging             config.LoggingConfig
+	VolumeName         string
+	ReadOnly           bool
+	AllowOther         bool
+	DefaultPermissions bool
+	MountOptions       map[string][]string
+	AttrTimeout        time.Duration
+	AttrTimeoutSet     bool
+	EntryTimeout       time.Duration
+	EntryTimeoutSet    bool
+	NegativeTimeout    time.Duration
+	TotalSpace         int64
+	FreeSpace          int64
+	Logging            config.LoggingConfig
 }
 
 func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
-		VolumeName:          "Qrypt",
-		IgnoreAppleMetadata: true,
-		AttrTimeout:         time.Second,
-		EntryTimeout:        time.Second,
-		NegativeTimeout:     0,
+		VolumeName:      "Qrypt",
+		MountOptions:    map[string][]string{"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304"}},
+		AttrTimeout:     time.Second,
+		EntryTimeout:    time.Second,
+		NegativeTimeout: 0,
 	}
 	if configPath == "" {
 		return mountConfig, nil
@@ -123,11 +122,11 @@ func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 
 func mountConfigFromLoadedConfig(cfg *config.Config) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
-		VolumeName:          "Qrypt",
-		IgnoreAppleMetadata: true,
-		AttrTimeout:         time.Second,
-		EntryTimeout:        time.Second,
-		NegativeTimeout:     0,
+		VolumeName:      "Qrypt",
+		MountOptions:    map[string][]string{"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304"}},
+		AttrTimeout:     time.Second,
+		EntryTimeout:    time.Second,
+		NegativeTimeout: 0,
 	}
 	if cfg == nil {
 		return mountConfig, nil
@@ -136,8 +135,7 @@ func mountConfigFromLoadedConfig(cfg *config.Config) (cliMountConfig, error) {
 	mountConfig.ReadOnly = cfg.EffectiveReadOnly()
 	mountConfig.AllowOther = cfg.EffectiveAllowOther()
 	mountConfig.DefaultPermissions = cfg.EffectiveDefaultPermissions()
-	mountConfig.IgnoreAppleMetadata = cfg.EffectiveIgnoreAppleMetadata()
-	mountConfig.DelegateAppleXattr = cfg.EffectiveDelegateAppleXattr()
+	mountConfig.MountOptions = cfg.EffectiveMountOptions()
 	attrTimeout, err := config.ParseDuration(cfg.EffectiveAttrTimeout())
 	if err != nil {
 		return mountConfig, fmt.Errorf("config: invalid attr_timeout: %w", err)

@@ -43,11 +43,6 @@ type createRouteFS struct {
 	truncate []string
 }
 
-type metadataRouteFS struct {
-	createRouteFS
-	modTimes []string
-}
-
 type copyPrepareFS struct {
 	stubFS
 	prepared []string
@@ -223,11 +218,6 @@ func (s *createRouteFS) Truncate(_ context.Context, path string, size int64) err
 	return nil
 }
 
-func (s *metadataRouteFS) SetModTime(_ context.Context, path string, modTime time.Time) error {
-	s.modTimes = append(s.modTimes, path)
-	return nil
-}
-
 func (s *copyPrepareFS) PrepareDirectoryCopy(_ context.Context, path string) error {
 	s.prepared = append(s.prepared, path)
 	return nil
@@ -236,7 +226,9 @@ func (s *copyPrepareFS) PrepareDirectoryCopy(_ context.Context, path string) err
 var errNotFound = vfs.ErrNotFound
 
 func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
-	opts := mountOptions(Options{})
+	opts := mountOptions(Options{PlatformOptions: map[string][]string{
+		"darwin": {"defer_permissions", "auto_xattr", "iosize=8388608"},
+	}})
 	for _, want := range []string{"attr_timeout=1", "entry_timeout=1", "negative_timeout=0", "use_ino"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("mount options %v missing %q", opts, want)
@@ -245,7 +237,7 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	for _, want := range []string{"defer_permissions", "fsname=qrypt", "subtype=qrypt", "iosize=4194304"} {
+	for _, want := range []string{"defer_permissions", "auto_xattr", "fsname=qrypt", "subtype=qrypt", "iosize=8388608"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}
@@ -385,13 +377,6 @@ func TestMountOptionsAllowDisablingMetadataTimeouts(t *testing.T) {
 	}
 }
 
-func TestMountOptionsDoNotUseMacFUSEIgnoreAppleMetadata(t *testing.T) {
-	opts := mountOptions(Options{IgnoreAppleMetadata: true})
-	if hasMountOption(opts, "noappledouble") {
-		t.Fatalf("mount options %v should not pass macFUSE noappledouble", opts)
-	}
-}
-
 func TestMountOptionsUseConfiguredKernelOptions(t *testing.T) {
 	opts := mountOptions(Options{
 		ReadOnly:           true,
@@ -405,6 +390,26 @@ func TestMountOptionsUseConfiguredKernelOptions(t *testing.T) {
 	}
 	if hasMountOption(opts, "rw") {
 		t.Fatalf("mount options %v should not include rw", opts)
+	}
+}
+
+func TestMountOptionsUseOnlyConfiguredPlatformOptions(t *testing.T) {
+	opts := Options{PlatformOptions: map[string][]string{
+		"darwin":  {"auto_xattr"},
+		"windows": {"FileInfoTimeout=1000"},
+	}}
+	for _, test := range []struct {
+		goos string
+		want string
+		have string
+	}{
+		{goos: "darwin", want: "auto_xattr", have: "FileInfoTimeout=1000"},
+		{goos: "windows", want: "FileInfoTimeout=1000", have: "auto_xattr"},
+	} {
+		got := mountOptionsForGOOS(opts, test.goos)
+		if !hasMountOption(got, test.want) || hasMountOption(got, test.have) {
+			t.Fatalf("%s mount options %v want %q without %q", test.goos, got, test.want, test.have)
+		}
 	}
 }
 
@@ -669,32 +674,12 @@ func TestAdapterXattrsRenameAndRemove(t *testing.T) {
 	}
 }
 
-func TestAdapterDelegateAppleXattrDelegatesAppleXattrs(t *testing.T) {
-	ad := newAdapterWithOptions(stubFS{}, adapterOptions{DelegateAppleXattr: true})
-
-	if errc := ad.Setxattr("/", "com.apple.FinderInfo", []byte("ignored"), 0); errc != -fuse.ENOTSUP {
-		t.Fatalf("Setxattr FinderInfo err = %d, want ENOTSUP", errc)
-	}
-	if errc, got := ad.Getxattr("/", "com.apple.ResourceFork"); errc != -fuse.ENOTSUP || len(got) != 0 {
-		t.Fatalf("Getxattr ResourceFork err=%d len=%d, want ENOTSUP/0", errc, len(got))
-	}
-	if errc := ad.Removexattr("/", "com.apple.quarantine"); errc != -fuse.ENOTSUP {
-		t.Fatalf("Removexattr quarantine err = %d, want ENOTSUP", errc)
-	}
-	if errc := ad.Setxattr("/", "user.foo", []byte("bar"), 0); errc != 0 {
-		t.Fatalf("Setxattr user.foo err = %d, want 0", errc)
-	}
-	if errc, got := ad.Getxattr("/", "user.foo"); errc != len("bar") || string(got) != "bar" {
-		t.Fatalf("Getxattr user.foo err=%d value=%q, want len/value", errc, got)
-	}
-}
-
-func TestAdapterDelegateAppleXattrStillPreparesFinderDirectoryCopy(t *testing.T) {
+func TestAdapterAppleCopySourceXattrPreparesFinderDirectoryCopy(t *testing.T) {
 	fs := &copyPrepareFS{}
-	ad := newAdapterWithOptions(fs, adapterOptions{DelegateAppleXattr: true})
+	ad := newAdapter(fs, StatfsOptions{})
 
-	if errc := ad.Setxattr("/copied", "com.apple.finder.copy.source", []byte("source"), 0); errc != -fuse.ENOTSUP {
-		t.Fatalf("Setxattr copy source err = %d, want ENOTSUP", errc)
+	if errc := ad.Setxattr("/copied", "com.apple.finder.copy.source", []byte("source"), 0); errc != 0 {
+		t.Fatalf("Setxattr copy source err = %d, want 0", errc)
 	}
 	if got := strings.Join(fs.prepared, ","); got != "/copied" {
 		t.Fatalf("prepared = %q, want /copied", got)
@@ -736,198 +721,6 @@ func TestAdapterMknodCreatesRegularFile(t *testing.T) {
 	}
 	if got := strings.Join(fs.created, ","); got != "/asset.js" {
 		t.Fatalf("created = %q, want /asset.js", got)
-	}
-}
-
-func TestAdapterIgnoreAppleMetadataIgnoresAppleMetadata(t *testing.T) {
-	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
-		"/folder": {ID: "folder", Name: "folder", IsDir: true},
-	}}}
-	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
-
-	if errc, fh := ad.Create("/folder/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
-		t.Fatalf("Create .DS_Store err=%d fh=%d, want success with fh", errc, fh)
-	}
-	if got := ad.Write("/folder/.DS_Store", []byte("finder"), 0, 1); got != len("finder") {
-		t.Fatalf("Write .DS_Store = %d, want %d", got, len("finder"))
-	}
-	if errc := ad.Flush("/folder/.DS_Store", 1); errc != 0 {
-		t.Fatalf("Flush .DS_Store err=%d, want 0", errc)
-	}
-	if errc := ad.Mknod("/folder/._asset.js", fuse.S_IFREG|0o644, 0); errc != 0 {
-		t.Fatalf("Mknod AppleDouble err=%d, want 0", errc)
-	}
-	if errc := ad.Mkdir("/.Spotlight-V100", 0o755); errc != 0 {
-		t.Fatalf("Mkdir Spotlight err=%d, want 0", errc)
-	}
-	if got := ad.Write("/.Spotlight-V100/store", []byte("ignored"), 0, 0); got != len("ignored") {
-		t.Fatalf("Write Spotlight child = %d, want %d", got, len("ignored"))
-	}
-	if errc := ad.Rename("/.DS_Store", "/.DS_Store.tmp"); errc != 0 {
-		t.Fatalf("Rename .DS_Store err=%d, want 0", errc)
-	}
-	if errc := ad.Unlink("/.DS_Store"); errc != 0 {
-		t.Fatalf("Unlink .DS_Store err=%d, want 0", errc)
-	}
-	if errc, fh := ad.Create("/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
-		t.Fatalf("Create second .DS_Store err=%d fh=%d, want success with fh", errc, fh)
-	}
-	if got := ad.Write("/.DS_Store", []byte("finder"), 0, 1); got != len("finder") {
-		t.Fatalf("Write second .DS_Store = %d, want %d", got, len("finder"))
-	}
-	var stat fuse.Stat_t
-	if errc := ad.Getattr("/.DS_Store", &stat, 0); errc != 0 {
-		t.Fatalf("Getattr .DS_Store err=%d, want 0", errc)
-	}
-	if stat.Size != int64(len("finder")) || stat.Mode&fuse.S_IFREG == 0 {
-		t.Fatalf("Getattr .DS_Store stat mode=%o size=%d, want regular file size %d", stat.Mode, stat.Size, len("finder"))
-	}
-	buf := make([]byte, 16)
-	if got := ad.Read("/.DS_Store", buf, 2, 1); got != len("finder")-2 {
-		t.Fatalf("Read .DS_Store = %d, want %d", got, len("finder")-2)
-	}
-	if string(buf[:len("finder")-2]) != "nder" {
-		t.Fatalf("Read .DS_Store content = %q, want %q", string(buf[:len("finder")-2]), "nder")
-	}
-	if got := ad.Write("/.DS_Store", []byte("XY"), 2, 1); got != 2 {
-		t.Fatalf("Write .DS_Store offset = %d, want 2", got)
-	}
-	clear(buf)
-	if got := ad.Read("/.DS_Store", buf, 0, 1); got != len("finder") {
-		t.Fatalf("Read rewritten .DS_Store = %d, want %d", got, len("finder"))
-	}
-	if string(buf[:len("finder")]) != "fiXYer" {
-		t.Fatalf("Read rewritten .DS_Store content = %q, want %q", string(buf[:len("finder")]), "fiXYer")
-	}
-	if errc := ad.Truncate("/.DS_Store", 2, 1); errc != 0 {
-		t.Fatalf("Truncate .DS_Store err=%d, want 0", errc)
-	}
-	clear(buf)
-	if got := ad.Read("/.DS_Store", buf, 0, 1); got != 2 {
-		t.Fatalf("Read truncated .DS_Store = %d, want 2", got)
-	}
-	if string(buf[:2]) != "fi" {
-		t.Fatalf("Read truncated .DS_Store content = %q, want %q", string(buf[:2]), "fi")
-	}
-	if errc := ad.Rename("/.DS_Store", "/.DS_Store.tmp"); errc != 0 {
-		t.Fatalf("Rename second .DS_Store err=%d, want 0", errc)
-	}
-	if errc := ad.Getattr("/.DS_Store.tmp", &stat, 0); errc != 0 {
-		t.Fatalf("Getattr renamed .DS_Store err=%d, want 0", errc)
-	}
-	if stat.Size != 2 {
-		t.Fatalf("renamed .DS_Store size=%d, want 2", stat.Size)
-	}
-	if errc := ad.Readdir("/.Spotlight-V100", func(string, *fuse.Stat_t, int64) bool { return true }, 0, 0); errc != 0 {
-		t.Fatalf("Readdir Spotlight err=%d, want 0", errc)
-	}
-
-	if len(fs.created) != 0 || len(fs.mkdirs) != 0 || len(fs.writes) != 0 || len(fs.flushes) != 0 ||
-		len(fs.removed) != 0 || len(fs.rmdirs) != 0 || len(fs.renames) != 0 || len(fs.truncate) != 0 {
-		t.Fatalf("backend calls created=%v mkdirs=%v writes=%v flushes=%v removed=%v rmdirs=%v renames=%v truncate=%v, want none",
-			fs.created, fs.mkdirs, fs.writes, fs.flushes, fs.removed, fs.rmdirs, fs.renames, fs.truncate)
-	}
-}
-
-func TestAdapterIgnoreAppleMetadataCreatesMissingRealParentForMetadataFile(t *testing.T) {
-	fs := &createRouteFS{stubFS: stubFS{entries: map[string]drive.Entry{
-		"/_nuxt": {ID: "_nuxt", Name: "_nuxt", IsDir: true},
-	}}}
-	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
-
-	if errc, fh := ad.Create("/_nuxt/builds/.DS_Store", 0, fuse.S_IFREG|0o644); errc != 0 || fh == 0 {
-		t.Fatalf("Create nested .DS_Store err=%d fh=%d, want success with fh", errc, fh)
-	}
-	if got := strings.Join(fs.mkdirs, ","); got != "/_nuxt/builds" {
-		t.Fatalf("mkdirs = %q, want missing real parent", got)
-	}
-	if len(fs.created) != 0 || len(fs.writes) != 0 || len(fs.flushes) != 0 {
-		t.Fatalf("backend file calls created=%v writes=%v flushes=%v, want none", fs.created, fs.writes, fs.flushes)
-	}
-}
-
-func TestAdapterIgnoreAppleMetadataMissingMetadataLookupReturnsNotFound(t *testing.T) {
-	ad := newAdapterWithOptions(stubFS{entries: map[string]drive.Entry{
-		"/":      {ID: "root", Name: "", IsDir: true},
-		"/_nuxt": {ID: "_nuxt", Name: "_nuxt", IsDir: true},
-	}}, adapterOptions{IgnoreAppleMetadata: true})
-
-	var stat fuse.Stat_t
-	if errc := ad.Getattr("/_nuxt/._entry.js", &stat, 0); errc != -fuse.ENOENT {
-		t.Fatalf("Getattr missing AppleDouble err=%d, want ENOENT", errc)
-	}
-	if errc := ad.Access("/_nuxt/._entry.js", 0); errc != -fuse.ENOENT {
-		t.Fatalf("Access missing AppleDouble err=%d, want ENOENT", errc)
-	}
-	if errc, fh := ad.Open("/_nuxt/._entry.js", 0); errc != -fuse.ENOENT || fh != 0 {
-		t.Fatalf("Open missing AppleDouble err=%d fh=%d, want ENOENT/0", errc, fh)
-	}
-}
-
-func TestAdapterIgnoreAppleMetadataBypassesReadOnlyRootMetadata(t *testing.T) {
-	ad := newAdapterWithOptions(stubFS{
-		readOnly: map[string]bool{"/.DS_Store": true},
-	}, adapterOptions{IgnoreAppleMetadata: true})
-
-	if errc := ad.Truncate("/.DS_Store", 0, 1); errc != 0 {
-		t.Fatalf("Truncate read-only .DS_Store err=%d, want 0", errc)
-	}
-	if got := ad.Write("/.DS_Store", []byte("Bud1"), 0, 1); got != 4 {
-		t.Fatalf("Write read-only .DS_Store = %d, want 4", got)
-	}
-	if errc := ad.Unlink("/.DS_Store"); errc != 0 {
-		t.Fatalf("Unlink read-only .DS_Store err=%d, want 0", errc)
-	}
-}
-
-func TestAdapterIgnoreAppleMetadataUtimensDoesNotTouchBackend(t *testing.T) {
-	fs := &metadataRouteFS{}
-	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: true})
-	times := []fuse.Timespec{
-		{Sec: 10, Nsec: 20},
-		{Sec: 30, Nsec: 40},
-	}
-
-	if errc := ad.Utimens("/folder/.DS_Store", times); errc != 0 {
-		t.Fatalf("Utimens .DS_Store err=%d, want 0", errc)
-	}
-	if len(fs.modTimes) != 0 {
-		t.Fatalf("SetModTime calls = %v, want none for ignored Apple metadata", fs.modTimes)
-	}
-}
-
-func TestAdapterIgnoreAppleMetadataFalseUploadsAppleMetadata(t *testing.T) {
-	fs := &createRouteFS{}
-	ad := newAdapterWithOptions(fs, adapterOptions{IgnoreAppleMetadata: false})
-
-	errc, fh := ad.Create("/.DS_Store", 0, fuse.S_IFREG|0o644)
-	if errc != 0 || fh == 0 {
-		t.Fatalf("Create .DS_Store err=%d fh=%d, want success with fh", errc, fh)
-	}
-	if got := ad.Write("/.DS_Store", []byte("finder"), 0, fh); got != len("finder") {
-		t.Fatalf("Write .DS_Store = %d, want %d", got, len("finder"))
-	}
-	if errc := ad.Flush("/.DS_Store", fh); errc != 0 {
-		t.Fatalf("Flush .DS_Store err=%d, want 0", errc)
-	}
-	if errc := ad.Mknod("/._asset.js", fuse.S_IFREG|0o644, 0); errc != 0 {
-		t.Fatalf("Mknod AppleDouble err=%d, want 0", errc)
-	}
-	if errc := ad.Mkdir("/.Spotlight-V100", 0o755); errc != 0 {
-		t.Fatalf("Mkdir Spotlight err=%d, want 0", errc)
-	}
-
-	if got := strings.Join(fs.created, ","); got != "/.DS_Store,/._asset.js" {
-		t.Fatalf("created = %q, want Apple metadata files", got)
-	}
-	if got := strings.Join(fs.writes, ","); got != "/.DS_Store" {
-		t.Fatalf("writes = %q, want .DS_Store", got)
-	}
-	if got := strings.Join(fs.flushes, ","); got != "/.DS_Store" {
-		t.Fatalf("flushes = %q, want .DS_Store", got)
-	}
-	if got := strings.Join(fs.mkdirs, ","); got != "/.Spotlight-V100" {
-		t.Fatalf("mkdirs = %q, want Spotlight", got)
 	}
 }
 

@@ -10,8 +10,7 @@
 |---|---|---|---|
 | `mount_point` | string | ~/Qrypt | FUSE mount point (e.g. ~/Qrypt). |
 | `volume_name` | string | Qrypt | Volume label shown in the OS file manager. |
-| `ignore_apple_metadata` | boolean | true | Do not sync Apple Double (._) metadata files to the backend on macOS. |
-| `delegate_apple_xattr` | boolean | false | Delegate com.apple.* extended attributes to macFUSE on macOS. |
+| `options` | object | - | Platform-specific FUSE mount options. Each item is passed as one -o value, such as auto_xattr or iosize=4194304. |
 | `read_only` | boolean | false | Mount the filesystem read-only. |
 | `allow_other` | boolean | false | Allow other local users to access the FUSE mount. |
 | `default_permissions` | boolean | false | Ask the kernel to enforce mode/uid/gid permissions. |
@@ -20,6 +19,15 @@
 | `negative_timeout` | string | 0s | FUSE negative lookup cache timeout (e.g. "0s", "1s"). |
 | `total_space` | string | 1T | Total capacity reported to the OS (e.g. "1T", "500G"). |
 | `free_space` | string | 800G | Free space reported to the OS (e.g. "800G"). |
+
+### `mount.options`
+
+按目标平台填写挂载参数；每个数组元素会作为一个 `-o` 参数传递。
+
+| 平台 | 示例值 |
+|---|---|
+| `darwin` | `["defer_permissions", "auto_xattr", "iosize=4194304"]` |
+| `windows` | `["FileInfoTimeout=1000"]` |
 
 ## 加密配置
 

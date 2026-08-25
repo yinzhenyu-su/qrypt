@@ -53,8 +53,7 @@ volume_name = "Qrypt Dev"
 read_only = true
 allow_other = true
 default_permissions = true
-ignore_apple_metadata = false
-delegate_apple_xattr = true
+options = { darwin = ["defer_permissions", "auto_xattr", "iosize=8388608"], windows = ["FileInfoTimeout=1000"] }
 attr_timeout = "1500ms"
 entry_timeout = "2s"
 negative_timeout = "250ms"
@@ -85,11 +84,11 @@ log_file = "`+filepath.Join(tmp, "qrypt.log")+`"
 	if !mountConfig.DefaultPermissions {
 		t.Fatal("expected default_permissions to be enabled")
 	}
-	if mountConfig.IgnoreAppleMetadata {
-		t.Fatal("expected ignore_apple_metadata to be disabled")
+	if got := strings.Join(mountConfig.MountOptions["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=8388608" {
+		t.Fatalf("unexpected darwin mount options: %q", got)
 	}
-	if !mountConfig.DelegateAppleXattr {
-		t.Fatal("expected delegate_apple_xattr to be enabled")
+	if got := strings.Join(mountConfig.MountOptions["windows"], ","); got != "FileInfoTimeout=1000" {
+		t.Fatalf("unexpected windows mount options: %q", got)
 	}
 	if mountConfig.AttrTimeout != 1500*time.Millisecond {
 		t.Fatalf("unexpected attr timeout: %s", mountConfig.AttrTimeout)
@@ -122,11 +121,8 @@ func TestMountConfigFromConfigDefaults(t *testing.T) {
 	if mountConfig.VolumeName != "Qrypt" {
 		t.Fatalf("unexpected default volume name: %q", mountConfig.VolumeName)
 	}
-	if !mountConfig.IgnoreAppleMetadata {
-		t.Fatal("expected ignore_apple_metadata to default to true")
-	}
-	if mountConfig.DelegateAppleXattr {
-		t.Fatal("expected delegate_apple_xattr to default to false")
+	if got := strings.Join(mountConfig.MountOptions["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=4194304" {
+		t.Fatalf("unexpected default darwin mount options: %q", got)
 	}
 	if mountConfig.ReadOnly {
 		t.Fatal("expected read_only to default to false")
@@ -157,6 +153,20 @@ func TestMountConfigRejectsInvalidMetadataTimeout(t *testing.T) {
 	_, err := mountConfigFromConfig(configPath)
 	if err == nil || !strings.Contains(err.Error(), "attr_timeout") {
 		t.Fatalf("expected attr_timeout error, got %v", err)
+	}
+}
+
+func TestMountOptionsFromConfigPropagatesPlatformOptions(t *testing.T) {
+	options, err := (cliRuntime{}).MountOptionsFromConfig(&config.Config{
+		Mount: config.MountOptions{Options: map[string][]string{
+			"darwin": {"auto_xattr", "iosize=8388608"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(options.PlatformOptions["darwin"], ","); got != "auto_xattr,iosize=8388608" {
+		t.Fatalf("unexpected platform mount options: %q", got)
 	}
 }
 

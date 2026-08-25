@@ -88,6 +88,25 @@ def build_field_rows(props, skip_encryption=False, skip_cache=False, doc_overrid
     return "\n".join(rows)
 
 
+def build_platform_options_section(prop):
+    examples = prop.get("examples", [])
+    if not examples:
+        return ""
+    platform_options = examples[0]
+    rows = [
+        "### `mount.options`",
+        "",
+        "按目标平台填写挂载参数；每个数组元素会作为一个 `-o` 参数传递。",
+        "",
+        "| 平台 | 示例值 |",
+        "|---|---|",
+    ]
+    for platform, values in platform_options.items():
+        rendered = json.dumps(values, ensure_ascii=False)
+        rows.append(f"| `{platform}` | `{rendered}` |")
+    return "\n".join(rows)
+
+
 def generate():
     schema = load_schema()
     props = schema.get("properties", {})
@@ -105,6 +124,10 @@ def generate():
     sections.append("挂载相关配置集中在 `[mount]` 下。旧的顶层写法仍兼容，但建议只用这一节。")
     sections.append("")
     sections.append(build_field_rows(mount_props))
+    options_prop = mount_props.get("options")
+    if options_prop:
+        sections.append("")
+        sections.append(build_platform_options_section(options_prop))
     sections.append("")
 
     enc = defs.get("encryptionConfig", {})

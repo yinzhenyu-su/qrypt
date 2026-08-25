@@ -21,9 +21,6 @@ func (a *adapter) Readdir(path string, fill func(name string, stat *fuse.Stat_t,
 	defer done()
 	fill(".", nil, 0)
 	fill("..", nil, 0)
-	if a.hasIgnoredAppleMetadata(path) {
-		return 0
-	}
 	entries, err := a.fs.List(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
@@ -55,10 +52,6 @@ func (a *adapter) Opendir(path string) (int, uint64) {
 		return errc, 0
 	}
 	defer done()
-	if a.hasIgnoredAppleMetadata(path) {
-		fh = a.nextHandle(path, a.ignoredAppleEntry(path))
-		return 0, fh
-	}
 	entry, err := a.fs.Stat(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
@@ -89,9 +82,6 @@ func (a *adapter) Fsyncdir(path string, datasync bool, fh uint64) int {
 		return errc
 	}
 	defer done()
-	if a.hasIgnoredAppleMetadata(path) {
-		return 0
-	}
 	if _, err := a.fs.Stat(ctx, path); err != nil {
 		errc = fuseErr(err)
 		logFuseError("Fsyncdir", path, errc, err)
@@ -109,10 +99,6 @@ func (a *adapter) Mkdir(path string, mode uint32) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, true)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc

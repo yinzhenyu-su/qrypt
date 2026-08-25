@@ -1,9 +1,14 @@
 package mount
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 )
+
+func cleanMountPath(path string) string {
+	return filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(path, "/")))
+}
 
 func (a *adapter) setXattr(path, name string, value []byte) {
 	key := cleanMountPath(path)
