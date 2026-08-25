@@ -16,46 +16,43 @@ import (
 )
 
 type Config struct {
-	Version             string          `toml:"version"`
-	Mount               MountOptions    `toml:"mount"`
-	MountPoint          string          `toml:"mount_point"`
-	VolumeName          string          `toml:"volume_name"`
-	ReadOnly            bool            `toml:"read_only"`
-	AllowOther          bool            `toml:"allow_other"`
-	DefaultPermissions  bool            `toml:"default_permissions"`
-	IgnoreAppleMetadata *bool           `toml:"ignore_apple_metadata"`
-	DelegateAppleXattr  *bool           `toml:"delegate_apple_xattr"`
-	AttrTimeout         string          `toml:"attr_timeout"`
-	EntryTimeout        string          `toml:"entry_timeout"`
-	NegativeTimeout     string          `toml:"negative_timeout"`
-	TotalSpace          string          `toml:"total_space"`
-	FreeSpace           string          `toml:"free_space"`
-	Logging             LoggingConfig   `toml:"logging"`
-	Debug               DebugConfig     `toml:"debug"`
-	Time                TimeConfig      `toml:"time"`
-	Bandwidth           BandwidthConfig `toml:"bandwidth"`
-	Storage             StorageConfig   `toml:"storage"`
-	ReadCache           ReadCacheConfig `toml:"read_cache"`
-	ThumbnailCache      ReadCacheConfig `toml:"thumbnail_cache"`
-	Upload              UploadConfig    `toml:"upload"`
-	Encryption          crypt.Config    `toml:"encryption"`
-	Defaults            Defaults        `toml:"defaults"`
-	Mounts              []MountConfig   `toml:"mounts"`
+	Version            string          `toml:"version"`
+	Mount              MountOptions    `toml:"mount"`
+	MountPoint         string          `toml:"mount_point"`
+	VolumeName         string          `toml:"volume_name"`
+	ReadOnly           bool            `toml:"read_only"`
+	AllowOther         bool            `toml:"allow_other"`
+	DefaultPermissions bool            `toml:"default_permissions"`
+	AttrTimeout        string          `toml:"attr_timeout"`
+	EntryTimeout       string          `toml:"entry_timeout"`
+	NegativeTimeout    string          `toml:"negative_timeout"`
+	TotalSpace         string          `toml:"total_space"`
+	FreeSpace          string          `toml:"free_space"`
+	Logging            LoggingConfig   `toml:"logging"`
+	Debug              DebugConfig     `toml:"debug"`
+	Time               TimeConfig      `toml:"time"`
+	Bandwidth          BandwidthConfig `toml:"bandwidth"`
+	Storage            StorageConfig   `toml:"storage"`
+	ReadCache          ReadCacheConfig `toml:"read_cache"`
+	ThumbnailCache     ReadCacheConfig `toml:"thumbnail_cache"`
+	Upload             UploadConfig    `toml:"upload"`
+	Encryption         crypt.Config    `toml:"encryption"`
+	Defaults           Defaults        `toml:"defaults"`
+	Mounts             []MountConfig   `toml:"mounts"`
 }
 
 type MountOptions struct {
-	MountPoint          string `toml:"mount_point"`
-	VolumeName          string `toml:"volume_name"`
-	ReadOnly            *bool  `toml:"read_only"`
-	AllowOther          *bool  `toml:"allow_other"`
-	DefaultPermissions  *bool  `toml:"default_permissions"`
-	IgnoreAppleMetadata *bool  `toml:"ignore_apple_metadata"`
-	DelegateAppleXattr  *bool  `toml:"delegate_apple_xattr"`
-	AttrTimeout         string `toml:"attr_timeout"`
-	EntryTimeout        string `toml:"entry_timeout"`
-	NegativeTimeout     string `toml:"negative_timeout"`
-	TotalSpace          string `toml:"total_space"`
-	FreeSpace           string `toml:"free_space"`
+	MountPoint         string              `toml:"mount_point"`
+	VolumeName         string              `toml:"volume_name"`
+	ReadOnly           *bool               `toml:"read_only"`
+	AllowOther         *bool               `toml:"allow_other"`
+	DefaultPermissions *bool               `toml:"default_permissions"`
+	Options            map[string][]string `toml:"options"`
+	AttrTimeout        string              `toml:"attr_timeout"`
+	EntryTimeout       string              `toml:"entry_timeout"`
+	NegativeTimeout    string              `toml:"negative_timeout"`
+	TotalSpace         string              `toml:"total_space"`
+	FreeSpace          string              `toml:"free_space"`
 }
 
 type Defaults struct {
@@ -369,30 +366,17 @@ func (c *Config) EffectiveVolumeName() string {
 	return "Qrypt"
 }
 
-func (c *Config) EffectiveIgnoreAppleMetadata() bool {
-	if c == nil {
-		return true
+func (c *Config) EffectiveMountOptions() map[string][]string {
+	if c == nil || c.Mount.Options == nil {
+		return map[string][]string{
+			"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304"},
+		}
 	}
-	if c.Mount.IgnoreAppleMetadata != nil {
-		return *c.Mount.IgnoreAppleMetadata
+	options := make(map[string][]string, len(c.Mount.Options))
+	for platform, values := range c.Mount.Options {
+		options[platform] = append([]string(nil), values...)
 	}
-	if c.IgnoreAppleMetadata != nil {
-		return *c.IgnoreAppleMetadata
-	}
-	return true
-}
-
-func (c *Config) EffectiveDelegateAppleXattr() bool {
-	if c == nil {
-		return false
-	}
-	if c.Mount.DelegateAppleXattr != nil {
-		return *c.Mount.DelegateAppleXattr
-	}
-	if c.DelegateAppleXattr != nil {
-		return *c.DelegateAppleXattr
-	}
-	return false
+	return options
 }
 
 func (c *Config) EffectiveReadOnly() bool {

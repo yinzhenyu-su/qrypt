@@ -4,9 +4,11 @@ version = "1"
 [mount]
 mount_point = "~/Qrypt"
 volume_name = "Qrypt"
-ignore_apple_metadata = true
 total_space = "1T"
 free_space = "800G"
+
+[mount.options]
+darwin = ["defer_permissions", "auto_xattr", "iosize=4194304"]
 
 [storage]
 work_dir = "/tmp/qrypt"

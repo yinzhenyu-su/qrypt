@@ -234,8 +234,7 @@ volume_name = "Qrypt Test"
 read_only = true
 allow_other = true
 default_permissions = true
-ignore_apple_metadata = false
-delegate_apple_xattr = true
+options = { darwin = ["defer_permissions", "auto_xattr", "iosize=8388608"], windows = ["FileInfoTimeout=1000"] }
 total_space = "1T"
 free_space = "800G"
 
@@ -269,11 +268,12 @@ log_file = "/tmp/qrypt.log"
 	if !cfg.EffectiveDefaultPermissions() {
 		t.Fatal("expected default_permissions to be enabled")
 	}
-	if cfg.EffectiveIgnoreAppleMetadata() {
-		t.Fatal("expected ignore_apple_metadata to be disabled")
+	options := cfg.EffectiveMountOptions()
+	if got := strings.Join(options["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=8388608" {
+		t.Fatalf("unexpected darwin mount options: %q", got)
 	}
-	if !cfg.EffectiveDelegateAppleXattr() {
-		t.Fatal("expected delegate_apple_xattr to be enabled")
+	if got := strings.Join(options["windows"], ","); got != "FileInfoTimeout=1000" {
+		t.Fatalf("unexpected windows mount options: %q", got)
 	}
 	total, free, err := cfg.EffectiveSpaceBytes()
 	if err != nil {
@@ -537,11 +537,9 @@ func TestMountOptionsDefaults(t *testing.T) {
 	if cfg.EffectiveVolumeName() != "Qrypt" {
 		t.Fatalf("unexpected default volume name: %q", cfg.EffectiveVolumeName())
 	}
-	if !cfg.EffectiveIgnoreAppleMetadata() {
-		t.Fatal("expected ignore_apple_metadata to default to true")
-	}
-	if cfg.EffectiveDelegateAppleXattr() {
-		t.Fatal("expected delegate_apple_xattr to default to false")
+	options := cfg.EffectiveMountOptions()
+	if got := strings.Join(options["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=4194304" {
+		t.Fatalf("unexpected default darwin mount options: %q", got)
 	}
 	if cfg.ReadOnly {
 		t.Fatal("expected read_only to default to false")

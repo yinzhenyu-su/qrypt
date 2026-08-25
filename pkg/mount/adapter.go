@@ -20,29 +20,26 @@ import (
 
 type adapter struct {
 	fuse.FileSystemBase
-	fs                  vfs.FileSystem
-	mu                  sync.Mutex
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	handles             map[uint64]fuseHandle
-	ignoredApple        map[string]ignoredAppleNode
-	xattrs              map[string]map[string][]byte
-	activeOps           [activeOpsSlots]activeOpsSlot
-	nextFH              uint64
-	nextOp              atomic.Uint64
-	stopping            atomic.Bool
-	ready               chan struct{}
-	readyOnce           sync.Once
-	trace               fuseTracer
-	statfs              StatfsOptions
-	statfsAuto          statfsAutoCache
-	readOnly            bool
-	allowOther          bool
-	credsOnce           sync.Once
-	cachedUID           uint32
-	cachedGID           uint32
-	ignoreAppleMetadata bool
-	delegateAppleXattr  bool
+	fs         vfs.FileSystem
+	mu         sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	handles    map[uint64]fuseHandle
+	xattrs     map[string]map[string][]byte
+	activeOps  [activeOpsSlots]activeOpsSlot
+	nextFH     uint64
+	nextOp     atomic.Uint64
+	stopping   atomic.Bool
+	ready      chan struct{}
+	readyOnce  sync.Once
+	trace      fuseTracer
+	statfs     StatfsOptions
+	statfsAuto statfsAutoCache
+	readOnly   bool
+	allowOther bool
+	credsOnce  sync.Once
+	cachedUID  uint32
+	cachedGID  uint32
 }
 
 // activeOpsSlots is the fixed capacity of the per-op active-operation ring.
@@ -54,13 +51,6 @@ type activeOpsSlot struct {
 	id atomic.Uint64 // 0 = empty, otherwise the op id occupying the slot
 	mu sync.RWMutex
 	op activeFuseOp
-}
-
-type ignoredAppleNode struct {
-	isDir bool
-	size  int64
-	data  []byte
-	mtime time.Time
 }
 
 type fuseHandle struct {
@@ -176,30 +166,25 @@ func newAdapter(fs vfs.FileSystem, statfs StatfsOptions) *adapter {
 }
 
 type adapterOptions struct {
-	Statfs              StatfsOptions
-	ReadOnly            bool
-	AllowOther          bool
-	IgnoreAppleMetadata bool
-	DelegateAppleXattr  bool
+	Statfs     StatfsOptions
+	ReadOnly   bool
+	AllowOther bool
 }
 
 func newAdapterWithOptions(fs vfs.FileSystem, opts adapterOptions) *adapter {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &adapter{
-		fs:                  fs,
-		ctx:                 ctx,
-		cancel:              cancel,
-		ready:               make(chan struct{}),
-		handles:             map[uint64]fuseHandle{},
-		ignoredApple:        map[string]ignoredAppleNode{},
-		xattrs:              map[string]map[string][]byte{},
-		trace:               fuseTracer{},
-		statfs:              opts.Statfs,
-		statfsAuto:          statfsAutoCache{},
-		readOnly:            opts.ReadOnly,
-		allowOther:          opts.AllowOther,
-		ignoreAppleMetadata: opts.IgnoreAppleMetadata,
-		delegateAppleXattr:  opts.DelegateAppleXattr,
+		fs:         fs,
+		ctx:        ctx,
+		cancel:     cancel,
+		ready:      make(chan struct{}),
+		handles:    map[uint64]fuseHandle{},
+		xattrs:     map[string]map[string][]byte{},
+		trace:      fuseTracer{},
+		statfs:     opts.Statfs,
+		statfsAuto: statfsAutoCache{},
+		readOnly:   opts.ReadOnly,
+		allowOther: opts.AllowOther,
 	}
 }
 

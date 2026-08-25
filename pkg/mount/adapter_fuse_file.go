@@ -21,10 +21,6 @@ func (a *adapter) Open(path string, flags int) (int, uint64) {
 		return errc, 0
 	}
 	defer done()
-	if a.hasIgnoredAppleMetadata(path) {
-		fh = a.nextHandleWithFlags(path, flags, a.ignoredAppleEntry(path))
-		return 0, fh
-	}
 	entry, err := a.fs.Stat(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
@@ -45,17 +41,6 @@ func (a *adapter) Mknod(path string, mode uint32, dev uint64) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		if !isAppleMetadataDirPath(path) {
-			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
-				errc = fuseErr(err)
-				logFuseError("Mknod", path, errc, err)
-				return errc
-			}
-		}
-		a.ensureIgnoredApple(path, mode&fuse.S_IFDIR != 0)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -93,18 +78,6 @@ func (a *adapter) Create(path string, flags int, mode uint32) (int, uint64) {
 		return errc, 0
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		if !isAppleMetadataDirPath(path) {
-			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
-				errc = fuseErr(err)
-				logFuseError("Create", path, errc, err)
-				return errc, 0
-			}
-		}
-		a.ensureIgnoredApple(path, false)
-		fh = a.nextHandleWithFlags(path, flags|2, a.ignoredAppleEntry(path))
-		return 0, fh
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc, 0
@@ -138,10 +111,6 @@ func (a *adapter) Read(path string, buff []byte, ofst int64, fh uint64) int {
 		return result
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		result = a.readIgnoredApple(path, buff, ofst)
-		return result
-	}
 	hint, finishRead := a.beginHandleRead(fh)
 	defer func() { a.releaseReadSession(finishRead()) }()
 	if hint.SessionID != 0 {
@@ -183,18 +152,6 @@ func (a *adapter) Write(path string, buff []byte, ofst int64, fh uint64) int {
 		return result
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		if !isAppleMetadataDirPath(path) {
-			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
-				result = fuseErr(err)
-				logFuseError("Write", path, result, err)
-				return result
-			}
-		}
-		a.writeIgnoredApple(path, buff, ofst)
-		result = len(buff)
-		return result
-	}
 	if a.isReadOnlyPath(path) {
 		result = -fuse.EROFS
 		return result
@@ -219,10 +176,6 @@ func (a *adapter) Flush(path string, fh uint64) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		return 0
-	}
 	if !a.handleWritable(fh) {
 		return 0
 	}
@@ -257,17 +210,6 @@ func (a *adapter) Truncate(path string, size int64, fh uint64) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		if !isAppleMetadataDirPath(path) {
-			if err := a.ensureIgnoredAppleParent(ctx, path); err != nil {
-				errc = fuseErr(err)
-				logFuseError("Truncate", path, errc, err)
-				return errc
-			}
-		}
-		a.truncateIgnoredApple(path, size)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc

@@ -13,23 +13,22 @@ import (
 )
 
 type Options struct {
-	MountPoint          string
-	ReadOnly            bool
-	AllowOther          bool
-	DefaultPermissions  bool
-	VolumeName          string
-	IgnoreAppleMetadata bool
-	DelegateAppleXattr  bool
-	AttrTimeout         time.Duration
-	AttrTimeoutSet      bool
-	EntryTimeout        time.Duration
-	EntryTimeoutSet     bool
-	NegativeTimeout     time.Duration
-	TotalSpace          int64
-	FreeSpace           int64
-	Foreground          bool
-	ReadyTimeout        time.Duration
-	UnmountOnError      bool
+	MountPoint         string
+	ReadOnly           bool
+	AllowOther         bool
+	DefaultPermissions bool
+	VolumeName         string
+	PlatformOptions    map[string][]string
+	AttrTimeout        time.Duration
+	AttrTimeoutSet     bool
+	EntryTimeout       time.Duration
+	EntryTimeoutSet    bool
+	NegativeTimeout    time.Duration
+	TotalSpace         int64
+	FreeSpace          int64
+	Foreground         bool
+	ReadyTimeout       time.Duration
+	UnmountOnError     bool
 }
 
 type Session struct {
@@ -72,10 +71,8 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 			TotalSpace: opts.TotalSpace,
 			FreeSpace:  opts.FreeSpace,
 		},
-		ReadOnly:            opts.ReadOnly,
-		AllowOther:          opts.AllowOther,
-		IgnoreAppleMetadata: opts.IgnoreAppleMetadata,
-		DelegateAppleXattr:  opts.DelegateAppleXattr,
+		ReadOnly:   opts.ReadOnly,
+		AllowOther: opts.AllowOther,
 	})
 	host := fuse.NewFileSystemHost(ad)
 	// qrypt's adapter and VFS synchronize their mutable state internally, so
@@ -150,6 +147,10 @@ func (FuseMounter) Unmount(ctx context.Context, session *Session) error {
 }
 
 func mountOptions(opts Options) []string {
+	return mountOptionsForGOOS(opts, runtime.GOOS)
+}
+
+func mountOptionsForGOOS(opts Options, goos string) []string {
 	mode := "rw"
 	if opts.ReadOnly {
 		mode = "ro"
@@ -169,20 +170,20 @@ func mountOptions(opts Options) []string {
 		"-o", "negative_timeout=" + fuseTimeout(opts.NegativeTimeout),
 		"-o", "use_ino",
 	}
-	if runtime.GOOS == "darwin" {
+	if goos == "darwin" {
 		flags = append(flags,
-			"-o", "defer_permissions",
-			// Let macFUSE store extended attributes in AppleDouble files. Finder
-			// otherwise aborts a newly-created file with EEXIST on macOS 26.6.1.
-			// AppleDouble filtering remains in the adapter so IgnoreAppleMetadata keeps
-			// controlling whether those files reach the backing drive.
-			// "-o", "auto_xattr",
 			"-o", "fsname=qrypt",
 			"-o", "subtype=qrypt",
-			"-o", "iosize=4194304",
 		)
 	}
-	if runtime.GOOS == "windows" {
+	platformOptions := opts.PlatformOptions[goos]
+	if opts.PlatformOptions == nil && goos == "darwin" {
+		platformOptions = []string{"defer_permissions", "auto_xattr", "iosize=4194304"}
+	}
+	for _, option := range platformOptions {
+		flags = append(flags, "-o", option)
+	}
+	if goos == "windows" {
 		flags = append(flags,
 			"-o", "fsname=qrypt",
 		)
@@ -196,7 +197,7 @@ func mountOptions(opts Options) []string {
 	// volname is a macFUSE/WinFsp option; Linux libfuse rejects it with
 	// "unknown option", which would make mounting fail on Linux. The
 	// volume identity on Linux is carried by fsname/subtype above.
-	if opts.VolumeName != "" && runtime.GOOS != "linux" {
+	if opts.VolumeName != "" && goos != "linux" {
 		flags = append(flags, "-o", "volname="+opts.VolumeName)
 	}
 	return flags

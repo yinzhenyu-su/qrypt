@@ -16,11 +16,6 @@ func (a *adapter) Unlink(path string) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.removeIgnoredApple(path)
-		a.removeXattrs(path)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -44,11 +39,6 @@ func (a *adapter) Rmdir(path string) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.removeIgnoredApple(path)
-		a.removeXattrs(path)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -72,11 +62,6 @@ func (a *adapter) Rename(oldPath, newPath string) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(oldPath) || a.shouldIgnoreAppleMetadata(newPath) {
-		a.renameIgnoredApple(oldPath, newPath)
-		a.renameXattrs(oldPath, newPath)
-		return 0
-	}
 	if a.isReadOnlyPath(oldPath) || a.isReadOnlyPath(newPath) {
 		errc = -fuse.EROFS
 		return errc

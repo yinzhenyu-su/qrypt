@@ -367,7 +367,10 @@ behavior:
 - `adapter_fuse_mutation.go`: unlink/rmdir/rename operations
 - `adapter_fuse_metadata.go`: chmod/chown/time/statfs operations
 - `adapter_fuse_xattr.go`: extended attributes
-- `adapter_apple.go`: macOS Finder metadata compatibility
+
+Platform-specific FUSE mount attributes are configured under `[mount.options]`
+and passed through by `pkg/mount`; the callback adapter does not emulate
+Apple-specific metadata policy.
 
 Mount code should not implement cloud-drive semantics. It should convert FUSE
 inputs and errors, track handles, and delegate behavior to VFS.

@@ -18,11 +18,6 @@ func (a *adapter) Utimens(path string, tmsp []fuse.Timespec) int {
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 	}
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		a.trace.log("Utimens", path, "count=%d err=%d", len(tmsp), 0)
-		return 0
-	}
 	if errc == 0 && len(tmsp) >= 2 {
 		if setter, ok := a.fs.(modTimeSetter); ok {
 			modTime := time.Unix(tmsp[1].Sec, tmsp[1].Nsec)
@@ -54,10 +49,6 @@ func (a *adapter) Statfs(path string, stat *fuse.Statfs_t) int {
 func (a *adapter) Chmod(path string, mode uint32) int {
 	errc := 0
 	defer func() { a.trace.log("Chmod", path, "mode=%o err=%d", mode, errc) }()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -68,10 +59,6 @@ func (a *adapter) Chmod(path string, mode uint32) int {
 func (a *adapter) Chown(path string, uid uint32, gid uint32) int {
 	errc := 0
 	defer func() { a.trace.log("Chown", path, "uid=%d gid=%d err=%d", uid, gid, errc) }()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -88,10 +75,6 @@ func (a *adapter) Chflags(path string, flags uint32) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -113,10 +96,6 @@ func (a *adapter) Setcrtime(path string, tmsp fuse.Timespec) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc
@@ -138,10 +117,6 @@ func (a *adapter) Setchgtime(path string, tmsp fuse.Timespec) int {
 		return errc
 	}
 	defer done()
-	if a.shouldIgnoreAppleMetadata(path) {
-		a.ensureIgnoredApple(path, false)
-		return 0
-	}
 	if a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc

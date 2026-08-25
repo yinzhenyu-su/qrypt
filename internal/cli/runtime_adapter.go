@@ -60,19 +60,18 @@ func (cliRuntime) MountOptionsFromConfig(cfg *config.Config) (mount.Options, err
 		return mount.Options{}, err
 	}
 	return mount.Options{
-		ReadOnly:            mountCfg.ReadOnly,
-		AllowOther:          mountCfg.AllowOther,
-		DefaultPermissions:  mountCfg.DefaultPermissions,
-		VolumeName:          mountCfg.VolumeName,
-		IgnoreAppleMetadata: mountCfg.IgnoreAppleMetadata,
-		DelegateAppleXattr:  mountCfg.DelegateAppleXattr,
-		AttrTimeout:         mountCfg.AttrTimeout,
-		AttrTimeoutSet:      mountCfg.AttrTimeoutSet,
-		EntryTimeout:        mountCfg.EntryTimeout,
-		EntryTimeoutSet:     mountCfg.EntryTimeoutSet,
-		NegativeTimeout:     mountCfg.NegativeTimeout,
-		TotalSpace:          mountCfg.TotalSpace,
-		FreeSpace:           mountCfg.FreeSpace,
+		ReadOnly:           mountCfg.ReadOnly,
+		AllowOther:         mountCfg.AllowOther,
+		DefaultPermissions: mountCfg.DefaultPermissions,
+		VolumeName:         mountCfg.VolumeName,
+		PlatformOptions:    mountCfg.MountOptions,
+		AttrTimeout:        mountCfg.AttrTimeout,
+		AttrTimeoutSet:     mountCfg.AttrTimeoutSet,
+		EntryTimeout:       mountCfg.EntryTimeout,
+		EntryTimeoutSet:    mountCfg.EntryTimeoutSet,
+		NegativeTimeout:    mountCfg.NegativeTimeout,
+		TotalSpace:         mountCfg.TotalSpace,
+		FreeSpace:          mountCfg.FreeSpace,
 	}, nil
 }
 

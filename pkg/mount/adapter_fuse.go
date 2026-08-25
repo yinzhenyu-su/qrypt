@@ -16,10 +16,6 @@ func (a *adapter) Getattr(path string, stat *fuse.Stat_t, fh uint64) int {
 		return errc
 	}
 	defer done()
-	if a.hasIgnoredAppleMetadata(path) {
-		a.fillStat(stat, a.ignoredAppleEntry(path), path)
-		return 0
-	}
 	entry, err := a.fs.Stat(ctx, path)
 	if err != nil {
 		errc = fuseErr(err)
@@ -51,9 +47,6 @@ func (a *adapter) Access(path string, mask uint32) int {
 		return errc
 	}
 	defer done()
-	if a.hasIgnoredAppleMetadata(path) {
-		return 0
-	}
 	if mask&fuse.W_OK != 0 && a.isReadOnlyPath(path) {
 		errc = -fuse.EROFS
 		return errc

@@ -4,7 +4,18 @@ This page records recurring implementation issues and the reasoning behind the
 current fixes. It is meant to help contributors find the right layer to inspect
 before making changes.
 
-## Finder copy fails when `ignore_apple_metadata = true`
+## Finder copy and platform mount options
+
+The old Apple-specific configuration switches and qrypt-side emulation have
+been removed. Platform-specific FUSE behavior is now
+configured through raw options:
+
+```toml
+[mount.options]
+darwin = ["auto_xattr", "iosize=4194304"]
+```
+
+Each item is passed as one `-o` value to the platform FUSE implementation.
 
 ### Symptom
 
@@ -15,19 +26,8 @@ Original report:
 > completed"). This is a regression.
 
 On macOS, copying a directory with Finder may fail with a generic message such
-as "The operation can't be completed" when:
-
-```toml
-ignore_apple_metadata = true
-```
-
-The same copy may work when:
-
-```toml
-ignore_apple_metadata = false
-```
-
-Changing `delegate_apple_xattr` may not affect this failure.
+as "The operation can't be completed" when the selected macFUSE options do not
+match the installed macOS/macFUSE behavior.
 
 ### Why This Happens
 
@@ -39,20 +39,11 @@ probe, update, read, and remove Apple metadata paths such as:
 - `.Spotlight-V100`
 - `.fseventsd`
 
-When `ignore_apple_metadata = true`, qrypt should hide or ignore those metadata files
-without changing the behavior Finder expects from the filesystem.
+macFUSE mount options, rather than qrypt-side path emulation, control how those
+metadata files and extended attributes are handled.
 
-A subtle failure mode is returning "exists" for an AppleDouble path that Finder
-only probed and never created. For example, if `Getattr("/dir/._entry.js")`
-returns success just because the name matches `._*`, Finder can take a different
-copy path and later clean up or abort the directory copy.
-
-The correct behavior is:
-
-- Write-like operations for Apple metadata may create an in-memory ignored node.
-- Lookup/read-like operations should report the node only if it was actually
-  created during this mount process.
-- Missing AppleDouble paths should still return `ENOENT`.
+The actual behavior is determined by the selected macFUSE options and should be
+verified against the installed macFUSE version.
 
 ### What To Check
 
@@ -73,43 +64,30 @@ rg 'Getattr|Create|Open|Write|Flush|Unlink|Rmdir|Setxattr|Getxattr' ~/.qrypt/qry
 
 Important signs:
 
-- `Getattr` for a missing `._*` path should return `ENOENT`.
-- `.DS_Store` and `._*` writes should not reach the remote driver when
-  `ignore_apple_metadata = true`.
+- Check the effective macFUSE option list and the corresponding FUSE return codes.
 - Finder may remove and recreate the destination directory after an earlier
   failure. That can be a symptom, not the root cause.
-- If `ignore_apple_metadata = false` works, compare whether the failure is specific to
-  the ignored Apple metadata path.
 
-### About `delegate_apple_xattr`
+### About platform xattr options
 
-`delegate_apple_xattr` controls whether Apple-specific extended attributes
-such as:
+Apple-specific extended attributes such as:
 
 - `com.apple.FinderInfo`
 - `com.apple.quarantine`
 - `com.apple.metadata:*`
 
-It is separate from `ignore_apple_metadata`.
-
-When `delegate_apple_xattr = true`, qrypt returns `ENOTSUP` for those xattrs so
-macFUSE can handle them locally through AppleDouble. When
-`delegate_apple_xattr = false`, qrypt keeps xattrs in memory for Finder
-compatibility. In either case, they are not uploaded to the remote drive.
+are controlled by the macFUSE options selected in `[mount.options].darwin`.
+qrypt passes the values through and does not emulate Apple metadata policy in
+the FUSE adapter.
 
 ### Regression Tests
 
 Keep tests focused on filesystem semantics rather than one Finder version.
 Relevant tests live in `pkg/mount/mount_test.go` and should cover:
 
-- Missing AppleDouble lookup returns `ENOENT`.
-- Ignored `.DS_Store` supports write, read, offset write, truncate, and rename
-  during the same mount process.
-- Ignored nested metadata files still create the real parent directory when
-  needed.
-- Ignored metadata time updates do not touch the backend.
-- xattrs can be set, read, listed, removed, renamed, and removed with their
-  subtree when `delegate_apple_xattr = false`.
+- Platform-specific mount options are forwarded only to the matching platform.
+- Generic xattrs can be set, read, listed, removed, renamed, and removed with
+  their subtree.
 
 Run:
 
@@ -120,14 +98,13 @@ go test ./...
 
 ### Practical Guidance
 
-When fixing Finder copy issues, avoid solving them only by checking file names.
-Finder depends on a sequence of FUSE semantics. A path should not appear to
-exist unless qrypt has a real backend entry or an in-memory node created by an
-earlier operation in the same mount process.
+When fixing Finder copy issues, inspect the actual macFUSE option list and the
+FUSE operation sequence. qrypt should not add a second Apple metadata policy in
+the adapter.
 
 ### macOS 26.6.1 regression
 
-macOS 26.6.1 后，Finder 在 qrypt 挂载点复制文件报 EEXIST/-48。它在创建空文件、处理扩展属性后中止并删除，尚未执行 Write/Upload，与 upload_delay 无关。旧版 qrypt 在新系统失败且 macFUSE 未更新，表明是系统兼容性变化。Darwin 启用 auto_xattr 可绕过故障路径，AppleDouble 仍由 qrypt 控制。
+macOS 26.6.1 后，如 Finder 复制仍报 EEXIST/-48，应先检查 `[mount.options].darwin` 是否包含适合当前 macFUSE 的选项，例如 `auto_xattr`，再检查 FUSE 操作日志；Apple metadata 不再由 qrypt 适配器单独模拟。
 
 ## Why cross-drive copies write more data to disk than expected
 
