@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,12 +14,12 @@ import (
 
 type failingStateStore struct {
 	*drive.FileStateStore
-	failSaves int
+	failSaves atomic.Int32
 }
 
 func (s *failingStateStore) SaveJSON(name string, value any) error {
-	if s.failSaves > 0 {
-		s.failSaves--
+	if s.failSaves.Load() > 0 {
+		s.failSaves.Add(-1)
 		return errors.New("injected state save failure")
 	}
 	return s.FileStateStore.SaveJSON(name, value)
@@ -121,7 +122,7 @@ func TestStoreDeleteReportsFailureAndCanRetry(t *testing.T) {
 	session := testUploadSession{Key: "session-1", UploadID: "upload-1", Completed: map[int]bool{0: true}}
 	store.Save(session)
 	store.Flush()
-	stateStore.failSaves = 1
+	stateStore.failSaves.Store(1)
 
 	if err := store.Delete(session.Key); err == nil {
 		t.Fatal("Delete succeeded, want persistence error")
@@ -167,6 +168,44 @@ func TestStoreConcurrentSavesPreserveAllSessions(t *testing.T) {
 		if _, ok := reloaded.Load(key); !ok {
 			t.Fatalf("session %q was lost during concurrent saves", key)
 		}
+	}
+}
+
+func TestStoreDeleteConcurrentWithFailingSaves(t *testing.T) {
+	stateDir := t.TempDir()
+	stateStore := &failingStateStore{FileStateStore: drive.NewFileStateStore(filepath.Join(stateDir, "state"))}
+	store := NewStore(StoreOptions[testUploadSession]{
+		Store: stateStore,
+		Async: true,
+		File:  "upload_sessions.json",
+		Key: func(session testUploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session testUploadSession) bool {
+			return key != "" && session.Key == key && session.UploadID != ""
+		},
+	})
+	t.Cleanup(func() { store.Close() })
+
+	const key = "session-1"
+	store.Save(testUploadSession{Key: key, UploadID: "upload-1", Completed: map[int]bool{0: true}})
+	store.Flush()
+
+	for i := 0; i < 100; i++ {
+		if i%3 == 0 && i < 98 {
+			stateStore.failSaves.Store(1)
+		}
+		store.Save(testUploadSession{Key: fmt.Sprintf("session-%d", i), UploadID: "x", Completed: map[int]bool{0: true}})
+		_ = store.Delete(key)
+	}
+	store.Flush()
+
+	state, err := stateStore.load("upload_sessions.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Sessions[key]; ok {
+		t.Fatalf("deleted session %q resurrected on disk after successful flush", key)
 	}
 }
 
