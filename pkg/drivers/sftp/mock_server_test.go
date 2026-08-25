@@ -235,6 +235,41 @@ func TestMockSFTPReconnectsAfterConnectionLoss(t *testing.T) {
 	}
 }
 
+func TestMockSFTPListRetriesReadDirAfterConnectionLoss(t *testing.T) {
+	server := newMockSFTPServer(t)
+	driver := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})
+	ctx := context.Background()
+	if err := driver.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := driver.Drop(ctx); err != nil {
+			t.Errorf("driver.Drop() = %v", err)
+		}
+	})
+
+	readDirCalls := 0
+	defaultReadDir := driver.readDir
+	driver.readDir = func(ctx context.Context, client *sftpserver.Client, parent string) ([]os.FileInfo, error) {
+		readDirCalls++
+		if readDirCalls == 1 {
+			return nil, errors.New("connection lost")
+		}
+		return defaultReadDir(ctx, client, parent)
+	}
+
+	entries, err := driver.List(ctx, "/")
+	if err != nil {
+		t.Fatalf("List() after ReadDir connection loss = %v, want retry success", err)
+	}
+	if readDirCalls != 2 {
+		t.Fatalf("ReadDir calls = %d, want 2", readDirCalls)
+	}
+	if entries == nil {
+		t.Fatal("List() returned nil entries after retry")
+	}
+}
+
 func TestMockSFTPBandwidthLimiter(t *testing.T) {
 	server := newMockSFTPServer(t)
 	driver := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})
