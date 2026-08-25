@@ -10,12 +10,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"golang.org/x/crypto/ssh"
 )
+
+type blockingReadSource struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (s *blockingReadSource) Read([]byte) (int, error) {
+	<-s.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (s *blockingReadSource) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
 
 func TestFactoryRequiresConnectionAndAuthentication(t *testing.T) {
 	tests := []struct {
@@ -55,6 +71,29 @@ func TestReadRejectsNegativeRangeBeforeInitialization(t *testing.T) {
 	driver := New(Options{})
 	if _, err := driver.Read(context.Background(), drive.Entry{ID: "/file"}, -1, 1); !errors.Is(err, drive.ErrInvalidInput) {
 		t.Fatalf("Read error = %v, want drive.ErrInvalidInput", err)
+	}
+}
+
+func TestContextReadCloserClosesBlockedSourceOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &blockingReadSource{closed: make(chan struct{})}
+	reader := newContextReadCloser(ctx, source, source, nil)
+	t.Cleanup(func() { _ = reader.Close() })
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := reader.Read(make([]byte, 1))
+		readDone <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("blocked read returned nil error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked read did not stop after context cancellation")
 	}
 }
 

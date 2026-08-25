@@ -5,6 +5,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const (
@@ -44,8 +45,8 @@ func (d *Driver) saveUploadSession(session sftpUploadSession) {
 	d.uploadSessionStore().Save(session)
 }
 
-func (d *Driver) deleteUploadSession(key string) {
-	d.uploadSessionStore().Delete(key)
+func (d *Driver) deleteUploadSession(key string) error {
+	return d.uploadSessionStore().Delete(key)
 }
 
 func (d *Driver) pruneUploadSessions() {
@@ -90,6 +91,9 @@ func newUploadSessionStore(stateStore drive.StateStore) *uploadsession.Store[sft
 				}
 			}
 			return clone
+		},
+		OnError: func(err error) {
+			logging.L.Warnf("[SFTP] upload session state failed err=%v", err)
 		},
 	})
 }

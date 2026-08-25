@@ -1,6 +1,7 @@
 package uploadsession
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -9,6 +10,25 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+type failingStateStore struct {
+	*drive.FileStateStore
+	failSaves int
+}
+
+func (s *failingStateStore) SaveJSON(name string, value any) error {
+	if s.failSaves > 0 {
+		s.failSaves--
+		return errors.New("injected state save failure")
+	}
+	return s.FileStateStore.SaveJSON(name, value)
+}
+
+func (s *failingStateStore) load(name string) (uploadSessionState[testUploadSession], error) {
+	var state uploadSessionState[testUploadSession]
+	err := s.LoadJSON(name, &state)
+	return state, err
+}
 
 type testUploadSession struct {
 	Key       string          `json:"key"`
@@ -71,6 +91,54 @@ func TestStoreSaveLoadDelete(t *testing.T) {
 	store.Delete("session-1")
 	if _, ok := store.Load("session-1"); ok {
 		t.Fatal("expected deleted upload session to be absent")
+	}
+}
+
+func TestStoreDeleteReportsFailureAndCanRetry(t *testing.T) {
+	stateDir := t.TempDir()
+	stateStore := &failingStateStore{FileStateStore: drive.NewFileStateStore(filepath.Join(stateDir, "state"))}
+	store := NewStore(StoreOptions[testUploadSession]{
+		Store: stateStore,
+		Async: true,
+		File:  "upload_sessions.json",
+		Key: func(session testUploadSession) string {
+			return session.Key
+		},
+		Valid: func(key string, session testUploadSession) bool {
+			return key != "" && session.Key == key && session.UploadID != ""
+		},
+		Clone: func(session testUploadSession) testUploadSession {
+			clone := session
+			clone.Completed = map[int]bool{}
+			for part, completed := range session.Completed {
+				clone.Completed[part] = completed
+			}
+			return clone
+		},
+	})
+	t.Cleanup(func() { store.Close() })
+
+	session := testUploadSession{Key: "session-1", UploadID: "upload-1", Completed: map[int]bool{0: true}}
+	store.Save(session)
+	store.Flush()
+	stateStore.failSaves = 1
+
+	if err := store.Delete(session.Key); err == nil {
+		t.Fatal("Delete succeeded, want persistence error")
+	}
+	if _, ok := store.Load(session.Key); !ok {
+		t.Fatal("failed delete removed the in-memory session")
+	}
+
+	if err := store.Delete(session.Key); err != nil {
+		t.Fatalf("retry Delete: %v", err)
+	}
+	state, err := stateStore.load("upload_sessions.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Sessions[session.Key]; ok {
+		t.Fatalf("session remained on disk after successful retry: %+v", state.Sessions[session.Key])
 	}
 }
 

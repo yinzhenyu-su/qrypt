@@ -130,7 +130,9 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("sftp: stat upload %q: %w", req.Name, classifyError(err))
 	}
-	d.deleteUploadSession(sessionKey)
+	if err := d.deleteUploadSession(sessionKey); err != nil {
+		return drive.Entry{}, fmt.Errorf("sftp: persist completed upload cleanup: %w", err)
+	}
 	entry = drive.Entry{ID: path.Join(parent, req.Name), ParentID: parent, Name: req.Name, Size: info.Size(), ModTime: info.ModTime(), UpdatedAt: info.ModTime()}
 	return entry, nil
 }
