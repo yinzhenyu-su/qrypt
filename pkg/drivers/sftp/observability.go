@@ -71,7 +71,8 @@ func (r *metricReadCloser) Read(p []byte) (int, error) {
 	r.bytes += int64(n)
 	if err != nil {
 		if err == io.EOF {
-			err = nil
+			r.record(nil)
+			return n, io.EOF
 		}
 		r.record(err)
 	}

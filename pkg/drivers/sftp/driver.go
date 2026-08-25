@@ -119,7 +119,7 @@ func (d *Driver) connect(ctx context.Context) (*ssh.Client, *sftp.Client, error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sftp: connect %s: %w", d.address, err)
 	}
-	client, err := sftp.NewClient(connection)
+	client, err := sftp.NewClient(connection, sftp.UseConcurrentReads(false))
 	if err != nil {
 		_ = connection.Close()
 		return nil, nil, fmt.Errorf("sftp: create client: %w", err)
@@ -234,7 +234,7 @@ func (d *Driver) getClient(ctx context.Context) (*sftp.Client, error) {
 	if client == nil {
 		return nil, fmt.Errorf("sftp: driver is not initialized")
 	}
-	if _, err := client.Stat(d.rootPath); err == nil {
+	if _, err := d.statClient(ctx, client, d.rootPath); err == nil {
 		return client, nil
 	} else if !isConnectionFailure(err) {
 		return nil, fmt.Errorf("sftp: session health check: %w", classifyError(err))
@@ -242,6 +242,37 @@ func (d *Driver) getClient(ctx context.Context) (*sftp.Client, error) {
 		return reconnected, nil
 	} else {
 		return nil, reconnectErr
+	}
+}
+
+func (d *Driver) statClient(ctx context.Context, client *sftp.Client, name string) (os.FileInfo, error) {
+	result := make(chan struct {
+		info os.FileInfo
+		err  error
+	}, 1)
+	go func() {
+		info, err := client.Stat(name)
+		result <- struct {
+			info os.FileInfo
+			err  error
+		}{info: info, err: err}
+	}()
+	select {
+	case result := <-result:
+		return result.info, result.err
+	case <-ctx.Done():
+		d.closeConnection(client)
+		return nil, ctx.Err()
+	}
+}
+
+func (d *Driver) closeConnection(client *sftp.Client) {
+	d.mu.RLock()
+	connection := d.connection
+	current := d.client
+	d.mu.RUnlock()
+	if current == client && connection != nil {
+		_ = connection.Close()
 	}
 }
 

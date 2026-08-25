@@ -29,6 +29,7 @@ type Store[T any] struct {
 	writtenVersion uint64
 	workerStarted  bool
 	closed         bool
+	processedErr   error
 	cond           *sync.Cond
 	workerDone     chan struct{}
 }
@@ -122,20 +123,29 @@ func (s *Store[T]) Save(session T) {
 	s.mu.Unlock()
 }
 
-func (s *Store[T]) Delete(key string) {
+func (s *Store[T]) Delete(key string) error {
 	if s == nil || s.store == nil || key == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	s.ensureLoadedLocked()
-	if _, ok := s.state.Sessions[key]; !ok {
+	session, ok := s.state.Sessions[key]
+	if !ok {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	delete(s.state.Sessions, key)
 	version := s.enqueueLocked()
 	s.mu.Unlock()
-	s.waitForVersion(version)
+	if err := s.waitForVersion(version); err != nil {
+		s.mu.Lock()
+		if s.nextVersion == version {
+			s.state.Sessions[key] = session
+		}
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Store[T]) Prune() {
@@ -152,7 +162,7 @@ func (s *Store[T]) Prune() {
 	}
 	version := s.enqueueLocked()
 	s.mu.Unlock()
-	s.waitForVersion(version)
+	_ = s.waitForVersion(version)
 }
 
 func (s *Store[T]) Flush() {
@@ -163,7 +173,7 @@ func (s *Store[T]) Flush() {
 	s.ensureLoadedLocked()
 	version := s.nextVersion
 	s.mu.Unlock()
-	s.waitForVersion(version)
+	_ = s.waitForVersion(version)
 }
 
 func (s *Store[T]) Close() {
@@ -223,17 +233,21 @@ func (s *Store[T]) enqueueLocked() uint64 {
 	s.nextVersion++
 	version := s.nextVersion
 	if !s.async {
-		if err := s.saveState(s.stateSnapshotLocked()); err != nil {
+		err := s.saveState(s.stateSnapshotLocked())
+		if err != nil {
 			s.report(err)
 		}
 		s.writtenVersion = version
+		s.processedErr = err
 		return version
 	}
 	if s.closed {
-		if err := s.saveState(s.stateSnapshotLocked()); err != nil {
+		err := s.saveState(s.stateSnapshotLocked())
+		if err != nil {
 			s.report(err)
 		}
 		s.writtenVersion = version
+		s.processedErr = err
 		return version
 	}
 	if !s.workerStarted {
@@ -256,15 +270,17 @@ func (s *Store[T]) stateSnapshotLocked() uploadSessionState[T] {
 	return snapshot
 }
 
-func (s *Store[T]) waitForVersion(version uint64) {
+func (s *Store[T]) waitForVersion(version uint64) error {
 	if version == 0 || s == nil || s.store == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	for s.writtenVersion < version && !s.closed {
 		s.cond.Wait()
 	}
+	err := s.processedErr
 	s.mu.Unlock()
+	return err
 }
 
 func (s *Store[T]) writeLoop() {
@@ -288,6 +304,7 @@ func (s *Store[T]) writeLoop() {
 		if pending.version > s.writtenVersion {
 			s.writtenVersion = pending.version
 		}
+		s.processedErr = err
 		s.cond.Broadcast()
 		s.mu.Unlock()
 		s.report(err)
