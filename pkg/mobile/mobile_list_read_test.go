@@ -26,7 +26,7 @@ func TestMobileListAndReadAt(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestMobileReadAtRepeatedSeek(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestMobileVirtualFileReadAtInto(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestMobileListPageJSON(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestMobileCancelFileReadKeepsHandleUsable(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
