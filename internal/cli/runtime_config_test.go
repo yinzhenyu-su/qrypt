@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func TestApplyQryptHomeOverride(t *testing.T) {
@@ -62,7 +63,7 @@ free_space = "1.5T"
 
 [logging]
 log_level = "debug"
-log_file = "`+filepath.Join(tmp, "qrypt.log")+`"
+log_file = `+util.TOMLPath(filepath.Join(tmp, "qrypt.log"))+`
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)

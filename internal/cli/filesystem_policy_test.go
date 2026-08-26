@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,9 +20,9 @@ func TestBuildNamespaceDoesNotLimitLocalStagingUpload(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [bandwidth]
 upload = "1"
@@ -33,7 +34,7 @@ upload_delay = "10ms"
 name = "encrypted"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 [mounts.encryption]
 password = "encrypted-pass"
 salt = "encrypted-salt"
@@ -75,11 +76,11 @@ func TestBuildNamespaceUsesStorageDirs(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 [storage]
-read_cache_dir = "`+filepath.Join(cacheDir, "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(cacheDir, "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [upload]
 upload_delay = "10ms"
@@ -88,13 +89,13 @@ upload_delay = "10ms"
 name = "one"
 type = "localfs"
 [mounts.params]
-root_path = "`+remoteA+`"
+root_path = `+util.TOMLPath(remoteA)+`
 
 [[mounts]]
 name = "two"
 type = "localfs"
 [mounts.params]
-root_path = "`+remoteB+`"
+root_path = `+util.TOMLPath(remoteB)+`
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)

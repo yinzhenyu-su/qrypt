@@ -15,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -276,7 +277,7 @@ tmp_dir = "/desktop/tmp"
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +322,7 @@ func TestOpenInitializesRuntimeLog(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +351,7 @@ func TestStorageUsageAndClearReadCache(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +416,7 @@ func TestThumbnailCacheFileLifecycle(t *testing.T) {
 	name = "quark"
 	type = "localfs"
 	[mounts.params]
-	root_path = "`+remote+`"
+	root_path = `+util.TOMLPath(remote)+`
 	`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +518,7 @@ func TestThumbnailCachePrunesOldEntries(t *testing.T) {
 	name = "quark"
 	type = "localfs"
 	[mounts.params]
-	root_path = "`+remote+`"
+	root_path = `+util.TOMLPath(remote)+`
 	`), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
@@ -116,11 +117,11 @@ func TestBuildFileSystemCreatesNamespaceFromMountConfig(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [upload]
 upload_delay = "10ms"
@@ -129,13 +130,13 @@ upload_delay = "10ms"
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remoteA+`"
+root_path = `+util.TOMLPath(remoteA)+`
 
 [[mounts]]
 name = "quark2"
 type = "localfs"
 [mounts.params]
-root_path = "`+remoteB+`"
+root_path = `+util.TOMLPath(remoteB)+`
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -186,11 +187,11 @@ func TestBuildFileSystemSelectsSingleMount(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [upload]
 upload_delay = "10ms"
@@ -199,13 +200,13 @@ upload_delay = "10ms"
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remoteA+`"
+root_path = `+util.TOMLPath(remoteA)+`
 
 [[mounts]]
 name = "quark-test"
 type = "localfs"
 [mounts.params]
-root_path = "`+remoteB+`"
+root_path = `+util.TOMLPath(remoteB)+`
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -315,13 +316,13 @@ func TestBuildFileSystemSelectsMissingMount(t *testing.T) {
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 
 [[mounts]]
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)

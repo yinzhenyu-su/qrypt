@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // testLogRoot is a process-wide directory for session log files, deliberately
@@ -33,14 +32,4 @@ func testRuntimeJSON(tmp string) string {
 		filepath.Join(os.TempDir(), testLogRoot),
 		filepath.Join(tmp, "cache", "qrypt", "tmp"),
 	)
-}
-
-// tomlPath renders a filesystem path as a TOML basic-string literal. On
-// Windows paths contain backslashes, which TOML parses as escape sequences
-// ("\U" is a unicode escape), so they must be escaped before embedding.
-// macOS/Linux temp paths are unchanged by this.
-func tomlPath(p string) string {
-	p = strings.ReplaceAll(p, `\`, `\\`)
-	p = strings.ReplaceAll(p, `"`, `\"`)
-	return `"` + p + `"`
 }

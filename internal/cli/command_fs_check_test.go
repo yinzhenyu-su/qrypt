@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -36,7 +37,7 @@ func setupCheckTest(t *testing.T) (configPath, remote, local string) {
 		t.Fatal(err)
 	}
 	configPath = filepath.Join(tmp, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n[mounts.upload]\nupload_delay = \"10ms\"\ndelete_delay = \"10ms\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = "+util.TOMLPath(remote)+"\n[mounts.upload]\nupload_delay = \"10ms\"\ndelete_delay = \"10ms\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return configPath, remote, local
@@ -171,7 +172,7 @@ func TestFsCheckDirectionFlipsWithArgumentOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = "+util.TOMLPath(remote)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

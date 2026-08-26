@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,11 +25,11 @@ func TestBuildNamespaceUsesPerMountEncryption(t *testing.T) {
 
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [upload]
 upload_delay = "10ms"
@@ -37,7 +38,7 @@ upload_delay = "10ms"
 name = "plain"
 type = "localfs"
 [mounts.params]
-root_path = "`+plainRemote+`"
+root_path = `+util.TOMLPath(plainRemote)+`
 [mounts.encryption]
 password = "plain-pass"
 salt = "plain-salt"
@@ -47,7 +48,7 @@ filename_encryption = "off"
 name = "encrypted"
 type = "localfs"
 [mounts.params]
-root_path = "`+encryptedRemote+`"
+root_path = `+util.TOMLPath(encryptedRemote)+`
 [mounts.encryption]
 password = "encrypted-pass"
 salt = "encrypted-salt"
@@ -109,11 +110,11 @@ func TestBuildNamespaceAppliesGlobalEncryptionToMountWithoutEncryption(t *testin
 
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [encryption]
 password = "global-pass"
@@ -128,13 +129,13 @@ upload_delay = "10ms"
 name = "global"
 type = "localfs"
 [mounts.params]
-root_path = "`+globalRemote+`"
+root_path = `+util.TOMLPath(globalRemote)+`
 
 [[mounts]]
 name = "encrypted"
 type = "localfs"
 [mounts.params]
-root_path = "`+encryptedRemote+`"
+root_path = `+util.TOMLPath(encryptedRemote)+`
 [mounts.encryption]
 password = "encrypted-pass"
 salt = "encrypted-salt"
@@ -188,11 +189,11 @@ func TestBuildNamespaceReadsPlainFilesWhenNoEncryptionConfigured(t *testing.T) {
 
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
-mount_point = "`+filepath.Join(tmp, "mnt")+`"
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [upload]
 upload_delay = "10ms"
@@ -201,7 +202,7 @@ upload_delay = "10ms"
 name = "plain"
 type = "localfs"
 [mounts.params]
-root_path = "`+plainRemote+`"
+root_path = `+util.TOMLPath(plainRemote)+`
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
