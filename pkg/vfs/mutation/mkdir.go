@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+	"path/filepath"
 )
 
 // MkdirResolver resolves the target path and its parent.
@@ -50,7 +50,7 @@ func NewMkdirCoordinator(resolve MkdirResolver, remote MkdirRemote, view MkdirVi
 
 // Mkdir creates path and commits it to the view.
 func (c *MkdirCoordinator) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
-	path = cleanVirtualPath(path)
+	path = vfstypes.CleanVirtualPath(path)
 
 	// Already exists (or is a file): report as-is. Only a not-found
 	// result proceeds to create; any other resolve error (cancel, auth,
@@ -119,7 +119,7 @@ func (c *MkdirCoordinator) findExistingChildDir(ctx context.Context, parentPath,
 			return child, nil
 		}
 	}
-	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", joinVirtual(parentPath, name))
+	return drive.Entry{}, fmt.Errorf("vfs: existing directory not found: %s", vfstypes.JoinVirtualPath(parentPath, name))
 }
 
 // isAlreadyExistsError reports whether a remote mkdir error means the

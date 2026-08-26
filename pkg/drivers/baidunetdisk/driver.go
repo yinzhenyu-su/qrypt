@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httpclient"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 )
 
 const (
@@ -63,6 +63,12 @@ type Driver struct {
 	lastError          string
 	instantUploadCount int64
 	metrics            *driverutil.Buffer
+
+	// Upload session binding store：只保存 "内容键 → provider 上传句柄"，
+	// 分片进度用 superfile2 list 从服务端重建。
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 var errBaiduUploadIDExpired = errors.New("baidu_netdisk: uploadid expired")
@@ -99,29 +105,9 @@ type tokenState struct {
 	UpdatedAt          time.Time `json:"updated_at,omitempty"`
 }
 
-type baiduUploadSessionState struct {
-	Version  int                           `json:"version"`
-	Sessions map[string]baiduUploadSession `json:"sessions,omitempty"`
-}
-
-type baiduUploadSession struct {
-	Key            string       `json:"key"`
-	ParentPath     string       `json:"parent_path"`
-	Name           string       `json:"name"`
-	RemotePath     string       `json:"remote_path"`
-	Size           int64        `json:"size"`
-	ContentMD5     string       `json:"content_md5"`
-	SliceMD5       string       `json:"slice_md5"`
-	UploadID       string       `json:"upload_id"`
-	PartSize       int64        `json:"part_size"`
-	BlockList      []int        `json:"block_list,omitempty"`
-	CompletedParts map[int]bool `json:"completed_parts,omitempty"`
-	SavedAt        time.Time    `json:"saved_at"`
-}
-
-const baiduUploadSessionStateFile = "baidu_netdisk_upload_sessions.json"
-const baiduUploadSessionMaxAge = 24 * time.Hour
-const baiduUploadSessionMaxEntries = 1024
+const baiduSessionFile = "baidu_netdisk_upload_sessions.json"
+const baiduSessionMaxAge = 24 * time.Hour
+const baiduSessionExpiryEvery = time.Hour
 
 func init() {
 	drive.Register("baidu_netdisk", func(params drive.Params) (drive.Driver, error) {
@@ -246,10 +232,22 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-func (d *Driver) Drop(ctx context.Context) error { return nil }
+func (d *Driver) Drop(ctx context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
+	return nil
+}
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -545,52 +543,4 @@ func responseErrno(data []byte) (int, string) {
 		return 0, ""
 	}
 	return *resp.Errno, resp.Errmsg
-}
-
-func (d *Driver) loadUploadSession(key string) (baiduUploadSession, bool) {
-	session, ok := d.uploadSessionStore().Load(key)
-	if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
-	}
-	return session, ok
-}
-
-func (d *Driver) saveUploadSession(session baiduUploadSession) {
-	d.uploadSessionStore().Save(session)
-}
-
-func (d *Driver) deleteUploadSession(key string) {
-	d.uploadSessionStore().Delete(key)
-}
-
-func (d *Driver) uploadSessionStore() *uploadsession.Store[baiduUploadSession] {
-	return uploadsession.NewStore(uploadsession.StoreOptions[baiduUploadSession]{
-		Store:      d.stateStore,
-		File:       baiduUploadSessionStateFile,
-		MaxAge:     baiduUploadSessionMaxAge,
-		MaxEntries: baiduUploadSessionMaxEntries,
-		Key: func(session baiduUploadSession) string {
-			return session.Key
-		},
-		Valid: func(key string, session baiduUploadSession) bool {
-			return session.Key != "" && session.UploadID != "" && len(session.BlockList) > 0 && len(session.CompletedParts) > 0
-		},
-		UpdatedAt: func(session baiduUploadSession) time.Time {
-			return session.SavedAt
-		},
-		Touch: func(session *baiduUploadSession, now time.Time) {
-			session.SavedAt = now
-		},
-		OnError: func(err error) {
-			d.setLastError(fmt.Errorf("baidu_netdisk: upload session state: %w", err))
-		},
-	})
-}
-
-func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
-	if resumed && (errors.Is(err, errBaiduUploadIDExpired) || drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
-		d.deleteUploadSession(key)
-		return fmt.Errorf("baidu_netdisk: resumed upload session invalid, will retry from scratch: %v", err)
-	}
-	return err
 }

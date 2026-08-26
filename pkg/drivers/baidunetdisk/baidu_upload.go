@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
@@ -40,14 +41,65 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sessionKey := uploadsession.Key(parentPath, name, size, contentMD5, sliceMD5)
-	session, resumedSession := d.loadUploadSession(sessionKey)
-	uploadID := session.UploadID
-	partsToUpload := append([]int(nil), session.BlockList...)
-	if !resumedSession {
+	// 内容指纹（contentMD5，provider 必填）参与寻址：内容变化 ⇒ Key 变化 ⇒ 旧分片绝不复用。
+	sessionKey := session.Identity{ParentID: parentPath, Name: name, Size: size, Fingerprint: contentMD5}.Key()
+	partSize := uploadPartSize(size)
+	partsToUpload := partSeqs(size, partSize)
+	uploadID := ""
+	resumed := false
+	var completedSet map[int]bool
+	if d.sessions != nil {
+		if binding, ok := d.sessions.Get(sessionKey); ok {
+			var tok baiduToken
+			if err := json.Unmarshal(binding.Token, &tok); err == nil && tok.UploadID != "" {
+				if tok.PartSize > 0 {
+					partSize = tok.PartSize
+					partsToUpload = partSeqs(size, partSize)
+				}
+				uploadID = tok.UploadID
+				resumed = true
+			} else {
+				// 无效绑定：作废重来。
+				d.sessions.Delete(sessionKey)
+			}
+		}
+	}
+	if resumed {
+		// 恢复时进度真相在服务端：superfile2 list 重建已上传 partseq，
+		// 本地零分片状态。
+		completed, err := d.listUploadedPartSeqs(ctx, remotePath, uploadID)
+		if err != nil && !invalidResumedUploadSession(err) {
+			// 查询临时失败：同句柄全量重传（分片按 partseq 幂等覆盖）。
+			logging.L.Warnf("baidu_netdisk: list uploaded partseqs failed, will re-upload all parts: %v", err)
+		} else if err != nil {
+			// 会话已失效：作废重来。
+			d.sessions.Delete(sessionKey)
+			resumed = false
+		} else {
+			completedSet = make(map[int]bool, len(completed))
+			for _, seq := range completed {
+				if seq >= 0 && seq < len(partsToUpload) {
+					completedSet[seq] = true
+				}
+			}
+		}
+	}
+	if !resumed {
+		// 预留绑定：precreate 是 provider 上传资源创建，先落盘再调用，
+		// 崩溃只留下空句柄绑定（下次作废重来）。
+		if d.sessions != nil {
+			if raw, err := json.Marshal(baiduToken{PartSize: partSize}); err != nil {
+				return drive.Entry{}, fmt.Errorf("baidu_netdisk: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				return drive.Entry{}, fmt.Errorf("baidu_netdisk: persist upload session: %w", err)
+			}
+		}
 		var pre precreateResp
 		if err := d.precreate(ctx, remotePath, size, string(blockListJSON), contentMD5, sliceMD5, &pre); err != nil {
 			err = fmt.Errorf("baidu_netdisk: upload precreate: %w", err)
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			d.setLastError(err)
 			return drive.Entry{}, err
 		}
@@ -56,35 +108,37 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			d.lastErrorMu.Lock()
 			d.instantUploadCount++
 			d.lastErrorMu.Unlock()
-			d.deleteUploadSession(sessionKey)
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return pre.File.entry(parentPath), nil
 		}
 		if pre.UploadID == "" {
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return drive.Entry{}, drive.NonRetryable(fmt.Errorf("baidu_netdisk: upload precreate returned empty uploadid"))
 		}
 		uploadID = pre.UploadID
 		partsToUpload = append([]int(nil), pre.BlockList...)
-		session = baiduUploadSession{
-			Key:            sessionKey,
-			ParentPath:     parentPath,
-			Name:           name,
-			RemotePath:     remotePath,
-			Size:           size,
-			ContentMD5:     contentMD5,
-			SliceMD5:       sliceMD5,
-			UploadID:       uploadID,
-			PartSize:       uploadPartSize(size),
-			BlockList:      partsToUpload,
-			CompletedParts: map[int]bool{},
+		if d.sessions != nil {
+			if raw, err := json.Marshal(baiduToken{UploadID: uploadID, PartSize: partSize}); err != nil {
+				return drive.Entry{}, fmt.Errorf("baidu_netdisk: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				// 持句柄落盘失败：provider 会话无 abort 端点，靠服务端过期；
+				// 下次尝试发现空/旧句柄时视为作废重来。
+				return drive.Entry{}, fmt.Errorf("baidu_netdisk: persist upload session: %w", err)
+			}
 		}
-	} else if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
 	}
-	if err := d.uploadParts(ctx, source, req.Progress, remotePath, name, size, uploadID, partsToUpload, session.CompletedParts, func(partSeq int) {
-		session.CompletedParts[partSeq] = true
-		d.saveUploadSession(session)
+	if err := d.uploadParts(ctx, source, req.Progress, remotePath, name, size, uploadID, partsToUpload, completedSet, func(partSeq int) {
+		if d.sessions != nil {
+			d.sessions.Touch(sessionKey)
+		}
 	}); err != nil {
-		err = d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		if d.sessions != nil && (errors.Is(err, errBaiduUploadIDExpired) || invalidResumedUploadSession(err)) {
+			d.sessions.Delete(sessionKey)
+		}
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
@@ -92,7 +146,9 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	var created createResp
 	if err := d.createFile(ctx, remotePath, size, uploadID, string(blockListJSON), &created); err != nil {
 		err = fmt.Errorf("baidu_netdisk: upload create: %w", err)
-		err = d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		if d.sessions != nil && invalidResumedUploadSession(err) {
+			d.sessions.Delete(sessionKey)
+		}
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
@@ -105,7 +161,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if created.FsID > 0 {
 		entry.Extra = map[string]any{"fs_id": strconv.FormatInt(created.FsID, 10)}
 	}
-	d.deleteUploadSession(sessionKey)
+	// provider commit 成功即成功：绑定清理尽力而为，残留由过期回收兜底。
+	if d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
 	return entry, nil
 }
 

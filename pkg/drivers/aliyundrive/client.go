@@ -141,7 +141,9 @@ func (c *client) request(ctx context.Context, method, path string, body, result 
 	if apiErr.status == http.StatusNotFound || apiErr.code == "ForbiddenFileInTheRecycleBin" {
 		// 404 and recycle-bin files are "gone" from the user's perspective;
 		// aliyun soft-deletes into the recycle bin and refuses access there.
-		return fmt.Errorf("%w: %v", drive.ErrNotFound, apiErr)
+		// apiErr 也须进入错误链（%w），下游才能按 apiStatusError 区分
+		// “会话失效”等业务语义（例如 complete 404 ⇒ 上传绑定作废回收）。
+		return fmt.Errorf("%w: %w", drive.ErrNotFound, apiErr)
 	}
 	return err
 }

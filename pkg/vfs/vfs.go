@@ -12,10 +12,13 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/observe"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,9 +28,6 @@ const uploadDebounceDelay = 5 * time.Second
 const zeroByteUploadDebounceDelay = 10 * time.Second
 const defaultUploadWorkers = 4
 const deleteDebounceDelay = 2 * time.Second
-const restoredDirTTL = 60 * time.Second
-const directoryCopyHideTTL = 10 * time.Minute
-const localCreateLookupTTL = 2 * time.Minute
 
 type Options struct {
 	Name          string
@@ -55,21 +55,22 @@ type VFS struct {
 	// New, mutated only by its domain's code paths, and shut down by the VFS
 	// lifecycle. activeDebug (single-state) and pathLocks (cross-domain)
 	// stay top-level.
-	view          *viewState
+	view          *view.View
 	read          *readState
 	reader        *read.Reader
 	uploads       *uploadService
 	uploadTargets *uploadTargetIndex
+	uploadEngine  *upload.Engine
 	deletes       *DeleteService
 	listing       *listingState
 	lister        *listing.Lister
-	hashes        *uploadHashTrackerState
+	hashes        *upload.HashTracker
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
 	activeDebug   *observe.ActiveStore
 	faults        *faultinject.Registry
-	pathLocks     *pathLockState
+	pathLocks     *pathlock.State
 	invalidations invalidationState
 
 	// done is closed when the VFS shuts down (Close or context cancel in
@@ -112,15 +113,6 @@ const (
 	lifecycleClosed
 )
 
-type overlayOp struct {
-	oldPath string
-	newPath string
-	entryID string
-	isDir   bool
-	oldGone bool
-	newSeen bool
-}
-
 func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if opts.Name == "" {
 		opts.Name = "default"
@@ -150,11 +142,10 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		return nil, err
 	}
 	now := util.Now()
-	overlay, deleteTasks := newDeleteStates()
-	view := newViewState(opts.RootID, now)
-	view.overlay = overlay
+	overlay, deleteTasks := view.NewOverlayTasks()
+	vs := view.NewView(opts.RootID, now, overlay)
 	done := make(chan struct{})
-	hashes := newUploadHashTrackerState()
+	hashes := upload.NewHashTracker()
 	v := &VFS{
 		driver:        driver,
 		name:          opts.Name,
@@ -163,7 +154,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		encrypted:     opts.Encrypted,
 		testEnabled:   opts.TestEnabled,
 		done:          done,
-		view:          view,
+		view:          vs,
 		read:          read.NewState(stores.readCacheStore),
 		hashes:        hashes,
 		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
@@ -172,13 +163,13 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		listing:       listing.NewState(),
 		activeDebug:   observe.NewActiveStore(opts.Name),
 		faults:        faultinject.NewRegistry(0),
-		pathLocks:     newPathLockState(),
+		pathLocks:     pathlock.New(),
 		closeDone:     make(chan struct{}),
 	}
 	v.reader = read.NewReader(read.ReaderDeps{
 		Host:     newVFSReadHost(v),
 		State:    v.read,
-		Observer: newVFSReadObserver(v),
+		Observer: newVFSReadObserver(v.read, v.activeDebug),
 		Health:   vfsReadHealth{tracker: v.healthTracker},
 	})
 	v.lister = listing.NewLister(listing.ListerDeps{
@@ -187,6 +178,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		State:  v.listing,
 		Health: vfsListingHealth{tracker: v.healthTracker},
 	})
+	v.uploadEngine = newUploadEngine(v)
 	return v, nil
 }
 
@@ -347,7 +339,7 @@ func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
 
 func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpStat, err) }()
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	if pending, err := v.pendingUpload(path); err == nil {
 		entry := drive.Entry{
 			ID:        pending.FID,
@@ -377,23 +369,6 @@ func uploadModTime(p PendingUpload) time.Time {
 	return time.Unix(0, p.ModTime)
 }
 
-func cloneEntries(entries []drive.Entry) []drive.Entry {
-	if entries == nil {
-		return nil
-	}
-	cloned := make([]drive.Entry, len(entries))
-	copy(cloned, entries)
-	return cloned
-}
-
-func cleanVirtual(path string) string {
-	return CleanVirtualPath(path)
-}
-
-func isAppleMetadataName(name string) bool {
-	return name == ".DS_Store" || strings.HasPrefix(name, "._")
-}
-
 func (v *VFS) FlushReadCache() error {
 	return v.read.FlushReadCache()
 }
@@ -403,7 +378,7 @@ func (v *VFS) ClearReadCache() error {
 }
 
 func (v *VFS) ClearReadCacheForMount(name string) error {
-	if name != "" && cleanMountName(name) != cleanMountName(v.name) {
+	if name != "" && vfstypes.CleanMountName(name) != vfstypes.CleanMountName(v.name) {
 		return fmt.Errorf("vfs: unknown mount %q", name)
 	}
 	return v.ClearReadCache()
@@ -457,7 +432,7 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 }
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	if pending, ok := v.uploads.Store().UploadByPath(path); ok {
 		return pending, nil
 	}
@@ -465,5 +440,21 @@ func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
 }
 
 func (v *VFS) lockPath(path string) func() {
-	return v.pathLocks.lock(cleanVirtual(path))
+	return v.pathLocks.Lock(vfstypes.CleanVirtualPath(path))
+}
+
+// CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
+// The implementation lives in vfstypes (shared with the vfs sub-packages).
+func CleanVirtualPath(path string) string {
+	return vfstypes.CleanVirtualPath(path)
+}
+
+// IsNotFound reports whether err represents a missing virtual or remote path.
+// The sentinel chain is the single source of truth: drivers wrap
+// drive.ErrNotFound (via drive.HTTPError on 404 responses or explicitly), and
+// vfs aliases it. No string matching — a bare "not found" text without the
+// sentinel is not classified as missing. The implementation lives in
+// vfstypes (drive.ErrNotFound == ErrNotFound).
+func IsNotFound(err error) bool {
+	return vfstypes.IsNotFound(err)
 }

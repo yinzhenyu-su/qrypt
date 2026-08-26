@@ -2,35 +2,13 @@ package vfs
 
 import (
 	"context"
-	"path/filepath"
-	"time"
-
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
+	"path/filepath"
+	"time"
 )
-
-// listingState aliases the listing domain state (internal/listing).
-type listCacheEntry struct {
-	entries []drive.Entry
-	expires time.Time
-}
-
-// listBackend abstracts the driver's child listing for tests.
-type listBackend interface {
-	ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error)
-}
-
-type driverListBackend struct {
-	driver drive.Driver
-}
-
-func newDriverListBackend(driver drive.Driver) driverListBackend {
-	return driverListBackend{driver: driver}
-}
-
-func (b driverListBackend) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	return b.driver.List(ctx, parentID)
-}
 
 func (v *VFS) listNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {
 	return v.lister.ListNoPrefetch(ctx, path)
@@ -47,51 +25,54 @@ type listingState = listing.State
 // vfsListingRemote adapts VFS internals to listing.Remote: resolution and
 // backend child listing only.
 type vfsListingRemote struct {
-	v *VFS
+	resolver pathResolver
+	driver   drive.Driver
 }
 
 func newVFSListingRemote(v *VFS) vfsListingRemote {
-	return vfsListingRemote{v: v}
+	return vfsListingRemote{resolver: v, driver: v.driver}
 }
 
 func (h vfsListingRemote) Resolve(ctx context.Context, path string) (drive.Entry, error) {
-	return h.v.resolve(ctx, path)
+	return h.resolver.resolve(ctx, path)
 }
 
 func (h vfsListingRemote) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	return newVFSDriverRuntime(h.v).ListBackend().ListChildren(ctx, parentID)
+	return h.driver.List(ctx, parentID)
 }
 
 // vfsListingView adapts VFS internals to listing.View: the synthesized
-// directory view (overlay + fresh-list cache + pending projection).
+// directory view (overlay visibility + fresh-list cache + pending
+// projection). The view-domain steps (visibility filtering, local-children
+// merge, list-cache commit) delegate to the view package; only the pending
+// upload projection is VFS-specific.
 type vfsListingView struct {
-	v *VFS
+	vis   view.Visibility
+	rt    view.Runtime
+	store *uploadStore
 }
 
 func newVFSListingView(v *VFS) vfsListingView {
-	return vfsListingView{v: v}
+	return vfsListingView{vis: newVFSVisibilityRuntime(v), rt: view.NewRuntime(v.view), store: v.uploads.Store()}
 }
 
 func (h vfsListingView) IsUnavailable(path string) bool {
-	return h.v.isUnavailable(path)
+	return h.vis.IsUnavailable(path)
 }
 
 // Entry returns the cached entry identity. A miss does not mean the path
 // is unavailable - the listing domain separates visibility from cache
 // identity (callers of Children already hold the parentID from resolve).
 func (h vfsListingView) Entry(path string) (drive.Entry, bool) {
-	return h.v.view.entries.Get(path)
+	return h.rt.CachedEntry(path)
 }
 
 func (h vfsListingView) FreshListCache(parentPath string, now time.Time) ([]drive.Entry, bool) {
-	parentPath = cleanVirtual(parentPath)
-	h.v.view.mu.RLock()
-	cached, ok := h.v.view.lists[parentPath]
-	h.v.view.mu.RUnlock()
-	if !ok || !now.Before(cached.expires) {
+	entries, ok := h.rt.FreshList(parentPath, now)
+	if !ok {
 		return nil, false
 	}
-	return h.projectChildren(parentPath, cached.entries), true
+	return h.projectChildren(parentPath, entries), true
 }
 
 // CommitRemoteChildren folds a fresh remote listing into the synthesized
@@ -102,17 +83,9 @@ func (h vfsListingView) FreshListCache(parentPath string, now time.Time) ([]driv
 // it encapsulates the ordered commit protocol. The listing domain never
 // sees the overlay/cache orchestration or the locks.
 func (h vfsListingView) CommitRemoteChildren(parentPath string, remote []drive.Entry, expires time.Time) []drive.Entry {
-	parentPath = cleanVirtual(parentPath)
-	h.v.updateOverlay(parentPath, remote)
-	entries := h.v.filterDeleted(parentPath, remote)
-	h.v.view.mu.Lock()
-	for i, child := range entries {
-		childPath := joinVirtual(parentPath, child.Name)
-		entries[i] = h.v.applyLocalModTimeLocked(childPath, child)
-		h.v.view.entries.Set(childPath, child)
-	}
-	h.v.view.lists[parentPath] = listCacheEntry{entries: cloneEntries(entries), expires: expires}
-	h.v.view.mu.Unlock()
+	h.vis.UpdateRenameOverlay(parentPath, remote)
+	entries := h.vis.FilterDeleted(parentPath, remote)
+	entries = h.rt.CommitChildren(parentPath, entries, expires)
 	return h.projectChildren(parentPath, entries)
 }
 
@@ -124,10 +97,10 @@ func (h vfsListingView) projectChildren(parentPath string, entries []drive.Entry
 	// ApplyLocalModTimes writes modtimes in place; clone first so a shared
 	// snapshot (e.g. concurrent waiters projecting the same owner load) is
 	// never mutated and the caller's slice stays untouched.
-	entries = cloneEntries(entries)
-	entries = h.v.applyLocalModTimes(parentPath, entries)
-	entries = h.v.filterDeleted(parentPath, entries)
-	entries = h.v.localChildren(parentPath, entries)
+	entries = view.CloneEntries(entries)
+	entries = h.rt.ApplyLocalModTimes(parentPath, entries)
+	entries = h.vis.FilterDeleted(parentPath, entries)
+	entries = h.vis.LocalChildren(parentPath, entries)
 	return h.mergePendingChildren(parentPath, entries)
 }
 
@@ -137,13 +110,13 @@ func (h vfsListingView) projectChildren(parentPath string, entries []drive.Entry
 // The pending projection is dynamic - it is recomputed on every read, so a
 // pending record appearing or vanishing never requires cache invalidation.
 func (h vfsListingView) mergePendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
-	parentPath = cleanVirtual(parentPath)
+	parentPath = vfstypes.CleanVirtualPath(parentPath)
 	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {
 		seen[entry.Name] = true
 	}
-	for _, pending := range h.v.uploads.Store().PendingUploads() {
-		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || h.v.isDeleted(pending.Path) {
+	for _, pending := range h.store.PendingUploads() {
+		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || h.vis.IsDeleted(pending.Path) {
 			continue
 		}
 		modTime := pendingModTime(pending)
@@ -193,10 +166,6 @@ func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error
 
 // ListPageResult is the deterministic page type returned by ListPage.
 type ListPageResult = listing.ListPageResult
-
-func (v *VFS) suppressDirPrefetch(path string) {
-	v.lister.SuppressDirPrefetch(path)
-}
 
 func (v *VFS) startDirPrefetch(ctx context.Context) bool {
 	return v.lister.StartDirPrefetch(ctx)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"io"
 	"strings"
 )
@@ -34,7 +35,7 @@ func (n *Namespace) ClearReadCache() error {
 }
 
 func (n *Namespace) ClearReadCacheForMount(name string) error {
-	name = cleanMountName(name)
+	name = vfstypes.CleanMountName(name)
 	n.mu.RLock()
 	mount, ok := n.mounts[name]
 	n.mu.RUnlock()
@@ -73,7 +74,7 @@ func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) 
 		return drive.Entry{ID: "/", Name: "/", IsDir: true, ModTime: n.createdAt, CreatedAt: n.createdAt, UpdatedAt: n.createdAt}, nil
 	}
 	if rest == "/" {
-		name := strings.Trim(strings.TrimPrefix(cleanVirtual(path), "/"), "/")
+		name := strings.Trim(strings.TrimPrefix(vfstypes.CleanVirtualPath(path), "/"), "/")
 		return drive.Entry{ID: "/" + name, ParentID: "/", Name: name, IsDir: true, ModTime: n.createdAt, CreatedAt: n.createdAt, UpdatedAt: n.createdAt}, nil
 	}
 	return mount.Stat(ctx, rest)

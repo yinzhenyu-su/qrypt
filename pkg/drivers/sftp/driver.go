@@ -13,8 +13,8 @@ import (
 
 	"github.com/pkg/sftp"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -26,13 +26,13 @@ type Driver struct {
 	client                                                                    *sftp.Client
 	connection                                                                *ssh.Client
 	readDir                                                                   func(context.Context, *sftp.Client, string) ([]os.FileInfo, error)
-	stateStore                                                                drive.StateStore
 	limiter                                                                   *drive.BandwidthLimiter
 	metrics                                                                   *driverutil.Buffer
 	mu                                                                        sync.RWMutex
 	sessionMu                                                                 sync.Mutex
-	uploadSessionMu                                                           sync.Mutex
-	uploadSessions                                                            *uploadsession.Store[sftpUploadSession]
+	sessionStoreMu                                                            sync.Mutex
+	sessions                                                                  *session.Index
+	sessionCancel                                                             context.CancelFunc
 }
 
 type Options struct {
@@ -152,11 +152,14 @@ func (d *Driver) hostKeyCallback() (ssh.HostKeyCallback, error) {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	d.uploadSessionMu.Lock()
-	uploadSessions := d.uploadSessions
-	d.uploadSessionMu.Unlock()
-	if uploadSessions != nil {
-		uploadSessions.Close()
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
 	}
 	d.sessionMu.Lock()
 	defer d.sessionMu.Unlock()
@@ -176,14 +179,7 @@ func (d *Driver) Drop(ctx context.Context) error {
 }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
-	d.uploadSessionMu.Lock()
-	if d.uploadSessions != nil {
-		d.uploadSessions.Close()
-	}
-	d.stateStore = store
-	d.uploadSessions = newUploadSessionStore(store)
-	d.uploadSessionMu.Unlock()
-	d.pruneUploadSessions()
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) authMethod() (ssh.AuthMethod, error) {

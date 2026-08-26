@@ -2,9 +2,9 @@ package vfs
 
 import (
 	"context"
-	"sort"
-
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"sort"
 )
 
 // TaskSource returns a task.Source backed by the upload and delete services.
@@ -141,7 +141,7 @@ func (s uploadServiceTaskSource) Dismiss(ctx context.Context, id string) error {
 		return err
 	}
 	// Completed but still active: drop history without cancelling.
-	if state, ok := s.svc.DebugStateByID(id); ok && state == uploadSnapshotStateCompleted {
+	if state, ok := s.svc.DebugStateByID(id); ok && state == upload.SnapshotStateCompleted {
 		_ = s.svc.RemoveHistoryByID(id)
 		return nil
 	}

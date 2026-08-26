@@ -6,14 +6,21 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
+
+func newTestViewState(rootID string, now time.Time) *view.View {
+	overlay, _ := view.NewOverlayTasks()
+	return view.NewView(rootID, now, overlay)
+}
 
 func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	cache, err := newStoresInDir(t.TempDir(), 0)
@@ -33,9 +40,9 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	}
 	v := &VFS{
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
-		pathLocks: newPathLockState(),
-		view:      newViewState("0", time.Now()),
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		pathLocks: pathlock.New(),
+		view:      newTestViewState("0", time.Now()),
 	}
 	next, err := v.rotateFrozenGeneration("/file", old)
 	if err != nil {
@@ -73,9 +80,9 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 	}
 	v := &VFS{
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
-		pathLocks: newPathLockState(),
-		view:      newViewState("0", time.Now()),
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		pathLocks: pathlock.New(),
+		view:      newTestViewState("0", time.Now()),
 	}
 	old := PendingUpload{
 		Path: "/file", FID: "old-fid", ParentID: "0", Name: "file",
@@ -221,9 +228,9 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 	}
 	v := &VFS{
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
-		pathLocks: newPathLockState(),
-		view:      newViewState("0", time.Now()),
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		pathLocks: pathlock.New(),
+		view:      newTestViewState("0", time.Now()),
 	}
 	localPath, err := cache.CreateStaging("file")
 	if err != nil {
@@ -272,9 +279,9 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	v := &VFS{
 		driver:    drv,
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, newUploadHashTrackerState()),
-		pathLocks: newPathLockState(),
-		view:      newViewState("0", time.Now()),
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		pathLocks: pathlock.New(),
+		view:      newTestViewState("0", time.Now()),
 	}
 	localPath, err := cache.CreateStaging("file")
 	if err != nil {
@@ -403,7 +410,7 @@ func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
 	store, _ := newUploadStore(t.TempDir())
-	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, newUploadHashTrackerState())}
+	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, upload.NewHashTracker())}
 
 	small := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold - 1})
 	if small != 10*time.Millisecond {

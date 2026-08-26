@@ -10,6 +10,7 @@ package s3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	stdpath "path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,9 +27,10 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 // Driver implements drive.Driver (plus Writer, SourceUploader, Debugger, and
@@ -57,10 +60,13 @@ type Driver struct {
 
 	signExpire time.Duration
 
-	client     *s3.Client
-	limiter    *drive.BandwidthLimiter
-	stateStore drive.StateStore
-	metrics    *driverutil.Buffer
+	client  *s3.Client
+	limiter *drive.BandwidthLimiter
+	metrics *driverutil.Buffer
+
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 // Options configures a new S3 driver.
@@ -85,22 +91,18 @@ const (
 	s3MultipartPartSize = 16 * 1024 * 1024
 	s3MultipartMinSize  = s3MultipartPartSize
 
-	s3UploadSessionStateFile  = "s3_upload_sessions.json"
-	s3UploadSessionMaxAge     = 24 * time.Hour
-	s3UploadSessionMaxEntries = 1024
+	// s3SessionFile 存放"内容键 → 上传引用"绑定（不含任何 part 进度；
+	// 进度通过 ListParts 从服务端重建）。
+	s3SessionFile        = "s3_upload_sessions.json"
+	s3SessionMaxAge      = session.DefaultMaxAge
+	s3SessionExpiryEvery = time.Hour
 )
 
-type s3UploadSession struct {
-	Key      string         `json:"key"`
-	Bucket   string         `json:"bucket"`
-	Object   string         `json:"object"`
-	UploadID string         `json:"upload_id"`
-	ParentID string         `json:"parent_id"`
-	Name     string         `json:"name"`
-	Size     int64          `json:"size"`
-	PartSize int64          `json:"part_size"`
-	Parts    []s3UploadPart `json:"parts,omitempty"`
-	SavedAt  time.Time      `json:"saved_at,omitempty"`
+// s3Token 是绑定中保存的 provider 侧上传引用。
+type s3Token struct {
+	UploadID string `json:"upload_id"`
+	Object   string `json:"object"`
+	PartSize int64  `json:"part_size,omitempty"`
 }
 
 type s3UploadPart struct {
@@ -277,16 +279,42 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-func (d *Driver) Drop(ctx context.Context) error { return nil }
+func (d *Driver) Drop(ctx context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
+	return nil
+}
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
 	return drive.BandwidthLimitDownload | drive.BandwidthLimitUpload
 }
 
+// InstallStateStore 接入会话绑定索引并启动过期回收：绑定只保存
+// "内容键 → UploadID"，part 进度在恢复时用 ListParts 重建。
 func (d *Driver) InstallStateStore(store drive.StateStore) {
-	d.stateStore = store
-	d.pruneStoredUploadSessions()
+	d.sessionStoreMu.Lock()
+	defer d.sessionStoreMu.Unlock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessions = session.NewIndex(store, s3SessionFile, session.IndexOptions{
+		OnError: func(err error) {
+			logging.L.Warnf("[S3] upload session state failed err=%v", err)
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	d.sessionCancel = cancel
+	d.expireUploadSessions()
+	go session.RunExpirer(ctx, s3SessionExpiryEvery, d.expireUploadSessions)
 }
 
 // List returns the immediate children of the directory identified by parentID.
@@ -407,7 +435,11 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 
 	key := d.toS3Key(d.joinPath(parentID, name))
 	if source.Size() >= s3MultipartMinSize {
-		if err := d.putMultipartSource(ctx, parentID, name, key, source.Size(), body, req.Progress); err != nil {
+		sha256Hex, err := session.ContentSHA256Hex(ctx, source, source.Size())
+		if err != nil {
+			return drive.Entry{}, fmt.Errorf("s3: hash source %q: %w", name, err)
+		}
+		if err := d.putMultipartSource(ctx, parentID, name, key, source.Size(), sha256Hex, body, req.Progress); err != nil {
 			return drive.Entry{}, err
 		}
 		now := time.Now()
@@ -527,44 +559,28 @@ func (d *Driver) Capabilities() []drive.Capability {
 	}
 }
 
-func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key string, size int64, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
-	sessionKey := uploadsession.Key(d.bucket, key, size)
-	session, resumedSession := d.loadUploadSession(sessionKey)
-	if !resumedSession {
-		start := time.Now()
-		resp, err := d.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-			Bucket: aws.String(d.bucket),
-			Key:    aws.String(key),
-		})
-		d.recordSDK(ctx, "CreateMultipartUpload", start, map[string]any{"bucket": d.bucket, "key": key, "bytes": size}, err)
-		if err != nil {
-			err = fmt.Errorf("s3: create multipart upload %q: %w", key, err)
-			if nonRetryableUploadError(err) {
-				err = drive.NonRetryable(err)
-			}
-			return err
-		}
-		session = s3UploadSession{
-			Key:      sessionKey,
-			Bucket:   d.bucket,
-			Object:   key,
-			UploadID: aws.ToString(resp.UploadId),
-			ParentID: parentID,
-			Name:     name,
-			Size:     size,
-			PartSize: s3MultipartPartSize,
-		}
+// putMultipartSource 上传大文件。恢复只发生在内容指纹一致时（会话键内容寻址），
+// 已传 part 通过 ListParts 从服务端重建；本地绑定只保存 UploadID，任何 part
+// 进度都不落盘。provider 侧 commit 成功即成功，绑定清理不阻塞返回。
+func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key string, size int64, sha256Hex string, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
+	sessionKey := session.Identity{ParentID: parentID, Name: name, Size: size, Fingerprint: sha256Hex}.Key()
+
+	uploadID, completedParts, err := d.beginMultipartUpload(ctx, sessionKey, key, size)
+	if err != nil {
+		return err
 	}
 
-	ranges := s3UploadPartRanges(size, session.PartSize)
-	completedByNumber := s3PartsByNumber(session.Parts)
+	ranges := s3UploadPartRanges(size, s3MultipartPartSize)
+	// 恢复的已传 part 必须保留在最终提交列表里，不能只收集本次新传的。
+	parts := append([]s3UploadPart(nil), completedParts...)
+	completedByNumber := s3PartsByNumber(completedParts)
 	for _, part := range ranges {
-		if completed, ok := completedByNumber[part.Number]; ok && completed.ETag != "" {
+		if _, ok := completedByNumber[part.Number]; ok {
 			drive.ReportUploadProgress(progress, part.Size)
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			return d.resumedUploadSessionError(resumedSession, sessionKey, err)
+			return err
 		}
 		reader := io.NewSectionReader(body, part.Offset, part.Size)
 		var uploadBody = drive.NewUploadProgressReader(progress, reader)
@@ -573,9 +589,9 @@ func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key str
 		}
 		start := time.Now()
 		resp, err := d.client.UploadPart(ctx, &s3.UploadPartInput{
-			Bucket:        aws.String(session.Bucket),
-			Key:           aws.String(session.Object),
-			UploadId:      aws.String(session.UploadID),
+			Bucket:        aws.String(d.bucket),
+			Key:           aws.String(key),
+			UploadId:      aws.String(uploadID),
 			PartNumber:    aws.Int32(part.Number),
 			Body:          uploadBody,
 			ContentLength: aws.Int64(part.Size),
@@ -583,41 +599,182 @@ func (d *Driver) putMultipartSource(ctx context.Context, parentID, name, key str
 		if err != nil && ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		d.recordSDK(ctx, "UploadPart", start, map[string]any{"bucket": session.Bucket, "key": session.Object, "part": part.Number, "bytes": part.Size}, err)
+		d.recordSDK(ctx, "UploadPart", start, map[string]any{"bucket": d.bucket, "key": key, "part": part.Number, "bytes": part.Size}, err)
 		if err != nil {
 			err = fmt.Errorf("s3: upload part %d: %w", part.Number, err)
 			if nonRetryableUploadError(err) {
 				err = drive.NonRetryable(err)
 			}
-			return d.resumedUploadSessionError(resumedSession, sessionKey, err)
+			if invalidResumedUploadSession(err) {
+				d.sessions.Delete(sessionKey)
+				return fmt.Errorf("s3: resumed upload session invalid, will retry from scratch: %w", err)
+			}
+			return err
 		}
-		session.Parts = upsertS3UploadPart(session.Parts, s3UploadPart{Number: part.Number, ETag: aws.ToString(resp.ETag)})
+		parts = append(parts, s3UploadPart{Number: part.Number, ETag: aws.ToString(resp.ETag)})
 		completedByNumber[part.Number] = s3UploadPart{Number: part.Number, ETag: aws.ToString(resp.ETag)}
-		d.saveUploadSession(session)
+		if d.sessions != nil {
+			d.sessions.Touch(sessionKey)
+		}
 	}
 
 	start := time.Now()
-	_, err := d.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
-		Bucket:   aws.String(session.Bucket),
-		Key:      aws.String(session.Object),
-		UploadId: aws.String(session.UploadID),
+	_, err = d.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(d.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
 		MultipartUpload: &types.CompletedMultipartUpload{
-			Parts: s3CompletedParts(session.Parts),
+			Parts: s3CompletedParts(parts),
 		},
 	})
 	if err != nil && ctx.Err() != nil {
 		err = ctx.Err()
 	}
-	d.recordSDK(ctx, "CompleteMultipartUpload", start, map[string]any{"bucket": session.Bucket, "key": session.Object, "parts": len(session.Parts)}, err)
+	d.recordSDK(ctx, "CompleteMultipartUpload", start, map[string]any{"bucket": d.bucket, "key": key, "parts": len(parts)}, err)
 	if err != nil {
 		err = fmt.Errorf("s3: complete multipart upload %q: %w", key, err)
+		if invalidResumedUploadSession(err) {
+			d.sessions.Delete(sessionKey)
+			return fmt.Errorf("s3: resumed upload session invalid, will retry from scratch: %w", err)
+		}
+		return err
+	}
+	if d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
+	return nil
+}
+
+// beginMultipartUpload 返回复用的或新建的 multipart UploadID，以及从服务端
+// 重建的已完成 part（全新上传时为空）。
+//
+// 全新上传先预留绑定、再创建 provider 上传：若绑定落盘后进程崩溃，下次尝试
+// 会发现空 UploadID 绑定而作废重来，不会产生孤儿 multipart。
+func (d *Driver) beginMultipartUpload(ctx context.Context, sessionKey, key string, size int64) (string, []s3UploadPart, error) {
+	if d.sessions != nil {
+		if binding, ok := d.sessions.Get(sessionKey); ok {
+			var tok s3Token
+			if err := json.Unmarshal(binding.Token, &tok); err == nil && tok.UploadID != "" && tok.Object == key {
+				parts, err := d.listCompletedParts(ctx, tok.UploadID, key)
+				if err == nil {
+					return tok.UploadID, parts, nil
+				}
+				if invalidResumedUploadSession(err) {
+					d.sessions.Delete(sessionKey)
+				} else {
+					return "", nil, err
+				}
+			} else {
+				// 无效或空 UploadID 绑定（预留后未完成创建）→ 作废重来。
+				d.sessions.Delete(sessionKey)
+			}
+		}
+	}
+
+	// 预留绑定：内容寻址键落盘后任何崩溃都可恢复或可回收。
+	token := s3Token{Object: key, PartSize: s3MultipartPartSize}
+	if d.sessions != nil {
+		if raw, err := json.Marshal(token); err != nil {
+			return "", nil, fmt.Errorf("s3: encode upload session: %w", err)
+		} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+			return "", nil, fmt.Errorf("s3: persist upload session: %w", err)
+		}
+	}
+
+	start := time.Now()
+	resp, err := d.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(d.bucket),
+		Key:    aws.String(key),
+	})
+	d.recordSDK(ctx, "CreateMultipartUpload", start, map[string]any{"bucket": d.bucket, "key": key, "bytes": size}, err)
+	if err != nil {
+		if d.sessions != nil {
+			d.sessions.Delete(sessionKey)
+		}
+		err = fmt.Errorf("s3: create multipart upload %q: %w", key, err)
 		if nonRetryableUploadError(err) {
 			err = drive.NonRetryable(err)
 		}
-		return d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		return "", nil, err
 	}
-	d.deleteUploadSession(sessionKey)
+	uploadID := aws.ToString(resp.UploadId)
+	token.UploadID = uploadID
+	if d.sessions != nil {
+		if raw, err := json.Marshal(token); err != nil {
+			return "", nil, fmt.Errorf("s3: encode upload session: %w", err)
+		} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+			// 持 UploadID 落盘失败：立即回收刚创建的 provider 上传，避免孤儿。
+			_ = d.abortMultipartUpload(context.Background(), key, uploadID)
+			return "", nil, fmt.Errorf("s3: persist multipart upload id: %w", err)
+		}
+	}
+	return uploadID, nil, nil
+}
+
+// listCompletedParts 从服务端重建已上传 part（本地不保存任何 part 状态）。
+func (d *Driver) listCompletedParts(ctx context.Context, uploadID, key string) ([]s3UploadPart, error) {
+	var parts []s3UploadPart
+	var marker *string
+	for {
+		start := time.Now()
+		out, err := d.client.ListParts(ctx, &s3.ListPartsInput{
+			Bucket:           aws.String(d.bucket),
+			Key:              aws.String(key),
+			UploadId:         aws.String(uploadID),
+			PartNumberMarker: marker,
+		})
+		d.recordSDK(ctx, "ListParts", start, map[string]any{"bucket": d.bucket, "key": key, "marker": marker != nil}, err)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range out.Parts {
+			parts = append(parts, s3UploadPart{Number: aws.ToInt32(p.PartNumber), ETag: aws.ToString(p.ETag)})
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			return parts, nil
+		}
+		marker = out.NextPartNumberMarker
+	}
+}
+
+// abortMultipartUpload 幂等回收一个 multipart 上传；已 complete/已 abort 的
+// 会话返回 NoSuchUpload，视为成功。绑定删除后在过期回收时调用。
+func (d *Driver) abortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	start := time.Now()
+	_, err := d.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(d.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+	})
+	d.recordSDK(ctx, "AbortMultipartUpload", start, map[string]any{"bucket": d.bucket, "key": key}, err)
+	if err != nil && !invalidResumedUploadSession(err) {
+		return err
+	}
 	return nil
+}
+
+// expireUploadSessions 回收超过 maxAge 未活动的绑定对应的 provider 上传。
+func (d *Driver) expireUploadSessions() {
+	if d.sessions == nil || d.client == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	d.sessions.Expire(s3SessionMaxAge, time.Now(), func(binding session.Session) error {
+		return d.reclaimUploadSession(ctx, binding)
+	})
+}
+
+// reclaimUploadSession 幂等回收一个过期绑定；无效或空 token 没有可回收资源。
+func (d *Driver) reclaimUploadSession(ctx context.Context, binding session.Session) error {
+	var tok s3Token
+	if err := json.Unmarshal(binding.Token, &tok); err != nil {
+		return nil
+	}
+	if tok.UploadID == "" || tok.Object == "" {
+		return nil
+	}
+	return d.abortMultipartUpload(ctx, tok.Object, tok.UploadID)
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
@@ -803,52 +960,6 @@ func (d *Driver) recordSDK(ctx context.Context, operation string, start time.Tim
 	d.metrics.Record(ctx, event)
 }
 
-func (d *Driver) loadUploadSession(key string) (s3UploadSession, bool) {
-	session, ok := d.uploadSessionStore().Load(key)
-	return session, ok
-}
-
-func (d *Driver) saveUploadSession(session s3UploadSession) {
-	d.uploadSessionStore().Save(session)
-}
-
-func (d *Driver) deleteUploadSession(key string) {
-	d.uploadSessionStore().Delete(key)
-}
-
-func (d *Driver) pruneStoredUploadSessions() {
-	d.uploadSessionStore().Prune()
-}
-
-func (d *Driver) uploadSessionStore() *uploadsession.Store[s3UploadSession] {
-	return uploadsession.NewStore(uploadsession.StoreOptions[s3UploadSession]{
-		Store:      d.stateStore,
-		File:       s3UploadSessionStateFile,
-		MaxAge:     s3UploadSessionMaxAge,
-		MaxEntries: s3UploadSessionMaxEntries,
-		Key: func(session s3UploadSession) string {
-			return session.Key
-		},
-		Valid: func(key string, session s3UploadSession) bool {
-			return session.Key != "" && session.Bucket != "" && session.Object != "" && session.UploadID != "" && session.PartSize > 0 && len(session.Parts) > 0
-		},
-		UpdatedAt: func(session s3UploadSession) time.Time {
-			return session.SavedAt
-		},
-		Touch: func(session *s3UploadSession, now time.Time) {
-			session.SavedAt = now
-		},
-	})
-}
-
-func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
-	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
-		d.deleteUploadSession(key)
-		return fmt.Errorf("s3: resumed upload session invalid, will retry from scratch: %v", err)
-	}
-	return err
-}
-
 func invalidResumedUploadSession(err error) bool {
 	if err == nil {
 		return false
@@ -910,16 +1021,6 @@ func s3CompletedParts(parts []s3UploadPart) []types.CompletedPart {
 		})
 	}
 	return out
-}
-
-func upsertS3UploadPart(parts []s3UploadPart, part s3UploadPart) []s3UploadPart {
-	for i := range parts {
-		if parts[i].Number == part.Number {
-			parts[i] = part
-			return parts
-		}
-	}
-	return append(parts, part)
 }
 
 // ─── S3 error helpers ───────────────────────────────────────────────────────

@@ -158,8 +158,64 @@ and only scan the source when the required hash metadata is unavailable.
 Declare `CapabilitySourceUploader` and `CapabilityWriter` when `PutSource` can
 stream from a `ReadOnlyFileSource` into the backend. This is enough for direct
 upload tasks to bypass qrypt staging. Add `CapabilityResumableUploader` only
-when the driver persists provider upload session state and can continue an
-interrupted source upload instead of restarting from byte zero.
+when the driver can continue an interrupted source upload instead of
+restarting from byte zero.
+
+### Upload sessions: provider-authoritative resume
+
+Resumable drivers persist one small thing locally: a binding from a
+**content-addressed identity** (`pkg/drive/session.Identity`: parent, name,
+size, and a content fingerprint — the provider-mandated hash, SHA-256 for
+s3/sftp/onedrive/yun139, SHA-1 for p115/p115open/aliyundrive/quark, MD5 for
+p189/baidu) to a **provider-side upload reference** (S3 UploadID, OneDrive
+upload URL, SFTP staging path, uploadFileId, ...). Upload progress is
+reconstructed from the provider where possible (`ListParts`, `stat`, Graph
+`nextExpectedRanges`, OSS ListParts, Baidu superfile2 list), so for those
+drivers the session file stays tiny and per-part work costs zero local I/O.
+Use `pkg/drive/session.Index` (installed via
+`drive.StateStoreInstaller`) for the binding store and `session.RunExpirer`
+with a driver-provided idempotent `Reclaim` for orphan cleanup.
+
+Contract rules:
+
+- The binding is written before provider upload work starts ("reserve, then
+  create"), so a crash at any point leaves a resumable or reclaimable state —
+  never an untracked provider-side orphan. Binding writes are transactional:
+  `Index` commits memory only after the disk write succeeds, and a failed
+  reservation must abort the attempt (s3/p115/p115open abort the provider
+  session, sftp refuses to start) instead of proceeding without durable state.
+- Content identity is mandatory: resuming parts whose identity does not match
+  the current source is forbidden. When the caller provides no fingerprint,
+  either scan the source (cheap local reads) or degrade to a fresh session —
+  never reuse a session keyed without content proof. s3 and sftp scan when the
+  hash is missing; onedrive degrades, since its sources may be remote streams.
+- The provider commit (complete/rename/finish) succeeding **is** the upload
+  succeeding. Local binding cleanup is best-effort; leftover bindings are
+  reclaimed by the expiry pass, and a binding pointing at a completed upload
+  is detected as invalid on the next attempt.
+- `Reclaim` must be idempotent and tolerate already-committed or already-gone
+  provider resources (abort of a completed multipart returns 404, removal of
+  a renamed-away staging file is not-exist, cancel of a finished upload
+  session is 404/410). Drivers whose provider has no abort endpoint
+  (yun139/p189/quark/aliyundrive/baidunetdisk) reclaim by dropping the binding;
+  the provider session expires server-side.
+- When the provider can neither query part progress nor make partial writes
+  unsafe, the fallback is a **local confirmation record**: a compact
+  confirmed-parts bitmap (`session.ConfirmedBitmap`/`MarkConfirmed`) or the
+  per-part ETags (quark, needed by OSS Complete) folded into the binding token
+  via `Index.TouchWith`. This covers yun139/p189/quark and aliyundrive (whose
+  deployment has no query endpoint: the `getUploadUrl`/`listUploadedParts`
+  paths only exist on the openapi.alipan.com gateway with an open-platform
+  token; aliyundrive also persists the createWithFolders part URLs in the
+  token, since URLs cannot be re-fetched). `TouchWith` serializes the token
+  read-modify-write under the index lock (safe under concurrent part
+  confirmations) and persists throttled to one disk write per minute; a crash
+  loses at most a minute of confirmations, and those parts are re-uploaded
+  idempotently (part uploads overwrite by number/seq) — never corrupt.
+- Mark the binding alive with `Index.Touch` per part (throttled to one disk
+  write per minute), so long uploads are not reclaimed by the expiry scan;
+  call `Index.Flush` from `Drop` so the on-disk index matches memory before
+  the process exits.
 
 Drivers that can skip network upload when hashes are available before streaming
 should implement `drive.UploadHashRequirements`. The crypt wrapper uses this to

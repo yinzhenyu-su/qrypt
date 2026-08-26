@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 
 	cryptpkg "github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
@@ -616,120 +618,39 @@ func TestQuarkUploadConflictIsRetryable(t *testing.T) {
 	}
 }
 
-func TestResumedUploadConflictDeletesSessionAndRetriesFromScratch(t *testing.T) {
+func TestResumedUploadConflictIsRetryableAndBindingRoundTrips(t *testing.T) {
 	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
 	driver := New("k=v", Options{})
 	driver.InstallStateStore(store)
-	session := quarkUploadSession{
-		Key:       "session-key",
-		ParentID:  "parent",
-		Name:      "data.bin",
-		Size:      1,
-		TaskID:    "task-old",
-		UploadID:  "upload-old",
-		ObjKey:    "obj-old",
-		UploadURL: "upload.example",
-		AuthInfo:  "auth",
-		PartSize:  4 * 1024 * 1024,
-		Etags:     map[int]string{},
-	}
-	driver.saveUploadSession(session)
 
-	err := driver.resumedUploadSessionError(true, session.Key, uploadStatusError{op: "upload part 1", status: http.StatusConflict})
-	if err == nil {
-		t.Fatal("expected retryable invalid session error")
+	// 409 冲突判定为会话失效且可重试（与 OSS 陈旧 uploadId 语义一致）。
+	if !invalidResumedUploadSession(uploadStatusError{op: "upload part 1", status: http.StatusConflict}) {
+		t.Fatal("409 conflict should invalidate a resumed upload session")
 	}
-	if drive.IsNonRetryable(err) {
-		t.Fatalf("invalid resumed session error should be retryable, got %v", err)
+	if drive.IsNonRetryable(uploadStatusError{op: "upload part 1", status: http.StatusConflict}) {
+		t.Fatal("409 conflict should stay retryable")
 	}
-	if _, ok := driver.loadUploadSession(session.Key); ok {
-		t.Fatal("stale resumed upload session was not deleted")
-	}
-}
 
-func TestUploadSessionPruneOnInstallStateStore(t *testing.T) {
-	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
-	now := time.Now()
-	old := quarkUploadSession{
-		Key:       "old",
-		Name:      "old.bin",
-		UploadID:  "upload-old",
-		PartSize:  4 * 1024 * 1024,
-		Etags:     map[int]string{1: "etag-old"},
-		UpdatedAt: now.Add(-quarkUploadSessionMaxAge - time.Minute),
-	}
-	empty := quarkUploadSession{
-		Key:       "empty",
-		Name:      "empty.bin",
-		UploadID:  "upload-empty",
-		PartSize:  4 * 1024 * 1024,
-		UpdatedAt: now,
-	}
-	fresh := quarkUploadSession{
-		Key:       "fresh",
-		Name:      "fresh.bin",
-		UploadID:  "upload-fresh",
-		PartSize:  4 * 1024 * 1024,
-		Etags:     map[int]string{1: "etag-fresh"},
-		UpdatedAt: now,
-	}
-	if err := store.SaveJSON(quarkUploadSessionStateFile, uploadSessionState{
-		Version: 1,
-		Sessions: map[string]quarkUploadSession{
-			old.Key:   old,
-			empty.Key: empty,
-			fresh.Key: fresh,
-		},
-	}); err != nil {
+	// 绑定（quarkToken）经新 Index 持久化并可跨实例读回。
+	key := session.Identity{ParentID: "parent", Name: "data.bin", Size: 1, Fingerprint: "md5sha1"}.Key()
+	raw, err := json.Marshal(quarkToken{TaskID: "task-old", UploadID: "upload-old", ObjKey: "obj-old", UploadURL: "upload.example", AuthInfo: "auth", PartSize: 4 * 1024 * 1024})
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	driver := New("k=v", Options{})
-	driver.InstallStateStore(store)
-
-	state := uploadSessionState{}
-	if err := store.LoadJSON(quarkUploadSessionStateFile, &state); err != nil {
+	if err := driver.sessions.Create(key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := state.Sessions[old.Key]; ok {
-		t.Fatal("expired upload session was not pruned")
+	reloaded := session.NewIndex(store, quarkSessionFile, session.IndexOptions{})
+	binding, ok := reloaded.Get(key)
+	if !ok {
+		t.Fatal("expected binding to survive a new index instance")
 	}
-	if _, ok := state.Sessions[empty.Key]; ok {
-		t.Fatal("empty upload session was not pruned")
+	var tok quarkToken
+	if err := json.Unmarshal(binding.Token, &tok); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := state.Sessions[fresh.Key]; !ok {
-		t.Fatal("fresh upload session was pruned")
-	}
-}
-
-func TestUploadSessionPruneCapsOldestEntries(t *testing.T) {
-	driver := New("k=v", Options{})
-	now := time.Now()
-	state := uploadSessionState{Version: 1, Sessions: map[string]quarkUploadSession{}}
-	for i := 0; i < quarkUploadSessionMaxEntries+2; i++ {
-		key := fmt.Sprintf("session-%04d", i)
-		state.Sessions[key] = quarkUploadSession{
-			Key:       key,
-			Name:      key + ".bin",
-			UploadID:  key,
-			PartSize:  4 * 1024 * 1024,
-			Etags:     map[int]string{1: "etag"},
-			UpdatedAt: now.Add(time.Duration(i) * time.Second),
-		}
-	}
-
-	pruned, changed := driver.prunedUploadSessions(state, now)
-	if !changed {
-		t.Fatal("expected cap pruning to report changed")
-	}
-	if got := len(pruned.Sessions); got != quarkUploadSessionMaxEntries {
-		t.Fatalf("session count = %d, want %d", got, quarkUploadSessionMaxEntries)
-	}
-	if _, ok := pruned.Sessions["session-0000"]; ok {
-		t.Fatal("oldest upload session was not pruned")
-	}
-	if _, ok := pruned.Sessions[fmt.Sprintf("session-%04d", quarkUploadSessionMaxEntries+1)]; !ok {
-		t.Fatal("newest upload session was pruned")
+	if tok.UploadID != "upload-old" || tok.TaskID != "task-old" {
+		t.Fatalf("unexpected persisted token: %+v", tok)
 	}
 }
 
@@ -1053,6 +974,10 @@ func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
 		t.Fatalf("part 1 uploads after first attempt = %d, want 1", partUploads["1"])
 	}
 	partsMu.Unlock()
+	// 优雅退出：Drop 触发 Flush，节流期的 ETag 确认记录落盘。
+	if err := first.Drop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	second := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	second.InstallStateStore(store)
@@ -1069,8 +994,10 @@ func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
 	}
 	partsMu.Lock()
 	defer partsMu.Unlock()
+	// quark 无分片进度查询：跳过基于本地确认 ETag 记录，part 1 不再重传；
+	// pre/hash 不重复调用。
 	if partUploads["1"] != 1 {
-		t.Fatalf("part 1 was reuploaded: count=%d", partUploads["1"])
+		t.Fatalf("part 1 was re-uploaded on resume: count=%d", partUploads["1"])
 	}
 	if partUploads["2"] < 2 || partUploads["3"] != 1 {
 		t.Fatalf("unexpected resumed upload counts: %+v", partUploads)
@@ -1891,5 +1818,162 @@ func TestDriverServerSideCopyRejectsDirectory(t *testing.T) {
 	d := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
 	if _, err := d.Copy(context.Background(), drive.Entry{ID: "d", IsDir: true}, "0", "x"); err == nil {
 		t.Fatal("directory copy should fail")
+	}
+}
+
+func TestPutSourceHandlelessBindingIsDiscarded(t *testing.T) {
+	var partsMu sync.Mutex
+	partUploads := map[string]int{}
+	var completed bool
+	preCalls := 0
+	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/obj-empty" {
+			t.Fatalf("unexpected oss path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodPut:
+			partNumber := r.URL.Query().Get("partNumber")
+			_, _ = io.ReadAll(r.Body)
+			partsMu.Lock()
+			partUploads[partNumber]++
+			partsMu.Unlock()
+			w.Header().Set("Etag", "etag-"+partNumber)
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPost:
+			completed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected oss method: %s", r.Method)
+		}
+	}))
+	defer oss.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/upload/pre":
+			preCalls++
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data": map[string]any{
+					"task_id":    "task-1",
+					"upload_id":  "upload-1",
+					"obj_key":    "obj-empty",
+					"upload_url": strings.TrimPrefix(oss.URL, "https://"),
+					"fid":        "pre-fid",
+					"bucket":     "bucket",
+					"callback":   json.RawMessage(`{}`),
+					"auth_info":  "auth-info",
+				},
+				"metadata": map[string]any{"part_size": 3},
+			})
+		case "/file/upload/auth":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"auth_key": "auth-key"},
+			})
+		case "/file/update/hash":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"finish": false},
+			})
+		case "/file/upload/finish":
+			writeJSON(t, w, map[string]any{
+				"status": 200,
+				"code":   0,
+				"data":   map[string]any{"fid": "final-fid"},
+			})
+		default:
+			t.Fatalf("unexpected api path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	content := []byte("abcdefghi")
+	tmp := filepath.Join(t.TempDir(), "resume.bin")
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	md5Sum := md5.Sum(content)
+	sha1Sum := sha1.Sum(content)
+	source := drive.NewLocalReadOnlyFileSourceWithHashes(tmp, int64(len(content)), drive.SourceHashes{
+		drive.HashMD5:  md5Sum[:],
+		drive.HashSHA1: sha1Sum[:],
+	})
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+
+	d := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	d.InstallStateStore(store)
+	routeOSSToTestServer(d.cl.ossClient, oss)
+	// 模拟“预留后未完成创建”的崩溃残留：空句柄绑定必须先作废重来。
+	key := session.Identity{
+		ParentID:    "parent",
+		Name:        "resume.bin",
+		Size:        int64(len(content)),
+		Fingerprint: strings.ToLower(fmt.Sprintf("%X", md5Sum)) + strings.ToLower(fmt.Sprintf("%X", sha1Sum)),
+	}.Key()
+	if err := d.sessions.Create(key, json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := d.PutSource(context.Background(), drive.UploadRequest{ParentID: "parent", Name: "resume.bin", Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "final-fid" || entry.Size != int64(len(content)) {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	// 空句柄没有被当作可恢复会话：pre 只执行一次（全新上传）。
+	if preCalls != 1 {
+		t.Fatalf("pre calls = %d, want 1", preCalls)
+	}
+	if !completed {
+		t.Fatal("multipart upload was not completed")
+	}
+	partsMu.Lock()
+	defer partsMu.Unlock()
+	for part := 1; part <= 3; part++ {
+		if partUploads[strconv.Itoa(part)] != 1 {
+			t.Fatalf("part %d uploads = %d, want 1", part, partUploads[strconv.Itoa(part)])
+		}
+	}
+	if bindings := d.sessions.List(); len(bindings) != 0 {
+		t.Fatalf("binding should be deleted after success, got %d", len(bindings))
+	}
+}
+
+func TestQuarkTokenJSONRoundTrip(t *testing.T) {
+	want := quarkToken{
+		TaskID:    "task-1",
+		UploadID:  "upload-1",
+		ObjKey:    "obj-1",
+		UploadURL: "https://oss.example/",
+		Fid:       "fid-1",
+		Bucket:    "bucket",
+		Callback:  json.RawMessage(`{"x":1}`),
+		AuthInfo:  "auth-info",
+		PartSize:  3,
+		Etags:     map[int]string{1: "etag-1", 3: "etag-3"},
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got quarkToken
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TaskID != want.TaskID || got.UploadID != want.UploadID || got.ObjKey != want.ObjKey ||
+		got.UploadURL != want.UploadURL || got.Fid != want.Fid || got.Bucket != want.Bucket ||
+		got.AuthInfo != want.AuthInfo || got.PartSize != want.PartSize {
+		t.Fatalf("round trip lost handle fields: %+v", got)
+	}
+	if string(got.Callback) != string(want.Callback) {
+		t.Fatalf("round trip callback = %s, want %s", got.Callback, want.Callback)
+	}
+	if len(got.Etags) != 2 || got.Etags[1] != "etag-1" || got.Etags[3] != "etag-3" {
+		t.Fatalf("round trip etags = %+v, want part 1 and 3 retained", got.Etags)
 	}
 }

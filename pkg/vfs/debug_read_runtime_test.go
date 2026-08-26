@@ -13,7 +13,7 @@ func TestVFSDebugReadRuntimeOwnsReadHistoryState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := newVFSDebugReadRuntime(fs)
+	runtime := newVFSDebugReadRuntime(fs.read)
 
 	if got := runtime.NextOpID(); got != "read-1" {
 		t.Fatalf("first op id = %q", got)
@@ -45,7 +45,7 @@ func TestVFSDebugReadRuntimeRingPreservesOrderAcrossWraps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := newVFSDebugReadRuntime(fs)
+	runtime := newVFSDebugReadRuntime(fs.read)
 
 	const total = debugReadHistoryLimit*3 + 17
 	for i := 0; i < total; i++ {

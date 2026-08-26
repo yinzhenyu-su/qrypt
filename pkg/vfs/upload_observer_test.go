@@ -1,9 +1,9 @@
 package vfs
 
 import (
-	"testing"
-
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"testing"
 )
 
 func TestVFSUploadObserverRecordsSnapshotLifecycle(t *testing.T) {
@@ -11,7 +11,7 @@ func TestVFSUploadObserverRecordsSnapshotLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	observer := newVFSUploadObserver(fs)
+	observer := newVFSUploadObserver(fs.uploads, fs.healthTracker)
 	pending := PendingUpload{
 		FID:      "fid",
 		Path:     "/observer.txt",
@@ -21,18 +21,18 @@ func TestVFSUploadObserverRecordsSnapshotLifecycle(t *testing.T) {
 	}
 
 	observer.Start(pending)
-	observer.State(pending.Path, uploadSnapshotStateUploading)
+	observer.State(pending.Path, upload.SnapshotStateUploading)
 	observer.Metadata(pending.Path, "remote-id", []string{"sha256"})
 	observer.Extra(pending.Path, "local_path", "/tmp/observer")
 	observer.Uploaded(pending.Path, 4)
-	observer.Finish(pending.Path, uploadSnapshotStateCompleted, "")
+	observer.Finish(pending.Path, upload.SnapshotStateCompleted, "")
 
 	history := fs.DebugSnapshot().Mounts[0].HistoricalUploads()
 	if len(history) != 1 {
 		t.Fatalf("history = %+v, want one upload", history)
 	}
 	got := history[0]
-	if got.Path != pending.Path || got.State != uploadSnapshotStateCompleted || got.ResultRemoteID != "remote-id" || got.BytesUploaded != 4 {
+	if got.Path != pending.Path || got.State != upload.SnapshotStateCompleted || got.ResultRemoteID != "remote-id" || got.BytesUploaded != 4 {
 		t.Fatalf("history upload = %+v, want observer metadata", got)
 	}
 	if len(got.Hashes) != 1 || got.Hashes[0] != "sha256" || got.Extra["local_path"] != "/tmp/observer" {

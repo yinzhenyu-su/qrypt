@@ -6,7 +6,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
 )
 
-func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutationBackend, runtime mutationRuntime, committer viewCommitter) (err error) {
+func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutation.Backend, runtime mutationRuntime, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "rename"); err != nil {
 		return err
@@ -20,18 +20,27 @@ func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backe
 	return coordinator.Rename(ctx, oldPath, newPath)
 }
 
+// pathResolver is the narrow resolution boundary used by the mutation
+// adapters: it resolves a virtual path to its entry and splits a path into
+// parent entry and child name. *VFS satisfies it via its package-private
+// resolve/parent methods.
+type pathResolver interface {
+	resolve(ctx context.Context, path string) (drive.Entry, error)
+	parent(ctx context.Context, path string) (drive.Entry, string, error)
+}
+
 // vfsRenameResolver adapts VFS resolution to mutation.Resolver.
 
-type vfsRenameResolver struct{ v *VFS }
+type vfsRenameResolver struct{ resolver pathResolver }
 
-func newVFSRenameResolver(v *VFS) vfsRenameResolver { return vfsRenameResolver{v: v} }
+func newVFSRenameResolver(v *VFS) vfsRenameResolver { return vfsRenameResolver{resolver: v} }
 
 func (r vfsRenameResolver) Resolve(ctx context.Context, path string) (drive.Entry, error) {
-	return r.v.resolve(ctx, path)
+	return r.resolver.resolve(ctx, path)
 }
 
 func (r vfsRenameResolver) Parent(ctx context.Context, path string) (drive.Entry, string, error) {
-	return r.v.parent(ctx, path)
+	return r.resolver.parent(ctx, path)
 }
 
 // vfsRenamePending adapts the pending-upload rename to mutation.PendingRenamer.

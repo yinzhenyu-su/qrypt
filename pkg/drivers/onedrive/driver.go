@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const (
@@ -27,6 +29,10 @@ const (
 	oneDriveSmallUploadLimit = 4 * 1024 * 1024
 	defaultChunkSize         = 5 * 1024 * 1024
 	oneDriveRequestAttempts  = 3
+
+	oneDriveSessionFile        = "onedrive_upload_sessions.json"
+	oneDriveSessionMaxAge      = session.DefaultMaxAge
+	oneDriveSessionExpiryEvery = 4 * time.Hour
 )
 
 type host struct {
@@ -72,6 +78,10 @@ type Driver struct {
 	client  *http.Client
 	limiter *drive.BandwidthLimiter
 	metrics *driverutil.Buffer
+
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 type Options struct {
@@ -294,7 +304,38 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-func (d *Driver) Drop(ctx context.Context) error { return nil }
+func (d *Driver) Drop(ctx context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
+	return nil
+}
+
+// InstallStateStore 接入绑定索引并启动过期回收：本地只保存
+// "内容键 → uploadUrl"，进度在恢复时用 nextExpectedRanges 查询。
+func (d *Driver) InstallStateStore(store drive.StateStore) {
+	d.sessionStoreMu.Lock()
+	defer d.sessionStoreMu.Unlock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessions = session.NewIndex(store, oneDriveSessionFile, session.IndexOptions{
+		OnError: func(err error) {
+			logging.L.Warnf("[OneDrive] upload session state failed err=%v", err)
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	d.sessionCancel = cancel
+	d.expireUploadSessions()
+	go session.RunExpirer(ctx, oneDriveSessionExpiryEvery, d.expireUploadSessions)
+}
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
 	d.limiter = limiter
@@ -344,6 +385,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilitySourceUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityWriter,
+		drive.CapabilityResumableUploader,
 	}
 }
 
@@ -394,7 +436,8 @@ func (d *Driver) driverName() string {
 }
 
 var (
-	_ drive.Driver = (*Driver)(nil)
+	_ drive.Driver              = (*Driver)(nil)
+	_ drive.StateStoreInstaller = (*Driver)(nil)
 )
 
 func retryableOneDriveError(ctx context.Context, err error) bool {

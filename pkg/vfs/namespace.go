@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"io"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 var ErrReadOnly = errors.New("vfs: read-only namespace path")
@@ -171,7 +171,7 @@ type Namespace struct {
 func NewNamespace(mounts []Mount) (*Namespace, error) {
 	ns := &Namespace{mounts: map[string]*VFS{}, createdAt: time.Now()}
 	for _, mount := range mounts {
-		name := cleanMountName(mount.Name)
+		name := vfstypes.CleanMountName(mount.Name)
 		if name == "" {
 			return nil, fmt.Errorf("vfs: mount name required")
 		}
@@ -236,7 +236,7 @@ func (n *Namespace) Close(ctx context.Context) error {
 }
 
 func splitNamespacePath(path string) (string, string, bool) {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	if path == "/" {
 		return "", "", true
 	}
@@ -251,7 +251,7 @@ func splitNamespacePath(path string) (string, string, bool) {
 // firstVirtualSegment returns the first slash-delimited segment of a
 // virtual path ("" for root).
 func firstVirtualSegment(path string) string {
-	trimmed := strings.TrimPrefix(cleanVirtual(path), "/")
+	trimmed := strings.TrimPrefix(vfstypes.CleanVirtualPath(path), "/")
 	name, _, _ := strings.Cut(trimmed, "/")
 	return name
 }
@@ -261,7 +261,7 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	if root {
 		return nil, "/", true, nil
 	}
-	name = cleanMountName(name)
+	name = vfstypes.CleanMountName(name)
 	n.mu.RLock()
 	mount := n.mounts[name]
 	n.mu.RUnlock()
@@ -292,10 +292,6 @@ func (n *Namespace) rootEntries() []drive.Entry {
 		})
 	}
 	return entries
-}
-
-func cleanMountName(name string) string {
-	return strings.Trim(strings.TrimSpace(name), "/")
 }
 
 var _ FileSystem = (*VFS)(nil)

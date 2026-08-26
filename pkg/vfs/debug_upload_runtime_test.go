@@ -11,7 +11,7 @@ func TestDebugUploadRuntimeOwnsActiveAndHistoryState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := newVFSDebugUploadRuntime(fs)
+	runtime := newVFSDebugUploadRuntime(fs.uploads)
 
 	runtime.StartSnapshot(PendingUpload{
 		FID:      "op-1",

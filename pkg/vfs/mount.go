@@ -1,6 +1,10 @@
 package vfs
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+)
 
 type MountInfo struct {
 	Name      string `json:"name"`
@@ -17,7 +21,7 @@ func (v *VFS) Mounts() []MountInfo {
 		return nil
 	}
 	return []MountInfo{{
-		Name:      cleanMountName(v.name),
+		Name:      vfstypes.CleanMountName(v.name),
 		Path:      "/",
 		Encrypted: v.encrypted,
 	}}

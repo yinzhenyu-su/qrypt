@@ -1,6 +1,7 @@
 package aliyundrive
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 type countingSHA1Source struct {
@@ -608,6 +610,7 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	source := drive.NewBytesReadOnlyFileSource([]byte("abcdefgh"))
 	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
 	partAttempts := map[string]int{}
+	uploadedParts := map[int]bool{} // mock 服务端的已确认分片
 	createCalls := 0
 	completeCalls := 0
 	failPart2 := true
@@ -654,6 +657,7 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 				http.Error(w, "temporary failure", http.StatusInternalServerError)
 				return
 			}
+			uploadedParts[partNum] = true
 			w.WriteHeader(http.StatusOK)
 		case r.URL.Path == "/v2/file/complete":
 			completeCalls++
@@ -681,12 +685,9 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	if partAttempts["1"] != 1 || partAttempts["2"] != 1 || partAttempts["3"] != 0 {
 		t.Fatalf("part attempts after first upload = %+v", partAttempts)
 	}
-	var state aliyunUploadSessionState
-	if err := store.LoadJSON(aliyunUploadSessionStateFile, &state); err != nil {
+	// 优雅退出：Drop 触发 Flush，节流期的确认位图落盘。
+	if err := first.Drop(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	if len(state.Sessions) != 1 {
-		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
 	}
 
 	second := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: server.URL})
@@ -712,15 +713,14 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	if completeCalls != 1 {
 		t.Fatalf("complete calls = %d, want 1", completeCalls)
 	}
+	// 恢复基于本地确认位图 + 复用 create 下发的预签名 URL，part 1 跳过。
 	if partAttempts["1"] != 1 || partAttempts["2"] != 2 || partAttempts["3"] != 1 {
 		t.Fatalf("part attempts after resume = %+v, want part 1 skipped on resume", partAttempts)
 	}
-	state = aliyunUploadSessionState{}
-	if err := store.LoadJSON(aliyunUploadSessionStateFile, &state); err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Sessions) != 0 {
-		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
+	// commit 成功后绑定清理：盘面无残留。
+	reloaded := session.NewIndex(store, aliyunSessionFile, session.IndexOptions{})
+	if bindings := reloaded.List(); len(bindings) != 0 {
+		t.Fatalf("binding should be deleted after complete, got %d", len(bindings))
 	}
 }
 
@@ -877,5 +877,303 @@ func TestServerSideCopyRejectsDirectory(t *testing.T) {
 	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root"})
 	if _, err := d.Copy(context.Background(), drive.Entry{ID: "d", IsDir: true}, "0", "x"); err == nil {
 		t.Fatal("directory copy should fail")
+	}
+}
+
+func TestDropHandlelessBindings(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root"})
+	d.InstallStateStore(store)
+
+	handleless, _ := json.Marshal(aliyunToken{})
+	if err := d.sessions.Create("key-empty", handleless); err != nil {
+		t.Fatal(err)
+	}
+	withHandle, _ := json.Marshal(aliyunToken{FileID: "f", UploadID: "u", PartSize: 10 << 20})
+	if err := d.sessions.Create("key-handle", withHandle); err != nil {
+		t.Fatal(err)
+	}
+
+	d.dropHandlelessBindings()
+
+	if _, ok := d.sessions.Get("key-empty"); ok {
+		t.Fatal("handleless binding must be dropped eagerly")
+	}
+	if _, ok := d.sessions.Get("key-handle"); !ok {
+		t.Fatal("binding with a provider handle must survive the sweep")
+	}
+}
+
+func TestInstallStateStoreReclaimsExpiredBindings(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	stale, _ := json.Marshal(aliyunToken{FileID: "f", UploadID: "u", PartSize: 10 << 20})
+	live, _ := json.Marshal(aliyunToken{FileID: "g", UploadID: "v", PartSize: 10 << 20})
+	old := time.Now().Add(-30 * time.Hour)
+	if err := store.SaveJSON(aliyunSessionFile, map[string]session.Session{
+		"stale": {Key: "stale", Token: stale, CreatedAt: old, UpdatedAt: old},
+		"live":  {Key: "live", Token: live, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root"})
+	d.InstallStateStore(store)
+
+	if _, ok := d.sessions.Get("stale"); ok {
+		t.Fatal("stale binding must be reclaimed on install")
+	}
+	if _, ok := d.sessions.Get("live"); !ok {
+		t.Fatal("live binding must survive the expiry pass")
+	}
+	// 回收需要落盘：新实例重载后 stale 也不在，而不是仅内存清理。
+	reloaded := session.NewIndex(store, aliyunSessionFile, session.IndexOptions{})
+	bindings := reloaded.List()
+	if len(bindings) != 1 || bindings[0].Key != "live" {
+		t.Fatalf("reloaded bindings = %+v, want only live", bindings)
+	}
+}
+
+// completionServer mocks a multipart upload whose create returns three parts
+// of partSize each and whose complete responds per completeStatus.
+func completionServer(t *testing.T, source drive.ReadOnlyFileSource, partSize int, completeStatus func() int) (*httptest.Server, *int) {
+	t.Helper()
+	completeCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/adrive/v2/file/createWithFolders":
+			_ = json.NewEncoder(w).Encode(createResp{
+				FileID:   "file-1",
+				Name:     "resume.bin",
+				Size:     source.Size(),
+				UploadID: "upload-1",
+				PartInfoList: []uploadPartInfo{
+					{PartNumber: 1, UploadURL: serverURL(r) + "/upload/1"},
+					{PartNumber: 2, UploadURL: serverURL(r) + "/upload/2"},
+					{PartNumber: 3, UploadURL: serverURL(r) + "/upload/3"},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/upload/"):
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v2/file/complete":
+			completeCalls++
+			if status := completeStatus(); status != http.StatusOK {
+				http.Error(w, "complete failed", status)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(completeResp{FileID: "file-1", Name: "resume.bin", Size: source.Size()})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, &completeCalls
+}
+
+func newAliyunUploadDriver(t *testing.T, serverURL string, store drive.StateStore) *Driver {
+	t.Helper()
+	d := New(Options{RefreshToken: "refresh", DriveID: "drive", RootID: "root", APIBaseURL: serverURL})
+	d.partSize = 3
+	d.cl.mu.Lock()
+	d.cl.accessToken = "access-token"
+	d.cl.mu.Unlock()
+	d.InstallStateStore(store)
+	return d
+}
+
+func TestPutSourceCompleteInvalidErrorDeletesBinding(t *testing.T) {
+	source := drive.NewBytesReadOnlyFileSource([]byte("abcdefgh"))
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	server, completeCalls := completionServer(t, source, 3, func() int { return http.StatusNotFound })
+	defer server.Close()
+
+	d := newAliyunUploadDriver(t, server.URL, store)
+	_, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err == nil || !strings.Contains(err.Error(), "upload complete") {
+		t.Fatalf("upload error = %v, want complete failure", err)
+	}
+	if *completeCalls != 1 {
+		t.Fatalf("complete calls = %d, want 1", *completeCalls)
+	}
+	// 404 判定为会话失效：绑定被回收，避免下次盲目续传。
+	if bindings := d.sessions.List(); len(bindings) != 0 {
+		t.Fatalf("binding must be deleted after invalid complete error, got %d", len(bindings))
+	}
+}
+
+// noHashSource 是不提供任何内容指纹的 source：驱动无法寻址，不应创建上传绑定。
+type noHashSource struct{ data []byte }
+
+func (s noHashSource) Size() int64 { return int64(len(s.data)) }
+
+func (s noHashSource) Open(context.Context) (drive.ReadOnlyFile, error) {
+	return &noHashFile{bytes.NewReader(s.data)}, nil
+}
+
+type noHashFile struct{ bytes *bytes.Reader }
+
+func (f *noHashFile) Read(p []byte) (int, error)  { return f.bytes.Read(p) }
+func (f *noHashFile) ReadAt(p []byte, off int64) (int, error) {
+	return f.bytes.ReadAt(p, off)
+}
+func (f *noHashFile) Seek(off int64, whence int) (int64, error) {
+	return f.bytes.Seek(off, whence)
+}
+func (f *noHashFile) Close() error { return nil }
+
+func TestPutSourceWithoutFingerprintCreatesNoBinding(t *testing.T) {
+	source := noHashSource{data: []byte("abcdefgh")}
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	server, _ := completionServer(t, source, 3, func() int { return http.StatusOK })
+	defer server.Close()
+
+	d := newAliyunUploadDriver(t, server.URL, store)
+	entry, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "file-1" {
+		t.Fatalf("entry id = %q, want file-1", entry.ID)
+	}
+	// 无内容指纹 ⇒ 无 sessionKey ⇒ 全程不写绑定（成功清理由 Delete 之外，
+	// 这里直接从未创建）。
+	if bindings := d.sessions.List(); len(bindings) != 0 {
+		t.Fatalf("no binding should ever be created without fingerprint, got %d", len(bindings))
+	}
+}
+
+func TestAliyunTokenJSONRoundTrip(t *testing.T) {
+	want := aliyunToken{
+		FileID:   "file-1",
+		UploadID: "upload-1",
+		PartSize: 3,
+		PartURLs: []uploadPartInfo{
+			{PartNumber: 1, UploadURL: "https://oss.example/upload/1"},
+			{PartNumber: 2, UploadURL: "https://oss.example/upload/2"},
+		},
+		Confirmed: []byte{0b00000111}, // base64 "Bw=="
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got aliyunToken
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FileID != want.FileID || got.UploadID != want.UploadID || got.PartSize != want.PartSize {
+		t.Fatalf("round trip lost identity fields: %+v", got)
+	}
+	if len(got.PartURLs) != 2 || got.PartURLs[0].PartNumber != 1 || got.PartURLs[1].UploadURL != "https://oss.example/upload/2" {
+		t.Fatalf("round trip lost part urls: %+v", got.PartURLs)
+	}
+	if !bytes.Equal(got.Confirmed, want.Confirmed) {
+		t.Fatalf("round trip bitmap = %v, want %v", got.Confirmed, want.Confirmed)
+	}
+	// 位图经 JSON 以 base64 保存，字节语义不变（此前线上问题即来自字段语义漂移）。
+	var state map[string]any
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state["confirmed"].(string); !ok {
+		t.Fatalf("confirmed field type = %T, want base64 string", state["confirmed"])
+	}
+}
+
+func TestPutSourceCompleteTransientKeepsBindingAndResumes(t *testing.T) {
+	source := drive.NewBytesReadOnlyFileSource([]byte("abcdefgh"))
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	createCalls := 0
+	completeCalls := 0
+	completeFails := true
+	oldWait := aliyunRetryWait
+	aliyunRetryWait = func(context.Context, int) error { return nil } // 重试等待归零，测试不睡
+	t.Cleanup(func() { aliyunRetryWait = oldWait })
+	completeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/adrive/v2/file/createWithFolders":
+			createCalls++
+			if createCalls > 1 {
+				t.Fatal("fresh create must not be repeated on transient complete failure")
+			}
+			_ = json.NewEncoder(w).Encode(createResp{
+				FileID:   "file-1",
+				Name:     "resume.bin",
+				Size:     source.Size(),
+				UploadID: "upload-1",
+				PartInfoList: []uploadPartInfo{
+					{PartNumber: 1, UploadURL: serverURL(r) + "/upload/1"},
+					{PartNumber: 2, UploadURL: serverURL(r) + "/upload/2"},
+					{PartNumber: 3, UploadURL: serverURL(r) + "/upload/3"},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/upload/"):
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v2/file/complete":
+			completeCalls++
+			if completeFails {
+				// 始终 500：client 内部重试耗尽后仍报错，模拟持续临时故障。
+				http.Error(w, "temporary failure", http.StatusInternalServerError)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(completeResp{FileID: "file-1", Name: "resume.bin", Size: source.Size()})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer completeServer.Close()
+
+	d := newAliyunUploadDriver(t, completeServer.URL, store)
+	_, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err == nil || !strings.Contains(err.Error(), "upload complete") {
+		t.Fatalf("first upload error = %v, want complete failure", err)
+	}
+	// 500 是临时错误：绑定保留，且本地确认位图更新了全部 3 片。
+	bindings := d.sessions.List()
+	if len(bindings) != 1 {
+		t.Fatalf("binding must survive transient complete error, got %d", len(bindings))
+	}
+	var tok aliyunToken
+	if err := json.Unmarshal(bindings[0].Token, &tok); err != nil {
+		t.Fatal(err)
+	}
+	if tok.FileID != "file-1" || tok.UploadID != "upload-1" || len(tok.PartURLs) != 3 {
+		t.Fatalf("unexpected retained token: %+v", tok)
+	}
+	if tok.Confirmed[0] != 0b00000111 {
+		t.Fatalf("confirmed bitmap = %08b, want parts 1-3 confirmed", tok.Confirmed[0])
+	}
+
+	// 故障恢复后重试走恢复路径：跳过全部 3 片，直接再次 complete，不重复 create。
+	completeFails = false
+	entry, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "parent",
+		Name:     "resume.bin",
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "file-1" {
+		t.Fatalf("resumed entry id = %q", entry.ID)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+	if bindings := d.sessions.List(); len(bindings) != 0 {
+		t.Fatalf("binding should be deleted after successful retry, got %d", len(bindings))
 	}
 }

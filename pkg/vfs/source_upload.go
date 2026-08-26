@@ -3,13 +3,13 @@ package vfs
 import (
 	"context"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 func (v *VFS) SupportsSourceUpload(string) bool {
@@ -30,7 +30,7 @@ func (v *VFS) UploadSource(ctx context.Context, path string, req SourceUploadReq
 	if req.Source == nil {
 		return drive.Entry{}, fmt.Errorf("vfs: upload source required")
 	}
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	if path == "/" {
 		return drive.Entry{}, ErrReadOnly
 	}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 func TestResolvePathUsesConfiguredRootPath(t *testing.T) {
@@ -313,6 +314,7 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	precreateCalls := 0
 	createCalls := 0
 	partAttempts := map[string]int{}
+	uploadedSeqs := map[int]bool{} // mock 服务端的已确认分片
 	failPart1 := true
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,6 +343,15 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 				t.Fatalf("unexpected xpan method %q", method)
 			}
 		case "/rest/2.0/pcs/superfile2":
+			method := r.URL.Query().Get("method")
+			if method == "list" {
+				var seqs []int
+				for seq := range uploadedSeqs {
+					seqs = append(seqs, seq)
+				}
+				writeJSON(t, w, map[string]any{"block_list": seqs})
+				return
+			}
 			partSeq := r.URL.Query().Get("partseq")
 			partAttempts[partSeq]++
 			if err := r.ParseMultipartForm(16 << 20); err != nil {
@@ -372,6 +383,7 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 				http.Error(w, "temporary failure", http.StatusInternalServerError)
 				return
 			}
+			uploadedSeqs[seq] = true
 			writeJSON(t, w, uploadSliceResp{})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
@@ -390,13 +402,6 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	}
 	if partAttempts["0"] != 1 || partAttempts["1"] != 1 || partAttempts["2"] != 0 {
 		t.Fatalf("part attempts after first upload = %+v", partAttempts)
-	}
-	var state baiduUploadSessionState
-	if err := store.LoadJSON(baiduUploadSessionStateFile, &state); err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Sessions) != 1 {
-		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
 	}
 
 	second := newTestBaiduDriver(srv.URL, store)
@@ -417,15 +422,14 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	if createCalls != 1 {
 		t.Fatalf("create calls = %d, want 1", createCalls)
 	}
+	// 恢复只依赖服务端确认的 partseq（superfile2 list），本地零分片状态。
 	if partAttempts["0"] != 1 || partAttempts["1"] != 2 || partAttempts["2"] != 1 {
 		t.Fatalf("part attempts after resume = %+v, want part 0 skipped", partAttempts)
 	}
-	state = baiduUploadSessionState{}
-	if err := store.LoadJSON(baiduUploadSessionStateFile, &state); err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Sessions) != 0 {
-		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
+	// commit 成功后绑定清理：盘面无残留。
+	reloaded := session.NewIndex(store, baiduSessionFile, session.IndexOptions{})
+	if bindings := reloaded.List(); len(bindings) != 0 {
+		t.Fatalf("binding should be deleted after complete, got %d", len(bindings))
 	}
 }
 

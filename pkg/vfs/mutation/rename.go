@@ -10,20 +10,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
-// cleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
-func cleanVirtualPath(path string) string {
-	return vfstypes.CleanVirtualPath(path)
-}
-
-// joinVirtual joins a parent virtual path and a child name.
-func joinVirtual(parent, name string) string {
-	parent = cleanVirtualPath(parent)
-	if parent == "/" {
-		return "/" + name
-	}
-	return parent + "/" + name
-}
-
 // Resolver resolves virtual paths to entries and parents.
 type Resolver interface {
 	Resolve(ctx context.Context, path string) (drive.Entry, error)
@@ -82,8 +68,8 @@ func NewCoordinator(resolve Resolver, pending PendingRenamer, view RenameView, r
 // exist, and the read cache is invalidated only once both source and
 // destination are valid.
 func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error {
-	oldPath = cleanVirtualPath(oldPath)
-	newPath = cleanVirtualPath(newPath)
+	oldPath = vfstypes.CleanVirtualPath(oldPath)
+	newPath = vfstypes.CleanVirtualPath(newPath)
 	if oldPath == "/" || newPath == "/" {
 		return fmt.Errorf("vfs: cannot rename root")
 	}
@@ -115,7 +101,7 @@ func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error
 			// The remote is renamed-but-unmoved: commit that intermediate
 			// state (old parent + new name, full entry metadata) so local
 			// and remote stay consistent even though the operation failed.
-			c.view.CommitRemoteRename(oldPath, joinVirtual(filepath.Dir(oldPath), name), renamed)
+			c.view.CommitRemoteRename(oldPath, vfstypes.JoinVirtualPath(filepath.Dir(oldPath), name), renamed)
 		}
 		return err
 	}

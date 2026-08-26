@@ -1,10 +1,10 @@
 package vfs
 
 import (
+	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"strings"
 	"sync"
-
-	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 type invalidationState struct {
@@ -60,7 +60,7 @@ func (v *VFS) SubscribeInvalidations(listener func(string)) func() {
 }
 
 func (v *VFS) emitInvalidation(path string) {
-	v.invalidations.emit(cleanVirtual(path))
+	v.invalidations.emit(vfstypes.CleanVirtualPath(path))
 }
 
 func (n *Namespace) SubscribeInvalidations(listener func(string)) func() {
@@ -74,7 +74,7 @@ func (n *Namespace) SubscribeInvalidations(listener func(string)) func() {
 	for name, fs := range n.mounts {
 		mountName := name
 		unsubscribes = append(unsubscribes, fs.SubscribeInvalidations(func(path string) {
-			listener(joinVirtual("/"+mountName, strings.TrimPrefix(path, "/")))
+			listener(vfstypes.JoinVirtualPath("/"+mountName, strings.TrimPrefix(path, "/")))
 		}))
 	}
 	n.mu.RUnlock()

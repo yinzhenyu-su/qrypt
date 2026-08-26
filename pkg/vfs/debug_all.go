@@ -3,7 +3,6 @@ package vfs
 import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"sync"
 	"time"
 )
@@ -26,15 +25,6 @@ func ResetDebugStartedAt() time.Time {
 	debugStartedAt = util.Now()
 	return debugStartedAt
 }
-
-const (
-	uploadSnapshotStatePreparing  = upload.SnapshotStatePreparing
-	uploadSnapshotStateUploading  = upload.SnapshotStateUploading
-	uploadSnapshotStateCommitting = upload.SnapshotStateCommitting
-	uploadSnapshotStateCompleted  = upload.SnapshotStateCompleted
-	uploadSnapshotStateFailed     = upload.SnapshotStateFailed
-	uploadSnapshotStateSuperseded = upload.SnapshotStateSuperseded
-)
 
 type encryptedMarker interface {
 	Encrypted() bool

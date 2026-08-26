@@ -5,6 +5,8 @@
 package vfstypes
 
 import (
+	"errors"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"path/filepath"
 	"strings"
 	"time"
@@ -56,11 +58,46 @@ func CleanVirtualPath(path string) string {
 	return path
 }
 
+// IsNotFound reports whether err represents a missing virtual or remote
+// path: the drive.ErrNotFound sentinel only (vfs.ErrNotFound aliases it).
+func IsNotFound(err error) bool {
+	return errors.Is(err, drive.ErrNotFound)
+}
+
+// CleanMountName normalizes a mount reference to its bare name.
+func CleanMountName(name string) string {
+	return strings.Trim(strings.TrimSpace(name), "/")
+}
+
 // IsPathUnder reports whether path is strictly inside dir (not equal).
 func IsPathUnder(path, dir string) bool {
 	path = CleanVirtualPath(path)
 	dir = CleanVirtualPath(dir)
 	return dir != "/" && len(path) > len(dir) && path[:len(dir)] == dir && path[len(dir)] == '/'
+}
+
+// JoinVirtualPath joins a cleaned parent virtual path and a child name.
+func JoinVirtualPath(parent, name string) string {
+	parent = CleanVirtualPath(parent)
+	if parent == "/" {
+		return "/" + name
+	}
+	return parent + "/" + name
+}
+
+// SplitVirtualPath splits a cleaned virtual path into the last component
+// (name) and its parent directory. Unlike filepath.Dir/Base, this uses
+// forward-slash semantics regardless of the host OS, which is required for
+// virtual FUSE paths.
+func SplitVirtualPath(p string) (name, parent string) {
+	if p == "/" {
+		return "/", "/"
+	}
+	idx := strings.LastIndexByte(p, '/')
+	if idx <= 0 {
+		return p[1:], "/"
+	}
+	return p[idx+1:], p[:idx]
 }
 
 // DebugActiveOp describes one in-flight operation for debug snapshots.

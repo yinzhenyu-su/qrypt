@@ -3,6 +3,7 @@ package vfs
 import (
 	"context"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"sort"
 	"strings"
 	"sync"
@@ -22,7 +23,7 @@ func (n *Namespace) PendingUploads() []PendingUpload {
 	var pending []PendingUpload
 	for name, fs := range n.mounts {
 		for _, item := range fs.PendingUploads() {
-			item.Path = joinVirtual("/"+name, strings.TrimPrefix(item.Path, "/"))
+			item.Path = vfstypes.JoinVirtualPath("/"+name, strings.TrimPrefix(item.Path, "/"))
 			pending = append(pending, item)
 		}
 	}

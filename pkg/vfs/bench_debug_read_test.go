@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 )
 
@@ -28,7 +29,7 @@ func benchReadHistoryVFS(prefill int) *VFS {
 
 // AppendEvent on an empty history: append-only cost.
 func BenchmarkReadHistoryAppendEmpty(b *testing.B) {
-	r := newVFSDebugReadRuntime(benchReadHistoryVFS(0))
+	r := newVFSDebugReadRuntime(benchReadHistoryVFS(0).read)
 	event := drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20}
 	b.ReportAllocs()
 
@@ -39,7 +40,7 @@ func BenchmarkReadHistoryAppendEmpty(b *testing.B) {
 
 // AppendEvent once the history already hit the limit: adds the O(n) tail copy.
 func BenchmarkReadHistoryAppendOverLimit(b *testing.B) {
-	r := newVFSDebugReadRuntime(benchReadHistoryVFS(read.HistoryLimit))
+	r := newVFSDebugReadRuntime(benchReadHistoryVFS(read.HistoryLimit).read)
 	event := drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20}
 	b.ReportAllocs()
 
@@ -52,11 +53,12 @@ func BenchmarkReadHistoryAppendOverLimit(b *testing.B) {
 // runs on every chunk of every VFS.Read today.
 func BenchmarkRecordDebugReadDetail(b *testing.B) {
 	v := benchReadHistoryVFS(0)
+	runtime := newVFSDebugReadRuntime(v.read)
 	ctx := context.Background()
 	started := time.Now()
 	b.ReportAllocs()
 
 	for b.Loop() {
-		v.recordDebugReadDetail(ctx, "/data.bin", "fid", "fetch_window", 0, 1<<20, 1<<20, started, map[string]any{"chunk_index": int64(0)}, nil)
+		diagnostics.RecordReadDetail(runtime, ctx, "/data.bin", "fid", "fetch_window", 0, 1<<20, 1<<20, started, map[string]any{"chunk_index": int64(0)}, nil)
 	}
 }

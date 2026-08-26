@@ -3,8 +3,8 @@ package mutation
 import (
 	"context"
 	"fmt"
-
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 // RemoveResolver resolves the target path.
@@ -57,7 +57,7 @@ func NewRemoveCoordinator(resolve RemoveResolver, view RemoveView, schedule Dele
 // without a remote view commit or a remote delete; an uploaded path is
 // resolved, committed, and scheduled.
 func (c *RemoveCoordinator) RemoveFile(ctx context.Context, path string) error {
-	path = cleanVirtualPath(path)
+	path = vfstypes.CleanVirtualPath(path)
 
 	handled, err := c.cleanup.RemovePendingFile(path)
 	if err != nil || handled {
@@ -77,7 +77,7 @@ func (c *RemoveCoordinator) RemoveFile(ctx context.Context, path string) error {
 // cleanup (which must succeed first), then the view commit and the remote
 // delete schedule.
 func (c *RemoveCoordinator) RemoveDirectory(ctx context.Context, path string) error {
-	path = cleanVirtualPath(path)
+	path = vfstypes.CleanVirtualPath(path)
 
 	entry, err := c.resolve.Resolve(ctx, path)
 	if err != nil {

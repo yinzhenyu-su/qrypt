@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/observe"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -24,35 +25,38 @@ type readState = read.State
 
 // vfsReadHost adapts VFS internals to read.Host.
 type vfsReadHost struct {
-	v *VFS
+	resolver pathResolver
+	driver   drive.Driver
+	store    *uploadStore
+	rootID   string
 }
 
 func newVFSReadHost(v *VFS) vfsReadHost {
-	return vfsReadHost{v: v}
+	return vfsReadHost{resolver: v, driver: v.driver, store: v.uploads.Store(), rootID: v.rootID}
 }
 
 func (h vfsReadHost) Resolve(ctx context.Context, path string) (drive.Entry, error) {
-	return h.v.resolve(ctx, path)
+	return h.resolver.resolve(ctx, path)
 }
 
 func (h vfsReadHost) PendingUpload(path string) (vfstypes.PendingUpload, bool, error) {
-	pending, err := h.v.pendingUpload(path)
-	if err != nil {
-		return vfstypes.PendingUpload{}, false, err
+	pending, ok := h.store.UploadByPath(vfstypes.CleanVirtualPath(path))
+	if !ok {
+		return vfstypes.PendingUpload{}, false, fmt.Errorf("vfs: no pending file for %s", path)
 	}
 	return pending, true, nil
 }
 
 func (h vfsReadHost) FlushStaging(localPath string) error {
-	return h.v.uploads.Store().FlushStaging(localPath)
+	return h.store.FlushStaging(localPath)
 }
 
 func (h vfsReadHost) ReadCacheKey(entry drive.Entry) string {
-	return h.v.readCacheKey(entry)
+	return read.CacheKey(h.rootID, entry)
 }
 
 func (h vfsReadHost) DriverRead(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	return h.v.driver.Read(ctx, entry, offset, size)
+	return h.driver.Read(ctx, entry, offset, size)
 }
 
 // vfsReadHost adapts only the read host surface; debug instrumentation
@@ -77,39 +81,40 @@ var _ read.HealthRecorder = vfsReadHealth{}
 // distinct type from vfsReadHost (even though both currently reach into the
 // VFS) so the read host surface cannot grow debug methods by accident.
 type vfsReadObserver struct {
-	v *VFS
+	st     *readState
+	active *observe.ActiveStore
 }
 
-func newVFSReadObserver(v *VFS) vfsReadObserver {
-	return vfsReadObserver{v: v}
+func newVFSReadObserver(st *readState, active *observe.ActiveStore) vfsReadObserver {
+	return vfsReadObserver{st: st, active: active}
 }
 
 func (o vfsReadObserver) DebugNextOpID() string {
-	return o.v.nextDebugReadOpID()
+	return newVFSDebugReadRuntime(o.st).NextOpID()
 }
 
 func (o vfsReadObserver) DebugBeginActive(op vfstypes.DebugActiveOp) uint64 {
-	return o.v.beginDebugActive(op)
+	return o.active.Begin(op)
 }
 
 func (o vfsReadObserver) DebugUpdateActive(id uint64, fn func(*vfstypes.DebugActiveOp)) {
-	o.v.updateDebugActive(id, func(op *debugActiveOp) { fn(op) })
+	o.active.Update(id, fn)
 }
 
 func (o vfsReadObserver) DebugFinishActive(id uint64) {
-	o.v.finishDebugActive(id)
+	o.active.Finish(id)
 }
 
 func (o vfsReadObserver) DebugRecordRead(opID, path, remoteID string, offset, requested, bytes int64, source string, cacheHits, cacheMisses, chunks int64, started time.Time, extra map[string]any, err error) {
-	o.v.recordDebugRead(opID, path, remoteID, offset, requested, bytes, source, cacheHits, cacheMisses, chunks, started, extra, err)
+	diagnostics.RecordRead(newVFSDebugReadRuntime(o.st), opID, path, remoteID, offset, requested, bytes, source, cacheHits, cacheMisses, chunks, started, extra, err)
 }
 
 func (o vfsReadObserver) DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
-	o.v.recordDebugReadDetail(ctx, path, remoteID, phase, offset, requested, bytes, started, extra, err)
+	diagnostics.RecordReadDetail(newVFSDebugReadRuntime(o.st), ctx, path, remoteID, phase, offset, requested, bytes, started, extra, err)
 }
 
 func (o vfsReadObserver) DebugCacheCounters() (hits, misses int64) {
-	return o.v.debugCacheCounters()
+	return newVFSDebugReadRuntime(o.st).CacheCounters()
 }
 
 var _ read.ReadObserver = vfsReadObserver{}
@@ -142,7 +147,7 @@ func (v *VFS) ReadRaw(ctx context.Context, path string, offset, size int64) (rc 
 		return nil, err
 	}
 	if entry.IsDir {
-		return nil, fmt.Errorf("vfs: %s is a directory", cleanVirtual(path))
+		return nil, fmt.Errorf("vfs: %s is a directory", vfstypes.CleanVirtualPath(path))
 	}
 	if raw, ok := v.driver.(rawReadableDriver); ok {
 		return raw.ReadRaw(ctx, entry, offset, size)
@@ -161,19 +166,6 @@ func (v *VFS) readCacheKey(entry drive.Entry) string {
 }
 
 // readLoadKey returns the window-coalescing key for an entry.
-
-// readCacheSnapshot returns the read cache debug snapshot.
-func (v *VFS) readCacheSnapshot() readcache.DebugReadCache {
-	return v.read.DebugSnapshot()
-}
-
-// readCacheCounters returns the read cache hit/miss counters.
-func (v *VFS) readCacheCounters() (hits, misses int64) {
-	if v.read.Cache() == nil {
-		return 0, 0
-	}
-	return v.read.Cache().Counters()
-}
 
 // debugHotChunks returns the hot-chunk entry count and bytes.
 func (v *VFS) debugHotChunks() (int, int64) {

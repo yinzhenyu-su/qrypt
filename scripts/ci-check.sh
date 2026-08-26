@@ -11,6 +11,10 @@ Usage: scripts/ci-check.sh [--install-system-deps]
 
 Run the repository's CI check job locally.
 
+Linux/macOS only: the Windows gate (build + vet + unit tests + localfs
+smoke) runs in GitHub Actions on windows-latest (ci.yaml test-windows),
+and the real WinFsp mount smoke runs nightly (nightly.yaml windows-mount).
+
 Options:
   --install-system-deps  On Linux, install libfuse-dev with apt-get when needed.
   -h, --help             Show this help.

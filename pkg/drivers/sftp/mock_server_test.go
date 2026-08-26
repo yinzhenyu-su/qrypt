@@ -13,12 +13,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	sftpserver "github.com/pkg/sftp"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -401,7 +401,9 @@ func (f *failingUploadFile) Read(p []byte) (int, error) {
 
 func (f *failingUploadFile) Close() error { return nil }
 
-func TestMockSFTPFailedUploadLeavesNoPartialFile(t *testing.T) {
+// TestMockSFTPFailedUploadLeavesNoCommittedFile 验证中断上传不会提交最终文件：
+// 只留下隐藏 staging 文件（可恢复状态），随后用完好源重试能正确续传完成。
+func TestMockSFTPFailedUploadLeavesNoCommittedFile(t *testing.T) {
 	server := newMockSFTPServer(t)
 	driver := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})
 	ctx := context.Background()
@@ -417,22 +419,31 @@ func TestMockSFTPFailedUploadLeavesNoPartialFile(t *testing.T) {
 	if _, err := driver.PutSource(ctx, drive.UploadRequest{ParentID: "/", Name: "partial.bin", Source: failingUploadSource{}}); err == nil {
 		t.Fatal("PutSource returned nil error for failed upload")
 	}
-	entries, err := driver.List(ctx, "/")
+	if _, err := os.Stat(filepath.Join(server.root, "partial.bin")); !os.IsNotExist(err) {
+		t.Fatal("failed upload must not commit the final file")
+	}
+
+	// 中断只留下 staging 文件；带内容的成功重试从 staging 续传并最终一致。
+	content := []byte("partial")
+	entry, err := driver.PutSource(ctx, drive.UploadRequest{ParentID: "/", Name: "partial.bin", Source: drive.NewBytesReadOnlyFileSource(content)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if entry.Name == "partial.bin" || strings.HasPrefix(entry.Name, ".qrypt-upload-") {
-			t.Fatalf("failed upload left remote entry: %+v", entry)
-		}
+	if entry.Size != int64(len(content)) {
+		t.Fatalf("resumed entry size = %d, want %d", entry.Size, len(content))
+	}
+	got, err := os.ReadFile(filepath.Join(server.root, "partial.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("resumed content = %q, want %q", got, content)
 	}
 }
 
 func TestMockSFTPResumesCompletedPartsFromState(t *testing.T) {
 	server := newMockSFTPServer(t)
-	stateStore := drive.NewFileStateStore(t.TempDir())
 	driver := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})
-	driver.InstallStateStore(stateStore)
 	ctx := context.Background()
 	if err := driver.Init(ctx); err != nil {
 		t.Fatal(err)
@@ -443,27 +454,19 @@ func TestMockSFTPResumesCompletedPartsFromState(t *testing.T) {
 		}
 	})
 
+	// 恢复是确定性的：内容键推导出 staging 路径，stat 得到连续进度，
+	// 不依赖任何本地绑定。这里模拟一次中断留下的 8MB staging 文件。
 	data := append(bytes.Repeat([]byte("a"), sftpUploadPartSize), []byte("tail")...)
 	source := drive.NewBytesReadOnlyFileSource(data)
-	sha256Hex, err := sourceSHA256Hex(ctx, source, int64(len(data)))
+	sha256Hex, err := session.ContentSHA256Hex(ctx, source, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := driver.uploadSessionKey(server.root, "resume.bin", int64(len(data)), sha256Hex)
+	key := session.Identity{ParentID: server.root, Name: "resume.bin", Size: int64(len(data)), Fingerprint: sha256Hex}.Key()
 	remotePath := path.Join(server.root, ".qrypt-sftp-upload-"+key)
 	if err := os.WriteFile(remotePath, data[:sftpUploadPartSize], 0o600); err != nil {
 		t.Fatal(err)
 	}
-	driver.saveUploadSession(sftpUploadSession{
-		Key:            key,
-		ParentID:       server.root,
-		Name:           "resume.bin",
-		RemotePath:     remotePath,
-		Size:           int64(len(data)),
-		SHA256:         sha256Hex,
-		PartSize:       sftpUploadPartSize,
-		CompletedParts: map[int]bool{0: true},
-	})
 
 	entry, err := driver.PutSource(ctx, drive.UploadRequest{ParentID: "/", Name: "resume.bin", Source: source})
 	if err != nil {
@@ -479,7 +482,7 @@ func TestMockSFTPResumesCompletedPartsFromState(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatalf("resumed file content mismatch: got %d bytes, want %d", len(got), len(data))
 	}
-	if _, ok := driver.loadUploadSession(key); ok {
-		t.Fatal("completed upload session was not deleted")
+	if _, err := os.Stat(remotePath); !os.IsNotExist(err) {
+		t.Fatalf("staging file should be renamed away after commit, stat err = %v", err)
 	}
 }

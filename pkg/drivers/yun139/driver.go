@@ -3,6 +3,7 @@ package yun139
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,9 +12,9 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"golang.org/x/sync/errgroup"
@@ -44,6 +45,13 @@ type Driver struct {
 	debugMu             sync.Mutex
 	lastError           string
 	instantUploadCount  int64
+
+	// Upload session binding store：只保存 "内容键 → provider 上传句柄 +
+	// 本地确认位图"。139 无分片进度查询接口，能跳过已确认分片靠的是
+	// 本地确认记录（TouchWith 节流落盘，幂等重传兜底）。
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 type authState struct {
@@ -55,30 +63,9 @@ type authState struct {
 	UpdatedAt           time.Time `json:"updated_at,omitempty"`
 }
 
-type uploadSessionState struct {
-	Version  int                            `json:"version"`
-	Sessions map[string]yun139UploadSession `json:"sessions,omitempty"`
-}
-
-type yun139UploadSession struct {
-	Key            string             `json:"key"`
-	ParentID       string             `json:"parent_id"`
-	Name           string             `json:"name"`
-	Size           int64              `json:"size"`
-	SHA256         string             `json:"sha256"`
-	FileID         string             `json:"file_id"`
-	FileName       string             `json:"file_name,omitempty"`
-	UploadID       string             `json:"upload_id"`
-	PartSize       int64              `json:"part_size"`
-	PartInfos      []partMeta         `json:"part_infos,omitempty"`
-	UploadPartInfo []personalPartInfo `json:"upload_part_infos,omitempty"`
-	CompletedParts map[int]bool       `json:"completed_parts,omitempty"`
-	SavedAt        time.Time          `json:"saved_at"`
-}
-
-const uploadSessionStateFile = "yun139_upload_sessions.json"
-const uploadSessionMaxAge = 24 * time.Hour
-const uploadSessionMaxEntries = 1024
+const yun139SessionFile = "yun139_upload_sessions.json"
+const yun139SessionMaxAge = 24 * time.Hour
+const yun139SessionExpiryEvery = time.Hour
 
 func init() {
 	drive.Register("yun139", func(params drive.Params) (drive.Driver, error) {
@@ -148,11 +135,22 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-func (d *Driver) Drop(ctx context.Context) error { return nil }
+func (d *Driver) Drop(ctx context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
+	return nil
+}
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
-	d.pruneStoredUploadSessions()
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -220,89 +218,6 @@ func (d *Driver) getLastError() string {
 	d.debugMu.Lock()
 	defer d.debugMu.Unlock()
 	return d.lastError
-}
-
-func (d *Driver) uploadSessionKey(parentID, name string, size int64, sha256Hex string) string {
-	return uploadsession.Key(parentID, name, size, sha256Hex)
-}
-
-func (d *Driver) loadUploadSession(key string) (yun139UploadSession, bool) {
-	session, ok := d.uploadSessionStore().Load(key)
-	if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
-	}
-	return session, ok
-}
-
-func (d *Driver) saveUploadSession(session yun139UploadSession) {
-	d.uploadSessionStore().Save(session)
-}
-
-func (d *Driver) deleteUploadSession(key string) {
-	d.uploadSessionStore().Delete(key)
-}
-
-func (d *Driver) pruneStoredUploadSessions() {
-	d.uploadSessionStore().Prune()
-}
-
-func (d *Driver) uploadSessionStore() *uploadsession.Store[yun139UploadSession] {
-	return uploadsession.NewStore(uploadsession.StoreOptions[yun139UploadSession]{
-		Store:      d.stateStore,
-		File:       uploadSessionStateFile,
-		MaxAge:     uploadSessionMaxAge,
-		MaxEntries: uploadSessionMaxEntries,
-		Key: func(session yun139UploadSession) string {
-			return session.Key
-		},
-		Valid: func(key string, session yun139UploadSession) bool {
-			return session.Key != "" && session.FileID != "" && session.UploadID != "" && len(session.UploadPartInfo) > 0 && len(session.CompletedParts) > 0
-		},
-		UpdatedAt: func(session yun139UploadSession) time.Time {
-			return session.SavedAt
-		},
-		Touch: func(session *yun139UploadSession, now time.Time) {
-			session.SavedAt = now
-		},
-		OnError: func(err error) {
-			d.setLastError(fmt.Errorf("139: upload session state: %w", err))
-		},
-	})
-}
-
-func uploadSessionFromCreate(key, parentID, name string, size int64, sha256Hex string, partSize int64, partInfos []partMeta, create personalUploadResp) yun139UploadSession {
-	return yun139UploadSession{
-		Key:            key,
-		ParentID:       parentID,
-		Name:           name,
-		Size:           size,
-		SHA256:         sha256Hex,
-		FileID:         create.Data.FileID,
-		FileName:       create.Data.FileName,
-		UploadID:       create.Data.UploadID,
-		PartSize:       partSize,
-		PartInfos:      append([]partMeta(nil), partInfos...),
-		UploadPartInfo: append([]personalPartInfo(nil), create.Data.PartInfos...),
-		CompletedParts: map[int]bool{},
-	}
-}
-
-func (s yun139UploadSession) createResp() personalUploadResp {
-	var resp personalUploadResp
-	resp.Success = true
-	resp.Data.FileID = s.FileID
-	resp.Data.FileName = s.FileName
-	resp.Data.UploadID = s.UploadID
-	resp.Data.PartInfos = append([]personalPartInfo(nil), s.UploadPartInfo...)
-	return resp
-}
-
-func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
-	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
-		d.deleteUploadSession(key)
-		return fmt.Errorf("139: resumed upload session invalid, will retry from scratch: %v", err)
-	}
-	return err
 }
 
 func invalidResumedUploadSession(err error) bool {
@@ -549,8 +464,22 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sessionKey := d.uploadSessionKey(fileID, name, size, sha256Hex)
-	session, resumedSession := d.loadUploadSession(sessionKey)
+	sessionKey := session.Identity{ParentID: fileID, Name: name, Size: size, Fingerprint: sha256Hex}.Key()
+	resumedSession := false
+	var token yun139Token
+	if d.sessions != nil {
+		if binding, ok := d.sessions.Get(sessionKey); ok {
+			if err := json.Unmarshal(binding.Token, &token); err == nil && token.FileID != "" && token.UploadID != "" {
+				resumedSession = true
+				if token.PartSize > 0 {
+					partSize = token.PartSize
+				}
+			} else {
+				// 无效绑定：作废重来。
+				d.sessions.Delete(sessionKey)
+			}
+		}
+	}
 	partCount := size / partSize
 	if size%partSize > 0 {
 		partCount++
@@ -583,18 +512,27 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	}
 	var createResp personalUploadResp
 	if resumedSession {
-		createResp = session.createResp()
-		if session.PartSize > 0 {
-			partSize = session.PartSize
-		}
-		if len(session.PartInfos) > 0 {
-			partInfos = append([]partMeta(nil), session.PartInfos...)
-		}
+		createResp = token.createResp()
 	} else {
+		// 预留绑定：/file/create 是 provider 上传资源创建，先落盘再调用，
+		// 崩溃只留下空句柄绑定（下次作废重来）。
+		if d.sessions != nil {
+			if raw, err := json.Marshal(yun139Token{PartSize: partSize}); err != nil {
+				return drive.Entry{}, fmt.Errorf("139: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				return drive.Entry{}, fmt.Errorf("139: persist upload session: %w", err)
+			}
+		}
 		if err := d.cl.personalPost(ctx, "/file/create", createData, &createResp); err != nil {
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return drive.Entry{}, fmt.Errorf("139: upload create: %w", err)
 		}
 		if !createResp.Success {
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return drive.Entry{}, fmt.Errorf("139: upload create failed (code=%s): %s", createResp.Code, createResp.Message)
 		}
 	}
@@ -608,30 +546,55 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		d.debugMu.Lock()
 		d.instantUploadCount++
 		d.debugMu.Unlock()
-		d.deleteUploadSession(sessionKey)
+		if d.sessions != nil {
+			d.sessions.Delete(sessionKey)
+		}
 		return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 	}
 
-	if !resumedSession {
-		session = uploadSessionFromCreate(sessionKey, fileID, name, size, sha256Hex, partSize, partInfos, createResp)
-		d.saveUploadSession(session)
-	} else if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
+	if !resumedSession && d.sessions != nil {
+		token = yun139Token{
+			FileID:    createResp.Data.FileID,
+			FileName:  createResp.Data.FileName,
+			UploadID:  createResp.Data.UploadID,
+			PartSize:  partSize,
+			Confirmed: session.ConfirmedBitmap(size, partSize, nil),
+		}
+		if raw, err := json.Marshal(token); err != nil {
+			return drive.Entry{}, fmt.Errorf("139: encode upload session: %w", err)
+		} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+			// 持句柄落盘失败：provider 会话无 abort 端点，靠服务端过期；
+			// 下次尝试发现空句柄时视为作废重来。
+			return drive.Entry{}, fmt.Errorf("139: persist upload session: %w", err)
+		}
 	}
 
-	// Server returns upload URLs when it needs multipart upload.
-	if len(createResp.Data.PartInfos) > 0 {
-		var sessionMu sync.Mutex
-		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size, session.CompletedParts, func(partNumber int) {
-			sessionMu.Lock()
-			defer sessionMu.Unlock()
-			if session.CompletedParts == nil {
-				session.CompletedParts = map[int]bool{}
+	// 分片上传：已确认分片跳过（本地确认位图），上传 URL 每次现取。
+	if len(partInfos) > 0 {
+		skipParts := session.ConfirmedParts(token.Confirmed)
+		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size, skipParts, func(partNumber int) {
+			if d.sessions == nil || sessionKey == "" {
+				return
 			}
-			session.CompletedParts[partNumber] = true
-			d.saveUploadSession(session)
+			// 确认记录在 Index 锁内原地更新、节流落盘（≤1 次/分钟）；
+			// 崩溃最多丢一分钟确认，对应分片重传幂等覆盖，安全。闭包模式
+			// 对并发的分片确认也安全。
+			d.sessions.TouchWith(sessionKey, func(s *session.Session) {
+				var tok yun139Token
+				if err := json.Unmarshal(s.Token, &tok); err != nil || tok.FileID == "" || tok.UploadID == "" {
+					return
+				}
+				tok.Confirmed = session.ConfirmedBitmap(size, partSize, tok.Confirmed)
+				session.MarkConfirmed(tok.Confirmed, partNumber)
+				if raw, err := json.Marshal(tok); err == nil {
+					s.Token = raw
+				}
+			})
 		}); err != nil {
-			return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
+			if d.sessions != nil && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+				d.sessions.Delete(sessionKey)
+			}
+			return drive.Entry{}, err
 		}
 	}
 
@@ -645,10 +608,16 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	logging.L.Debugf("[139] upload complete: fileId=%s uploadId=%s", createResp.Data.FileID, createResp.Data.UploadID)
 	var completeResp baseResp
 	if err := d.cl.personalPost(ctx, "/file/complete", completeData, &completeResp); err != nil {
-		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, fmt.Errorf("139: upload complete: %w", err))
+		if d.sessions != nil && invalidResumedUploadSession(err) {
+			d.sessions.Delete(sessionKey)
+		}
+		return drive.Entry{}, fmt.Errorf("139: upload complete: %w", err)
 	}
 	if !completeResp.Success {
-		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, drive.NonRetryable(fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message)))
+		if d.sessions != nil {
+			d.sessions.Delete(sessionKey)
+		}
+		return drive.Entry{}, drive.NonRetryable(fmt.Errorf("139: upload complete failed (code=%s): %s", completeResp.Code, completeResp.Message))
 	}
 
 	// Handle auto_rename conflict: server renamed our uploaded file because
@@ -676,12 +645,16 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 		// file ID (toEntry strips the suffix so the list name is ambiguous).
 		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileID}, name); err != nil {
 			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileID, name, err)
-			d.deleteUploadSession(sessionKey)
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 		}
 	}
 
-	d.deleteUploadSession(sessionKey)
+	if d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
 	return drive.Entry{ID: createResp.Data.FileID, ParentID: fileID, Name: name, Size: size, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
@@ -724,7 +697,14 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 	for _, p := range createResp.Data.PartInfos {
 		uploadParts = append(uploadParts, uploadPart{partNumber: p.PartNumber, uploadURL: p.UploadURL})
 	}
-	for i := 101; i <= len(partInfos); i += 100 {
+	// On resume the create response carries no part URLs, so the first batch
+	// starts at part 1 (URLs fetched fresh via /file/getUploadUrl instead of
+	// reusing stale presigned URLs).
+	firstURLBatch := 101
+	if len(createResp.Data.PartInfos) == 0 {
+		firstURLBatch = 1
+	}
+	for i := firstURLBatch; i <= len(partInfos); i += 100 {
 		end := i + 100
 		if end > len(partInfos) {
 			end = len(partInfos)

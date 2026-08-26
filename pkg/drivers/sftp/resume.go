@@ -2,8 +2,7 @@ package sftp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +11,12 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
+
+const sftpUploadPartSize = 8 << 20
 
 func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest) (entry drive.Entry, err error) {
 	started := time.Now()
@@ -31,56 +34,28 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 	}
 	size := req.Source.Size()
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
-	sha256Hex, err := sourceSHA256Hex(ctx, req.Source, size)
+	sha256Hex, err := session.ContentSHA256Hex(ctx, req.Source, size)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sessionKey := d.uploadSessionKey(parent, req.Name, size, sha256Hex)
-	session, resumed := d.loadUploadSession(sessionKey)
-	if !resumed {
-		session = sftpUploadSession{
-			Key:            sessionKey,
-			ParentID:       parent,
-			Name:           req.Name,
-			RemotePath:     path.Join(parent, ".qrypt-sftp-upload-"+sessionKey),
-			Size:           size,
-			SHA256:         sha256Hex,
-			PartSize:       sftpUploadPartSize,
-			CompletedParts: map[int]bool{},
-		}
-		if err := removeRemoteFile(client, session.RemotePath); err != nil {
-			return drive.Entry{}, err
-		}
-	} else if session.PartSize <= 0 || session.Size != size || session.SHA256 != sha256Hex {
-		resumed = false
-		session.CompletedParts = map[int]bool{}
-		session.PartSize = sftpUploadPartSize
+	sessionKey := session.Identity{ParentID: parent, Name: req.Name, Size: size, Fingerprint: sha256Hex}.Key()
+	staging := stagingPath(parent, sessionKey)
+	if err := d.ensureSessionBinding(sessionKey, parent, req.Name, staging); err != nil {
+		return drive.Entry{}, err
 	}
-	if session.CompletedParts == nil {
-		session.CompletedParts = map[int]bool{}
+
+	// 进度真相在服务端：staging 文件的连续大小即已传字节数，与本地绑定无关。
+	resumeFrom, err := stagingResumeOffset(client, staging, size)
+	if err != nil {
+		return drive.Entry{}, err
 	}
+	// 中断可能留下半个分片：回退到分片边界重传整个分片。
+	resumeFrom = (resumeFrom / sftpUploadPartSize) * sftpUploadPartSize
 	if size == 0 {
-		if err := createRemoteFile(client, session.RemotePath); err != nil {
+		if err := createRemoteFile(client, staging); err != nil {
 			return drive.Entry{}, err
 		}
 	}
-	remoteSize, err := remoteUploadSize(client, session.RemotePath, resumed)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	if remoteSize > size {
-		if err := removeRemoteFile(client, session.RemotePath); err != nil {
-			return drive.Entry{}, err
-		}
-		remoteSize = 0
-		session.CompletedParts = map[int]bool{}
-	}
-	for part := range session.CompletedParts {
-		if remoteSize < sftpUploadPartEnd(part, session.PartSize, size) {
-			delete(session.CompletedParts, part)
-		}
-	}
-	d.saveUploadSession(session)
 
 	source, err := req.Source.Open(ctx)
 	if err != nil {
@@ -88,79 +63,92 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 	}
 	defer source.Close()
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
-	partCount := uploadPartCount(size, session.PartSize)
-	for part := 0; part < partCount; part++ {
-		start := int64(part) * session.PartSize
-		length := session.PartSize
+	drive.ReportUploadProgress(req.Progress, resumeFrom)
+	partCount := uploadPartCount(size, sftpUploadPartSize)
+	for part := int(resumeFrom / sftpUploadPartSize); part < partCount; part++ {
+		start := int64(part) * sftpUploadPartSize
+		length := int64(sftpUploadPartSize)
 		if remaining := size - start; remaining < length {
 			length = remaining
 		}
-		if session.CompletedParts[part] {
-			drive.ReportUploadProgress(req.Progress, length)
-			continue
-		}
 		partStarted := time.Now()
-		partErr := d.uploadSFTPPart(ctx, client, session.RemotePath, source, start, length)
+		partErr := d.uploadSFTPPart(ctx, client, staging, source, start, length)
 		partBytes := length
 		if partErr != nil {
 			partBytes = 0
 		}
-		d.recordOperation(ctx, "upload_part", session.RemotePath, partStarted, partBytes, partErr)
+		d.recordOperation(ctx, "upload_part", staging, partStarted, partBytes, partErr)
 		if partErr != nil {
 			return drive.Entry{}, fmt.Errorf("sftp: upload part %d: %w", part, partErr)
 		}
-		session.CompletedParts[part] = true
-		remoteSize = maxInt64(remoteSize, start+length)
-		d.saveUploadSession(session)
+		if d.sessions != nil {
+			d.sessions.Touch(sessionKey)
+		}
 	}
 
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	if !req.ModTime.IsZero() {
-		if err := client.Chtimes(session.RemotePath, req.ModTime, req.ModTime); err != nil {
-			return drive.Entry{}, fmt.Errorf("sftp: set mtime %q: %w", session.RemotePath, err)
+		if err := client.Chtimes(staging, req.ModTime, req.ModTime); err != nil {
+			return drive.Entry{}, fmt.Errorf("sftp: set mtime %q: %w", staging, err)
 		}
 	}
 	commitStarted := time.Now()
-	if err := client.Rename(session.RemotePath, path.Join(parent, req.Name)); err != nil {
-		d.recordOperation(ctx, "upload_commit", path.Join(parent, req.Name), commitStarted, 0, err)
+	finalPath := path.Join(parent, req.Name)
+	if err := client.Rename(staging, finalPath); err != nil {
+		d.recordOperation(ctx, "upload_commit", finalPath, commitStarted, 0, err)
 		return drive.Entry{}, fmt.Errorf("sftp: commit upload %q: %w", req.Name, classifyError(err))
 	}
-	d.recordOperation(ctx, "upload_commit", path.Join(parent, req.Name), commitStarted, size, nil)
-	info, err := client.Stat(path.Join(parent, req.Name))
+	d.recordOperation(ctx, "upload_commit", finalPath, commitStarted, size, nil)
+	info, err := client.Stat(finalPath)
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("sftp: stat upload %q: %w", req.Name, classifyError(err))
 	}
-	if err := d.deleteUploadSession(sessionKey); err != nil {
-		return drive.Entry{}, fmt.Errorf("sftp: persist completed upload cleanup: %w", err)
+	// provider 侧 commit 已成功：绑定清理尽力而为，不阻塞成功返回；
+	// 残留绑定由过期回收兜底。
+	if d.sessions != nil {
+		d.sessions.Delete(sessionKey)
 	}
-	entry = drive.Entry{ID: path.Join(parent, req.Name), ParentID: parent, Name: req.Name, Size: info.Size(), ModTime: info.ModTime(), UpdatedAt: info.ModTime()}
+	entry = drive.Entry{ID: finalPath, ParentID: parent, Name: req.Name, Size: info.Size(), ModTime: info.ModTime(), UpdatedAt: info.ModTime()}
 	return entry, nil
 }
 
-func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size int64) (string, error) {
-	if sum, ok := drive.SourceHash(source, drive.HashSHA256); ok {
-		if len(sum) != sha256.Size {
-			return "", drive.NonRetryable(fmt.Errorf("sftp: source SHA-256 metadata has %d bytes, want %d", len(sum), sha256.Size))
-		}
-		return hex.EncodeToString(sum), nil
+// ensureSessionBinding 预留绑定：上传开始前必须落盘，崩溃后回收器才知道
+// 该 staging 文件属于哪个会话。写入失败则拒绝开始上传，避免产生无绑定
+// 可循的孤儿 staging。
+func (d *Driver) ensureSessionBinding(sessionKey, parent, name, staging string) error {
+	if d.sessions == nil {
+		return nil
 	}
-	file, err := source.Open(ctx)
+	if _, ok := d.sessions.Get(sessionKey); ok {
+		return nil
+	}
+	token, err := json.Marshal(sftpToken{ParentID: parent, Name: name, StagingPath: staging, PartSize: sftpUploadPartSize})
 	if err != nil {
-		return "", fmt.Errorf("sftp: hash source open: %w", err)
+		return fmt.Errorf("sftp: encode upload session: %w", err)
 	}
-	hasher := sha256.New()
-	written, copyErr := io.Copy(hasher, file)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return "", fmt.Errorf("sftp: hash source: %w", copyErr)
+	if err := d.sessions.Create(sessionKey, token); err != nil {
+		return fmt.Errorf("sftp: persist upload session: %w", err)
 	}
-	if closeErr != nil {
-		return "", fmt.Errorf("sftp: close hash source: %w", closeErr)
+	return nil
+}
+
+// stagingResumeOffset 返回 staging 文件已有的连续字节数；文件不存在返回 0，
+// 文件比目标还大视为损坏清掉重传。
+func stagingResumeOffset(client *sftp.Client, stagingPath string, size int64) (int64, error) {
+	info, err := client.Stat(stagingPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("sftp: stat staging file %q: %w", stagingPath, classifyError(err))
 	}
-	if written != size {
-		return "", drive.NonRetryable(fmt.Errorf("sftp: source size mismatch: hashed %d, expected %d", written, size))
+	if info.Size() > size {
+		if err := client.Remove(stagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return 0, fmt.Errorf("sftp: remove corrupt staging file %q: %w", stagingPath, err)
+		}
+		return 0, nil
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	return info.Size(), nil
 }
 
 func uploadPartCount(size, partSize int64) int {
@@ -168,14 +156,6 @@ func uploadPartCount(size, partSize int64) int {
 		return 0
 	}
 	return int((size + partSize - 1) / partSize)
-}
-
-func sftpUploadPartEnd(part int, partSize, size int64) int64 {
-	end := (int64(part) + 1) * partSize
-	if end > size {
-		return size
-	}
-	return end
 }
 
 func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remotePath string, source drive.ReadOnlyFile, offset, size int64) error {
@@ -219,27 +199,6 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 	return nil
 }
 
-func remoteUploadSize(client *sftp.Client, remotePath string, resumed bool) (int64, error) {
-	info, err := client.Stat(remotePath)
-	if err == nil {
-		return info.Size(), nil
-	}
-	if resumed && !errors.Is(err, os.ErrNotExist) {
-		return 0, fmt.Errorf("stat remote staging file %q: %w", remotePath, err)
-	}
-	if resumed {
-		return 0, fmt.Errorf("remote staging file %q disappeared: %w", remotePath, drive.ErrNotFound)
-	}
-	return 0, nil
-}
-
-func removeRemoteFile(client *sftp.Client, remotePath string) error {
-	if err := client.Remove(remotePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale staging file %q: %w", remotePath, err)
-	}
-	return nil
-}
-
 func createRemoteFile(client *sftp.Client, remotePath string) error {
 	file, err := client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE)
 	if err != nil {
@@ -249,11 +208,4 @@ func createRemoteFile(client *sftp.Client, remotePath string) error {
 		return fmt.Errorf("close remote staging file %q: %w", remotePath, err)
 	}
 	return nil
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
