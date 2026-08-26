@@ -1,7 +1,7 @@
 package view
 
 import (
-	"path/filepath"
+	pathpkg "path"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
@@ -36,7 +36,7 @@ func (r Committer) CommitMkdir(path string, entry drive.Entry) {
 	r.view.mu.Lock()
 	r.view.entries.Set(path, entry)
 	rt.MarkLocalDirLocked(path)
-	rt.InvalidateListLocked(filepath.Dir(path))
+	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
 }
 
@@ -60,8 +60,8 @@ func (r Committer) CommitUploadedEntry(path string, entry drive.Entry, stagingPa
 	rt := NewRuntime(r.view)
 	r.view.mu.Lock()
 	r.view.entries.Set(path, entry)
-	r.vis.UnhideCopyChild(filepath.Dir(path), entry.Name)
-	rt.InvalidateListLocked(filepath.Dir(path))
+	r.vis.UnhideCopyChild(pathpkg.Dir(path), entry.Name)
+	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
 }
 
@@ -70,8 +70,8 @@ func (r Committer) CommitUploadedEntry(path string, entry drive.Entry, stagingPa
 // invalidates the affected parent list caches, writes the new entry, and
 // records the rename overlay so stale backend listings hide the old name.
 func (r Committer) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) {
-	oldParent := filepath.Dir(oldPath)
-	newParent := filepath.Dir(newPath)
+	oldParent := pathpkg.Dir(oldPath)
+	newParent := pathpkg.Dir(newPath)
 	rt := NewRuntime(r.view)
 	r.view.mu.Lock()
 	r.view.entries.Delete(oldPath)

@@ -10,7 +10,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"io"
 	"os"
-	"path/filepath"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"time"
@@ -49,13 +49,13 @@ func (v *VFS) createLocked(ctx context.Context, path string) error {
 
 func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *uploadStore, hashes vfsUploadWriteHashTracker) error {
 	path = vfstypes.CleanVirtualPath(path)
-	v.restoreDeletedAncestor(filepath.Dir(path))
+	v.restoreDeletedAncestor(pathpkg.Dir(path))
 	v.cancelDeletedFile(path)
 	parent, name, err := v.parent(ctx, path)
 	if err != nil {
 		return err
 	}
-	v.unhideCopyChild(filepath.Dir(path), name)
+	v.unhideCopyChild(pathpkg.Dir(path), name)
 	old, hadOld := store.UploadByPath(path)
 	fid := newStagingFID(path)
 	localPath, err := store.CreateStaging(fid)

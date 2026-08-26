@@ -3,7 +3,7 @@ package diagnostics
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	pathpkg "path"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -34,8 +34,8 @@ func Resolve(ctx context.Context, path string, includeRemoteName bool, runtime R
 	path = vfstypes.CleanVirtualPath(path)
 	info := DebugResolveInfo{
 		Path:      path,
-		Parent:    filepath.Dir(path),
-		PlainName: filepath.Base(path),
+		Parent:    pathpkg.Dir(path),
+		PlainName: pathpkg.Base(path),
 	}
 	resolvedRemoteName := ""
 	if pending, ok := runtime.PendingUpload(path); ok {
@@ -90,7 +90,7 @@ func ResolvePathByRemoteID(ctx context.Context, runtime ResolveRuntime, remoteID
 // state vs the remote listing under the parent.
 func Consistency(ctx context.Context, path string, runtime ResolveRuntime) (ConsistencyReport, error) {
 	path = vfstypes.CleanVirtualPath(path)
-	report := ConsistencyReport{Path: path, Parent: filepath.Dir(path), Name: filepath.Base(path)}
+	report := ConsistencyReport{Path: path, Parent: pathpkg.Dir(path), Name: pathpkg.Base(path)}
 	expectedKnown := false
 	if pending, ok := runtime.PendingUpload(path); ok {
 		report.Pending = true

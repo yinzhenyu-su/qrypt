@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
+	pathpkg "path"
 	"sort"
 	"strings"
 	"time"
@@ -358,7 +358,7 @@ func joinVirtual(parent, name string) string {
 
 // CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
 func CleanVirtualPath(path string) string {
-	return filepath.Clean("/" + strings.TrimPrefix(path, "/"))
+	return pathpkg.Clean("/" + strings.TrimPrefix(path, "/"))
 }
 
 // ErrNotFound is reported for paths hidden by the overlay.

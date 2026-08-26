@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
-	"path/filepath"
+	pathpkg "path"
 )
 
 // MkdirResolver resolves the target path and its parent.
@@ -73,7 +73,7 @@ func (c *MkdirCoordinator) Mkdir(ctx context.Context, path string) (drive.Entry,
 	}
 	// Creating inside a deleted ancestor restores that ancestor, and a
 	// path under a just-restored directory may already exist remotely.
-	c.view.RestoreDeletedAncestor(filepath.Dir(path))
+	c.view.RestoreDeletedAncestor(pathpkg.Dir(path))
 	if c.view.IsUnderRestoredDir(path) {
 		entry, err := c.resolve.Resolve(ctx, path)
 		switch {
@@ -97,7 +97,7 @@ func (c *MkdirCoordinator) Mkdir(ctx context.Context, path string) (drive.Entry,
 		if !isAlreadyExistsError(err) {
 			return drive.Entry{}, err
 		}
-		entry, err = c.findExistingChildDir(ctx, filepath.Dir(path), parent.ID, name)
+		entry, err = c.findExistingChildDir(ctx, pathpkg.Dir(path), parent.ID, name)
 		if err != nil {
 			return drive.Entry{}, err
 		}

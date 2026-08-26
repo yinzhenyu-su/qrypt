@@ -1,7 +1,7 @@
 package view
 
 import (
-	"path/filepath"
+	pathpkg "path"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -76,7 +76,7 @@ func (r Visibility) RestoreDeletedPath(path string) (drive.Entry, bool) {
 
 	r.view.mu.Lock()
 	r.view.entries.Set(path, entry)
-	delete(r.view.lists, vfstypes.CleanVirtualPath(filepath.Dir(path)))
+	delete(r.view.lists, vfstypes.CleanVirtualPath(pathpkg.Dir(path)))
 	r.view.mu.Unlock()
 	return entry, true
 }
@@ -102,7 +102,7 @@ func (r Visibility) RestoreDeletedAncestor(path string) {
 
 	r.view.mu.Lock()
 	r.view.entries.Set(restorePath, entry)
-	delete(r.view.lists, vfstypes.CleanVirtualPath(filepath.Dir(restorePath)))
+	delete(r.view.lists, vfstypes.CleanVirtualPath(pathpkg.Dir(restorePath)))
 	r.view.mu.Unlock()
 }
 
@@ -185,7 +185,7 @@ func (r Visibility) LocalChildren(parentPath string, entries []drive.Entry) []dr
 		entry drive.Entry
 	}
 	r.view.entries.Range(func(path string, entry drive.Entry) bool {
-		if path == "/" || filepath.Dir(path) != parentPath || seen[entry.Name] {
+		if path == "/" || pathpkg.Dir(path) != parentPath || seen[entry.Name] {
 			return true
 		}
 		local = append(local, struct {
@@ -241,11 +241,11 @@ func (r Visibility) UpdateRenameOverlay(parentPath string, entries []drive.Entry
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 	for key, op := range r.overlay.renameOverlays {
-		if filepath.Dir(op.oldPath) == parentPath {
-			op.oldGone = !entryListHasPath(entries, filepath.Base(op.oldPath), op.entryID)
+		if pathpkg.Dir(op.oldPath) == parentPath {
+			op.oldGone = !entryListHasPath(entries, pathpkg.Base(op.oldPath), op.entryID)
 		}
-		if filepath.Dir(op.newPath) == parentPath {
-			op.newSeen = entryListHasPath(entries, filepath.Base(op.newPath), op.entryID)
+		if pathpkg.Dir(op.newPath) == parentPath {
+			op.newSeen = entryListHasPath(entries, pathpkg.Base(op.newPath), op.entryID)
 		}
 		if op.oldGone && op.newSeen {
 			r.overlay.removeRenameOverlay(key)
@@ -284,8 +284,8 @@ func (r Visibility) UnhideCopyChild(parentPath, name string) {
 // IsCopyHidden reports whether path is currently copy-hidden.
 func (r Visibility) IsCopyHidden(path string) bool {
 	path = vfstypes.CleanVirtualPath(path)
-	parentPath := filepath.Dir(path)
-	name := filepath.Base(path)
+	parentPath := pathpkg.Dir(path)
+	name := pathpkg.Base(path)
 	now := time.Now()
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
@@ -364,7 +364,7 @@ func (r Visibility) MarkDeleteComplete(path string, entry drive.Entry) {
 	r.overlay.mu.Unlock()
 
 	r.view.mu.Lock()
-	delete(r.view.lists, vfstypes.CleanVirtualPath(filepath.Dir(path)))
+	delete(r.view.lists, vfstypes.CleanVirtualPath(pathpkg.Dir(path)))
 	r.view.mu.Unlock()
 }
 

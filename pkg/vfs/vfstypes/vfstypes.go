@@ -7,7 +7,7 @@ package vfstypes
 import (
 	"errors"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"path/filepath"
+	pathpkg "path"
 	"strings"
 	"time"
 )
@@ -51,7 +51,7 @@ type UploadStagingStatus struct {
 
 // CleanVirtualPath normalizes qrypt virtual paths to absolute slash paths.
 func CleanVirtualPath(path string) string {
-	path = filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(path, "/")))
+	path = pathpkg.Clean("/" + strings.TrimPrefix(path, "/"))
 	if path == "." {
 		return "/"
 	}
