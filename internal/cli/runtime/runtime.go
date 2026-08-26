@@ -186,7 +186,7 @@ func FormatBytes(n int64) string {
 
 func PendingFiles(fs any) ([]vfs.PendingUpload, error) {
 	inspector, ok := fs.(vfs.UploadInspector)
-	if !ok {
+	if !vfs.HasCapability(fs, vfs.CapabilityUploadInspection) || !ok {
 		return nil, fmt.Errorf("filesystem does not expose upload state")
 	}
 	return inspector.PendingUploads(), nil

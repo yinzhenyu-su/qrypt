@@ -201,7 +201,7 @@ func runCat(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		var rc io.ReadCloser
 		if raw {
 			reader, ok := fs.(vfs.RawReader)
-			if !ok {
+			if !vfs.HasCapability(fs, vfs.CapabilityRawRead) || !ok {
 				return fmt.Errorf("fs cat --raw: raw read unsupported by filesystem")
 			}
 			rc, err = reader.ReadRaw(ctx, args[0], 0, 0)
@@ -276,7 +276,7 @@ func runGet(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 func copyRemoteFile(ctx context.Context, fs vfs.Reader, remotePath string, out io.Writer) error {
 	var rc io.ReadCloser
 	var err error
-	if streamer, ok := fs.(vfs.StreamReader); ok {
+	if streamer, ok := fs.(vfs.StreamReader); ok && vfs.HasCapability(fs, vfs.CapabilityStreamRead) {
 		rc, err = streamer.ReadStream(ctx, remotePath)
 	} else {
 		rc, err = fs.Read(ctx, remotePath, 0, 0)

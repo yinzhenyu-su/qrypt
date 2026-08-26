@@ -63,7 +63,7 @@ func runDf(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return SpaceEntry{Name: name, Total: space.Total, Free: space.Free, Used: used}, nil
 		}
 
-		if spacer, ok := fs.(vfs.MountSpaceProvider); ok {
+		if spacer, ok := fs.(vfs.MountSpaceProvider); ok && vfs.HasCapability(fs, vfs.CapabilityMountSpace) {
 			mounts := spacer.MountSpaces(ctx)
 			if selected != "" {
 				for _, mount := range mounts {
@@ -110,7 +110,7 @@ func runDf(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		}
 
 		spacer, ok := fs.(vfs.SpaceProvider)
-		if !ok {
+		if !vfs.HasCapability(fs, vfs.CapabilitySpace) || !ok {
 			return fmt.Errorf("this filesystem does not report space usage")
 		}
 		space, err := spacer.Space(ctx)

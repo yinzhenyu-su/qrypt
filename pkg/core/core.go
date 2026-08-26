@@ -141,10 +141,6 @@ func (c *Core) List(ctx context.Context, path string) ([]drive.Entry, error) {
 	return c.fs.List(ctx, path)
 }
 
-type listPager interface {
-	ListPage(ctx context.Context, path, cursor string, limit int) (vfs.ListPageResult, error)
-}
-
 // ListPage returns a deterministic slice of a directory listing (sorted by
 // name) with a cursor for incremental browsing. limit <= 0 returns the whole
 // listing.
@@ -152,8 +148,8 @@ func (c *Core) ListPage(ctx context.Context, path, cursor string, limit int) (vf
 	if c == nil || c.fs == nil {
 		return vfs.ListPageResult{}, fmt.Errorf("core: closed")
 	}
-	pager, ok := c.fs.(listPager)
-	if !ok {
+	pager, ok := c.fs.(vfs.ListPager)
+	if !vfs.HasCapability(c.fs, vfs.CapabilityListPage) || !ok {
 		return vfs.ListPageResult{}, fmt.Errorf("core: list paging unsupported")
 	}
 	return pager.ListPage(ctx, path, cursor, limit)
@@ -200,7 +196,7 @@ func (c *Core) Capabilities(ctx context.Context, path string) (vfs.CapabilityInf
 		return vfs.CapabilityInfo{}, fmt.Errorf("core: closed")
 	}
 	reporter, ok := c.fs.(vfs.CapabilityReporter)
-	if !ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityPathCapabilities) || !ok {
 		return vfs.CapabilityInfo{}, fmt.Errorf("core: capability query unavailable")
 	}
 	return reporter.CapabilitiesForPath(ctx, path)
@@ -211,7 +207,7 @@ func (c *Core) Mounts() ([]vfs.MountInfo, error) {
 		return nil, fmt.Errorf("core: closed")
 	}
 	reporter, ok := c.fs.(vfs.MountReporter)
-	if !ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityMountReport) || !ok {
 		return nil, fmt.Errorf("core: mount query unavailable")
 	}
 	mounts := reporter.Mounts()
@@ -282,16 +278,10 @@ func DriverSchemaJSON(name string) (string, error) {
 	return marshalJSON(DriverSchema(name))
 }
 
-// BuiltFileSystem is the filesystem surface BuildFileSystem returns: full
-// file operations plus lifecycle (Start), cache-refresh (RefreshPath),
-// and task-source introspection (TaskSource) so the service layer can
-// aggregate upload and delete activity into the task manager.
-type BuiltFileSystem interface {
-	vfs.FileSystem
-	vfs.Lifecycle
-	vfs.PathRefresher
-	TaskSource() task.Source
-}
+// BuiltFileSystem is the filesystem surface BuildFileSystem returns. It is
+// the vfs mount contract (file operations, lifecycle, path refresh, task
+// source); every build path - single VFS or Namespace - satisfies it.
+type BuiltFileSystem = vfs.MountedFileSystem
 
 // ReadStream opens a bounded-memory sequential reader when the filesystem
 // provides the optional streaming surface.
@@ -300,7 +290,7 @@ func (c *Core) ReadStream(ctx context.Context, path string) (io.ReadCloser, erro
 		return nil, fmt.Errorf("core: closed")
 	}
 	streamer, ok := c.fs.(vfs.StreamReader)
-	if !ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityStreamRead) || !ok {
 		return nil, fmt.Errorf("core: sequential read stream unsupported")
 	}
 	return streamer.ReadStream(ctx, path)
@@ -312,7 +302,10 @@ func (c *Core) ReleaseReadSession(sessionID uint64) {
 	if c == nil || c.fs == nil {
 		return
 	}
-	if releaser, ok := c.fs.(interface{ ReleaseReadSession(uint64) }); ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityReleaseReadSession) {
+		return
+	}
+	if releaser, ok := c.fs.(vfs.ReadSessionReleaser); ok {
 		releaser.ReleaseReadSession(sessionID)
 	}
 }
@@ -650,7 +643,9 @@ func dropAll(ctx context.Context, drivers []drive.Driver) {
 // goroutine behind on every failed namespace build.
 func closeMounts(mounts []vfs.Mount) {
 	for _, m := range mounts {
-		_ = m.FS.CloseReadCache()
+		if closer, ok := m.FS.(vfs.ReadCacheCloser); ok {
+			_ = closer.CloseReadCache()
+		}
 	}
 }
 
@@ -713,23 +708,14 @@ func TimeoutContext(timeoutMS int) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 }
 
-type readCacheFlusher interface {
-	FlushReadCache() error
-}
-
-type readCacheCloser interface {
-	CloseReadCache() error
-}
-
 func flushReadCache(fs any) {
-	if closer, ok := fs.(readCacheCloser); ok {
-		if err := closer.CloseReadCache(); err != nil {
+	switch {
+	case vfs.HasCapability(fs, vfs.CapabilityCloseReadCache):
+		if err := fs.(vfs.ReadCacheCloser).CloseReadCache(); err != nil {
 			logging.L.Warnf("[CACHE] close read cache failed: %v", err)
 		}
-		return
-	}
-	if flusher, ok := fs.(readCacheFlusher); ok {
-		if err := flusher.FlushReadCache(); err != nil {
+	case vfs.HasCapability(fs, vfs.CapabilityFlushReadCache):
+		if err := fs.(vfs.ReadCacheFlusher).FlushReadCache(); err != nil {
 			logging.L.Warnf("[CACHE] flush read cache failed: %v", err)
 		}
 	}
