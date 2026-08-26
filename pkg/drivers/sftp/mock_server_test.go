@@ -184,7 +184,7 @@ func TestMockSFTPCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry.Name = "renamed.txt"
-	entry.ID = filepath.Join(directory.ID, entry.Name)
+	entry.ID = path.Join(directory.ID, entry.Name)
 	destination, err := driver.Mkdir(ctx, "/", "qa-destination")
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestMockSFTPCRUD(t *testing.T) {
 	if err := driver.Move(ctx, entry, destination.ID); err != nil {
 		t.Fatal(err)
 	}
-	entry.ID = filepath.Join(destination.ID, entry.Name)
+	entry.ID = path.Join(destination.ID, entry.Name)
 	if err := driver.Remove(ctx, entry); err != nil {
 		t.Fatal(err)
 	}

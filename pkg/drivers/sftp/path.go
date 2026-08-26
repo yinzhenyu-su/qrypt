@@ -87,10 +87,12 @@ func (d *Driver) resolveID(id string) (string, error) {
 		}
 		return "", fmt.Errorf("sftp: path escapes root %q: %w", id, drive.ErrInvalidInput)
 	}
-	if filepath.IsAbs(id) {
+	if filepath.IsAbs(id) || strings.HasPrefix(id, `\`) {
 		// A host-absolute root (e.g. "C:\data" on Windows) is the remote
 		// root encoded in native form; normalize to the slash-rooted form
-		// before the root-relative fallback mangles it.
+		// before the root-relative fallback mangles it. A bare "\" root is
+		// not volume-absolute for filepath.IsAbs on Windows but is still a
+		// native path.
 		resolved := path.Clean("/" + filepath.ToSlash(id))
 		if d.withinRoot(resolved) {
 			return resolved, nil
