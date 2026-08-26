@@ -188,10 +188,26 @@ func listenEndpoint(endpoint string) (network, address string, err error) {
 	case strings.HasPrefix(endpoint, "https://"):
 		return "", "", fmt.Errorf("control: https listen is not supported")
 	}
-	if _, _, err := net.SplitHostPort(endpoint); err == nil {
+	if _, port, err := net.SplitHostPort(endpoint); err == nil && isNumericPort(port) {
 		return tcpListenEndpoint(endpoint)
 	}
 	return "unix", util.ExpandHome(endpoint), nil
+}
+
+// isNumericPort reports whether port is a bare decimal port number. A bare
+// endpoint is treated as TCP only when its port is numeric; on Windows a
+// unix socket path like "C:\...\qrypt.sock" also splits as host:port, so it
+// must not be routed into the TCP branch.
+func isNumericPort(port string) bool {
+	if port == "" {
+		return false
+	}
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func tcpListenEndpoint(address string) (string, string, error) {

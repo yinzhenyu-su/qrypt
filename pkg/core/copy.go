@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strconv"
 	"sync"
 
@@ -54,7 +55,7 @@ func (c *Core) createCopyTask(ctx context.Context, req task.Request) (task.Task,
 		State:     task.StateQueued,
 		Scope:     task.ScopeUser,
 		Path:      first.SourcePath,
-		Name:      path.Base(first.SourcePath),
+		Name:      filepath.Base(first.SourcePath),
 		CreatedAt: now,
 		UpdatedAt: now,
 		Progress: task.Progress{

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +65,14 @@ func init() {
 }
 
 func New(opts Options) *Driver {
-	root := path.Clean(opts.RootPath)
+	root := path.Clean(filepath.ToSlash(opts.RootPath))
 	if root == "." || root == "" {
 		root = "/"
+	} else if !strings.HasPrefix(root, "/") && filepath.IsAbs(opts.RootPath) {
+		// A host-absolute root (e.g. "C:\data" on Windows) is encoded as an
+		// absolute SFTP path ("/C:/data") so the server maps requests back to
+		// the same location; relative roots stay relative to the working dir.
+		root = "/" + root
 	}
 	return &Driver{address: opts.Address, username: opts.Username, password: opts.Password, privateKey: opts.PrivateKey, passphrase: opts.Passphrase, knownHosts: opts.KnownHosts, rootPath: root, metrics: driverutil.NewBuffer(500), readDir: readDirContext}
 }

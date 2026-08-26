@@ -224,6 +224,9 @@ func TestDebugSnapshotsCarryNoCredentialMaterial(t *testing.T) {
 			// the test function name, which would false-positive the scan.
 			if tc.root != "" {
 				blob = bytes.ReplaceAll(blob, []byte(tc.root), nil)
+				// JSON escapes backslashes, so on Windows the raw root is
+				// not present in the blob; strip the escaped form too.
+				blob = bytes.ReplaceAll(blob, []byte(strings.ReplaceAll(tc.root, `\`, `\\`)), nil)
 			}
 			lower := strings.ToLower(string(blob))
 			for _, key := range sensitiveKeys {

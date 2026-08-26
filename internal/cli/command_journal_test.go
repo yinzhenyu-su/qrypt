@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,9 +99,9 @@ func setupJournalCache(t *testing.T) string {
 	}
 	defer f.Close()
 	entries := []string{
-		`{"op":"dirty","path":"/keep.txt","fid":"f-keep","local_path":"` + filepath.Join(staging, "keep") + `","size":4}`,
-		`{"op":"dirty","path":"/fail.txt","fid":"f-fail","local_path":"` + filepath.Join(staging, "fail") + `","size":4,"permanent_fail":true,"last_error":"network","retry_count":2}`,
-		`{"op":"dirty","path":"/gone.txt","fid":"f-gone","local_path":"` + filepath.Join(staging, "gone") + `","size":4}`,
+		`{"op":"dirty","path":"/keep.txt","fid":"f-keep","local_path":` + strconv.Quote(filepath.Join(staging, "keep")) + `,"size":4}`,
+		`{"op":"dirty","path":"/fail.txt","fid":"f-fail","local_path":` + strconv.Quote(filepath.Join(staging, "fail")) + `,"size":4,"permanent_fail":true,"last_error":"network","retry_count":2}`,
+		`{"op":"dirty","path":"/gone.txt","fid":"f-gone","local_path":` + strconv.Quote(filepath.Join(staging, "gone")) + `,"size":4}`,
 	}
 	for _, line := range entries {
 		if _, err := f.WriteString(line + "\n"); err != nil {

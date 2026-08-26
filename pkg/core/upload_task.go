@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -287,7 +288,7 @@ func (c *Core) uploadSpecFromTaskRequest(ctx context.Context, req task.Request) 
 		if destPath == "" {
 			destPath = item.Path
 		}
-		resolvedDestPath, err := c.resolveUploadDestPath(ctx, destPath, path.Base(sourcePath))
+		resolvedDestPath, err := c.resolveUploadDestPath(ctx, destPath, filepath.Base(sourcePath))
 		if err != nil {
 			return uploadTaskSpec{}, err
 		}

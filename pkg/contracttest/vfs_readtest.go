@@ -483,7 +483,7 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 			if firstByteAt.IsZero() {
 				firstByteAt = time.Now()
 				firstReadBytes = int64(n)
-				measurement.TTFBMicros = firstByteAt.Sub(started).Microseconds()
+				measurement.TTFBMicros = measuredMicros(firstByteAt.Sub(started))
 			}
 			measurement.Bytes += int64(n)
 			measurement.ReadCalls++
@@ -507,14 +507,14 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 	}
 	finished := time.Now()
 	if windowBytes > 0 {
-		if bps := bytesPerSecond(windowBytes, finished.Sub(windowStarted)); bps > measurement.PeakWindowBPS {
+		if bps := bytesPerSecond(windowBytes, nonZeroDuration(finished.Sub(windowStarted))); bps > measurement.PeakWindowBPS {
 			measurement.PeakWindowBPS = bps
 		}
 	}
-	measurement.DurationMicros = finished.Sub(started).Microseconds()
-	measurement.EndToEndBPS = bytesPerSecond(measurement.Bytes, finished.Sub(started))
+	measurement.DurationMicros = measuredMicros(finished.Sub(started))
+	measurement.EndToEndBPS = bytesPerSecond(measurement.Bytes, nonZeroDuration(finished.Sub(started)))
 	if !firstByteAt.IsZero() && measurement.Bytes > firstReadBytes {
-		measurement.SteadyBPS = bytesPerSecond(measurement.Bytes-firstReadBytes, finished.Sub(firstByteAt))
+		measurement.SteadyBPS = bytesPerSecond(measurement.Bytes-firstReadBytes, nonZeroDuration(finished.Sub(firstByteAt)))
 	} else {
 		measurement.SteadyBPS = measurement.EndToEndBPS
 	}
@@ -684,7 +684,7 @@ func measureMountedSeekOnFile(ctx context.Context, fs vfs.FileSystem, mount stri
 	seekStarted := time.Now()
 	actualOffset, err := file.Seek(offset, io.SeekStart)
 	seekFinished := time.Now()
-	measurement.SeekMicros = seekFinished.Sub(seekStarted).Microseconds()
+	measurement.SeekMicros = measuredMicros(seekFinished.Sub(seekStarted))
 	if err != nil {
 		return err
 	}
@@ -698,9 +698,9 @@ func measureMountedSeekOnFile(ctx context.Context, fs vfs.FileSystem, mount stri
 	loadFinished := time.Now()
 	loadDuration := loadFinished.Sub(loadStarted)
 	measurement.Bytes = int64(n)
-	measurement.LoadMicros = loadDuration.Microseconds()
-	measurement.TotalMicros = loadFinished.Sub(seekStarted).Microseconds()
-	measurement.LoadBPS = bytesPerSecond(int64(n), loadDuration)
+	measurement.LoadMicros = measuredMicros(loadDuration)
+	measurement.TotalMicros = measuredMicros(loadFinished.Sub(seekStarted))
+	measurement.LoadBPS = bytesPerSecond(int64(n), nonZeroDuration(loadDuration))
 	after := fsMountState(fs, mount)
 	measurement.CacheHits = after.CacheHits - before.CacheHits
 	measurement.CacheMisses = after.CacheMisses - before.CacheMisses
@@ -987,11 +987,25 @@ func percentileInt64(sorted []int64, percentile int) int64 {
 }
 
 func elapsedMicros(started time.Time) int64 {
-	d := time.Since(started)
+	return measuredMicros(time.Since(started))
+}
+
+// measuredMicros floors sub-resolution deltas to 1µs: on Windows the clock
+// tick (~1ms) can measure real work as a zero delta.
+func measuredMicros(d time.Duration) int64 {
 	if d <= 0 {
-		return 0
+		d = time.Microsecond
 	}
 	return d.Microseconds()
+}
+
+// nonZeroDuration floors a sub-resolution delta to 1µs so throughput math
+// (bytesPerSecond) reports positive rates for recorded work.
+func nonZeroDuration(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Microsecond
+	}
+	return d
 }
 
 func bytesPerSecond(bytes int64, duration time.Duration) int64 {

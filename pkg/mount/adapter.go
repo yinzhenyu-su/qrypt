@@ -490,6 +490,16 @@ func (a *adapter) fillStat(stat *fuse.Stat_t, entry drive.Entry, fallbackPath ..
 		return
 	}
 	a.credsOnce.Do(func() {
+		// fuse.Getcontext is only valid inside a live FUSE operation. When
+		// the adapter runs without a host mount (unit tests; or the cgofuse
+		// host never initialized — the Windows no-cgo proc is nil and panics
+		// on call), fall back to zero caller credentials for single-user
+		// mounts.
+		defer func() {
+			if recover() != nil {
+				a.cachedUID, a.cachedGID = 0, 0
+			}
+		}()
 		uid, gid, _ := fuse.Getcontext()
 		a.cachedUID = uid
 		a.cachedGID = gid
