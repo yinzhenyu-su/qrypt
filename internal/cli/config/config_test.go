@@ -12,7 +12,7 @@ import (
 )
 
 func TestDirectPasswordFromStdin(t *testing.T) {
-	cmd := NewExportRclonePasswordCmd(testRuntime{})
+	cmd := NewExportRclonePasswordCmd(newTestRuntime())
 	cmd.SetIn(strings.NewReader("secret\r\n"))
 	if err := cmd.Flags().Set("password-stdin", "true"); err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestGeneratedConfigPassesValidation(t *testing.T) {
 
 func TestConfigInitCreatesValidStarter(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "nested", "qrypt.toml")
-	cmd := NewInitCmd(testRuntime{})
+	cmd := NewInitCmd(newTestRuntime())
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.RunE(cmd, []string{configPath}); err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestDirectPasswordFromFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := NewExportRclonePasswordCmd(testRuntime{})
+	cmd := NewExportRclonePasswordCmd(newTestRuntime())
 	if err := cmd.Flags().Set("password-file", path); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestDirectPasswordFromFile(t *testing.T) {
 }
 
 func TestDirectPasswordRejectsInvalidFlagCombinations(t *testing.T) {
-	cmd := NewExportRclonePasswordCmd(testRuntime{})
+	cmd := NewExportRclonePasswordCmd(newTestRuntime())
 	if err := cmd.Flags().Set("password", "secret"); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestDirectPasswordRejectsInvalidFlagCombinations(t *testing.T) {
 		t.Fatal("expected conflicting password sources to fail")
 	}
 
-	cmd = NewExportRclonePasswordCmd(testRuntime{})
+	cmd = NewExportRclonePasswordCmd(newTestRuntime())
 	if err := cmd.Flags().Set("salt", "salt"); err != nil {
 		t.Fatal(err)
 	}

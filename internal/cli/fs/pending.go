@@ -35,10 +35,7 @@ func runPending(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if verbose && asJSON {
 			return fmt.Errorf("--verbose and --json cannot be used together")
 		}
-		pending, err := cliruntime.PendingFiles(fs)
-		if err != nil {
-			return err
-		}
+		pending := cliruntime.PendingFiles(fs)
 		if asJSON {
 			if pending == nil {
 				pending = []vfs.PendingUpload{}

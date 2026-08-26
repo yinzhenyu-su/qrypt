@@ -10,7 +10,7 @@ import (
 
 type BuildInfo = buildinfo.Info
 
-func NewCommand(rt cliruntime.Runtime, info BuildInfo) *cobra.Command {
+func NewCommand(rt cliruntime.ErrorFactory, info BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show build version information",

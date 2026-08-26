@@ -3,13 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"os/signal"
 	"time"
 
 	"github.com/spf13/cobra"
+	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
@@ -17,10 +16,16 @@ import (
 
 // builtFS is a filesystem the CLI constructed and will start. Every builder
 // path returns a value with the full file-operation surface plus the
-// lifecycle hook, so commands can Start it without type assertions.
+// lifecycle hook, so commands can Start it without type assertions. It is
+// wider than cliruntime.OpenedFileSystem: the upload and debug-observation
+// surfaces it carries let openFileSystem hand the started filesystem to
+// commands fully typed (no any-assertions in the idle-wait and pending
+// paths).
 type builtFS interface {
 	vfs.FileSystem
 	vfs.Lifecycle
+	vfs.UploadInspector
+	diagnostics.DebugSnapshotProvider
 }
 
 func openFileSystem(cmd *cobra.Command) (context.Context, builtFS, func(), error) {
@@ -65,36 +70,10 @@ func openFileSystem(cmd *cobra.Command) (context.Context, builtFS, func(), error
 }
 
 func commandFSMount(cmd *cobra.Command) string {
-	if cmd == nil {
-		return ""
-	}
-	if flag := cmd.Flags().Lookup("mount"); flag != nil {
-		value, _ := cmd.Flags().GetString("mount")
-		return value
-	}
-	if flag := cmd.InheritedFlags().Lookup("mount"); flag != nil {
-		value, _ := cmd.InheritedFlags().GetString("mount")
-		return value
-	}
-	return ""
+	return cliruntime.FlagStringValue(cmd, "mount")
 }
 
-func printEntryStat(w io.Writer, entry drive.Entry) {
-	kind := "file"
-	if entry.IsDir {
-		kind = "dir"
-	}
-	fmt.Fprintf(w, "type: %s\n", kind)
-	fmt.Fprintf(w, "name: %s\n", entry.Name)
-	fmt.Fprintf(w, "id: %s\n", entry.ID)
-	fmt.Fprintf(w, "parent_id: %s\n", entry.ParentID)
-	fmt.Fprintf(w, "size: %d\n", entry.Size)
-	if !entry.ModTime.IsZero() {
-		fmt.Fprintf(w, "mod_time: %s\n", entry.ModTime.Format(time.RFC3339))
-	}
-}
-
-func waitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) error {
+func waitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, timeout time.Duration) error {
 	// No deadline (timeout <= 0): wait until the filesystem is idle or the
 	// context is cancelled (Ctrl-C). fs sync uses this because its transfer
 	// size is unbounded; a fixed timeout would report a healthy slow upload
@@ -109,10 +88,7 @@ func waitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) erro
 	defer ticker.Stop()
 	for {
 		uploads, deleteTimers := fileSystemActivity(fs)
-		pending, err := pendingFiles(fs)
-		if err != nil {
-			return err
-		}
+		pending := cliruntime.PendingFiles(fs)
 		if len(pending) == 0 && uploads == 0 && deleteTimers == 0 {
 			return nil
 		}
@@ -126,12 +102,8 @@ func waitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) erro
 	}
 }
 
-func fileSystemActivity(fs any) (uploads, deleteTimers int) {
-	snapshotter, ok := fs.(diagnostics.DebugSnapshotProvider)
-	if !ok {
-		return 0, 0
-	}
-	for _, mount := range snapshotter.DebugSnapshot().Mounts {
+func fileSystemActivity(fs cliruntime.OpenedFileSystem) (uploads, deleteTimers int) {
+	for _, mount := range fs.DebugSnapshot().Mounts {
 		uploads += len(mount.ActiveUploads())
 		deleteTimers += len(mount.ActiveDeleteTimers())
 	}
@@ -141,9 +113,9 @@ func fileSystemActivity(fs any) (uploads, deleteTimers int) {
 // bandwidthOverrideFromFlags maps the fs --bwlimit flags onto bandwidth
 // limits. nil means no override (use the config [bandwidth] section).
 func bandwidthOverrideFromFlags(cmd *cobra.Command) (*config.BandwidthLimits, error) {
-	both := flagStringValue(cmd, "bwlimit")
-	download := flagStringValue(cmd, "bwlimit-download")
-	upload := flagStringValue(cmd, "bwlimit-upload")
+	both := cliruntime.FlagStringValue(cmd, "bwlimit")
+	download := cliruntime.FlagStringValue(cmd, "bwlimit-download")
+	upload := cliruntime.FlagStringValue(cmd, "bwlimit-upload")
 	if both == "" && download == "" && upload == "" {
 		return nil, nil
 	}
@@ -190,16 +162,4 @@ func addFSBandwidthFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().String("bwlimit", "", "limit both download and upload bandwidth (e.g. 10M)")
 	cmd.PersistentFlags().String("bwlimit-download", "", "limit download bandwidth (e.g. 10M)")
 	cmd.PersistentFlags().String("bwlimit-upload", "", "limit upload bandwidth (e.g. 10M)")
-}
-
-// flagStringValue reads a string flag that may live on the command or any
-// of its parents (persistent flags).
-func flagStringValue(cmd *cobra.Command, name string) string {
-	if flag := cmd.Flags().Lookup(name); flag != nil {
-		return flag.Value.String()
-	}
-	if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
-		return flag.Value.String()
-	}
-	return ""
 }
