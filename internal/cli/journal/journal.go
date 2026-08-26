@@ -19,6 +19,16 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 )
 
+// Runtime is the slice of Runtime this package needs: config
+// resolution, cached-journal paths, usage errors, and the debug schema.
+// journal commands never build or open a filesystem, so they depend on this
+// narrow surface instead of the full Runtime.
+type Runtime interface {
+	cliruntime.FileSystemBuilder
+	cliruntime.ErrorFactory
+	cliruntime.DebugReporter
+}
+
 type DebugCacheTarget struct {
 	Name string `json:"name"`
 	Dir  string `json:"dir"`
@@ -51,7 +61,7 @@ type debugJournalEntry struct {
 	vfs.PendingUpload
 }
 
-func NewCommand(rt cliruntime.Runtime, use string) *cobra.Command {
+func NewCommand(rt Runtime, use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "Inspect and maintain the offline upload journal",
@@ -88,9 +98,9 @@ func NewCommand(rt cliruntime.Runtime, use string) *cobra.Command {
 
 // journalTargetsFromCmd resolves the journal directories to inspect from the
 // config (or explicit --cache-dir/--mount flags).
-func TargetsFromCmd(rt cliruntime.Runtime, cmd *cobra.Command) ([]DebugCacheTarget, error) {
-	cacheDir := journalFlagValue(cmd, "cache-dir")
-	mountName := journalFlagValue(cmd, "mount")
+func TargetsFromCmd(rt Runtime, cmd *cobra.Command) ([]DebugCacheTarget, error) {
+	cacheDir := cliruntime.FlagStringValue(cmd, "cache-dir")
+	mountName := cliruntime.FlagStringValue(cmd, "mount")
 	state, err := rt.CommandConfig(cmd)
 	if err != nil {
 		return nil, err
@@ -114,17 +124,6 @@ func addJournalJSONFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool("json", false, "write JSON output")
 }
 
-// journalFlagValue reads a flag that may live on the command or its parents.
-func journalFlagValue(cmd *cobra.Command, name string) string {
-	if flag := cmd.Flags().Lookup(name); flag != nil {
-		return flag.Value.String()
-	}
-	if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
-		return flag.Value.String()
-	}
-	return ""
-}
-
 type MaintenanceResult struct {
 	Mount    string   `json:"mount"`
 	Dir      string   `json:"dir"`
@@ -133,7 +132,7 @@ type MaintenanceResult struct {
 	Entries  []string `json:"entries"`
 }
 
-func NewReplayCmd(rt cliruntime.Runtime) *cobra.Command {
+func NewReplayCmd(rt Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "replay",
 		Short: "Reset failed offline uploads so the next mount retries them",
@@ -169,7 +168,7 @@ func NewReplayCmd(rt cliruntime.Runtime) *cobra.Command {
 	return cmd
 }
 
-func NewPruneCmd(rt cliruntime.Runtime) *cobra.Command {
+func NewPruneCmd(rt Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Drop offline uploads whose staging data is gone",
@@ -201,7 +200,7 @@ func NewPruneCmd(rt cliruntime.Runtime) *cobra.Command {
 	return cmd
 }
 
-func WriteReportsJSON(rt cliruntime.Runtime, w io.Writer, reports []DebugReport) error {
+func WriteReportsJSON(rt Runtime, w io.Writer, reports []DebugReport) error {
 	return cliruntime.WritePrettyJSON(w, struct {
 		SchemaVersion int           `json:"schema_version"`
 		GeneratedAt   time.Time     `json:"generated_at"`
@@ -213,7 +212,7 @@ func WriteReportsJSON(rt cliruntime.Runtime, w io.Writer, reports []DebugReport)
 	})
 }
 
-func DebugCacheTargets(rt cliruntime.Runtime, cacheDir string, cfg *config.Config, mountName string) ([]DebugCacheTarget, error) {
+func DebugCacheTargets(rt Runtime, cacheDir string, cfg *config.Config, mountName string) ([]DebugCacheTarget, error) {
 	if cfg == nil {
 		if cacheDir == "" {
 			cacheDir = rt.DefaultCacheDir()

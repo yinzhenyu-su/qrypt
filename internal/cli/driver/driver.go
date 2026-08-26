@@ -8,7 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-func NewCommand(rt cliruntime.Runtime) *cobra.Command {
+func NewCommand(rt cliruntime.ErrorFactory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "driver",
 		Short: "List drivers and show parameter schemas",
@@ -20,7 +20,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	return cmd
 }
 
-func NewListCmd(rt cliruntime.Runtime) *cobra.Command {
+func NewListCmd(rt cliruntime.ErrorFactory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Args:  cliruntime.NoArgs(rt),
@@ -40,7 +40,7 @@ func NewListCmd(rt cliruntime.Runtime) *cobra.Command {
 	return cmd
 }
 
-func NewSchemaCmd(rt cliruntime.Runtime) *cobra.Command {
+func NewSchemaCmd(rt cliruntime.ErrorFactory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "schema NAME",
 		Args:  cliruntime.ExactNamedArgs(rt, "NAME"),

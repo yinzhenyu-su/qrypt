@@ -20,6 +20,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 type Options struct {
@@ -280,8 +281,14 @@ func DriverSchemaJSON(name string) (string, error) {
 
 // BuiltFileSystem is the filesystem surface BuildFileSystem returns. It is
 // the vfs mount contract (file operations, lifecycle, path refresh, task
-// source); every build path - single VFS or Namespace - satisfies it.
-type BuiltFileSystem = vfs.MountedFileSystem
+// source) plus the upload and debug-observation surfaces the CLI relies on
+// when waiting for async work; every build path - single VFS or Namespace -
+// satisfies it.
+type BuiltFileSystem interface {
+	vfs.MountedFileSystem
+	vfs.UploadInspector
+	diagnostics.DebugSnapshotProvider
+}
 
 // ReadStream opens a bounded-memory sequential reader when the filesystem
 // provides the optional streaming surface.
@@ -509,8 +516,17 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 	}
 
 	if opts.MountName != "" && !opts.ForceNamespace {
+		// The single-mount fast path hands back the drive's own VFS. The
+		// mount's FS field is typed vfs.MountedFileSystem (which does not
+		// declare the observation surfaces), but every mount built here is a
+		// *vfs.VFS, so the BuiltFileSystem contract is re-established in one
+		// place instead of being re-asserted by every CLI caller.
 		fs := mounts[0].FS
-		return fs, func() {
+		opened, ok := fs.(BuiltFileSystem)
+		if !ok {
+			return nil, nil, fmt.Errorf("config: mount %q does not expose upload/diagnostics surfaces", mounts[0].Name)
+		}
+		return opened, func() {
 			flushReadCache(fs)
 			closeMounts(mounts)
 			dropAll(ctx, drivers)

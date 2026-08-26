@@ -96,7 +96,7 @@ cookie = ""
 		t.Fatal(err)
 	}
 
-	cmd := NewShowCmd(testRuntime{})
+	cmd := NewShowCmd(newTestRuntime())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	if err := cmd.Flags().Set("config", configPath); err != nil {

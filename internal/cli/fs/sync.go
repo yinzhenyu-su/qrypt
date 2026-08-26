@@ -77,10 +77,11 @@ func runSync(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		}
 		defer cleanup()
 
-		waitIdle := func(ctx context.Context, fs any) error {
+		result, err := syncer.Run(ctx, fs, func(context.Context, any) error {
+			// The sync engine passes us the filesystem untyped; we already
+			// hold the started OpenedFileSystem, so wait on that, typed.
 			return rt.WaitFileSystemIdle(ctx, fs, 0)
-		}
-		result, err := syncer.Run(ctx, fs, waitIdle, req)
+		}, req)
 		if err != nil {
 			if errors.Is(err, syncer.ErrNoSession) {
 				return rt.UsageError(cmd, "%v", err)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 
+	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
@@ -37,24 +38,16 @@ func TestPrintPendingVerboseIncludesDebugState(t *testing.T) {
 	}
 }
 
-func waitPendingEmpty(t *testing.T, fs vfs.FileSystem) {
+func waitPendingEmpty(t *testing.T, fs builtFS) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		pending, err := pendingFiles(fs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(pending) == 0 && activeUploadCount(fs) == 0 {
+		if len(cliruntime.PendingFiles(fs)) == 0 && activeUploadCount(fs) == 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	pending, err := pendingFiles(fs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Fatalf("pending uploads did not drain: %+v", pending)
+	t.Fatalf("pending uploads did not drain: %+v", cliruntime.PendingFiles(fs))
 }
 
 func activeUploadCount(fs vfs.FileSystem) int {

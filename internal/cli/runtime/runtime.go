@@ -15,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/mount"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 type ConfigState struct {
@@ -27,30 +28,35 @@ const (
 	ExitMismatch = 4
 )
 
-type FileSystem interface {
+// OpenedFileSystem is the surface OpenFileSystem returns. The one-shot fs
+// commands need file operations plus upload inspection and debug snapshots
+// (idle-wait, pending uploads, activity counts), so the seam carries them
+// typed instead of re-discovering them via any-assertions. The filesystem is
+// already Started when a caller receives it; the returned cleanup function
+// owns the Close.
+type OpenedFileSystem interface {
 	vfs.FileSystem
+	vfs.UploadInspector
+	diagnostics.DebugSnapshotProvider
 }
 
+// MountFileSystem is a built-but-not-started filesystem. The mount command
+// owns the lifecycle: it starts the filesystem, then closes it in dependency
+// order (stop FUSE requests, drain workers, release external resources).
 type MountFileSystem interface {
 	vfs.FileSystem
 	vfs.Lifecycle
 }
 
-type Runtime interface {
-	BuildFileSystemForMount(ctx context.Context, cfg *config.Config, mountName string) (MountFileSystem, func(), error)
-	CommandConfig(cmd *cobra.Command) (ConfigState, error)
-	CommandConfigPath(cmd *cobra.Command) (string, error)
-	ConfigNotFoundError() error
-	DefaultCacheDir() string
-	DebugReportSchemaVersion() int
+// ErrorFactory shapes usage, exit, and debug-socket errors for commands.
+type ErrorFactory interface {
+	UsageError(cmd *cobra.Command, format string, args ...any) error
 	ExitError(code int, err error) error
 	MissingSocketError(cmd *cobra.Command) error
-	MountOptionsFromConfig(cfg *config.Config) (mount.Options, error)
-	MountPointFromConfig(cfg *config.Config) (string, error)
-	OpenFileSystem(cmd *cobra.Command) (context.Context, FileSystem, func(), error)
-	ShutdownContext(cmd *cobra.Command) (context.Context, func())
-	UsageError(cmd *cobra.Command, format string, args ...any) error
-	WaitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) error
+}
+
+// FlagRegistrar wires the cobra flags that command subpackages share.
+type FlagRegistrar interface {
 	WithFSBandwidthFlags(cmd *cobra.Command) *cobra.Command
 	WithConfigFlag(cmd *cobra.Command) *cobra.Command
 	WithPersistentConfigFlag(cmd *cobra.Command) *cobra.Command
@@ -58,7 +64,38 @@ type Runtime interface {
 	WithRuntimeConfigFlag(cmd *cobra.Command) *cobra.Command
 }
 
-func CommandGroupArgs(rt Runtime, hints map[string]string) cobra.PositionalArgs {
+// DebugReporter exposes the debug-report schema version.
+type DebugReporter interface {
+	DebugReportSchemaVersion() int
+}
+
+// FileSystemBuilder builds or opens the filesystem and resolves config.
+type FileSystemBuilder interface {
+	BuildFileSystemForMount(ctx context.Context, cfg *config.Config, mountName string) (MountFileSystem, func(), error)
+	CommandConfig(cmd *cobra.Command) (ConfigState, error)
+	CommandConfigPath(cmd *cobra.Command) (string, error)
+	ConfigNotFoundError() error
+	DefaultCacheDir() string
+	MountOptionsFromConfig(cfg *config.Config) (mount.Options, error)
+	MountPointFromConfig(cfg *config.Config) (string, error)
+	OpenFileSystem(cmd *cobra.Command) (context.Context, OpenedFileSystem, func(), error)
+	ShutdownContext(cmd *cobra.Command) (context.Context, func())
+	WaitFileSystemIdle(ctx context.Context, fs OpenedFileSystem, timeout time.Duration) error
+}
+
+// Runtime is the seam the command subpackages share: building and opening the
+// filesystem, registering cobra flags, shaping errors, and the debug-report
+// schema. It composes the role interfaces so a subtree that needs all of them
+// keeps a single parameter; packages that need less take the narrower role
+// directly (journal does: it never builds or opens a filesystem).
+type Runtime interface {
+	FileSystemBuilder
+	FlagRegistrar
+	ErrorFactory
+	DebugReporter
+}
+
+func CommandGroupArgs(rt ErrorFactory, hints map[string]string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return nil
@@ -70,7 +107,7 @@ func CommandGroupArgs(rt Runtime, hints map[string]string) cobra.PositionalArgs 
 	}
 }
 
-func RangeArgs(rt Runtime, minArgs, maxArgs int) cobra.PositionalArgs {
+func RangeArgs(rt ErrorFactory, minArgs, maxArgs int) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) >= minArgs && len(args) <= maxArgs {
 			return nil
@@ -82,7 +119,7 @@ func RangeArgs(rt Runtime, minArgs, maxArgs int) cobra.PositionalArgs {
 	}
 }
 
-func NoArgs(rt Runtime) cobra.PositionalArgs {
+func NoArgs(rt ErrorFactory) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) != 0 {
 			return rt.UsageError(cmd, "unexpected argument %q", args[0])
@@ -91,7 +128,7 @@ func NoArgs(rt Runtime) cobra.PositionalArgs {
 	}
 }
 
-func MaxArgs(rt Runtime, n int) cobra.PositionalArgs {
+func MaxArgs(rt ErrorFactory, n int) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) <= n {
 			return nil
@@ -100,7 +137,7 @@ func MaxArgs(rt Runtime, n int) cobra.PositionalArgs {
 	}
 }
 
-func ExactNamedArgs(rt Runtime, names ...string) cobra.PositionalArgs {
+func ExactNamedArgs(rt ErrorFactory, names ...string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) == len(names) {
 			return nil
@@ -146,6 +183,23 @@ func ShowHelp(cmd *cobra.Command, _ []string) error {
 	return cmd.Help()
 }
 
+// FlagStringValue reads a string flag that may live on the command or on any
+// of its parents (persistent flags). cmd may be nil, which yields "". It is
+// the single definition of the "flag or inherited flag" lookup; command
+// subpackages and the root adapter share it instead of re-implementing it.
+func FlagStringValue(cmd *cobra.Command, name string) string {
+	if cmd == nil {
+		return ""
+	}
+	if flag := cmd.Flags().Lookup(name); flag != nil {
+		return flag.Value.String()
+	}
+	if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
+		return flag.Value.String()
+	}
+	return ""
+}
+
 func CommandWaitTimeout(cmd *cobra.Command) time.Duration {
 	if cmd.Flag("wait-timeout") == nil {
 		return 30 * time.Second
@@ -184,12 +238,11 @@ func FormatBytes(n int64) string {
 	return util.FormatBytes(n)
 }
 
-func PendingFiles(fs any) ([]vfs.PendingUpload, error) {
-	inspector, ok := fs.(vfs.UploadInspector)
-	if !vfs.HasCapability(fs, vfs.CapabilityUploadInspection) || !ok {
-		return nil, fmt.Errorf("filesystem does not expose upload state")
-	}
-	return inspector.PendingUploads(), nil
+// PendingFiles lists the uploads still awaiting completion. Every filesystem
+// the runtime opens satisfies vfs.UploadInspector, so this is a plain typed
+// accessor rather than a capability-gated any-assertion.
+func PendingFiles(fs vfs.UploadInspector) []vfs.PendingUpload {
+	return fs.PendingUploads()
 }
 
 func StagingStatus(item vfs.PendingUpload) (string, int64) {

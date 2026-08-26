@@ -12,6 +12,8 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+
+	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 )
 
 func TestFSCommandsCreateMoveAndRemoveLocalFS(t *testing.T) {
@@ -546,7 +548,7 @@ root_path = `+util.TOMLPath(filepath.Join(tmp, "missing"))+`
 
 func TestPrintEntryStat(t *testing.T) {
 	var out bytes.Buffer
-	printEntryStat(&out, drive.Entry{
+	cliruntime.PrintEntryStat(&out, drive.Entry{
 		ID:       "id",
 		ParentID: "parent",
 		Name:     "file.txt",

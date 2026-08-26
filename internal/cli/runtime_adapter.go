@@ -18,7 +18,7 @@ func (cliRuntime) BuildFileSystemForMount(ctx context.Context, cfg *config.Confi
 	return buildFileSystemFromConfigMount(ctx, cfg, mountName)
 }
 
-func (cliRuntime) OpenFileSystem(cmd *cobra.Command) (context.Context, cliruntime.FileSystem, func(), error) {
+func (cliRuntime) OpenFileSystem(cmd *cobra.Command) (context.Context, cliruntime.OpenedFileSystem, func(), error) {
 	return openFileSystem(cmd)
 }
 
@@ -87,7 +87,7 @@ func (cliRuntime) UsageError(cmd *cobra.Command, format string, args ...any) err
 	return commandUsageError(cmd, format, args...)
 }
 
-func (cliRuntime) WaitFileSystemIdle(ctx context.Context, fs any, timeout time.Duration) error {
+func (cliRuntime) WaitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, timeout time.Duration) error {
 	return waitFileSystemIdle(ctx, fs, timeout)
 }
 
