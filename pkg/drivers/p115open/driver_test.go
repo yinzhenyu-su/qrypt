@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	sdk "github.com/OpenListTeam/115-sdk-go"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 func sha1Hex(value string) string {
@@ -384,62 +386,31 @@ func TestWrappedEntryExtraPreservesRawMetadata(t *testing.T) {
 	}
 }
 
-func TestUploadSessionStoreRoundTrip(t *testing.T) {
-	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+func TestUploadSessionBindingPersistsAcrossInstances(t *testing.T) {
+	dir := t.TempDir()
+	store := drive.NewFileStateStore(filepath.Join(dir, "driver"))
 	driver := New(Options{})
 	driver.InstallStateStore(store)
 
-	session := p115OpenUploadSession{
-		Key:      "session-key",
-		ParentID: "0",
-		Name:     "video.bin",
-		Size:     32 << 20,
-		SHA1:     "ABC",
-		Bucket:   "bucket",
-		Object:   "object",
-		UploadID: "upload-id",
-		PartSize: 20 << 20,
-		Parts: []ossPart{
-			{Number: 1, ETag: "etag-1"},
-		},
-		Callback:  "callback",
-		CallbackV: "callback-var",
-	}
-	driver.saveUploadSession(session)
-
-	loaded, ok := driver.loadUploadSession("session-key")
-	if !ok {
-		t.Fatal("expected session to load")
-	}
-	if loaded.UploadID != "upload-id" || len(loaded.Parts) != 1 || loaded.Parts[0].ETag != "etag-1" {
-		t.Fatalf("unexpected loaded session: %+v", loaded)
-	}
-	if loaded.SavedAt.IsZero() {
-		t.Fatal("SavedAt was not set")
-	}
-
-	var state p115OpenUploadSessionState
-	if err := store.LoadJSON(p115OpenUploadSessionStateFile, &state); err != nil {
+	key := session.Identity{ParentID: "0", Name: "video.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+	token, err := json.Marshal(p115OpenToken{Bucket: "bucket", Object: "object", UploadID: "upload-id", PartSize: 20 << 20})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Version != 1 || len(state.Sessions) != 1 {
-		t.Fatalf("unexpected persisted state: %+v", state)
+	if err := driver.sessions.Create(key, token); err != nil {
+		t.Fatal(err)
 	}
-}
 
-func TestUploadSessionStoreRejectsEmptyParts(t *testing.T) {
-	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
-	driver := New(Options{})
-	driver.InstallStateStore(store)
-
-	driver.saveUploadSession(p115OpenUploadSession{
-		Key:      "session-key",
-		Bucket:   "bucket",
-		Object:   "object",
-		UploadID: "upload-id",
-		PartSize: 20 << 20,
-	})
-	if _, ok := driver.loadUploadSession("session-key"); ok {
-		t.Fatal("expected empty-parts session to be rejected")
+	reloaded := session.NewIndex(drive.NewFileStateStore(filepath.Join(dir, "driver")), p115OpenSessionFile, session.IndexOptions{})
+	binding, ok := reloaded.Get(key)
+	if !ok {
+		t.Fatal("expected binding to survive a new index instance")
+	}
+	var tok p115OpenToken
+	if err := json.Unmarshal(binding.Token, &tok); err != nil {
+		t.Fatal(err)
+	}
+	if tok.UploadID != "upload-id" || tok.Bucket != "bucket" || tok.Object != "object" {
+		t.Fatalf("unexpected persisted token: %+v", tok)
 	}
 }

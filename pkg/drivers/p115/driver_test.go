@@ -2,17 +2,21 @@ package p115
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 func TestResolvePathRootUsesConfiguredRootID(t *testing.T) {
@@ -324,63 +328,281 @@ func TestWrappedEntryExtraPreservesRawMetadata(t *testing.T) {
 	}
 }
 
-func TestUploadSessionStoreRoundTrip(t *testing.T) {
-	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+func TestUploadSessionBindingPersistsAcrossInstances(t *testing.T) {
+	dir := t.TempDir()
+	store := drive.NewFileStateStore(filepath.Join(dir, "driver"))
 	driver := New(Options{Cookie: "UID=uid"})
 	driver.InstallStateStore(store)
 
-	session := p115UploadSession{
-		Key:      "session-key",
-		ParentID: "0",
-		Name:     "video.bin",
-		Size:     32 << 20,
-		SHA1:     "ABC",
-		Bucket:   "bucket",
-		Object:   "object",
-		UploadID: "upload-id",
-		PartSize: p115MultipartPartSize,
-		Parts: []ossPart{
-			{Number: 1, ETag: "etag-1"},
-		},
-		Callback:  "callback",
-		CallbackV: "callback-var",
-	}
-	driver.saveUploadSession(session)
-
-	loaded, ok := driver.loadUploadSession("session-key")
-	if !ok {
-		t.Fatal("expected session to load")
-	}
-	if loaded.UploadID != "upload-id" || len(loaded.Parts) != 1 || loaded.Parts[0].ETag != "etag-1" {
-		t.Fatalf("unexpected loaded session: %+v", loaded)
-	}
-	if loaded.SavedAt.IsZero() {
-		t.Fatal("SavedAt was not set")
-	}
-
-	var state p115UploadSessionState
-	if err := store.LoadJSON(p115UploadSessionStateFile, &state); err != nil {
+	key := session.Identity{ParentID: "0", Name: "video.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+	token, err := json.Marshal(p115Token{Bucket: "bucket", Object: "object", UploadID: "upload-id", PartSize: p115MultipartPartSize})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Version != 1 || len(state.Sessions) != 1 {
-		t.Fatalf("unexpected persisted state: %+v", state)
+	if err := driver.sessions.Create(key, token); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := session.NewIndex(drive.NewFileStateStore(filepath.Join(dir, "driver")), p115SessionFile, session.IndexOptions{})
+	binding, ok := reloaded.Get(key)
+	if !ok {
+		t.Fatal("expected binding to survive a new index instance")
+	}
+	var tok p115Token
+	if err := json.Unmarshal(binding.Token, &tok); err != nil {
+		t.Fatal(err)
+	}
+	if tok.UploadID != "upload-id" || tok.Bucket != "bucket" || tok.Object != "object" {
+		t.Fatalf("unexpected persisted token: %+v", tok)
 	}
 }
 
-func TestUploadSessionStoreRejectsEmptyParts(t *testing.T) {
-	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
-	driver := New(Options{Cookie: "UID=uid"})
-	driver.InstallStateStore(store)
+// newMockOSSBucket builds an *oss.Bucket whose HTTP calls hit handler. The
+// handler inspects r.URL.Path and method to answer OSS ListParts
+// (GET /bucket/object?uploadId=...), InitiateMultipartUpload
+// (POST /bucket/object?uploads) and AbortMultipartUpload (DELETE ...).
+func newMockOSSBucket(t *testing.T, handler http.HandlerFunc) *oss.Bucket {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := oss.New(server.URL, "access-key", "secret-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := client.Bucket("bucket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bucket
+}
 
-	driver.saveUploadSession(p115UploadSession{
-		Key:      "session-key",
-		Bucket:   "bucket",
-		Object:   "object",
-		UploadID: "upload-id",
-		PartSize: p115MultipartPartSize,
+func seedP115Binding(t *testing.T, d *Driver, key string, tok p115Token) {
+	t.Helper()
+	raw, err := json.Marshal(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.sessions.Create(key, raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func bindingP115Token(t *testing.T, d *Driver, key string) p115Token {
+	t.Helper()
+	binding, ok := d.sessions.Get(key)
+	if !ok {
+		t.Fatal("binding missing")
+	}
+	var tok p115Token
+	if err := json.Unmarshal(binding.Token, &tok); err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+func TestBeginMultipartUploadListPartsTransientReusesHandle(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{})
+	d.InstallStateStore(store)
+	key := session.Identity{ParentID: "0", Name: "a.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+	seedP115Binding(t, d, key, p115Token{Bucket: "bucket", Object: "object", UploadID: "old-uid", PartSize: p115MultipartPartSize})
+
+	getCalls := 0
+	deleteCalls := 0
+	postCalls := 0
+	bucket := newMockOSSBucket(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/bucket/object":
+			getCalls++
+			// 网络/服务端临时故障：非 404 的非 2xx 都是 transient。
+			http.Error(w, "service unavailable", http.StatusInternalServerError)
+		case r.Method == http.MethodDelete:
+			deleteCalls++
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost:
+			postCalls++
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
 	})
-	if _, ok := driver.loadUploadSession("session-key"); ok {
-		t.Fatal("expected empty-parts session to be rejected")
+
+	params := &driver115.UploadOSSParams{Bucket: "bucket", Object: "object"}
+	imur, completed, err := d.beginMultipartUpload(context.Background(), key, params, p115MultipartPartSize, bucket, &driver115.UploadOSSTokenResp{SecurityToken: "sts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imur.UploadID != "old-uid" {
+		t.Fatalf("imur upload id = %q, want same handle on transient list failure", imur.UploadID)
+	}
+	if len(completed) != 0 {
+		t.Fatalf("completed parts = %+v, want none (full re-upload)", completed)
+	}
+	if getCalls != 1 || deleteCalls != 0 || postCalls != 0 {
+		t.Fatalf("calls get/delete/post = %d/%d/%d, want 1/0/0", getCalls, deleteCalls, postCalls)
+	}
+	if tok := bindingP115Token(t, d, key); tok.UploadID != "old-uid" {
+		t.Fatalf("binding upload id = %q, want unchanged", tok.UploadID)
+	}
+}
+
+func TestBeginMultipartUploadListPartsInvalidRecreatesSession(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{})
+	d.InstallStateStore(store)
+	key := session.Identity{ParentID: "0", Name: "a.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+	seedP115Binding(t, d, key, p115Token{Bucket: "bucket", Object: "object", UploadID: "old-uid", PartSize: p115MultipartPartSize})
+
+	getCalls, deleteCalls, postCalls := 0, 0, 0
+	bucket := newMockOSSBucket(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/bucket/object":
+			getCalls++
+			// 会话已失效：OSS 返回 404 NoSuchUpload。
+			http.Error(w, "NoSuchUpload", http.StatusNotFound)
+		case r.Method == http.MethodDelete:
+			deleteCalls++
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/bucket/object":
+			postCalls++
+			_, _ = w.Write([]byte(`<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>object</Key><UploadId>fresh-uid</UploadId></InitiateMultipartUploadResult>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	params := &driver115.UploadOSSParams{Bucket: "bucket", Object: "object"}
+	imur, completed, err := d.beginMultipartUpload(context.Background(), key, params, p115MultipartPartSize, bucket, &driver115.UploadOSSTokenResp{SecurityToken: "sts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 旧会话被幂等回收，新上传句柄绑定落地。
+	if imur.UploadID != "fresh-uid" {
+		t.Fatalf("imur upload id = %q, want fresh-uid", imur.UploadID)
+	}
+	if len(completed) != 0 {
+		t.Fatalf("completed parts = %+v, want none", completed)
+	}
+	if getCalls != 1 || deleteCalls != 1 || postCalls != 1 {
+		t.Fatalf("calls get/delete/post = %d/%d/%d, want 1/1/1", getCalls, deleteCalls, postCalls)
+	}
+	if tok := bindingP115Token(t, d, key); tok.UploadID != "fresh-uid" || tok.Object != "object" {
+		t.Fatalf("binding = %+v, want fresh session recorded", tok)
+	}
+}
+
+func TestBeginMultipartUploadListPartsResumesPagination(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{})
+	d.InstallStateStore(store)
+	key := session.Identity{ParentID: "0", Name: "a.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+	seedP115Binding(t, d, key, p115Token{Bucket: "bucket", Object: "object", UploadID: "old-uid", PartSize: p115MultipartPartSize})
+
+	getCalls, postCalls := 0, 0
+	bucket := newMockOSSBucket(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/bucket/object":
+			getCalls++
+			marker := r.URL.Query().Get("part-number-marker")
+			if marker == "0" {
+				_, _ = w.Write([]byte(`<ListPartsResult><Bucket>bucket</Bucket><Key>object</Key><UploadId>old-uid</UploadId><PartNumberMarker>0</PartNumberMarker><NextPartNumberMarker>2</NextPartNumberMarker><MaxParts>1000</MaxParts><IsTruncated>true</IsTruncated><Part><PartNumber>1</PartNumber><LastModified>2026-01-01T00:00:00Z</LastModified><ETag>"etag-1"</ETag><Size>5242880</Size></Part></ListPartsResult>`))
+			} else if marker == "2" {
+				_, _ = w.Write([]byte(`<ListPartsResult><Bucket>bucket</Bucket><Key>object</Key><UploadId>old-uid</UploadId><PartNumberMarker>2</PartNumberMarker><MaxParts>1000</MaxParts><IsTruncated>false</IsTruncated><Part><PartNumber>3</PartNumber><LastModified>2026-01-01T00:00:01Z</LastModified><ETag>"etag-3"</ETag><Size>5242880</Size></Part></ListPartsResult>`))
+			} else {
+				t.Fatalf("unexpected part-number-marker %q", marker)
+			}
+		case r.Method == http.MethodPost:
+			postCalls++
+			http.Error(w, "unexpected initiate", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	params := &driver115.UploadOSSParams{Bucket: "bucket", Object: "object"}
+	imur, completed, err := d.beginMultipartUpload(context.Background(), key, params, p115MultipartPartSize, bucket, &driver115.UploadOSSTokenResp{SecurityToken: "sts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imur.UploadID != "old-uid" {
+		t.Fatalf("imur upload id = %q, want old-uid", imur.UploadID)
+	}
+	if len(completed) != 2 || completed[0].PartNumber != 1 || completed[1].PartNumber != 3 {
+		t.Fatalf("completed parts = %+v, want [1 3] across pages", completed)
+	}
+	if completed[0].ETag != `"etag-1"` || completed[1].ETag != `"etag-3"` {
+		t.Fatalf("completed etags = %+v, want server etags", completed)
+	}
+	if getCalls != 2 || postCalls != 0 {
+		t.Fatalf("calls get/post = %d/%d, want 2/0", getCalls, postCalls)
+	}
+}
+
+func TestBeginMultipartUploadHandlelessBindingIsRecreated(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{})
+	d.InstallStateStore(store)
+	key := session.Identity{ParentID: "0", Name: "a.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+	// 预留后未完成创建的绑定（空上传 id）：不应被续传，直接作废重来。
+	seedP115Binding(t, d, key, p115Token{Bucket: "bucket", Object: "object", UploadID: ""})
+
+	getCalls, postCalls := 0, 0
+	bucket := newMockOSSBucket(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			getCalls++
+			http.Error(w, "unexpected list", http.StatusInternalServerError)
+		case r.Method == http.MethodPost && r.URL.Path == "/bucket/object":
+			postCalls++
+			_, _ = w.Write([]byte(`<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>object</Key><UploadId>fresh-uid</UploadId></InitiateMultipartUploadResult>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	params := &driver115.UploadOSSParams{Bucket: "bucket", Object: "object"}
+	imur, _, err := d.beginMultipartUpload(context.Background(), key, params, p115MultipartPartSize, bucket, &driver115.UploadOSSTokenResp{SecurityToken: "sts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imur.UploadID != "fresh-uid" {
+		t.Fatalf("imur upload id = %q, want fresh-uid", imur.UploadID)
+	}
+	if getCalls != 0 || postCalls != 1 {
+		t.Fatalf("calls get/post = %d/%d, want 0/1", getCalls, postCalls)
+	}
+	if tok := bindingP115Token(t, d, key); tok.UploadID != "fresh-uid" {
+		t.Fatalf("binding = %+v, want fresh session recorded", tok)
+	}
+}
+
+func TestBeginMultipartUploadInitiateFailureDeletesReservation(t *testing.T) {
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	d := New(Options{})
+	d.InstallStateStore(store)
+	key := session.Identity{ParentID: "0", Name: "a.bin", Size: 32 << 20, Fingerprint: "ABC"}.Key()
+
+	postCalls := 0
+	bucket := newMockOSSBucket(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/bucket/object" {
+			postCalls++
+			http.Error(w, "initiate failed", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	params := &driver115.UploadOSSParams{Bucket: "bucket", Object: "object"}
+	_, _, err := d.beginMultipartUpload(context.Background(), key, params, p115MultipartPartSize, bucket, &driver115.UploadOSSTokenResp{SecurityToken: "sts"})
+	if err == nil {
+		t.Fatal("expected initiate failure")
+	}
+	// 预留绑定（空句柄）在失败后清理，不留无记录残留。
+	if postCalls != 1 {
+		t.Fatalf("initiate calls = %d, want 1", postCalls)
+	}
+	if _, ok := d.sessions.Get(key); ok {
+		t.Fatal("reservation binding must be deleted after initiate failure")
 	}
 }
 

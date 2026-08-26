@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -31,51 +31,92 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	sessionKey := uploadsession.Key(parentID, name, size, hashes.FileMD5, hashes.SliceMD5)
-	session, resumedSession := d.loadUploadSession(sessionKey)
-	uploadFileID := session.UploadFileID
+	sessionKey := session.Identity{ParentID: parentID, Name: name, Size: size, Fingerprint: hashes.FileMD5 + hashes.SliceMD5}.Key()
+	uploadFileID := ""
 	fileDataExists := false
-	if !resumedSession {
-		uploadFileID, fileDataExists, err = d.cl.initUpload(ctx, parent, name, size, hashes.FileMD5, hashes.SliceMD5)
-		if err != nil {
-			return drive.Entry{}, err
+	resumedSession := false
+	var bitmap []byte
+	if d.sessions != nil {
+		if binding, ok := d.sessions.Get(sessionKey); ok {
+			var tok p189Token
+			if err := json.Unmarshal(binding.Token, &tok); err == nil && tok.UploadFileID != "" {
+				uploadFileID = tok.UploadFileID
+				bitmap = session.ConfirmedBitmap(size, uploadPartSize, tok.Confirmed)
+				resumedSession = true
+			} else {
+				// 无效绑定：作废重来。
+				d.sessions.Delete(sessionKey)
+			}
 		}
 	}
-	if !fileDataExists {
-		if resumedSession {
-			if session.CompletedParts == nil {
-				session.CompletedParts = map[int]bool{}
-			}
-		} else {
-			session = p189UploadSession{
-				Key:            sessionKey,
-				ParentID:       parentID,
-				Name:           name,
-				Size:           size,
-				FileMD5:        hashes.FileMD5,
-				SliceMD5:       hashes.SliceMD5,
-				UploadFileID:   uploadFileID,
-				PartSize:       uploadPartSize,
-				CompletedParts: map[int]bool{},
+	if !resumedSession {
+		// 预留绑定：initUpload 是 provider 上传资源创建，先落盘再调用，
+		// 崩溃只留下空句柄绑定（下次作废重来）。
+		if d.sessions != nil {
+			if raw, err := json.Marshal(p189Token{PartSize: uploadPartSize}); err != nil {
+				return drive.Entry{}, fmt.Errorf("189: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				return drive.Entry{}, fmt.Errorf("189: persist upload session: %w", err)
 			}
 		}
-		err := d.uploadParts(ctx, source, req.Progress, uploadFileID, hashes.Parts, session.CompletedParts, func(partNumber int) {
-			session.CompletedParts[partNumber] = true
-			d.saveUploadSession(session)
+		uploadFileID, fileDataExists, err = d.cl.initUpload(ctx, parent, name, size, hashes.FileMD5, hashes.SliceMD5)
+		if err != nil {
+			if d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
+			return drive.Entry{}, err
+		}
+		bitmap = session.ConfirmedBitmap(size, uploadPartSize, nil)
+	}
+	if !fileDataExists {
+		if !resumedSession && d.sessions != nil {
+			// 预留已完成：更新为完整句柄；失败则下次作废重来。
+			if raw, err := json.Marshal(p189Token{UploadFileID: uploadFileID, PartSize: uploadPartSize, Confirmed: bitmap}); err != nil {
+				return drive.Entry{}, fmt.Errorf("189: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				return drive.Entry{}, fmt.Errorf("189: persist upload session: %w", err)
+			}
+		}
+		// 已确认分片跳过；确认记录在 Index 锁内原地更新、节流落盘（服务端
+		// 无查询接口，本地记录 + 幂等重传；闭包模式对并发的分片确认也安全）。
+		err := d.uploadParts(ctx, source, req.Progress, uploadFileID, hashes.Parts, session.ConfirmedParts(bitmap), func(partNumber int) {
+			if d.sessions == nil || sessionKey == "" {
+				return
+			}
+			d.sessions.TouchWith(sessionKey, func(s *session.Session) {
+				var tok p189Token
+				if err := json.Unmarshal(s.Token, &tok); err != nil || tok.UploadFileID == "" {
+					return
+				}
+				tok.Confirmed = session.ConfirmedBitmap(size, uploadPartSize, tok.Confirmed)
+				session.MarkConfirmed(tok.Confirmed, partNumber)
+				if raw, err := json.Marshal(tok); err == nil {
+					s.Token = raw
+				}
+			})
 		})
 		if err != nil {
-			return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
+			if d.sessions != nil && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+				d.sessions.Delete(sessionKey)
+			}
+			return drive.Entry{}, err
 		}
 	}
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	if err := d.cl.commitUpload(ctx, uploadFileID, hashes.FileMD5, hashes.SliceMD5); err != nil {
-		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		if d.sessions != nil && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+			d.sessions.Delete(sessionKey)
+		}
+		return drive.Entry{}, err
 	}
 	fileEntry, err := d.waitUploadedFile(ctx, parent, name)
 	if err != nil {
 		return drive.Entry{}, err
 	}
-	d.deleteUploadSession(sessionKey)
+	// provider commit 成功即成功：绑定清理尽力而为，残留由过期回收兜底。
+	if d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
 	createdAt := parseTime(fileEntry.CreateDate)
 	modTime := parseTime(fileEntry.LastOpTime)
 	return drive.Entry{

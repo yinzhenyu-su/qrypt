@@ -16,6 +16,11 @@
 # Real-netdisk contract tests are NOT part of go test: they need a running
 # `qrypt mount` debug server with mounted cloud accounts. Run them manually:
 #   qrypt debug test contract --socket /tmp/qrypt.sock --mount <name>
+#
+# Windows CI (ci.yaml test-windows, windows-latest) runs the main-module
+# package list from the race layer instead of `fast`, because `go test
+# ./...` also compiles the vendored cgofuse tests whose Windows host
+# expects a real WinFsp mount.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

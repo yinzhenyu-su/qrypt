@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,11 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
-
-	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -37,18 +38,39 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		return drive.Entry{}, err
 	}
 	sessionKey := ""
-	var session quarkUploadSession
-	var resumedSession bool
+	var token quarkToken
+	resumedSession := false
 	if hasSourceHashes {
-		sessionKey = d.uploadSessionKey(parentID, name, size, hashData)
-		session, resumedSession = d.loadUploadSession(sessionKey)
+		md5Hex, _ := hashData["md5"].(string)
+		sha1Hex, _ := hashData["sha1"].(string)
+		// 内容指纹（md5+sha1，provider 必填）参与寻址：内容变化 ⇒ Key 变化 ⇒ 旧分片绝不复用。
+		sessionKey = session.Identity{ParentID: parentID, Name: name, Size: size, Fingerprint: strings.ToLower(md5Hex) + strings.ToLower(sha1Hex)}.Key()
+		if d.sessions != nil {
+			if binding, ok := d.sessions.Get(sessionKey); ok {
+				if err := json.Unmarshal(binding.Token, &token); err == nil && token.UploadID != "" && token.TaskID != "" {
+					resumedSession = true
+				} else {
+					// 无效绑定：作废重来。
+					d.sessions.Delete(sessionKey)
+				}
+			}
+		}
 	}
 
 	var preResp upPreResp
 	if resumedSession {
-		preResp = session.preResp()
-		logging.L.InfofEvery("quark.upload_resume", time.Second, "[QUARK] upload resume name=%q task=%q upload_id=%q completed_parts=%d", name, session.TaskID, session.UploadID, len(session.Etags))
+		preResp = token.preResp()
+		logging.L.InfofEvery("quark.upload_resume", time.Second, "[QUARK] upload resume name=%q task=%q upload_id=%q", name, token.TaskID, token.UploadID)
 	} else {
+		// 预留绑定：pre 是 provider 上传资源创建，先落盘再调用，
+		// 崩溃只留下空句柄绑定（下次作废重来）。
+		if sessionKey != "" && d.sessions != nil {
+			if raw, err := json.Marshal(quarkToken{}); err != nil {
+				return drive.Entry{}, fmt.Errorf("quark: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				return drive.Entry{}, fmt.Errorf("quark: persist upload session: %w", err)
+			}
+		}
 		preData := map[string]any{
 			"ccp_hash_update": true,
 			"file_name":       name,
@@ -59,10 +81,16 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			"format_type":     0,
 		}
 		if err := d.cl.request(ctx, http.MethodPost, "/file/upload/pre", nil, preData, &preResp); err != nil {
+			if sessionKey != "" && d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			logging.L.Warnf("[QUARK] upload pre failed parent=%q name=%q size=%d err=%v", parentID, name, size, err)
 			return drive.Entry{}, fmt.Errorf("quark: upload pre: %w", err)
 		}
 		if err := apiError(preResp.respEnvelope); err != nil {
+			if sessionKey != "" && d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			logging.L.Warnf("[QUARK] upload pre api error parent=%q name=%q size=%d err=%v", parentID, name, size, err)
 			return drive.Entry{}, err
 		}
@@ -97,7 +125,9 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		d.debugMu.Lock()
 		d.instantUploadCount++
 		d.debugMu.Unlock()
-		d.deleteUploadSession(sessionKey)
+		if sessionKey != "" && d.sessions != nil {
+			d.sessions.Delete(sessionKey)
+		}
 		return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime, CreatedAt: mtime, UpdatedAt: mtime}, nil
 	}
 
@@ -121,12 +151,30 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		}
 		if finished {
 			drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
-			d.deleteUploadSession(sessionKey)
+			if sessionKey != "" && d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: size, ModTime: mtime, CreatedAt: mtime, UpdatedAt: mtime}, nil
 		}
-		session = uploadSessionFromPre(sessionKey, parentID, name, size, hashData, preResp, partSize)
-	} else if resumedSession && session.Etags == nil {
-		session.Etags = map[int]string{}
+	}
+	if sessionKey != "" && d.sessions != nil && !resumedSession {
+		// 预留已在 pre 前完成：更新为完整句柄；失败则下次作废重来。
+		token = quarkToken{
+			TaskID:    preResp.Data.TaskID,
+			UploadID:  preResp.Data.UploadID,
+			ObjKey:    preResp.Data.ObjKey,
+			UploadURL: preResp.Data.UploadURL,
+			Fid:       preResp.Data.Fid,
+			Bucket:    preResp.Data.Bucket,
+			Callback:  append(json.RawMessage(nil), preResp.Data.Callback...),
+			AuthInfo:  preResp.Data.AuthInfo,
+			PartSize:  partSize,
+		}
+		if raw, err := json.Marshal(token); err != nil {
+			return drive.Entry{}, fmt.Errorf("quark: encode upload session: %w", err)
+		} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+			return drive.Entry{}, fmt.Errorf("quark: persist upload session: %w", err)
+		}
 	}
 
 	sourceFile, err := source.Open(ctx)
@@ -138,7 +186,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 
 	etagsByPart := map[int]string{}
 	if resumedSession {
-		for part, etag := range session.Etags {
+		for part, etag := range token.Etags {
 			etagsByPart[part] = etag
 		}
 	}
@@ -147,12 +195,23 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	var completedParts int
 	savePart := func(partNumber int, etag string) {
 		etagsByPart[partNumber] = etag
-		if sessionKey != "" {
-			if session.Etags == nil {
-				session.Etags = map[int]string{}
-			}
-			session.Etags[partNumber] = etag
-			d.saveUploadSession(session)
+		if sessionKey != "" && d.sessions != nil {
+			// 确认记录在 Index 锁内原地更新、节流落盘（≤1 次/分钟）；
+			// 恢复时按记录跳过已确认分片，崩溃最多丢一分钟确认，对应分片
+			// 重传幂等覆盖，安全。闭包模式对并发的分片确认也安全。
+			d.sessions.TouchWith(sessionKey, func(s *session.Session) {
+				var tok quarkToken
+				if err := json.Unmarshal(s.Token, &tok); err != nil || tok.UploadID == "" {
+					return
+				}
+				if tok.Etags == nil {
+					tok.Etags = map[int]string{}
+				}
+				tok.Etags[partNumber] = etag
+				if raw, err := json.Marshal(tok); err == nil {
+					s.Token = raw
+				}
+			})
 		}
 	}
 	totalParts := int((size + int64(partSize) - 1) / int64(partSize))
@@ -176,7 +235,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			if err != nil {
 				d.setUploadDebugError(preResp.Data.TaskID, err)
 				logging.L.Warnf("[QUARK] upload part failed name=%q task=%q part=%d bytes=%d err=%v", name, preResp.Data.TaskID, partNumber, length, err)
-				return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, fmt.Errorf("quark: upload part %d: %w", partNumber, err))
+				if sessionKey != "" && d.sessions != nil && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+					d.sessions.Delete(sessionKey)
+				}
+				return drive.Entry{}, fmt.Errorf("quark: upload part %d: %w", partNumber, err)
 			}
 			drive.ReportUploadProgress(req.Progress, length)
 			submittedParts++
@@ -205,7 +267,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		if err != nil {
 			d.setUploadDebugError(preResp.Data.TaskID, err)
 			logging.L.Warnf("[QUARK] upload empty part failed name=%q task=%q err=%v", name, preResp.Data.TaskID, err)
-			return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, fmt.Errorf("quark: upload part 1: %w", err))
+			if sessionKey != "" && d.sessions != nil && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+				d.sessions.Delete(sessionKey)
+			}
+			return drive.Entry{}, fmt.Errorf("quark: upload part 1: %w", err)
 		}
 		etags = append(etags, etag)
 		savePart(1, etag)
@@ -215,7 +280,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err := d.ossComplete(ctx, &preResp, etags); err != nil {
 		d.setUploadDebugError(preResp.Data.TaskID, err)
 		logging.L.Warnf("[QUARK] upload complete multipart failed name=%q task=%q parts=%d err=%v", name, preResp.Data.TaskID, len(etags), err)
-		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, fmt.Errorf("quark: upload complete: %w", err))
+		if sessionKey != "" && d.sessions != nil && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
+			d.sessions.Delete(sessionKey)
+		}
+		return drive.Entry{}, fmt.Errorf("quark: upload complete: %w", err)
 	}
 	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "finish" })
 	finalFid, err := d.uploadFinish(ctx, preResp.Data.Fid, preResp.Data.ObjKey, preResp.Data.TaskID)
@@ -225,7 +293,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		return drive.Entry{}, fmt.Errorf("quark: upload finish: %w", err)
 	}
 	logging.L.InfofEvery("quark.upload_complete", time.Second, "[QUARK] upload complete name=%q fid=%q size=%d parts=%d dur=%s", name, finalFid, totalRead, len(etags), time.Since(putStart))
-	d.deleteUploadSession(sessionKey)
+	// provider commit 成功即成功：绑定清理尽力而为，残留由过期回收兜底。
+	if sessionKey != "" && d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
 	return drive.Entry{ID: finalFid, ParentID: parentID, Name: name, Size: totalRead, ModTime: mtime, CreatedAt: mtime, UpdatedAt: mtime}, nil
 }
 

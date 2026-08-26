@@ -155,7 +155,7 @@ func TestViewCommitRemoteChildrenHidesUnavailable(t *testing.T) {
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
-	fs.setCopyHidden("/", map[string]time.Time{"dir1": time.Now().Add(time.Minute)})
+	newVFSVisibilityRuntime(fs).SetCopyHidden("/", map[string]time.Time{"dir1": time.Now().Add(time.Minute)})
 	remote := []drive.Entry{
 		{ID: "id-d", Name: "dir1", IsDir: true},
 		{ID: "id-a", Name: "a.txt", Size: 5},
@@ -188,7 +188,7 @@ func TestProjectChildrenSemantics(t *testing.T) {
 	if err := fs.SetModTime(context.Background(), "/a.txt", time.Unix(1234567890, 0)); err != nil {
 		t.Fatal(err)
 	}
-	fs.setCopyHidden("/", map[string]time.Time{"dir1": time.Now().Add(time.Minute)})
+	newVFSVisibilityRuntime(fs).SetCopyHidden("/", map[string]time.Time{"dir1": time.Now().Add(time.Minute)})
 
 	// A stale snapshot fetched earlier (e.g. an in-flight waiter's copy).
 	snapshot := []drive.Entry{

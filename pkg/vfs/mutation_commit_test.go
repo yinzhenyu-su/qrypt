@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	viewpkg "github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
 
 // TestCommitMkdirWritesViewState locks the CommitMkdir state surface: after
@@ -49,7 +50,7 @@ func TestCommitMkdirWritesViewState(t *testing.T) {
 	}
 
 	// 3. Local-dir marker is set (resolve short-circuits to the local view).
-	if !fs.isRecentLocalDir("/newdir") {
+	if !viewpkg.NewRuntime(fs.view).IsRecentLocalDir("/newdir") {
 		t.Error("local-dir marker not set by CommitMkdir")
 	}
 }

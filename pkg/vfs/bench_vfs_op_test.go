@@ -32,9 +32,9 @@ func BenchmarkDebugActiveTracking(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		id := fs.beginDebugActive(op)
-		fs.updateDebugActive(id, func(o *debugActiveOp) { o.Phase = "read_range" })
-		fs.finishDebugActive(id)
+		id := fs.activeDebug.Begin(op)
+		fs.activeDebug.Update(id, func(o *debugActiveOp) { o.Phase = "read_range" })
+		fs.activeDebug.Finish(id)
 	}
 }
 

@@ -3,6 +3,7 @@ package vfs
 import (
 	"context"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"strings"
 )
 
@@ -124,7 +125,7 @@ func namespaceMountTaskFilter(filter task.Filter, mount string) (task.Filter, bo
 func namespaceTask(mount string, item task.Task) task.Task {
 	item.Mount = mount
 	item.ID = namespaceTaskID(mount, item.ID)
-	item.Path = joinVirtual("/"+mount, strings.TrimPrefix(item.Path, "/"))
+	item.Path = vfstypes.JoinVirtualPath("/"+mount, strings.TrimPrefix(item.Path, "/"))
 	return item
 }
 

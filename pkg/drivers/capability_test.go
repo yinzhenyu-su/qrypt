@@ -68,6 +68,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
@@ -80,6 +81,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,

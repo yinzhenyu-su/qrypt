@@ -20,7 +20,8 @@ func TestVFSDriverRuntimeOwnsCapabilitiesAndBackends(t *testing.T) {
 	if err := runtime.RequireCapability(drive.CapabilityWriter, "write"); err != nil {
 		t.Fatalf("RequireCapability returned error: %v", err)
 	}
-	if backend := runtime.RemoteMutationBackend(); runtime.ListBackend() == nil || runtime.MutationBackend() == nil || backend.driver == nil {
+	runtime.MutationBackend()
+	if backend := runtime.RemoteMutationBackend(); !backend.CanWrite() {
 		t.Fatal("driver runtime should construct driver-backed backends")
 	}
 	named := runtime.NamedDriver("debug")

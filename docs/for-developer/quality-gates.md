@@ -8,9 +8,9 @@ qrypt 用三个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
-| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**；tag/dispatch 时构建并发布 | README |
+| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**；tag/dispatch 时构建并发布 | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测 | README |
-| `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试 | README |
+| `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
 
 ## 手动触发
 
@@ -63,6 +63,27 @@ gh workflow run "Nightly Quality Gates"
 - 已保留样本：`pkg/crypt`（EME 分段 panic）、`pkg/config`
   （ParseSize NaN）。
 
+## Windows 验证
+
+发布产物含 windows/amd64 与 windows/arm64，但平台代码（`*_windows.go`、
+纯 Go nocgo 宿主 `host_nocgo_windows.go`、WinFsp DLL 加载）需要 CI 验证，
+分两级：
+
+1. **每 PR**（ci.yaml `test-windows` job，windows-latest）：`CGO_ENABLED=0`
+   `go build -tags nocgo`（与发布产物同款标签）、`go vet ./...`、主模块
+   单测（只用主模块包列表，不用 `go test ./...`——vendored cgofuse 的
+   Windows 宿主测试需要真实 WinFsp）、以及 localfs fs 冒烟
+   （`scripts/smoke-localfs.sh`，仅 `qrypt fs` 命令、不挂载）。无 WinFsp
+   依赖，跑得快。
+2. **每夜**（nightly.yaml `windows-mount` job）：安装 WinFsp（choco），
+   以 localfs + 加密配置真实挂载（`scripts/smoke-windows-mount.ps1`），
+   经 FUSE 路径写文件，校验 `qrypt fs cat` 解密读回、后端只存加密乱码
+   文件名、再经 FUSE 路径读回。这是 nocgo 宿主 + WinFsp 集成唯一覆盖
+   的路径。
+
+注意：Windows 下 race 检测需要 cgo 工具链（runner 无 gcc），所以
+`-race` 只在 Linux 跑。
+
 ## 本地等价命令
 
 ```bash
@@ -70,6 +91,7 @@ gh workflow run "Nightly Quality Gates"
 ./scripts/coverage.sh -print          # 覆盖率快照（不 gate）
 ./scripts/fuzz-nightly.sh 10s         # 本地 fuzz（每 fuzzer 10s）
 ./scripts/smoke-localfs.sh            # localfs 挂载冒烟
+./scripts/smoke-windows-mount.ps1     # Windows 真实挂载冒烟（需 WinFsp）
 ```
 
 ## 版本固定策略

@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
 
@@ -42,19 +44,37 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		"type":            "file",
 	}
 	sessionKey := ""
-	var session aliyunUploadSession
-	var resumedSession bool
+	resumed := false
+	var tok aliyunToken
+	var skipParts map[int]bool
+	partSize := d.partSize
 	// When source provides SHA1 (e.g. from crypt ContentDedupCrypt),
 	// skip two-phase pre_hash negotiation: saves one API round trip
 	// and avoids re-encrypting the full source on every Open().
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
 	if sha1sum, ok := d.sourceSHA1(source); ok {
-		sessionKey = d.uploadSessionKey(parentID, name, size, sha1sum)
-		session, resumedSession = d.loadUploadSession(sessionKey)
+		// 内容指纹（SHA1）参与寻址：内容变化 ⇒ Key 变化 ⇒ 旧分片绝不复用。
+		sessionKey = session.Identity{ParentID: parentID, Name: name, Size: size, Fingerprint: sha1sum}.Key()
 		body["content_hash"] = sha1sum
 		body["content_hash_name"] = "sha1"
 		body["proof_version"] = "v1"
-		if !resumedSession {
+		if d.sessions != nil {
+			if binding, ok := d.sessions.Get(sessionKey); ok {
+				if err := json.Unmarshal(binding.Token, &tok); err == nil && tok.FileID != "" && tok.UploadID != "" {
+					resumed = true
+					if tok.PartSize > 0 {
+						partSize = tok.PartSize
+						partCount = int(math.Ceil(float64(size) / float64(partSize)))
+						if partCount == 0 {
+							partCount = 1
+						}
+					}
+				} else {
+					d.sessions.Delete(sessionKey)
+				}
+			}
+		}
+		if !resumed {
 			proofCode, err := d.proofCode(ctx, source, size)
 			if err != nil {
 				return drive.Entry{}, err
@@ -70,9 +90,29 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		}
 	}
 	var err error
-	if resumedSession {
-		create = session.createResp()
-	} else {
+	if resumed {
+		// 恢复：分片进度来自本地确认位图（实网验证本网关无分片查询接口：
+		// v2 与 v1.0/openFile 的 getUploadUrl/listUploadedParts 均 404），
+		// 上传 URL 复用 createWithFolders 下发的预签名 URL；恢复只基于
+		// 内容寻址 Key 相同的确认记录（幂等重传兜底）。
+		if len(tok.PartURLs) == 0 || tok.UploadID == "" {
+			d.sessions.Delete(sessionKey)
+			resumed = false
+		} else {
+			create = tok.createResp(name, size)
+			skipParts = session.ConfirmedParts(tok.Confirmed)
+		}
+	}
+	if !resumed {
+		// 预留绑定：createWithFolders 是 provider 上传资源创建，先落盘再调用，
+		// 崩溃只留下空句柄绑定（下次作废重来），不会产生无记录的孤儿。
+		if sessionKey != "" && d.sessions != nil {
+			if raw, err := json.Marshal(tok); err != nil {
+				return drive.Entry{}, fmt.Errorf("aliyundrive: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				return drive.Entry{}, fmt.Errorf("aliyundrive: persist upload session: %w", err)
+			}
+		}
 		err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
 		var apiErr *apiStatusError
 		if errors.As(err, &apiErr) && apiErr.code == "PreHashMatched" {
@@ -87,44 +127,61 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			err = d.cl.request(ctx, http.MethodPost, "/adrive/v2/file/createWithFolders", body, &create)
 		}
 		if err != nil {
+			if sessionKey != "" && d.sessions != nil {
+				d.sessions.Delete(sessionKey)
+			}
 			return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload create: %w", err))
 		}
-	}
-	if create.InstantUpload {
-		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
-		d.debugMu.Lock()
-		d.instantUploadCount++
-		d.debugMu.Unlock()
-		d.deleteUploadSession(sessionKey)
-		createdAt, updatedAt, modTime := responseTimes(create.UpdatedAt, create.CreatedAt, now)
-		return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
-	}
-	if sessionKey != "" {
-		if resumedSession {
-			if session.CompletedParts == nil {
-				session.CompletedParts = map[int]bool{}
+		if create.InstantUpload {
+			drive.ReportUploadPhase(req.Progress, drive.UploadPhaseInstant)
+			d.debugMu.Lock()
+			d.instantUploadCount++
+			d.debugMu.Unlock()
+			if sessionKey != "" && d.sessions != nil {
+				d.sessions.Delete(sessionKey)
 			}
-		} else {
-			sha1sum, _ := body["content_hash"].(string)
-			session = uploadSessionFromCreate(sessionKey, parentID, name, size, sha1sum, d.partSize, create)
-			d.saveUploadSession(session)
+			createdAt, updatedAt, modTime := responseTimes(create.UpdatedAt, create.CreatedAt, now)
+			return drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+		}
+		if sessionKey != "" && d.sessions != nil {
+			tok = aliyunToken{
+				FileID:    create.FileID,
+				UploadID:  create.UploadID,
+				PartSize:  partSize,
+				PartURLs:  append([]uploadPartInfo(nil), create.PartInfoList...),
+				Confirmed: session.ConfirmedBitmap(size, partSize, nil),
+			}
+			if raw, err := json.Marshal(tok); err != nil {
+				return drive.Entry{}, fmt.Errorf("aliyundrive: encode upload session: %w", err)
+			} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+				// 持句柄落盘失败：provider 会话无 abort 端点，靠服务端过期；
+				// 下次尝试发现空/旧句柄时视为作废重来。
+				return drive.Entry{}, fmt.Errorf("aliyundrive: persist upload session: %w", err)
+			}
 		}
 	}
-	uploadPartSize := d.partSize
-	if resumedSession && session.PartSize > 0 {
-		uploadPartSize = session.PartSize
-	}
-	if err := d.uploadParts(ctx, source, req.Progress, create.PartInfoList, uploadPartSize, session.CompletedParts, func(partNumber int) {
-		if sessionKey == "" {
+	uploadPartSize := partSize
+	if err := d.uploadParts(ctx, source, req.Progress, create.PartInfoList, uploadPartSize, skipParts, func(partNumber int) {
+		if sessionKey == "" || d.sessions == nil {
 			return
 		}
-		if session.CompletedParts == nil {
-			session.CompletedParts = map[int]bool{}
-		}
-		session.CompletedParts[partNumber] = true
-		d.saveUploadSession(session)
+		// 确认记录在 Index 锁内原地更新、节流落盘（≤1 次/分钟）；
+		// 崩溃最多丢一分钟确认，对应分片重传幂等覆盖，安全。
+		d.sessions.TouchWith(sessionKey, func(s *session.Session) {
+			var tok aliyunToken
+			// 只对持有效句柄的绑定确认进度：空句柄（并发预留/崩溃残留）的
+			// token 不叠加确认位，避免"空句柄 + 已确认"的混合状态。
+			if err := json.Unmarshal(s.Token, &tok); err != nil || tok.FileID == "" || tok.UploadID == "" {
+				return
+			}
+			tok.Confirmed = session.ConfirmedBitmap(size, partSize, tok.Confirmed)
+			session.MarkConfirmed(tok.Confirmed, partNumber)
+			if raw, err := json.Marshal(tok); err == nil {
+				s.Token = raw
+			}
+		})
 	}); err != nil {
-		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		return drive.Entry{}, err
 	}
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)
 	var complete completeResp
@@ -134,8 +191,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		"upload_id": create.UploadID,
 	}
 	if err := d.cl.request(ctx, http.MethodPost, "/v2/file/complete", completeBody, &complete); err != nil {
-		err = classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload complete: %w", err))
-		return drive.Entry{}, d.resumedUploadSessionError(resumedSession, sessionKey, err)
+		if sessionKey != "" && d.sessions != nil && invalidResumedUploadSession(err) {
+			d.sessions.Delete(sessionKey)
+		}
+		return drive.Entry{}, classifyAliyunUploadError(fmt.Errorf("aliyundrive: upload complete: %w", err))
 	}
 	createdAt, updatedAt, modTime := responseTimes(complete.UpdatedAt, complete.CreatedAt, responseModTime(create.UpdatedAt, create.CreatedAt, now))
 	entry := drive.Entry{ID: create.FileID, ParentID: parentID, Name: name, Size: size, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}
@@ -148,7 +207,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if complete.Size > 0 {
 		entry.Size = complete.Size
 	}
-	d.deleteUploadSession(sessionKey)
+	// provider commit 成功即成功：绑定清理尽力而为，残留由过期回收兜底。
+	if sessionKey != "" && d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
 	return entry, nil
 }
 

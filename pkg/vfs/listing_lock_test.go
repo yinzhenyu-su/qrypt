@@ -48,9 +48,7 @@ func TestListCommitRacesLocalModTimeUpdate(t *testing.T) {
 		// reach CommitList).
 		for i := 0; i < 100; i++ {
 			_, _ = fs.List(ctx, "/")
-			fs.view.mu.Lock()
-			clear(fs.view.lists)
-			fs.view.mu.Unlock()
+			fs.view.ClearListCaches()
 		}
 	}()
 	go func() {

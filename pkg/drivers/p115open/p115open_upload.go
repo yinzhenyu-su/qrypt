@@ -12,6 +12,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ import (
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
@@ -223,50 +224,22 @@ func (d *Driver) ossCallbackOptions(initResp *sdk.UploadInitResp, bodyBytes *[]b
 }
 
 func (d *Driver) uploadMultipart(ctx context.Context, parentID, name string, size int64, sha1Hex string, initResp *sdk.UploadInitResp, bucket *oss.Bucket, body drive.ReadOnlyFile, progress drive.UploadProgress) error {
-	callback, callbackVar := d.callbackOf(initResp)
-	sessionKey := uploadsession.Key(parentID, name, size, strings.ToUpper(sha1Hex))
-	session, resumed := d.loadUploadSession(sessionKey)
-	if resumed {
-		logging.L.InfofEvery("115_open.upload_resume", time.Second, "[115_open] upload resume name=%q upload_id=%q completed_parts=%d", name, session.UploadID, len(session.Parts))
-	} else {
-		session = p115OpenUploadSession{
-			Key:       sessionKey,
-			ParentID:  parentID,
-			Name:      name,
-			Size:      size,
-			SHA1:      strings.ToUpper(sha1Hex),
-			Bucket:    initResp.Bucket,
-			Object:    initResp.Object,
-			PartSize:  calPartSize(size),
-			Callback:  callback,
-			CallbackV: callbackVar,
-		}
+	// 内容指纹（SHA1）参与寻址：内容变化 ⇒ Key 变化 ⇒ 旧分片绝不复用。
+	sessionKey := session.Identity{ParentID: parentID, Name: name, Size: size, Fingerprint: strings.ToUpper(sha1Hex)}.Key()
+	imur, completed, err := d.beginMultipartUpload(ctx, sessionKey, initResp, bucket, size)
+	if err != nil {
+		return err
 	}
-	partSize := session.PartSize
-	if partSize <= 0 {
-		partSize = calPartSize(size)
-		session.PartSize = partSize
+	partSize := calPartSize(size)
+	partsByNumber := make(map[int]oss.UploadPart, len(completed))
+	for _, part := range completed {
+		partsByNumber[part.PartNumber] = part
 	}
-	imur := oss.InitiateMultipartUploadResult{
-		Bucket:   session.Bucket,
-		Key:      session.Object,
-		UploadID: session.UploadID,
-	}
-	if imur.UploadID == "" {
-		initResult, err := bucket.InitiateMultipartUpload(session.Object, oss.Sequential())
-		if err != nil {
-			return fmt.Errorf("115_open: initiate multipart upload: %w", err)
-		}
-		imur.UploadID = initResult.UploadID
-		session.UploadID = initResult.UploadID
-		d.saveUploadSession(session)
-	}
-	partsByNumber := session.partsByNumber()
 	uploadParts := make([]oss.UploadPart, 0, len(p115OpenUploadPartRanges(size, partSize)))
 	for _, part := range p115OpenUploadPartRanges(size, partSize) {
-		if completed, ok := partsByNumber[part.Number]; ok {
+		if completedPart, ok := partsByNumber[part.Number]; ok {
 			drive.ReportUploadProgress(progress, part.Size)
-			uploadParts = append(uploadParts, completed)
+			uploadParts = append(uploadParts, completedPart)
 			continue
 		}
 		if err := ctx.Err(); err != nil {
@@ -289,20 +262,88 @@ func (d *Driver) uploadMultipart(ctx context.Context, parentID, name string, siz
 		}
 		partsByNumber[part.Number] = uploadedPart
 		uploadParts = append(uploadParts, uploadedPart)
-		session.Parts = append(session.Parts, ossPart{Number: uploadedPart.PartNumber, ETag: uploadedPart.ETag})
-		d.saveUploadSession(session)
+		if d.sessions != nil {
+			d.sessions.Touch(sessionKey)
+		}
 	}
 	sort.Slice(uploadParts, func(i, j int) bool {
 		return uploadParts[i].PartNumber < uploadParts[j].PartNumber
 	})
 	drive.ReportUploadPhase(progress, drive.UploadPhaseCommitting)
 	var bodyBytes []byte
-	_, err := bucket.CompleteMultipartUpload(imur, uploadParts, d.ossCallbackOptions(initResp, &bodyBytes)...)
+	_, err = bucket.CompleteMultipartUpload(imur, uploadParts, d.ossCallbackOptions(initResp, &bodyBytes)...)
 	if err != nil {
+		// complete 失败但会话已明确失效：幂等回收后下次重建；临时错误保留绑定。
+		if d.sessions != nil && invalidOpenUploadSession(err) {
+			_ = d.abortOpenUploadSession(bucket, p115OpenToken{Bucket: imur.Bucket, Object: imur.Key, UploadID: imur.UploadID})
+			d.sessions.Delete(sessionKey)
+		}
 		return fmt.Errorf("115_open: complete multipart upload: %w", err)
 	}
-	d.deleteUploadSession(sessionKey)
+	// provider commit 成功即成功：绑定清理尽力而为，残留由过期回收兜底。
+	if d.sessions != nil {
+		d.sessions.Delete(sessionKey)
+	}
 	return nil
+}
+
+// beginMultipartUpload 返回复用的或新建的 multipart 上传句柄，以及从服务端
+// 重建的已完成分片（全新上传为空）。进度真相在服务端（OSS ListParts），
+// 查询的临时失败退化为同句柄全量重传（分片按编号幂等覆盖），明确失效则
+// 幂等回收后按全新上传处理。
+func (d *Driver) beginMultipartUpload(ctx context.Context, sessionKey string, initResp *sdk.UploadInitResp, bucket *oss.Bucket, size int64) (oss.InitiateMultipartUploadResult, []oss.UploadPart, error) {
+	if d.sessions != nil {
+		if binding, ok := d.sessions.Get(sessionKey); ok {
+			var tok p115OpenToken
+			if err := json.Unmarshal(binding.Token, &tok); err == nil && tok.UploadID != "" && tok.Bucket != "" && tok.Object != "" {
+				parts, err := d.listCompletedParts(ctx, bucket, tok.Object, tok.UploadID)
+				if err != nil {
+					if !invalidOpenUploadSession(err) {
+						// 查询临时失败：同句柄全量重传（分片幂等覆盖），不中断上传。
+						logging.L.Warnf("115_open: list parts %q failed, will re-upload all parts: %v", tok.Object, err)
+						return oss.InitiateMultipartUploadResult{Bucket: tok.Bucket, Key: tok.Object, UploadID: tok.UploadID}, nil, nil
+					}
+					// 会话已失效：幂等回收后按全新上传处理。
+					_ = d.abortOpenUploadSession(bucket, tok)
+					d.sessions.Delete(sessionKey)
+				} else {
+					return oss.InitiateMultipartUploadResult{Bucket: tok.Bucket, Key: tok.Object, UploadID: tok.UploadID}, parts, nil
+				}
+			} else {
+				// 无效绑定（预留后未完成创建）：作废重来。
+				d.sessions.Delete(sessionKey)
+			}
+		}
+	}
+
+	// 预留绑定：句柄落盘后才发起 provider 上传，崩溃只留下可回收的绑定。
+	partSize := calPartSize(size)
+	token := p115OpenToken{Bucket: initResp.Bucket, Object: initResp.Object, PartSize: partSize}
+	if d.sessions != nil {
+		if raw, err := json.Marshal(token); err != nil {
+			return oss.InitiateMultipartUploadResult{}, nil, fmt.Errorf("115_open: encode upload session: %w", err)
+		} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+			return oss.InitiateMultipartUploadResult{}, nil, fmt.Errorf("115_open: persist upload session: %w", err)
+		}
+	}
+	initResult, err := bucket.InitiateMultipartUpload(initResp.Object, oss.Sequential())
+	if err != nil {
+		if d.sessions != nil {
+			d.sessions.Delete(sessionKey)
+		}
+		return oss.InitiateMultipartUploadResult{}, nil, fmt.Errorf("115_open: initiate multipart upload: %w", err)
+	}
+	token.UploadID = initResult.UploadID
+	if d.sessions != nil {
+		if raw, err := json.Marshal(token); err != nil {
+			return oss.InitiateMultipartUploadResult{}, nil, fmt.Errorf("115_open: encode upload session: %w", err)
+		} else if err := d.sessions.Create(sessionKey, raw); err != nil {
+			// 持 UploadID 落盘失败：立即回收刚创建的 provider 上传，避免孤儿。
+			_ = d.abortOpenUploadSession(bucket, token)
+			return oss.InitiateMultipartUploadResult{}, nil, fmt.Errorf("115_open: persist multipart upload id: %w", err)
+		}
+	}
+	return initResult, nil, nil
 }
 
 func (d *Driver) ossTokenFor(ctx context.Context) (*sdk.UploadGetTokenResp, error) {

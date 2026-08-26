@@ -7,55 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 )
-
-func TestPathLockStateReleasesEntriesAfterUnlock(t *testing.T) {
-	s := newPathLockState()
-	for i := 0; i < 100; i++ {
-		unlock := s.lock("/some/path")
-		unlock()
-	}
-	s.mu.Lock()
-	n := len(s.locks)
-	s.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("pathLockState retains %d entries after unlock, want 0", n)
-	}
-}
-
-func TestPathLockStateMutualExclusion(t *testing.T) {
-	s := newPathLockState()
-	var counter atomic.Int64
-	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 20; j++ {
-				unlock := s.lock("/hot/path")
-				cur := counter.Load()
-				counter.Store(cur + 1)
-				unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	if got := counter.Load(); got != 50*20 {
-		t.Fatalf("counter = %d, want %d (mutual exclusion lost)", got, 50*20)
-	}
-	s.mu.Lock()
-	n := len(s.locks)
-	s.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("pathLockState retains %d entries after unlock, want 0", n)
-	}
-}
 
 // TestLifecycleContextConcurrentWithStart exercises the data race between
 // Start storing the lifecycle context and background readers (delayed-delete

@@ -2,8 +2,8 @@ package vfs
 
 import (
 	"context"
-
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 type CapabilityInfo struct {
@@ -32,7 +32,7 @@ type CapabilityReporter interface {
 }
 
 func (v *VFS) CapabilitiesForPath(ctx context.Context, path string) (CapabilityInfo, error) {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	return v.capabilitiesForPath(ctx, path, v.name, path, false)
 }
 
@@ -49,7 +49,7 @@ func (v *VFS) capabilitiesForPath(ctx context.Context, path, mount, displayPath 
 	targetReadOnly := path == "/" || mountRoot
 	return CapabilityInfo{
 		Mount:          mount,
-		Path:           cleanVirtual(displayPath),
+		Path:           vfstypes.CleanVirtualPath(displayPath),
 		Root:           false,
 		MountRoot:      mountRoot,
 		Capabilities:   caps,
@@ -70,7 +70,7 @@ func (v *VFS) capabilitiesForPath(ctx context.Context, path, mount, displayPath 
 }
 
 func (n *Namespace) CapabilitiesForPath(ctx context.Context, path string) (CapabilityInfo, error) {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return CapabilityInfo{}, err
@@ -78,6 +78,6 @@ func (n *Namespace) CapabilitiesForPath(ctx context.Context, path string) (Capab
 	if root {
 		return CapabilityInfo{Path: "/", Root: true, CanList: true}, nil
 	}
-	name := cleanMountName(firstVirtualSegment(path))
+	name := vfstypes.CleanMountName(firstVirtualSegment(path))
 	return mount.capabilitiesForPath(ctx, rest, name, path, rest == "/")
 }

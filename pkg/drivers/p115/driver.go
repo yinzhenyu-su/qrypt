@@ -20,6 +20,7 @@ import (
 
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
@@ -47,6 +48,12 @@ type Driver struct {
 	debugMu          sync.Mutex
 	lastError        string
 	instantUploads   atomic.Int64
+
+	// Upload session binding store：只保存 "内容键 → OSS 上传句柄"，
+	// 分片进度用服务端 ListParts 重建。
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 type cookieState struct {
@@ -54,35 +61,9 @@ type cookieState struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
-type p115UploadSessionState struct {
-	Version  int                          `json:"version"`
-	Sessions map[string]p115UploadSession `json:"sessions,omitempty"`
-}
-
-type p115UploadSession struct {
-	Key       string    `json:"key"`
-	ParentID  string    `json:"parent_id"`
-	Name      string    `json:"name"`
-	Size      int64     `json:"size"`
-	SHA1      string    `json:"sha1"`
-	Bucket    string    `json:"bucket"`
-	Object    string    `json:"object"`
-	UploadID  string    `json:"upload_id"`
-	PartSize  int64     `json:"part_size"`
-	Parts     []ossPart `json:"parts,omitempty"`
-	Callback  string    `json:"callback,omitempty"`
-	CallbackV string    `json:"callback_var,omitempty"`
-	SavedAt   time.Time `json:"saved_at"`
-}
-
-type ossPart struct {
-	Number int    `json:"number"`
-	ETag   string `json:"etag"`
-}
-
-const p115UploadSessionStateFile = "115_upload_sessions.json"
-const p115UploadSessionMaxAge = 24 * time.Hour
-const p115UploadSessionMaxEntries = 1024
+const p115SessionFile = "115_upload_sessions.json"
+const p115SessionMaxAge = 24 * time.Hour
+const p115SessionExpiryEvery = time.Hour
 const p115MultipartPartSize = 16 * 1024 * 1024
 const p115MultipartMinSize = p115MultipartPartSize
 
@@ -174,11 +155,21 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
 	return nil
 }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {

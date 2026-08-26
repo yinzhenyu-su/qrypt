@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"io"
 	"os"
 	pathpkg "path"
@@ -146,8 +146,8 @@ func RunDirectDriverCopy(ctx context.Context, source diagnostics.DriverCopySourc
 func RunDirectDriverCopyWithModTime(ctx context.Context, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, modTime time.Time) *DriverCopyResult {
 	result := &DriverCopyResult{
 		OpID:       newDebugOperationID("copy"),
-		SourcePath: vfs.CleanVirtualPath(srcPath),
-		DestPath:   vfs.CleanVirtualPath(dstPath),
+		SourcePath: vfstypes.CleanVirtualPath(srcPath),
+		DestPath:   vfstypes.CleanVirtualPath(dstPath),
 		Started:    util.Now(),
 		Steps:      make([]TransferStep, 0, 8),
 	}
@@ -237,7 +237,7 @@ func RunDirectDriverCopyWithModTime(ctx context.Context, source diagnostics.Driv
 		if err != nil {
 			return result
 		}
-	} else if err != nil && !vfs.IsNotFound(err) {
+	} else if err != nil && !vfstypes.IsNotFound(err) {
 		appendCopyStep(result, "check_dest_exists", 0, start, err)
 		return result
 	} else {
@@ -307,15 +307,15 @@ func RunDirectDriverCopyWithModTime(ctx context.Context, source diagnostics.Driv
 }
 
 func RunDirectDriverCopyDir(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstParentPath string, overwrite bool) *DriverCopyDirResult {
-	return RunDirectDriverCopyDirToPath(ctx, fs, source, srcPath, pathpkg.Join(vfs.CleanVirtualPath(dstParentPath), pathpkg.Base(vfs.CleanVirtualPath(srcPath))), overwrite)
+	return RunDirectDriverCopyDirToPath(ctx, fs, source, srcPath, pathpkg.Join(vfstypes.CleanVirtualPath(dstParentPath), pathpkg.Base(vfstypes.CleanVirtualPath(srcPath))), overwrite)
 }
 
 func RunDirectDriverCopyDirToPath(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyDirResult {
 	started := util.Now()
 	result := &DriverCopyDirResult{
 		OpID:       newDebugOperationID("copydir"),
-		SourcePath: vfs.CleanVirtualPath(srcPath),
-		DestPath:   vfs.CleanVirtualPath(dstPath),
+		SourcePath: vfstypes.CleanVirtualPath(srcPath),
+		DestPath:   vfstypes.CleanVirtualPath(dstPath),
 		Started:    started,
 		Entries:    []DriverCopyEntryResult{},
 	}
@@ -359,7 +359,7 @@ func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics
 				result.Skipped++
 				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "skipped", SourcePath: childSrc, DestPath: childDst})
 				continue
-			} else if !vfs.IsNotFound(err) {
+			} else if !vfstypes.IsNotFound(err) {
 				result.Failed++
 				result.recordEntry(DriverCopyEntryResult{Kind: "file", State: "failed", SourcePath: childSrc, DestPath: childDst, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
 				return err
@@ -395,7 +395,7 @@ func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics
 }
 
 func mkdirAllRemote(ctx context.Context, fs copyFileSystem, dir string) error {
-	dir = vfs.CleanVirtualPath(dir)
+	dir = vfstypes.CleanVirtualPath(dir)
 	if dir == "/" {
 		return nil
 	}
@@ -409,7 +409,7 @@ func mkdirAllRemote(ctx context.Context, fs copyFileSystem, dir string) error {
 			}
 			continue
 		}
-		if !vfs.IsNotFound(err) {
+		if !vfstypes.IsNotFound(err) {
 			return err
 		}
 		if _, err := fs.Mkdir(ctx, current); err != nil {
@@ -420,7 +420,7 @@ func mkdirAllRemote(ctx context.Context, fs copyFileSystem, dir string) error {
 }
 
 func splitCleanPath(path string) []string {
-	path = strings.Trim(vfs.CleanVirtualPath(path), "/")
+	path = strings.Trim(vfstypes.CleanVirtualPath(path), "/")
 	if path == "" {
 		return nil
 	}
@@ -502,7 +502,7 @@ func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry driv
 }
 
 func resolveCopyPath(ctx context.Context, source diagnostics.DriverCopySource, drivers []diagnostics.NamedDriver, virtualPath string) (copyResolvedPath, error) {
-	virtualPath = vfs.CleanVirtualPath(virtualPath)
+	virtualPath = vfstypes.CleanVirtualPath(virtualPath)
 	info, err := source.DebugResolve(ctx, virtualPath, false)
 	if err != nil {
 		return copyResolvedPath{}, err
@@ -554,8 +554,8 @@ func findNamedDriver(drivers []diagnostics.NamedDriver, name string) drive.Drive
 }
 
 func splitDestPath(path string) (string, string) {
-	path = vfs.CleanVirtualPath(path)
-	return vfs.CleanVirtualPath(pathpkg.Dir(path)), pathpkg.Base(path)
+	path = vfstypes.CleanVirtualPath(path)
+	return vfstypes.CleanVirtualPath(pathpkg.Dir(path)), pathpkg.Base(path)
 }
 
 func appendCopyStep(result *DriverCopyResult, phase string, bytes int64, start time.Time, err error) {

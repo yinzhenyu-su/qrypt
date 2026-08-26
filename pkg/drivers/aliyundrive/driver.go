@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 const (
@@ -36,6 +37,12 @@ type Driver struct {
 	debugMu            sync.Mutex
 	lastError          string
 	instantUploadCount int64
+
+	// Upload session binding store：只保存 "内容键 → provider 上传句柄"，
+	// 分片进度用 listUploadedParts 从服务端重建。
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 type cachedDownloadURL struct {
@@ -53,30 +60,9 @@ type tokenState struct {
 	UpdatedAt          time.Time `json:"updated_at,omitempty"`
 }
 
-type aliyunUploadSessionState struct {
-	Version  int                            `json:"version"`
-	Sessions map[string]aliyunUploadSession `json:"sessions,omitempty"`
-}
-
-type aliyunUploadSession struct {
-	Key            string           `json:"key"`
-	ParentID       string           `json:"parent_id"`
-	Name           string           `json:"name"`
-	Size           int64            `json:"size"`
-	SHA1           string           `json:"sha1"`
-	FileID         string           `json:"file_id"`
-	UploadID       string           `json:"upload_id"`
-	PartSize       int64            `json:"part_size"`
-	PartInfoList   []uploadPartInfo `json:"part_info_list,omitempty"`
-	CompletedParts map[int]bool     `json:"completed_parts,omitempty"`
-	CreatedAt      *time.Time       `json:"created_at,omitempty"`
-	UpdatedAt      *time.Time       `json:"updated_at,omitempty"`
-	SavedAt        time.Time        `json:"saved_at"`
-}
-
-const aliyunUploadSessionStateFile = "aliyundrive_upload_sessions.json"
-const aliyunUploadSessionMaxAge = 24 * time.Hour
-const aliyunUploadSessionMaxEntries = 1024
+const aliyunSessionFile = "aliyundrive_upload_sessions.json"
+const aliyunSessionMaxAge = 24 * time.Hour
+const aliyunSessionExpiryEvery = time.Hour
 
 func init() {
 	drive.Register("aliyundrive", func(params drive.Params) (drive.Driver, error) {
@@ -214,11 +200,22 @@ func (d *Driver) Init(ctx context.Context) error {
 	return nil
 }
 
-func (d *Driver) Drop(ctx context.Context) error { return nil }
+func (d *Driver) Drop(ctx context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
+	return nil
+}
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
-	d.pruneStoredUploadSessions()
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {

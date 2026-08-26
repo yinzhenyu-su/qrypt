@@ -2,9 +2,10 @@ package vfs
 
 import (
 	"context"
+
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
-	"path/filepath"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
 
 func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
@@ -34,42 +35,6 @@ func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
 // renameWithDeps drives the rename through the mutation coordinator; the
 // VFS shell keeps the capability gate and health recording, and builds the
 // adapters.
-
-type mutationBackend interface {
-	List(ctx context.Context, parentID string) ([]drive.Entry, error)
-	Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error)
-	Rename(ctx context.Context, entry drive.Entry, newName string) error
-	Move(ctx context.Context, entry drive.Entry, dstParentID string) error
-}
-
-// driverMutationBackend satisfies mutation.Remote (Rename/Move) for the
-// transactional renamer; List/Mkdir remain part of the vfs-local backend
-// surface.
-var _ mutation.Remote = driverMutationBackend{}
-
-type driverMutationBackend struct {
-	driver drive.Driver
-}
-
-func newDriverMutationBackend(driver drive.Driver) driverMutationBackend {
-	return driverMutationBackend{driver: driver}
-}
-
-func (b driverMutationBackend) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	return b.driver.List(ctx, parentID)
-}
-
-func (b driverMutationBackend) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
-	return b.driver.Mkdir(ctx, parentID, name)
-}
-
-func (b driverMutationBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	return b.driver.Rename(ctx, entry, newName)
-}
-
-func (b driverMutationBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	return b.driver.Move(ctx, entry, dstParentID)
-}
 
 // viewCommitter is the narrow mutation-commit boundary: it writes the
 // effective view after a local mutation. The mutation coordinator depends
@@ -105,76 +70,18 @@ type listedChildrenCache interface {
 	CacheListedChildren(parentPath string, entries []drive.Entry)
 }
 
-// vfsViewCommitter implements viewCommitter and listedChildrenCache over
-// the VFS view.
-
-type vfsViewCommitter struct {
-	v *VFS
+// newVFSViewCommitter wires the view-domain committer (pkg/vfs/view) to the
+// VFS read-cache side effects: entry invalidation and staging-file seeding.
+// The commit semantics live in the view package; this adapter only supplies
+// the two cross-domain functions.
+func newVFSViewCommitter(v *VFS) view.Committer {
+	return view.NewCommitter(v.view, newVFSVisibilityRuntime(v), v.invalidateReadCache, v.seedReadCacheFromStaging)
 }
 
-func newVFSViewCommitter(v *VFS) vfsViewCommitter {
-	return vfsViewCommitter{v: v}
-}
-
-// CommitMkdir is the mutation-commit entry point for a created directory.
-// It is the canonical shape the mutation coordinator will use for every
-// local mutation (Rename/Remove/UploadCommitted follow the same pattern):
-// write the entry cache, mark derived local state, and invalidate the
-// affected list cache - all under the view lock, so a concurrent reader
-// never observes a half-committed mutation.
-func (r vfsViewCommitter) CommitMkdir(path string, entry drive.Entry) {
-	r.v.view.mu.Lock()
-	r.v.view.entries.Set(path, entry)
-	r.v.markLocalDirLocked(path)
-	r.v.invalidateListLocked(filepath.Dir(path))
-	r.v.view.mu.Unlock()
-}
-
-func (r vfsViewCommitter) CacheListedChildren(parentPath string, entries []drive.Entry) {
-	r.v.view.mu.Lock()
-	defer r.v.view.mu.Unlock()
-	for _, child := range entries {
-		r.v.view.entries.Set(joinVirtual(parentPath, child.Name), child)
-	}
-}
-
-// Compile-time assertions: the VFS adapter serves both the commit boundary
-// and the cache-warming boundary.
-var _ viewCommitter = vfsViewCommitter{}
-var _ listedChildrenCache = vfsViewCommitter{}
-
-func (r vfsViewCommitter) CommitRemove(path string, entry drive.Entry) {
-	r.v.markDeleted(path, entry)
-	r.v.invalidateReadCache(entry)
-	r.v.clearLocalModTime(path)
-}
-
-func (r vfsViewCommitter) CommitUploadedEntry(path string, entry drive.Entry, stagingPath string) {
-	if stagingPath != "" {
-		r.v.seedReadCacheFromStaging(entry, stagingPath)
-	}
-	r.v.view.mu.Lock()
-	r.v.view.entries.Set(path, entry)
-	r.v.unhideCopyChild(filepath.Dir(path), entry.Name)
-	r.v.invalidateListLocked(filepath.Dir(path))
-	r.v.view.mu.Unlock()
-}
-
-func (r vfsViewCommitter) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) {
-	oldParent := filepath.Dir(oldPath)
-	newParent := filepath.Dir(newPath)
-	r.v.view.mu.Lock()
-	r.v.view.entries.Delete(oldPath)
-	r.v.view.entries.Delete(newPath)
-	r.v.rebaseCachedPathsLocked(oldPath, newPath)
-	r.v.moveLocalModTimeLocked(oldPath, newPath)
-	r.v.invalidateListLocked(oldParent)
-	r.v.invalidateListLocked(newParent)
-	entry = r.v.applyLocalModTimeLocked(newPath, entry)
-	r.v.view.entries.Set(newPath, entry)
-	r.v.view.mu.Unlock()
-	r.v.addOverlay(oldPath, newPath, entry.ID, entry.IsDir)
-}
+// Compile-time assertions: the view committer serves both the commit
+// boundary and the cache-warming boundary.
+var _ viewCommitter = view.Committer{}
+var _ listedChildrenCache = view.Committer{}
 
 // mutationRuntime is the rename-time local-state surface: pending-store
 // rename and read-cache invalidation. The remote-view commit lives on
@@ -184,23 +91,39 @@ type mutationRuntime interface {
 	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
 }
 
+// readCacheInvalidator drops a committed entry's read-cache state. *VFS
+// satisfies it via its package-private invalidateReadCache method; mutation
+// and upload-write adapters depend on this narrow boundary instead of the
+// whole VFS.
+type readCacheInvalidator interface {
+	invalidateReadCache(entry drive.Entry)
+}
+
 type vfsMutationRuntime struct {
-	v *VFS
+	invalidator readCacheInvalidator
+	viewRT      view.Runtime
+	store       *uploadStore
+	hashes      *upload.HashTracker
 }
 
 func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
-	return vfsMutationRuntime{v: v}
+	return vfsMutationRuntime{
+		invalidator: v,
+		viewRT:      view.NewRuntime(v.view),
+		store:       v.uploads.Store(),
+		hashes:      v.hashes,
+	}
 }
 
 func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
-	r.v.invalidateReadCache(entry)
+	r.invalidator.invalidateReadCache(entry)
 }
 
 func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
-	r.v.moveLocalModTime(oldPath, newPath)
-	if err := r.v.uploads.Store().RenameUpload(oldPath, pending); err != nil {
+	r.viewRT.MoveLocalModTime(oldPath, newPath)
+	if err := r.store.RenameUpload(oldPath, pending); err != nil {
 		return err
 	}
-	r.v.hashes.renamePath(oldPath, newPath, pending)
+	r.hashes.RenamePath(oldPath, newPath, pending)
 	return nil
 }

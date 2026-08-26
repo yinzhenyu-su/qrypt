@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"time"
 )
 
@@ -125,6 +126,6 @@ func (n *Namespace) PrepareDirectoryCopy(ctx context.Context, path string) error
 }
 
 func (n *Namespace) IsReadOnlyPath(path string) bool {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	return path == "/"
 }

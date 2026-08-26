@@ -1,112 +1,82 @@
 package quark
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
-	"github.com/yinzhenyu/qrypt/pkg/logging"
-
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
-func (d *Driver) uploadSessionKey(parentID, name string, size int64, hashData map[string]any) string {
-	md5Hex, _ := hashData["md5"].(string)
-	sha1Hex, _ := hashData["sha1"].(string)
-	return uploadsession.Key(parentID, name, size, md5Hex, sha1Hex)
+// quarkToken 是持久化的 provider 上传句柄 + 每分片确认 ETag（OSS Complete
+// 需要全部 ETag）。quark 无分片进度查询接口，按设计文档的回退原则（服务端
+// 不可查询时以本地确认记录为依据，并允许幂等重传）经 TouchWith 节流落盘
+// （≤1 次/分钟）：崩溃最多丢一分钟确认，对应分片重传幂等覆盖，安全。
+type quarkToken struct {
+	TaskID    string          `json:"task_id"`
+	UploadID  string          `json:"upload_id"`
+	ObjKey    string          `json:"obj_key"`
+	UploadURL string          `json:"upload_url"`
+	Fid       string          `json:"fid"`
+	Bucket    string          `json:"bucket"`
+	Callback  json.RawMessage `json:"callback,omitempty"`
+	AuthInfo  string          `json:"auth_info"`
+	PartSize  int             `json:"part_size"`
+	Etags     map[int]string  `json:"etags,omitempty"`
 }
 
-func (d *Driver) loadUploadSession(key string) (quarkUploadSession, bool) {
-	return d.uploadSessionStore().Load(key)
+func (t quarkToken) preResp() upPreResp {
+	var pre upPreResp
+	pre.Data.TaskID = t.TaskID
+	pre.Data.UploadID = t.UploadID
+	pre.Data.ObjKey = t.ObjKey
+	pre.Data.UploadURL = t.UploadURL
+	pre.Data.Fid = t.Fid
+	pre.Data.Bucket = t.Bucket
+	pre.Data.Callback = append(json.RawMessage(nil), t.Callback...)
+	pre.Data.AuthInfo = t.AuthInfo
+	pre.Metadata.PartSize = t.PartSize
+	return pre
 }
 
-func (d *Driver) saveUploadSession(session quarkUploadSession) {
-	d.uploadSessionStore().Save(session)
-}
-
-func (d *Driver) deleteUploadSession(key string) {
-	d.uploadSessionStore().Delete(key)
-}
-
-func (d *Driver) pruneStoredUploadSessions() {
-	d.uploadSessionStore().Prune()
-}
-
-func (d *Driver) prunedUploadSessions(state uploadSessionState, now time.Time) (uploadSessionState, bool) {
-	state.Version = 1
-	sessions, changed := d.uploadSessionStore().PrunedForTest(state.Sessions, now)
-	state.Sessions = sessions
-	return state, changed
-}
-
-func (d *Driver) uploadSessionStore() *uploadsession.Store[quarkUploadSession] {
-	return uploadsession.NewStore(uploadsession.StoreOptions[quarkUploadSession]{
-		Store:      d.stateStore,
-		File:       quarkUploadSessionStateFile,
-		MaxAge:     quarkUploadSessionMaxAge,
-		MaxEntries: quarkUploadSessionMaxEntries,
-		Key: func(session quarkUploadSession) string {
-			return session.Key
-		},
-		Valid: func(key string, session quarkUploadSession) bool {
-			return session.Key != "" && len(session.Etags) > 0
-		},
-		UpdatedAt: func(session quarkUploadSession) time.Time {
-			return session.UpdatedAt
-		},
-		Touch: func(session *quarkUploadSession, now time.Time) {
-			session.UpdatedAt = now
-		},
+func (d *Driver) installSessionIndex(store drive.StateStore) {
+	d.sessionStoreMu.Lock()
+	defer d.sessionStoreMu.Unlock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessions = session.NewIndex(store, quarkSessionFile, session.IndexOptions{
 		OnError: func(err error) {
 			logging.L.Warnf("[QUARK] upload session state failed err=%v", err)
 		},
 	})
+	ctx, cancel := context.WithCancel(context.Background())
+	d.sessionCancel = cancel
+	d.expireSessions()
+	go session.RunExpirer(ctx, quarkSessionExpiryEvery, d.expireSessions)
 }
 
-func (d *Driver) resumedUploadSessionError(resumed bool, key string, err error) error {
-	if resumed && (drive.IsNonRetryable(err) || invalidResumedUploadSession(err)) {
-		d.deleteUploadSession(key)
-		return fmt.Errorf("quark: resumed upload session invalid, will retry from scratch: %v", err)
-	}
-	return err
-}
-
-func uploadSessionFromPre(key, parentID, name string, size int64, hashData map[string]any, pre upPreResp, partSize int) quarkUploadSession {
-	md5Hex, _ := hashData["md5"].(string)
-	sha1Hex, _ := hashData["sha1"].(string)
-	return quarkUploadSession{
-		Key:       key,
-		ParentID:  parentID,
-		Name:      name,
-		Size:      size,
-		MD5:       md5Hex,
-		SHA1:      sha1Hex,
-		TaskID:    pre.Data.TaskID,
-		UploadID:  pre.Data.UploadID,
-		ObjKey:    pre.Data.ObjKey,
-		UploadURL: pre.Data.UploadURL,
-		Fid:       pre.Data.Fid,
-		Bucket:    pre.Data.Bucket,
-		Callback:  append(json.RawMessage(nil), pre.Data.Callback...),
-		AuthInfo:  pre.Data.AuthInfo,
-		PartSize:  partSize,
-		Etags:     map[int]string{},
+func (d *Driver) expireSessions() {
+	if d.sessions != nil {
+		d.sessions.Expire(quarkSessionMaxAge, time.Now(), d.reclaimUploadSession)
 	}
 }
 
-func (s quarkUploadSession) preResp() upPreResp {
-	var pre upPreResp
-	pre.Data.TaskID = s.TaskID
-	pre.Data.UploadID = s.UploadID
-	pre.Data.ObjKey = s.ObjKey
-	pre.Data.UploadURL = s.UploadURL
-	pre.Data.Fid = s.Fid
-	pre.Data.Bucket = s.Bucket
-	pre.Data.Callback = append(json.RawMessage(nil), s.Callback...)
-	pre.Data.AuthInfo = s.AuthInfo
-	pre.Metadata.PartSize = s.PartSize
-	return pre
+// reclaimUploadSession 释放一个过期上传。quark 无 abort 上传接口，provider
+// 侧会话到期自动失效；回收只需要丢弃本地绑定（幂等，无副作用）。
+func (d *Driver) reclaimUploadSession(s session.Session) error {
+	var tok quarkToken
+	if err := json.Unmarshal(s.Token, &tok); err != nil {
+		return nil
+	}
+	if tok.UploadID == "" {
+		return nil
+	}
+	// 无 abort 端点：provider 会话到期后自动释放，绑定直接丢弃。
+	return nil
 }
 
 func (d *Driver) setUploadDebug(taskID string, item quarkUploadDebug) {
@@ -157,31 +127,6 @@ func (d *Driver) activeUploadDebug() []quarkUploadDebug {
 		uploads = append(uploads, upload)
 	}
 	return uploads
-}
-
-type uploadSessionState struct {
-	Version  int                           `json:"version"`
-	Sessions map[string]quarkUploadSession `json:"sessions,omitempty"`
-}
-
-type quarkUploadSession struct {
-	Key       string          `json:"key"`
-	ParentID  string          `json:"parent_id"`
-	Name      string          `json:"name"`
-	Size      int64           `json:"size"`
-	MD5       string          `json:"md5"`
-	SHA1      string          `json:"sha1"`
-	TaskID    string          `json:"task_id"`
-	UploadID  string          `json:"upload_id"`
-	ObjKey    string          `json:"obj_key"`
-	UploadURL string          `json:"upload_url"`
-	Fid       string          `json:"fid"`
-	Bucket    string          `json:"bucket"`
-	Callback  json.RawMessage `json:"callback,omitempty"`
-	AuthInfo  string          `json:"auth_info"`
-	PartSize  int             `json:"part_size"`
-	Etags     map[int]string  `json:"etags,omitempty"`
-	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 type quarkUploadDebug struct {

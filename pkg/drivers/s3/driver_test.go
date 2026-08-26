@@ -3,6 +3,9 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -23,7 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/uploadsession"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 // ─── in-memory mock S3 server ─────────────────────────────────────────────
@@ -116,6 +119,15 @@ func (m *mockS3) partCalls(partNumber int32) int {
 	return m.uploadPartCalls[partNumber]
 }
 
+func sortedInt32Keys(parts map[int32][]byte) []int32 {
+	keys := make([]int32, 0, len(parts))
+	for number := range parts {
+		keys = append(keys, number)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // S3 XML response types
 type listBucketResult struct {
 	XMLName     xml.Name      `xml:"ListBucketResult"`
@@ -187,6 +199,22 @@ type completeMultipartUploadResult struct {
 	Location string   `xml:"Location"`
 }
 
+type listPartsResult struct {
+	XMLName     xml.Name      `xml:"ListPartsResult"`
+	XMLNS       string        `xml:"xmlns,attr"`
+	Bucket      string        `xml:"Bucket"`
+	Key         string        `xml:"Key"`
+	UploadID    string        `xml:"UploadId"`
+	IsTruncated bool          `xml:"IsTruncated"`
+	Parts       []listPartXML `xml:"Part,omitempty"`
+}
+
+type listPartXML struct {
+	PartNumber int32  `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
+	Size       int64  `xml:"Size"`
+}
+
 type deleteResponse struct {
 	XMLName xml.Name      `xml:"DeleteResult"`
 	Deleted []deletedObj  `xml:"Deleted,omitempty"`
@@ -253,7 +281,32 @@ func (m *mockS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodGet:
-		// ListObjects or GetObject
+		// ListParts (multipart resume) or ListObjects/GetObject
+		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {
+			m.mu.RLock()
+			upload, ok := m.uploads[uploadID]
+			var parts []listPartXML
+			if ok {
+				for _, number := range sortedInt32Keys(upload.parts) {
+					parts = append(parts, listPartXML{PartNumber: number, ETag: upload.etags[number], Size: int64(len(upload.parts[number]))})
+				}
+			}
+			m.mu.RUnlock()
+			if !ok {
+				http.Error(w, "NoSuchUpload", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			_ = xml.NewEncoder(w).Encode(listPartsResult{
+				XMLNS:    "http://s3.amazonaws.com/doc/2006-03-01/",
+				Bucket:   bucket,
+				Key:      objKey,
+				UploadID: uploadID,
+				Parts:    parts,
+			})
+			return
+		}
 		if r.URL.Query().Has("prefix") || r.URL.Query().Has("list-type") {
 			// ListObjects
 			prefix := r.URL.Query().Get("prefix")
@@ -887,13 +940,18 @@ func TestPutSourceMultipartResumesCompletedPart(t *testing.T) {
 		t.Fatal("expected first upload to fail")
 	}
 
-	sessionKey := uploadsession.Key(d.bucket, "resume.bin", int64(len(content)))
-	session, ok := d.loadUploadSession(sessionKey)
+	id := session.Identity{ParentID: "0", Name: "resume.bin", Size: int64(len(content)), Fingerprint: sha256Hex(t, content)}
+	sessionKey := id.Key()
+	binding, ok := d.sessions.Get(sessionKey)
 	if !ok {
 		t.Fatal("expected saved upload session after first part")
 	}
-	if len(session.Parts) != 1 || session.Parts[0].Number != 1 {
-		t.Fatalf("saved parts = %+v, want only part 1", session.Parts)
+	var tok s3Token
+	if err := json.Unmarshal(binding.Token, &tok); err != nil {
+		t.Fatal(err)
+	}
+	if tok.UploadID == "" {
+		t.Fatal("expected persisted UploadID")
 	}
 
 	req.Progress = &recordingUploadProgress{}
@@ -913,9 +971,55 @@ func TestPutSourceMultipartResumesCompletedPart(t *testing.T) {
 	if mock.partCalls(2) != 2 {
 		t.Fatalf("part 2 calls = %d, want 2 because first attempt failed once", mock.partCalls(2))
 	}
-	if _, ok := d.loadUploadSession(sessionKey); ok {
+	if _, ok := d.sessions.Get(sessionKey); ok {
 		t.Fatal("upload session should be deleted after complete")
 	}
+}
+
+// TestPutSourceMultipartSameSizeDifferentContent 是旧方案静默损坏场景的回归测试：
+// 中断的上传（内容 A）后重传同大小不同内容（内容 B），绝不能复用 A 的 part。
+func TestPutSourceMultipartSameSizeDifferentContent(t *testing.T) {
+	ctx := context.Background()
+	d, mock, _ := setupTest(t)
+	d.InstallStateStore(drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver")))
+	mock.failPartOnce(2)
+
+	first := bytes.Repeat([]byte("a"), s3MultipartPartSize+3)
+	if _, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "same.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(first),
+		Progress: &recordingUploadProgress{},
+	}); err == nil {
+		t.Fatal("expected first upload to fail")
+	}
+
+	second := bytes.Repeat([]byte("b"), s3MultipartPartSize+3)
+	if _, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "same.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(second),
+		Progress: &recordingUploadProgress{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := mock.get("same.bin")
+	if !ok {
+		t.Fatal("expected same.bin in mock")
+	}
+	if !bytes.Equal(obj.data, second) {
+		t.Fatal("second upload reused parts of the interrupted first upload")
+	}
+	// 两次内容键不同：第二次必须是全新的 multipart，所有 part 都重新上传。
+	if mock.partCalls(1) != 2 || mock.partCalls(2) != 2 {
+		t.Fatalf("part calls = part1:%d part2:%d, want 2 each", mock.partCalls(1), mock.partCalls(2))
+	}
+}
+
+func sha256Hex(t *testing.T, data []byte) string {
+	t.Helper()
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 type recordingUploadProgress struct {

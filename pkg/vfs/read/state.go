@@ -15,9 +15,9 @@ const (
 	// ChunkSize 是 VFS 读取、缓存和预取使用的基础文件块大小。
 	ChunkSize = 512 * 1024
 	// PrefetchChunks 是普通读取首次或非连续读取使用的预取块数量。
-	PrefetchChunks = 6
+	PrefetchChunks = 8
 	// MaxConcurrency 是 VFS 读取任务允许占用的并发槽位总数。
-	MaxConcurrency = 64
+	MaxConcurrency = 32
 	// HighReserve 根据总并发数自动计算，为高优先级读取预留约四分之一的槽位，
 	// 同时保证总并发数大于 1 时至少保留一个槽位。
 	HighReserve = max(0, min(max(1, MaxConcurrency/4), MaxConcurrency-1))

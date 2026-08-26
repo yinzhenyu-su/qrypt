@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
-	"path/filepath"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"time"
 )
 
 func (v *VFS) prepareDirectoryCopyWithRuntime(ctx context.Context, path string, runtime vfsDirectoryCopyRuntime) error {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	entry, err := v.resolve(ctx, path)
 	if err != nil {
 		return err
@@ -20,9 +22,9 @@ func (v *VFS) prepareDirectoryCopyWithRuntime(ctx context.Context, path string, 
 	}
 	hideNames := map[string]time.Time{}
 	if entries, err := runtime.ListChildren(ctx, entry.ID); err == nil {
-		expires := time.Now().Add(directoryCopyHideTTL)
+		expires := time.Now().Add(view.DirectoryCopyHideTTL)
 		for _, child := range entries {
-			if !isAppleMetadataName(child.Name) {
+			if !view.IsAppleMetadataName(child.Name) {
 				hideNames[child.Name] = expires
 			}
 		}
@@ -34,7 +36,7 @@ func (v *VFS) prepareDirectoryCopyWithRuntime(ctx context.Context, path string, 
 	return nil
 }
 
-func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBackend, committer viewCommitter, cache listedChildrenCache) (entry drive.Entry, err error) {
+func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutation.Backend, committer viewCommitter, cache listedChildrenCache) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
 		return drive.Entry{}, err
@@ -53,25 +55,33 @@ func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutationBa
 // mutation.MkdirResolver (Resolve/Parent).
 
 type vfsMkdirView struct {
-	v         *VFS
-	committer viewCommitter
-	cache     listedChildrenCache
+	committer          viewCommitter
+	cache              listedChildrenCache
+	restoreDeleted     func(string) (drive.Entry, bool)
+	restoreAncestor    func(string)
+	isUnderRestoredDir func(string) bool
 }
 
 func newVFSMkdirView(v *VFS, committer viewCommitter, cache listedChildrenCache) vfsMkdirView {
-	return vfsMkdirView{v: v, committer: committer, cache: cache}
+	return vfsMkdirView{
+		committer:          committer,
+		cache:              cache,
+		restoreDeleted:     v.restoreDeletedPath,
+		restoreAncestor:    v.restoreDeletedAncestor,
+		isUnderRestoredDir: v.isUnderRestoredDir,
+	}
 }
 
 func (r vfsMkdirView) RestoreDeleted(path string) (drive.Entry, bool) {
-	return r.v.restoreDeletedPath(path)
+	return r.restoreDeleted(path)
 }
 
 func (r vfsMkdirView) RestoreDeletedAncestor(path string) {
-	r.v.restoreDeletedAncestor(path)
+	r.restoreAncestor(path)
 }
 
 func (r vfsMkdirView) IsUnderRestoredDir(path string) bool {
-	return r.v.isUnderRestoredDir(path)
+	return r.isUnderRestoredDir(path)
 }
 
 func (r vfsMkdirView) CommitMkdir(path string, entry drive.Entry) {
@@ -83,47 +93,43 @@ func (r vfsMkdirView) CacheListedChildren(parentPath string, entries []drive.Ent
 }
 
 // Compile-time assertions for the mkdir adapters.
-var _ mutation.MkdirRemote = driverMutationBackend{}
 var _ mutation.MkdirResolver = vfsRenameResolver{}
 var _ mutation.MkdirView = vfsMkdirView{}
 
 type vfsDirectoryCopyRuntime struct {
-	v *VFS
+	driver  drive.Driver
+	store   *uploadStore
+	uploads *uploadService
+	hashes  *upload.HashTracker
+	view    *view.View
 }
 
 func newVFSDirectoryCopyRuntime(v *VFS) vfsDirectoryCopyRuntime {
-	return vfsDirectoryCopyRuntime{v: v}
+	return vfsDirectoryCopyRuntime{
+		driver:  v.driver,
+		store:   v.uploads.Store(),
+		uploads: v.uploads,
+		hashes:  v.hashes,
+		view:    v.view,
+	}
 }
 
 func (r vfsDirectoryCopyRuntime) ListChildren(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	return newVFSDriverRuntime(r.v).List(ctx, parentID)
+	return r.driver.List(ctx, parentID)
 }
 
 func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
 	// Durable store commit first; timer/hash cleanup runs only after it
 	// succeeds, so a failed commit never leaves the children's timers
 	// cancelled while their pendings are still visible.
-	if err := r.v.uploads.Store().RemoveUploadsUnder(path); err != nil {
+	if err := r.store.RemoveUploadsUnder(path); err != nil {
 		return err
 	}
-	r.v.uploads.CancelChildUploads(path)
-	r.v.hashes.removeUnder(path)
+	r.uploads.CancelChildUploads(path)
+	r.hashes.RemoveUnder(path)
 	return nil
 }
 
 func (r vfsDirectoryCopyRuntime) PrepareLocalDirectoryCopy(path string, hideNames map[string]time.Time) {
-	r.v.view.entries.Range(func(cachedPath string, cachedEntry drive.Entry) bool {
-		if filepath.Dir(cachedPath) == path {
-			if _, ok := hideNames[cachedEntry.Name]; !ok && !isAppleMetadataName(cachedEntry.Name) {
-				hideNames[cachedEntry.Name] = time.Now().Add(directoryCopyHideTTL)
-			}
-			r.v.view.entries.Delete(cachedPath)
-		}
-		return true
-	})
-	r.v.view.mu.Lock()
-	r.v.markLocalDirLocked(path)
-	r.v.invalidateListLocked(path)
-	r.v.view.mu.Unlock()
-	r.v.setCopyHidden(path, hideNames)
+	view.NewRuntime(r.view).PrepareLocalDirectoryCopy(path, hideNames)
 }

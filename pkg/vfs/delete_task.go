@@ -3,18 +3,14 @@ package vfs
 import (
 	"context"
 	"fmt"
-
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
-	"github.com/yinzhenyu/qrypt/pkg/util"
 	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/delete"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"path"
 	"sort"
-	"strings"
 	"time"
 )
-
-const deleteTaskPrefix = "delete:"
 
 type deleteTaskSource struct {
 	runtime vfsDeleteTaskRuntime
@@ -156,78 +152,80 @@ func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 	return item
 }
 
-func deleteTaskID(entry drive.Entry, p string) string {
-	if entry.ID != "" {
-		return deleteTaskPrefix + entry.ID
-	}
-	return deleteTaskPrefix + strings.TrimPrefix(cleanVirtual(p), "/")
-}
-
+// vfsDeleteTaskRuntime adapts the view-domain delete records to the task
+// source: the record projection and retry/cancel live in the view package;
+// this adapter maps them onto pkg/task and the VFS delete scheduler.
 type vfsDeleteTaskRuntime struct {
-	v *VFS
+	vis            view.Visibility
+	tasks          *view.Tasks
+	restoreDeleted func(string) (drive.Entry, bool)
+	scheduleDelete func(string, drive.Entry)
 }
 
 func newVFSDeleteTaskRuntime(v *VFS) vfsDeleteTaskRuntime {
-	return vfsDeleteTaskRuntime{v: v}
+	return vfsDeleteTaskRuntime{
+		vis:            view.NewVisibility(v.view.Overlay(), v.deletes.tasks, v.view, nil),
+		tasks:          v.deletes.tasks,
+		restoreDeleted: v.restoreDeletedPath,
+		scheduleDelete: v.scheduleDelete,
+	}
 }
 
 func (r vfsDeleteTaskRuntime) Records() []deleteTaskRecord {
-	now := util.Now()
-	r.v.view.overlay.mu.Lock()
-	defer r.v.view.overlay.mu.Unlock()
-	records := make([]deleteTaskRecord, 0, len(r.v.view.overlay.deleted))
-	for p, entry := range r.v.view.overlay.deleted {
-		state, phase := r.deleteStateLocked(p)
-		records = append(records, deleteTaskRecord{
-			id:        deleteTaskID(entry, p),
-			path:      p,
-			entry:     entry,
-			state:     state,
-			phase:     phase,
-			errorText: r.v.deletes.tasks.failures[p],
-			updatedAt: now,
-		})
+	records := r.vis.DeleteTaskRecords()
+	out := make([]deleteTaskRecord, 0, len(records))
+	for _, record := range records {
+		out = append(out, deleteTaskRecordFromView(record))
 	}
-	return records
+	return out
+}
+
+// deleteTaskRecordFromView maps a view-domain DeleteRecord onto the task
+// source record (state flags -> task.State).
+func deleteTaskRecordFromView(r view.DeleteRecord) deleteTaskRecord {
+	state := task.StateFailed
+	phase := "failed"
+	if r.Running {
+		state, phase = task.StateRunning, "delete"
+	} else if r.Scheduled {
+		state, phase = task.StateScheduled, "scheduled"
+	}
+	return deleteTaskRecord{
+		id:        r.ID,
+		path:      r.Path,
+		entry:     r.Entry,
+		state:     state,
+		phase:     phase,
+		errorText: r.ErrorText,
+		updatedAt: r.UpdatedAt,
+	}
 }
 
 func (r vfsDeleteTaskRuntime) Restore(path string) (drive.Entry, bool) {
-	return r.v.restoreDeletedPath(path)
+	return r.restoreDeleted(path)
 }
 
 func (r vfsDeleteTaskRuntime) Retry(record deleteTaskRecord) {
-	r.v.view.overlay.mu.Lock()
-	delete(r.v.deletes.tasks.failures, record.path)
-	r.v.view.overlay.mu.Unlock()
-	r.v.scheduleDelete(record.path, record.entry)
-}
-
-func (r vfsDeleteTaskRuntime) deleteStateLocked(path string) (task.State, string) {
-	if _, ok := r.v.deletes.tasks.active[path]; ok {
-		return task.StateRunning, "delete"
-	}
-	if _, ok := r.v.deletes.tasks.scheduler.Keys()[path]; ok {
-		return task.StateScheduled, "scheduled"
-	}
-	return task.StateFailed, "failed"
+	r.tasks.ClearFailure(record.path)
+	r.scheduleDelete(record.path, record.entry)
 }
 
 // DeleteService groups the VFS delete-domain state: the debounce tasks and
 // the delete delay. Owned by the delete scheduler; initialized in New.
 type DeleteService struct {
-	tasks *deleteTaskState
+	tasks *view.Tasks
 	delay time.Duration
 }
 
-// newDeleteState builds the delete domain state together.
-func newDeleteService(tasks *deleteTaskState, delay time.Duration) *DeleteService {
+// newDeleteService builds the delete domain state together.
+func newDeleteService(tasks *view.Tasks, delay time.Duration) *DeleteService {
 	return &DeleteService{tasks: tasks, delay: delay}
 }
 
 // Close stops the pending delete timers. Called by the VFS lifecycle;
 // in-flight deletes run on the VFS lifecycle context and cancel with it.
 func (d *DeleteService) Close() {
-	d.tasks.stopAll()
+	d.tasks.StopAll()
 }
 
 // Compile-time interface satisfaction check.

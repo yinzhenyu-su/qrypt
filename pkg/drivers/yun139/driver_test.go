@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
@@ -802,6 +803,17 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 		case "/file/complete":
 			completeCalls++
 			writeJSON(t, w, map[string]interface{}{"success": true})
+		case "/file/getUploadUrl":
+			// 恢复时 create 不带 part URLs，全部经 getUploadUrl 现取。
+			writeJSON(t, w, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"partInfos": []map[string]interface{}{
+						{"partNumber": 1, "uploadUrl": uploadServer.URL + "/1"},
+						{"partNumber": 2, "uploadUrl": uploadServer.URL + "/2"},
+					},
+				},
+			})
 		}
 	})
 	defer server.Close()
@@ -821,12 +833,9 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	if partAttemptsAfterFirst["1"] != 1 || partAttemptsAfterFirst["2"] != 1 {
 		t.Fatalf("part attempts after first upload = %+v", partAttemptsAfterFirst)
 	}
-	var state uploadSessionState
-	if err := store.LoadJSON(uploadSessionStateFile, &state); err != nil {
+	// 优雅退出：Drop 触发 Flush，节流期的确认位图落盘。
+	if err := first.Drop(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	if len(state.Sessions) != 1 {
-		t.Fatalf("session count after failed upload = %d, want 1", len(state.Sessions))
 	}
 
 	second := New(testAuth("test", "token"), "/", "")
@@ -858,12 +867,10 @@ func TestPutSourceResumesPersistedUploadSession(t *testing.T) {
 	if partAttemptsAfterResume["1"] != 1 || partAttemptsAfterResume["2"] != 2 {
 		t.Fatalf("part attempts after resume = %+v, want part 1 skipped", partAttemptsAfterResume)
 	}
-	state = uploadSessionState{}
-	if err := store.LoadJSON(uploadSessionStateFile, &state); err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Sessions) != 0 {
-		t.Fatalf("session should be deleted after complete, got %+v", state.Sessions)
+	// commit 成功后绑定清理：盘面无残留。
+	reloaded := session.NewIndex(store, yun139SessionFile, session.IndexOptions{})
+	if bindings := reloaded.List(); len(bindings) != 0 {
+		t.Fatalf("binding should be deleted after complete, got %d", len(bindings))
 	}
 }
 
@@ -1086,5 +1093,78 @@ func TestIsAuthExpiredErrorPrefersSentinel(t *testing.T) {
 	}
 	if isAuthExpiredError(fmt.Errorf("yun139: network timeout")) {
 		t.Error("isAuthExpiredError(network timeout) = true, want false")
+	}
+}
+
+func TestPutSourceHandlelessBindingIsDiscarded(t *testing.T) {
+	payload := []byte("hello-session")
+	source := drive.NewBytesReadOnlyFileSource(payload)
+	store := drive.NewFileStateStore(filepath.Join(t.TempDir(), "driver"))
+	partAttempts := map[string]int{}
+	createCalls := 0
+	completeCalls := 0
+
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		part := strings.TrimPrefix(r.URL.Path, "/")
+		partAttempts[part]++
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer uploadServer.Close()
+
+	server, drv := fakePersonalServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/file/create":
+			createCalls++
+			writeJSON(t, w, map[string]interface{}{
+				"success": true,
+				"data": map[string]interface{}{
+					"fileId":   "file-1",
+					"uploadId": "upload-1",
+					"partInfos": []map[string]interface{}{
+						{"partNumber": 1, "uploadUrl": uploadServer.URL + "/1"},
+					},
+				},
+			})
+		case "/file/complete":
+			completeCalls++
+			writeJSON(t, w, map[string]interface{}{"success": true})
+		case "/file/getUploadUrl":
+			t.Fatalf("unexpected getUploadUrl call on fresh upload")
+		}
+	})
+	defer server.Close()
+	drv.InstallStateStore(store)
+
+	// 模拟“预留后未完成创建”的崩溃残留：空句柄绑定必须先作废重来。
+	sha256Hex, err := sourceSHA256Hex(context.Background(), source, source.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := session.Identity{ParentID: drv.resolveID("/"), Name: "resume.bin", Size: source.Size(), Fingerprint: sha256Hex}.Key()
+	empty, err := json.Marshal(yun139Token{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := drv.sessions.Create(key, empty); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := drv.PutSource(context.Background(), drive.UploadRequest{ParentID: "/", Name: "resume.bin", Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "file-1" {
+		t.Fatalf("entry id = %q, want file-1", entry.ID)
+	}
+	// 空句柄没有被当作可恢复会话：create 只执行一次（全新上传）。
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+	if completeCalls != 1 || partAttempts["1"] != 1 {
+		t.Fatalf("complete/part1 calls = %d/%d, want 1/1", completeCalls, partAttempts["1"])
+	}
+	if bindings := drv.sessions.List(); len(bindings) != 0 {
+		t.Fatalf("binding should be deleted after success, got %d", len(bindings))
 	}
 }

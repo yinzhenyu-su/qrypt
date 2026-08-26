@@ -16,16 +16,15 @@ func TestVFSDebugSnapshotRuntimeCollectsSortedOverlayState(t *testing.T) {
 	runtime := newVFSDebugSnapshotRuntime(fs)
 	future := time.Now().Add(time.Hour)
 	past := time.Now().Add(-time.Hour)
+	vis := newVFSVisibilityRuntime(fs)
 	newVFSDeleteScheduler(fs).Schedule("/z.txt", drive.Entry{ID: "z"}, time.Hour, func() {})
 	newVFSDeleteScheduler(fs).Schedule("/a.txt", drive.Entry{ID: "a"}, time.Hour, func() {})
-	fs.view.overlay.mu.Lock()
-	fs.view.overlay.setDeleted("/z.txt", drive.Entry{ID: "z", Name: "z.txt"})
-	fs.view.overlay.setDeleted("/a.txt", drive.Entry{ID: "a", Name: "a.txt"})
-	fs.view.overlay.setRenameOverlay(overlayOp{oldPath: "/old", newPath: "/new", entryID: "id"})
-	fs.view.overlay.restoredDirs["/restored"] = future
-	fs.view.overlay.restoredDirs["/expired"] = past
-	fs.view.overlay.copyHiddenChildren["/dir"] = map[string]time.Time{"b.txt": future, "a.txt": future, "old.txt": past}
-	fs.view.overlay.mu.Unlock()
+	vis.MarkDeleted("/z.txt", drive.Entry{ID: "z", Name: "z.txt"})
+	vis.MarkDeleted("/a.txt", drive.Entry{ID: "a", Name: "a.txt"})
+	vis.AddRenameOverlay("/old", "/new", "id", false)
+	fs.view.Overlay().SetRestoredDir("/restored", future)
+	fs.view.Overlay().SetRestoredDir("/expired", past)
+	vis.SetCopyHidden("/dir", map[string]time.Time{"b.txt": future, "a.txt": future, "old.txt": past})
 	defer runtime.StopAllDeleteTimersForTest()
 
 	overlay := runtime.Overlay()

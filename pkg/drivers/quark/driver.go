@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 func init() {
@@ -101,12 +102,21 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
 	return nil
 }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
-	d.pruneStoredUploadSessions()
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -132,6 +142,12 @@ type Driver struct {
 	debugUploads       map[string]quarkUploadDebug
 	lastError          string
 	instantUploadCount int64
+
+	// Upload session binding store：只保存 "内容键 → provider 上传句柄"；
+	// quark 无分片进度查询接口，恢复时同句柄全量重传（分片按编号幂等覆盖）。
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 type Options struct {
@@ -146,11 +162,11 @@ type cookieState struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
-const quarkUploadSessionStateFile = "quark_upload_sessions.json"
+const quarkSessionFile = "quark_upload_sessions.json"
 
-const quarkUploadSessionMaxAge = 24 * time.Hour
+const quarkSessionMaxAge = 24 * time.Hour
 
-const quarkUploadSessionMaxEntries = 1024
+const quarkSessionExpiryEvery = time.Hour
 
 const quarkDownloadMaxRetries = 3
 

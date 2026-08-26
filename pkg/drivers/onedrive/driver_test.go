@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
 
 type mockItem struct {
@@ -30,18 +32,20 @@ type mockItem struct {
 }
 
 type mockOneDrive struct {
-	mu       sync.RWMutex
-	items    map[string]*mockItem
-	children map[string][]string
-	nextID   int
-	uploads  map[string]*mockUploadSession
-	copyJobs []string
+	mu                      sync.RWMutex
+	items                   map[string]*mockItem
+	children                map[string][]string
+	nextID                  int
+	uploads                 map[string]*mockUploadSession
+	copyJobs                []string
+	failCreateUploadSession bool
 }
 
 type mockUploadSession struct {
 	parentID string
 	name     string
 	data     []byte
+	puts     int
 }
 
 func newMockOneDrive() *mockOneDrive {
@@ -143,6 +147,13 @@ func (m *mockOneDrive) handleItem(w http.ResponseWriter, r *http.Request, rest s
 			writeJSON(w, m.itemResp(id, r))
 			return
 		case op == "createUploadSession" && r.Method == http.MethodPost:
+			m.mu.RLock()
+			fail := m.failCreateUploadSession
+			m.mu.RUnlock()
+			if fail {
+				writeGraphError(w, http.StatusInternalServerError, "serverError", "injected create failure")
+				return
+			}
 			uploadID := "session-" + name
 			m.mu.Lock()
 			m.uploads[uploadID] = &mockUploadSession{parentID: parentID, name: name}
@@ -269,14 +280,48 @@ func (m *mockOneDrive) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 func (m *mockOneDrive) handleUploadSession(w http.ResponseWriter, r *http.Request) {
 	uploadID, _ := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/upload/"))
-	data, _ := io.ReadAll(r.Body)
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	session := m.uploads[uploadID]
 	if session == nil {
-		m.mu.Unlock()
 		http.NotFound(w, r)
 		return
 	}
+	if r.Method == http.MethodGet {
+		// upload session 状态查询：nextExpectedRanges 反映已传字节。
+		writeJSON(w, map[string]any{"nextExpectedRanges": []string{fmt.Sprintf("bytes %d-/", len(session.data))}})
+		return
+	}
+	if r.Method == http.MethodDelete {
+		// cancel upload session。
+		delete(m.uploads, uploadID)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	data, _ := io.ReadAll(r.Body)
+	session.puts++
+	start := int64(0)
+	if n, _ := fmt.Sscanf(r.Header.Get("Content-Range"), "bytes %d-", &start); n == 1 {
+		// Graph 语义：Content-Range 指定起始偏移，分片写入固定位置（支持覆盖重传）。
+		if int64(len(session.data)) < start+int64(len(data)) {
+			session.data = append(session.data, make([]byte, start+int64(len(data))-int64(len(session.data)))...)
+		}
+		copy(session.data[start:], data)
+		expected := int64(0)
+		if _, after, ok := strings.Cut(r.Header.Get("Content-Range"), "/"); ok {
+			expected, _ = strconv.ParseInt(after, 10, 64)
+		}
+		if expected > 0 && int64(len(session.data)) >= expected {
+			m.createItemLocked(session.parentID, session.name, false, session.data)
+			delete(m.uploads, uploadID)
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(w, map[string]string{"id": "complete"})
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	// 无 Content-Range 起始偏移的请求：顺序追加（兼容旧路径）。
 	session.data = append(session.data, data...)
 	total := int64(len(session.data))
 	expected := int64(0)
@@ -286,12 +331,10 @@ func (m *mockOneDrive) handleUploadSession(w http.ResponseWriter, r *http.Reques
 	if expected > 0 && total >= expected {
 		m.createItemLocked(session.parentID, session.name, false, session.data)
 		delete(m.uploads, uploadID)
-		m.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, map[string]string{"id": "complete"})
 		return
 	}
-	m.mu.Unlock()
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -564,6 +607,118 @@ func TestPutSourceLarge(t *testing.T) {
 	if !bytes.Equal(item.data, content) {
 		t.Fatal("large upload data mismatch")
 	}
+}
+
+// TestPutSourceLargeResumes 验证大文件中断后重试按 nextExpectedRanges 续传：
+// 已完整上传的分片跳过，中断分片重新上传，最终内容一致，且复用的是同一个
+// provider 会话而非新建。
+func TestPutSourceLargeResumes(t *testing.T) {
+	ctx := context.Background()
+	d, mock := newTestDriver(t)
+	d.InstallStateStore(drive.NewFileStateStore(t.TempDir()))
+	d.chunkSize = 3 << 20
+	// 在第 2 个分片的 PUT 发送前注入失败：请求不到达服务器，确定性可复现。
+	failer := &failChunkRoundTripper{base: d.client.Transport}
+	d.client.Transport = failer
+	if err := d.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 总大小必须超过 oneDriveSmallUploadLimit，且恰好两个分片。
+	content := bytes.Repeat([]byte("z"), 2*(3<<20))
+	if _, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "resume-large.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(content),
+	}); err == nil {
+		t.Fatal("expected first upload to fail at the second chunk")
+	}
+
+	mock.mu.RLock()
+	var session *mockUploadSession
+	for _, s := range mock.uploads {
+		session = s
+	}
+	mock.mu.RUnlock()
+	if session == nil {
+		t.Fatal("expected one live upload session after the failed attempt")
+	}
+	if session.puts != 1 || !bytes.Equal(session.data, content[:3<<20]) {
+		t.Fatalf("after failed attempt: puts=%d data=%d bytes, want chunk 0 only", session.puts, len(session.data))
+	}
+
+	entry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "resume-large.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(content),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := mock.get(entry.ID)
+	if !ok {
+		t.Fatal("expected uploaded item")
+	}
+	if !bytes.Equal(item.data, content) {
+		t.Fatal("resumed large upload data mismatch")
+	}
+	// 恢复必须跳过已完整上传的分片：同一会话只有 chunk0(1 次) + chunk1(1 次)。
+	if session.puts != 2 {
+		t.Fatalf("session puts = %d, want 2 (chunk 0 + resumed chunk 1)", session.puts)
+	}
+}
+
+func TestPutSourceLargeReserveCleansUpOnCreateFailure(t *testing.T) {
+	ctx := context.Background()
+	d, mock := newTestDriver(t)
+	store := drive.NewFileStateStore(t.TempDir())
+	d.InstallStateStore(store)
+	d.chunkSize = 3 << 20
+	if err := d.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mock.mu.Lock()
+	mock.failCreateUploadSession = true
+	mock.mu.Unlock()
+
+	content := bytes.Repeat([]byte("q"), 2*(3<<20))
+	if _, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "0",
+		Name:     "reserve-fail.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(content),
+	}); err == nil {
+		t.Fatal("expected create upload session failure to surface")
+	}
+	if len(mock.uploads) != 0 {
+		t.Fatalf("expected no provider session to survive a failed create, got %d", len(mock.uploads))
+	}
+	// 预留绑定必须随创建失败一起清理：内存和盘面都回到未预留状态，
+	// 崩溃/umount 后重启不会看到指向不存在会话的陈旧记录。
+	if bindings := d.sessions.List(); len(bindings) != 0 {
+		t.Fatalf("expected no in-memory binding after failed create, got %d", len(bindings))
+	}
+	reloaded := session.NewIndex(store, oneDriveSessionFile, session.IndexOptions{})
+	if bindings := reloaded.List(); len(bindings) != 0 {
+		t.Fatalf("expected no persisted binding after failed create, got %d", len(bindings))
+	}
+}
+
+// failChunkRoundTripper 在第一个非零起始偏移的分片 PUT 发送前失败一次，
+// 模拟上传中断（请求不会到达服务器，避免 body 中止导致的连接悬挂）。
+type failChunkRoundTripper struct {
+	base   http.RoundTripper
+	failed bool
+}
+
+func (f *failChunkRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPut && !f.failed {
+		var start int64
+		if n, _ := fmt.Sscanf(req.Header.Get("Content-Range"), "bytes %d-", &start); n == 1 && start > 0 {
+			f.failed = true
+			return nil, errors.New("injected chunk failure")
+		}
+	}
+	return f.base.RoundTrip(req)
 }
 
 func (m *mockOneDrive) get(id string) (*mockItem, bool) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
 
 // newRenameCoordinatorFixture drives renameWithDeps with injected backend +
@@ -24,9 +25,7 @@ type renameCoordinatorFixture struct {
 // addSubDir places a /sub directory in the view so cross-directory rename
 // targets resolve.
 func (f *renameCoordinatorFixture) addSubDir() {
-	f.fs.view.mu.Lock()
-	f.fs.view.entries.Set("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
-	f.fs.view.mu.Unlock()
+	newVFSViewCommitter(f.fs).CommitMkdir("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
 }
 
 func newRenameCoordinatorFixture(t *testing.T) *renameCoordinatorFixture {
@@ -73,10 +72,9 @@ func TestRenameCommitsExactlyOnce(t *testing.T) {
 func TestRenameDirCommitsWithSubtree(t *testing.T) {
 	fx := newRenameCoordinatorFixture(t)
 	// Warm the cache with a directory + child.
-	fx.fs.view.mu.Lock()
-	fx.fs.view.entries.Set("/dir", drive.Entry{ID: "dir", Name: "dir", IsDir: true})
-	fx.fs.view.entries.Set("/dir/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
-	fx.fs.view.mu.Unlock()
+	committer := newVFSViewCommitter(fx.fs)
+	committer.CommitMkdir("/dir", drive.Entry{ID: "dir", Name: "dir", IsDir: true})
+	committer.CacheListedChildren("/dir", []drive.Entry{{ID: "sub", Name: "sub", IsDir: true}})
 
 	fx.backend.moveResult = nil
 	// Use the real committer: the rebase effect is in the view, not in a
@@ -86,10 +84,9 @@ func TestRenameDirCommitsWithSubtree(t *testing.T) {
 	}
 	// The subtree must be rebased in the view (old child gone, new child
 	// present).
-	fx.fs.view.mu.RLock()
-	_, oldSub := fx.fs.view.entries.Get("/dir/sub")
-	_, newSub := fx.fs.view.entries.Get("/moved/sub")
-	fx.fs.view.mu.RUnlock()
+	rt := view.NewRuntime(fx.fs.view)
+	_, oldSub := rt.CachedEntry("/dir/sub")
+	_, newSub := rt.CachedEntry("/moved/sub")
 	if oldSub {
 		t.Error("old subtree path /dir/sub still cached after dir rename")
 	}
@@ -317,11 +314,9 @@ func TestRenameMovePartialPreservesEntryMetadata(t *testing.T) {
 
 	modTime := time.Unix(987654321, 0)
 	// Prime the entry cache so resolve returns full metadata.
-	fx.fs.view.mu.Lock()
-	fx.fs.view.entries.Set("/a.txt", drive.Entry{
+	newVFSViewCommitter(fx.fs).CacheListedChildren("/", []drive.Entry{{
 		ID: "id-a", ParentID: "parent-a", Name: "a.txt", Size: 42, ModTime: modTime,
-	})
-	fx.fs.view.mu.Unlock()
+	}})
 
 	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/sub/renamed.txt", rb, &recordingMutationRuntime{}, fx.committer); err == nil {
 		t.Fatal("want partial rename/move error")
@@ -354,9 +349,7 @@ func TestRenameMovePartialDirKeepsSubtreeHidden(t *testing.T) {
 	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}
 	rb.moveErr = errors.New("move boom")
 
-	fx.fs.view.mu.Lock()
-	fx.fs.view.entries.Set("/d", drive.Entry{ID: "id-d", ParentID: "parent", Name: "d", IsDir: true, Size: 0})
-	fx.fs.view.mu.Unlock()
+	newVFSViewCommitter(fx.fs).CommitMkdir("/d", drive.Entry{ID: "id-d", ParentID: "parent", Name: "d", IsDir: true, Size: 0})
 
 	if err := fx.fs.renameWithDeps(context.Background(), "/d", "/sub/d2", rb, &recordingMutationRuntime{}, fx.committer); err == nil {
 		t.Fatal("want partial rename/move error")
@@ -395,11 +388,10 @@ func TestRenameMoveRollbackOnCancelledContext(t *testing.T) {
 func TestRenameMovePartialDirOverlayHidesSubtree(t *testing.T) {
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
-	fs.view.mu.Lock()
-	fs.view.entries.Set("/d", drive.Entry{ID: "id-d", Name: "d", IsDir: true})
-	fs.view.entries.Set("/d/child.txt", drive.Entry{ID: "id-c", Name: "child.txt"})
-	fs.view.entries.Set("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
-	fs.view.mu.Unlock()
+	seed := newVFSViewCommitter(fs)
+	seed.CommitMkdir("/d", drive.Entry{ID: "id-d", Name: "d", IsDir: true})
+	seed.CacheListedChildren("/d", []drive.Entry{{ID: "id-c", Name: "child.txt"}})
+	seed.CommitMkdir("/sub", drive.Entry{ID: "sub", Name: "sub", IsDir: true})
 
 	orig := fakeMutationBackend{}
 	rb := &sequenceBackend{backend: &orig, failRenameOn: 1}

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
@@ -58,6 +59,12 @@ type Driver struct {
 	ossMu              sync.Mutex
 	ossToken           *sdk.UploadGetTokenResp
 	ossTokenAt         time.Time
+
+	// Upload session binding store：只保存 "内容键 → OSS 上传句柄"，
+	// 分片进度用服务端 ListParts 重建。
+	sessions       *session.Index
+	sessionStoreMu sync.Mutex
+	sessionCancel  context.CancelFunc
 }
 
 type tokenState struct {
@@ -181,11 +188,21 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(context.Context) error {
+	d.sessionStoreMu.Lock()
+	if d.sessionCancel != nil {
+		d.sessionCancel()
+		d.sessionCancel = nil
+	}
+	d.sessionStoreMu.Unlock()
+	if d.sessions != nil {
+		_ = d.sessions.Flush()
+	}
 	return nil
 }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
+	d.installSessionIndex(store)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {

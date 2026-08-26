@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"sort"
 )
 
@@ -210,9 +211,9 @@ func taskStateFromUpload(state string) task.State {
 		return task.StateScheduled
 	case "retry_wait":
 		return task.StateRetryWait
-	case uploadSnapshotStateCompleted:
+	case upload.SnapshotStateCompleted:
 		return task.StateSucceeded
-	case uploadSnapshotStateFailed:
+	case upload.SnapshotStateFailed:
 		return task.StateFailed
 	case "canceled":
 		return task.StateCanceled

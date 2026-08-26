@@ -6,6 +6,8 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,14 +23,14 @@ func (v *VFS) Create(ctx context.Context, path string) (err error) {
 	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilitySourceUploader, "upload"); err != nil {
 		return err
 	}
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
 	return v.createLocked(ctx, path)
 }
 
 func stagingFID(path string) string {
-	path = strings.Trim(cleanVirtual(path), "/")
+	path = strings.Trim(vfstypes.CleanVirtualPath(path), "/")
 	if path == "" {
 		return "root"
 	}
@@ -42,12 +44,11 @@ func newStagingFID(path string) string {
 }
 
 func (v *VFS) createLocked(ctx context.Context, path string) error {
-	runtime := newVFSUploadWriteRuntime(v)
-	return v.createLockedWithStore(ctx, path, runtime.Store(), runtime.HashTracker())
+	return v.createLockedWithStore(ctx, path, v.uploads.Store(), newVFSUploadWriteHashTracker(v.hashes, v.driver))
 }
 
 func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *uploadStore, hashes vfsUploadWriteHashTracker) error {
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	v.restoreDeletedAncestor(filepath.Dir(path))
 	v.cancelDeletedFile(path)
 	parent, name, err := v.parent(ctx, path)
@@ -85,7 +86,7 @@ func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upl
 // Parent/Name are reused from the old pending because the path already went
 // through createLocked once.
 func (v *VFS) rotateFrozenGeneration(path string, old PendingUpload) (PendingUpload, error) {
-	return v.rotateFrozenGenerationWithStore(path, old, newVFSUploadWriteRuntime(v).Store())
+	return v.rotateFrozenGenerationWithStore(path, old, v.uploads.Store())
 }
 
 func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, store *uploadStore) (PendingUpload, error) {
@@ -143,12 +144,11 @@ func copyStagingContent(srcPath, dstPath string) (int64, error) {
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
-	runtime := newVFSUploadWriteRuntime(v)
-	store := runtime.Store()
-	hashes := runtime.HashTracker()
+	store := v.uploads.Store()
+	hashes := newVFSUploadWriteHashTracker(v.hashes, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
 		if entry, resolveErr := v.resolve(ctx, path); resolveErr == nil && !entry.IsDir {
@@ -191,10 +191,10 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 
 func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
-	store := newVFSUploadWriteRuntime(v).Store()
+	store := v.uploads.Store()
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
 		logging.L.DebugfEvery("vfs.flush_ignored", time.Second, "[VFS] flush ignored without pending path=%q", path)
@@ -240,12 +240,11 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 	if size < 0 {
 		return fmt.Errorf("vfs: truncate size must be non-negative")
 	}
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
-	runtime := newVFSUploadWriteRuntime(v)
-	store := runtime.Store()
-	hashes := runtime.HashTracker()
+	store := v.uploads.Store()
+	hashes := newVFSUploadWriteHashTracker(v.hashes, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
 		if err := v.stageExisting(ctx, path); err != nil {
@@ -277,11 +276,11 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 }
 
 func (v *VFS) stageExisting(ctx context.Context, path string) error {
-	return v.stageExistingWithStore(ctx, path, newVFSUploadWriteRuntime(v).Store())
+	return v.stageExistingWithStore(ctx, path, v.uploads.Store())
 }
 
 func (v *VFS) stageExistingWithStore(ctx context.Context, path string, store *uploadStore) error {
-	return v.stageExistingWithDeps(ctx, path, store, newVFSUploadWriteRuntime(v).Remote())
+	return v.stageExistingWithDeps(ctx, path, store, vfsUploadWriteRemote{resolver: v, driver: v.driver, invalidator: v})
 }
 
 func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *uploadStore, remote uploadWriteRemote) error {
@@ -354,13 +353,13 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 
 func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
-	path = cleanVirtual(path)
+	path = vfstypes.CleanVirtualPath(path)
 	if modTime.IsZero() {
 		return nil
 	}
 	unlock := v.lockPath(path)
 	defer unlock()
-	store := newVFSUploadWriteRuntime(v).Store()
+	store := v.uploads.Store()
 	if _, err := pendingUploadFromWriteStore(store, path); err == nil {
 		v.setLocalModTime(path, modTime)
 		return nil
@@ -368,7 +367,7 @@ func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (e
 	if entry, err := v.resolve(ctx, path); err != nil {
 		return err
 	} else {
-		newVFSViewRuntime(v).CommitEntryLocalModTime(path, entry, modTime)
+		view.NewRuntime(v.view).CommitEntryLocalModTime(path, entry, modTime)
 	}
 	return nil
 }

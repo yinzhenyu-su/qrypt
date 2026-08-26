@@ -97,6 +97,45 @@ jobs:
         if: github.event_name == 'pull_request' && matrix.name == 'static'
         run: bash scripts/pr-coverage-report.sh "${{ github.event.pull_request.base.sha }}"
 
+  # Windows compile + unit-test gate. Windows is otherwise only a
+  # cross-compiled release target built on ubuntu runners, so a broken
+  # *_windows.go or the pure-Go nocgo FUSE host would ship untested.
+  test-windows:
+    name: Test (windows)
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.0"
+          cache: true
+
+      - name: Build (nocgo)
+        run: go build -tags nocgo -o qrypt.exe ./cmd/qrypt
+
+      - name: Vet
+        run: go vet ./...
+
+      # Main-module packages only: `go test ./...` would also run the
+      # vendored cgofuse tests, whose Windows host expects a real WinFsp
+      # mount. CGO_ENABLED=0 selects the pure-Go nocgo host.
+      - name: Unit tests (main module)
+        run: go test -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./pkg/contracttest ./pkg/vfs/drivecopy ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
+
+      - name: LocalFS smoke
+        shell: bash
+        run: |
+          # Git Bash mktemp reports unix /tmp paths that a native qrypt.exe
+          # resolves against the C: drive root; reroot to a forward-slash
+          # Windows path and disable MSYS2's argument path conversion so the
+          # /local/... virtual paths reach the CLI unchanged.
+          export TMPDIR="${RUNNER_TEMP//\\//}"
+          export MSYS2_ARG_CONV_EXCL="*"
+          scripts/smoke-localfs.sh
+
   update-changelog:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [check]
