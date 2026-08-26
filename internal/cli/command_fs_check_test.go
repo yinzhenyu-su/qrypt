@@ -264,8 +264,8 @@ func TestFsCheckTwoVFSTreesDetectMtimeAndDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
-	cfg := "[[mounts]]\nname = \"ra\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \"" + remoteA + "\"\n\n" +
-		"[[mounts]]\nname = \"rb\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \"" + remoteB + "\"\n"
+	cfg := "[[mounts]]\nname = \"ra\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = " + util.TOMLPath(remoteA) + "\n\n" +
+		"[[mounts]]\nname = \"rb\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = " + util.TOMLPath(remoteB) + "\n"
 	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
