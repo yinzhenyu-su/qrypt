@@ -336,16 +336,12 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 			result.Metrics.ReadTime = s.Duration
 			result.Metrics.ReadMS = s.DurationMS
 			d, _ := time.ParseDuration(s.Duration)
-			if d > 0 {
-				result.Metrics.ReadThroughput = int64(float64(s.Bytes) / d.Seconds())
-			}
+			result.Metrics.ReadThroughput = int64(float64(s.Bytes) / nonZeroDuration(d).Seconds())
 		case "write_source":
 			result.Metrics.WriteTime = s.Duration
 			result.Metrics.WriteMS = s.DurationMS
 			d, _ := time.ParseDuration(s.Duration)
-			if d > 0 {
-				result.Metrics.WriteThroughput = int64(float64(s.Bytes) / d.Seconds())
-			}
+			result.Metrics.WriteThroughput = int64(float64(s.Bytes) / nonZeroDuration(d).Seconds())
 		}
 	}
 	result.Metrics.TotalBytes = size
