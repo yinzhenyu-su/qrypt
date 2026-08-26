@@ -6,13 +6,12 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"io"
 	"os"
 	pathpkg "path"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -29,20 +28,6 @@ func (v *VFS) Create(ctx context.Context, path string) (err error) {
 	return v.createLocked(ctx, path)
 }
 
-func stagingFID(path string) string {
-	path = strings.Trim(vfstypes.CleanVirtualPath(path), "/")
-	if path == "" {
-		return "root"
-	}
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_")
-	return replacer.Replace(path)
-}
-
-func newStagingFID(path string) string {
-	base := stagingFID(path)
-	return base + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-}
-
 func (v *VFS) createLocked(ctx context.Context, path string) error {
 	return v.createLockedWithStore(ctx, path, v.uploads.Store(), newVFSUploadWriteHashTracker(v.hashes, v.driver))
 }
@@ -57,7 +42,7 @@ func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upl
 	}
 	v.unhideCopyChild(pathpkg.Dir(path), name)
 	old, hadOld := store.UploadByPath(path)
-	fid := newStagingFID(path)
+	fid := upload.NewStagingFID(path)
 	localPath, err := store.CreateStaging(fid)
 	if err != nil {
 		return err
@@ -90,12 +75,12 @@ func (v *VFS) rotateFrozenGeneration(path string, old PendingUpload) (PendingUpl
 }
 
 func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, store *uploadStore) (PendingUpload, error) {
-	fid := newStagingFID(path)
+	fid := upload.NewStagingFID(path)
 	localPath, err := store.CreateStaging(fid)
 	if err != nil {
 		return PendingUpload{}, err
 	}
-	size, err := copyStagingContent(old.LocalPath, localPath)
+	size, err := upload.CopyStagingContent(old.LocalPath, localPath)
 	if err != nil {
 		_ = store.RemoveStaging(localPath)
 		return PendingUpload{}, err
@@ -116,30 +101,6 @@ func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, st
 	}
 	v.setLocalModTime(path, now)
 	return pending, nil
-}
-
-func copyStagingContent(srcPath, dstPath string) (int64, error) {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	defer src.Close()
-	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return 0, err
-	}
-	written, copyErr := io.Copy(dst, src)
-	closeErr := dst.Close()
-	if copyErr != nil {
-		return 0, copyErr
-	}
-	if closeErr != nil {
-		return 0, closeErr
-	}
-	return written, nil
 }
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
@@ -288,7 +249,7 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 	if err != nil {
 		return err
 	}
-	fid := newStagingFID(path)
+	fid := upload.NewStagingFID(path)
 	localPath, err := store.CreateStaging(fid)
 	if err != nil {
 		return err
