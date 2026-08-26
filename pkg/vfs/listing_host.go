@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-func (v *VFS) listNoPrefetch(ctx context.Context, path string) ([]drive.Entry, error) {
-	return v.lister.ListNoPrefetch(ctx, path)
-}
-
 func (v *VFS) listChildren(ctx context.Context, parentPath, parentID string) ([]drive.Entry, error) {
 	return v.lister.Children(ctx, parentPath, parentID)
 }
@@ -166,14 +162,6 @@ func (v *VFS) RemoteList(ctx context.Context, path string) ([]drive.Entry, error
 
 // ListPageResult is the deterministic page type returned by ListPage.
 type ListPageResult = listing.ListPageResult
-
-func (v *VFS) startDirPrefetch(ctx context.Context) bool {
-	return v.lister.StartDirPrefetch(ctx)
-}
-
-func (v *VFS) scheduleDirPrefetch(ctx context.Context, path string, entries []drive.Entry) {
-	v.lister.ScheduleDirPrefetch(ctx, path, entries)
-}
 
 // vfsListingHealth adapts the drive health tracker to listing.HealthRecorder.
 // It holds only the tracker - not the whole VFS - so the listing adapter

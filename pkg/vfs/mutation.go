@@ -13,7 +13,7 @@ func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
 }
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
-	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v).MutationBackend(), newVFSViewCommitter(v), newVFSViewCommitter(v))
+	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v.driver, v.testEnabled).MutationBackend(), newVFSViewCommitter(v), newVFSViewCommitter(v))
 }
 
 // mkdirWithDeps drives directory creation through the mutation mkdir
@@ -29,7 +29,7 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 }
 
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
-	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v).MutationBackend(), newVFSMutationRuntime(v), newVFSViewCommitter(v))
+	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v.driver, v.testEnabled).MutationBackend(), newVFSMutationRuntime(v), newVFSViewCommitter(v))
 }
 
 // renameWithDeps drives the rename through the mutation coordinator; the

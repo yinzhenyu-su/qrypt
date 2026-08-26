@@ -57,7 +57,7 @@ func TestVFSStageExistingUsesUploadWriteRemote(t *testing.T) {
 	if pending.ParentID != "parent" || pending.Name != "file.txt" || pending.Size != 5 {
 		t.Fatalf("pending = %+v", pending)
 	}
-	if got := uploadModTime(pending); !got.Equal(modTime) {
+	if got := pendingModTime(pending); !got.Equal(modTime) {
 		t.Fatalf("pending mod time = %v, want %v", got, modTime)
 	}
 }

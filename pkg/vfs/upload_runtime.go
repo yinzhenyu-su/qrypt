@@ -72,7 +72,7 @@ func (r vfsUploadRuntime) ApplyUploadModTime(pending PendingUpload, entry drive.
 		entry.ModTime = modTime
 		return entry
 	}
-	if modTime := uploadModTime(pending); !modTime.IsZero() {
+	if modTime := pendingModTime(pending); !modTime.IsZero() {
 		entry.ModTime = modTime
 		r.viewRT.SetLocalModTime(pending.Path, modTime)
 	}

@@ -48,9 +48,6 @@ func (v *VFS) PendingUploads() []PendingUpload {
 	return v.uploads.PendingUploads()
 }
 
-var largeUploadQuietThreshold int64 = upload.LargeUploadQuietThreshold
-var largeUploadQuietDelay = upload.LargeUploadQuietDelay
-
 // VFS wrapper methods delegating to uploadService. These exist for
 // backward compatibility with internal callers; the upload schedule
 // implementation lives in internal/upload.
@@ -76,12 +73,10 @@ func (v *VFS) uploadSchedulingEnabled() bool {
 	return v.lifecycle == lifecycleRunning
 }
 
-func (v *VFS) uploadQuietWindow(p PendingUpload) time.Duration { return v.uploads.QuietWindow(p) }
-
 // newUploadEngine builds the upload engine wired to VFS adapters.
 func newUploadEngine(v *VFS) *upload.Engine {
 	return upload.NewEngine(upload.EngineDeps{
-		Remote:        newVFSDriverRuntime(v).RemoteMutationBackend(),
+		Remote:        newVFSDriverRuntime(v.driver, v.testEnabled).RemoteMutationBackend(),
 		Targets:       v.uploadTargets,
 		Observer:      newVFSUploadObserver(v.uploads, v.healthTracker),
 		Pending:       upload.NewStoreAdapter(v.uploads.Store()),

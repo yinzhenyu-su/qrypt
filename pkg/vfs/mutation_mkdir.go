@@ -38,7 +38,7 @@ func (v *VFS) prepareDirectoryCopyWithRuntime(ctx context.Context, path string, 
 
 func (v *VFS) mkdirWithDeps(ctx context.Context, path string, backend mutation.Backend, committer viewCommitter, cache listedChildrenCache) (entry drive.Entry, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpMkdir, err) }()
-	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
+	if err := newVFSDriverRuntime(v.driver, v.testEnabled).RequireCapability(drive.CapabilityWriter, "mkdir"); err != nil {
 		return drive.Entry{}, err
 	}
 	coordinator := mutation.NewMkdirCoordinator(

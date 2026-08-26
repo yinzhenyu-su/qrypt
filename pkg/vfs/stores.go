@@ -1,8 +1,6 @@
 package vfs
 
 import (
-	"path/filepath"
-
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
@@ -26,9 +24,6 @@ type stores struct {
 	*uploadStore
 }
 
-func newStoresInDir(dir string, maxSize int64) (*stores, error) {
-	return newStores(dir, filepath.Join(dir, "reading"), maxSize)
-}
 func newStores(uploadDir, readCacheDir string, maxSize int64) (*stores, error) {
 	readCache, err := readcache.NewStore(readCacheDir, maxSize)
 	if err != nil {

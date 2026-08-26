@@ -191,44 +191,65 @@ func (r vfsDebugResolveRuntime) UploadInProgress(path string) bool {
 }
 
 type vfsDebugSnapshotRuntime struct {
-	v *VFS
+	driverRT              vfsDriverRuntime
+	rootID                string
+	uploads               *uploadService
+	deletes               *DeleteService
+	view                  *view.View
+	read                  *readState
+	debugCacheSnapshot    func() diagnostics.DebugCacheSnapshot
+	debugReadHistory      func() []drive.MetricEvent
+	uploadSnapshots       func([]PendingUpload) []uploadSnapshot
+	uploadSnapshotHistory func() []uploadSnapshot
+	debugHotChunks        func() (int, int64)
 }
 
 func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
-	return vfsDebugSnapshotRuntime{v: v}
+	return vfsDebugSnapshotRuntime{
+		driverRT:              newVFSDriverRuntime(v.driver, v.testEnabled),
+		rootID:                v.rootID,
+		uploads:               v.uploads,
+		deletes:               v.deletes,
+		view:                  v.view,
+		read:                  v.read,
+		debugCacheSnapshot:    v.debugCacheSnapshot,
+		debugReadHistory:      v.debugReadHistory,
+		uploadSnapshots:       v.uploadSnapshots,
+		uploadSnapshotHistory: v.uploadSnapshotHistory,
+		debugHotChunks:        v.debugHotChunks,
+	}
 }
 
 func (r vfsDebugSnapshotRuntime) Identity(name string) diagnostics.MountSnapshotIdentity {
-	driverRuntime := newVFSDriverRuntime(r.v)
 	return diagnostics.MountSnapshotIdentity{
 		Name:         name,
-		RootID:       r.v.rootID,
-		Capabilities: driverRuntime.Capabilities(),
-		Encrypted:    driverRuntime.Encrypted(),
+		RootID:       r.rootID,
+		Capabilities: r.driverRT.Capabilities(),
+		Encrypted:    r.driverRT.Encrypted(),
 	}
 }
 
 func (r vfsDebugSnapshotRuntime) Queues() diagnostics.MountSnapshotQueues {
 	return diagnostics.MountSnapshotQueues{
-		UploadLength:  len(r.v.uploads.Queue()),
-		UploadCap:     cap(r.v.uploads.Queue()),
-		UploadWorkers: r.v.uploads.WorkerCount(),
-		UploadDelay:   r.v.uploads.DefaultDelay().String(),
-		DeleteDelay:   r.v.deletes.delay.String(),
+		UploadLength:  len(r.uploads.Queue()),
+		UploadCap:     cap(r.uploads.Queue()),
+		UploadWorkers: r.uploads.WorkerCount(),
+		UploadDelay:   r.uploads.DefaultDelay().String(),
+		DeleteDelay:   r.deletes.delay.String(),
 	}
 }
 
 func (r vfsDebugSnapshotRuntime) PendingUploads() []PendingUpload {
-	return r.v.uploads.Store().PendingUploads()
+	return r.uploads.Store().PendingUploads()
 }
 
 func (r vfsDebugSnapshotRuntime) DriverSnapshot(ctx context.Context) (drive.DebugSnapshot, bool) {
-	snapshot, err := newVFSDriverRuntime(r.v).DebugSnapshot(ctx)
+	snapshot, err := r.driverRT.DebugSnapshot(ctx)
 	return snapshot, err == nil
 }
 
 func (r vfsDebugSnapshotRuntime) DriverMetrics(ctx context.Context, since time.Time) []drive.MetricEvent {
-	metrics, err := newVFSDriverRuntime(r.v).Metrics(ctx, since)
+	metrics, err := r.driverRT.Metrics(ctx, since)
 	if err != nil {
 		return nil
 	}
@@ -236,7 +257,7 @@ func (r vfsDebugSnapshotRuntime) DriverMetrics(ctx context.Context, since time.T
 }
 
 func (r vfsDebugSnapshotRuntime) UploadTimers() []diagnostics.DebugTimer {
-	deadlines := r.v.uploads.ScheduledDeadlines()
+	deadlines := r.uploads.ScheduledDeadlines()
 	timers := make([]diagnostics.DebugTimer, 0, len(deadlines))
 	for path, deadline := range deadlines {
 		timers = append(timers, diagnostics.DebugTimer{Path: path, Deadline: deadline})
@@ -248,7 +269,7 @@ func (r vfsDebugSnapshotRuntime) UploadTimers() []diagnostics.DebugTimer {
 }
 
 func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
-	snap := r.v.view.Overlay().Snapshot(r.v.deletes.tasks)
+	snap := r.view.Overlay().Snapshot(r.deletes.tasks)
 	out := diagnostics.OverlaySnapshot{}
 	for _, path := range snap.DeleteTimers {
 		out.DeleteTimers = append(out.DeleteTimers, diagnostics.DebugTimer{Path: path})
@@ -279,19 +300,19 @@ func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 }
 
 func (r vfsDebugSnapshotRuntime) Cache() diagnostics.DebugCacheSnapshot {
-	return r.v.debugCacheSnapshot()
+	return r.debugCacheSnapshot()
 }
 
 func (r vfsDebugSnapshotRuntime) ReadHistory() []drive.MetricEvent {
-	return r.v.debugReadHistory()
+	return r.debugReadHistory()
 }
 
 func (r vfsDebugSnapshotRuntime) UploadSnapshots(pending []PendingUpload) []uploadSnapshot {
-	return r.v.uploadSnapshots(pending)
+	return r.uploadSnapshots(pending)
 }
 
 func (r vfsDebugSnapshotRuntime) UploadHistory() []uploadSnapshot {
-	return r.v.uploadSnapshotHistory()
+	return r.uploadSnapshotHistory()
 }
 
 func (r vfsDebugSnapshotRuntime) StartedAt() time.Time {
@@ -303,8 +324,8 @@ func (r vfsDebugSnapshotRuntime) Runtime() diagnostics.RuntimeSnapshot {
 		HotChunkLimit: read.HotChunkLimit,
 		RangeHitLimit: read.RangeHitLimit,
 	}
-	out.WindowLoads, out.Prefetches, out.RangeHitCount = r.v.read.RuntimeStats()
-	out.HotChunkCount, out.HotChunkBytes = r.v.debugHotChunks()
+	out.WindowLoads, out.Prefetches, out.RangeHitCount = r.read.RuntimeStats()
+	out.HotChunkCount, out.HotChunkBytes = r.debugHotChunks()
 	return out
 }
 

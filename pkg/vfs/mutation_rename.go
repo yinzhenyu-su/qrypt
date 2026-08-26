@@ -8,7 +8,7 @@ import (
 
 func (v *VFS) renameWithDeps(ctx context.Context, oldPath, newPath string, backend mutation.Backend, runtime mutationRuntime, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpRename, err) }()
-	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "rename"); err != nil {
+	if err := newVFSDriverRuntime(v.driver, v.testEnabled).RequireCapability(drive.CapabilityWriter, "rename"); err != nil {
 		return err
 	}
 	coordinator := mutation.NewCoordinator(
@@ -44,13 +44,25 @@ func (r vfsRenameResolver) Parent(ctx context.Context, path string) (drive.Entry
 }
 
 // vfsRenamePending adapts the pending-upload rename to mutation.PendingRenamer.
+// It holds only the rename-time dependencies - pending lookup, path lock, and
+// the mutation runtime - not the whole VFS.
 
-type vfsRenamePending struct{ v *VFS }
+type vfsRenamePending struct {
+	pendingUpload func(string) (PendingUpload, error)
+	lockPath      func(string) func()
+	runtime       mutationRuntime
+}
 
-func newVFSRenamePending(v *VFS) vfsRenamePending { return vfsRenamePending{v: v} }
+func newVFSRenamePending(v *VFS) vfsRenamePending {
+	return vfsRenamePending{
+		pendingUpload: v.pendingUpload,
+		lockPath:      v.lockPath,
+		runtime:       newVFSMutationRuntime(v),
+	}
+}
 
 func (r vfsRenamePending) IsPending(path string) bool {
-	_, err := r.v.pendingUpload(path)
+	_, err := r.pendingUpload(path)
 	return err == nil
 }
 
@@ -58,16 +70,16 @@ func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath st
 	// Take the path lock FIRST and re-read the pending inside it: a pending
 	// read before the lock could be stale by the time we mutate it (e.g. the
 	// frozen generation was rotated), committing an outdated FID/LocalPath.
-	unlockOld := r.v.lockPath(oldPath)
+	unlockOld := r.lockPath(oldPath)
 	defer unlockOld()
-	pending, err := r.v.pendingUpload(oldPath)
+	pending, err := r.pendingUpload(oldPath)
 	if err != nil {
 		return err
 	}
 	pending.Path = newPath
 	pending.ParentID = parent.ID
 	pending.Name = name
-	return newVFSMutationRuntime(r.v).RenamePendingUpload(oldPath, newPath, pending)
+	return r.runtime.RenamePendingUpload(oldPath, newPath, pending)
 }
 
 // vfsRenameView adapts the rename view commit; read-cache invalidation

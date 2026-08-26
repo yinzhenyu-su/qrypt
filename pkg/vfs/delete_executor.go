@@ -40,7 +40,7 @@ func (v *VFS) deleteRemote(ctx context.Context, path string, entry drive.Entry) 
 // newVFSDeleteExecutorDeps adapts VFS internals to idelete.ExecutorDeps.
 func newVFSDeleteExecutorDeps(v *VFS) idelete.ExecutorDeps {
 	return idelete.ExecutorDeps{
-		Driver:                   newVFSDriverRuntime(v),
+		Driver:                   newVFSDriverRuntime(v.driver, v.testEnabled),
 		Overlay:                  newVFSDeleteOverlayOps(v),
 		Health:                   v.healthTracker,
 		Upload:                   newVFSDeleteUploadCleanup(v.uploads.Store(), v.hashes),

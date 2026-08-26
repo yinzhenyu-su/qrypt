@@ -41,7 +41,7 @@ func (v *VFS) capabilitiesForPath(ctx context.Context, path, mount, displayPath 
 	if err != nil {
 		return CapabilityInfo{}, err
 	}
-	driverRuntime := newVFSDriverRuntime(v)
+	driverRuntime := newVFSDriverRuntime(v.driver, v.testEnabled)
 	caps := driverRuntime.Capabilities()
 	writer := driverRuntime.HasCapability(drive.CapabilityWriter)
 	uploader := driverRuntime.HasCapability(drive.CapabilitySourceUploader)

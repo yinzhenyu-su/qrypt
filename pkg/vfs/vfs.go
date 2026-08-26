@@ -314,7 +314,7 @@ func (v *VFS) teardown() {
 }
 
 func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
-	if !v.startDirPrefetch(ctx) {
+	if !v.lister.StartDirPrefetch(ctx) {
 		return
 	}
 
@@ -325,7 +325,7 @@ func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
 		default:
 		}
 		start := time.Now()
-		entries, err := v.listNoPrefetch(ctx, "/")
+		entries, err := v.lister.ListNoPrefetch(ctx, "/")
 		if err != nil {
 			if ctx.Err() == nil {
 				logging.L.DebugfEvery("vfs.dir_prefetch_root_failed", time.Second, "[PREFETCH] root list failed path=%q dur=%s err=%v", "/", time.Since(start), err)
@@ -333,7 +333,7 @@ func (v *VFS) StartDirectoryPrefetch(ctx context.Context) {
 			return
 		}
 		logging.L.DebugfEvery("vfs.dir_prefetch_root_complete", time.Second, "[PREFETCH] root list complete path=%q entries=%d dur=%s", "/", len(entries), time.Since(start))
-		v.scheduleDirPrefetch(ctx, "/", entries)
+		v.lister.ScheduleDirPrefetch(ctx, "/", entries)
 	}()
 }
 
@@ -347,8 +347,8 @@ func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err err
 			Name:      pending.Name,
 			IsDir:     false,
 			Size:      pending.Size,
-			ModTime:   uploadModTime(pending),
-			UpdatedAt: uploadModTime(pending),
+			ModTime:   pendingModTime(pending),
+			UpdatedAt: pendingModTime(pending),
 		}
 		return v.applyLocalModTime(path, entry), nil
 	}
@@ -357,16 +357,6 @@ func (v *VFS) Stat(ctx context.Context, path string) (entry drive.Entry, err err
 		return drive.Entry{}, err
 	}
 	return v.applyLocalModTime(path, entry), nil
-}
-
-func uploadModTime(p PendingUpload) time.Time {
-	if p.ModTime == 0 {
-		if p.UpdatedAt == 0 {
-			return time.Time{}
-		}
-		return time.Unix(0, p.UpdatedAt)
-	}
-	return time.Unix(0, p.ModTime)
 }
 
 func (v *VFS) FlushReadCache() error {
@@ -418,7 +408,7 @@ func (v *VFS) recordHealthResult(op string, err error) {
 }
 
 func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
-	return newVFSDriverRuntime(v).Space(ctx)
+	return newVFSDriverRuntime(v.driver, v.testEnabled).Space(ctx)
 }
 
 func (v *VFS) invalidateReadCache(entry drive.Entry) {
@@ -432,11 +422,7 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 }
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
-	path = vfstypes.CleanVirtualPath(path)
-	if pending, ok := v.uploads.Store().UploadByPath(path); ok {
-		return pending, nil
-	}
-	return PendingUpload{}, fmt.Errorf("vfs: no pending file for %s", path)
+	return pendingUploadFromWriteStore(v.uploads.Store(), path)
 }
 
 func (v *VFS) lockPath(path string) func() {
