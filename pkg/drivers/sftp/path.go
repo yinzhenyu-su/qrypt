@@ -2,12 +2,15 @@ package sftp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/pkg/sftp"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
@@ -42,9 +45,28 @@ func (d *Driver) Space(ctx context.Context) (space drive.Space, err error) {
 	}
 	stat, err := client.StatVFS(d.rootPath)
 	if err != nil {
+		if sftpOpUnsupported(err) {
+			// The server does not implement statvfs (e.g. the in-process
+			// test server on Windows); capacity is simply not reported.
+			return drive.Space{}, nil
+		}
 		return drive.Space{}, fmt.Errorf("sftp: statvfs %q: %w", d.rootPath, err)
 	}
 	return drive.Space{Total: statVFSBytes(stat.Blocks, stat.Bsize), Free: statVFSBytes(stat.Bfree, stat.Bsize)}, nil
+}
+
+// sftpOpUnsupported reports whether err is an SFTP "operation not supported"
+// status, which some servers return for statvfs.
+func sftpOpUnsupported(err error) bool {
+	if errors.Is(err, sftp.ErrSSHFxOpUnsupported) {
+		return true
+	}
+	var status *sftp.StatusError
+	if errors.As(err, &status) {
+		return status.FxCode() == sftp.ErrSSHFxOpUnsupported ||
+			strings.Contains(strings.ToLower(status.Error()), "not support")
+	}
+	return false
 }
 
 func statVFSBytes(blocks, blockSize uint64) int64 {
@@ -60,6 +82,16 @@ func (d *Driver) resolveID(id string) (string, error) {
 	}
 	if strings.HasPrefix(id, "/") {
 		resolved := path.Clean(id)
+		if d.withinRoot(resolved) {
+			return resolved, nil
+		}
+		return "", fmt.Errorf("sftp: path escapes root %q: %w", id, drive.ErrInvalidInput)
+	}
+	if filepath.IsAbs(id) {
+		// A host-absolute root (e.g. "C:\data" on Windows) is the remote
+		// root encoded in native form; normalize to the slash-rooted form
+		// before the root-relative fallback mangles it.
+		resolved := path.Clean("/" + filepath.ToSlash(id))
 		if d.withinRoot(resolved) {
 			return resolved, nil
 		}

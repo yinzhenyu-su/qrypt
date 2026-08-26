@@ -126,6 +126,13 @@ func TestBuildFileSystemInitializesMountsConcurrently(t *testing.T) {
 	result.cleanup()
 }
 
+// testLogRoot is a process-wide directory for session log files, deliberately
+// OUTSIDE any t.TempDir: core installs a lumberjack writer on <log_dir>/qrypt.log
+// as the process-default logger that is only released when the next core
+// replaces it, so a log dir inside t.TempDir would be locked by that handle on
+// Windows cleanup.
+const testLogRoot = "qrypt-core-test-logs"
+
 func testRuntimeLayout(tmp string) RuntimeLayout {
 	root := filepath.Join(tmp, "storage")
 	return RuntimeLayout{
@@ -135,7 +142,7 @@ func testRuntimeLayout(tmp string) RuntimeLayout {
 		ThumbnailDir: filepath.Join(root, "cache", "thumbnail"),
 		UploadDir:    filepath.Join(root, "runtime", "upload"),
 		StateDir:     filepath.Join(root, "runtime", "state"),
-		LogDir:       filepath.Join(root, "runtime", "logs"),
+		LogDir:       filepath.Join(os.TempDir(), testLogRoot),
 		TmpDir:       filepath.Join(root, "cache", "tmp"),
 	}
 }

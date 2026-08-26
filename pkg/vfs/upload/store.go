@@ -993,7 +993,6 @@ func PruneUploadJournal(dir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
 
 	// Replay the journal into the final per-path state, exactly like
 	// loadJournal: a later clean supersedes an earlier dirty, so a finished
@@ -1022,6 +1021,11 @@ func PruneUploadJournal(dir string) (int, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		return pruned, err
+	}
+	// Release the journal handle before rewriting: Windows refuses to
+	// rename over a file that is still open.
+	if err := file.Close(); err != nil {
 		return pruned, err
 	}
 
