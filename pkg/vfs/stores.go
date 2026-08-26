@@ -14,11 +14,6 @@ type PendingUpload = vfstypes.PendingUpload
 // debugActiveOp aliases the in-flight operation descriptor (pkg/vfs/vfstypes).
 type debugActiveOp = vfstypes.DebugActiveOp
 
-// shardedEntryMap aliases the sharded entry map (pkg/vfs/vfstypes).
-type shardedEntryMap = vfstypes.ShardedEntryMap
-
-var newShardedEntryMap = vfstypes.NewShardedEntryMap
-
 // readCacheStore aliases the durable read-cache store (pkg/vfs/readcache).
 type readCacheStore = readcache.Store
 
