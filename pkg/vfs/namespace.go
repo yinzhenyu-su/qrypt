@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"io"
 	"sort"
@@ -71,6 +72,25 @@ type PathRefresher interface {
 // returned function removes the subscription and is safe to call repeatedly.
 type InvalidationSource interface {
 	SubscribeInvalidations(func(path string)) func()
+}
+
+// ListPager pages a directory listing with a cursor; a vfs-owned optional
+// consumer surface, gated by CapabilityListPage.
+type ListPager interface {
+	ListPage(ctx context.Context, path, cursor string, limit int) (ListPageResult, error)
+}
+
+// ReadCacheCloser drops the read-cache files; a vfs-owned optional consumer
+// surface, gated by CapabilityCloseReadCache.
+type ReadCacheCloser interface {
+	CloseReadCache() error
+}
+
+// ReadSessionReleaser forgets adaptive read hints for a closed open-file
+// handle; a vfs-owned optional consumer surface, gated by
+// CapabilityReleaseReadSession.
+type ReadSessionReleaser interface {
+	ReleaseReadSession(sessionID uint64)
 }
 
 // FileSystem is the common file-operation API implemented by a single-drive
@@ -155,35 +175,111 @@ type ReadCacheFlusher interface {
 	FlushReadCache() error
 }
 
+// MountedFileSystem is the surface a namespace mount must provide: file
+// operations, lifecycle, path refresh, and task-source introspection. It is
+// the contract shared by every filesystem constructor (single VFS or
+// Namespace); consumers such as pkg/core type their filesystem API on it
+// directly instead of on the concrete *VFS.
+type MountedFileSystem interface {
+	FileSystem
+	Lifecycle
+	PathRefresher
+	TaskSource() task.Source
+}
+
 type Mount struct {
 	Name string
-	FS   *VFS
+	FS   MountedFileSystem
+}
+
+// mountAsVFS asserts a mount's filesystem is a VFS instance. A Namespace is
+// a VFS aggregator: its shared state (view, overlay, per-mount debug
+// internals) is reached through the concrete type, so only VFS instances
+// can be mounted.
+func mountAsVFS(name string, fs MountedFileSystem) (*VFS, error) {
+	if fs == nil {
+		return nil, fmt.Errorf("vfs: mount %s: nil filesystem", name)
+	}
+	v, ok := fs.(*VFS)
+	if !ok {
+		return nil, fmt.Errorf("vfs: mount %s: filesystem is not a VFS instance", name)
+	}
+	return v, nil
 }
 
 // Namespace mounts multiple VFS instances under one virtual root. The first
 // path segment is the mount name: /quark/docs, /quark2/docs, /localfs/docs.
 type Namespace struct {
-	mu        sync.RWMutex
-	mounts    map[string]*VFS
+	mu     sync.RWMutex
+	mounts map[string]*VFS
+	// subs tracks live invalidation subscriptions so AddMount/RemoveMount
+	// can attach and detach mounts without breaking the listener contract.
+	subs      map[*invalidationSubscription]struct{}
 	createdAt time.Time
 }
 
 func NewNamespace(mounts []Mount) (*Namespace, error) {
-	ns := &Namespace{mounts: map[string]*VFS{}, createdAt: time.Now()}
+	ns := &Namespace{mounts: map[string]*VFS{}, subs: map[*invalidationSubscription]struct{}{}, createdAt: time.Now()}
 	for _, mount := range mounts {
 		name := vfstypes.CleanMountName(mount.Name)
 		if name == "" {
 			return nil, fmt.Errorf("vfs: mount name required")
 		}
-		if mount.FS == nil {
-			return nil, fmt.Errorf("vfs: mount %s has nil filesystem", name)
-		}
 		if _, exists := ns.mounts[name]; exists {
 			return nil, fmt.Errorf("vfs: duplicate mount name %q", name)
 		}
-		ns.mounts[name] = mount.FS
+		fs, err := mountAsVFS(name, mount.FS)
+		if err != nil {
+			return nil, err
+		}
+		ns.mounts[name] = fs
 	}
 	return ns, nil
+}
+
+// AddMount mounts an additional VFS instance under the namespace root. The
+// mount becomes visible to every namespace operation immediately. Lifecycle
+// is the caller's: a mount added after Namespace.Start is not started here
+// (call mount.FS.Start yourself with the shareable context), and
+// RemoveMount does not Close. The invalidation subscriptions are extended to
+// the new mount so its async uploads keep reaching subscribers.
+func (n *Namespace) AddMount(mount Mount) error {
+	name := vfstypes.CleanMountName(mount.Name)
+	if name == "" {
+		return fmt.Errorf("vfs: mount name required")
+	}
+	fs, err := mountAsVFS(name, mount.FS)
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if _, exists := n.mounts[name]; exists {
+		return fmt.Errorf("vfs: duplicate mount name %q", name)
+	}
+	n.mounts[name] = fs
+	for sub := range n.subs {
+		sub.attach(name, fs)
+	}
+	return nil
+}
+
+// RemoveMount detaches a mounted filesystem from the namespace. It does not
+// close or stop the filesystem - the caller owns that lifecycle. Pending
+// uploads, tasks, and invalidation subscriptions of the removed mount are
+// dropped with it. Removing an unknown mount is an error.
+func (n *Namespace) RemoveMount(name string) error {
+	name = vfstypes.CleanMountName(name)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if _, exists := n.mounts[name]; !exists {
+		return fmt.Errorf("vfs: unknown mount %q", name)
+	}
+	delete(n.mounts, name)
+	for sub := range n.subs {
+		sub.detach(name)
+	}
+	return nil
 }
 
 // Start propagates the lifecycle context to every mounted filesystem. Each
@@ -304,3 +400,7 @@ var _ Lifecycle = (*Namespace)(nil)
 var _ PathRefresher = (*Namespace)(nil)
 var _ InvalidationSource = (*VFS)(nil)
 var _ InvalidationSource = (*Namespace)(nil)
+var _ MountedFileSystem = (*VFS)(nil)
+var _ MountedFileSystem = (*Namespace)(nil)
+var _ Capabler = (*VFS)(nil)
+var _ Capabler = (*Namespace)(nil)

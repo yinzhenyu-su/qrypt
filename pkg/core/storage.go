@@ -120,7 +120,7 @@ func (c *Core) ClearReadCache(ctx context.Context) error {
 	default:
 	}
 	clearer, ok := c.fs.(vfs.ReadCacheCleaner)
-	if !ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityClearReadCache) || !ok {
 		return fmt.Errorf("core: read cache clear unavailable")
 	}
 	return clearer.ClearReadCache()

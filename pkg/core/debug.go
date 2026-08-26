@@ -25,7 +25,7 @@ func (c *Core) FlushReadCache() error {
 		return fmt.Errorf("core: closed")
 	}
 	flusher, ok := c.fs.(vfs.ReadCacheFlusher)
-	if !ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityFlushReadCache) || !ok {
 		return fmt.Errorf("core: read cache flush unavailable")
 	}
 	return flusher.FlushReadCache()

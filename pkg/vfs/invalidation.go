@@ -63,28 +63,62 @@ func (v *VFS) emitInvalidation(path string) {
 	v.invalidations.emit(vfstypes.CleanVirtualPath(path))
 }
 
+// invalidationSubscription tracks one Namespace-level invalidation listener
+// across dynamically added/removed mounts. The mount set is no longer fixed
+// at construction (AddMount/RemoveMount), so a subscription cannot be a
+// one-time snapshot: attach/detach track the mount set for the listener's
+// lifetime. attach/detach run under n.mu (read/write respectively).
+type invalidationSubscription struct {
+	active   bool
+	unsubs   map[string]func()
+	listener func(string)
+}
+
+// attach subscribes the listener to one mount. The caller must hold n.mu.
+func (s *invalidationSubscription) attach(name string, fs *VFS) {
+	if !s.active {
+		return
+	}
+	mountName := name
+	s.unsubs[name] = fs.SubscribeInvalidations(func(path string) {
+		s.listener(vfstypes.JoinVirtualPath("/"+mountName, strings.TrimPrefix(path, "/")))
+	})
+}
+
+// detach unsubscribes one mount. The caller must hold n.mu.
+func (s *invalidationSubscription) detach(name string) {
+	if unsub, ok := s.unsubs[name]; ok {
+		delete(s.unsubs, name)
+		unsub()
+	}
+}
+
 func (n *Namespace) SubscribeInvalidations(listener func(string)) func() {
 	if listener == nil {
 		return func() {}
 	}
-	// Namespace mounts are fixed by NewNamespace, so one subscription snapshot
-	// covers the Namespace lifetime.
+	var once sync.Once
+	sub := &invalidationSubscription{active: true, unsubs: map[string]func(){}, listener: listener}
 	n.mu.RLock()
-	unsubscribes := make([]func(), 0, len(n.mounts))
+	n.subs[sub] = struct{}{}
 	for name, fs := range n.mounts {
-		mountName := name
-		unsubscribes = append(unsubscribes, fs.SubscribeInvalidations(func(path string) {
-			listener(vfstypes.JoinVirtualPath("/"+mountName, strings.TrimPrefix(path, "/")))
-		}))
+		sub.attach(name, fs)
 	}
 	n.mu.RUnlock()
-
-	var once sync.Once
 	return func() {
 		once.Do(func() {
-			for _, unsubscribe := range unsubscribes {
-				unsubscribe()
+			n.mu.Lock()
+			defer n.mu.Unlock()
+			if !sub.active {
+				delete(n.subs, sub)
+				return
 			}
+			sub.active = false
+			for _, unsub := range sub.unsubs {
+				unsub()
+			}
+			sub.unsubs = nil
+			delete(n.subs, sub)
 		})
 	}
 }

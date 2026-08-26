@@ -155,7 +155,7 @@ func (c *Core) isRecoverableUploadStreamTask(item task.Task) bool {
 		return false
 	}
 	inspector, ok := c.fs.(vfs.UploadInspector)
-	if !ok {
+	if !vfs.HasCapability(c.fs, vfs.CapabilityUploadInspection) || !ok {
 		return false
 	}
 	mutablePaths := map[string]bool{}
@@ -186,7 +186,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 		conflictPolicy = "overwrite"
 	}
 	pendingByPath := map[string]vfs.PendingUpload{}
-	if inspector, ok := c.fs.(vfs.UploadInspector); ok {
+	if inspector, ok := c.fs.(vfs.UploadInspector); ok && vfs.HasCapability(c.fs, vfs.CapabilityUploadInspection) {
 		for _, pending := range inspector.PendingUploads() {
 			pendingByPath[pending.Path] = pending
 		}

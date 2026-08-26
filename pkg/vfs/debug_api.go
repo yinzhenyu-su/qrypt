@@ -104,7 +104,7 @@ func (v *VFS) Drivers() []diagnostics.NamedDriver {
 // per-mount queries without holding the lock - management/close never
 // wait on driver I/O. Private: this is a diagnostics helper, not a
 // Namespace business API.
-func (n *Namespace) debugSortedMounts() []Mount {
+func (n *Namespace) debugSortedMounts() []namedMount {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	names := make([]string, 0, len(n.mounts))
@@ -112,12 +112,21 @@ func (n *Namespace) debugSortedMounts() []Mount {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	mounts := make([]Mount, 0, len(names))
+	mounts := make([]namedMount, 0, len(names))
 	for _, name := range names {
-		mounts = append(mounts, Mount{Name: name, FS: n.mounts[name]})
+		mounts = append(mounts, namedMount{name: name, fs: n.mounts[name]})
 	}
 	return mounts
 }
+
+// namedMount pairs a namespace mount key with its VFS for the debug
+// adapters; Mount.FS is the public MountedFileSystem contract, while the
+// debug surface reaches the concrete per-mount state.
+type namedMount struct {
+	name string
+	fs   *VFS
+}
+
 func (n *Namespace) DebugActiveOps(ctx context.Context, mountNames []string) ([]diagnostics.DebugActiveMount, error) {
 	n.mu.RLock()
 	names := make([]string, 0, len(n.mounts))
@@ -188,7 +197,7 @@ func (n *Namespace) DebugClearUploadCancel(ctx context.Context, id string) error
 func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []faultinject.DebugUploadCancelFault {
 	var out []faultinject.DebugUploadCancelFault
 	for _, m := range n.debugSortedMounts() {
-		name, mount := m.Name, m.FS
+		name, mount := m.name, m.fs
 		for _, fault := range mount.DebugUploadCancelFaults(ctx) {
 			if fault.ID != "" {
 				fault.ID = name + ":" + fault.ID
@@ -208,7 +217,7 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []faultinject.D
 func (n *Namespace) Drivers() []diagnostics.NamedDriver {
 	var result []diagnostics.NamedDriver
 	for _, m := range n.debugSortedMounts() {
-		result = append(result, newVFSDriverRuntime(m.FS.driver, m.FS.testEnabled).NamedDriver(m.Name))
+		result = append(result, newVFSDriverRuntime(m.fs.driver, m.fs.testEnabled).NamedDriver(m.name))
 	}
 	return result
 }
@@ -226,7 +235,7 @@ func (n *Namespace) MountHealth(ctx context.Context, mountName string) ([]diagno
 	}
 	var results []diagnostics.MountHealth
 	for _, m := range n.debugSortedMounts() {
-		health, _ := m.FS.MountHealth(ctx, m.Name)
+		health, _ := m.fs.MountHealth(ctx, m.name)
 		results = append(results, health...)
 	}
 	return results, nil
@@ -261,7 +270,7 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 	var found *diagnostics.DebugResolveInfo
 	var foundName string
 	for _, m := range n.debugSortedMounts() {
-		info, err := m.FS.DebugResolveByRemoteID(ctx, remoteID)
+		info, err := m.fs.DebugResolveByRemoteID(ctx, remoteID)
 		if err != nil {
 			continue
 		}
@@ -269,13 +278,13 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 			// Different drivers can legitimately reuse IDs (e.g. "0" or
 			// "root"); refuse to guess which mount the caller meant.
 			return nil, "", fmt.Errorf(
-				"vfs: remote ID %q is ambiguous across mounts %q and %q; specify a mount", remoteID, foundName, m.Name)
+				"vfs: remote ID %q is ambiguous across mounts %q and %q; specify a mount", remoteID, foundName, m.name)
 		}
-		info.Mount = m.Name
-		info.Path = vfstypes.JoinVirtualPath("/"+m.Name, strings.TrimPrefix(info.Path, "/"))
+		info.Mount = m.name
+		info.Path = vfstypes.JoinVirtualPath("/"+m.name, strings.TrimPrefix(info.Path, "/"))
 		info.Parent = pathpkg.Dir(info.Path)
 		found = &info
-		foundName = m.Name
+		foundName = m.name
 	}
 	if found == nil {
 		return nil, "", fmt.Errorf("vfs: no path found for remote ID %q", remoteID)
@@ -312,7 +321,7 @@ func (n *Namespace) DebugSnapshot() diagnostics.DebugSnapshot {
 		Process:       diagnostics.Process(os.Getpid(), DebugStartedAt()),
 	}
 	for _, m := range n.debugSortedMounts() {
-		snapshot.Mounts = append(snapshot.Mounts, m.FS.debugMountSnapshot(m.Name))
+		snapshot.Mounts = append(snapshot.Mounts, m.fs.debugMountSnapshot(m.name))
 	}
 	return snapshot
 }
@@ -331,8 +340,8 @@ func (n *Namespace) DebugSnapshotForMounts(mountNames []string) diagnostics.Debu
 	// snapshots (driver metrics, cache, uploads) AFTER releasing it.
 	selected := diagnostics.MountNameSet(mountNames)
 	for _, mount := range n.debugSortedMounts() {
-		if selected[mount.Name] {
-			snapshot.Mounts = append(snapshot.Mounts, mount.FS.debugMountSnapshot(mount.Name))
+		if selected[mount.name] {
+			snapshot.Mounts = append(snapshot.Mounts, mount.fs.debugMountSnapshot(mount.name))
 		}
 	}
 	return snapshot
@@ -379,8 +388,8 @@ func (n *Namespace) DebugStaging(ctx context.Context, path string) (diagnostics.
 	}
 
 	for _, m := range n.debugSortedMounts() {
-		item := m.FS.debugStagingMount(m.Name, "/")
-		diagnostics.PrefixStagingMountPaths(&item, m.Name)
+		item := m.fs.debugStagingMount(m.name, "/")
+		diagnostics.PrefixStagingMountPaths(&item, m.name)
 		report.Mounts = append(report.Mounts, item)
 	}
 	return report, nil
