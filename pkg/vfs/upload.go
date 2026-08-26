@@ -22,7 +22,6 @@ type uploadService = upload.Service
 type uploadStore = upload.PendingStore
 type uploadTaskRecord = upload.UploadTaskRecord
 type uploadSnapshot = upload.UploadSnapshot
-type uploadSnapshotState = upload.SnapshotState
 type uploadAdmission = upload.Admission
 type uploadTargetIndex = upload.TargetIndex
 
