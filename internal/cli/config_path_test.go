@@ -79,6 +79,7 @@ func TestFindConfigPathPrecedence(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir uses USERPROFILE on Windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 	t.Chdir(cwd)
 
@@ -115,6 +116,7 @@ func TestFindConfigPathPrecedence(t *testing.T) {
 func TestCommandConfigPathExpandsHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir uses USERPROFILE on Windows
 	cmd := &cobra.Command{Use: "test"}
 	withConfigFlag(cmd)
 	if err := cmd.Flags().Set("config", "~/.qrypt/qrypt.toml"); err != nil {

@@ -136,6 +136,7 @@ func TestAuthMethodLoadsPrivateKeyFromPath(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows, not HOME
 	homeKeyPath := filepath.Join(home, ".ssh", "id_ed25519")
 	if err := os.MkdirAll(filepath.Dir(homeKeyPath), 0o700); err != nil {
 		t.Fatal(err)

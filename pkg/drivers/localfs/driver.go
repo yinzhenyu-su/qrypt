@@ -244,19 +244,25 @@ func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
 		return d.root, nil
 	}
 	clean := filepath.Clean(path)
+	rel := func(target string) (string, bool) {
+		computed, err := filepath.Rel(d.root, target)
+		if err != nil {
+			return "", false
+		}
+		computed = filepath.ToSlash(computed) // Rel returns "..\" style on Windows
+		return computed, computed != ".." && !strings.HasPrefix(computed, "../")
+	}
 	if filepath.IsAbs(clean) {
-		rel, err := filepath.Rel(d.root, clean)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+		if _, ok := rel(clean); ok {
 			return clean, nil
 		}
 		return "", fmt.Errorf("localfs: path escapes root: %s", path)
 	}
 	target := filepath.Join(d.root, clean)
-	rel, err := filepath.Rel(d.root, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", fmt.Errorf("localfs: path escapes root: %s", path)
+	if _, ok := rel(target); ok {
+		return target, nil
 	}
-	return target, nil
+	return "", fmt.Errorf("localfs: path escapes root: %s", path)
 }
 
 func (d *Driver) resolve(id string) string {

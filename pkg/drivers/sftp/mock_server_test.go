@@ -462,7 +462,7 @@ func TestMockSFTPResumesCompletedPartsFromState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := session.Identity{ParentID: server.root, Name: "resume.bin", Size: int64(len(data)), Fingerprint: sha256Hex}.Key()
+	key := session.Identity{ParentID: driver.rootPath, Name: "resume.bin", Size: int64(len(data)), Fingerprint: sha256Hex}.Key()
 	remotePath := path.Join(server.root, ".qrypt-sftp-upload-"+key)
 	if err := os.WriteFile(remotePath, data[:sftpUploadPartSize], 0o600); err != nil {
 		t.Fatal(err)
