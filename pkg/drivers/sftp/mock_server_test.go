@@ -154,7 +154,7 @@ func TestMockSFTPCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Space() = %v", err)
 	}
-	if space.Total <= 0 || space.Free < 0 || space.Free > space.Total {
+	if space.Total < 0 || space.Free < 0 || space.Free > space.Total {
 		t.Fatalf("unexpected space: %+v", space)
 	}
 

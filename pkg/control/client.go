@@ -100,7 +100,7 @@ func clientHTTPBaseURL(endpoint string) (string, bool) {
 	case strings.HasPrefix(endpoint, "tcp:"):
 		return "http://" + strings.TrimPrefix(endpoint, "tcp:"), true
 	}
-	if _, _, err := net.SplitHostPort(endpoint); err == nil {
+	if _, port, err := net.SplitHostPort(endpoint); err == nil && isNumericPort(port) {
 		return "http://" + endpoint, true
 	}
 	return "", false
