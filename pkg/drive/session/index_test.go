@@ -35,7 +35,8 @@ func newTestIndex(t *testing.T, maxEntries int) *Index {
 
 func TestIdentityKeyChangesWhenContentChanges(t *testing.T) {
 	base := Identity{ParentID: "p", Name: "n", Size: 10, Fingerprint: "abc"}
-	if base.Key() != base.Key() {
+	key := base.Key()
+	if key != base.Key() {
 		t.Fatal("key must be stable for the same identity")
 	}
 	mutations := []struct {

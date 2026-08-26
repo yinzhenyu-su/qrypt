@@ -64,10 +64,6 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 					resumed = true
 					if tok.PartSize > 0 {
 						partSize = tok.PartSize
-						partCount = int(math.Ceil(float64(size) / float64(partSize)))
-						if partCount == 0 {
-							partCount = 1
-						}
 					}
 				} else {
 					d.sessions.Delete(sessionKey)
