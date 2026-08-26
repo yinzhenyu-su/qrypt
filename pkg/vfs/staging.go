@@ -280,7 +280,7 @@ func (v *VFS) stageExisting(ctx context.Context, path string) error {
 }
 
 func (v *VFS) stageExistingWithStore(ctx context.Context, path string, store *uploadStore) error {
-	return v.stageExistingWithDeps(ctx, path, store, vfsUploadWriteRemote{resolver: v, driver: v.driver, invalidator: v})
+	return v.stageExistingWithDeps(ctx, path, store, newVFSUploadWriteRemote(v))
 }
 
 func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *uploadStore, remote uploadWriteRemote) error {

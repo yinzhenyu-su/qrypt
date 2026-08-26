@@ -25,7 +25,3 @@ func ResetDebugStartedAt() time.Time {
 	debugStartedAt = util.Now()
 	return debugStartedAt
 }
-
-type encryptedMarker interface {
-	Encrypted() bool
-}
