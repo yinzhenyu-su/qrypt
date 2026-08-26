@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-const uploadSnapshotHistoryLimit = 100
 const debugReadHistoryLimit = read.HistoryLimit
 
 var debugStartedAt = time.Now()

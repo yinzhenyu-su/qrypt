@@ -84,27 +84,27 @@ func newVFSUploadObserver(svc *uploadService, tracker *drive.HealthTracker) vfsU
 }
 
 func (o vfsUploadObserver) Start(pending PendingUpload) {
-	newVFSDebugUploadRuntime(o.svc).StartSnapshot(pending)
+	o.svc.DebugState().Start(pending)
 }
 
 func (o vfsUploadObserver) State(path, state string) {
-	newVFSDebugUploadRuntime(o.svc).SetSnapshotState(path, state)
+	o.svc.DebugState().SetState(path, state)
 }
 
 func (o vfsUploadObserver) Extra(path, key string, value any) {
-	newVFSDebugUploadRuntime(o.svc).SetSnapshotExtra(path, key, value)
+	o.svc.DebugState().SetExtra(path, key, value)
 }
 
 func (o vfsUploadObserver) Metadata(path, resultRemoteID string, hashes []string) {
-	newVFSDebugUploadRuntime(o.svc).SetSnapshotMetadata(path, resultRemoteID, hashes)
+	o.svc.DebugState().SetMetadata(path, resultRemoteID, hashes)
 }
 
 func (o vfsUploadObserver) Event(path, phase string, start time.Time, bytes int64, extra map[string]any) {
-	newVFSDebugUploadRuntime(o.svc).RecordEvent(path, phase, start, bytes, extra)
+	o.svc.DebugState().RecordEvent(path, phase, start, bytes, extra)
 }
 
 func (o vfsUploadObserver) Uploaded(path string, n int) {
-	newVFSDebugUploadRuntime(o.svc).UpdateSnapshot(path, n)
+	o.svc.DebugState().UpdateBytes(path, n)
 }
 
 func (o vfsUploadObserver) HealthResult(op string, err error) {
@@ -112,7 +112,7 @@ func (o vfsUploadObserver) HealthResult(op string, err error) {
 }
 
 func (o vfsUploadObserver) Finish(path, state, lastError string) {
-	newVFSDebugUploadRuntime(o.svc).FinishSnapshot(path, state, lastError)
+	o.svc.DebugState().Finish(path, state, lastError)
 }
 
 func newVFSUploadSnapshotter(v *VFS) vfsUploadSnapshotter {

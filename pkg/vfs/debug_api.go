@@ -7,6 +7,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"os"
 	pathpkg "path"
@@ -471,53 +472,9 @@ func (v *VFS) debugStagingMount(name, path string) diagnostics.DebugStagingMount
 }
 
 func (v *VFS) uploadSnapshots(pending []PendingUpload) []uploadSnapshot {
-	active := newVFSDebugUploadRuntime(v.uploads).ActiveSnapshots()
-
-	timerPaths := v.uploads.ScheduledDeadlines()
-
-	uploads := make([]uploadSnapshot, 0, len(pending)+len(active))
-	seen := map[string]bool{}
-	for _, item := range pending {
-		if upload, ok := active[item.Path]; ok {
-			uploads = append(uploads, upload)
-			seen[item.Path] = true
-			continue
-		}
-		state := "queued"
-		if item.PermanentFail {
-			state = "failed"
-		} else if _, ok := timerPaths[item.Path]; ok {
-			state = "scheduled"
-			if item.LastError != "" && item.NextAttemptAt > util.Now().UnixNano() {
-				state = "retry_wait"
-			}
-		}
-		uploads = append(uploads, uploadSnapshot{
-			OpID:           item.FID,
-			Path:           item.Path,
-			Name:           item.Name,
-			State:          state,
-			BytesTotal:     item.Size,
-			UpdatedAt:      timeFromUnixNano(item.UpdatedAt),
-			RetryCount:     item.RetryCount,
-			LastError:      item.LastError,
-			LastAttemptAt:  item.LastAttemptAt,
-			NextAttemptAt:  item.NextAttemptAt,
-			ParentRemoteID: item.ParentID,
-		})
-		seen[item.Path] = true
-	}
-	for path, upload := range active {
-		if !seen[path] {
-			uploads = append(uploads, upload)
-		}
-	}
-	sort.Slice(uploads, func(i, j int) bool {
-		return uploads[i].Path < uploads[j].Path
-	})
-	return uploads
+	return upload.ComposeSnapshots(pending, v.uploads.DebugState().ActiveSnapshots(), v.uploads.ScheduledDeadlines())
 }
 
 func (v *VFS) uploadSnapshotHistory() []uploadSnapshot {
-	return newVFSDebugUploadRuntime(v.uploads).History()
+	return v.uploads.DebugState().HistorySnapshots()
 }
