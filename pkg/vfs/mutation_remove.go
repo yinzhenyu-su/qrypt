@@ -12,7 +12,7 @@ import (
 
 func (v *VFS) removeWithRuntime(ctx context.Context, path string, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
-	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
+	if err := newVFSDriverRuntime(v.driver, v.testEnabled).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
 	}
 	coordinator := mutation.NewRemoveCoordinator(
@@ -26,7 +26,7 @@ func (v *VFS) removeWithRuntime(ctx context.Context, path string, committer view
 
 func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, committer viewCommitter) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpDelete, err) }()
-	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
+	if err := newVFSDriverRuntime(v.driver, v.testEnabled).RequireCapability(drive.CapabilityWriter, "remove"); err != nil {
 		return err
 	}
 	coordinator := mutation.NewRemoveCoordinator(

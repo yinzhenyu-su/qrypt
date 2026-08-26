@@ -12,7 +12,7 @@ func TestVFSDriverRuntimeOwnsCapabilitiesAndBackends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := newVFSDriverRuntime(fs)
+	runtime := newVFSDriverRuntime(fs.driver, fs.testEnabled)
 
 	if !runtime.HasCapability(drive.CapabilityWriter) {
 		t.Fatal("localfs should report writer capability")

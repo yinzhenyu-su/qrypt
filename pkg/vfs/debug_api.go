@@ -91,7 +91,7 @@ func (v *VFS) MountHealth(ctx context.Context, mountName string) ([]diagnostics.
 }
 
 func (v *VFS) Drivers() []diagnostics.NamedDriver {
-	return []diagnostics.NamedDriver{newVFSDriverRuntime(v).NamedDriver(v.name)}
+	return []diagnostics.NamedDriver{newVFSDriverRuntime(v.driver, v.testEnabled).NamedDriver(v.name)}
 }
 
 // Namespace diagnostics adapters: namespace-level orchestration of the
@@ -208,7 +208,7 @@ func (n *Namespace) DebugUploadCancelFaults(ctx context.Context) []faultinject.D
 func (n *Namespace) Drivers() []diagnostics.NamedDriver {
 	var result []diagnostics.NamedDriver
 	for _, m := range n.debugSortedMounts() {
-		result = append(result, newVFSDriverRuntime(m.FS).NamedDriver(m.Name))
+		result = append(result, newVFSDriverRuntime(m.FS.driver, m.FS.testEnabled).NamedDriver(m.Name))
 	}
 	return result
 }

@@ -412,19 +412,19 @@ func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
 	store, _ := newUploadStore(t.TempDir())
 	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, upload.NewHashTracker())}
 
-	small := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold - 1})
+	small := v.uploads.QuietWindow(PendingUpload{Size: upload.LargeUploadQuietThreshold - 1})
 	if small != 10*time.Millisecond {
 		t.Fatalf("small quiet window = %s, want configured delay", small)
 	}
-	large := v.uploadQuietWindow(PendingUpload{Size: largeUploadQuietThreshold})
-	if large != largeUploadQuietDelay {
-		t.Fatalf("large quiet window = %s, want %s", large, largeUploadQuietDelay)
+	large := v.uploads.QuietWindow(PendingUpload{Size: upload.LargeUploadQuietThreshold})
+	if large != upload.LargeUploadQuietDelay {
+		t.Fatalf("large quiet window = %s, want %s", large, upload.LargeUploadQuietDelay)
 	}
 }
 
 func TestUploadAdmissionLargeUploadIsExclusive(t *testing.T) {
-	small := PendingUpload{Path: "/small.txt", Size: largeUploadQuietThreshold - 1}
-	large := PendingUpload{Path: "/large.bin", Size: largeUploadQuietThreshold}
+	small := PendingUpload{Path: "/small.txt", Size: upload.LargeUploadQuietThreshold - 1}
+	large := PendingUpload{Path: "/large.bin", Size: upload.LargeUploadQuietThreshold}
 
 	var admission uploadAdmission
 	if !admission.TryAcquire(large, 3) {

@@ -15,8 +15,8 @@ type vfsDriverRuntime struct {
 	testEnabled bool
 }
 
-func newVFSDriverRuntime(v *VFS) vfsDriverRuntime {
-	return vfsDriverRuntime{driver: v.driver, testEnabled: v.testEnabled}
+func newVFSDriverRuntime(driver drive.Driver, testEnabled bool) vfsDriverRuntime {
+	return vfsDriverRuntime{driver: driver, testEnabled: testEnabled}
 }
 
 func (r vfsDriverRuntime) Capabilities() []drive.Capability {

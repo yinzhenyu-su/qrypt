@@ -19,7 +19,7 @@ import (
 
 func (v *VFS) Create(ctx context.Context, path string) (err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
-	if err := newVFSDriverRuntime(v).RequireCapability(drive.CapabilitySourceUploader, "upload"); err != nil {
+	if err := newVFSDriverRuntime(v.driver, v.testEnabled).RequireCapability(drive.CapabilitySourceUploader, "upload"); err != nil {
 		return err
 	}
 	path = vfstypes.CleanVirtualPath(path)
