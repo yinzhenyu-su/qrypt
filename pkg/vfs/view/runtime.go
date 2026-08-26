@@ -1,7 +1,7 @@
 package view
 
 import (
-	"path/filepath"
+	pathpkg "path"
 	"strings"
 	"time"
 
@@ -138,7 +138,7 @@ func (r Runtime) CommitEntryLocalModTime(path string, entry drive.Entry, modTime
 	r.view.mu.Lock()
 	r.view.entries.Set(path, entry)
 	r.SetLocalModTimeLocked(path, modTime)
-	r.InvalidateListLocked(filepath.Dir(path))
+	r.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
 }
 
@@ -227,7 +227,7 @@ func (r Runtime) CommitChildren(parentPath string, entries []drive.Entry, expire
 // surfaced while the copy fills in.
 func (r Runtime) PrepareLocalDirectoryCopy(path string, hideNames map[string]time.Time) {
 	r.view.entries.Range(func(cachedPath string, cachedEntry drive.Entry) bool {
-		if filepath.Dir(cachedPath) == path {
+		if pathpkg.Dir(cachedPath) == path {
 			if _, ok := hideNames[cachedEntry.Name]; !ok && !IsAppleMetadataName(cachedEntry.Name) {
 				hideNames[cachedEntry.Name] = time.Now().Add(DirectoryCopyHideTTL)
 			}

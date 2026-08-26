@@ -6,7 +6,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
-	"path/filepath"
+	pathpkg "path"
 	"time"
 )
 
@@ -116,7 +116,7 @@ func (h vfsListingView) mergePendingChildren(parentPath string, entries []drive.
 		seen[entry.Name] = true
 	}
 	for _, pending := range h.store.PendingUploads() {
-		if filepath.Dir(pending.Path) != parentPath || seen[pending.Name] || h.vis.IsDeleted(pending.Path) {
+		if pathpkg.Dir(pending.Path) != parentPath || seen[pending.Name] || h.vis.IsDeleted(pending.Path) {
 			continue
 		}
 		modTime := pendingModTime(pending)

@@ -6,7 +6,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
-	"path/filepath"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"time"
@@ -52,9 +52,9 @@ func (v *VFS) UploadSource(ctx context.Context, path string, req SourceUploadReq
 	if len(replaceExisting) > 0 || !resumable {
 		uploadName = sourceUploadTemporaryName(name)
 	}
-	v.restoreDeletedAncestor(filepath.Dir(path))
+	v.restoreDeletedAncestor(pathpkg.Dir(path))
 	v.cancelDeletedFile(path)
-	v.unhideCopyChild(filepath.Dir(path), name)
+	v.unhideCopyChild(pathpkg.Dir(path), name)
 	entry, err = v.driver.PutSource(ctx, drive.UploadRequest{
 		ParentID: parent.ID,
 		Name:     uploadName,

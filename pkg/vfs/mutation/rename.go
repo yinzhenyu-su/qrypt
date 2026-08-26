@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
+	pathpkg "path"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
@@ -101,7 +101,7 @@ func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error
 			// The remote is renamed-but-unmoved: commit that intermediate
 			// state (old parent + new name, full entry metadata) so local
 			// and remote stay consistent even though the operation failed.
-			c.view.CommitRemoteRename(oldPath, vfstypes.JoinVirtualPath(filepath.Dir(oldPath), name), renamed)
+			c.view.CommitRemoteRename(oldPath, vfstypes.JoinVirtualPath(pathpkg.Dir(oldPath), name), renamed)
 		}
 		return err
 	}

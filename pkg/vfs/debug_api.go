@@ -9,7 +9,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"os"
-	"path/filepath"
+	pathpkg "path"
 	"sort"
 	"strings"
 	"time"
@@ -248,7 +248,7 @@ func (n *Namespace) DebugResolve(ctx context.Context, path string, includeRemote
 		mountName = mountName[:idx]
 	}
 	info.Path = vfstypes.JoinVirtualPath("/"+mountName, strings.TrimPrefix(info.Path, "/"))
-	info.Parent = filepath.Dir(info.Path)
+	info.Parent = pathpkg.Dir(info.Path)
 	info.Mount = mountName
 	return info, nil
 }
@@ -272,7 +272,7 @@ func (n *Namespace) DebugResolveByRemoteID(ctx context.Context, remoteID string)
 		}
 		info.Mount = m.Name
 		info.Path = vfstypes.JoinVirtualPath("/"+m.Name, strings.TrimPrefix(info.Path, "/"))
-		info.Parent = filepath.Dir(info.Path)
+		info.Parent = pathpkg.Dir(info.Path)
 		found = &info
 		foundName = m.Name
 	}
@@ -299,7 +299,7 @@ func (n *Namespace) DebugConsistency(ctx context.Context, path string) (diagnost
 		mountName = mountName[:idx]
 	}
 	report.Path = vfstypes.JoinVirtualPath("/"+mountName, strings.TrimPrefix(report.Path, "/"))
-	report.Parent = filepath.Dir(report.Path)
+	report.Parent = pathpkg.Dir(report.Path)
 	return report, nil
 }
 

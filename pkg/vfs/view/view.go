@@ -13,7 +13,7 @@ package view
 
 import (
 	"context"
-	"path/filepath"
+	pathpkg "path"
 	"sort"
 	"strings"
 	"sync"
@@ -297,8 +297,8 @@ func (o *Overlay) unavailableLocked(path string) bool {
 	if o.isDeletedPath(path) || o.isRenameHiddenPath(path) {
 		return true
 	}
-	parentPath := filepath.Dir(path)
-	name := filepath.Base(path)
+	parentPath := pathpkg.Dir(path)
+	name := pathpkg.Base(path)
 	now := time.Now()
 	names := o.copyHiddenChildren[parentPath]
 	if len(names) == 0 {
