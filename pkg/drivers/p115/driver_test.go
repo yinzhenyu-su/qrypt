@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
+	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 )
@@ -504,11 +504,12 @@ func TestBeginMultipartUploadListPartsResumesPagination(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/bucket/object":
 			getCalls++
 			marker := r.URL.Query().Get("part-number-marker")
-			if marker == "0" {
+			switch marker {
+			case "0":
 				_, _ = w.Write([]byte(`<ListPartsResult><Bucket>bucket</Bucket><Key>object</Key><UploadId>old-uid</UploadId><PartNumberMarker>0</PartNumberMarker><NextPartNumberMarker>2</NextPartNumberMarker><MaxParts>1000</MaxParts><IsTruncated>true</IsTruncated><Part><PartNumber>1</PartNumber><LastModified>2026-01-01T00:00:00Z</LastModified><ETag>"etag-1"</ETag><Size>5242880</Size></Part></ListPartsResult>`))
-			} else if marker == "2" {
+			case "2":
 				_, _ = w.Write([]byte(`<ListPartsResult><Bucket>bucket</Bucket><Key>object</Key><UploadId>old-uid</UploadId><PartNumberMarker>2</PartNumberMarker><MaxParts>1000</MaxParts><IsTruncated>false</IsTruncated><Part><PartNumber>3</PartNumber><LastModified>2026-01-01T00:00:01Z</LastModified><ETag>"etag-3"</ETag><Size>5242880</Size></Part></ListPartsResult>`))
-			} else {
+			default:
 				t.Fatalf("unexpected part-number-marker %q", marker)
 			}
 		case r.Method == http.MethodPost:

@@ -1016,7 +1016,7 @@ func (s noHashSource) Open(context.Context) (drive.ReadOnlyFile, error) {
 
 type noHashFile struct{ bytes *bytes.Reader }
 
-func (f *noHashFile) Read(p []byte) (int, error)  { return f.bytes.Read(p) }
+func (f *noHashFile) Read(p []byte) (int, error) { return f.bytes.Read(p) }
 func (f *noHashFile) ReadAt(p []byte, off int64) (int, error) {
 	return f.bytes.ReadAt(p, off)
 }
