@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/drivecopy"
 )
 
@@ -346,23 +347,23 @@ func writeFsCopyConfig(t *testing.T, tmp, srcRemote, dstRemote string) string {
 	t.Helper()
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	content := `
-mount_point = "` + filepath.Join(tmp, "mnt") + `"
+mount_point = ` + util.TOMLPath(filepath.Join(tmp, "mnt")) + `
 [storage]
-read_cache_dir = "` + filepath.Join(tmp, "cache", "read") + `"
-upload_dir = "` + filepath.Join(tmp, "upload") + `"
-state_dir = "` + filepath.Join(tmp, "state") + `"
+read_cache_dir = ` + util.TOMLPath(filepath.Join(tmp, "cache", "read")) + `
+upload_dir = ` + util.TOMLPath(filepath.Join(tmp, "upload")) + `
+state_dir = ` + util.TOMLPath(filepath.Join(tmp, "state")) + `
 
 [[mounts]]
 name = "src"
 type = "localfs"
 [mounts.params]
-root_path = "` + srcRemote + `"
+root_path = ` + util.TOMLPath(srcRemote) + `
 
 [[mounts]]
 name = "dst"
 type = "localfs"
 [mounts.params]
-root_path = "` + dstRemote + `"
+root_path = ` + util.TOMLPath(dstRemote) + `
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)

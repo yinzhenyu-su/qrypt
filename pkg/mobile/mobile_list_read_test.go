@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func TestMobileListAndReadAt(t *testing.T) {
@@ -26,7 +27,7 @@ func TestMobileListAndReadAt(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestMobileReadAtRepeatedSeek(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestMobileVirtualFileReadAtInto(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestMobileListPageJSON(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +311,7 @@ func TestMobileCancelFileReadKeepsHandleUsable(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}

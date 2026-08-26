@@ -25,6 +25,9 @@ func TestMain(m *testing.M) {
 		panic("cli: cannot create isolated test home: " + err.Error())
 	}
 	os.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE (not HOME) on Windows; redirect both
+	// so "~" expansion stays inside the isolated test home.
+	os.Setenv("USERPROFILE", home)
 	os.Unsetenv("QRYPT_HOME")
 	defer os.RemoveAll(home)
 	// Keep the command layer off the network: NTP queries hit DNS, whose

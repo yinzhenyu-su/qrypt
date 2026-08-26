@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,7 +53,7 @@ func TestReadCacheMaxSizeZeroDisablesCache(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "` + remote + `"
+root_path = ` + util.TOMLPath(remote) + `
 `
 		if maxSizeLine != "" {
 			cfg += "[mounts.read_cache]\nmax_size = \"" + maxSizeLine + "\"\n"

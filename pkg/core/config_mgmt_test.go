@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,7 +164,7 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = \""+remote+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = "+util.TOMLPath(remote)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

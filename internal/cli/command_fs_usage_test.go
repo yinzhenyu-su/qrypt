@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func setupUsageTest(t *testing.T) string {
@@ -34,7 +35,7 @@ func setupUsageTest(t *testing.T) string {
 name = "loc"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -228,14 +229,14 @@ func TestFsDfJSONIncludesUnsupportedMountError(t *testing.T) {
 name = "loc"
 type = "localfs"
 [mounts.params]
-root_path = "` + remote + `"
+root_path = ` + util.TOMLPath(remote) + `
 
 [[mounts]]
 name = "s3m"
 type = "s3"
 [mounts.params]
 bucket = "b"
-endpoint = "` + api.URL + `"
+endpoint = ` + util.TOMLPath(api.URL) + `
 region = "us-east-1"
 access_key_id = "x"
 secret_access_key = "y"

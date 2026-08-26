@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,15 +19,15 @@ func TestBuildNamespaceRejectsInvalidDeleteDelay(t *testing.T) {
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	err := os.WriteFile(configPath, []byte(`
 [storage]
-read_cache_dir = "`+filepath.Join(tmp, "cache", "read")+`"
-upload_dir = "`+filepath.Join(tmp, "upload")+`"
-state_dir = "`+filepath.Join(tmp, "state")+`"
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
 
 [[mounts]]
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+util.TOMLPath(remote)+`
 [mounts.upload]
 delete_delay = "soon"
 `), 0o644)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +24,7 @@ func TestMobileJSONEnvelopeAndDiagnostics(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,7 @@ func TestMobileThumbnailCacheUsesFilePaths(t *testing.T) {
 	name = "quark"
 	type = "localfs"
 	[mounts.params]
-	root_path = `+tomlPath(remote)+`
+	root_path = `+util.TOMLPath(remote)+`
 	`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -227,13 +228,13 @@ func TestMobileMountsJSONReportsEncryptedPerMount(t *testing.T) {
 name = "plain"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(plainRemote)+`
+root_path = `+util.TOMLPath(plainRemote)+`
 
 [[mounts]]
 name = "secret"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(encryptedRemote)+`
+root_path = `+util.TOMLPath(encryptedRemote)+`
 [mounts.encryption]
 password = "test-password"
 `), 0o644); err != nil {
@@ -292,7 +293,7 @@ state_dir = "/desktop/state"
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +354,7 @@ func TestMobileWaitLocalFileStableJSON(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +397,7 @@ func TestMobileConfigManagement(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = ` + tomlPath(remote) + `
+root_path = ` + util.TOMLPath(remote) + `
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 		t.Fatal(err)
@@ -509,7 +510,7 @@ func TestMobileDebugSnapshotHandleCounts(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +575,7 @@ func TestMobileReloadConcurrentWithAPICalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = "+tomlPath(remote)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = "+util.TOMLPath(remote)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	coreID, err := openCore(configPath, testRuntimeJSON(tmp))
@@ -619,7 +620,7 @@ func TestCloseCancelsSessionLifecycle(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = `+tomlPath(remote)+`
+root_path = `+util.TOMLPath(remote)+`
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
