@@ -162,12 +162,12 @@ func TestMockSFTPCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := driver.PutSource(ctx, drive.UploadRequest{ParentID: directory.ID, Name: "名字 #?.txt", Source: drive.NewBytesReadOnlyFileSource([]byte("sftp payload"))})
+	entry, err := driver.PutSource(ctx, drive.UploadRequest{ParentID: directory.ID, Name: "名字 #%.txt", Source: drive.NewBytesReadOnlyFileSource([]byte("sftp payload"))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	entries, err := driver.List(ctx, directory.ID)
-	if err != nil || len(entries) != 1 || entries[0].Name != "名字 #?.txt" {
+	if err != nil || len(entries) != 1 || entries[0].Name != "名字 #%.txt" {
 		t.Fatalf("List = %+v, %v", entries, err)
 	}
 	reader, err := driver.Read(ctx, entry, 5, 7)

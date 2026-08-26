@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
+	pathpkg "path"
 	"runtime"
 	"runtime/pprof"
 	"sort"
@@ -129,7 +129,7 @@ func (s *Server) handleTransferContext(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	destinationParent, err := resolver.DebugResolve(r.Context(), filepath.Dir(cleanVirtual(destPath)), true)
+	destinationParent, err := resolver.DebugResolve(r.Context(), pathpkg.Dir(cleanVirtual(destPath)), true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -312,7 +312,7 @@ func (s *Server) consistencyReports(ctx context.Context, checker diagnostics.Deb
 			}
 			path = cleanVirtual(path)
 			if path == dir || strings.HasPrefix(path, strings.TrimRight(dir, "/")+"/") {
-				if !recursive && filepath.Dir(path) != dir {
+				if !recursive && pathpkg.Dir(path) != dir {
 					continue
 				}
 				paths[path] = true
