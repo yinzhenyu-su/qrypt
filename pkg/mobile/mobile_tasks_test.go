@@ -25,7 +25,7 @@ func TestMobileCreateTaskJSONMoveRemote(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestMobileCreateTaskJSONDeleteBatchPartialFailed(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestMobileCreateTaskJSONDeleteBatchRecursiveDirectory(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestMobileCreateTaskJSONUploadBatch(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 
 [upload]
 upload_delay = "10ms"
@@ -331,7 +331,7 @@ func TestMobileUploadTaskEventsIncludeItemProgress(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 
 [upload]
 upload_delay = "10ms"
@@ -433,7 +433,7 @@ func TestMobileCreateTaskJSONDownload(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestMobileCreateTaskJSONDownloadRecursiveDirectory(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +538,7 @@ func TestMobileTaskEvents(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +737,7 @@ func TestMobileCreateLocalUploadTaskJSON(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 
 [upload]
 upload_delay = "10ms"
@@ -791,7 +791,7 @@ func TestMobileCreateDirectUploadTaskJSON(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 
 [upload]
 upload_delay = "10ms"
@@ -867,7 +867,7 @@ func TestMobileUploadLocalFileJSONCreatesUserTask(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 
 [upload]
 upload_delay = "10ms"

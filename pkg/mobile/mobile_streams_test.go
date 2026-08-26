@@ -23,7 +23,7 @@ func TestMobileDownloadStreamBatch(t *testing.T) {
 name = "local"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestMobileUploadStreamBatch(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 
 [upload]
 upload_delay = "10ms"
@@ -257,7 +257,7 @@ func TestMobileCancelUploadStreamItem(t *testing.T) {
 name = "quark"
 type = "localfs"
 [mounts.params]
-root_path = "`+remote+`"
+root_path = `+tomlPath(remote)+`
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
