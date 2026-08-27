@@ -27,7 +27,11 @@ ARG VERSION=dev
 ARG COMMIT=
 ARG BUILD_TIME=
 ARG DIRTY=false
-RUN CGO_ENABLED=1 go build \
+# netgo: keep DNS in Go's own resolver. With cgo enabled the net package
+# routes lookups through glibc getaddrinfo, which SIGFPEs on some host
+# resolv.conf/glibc-version combinations (seen at mount startup during the
+# NTP host lookup). FUSE still links via cgo; only DNS drops the glibc path.
+RUN CGO_ENABLED=1 go build -tags netgo \
     -ldflags="-s -w -extldflags=-static -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${VERSION} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${COMMIT} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${BUILD_TIME} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${DIRTY}" \
     -o /usr/local/bin/qrypt ./cmd/qrypt/
 
