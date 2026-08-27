@@ -31,7 +31,7 @@ qrypt turns your cloud drives into one encrypted local folder — mount it, open
 
 | Dependency             | macOS                          | Linux                           | Windows                       |
 | ---------------------- | ------------------------------ | ------------------------------- | ----------------------------- |
-| FUSE                   | [macFUSE](https://macfuse.io/) | libfuse (usually pre-installed) | [WinFsp](https://winfsp.dev/) |
+| FUSE                   | [macFUSE](https://macfuse.io/) | none (libfuse3 statically linked) | [WinFsp](https://winfsp.dev/) |
 | Go (source build only) | 1.27+                          | 1.27+                           | 1.27+                         |
 
 The `fs` commands (list, cat, get, put) do not require FUSE — only `mount` does.
@@ -114,7 +114,7 @@ Extended walkthrough →
 
 ## Building from Source
 
-Requires Go 1.27+ and FUSE headers (libfuse-dev on Linux, macFUSE on macOS).
+Requires Go 1.27+ and FUSE headers (libfuse3-dev on Linux, macFUSE on macOS).
 
 ```
 git clone https://github.com/yinzhenyu-su/qrypt.git

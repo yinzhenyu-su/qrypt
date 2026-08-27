@@ -24,14 +24,16 @@ package fuse
 #cgo linux,!fuse3 CFLAGS: -DFUSE_USE_VERSION=28 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse
 #cgo linux,fuse3 CFLAGS: -DFUSE_USE_VERSION=39 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse3
 #cgo linux LDFLAGS: -ldl
-// staticfuse links libfuse2 statically instead of dlopening it at runtime.
+// staticfuse links libfuse statically instead of dlopening it at runtime.
 // glibc's dlopen from a statically linked executable SIGFPEs (div by zero
 // inside dl_open_worker) on Debian trixie's glibc 2.41, which kills qrypt
 // at mount time; the fully static docker builds opt into it via -tags
-// staticfuse. fuse_invalidate_path is not exported by distro libfuse.a, so
-// path invalidation is unavailable in this mode.
+// staticfuse. With fuse2 (-tags staticfuse) distro libfuse.a does not
+// export fuse_invalidate_path, so path invalidation is a no-op there;
+// fuse3 (-tags staticfuse,fuse3) exports it and restores invalidation.
 #cgo linux,staticfuse CFLAGS: -DCGOFUSE_STATIC_FUSE
-#cgo linux,staticfuse LDFLAGS: -lfuse
+#cgo linux,staticfuse,!fuse3 LDFLAGS: -lfuse
+#cgo linux,staticfuse,fuse3 LDFLAGS: -lfuse3 -lpthread -ldl
 #cgo windows CFLAGS: -DFUSE_USE_VERSION=28 -I/usr/local/include/winfsp
 	// Use `set CPATH=C:\Program Files (x86)\WinFsp\inc\fuse` on Windows.
 	// The flag `I/usr/local/include/winfsp` only works on xgo and docker.
@@ -144,7 +146,13 @@ static inline int inl_fuse_main_real(int argc, char *argv[],
     const struct fuse_operations *ops, size_t opsize, void *data)
 {
 #if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
+#if FUSE_USE_VERSION >= 30
+	// libfuse3 hides fuse_main_real ("internal function"); the public
+	// entry point is fuse_main, which forwards with the ops size itself.
+	return fuse_main(argc, argv, ops, data);
+#else
 	return fuse_main_real(argc, argv, ops, opsize, data);
+#endif
 #else
 	cgofuse_init_fast(1);
 #if defined(__OpenBSD__)
@@ -192,7 +200,10 @@ static inline void inl_fuse_opt_free_args(struct fuse_args *args)
 static void *cgofuse_init_fuse(void)
 {
 #if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
-	// libfuse2 is linked directly; there is nothing to load at runtime.
+	// libfuse is linked directly; there is nothing to load at runtime.
+#if FUSE_USE_VERSION >= 30
+	pfn_fuse_invalidate_path = fuse_invalidate_path;
+#endif
 	return (void *)1;
 #else
 #define CGOFUSE_GET_API(n)		\

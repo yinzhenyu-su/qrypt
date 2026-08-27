@@ -168,7 +168,11 @@ func mountOptionsForGOOS(opts Options, goos string) []string {
 		"-o", "attr_timeout=" + fuseTimeout(attrTimeout),
 		"-o", "entry_timeout=" + fuseTimeout(entryTimeout),
 		"-o", "negative_timeout=" + fuseTimeout(opts.NegativeTimeout),
-		"-o", "use_ino",
+	}
+	// fuse2 takes -o use_ino so the kernel keeps the inode numbers handed to
+	// it by the filesystem; fuse3 removed the option (it always uses them).
+	if fuseUseInoOption != "" {
+		flags = append(flags, "-o", fuseUseInoOption)
 	}
 	if goos == "darwin" {
 		flags = append(flags,

@@ -11,7 +11,7 @@
 ### Bug fixes
 - fix(windows): sftp mock rename IDs and xfer benchmark read_bps
 - fix(build): statically link linux binaries so release tarballs run on any distro
-- fix(build): netgo DNS + direct libfuse2 link in static glibc builds; glibc dlopen SIGFPEs from a static binary
+- fix(build): netgo DNS + static libfuse3 link in static glibc builds; glibc dlopen SIGFPEs from a static binary
 - fix(test): windows-robust fixture reads and reader cleanup for coverage tests
 - fix(windows): last three windows CI failures
 - fix(windows): close remaining windows gaps in core logs, control client, sftp, journal
