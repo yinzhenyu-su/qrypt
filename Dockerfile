@@ -27,19 +27,22 @@ ARG VERSION=dev
 ARG COMMIT=
 ARG BUILD_TIME=
 ARG DIRTY=false
-# netgo: keep DNS in Go's own resolver. With cgo enabled the net package
-# routes lookups through glibc getaddrinfo, which SIGFPEs on some host
-# resolv.conf/glibc-version combinations (seen at mount startup during the
-# NTP host lookup). FUSE still links via cgo; only DNS drops the glibc path.
-RUN CGO_ENABLED=1 go build -tags netgo \
+# netgo: keep DNS in Go's own resolver; glibc's NSS/dlopen path SIGFPEs from a
+# statically linked executable (seen at mount startup). staticfuse: link the
+# vendored cgofuse against libfuse2 directly instead of dlopening libfuse.so.2
+# at runtime — glibc's dlopen itself SIGFPEs (div by zero in dl_open_worker)
+# when called from this static build, so both uses of the dynamic loader must
+# go. FUSE stays cgo; only loading changes.
+RUN CGO_ENABLED=1 go build -tags netgo,staticfuse \
     -ldflags="-s -w -extldflags=-static -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${VERSION} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${COMMIT} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${BUILD_TIME} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${DIRTY}" \
     -o /usr/local/bin/qrypt ./cmd/qrypt/
 
 # ---- Runtime stage ----
-# The binary is statically linked, so a minimal runtime suffices.
+# The binary carries its own glibc and libfuse (fully static), so a minimal
+# runtime suffices.
 FROM alpine:3.21
 
-RUN apk add --no-cache fuse ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=build /usr/local/bin/qrypt /usr/local/bin/qrypt
 
