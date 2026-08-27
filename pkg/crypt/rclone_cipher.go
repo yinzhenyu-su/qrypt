@@ -91,9 +91,20 @@ func NewRcloneCipher(password, salt string, opts ...string) (*RcloneCipher, erro
 		password = argon2idStretch(password, salt)
 	}
 
-	key, err := scrypt.Key([]byte(password), saltBytes, 16384, 8, 1, 80)
-	if err != nil {
-		return nil, err
+	// rclone's Key() uses an all-zero 80-byte key for an empty password
+	// instead of running scrypt ("empty password makes all 0x00 keys which
+	// is used in the tests"); mirror that so the empty-password vectors in
+	// rclone's own test suite agree. Config.Validate rejects empty passwords,
+	// so this path is only reachable through direct NewRcloneCipher calls.
+	var key []byte
+	var err error
+	if password == "" {
+		key = make([]byte, 80)
+	} else {
+		key, err = scrypt.Key([]byte(password), saltBytes, 16384, 8, 1, 80)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	c := &RcloneCipher{}
