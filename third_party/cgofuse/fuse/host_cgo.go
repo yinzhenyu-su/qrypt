@@ -24,6 +24,14 @@ package fuse
 #cgo linux,!fuse3 CFLAGS: -DFUSE_USE_VERSION=28 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse
 #cgo linux,fuse3 CFLAGS: -DFUSE_USE_VERSION=39 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse3
 #cgo linux LDFLAGS: -ldl
+// staticfuse links libfuse2 statically instead of dlopening it at runtime.
+// glibc's dlopen from a statically linked executable SIGFPEs (div by zero
+// inside dl_open_worker) on Debian trixie's glibc 2.41, which kills qrypt
+// at mount time; the fully static docker builds opt into it via -tags
+// staticfuse. fuse_invalidate_path is not exported by distro libfuse.a, so
+// path invalidation is unavailable in this mode.
+#cgo linux,staticfuse CFLAGS: -DCGOFUSE_STATIC_FUSE
+#cgo linux,staticfuse LDFLAGS: -lfuse
 #cgo windows CFLAGS: -DFUSE_USE_VERSION=28 -I/usr/local/include/winfsp
 	// Use `set CPATH=C:\Program Files (x86)\WinFsp\inc\fuse` on Windows.
 	// The flag `I/usr/local/include/winfsp` only works on xgo and docker.
@@ -135,28 +143,44 @@ static int (*pfn_fuse_invalidate_path)(struct fuse *fuse, const char *path);
 static inline int inl_fuse_main_real(int argc, char *argv[],
     const struct fuse_operations *ops, size_t opsize, void *data)
 {
+#if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
+	return fuse_main_real(argc, argv, ops, opsize, data);
+#else
 	cgofuse_init_fast(1);
 #if defined(__OpenBSD__)
 	return pfn_fuse_main(argc, argv, ops, data);
 #else
 	return pfn_fuse_main_real(argc, argv, ops, opsize, data);
 #endif
+#endif
 }
 static inline struct fuse_context *inl_fuse_get_context(void)
 {
+#if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
+	return fuse_get_context();
+#else
 	cgofuse_init_fast(1);
 	return pfn_fuse_get_context();
+#endif
 }
 static inline int inl_fuse_opt_parse(struct fuse_args *args, void *data,
     const struct fuse_opt opts[], fuse_opt_proc_t proc)
 {
+#if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
+	return fuse_opt_parse(args, data, opts, proc);
+#else
 	cgofuse_init_fast(1);
 	return pfn_fuse_opt_parse(args, data, opts, proc);
+#endif
 }
 static inline void inl_fuse_opt_free_args(struct fuse_args *args)
 {
+#if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
+	return fuse_opt_free_args(args);
+#else
 	cgofuse_init_fast(1);
 	return pfn_fuse_opt_free_args(args);
+#endif
 }
 
 #define fuse_main_real			inl_fuse_main_real
@@ -167,6 +191,10 @@ static inline void inl_fuse_opt_free_args(struct fuse_args *args)
 
 static void *cgofuse_init_fuse(void)
 {
+#if defined(CGOFUSE_STATIC_FUSE) && defined(__linux__)
+	// libfuse2 is linked directly; there is nothing to load at runtime.
+	return (void *)1;
+#else
 #define CGOFUSE_GET_API(n)		\
 	if (0 == (*(void **)&(pfn_ ## n) = dlsym(h, #n)))\
 		return 0;
@@ -213,6 +241,7 @@ static void *cgofuse_init_fuse(void)
 	return h;
 
 #undef CGOFUSE_GET_API
+#endif // !CGOFUSE_STATIC_FUSE
 }
 
 #elif defined(_WIN32)
