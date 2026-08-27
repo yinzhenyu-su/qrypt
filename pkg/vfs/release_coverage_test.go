@@ -242,9 +242,11 @@ func TestCoverageNamespaceReadSurface(t *testing.T) {
 	} else {
 		t.Logf("ReadStream: %v", err)
 	}
-	if _, err := ns.ReadRaw(ctx, "/m/d/f.txt", 0, 4); err != nil {
+	raw, err := ns.ReadRaw(ctx, "/m/d/f.txt", 0, 4)
+	if err != nil {
 		t.Fatalf("raw read: %v", err)
 	}
+	raw.Close()
 	ns.RefreshPath("/m/d/f.txt")
 	ns.RefreshPath("/nope/x.txt")
 	if _, err := ns.ReadRaw(ctx, "/m/d", 0, 0); err == nil {

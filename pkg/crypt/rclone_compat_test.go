@@ -245,6 +245,30 @@ func TestRcloneCompatConfigValuesWrittenByRclone(t *testing.T) {
 	}
 }
 
+// rcloneFixturePlaintext reproduces the deterministic corpus used to generate
+// the rclone ciphertext fixtures (testdata/rclone/README.md documents the
+// recipe), keyed by plaintext file name.
+func rcloneFixturePlaintext(name string) []byte {
+	rcloneFixtureSizes := map[string]int{
+		"empty.bin":      0,
+		"tiny.bin":       100,
+		"oneblock.bin":   64 * 1024,
+		"oneplus.bin":    64*1024 + 1,
+		"multiblock.bin": 200000,
+		"big.bin":        1048600,
+	}
+	size, ok := rcloneFixtureSizes[name]
+	if !ok {
+		return nil
+	}
+	row := []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n")
+	out := make([]byte, size)
+	for i := range out {
+		out[i] = row[i%len(row)]
+	}
+	return out
+}
+
 // TestRcloneCompatDataFixtures decrypts ciphertext files that the real rclone
 // binary v1.73.3 produced for a deterministic plaintext corpus (stored under
 // pkg/crypt/testdata/rclone). Each file is a full rclone-encrypted object:
@@ -264,7 +288,9 @@ func TestRcloneCompatDataFixtures(t *testing.T) {
 		}
 		want := map[string]string{}
 		for _, line := range strings.Split(strings.TrimSpace(string(rows)), "\n") {
-			enc, plain, ok := strings.Cut(line, "\t")
+			// The map file is ASCII text and can come back CRLF-normalised
+			// from the checkout; strip the trailing \r so names stay exact.
+			enc, plain, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
 			if !ok {
 				t.Fatalf("bad map line %q", line)
 			}
@@ -292,9 +318,13 @@ func TestRcloneCompatDataFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plain, err := os.ReadFile(filepath.Join(dataRoot, "plain", plainName))
-			if err != nil {
-				t.Fatal(err)
+			// The expected plaintext is synthesized from the known corpus
+			// pattern instead of reading testdata/rclone/plain back: those
+			// files are ASCII text and may be CRLF-normalised on Windows
+			// checkouts, while binary ciphertext never is.
+			plain := rcloneFixturePlaintext(plainName)
+			if len(plain) == 0 && plainName != "empty.bin" {
+				t.Fatalf("%s: unknown fixture %q", encDir, plainName)
 			}
 			if string(ciphertext[:FileMagicSize]) != FileMagic {
 				t.Errorf("%s/%s: bad magic", encDir, encName)
