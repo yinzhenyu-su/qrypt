@@ -10,6 +10,7 @@
 
 ### Bug fixes
 - fix(windows): sftp mock rename IDs and xfer benchmark read_bps
+- fix(test): windows-robust fixture reads and reader cleanup for coverage tests
 - fix(windows): last three windows CI failures
 - fix(windows): close remaining windows gaps in core logs, control client, sftp, journal
 - fix(windows): port remaining packages to Windows paths and clock
