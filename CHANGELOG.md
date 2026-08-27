@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.5.0 (2026-08-27)
+
+### Features
+- feat(vfs): mount contract, consumer capabilities, and dynamic mounts
+- feat(mount): 用平台挂载选项替代苹果元数据模拟
+- feat(sftp): 支持断线自动重连与修复分段上传结果不清空的问题
+- feat(drivers): 新增 SFTP 驱动支持密码和私钥认证
+
+### Bug fixes
+- fix(windows): sftp mock rename IDs and xfer benchmark read_bps
+- fix(windows): last three windows CI failures
+- fix(windows): close remaining windows gaps in core logs, control client, sftp, journal
+- fix(windows): port remaining packages to Windows paths and clock
+- fix(vfs): keep virtual paths slash-based on Windows
+- fix(test): escape Windows paths in test TOML configs via shared util.TOMLPath
+- fix(mobile): make test configs Windows-safe (TOML escaping, log-dir lock)
+- fix(sftp): 超时仅关闭无响应连接，上传加超时保护
+- fix(sftp): 修复读操作超时与EOF处理，删除失败回滚并重试
+- fix(sftp): 列目录断连后自动重连并重试
+
+### Others
+- test(vfs): coverage for namespace/runtime surfaces, restore release coverage floor
+- test(crypt): rclone compat golden fixtures and interop tests, empty-password key path
+- cli: typed runtime seam, role interfaces, shared flag helper
+- refactor(vfs): narrow adapter surface and drop redundant wrappers
+- chore(vfs): drop unused uploadSnapshotState alias after debug runtime slim-down
+- refactor(vfs): narrow staging and debug adapters
+- chore(ci): fix staticcheck and gofmt findings
+- refactor(vfs): remove dead aliases left by the view-domain split
+- refactor(vfs): split layer domains; rework upload session; add windows ci
+- test(sftp): 断言清理阶段错误并修复断点续传恢复标记
+- test: 使用 b.Loop 替代固定迭代计数器
+- test: 添加模糊测试用例并更新夜间模糊测试脚本
+- ci: 缓存 CI 工具并矩阵化测试任务
+- test(media): 使用 b.Loop 与 limits 常量优化 MP4 测试基准
+- docs(drivers): 支持 189 网盘账号密码登录与 alternate 必填参数文档生成
+
+---
+
 ## v0.4.0 (2026-08-24)
 
 ### Features
