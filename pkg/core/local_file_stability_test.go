@@ -32,6 +32,11 @@ func TestWaitLocalFileStableWaitsAfterChange(t *testing.T) {
 	if err := os.WriteFile(localPath, []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The quiet window must comfortably outlast the writer goroutine's
+	// scheduling delay: on loaded CI runners the 8ms sleep can stretch well
+	// past a 20ms window, and the waiter would legitimately report the
+	// pre-change snapshot as stable.
+	opts := LocalFileStabilityOptions{QuietMS: 250, PollMS: 2}
 	c := &Core{}
 	go func() {
 		time.Sleep(8 * time.Millisecond)
@@ -39,17 +44,14 @@ func TestWaitLocalFileStableWaitsAfterChange(t *testing.T) {
 	}()
 
 	start := time.Now()
-	got, err := c.WaitLocalFileStable(context.Background(), localPath, LocalFileStabilityOptions{
-		QuietMS: 20,
-		PollMS:  2,
-	})
+	got, err := c.WaitLocalFileStable(context.Background(), localPath, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Size != int64(len("changed")) {
 		t.Fatalf("size = %d, want changed size", got.Size)
 	}
-	if time.Since(start) < 20*time.Millisecond {
+	if time.Since(start) < time.Duration(opts.QuietMS)*time.Millisecond {
 		t.Fatalf("returned before quiet window elapsed")
 	}
 }
