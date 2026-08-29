@@ -613,6 +613,37 @@ func (r *closeTrackingReader) Close() error {
 	return nil
 }
 
+func TestIsRecoverableUploadStreamTask(t *testing.T) {
+	c := &Core{}
+	base := task.Task{Type: task.TypeUploadStreamBatch, ID: "t1"}
+	cases := []struct {
+		name  string
+		state task.State
+		err   *task.Error
+		want  bool
+	}{
+		{"interrupted failed", task.StateFailed, &task.Error{Code: "interrupted"}, true},
+		{"waiting_input", task.StateWaitingInput, nil, true},
+		{"running", task.StateRunning, nil, true},
+		{"queued", task.StateQueued, nil, true},
+		{"scheduled", task.StateScheduled, nil, true},
+		{"succeeded", task.StateSucceeded, nil, false},
+		{"canceled", task.StateCanceled, nil, false},
+		// Without an upload inspector the failed/partial_failed branch stays
+		// conservative (no staging file can be confirmed).
+		{"plain failed", task.StateFailed, &task.Error{Code: "oops"}, false},
+		{"partial_failed", task.StatePartialFailed, nil, false},
+	}
+	for _, tc := range cases {
+		item := base
+		item.State = tc.state
+		item.Error = tc.err
+		if got := c.isRecoverableUploadStreamTask(item); got != tc.want {
+			t.Fatalf("isRecoverableUploadStreamTask(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestRequiresPrecomputedSourceHashes(t *testing.T) {
 	c := &Core{
 		mountContentDedup:  map[string]bool{"quark-test": true, "jianguoyun": false},
