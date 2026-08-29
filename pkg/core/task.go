@@ -151,6 +151,21 @@ func (c *Core) RetryTask(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// A direct-upload task in retry_wait is sleeping out an exponential
+	// backoff inside its batch runner. Re-running it through the manager
+	// would start a second runner on the same batch; instead wake the batch
+	// so it attempts again immediately.
+	if batch := c.getUploadStream(id); batch != nil {
+		if current, getErr := manager.GetTask(ctx, id); getErr == nil &&
+			current.Type == task.TypeUploadStreamDirect &&
+			current.State == task.StateRetryWait {
+			select {
+			case batch.retrySignal <- struct{}{}:
+			default:
+			}
+			return nil
+		}
+	}
 	return manager.RetryTask(ctx, id)
 }
 

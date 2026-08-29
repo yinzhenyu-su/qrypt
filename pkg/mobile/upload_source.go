@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 )
 
@@ -30,6 +31,24 @@ type UploadSourceOpener interface {
 	Read(handle int64, size int) ([]byte, error)
 	// Close releases the handle.
 	Close(handle int64) error
+	// OpenRawSource hands over a raw file descriptor for the source (e.g.
+	// from ParcelFileDescriptor.detachFd) plus the byte offset that fd starts
+	// at, so Go can read the source directly without a per-read JNI round
+	// trip. The fd must be seekable; ownership transfers to Go, which closes
+	// it. Any failure (unsupported provider, pipe-backed fd, detach error)
+	// falls back to Open/Read above, so this path is purely an optimization.
+	//
+	// The result is a bound struct rather than a tuple: gobind interface
+	// proxies do not support int64 slices.
+	OpenRawSource(token string) (*RawSource, error)
+}
+
+// RawSource is the raw file descriptor handed to Go for direct source reads.
+// FD is owned by Go once returned; StartOffset is the byte offset the fd
+// begins at (e.g. a document container start offset).
+type RawSource struct {
+	FD          int64
+	StartOffset int64
 }
 
 var uploadSourceMu sync.Mutex
@@ -107,11 +126,50 @@ func (p *mobileUploadSourceProvider) OpenUploadSource(ctx context.Context, token
 	if p.opener == nil {
 		return nil, fmt.Errorf("mobile: no upload source opener registered")
 	}
+	// Preferred path: the app hands over a raw file descriptor so Go reads
+	// the source directly with no per-read JNI round trip or byte copying.
+	// Any failure (unsupported provider, non-seekable fd) falls back below.
+	if raw, err := p.opener.OpenRawSource(token); err == nil && raw != nil && raw.FD > 0 {
+		if f, seekErr := openSeekableFD(raw.FD, raw.StartOffset+offset); seekErr == nil {
+			return f, nil
+		}
+	}
 	handle, err := p.opener.Open(token, offset)
 	if err != nil {
 		return nil, wrapError(err)
 	}
 	return &mobileSourceReader{opener: p.opener, handle: handle}, nil
+}
+
+// fdSourceReader reads a raw file descriptor handed over by the app. The seek
+// in openSeekableFD doubles as a seekability probe: a pipe-backed source
+// (which cannot honor requested offsets) fails here and the caller falls back
+// to the per-read opener path.
+type fdSourceReader struct {
+	file   *os.File
+	closed bool
+}
+
+func openSeekableFD(fd, offset int64) (io.ReadCloser, error) {
+	if fd <= 0 {
+		return nil, fmt.Errorf("mobile: invalid source fd %d", fd)
+	}
+	file := os.NewFile(uintptr(fd), "qrypt-upload-source")
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &fdSourceReader{file: file}, nil
+}
+
+func (r *fdSourceReader) Read(p []byte) (int, error) { return r.file.Read(p) }
+
+func (r *fdSourceReader) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	return r.file.Close()
 }
 
 type mobileSourceReader struct {
