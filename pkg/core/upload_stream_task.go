@@ -158,6 +158,14 @@ func (c *Core) isRecoverableUploadStreamTask(item task.Task) bool {
 	if item.State == task.StateFailed && item.Error != nil && item.Error.Code == "interrupted" {
 		return true
 	}
+	// A process died mid-staging: the task is stuck in a non-terminal state
+	// with its staging file (if any) still on disk. Recover it so the app can
+	// resume pushing bytes from its saved offset; the UI's resume affordance
+	// is useless while such a task has no runner.
+	if item.State == task.StateWaitingInput || item.State == task.StateRunning ||
+		item.State == task.StateQueued || item.State == task.StateScheduled {
+		return true
+	}
 	if item.State != task.StateFailed && item.State != task.StatePartialFailed {
 		return false
 	}
