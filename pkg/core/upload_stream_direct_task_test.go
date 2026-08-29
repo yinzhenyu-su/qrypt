@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ func TestCreateTaskUploadStreamDirectUsesSourceUploader(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"direct.txt": true}
 	sourcePath := filepath.Join(t.TempDir(), "source.txt")
 	payload := []byte("direct payload")
 	if err := os.WriteFile(sourcePath, payload, 0o644); err != nil {
@@ -121,6 +123,7 @@ func TestCreateTaskUploadStreamDirectNonResumableCleansPartialAndRetries(t *test
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"retry.txt": true}
 	payload := []byte("non resumable retry payload")
 	provider := &flakyDirectUploadSourceProvider{data: payload, failSecondOpen: true}
 	c.SetUploadSourceProvider(provider)
@@ -182,6 +185,7 @@ func TestCreateTaskUploadStreamDirectAutoRetryKeepsTaskID(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"auto-retry.txt": true}
 	payload := []byte("persistent automatic retry")
 	provider := &flakyDirectUploadSourceProvider{data: payload, failSecondOpen: true}
 	c.SetUploadSourceProvider(provider)
@@ -250,6 +254,7 @@ func TestCreateTaskUploadStreamDirectRejectsBadOffsetSource(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"bad-offset.bin": true}
 	payload := make([]byte, 2*uploadCopyChunkSize+123)
 	for i := range payload {
 		payload[i] = byte((i*31 + i/251) % 256)
@@ -405,4 +410,164 @@ func (d *directUploadTestDriver) putSourceCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.putSource
+}
+
+// countingUploadSourceProvider tracks the total bytes it hands out, so a test
+// can distinguish "one full read" (dedup off) from "hash pass + upload pass".
+type countingUploadSourceProvider struct {
+	mu        sync.Mutex
+	data      []byte
+	bytesRead int64
+	opens     int
+}
+
+func (p *countingUploadSourceProvider) OpenUploadSource(_ context.Context, _ string, offset int64) (io.ReadCloser, error) {
+	if offset < 0 || offset > int64(len(p.data)) {
+		return nil, fmt.Errorf("counting provider: offset %d out of range", offset)
+	}
+	p.mu.Lock()
+	p.opens++
+	p.mu.Unlock()
+	return &countingSourceReader{p: p, data: p.data[offset:]}, nil
+}
+
+func (p *countingUploadSourceProvider) total() (int64, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.bytesRead, p.opens
+}
+
+type countingSourceReader struct {
+	p    *countingUploadSourceProvider
+	data []byte
+	off  int
+}
+
+func (r *countingSourceReader) Read(buf []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(buf, r.data[r.off:])
+	r.off += n
+	r.p.mu.Lock()
+	r.p.bytesRead += int64(n)
+	r.p.mu.Unlock()
+	return n, nil
+}
+
+func (r *countingSourceReader) Close() error { return nil }
+
+func TestCreateTaskUploadStreamDirectSkippedSegmentsHashWhenDedupOff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs) // no config: mountContentDedup empty => no dedup path
+	payload := make([]byte, 2*uploadCopyChunkSize+123)
+	for i := range payload {
+		payload[i] = byte((i*17 + i/19) % 256)
+	}
+	provider := &countingUploadSourceProvider{data: payload}
+	c.SetUploadSourceProvider(provider)
+
+	item, err := c.CreateTask(ctx, task.Request{
+		Type: task.TypeUploadStreamDirect,
+		Items: []task.Item{{
+			ItemID:     "item",
+			SourcePath: "token",
+			DestPath:   "/no-dedup.bin",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = waitCoreTask(t, c, item.ID)
+	if item.State != task.StateSucceeded {
+		t.Fatalf("task = %+v, want succeeded", item)
+	}
+	if got := drv.uploadedData(); !bytes.Equal(got, payload) {
+		t.Fatalf("uploaded data mismatch: %d vs %d bytes", len(got), len(payload))
+	}
+	read, opens := provider.total()
+	if read != int64(len(payload)) {
+		t.Fatalf("source bytes read = %d, want %d (one upload pass, no pre-hash read)", read, len(payload))
+	}
+	if opens > 2 {
+		t.Fatalf("source opens = %d, want at most 2", opens)
+	}
+}
+
+func TestCreateTaskUploadStreamDirectPrehashesWhenDedupOn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"dedup.bin": true}
+	payload := make([]byte, 3*uploadCopyChunkSize+9)
+	for i := range payload {
+		payload[i] = byte((i*13 + i/7) % 256)
+	}
+	provider := &countingUploadSourceProvider{data: payload}
+	c.SetUploadSourceProvider(provider)
+
+	item, err := c.CreateTask(ctx, task.Request{
+		Type: task.TypeUploadStreamDirect,
+		Items: []task.Item{{
+			ItemID:     "item",
+			SourcePath: "token",
+			DestPath:   "/dedup.bin",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = waitCoreTask(t, c, item.ID)
+	if item.State != task.StateSucceeded {
+		t.Fatalf("task = %+v, want succeeded", item)
+	}
+	if got := drv.uploadedData(); !bytes.Equal(got, payload) {
+		t.Fatalf("uploaded data mismatch: %d vs %d bytes", len(got), len(payload))
+	}
+	read, _ := provider.total()
+	if read < 2*int64(len(payload)) {
+		t.Fatalf("source bytes read = %d, want at least 2x payload (hash pass + upload pass) = %d", read, 2*int64(len(payload)))
+	}
+	if read >= 3*int64(len(payload)) {
+		t.Fatalf("source bytes read = %d, want less than 3x payload", read)
+	}
+}
+
+func TestRequiresPrecomputedSourceHashes(t *testing.T) {
+	c := &Core{
+		mountContentDedup:  map[string]bool{"quark-test": true, "jianguoyun": false},
+		defaultUploadMount: "quark-test",
+	}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/quark-test/Upload/a.jpg", true}, // explicit dedup mount
+		{"/Upload/a.jpg", true},            // no mount prefix -> default upload mount
+		{"/jianguoyun/x", false},           // known mount without dedup
+		{"/", false},                       // rooted path
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := c.requiresPrecomputedSourceHashes(tc.path); got != tc.want {
+			t.Fatalf("requiresPrecomputedSourceHashes(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
 }

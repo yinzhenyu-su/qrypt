@@ -7,7 +7,25 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
+// Validate checks the whole configuration strictly and returns the first
+// problem found. It is used by the CLI (config validate) and by config
+// updates, where a typo in any mount must abort the whole operation.
 func Validate(cfg *Config) error {
+	if err := ValidateGlobal(cfg); err != nil {
+		return err
+	}
+	for index, mountCfg := range cfg.Mounts {
+		if err := ValidateMount(cfg, index, mountCfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateGlobal checks the configuration parts that are not scoped to a
+// single mount: version, bandwidth, durations, logging level, cache sizes,
+// mount name sanity and uniqueness, and the upload.default_mount references.
+func ValidateGlobal(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config: configuration is empty")
 	}
@@ -57,10 +75,6 @@ func Validate(cfg *Config) error {
 	if len(cfg.Mounts) == 0 {
 		return fmt.Errorf("config: at least one [[mounts]] entry is required")
 	}
-	knownDrivers := make(map[string]bool)
-	for _, name := range drive.Names() {
-		knownDrivers[name] = true
-	}
 	seenMounts := make(map[string]bool)
 	for index, mountCfg := range cfg.Mounts {
 		label := fmt.Sprintf("mounts[%d]", index)
@@ -74,53 +88,6 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("config: duplicate mount name %q", mountCfg.Name)
 		}
 		seenMounts[mountCfg.Name] = true
-		if !knownDrivers[mountCfg.Type] {
-			return fmt.Errorf("config: mount %q has unknown driver %q", mountCfg.Name, mountCfg.Type)
-		}
-		allowedParams := make(map[string]bool)
-		for _, param := range drive.ParamSchema(mountCfg.Type) {
-			allowedParams[param.Name] = true
-			if param.Required && strings.TrimSpace(mountCfg.Params[param.Name]) == "" {
-				return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, param.Name)
-			}
-		}
-		for name := range mountCfg.Params {
-			if !allowedParams[name] {
-				return fmt.Errorf("config: mount %q has unknown parameter %q for driver %q", mountCfg.Name, name, mountCfg.Type)
-			}
-		}
-		params := drive.Params{}
-		for key, value := range mountCfg.Params {
-			params[key] = value
-		}
-		if _, err := drive.New(mountCfg.Type, params); err != nil {
-			return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
-		}
-		enc := cfg.EncryptionFor(mountCfg.Name)
-		if enc.Password != "" {
-			if err := enc.Validate(); err != nil {
-				return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
-			}
-		}
-		readCache := cfg.ReadCacheFor(mountCfg.Name)
-		if readCache.MaxSize != "" {
-			if _, err := ParseSize(readCache.MaxSize); err != nil {
-				return fmt.Errorf("config: mount %q invalid read_cache.max_size: %w", mountCfg.Name, err)
-			}
-		}
-		upload := cfg.UploadFor(mountCfg.Name)
-		if _, err := ParseDuration(upload.UploadDelay); err != nil {
-			return fmt.Errorf("config: mount %q invalid upload.upload_delay: %w", mountCfg.Name, err)
-		}
-		if _, err := ParseDuration(upload.DeleteDelay); err != nil {
-			return fmt.Errorf("config: mount %q invalid upload.delete_delay: %w", mountCfg.Name, err)
-		}
-		if upload.UploadWorkers < 0 {
-			return fmt.Errorf("config: mount %q invalid upload.upload_workers: must be non-negative", mountCfg.Name)
-		}
-		if mountCfg.Upload != nil && (strings.TrimSpace(mountCfg.Upload.DefaultMount) != "" || strings.TrimSpace(mountCfg.Upload.DefaultPath) != "") {
-			return fmt.Errorf("config: mount %q upload.default_mount and upload.default_path are only supported in top-level [upload]", mountCfg.Name)
-		}
 	}
 	if strings.TrimSpace(cfg.Upload.DefaultMount) == "" {
 		if strings.TrimSpace(cfg.Upload.DefaultPath) != "" {
@@ -133,6 +100,65 @@ func Validate(cfg *Config) error {
 		if cfg.Upload.DefaultPath != "" && !strings.HasPrefix(cfg.Upload.DefaultPath, "/") {
 			return fmt.Errorf("config: upload.default_path must be absolute")
 		}
+	}
+	return nil
+}
+
+// ValidateMount checks a single mount's driver, parameters, and encryption.
+// The core open path applies it per mount so one broken mount (missing
+// driver, expiring credentials, invalid params) is skipped and reported
+// instead of blocking the whole namespace.
+func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
+	knownDrivers := make(map[string]bool)
+	for _, name := range drive.Names() {
+		knownDrivers[name] = true
+	}
+	if !knownDrivers[mountCfg.Type] {
+		return fmt.Errorf("config: mount %q has unknown driver %q", mountCfg.Name, mountCfg.Type)
+	}
+	allowedParams := make(map[string]bool)
+	for _, param := range drive.ParamSchema(mountCfg.Type) {
+		allowedParams[param.Name] = true
+		if param.Required && strings.TrimSpace(mountCfg.Params[param.Name]) == "" {
+			return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, param.Name)
+		}
+	}
+	for name := range mountCfg.Params {
+		if !allowedParams[name] {
+			return fmt.Errorf("config: mount %q has unknown parameter %q for driver %q", mountCfg.Name, name, mountCfg.Type)
+		}
+	}
+	params := drive.Params{}
+	for key, value := range mountCfg.Params {
+		params[key] = value
+	}
+	if _, err := drive.New(mountCfg.Type, params); err != nil {
+		return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
+	}
+	enc := cfg.EncryptionFor(mountCfg.Name)
+	if enc.Password != "" {
+		if err := enc.Validate(); err != nil {
+			return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
+		}
+	}
+	readCache := cfg.ReadCacheFor(mountCfg.Name)
+	if readCache.MaxSize != "" {
+		if _, err := ParseSize(readCache.MaxSize); err != nil {
+			return fmt.Errorf("config: mount %q invalid read_cache.max_size: %w", mountCfg.Name, err)
+		}
+	}
+	upload := cfg.UploadFor(mountCfg.Name)
+	if _, err := ParseDuration(upload.UploadDelay); err != nil {
+		return fmt.Errorf("config: mount %q invalid upload.upload_delay: %w", mountCfg.Name, err)
+	}
+	if _, err := ParseDuration(upload.DeleteDelay); err != nil {
+		return fmt.Errorf("config: mount %q invalid upload.delete_delay: %w", mountCfg.Name, err)
+	}
+	if upload.UploadWorkers < 0 {
+		return fmt.Errorf("config: mount %q invalid upload.upload_workers: must be non-negative", mountCfg.Name)
+	}
+	if mountCfg.Upload != nil && (strings.TrimSpace(mountCfg.Upload.DefaultMount) != "" || strings.TrimSpace(mountCfg.Upload.DefaultPath) != "") {
+		return fmt.Errorf("config: mount %q upload.default_mount and upload.default_path are only supported in top-level [upload]", mountCfg.Name)
 	}
 	return nil
 }

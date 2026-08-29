@@ -212,6 +212,9 @@ func mountAsVFS(name string, fs MountedFileSystem) (*VFS, error) {
 type Namespace struct {
 	mu     sync.RWMutex
 	mounts map[string]*VFS
+	// failures are configured mounts that could not be initialized when the
+	// namespace was built; they surface through Mounts() (state "failed").
+	failures []MountFailure
 	// subs tracks live invalidation subscriptions so AddMount/RemoveMount
 	// can attach and detach mounts without breaking the listener contract.
 	subs      map[*invalidationSubscription]struct{}

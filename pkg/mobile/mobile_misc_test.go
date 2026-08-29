@@ -273,6 +273,80 @@ password = "test-password"
 	}
 }
 
+func TestMobileOpenImportedReportsSkippedMounts(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[storage]
+read_cache_dir = "/desktop/cache/read"
+upload_dir = "/desktop/upload"
+state_dir = "/desktop/state"
+
+[[mounts]]
+name = "good"
+type = "localfs"
+[mounts.params]
+root_path = `+util.TOMLPath(remote)+`
+
+[[mounts]]
+name = "broken"
+type = "no-such-driver"
+[mounts.params]
+foo = "bar"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runtimeRaw := testRuntimeJSON(tmp)
+	if raw := ImportConfigJSON(configPath, runtimeRaw); !strings.Contains(raw, `"ok":true`) {
+		t.Fatalf("ImportConfigJSON = %s, want ok", raw)
+	}
+	var opened struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(OpenImportedJSON(runtimeRaw)), &opened); err != nil {
+		t.Fatal(err)
+	}
+	// The failing "broken" mount must not block the import; only "good" opens.
+	if !opened.OK || opened.Data == "" {
+		t.Fatalf("OpenImportedJSON = %+v, want ok despite one failing mount", opened)
+	}
+	defer func() { _ = closeCore(opened.Data) }()
+
+	var mounts struct {
+		OK   bool `json:"ok"`
+		Data []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+			Error string `json:"error"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(MountsJSON(opened.Data)), &mounts); err != nil {
+		t.Fatal(err)
+	}
+	if !mounts.OK {
+		t.Fatalf("MountsJSON = %+v, want ok", mounts)
+	}
+	byName := map[string]struct{ state, message string }{}
+	for _, mount := range mounts.Data {
+		byName[mount.Name] = struct{ state, message string }{mount.State, mount.Error}
+	}
+	if got := byName["good"]; got.state != "" || got.message != "" {
+		t.Fatalf("good mount = %+v, want clean mounted entry", got)
+	}
+	broken, ok := byName["broken"]
+	if !ok {
+		t.Fatalf("skipped mount missing from MountsJSON: %+v", byName)
+	}
+	if broken.state != "failed" || !strings.Contains(broken.message, `unknown driver "no-such-driver"`) {
+		t.Fatalf("broken mount = %+v, want state failed with driver error", broken)
+	}
+}
+
 func TestMobileImportOpenAndResume(t *testing.T) {
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
