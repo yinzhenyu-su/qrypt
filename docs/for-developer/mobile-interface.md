@@ -187,6 +187,15 @@ OpenJSON(configPath, runtimeJSON)
 desktop runtime paths such as `mount_point`, `storage.*_dir`, and log file paths.
 The supplied runtime layout is then applied when opening the imported config.
 
+A single failing mount does not block the open: `OpenJSON`,
+`OpenImportedJSON`, and `ReloadConfigJSON` succeed as long as at least one
+configured mount initializes, and skip the rest. Skipped mounts (including
+mounts that fail per-mount validation, e.g. an unknown driver type or a
+missing required parameter) are reported through `MountsJSON` with
+`state = "failed"` and the initialization `error`, so the UI can tell the
+user which drives are absent and why. Only when every mount fails does the
+open return an error; the error joins the per-mount failures.
+
 ### Browse Files
 
 Use these for file-browser screens:
@@ -287,7 +296,12 @@ with an explicit opener-unavailable error instead of being treated as paths.
 qrypt reads the source once to compute upload hashes and reports this as
 `hashing` with `source_bytes_done/total`. It then checks a few source offsets
 against samples captured during that pass (without a second full read) before
-reopening it for cloud upload. If the destination driver
+reopening it for cloud upload. The whole-file hash pass runs only for mounts
+that need it — encrypted mounts with `content_dedup = true`, whose plaintext
+SHA-256 derives the dedup nonce. Other mounts skip the pre-upload read
+entirely; backends whose own protocol requires content hashes (e.g. quark
+MD5/SHA-1, 115 SHA-1, 139 SHA-256) compute them inline during the upload.
+If the destination driver
 supports source upload, qrypt uploads directly without qrypt staging.
 Drivers that also advertise resumable source upload can continue an interrupted
 provider upload; non-resumable direct drivers, such as scopedfs, localfs, and
@@ -681,17 +695,18 @@ ValidateResumeJSON(coreID, path, fileID, size, modTime, deadlineMS)
 RefreshPathJSON(coreID, path)
 ```
 
+`MountsJSON` returns the live mount table: each mounted drive as
+`{name, path, encrypted}`, followed by the configured mounts that failed to
+initialize as `{name, state: "failed", error}`. Use it (or diff it against
+`ConfigSummaryJSON`'s configured mounts) to surface skipped drives in the UI.
+Entries that mounted successfully leave `state` empty.
+
 ### Reads
 
 ```text
 OpenFileJSON(coreID, path, optionsJSON)
 ReadAtInto(handleID, offset, dst, deadlineMS)
-ReadAtIntoWithRequest(handleID, requestID, offset, dst, deadlineMS)
-ReadAtBatchIntoJSON(handleID, offsetsJSON, dst, slotSize, deadlineMS)
 CancelFileReadJSON(handleID)
-CancelFileReadRequestJSON(handleID, requestID)
-OpenFileStreamJSON(coreID, path, optionsJSON)
-ReadFileStreamInto(handleID, dst, deadlineMS)
 CloseFileJSON(handleID)
 OpenVirtualFileJSON(coreID, path, mode, deadlineMS)
 ReadVirtualFileAtInto(handleID, offset, dst, deadlineMS)
@@ -701,22 +716,8 @@ CloseVirtualFileJSON(handleID)
 
 `ReadAtInto` attaches an internal open-handle access hint to every read. The
 VFS can therefore distinguish contiguous reads, seeks, and overlapping reads
-without requiring the mobile caller to manage VFS state. Use
-`ReadAtIntoWithRequest` when a caller-owned positive request ID is needed for
-`CancelFileReadRequestJSON`; the ID is a cancellation token, not the internal
-VFS sequence number.
-
-`ReadAtBatchIntoJSON` accepts a JSON array of offsets and writes each result to
-`dst[i*slotSize:(i+1)*slotSize]`. It is intended for a small number of
-independent media ranges (up to 64); the returned `data` array contains the
-actual byte count for each slot. The byte payload still uses the direct
-`[]byte` binding and is not base64 encoded.
-
-`OpenFileStreamJSON` plus `ReadFileStreamInto` is the sequential path. It keeps
-the read window bounded and serializes reads on the handle. `deadline_ms` on
-open bounds stream creation; the same option on `ReadFileStreamInto` bounds
-that refill. Close the handle with `CloseFileJSON`, or use
-`CancelFileReadJSON` for an in-flight refill.
+without requiring the mobile caller to manage VFS state. Close the handle
+with `CloseFileJSON`, or use `CancelFileReadJSON` for an in-flight read.
 
 ### Media
 
