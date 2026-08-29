@@ -26,6 +26,10 @@ import (
 var (
 	DirectUploadRetryBaseDelay = 3 * time.Second
 	DirectUploadRetryMaxDelay  = 5 * time.Minute
+	// DirectUploadRetryHeartbeatInterval paces updates emitted while a task
+	// waits out a retry backoff, so observers can tell a live wait from a
+	// stuck task. update() also bumps updated_at on every beat.
+	DirectUploadRetryHeartbeatInterval = 5 * time.Second
 )
 
 // directUploadHashChunkSize is the read buffer for the pre-upload hash pass.
@@ -170,6 +174,7 @@ func (c *Core) uploadStreamDirectBatchFromTask(item task.Task) (*uploadStreamBat
 		nextAttempt:    item.NextAttempt,
 		ready:          make(chan struct{}),
 		done:           make(chan struct{}),
+		retrySignal:    make(chan struct{}, 1),
 	}
 	for i, detail := range detailItems {
 		itemID := directUploadDetailString(detail, "item_id")
@@ -304,10 +309,29 @@ func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *u
 	})
 	timer := time.NewTimer(time.Until(next))
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
+	heartbeat := time.NewTicker(DirectUploadRetryHeartbeatInterval)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			// Backoff elapsed: attempt again.
+		case <-batch.retrySignal:
+			// User-requested immediate retry (RetryTask during the wait):
+			// cut the backoff short and attempt now.
+		case <-heartbeat.C:
+			// A backoff can run for minutes; keep emitting updates so the
+			// task is visibly alive rather than looking stuck.
+			update(func(item *task.Task) {
+				item.Progress.Phase = string(task.StateRetryWait)
+				if item.Detail != nil {
+					item.Detail["phase"] = string(task.StateRetryWait)
+				}
+			})
+			continue
+		}
+		break
 	}
 	batch.mu.Lock()
 	batch.nextAttempt = time.Time{}
@@ -340,6 +364,9 @@ func (b *uploadStreamBatch) scheduleDirectUploadRetry(update task.UpdateFunc, it
 		item.State = task.StateRetryWait
 		item.RetryCount = retryCount
 		item.NextAttempt = next
+		// Advertise immediate retry while backing off: the client shows a
+		// "retry now" affordance and Core.RetryTask wakes the batch early.
+		item.Capabilities.Retryable = true
 		item.Error = &task.Error{Message: err.Error(), Retryable: true}
 	})
 }
@@ -389,6 +416,9 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 		batch.updateTaskSnapshotLocked()
 		batch.mu.Unlock()
 	})
+	// Guarantee source files are reclaimed even if a consumer path forgets to
+	// close its reader (see directUploadSource.releaseOpenFiles).
+	defer source.releaseOpenFiles()
 	if precomputeHashes {
 		// Whole-file hashing is required only to derive the content_dedup
 		// nonce (crypt requires source SHA-256 metadata). Other mounts skip
@@ -549,6 +579,44 @@ type directUploadSource struct {
 	size     int64
 	hashes   drive.SourceHashes
 	progress func(int64)
+
+	// Files opened via Open that consumers have not closed yet. Released
+	// exactly once by releaseOpenFiles when the item finishes, so a consumer
+	// path that forgets to close a reader cannot leak the underlying
+	// resource (e.g. an app file descriptor on Android).
+	mu   sync.Mutex
+	open map[*directUploadFile]struct{}
+}
+
+func (s *directUploadSource) track(f *directUploadFile) {
+	s.mu.Lock()
+	if s.open == nil {
+		s.open = map[*directUploadFile]struct{}{}
+	}
+	s.open[f] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *directUploadSource) untrack(f *directUploadFile) {
+	s.mu.Lock()
+	delete(s.open, f)
+	s.mu.Unlock()
+}
+
+// releaseOpenFiles force-closes every source file still open, defending
+// against readers that were never closed by their consumer. Idempotent in the
+// normal case (consumers closed everything, so there is nothing to do).
+func (s *directUploadSource) releaseOpenFiles() {
+	s.mu.Lock()
+	files := make([]*directUploadFile, 0, len(s.open))
+	for f := range s.open {
+		files = append(files, f)
+	}
+	s.open = nil
+	s.mu.Unlock()
+	for _, f := range files {
+		_ = f.Close()
+	}
 }
 
 // requiresPrecomputedSourceHashes reports whether a direct upload to destPath
@@ -605,7 +673,9 @@ func (s *directUploadSource) Size() int64 {
 }
 
 func (s *directUploadSource) Open(ctx context.Context) (drive.ReadOnlyFile, error) {
-	return &directUploadFile{ctx: ctx, provider: s.provider, token: s.token}, nil
+	f := &directUploadFile{ctx: ctx, provider: s.provider, token: s.token, source: s}
+	s.track(f)
+	return f, nil
 }
 
 func (s *directUploadSource) Hash(algorithm drive.HashAlgorithm) ([]byte, bool) {
@@ -739,6 +809,7 @@ type directUploadFile struct {
 	ctx      context.Context
 	provider UploadSourceProvider
 	token    string
+	source   *directUploadSource
 	mu       sync.Mutex
 	reader   io.ReadCloser
 	offset   int64
@@ -800,10 +871,16 @@ func (f *directUploadFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.reader == nil {
+		if f.source != nil {
+			f.source.untrack(f)
+		}
 		return nil
 	}
 	err := f.reader.Close()
 	f.reader = nil
+	if f.source != nil {
+		f.source.untrack(f)
+	}
 	return err
 }
 

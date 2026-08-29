@@ -36,6 +36,13 @@ type uploadStreamBatch struct {
 	retryCount     int
 	nextAttempt    time.Time
 	recovered      bool
+	// retrySignal wakes a retry_wait backoff early (user-requested "retry
+	// now"). Buffered so a request made just before a retry is not lost.
+	retrySignal chan struct{}
+	// Speed bookkeeping for progress speed_bps/eta_ms derivation. Guarded by mu.
+	speedEstimate  int64
+	lastSpeedBytes int64
+	lastSpeedAt    time.Time
 }
 
 type uploadStreamItem struct {
@@ -202,6 +209,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 		channel:        "staging",
 		ready:          make(chan struct{}),
 		done:           make(chan struct{}),
+		retrySignal:    make(chan struct{}, 1),
 		recovered:      true,
 	}
 	for i, detail := range detailItems {
@@ -572,6 +580,7 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 		channel:        "staging",
 		ready:          make(chan struct{}),
 		done:           make(chan struct{}),
+		retrySignal:    make(chan struct{}, 1),
 	}
 	for i, reqItem := range req.Items {
 		destPath := reqItem.DestPath
@@ -826,6 +835,19 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 			sourceBytesTotal += item.Size
 		}
 	}
+	// Phase-appropriate byte counter so observers can tell a moving transfer
+	// from a stalled one: hashing counts source bytes, uploads count cloud
+	// bytes, app-staged streams count staging bytes. Nothing moving (queued,
+	// backoff, waiting) reports 0.
+	var speedBPS, etaMs int64
+	switch {
+	case phase == "hashing" && sourceBytesTotal >= 0:
+		speedBPS, etaMs = b.progressSpeedAndETA(sourceBytesDone, sourceBytesTotal)
+	case cloudBytesTotal > 0:
+		speedBPS, etaMs = b.progressSpeedAndETA(cloudBytesDone, cloudBytesTotal)
+	case stagingBytesTotal > 0:
+		speedBPS, etaMs = b.progressSpeedAndETA(stagingBytesDone, stagingBytesTotal)
+	}
 	b.update(func(taskItem *task.Task) {
 		if waitingInput && len(active) == 0 {
 			taskItem.State = task.StateWaitingInput
@@ -841,6 +863,8 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 		taskItem.Progress.CloudBytesDone = cloudBytesDone
 		taskItem.Progress.CloudBytesTotal = cloudBytesTotal
 		taskItem.Progress.Phase = phase
+		taskItem.Progress.SpeedBPS = speedBPS
+		taskItem.Progress.ETAMS = etaMs
 		taskItem.Progress.CurrentPath = ""
 		if len(active) > 0 {
 			taskItem.Progress.CurrentPath = active[0]
@@ -853,6 +877,41 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 		}
 		taskItem.Result.Items = results
 	})
+}
+
+// progressSpeedAndETA derives a smoothed transfer rate and remaining ETA from
+// successive snapshot byte counters. Caller holds b.mu. An interval with no
+// bytes moved (stall, reset, item boundary) reports 0 so observers treat the
+// task as waiting instead of assuming invisible progress.
+func (b *uploadStreamBatch) progressSpeedAndETA(done, total int64) (speedBPS, etaMs int64) {
+	if total <= 0 || done >= total {
+		return 0, 0
+	}
+	now := time.Now()
+	if b.lastSpeedAt.IsZero() {
+		b.lastSpeedAt = now
+		b.lastSpeedBytes = done
+		return 0, 0
+	}
+	elapsed := now.Sub(b.lastSpeedAt)
+	if elapsed >= 500*time.Millisecond {
+		delta := done - b.lastSpeedBytes
+		b.lastSpeedAt = now
+		b.lastSpeedBytes = done
+		if delta <= 0 {
+			b.speedEstimate = 0
+		} else if inst := delta * int64(time.Second) / int64(elapsed); inst > 0 {
+			if b.speedEstimate <= 0 {
+				b.speedEstimate = inst
+			} else {
+				b.speedEstimate = (b.speedEstimate + inst) / 2
+			}
+		}
+	}
+	if b.speedEstimate <= 0 {
+		return 0, 0
+	}
+	return b.speedEstimate, (total - done) * 1000 / b.speedEstimate
 }
 
 func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal int64, phase string, active []string) {

@@ -550,6 +550,69 @@ func TestCreateTaskUploadStreamDirectPrehashesWhenDedupOn(t *testing.T) {
 	}
 }
 
+func TestDirectUploadSourceReleaseOpenFiles(t *testing.T) {
+	closed := 0
+	provider := closeTrackingProvider{onClose: func() { closed++ }}
+	source := &directUploadSource{provider: provider, token: "t", size: 4}
+
+	// Normal use: the consumer closes its file; release must find nothing.
+	f, err := source.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Read(make([]byte, 4)); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 1 {
+		t.Fatalf("reader closed %d times, want 1", closed)
+	}
+	source.releaseOpenFiles()
+	if closed != 1 {
+		t.Fatalf("release closed an already-closed file: closed %d, want 1", closed)
+	}
+
+	// Leak: the consumer forgets Close; release must reclaim the reader.
+	f2, err := source.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f2.Read(make([]byte, 4)); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+	source.releaseOpenFiles()
+	if closed != 2 {
+		t.Fatalf("release did not close the leaked reader: closed %d, want 2", closed)
+	}
+	if err := f2.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type closeTrackingProvider struct {
+	onClose func()
+}
+
+func (p closeTrackingProvider) OpenUploadSource(context.Context, string, int64) (io.ReadCloser, error) {
+	return &closeTrackingReader{onClose: p.onClose}, nil
+}
+
+type closeTrackingReader struct {
+	onClose func()
+	closed  bool
+}
+
+func (r *closeTrackingReader) Read([]byte) (int, error) { return 0, io.EOF }
+func (r *closeTrackingReader) Close() error {
+	if !r.closed {
+		r.closed = true
+		r.onClose()
+	}
+	return nil
+}
+
 func TestRequiresPrecomputedSourceHashes(t *testing.T) {
 	c := &Core{
 		mountContentDedup:  map[string]bool{"quark-test": true, "jianguoyun": false},
@@ -569,5 +632,170 @@ func TestRequiresPrecomputedSourceHashes(t *testing.T) {
 		if got := c.requiresPrecomputedSourceHashes(tc.path); got != tc.want {
 			t.Fatalf("requiresPrecomputedSourceHashes(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestUploadStreamBatchProgressSpeedAndETA(t *testing.T) {
+	b := &uploadStreamBatch{}
+	// First sample only seeds bookkeeping.
+	if s, e := b.progressSpeedAndETA(0, 100_000); s != 0 || e != 0 {
+		t.Fatalf("first sample = %d/%d, want 0/0", s, e)
+	}
+	// 50KB over ~1s.
+	b.lastSpeedAt = b.lastSpeedAt.Add(-time.Second)
+	s, e := b.progressSpeedAndETA(50_000, 100_000)
+	if s < 40_000 || s > 60_000 {
+		t.Fatalf("speed = %d, want ~50000", s)
+	}
+	if e < 800 || e > 1_200 {
+		t.Fatalf("eta = %d, want ~1000", e)
+	}
+	// A stalled interval (no bytes moved) must report 0, not stale speed.
+	b.lastSpeedAt = b.lastSpeedAt.Add(-time.Second)
+	if s, e := b.progressSpeedAndETA(50_000, 100_000); s != 0 || e != 0 {
+		t.Fatalf("stalled = %d/%d, want 0/0", s, e)
+	}
+	// Done equals total (complete) reports neither speed nor ETA.
+	if s, e := b.progressSpeedAndETA(100_000, 100_000); s != 0 || e != 0 {
+		t.Fatalf("complete = %d/%d, want 0/0", s, e)
+	}
+}
+
+func TestCreateTaskUploadStreamDirectRetryNowDuringBackoff(t *testing.T) {
+	oldBase := DirectUploadRetryBaseDelay
+	DirectUploadRetryBaseDelay = 30 * time.Second
+	t.Cleanup(func() { DirectUploadRetryBaseDelay = oldBase })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"retry-now.txt": true}
+	payload := []byte("immediate retry payload")
+	provider := &flakyDirectUploadSourceProvider{data: payload, failSecondOpen: true}
+	c.SetUploadSourceProvider(provider)
+
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:   task.TypeUploadStreamDirect,
+		Detail: map[string]any{"auto_retry": true},
+		Items: []task.Item{{
+			ItemID:     "item",
+			SourcePath: "token",
+			DestPath:   "/retry-now.txt",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the first attempt to fail and the backoff to start.
+	var waiting task.Task
+	for {
+		current, err := c.GetTask(context.Background(), created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == task.StateRetryWait {
+			waiting = current
+			break
+		}
+		if current.State == task.StateSucceeded || current.State == task.StateFailed {
+			t.Fatalf("task reached %s before retry_wait: %+v", current.State, current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !waiting.Capabilities.Retryable {
+		t.Fatalf("retry_wait capabilities = %+v, want Retryable", waiting.Capabilities)
+	}
+	if waiting.NextAttempt.IsZero() {
+		t.Fatalf("retry_wait task has no next_attempt_at: %+v", waiting)
+	}
+
+	provider.setFailSecondOpen(false)
+	if err := c.RetryTask(context.Background(), waiting.ID); err != nil {
+		t.Fatal(err)
+	}
+	// waitCoreTask's 3s deadline is far shorter than the 30s backoff, so a
+	// success here proves the retry-now cut the wait short.
+	finished := waitCoreTask(t, c, created.ID)
+	if finished.State != task.StateSucceeded {
+		t.Fatalf("retried task = %+v, want succeeded", finished)
+	}
+	if finished.RetryCount == 0 {
+		t.Fatalf("retry count = 0, want the scheduled backoff counted")
+	}
+}
+
+func TestCreateTaskUploadStreamDirectRetryWaitHeartbeats(t *testing.T) {
+	oldBase := DirectUploadRetryBaseDelay
+	oldBeat := DirectUploadRetryHeartbeatInterval
+	DirectUploadRetryBaseDelay = 3 * time.Second
+	DirectUploadRetryHeartbeatInterval = 40 * time.Millisecond
+	t.Cleanup(func() {
+		DirectUploadRetryBaseDelay = oldBase
+		DirectUploadRetryHeartbeatInterval = oldBeat
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &directUploadTestDriver{}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	c.mountContentDedup = map[string]bool{"heartbeat.txt": true}
+	payload := []byte("heartbeat payload")
+	provider := &flakyDirectUploadSourceProvider{data: payload, failSecondOpen: true}
+	c.SetUploadSourceProvider(provider)
+
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:   task.TypeUploadStreamDirect,
+		Detail: map[string]any{"auto_retry": true},
+		Items: []task.Item{{
+			ItemID:     "item",
+			SourcePath: "token",
+			DestPath:   "/heartbeat.txt",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		current, err := c.GetTask(context.Background(), created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == task.StateRetryWait {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// While the 3s backoff runs, heartbeat updates must bump updated_at
+	// repeatedly (40ms tick, observed over 400ms => comfortably many beats).
+	updates := map[time.Time]bool{}
+	observeUntil := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(observeUntil) {
+		current, err := c.GetTask(context.Background(), created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updates[current.UpdatedAt] = true
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(updates) < 3 {
+		t.Fatalf("distinct updated_at during backoff = %d, want >= 3 heartbeats", len(updates))
 	}
 }
