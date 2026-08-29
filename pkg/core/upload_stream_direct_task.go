@@ -28,6 +28,11 @@ var (
 	DirectUploadRetryMaxDelay  = 5 * time.Minute
 )
 
+// directUploadHashChunkSize is the read buffer for the pre-upload hash pass.
+// Mobile sources stream through the app's content provider, so a larger
+// buffer means fewer per-chunk round trips, which dominates hashing time.
+const directUploadHashChunkSize = 1 << 20
+
 const directUploadOffsetSampleSize = 4 * 1024
 
 type directUploadBackend interface {
@@ -365,11 +370,14 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	size := item.Size
 	item.Open = false
 	item.State = task.StateRunning
-	item.CloudPhase = "hashing"
 	item.Error = nil
 	item.SourceRead = 0
 	item.CloudWritten = 0
 	item.CloudTotal = 0
+	precomputeHashes := c.requiresPrecomputedSourceHashes(destPath)
+	if precomputeHashes {
+		item.CloudPhase = "hashing"
+	}
 	batch.updateTaskSnapshotLocked()
 	batch.mu.Unlock()
 
@@ -381,9 +389,15 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 		batch.updateTaskSnapshotLocked()
 		batch.mu.Unlock()
 	})
-	if err := source.computeHashes(ctx); err != nil {
-		c.failUploadStreamDirectItem(batch, itemID, err)
-		return err
+	if precomputeHashes {
+		// Whole-file hashing is required only to derive the content_dedup
+		// nonce (crypt requires source SHA-256 metadata). Other mounts skip
+		// the full pre-upload read entirely; backends that need content
+		// hashes for their own protocol compute them inline.
+		if err := source.computeHashes(ctx); err != nil {
+			c.failUploadStreamDirectItem(batch, itemID, err)
+			return err
+		}
 	}
 	batch.mu.Lock()
 	if current := batch.byID[itemID]; current != nil {
@@ -537,6 +551,37 @@ type directUploadSource struct {
 	progress func(int64)
 }
 
+// requiresPrecomputedSourceHashes reports whether a direct upload to destPath
+// must hash the whole source before uploading: only encrypted content_dedup
+// mounts need the plaintext SHA-256 to derive the dedup nonce. Every other
+// mount skips the full pre-upload read; backends whose protocol requires
+// content hashes compute them inline.
+func (c *Core) requiresPrecomputedSourceHashes(destPath string) bool {
+	if c == nil || len(c.mountContentDedup) == 0 {
+		return false
+	}
+	name := pathMountName(destPath)
+	if name == "" {
+		return false
+	}
+	if dedup, known := c.mountContentDedup[name]; known {
+		return dedup
+	}
+	// destPath may omit the mount prefix (the app's auto-upload remote path,
+	// e.g. /Upload/file); such uploads land on upload.default_mount.
+	return c.mountContentDedup[c.defaultUploadMount]
+}
+
+// pathMountName returns the first path segment of a virtual path
+// ("/mount/rest/file" -> "mount").
+func pathMountName(path string) string {
+	path = strings.Trim(path, "/")
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
 func (c *Core) newDirectUploadSource(token string, size int64, progress ...func(int64)) *directUploadSource {
 	c.streamsMu.Lock()
 	provider := c.uploadSources
@@ -586,7 +631,10 @@ func (s *directUploadSource) computeHashes(ctx context.Context) error {
 		{drive.HashSHA256, sha256.New()},
 	}
 	samples := newDirectUploadSamples(s.size)
-	buf := make([]byte, uploadCopyChunkSize)
+	// A larger buffer than the staging/upload copies cuts the number of
+	// provider round trips (each Read crosses to the app's content provider),
+	// which dominates the pre-upload hashing cost on mobile.
+	buf := make([]byte, directUploadHashChunkSize)
 	var written int64
 	for {
 		n, readErr := reader.Read(buf)

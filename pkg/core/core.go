@@ -54,9 +54,16 @@ type Core struct {
 	uploadSources      UploadSourceProvider
 	readChunkLimit     int
 	vfsCancel          context.CancelFunc
-	streamsMu          sync.Mutex
-	downloadStreams    map[string]*downloadStreamBatch
-	uploadStreams      map[string]*uploadStreamBatch
+	// mountContentDedup records, per mount name, whether the mount is
+	// encrypted with content_dedup. Direct uploads only precompute whole-file
+	// source hashes for such mounts; the plaintext SHA-256 is required to
+	// derive the dedup nonce (crypt nonceForSource). Mounts without it skip
+	// the pre-upload full read and let their backend compute any hashes the
+	// protocol needs inline.
+	mountContentDedup map[string]bool
+	streamsMu         sync.Mutex
+	downloadStreams   map[string]*downloadStreamBatch
+	uploadStreams     map[string]*uploadStreamBatch
 }
 
 type RuntimeLayout struct {
@@ -107,7 +114,7 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	if readChunkLimit <= 0 {
 		readChunkLimit = DefaultReadChunkLimit
 	}
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, vfsCancel: vfsCancel}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if cfg.Debug.Enabled {
 		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
@@ -318,7 +325,10 @@ func (c *Core) ReleaseReadSession(sessionID uint64) {
 }
 
 func BuildFileSystem(ctx context.Context, cfg *config.Config, opts Options) (BuiltFileSystem, func(), error) {
-	if err := config.Validate(cfg); err != nil {
+	// Global config problems (version, bandwidth, mount names, upload
+	// defaults) abort the open; mount-scoped problems are handled per mount
+	// in buildNamespace so one broken mount cannot block the others.
+	if err := config.ValidateGlobal(cfg); err != nil {
 		return nil, nil, err
 	}
 	limits, err := cfg.EffectiveBandwidthLimits()
@@ -471,13 +481,26 @@ type mountBuildResult struct {
 
 func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, opts Options) (BuiltFileSystem, func(), error) {
 	var mountConfigs []config.MountConfig
-	for _, mountCfg := range cfg.Mounts {
+	var mountFailures []vfs.MountFailure
+	for i, mountCfg := range cfg.Mounts {
 		if opts.MountName != "" && mountCfg.Name != opts.MountName {
+			continue
+		}
+		if err := config.ValidateMount(cfg, i, mountCfg); err != nil {
+			logging.L.Warnf("config: mount %q failed validation, continuing with remaining mounts: %v", mountCfg.Name, err)
+			mountFailures = append(mountFailures, vfs.MountFailure{Name: mountCfg.Name, Err: err})
 			continue
 		}
 		mountConfigs = append(mountConfigs, mountCfg)
 	}
 	if len(mountConfigs) == 0 {
+		if len(mountFailures) > 0 {
+			errs := make([]error, 0, len(mountFailures))
+			for _, failure := range mountFailures {
+				errs = append(errs, failure.Err)
+			}
+			return nil, nil, fmt.Errorf("config: requested mounts failed: %w", errors.Join(errs...))
+		}
 		if opts.MountName != "" {
 			return nil, nil, fmt.Errorf("config: mount %q not found", opts.MountName)
 		}
@@ -497,22 +520,30 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 
 	mounts := make([]vfs.Mount, 0, len(results))
 	drivers := make([]drive.Driver, 0, len(results))
-	var buildErr error
-	for _, result := range results {
+	var mountErrs []error
+	for i, result := range results {
 		if result.driver != nil {
 			drivers = append(drivers, result.driver)
-		}
-		if result.err != nil && buildErr == nil {
-			buildErr = result.err
 		}
 		if result.mount.FS != nil {
 			mounts = append(mounts, result.mount)
 		}
+		if result.err != nil {
+			name := mountConfigs[i].Name
+			logging.L.Warnf("config: mount %q failed, continuing with remaining mounts: %v", name, result.err)
+			mountErrs = append(mountErrs, fmt.Errorf("config: mount %q: %w", name, result.err))
+			mountFailures = append(mountFailures, vfs.MountFailure{Name: name, Err: result.err})
+		}
 	}
-	if buildErr != nil {
+	if len(mounts) == 0 {
+		// A single failing mount must not block the whole namespace: keep the
+		// mounts that initialized and only fail the open when none did.
 		closeMounts(mounts)
 		dropAll(ctx, drivers)
-		return nil, nil, buildErr
+		if len(mountErrs) == 1 {
+			return nil, nil, mountErrs[0]
+		}
+		return nil, nil, fmt.Errorf("config: all mounts failed: %w", errors.Join(mountErrs...))
 	}
 
 	if opts.MountName != "" && !opts.ForceNamespace {
@@ -538,6 +569,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		dropAll(ctx, drivers)
 		return nil, nil, err
 	}
+	ns.SetMountFailures(mountFailures)
 	return ns, func() {
 		flushReadCache(ns)
 		closeMounts(mounts)
@@ -638,6 +670,21 @@ func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error
 
 func driverStateDir(layout RuntimeLayout, mountName string) string {
 	return filepath.Join(layout.DriverDir, mountName)
+}
+
+// contentDedupByMount returns, per mount name, whether the mount's encryption
+// enables content_dedup (encryption with a password AND dedup). Only these
+// mounts need whole-file plaintext hashes computed before a direct upload.
+func contentDedupByMount(cfg *config.Config) map[string]bool {
+	dedup := make(map[string]bool)
+	if cfg == nil {
+		return dedup
+	}
+	for _, mount := range cfg.Mounts {
+		enc := cfg.EncryptionFor(mount.Name)
+		dedup[mount.Name] = enc.Password != "" && enc.ContentDedup
+	}
+	return dedup
 }
 
 func installDriverStateStore(driver drive.Driver, stateDir string) {

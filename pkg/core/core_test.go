@@ -45,6 +45,9 @@ func init() {
 		}
 		return &initProbeDriver{name: params["name"], probe: probe}, nil
 	}, drive.ParamDef{Name: "name", Required: true})
+	drive.Register("core-fail-init-test", func(params drive.Params) (drive.Driver, error) {
+		return &failInitDriver{name: params["name"]}, nil
+	}, drive.ParamDef{Name: "name", Required: true})
 }
 
 func (d *initProbeDriver) Init(ctx context.Context) error {
@@ -76,6 +79,39 @@ func (d *initProbeDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, e
 }
 
 func (d *initProbeDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
+	return nil, nil
+}
+
+// failInitDriver is a backend whose initialization always fails, used to
+// verify that a single failing mount does not block building the namespace.
+type failInitDriver struct {
+	drive.UnsupportedOperations
+	name string
+}
+
+func (d *failInitDriver) Init(context.Context) error {
+	return fmt.Errorf("fail-init driver %q refuses to initialize", d.name)
+}
+
+func (d *failInitDriver) Drop(context.Context) error { return nil }
+
+func (d *failInitDriver) List(context.Context, string) ([]drive.Entry, error) { return nil, nil }
+
+func (d *failInitDriver) Read(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {
+	return nil, drive.ErrUnsupported
+}
+
+func (d *failInitDriver) Space(context.Context) (drive.Space, error) {
+	return drive.Space{}, drive.ErrSpaceUnsupported
+}
+
+func (d *failInitDriver) Capabilities() []drive.Capability { return nil }
+
+func (d *failInitDriver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
+	return drive.DebugSnapshot{}, nil
+}
+
+func (d *failInitDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, error) {
 	return nil, nil
 }
 
@@ -124,6 +160,84 @@ func TestBuildFileSystemInitializesMountsConcurrently(t *testing.T) {
 		t.Fatal(result.err)
 	}
 	result.cleanup()
+}
+
+func TestBuildFileSystemSkipsFailedMounts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	first := filepath.Join(tmp, "first")
+	second := filepath.Join(tmp, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{Mounts: []config.MountConfig{
+		{Name: "broken", Type: "core-fail-init-test", Params: config.ParamMap{"name": "broken"}},
+		{Name: "first", Type: "localfs", Params: config.ParamMap{"root_path": first}},
+		{Name: "second", Type: "localfs", Params: config.ParamMap{"root_path": second}},
+	}}
+	fs, cleanup, err := BuildFileSystem(ctx, cfg, Options{Runtime: testRuntimeLayout(tmp)})
+	if err != nil {
+		t.Fatalf("a single failing mount must not fail the build: %v", err)
+	}
+	defer cleanup()
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, entry := range entries {
+		names[entry.Name] = true
+	}
+	if names["broken"] {
+		t.Fatalf("failed mount leaked into namespace: %v", entries)
+	}
+	if !names["first"] || !names["second"] {
+		t.Fatalf("working mounts missing from namespace: %v", entries)
+	}
+
+	reporter, ok := fs.(vfs.MountReporter)
+	if !ok {
+		t.Fatalf("built filesystem does not report mounts")
+	}
+	reported := map[string]vfs.MountInfo{}
+	for _, info := range reporter.Mounts() {
+		reported[info.Name] = info
+	}
+	failed, ok := reported["broken"]
+	if !ok {
+		t.Fatalf("failed mount missing from mount report: %v", reported)
+	}
+	if failed.State != "failed" || !strings.Contains(failed.Error, "refuses to initialize") {
+		t.Fatalf("failed mount report = %+v, want state/failed with error", failed)
+	}
+	if info := reported["first"]; info.State != "" || info.Error != "" || !strings.HasPrefix(info.Path, "/first") {
+		t.Fatalf("working mount report = %+v, want clean mounted entry", info)
+	}
+}
+
+func TestBuildFileSystemFailsWhenEveryMountFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := t.TempDir()
+	cfg := &config.Config{Mounts: []config.MountConfig{
+		{Name: "alpha", Type: "core-fail-init-test", Params: config.ParamMap{"name": "alpha"}},
+		{Name: "beta", Type: "core-fail-init-test", Params: config.ParamMap{"name": "beta"}},
+	}}
+	if _, _, err := BuildFileSystem(ctx, cfg, Options{Runtime: testRuntimeLayout(tmp)}); err == nil {
+		t.Fatal("expected an error when every mount fails")
+	} else {
+		for _, name := range []string{"alpha", "beta"} {
+			if !strings.Contains(err.Error(), name) {
+				t.Fatalf("aggregate error should mention mount %q: %v", name, err)
+			}
+		}
+	}
 }
 
 // testLogRoot is a process-wide directory for session log files, deliberately
