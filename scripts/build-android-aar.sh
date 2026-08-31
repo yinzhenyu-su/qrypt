@@ -4,6 +4,9 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT_DIR="${1:-$ROOT_DIR/dist/android}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
+# ABI=arm64 builds only the device ABI for fast dev iteration (~4x less Go
+# cross-compilation); ABI=all (default) keeps the full release matrix.
+ABI="${ABI:-all}"
 GOPATH_BIN="$(go env GOPATH)/bin"
 PATH="$PATH:$GOPATH_BIN"
 
@@ -20,8 +23,14 @@ if [ "$SKIP_TESTS" != "1" ]; then
   go test ./pkg/mobile ./pkg/core ./pkg/vfs ./pkg/drive
 fi
 
+if [ "$ABI" = "all" ]; then
+  TARGET="android"
+else
+  TARGET="android/$ABI"
+fi
+
 gomobile bind \
-  -target=android \
+  -target="$TARGET" \
   -androidapi 21 \
   -o "$OUT_DIR/qrypt-mobile.aar" \
   ./pkg/mobile
