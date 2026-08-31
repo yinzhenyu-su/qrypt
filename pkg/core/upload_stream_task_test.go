@@ -133,6 +133,59 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	}
 }
 
+func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
+	// 任务在任意阶段都可删除：waiting_input（staging 未开始写）时
+	// DismissTask 应取消并移除任务，而不是报 "not terminal"。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	UploadStreamTaskPollInterval = 5 * time.Millisecond
+
+	created, err := c.CreateTask(ctx, task.Request{
+		Type:  task.TypeUploadStreamBatch,
+		Items: []task.Item{{ItemID: "item", DestPath: "/dismiss.txt", Size: 4}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cur, err := c.GetTask(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.State == task.StateWaitingInput {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task state = %s, want waiting_input", cur.State)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := c.DismissTask(ctx, created.ID); err != nil {
+		t.Fatalf("DismissTask of waiting_input task: %v", err)
+	}
+	if _, err := c.GetTask(ctx, created.ID); err == nil {
+		t.Fatal("task still present after dismiss, want removed")
+	}
+	entries, err := os.ReadDir(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "dismiss.txt" {
+			t.Fatal("dismissed waiting_input task left a remote file")
+		}
+	}
+}
+
 func TestCommitIncompleteStagingStillRequiresSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
