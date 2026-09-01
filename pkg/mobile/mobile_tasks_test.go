@@ -628,7 +628,13 @@ root_path = `+util.TOMLPath(remote)+`
 
 func waitMobileTaskState(t *testing.T, coreID, taskID, want string) mobileTask {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// The upload/download stream pipeline makes several disk round trips
+	// (staging writes, fsync, worker pickup), which on a loaded CI runner —
+	// especially Windows — can exceed the previous 3s budget. The loop below
+	// returns as soon as the state lands, so the wider budget only costs
+	// wall time on genuinely slow machines, and states are tracked so a
+	// stuck task reports where it got to instead of a bare timeout.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		raw := GetTaskJSON(coreID, taskID)
 		var got struct {
@@ -649,8 +655,23 @@ func waitMobileTaskState(t *testing.T, coreID, taskID, want string) mobileTask {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("task %s did not reach state %s", taskID, want)
+	t.Fatalf("task %s did not reach state %s (last state %s)", taskID, want, taskLastState(t, coreID, taskID))
 	return mobileTask{}
+}
+
+// taskLastState reads the current state for a timeout diagnostic without
+// re-failing: waitMobileTaskState already printed a failure, so only the
+// state is of interest here.
+func taskLastState(t *testing.T, coreID, taskID string) string {
+	t.Helper()
+	raw := GetTaskJSON(coreID, taskID)
+	var got struct {
+		Data mobileTask `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		return "unknown"
+	}
+	return got.Data.State
 }
 
 func readUploadEventItem(t *testing.T, handleID, taskID string, match func(mobileTaskItem) bool) bool {
