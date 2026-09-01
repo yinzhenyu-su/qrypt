@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -303,14 +302,8 @@ func TestMobileProviderPrefersRawFD(t *testing.T) {
 	}
 }
 
-func dupFD(t *testing.T, f *os.File) int64 {
-	t.Helper()
-	dup, err := syscall.Dup(int(f.Fd()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return int64(dup)
-}
+// dupFD is implemented per-platform: syscall.Dup on Unix, DuplicateHandle on
+// Windows (which has no syscall.Dup). See dupfd_unix_test.go / dupfd_windows_test.go.
 
 func TestMobileProviderFallsBackWhenRawFDUnsupported(t *testing.T) {
 	opener := newFakeOpener()

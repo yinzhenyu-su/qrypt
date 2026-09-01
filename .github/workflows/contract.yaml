@@ -101,8 +101,40 @@ jobs:
 
       - name: "Contract suite: ${{ matrix.mount }}"
         timeout-minutes: 30
+        env:
+          MOUNT: ${{ matrix.mount }}
         run: |
-          /tmp/qrypt debug test contract --socket /tmp/qrypt.sock --mount "${{ matrix.mount }}"
+          # A mount can be skipped at server startup when its init hits a
+          # transient network blip, in which case the suite fails immediately
+          # with `mount "X" not found`. Restart the mount server once so the
+          # mount gets a fresh init attempt before declaring the run failed.
+          out=$(mktemp)
+          attempts=2
+          for i in $(seq 1 "$attempts"); do
+            if /tmp/qrypt debug test contract --socket /tmp/qrypt.sock --mount "$MOUNT" >"$out" 2>&1; then
+              cat "$out"
+              exit 0
+            fi
+            rc=$?
+            cat "$out"
+            if [ "$i" -ge "$attempts" ] || ! grep -q "not found" "$out"; then
+              exit "$rc"
+            fi
+            echo "== mount \"$MOUNT\" missing from the server; restarting mount server for a fresh init attempt =="
+            pkill -f '^/tmp/qrypt mount' || true
+            sleep 2
+            rm -f /tmp/qrypt.sock
+            nohup /tmp/qrypt mount -s /tmp/qrypt.sock >/tmp/qrypt-mount.log 2>&1 &
+            for j in $(seq 1 120); do
+              [ -S /tmp/qrypt.sock ] && break
+              sleep 1
+            done
+            if [ ! -S /tmp/qrypt.sock ]; then
+              echo "mount server did not restart:"
+              cat /tmp/qrypt-mount.log
+              exit 1
+            fi
+          done
 
       - name: Dump mount server log on failure
         if: failure()

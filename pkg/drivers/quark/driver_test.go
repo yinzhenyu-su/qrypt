@@ -1441,7 +1441,13 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	routeOSSToTestServer(driver.cl.ossClient, oss)
 	driver.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1}))
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	// The body must be large enough that throttling it at 1 byte/s needs hours:
+	// then the deadline always fires inside the throttled body read, no matter
+	// how slow the local auth/TLS round trip gets on a loaded CI runner. With a
+	// tiny body the outcome can race the wall clock (observed once on a GH
+	// ubuntu runner), so the deadline is a determinism aid, not the assert.
+	body := strings.Repeat("s", 64*1024)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	pre := &upPreResp{}
@@ -1452,8 +1458,8 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	pre.Data.Bucket = "bucket"
 	pre.Data.AuthInfo = "auth-info"
 
-	_, err := driver.uploadPart(ctx, pre, 1, int64(len("slow")), func() (io.Reader, error) {
-		return strings.NewReader("slow"), nil
+	_, err := driver.uploadPart(ctx, pre, 1, int64(len(body)), func() (io.Reader, error) {
+		return strings.NewReader(body), nil
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("uploadPart error = %v, want context deadline exceeded", err)

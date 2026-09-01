@@ -135,7 +135,12 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	}
 	body, err := debugSocketPostJSON(cmd.Context(), "/v1/driver/test", req)
 	if err != nil {
-		if strings.Contains(err.Error(), "/v1/driver/test returned status 404") {
+		// A handler-level 404 (mount not found/disabled) carries the server's
+		// reason in the body; only a route-level 404 means the socket's binary
+		// predates this endpoint.
+		if detail, routeMissing := debugSocket404Detail(err); detail != "" {
+			return fmt.Errorf("debug test failed: %s", detail)
+		} else if routeMissing {
 			return fmt.Errorf("debug test endpoint is not available on this socket; restart the qrypt mount process with the current binary")
 		}
 		return err

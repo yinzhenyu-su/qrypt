@@ -27,6 +27,12 @@ if (-not (Test-Path $Binary)) {
 }
 
 $work = Join-Path $env:TEMP ("qrypt-smoke-windows-" + [guid]::NewGuid().ToString("N"))
+# GitHub-hosted Windows runners point TEMP at the 8.3 short form
+# (C:\Users\RUNNER~1\...); WinFsp refuses to mount at paths whose components
+# are short names ("mount point in use"), so canonicalize the work tree to
+# its long path before deriving any child paths.
+$work = [System.IO.Directory]::CreateDirectory($work).FullName
+$work = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($work).Path
 $remote  = Join-Path $work "remote"
 $cache   = Join-Path $work "cache"
 $upload  = Join-Path $work "upload"
@@ -85,20 +91,30 @@ function Assert-True {
 
 $proc = $null
 try {
-    $proc = Start-Process -FilePath $Binary `
-        -ArgumentList @("mount", "--config", $config) `
-        -WorkingDirectory $work `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr `
-        -PassThru
-
     # Readiness: the FUSE mount exposes the `local` mount name as a child of
-    # the mount point; only the nocgo host + WinFsp can create it.
+    # the mount point; only the nocgo host + WinFsp can create it. WinFsp can
+    # transiently report "mount point in use" on a fresh runner (Defender
+    # scanning the new directory, leftover mount state), so restart once.
     $ready = $false
-    for ($i = 0; $i -lt 60; $i++) {
-        if ($proc.HasExited) { break }
-        Start-Sleep -Seconds 1
-        if (Test-Path (Join-Path $mountPt "local")) { $ready = $true; break }
+    for ($attempt = 0; $attempt -lt 2 -and -not $ready; $attempt++) {
+        if ($attempt -gt 0) {
+            Write-Host "mount attempt $attempt failed; restarting once"
+            if ($proc -and -not $proc.HasExited) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
+        }
+        $proc = Start-Process -FilePath $Binary `
+            -ArgumentList @("mount", "--config", $config) `
+            -WorkingDirectory $work `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -PassThru
+        for ($i = 0; $i -lt 60; $i++) {
+            if ($proc.HasExited) { break }
+            Start-Sleep -Seconds 1
+            if (Test-Path (Join-Path $mountPt "local")) { $ready = $true; break }
+        }
     }
     Assert-True $ready "mount not ready within 60s (process exited: $($proc.HasExited))"
 
