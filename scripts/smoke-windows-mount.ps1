@@ -137,7 +137,10 @@ try {
     }
     Assert-True ($backendEntries.Count -eq 1) "backend file count = $($backendEntries.Count), want 1"
     Assert-True ($backendEntries[0].Name -ne "hello.txt") "backend file is not encrypted: $($backendEntries[0].Name)"
-    Assert-True ($backendEntries[0].Name -match '^[a-z0-9]{40,}$') "unexpected backend file name: $($backendEntries[0].Name)"
+    # Encrypted names are lowercase base32 (rclone encoding); short plaintext
+    # names yield short names (e.g. 25 chars for "hello.txt"), so only require
+    # an encrypted-looking bare name, not a minimum length.
+    Assert-True ($backendEntries[0].Name -match '^[a-z0-9]{8,}$') "unexpected backend file name: $($backendEntries[0].Name)"
 
     # Read back through the FUSE path again (served by the mount).
     $readBack = [System.IO.File]::ReadAllText($fuseFile)
