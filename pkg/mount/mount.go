@@ -194,6 +194,12 @@ func mountOptionsForGOOS(opts Options, goos string) []string {
 	if goos == "windows" {
 		flags = append(flags,
 			"-o", "fsname=qrypt",
+			// WinFsp enforces POSIX mode bits for access checks. Without
+			// uid/gid the caller only gets the "other" bits (typically 0555
+			// for qrypt dirs), so every write fails with access denied; -1
+			// makes the mounting user the owner of all files.
+			"-o", "uid=-1",
+			"-o", "gid=-1",
 		)
 	}
 	if opts.AllowOther {
