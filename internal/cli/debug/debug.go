@@ -107,6 +107,26 @@ func debugSocketPostJSON(ctx context.Context, endpoint string, value any) ([]byt
 	return client.PostJSON(ctx, endpoint, value)
 }
 
+// debugSocket404Detail classifies a 404 from the socket's control server: a
+// handler-level 404 (e.g. `mount "x" not found`) carries the failure reason
+// in the body, while a route-level 404 (mux's bare "page not found") means
+// the endpoint itself is absent, e.g. the socket is served by an older
+// binary. It returns the explanation body, or routeMissing=true when the
+// caller should emit the "endpoint not available" hint instead.
+func debugSocket404Detail(err error) (body string, routeMissing bool) {
+	msg := err.Error()
+	prefix := "returned status 404:"
+	i := strings.Index(msg, prefix)
+	if i == -1 {
+		return "", false
+	}
+	detail := msg[i+len(prefix):]
+	if strings.TrimSpace(detail) == "" || strings.Contains(detail, "page not found") {
+		return "", true
+	}
+	return strings.TrimSpace(detail), false
+}
+
 func newDebugRawCmd(rt cliruntime.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "raw ENDPOINT",

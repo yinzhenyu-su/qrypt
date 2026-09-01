@@ -537,12 +537,20 @@ root_path = `+util.TOMLPath(filepath.Join(tmp, "missing"))+`
 		t.Fatalf("expected selected mount listing, got %q", out.String())
 	}
 
+	// A full namespace build skips mounts that fail to initialize (see
+	// "skip failed mounts instead of blocking namespace open") and keeps
+	// serving the working ones, so the build must succeed and list only the
+	// healthy mount.
 	root = NewRootCommand()
-	root.SetOut(&bytes.Buffer{})
+	var fullOut bytes.Buffer
+	root.SetOut(&fullOut)
 	root.SetErr(&bytes.Buffer{})
 	root.SetArgs([]string{"fs", "--config", configPath, "list", "/"})
-	if err := root.Execute(); err == nil {
-		t.Fatal("expected full namespace build to fail on broken mount")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("full namespace build: %v", err)
+	}
+	if !strings.Contains(fullOut.String(), "local") || strings.Contains(fullOut.String(), "broken") {
+		t.Fatalf("expected only the healthy mount in the namespace listing, got %q", fullOut.String())
 	}
 }
 

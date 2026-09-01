@@ -115,7 +115,9 @@ func runDebugDriverBench(cmd *cobra.Command, test string) error {
 	}
 	body, err := debugSocketPostJSON(cmd.Context(), "/v1/bench", req)
 	if err != nil {
-		if strings.Contains(err.Error(), "/v1/bench returned status 404") {
+		if detail, routeMissing := debugSocket404Detail(err); detail != "" {
+			return fmt.Errorf("debug bench failed: %s", detail)
+		} else if routeMissing {
 			return fmt.Errorf("debug bench endpoint is not available on this socket; restart the qrypt mount process with the current binary")
 		}
 		return err
