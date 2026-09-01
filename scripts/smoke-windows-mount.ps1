@@ -44,7 +44,9 @@ $stderr  = Join-Path $work "mount.stderr.log"
 $fuseFile = Join-Path $mountPt "local\hello.txt"
 $content  = "qrypt windows mount smoke " + (Get-Date -Format o)
 
-New-Item -ItemType Directory -Force -Path $remote, $cache, $upload, $state, $mountPt | Out-Null
+# The mount point directory must NOT exist: WinFsp preflight rejects an
+# existing directory as "mount point in use" and creates it at mount time.
+New-Item -ItemType Directory -Force -Path $remote, $cache, $upload, $state | Out-Null
 
 # Forward-slash paths keep the TOML free of backslash escapes; Go and the
 # Windows APIs accept them.
