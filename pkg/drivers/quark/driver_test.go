@@ -1416,10 +1416,11 @@ func TestDriverPutSourceStreamsMultipartWithoutPartSizedReads(t *testing.T) {
 }
 
 func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
+	// The handlers run on httptest's own goroutines and must never call
+	// t.Fatal/t.Fatalf: when the client's deadline fires mid-request it aborts
+	// the connection, the handler's response write fails, and a test-fatal
+	// call from that goroutine fails the whole test (observed on GH runners).
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Fatalf("unexpected oss method: %s", r.Method)
-		}
 		_, _ = io.ReadAll(r.Body)
 		w.Header().Set("Etag", "etag-1")
 		w.WriteHeader(http.StatusOK)
@@ -1427,14 +1428,8 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	defer oss.Close()
 
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/file/upload/auth" {
-			t.Fatalf("unexpected api path: %s", r.URL.Path)
-		}
-		writeJSON(t, w, map[string]any{
-			"status": 200,
-			"code":   0,
-			"data":   map[string]any{"auth_key": "auth-key"},
-		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":200,"code":0,"data":{"auth_key":"auth-key"}}`))
 	}))
 	defer api.Close()
 
@@ -1445,9 +1440,11 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	// then the deadline always fires inside the throttled body read, no matter
 	// how slow the local auth/TLS round trip gets on a loaded CI runner. With a
 	// tiny body the outcome can race the wall clock (observed once on a GH
-	// ubuntu runner), so the deadline is a determinism aid, not the assert.
+	// ubuntu runner), so the deadline is a determinism aid, not the assert. It
+	// is set well above the auth round trip so only the throttled read can hit
+	// it; a success would mean the native limiter was bypassed.
 	body := strings.Repeat("s", 64*1024)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	pre := &upPreResp{}

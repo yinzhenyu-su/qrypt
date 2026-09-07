@@ -66,6 +66,13 @@ func TestCoreCloseWaitsForFilesystemWorkers(t *testing.T) {
 // resources (workers may still write journal/staging/cache) and must keep
 // c.fs so the caller can util. A retried Close waits for the background
 // teardown and then runs cleanup exactly once.
+//
+// The VFS is wrapped in a teardownFS whose first Close deterministically
+// reports the caller's context error: VFS.Close itself selects between the
+// already-finished teardown and an already-cancelled context, so on an idle
+// VFS (whose teardown completes in microseconds) the outcome races the wall
+// clock on loaded CI runners. The wrapper removes that race without changing
+// what Core.Close must do with the returned error.
 func TestCoreCloseTimeoutDoesNotCleanup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -83,7 +90,7 @@ func TestCoreCloseTimeoutDoesNotCleanup(t *testing.T) {
 	}
 	fs.Start(ctx)
 	cleaned := false
-	c := &Core{fs: fs, cleanup: func() { cleaned = true }}
+	c := &Core{fs: &teardownFS{BuiltFileSystem: fs}, cleanup: func() { cleaned = true }}
 
 	// An already-cancelled context makes fs.Close return ctx.Canceled
 	// immediately (teardown continues in the background).
@@ -118,4 +125,23 @@ func TestCoreCloseTimeoutDoesNotCleanup(t *testing.T) {
 	if c.cleanup != nil || c.fs != nil {
 		t.Fatal("cleanup state not finalized after successful Close")
 	}
+}
+
+// teardownFS wraps a BuiltFileSystem so the first Close deterministically
+// observes a teardown that is still in flight: it waits on ctx and returns
+// ctx.Err() without touching the wrapped filesystem, so Core.Close must keep
+// c.fs and defer cleanup exactly as if the real teardown had not finished in
+// time. Later Closes delegate to the real filesystem.
+type teardownFS struct {
+	BuiltFileSystem
+	closing bool
+}
+
+func (f *teardownFS) Close(ctx context.Context) error {
+	if !f.closing {
+		f.closing = true
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return f.BuiltFileSystem.Close(ctx)
 }
