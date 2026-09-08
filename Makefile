@@ -23,7 +23,16 @@ BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
 LDFLAGS ?= -s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=$(VERSION) -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=$(COMMIT) -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=$(BUILD_TIME) -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=$(DIRTY)
 
-.PHONY: build dist mkdist clean
+.PHONY: build dist mkdist clean hooks
+
+# ── Git hooks ──────────────────────────────────────────────────────
+# Register the committed .githooks scripts so every commit/push runs the
+# local CI checks before GitHub Actions does. One-time per clone:
+#   make hooks
+hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit .githooks/pre-push
+	@echo "local git hooks installed (core.hooksPath=.githooks)"
 
 build: mkdist
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(DIST_DIR)/qrypt ./cmd/qrypt/
