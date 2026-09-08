@@ -40,10 +40,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "$(go env GOVERSION)" != "go1.27.0" ]; then
-  echo "CI requires go1.27.0; found $(go env GOVERSION)" >&2
-  exit 1
-fi
+# CI pins go1.27.0 exactly; any go1.27.x patch satisfies the toolchain line.
+case "$(go env GOVERSION)" in
+  go1.27.*) ;;
+  *)
+    echo "CI requires go1.27.x; found $(go env GOVERSION)" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$(uname -s)" = "Linux" ]; then
   if ! pkg-config --exists fuse 2>/dev/null; then
