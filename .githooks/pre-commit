@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fast local gate before every commit: format, vet, fast suite.
+# Mirrors the ci.yaml 'fast' + format/vet checks; the slow static/race
+# layers run in pre-push. Skip with: git commit --no-verify
+set -euo pipefail
+[ -n "${QRYPT_SKIP_HOOKS:-}" ] && exit 0
+cd "$(git rev-parse --show-toplevel)"
+
+echo "== pre-commit: gofmt =="
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+  echo "gofmt needed on:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+
+echo "== pre-commit: go vet =="
+go vet ./...
+
+echo "== pre-commit: fast suite =="
+scripts/test-layers.sh fast

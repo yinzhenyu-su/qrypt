@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Full local CI check before pushing refs that GitHub Actions would test
+# (ci.yaml pushes on main, feat/* and v* tags). Other refs are not CI-tested
+# and skip the check. Skip with: git push --no-verify
+set -euo pipefail
+[ -n "${QRYPT_SKIP_HOOKS:-}" ] && exit 0
+
+local_ref="${1:-}"
+case "$local_ref" in
+  refs/heads/main|refs/heads/feat/*|refs/tags/v*)
+    cd "$(git rev-parse --show-toplevel)"
+    scripts/ci-check.sh
+    ;;
+  *)
+    echo "pre-push: $local_ref is not CI-tested; skipping local CI check" >&2
+    ;;
+esac
