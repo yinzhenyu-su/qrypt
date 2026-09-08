@@ -5,13 +5,20 @@
 set -euo pipefail
 [ -n "${QRYPT_SKIP_HOOKS:-}" ] && exit 0
 
-local_ref="${1:-}"
-case "$local_ref" in
-  refs/heads/main|refs/heads/feat/*|refs/tags/v*)
-    cd "$(git rev-parse --show-toplevel)"
-    scripts/ci-check.sh
-    ;;
-  *)
-    echo "pre-push: $local_ref is not CI-tested; skipping local CI check" >&2
-    ;;
-esac
+# $1 = remote name, $2 = remote URL; the pushed refs arrive on stdin as
+# "<local ref> <local oid> <remote ref> <remote oid>" lines.
+ci_tested=false
+while read -r local_ref _local_oid _remote_ref _remote_oid; do
+  case "$local_ref" in
+    refs/heads/main|refs/heads/feat/*|refs/tags/v*)
+      ci_tested=true
+      ;;
+  esac
+done
+
+if [ "$ci_tested" = true ]; then
+  cd "$(git rev-parse --show-toplevel)"
+  scripts/ci-check.sh
+else
+  echo "pre-push: pushed refs are not CI-tested; skipping local CI check" >&2
+fi
