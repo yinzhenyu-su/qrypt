@@ -144,6 +144,16 @@ func RunDirectDriverCopy(ctx context.Context, source diagnostics.DriverCopySourc
 // UploadRequest.ModTime, which localfs persists via Chtimes and other
 // backends ignore.
 func RunDirectDriverCopyWithModTime(ctx context.Context, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, modTime time.Time) *DriverCopyResult {
+	return runDirectDriverCopy(ctx, source, srcPath, dstPath, overwrite, modTime, "")
+}
+
+// RunDirectDriverCopyWithTempDir is RunDirectDriverCopy using tempDir for
+// the local copy buffer. An empty tempDir preserves the platform default.
+func RunDirectDriverCopyWithTempDir(ctx context.Context, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, tempDir string) *DriverCopyResult {
+	return runDirectDriverCopy(ctx, source, srcPath, dstPath, overwrite, time.Time{}, tempDir)
+}
+
+func runDirectDriverCopy(ctx context.Context, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, modTime time.Time, tempDir string) *DriverCopyResult {
 	result := &DriverCopyResult{
 		OpID:       newDebugOperationID("copy"),
 		SourcePath: vfstypes.CleanVirtualPath(srcPath),
@@ -266,7 +276,7 @@ func RunDirectDriverCopyWithModTime(ctx context.Context, source diagnostics.Driv
 		}
 	}
 
-	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size)
+	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size, tempDir)
 	appendCopyStep(result, "read_source_to_temp", tmp.bytes, tmp.started, err)
 	appendCopyEvent(result, "read_source_to_temp", src.Mount, src.Driver, result.SourcePath, tmp.bytes, tmp.started, nil)
 	defer cleanup()
@@ -311,6 +321,16 @@ func RunDirectDriverCopyDir(ctx context.Context, fs copyFileSystem, source diagn
 }
 
 func RunDirectDriverCopyDirToPath(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool) *DriverCopyDirResult {
+	return runDirectDriverCopyDirToPath(ctx, fs, source, srcPath, dstPath, overwrite, "")
+}
+
+// RunDirectDriverCopyDirToPathWithTempDir is the directory variant of
+// RunDirectDriverCopyWithTempDir.
+func RunDirectDriverCopyDirToPathWithTempDir(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, tempDir string) *DriverCopyDirResult {
+	return runDirectDriverCopyDirToPath(ctx, fs, source, srcPath, dstPath, overwrite, tempDir)
+}
+
+func runDirectDriverCopyDirToPath(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, tempDir string) *DriverCopyDirResult {
 	started := util.Now()
 	result := &DriverCopyDirResult{
 		OpID:       newDebugOperationID("copydir"),
@@ -326,7 +346,7 @@ func RunDirectDriverCopyDirToPath(ctx context.Context, fs copyFileSystem, source
 		result.DurationMS = durationMillis(duration)
 		result.Pass = result.Error == "" && result.Failed == 0
 	}()
-	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, result); err != nil {
+	if err := copyDirRecursive(ctx, fs, source, result.SourcePath, result.DestPath, overwrite, tempDir, result); err != nil {
 		result.Error = err.Error()
 		result.ErrorCategory = drive.ErrorCategory(err)
 		result.Retryable = drive.RetryableCategory(result.ErrorCategory)
@@ -334,7 +354,7 @@ func RunDirectDriverCopyDirToPath(ctx context.Context, fs copyFileSystem, source
 	return result
 }
 
-func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, result *DriverCopyDirResult) error {
+func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics.DriverCopySource, srcPath, dstPath string, overwrite bool, tempDir string, result *DriverCopyDirResult) error {
 	if err := mkdirAllRemote(ctx, fs, dstPath); err != nil {
 		result.recordEntry(DriverCopyEntryResult{Kind: "directory", State: "failed", SourcePath: srcPath, DestPath: dstPath, Error: err.Error(), ErrorCategory: drive.ErrorCategory(err), Retryable: drive.RetryableCategory(drive.ErrorCategory(err))})
 		return err
@@ -349,7 +369,7 @@ func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics
 		childSrc := pathpkg.Join(srcPath, entry.Name)
 		childDst := pathpkg.Join(dstPath, entry.Name)
 		if entry.IsDir {
-			if err := copyDirRecursive(ctx, fs, source, childSrc, childDst, overwrite, result); err != nil {
+			if err := copyDirRecursive(ctx, fs, source, childSrc, childDst, overwrite, tempDir, result); err != nil {
 				return err
 			}
 			continue
@@ -365,7 +385,7 @@ func copyDirRecursive(ctx context.Context, fs copyFileSystem, source diagnostics
 				return err
 			}
 		}
-		copyResult := RunDirectDriverCopy(ctx, source, childSrc, childDst, overwrite)
+		copyResult := RunDirectDriverCopyWithTempDir(ctx, source, childSrc, childDst, overwrite, tempDir)
 		entryResult := DriverCopyEntryResult{
 			OpID:       copyResult.OpID,
 			Kind:       "file",
@@ -462,7 +482,7 @@ type tempCopy struct {
 	started time.Time
 }
 
-func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry drive.Entry, expectedSize int64) (tempCopy, func(), drive.SourceHashes, error) {
+func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry drive.Entry, expectedSize int64, tempDir string) (tempCopy, func(), drive.SourceHashes, error) {
 	start := util.Now()
 	cleanup := func() {}
 	rc, err := srcDriver.Read(ctx, srcEntry, 0, 0)
@@ -471,7 +491,7 @@ func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry driv
 	}
 	defer rc.Close()
 
-	tmp, err := os.CreateTemp("", "qrypt-direct-copy-*")
+	tmp, err := os.CreateTemp(tempDir, "qrypt-direct-copy-*")
 	if err != nil {
 		return tempCopy{started: start}, cleanup, nil, err
 	}
