@@ -77,6 +77,49 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 	}
 }
 
+func TestRecoveredUploadStreamItemKeepsPersistedProgress(t *testing.T) {
+	item := &uploadStreamItem{ID: "item", Size: 100}
+	applyPersistedUploadStreamResult(item, task.ItemResult{
+		State:            task.StateRunning,
+		SourceBytesDone:  20,
+		StagingBytesDone: 25,
+		CloudBytesDone:   10,
+		CloudBytesTotal:  100,
+		Phase:            "upload",
+		RemoteID:         "remote-id",
+		Error:            &task.Error{Message: "retrying", Retryable: true},
+	})
+	if item.SourceRead != 20 || item.Written != 25 || item.CloudWritten != 10 ||
+		item.CloudTotal != 100 || item.CloudPhase != "upload" || item.RemoteID != "remote-id" {
+		t.Fatalf("recovered progress = %+v, want persisted progress", item)
+	}
+	if item.Error == nil || !item.Error.Retryable {
+		t.Fatalf("recovered error = %+v, want retryable error", item.Error)
+	}
+}
+
+func TestUploadStreamTaskSourcePathsIncludesSingleVFSFallback(t *testing.T) {
+	got := uploadStreamTaskSourcePaths(&vfs.VFS{}, "/quark-test/n_xq0LMgE_iVtPN9.mp4")
+	if len(got) != 2 || got[0] != "/quark-test/n_xq0LMgE_iVtPN9.mp4" || got[1] != "/n_xq0LMgE_iVtPN9.mp4" {
+		t.Fatalf("task source paths = %#v, want namespaced and mount-local paths", got)
+	}
+}
+
+func TestPutUploadStreamRejectsDuplicateTaskID(t *testing.T) {
+	c := &Core{}
+	first := &uploadStreamBatch{taskID: "upload-1"}
+	second := &uploadStreamBatch{taskID: "upload-1"}
+	if !c.putUploadStream(first) {
+		t.Fatal("first upload stream registration rejected")
+	}
+	if c.putUploadStream(second) {
+		t.Fatal("duplicate upload stream registration accepted")
+	}
+	if got := c.getUploadStream("upload-1"); got != first {
+		t.Fatalf("registered batch = %p, want first batch %p", got, first)
+	}
+}
+
 func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -398,6 +441,32 @@ func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
 	}
 	if len(got.Result.Items) != 1 || got.Result.Items[0].State != task.StateRunning {
 		t.Fatalf("result after commit = %+v, want running item", got.Result.Items)
+	}
+}
+
+func TestApplyRemoteUploadStateKeepsParentRunningForRetryableFailure(t *testing.T) {
+
+	item := &uploadStreamItem{
+		ID:    "item",
+		State: task.StateRunning,
+	}
+	remote := task.Task{
+		ID:    "remote-1",
+		State: task.StateFailed,
+		Error: &task.Error{Message: "stale upload session", Retryable: true},
+		Progress: task.Progress{
+			Phase: "failed",
+		},
+	}
+
+	if dismiss := applyRemoteUploadState(item, remote); dismiss {
+		t.Fatal("retryable remote failure requested dismissal")
+	}
+	if item.State != task.StateRunning {
+		t.Fatalf("parent item state = %s, want running", item.State)
+	}
+	if item.Error != nil {
+		t.Fatalf("parent item error = %+v, want nil while remote retry is pending", item.Error)
 	}
 }
 

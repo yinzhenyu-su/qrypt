@@ -34,6 +34,20 @@ func TestTaskRequestForOperationMapsUploadPolicyToInternalType(t *testing.T) {
 	}
 }
 
+func TestTaskRequestForOperationPreservesDetail(t *testing.T) {
+	req, err := taskRequestForOperation(task.OperationRequest{
+		Operation: task.OperationUpload,
+		Items:     []task.Item{{SourcePath: "token", DestPath: "/file.txt"}},
+		Detail:    map[string]any{"auto_upload_item_id": "item-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Detail["auto_upload_item_id"] != "item-1" {
+		t.Fatalf("detail = %#v, want auto upload item id", req.Detail)
+	}
+}
+
 func TestCreateOperationRejectsInvalidRequestBeforeCoreAccess(t *testing.T) {
 	_, err := (&Core{}).CreateOperation(context.Background(), task.OperationRequest{})
 	if !errors.Is(err, task.ErrInvalidOperation) {

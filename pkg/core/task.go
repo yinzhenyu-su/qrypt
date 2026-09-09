@@ -175,6 +175,26 @@ func (c *Core) RetryTask(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if current, getErr := manager.GetTask(ctx, id); getErr == nil &&
+		current.Type == task.TypeUploadStreamBatch &&
+		(current.State == task.StateFailed || current.State == task.StatePartialFailed) &&
+		c.isRecoverableUploadStreamTask(current) {
+		batch, buildErr := c.uploadStreamBatchFromTask(ctx, current)
+		if buildErr != nil {
+			return buildErr
+		}
+		c.putUploadStream(batch)
+		_, ok, recoverErr := manager.RecoverTask(ctx, id, func(runCtx context.Context, update task.UpdateFunc) error {
+			return c.runUploadStreamTask(runCtx, update, batch)
+		})
+		if recoverErr != nil || !ok {
+			c.removeUploadStream(id)
+		}
+		if recoverErr == nil && !ok {
+			return fmt.Errorf("core: upload stream task %q is not recoverable", id)
+		}
+		return recoverErr
+	}
 	// A direct-upload task in retry_wait is sleeping out an exponential
 	// backoff inside its batch runner. Re-running it through the manager
 	// would start a second runner on the same batch; instead wake the batch
@@ -290,6 +310,7 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 		Scope:   req.Scope,
 		Items:   req.Items,
 		Options: req.Options,
+		Detail:  req.Detail,
 	}, nil
 }
 

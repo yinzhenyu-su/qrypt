@@ -974,10 +974,8 @@ func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
 		t.Fatalf("part 1 uploads after first attempt = %d, want 1", partUploads["1"])
 	}
 	partsMu.Unlock()
-	// 优雅退出：Drop 触发 Flush，节流期的 ETag 确认记录落盘。
-	if err := first.Drop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	// 模拟进程被杀：不调用 Drop，第二个 driver 只能读取磁盘上已经
+	// 持久化的分片确认记录。
 
 	second := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	second.InstallStateStore(store)

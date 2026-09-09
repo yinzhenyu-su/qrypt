@@ -505,6 +505,7 @@ Common endpoints:
 | `/v1/state?mount=NAME` | Mount snapshot | Can grow with pending, cache, events |
 | `/v1/pending?mount=NAME` | Pending upload files | Grows with pending count |
 | `/v1/tasks?type=upload_stream_batch&state=waiting_input&limit=200` | Persistent tasks with item progress and recovery linkage | Grows with task and item count; use filters |
+| `/v1/task-events?after_seq=N&wait_ms=25000` | Incremental task snapshots with cursor replay and gap recovery | Bounded by the task event history and response batch |
 | `/v1/uploads?mount=NAME&history=1` | Active and recent uploads | Bounded history |
 | `/v1/ops?mount=NAME` | Active VFS read, chunk, window, and prefetch ops | Small, current in-flight ops only |
 | `/v1/reads?mount=NAME&limit=200&since=2m` | Recent read events | Bounded history, filtered server-side |

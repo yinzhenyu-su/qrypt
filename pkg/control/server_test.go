@@ -32,8 +32,9 @@ type fakeSnapshotter struct {
 }
 
 type fakeTaskDebugger struct {
-	tasks []task.Task
-	items map[string][]task.ItemResult
+	tasks   []task.Task
+	items   map[string][]task.ItemResult
+	manager *task.Manager
 }
 
 func (f fakeTaskDebugger) ListTasks(_ context.Context, filter task.Filter) ([]task.Task, error) {
@@ -57,6 +58,13 @@ func (f fakeTaskDebugger) ListTaskItems(_ context.Context, taskID string, filter
 		}
 	}
 	return out, nil
+}
+
+func (f fakeTaskDebugger) OpenTaskEventsFrom(_ context.Context, filter task.Filter, afterSeq uint64) (*task.Subscription, error) {
+	if f.manager == nil {
+		return nil, errors.New("task events unavailable")
+	}
+	return f.manager.SubscribeFrom(filter, afterSeq), nil
 }
 
 func (f fakeSnapshotter) DebugSnapshot() diagnostics.DebugSnapshot {
@@ -741,6 +749,129 @@ func TestServerExposesTasksWithItemsAndFilters(t *testing.T) {
 	}
 	if response.Tasks[0].Items[0].ResumeOffset != 7 {
 		t.Fatalf("missing item progress: %s", body)
+	}
+}
+
+func TestServerExposesTaskEventsWithCursorAndFilter(t *testing.T) {
+	manager := task.NewManager()
+	defer manager.Close()
+	manager.Submit(context.Background(), task.Task{
+		ID:    "upload-1",
+		Type:  task.TypeUploadStreamBatch,
+		Scope: task.ScopeUser,
+	}, func(context.Context, task.UpdateFunc) error { return nil })
+	manager.Submit(context.Background(), task.Task{
+		ID:    "upload-2",
+		Type:  task.TypeUploadStreamBatch,
+		Scope: task.ScopeUser,
+	}, func(context.Context, task.UpdateFunc) error { return nil })
+
+	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.SetTaskDebugger(fakeTaskDebugger{manager: manager})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+
+	client, err := NewClient(server.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.Get(context.Background(), "/v1/task-events?id=upload-2&after_seq=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first TaskEventsResponse
+	if err := json.Unmarshal(body, &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Events) == 0 || first.Events[0].TaskID != "upload-2" {
+		t.Fatalf("unexpected first task events: %s", body)
+	}
+	lastSeq := first.Events[len(first.Events)-1].Seq
+
+	manager.Submit(context.Background(), task.Task{
+		ID:    "upload-3",
+		Type:  task.TypeUploadStreamBatch,
+		Scope: task.ScopeUser,
+	}, func(context.Context, task.UpdateFunc) error { return nil })
+	body, err = client.Get(context.Background(), "/v1/task-events?id=upload-3&after_seq="+strconv.FormatUint(lastSeq, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed TaskEventsResponse
+	if err := json.Unmarshal(body, &resumed); err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Events) == 0 || resumed.Events[0].TaskID != "upload-3" {
+		t.Fatalf("unexpected resumed task events: %s", body)
+	}
+	if resumed.Events[0].Seq <= lastSeq {
+		t.Fatalf("event sequence did not advance: first=%d resumed=%d", lastSeq, resumed.Events[0].Seq)
+	}
+}
+
+func TestServerTaskEventsReportGap(t *testing.T) {
+	manager := task.NewManager()
+	defer manager.Close()
+	for i := 0; i < 300; i++ {
+		id := "upload-" + strconv.Itoa(i)
+		manager.Submit(context.Background(), task.Task{
+			ID:    id,
+			Type:  task.TypeUploadStreamBatch,
+			Scope: task.ScopeUser,
+		}, func(ctx context.Context, _ task.UpdateFunc) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}
+
+	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.SetTaskDebugger(fakeTaskDebugger{manager: manager})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+
+	client, err := NewClient(server.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.Get(context.Background(), "/v1/task-events?after_seq=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response TaskEventsResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Events) == 0 || response.Events[0].Type != task.EventTaskGap || !response.Events[0].SnapshotRequired {
+		t.Fatalf("expected snapshot-required gap: %s", body)
+	}
+}
+
+func TestTaskEventQueryValidation(t *testing.T) {
+	if _, err := parseTaskEventSequence("-1"); err == nil {
+		t.Fatal("negative after_seq accepted")
+	}
+	if _, err := parseTaskEventSequence("abc"); err == nil {
+		t.Fatal("non-numeric after_seq accepted")
+	}
+	if _, err := parseTaskEventWait("-1"); err == nil {
+		t.Fatal("negative wait_ms accepted")
+	}
+	if wait, err := parseTaskEventWait("250"); err != nil || wait != 250*time.Millisecond {
+		t.Fatalf("wait_ms = %s, err=%v", wait, err)
 	}
 }
 

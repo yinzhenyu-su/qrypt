@@ -140,7 +140,9 @@ func (c *Core) recoverUploadStreamDirectTasks(ctx context.Context, manager *task
 		if err != nil {
 			continue
 		}
-		c.putUploadStream(batch)
+		if !c.putUploadStream(batch) {
+			continue
+		}
 		if _, ok, err := manager.RecoverTask(ctx, item.ID, func(runCtx context.Context, update task.UpdateFunc) error {
 			return c.runUploadStreamDirectTask(runCtx, update, batch)
 		}); err != nil || !ok {
