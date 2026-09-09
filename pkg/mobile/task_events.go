@@ -3,6 +3,7 @@ package mobile
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/task"
@@ -41,8 +42,11 @@ func OpenTaskEventsJSON(coreID, filterJSON string, deadlineMS int) string {
 	return resultJSON(id, err)
 }
 
-func OpenTaskEventsFromJSON(coreID, filterJSON string, afterSeq uint64, deadlineMS int) string {
-	id, err := openTaskEvents(coreID, filterJSON, afterSeq, deadlineMS)
+func OpenTaskEventsFromJSON(coreID, filterJSON string, afterSeq int64, deadlineMS int) string {
+	if afterSeq < 0 {
+		return resultJSON(nil, wrapError(fmt.Errorf("mobile: after sequence must be non-negative")))
+	}
+	id, err := openTaskEvents(coreID, filterJSON, uint64(afterSeq), deadlineMS)
 	return resultJSON(id, err)
 }
 

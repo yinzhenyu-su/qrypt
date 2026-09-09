@@ -689,6 +689,7 @@ func TestIsRecoverableUploadStreamTask(t *testing.T) {
 		{"scheduled", task.StateScheduled, nil, true},
 		{"succeeded", task.StateSucceeded, nil, false},
 		{"canceled", task.StateCanceled, nil, false},
+		{"retryable item failure", task.StateFailed, &task.Error{Message: "parent failure"}, true},
 		// Without an upload inspector the failed/partial_failed branch stays
 		// conservative (no staging file can be confirmed).
 		{"plain failed", task.StateFailed, &task.Error{Code: "oops"}, false},
@@ -698,6 +699,9 @@ func TestIsRecoverableUploadStreamTask(t *testing.T) {
 		item := base
 		item.State = tc.state
 		item.Error = tc.err
+		if tc.name == "retryable item failure" {
+			item.Result.Items = []task.ItemResult{{Error: &task.Error{Message: "part conflict", Retryable: true}}}
+		}
 		if got := c.isRecoverableUploadStreamTask(item); got != tc.want {
 			t.Fatalf("isRecoverableUploadStreamTask(%s) = %v, want %v", tc.name, got, tc.want)
 		}

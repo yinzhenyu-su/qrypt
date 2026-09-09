@@ -383,6 +383,7 @@ func (v *VFS) Resume(ctx context.Context) {
 		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
 			oldSize := pending.Size
 			pending.Size = info.Size()
+			pending.SourceHashes = nil
 			pending.UpdatedAt = util.Now().UnixNano()
 			if err := v.uploads.Store().SaveUpload(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)

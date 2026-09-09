@@ -193,12 +193,12 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	var totalRead int64
 	var submittedParts int
 	var completedParts int
-	savePart := func(partNumber int, etag string) {
+	savePart := func(partNumber int, etag string) error {
 		etagsByPart[partNumber] = etag
 		if sessionKey != "" && d.sessions != nil {
-			// 确认记录在 Index 锁内原地更新、节流落盘（≤1 次/分钟）；
-			// 恢复时按记录跳过已确认分片，崩溃最多丢一分钟确认，对应分片
-			// 重传幂等覆盖，安全。闭包模式对并发的分片确认也安全。
+			// 确认记录在 Index 锁内原地更新。分片完成后立即落盘，
+			// 这样进程被杀时不会丢失已经成功上传的分片进度。
+			// 闭包模式对并发的分片确认也安全。
 			d.sessions.TouchWith(sessionKey, func(s *session.Session) {
 				var tok quarkToken
 				if err := json.Unmarshal(s.Token, &tok); err != nil || tok.UploadID == "" {
@@ -212,7 +212,9 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 					s.Token = raw
 				}
 			})
+			return d.sessions.Flush()
 		}
+		return nil
 	}
 	totalParts := int((size + int64(partSize) - 1) / int64(partSize))
 	for partNumber := 1; partNumber <= totalParts; partNumber++ {
@@ -243,7 +245,9 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			drive.ReportUploadProgress(req.Progress, length)
 			submittedParts++
 			completedParts++
-			savePart(partNumber, etag)
+			if err := savePart(partNumber, etag); err != nil {
+				return drive.Entry{}, fmt.Errorf("quark: persist upload part %d: %w", partNumber, err)
+			}
 			logging.L.Debugf("[QUARK] upload part complete name=%q task=%q part=%d etag=%q", name, preResp.Data.TaskID, partNumber, etag)
 		}
 		totalRead += length
@@ -273,7 +277,9 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 			return drive.Entry{}, fmt.Errorf("quark: upload part 1: %w", err)
 		}
 		etags = append(etags, etag)
-		savePart(1, etag)
+		if err := savePart(1, etag); err != nil {
+			return drive.Entry{}, fmt.Errorf("quark: persist upload part 1: %w", err)
+		}
 	}
 	d.updateUploadDebug(preResp.Data.TaskID, func(item *quarkUploadDebug) { item.Stage = "oss_complete" })
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCommitting)

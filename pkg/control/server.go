@@ -36,6 +36,10 @@ type taskDebugger interface {
 	ListTaskItems(context.Context, string, task.ItemFilter) ([]task.ItemResult, error)
 }
 
+type taskEventDebugger interface {
+	OpenTaskEventsFrom(context.Context, task.Filter, uint64) (*task.Subscription, error)
+}
+
 type Server struct {
 	socketPath string
 	endpoint   string
@@ -44,6 +48,7 @@ type Server struct {
 	source     Snapshotter
 	taskHealth taskPersistenceHealth
 	taskDebug  taskDebugger
+	taskEvents taskEventDebugger
 	server     *http.Server
 	listener   net.Listener
 	stop       context.CancelFunc
@@ -53,6 +58,7 @@ type Server struct {
 func (s *Server) SetTaskDebugger(debugger taskDebugger) {
 	if s != nil {
 		s.taskDebug = debugger
+		s.taskEvents, _ = debugger.(taskEventDebugger)
 	}
 }
 
@@ -113,6 +119,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/state", s.handleState)
 	mux.HandleFunc("/v1/pending", s.handlePending)
 	mux.HandleFunc("/v1/tasks", s.handleTasks)
+	mux.HandleFunc("/v1/task-events", s.handleTaskEvents)
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/ops", s.handleOps)
 	mux.HandleFunc("/v1/reads", s.handleReads)

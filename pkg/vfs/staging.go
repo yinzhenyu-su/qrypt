@@ -172,6 +172,9 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 		return err
 	}
 	pending.Size = size
+	if sourceHashes, ok := v.hashes.Snapshot(pending, requiredUploadSnapshotHashes(v.driver)); ok {
+		pending.SourceHashes = sourceHashes
+	}
 	pending.Frozen = true
 	if pending.ModTime == 0 {
 		now := util.Now()

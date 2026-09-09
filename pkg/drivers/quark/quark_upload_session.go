@@ -12,8 +12,8 @@ import (
 
 // quarkToken 是持久化的 provider 上传句柄 + 每分片确认 ETag（OSS Complete
 // 需要全部 ETag）。quark 无分片进度查询接口，按设计文档的回退原则（服务端
-// 不可查询时以本地确认记录为依据，并允许幂等重传）经 TouchWith 节流落盘
-// （≤1 次/分钟）：崩溃最多丢一分钟确认，对应分片重传幂等覆盖，安全。
+// 不可查询时以本地确认记录为依据，并允许幂等重传）；Quark 在每个分片完成
+// 后立即落盘，进程被杀时最多重传当前尚未确认的分片。
 type quarkToken struct {
 	TaskID    string          `json:"task_id"`
 	UploadID  string          `json:"upload_id"`

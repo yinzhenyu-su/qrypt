@@ -600,6 +600,7 @@ root_path = `+util.TOMLPath(remote)+`
 		Data []struct {
 			Type   string `json:"type"`
 			TaskID string `json:"task_id"`
+			Seq    uint64 `json:"seq"`
 			Task   struct {
 				ID   string `json:"id"`
 				Type string `json:"type"`
@@ -613,7 +614,11 @@ root_path = `+util.TOMLPath(remote)+`
 		t.Fatalf("ReadTaskEventsJSON = %s, want events", eventRaw)
 	}
 	found := false
+	var lastSeq uint64
 	for _, event := range events.Data {
+		if event.Seq > lastSeq {
+			lastSeq = event.Seq
+		}
 		if event.Type == "task_updated" && event.TaskID == created.Data.ID && event.Task.Type == "upload_stream_batch" {
 			found = true
 		}
@@ -624,6 +629,62 @@ root_path = `+util.TOMLPath(remote)+`
 	if raw := CloseTaskEventsJSON(openedEvents.Data); !strings.Contains(raw, `"ok":true`) {
 		t.Fatalf("CloseTaskEventsJSON = %s, want ok", raw)
 	}
+
+	resumedRaw := OpenTaskEventsFromJSON(opened.Data, `{"types":["upload_stream_batch"]}`, int64(lastSeq), 0)
+	var resumedHandle struct {
+		OK   bool   `json:"ok"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(resumedRaw), &resumedHandle); err != nil {
+		t.Fatal(err)
+	}
+	if !resumedHandle.OK || resumedHandle.Data == "" {
+		t.Fatalf("OpenTaskEventsFromJSON = %s", resumedRaw)
+	}
+	defer CloseTaskEventsJSON(resumedHandle.Data)
+	nextRaw := CreateUploadTaskJSON(opened.Data, `{"items":[{"item_id":"two","dest_path":"/quark/event-2.txt","size":5}]}`, 0)
+	var nextCreated struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(nextRaw), &nextCreated); err != nil {
+		t.Fatal(err)
+	}
+	if !nextCreated.OK || nextCreated.Data.ID == "" {
+		t.Fatalf("next CreateUploadTaskJSON = %s", nextRaw)
+	}
+	if !readUploadEventForTask(t, resumedHandle.Data, nextCreated.Data.ID) {
+		t.Fatalf("OpenTaskEventsFromJSON did not replay subsequent task event")
+	}
+}
+
+func readUploadEventForTask(t *testing.T, handleID, taskID string) bool {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw := ReadTaskEventsJSON(handleID, 500)
+		var response struct {
+			OK   bool `json:"ok"`
+			Data []struct {
+				Type   string `json:"type"`
+				TaskID string `json:"task_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(raw), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !response.OK {
+			t.Fatalf("ReadTaskEventsJSON = %s", raw)
+		}
+		for _, event := range response.Data {
+			if event.Type == "task_updated" && event.TaskID == taskID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func waitMobileTaskState(t *testing.T, coreID, taskID, want string) mobileTask {

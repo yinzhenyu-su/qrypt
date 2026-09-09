@@ -44,6 +44,12 @@ type TasksResponse struct {
 	Tasks         []DebugTask `json:"tasks"`
 }
 
+type TaskEventsResponse struct {
+	SchemaVersion int          `json:"schema_version"`
+	GeneratedAt   time.Time    `json:"generated_at"`
+	Events        []task.Event `json:"events"`
+}
+
 type DebugTask struct {
 	Task  task.Task         `json:"task"`
 	Items []task.ItemResult `json:"items"`

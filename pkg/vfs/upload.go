@@ -141,6 +141,12 @@ func (v *VFS) snapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 		return upload.Snapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	algorithms := requiredUploadSnapshotHashes(v.driver)
+	if sourceHashesCover(pending.SourceHashes, algorithms) {
+		return upload.Snapshot{
+			Path:   pending.LocalPath,
+			Hashes: cloneSourceHashes(pending.SourceHashes),
+		}, nil
+	}
 	if hashes, ok := v.hashes.Snapshot(pending, algorithms); ok {
 		return upload.Snapshot{
 			Path:        pending.LocalPath,
@@ -168,6 +174,26 @@ func (v *VFS) snapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 		Path:   pending.LocalPath,
 		Hashes: sums,
 	}, nil
+}
+
+func sourceHashesCover(hashes drive.SourceHashes, algorithms []drive.HashAlgorithm) bool {
+	if len(algorithms) == 0 || len(hashes) == 0 {
+		return false
+	}
+	for _, algorithm := range algorithms {
+		if len(hashes[algorithm]) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneSourceHashes(hashes drive.SourceHashes) drive.SourceHashes {
+	clone := make(drive.SourceHashes, len(hashes))
+	for algorithm, sum := range hashes {
+		clone[algorithm] = append([]byte(nil), sum...)
+	}
+	return clone
 }
 
 // requiredUploadSnapshotHashes returns the hash algorithms an upload snapshot

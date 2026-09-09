@@ -146,7 +146,9 @@ func (c *Core) recoverUploadStreamTasks(ctx context.Context, manager *task.Manag
 		if err != nil {
 			continue
 		}
-		c.putUploadStream(batch)
+		if !c.putUploadStream(batch) {
+			continue
+		}
 		if _, ok, err := manager.RecoverTask(ctx, item.ID, func(runCtx context.Context, update task.UpdateFunc) error {
 			return c.runUploadStreamTask(runCtx, update, batch)
 		}); err != nil || !ok {
@@ -173,15 +175,18 @@ func (c *Core) isRecoverableUploadStreamTask(item task.Task) bool {
 	if item.State != task.StateFailed && item.State != task.StatePartialFailed {
 		return false
 	}
+	for _, result := range item.Result.Items {
+		if result.Error != nil && result.Error.Retryable {
+			return true
+		}
+	}
 	inspector, ok := c.fs.(vfs.UploadInspector)
 	if !vfs.HasCapability(c.fs, vfs.CapabilityUploadInspection) || !ok {
 		return false
 	}
 	mutablePaths := map[string]bool{}
 	for _, pending := range inspector.PendingUploads() {
-		if !pending.Frozen {
-			mutablePaths[pending.Path] = true
-		}
+		mutablePaths[pending.Path] = true
 	}
 	details, ok := directUploadDetailItems(item.Detail["items"])
 	if !ok {
@@ -247,13 +252,13 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			Size:         size,
 			State:        task.StateWaitingInput,
 		}
-		if prior, ok := previous[itemID]; ok && prior.State == task.StateSucceeded {
+		prior, hasPrior := previous[itemID]
+		if hasPrior {
+			applyPersistedUploadStreamResult(streamItem, prior)
+		}
+		if hasPrior && prior.State == task.StateSucceeded {
 			streamItem.Recovery = "persisted_result"
 			streamItem.State = task.StateSucceeded
-			streamItem.RemoteID = prior.RemoteID
-			streamItem.CloudWritten = prior.CloudBytesDone
-			streamItem.CloudTotal = prior.CloudBytesTotal
-			streamItem.CloudPhase = prior.Phase
 		} else if pending, ok := pendingByPath[destPath]; ok {
 			streamItem.PendingFID = pending.FID
 			streamItem.Recovery = "staging_available"
@@ -264,7 +269,9 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			if pending.Frozen {
 				streamItem.Recovery = "pending_upload"
 				streamItem.State = task.StateRunning
-				streamItem.CloudPhase = "queued_upload"
+				if streamItem.CloudPhase == "" {
+					streamItem.CloudPhase = "queued_upload"
+				}
 				streamItem.CloudTotal = streamItem.Size
 			}
 		} else if remote, err := c.fs.Stat(ctx, destPath); err == nil && !remote.IsDir && remote.Size == streamItem.Size {
@@ -291,6 +298,19 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 	batch.closeDoneIfTerminalLocked()
 	batch.mu.Unlock()
 	return batch, nil
+}
+
+func applyPersistedUploadStreamResult(item *uploadStreamItem, prior task.ItemResult) {
+	if item == nil {
+		return
+	}
+	item.SourceRead = prior.SourceBytesDone
+	item.Written = prior.StagingBytesDone
+	item.CloudWritten = prior.CloudBytesDone
+	item.CloudTotal = prior.CloudBytesTotal
+	item.CloudPhase = prior.Phase
+	item.RemoteID = prior.RemoteID
+	item.Error = cloneTaskError(prior.Error)
 }
 
 func (c *Core) runUploadStreamTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
@@ -773,47 +793,29 @@ func (c *Core) refreshUploadStreamCloudProgress(ctx context.Context, batch *uplo
 		if snapshot.DestPath == "" {
 			continue
 		}
-		tasks, err := source.ListTasks(ctx, task.Filter{
-			Types: []task.Type{task.TypeUploadRemote},
-			Path:  snapshot.DestPath,
-			Limit: 1,
-		})
-		if err != nil || len(tasks) == 0 {
+		var remoteTasks []task.Task
+		for _, sourcePath := range uploadStreamTaskSourcePaths(c.fs, snapshot.DestPath) {
+			tasks, err := source.ListTasks(ctx, task.Filter{
+				Types: []task.Type{task.TypeUploadRemote},
+				Path:  sourcePath,
+				Limit: 1,
+			})
+			if err != nil {
+				continue
+			}
+			if len(tasks) > 0 {
+				remoteTasks = tasks
+				break
+			}
+		}
+		if len(remoteTasks) == 0 {
 			continue
 		}
-		remote := tasks[0]
-		dismissRemote := false
+		remote := remoteTasks[0]
 		batch.mu.Lock()
 		item := batch.byID[snapshot.ID]
+		dismissRemote := item != nil && applyRemoteUploadState(item, remote)
 		if item != nil {
-			item.CloudTaskID = remote.ID
-			item.CloudState = remote.State
-			item.CloudWritten = remote.Progress.CloudBytesDone
-			item.CloudTotal = remote.Progress.CloudBytesTotal
-			item.CloudPhase = remote.Progress.Phase
-			if remote.Detail != nil {
-				if id, ok := remote.Detail["result_remote_id"].(string); ok {
-					item.RemoteID = id
-				}
-			}
-			switch remote.State {
-			case task.StateSucceeded:
-				item.Open = false
-				item.State = task.StateSucceeded
-				item.Error = nil
-				dismissRemote = true
-				if item.CloudPhase == "" {
-					item.CloudPhase = "complete"
-				}
-			case task.StateFailed, task.StateCanceled:
-				item.Open = false
-				item.State = remote.State
-				if remote.Error != nil {
-					item.Error = cloneTaskError(remote.Error)
-				} else {
-					item.Error = &task.Error{Message: fmt.Sprintf("upload %s ended with state %s", snapshot.DestPath, remote.State)}
-				}
-			}
 			batch.closeDoneIfTerminalLocked()
 		}
 		batch.mu.Unlock()
@@ -823,6 +825,63 @@ func (c *Core) refreshUploadStreamCloudProgress(ctx context.Context, batch *uplo
 			}
 		}
 	}
+}
+
+func uploadStreamTaskSourcePaths(fs vfs.FileSystem, destPath string) []string {
+	paths := []string{destPath}
+	if _, ok := fs.(*vfs.Namespace); ok {
+		return paths
+	}
+	_, root, _ := splitMoveNamespacePath(destPath)
+	if root != destPath {
+		paths = append(paths, root)
+	}
+	return paths
+}
+
+func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
+	if item == nil {
+		return false
+	}
+	item.CloudTaskID = remote.ID
+	item.CloudState = remote.State
+	item.CloudWritten = remote.Progress.CloudBytesDone
+	item.CloudTotal = remote.Progress.CloudBytesTotal
+	item.CloudPhase = remote.Progress.Phase
+	if remote.Detail != nil {
+		if id, ok := remote.Detail["result_remote_id"].(string); ok {
+			item.RemoteID = id
+		}
+	}
+	switch remote.State {
+	case task.StateSucceeded:
+		item.Open = false
+		item.State = task.StateSucceeded
+		item.Error = nil
+		if item.CloudPhase == "" {
+			item.CloudPhase = "complete"
+		}
+		return true
+	case task.StateFailed:
+		if remote.Error != nil && remote.Error.Retryable {
+			item.State = task.StateRunning
+			item.Error = nil
+			return false
+		}
+		fallthrough
+	case task.StateCanceled:
+		item.Open = false
+		item.State = remote.State
+		if remote.Error != nil {
+			item.Error = cloneTaskError(remote.Error)
+		} else {
+			item.Error = &task.Error{Message: fmt.Sprintf("upload %s ended with state %s", item.DestPath, remote.State)}
+		}
+	default:
+		item.State = task.StateRunning
+		item.Error = nil
+	}
+	return false
 }
 
 func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
@@ -1030,13 +1089,17 @@ func (b *uploadStreamBatch) closeDoneIfTerminalLocked() {
 	b.doneOnce.Do(func() { close(b.done) })
 }
 
-func (c *Core) putUploadStream(batch *uploadStreamBatch) {
+func (c *Core) putUploadStream(batch *uploadStreamBatch) bool {
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 	if c.uploadStreams == nil {
 		c.uploadStreams = map[string]*uploadStreamBatch{}
 	}
+	if _, exists := c.uploadStreams[batch.taskID]; exists {
+		return false
+	}
 	c.uploadStreams[batch.taskID] = batch
+	return true
 }
 
 func (c *Core) getUploadStream(taskID string) *uploadStreamBatch {

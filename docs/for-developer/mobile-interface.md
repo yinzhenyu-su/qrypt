@@ -571,6 +571,11 @@ ReadTaskEventsJSON(handleID, waitMS)
 CloseTaskEventsJSON(handleID)
 ```
 
+After reconnecting, use OpenTaskEventsFromJSON(coreID, filterJSON, afterSeq,
+deadlineMS) with the last processed sequence. If the returned event has
+type=task_gap or snapshot_required=true, reload the task snapshot before
+continuing.
+
 `ReadTaskEventsJSON` is long polling. If queued events exist, it returns
 immediately. If no event exists and `waitMS > 0`, it waits until a task event
 arrives or the timeout expires. Timeout returns an empty event array, not an

@@ -28,6 +28,7 @@ type PendingUpload struct {
 	LastAttemptAt int64                `json:"last_attempt_at,omitempty"`
 	NextAttemptAt int64                `json:"next_attempt_at,omitempty"`
 	ReplaceUpload *UploadReplacement   `json:"replace_upload,omitempty"`
+	SourceHashes  drive.SourceHashes   `json:"source_hashes,omitempty"`
 	Staging       *UploadStagingStatus `json:"staging,omitempty"`
 	Frozen        bool                 `json:"frozen,omitempty"`
 }

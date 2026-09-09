@@ -312,6 +312,55 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	}
 }
 
+func TestSnapshotPendingUsesPersistedHashesAfterRestart(t *testing.T) {
+	cache, err := newStoresInDir(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("persisted-upload-hashes")
+	md5Sum := md5.Sum(content)
+	sha1Sum := sha1.Sum(content)
+	sha256Sum := sha256.Sum256(content)
+	v := &VFS{
+		driver:    &snapshotHashDriver{Driver: drive.NewFakeDriver(), hashes: []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1}},
+		read:      read.NewState(cache.readCacheStore),
+		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		pathLocks: pathlock.New(),
+		view:      newTestViewState("0", time.Now()),
+	}
+	localPath, err := cache.CreateStaging("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.WriteStagingAt(localPath, content, 0); err != nil {
+		t.Fatal(err)
+	}
+	pending := PendingUpload{
+		Path:      "/file",
+		FID:       "file",
+		LocalPath: localPath,
+		Size:      int64(len(content)),
+		SourceHashes: drive.SourceHashes{
+			drive.HashMD5:    md5Sum[:],
+			drive.HashSHA1:   sha1Sum[:],
+			drive.HashSHA256: sha256Sum[:],
+		},
+	}
+
+	snapshot, err := v.snapshotPending(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Incremental {
+		t.Fatal("snapshot used the in-memory hash tracker after restart")
+	}
+	for algorithm, want := range pending.SourceHashes {
+		if got := snapshot.Hashes[algorithm]; !bytes.Equal(got, want) {
+			t.Fatalf("persisted %s = %x, want %x", algorithm, got, want)
+		}
+	}
+}
+
 func TestSnapshotPendingUsesIncrementalHashesForSequentialWrite(t *testing.T) {
 	ctx := context.Background()
 	raw := drive.NewFakeDriver()
