@@ -44,13 +44,10 @@ func (c *Core) CreateLocalUploadTask(ctx context.Context, req LocalUploadTaskReq
 			ItemID:     item.ItemID,
 		})
 	}
-	taskType := task.TypeUploadRemote
-	if len(items) > 1 {
-		taskType = task.TypeUploadBatch
-	}
-	return c.CreateTask(ctx, task.Request{
-		Type:    taskType,
-		Items:   items,
-		Options: req.Options,
+	return c.CreateOperation(ctx, task.OperationRequest{
+		Operation:    task.OperationUpload,
+		UploadSource: task.UploadSourceLocal,
+		Items:        items,
+		Options:      req.Options,
 	})
 }

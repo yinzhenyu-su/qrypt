@@ -118,15 +118,16 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 		item.Mount = destMount
 		item.Detail["dest_mount"] = destMount
 	}
+	applyTaskRequestMetadata(&item, req)
 	c.putUploadStream(batch)
 	manager, err := c.taskManager()
 	if err != nil {
 		c.removeUploadStream(batch.taskID)
 		return task.Task{}, err
 	}
-	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runUploadStreamTask(runCtx, update, batch)
-	}), nil
+	})
 }
 
 func (c *Core) recoverUploadStreamTasks(ctx context.Context, manager *task.Manager) {
@@ -745,13 +746,15 @@ func uploadStreamItemPhase(item *uploadStreamItem) string {
 }
 
 func uploadStreamItemCapabilities(item *uploadStreamItem) task.ItemCapabilities {
-	return task.ItemCapabilities{
+	capabilities := task.ItemCapabilities{
 		OpenInput:   item.State == task.StateWaitingInput && item.Written != item.Size,
 		CommitInput: item.State == task.StateWaitingInput && item.Written == item.Size,
 		Cancelable: item.State != task.StateSucceeded &&
 			item.State != task.StateFailed &&
 			item.State != task.StateCanceled,
 	}
+	capabilities.Actions = task.ActionsForItemCapabilities(capabilities)
+	return capabilities
 }
 
 func (b *uploadStreamBatch) updateTaskSnapshot() {

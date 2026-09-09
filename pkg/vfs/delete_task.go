@@ -114,13 +114,15 @@ func (s deleteTaskSource) records() []deleteTaskRecord {
 
 func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 	item := task.Task{
-		ID:        record.id,
-		Type:      task.TypeDeleteRemote,
-		State:     record.state,
-		Scope:     task.ScopeSync,
-		Path:      record.path,
-		Name:      path.Base(record.path),
-		UpdatedAt: record.updatedAt,
+		ID:            record.id,
+		Operation:     task.OperationDelete,
+		Type:          task.TypeDeleteRemote,
+		State:         record.state,
+		Scope:         task.ScopeSync,
+		SchemaVersion: task.CurrentTaskSchemaVersion,
+		Path:          record.path,
+		Name:          path.Base(record.path),
+		UpdatedAt:     record.updatedAt,
 		Progress: task.Progress{
 			ItemsTotal:  1,
 			CurrentPath: record.path,

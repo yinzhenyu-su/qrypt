@@ -129,35 +129,18 @@ func CreateTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	return resultJSON(item, err)
 }
 
-func CreateUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
+func CreateOperationJSON(coreID, requestRaw string, deadlineMS int) string {
 	s, err := getSession(coreID)
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	var req task.Request
+	var req task.OperationRequest
 	if err := json.Unmarshal([]byte(requestRaw), &req); err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	req.Type = task.TypeUploadStreamBatch
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
-	return resultJSON(item, err)
-}
-
-func CreateDirectUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	var req task.Request
-	if err := json.Unmarshal([]byte(requestRaw), &req); err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	req.Type = task.TypeUploadStreamDirect
-	ctx, cancel := s.timeoutContext(deadlineMS)
-	defer cancel()
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
+	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateOperation(ctx, req) })
 	return resultJSON(item, err)
 }
 
@@ -173,22 +156,6 @@ func CreateLocalUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
 	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateLocalUploadTask(ctx, req) })
-	return resultJSON(item, err)
-}
-
-func CreateDownloadTaskJSON(coreID, requestRaw string, deadlineMS int) string {
-	s, err := getSession(coreID)
-	if err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	var req task.Request
-	if err := json.Unmarshal([]byte(requestRaw), &req); err != nil {
-		return resultJSON(nil, wrapError(err))
-	}
-	req.Type = task.TypeDownloadStreamBatch
-	ctx, cancel := s.timeoutContext(deadlineMS)
-	defer cancel()
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
 	return resultJSON(item, err)
 }
 

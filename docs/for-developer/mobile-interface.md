@@ -266,8 +266,7 @@ Pick the upload entry point that matches the source of the data:
 
 | API | Input source | Behavior | Task visible / events |
 | --- | --- | --- | --- |
-| `CreateUploadTaskJSON` | app input stream (SAF `content://` on Android, security-scoped on iOS) | creates `upload_stream_batch`; app writes chunks | yes |
-| `CreateDirectUploadTaskJSON` | reopenable source token; with the current gomobile wrapper this is a qrypt-readable local path unless the embedding app wires a custom source provider | creates `upload_stream_direct`; qrypt reads the source directly, hashes first, then uploads without staging when supported | yes |
+| `CreateOperationJSON(operation=upload)` | app input stream (SAF `content://` on Android, security-scoped on iOS) | selects direct or staging from `upload_policy`; app writes chunks for `staging_only` | yes |
 | `CreateLocalUploadTaskJSON` | stable local filesystem path | creates a user-scope `upload_remote`/`upload_batch` task; waits for stability when `wait_stable` | yes |
 | `UploadLocalFileJSON` | stable local filesystem path | convenience wrapper that streams the file into an `upload_stream_batch` task and returns after staging | yes |
 | `CreateTaskJSON(type="upload_batch")` | qrypt-readable local paths | generic task API | yes |
@@ -279,11 +278,13 @@ upload (`upload_remote`, sync scope) stay hidden from the default list and do
 not emit events; user tasks surface their cloud progress by watching those
 sync tasks internally.
 
-Use `CreateUploadTaskJSON` when the app owns the input stream. On Android this
-is usually a SAF/content URI InputStream. On iOS this can be a security-scoped
-file or provider stream.
+Use `CreateOperationJSON` with `operation=upload` and
+`upload_policy=staging_only` when the app owns the input stream. On Android
+this is usually a SAF/content URI InputStream. On iOS this can be a
+security-scoped file or provider stream.
 
-Use `CreateDirectUploadTaskJSON` when qrypt can reopen the source later from a
+Use `CreateOperationJSON` with `operation=upload` and
+`upload_policy=prefer_direct` when qrypt can reopen the source later from a
 stable token. `source_path` in the item JSON is the source token. On Android,
 call `SetUploadSourceOpenerJSON` once (it applies to all open and future
 sessions) with an implementation of the `UploadSourceOpener` interface that
@@ -339,9 +340,9 @@ overrides the default target. When the default target is used, qrypt attempts to
 create `default_path` itself if missing, but it does not create missing parent
 directories.
 
-`CreateUploadTaskJSON` always creates an app-stream staging upload task, and
-`CreateDirectUploadTaskJSON` always creates a direct upload task, so the app
-does not need to pass a task type for either flow.
+`CreateOperationJSON` accepts one stable upload operation and chooses the
+internal transport from `upload_policy`; callers do not pass a transport task
+type.
 
 Then write each item:
 
@@ -458,7 +459,7 @@ of querying progress by path.
 
 ### Download To App-Owned Output
 
-Use `CreateDownloadTaskJSON` when the app owns the output stream. On Android
+Use `CreateOperationJSON` with `operation=download` when the app owns the output stream. On Android
 this usually means SAF, MediaStore, or public-directory OutputStreams.
 
 Create the task:
@@ -474,8 +475,8 @@ Create the task:
 }
 ```
 
-`CreateDownloadTaskJSON` always creates an app-stream download task, so the app
-does not need to pass a task type for this flow.
+`CreateOperationJSON` always creates an app-stream download task, so the app
+does not need to pass an internal transport task type.
 
 Then copy each item:
 
@@ -606,9 +607,9 @@ task reaches a terminal state, close the event handle with
 `GetTaskJSON`, `ListTasksJSON`, or `GetTaskItemJSON` to reload the latest task
 snapshot and continue from that state.
 
-Events cover qrypt-managed user tasks created through `CreateTaskJSON` and its
-wrappers (`CreateUploadTaskJSON`, `CreateDownloadTaskJSON`,
-`CreateLocalUploadTaskJSON`, `UploadLocalFileJSON`). Sync-scope VFS tasks
+Events cover qrypt-managed user tasks created through `CreateOperationJSON`,
+`CreateTaskJSON`, `CreateLocalUploadTaskJSON`, and `UploadLocalFileJSON`.
+Sync-scope VFS tasks
 (`upload_remote` bookkeeping) are not managed by the mobile task manager and do
 not emit events. `ListTasksJSON` with an empty filter defaults to user-scope
 tasks, so the app's task list naturally excludes sync internals.
@@ -734,9 +735,8 @@ SetScopedFSBackendJSON(backend)
 ClearScopedFSBackendJSON()
 UploadLocalFileJSON(coreID, localPath, remotePath, deadlineMS)
 WaitLocalFileStableJSON(coreID, localPath, optionsJSON, deadlineMS)
+CreateOperationJSON(coreID, requestJSON, deadlineMS)
 CreateLocalUploadTaskJSON(coreID, requestJSON, deadlineMS)
-CreateUploadTaskJSON(coreID, requestJSON, deadlineMS)
-CreateDirectUploadTaskJSON(coreID, requestJSON, deadlineMS)
 OpenUploadItemJSON(coreID, taskID, itemID, deadlineMS)
 WriteUploadItem(handleID, data, deadlineMS)
 CommitUploadItemJSON(handleID, deadlineMS)
@@ -747,7 +747,6 @@ PauseUploadItemJSON(handleID)
 ### Downloads
 
 ```text
-CreateDownloadTaskJSON(coreID, requestJSON, deadlineMS)
 OpenDownloadItemJSON(coreID, taskID, itemID, deadlineMS)
 ReadDownloadItemInto(handleID, dst, deadlineMS)
 AckDownloadItemJSON(handleID, bytesWritten)

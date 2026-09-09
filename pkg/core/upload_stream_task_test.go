@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -172,8 +173,19 @@ func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
 	if err := c.DismissTask(ctx, created.ID); err != nil {
 		t.Fatalf("DismissTask of waiting_input task: %v", err)
 	}
-	if _, err := c.GetTask(ctx, created.ID); err == nil {
-		t.Fatal("task still present after dismiss, want removed")
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		_, getErr := c.GetTask(ctx, created.ID)
+		if errors.Is(getErr, task.ErrNotFound) {
+			break
+		}
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("task still present after cancellation cleanup, want removed")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	entries, err := os.ReadDir(remote)
 	if err != nil {

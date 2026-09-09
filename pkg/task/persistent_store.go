@@ -21,10 +21,13 @@ type PersistentStore struct {
 
 var ErrPersistence = errors.New("task: persistence failed")
 
+const currentJournalVersion = 1
+
 type taskJournalEntry struct {
-	Op   string `json:"op"`
-	Task Task   `json:"task,omitempty"`
-	ID   string `json:"id,omitempty"`
+	Version int    `json:"version,omitempty"`
+	Op      string `json:"op"`
+	Task    Task   `json:"task,omitempty"`
+	ID      string `json:"id,omitempty"`
 }
 
 func NewPersistentStore(path string) (*PersistentStore, error) {
@@ -92,24 +95,32 @@ func taskDurableKey(t Task) durableKey {
 		code, message = t.Error.Code, t.Error.Message
 	}
 	return durableKey{
-		state:        t.State,
-		cancelable:   t.Capabilities.Cancelable,
-		retryable:    t.Capabilities.Retryable,
-		dismissible:  t.Capabilities.Dismissible,
-		persistent:   t.Capabilities.Persistent,
-		errorCode:    code,
-		errorMessage: message,
+		operation:            t.Operation,
+		operationKey:         t.OperationKey,
+		operationFingerprint: t.OperationFingerprint,
+		generation:           t.ExecutionGeneration,
+		state:                t.State,
+		cancelable:           t.Capabilities.Cancelable,
+		retryable:            t.Capabilities.Retryable,
+		dismissible:          t.Capabilities.Dismissible,
+		persistent:           t.Capabilities.Persistent,
+		errorCode:            code,
+		errorMessage:         message,
 	}
 }
 
 type durableKey struct {
-	state        State
-	cancelable   bool
-	retryable    bool
-	dismissible  bool
-	persistent   bool
-	errorCode    string
-	errorMessage string
+	operation            OperationKind
+	operationKey         string
+	operationFingerprint string
+	generation           uint64
+	state                State
+	cancelable           bool
+	retryable            bool
+	dismissible          bool
+	persistent           bool
+	errorCode            string
+	errorMessage         string
 }
 
 func (s *PersistentStore) DismissManaged(id string) bool {
@@ -149,6 +160,9 @@ func (s *PersistentStore) replay() error {
 		if err := json.Unmarshal(line, &entry); err != nil {
 			return fmt.Errorf("task: replay %s: %w", s.path, err)
 		}
+		if entry.Version > currentJournalVersion {
+			return fmt.Errorf("task: unsupported journal version %d", entry.Version)
+		}
 		switch entry.Op {
 		case "put", "update":
 			if entry.Task.ID != "" && entry.Task.Capabilities.Persistent {
@@ -167,8 +181,11 @@ func (s *PersistentStore) replay() error {
 }
 
 func normalizeReplayedTask(item Task) Task {
+	if item.SchemaVersion == 0 {
+		item.SchemaVersion = CurrentTaskSchemaVersion
+	}
 	switch item.State {
-	case StateQueued, StateScheduled, StateRunning, StateRetryWait, StateWaitingInput, StateWaitingOutput:
+	case StateQueued, StateScheduled, StateRunning, StateRetryWait, StateCanceling, StateWaitingInput, StateWaitingOutput:
 		item.State = StateFailed
 		item.Capabilities.Cancelable = false
 		item.Capabilities.Retryable = false
@@ -217,6 +234,9 @@ func (s *PersistentStore) recordPersistenceError(err error) {
 }
 
 func (s *PersistentStore) append(entry taskJournalEntry) error {
+	if entry.Version == 0 {
+		entry.Version = currentJournalVersion
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {

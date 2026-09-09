@@ -92,15 +92,16 @@ func (c *Core) createDownloadStreamTask(ctx context.Context, req task.Request) (
 		item.Mount = sourceMount
 		item.Detail["source_mount"] = sourceMount
 	}
+	applyTaskRequestMetadata(&item, req)
 	c.putDownloadStream(batch)
 	manager, err := c.taskManager()
 	if err != nil {
 		c.removeDownloadStream(batch.taskID)
 		return task.Task{}, err
 	}
-	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runDownloadStreamTask(runCtx, update, batch)
-	}), nil
+	})
 }
 
 func (c *Core) runDownloadStreamTask(ctx context.Context, update task.UpdateFunc, batch *downloadStreamBatch) error {
@@ -409,12 +410,14 @@ func (b *downloadStreamBatch) resultItemsLocked() []task.ItemResult {
 }
 
 func downloadStreamItemCapabilities(item *downloadStreamItem) task.ItemCapabilities {
-	return task.ItemCapabilities{
+	capabilities := task.ItemCapabilities{
 		OpenOutput: item.State == task.StateQueued || item.State == task.StateWaitingOutput,
 		Cancelable: item.State != task.StateSucceeded &&
 			item.State != task.StateFailed &&
 			item.State != task.StateCanceled,
 	}
+	capabilities.Actions = task.ActionsForItemCapabilities(capabilities)
+	return capabilities
 }
 
 func (b *downloadStreamBatch) updateTaskSnapshot() {
