@@ -126,7 +126,7 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 						taskItem.Progress.Phase = "upload"
 						taskItem.Detail["phase"] = "upload"
 					})
-					remoteTask, hasRemoteTask, err = c.waitUploadTaskForPath(ctx, item.DestPath)
+					remoteTask, hasRemoteTask, err = c.uploadCompletion().Wait(ctx, item.DestPath)
 					if err == nil {
 						if finalEntry, statErr := c.fs.Stat(ctx, item.DestPath); statErr == nil {
 							uploadResult.Entry = finalEntry

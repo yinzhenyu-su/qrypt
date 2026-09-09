@@ -19,7 +19,10 @@ import (
 var UploadStreamTaskPollInterval = 500 * time.Millisecond
 
 type uploadStreamBatch struct {
-	mu             sync.Mutex
+	mu sync.Mutex
+	// Keep one service boundary for the batch; the service is stateless and
+	// retains the same stream lifecycle semantics without Core forwarding.
+	uploadService  *UploadService
 	taskID         string
 	items          []*uploadStreamItem
 	byID           map[string]*uploadStreamItem
@@ -200,6 +203,10 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 	if conflictPolicy == "" {
 		conflictPolicy = "overwrite"
 	}
+	uploadService, err := c.UploadService()
+	if err != nil {
+		return nil, err
+	}
 	pendingByPath := map[string]vfs.PendingUpload{}
 	if inspector, ok := c.fs.(vfs.UploadInspector); ok && vfs.HasCapability(c.fs, vfs.CapabilityUploadInspection) {
 		for _, pending := range inspector.PendingUploads() {
@@ -211,6 +218,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 		previous[result.ItemID] = result
 	}
 	batch := &uploadStreamBatch{
+		uploadService:  uploadService,
 		taskID:         item.ID,
 		byID:           map[string]*uploadStreamItem{},
 		conflictPolicy: conflictPolicy,
@@ -285,32 +293,27 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 }
 
 func (c *Core) runUploadStreamTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
-	batch.mu.Lock()
-	batch.update = update
-	batch.readyOnce.Do(func() { close(batch.ready) })
-	batch.mu.Unlock()
-	batch.updateTaskSnapshot()
-	ticker := time.NewTicker(UploadStreamTaskPollInterval)
-	defer ticker.Stop()
-	defer c.removeUploadStream(batch.taskID)
-	for {
-		select {
-		case <-ctx.Done():
-			batch.markCanceled(ctx.Err())
-			for _, item := range batch.itemsSnapshot() {
-				if item.State != task.StateSucceeded {
-					_ = c.cancelStreamingUpload(context.Background(), item.DestPath)
+	return c.runUploadStreamLifecycle(ctx, update, batch, func(ctx context.Context) error {
+		ticker := time.NewTicker(UploadStreamTaskPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				_ = c.cancelUploadStreamTask(ctx, batch)
+				for _, item := range batch.itemsSnapshot() {
+					if item.State != task.StateSucceeded {
+						_ = batch.uploadService.CancelStream(context.Background(), item.DestPath)
+					}
 				}
+				return ctx.Err()
+			case <-batch.done:
+				return nil
+			case <-ticker.C:
+				c.refreshUploadStreamCloudProgress(ctx, batch)
+				batch.updateTaskSnapshot()
 			}
-			batch.updateTaskSnapshot()
-			return ctx.Err()
-		case <-batch.done:
-			return batch.finishTask(update)
-		case <-ticker.C:
-			c.refreshUploadStreamCloudProgress(ctx, batch)
-			batch.updateTaskSnapshot()
 		}
-	}
+	})
 }
 
 func (c *Core) OpenUploadStreamItem(ctx context.Context, taskID, itemID string) (*UploadStreamItemHandle, error) {
@@ -353,7 +356,7 @@ func (c *Core) OpenUploadStreamItem(ctx context.Context, taskID, itemID string) 
 	batch.updateTaskSnapshotLocked()
 	batch.mu.Unlock()
 	if needsCreate {
-		if err := c.beginStreamingUpload(ctx, destPath); err != nil {
+		if err := batch.uploadService.BeginStream(ctx, destPath); err != nil {
 			batch.mu.Lock()
 			if current := batch.byID[itemID]; current != nil {
 				current.Open = false
@@ -420,7 +423,7 @@ func (h *UploadStreamItemHandle) Write(ctx context.Context, data []byte) (int, e
 	destPath := item.DestPath
 	offset := item.Written
 	h.batch.mu.Unlock()
-	n, err := h.core.writeStreamingUpload(ctx, destPath, data, offset)
+	n, err := h.batch.uploadService.WriteStream(ctx, destPath, data, offset)
 	h.batch.mu.Lock()
 	if current := h.batch.byID[h.itemID]; current != nil && !h.closed && n > 0 {
 		current.Written += int64(n)
@@ -446,7 +449,7 @@ func (h *UploadStreamItemHandle) Commit(ctx context.Context) error {
 	item.State = task.StateRunning
 	h.batch.updateTaskSnapshotLocked()
 	h.batch.mu.Unlock()
-	entry, err := h.core.finishStreamingUpload(ctx, destPath)
+	entry, err := h.batch.uploadService.FinishStream(ctx, destPath)
 	if err == nil {
 		h.core.refreshUploadStreamCloudProgress(ctx, h.batch)
 	}
@@ -564,7 +567,7 @@ func (c *Core) cancelUploadStreamItem(ctx context.Context, batch *uploadStreamBa
 	if !hadStaging {
 		return nil
 	}
-	return c.cancelStreamingUpload(ctx, destPath)
+	return batch.uploadService.CancelStream(ctx, destPath)
 }
 
 func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Request) (*uploadStreamBatch, error) {
@@ -582,6 +585,7 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 		return nil, err
 	}
 	batch := &uploadStreamBatch{
+		uploadService:  uploadService,
 		taskID:         newUploadStreamTaskID(),
 		byID:           map[string]*uploadStreamItem{},
 		conflictPolicy: conflictPolicy,
