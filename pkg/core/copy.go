@@ -260,7 +260,7 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 		if spec.expanded {
 			return copyOneResult{}, fmt.Errorf("core: expanded copy item %q is unexpectedly a directory", item.SourcePath)
 		}
-		result := drivecopy.RunDirectDriverCopyDirToPath(ctx, c.fs, source, item.SourcePath, item.DestPath, spec.Overwrite)
+		result := drivecopy.RunDirectDriverCopyDirToPathWithTempDir(ctx, c.fs, source, item.SourcePath, item.DestPath, spec.Overwrite, c.runtimeLayout.TmpDir)
 		out := copyOneResult{opID: result.OpID, bytes: result.Bytes}
 		if !result.Pass {
 			if result.Error != "" {
@@ -269,13 +269,13 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 			return out, fmt.Errorf("core: directory copy failed")
 		}
 		if spec.DeleteSourceAfterCopy {
-			if err := removeMoveSource(ctx, source, item.SourcePath, true); err != nil {
+			if err := c.removeMoveSource(ctx, source, item.SourcePath, true); err != nil {
 				return out, err
 			}
 		}
 		return out, nil
 	}
-	result := drivecopy.RunDirectDriverCopy(ctx, source, item.SourcePath, item.DestPath, spec.Overwrite)
+	result := drivecopy.RunDirectDriverCopyWithTempDir(ctx, source, item.SourcePath, item.DestPath, spec.Overwrite, c.runtimeLayout.TmpDir)
 	out := copyOneResult{opID: result.OpID, bytes: result.Bytes}
 	if result.DestEntry != nil {
 		out.remoteID = result.DestEntry.ID
@@ -284,7 +284,7 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 		return out, fmt.Errorf("%s", drivecopy.DriverCopyError(result))
 	}
 	if spec.DeleteSourceAfterCopy {
-		if err := removeMoveSource(ctx, source, item.SourcePath, false); err != nil {
+		if err := c.removeMoveSource(ctx, source, item.SourcePath, false); err != nil {
 			return out, err
 		}
 	}
@@ -375,12 +375,12 @@ func (c *Core) removeCopiedSourceDirs(ctx context.Context, dirs []string, update
 			taskItem.Detail["phase"] = "delete_source"
 		})
 		if source != nil {
-			if err := removeMoveSource(ctx, source, dir.Path, true); err != nil {
+			if err := c.removeMoveSource(ctx, source, dir.Path, true); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := c.Remove(ctx, dir.Path); err != nil {
+		if err := c.fs.RemoveDir(ctx, dir.Path); err != nil {
 			return err
 		}
 	}

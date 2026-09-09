@@ -126,7 +126,7 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 	}), nil
 }
 
-func removeMoveSource(ctx context.Context, source diagnostics.DriverCopySource, sourcePath string, isDir bool) error {
+func (c *Core) removeMoveSource(ctx context.Context, source diagnostics.DriverCopySource, sourcePath string, isDir bool) error {
 	info, err := source.DebugResolve(ctx, sourcePath, false)
 	if err != nil {
 		return err
@@ -144,13 +144,20 @@ func removeMoveSource(ctx context.Context, source diagnostics.DriverCopySource, 
 	if driver == nil {
 		return fmt.Errorf("core: source driver %q not found", info.Mount)
 	}
-	return driver.Remove(ctx, drive.Entry{
+	if err := driver.Remove(ctx, drive.Entry{
 		ID:       info.RemoteID,
 		ParentID: info.ParentID,
 		Name:     info.PlainName,
 		IsDir:    isDir,
 		Size:     info.Size,
-	})
+	}); err != nil {
+		return err
+	}
+	// The direct driver removal is synchronous, but it bypasses the VFS view
+	// mutation path. Invalidate the containing directory so the next listing
+	// cannot resurrect the deleted source from a stale cache.
+	c.fs.RefreshPath(path.Dir(sourcePath))
+	return nil
 }
 
 func moveMounts(sourcePath, destPath string, fs vfs.FileSystem) (string, string, bool) {
