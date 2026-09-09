@@ -31,6 +31,24 @@ func TestManagerSubmitDetachesFromSubmitContext(t *testing.T) {
 	}
 }
 
+func TestManagerDerivesTaskActionsFromState(t *testing.T) {
+	m := NewManager()
+	defer m.Close()
+	item, err := m.SubmitIdempotent(context.Background(), Task{ID: "task-1"}, func(context.Context, UpdateFunc) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Capabilities.Actions) != 1 || item.Capabilities.Actions[0] != ActionCancel {
+		t.Fatalf("queued actions = %v, want cancel", item.Capabilities.Actions)
+	}
+	got := waitTaskState(t, m, "task-1", StateSucceeded)
+	if len(got.Capabilities.Actions) != 1 || got.Capabilities.Actions[0] != ActionDismiss {
+		t.Fatalf("terminal actions = %v, want dismiss", got.Capabilities.Actions)
+	}
+}
+
 func TestManagerListsOwnAndSourceTasks(t *testing.T) {
 	source := staticSource{tasks: []Task{{ID: "upload-1", Type: TypeUploadRemote, State: StateRunning}}}
 	m := NewManager(source)
@@ -46,6 +64,41 @@ func TestManagerListsOwnAndSourceTasks(t *testing.T) {
 	}
 	if len(tasks) != 2 {
 		t.Fatalf("tasks = %+v, want own and source task", tasks)
+	}
+}
+
+func TestManagerSubscribeFromReplaysEvents(t *testing.T) {
+	m := NewManager()
+	defer m.Close()
+	m.broadcast(Event{Type: EventTaskUpdated, TaskID: "task-1"})
+	m.broadcast(Event{Type: EventTaskUpdated, TaskID: "task-2"})
+
+	sub := m.SubscribeFrom(Filter{}, 1)
+	defer sub.Close()
+	events, err := sub.ReadAvailable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].TaskID != "task-2" || events[0].Seq != 2 {
+		t.Fatalf("replayed events = %+v, want task-2 seq 2", events)
+	}
+}
+
+func TestManagerSubscribeFromSignalsHistoryGap(t *testing.T) {
+	m := NewManager()
+	defer m.Close()
+	for i := 0; i < eventHistoryLimit+2; i++ {
+		m.broadcast(Event{Type: EventTaskUpdated, TaskID: "task"})
+	}
+
+	sub := m.SubscribeFrom(Filter{}, 1)
+	defer sub.Close()
+	events, err := sub.ReadAvailable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[0].Type != EventTaskGap || !events[0].SnapshotRequired {
+		t.Fatalf("gap event = %+v, want snapshot-required gap", events)
 	}
 }
 
@@ -111,13 +164,24 @@ func TestManagerDismissTaskCancelsActiveOrRemovesTerminalTask(t *testing.T) {
 	if err := m.DismissTask(context.Background(), "running"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.GetTask(context.Background(), "running"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetTask after active dismiss err=%v, want not found", err)
+	if got, err := m.GetTask(context.Background(), "running"); err != nil || got.State != StateCanceling {
+		t.Fatalf("GetTask after active dismiss = %+v err=%v, want canceling", got, err)
 	}
 	select {
 	case <-canceled:
 	case <-time.After(time.Second):
 		t.Fatal("dismiss did not cancel active task")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, err := m.GetTask(context.Background(), "running")
+		if errors.Is(err, ErrNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("active task was not removed after cancellation: %v", err)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	m.Submit(context.Background(), Task{ID: "done", Type: TypeDeleteBatch}, func(context.Context, UpdateFunc) error {

@@ -85,13 +85,14 @@ func (c *Core) createDownloadTask(ctx context.Context, req task.Request) (task.T
 		item.Mount = sourceMount
 		item.Detail["source_mount"] = sourceMount
 	}
+	applyTaskRequestMetadata(&item, req)
 	manager, err := c.taskManager()
 	if err != nil {
 		return task.Task{}, err
 	}
-	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runDownloadTask(runCtx, update, spec)
-	}), nil
+	})
 }
 
 func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec downloadTaskSpec) error {

@@ -112,15 +112,16 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 		item.Mount = destMount
 		item.Detail["dest_mount"] = destMount
 	}
+	applyTaskRequestMetadata(&item, req)
 	c.putUploadStream(batch)
 	manager, err := c.taskManager()
 	if err != nil {
 		c.removeUploadStream(batch.taskID)
 		return task.Task{}, err
 	}
-	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runUploadStreamDirectTask(runCtx, update, batch)
-	}), nil
+	})
 }
 
 func (c *Core) recoverUploadStreamDirectTasks(ctx context.Context, manager *task.Manager) {

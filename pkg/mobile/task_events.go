@@ -8,7 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
-func openTaskEvents(coreID, filterJSON string, deadlineMS int) (string, error) {
+func openTaskEvents(coreID, filterJSON string, afterSeq uint64, deadlineMS int) (string, error) {
 	s, err := getSession(coreID)
 	if err != nil {
 		return "", wrapError(err)
@@ -19,7 +19,9 @@ func openTaskEvents(coreID, filterJSON string, deadlineMS int) (string, error) {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	sub, err := withCore(s, func(c *core.Core) (*task.Subscription, error) { return c.OpenTaskEvents(ctx, filter) })
+	sub, err := withCore(s, func(c *core.Core) (*task.Subscription, error) {
+		return c.OpenTaskEventsFrom(ctx, filter, afterSeq)
+	})
 	if err != nil {
 		return "", wrapError(err)
 	}
@@ -35,7 +37,12 @@ func openTaskEvents(coreID, filterJSON string, deadlineMS int) (string, error) {
 }
 
 func OpenTaskEventsJSON(coreID, filterJSON string, deadlineMS int) string {
-	id, err := openTaskEvents(coreID, filterJSON, deadlineMS)
+	id, err := openTaskEvents(coreID, filterJSON, 0, deadlineMS)
+	return resultJSON(id, err)
+}
+
+func OpenTaskEventsFromJSON(coreID, filterJSON string, afterSeq uint64, deadlineMS int) string {
+	id, err := openTaskEvents(coreID, filterJSON, afterSeq, deadlineMS)
 	return resultJSON(id, err)
 }
 

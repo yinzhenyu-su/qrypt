@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func TestPersistentStoreRejectsFutureJournalVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.jsonl")
+	if err := os.WriteFile(path, []byte("{\"version\":2,\"op\":\"update\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPersistentStore(path); err == nil {
+		t.Fatal("NewPersistentStore() succeeded for a future journal version")
+	}
+}
+
 func TestPersistentStorePersistsOnlyPersistentTasks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks", "tasks.jsonl")
 	store, err := NewPersistentStore(path)

@@ -7,6 +7,8 @@ import (
 
 var ErrNotFound = errors.New("task: not found")
 
+const CurrentTaskSchemaVersion uint16 = 1
+
 type Type string
 
 const (
@@ -29,6 +31,7 @@ const (
 	StateScheduled State = "scheduled"
 	StateRunning   State = "running"
 	StateRetryWait State = "retry_wait"
+	StateCanceling State = "canceling"
 	StateSucceeded State = "succeeded"
 	// StatePartialFailed means a batch task completed with at least one failed item.
 	StatePartialFailed State = "partial_failed"
@@ -46,25 +49,31 @@ const (
 )
 
 type Task struct {
-	ID           string         `json:"id"`
-	Type         Type           `json:"type"`
-	State        State          `json:"state"`
-	Scope        Scope          `json:"scope,omitempty"`
-	Mount        string         `json:"mount,omitempty"`
-	Path         string         `json:"path,omitempty"`
-	Name         string         `json:"name,omitempty"`
-	CreatedAt    time.Time      `json:"created_at,omitempty"`
-	StartedAt    time.Time      `json:"started_at,omitempty"`
-	UpdatedAt    time.Time      `json:"updated_at,omitempty"`
-	CompletedAt  time.Time      `json:"completed_at,omitempty"`
-	RetryCount   int            `json:"retry_count,omitempty"`
-	NextAttempt  time.Time      `json:"next_attempt_at,omitempty"`
-	Version      uint64         `json:"version,omitempty"`
-	Progress     Progress       `json:"progress,omitempty"`
-	Capabilities Capabilities   `json:"capabilities,omitempty"`
-	Error        *Error         `json:"error,omitempty"`
-	Result       Result         `json:"result,omitempty"`
-	Detail       map[string]any `json:"detail,omitempty"`
+	ID                   string         `json:"id"`
+	Operation            OperationKind  `json:"operation,omitempty"`
+	Type                 Type           `json:"type"`
+	State                State          `json:"state"`
+	Scope                Scope          `json:"scope,omitempty"`
+	Mount                string         `json:"mount,omitempty"`
+	Path                 string         `json:"path,omitempty"`
+	Name                 string         `json:"name,omitempty"`
+	CreatedAt            time.Time      `json:"created_at,omitempty"`
+	StartedAt            time.Time      `json:"started_at,omitempty"`
+	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
+	CompletedAt          time.Time      `json:"completed_at,omitempty"`
+	RetryCount           int            `json:"retry_count,omitempty"`
+	NextAttempt          time.Time      `json:"next_attempt_at,omitempty"`
+	Version              uint64         `json:"version,omitempty"`
+	SchemaVersion        uint16         `json:"schema_version,omitempty"`
+	ExecutionGeneration  uint64         `json:"execution_generation,omitempty"`
+	OperationKey         string         `json:"idempotency_key,omitempty"`
+	OperationFingerprint string         `json:"operation_fingerprint,omitempty"`
+	DismissRequested     bool           `json:"dismiss_requested,omitempty"`
+	Progress             Progress       `json:"progress,omitempty"`
+	Capabilities         Capabilities   `json:"capabilities,omitempty"`
+	Error                *Error         `json:"error,omitempty"`
+	Result               Result         `json:"result,omitempty"`
+	Detail               map[string]any `json:"detail,omitempty"`
 }
 
 type Progress struct {
@@ -88,10 +97,11 @@ type Progress struct {
 }
 
 type Capabilities struct {
-	Cancelable  bool `json:"cancelable"`
-	Retryable   bool `json:"retryable"`
-	Dismissible bool `json:"dismissible"`
-	Persistent  bool `json:"persistent"`
+	Cancelable  bool     `json:"cancelable"`
+	Retryable   bool     `json:"retryable"`
+	Dismissible bool     `json:"dismissible"`
+	Persistent  bool     `json:"persistent"`
+	Actions     []Action `json:"actions,omitempty"`
 }
 
 type Error struct {
@@ -109,13 +119,17 @@ type EventType string
 const (
 	EventTaskUpdated EventType = "task_updated"
 	EventTaskRemoved EventType = "task_removed"
+	EventTaskGap     EventType = "task_gap"
 )
 
 type Event struct {
-	Seq    uint64    `json:"seq"`
-	Type   EventType `json:"type"`
-	TaskID string    `json:"task_id"`
-	Task   *Task     `json:"task,omitempty"`
+	Seq              uint64    `json:"seq"`
+	Type             EventType `json:"type"`
+	TaskID           string    `json:"task_id"`
+	Task             *Task     `json:"task,omitempty"`
+	SnapshotRequired bool      `json:"snapshot_required,omitempty"`
+	FromSeq          uint64    `json:"from_seq,omitempty"`
+	ToSeq            uint64    `json:"to_seq,omitempty"`
 }
 
 type ItemResult struct {
@@ -143,18 +157,21 @@ type ItemResult struct {
 }
 
 type ItemCapabilities struct {
-	OpenInput   bool `json:"open_input,omitempty"`
-	CommitInput bool `json:"commit_input,omitempty"`
-	OpenOutput  bool `json:"open_output,omitempty"`
-	Cancelable  bool `json:"cancelable,omitempty"`
+	OpenInput   bool     `json:"open_input,omitempty"`
+	CommitInput bool     `json:"commit_input,omitempty"`
+	OpenOutput  bool     `json:"open_output,omitempty"`
+	Cancelable  bool     `json:"cancelable,omitempty"`
+	Actions     []Action `json:"actions,omitempty"`
 }
 
 type Request struct {
-	Type    Type           `json:"type"`
-	Scope   Scope          `json:"scope,omitempty"`
-	Items   []Item         `json:"items,omitempty"`
-	Options Options        `json:"options,omitempty"`
-	Detail  map[string]any `json:"detail,omitempty"`
+	Type                 Type           `json:"type"`
+	Scope                Scope          `json:"scope,omitempty"`
+	Items                []Item         `json:"items,omitempty"`
+	Options              Options        `json:"options,omitempty"`
+	Detail               map[string]any `json:"detail,omitempty"`
+	OperationKey         string         `json:"idempotency_key,omitempty"`
+	OperationFingerprint string         `json:"-"`
 }
 
 type Item struct {

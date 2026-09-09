@@ -64,14 +64,15 @@ func (c *Core) createDeleteTask(ctx context.Context, req task.Request) (task.Tas
 			"phase":       "queued",
 		},
 	}
+	applyTaskRequestMetadata(&item, req)
 
 	manager, err := c.taskManager()
 	if err != nil {
 		return task.Task{}, err
 	}
-	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runDeleteTask(runCtx, update, spec)
-	}), nil
+	})
 }
 
 func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec deleteTaskSpec) error {

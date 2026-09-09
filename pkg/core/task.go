@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 
@@ -13,6 +16,7 @@ type TaskFilter = task.Filter
 type TaskItem = task.Item
 type TaskOptions = task.Options
 type TaskRequest = task.Request
+type TaskOperationRequest = task.OperationRequest
 type TaskType = task.Type
 type TaskState = task.State
 type TaskItemFilter = task.ItemFilter
@@ -82,6 +86,9 @@ func (c *Core) GetTask(ctx context.Context, id string) (task.Task, error) {
 }
 
 func (c *Core) ListTaskItems(ctx context.Context, taskID string, filter task.ItemFilter) ([]task.ItemResult, error) {
+	if controller, err := c.itemController(taskID); err == nil {
+		return controller.listItems(filter), nil
+	}
 	item, err := c.GetTask(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -97,6 +104,25 @@ func (c *Core) ListTaskItems(ctx context.Context, taskID string, filter task.Ite
 		}
 	}
 	return out, nil
+}
+
+func (c *Core) OpenTaskItem(ctx context.Context, taskID, itemID string, action task.Action) (TaskItemHandle, error) {
+	if taskID == "" || itemID == "" {
+		return nil, fmt.Errorf("core: task and item ids are required")
+	}
+	controller, err := c.itemController(taskID)
+	if err != nil {
+		return nil, err
+	}
+	return controller.openItem(ctx, itemID, action)
+}
+
+func (c *Core) CommitTaskItem(ctx context.Context, taskID, itemID string) error {
+	controller, err := c.itemController(taskID)
+	if err != nil {
+		return err
+	}
+	return controller.commitItem(ctx, itemID)
 }
 
 func (c *Core) GetTaskItem(ctx context.Context, taskID, itemID string) (task.ItemResult, error) {
@@ -123,13 +149,11 @@ func (c *Core) CancelTaskItem(ctx context.Context, taskID, itemID string) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if batch := c.getUploadStream(taskID); batch != nil {
-		return c.cancelUploadStreamItem(ctx, batch, itemID)
+	controller, err := c.itemController(taskID)
+	if err != nil {
+		return err
 	}
-	if batch := c.getDownloadStream(taskID); batch != nil {
-		return c.cancelDownloadStreamItem(ctx, batch, itemID)
-	}
-	return fmt.Errorf("core: task item cancel is only supported for active stream tasks")
+	return controller.cancelItem(ctx, itemID)
 }
 
 func (c *Core) CancelTask(ctx context.Context, id string) error {
@@ -213,6 +237,70 @@ func (c *Core) CreateTask(ctx context.Context, req task.Request) (task.Task, err
 	default:
 		return task.Task{}, fmt.Errorf("core: unsupported task type %q", req.Type)
 	}
+}
+
+func applyTaskRequestMetadata(item *task.Task, req task.Request) {
+	item.OperationKey = req.OperationKey
+	item.OperationFingerprint = req.OperationFingerprint
+}
+
+func (c *Core) CreateOperation(ctx context.Context, req task.OperationRequest) (task.Task, error) {
+	if err := req.Validate(); err != nil {
+		return task.Task{}, err
+	}
+	legacy, err := taskRequestForOperation(req)
+	if err != nil {
+		return task.Task{}, err
+	}
+	legacy.OperationKey = req.Idempotency
+	legacy.OperationFingerprint, err = operationFingerprint(req)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return c.CreateTask(ctx, legacy)
+}
+
+func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
+	taskType := task.Type("")
+	switch req.Operation {
+	case task.OperationUpload:
+		if req.UploadSource == task.UploadSourceLocal {
+			taskType = task.TypeUploadRemote
+		} else if req.UploadPolicy == task.UploadPolicyStagingOnly {
+			taskType = task.TypeUploadStreamBatch
+		} else {
+			taskType = task.TypeUploadStreamDirect
+		}
+	case task.OperationDownload:
+		taskType = task.TypeDownloadStreamBatch
+	case task.OperationDelete:
+		taskType = task.TypeDeleteRemote
+		if len(req.Items) > 1 {
+			taskType = task.TypeDeleteBatch
+		}
+	case task.OperationCopy:
+		taskType = task.TypeCopy
+	case task.OperationMove:
+		taskType = task.TypeMoveRemote
+	default:
+		return task.Request{}, fmt.Errorf("%w: unsupported operation %q", task.ErrInvalidOperation, req.Operation)
+	}
+	return task.Request{
+		Type:    taskType,
+		Scope:   req.Scope,
+		Items:   req.Items,
+		Options: req.Options,
+	}, nil
+}
+
+func operationFingerprint(req task.OperationRequest) (string, error) {
+	req.Idempotency = ""
+	data, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("core: fingerprint task operation: %w", err)
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func moveSpecFromTaskRequest(req task.Request) (moveTaskSpec, error) {

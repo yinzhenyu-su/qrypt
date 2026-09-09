@@ -27,21 +27,25 @@ type RunFunc func(ctx context.Context, update UpdateFunc) error
 type UpdateFunc func(func(*Task))
 
 type Manager struct {
-	mu          sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	store       Store
-	sources     []Source
-	eventSeq    uint64
-	nextSubID   uint64
-	subscribers map[uint64]subscriber
-	wg          sync.WaitGroup
+	mu           sync.Mutex
+	submitMu     sync.Mutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	store        Store
+	sources      []Source
+	eventSeq     uint64
+	eventHistory []Event
+	nextSubID    uint64
+	subscribers  map[uint64]subscriber
+	wg           sync.WaitGroup
 }
 
 type subscriber struct {
 	filter Filter
 	events chan Event
 }
+
+const eventHistoryLimit = 256
 
 func NewManager(sources ...Source) *Manager {
 	return NewManagerWithStore(NewMemoryStore(), sources...)
@@ -85,10 +89,41 @@ func (m *Manager) AddSource(source Source) {
 }
 
 func (m *Manager) Submit(ctx context.Context, item Task, run RunFunc) Task {
+	submitted, err := m.SubmitIdempotent(ctx, item, run)
+	if err == nil {
+		return submitted
+	}
+	item.State = StateFailed
+	item.Error = &Error{Code: "idempotency_conflict", Message: err.Error()}
+	return item
+}
+
+func (m *Manager) SubmitIdempotent(ctx context.Context, item Task, run RunFunc) (Task, error) {
 	if err := ctx.Err(); err != nil {
 		item.State = StateCanceled
 		item.Error = &Error{Message: err.Error()}
-		return item
+		return item, err
+	}
+	if run == nil {
+		return Task{}, fmt.Errorf("task: run function required")
+	}
+	if item.Operation == "" {
+		item.Operation = operationKindForType(item.Type)
+	}
+	if item.ExecutionGeneration == 0 {
+		item.ExecutionGeneration = 1
+	}
+	if item.SchemaVersion == 0 {
+		item.SchemaVersion = CurrentTaskSchemaVersion
+	}
+	m.submitMu.Lock()
+	defer m.submitMu.Unlock()
+	if item.OperationKey != "" {
+		if existing, found, err := m.findIdempotent(item); err != nil {
+			return Task{}, err
+		} else if found {
+			return existing, nil
+		}
 	}
 	now := time.Now().UTC()
 	if item.CreatedAt.IsZero() {
@@ -106,24 +141,26 @@ func (m *Manager) Submit(ctx context.Context, item Task, run RunFunc) Task {
 
 	m.wg.Add(1)
 	go m.run(runCtx, item.ID)
-	return item
+	return item, nil
 }
 
 func (m *Manager) run(ctx context.Context, id string) {
 	defer m.wg.Done()
-	m.update(id, func(item *Task) {
+	managed, ok := m.store.GetManaged(id)
+	if !ok || managed.Run == nil {
+		return
+	}
+	generation := managed.Task.ExecutionGeneration
+	m.updateForGeneration(id, generation, func(item *Task) {
 		item.State = StateRunning
 		item.StartedAt = time.Now().UTC()
 		item.UpdatedAt = item.StartedAt
 	})
-	run := m.runFunc(id)
-	if run == nil {
-		return
-	}
-	err := run(ctx, func(fn func(*Task)) {
-		m.update(id, fn)
+	err := managed.Run(ctx, func(fn func(*Task)) {
+		m.updateForGeneration(id, generation, fn)
 	})
-	m.update(id, func(item *Task) {
+	dismiss := false
+	m.updateForGeneration(id, generation, func(item *Task) {
 		now := time.Now().UTC()
 		item.UpdatedAt = now
 		item.CompletedAt = now
@@ -133,25 +170,39 @@ func (m *Manager) run(ctx context.Context, id string) {
 			if ctx.Err() != nil {
 				item.State = StateCanceled
 				item.Error = &Error{Message: ctx.Err().Error()}
+				dismiss = item.DismissRequested
 				return
 			}
 			item.State = StateFailed
 			item.Error = &Error{Message: err.Error(), Retryable: item.Capabilities.Retryable}
+			dismiss = item.DismissRequested
 			return
 		}
 		if item.State == StatePartialFailed {
+			dismiss = item.DismissRequested
 			return
 		}
 		item.State = StateSucceeded
 		item.Error = nil
+		dismiss = item.DismissRequested
 	})
+	if dismiss && m.store.DismissManaged(id) {
+		m.broadcastTaskRemoved(Task{ID: id})
+	}
 }
 
-func (m *Manager) runFunc(id string) RunFunc {
-	if managed, ok := m.store.GetManaged(id); ok {
-		return managed.Run
+func (m *Manager) findIdempotent(item Task) (Task, bool, error) {
+	for _, managed := range m.store.ListManaged(Filter{}) {
+		current := managed.Task
+		if current.Scope != item.Scope || current.OperationKey != item.OperationKey {
+			continue
+		}
+		if current.OperationFingerprint != item.OperationFingerprint {
+			return Task{}, false, fmt.Errorf("%w: key %q", ErrIdempotencyConflict, item.OperationKey)
+		}
+		return current, true, nil
 	}
-	return nil
+	return Task{}, false, nil
 }
 
 func normalizeManagedTaskCapabilities(item *Task) {
@@ -161,17 +212,33 @@ func normalizeManagedTaskCapabilities(item *Task) {
 	if isTerminalState(item.State) {
 		item.Capabilities.Cancelable = false
 		item.Capabilities.Dismissible = true
+		item.Capabilities.Actions = []Action{ActionDismiss}
 		return
 	}
-	item.Capabilities.Cancelable = true
+	item.Capabilities.Cancelable = item.State != StateCanceling
 	item.Capabilities.Dismissible = false
+	actions := make([]Action, 0, 2)
+	if item.Capabilities.Cancelable {
+		actions = append(actions, ActionCancel)
+	}
+	if item.Capabilities.Retryable {
+		actions = append(actions, ActionRetry)
+	}
+	item.Capabilities.Actions = actions
 }
 
 func (m *Manager) update(id string, fn func(*Task)) {
+	m.updateForGeneration(id, 0, fn)
+}
+
+func (m *Manager) updateForGeneration(id string, generation uint64, fn func(*Task)) {
 	m.mu.Lock()
 	hasSubscribers := len(m.subscribers) > 0
 	m.mu.Unlock()
 	apply := func(managed *ManagedTask) {
+		if generation != 0 && managed.Task.ExecutionGeneration != generation {
+			return
+		}
 		fn(&managed.Task)
 		normalizeManagedTaskCapabilities(&managed.Task)
 		managed.Task.UpdatedAt = time.Now().UTC()
@@ -253,6 +320,12 @@ func (m *Manager) CancelTask(ctx context.Context, id string) error {
 			return fmt.Errorf("task: %q is not cancelable", id)
 		}
 		if managed.Cancel != nil {
+			m.store.UpdateManaged(id, func(managed *ManagedTask) {
+				if !isTerminalState(managed.Task.State) {
+					managed.Task.State = StateCanceling
+				}
+			})
+			m.broadcastTaskUpdated(managed.Task)
 			managed.Cancel()
 		}
 		return nil
@@ -285,6 +358,7 @@ func (m *Manager) RetryTask(ctx context.Context, id string) error {
 			managed.Task.State = StateQueued
 			managed.Task.Error = nil
 			managed.Task.RetryCount++
+			managed.Task.ExecutionGeneration++
 			managed.Task.CompletedAt = time.Time{}
 		})
 		if ok {
@@ -324,6 +398,7 @@ func (m *Manager) RecoverTask(ctx context.Context, id string, run RunFunc) (Task
 		managed.Cancel = cancel
 		managed.Task.State = StateQueued
 		managed.Task.Error = nil
+		managed.Task.ExecutionGeneration++
 		managed.Task.CompletedAt = time.Time{}
 		managed.Task.Capabilities.Cancelable = true
 		managed.Task.Capabilities.Retryable = false
@@ -365,12 +440,17 @@ func (m *Manager) DismissTask(ctx context.Context, id string) error {
 	}
 	if managed.Task.Capabilities.Cancelable {
 		if managed.Cancel != nil {
+			updated, ok := m.store.UpdateManaged(id, func(managed *ManagedTask) {
+				managed.Task.DismissRequested = true
+				if !isTerminalState(managed.Task.State) {
+					managed.Task.State = StateCanceling
+				}
+			})
+			if ok {
+				m.broadcastTaskUpdated(updated.Task)
+			}
 			managed.Cancel()
 		}
-		if !m.store.DismissManaged(id) {
-			return fmt.Errorf("%w: %q", ErrNotFound, id)
-		}
-		m.broadcastTaskRemoved(managed.Task)
 		return nil
 	}
 	if !isTerminalState(managed.Task.State) {
@@ -423,12 +503,33 @@ func (m *Manager) DismissFinishedTasks(ctx context.Context, filter Filter) (int,
 }
 
 func (m *Manager) Subscribe(filter Filter) *Subscription {
+	return m.SubscribeFrom(filter, 0)
+}
+
+func (m *Manager) SubscribeFrom(filter Filter, afterSeq uint64) *Subscription {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextSubID++
 	id := m.nextSubID
-	ch := make(chan Event, defaultSubscriptionBuffer)
+	bufferSize := defaultSubscriptionBuffer
+	if len(m.eventHistory)+1 > bufferSize {
+		bufferSize = len(m.eventHistory) + 1
+	}
+	ch := make(chan Event, bufferSize)
 	m.subscribers[id] = subscriber{filter: filter, events: ch}
+	if afterSeq > 0 {
+		if len(m.eventHistory) == 0 && m.eventSeq > afterSeq {
+			ch <- Event{Type: EventTaskGap, Seq: m.eventSeq, SnapshotRequired: true, FromSeq: afterSeq + 1, ToSeq: m.eventSeq}
+		} else if len(m.eventHistory) > 0 && afterSeq < m.eventHistory[0].Seq-1 {
+			ch <- Event{Type: EventTaskGap, Seq: m.eventSeq, SnapshotRequired: true, FromSeq: afterSeq + 1, ToSeq: m.eventHistory[0].Seq - 1}
+		} else {
+			for _, event := range m.eventHistory {
+				if event.Seq > afterSeq && (event.Task == nil || filter.Match(*event.Task)) {
+					ch <- event
+				}
+			}
+		}
+	}
 	return &Subscription{
 		events: ch,
 		close: func() {
@@ -476,6 +577,10 @@ func (m *Manager) broadcast(event Event) {
 	defer m.mu.Unlock()
 	m.eventSeq++
 	event.Seq = m.eventSeq
+	m.eventHistory = append(m.eventHistory, event)
+	if len(m.eventHistory) > eventHistoryLimit {
+		m.eventHistory = m.eventHistory[len(m.eventHistory)-eventHistoryLimit:]
+	}
 	for _, sub := range m.subscribers {
 		if event.Task != nil && !sub.filter.Match(*event.Task) {
 			continue
@@ -483,12 +588,15 @@ func (m *Manager) broadcast(event Event) {
 		select {
 		case sub.events <- event:
 		default:
+			fromSeq := uint64(0)
 			select {
-			case <-sub.events:
+			case dropped := <-sub.events:
+				fromSeq = dropped.Seq
 			default:
 			}
+			gap := Event{Type: EventTaskGap, TaskID: event.TaskID, Seq: event.Seq, SnapshotRequired: true, FromSeq: fromSeq, ToSeq: event.Seq}
 			select {
-			case sub.events <- event:
+			case sub.events <- gap:
 			default:
 			}
 		}

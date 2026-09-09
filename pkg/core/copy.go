@@ -86,14 +86,15 @@ func (c *Core) createCopyTask(ctx context.Context, req task.Request) (task.Task,
 	if destMount != "" {
 		item.Detail["dest_mount"] = destMount
 	}
+	applyTaskRequestMetadata(&item, req)
 
 	manager, err := c.taskManager()
 	if err != nil {
 		return task.Task{}, err
 	}
-	return manager.Submit(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runCopyTask(runCtx, update, spec)
-	}), nil
+	})
 }
 
 func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec copyTaskSpec) error {

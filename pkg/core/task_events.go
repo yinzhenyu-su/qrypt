@@ -9,6 +9,10 @@ import (
 type TaskEvent = task.Event
 
 func (c *Core) OpenTaskEvents(ctx context.Context, filter task.Filter) (*task.Subscription, error) {
+	return c.OpenTaskEventsFrom(ctx, filter, 0)
+}
+
+func (c *Core) OpenTaskEventsFrom(ctx context.Context, filter task.Filter, afterSeq uint64) (*task.Subscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -16,5 +20,5 @@ func (c *Core) OpenTaskEvents(ctx context.Context, filter task.Filter) (*task.Su
 	if err != nil {
 		return nil, err
 	}
-	return manager.Subscribe(filter), nil
+	return manager.SubscribeFrom(filter, afterSeq), nil
 }
