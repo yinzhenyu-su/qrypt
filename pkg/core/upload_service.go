@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -14,8 +13,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
-
-const uploadCopyChunkSize = 256 * 1024
 
 // UploadService owns business-level upload semantics. It deliberately writes
 // through the internal filesystem API instead of treating FUSE as the upload
@@ -130,37 +127,17 @@ func (s *UploadService) UploadLocalFileResult(ctx context.Context, req UploadLoc
 	} else if skipped {
 		return s.resultForEntry(resolvedRemotePath, existing, true), nil
 	}
-	f, err := os.Open(req.LocalPath)
+	info, err := os.Stat(req.LocalPath)
 	if err != nil {
 		return UploadResult{}, err
 	}
-	defer f.Close()
 	if err := s.BeginStream(ctx, resolvedRemotePath); err != nil {
 		return UploadResult{}, err
 	}
-	buf := make([]byte, uploadCopyChunkSize)
-	var off int64
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			written, err := s.WriteStream(ctx, resolvedRemotePath, buf[:n], off)
-			if err != nil {
-				return UploadResult{}, err
-			}
-			if written != n {
-				return UploadResult{}, fmt.Errorf("core: short staging write: wrote %d of %d", written, n)
-			}
-			off += int64(written)
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return UploadResult{}, readErr
-		}
-	}
-	entry, err := s.FinishStream(ctx, resolvedRemotePath)
+	writer := newServiceUploadWriter(s, resolvedRemotePath)
+	entry, err := copyUploadSource(ctx, drive.NewLocalReadOnlyFileSource(req.LocalPath, info.Size()), writer)
 	if err != nil {
+		_ = writer.Abort(context.WithoutCancel(ctx))
 		return UploadResult{}, err
 	}
 	return s.resultForEntry(resolvedRemotePath, entry, false), nil

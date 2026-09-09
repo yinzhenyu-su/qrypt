@@ -255,41 +255,32 @@ func directUploadDetailBool(detail map[string]any, key string) bool {
 }
 
 func (c *Core) runUploadStreamDirectTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
-	batch.mu.Lock()
-	batch.update = update
-	batch.readyOnce.Do(func() { close(batch.ready) })
-	batch.mu.Unlock()
-	defer c.removeUploadStream(batch.taskID)
-	batch.updateTaskSnapshot()
-	for _, snapshot := range batch.itemsSnapshot() {
-		if snapshot.State == task.StateSucceeded {
-			continue
+	return c.runUploadStreamLifecycle(ctx, update, batch, func(ctx context.Context) error {
+		for _, snapshot := range batch.itemsSnapshot() {
+			if snapshot.State == task.StateSucceeded {
+				continue
+			}
+			for {
+				if err := waitDirectUploadRetry(ctx, update, batch); err != nil {
+					_ = c.cancelUploadStreamTask(ctx, batch)
+					return err
+				}
+				err := c.uploadStreamDirectItem(ctx, batch, snapshot.ID)
+				if err == nil {
+					break
+				}
+				if ctx.Err() != nil {
+					_ = c.cancelUploadStreamTask(ctx, batch)
+					return ctx.Err()
+				}
+				if !batch.autoRetry {
+					break
+				}
+				batch.scheduleDirectUploadRetry(update, snapshot.ID, err)
+			}
 		}
-		for {
-			if err := waitDirectUploadRetry(ctx, update, batch); err != nil {
-				batch.markCanceled(err)
-				batch.updateTaskSnapshot()
-				return err
-			}
-			err := c.uploadStreamDirectItem(ctx, batch, snapshot.ID)
-			if err == nil {
-				break
-			}
-			if ctx.Err() != nil {
-				batch.markCanceled(ctx.Err())
-				batch.updateTaskSnapshot()
-				return ctx.Err()
-			}
-			if !batch.autoRetry {
-				break
-			}
-			batch.scheduleDirectUploadRetry(update, snapshot.ID, err)
-		}
-	}
-	batch.mu.Lock()
-	batch.closeDoneIfTerminalLocked()
-	batch.mu.Unlock()
-	return batch.finishTask(update)
+		return nil
+	})
 }
 
 func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
@@ -489,41 +480,13 @@ func (c *Core) uploadSourceViaStaging(ctx context.Context, destPath string, sour
 	if err := service.BeginStream(ctx, destPath); err != nil {
 		return drive.Entry{}, err
 	}
-	reader, err := source.Open(ctx)
+	writer := newServiceUploadWriter(service, destPath)
+	entry, err := copyUploadSource(ctx, source, writer)
 	if err != nil {
-		_ = service.CancelStream(context.WithoutCancel(ctx), destPath)
+		_ = writer.Abort(context.WithoutCancel(ctx))
 		return drive.Entry{}, err
 	}
-	defer reader.Close()
-	buf := make([]byte, uploadCopyChunkSize)
-	var off int64
-	for {
-		n, readErr := reader.Read(buf)
-		if n > 0 {
-			written, err := service.WriteStream(ctx, destPath, buf[:n], off)
-			if err != nil {
-				_ = service.CancelStream(context.WithoutCancel(ctx), destPath)
-				return drive.Entry{}, err
-			}
-			if written != n {
-				_ = service.CancelStream(context.WithoutCancel(ctx), destPath)
-				return drive.Entry{}, fmt.Errorf("core: short staging write: wrote %d of %d", written, n)
-			}
-			off += int64(written)
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			_ = service.CancelStream(context.WithoutCancel(ctx), destPath)
-			return drive.Entry{}, readErr
-		}
-	}
-	entry, err := service.FinishStream(ctx, destPath)
-	if err != nil {
-		return drive.Entry{}, err
-	}
-	remoteTask, hasRemoteTask, err := c.waitUploadTaskForPath(ctx, destPath)
+	remoteTask, hasRemoteTask, err := c.uploadCompletion().Wait(ctx, destPath)
 	if err != nil {
 		return drive.Entry{}, err
 	}

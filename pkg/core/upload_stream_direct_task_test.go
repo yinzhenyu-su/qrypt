@@ -112,6 +112,58 @@ func TestCreateTaskUploadStreamDirectUsesLocalFSDirectPath(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUploadStreamDirectFallsBackToStagingWithoutDirectCapability(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	storage := t.TempDir()
+	drv := &sourceUploaderOnlyDriver{directUploadTestDriver: &directUploadTestDriver{}}
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: storage, UploadDelay: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+	sourcePath := filepath.Join(t.TempDir(), "source.txt")
+	payload := []byte("staging fallback payload")
+	if err := os.WriteFile(sourcePath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := c.CreateTask(ctx, task.Request{
+		Type: task.TypeUploadStreamDirect,
+		Items: []task.Item{{
+			ItemID:     "item",
+			SourcePath: sourcePath,
+			DestPath:   "/fallback-with-staging.txt",
+			Size:       int64(len(payload)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = waitCoreTask(t, c, item.ID)
+	if item.State != task.StateSucceeded {
+		t.Fatalf("task = %+v, want staging fallback success", item)
+	}
+	if got := item.Result.Items[0].Phase; got != "queued_upload" {
+		t.Fatalf("item phase = %q, want queued_upload", got)
+	}
+	if got := drv.uploadedData(); string(got) != string(payload) {
+		t.Fatalf("uploaded data = %q, want %q", got, payload)
+	}
+	if pending := fs.PendingUploads(); len(pending) != 0 {
+		t.Fatalf("pending uploads = %+v, want none after fallback completion", pending)
+	}
+	entries, err := os.ReadDir(filepath.Join(storage, "staging"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("staging entries = %+v, want cleaned staging", entries)
+	}
+}
+
 func TestCreateTaskUploadStreamDirectNonResumableCleansPartialAndRetries(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -291,6 +343,14 @@ type directUploadTestDriver struct {
 	data      []byte
 	sha1Hex   string
 	putSource int
+}
+
+type sourceUploaderOnlyDriver struct {
+	*directUploadTestDriver
+}
+
+func (*sourceUploaderOnlyDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{drive.CapabilitySourceUploader}
 }
 
 type badOffsetUploadSourceProvider struct {
