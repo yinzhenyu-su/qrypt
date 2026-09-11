@@ -8,6 +8,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
@@ -17,10 +18,11 @@ import (
 )
 
 type moveTaskSpec struct {
-	Items       []task.Item `json:"items"`
-	Overwrite   bool        `json:"overwrite,omitempty"`
-	Recursive   bool        `json:"recursive,omitempty"`
-	Concurrency int         `json:"concurrency,omitempty"`
+	Type        task.Type
+	Items       []task.Item
+	Overwrite   bool
+	Recursive   bool
+	Concurrency int
 }
 
 func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task, error) {
@@ -45,10 +47,20 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 	}
 	first := req.Items[0]
 
+	// Mirror delete tasks: an explicit batch type keeps its identity, while a
+	// multi-item remote move is promoted to the batch type.
+	taskType := req.Type
+	if taskType == task.TypeMoveRemote && len(req.Items) > 1 {
+		taskType = task.TypeMoveBatch
+	}
+	if taskType == "" {
+		taskType = task.TypeMoveRemote
+	}
+
 	now := util.Now()
 	item := task.Task{
 		ID:        newMoveTaskID(),
-		Type:      task.TypeMoveRemote,
+		Type:      taskType,
 		State:     task.StateQueued,
 		Scope:     task.ScopeUser,
 		Path:      first.SourcePath,
@@ -57,7 +69,9 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Capabilities: task.Capabilities{
-			Cancelable: true,
+			Cancelable:  true,
+			Persistent:  taskType == task.TypeMoveBatch,
+			Dismissible: taskType == task.TypeMoveBatch,
 		},
 		Detail: map[string]any{
 			"items":       copyTaskDetailItems(req.Items),
@@ -74,10 +88,6 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 	}
 	if destMount != "" {
 		item.Detail["dest_mount"] = destMount
-	}
-	if len(req.Items) > 1 {
-		item.Capabilities.Persistent = true
-		item.Capabilities.Dismissible = true
 	}
 	var crossCopySpec copyTaskSpec
 	if len(req.Items) == 1 && crossQryptMount {
@@ -197,7 +207,7 @@ type moveBatchKey struct {
 // runMoveBatch moves every item of a multi-item move, publishing per-item
 // results and monotonic progress. prior carries the item results of an earlier
 // attempt so a retry never re-resolves a source an earlier attempt already
-// moved away.
+// moved away. Items run on taskConcurrency(req.Concurrency) workers.
 func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req moveTaskSpec, prior []task.ItemResult) error {
 	completed := make(map[moveBatchKey]task.ItemResult, len(prior))
 	for _, result := range prior {
@@ -208,32 +218,49 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 	results := make([]task.ItemResult, len(req.Items))
 	var succeeded int64
 	var bytesDone int64
-	publish := func(done int64) {
+	var done int64
+	var mu sync.Mutex
+	active := map[int]string{}
+	// publish reports progress for the items finished so far. The caller holds
+	// mu, so concurrent workers emit monotonic counters and snapshots.
+	publish := func() {
+		doneNow := done
 		succeededNow := succeeded
 		bytesNow := bytesDone
+		activePaths := taskActivePaths(active)
+		snapshot := compactItemResults(results)
 		update(func(t *task.Task) {
-			t.Progress.ItemsDone = done
-			t.Progress.ItemsFailed = done - succeededNow
+			t.Progress.ItemsDone = doneNow
+			t.Progress.ItemsFailed = doneNow - succeededNow
 			t.Progress.TransferBytesDone = bytesNow
 			t.Progress.TransferBytesTotal = bytesNow
-			t.Result.Items = compactItemResults(results)
+			t.Result.Items = snapshot
+			t.Detail["active_paths"] = activePaths
 		})
 	}
-	for i, item := range req.Items {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	moveOne := func(i int) {
+		item := req.Items[i]
 		if previous, ok := completed[moveBatchKey{source: item.SourcePath, dest: item.DestPath}]; ok {
+			// An earlier attempt already moved this item; re-resolving or
+			// re-copying its source would fail, because the move removed it.
+			mu.Lock()
 			results[i] = previous
+			done++
 			succeeded++
-			publish(int64(i + 1))
-			continue
+			publish()
+			mu.Unlock()
+			return
 		}
 		_, _, cross := moveMounts(item.SourcePath, item.DestPath, c.fs)
+		mu.Lock()
+		active[i] = item.SourcePath
+		activePaths := taskActivePaths(active)
+		mu.Unlock()
 		update(func(t *task.Task) {
 			t.Progress.CurrentPath = item.SourcePath
 			t.Progress.Phase = "move"
 			t.Detail["phase"] = "move"
+			t.Detail["active_paths"] = activePaths
 			if cross {
 				t.Detail["mode"] = "copy_delete"
 			} else {
@@ -267,18 +294,57 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 		if err != nil {
 			itemResult.State = task.StateFailed
 			itemResult.Error = &task.Error{Message: err.Error()}
-		} else {
+		}
+		mu.Lock()
+		delete(active, i)
+		results[i] = itemResult
+		done++
+		if err == nil {
 			succeeded++
 			bytesDone += result.bytes
 		}
-		results[i] = itemResult
-		publish(int64(i + 1))
+		publish()
+		mu.Unlock()
+	}
+
+	workers := taskConcurrency(req.Concurrency)
+	if workers > len(req.Items) {
+		workers = len(req.Items)
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				moveOne(i)
+			}
+		}()
+	}
+	for i := range req.Items {
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return ctx.Err()
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	failed := int64(len(req.Items)) - succeeded
 	update(func(t *task.Task) {
 		t.Progress.CurrentPath = ""
 		t.Detail["phase"] = "complete"
+		t.Detail["active_paths"] = []string{}
 		if failed == 0 {
 			// Every item is in place, including the ones an earlier attempt
 			// moved: stop offering a retry that would only re-scan them.

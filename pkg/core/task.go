@@ -248,7 +248,7 @@ func (c *Core) CreateTask(ctx context.Context, req task.Request) (task.Task, err
 		return c.createDeleteTask(ctx, req)
 	case task.TypeCopy:
 		return c.createCopyTask(ctx, req)
-	case task.TypeMoveRemote:
+	case task.TypeMoveRemote, task.TypeMoveBatch:
 		move, err := moveSpecFromTaskRequest(req)
 		if err != nil {
 			return task.Task{}, err
@@ -302,6 +302,9 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 		taskType = task.TypeCopy
 	case task.OperationMove:
 		taskType = task.TypeMoveRemote
+		if len(req.Items) > 1 {
+			taskType = task.TypeMoveBatch
+		}
 	default:
 		return task.Request{}, fmt.Errorf("%w: unsupported operation %q", task.ErrInvalidOperation, req.Operation)
 	}
@@ -336,6 +339,7 @@ func moveSpecFromTaskRequest(req task.Request) (moveTaskSpec, error) {
 		items[i] = item
 	}
 	return moveTaskSpec{
+		Type:        req.Type,
 		Items:       items,
 		Overwrite:   req.Options.Overwrite,
 		Recursive:   req.Options.Recursive,
