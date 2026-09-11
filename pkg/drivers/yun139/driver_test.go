@@ -428,7 +428,7 @@ func TestMove(t *testing.T) {
 	})
 	defer server.Close()
 
-	err := drv.Move(context.Background(), drive.Entry{ID: "f1"}, "dst-folder")
+	_, err := drv.Move(context.Background(), drive.Entry{ID: "f1"}, "dst-folder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestRename(t *testing.T) {
 	})
 	defer server.Close()
 
-	err := drv.Rename(context.Background(), drive.Entry{ID: "f1"}, "newname.txt")
+	_, err := drv.Rename(context.Background(), drive.Entry{ID: "f1"}, "newname.txt")
 	if err != nil {
 		t.Fatal(err)
 	}

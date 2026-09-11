@@ -32,9 +32,10 @@ func (b *recordingRemoteOps) Remove(_ context.Context, entry drive.Entry) error 
 	return nil
 }
 
-func (b *recordingRemoteOps) Rename(_ context.Context, entry drive.Entry, newName string) error {
+func (b *recordingRemoteOps) Rename(_ context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	b.renamed = append(b.renamed, entry.ID+":"+newName)
-	return nil
+	entry.Name = newName
+	return entry, nil
 }
 
 func TestPrepareUploadTarget(t *testing.T) {

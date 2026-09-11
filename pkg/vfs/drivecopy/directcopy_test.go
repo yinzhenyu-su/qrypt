@@ -83,9 +83,11 @@ func (d *directCopyTestDriver) Space(context.Context) (drive.Space, error) {
 func (d *directCopyTestDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, nil
 }
-func (d *directCopyTestDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *directCopyTestDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *directCopyTestDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *directCopyTestDriver) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
 }
 func (d *directCopyTestDriver) Remove(_ context.Context, entry drive.Entry) error {
 	d.removed = append(d.removed, entry.ID)

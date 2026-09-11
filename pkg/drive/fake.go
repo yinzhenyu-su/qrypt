@@ -381,57 +381,57 @@ func (d *FakeDriver) Mkdir(ctx context.Context, parentID, name string) (Entry, e
 }
 
 // Move implements Driver.
-func (d *FakeDriver) Move(ctx context.Context, entry Entry, dstParentID string) error {
+func (d *FakeDriver) Move(ctx context.Context, entry Entry, dstParentID string) (Entry, error) {
 	d.mu.Lock()
 	d.record("Move", entry.ID)
 	d.mu.Unlock()
 	if err := d.failOn("Move"); err != nil {
-		return err
+		return Entry{}, err
 	}
 	if err := d.wait(ctx, d.Delay); err != nil {
-		return err
+		return Entry{}, err
 	}
 	if err := d.consume(&d.ErrMove); err != nil {
-		return err
+		return Entry{}, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	n, ok := d.nodes[entry.ID]
 	if !ok {
-		return fmt.Errorf("%w: fake move %q", ErrNotFound, entry.ID)
+		return Entry{}, fmt.Errorf("%w: fake move %q", ErrNotFound, entry.ID)
 	}
 	if _, ok := d.nodes[dstParentID]; !ok {
-		return fmt.Errorf("%w: fake move destination %q", ErrNotFound, dstParentID)
+		return Entry{}, fmt.Errorf("%w: fake move destination %q", ErrNotFound, dstParentID)
 	}
 	d.rekey(entry.ID, n, dstParentID)
 	d.captureLocked()
-	return nil
+	return entry, nil
 }
 
 // Rename implements Driver.
-func (d *FakeDriver) Rename(ctx context.Context, entry Entry, newName string) error {
+func (d *FakeDriver) Rename(ctx context.Context, entry Entry, newName string) (Entry, error) {
 	d.mu.Lock()
 	d.record("Rename", entry.ID)
 	d.mu.Unlock()
 	if err := d.failOn("Rename"); err != nil {
-		return err
+		return Entry{}, err
 	}
 	if err := d.wait(ctx, d.Delay); err != nil {
-		return err
+		return Entry{}, err
 	}
 	if err := d.consume(&d.ErrRename); err != nil {
-		return err
+		return Entry{}, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	n, ok := d.nodes[entry.ID]
 	if !ok {
-		return fmt.Errorf("%w: fake rename %q", ErrNotFound, entry.ID)
+		return Entry{}, fmt.Errorf("%w: fake rename %q", ErrNotFound, entry.ID)
 	}
 	d.rekey(entry.ID, n, n.parentID)
 	d.nodes[entry.ID].name = newName
 	d.captureLocked()
-	return nil
+	return entry, nil
 }
 
 // Copy implements ServerSideCopier: duplicates a stored file node in

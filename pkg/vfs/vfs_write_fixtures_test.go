@@ -215,19 +215,21 @@ func (d *countingUploadDriver) renamedIDs() []string {
 func (d *countingUploadDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, errors.New("mkdir should not be called")
 }
-func (d *countingUploadDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *countingUploadDriver) Rename(_ context.Context, entry drive.Entry, newName string) error {
+func (d *countingUploadDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *countingUploadDriver) Rename(_ context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.failRenames > 0 {
 		d.failRenames--
-		return errors.New("temporary rename failure")
+		return drive.Entry{}, errors.New("temporary rename failure")
 	}
 	existing := d.entries[entry.ID]
 	existing.Name = newName
 	d.entries[entry.ID] = existing
 	d.renamed = append(d.renamed, entry.ID+":"+newName)
-	return nil
+	return existing, nil
 }
 func (d *countingUploadDriver) Remove(_ context.Context, entry drive.Entry) error {
 	d.mu.Lock()
@@ -262,9 +264,11 @@ func (d *blockingUploadDriver) Read(context.Context, drive.Entry, int64, int64) 
 func (d *blockingUploadDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, errors.New("mkdir should not be called")
 }
-func (d *blockingUploadDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *blockingUploadDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *blockingUploadDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *blockingUploadDriver) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
 }
 func (d *blockingUploadDriver) Remove(_ context.Context, entry drive.Entry) error {
 	d.mu.Lock()

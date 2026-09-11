@@ -36,8 +36,10 @@ func CheckUnsupportedCapabilities(ctx context.Context, d Driver) []CapabilityCon
 	if !HasCapability(d, CapabilityWriter) {
 		_, err := d.Mkdir(ctx, "__qrypt_contract_parent__", "__qrypt_contract_name__")
 		check(CapabilityWriter, "Mkdir", err)
-		check(CapabilityWriter, "Move", d.Move(ctx, dummyEntry, "__qrypt_contract_parent__"))
-		check(CapabilityWriter, "Rename", d.Rename(ctx, dummyEntry, "__qrypt_contract_renamed__"))
+		_, err = d.Move(ctx, dummyEntry, "__qrypt_contract_parent__")
+		check(CapabilityWriter, "Move", err)
+		_, err = d.Rename(ctx, dummyEntry, "__qrypt_contract_renamed__")
+		check(CapabilityWriter, "Rename", err)
 		check(CapabilityWriter, "Remove", d.Remove(ctx, dummyEntry))
 	}
 

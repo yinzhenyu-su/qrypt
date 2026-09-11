@@ -35,9 +35,11 @@ func (d *instantUploadTestDriver) Mkdir(ctx context.Context, parentID, name stri
 	d.mkdirParentID = parentID
 	return drive.Entry{ID: "dir", ParentID: parentID, Name: name, IsDir: true, ModTime: time.Now()}, nil
 }
-func (d *instantUploadTestDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *instantUploadTestDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *instantUploadTestDriver) Move(context.Context, drive.Entry, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+func (d *instantUploadTestDriver) Rename(context.Context, drive.Entry, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
 }
 func (d *instantUploadTestDriver) Remove(context.Context, drive.Entry) error { return nil }
 func (d *instantUploadTestDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {

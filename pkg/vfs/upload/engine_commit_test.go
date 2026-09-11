@@ -18,9 +18,11 @@ func (fakeCommitRemote) List(context.Context, string) ([]drive.Entry, error) { r
 func (fakeCommitRemote) PutSource(context.Context, drive.UploadRequest) (drive.Entry, error) {
 	return drive.Entry{}, nil
 }
-func (fakeCommitRemote) Remove(context.Context, drive.Entry) error         { return nil }
-func (fakeCommitRemote) Rename(context.Context, drive.Entry, string) error { return nil }
-func (fakeCommitRemote) CanWrite() bool                                    { return true }
+func (fakeCommitRemote) Remove(context.Context, drive.Entry) error { return nil }
+func (fakeCommitRemote) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (fakeCommitRemote) CanWrite() bool { return true }
 
 type fakeCommitObserver struct{}
 

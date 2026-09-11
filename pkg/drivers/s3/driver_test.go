@@ -796,7 +796,7 @@ func TestS3CRUD(t *testing.T) {
 		t.Fatal("expected error reading a directory")
 	}
 
-	if err := d.Rename(ctx, entry, "renamed.txt"); err != nil {
+	if _, err := d.Rename(ctx, entry, "renamed.txt"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := mock.get("docs/renamed.txt"); !ok {
@@ -807,7 +807,7 @@ func TestS3CRUD(t *testing.T) {
 	}
 
 	renamedEntry := drive.Entry{ID: "docs/renamed.txt", Name: "renamed.txt"}
-	if err := d.Move(ctx, renamedEntry, "0"); err != nil {
+	if _, err := d.Move(ctx, renamedEntry, "0"); err != nil {
 		t.Fatal(err)
 	}
 

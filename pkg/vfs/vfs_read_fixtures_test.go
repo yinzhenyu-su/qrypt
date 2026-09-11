@@ -225,9 +225,11 @@ func (d *treeListDriver) listCount(parentID string) int {
 func (d *treeListDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, errors.New("mkdir should not be called")
 }
-func (d *treeListDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *treeListDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *treeListDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *treeListDriver) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
 }
 func (d *treeListDriver) Remove(context.Context, drive.Entry) error {
 	return nil

@@ -67,8 +67,8 @@ func (r *targetIndexRemote) Remove(_ context.Context, entry drive.Entry) error {
 	return nil
 }
 
-func (r *targetIndexRemote) Rename(_ context.Context, _ drive.Entry, _ string) error {
-	return r.renameErr
+func (r *targetIndexRemote) Rename(_ context.Context, _ drive.Entry, _ string) (drive.Entry, error) {
+	return drive.Entry{}, r.renameErr
 }
 
 func (r *targetIndexRemote) callCount() int {

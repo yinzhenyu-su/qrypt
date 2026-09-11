@@ -179,24 +179,27 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return entry, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
-	if err := d.backend().Move(ctx, d.rootToken, entry, d.resolveID(dstParentID)); err != nil {
-		return fmt.Errorf("scopedfs: move: %w", err)
+	dst := d.resolveID(dstParentID)
+	if err := d.backend().Move(ctx, d.rootToken, entry, dst); err != nil {
+		return drive.Entry{}, fmt.Errorf("scopedfs: move: %w", err)
 	}
-	return nil
+	entry.ParentID = dst
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	if err := d.backend().Rename(ctx, d.rootToken, entry, newName); err != nil {
-		return fmt.Errorf("scopedfs: rename: %w", err)
+		return drive.Entry{}, fmt.Errorf("scopedfs: rename: %w", err)
 	}
-	return nil
+	entry.Name = newName
+	return entry, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

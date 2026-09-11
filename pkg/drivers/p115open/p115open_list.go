@@ -120,9 +120,9 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	return drive.Entry{ParentID: dstParentID, Name: dstName, Size: src.Size, ModTime: time.Now()}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	if err := d.waitLimit(ctx); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	dstParentID = d.resolveID(dstParentID)
 	err := d.recordSDK(ctx, "move", map[string]any{"id": entry.ID, "dst_parent_id": dstParentID}, func() error {
@@ -131,13 +131,14 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	})
 	if err != nil {
 		d.setLastError(fmt.Sprintf("115_open: move %q: %v", entry.ID, err))
+		return drive.Entry{}, err
 	}
-	return err
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	if err := d.waitLimit(ctx); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	err := d.recordSDK(ctx, "rename", map[string]any{"id": entry.ID, "new_name": newName}, func() error {
 		_, err := d.cl.UpdateFile(ctx, &sdk.UpdateFileReq{FileID: entry.ID, FileName: newName})
@@ -145,8 +146,9 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	})
 	if err != nil {
 		d.setLastError(fmt.Sprintf("115_open: rename %q: %v", entry.ID, err))
+		return drive.Entry{}, err
 	}
-	return err
+	return entry, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

@@ -334,11 +334,12 @@ func (r indexedRemoteOps) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-func (r indexedRemoteOps) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	if err := r.RemoteOps.Rename(ctx, entry, newName); err != nil {
+func (r indexedRemoteOps) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
+	renamed, err := r.RemoteOps.Rename(ctx, entry, newName)
+	if err != nil {
 		r.index.invalidate(entry.ParentID)
-		return err
+		return drive.Entry{}, err
 	}
 	r.index.rename(entry, newName)
-	return nil
+	return renamed, nil
 }

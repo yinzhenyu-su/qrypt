@@ -485,29 +485,29 @@ func (d *crudMemoryDriver) Mkdir(_ context.Context, parentID, name string) (driv
 	return entry, nil
 }
 
-func (d *crudMemoryDriver) Move(_ context.Context, entry drive.Entry, dstParentID string) error {
+func (d *crudMemoryDriver) Move(_ context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	if _, ok := d.entries[dstParentID]; !ok {
-		return fmt.Errorf("parent %q not found", dstParentID)
+		return drive.Entry{}, fmt.Errorf("parent %q not found", dstParentID)
 	}
 	current, ok := d.entries[entry.ID]
 	if !ok {
-		return fmt.Errorf("entry %q not found", entry.ID)
+		return drive.Entry{}, fmt.Errorf("entry %q not found", entry.ID)
 	}
 	d.removeChild(current.ParentID, entry.ID)
 	current.ParentID = dstParentID
 	d.entries[entry.ID] = current
 	d.child[dstParentID] = append(d.child[dstParentID], entry.ID)
-	return nil
+	return current, nil
 }
 
-func (d *crudMemoryDriver) Rename(_ context.Context, entry drive.Entry, newName string) error {
+func (d *crudMemoryDriver) Rename(_ context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	current, ok := d.entries[entry.ID]
 	if !ok {
-		return fmt.Errorf("entry %q not found", entry.ID)
+		return drive.Entry{}, fmt.Errorf("entry %q not found", entry.ID)
 	}
 	current.Name = newName
 	d.entries[entry.ID] = current
-	return nil
+	return current, nil
 }
 
 func (d *crudMemoryDriver) Remove(_ context.Context, entry drive.Entry) error {

@@ -108,7 +108,7 @@ func (v *VFS) replaceSourceUploadedEntry(ctx context.Context, entry drive.Entry,
 		}
 	}
 	if entry.Name != finalName {
-		if err := v.driver.Rename(ctx, entry, finalName); err != nil {
+		if _, err := v.driver.Rename(ctx, entry, finalName); err != nil {
 			return drive.Entry{}, err
 		}
 		if refreshed, ok := v.findSourceUploadedEntry(ctx, entry.ParentID, finalName); ok {

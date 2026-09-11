@@ -24,11 +24,11 @@ func (d *capabilityReadOnlyDriver) Read(context.Context, Entry, int64, int64) (i
 func (d *capabilityReadOnlyDriver) Mkdir(context.Context, string, string) (Entry, error) {
 	return Entry{}, ErrUnsupported
 }
-func (d *capabilityReadOnlyDriver) Move(context.Context, Entry, string) error {
-	return ErrUnsupported
+func (d *capabilityReadOnlyDriver) Move(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
 }
-func (d *capabilityReadOnlyDriver) Rename(context.Context, Entry, string) error {
-	return ErrUnsupported
+func (d *capabilityReadOnlyDriver) Rename(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
 }
 func (d *capabilityReadOnlyDriver) Remove(context.Context, Entry) error {
 	return ErrUnsupported
@@ -57,9 +57,11 @@ type capabilityFullDriver struct {
 func (d *capabilityFullDriver) Mkdir(context.Context, string, string) (Entry, error) {
 	return Entry{}, nil
 }
-func (d *capabilityFullDriver) Move(context.Context, Entry, string) error { return nil }
-func (d *capabilityFullDriver) Rename(context.Context, Entry, string) error {
-	return nil
+func (d *capabilityFullDriver) Move(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, nil
+}
+func (d *capabilityFullDriver) Rename(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, nil
 }
 func (d *capabilityFullDriver) Remove(context.Context, Entry) error { return nil }
 func (d *capabilityFullDriver) PutSource(context.Context, UploadRequest) (Entry, error) {

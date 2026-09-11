@@ -173,56 +173,56 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (entry drive.
 	return drive.Entry{ID: child, ParentID: parent, Name: path.Base(child), IsDir: true}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (err error) {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (_ drive.Entry, err error) {
 	started := time.Now()
 	defer func() { d.recordOperation(ctx, "move", entry.ID, started, 0, err) }()
 	if err := ctx.Err(); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	source, err := d.resolveID(entry.ID)
 	if err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	if err := validateName(entry.Name); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	client, err := d.getClient(ctx)
 	if err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	destinationParent, err := d.resolveID(dstParentID)
 	if err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	destination := path.Join(destinationParent, entry.Name)
 	if err := client.Rename(source, destination); err != nil {
-		return fmt.Errorf("sftp: move %q to %q: %w", source, destination, classifyError(err))
+		return drive.Entry{}, fmt.Errorf("sftp: move %q to %q: %w", source, destination, classifyError(err))
 	}
-	return nil
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (err error) {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (_ drive.Entry, err error) {
 	started := time.Now()
 	defer func() { d.recordOperation(ctx, "rename", entry.ID, started, 0, err) }()
 	if err := validateName(newName); err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	source, err := d.resolveID(entry.ID)
 	if err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	if source == d.rootPath {
-		return fmt.Errorf("sftp: cannot rename root: %w", drive.ErrInvalidInput)
+		return drive.Entry{}, fmt.Errorf("sftp: cannot rename root: %w", drive.ErrInvalidInput)
 	}
 	client, err := d.getClient(ctx)
 	if err != nil {
-		return err
+		return drive.Entry{}, err
 	}
 	destination := path.Join(path.Dir(source), newName)
 	if err := client.Rename(source, destination); err != nil {
-		return fmt.Errorf("sftp: rename %q to %q: %w", source, destination, classifyError(err))
+		return drive.Entry{}, fmt.Errorf("sftp: rename %q to %q: %w", source, destination, classifyError(err))
 	}
-	return nil
+	return entry, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) (err error) {

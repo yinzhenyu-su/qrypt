@@ -48,24 +48,24 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	body := map[string]any{"name": newName}
 	if err := d.requestJSON(ctx, http.MethodPatch, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), body, nil); err != nil {
-		return fmt.Errorf("onedrive: rename %q: %w", entry.ID, err)
+		return drive.Entry{}, fmt.Errorf("onedrive: rename %q: %w", entry.ID, err)
 	}
-	return nil
+	return entry, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	dstParentID = d.resolveID(dstParentID)
 	body := map[string]any{
 		"parentReference": map[string]any{"id": dstParentID},
 		"name":            entry.Name,
 	}
 	if err := d.requestJSON(ctx, http.MethodPatch, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), body, nil); err != nil {
-		return fmt.Errorf("onedrive: move %q: %w", entry.ID, err)
+		return drive.Entry{}, fmt.Errorf("onedrive: move %q: %w", entry.ID, err)
 	}
-	return nil
+	return entry, nil
 }
 
 func (d *Driver) itemByPath(ctx context.Context, p string) (itemResp, error) {

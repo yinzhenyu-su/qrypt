@@ -97,23 +97,25 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	return drive.Entry{ID: dst + "/" + dstName, ParentID: dstParentID, Name: dstName, Size: src.Size}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	dst := d.resolvePath(dstParentID)
 	err := d.manage(ctx, "move", []map[string]string{{"path": entry.ID, "dest": dst, "newname": entry.Name}})
 	if err != nil {
 		err = fmt.Errorf("baidu_netdisk: move %q to %q: %w", entry.ID, dst, err)
 		d.setLastError(err)
+		return drive.Entry{}, err
 	}
-	return err
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	err := d.manage(ctx, "rename", []map[string]string{{"path": entry.ID, "newname": newName}})
 	if err != nil {
 		err = fmt.Errorf("baidu_netdisk: rename %q: %w", entry.ID, err)
 		d.setLastError(err)
+		return drive.Entry{}, err
 	}
-	return err
+	return entry, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

@@ -142,9 +142,11 @@ func (d *countingRemoveDriver) mkdirCount() int {
 	defer d.mu.Unlock()
 	return len(d.mkdirs)
 }
-func (d *countingRemoveDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *countingRemoveDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *countingRemoveDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *countingRemoveDriver) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
 }
 func (d *countingRemoveDriver) Remove(_ context.Context, entry drive.Entry) error {
 	d.mu.Lock()
@@ -203,9 +205,11 @@ func (d *staleMkdirListDriver) List(_ context.Context, parentID string) ([]drive
 func (d *staleMkdirListDriver) Mkdir(_ context.Context, parentID, name string) (drive.Entry, error) {
 	return drive.Entry{ID: "dir-id", ParentID: parentID, Name: name, IsDir: true}, nil
 }
-func (d *staleMkdirListDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *staleMkdirListDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *staleMkdirListDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *staleMkdirListDriver) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
 }
 func (d *staleMkdirListDriver) Remove(context.Context, drive.Entry) error { return nil }
 func (d *staleMkdirListDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
@@ -271,13 +275,15 @@ func (d *staleMoveListDriver) List(_ context.Context, parentID string) ([]drive.
 func (d *staleMoveListDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, nil
 }
-func (d *staleMoveListDriver) Rename(_ context.Context, entry drive.Entry, newName string) error {
+func (d *staleMoveListDriver) Rename(_ context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	d.renamed = append(d.renamed, entry.ID+":"+newName)
-	return nil
+	entry.Name = newName
+	return entry, nil
 }
-func (d *staleMoveListDriver) Move(_ context.Context, entry drive.Entry, dstParentID string) error {
+func (d *staleMoveListDriver) Move(_ context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	d.moved = append(d.moved, entry.ID+":"+dstParentID)
-	return nil
+	entry.ParentID = dstParentID
+	return entry, nil
 }
 func (d *staleMoveListDriver) Remove(context.Context, drive.Entry) error { return nil }
 func (d *existingMkdirDriver) Init(context.Context) error                { return nil }
@@ -299,8 +305,10 @@ func (d *existingMkdirDriver) Mkdir(context.Context, string, string) (drive.Entr
 	d.mkdirs++
 	return drive.Entry{}, errors.New("already exists")
 }
-func (d *existingMkdirDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *existingMkdirDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *existingMkdirDriver) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
+}
+func (d *existingMkdirDriver) Rename(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
+	return entry, nil
 }
 func (d *existingMkdirDriver) Remove(context.Context, drive.Entry) error { return nil }

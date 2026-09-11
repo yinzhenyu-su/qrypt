@@ -191,7 +191,7 @@ func TestLiveSFTPCRUD(t *testing.T) {
 	if err != nil || string(data) != "payload" {
 		t.Fatalf("Read = %q, %v", data, err)
 	}
-	if err := driver.Rename(ctx, entry, "renamed.txt"); err != nil {
+	if _, err := driver.Rename(ctx, entry, "renamed.txt"); err != nil {
 		t.Fatal(err)
 	}
 	entry.Name = "renamed.txt"
@@ -200,7 +200,7 @@ func TestLiveSFTPCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Move(ctx, entry, destination.ID); err != nil {
+	if _, err := driver.Move(ctx, entry, destination.ID); err != nil {
 		t.Fatal(err)
 	}
 	entry.ParentID = destination.ID

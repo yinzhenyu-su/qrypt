@@ -19,18 +19,21 @@ type stubRemote struct {
 	lastRenameCtx context.Context
 }
 
-func (s *stubRemote) Rename(ctx context.Context, _ drive.Entry, _ string) error {
+func (s *stubRemote) Rename(ctx context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
 	s.renames++
 	s.lastRenameCtx = ctx
 	if s.renameFailAt > 0 && s.renames == s.renameFailAt {
-		return s.renameErr
+		return drive.Entry{}, s.renameErr
 	}
-	return nil
+	return entry, nil
 }
 
-func (s *stubRemote) Move(context.Context, drive.Entry, string) error {
+func (s *stubRemote) Move(_ context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
 	s.moves++
-	return s.moveErr
+	if s.moveErr != nil {
+		return drive.Entry{}, s.moveErr
+	}
+	return entry, nil
 }
 
 func newEntry() drive.Entry {
@@ -161,17 +164,17 @@ type cancelMoveRemote struct {
 	rbCtxErr error
 }
 
-func (c *cancelMoveRemote) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (c *cancelMoveRemote) Rename(ctx context.Context, entry drive.Entry, _ string) (drive.Entry, error) {
 	if c.inner.renames > 0 {
 		// Second call (the rollback): record whether the detached context
 		// is still live. Only this layer counts.
 		c.rbCtxErr = ctx.Err()
 	}
 	c.inner.renames++
-	return nil
+	return entry, nil
 }
 
-func (c *cancelMoveRemote) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (c *cancelMoveRemote) Move(context.Context, drive.Entry, string) (drive.Entry, error) {
 	c.cancel()
-	return context.Canceled
+	return drive.Entry{}, context.Canceled
 }

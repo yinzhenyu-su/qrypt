@@ -32,7 +32,7 @@ func (b DriverBackend) Remove(ctx context.Context, entry drive.Entry) error {
 	return b.driver.Remove(ctx, entry)
 }
 
-func (b DriverBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (b DriverBackend) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	return b.driver.Rename(ctx, entry, newName)
 }
 

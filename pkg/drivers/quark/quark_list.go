@@ -109,7 +109,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return drive.Entry{ID: resp.Data.Fid, ParentID: parentID, Name: name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	data := map[string]any{
 		"filelist":     []string{entry.ID},
 		"to_pdir_fid":  d.resolve(dstParentID),
@@ -118,21 +118,27 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	}
 	var resp respEnvelope
 	if err := d.cl.request(ctx, http.MethodPost, "/file/move", nil, data, &resp); err != nil {
-		return fmt.Errorf("quark: move: %w", err)
+		return drive.Entry{}, fmt.Errorf("quark: move: %w", err)
 	}
-	return apiError(resp)
+	if err := apiError(resp); err != nil {
+		return drive.Entry{}, err
+	}
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	data := map[string]any{
 		"fid":       entry.ID,
 		"file_name": newName,
 	}
 	var resp respEnvelope
 	if err := d.cl.request(ctx, http.MethodPost, "/file/rename", nil, data, &resp); err != nil {
-		return fmt.Errorf("quark: rename: %w", err)
+		return drive.Entry{}, fmt.Errorf("quark: rename: %w", err)
 	}
-	return apiError(resp)
+	if err := apiError(resp); err != nil {
+		return drive.Entry{}, err
+	}
+	return entry, nil
 }
 
 // Copy implements drive.ServerSideCopier: POST /file/copy (same payload

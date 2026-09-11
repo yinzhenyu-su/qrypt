@@ -338,7 +338,7 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return drive.Entry{ID: resp.Data.FileID, ParentID: fileID, Name: resp.Data.Name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	data := map[string]interface{}{
 		"fileIds":        []string{d.resolveID(entry.ID)},
 		"toParentFileId": d.resolveID(dstParentID),
@@ -346,15 +346,15 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	var resp baseResp
 	err := d.cl.personalPost(ctx, "/file/batchMove", data, &resp)
 	if err != nil {
-		return fmt.Errorf("139: move: %w", err)
+		return drive.Entry{}, fmt.Errorf("139: move: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("139: move failed (code=%s): %s", resp.Code, resp.Message)
+		return drive.Entry{}, fmt.Errorf("139: move failed (code=%s): %s", resp.Code, resp.Message)
 	}
-	return nil
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	data := map[string]interface{}{
 		"fileId":      d.resolveID(entry.ID),
 		"name":        newName,
@@ -363,12 +363,12 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	var resp baseResp
 	err := d.cl.personalPost(ctx, "/file/update", data, &resp)
 	if err != nil {
-		return fmt.Errorf("139: rename: %w", err)
+		return drive.Entry{}, fmt.Errorf("139: rename: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("139: rename failed (code=%s): %s", resp.Code, resp.Message)
+		return drive.Entry{}, fmt.Errorf("139: rename failed (code=%s): %s", resp.Code, resp.Message)
 	}
-	return nil
+	return entry, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
@@ -643,7 +643,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 
 		// 2. Rename our new file back to the original name using its stable
 		// file ID (toEntry strips the suffix so the list name is ambiguous).
-		if err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileID}, name); err != nil {
+		if _, err := d.Rename(ctx, drive.Entry{ID: createResp.Data.FileID}, name); err != nil {
 			logging.L.Warnf("[139] failed to rename new file id=%s back to %q: %v", createResp.Data.FileID, name, err)
 			if d.sessions != nil {
 				d.sessions.Delete(sessionKey)
