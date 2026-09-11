@@ -325,16 +325,18 @@ func operationFingerprint(req task.OperationRequest) (string, error) {
 }
 
 func moveSpecFromTaskRequest(req task.Request) (moveTaskSpec, error) {
-	if len(req.Items) != 1 {
-		return moveTaskSpec{}, fmt.Errorf("core: move task requires exactly one item")
+	if len(req.Items) == 0 {
+		return moveTaskSpec{}, fmt.Errorf("core: move task requires at least one item")
 	}
-	item := req.Items[0]
-	if item.SourcePath == "" || item.DestPath == "" {
-		return moveTaskSpec{}, fmt.Errorf("core: move task item requires source_path and dest_path")
+	items := make([]task.Item, len(req.Items))
+	for i, item := range req.Items {
+		if item.SourcePath == "" || item.DestPath == "" {
+			return moveTaskSpec{}, fmt.Errorf("core: move task item requires source_path and dest_path")
+		}
+		items[i] = item
 	}
 	return moveTaskSpec{
-		SourcePath:  item.SourcePath,
-		DestPath:    item.DestPath,
+		Items:       items,
 		Overwrite:   req.Options.Overwrite,
 		Recursive:   req.Options.Recursive,
 		Concurrency: req.Options.Concurrency,
