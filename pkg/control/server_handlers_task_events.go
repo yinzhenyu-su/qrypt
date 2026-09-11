@@ -45,7 +45,7 @@ func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer subscription.Close()
 
-	events := []task.Event{}
+	var events []task.Event
 	if wait > 0 {
 		ctx, cancel := context.WithTimeout(r.Context(), wait)
 		defer cancel()
