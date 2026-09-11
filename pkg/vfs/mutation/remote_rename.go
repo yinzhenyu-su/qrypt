@@ -53,25 +53,31 @@ func NewRemoteRenamer(remote Remote) RemoteRenamer {
 	return RemoteRenamer{remote: remote}
 }
 
-// RenameMove applies the rename/move transaction. On success it returns
-// the updated entry (new name and parent). On a rollback it returns the
-// original move error. On a failed rollback it returns the entry in its
-// intermediate state together with a *PartialError.
+// RenameMove applies the rename/move transaction. The backend owns the
+// resulting identity: each step folds the entry the backend reports into the
+// tracked entry, while the caller's requested name and parent stay
+// authoritative. On a rollback it returns the original move error. On a
+// failed rollback it returns the entry in its intermediate state together
+// with a *PartialError.
 func (r RemoteRenamer) RenameMove(ctx context.Context, entry drive.Entry, dstParentID, newName string) (drive.Entry, error) {
 	oldName := entry.Name
 	renamed := false
 	if oldName != newName {
-		if _, err := r.remote.Rename(ctx, entry, newName); err != nil {
+		updated, err := r.remote.Rename(ctx, entry, newName)
+		if err != nil {
 			return drive.Entry{}, err
 		}
-		entry.Name = newName
+		entry = mergeRenamedEntry(updated, newName, "")
 		renamed = true
 	}
 	if entry.ParentID != dstParentID {
-		if _, err := r.remote.Move(ctx, entry, dstParentID); err != nil {
+		updated, err := r.remote.Move(ctx, entry, dstParentID)
+		if err != nil {
 			if renamed {
 				// The move may have failed because ctx was cancelled; the
-				// rollback must not inherit that cancellation.
+				// rollback must not inherit that cancellation. The rollback
+				// addresses the entry as it stands now - renamed with the
+				// identity the rename reported.
 				rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 				_, rbErr := r.remote.Rename(rbCtx, entry, oldName)
 				cancel()
@@ -88,7 +94,21 @@ func (r RemoteRenamer) RenameMove(ctx context.Context, entry drive.Entry, dstPar
 			}
 			return drive.Entry{}, err
 		}
-		entry.ParentID = dstParentID
+		entry = mergeRenamedEntry(updated, "", dstParentID)
 	}
 	return entry, nil
+}
+
+// mergeRenamedEntry takes the entry the backend reported and enforces the
+// operation the caller asked for: a backend that keeps provider-assigned ids
+// reports the same id, a backend that derives ids from the location reports
+// the id of the new location.
+func mergeRenamedEntry(reported drive.Entry, newName, dstParentID string) drive.Entry {
+	if newName != "" {
+		reported.Name = newName
+	}
+	if dstParentID != "" {
+		reported.ParentID = dstParentID
+	}
+	return reported
 }

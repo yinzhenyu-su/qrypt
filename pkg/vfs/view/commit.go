@@ -38,6 +38,7 @@ func (r Committer) CommitMkdir(path string, entry drive.Entry) {
 	rt.MarkLocalDirLocked(path)
 	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
+	r.vis.RetireRenameShadow(path, entry.ID)
 }
 
 // CommitRemove marks a path deleted in the view: the visibility overlay hides
@@ -63,6 +64,7 @@ func (r Committer) CommitUploadedEntry(path string, entry drive.Entry, stagingPa
 	r.vis.UnhideCopyChild(pathpkg.Dir(path), entry.Name)
 	rt.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
+	r.vis.RetireRenameShadow(path, entry.ID)
 }
 
 // DropUploadedEntry takes a just-committed upload entry back out of the view:
@@ -81,20 +83,37 @@ func (r Committer) DropUploadedEntry(path string, entry drive.Entry) {
 }
 
 // CommitRemoteRename folds a completed remote rename/move into the view: it
-// removes the old path (rebasing cached descendants), moves local modtime,
-// invalidates the affected parent list caches, writes the new entry, and
-// records the rename overlay so stale backend listings hide the old name.
+// removes the old path, re-keys or drops cached descendants depending on
+// whether the backend reported a new identity, moves local modtime and
+// local-directory markers, invalidates the affected list caches, writes the
+// new entry, and records the rename overlay so stale backend listings hide
+// the old name.
 func (r Committer) CommitRemoteRename(oldPath, newPath string, entry drive.Entry) {
 	oldParent := pathpkg.Dir(oldPath)
 	newParent := pathpkg.Dir(newPath)
 	rt := NewRuntime(r.view)
 	r.view.mu.Lock()
+	previous, hadPrevious := r.view.entries.Get(vfstypes.CleanVirtualPath(oldPath))
 	r.view.entries.Delete(oldPath)
 	r.view.entries.Delete(newPath)
-	rt.RebaseCachedPathsLocked(oldPath, newPath)
+	if hadPrevious && previous.ID != "" && previous.ID != entry.ID {
+		// The backend reported a different identity for the renamed object,
+		// which means every cached descendant identity went stale with it:
+		// drop the subtree instead of re-keying entries that can no longer
+		// address the backend. The next resolve or listing refills them.
+		r.view.entries.DeleteUnder(oldPath)
+		rt.DropListCachesUnderLocked(oldPath)
+	} else {
+		rt.RebaseCachedPathsLocked(oldPath, newPath)
+	}
 	rt.MoveLocalModTimeLocked(oldPath, newPath)
+	rt.RebaseLocalDirsLocked(oldPath, newPath)
 	rt.InvalidateListLocked(oldParent)
 	rt.InvalidateListLocked(newParent)
+	// The renamed directory's own listing cache is stale too (a rename over
+	// an existing target would otherwise serve the replaced directory's
+	// children until the cache expires).
+	rt.InvalidateListLocked(newPath)
 	entry = rt.ApplyLocalModTimeLocked(newPath, entry)
 	r.view.entries.Set(newPath, entry)
 	r.view.mu.Unlock()

@@ -234,18 +234,30 @@ func (r Visibility) IsHidden(path string) bool {
 }
 
 // UpdateRenameOverlay reconciles rename overlays against a freshly listed
-// parent: an overlay whose old path is gone and new path is visible is
-// removed.
+// parent: an overlay whose old name is gone and new name is visible is
+// removed, and one that outlived RenameShadowTTL is dropped.
+//
+// Matching is by name on both ends. The identity recorded with the shadow
+// cannot be relied on here: a backend that derives ids from the location
+// reports a new id for the moved object, and a stale listing still carries
+// the old name either way. A different object taking over the old path is
+// retired by the commit that writes it (see RetireRenameShadow), and the TTL
+// bounds every other way the shadow could linger.
 func (r Visibility) UpdateRenameOverlay(parentPath string, entries []drive.Entry) {
 	parentPath = vfstypes.CleanVirtualPath(parentPath)
+	now := time.Now()
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 	for key, op := range r.overlay.renameOverlays {
+		if op.expired(now) {
+			r.overlay.removeRenameOverlay(key)
+			continue
+		}
 		if pathpkg.Dir(op.oldPath) == parentPath {
-			op.oldGone = !entryListHasPath(entries, pathpkg.Base(op.oldPath), op.entryID)
+			op.oldGone = !entryListHasPath(entries, pathpkg.Base(op.oldPath), "")
 		}
 		if pathpkg.Dir(op.newPath) == parentPath {
-			op.newSeen = entryListHasPath(entries, pathpkg.Base(op.newPath), op.entryID)
+			op.newSeen = entryListHasPath(entries, pathpkg.Base(op.newPath), "")
 		}
 		if op.oldGone && op.newSeen {
 			r.overlay.removeRenameOverlay(key)
@@ -253,6 +265,20 @@ func (r Visibility) UpdateRenameOverlay(parentPath string, entries []drive.Entry
 		}
 		r.overlay.setRenameOverlay(op)
 	}
+}
+
+// RetireRenameShadow drops a rename shadow whose old path now belongs to a
+// different object: a new file or directory committed at that path must be
+// visible even while a stale backend listing still carries the old name.
+func (r Visibility) RetireRenameShadow(path, entryID string) {
+	path = vfstypes.CleanVirtualPath(path)
+	r.overlay.mu.Lock()
+	defer r.overlay.mu.Unlock()
+	op, ok := r.overlay.renameOverlays[path]
+	if !ok || op.entryID == entryID {
+		return
+	}
+	r.overlay.removeRenameOverlay(path)
 }
 
 // SetCopyHidden hides names under dir until their deadlines (directory copy

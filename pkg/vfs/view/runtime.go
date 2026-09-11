@@ -42,6 +42,37 @@ func (r Runtime) RebaseCachedPathsLocked(oldPath, newPath string) {
 	})
 }
 
+// RebaseLocalDirsLocked relocates recent-local-dir markers from oldPath to
+// newPath, subtree included. Callers hold view.mu.
+func (r Runtime) RebaseLocalDirsLocked(oldPath, newPath string) {
+	oldPath = vfstypes.CleanVirtualPath(oldPath)
+	newPath = vfstypes.CleanVirtualPath(newPath)
+	for knownPath, expires := range r.view.localDirs {
+		nextPath := ""
+		if knownPath == oldPath {
+			nextPath = newPath
+		} else if vfstypes.IsPathUnder(knownPath, oldPath) {
+			nextPath = vfstypes.JoinVirtualPath(newPath, strings.TrimPrefix(knownPath, oldPath+"/"))
+		}
+		if nextPath == "" {
+			continue
+		}
+		delete(r.view.localDirs, knownPath)
+		r.view.localDirs[nextPath] = expires
+	}
+}
+
+// DropListCachesUnderLocked drops every cached listing for path and its
+// descendants. Callers hold view.mu.
+func (r Runtime) DropListCachesUnderLocked(path string) {
+	path = vfstypes.CleanVirtualPath(path)
+	for cachedPath := range r.view.lists {
+		if cachedPath == path || vfstypes.IsPathUnder(cachedPath, path) {
+			delete(r.view.lists, cachedPath)
+		}
+	}
+}
+
 // MarkLocalDirLocked marks a directory as locally created so resolves short-
 // circuit to the local view for a while. Callers hold view.mu.
 func (r Runtime) MarkLocalDirLocked(path string) {
