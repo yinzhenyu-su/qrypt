@@ -583,3 +583,42 @@ func TestVFSRenameUploadUpload(t *testing.T) {
 		t.Fatalf("unexpected pending renamed data: %q", data)
 	}
 }
+
+// TestVFSRenameFlushedPendingUpload: downloaders flush the temp name and then
+// rename it without a post-rename flush (write, close, rename). The debounce
+// timer and the worker queue are keyed by path, so the pending rename must
+// move the scheduled upload to the new path - otherwise the queued entry
+// misses its latest-record lookup and the frozen pending never uploads.
+func TestVFSRenameFlushedPendingUpload(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	// The debounce must stay far wider than the gap between Flush and Rename
+	// below: if the timer fired first the record would upload under the temp
+	// name, the rename would become an ordinary remote rename, and the test
+	// would pass without the fix.
+	const uploadDelay = 250 * time.Millisecond
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: uploadDelay, RootID: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+	fs.Start(ctx)
+	if _, err := fs.WriteAt(ctx, "/draft.mp4.qkdownloading", []byte("pending rename"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/draft.mp4.qkdownloading"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/draft.mp4.qkdownloading", "/final.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+	data, err := os.ReadFile(remote + "/final.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "pending rename" {
+		t.Fatalf("unexpected renamed upload data: %q", data)
+	}
+}
