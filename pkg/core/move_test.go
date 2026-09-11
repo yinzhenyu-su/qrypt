@@ -107,7 +107,7 @@ func TestCreateTaskMoveRemoteBatchesSameMountItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Result.Items) != 2 {
+	if item.Type != task.TypeMoveBatch || item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Result.Items) != 2 {
 		t.Fatalf("task = %+v, want two-item move success", item)
 	}
 	for _, name := range []string{"one.txt", "two.txt"} {
@@ -259,7 +259,7 @@ func TestCreateTaskCrossQryptMountBatchesItemsAndDeletesSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Result.Items) != 2 {
+	if item.Type != task.TypeMoveBatch || item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Result.Items) != 2 {
 		t.Fatalf("task = %+v, want cross-mount batch success", item)
 	}
 	if item.Progress.TransferBytesDone <= 0 || item.Progress.TransferBytesTotal <= 0 {
@@ -485,6 +485,100 @@ func TestCreateTaskMoveBatchRetryOnlyRunsUnfinishedItems(t *testing.T) {
 			t.Fatalf("source %s still exists, stat err=%v", name, err)
 		}
 	}
+}
+
+// TestCreateTaskMoveBatchHonorsConcurrency: batch moves run on the requested
+// number of workers. The probe driver holds every rename until the expected
+// number of them are in flight, so a serial implementation times out.
+func TestCreateTaskMoveBatchHonorsConcurrency(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	names := []string{"one.txt", "two.txt"}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(remote, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	driver := &probeRenameDriver{
+		Driver:  localfs.New(remote),
+		arrived: make(chan struct{}, len(names)),
+		release: make(chan struct{}),
+	}
+	fs, err := vfs.New(driver, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), RootID: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestVFS(t, fs)
+	fs.Start(ctx)
+	c := newTestCore(t, fs)
+
+	item, err := c.CreateTask(ctx, task.Request{
+		Type: task.TypeMoveRemote,
+		Items: []task.Item{
+			{SourcePath: "/one.txt", DestPath: "/moved-one.txt"},
+			{SourcePath: "/two.txt", DestPath: "/moved-two.txt"},
+		},
+		Options: task.Options{Concurrency: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range names {
+		select {
+		case <-driver.arrived:
+		case <-time.After(3 * time.Second):
+			concurrent := driver.maxConcurrency()
+			close(driver.release)
+			t.Fatalf("only %d of %d renames ran concurrently", concurrent, len(names))
+		}
+	}
+	close(driver.release)
+	item = waitCoreTask(t, c, item.ID)
+	if item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || item.Progress.ItemsFailed != 0 {
+		t.Fatalf("task = %+v, want both items moved", item)
+	}
+	if paths, ok := item.Detail["active_paths"].([]string); !ok || len(paths) != 0 {
+		t.Fatalf("active_paths = %v, want no in-flight item after completion", item.Detail["active_paths"])
+	}
+}
+
+// probeRenameDriver holds each rename until release is closed, recording the
+// highest number of concurrent renames.
+type probeRenameDriver struct {
+	*localfs.Driver
+	mu          sync.Mutex
+	inFlight    int
+	maxInFlight int
+	arrived     chan struct{}
+	release     chan struct{}
+}
+
+func (d *probeRenameDriver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+	d.mu.Lock()
+	d.inFlight++
+	if d.inFlight > d.maxInFlight {
+		d.maxInFlight = d.inFlight
+	}
+	d.mu.Unlock()
+	select {
+	case d.arrived <- struct{}{}:
+	default:
+	}
+	select {
+	case <-d.release:
+	case <-ctx.Done():
+	}
+	d.mu.Lock()
+	d.inFlight--
+	d.mu.Unlock()
+	return d.Driver.Rename(ctx, entry, newName)
+}
+
+func (d *probeRenameDriver) maxConcurrency() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.maxInFlight
 }
 
 // flakyRenameDriver fails the configured number of leading rename attempts per

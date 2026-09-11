@@ -22,6 +22,7 @@ const (
 	TypeDeleteBatch         Type = "delete_batch"
 	TypeCopy                Type = "copy"
 	TypeMoveRemote          Type = "move_remote"
+	TypeMoveBatch           Type = "move_batch"
 )
 
 type State string

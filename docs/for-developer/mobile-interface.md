@@ -513,7 +513,8 @@ Use `CreateTaskJSON` for UI-created file operations:
 upload_stream_batch     app input stream -> qrypt/dest_path
 upload_stream_direct    app source token -> qrypt/dest_path
 download_stream_batch   qrypt source_path -> app output stream
-move_remote             qrypt source_path -> qrypt dest_path
+move_remote             qrypt items[1] source_path -> qrypt dest_path
+move_batch              qrypt items[n] source_path -> qrypt dest_path
 ```
 
 `ListTasksJSON` defaults to user-visible mobile tasks. The app can use the

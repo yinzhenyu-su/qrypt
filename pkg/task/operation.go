@@ -91,7 +91,7 @@ func operationKindForType(typ Type) OperationKind {
 		return OperationDelete
 	case TypeCopy:
 		return OperationCopy
-	case TypeMoveRemote:
+	case TypeMoveRemote, TypeMoveBatch:
 		return OperationMove
 	default:
 		return ""
