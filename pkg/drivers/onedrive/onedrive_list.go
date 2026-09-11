@@ -53,6 +53,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := d.requestJSON(ctx, http.MethodPatch, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), body, nil); err != nil {
 		return drive.Entry{}, fmt.Errorf("onedrive: rename %q: %w", entry.ID, err)
 	}
+	entry.Name = newName
 	return entry, nil
 }
 
@@ -65,6 +66,7 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if err := d.requestJSON(ctx, http.MethodPatch, d.apiPath(fmt.Sprintf("/items/%s", url.PathEscape(entry.ID))), body, nil); err != nil {
 		return drive.Entry{}, fmt.Errorf("onedrive: move %q: %w", entry.ID, err)
 	}
+	entry.ParentID = dstParentID
 	return entry, nil
 }
 

@@ -89,6 +89,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := d.cl.rename(ctx, id, newName, entry.IsDir); err != nil {
 		return drive.Entry{}, err
 	}
+	entry.Name = newName
 	return entry, nil
 }
 
@@ -135,5 +136,6 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if err := d.cl.batchTask(ctx, "MOVE", taskInfos, dstParentID); err != nil {
 		return drive.Entry{}, err
 	}
+	entry.ParentID = dstParentID
 	return entry, nil
 }

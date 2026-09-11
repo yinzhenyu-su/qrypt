@@ -339,9 +339,10 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
+	dst := d.resolveID(dstParentID)
 	data := map[string]interface{}{
 		"fileIds":        []string{d.resolveID(entry.ID)},
-		"toParentFileId": d.resolveID(dstParentID),
+		"toParentFileId": dst,
 	}
 	var resp baseResp
 	err := d.cl.personalPost(ctx, "/file/batchMove", data, &resp)
@@ -351,6 +352,7 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if !resp.Success {
 		return drive.Entry{}, fmt.Errorf("139: move failed (code=%s): %s", resp.Code, resp.Message)
 	}
+	entry.ParentID = dst
 	return entry, nil
 }
 
@@ -368,6 +370,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if !resp.Success {
 		return drive.Entry{}, fmt.Errorf("139: rename failed (code=%s): %s", resp.Code, resp.Message)
 	}
+	entry.Name = newName
 	return entry, nil
 }
 

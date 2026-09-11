@@ -398,12 +398,39 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	name := stdpath.Base(strings.TrimRight(entry.ID, "/"))
-	return entry, d.moveCopy(ctx, entry, dstParentID, name)
+	if err := d.moveCopy(ctx, entry, dstParentID, name); err != nil {
+		return drive.Entry{}, err
+	}
+	return d.resultEntry(entry, dstParentID, name), nil
 }
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	parentID := stdpath.Dir(strings.TrimRight(entry.ID, "/"))
-	return entry, d.moveCopy(ctx, entry, parentID, newName)
+	if parentID == "." {
+		// A bare root-level id (Mkdir/PutSource at the root) still belongs to
+		// the root parent, which the list builders report as "0".
+		parentID = "0"
+	}
+	if err := d.moveCopy(ctx, entry, parentID, newName); err != nil {
+		return drive.Entry{}, err
+	}
+	return d.resultEntry(entry, parentID, newName), nil
+}
+
+// resultEntry builds the entry for a moved or renamed object at its new
+// location. The id and parent id follow the form the list builders report for
+// a child of dstParentID (root children carry the "0/" prefix), so the result
+// is verifiable against a listing of the destination parent.
+func (d *Driver) resultEntry(entry drive.Entry, dstParentID, name string) drive.Entry {
+	parentID := d.normParent(dstParentID)
+	newID := stdpath.Join(parentID, name)
+	if entry.IsDir {
+		newID += "/"
+	}
+	entry.ID = newID
+	entry.ParentID = parentID
+	entry.Name = name
+	return entry
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

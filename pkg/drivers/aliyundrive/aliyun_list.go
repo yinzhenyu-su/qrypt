@@ -69,9 +69,11 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
-	if err := d.batch(ctx, entry.ID, d.resolveID(dstParentID), "/file/move"); err != nil {
+	dst := d.resolveID(dstParentID)
+	if err := d.batch(ctx, entry.ID, dst, "/file/move"); err != nil {
 		return drive.Entry{}, err
 	}
+	entry.ParentID = dst
 	return entry, nil
 }
 
@@ -85,6 +87,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := d.cl.request(ctx, http.MethodPost, "/v3/file/update", body, nil); err != nil {
 		return drive.Entry{}, fmt.Errorf("aliyundrive: rename: %w", err)
 	}
+	entry.Name = newName
 	return entry, nil
 }
 

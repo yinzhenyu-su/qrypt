@@ -403,8 +403,10 @@ func (d *FakeDriver) Move(ctx context.Context, entry Entry, dstParentID string) 
 	if _, ok := d.nodes[dstParentID]; !ok {
 		return Entry{}, fmt.Errorf("%w: fake move destination %q", ErrNotFound, dstParentID)
 	}
-	d.rekey(entry.ID, n, dstParentID)
+	newID := d.rekey(entry.ID, n, dstParentID)
 	d.captureLocked()
+	entry.ID = newID
+	entry.ParentID = dstParentID
 	return entry, nil
 }
 
@@ -428,9 +430,11 @@ func (d *FakeDriver) Rename(ctx context.Context, entry Entry, newName string) (E
 	if !ok {
 		return Entry{}, fmt.Errorf("%w: fake rename %q", ErrNotFound, entry.ID)
 	}
-	d.rekey(entry.ID, n, n.parentID)
-	d.nodes[entry.ID].name = newName
+	n.name = newName
+	newID := d.rekey(entry.ID, n, n.parentID)
 	d.captureLocked()
+	entry.ID = newID
+	entry.Name = newName
 	return entry, nil
 }
 
@@ -474,12 +478,13 @@ func (d *FakeDriver) Copy(ctx context.Context, src Entry, dstParentID, dstName s
 }
 
 // rekey moves a node (and its subtree) to a new parent, keeping ids
-// path-based. Caller must hold d.mu.
-func (d *FakeDriver) rekey(oldID string, n *fakeNode, newParentID string) {
+// path-based, and reports the node's id afterwards. The caller must have
+// applied the new name (if any) before calling. Caller must hold d.mu.
+func (d *FakeDriver) rekey(oldID string, n *fakeNode, newParentID string) string {
 	newID := newParentID + "/" + n.name
 	if newID == oldID {
 		n.parentID = newParentID
-		return
+		return newID
 	}
 	d.nodes[newID] = n
 	n.parentID = newParentID
@@ -494,6 +499,7 @@ func (d *FakeDriver) rekey(oldID string, n *fakeNode, newParentID string) {
 			delete(d.nodes, id)
 		}
 	}
+	return newID
 }
 
 // Remove implements Driver; missing objects classify as ErrNotFound.

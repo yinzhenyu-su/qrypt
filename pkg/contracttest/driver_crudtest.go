@@ -272,16 +272,23 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		if err == nil {
 			s = result.newStep("verify_rename_list", newName)
 			s.Input = map[string]any{"parent_id": renamed.ParentID, "old_name": oldName, "new_name": newName}
-			s.Expected = map[string]any{"old_listed": false, "new_listed": true}
+			s.Expected = map[string]any{"old_listed": false, "new_listed": true, "reported_id_listed": true}
 			start = time.Now()
 			stepCtx := stepContext(ctx, s)
 			_, oldErr := fx.VerifyList(stepCtx, renamed.ParentID, oldName, false)
 			newEntry, newErr := fx.VerifyList(stepCtx, renamed.ParentID, newName, true)
 			err = firstErr(oldErr, newErr)
+			if err == nil && renamed.ID != "" && newEntry.ID != renamed.ID {
+				// The rename must report the identity the backend now uses for
+				// the object, otherwise later reads and deletes address the
+				// location it came from.
+				err = fmt.Errorf("contract: rename reported id %q but %q lists as id %q", renamed.ID, newName, newEntry.ID)
+			}
 			s.Actual = map[string]any{
-				"old_listed": oldErr != nil,
-				"new_listed": newErr == nil,
-				"new_entry":  entryActual(newEntry),
+				"old_listed":         oldErr != nil,
+				"new_listed":         newErr == nil,
+				"reported_id_listed": err == nil,
+				"new_entry":          entryActual(newEntry),
 			}
 			s.finish(start, err)
 			result.addStep(s)
