@@ -268,6 +268,12 @@ func (c *Core) copyOne(ctx context.Context, item task.Item, spec copyTaskSpec) (
 			}
 			return out, fmt.Errorf("core: directory copy failed")
 		}
+		if spec.DeleteSourceAfterCopy && result.Skipped > 0 {
+			// The directory copy skips existing destination files when overwrite
+			// is off, so this is not a move: removing the source would drop the
+			// source content that never reached the destination.
+			return out, fmt.Errorf("core: move of %q is incomplete: %d existing destination file(s) were skipped; retry with overwrite to replace them", item.SourcePath, result.Skipped)
+		}
 		if spec.DeleteSourceAfterCopy {
 			if err := c.removeMoveSource(ctx, source, item.SourcePath, true); err != nil {
 				return out, err
