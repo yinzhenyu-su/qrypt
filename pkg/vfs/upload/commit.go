@@ -23,17 +23,21 @@ func (e *Engine) rollbackUploadedEntry(ctx context.Context, pending PendingUploa
 }
 
 // finalizeUpload commits a successfully uploaded entry: seed the read
-// cache, commit the entry to the view, and clean up the pending record
-// and staging file. When the pending record moved on during the commit
-// the uploaded entry is rolled back instead. Returns the finish state
-// (one of the SnapshotState* constants), the finish error text, and
-// the error to return to the caller.
+// cache, commit the entry to the view, and clean up the pending record and
+// staging file. When the pending record moved on during the commit the
+// committed entry is dropped again and the uploaded file is rolled back.
+// Returns the finish state (one of the SnapshotState* constants), the finish
+// error text, and the error to return to the caller.
 func (e *Engine) finalizeUpload(ctx context.Context, pending PendingUpload, entry drive.Entry, snapshot Snapshot, uploadStart time.Time) (string, string, error) {
 	observer := e.observer
 	pendingStore := e.pending
 	phaseStart := util.Now()
 	e.view.CommitUploadedEntry(pending.Path, entry, snapshot.Path)
 	observer.Event(pending.Path, "cache_seed", phaseStart, pending.Size, map[string]any{"entry_id": entry.ID})
+	// Removing the record is the atomic check that this generation is still
+	// current. The view commit above cannot be made conditional on it without
+	// letting readers observe a path with no pending record and no committed
+	// entry, so a lost record is undone instead of predicted.
 	removed, err := pendingStore.RemoveIfUnchanged(pending)
 	pendingCleanupExtra := map[string]any{"removed": removed}
 	if err != nil {
@@ -46,6 +50,7 @@ func (e *Engine) finalizeUpload(ctx context.Context, pending PendingUpload, entr
 	}
 	if !removed {
 		logging.L.InfofEvery("vfs.upload_stale_committed_after_update", time.Second, "[VFS] upload committed stale version after local update; removing uploaded replacement op_id=%q path=%q uploaded_id=%q", pending.FID, pending.Path, entry.ID)
+		e.view.DropUploadedEntry(pending.Path, entry)
 		e.rollbackUploadedEntry(ctx, pending, entry)
 		return SnapshotStateSuperseded, "", nil
 	}
