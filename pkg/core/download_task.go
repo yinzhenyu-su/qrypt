@@ -33,6 +33,17 @@ type downloadTaskSpec struct {
 	localDirSet map[string]struct{}
 }
 
+// downloadCapabilities applies the request-derived upgrade to the declared
+// type defaults: a recursive or multi-item download survives restarts.
+func downloadCapabilities(spec downloadTaskSpec) task.Capabilities {
+	capabilities := taskCreationCapabilities(task.TypeDownload)
+	if len(spec.Items) > 1 || spec.Recursive {
+		capabilities.Persistent = true
+		capabilities.Dismissible = true
+	}
+	return capabilities
+}
+
 func (c *Core) createDownloadTask(ctx context.Context, req task.Request) (task.Task, error) {
 	if c == nil || c.fs == nil {
 		return task.Task{}, fmt.Errorf("core: closed")
@@ -59,7 +70,7 @@ func (c *Core) createDownloadTask(ctx context.Context, req task.Request) (task.T
 		ID:        newDownloadTaskID(),
 		Type:      task.TypeDownload,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(task.TypeDownload),
 		Path:      first.SourcePath,
 		Name:      path.Base(first.SourcePath),
 		CreatedAt: now,
@@ -67,11 +78,7 @@ func (c *Core) createDownloadTask(ctx context.Context, req task.Request) (task.T
 		Progress: task.Progress{
 			ItemsTotal: int64(len(spec.Items)),
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  len(spec.Items) > 1 || spec.Recursive,
-			Dismissible: len(spec.Items) > 1 || spec.Recursive,
-		},
+		Capabilities: downloadCapabilities(spec),
 		Detail: map[string]any{
 			"items":       downloadTaskDetailItems(spec.Items),
 			"overwrite":   spec.Overwrite,

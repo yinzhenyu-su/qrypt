@@ -161,10 +161,13 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 		"instant":          upload.Instant,
 		"local_path":       upload.LocalPath,
 	}
+	// Internal upload bookkeeping is exposed as a sync-scope task even though
+	// the task API creates this type as user-visible.
+	typ := task.TypeUploadRemote
 	item := task.Task{
 		ID:            upload.ID,
-		Operation:     task.OperationUpload,
-		Type:          task.TypeUploadRemote,
+		Operation:     task.OperationForType(typ),
+		Type:          typ,
 		State:         state,
 		Scope:         task.ScopeSync,
 		SchemaVersion: task.CurrentTaskSchemaVersion,

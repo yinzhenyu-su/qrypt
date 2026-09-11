@@ -81,19 +81,10 @@ func validOperationKind(kind OperationKind) bool {
 	}
 }
 
-func operationKindForType(typ Type) OperationKind {
-	switch typ {
-	case TypeUploadRemote, TypeUploadBatch, TypeUploadStreamBatch, TypeUploadStreamDirect:
-		return OperationUpload
-	case TypeDownload, TypeDownloadStreamBatch:
-		return OperationDownload
-	case TypeDeleteRemote, TypeDeleteBatch:
-		return OperationDelete
-	case TypeCopy:
-		return OperationCopy
-	case TypeMoveRemote, TypeMoveBatch:
-		return OperationMove
-	default:
-		return ""
-	}
+// OperationForType reports the operation category declared for a task type, or
+// "" when the type is not declared. Creation paths reject an undeclared type
+// instead of persisting a task without operation identity.
+func OperationForType(typ Type) OperationKind {
+	descriptor, _ := Describe(typ)
+	return descriptor.Operation
 }
