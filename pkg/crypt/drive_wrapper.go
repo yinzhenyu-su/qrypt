@@ -292,11 +292,11 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return entry, err
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	return d.raw.Move(ctx, entry, dstParentID)
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	return d.raw.Rename(ctx, entry, d.cp.EncryptSegment(newName))
 }
 

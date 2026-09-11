@@ -75,7 +75,7 @@ func TestDriverFileOperations(t *testing.T) {
 		t.Fatalf("read data = %q, want world", data)
 	}
 
-	if err := driver.Rename(ctx, entry, "renamed.txt"); err != nil {
+	if _, err := driver.Rename(ctx, entry, "renamed.txt"); err != nil {
 		t.Fatal(err)
 	}
 	renamed := drive.Entry{ID: filepath.Join(docs.ID, "renamed.txt"), Name: "renamed.txt"}
@@ -83,7 +83,7 @@ func TestDriverFileOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Move(ctx, renamed, archive.ID); err != nil {
+	if _, err := driver.Move(ctx, renamed, archive.ID); err != nil {
 		t.Fatal(err)
 	}
 

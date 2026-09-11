@@ -554,7 +554,7 @@ type probeRenameDriver struct {
 	release     chan struct{}
 }
 
-func (d *probeRenameDriver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *probeRenameDriver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	d.mu.Lock()
 	d.inFlight++
 	if d.inFlight > d.maxInFlight {
@@ -590,7 +590,7 @@ type flakyRenameDriver struct {
 	counts map[string]int
 }
 
-func (d *flakyRenameDriver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *flakyRenameDriver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	d.mu.Lock()
 	if d.counts == nil {
 		d.counts = map[string]int{}
@@ -602,7 +602,7 @@ func (d *flakyRenameDriver) Rename(ctx context.Context, entry drive.Entry, newNa
 	}
 	d.mu.Unlock()
 	if fail {
-		return errors.New("move test: transient rename failure")
+		return drive.Entry{}, errors.New("move test: transient rename failure")
 	}
 	return d.Driver.Rename(ctx, entry, newName)
 }

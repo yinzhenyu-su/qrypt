@@ -69,9 +69,11 @@ type writableRawDriver struct {
 func (d *writableRawDriver) Mkdir(context.Context, string, string) (drive.Entry, error) {
 	return drive.Entry{}, nil
 }
-func (d *writableRawDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *writableRawDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *writableRawDriver) Move(context.Context, drive.Entry, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+func (d *writableRawDriver) Rename(context.Context, drive.Entry, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
 }
 func (d *writableRawDriver) Remove(context.Context, drive.Entry) error { return nil }
 func (d *writableRawDriver) Capabilities() []drive.Capability {

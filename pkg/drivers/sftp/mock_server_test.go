@@ -180,7 +180,7 @@ func TestMockSFTPCRUD(t *testing.T) {
 	if err != nil || closeErr != nil || readN != len(data) || string(data) != "payload" {
 		t.Fatalf("Read = %q, n=%d, err=%v, closeErr=%v", data, readN, err, closeErr)
 	}
-	if err := driver.Rename(ctx, entry, "renamed.txt"); err != nil {
+	if _, err := driver.Rename(ctx, entry, "renamed.txt"); err != nil {
 		t.Fatal(err)
 	}
 	entry.Name = "renamed.txt"
@@ -189,7 +189,7 @@ func TestMockSFTPCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Move(ctx, entry, destination.ID); err != nil {
+	if _, err := driver.Move(ctx, entry, destination.ID); err != nil {
 		t.Fatal(err)
 	}
 	entry.ID = path.Join(destination.ID, entry.Name)
@@ -369,7 +369,7 @@ func TestMockSFTPRejectsPathsOutsideRoot(t *testing.T) {
 	if err := driver.Remove(ctx, root); !errors.Is(err, drive.ErrInvalidInput) {
 		t.Fatalf("Remove root error = %v, want drive.ErrInvalidInput", err)
 	}
-	if err := driver.Rename(ctx, root, "renamed"); !errors.Is(err, drive.ErrInvalidInput) {
+	if _, err := driver.Rename(ctx, root, "renamed"); !errors.Is(err, drive.ErrInvalidInput) {
 		t.Fatalf("Rename root error = %v, want drive.ErrInvalidInput", err)
 	}
 }

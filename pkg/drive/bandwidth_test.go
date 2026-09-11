@@ -28,12 +28,12 @@ func (d *bandwidthLimitTestDriver) Mkdir(context.Context, string, string) (Entry
 	return Entry{}, ErrUnsupported
 }
 
-func (d *bandwidthLimitTestDriver) Move(context.Context, Entry, string) error {
-	return ErrUnsupported
+func (d *bandwidthLimitTestDriver) Move(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
 }
 
-func (d *bandwidthLimitTestDriver) Rename(context.Context, Entry, string) error {
-	return ErrUnsupported
+func (d *bandwidthLimitTestDriver) Rename(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
 }
 
 func (d *bandwidthLimitTestDriver) Remove(context.Context, Entry) error {

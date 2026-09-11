@@ -628,7 +628,7 @@ func TestWebDAV_Move(t *testing.T) {
 	ts.mu.Unlock()
 
 	// Move file to subdirectory
-	err := drv.Move(ctx, drive.Entry{ID: "/movable.txt", Name: "movable.txt"}, "/destdir")
+	_, err := drv.Move(ctx, drive.Entry{ID: "/movable.txt", Name: "movable.txt"}, "/destdir")
 	if err != nil {
 		t.Fatalf("Move failed: %v", err)
 	}
@@ -660,7 +660,7 @@ func TestWebDAV_Rename(t *testing.T) {
 	ts.files["/old_name.txt"] = &testFile{data: []byte("renamed"), modTime: time.Now()}
 	ts.mu.Unlock()
 
-	err := drv.Rename(ctx, drive.Entry{ID: "/old_name.txt", Name: "old_name.txt"}, "new_name.txt")
+	_, err := drv.Rename(ctx, drive.Entry{ID: "/old_name.txt", Name: "old_name.txt"}, "new_name.txt")
 	if err != nil {
 		t.Fatalf("Rename failed: %v", err)
 	}

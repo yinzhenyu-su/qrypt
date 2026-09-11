@@ -396,14 +396,14 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	name := stdpath.Base(strings.TrimRight(entry.ID, "/"))
-	return d.moveCopy(ctx, entry, dstParentID, name)
+	return entry, d.moveCopy(ctx, entry, dstParentID, name)
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	parentID := stdpath.Dir(strings.TrimRight(entry.ID, "/"))
-	return d.moveCopy(ctx, entry, parentID, newName)
+	return entry, d.moveCopy(ctx, entry, parentID, newName)
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

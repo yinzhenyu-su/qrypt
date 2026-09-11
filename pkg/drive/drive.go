@@ -124,8 +124,14 @@ type Driver interface {
 	List(ctx context.Context, parentID string) ([]Entry, error)
 	Read(ctx context.Context, entry Entry, offset, size int64) (io.ReadCloser, error)
 	Mkdir(ctx context.Context, parentID, name string) (Entry, error)
-	Move(ctx context.Context, entry Entry, dstParentID string) error
-	Rename(ctx context.Context, entry Entry, newName string) error
+	// Move relocates entry under dstParentID. A backend that derives an
+	// entry's id from its location must return the id of the new location; a
+	// backend with provider-assigned ids must keep that id stable across the
+	// move and return it unchanged with the new parent id.
+	Move(ctx context.Context, entry Entry, dstParentID string) (Entry, error)
+	// Rename renames entry in place; the returned entry follows the same id
+	// rule as Move.
+	Rename(ctx context.Context, entry Entry, newName string) (Entry, error)
 	Remove(ctx context.Context, entry Entry) error
 	PutSource(ctx context.Context, req UploadRequest) (Entry, error)
 	RequiredUploadHashes() []HashAlgorithm
@@ -185,12 +191,12 @@ func (UnsupportedOperations) Mkdir(context.Context, string, string) (Entry, erro
 	return Entry{}, ErrUnsupported
 }
 
-func (UnsupportedOperations) Move(context.Context, Entry, string) error {
-	return ErrUnsupported
+func (UnsupportedOperations) Move(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
 }
 
-func (UnsupportedOperations) Rename(context.Context, Entry, string) error {
-	return ErrUnsupported
+func (UnsupportedOperations) Rename(context.Context, Entry, string) (Entry, error) {
+	return Entry{}, ErrUnsupported
 }
 
 func (UnsupportedOperations) Remove(context.Context, Entry) error {

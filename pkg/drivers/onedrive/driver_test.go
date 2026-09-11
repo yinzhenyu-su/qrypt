@@ -568,10 +568,10 @@ func TestInitListReadAndWrite(t *testing.T) {
 	if entry.Size != 5 {
 		t.Fatalf("entry = %+v", entry)
 	}
-	if err := d.Rename(ctx, entry, "renamed.txt"); err != nil {
+	if _, err := d.Rename(ctx, entry, "renamed.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Move(ctx, drive.Entry{ID: entry.ID, Name: "renamed.txt"}, dir.ID); err != nil {
+	if _, err := d.Move(ctx, drive.Entry{ID: entry.ID, Name: "renamed.txt"}, dir.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := mock.childByName(dir.ID, "renamed.txt"); !ok {

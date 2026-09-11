@@ -74,7 +74,7 @@ func TestDriverUsesRegisteredBackend(t *testing.T) {
 	if string(got) != "hello scoped storage" {
 		t.Fatalf("full read = %q, want full content", got)
 	}
-	if err := driver.Rename(context.Background(), entry, "renamed.txt"); err != nil {
+	if _, err := driver.Rename(context.Background(), entry, "renamed.txt"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
 	if _, err := driver.ResolvePath(context.Background(), "/docs/renamed.txt"); err != nil {
@@ -110,7 +110,7 @@ func TestDriverMoveAndRemove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Move(context.Background(), entry, dstDir.ID); err != nil {
+	if _, err := driver.Move(context.Background(), entry, dstDir.ID); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
 	movedID, err := driver.ResolvePath(context.Background(), "/dst/file.txt")

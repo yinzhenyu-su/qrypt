@@ -225,15 +225,15 @@ func (b *sequenceBackend) List(ctx context.Context, parentID string) ([]drive.En
 func (b *sequenceBackend) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	return b.backend.Mkdir(ctx, parentID, name)
 }
-func (b *sequenceBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (b *sequenceBackend) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	if b.backend.renameCalls == b.failRenameOn {
-		return errors.New("rollback boom")
+		return drive.Entry{}, errors.New("rollback boom")
 	}
 	return b.backend.Rename(ctx, entry, newName)
 }
-func (b *sequenceBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (b *sequenceBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	if b.moveErr != nil {
-		return b.moveErr
+		return drive.Entry{}, b.moveErr
 	}
 	return b.backend.Move(ctx, entry, dstParentID)
 }
@@ -426,7 +426,7 @@ func (b *cancelOnMoveBackend) List(ctx context.Context, parentID string) ([]driv
 func (b *cancelOnMoveBackend) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	return b.backend.Mkdir(ctx, parentID, name)
 }
-func (b *cancelOnMoveBackend) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (b *cancelOnMoveBackend) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	b.renameCount++
 	if b.renameCount > 1 {
 		// This is the rollback call: capture whether the detached context
@@ -435,9 +435,9 @@ func (b *cancelOnMoveBackend) Rename(ctx context.Context, entry drive.Entry, new
 	}
 	return b.backend.Rename(ctx, entry, newName)
 }
-func (b *cancelOnMoveBackend) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (b *cancelOnMoveBackend) Move(context.Context, drive.Entry, string) (drive.Entry, error) {
 	b.cancel()
-	return context.Canceled
+	return drive.Entry{}, context.Canceled
 }
 
 // TestRenameMoveRollbackGetsLiveContext: the move cancels the caller's

@@ -36,7 +36,7 @@ type RemoteOps interface {
 	List(ctx context.Context, parentID string) ([]drive.Entry, error)
 	PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error)
 	Remove(ctx context.Context, entry drive.Entry) error
-	Rename(ctx context.Context, entry drive.Entry, newName string) error
+	Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error)
 	CanWrite() bool
 }
 

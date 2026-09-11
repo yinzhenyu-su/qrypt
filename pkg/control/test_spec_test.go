@@ -88,9 +88,11 @@ func (d *instantUploadStubDriver) Space(context.Context) (drive.Space, error) {
 func (d *instantUploadStubDriver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry, error) {
 	return drive.Entry{ID: "dir", ParentID: parentID, Name: name, IsDir: true, ModTime: time.Now()}, nil
 }
-func (d *instantUploadStubDriver) Move(context.Context, drive.Entry, string) error { return nil }
-func (d *instantUploadStubDriver) Rename(context.Context, drive.Entry, string) error {
-	return nil
+func (d *instantUploadStubDriver) Move(context.Context, drive.Entry, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
+}
+func (d *instantUploadStubDriver) Rename(context.Context, drive.Entry, string) (drive.Entry, error) {
+	return drive.Entry{}, nil
 }
 func (d *instantUploadStubDriver) Remove(context.Context, drive.Entry) error { return nil }
 func (d *instantUploadStubDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {

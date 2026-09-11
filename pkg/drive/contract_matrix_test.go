@@ -116,10 +116,10 @@ func TestUnsupportedOperationsClassifyConsistently(t *testing.T) {
 	if _, err := uo.Mkdir(ctx, "p", "n"); err != drive.ErrUnsupported {
 		t.Errorf("Mkdir = %v, want ErrUnsupported", err)
 	}
-	if err := uo.Move(ctx, drive.Entry{}, "p"); err != drive.ErrUnsupported {
+	if _, err := uo.Move(ctx, drive.Entry{}, "p"); err != drive.ErrUnsupported {
 		t.Errorf("Move = %v, want ErrUnsupported", err)
 	}
-	if err := uo.Rename(ctx, drive.Entry{}, "n"); err != drive.ErrUnsupported {
+	if _, err := uo.Rename(ctx, drive.Entry{}, "n"); err != drive.ErrUnsupported {
 		t.Errorf("Rename = %v, want ErrUnsupported", err)
 	}
 	if err := uo.Remove(ctx, drive.Entry{}); err != drive.ErrUnsupported {

@@ -81,12 +81,15 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	return d.cl.batchTask(ctx, "DELETE", taskInfos, "")
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	id, err := strconv.ParseInt(entry.ID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("189: invalid id: %w", err)
+		return drive.Entry{}, fmt.Errorf("189: invalid id: %w", err)
 	}
-	return d.cl.rename(ctx, id, newName, entry.IsDir)
+	if err := d.cl.rename(ctx, id, newName, entry.IsDir); err != nil {
+		return drive.Entry{}, err
+	}
+	return entry, nil
 }
 
 // Copy implements drive.ServerSideCopier: POST copyFile.action. File
@@ -116,10 +119,10 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	return drive.Entry{ParentID: dstParentID, Name: dstName, Size: src.Size, ModTime: time.Now()}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	id, err := strconv.ParseInt(entry.ID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("189: invalid id: %w", err)
+		return drive.Entry{}, fmt.Errorf("189: invalid id: %w", err)
 	}
 	isFolder := 0
 	if entry.IsDir {
@@ -127,7 +130,10 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	}
 	taskInfos, err := batchTaskInfos(batchTaskInfo{FileID: id, FileName: entry.Name, IsFolder: isFolder})
 	if err != nil {
-		return err
+		return drive.Entry{}, err
 	}
-	return d.cl.batchTask(ctx, "MOVE", taskInfos, dstParentID)
+	if err := d.cl.batchTask(ctx, "MOVE", taskInfos, dstParentID); err != nil {
+		return drive.Entry{}, err
+	}
+	return entry, nil
 }

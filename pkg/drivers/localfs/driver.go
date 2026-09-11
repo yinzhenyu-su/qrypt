@@ -126,8 +126,8 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return drive.Entry{ID: path, ParentID: d.resolve(parentID), Name: name, IsDir: true, ModTime: now, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	return os.Rename(entry.ID, filepath.Join(d.resolve(dstParentID), filepath.Base(entry.ID)))
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
+	return entry, os.Rename(entry.ID, filepath.Join(d.resolve(dstParentID), filepath.Base(entry.ID)))
 }
 
 // Copy implements drive.ServerSideCopier: duplicates a stored file with an
@@ -185,8 +185,8 @@ func copyFilePreservingMtime(srcPath, dstPath string) error {
 	return os.Chtimes(dstPath, info.ModTime(), info.ModTime())
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
-	return os.Rename(entry.ID, filepath.Join(filepath.Dir(entry.ID), newName))
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
+	return entry, os.Rename(entry.ID, filepath.Join(filepath.Dir(entry.ID), newName))
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

@@ -28,14 +28,22 @@ func (b *fakeMutationBackend) Mkdir(context.Context, string, string) (drive.Entr
 	return b.mkdirResult, b.mkdirErr
 }
 
-func (b *fakeMutationBackend) Rename(context.Context, drive.Entry, string) error {
+func (b *fakeMutationBackend) Rename(_ context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	b.renameCalls++
-	return b.renameErr
+	if b.renameErr != nil {
+		return drive.Entry{}, b.renameErr
+	}
+	entry.Name = newName
+	return entry, nil
 }
 
-func (b *fakeMutationBackend) Move(context.Context, drive.Entry, string) error {
+func (b *fakeMutationBackend) Move(_ context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	b.moveCalls++
-	return b.moveErr
+	if b.moveErr != nil {
+		return drive.Entry{}, b.moveErr
+	}
+	entry.ParentID = dstParentID
+	return entry, nil
 }
 
 // recordingViewCommitter records ViewCommitter calls (commit + cache) so

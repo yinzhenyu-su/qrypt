@@ -317,16 +317,16 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	srcURL := d.resolveURL(entry.ID)
 	destURL := d.childURL(dstParentID, entry.Name)
-	return d.move(ctx, srcURL, destURL)
+	return entry, d.move(ctx, srcURL, destURL)
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	srcURL := d.resolveURL(entry.ID)
 	destURL := d.parentURL(srcURL) + url.PathEscape(newName)
-	return d.move(ctx, srcURL, destURL)
+	return entry, d.move(ctx, srcURL, destURL)
 }
 
 // ─── drive.Driver space query ───────────────────────────────────────────────

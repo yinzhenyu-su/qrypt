@@ -51,7 +51,7 @@ func replaceUploadedFile(ctx context.Context, remote RemoteOps, uploaded drive.E
 			return err
 		}
 	}
-	if err := remote.Rename(ctx, uploaded, finalName); err != nil {
+	if _, err := remote.Rename(ctx, uploaded, finalName); err != nil {
 		return err
 	}
 	return nil

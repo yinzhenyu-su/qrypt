@@ -18,8 +18,8 @@ const rollbackTimeout = 10 * time.Second
 
 // Remote is the remote-IO surface a transactional rename needs.
 type Remote interface {
-	Rename(ctx context.Context, entry drive.Entry, newName string) error
-	Move(ctx context.Context, entry drive.Entry, dstParentID string) error
+	Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error)
+	Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error)
 }
 
 // PartialError reports a remote rename/move that partially applied: the
@@ -61,19 +61,19 @@ func (r RemoteRenamer) RenameMove(ctx context.Context, entry drive.Entry, dstPar
 	oldName := entry.Name
 	renamed := false
 	if oldName != newName {
-		if err := r.remote.Rename(ctx, entry, newName); err != nil {
+		if _, err := r.remote.Rename(ctx, entry, newName); err != nil {
 			return drive.Entry{}, err
 		}
 		entry.Name = newName
 		renamed = true
 	}
 	if entry.ParentID != dstParentID {
-		if err := r.remote.Move(ctx, entry, dstParentID); err != nil {
+		if _, err := r.remote.Move(ctx, entry, dstParentID); err != nil {
 			if renamed {
 				// The move may have failed because ctx was cancelled; the
 				// rollback must not inherit that cancellation.
 				rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
-				rbErr := r.remote.Rename(rbCtx, entry, oldName)
+				_, rbErr := r.remote.Rename(rbCtx, entry, oldName)
 				cancel()
 				if rbErr == nil {
 					// Rolled back: the remote is back to its original

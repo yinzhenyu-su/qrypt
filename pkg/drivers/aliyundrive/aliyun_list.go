@@ -68,11 +68,14 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return drive.Entry{ID: resp.FileID, ParentID: parentID, Name: name, IsDir: true, ModTime: modTime, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
-func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) error {
-	return d.batch(ctx, entry.ID, d.resolveID(dstParentID), "/file/move")
+func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
+	if err := d.batch(ctx, entry.ID, d.resolveID(dstParentID), "/file/move"); err != nil {
+		return drive.Entry{}, err
+	}
+	return entry, nil
 }
 
-func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) error {
+func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	body := map[string]any{
 		"check_name_mode": "refuse",
 		"drive_id":        d.driveID,
@@ -80,9 +83,9 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 		"name":            newName,
 	}
 	if err := d.cl.request(ctx, http.MethodPost, "/v3/file/update", body, nil); err != nil {
-		return fmt.Errorf("aliyundrive: rename: %w", err)
+		return drive.Entry{}, fmt.Errorf("aliyundrive: rename: %w", err)
 	}
-	return nil
+	return entry, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {

@@ -261,7 +261,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		s.Input = map[string]any{"id": renamed.ID, "old_name": oldName, "new_name": newName}
 		s.Expected = map[string]any{"old_listed": false, "new_listed": true}
 		start = time.Now()
-		err = d.Rename(stepContext(ctx, s), renamed, newName)
+		renamed, err = d.Rename(stepContext(ctx, s), renamed, newName)
 		if err == nil {
 			renamed.Name = newName
 		}
