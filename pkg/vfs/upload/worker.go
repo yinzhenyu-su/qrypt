@@ -34,6 +34,7 @@ func PendingWithRuntime(ctx context.Context, pending PendingUpload, runtime Work
 	}
 	latest, ok := runtime.LatestUpload(pending.Path)
 	if !ok {
+		logging.L.DebugfEvery("vfs.upload_dropped_missing_record", time.Second, "[VFS] drop upload; pending record no longer exists op_id=%q path=%q size=%d", pending.FID, pending.Path, pending.Size)
 		runtime.RemoveStagingIfUnreferenced(pending.LocalPath)
 		return nil
 	}

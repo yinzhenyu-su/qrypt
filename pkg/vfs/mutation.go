@@ -2,8 +2,10 @@ package vfs
 
 import (
 	"context"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
@@ -100,18 +102,22 @@ type readCacheInvalidator interface {
 }
 
 type vfsMutationRuntime struct {
-	invalidator readCacheInvalidator
-	viewRT      view.Runtime
-	store       *uploadStore
-	hashes      *upload.HashTracker
+	invalidator       readCacheInvalidator
+	viewRT            view.Runtime
+	store             *uploadStore
+	hashes            *upload.HashTracker
+	uploads           *uploadService
+	schedulingEnabled func() bool
 }
 
 func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
 	return vfsMutationRuntime{
-		invalidator: v,
-		viewRT:      view.NewRuntime(v.view),
-		store:       v.uploads.Store(),
-		hashes:      v.hashes,
+		invalidator:       v,
+		viewRT:            view.NewRuntime(v.view),
+		store:             v.uploads.Store(),
+		hashes:            v.hashes,
+		uploads:           v.uploads,
+		schedulingEnabled: v.uploadSchedulingEnabled,
 	}
 }
 
@@ -125,5 +131,18 @@ func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending
 		return err
 	}
 	r.hashes.RenamePath(oldPath, newPath, pending)
+	if !r.schedulingEnabled() {
+		return nil
+	}
+	// Debounce timers and the worker queue are keyed by path: the entry
+	// scheduled for the pre-rename path can only miss its latest-record
+	// lookup and be dropped, leaving the frozen pending unscheduled forever.
+	// Drop it and schedule the renamed record instead. Mutable (unflushed)
+	// records stay unscheduled - their next flush schedules them.
+	r.uploads.CancelUpload(oldPath)
+	if pending.Frozen {
+		logging.L.InfofEvery("vfs.rename_reschedule_upload", time.Second, "[VFS] reschedule renamed upload op_id=%q path=%q old_path=%q size=%d", pending.FID, newPath, oldPath, pending.Size)
+		r.uploads.Enqueue(pending)
+	}
 	return nil
 }
