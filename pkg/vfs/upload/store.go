@@ -708,6 +708,12 @@ func (c *PendingStore) PendingByID(id string) (PendingUpload, bool) {
 func (c *PendingStore) RenameUpload(oldPath string, next PendingUpload) error {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
+	return c.renameUploadLocked(oldPath, next)
+}
+
+// renameUploadLocked journals one transactional "rename" entry and applies it
+// to memory. Caller must hold txMu.
+func (c *PendingStore) renameUploadLocked(oldPath string, next PendingUpload) error {
 	// Journal commit FIRST, as ONE transactional "rename" entry: replay
 	// deletes the old path and sets the new path atomically, so a
 	// crash between the old clean and the new dirty intents can never
@@ -726,6 +732,47 @@ func (c *PendingStore) RenameUpload(oldPath string, next PendingUpload) error {
 	}
 	c.mu.Unlock()
 	return nil
+}
+
+// RebaseUploadsUnder moves every pending upload at or below a renamed
+// directory to the matching path under newDir and re-parents each record to
+// parentID (empty parentID keeps the recorded one). Staging files are
+// untouched: a rebased record keeps its LocalPath. Records are rebased one at
+// a time, so a journal failure leaves the remaining records at their old path
+// instead of dropping them. It returns the rebased records.
+func (c *PendingStore) RebaseUploadsUnder(oldDir, newDir, parentID string) ([]PendingUpload, error) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
+	oldDir = cleanVirtual(oldDir)
+	newDir = cleanVirtual(newDir)
+	c.mu.RLock()
+	var targets []PendingUpload
+	for path, pending := range c.pending {
+		if path == oldDir || isPathUnder(path, oldDir) {
+			targets = append(targets, pending)
+		}
+	}
+	c.mu.RUnlock()
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].Path < targets[j].Path })
+	moved := make([]PendingUpload, 0, len(targets))
+	for _, pending := range targets {
+		next := pending
+		next.Path = newDir + strings.TrimPrefix(pending.Path, oldDir)
+		if parentID != "" {
+			next.ParentID = parentID
+		}
+		if err := c.renameUploadLocked(pending.Path, next); err != nil {
+			return moved, err
+		}
+		moved = append(moved, next)
+	}
+	if err := c.compactJournalLocked(); err != nil {
+		logging.L.Warnf("[CACHE] journal compact failed after rebase dir=%q err=%v", oldDir, err)
+	}
+	return moved, nil
 }
 func sameUploadRecord(a, b PendingUpload) bool {
 	return a.Path == b.Path &&

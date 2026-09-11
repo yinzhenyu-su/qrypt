@@ -21,7 +21,8 @@ type Resolver interface {
 // coordinator can resolve the source first (preserving error precedence
 // and avoiding a useless destination-parent request when the source does
 // not exist). RenamePending performs the local pending rename once the
-// destination parent is resolved.
+// destination parent is resolved. RebasePendingUnder moves the pending
+// uploads of a renamed directory's descendants onto the renamed subtree.
 type PendingRenamer interface {
 	IsPending(path string) bool
 	RenamePending(
@@ -30,6 +31,7 @@ type PendingRenamer interface {
 		parent drive.Entry,
 		name string,
 	) error
+	RebasePendingUnder(oldPath, newPath string, entry drive.Entry) error
 }
 
 // RenameView is the view surface a rename coordinator commits to.
@@ -106,5 +108,11 @@ func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error
 		return err
 	}
 	c.view.CommitRemoteRename(oldPath, newPath, renamed)
+	if renamed.IsDir {
+		// Pending uploads written inside the directory before it was renamed
+		// follow the subtree; their recorded parent would otherwise point at a
+		// directory entry that no longer exists under that name.
+		return c.pending.RebasePendingUnder(oldPath, newPath, renamed)
+	}
 	return nil
 }

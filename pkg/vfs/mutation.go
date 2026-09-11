@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -91,6 +92,9 @@ var _ listedChildrenCache = view.Committer{}
 type mutationRuntime interface {
 	InvalidateReadCache(entry drive.Entry)
 	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
+	// RebasePendingUploads moves the pending uploads of the renamed
+	// directory's descendants onto the renamed subtree.
+	RebasePendingUploads(oldPath, newPath string, entry drive.Entry) error
 }
 
 // readCacheInvalidator drops a committed entry's read-cache state. *VFS
@@ -143,6 +147,34 @@ func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending
 	if pending.Frozen {
 		logging.L.InfofEvery("vfs.rename_reschedule_upload", time.Second, "[VFS] reschedule renamed upload op_id=%q path=%q old_path=%q size=%d", pending.FID, newPath, oldPath, pending.Size)
 		r.uploads.Enqueue(pending)
+	}
+	return nil
+}
+
+// RebasePendingUploads follows a renamed directory: pending uploads recorded
+// under the old subtree are moved onto the new one, re-parented to the renamed
+// directory entry, and their scheduled upload moves with them - otherwise a
+// child written before the rename would upload into a path that no longer
+// exists. The recorded parent is the entry the rename reported; drivers that
+// keep entry IDs stable across a move (cloud APIs) upload straight into the
+// renamed directory.
+func (r vfsMutationRuntime) RebasePendingUploads(oldPath, newPath string, entry drive.Entry) error {
+	moved, err := r.store.RebaseUploadsUnder(oldPath, newPath, entry.ID)
+	if err != nil {
+		return err
+	}
+	for _, next := range moved {
+		oldChild := oldPath + strings.TrimPrefix(next.Path, newPath)
+		r.viewRT.MoveLocalModTime(oldChild, next.Path)
+		r.hashes.RenamePath(oldChild, next.Path, next)
+		if !r.schedulingEnabled() {
+			continue
+		}
+		r.uploads.CancelUpload(oldChild)
+		if next.Frozen {
+			logging.L.InfofEvery("vfs.rename_rebase_upload", time.Second, "[VFS] reschedule rebased upload op_id=%q path=%q old_path=%q size=%d", next.FID, next.Path, oldChild, next.Size)
+			r.uploads.Enqueue(next)
+		}
 	}
 	return nil
 }

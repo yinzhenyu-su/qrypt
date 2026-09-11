@@ -462,3 +462,68 @@ func TestRenameMoveRollbackGetsLiveContext(t *testing.T) {
 		t.Fatalf("CommitRemoteRename called %d times, want 0", len(fx.committer.renamed))
 	}
 }
+
+// TestDirectoryRenameRebasesPendingChildren: a file written inside a directory
+// before the directory is renamed keeps following that directory - its pending
+// record moves onto the renamed subtree, keeps its staging, and its scheduled
+// upload moves with it instead of staying keyed to a path that no longer
+// exists.
+func TestDirectoryRenameRebasesPendingChildren(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	fs, err := New(localfs.New(remote), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour, RootID: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fs.Close(context.Background()) })
+	fs.Start(ctx)
+
+	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/dir/f.txt", []byte("child"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/dir/f.txt"); err != nil {
+		t.Fatal(err)
+	}
+	staged, ok := fs.uploads.Store().UploadByPath("/dir/f.txt")
+	if !ok || !staged.Frozen {
+		t.Fatalf("staged child = %+v ok=%v, want a frozen pending record", staged, ok)
+	}
+	if err := fs.Rename(ctx, "/dir", "/moved"); err != nil {
+		t.Fatal(err)
+	}
+
+	pending := fs.uploads.Store().PendingUploads()
+	if len(pending) != 1 {
+		t.Fatalf("pending = %+v, want the one staged child", pending)
+	}
+	if pending[0].Path != "/moved/f.txt" {
+		t.Fatalf("pending path = %q, want the renamed directory", pending[0].Path)
+	}
+	if _, ok := fs.uploads.Store().UploadByPath("/dir/f.txt"); ok {
+		t.Fatal("pre-rename pending path still recorded")
+	}
+	if pending[0].FID != staged.FID || pending[0].LocalPath != staged.LocalPath || pending[0].Size != staged.Size || !pending[0].Frozen {
+		t.Fatalf("rebased record = %+v, want the staged generation preserved", pending[0])
+	}
+	// The recorded parent is the renamed directory entry the view committed.
+	dir, err := fs.Stat(ctx, "/moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending[0].ParentID != dir.ID {
+		t.Fatalf("pending parent = %q, want the renamed directory entry %q", pending[0].ParentID, dir.ID)
+	}
+	// The debounce timer follows the record: nothing may stay armed for the
+	// pre-rename path.
+	deadlines := fs.uploads.ScheduledDeadlines()
+	if _, ok := deadlines["/dir/f.txt"]; ok {
+		t.Fatalf("upload timer still armed for the pre-rename path: %v", deadlines)
+	}
+	if _, ok := deadlines["/moved/f.txt"]; !ok {
+		t.Fatalf("upload timer not armed for the renamed path: %v", deadlines)
+	}
+}
