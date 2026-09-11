@@ -198,7 +198,11 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if err := client.Rename(source, destination); err != nil {
 		return drive.Entry{}, fmt.Errorf("sftp: move %q to %q: %w", source, destination, classifyError(err))
 	}
-	return entry, nil
+	moved := entry
+	moved.ID = destination
+	moved.ParentID = destinationParent
+	moved.Name = path.Base(destination)
+	return moved, nil
 }
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (_ drive.Entry, err error) {
@@ -222,7 +226,11 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := client.Rename(source, destination); err != nil {
 		return drive.Entry{}, fmt.Errorf("sftp: rename %q to %q: %w", source, destination, classifyError(err))
 	}
-	return entry, nil
+	renamed := entry
+	renamed.ID = destination
+	renamed.ParentID = path.Dir(destination)
+	renamed.Name = path.Base(destination)
+	return renamed, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) (err error) {

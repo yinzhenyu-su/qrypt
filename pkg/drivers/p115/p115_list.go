@@ -88,6 +88,7 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		d.setLastError(fmt.Sprintf("115: move %q: %v", entry.ID, err))
 		return drive.Entry{}, err
 	}
+	entry.ParentID = dstParentID
 	return entry, nil
 }
 
@@ -99,6 +100,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 		d.setLastError(fmt.Sprintf("115: rename %q: %v", entry.ID, err))
 		return drive.Entry{}, err
 	}
+	entry.Name = newName
 	return entry, nil
 }
 

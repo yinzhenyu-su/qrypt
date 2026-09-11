@@ -320,13 +320,25 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
 	srcURL := d.resolveURL(entry.ID)
 	destURL := d.childURL(dstParentID, entry.Name)
-	return entry, d.move(ctx, srcURL, destURL)
+	if err := d.move(ctx, srcURL, destURL); err != nil {
+		return drive.Entry{}, err
+	}
+	entry.ID = d.joinPath(dstParentID, entry.Name)
+	entry.ParentID = d.relativePath(dstParentID)
+	return entry, nil
 }
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	srcURL := d.resolveURL(entry.ID)
 	destURL := d.parentURL(srcURL) + url.PathEscape(newName)
-	return entry, d.move(ctx, srcURL, destURL)
+	if err := d.move(ctx, srcURL, destURL); err != nil {
+		return drive.Entry{}, err
+	}
+	parentID := path.Dir(entry.ID)
+	entry.ID = d.joinPath(parentID, newName)
+	entry.ParentID = d.relativePath(parentID)
+	entry.Name = newName
+	return entry, nil
 }
 
 // ─── drive.Driver space query ───────────────────────────────────────────────

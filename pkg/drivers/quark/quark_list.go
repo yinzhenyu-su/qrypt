@@ -110,9 +110,10 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
+	dst := d.resolve(dstParentID)
 	data := map[string]any{
 		"filelist":     []string{entry.ID},
-		"to_pdir_fid":  d.resolve(dstParentID),
+		"to_pdir_fid":  dst,
 		"action_type":  1,
 		"exclude_fids": []string{},
 	}
@@ -123,6 +124,7 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if err := apiError(resp); err != nil {
 		return drive.Entry{}, err
 	}
+	entry.ParentID = dst
 	return entry, nil
 }
 
@@ -138,6 +140,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := apiError(resp); err != nil {
 		return drive.Entry{}, err
 	}
+	entry.Name = newName
 	return entry, nil
 }
 

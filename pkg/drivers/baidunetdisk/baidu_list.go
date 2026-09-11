@@ -105,7 +105,10 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
-	return entry, nil
+	moved := entry
+	moved.ID = path.Join(dst, entry.Name)
+	moved.ParentID = dst
+	return moved, nil
 }
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
@@ -115,7 +118,12 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
-	return entry, nil
+	parentPath := normalizeDir(path.Dir(entry.ID))
+	renamed := entry
+	renamed.ID = path.Join(parentPath, newName)
+	renamed.ParentID = parentPath
+	renamed.Name = newName
+	return renamed, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
