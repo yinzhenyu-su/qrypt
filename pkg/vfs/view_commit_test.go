@@ -302,3 +302,35 @@ func TestViewSeparatesVisibilityFromCacheIdentity(t *testing.T) {
 		t.Error("committed child should have entry identity")
 	}
 }
+
+// TestViewCommitRemoteChildrenRetiresShadowForNewObject: once a different
+// object is committed at the old path of a completed rename, that path must be
+// visible even while a stale backend listing still carries the old name -
+// otherwise the new object would stay hidden behind the rename shadow.
+func TestViewCommitRemoteChildrenRetiresShadowForNewObject(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+
+	if err := fs.Rename(context.Background(), "/a.txt", "/renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	// A new object lands at the old path (upload commit) while the remote
+	// listing still reports the pre-rename name there.
+	newVFSViewCommitter(fs).CommitUploadedEntry("/a.txt", drive.Entry{ID: "id-new", Name: "a.txt", Size: 3}, "")
+
+	got := view.CommitRemoteChildren("/", []drive.Entry{
+		{ID: "id-a", Name: "a.txt", Size: 5},
+		{ID: "id-r", Name: "renamed.txt", Size: 5},
+	}, time.Now().Add(time.Minute))
+
+	names := map[string]bool{}
+	for _, entry := range got {
+		names[entry.Name] = true
+	}
+	if !names["a.txt"] {
+		t.Fatalf("object committed at the old path is hidden by the rename shadow: %+v", got)
+	}
+	if !names["renamed.txt"] {
+		t.Fatalf("renamed object missing from the listing: %+v", got)
+	}
+}

@@ -108,28 +108,10 @@ func (v *VFS) replaceSourceUploadedEntry(ctx context.Context, entry drive.Entry,
 		}
 	}
 	if entry.Name != finalName {
-		if _, err := v.driver.Rename(ctx, entry, finalName); err != nil {
-			return drive.Entry{}, err
-		}
-		if refreshed, ok := v.findSourceUploadedEntry(ctx, entry.ParentID, finalName); ok {
-			return refreshed, nil
-		}
+		return v.driver.Rename(ctx, entry, finalName)
 	}
 	entry.Name = finalName
 	return entry, nil
-}
-
-func (v *VFS) findSourceUploadedEntry(ctx context.Context, parentID, name string) (drive.Entry, bool) {
-	entries, err := v.driver.List(ctx, parentID)
-	if err != nil {
-		return drive.Entry{}, false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir && entry.Name == name {
-			return entry, true
-		}
-	}
-	return drive.Entry{}, false
 }
 
 func (v *VFS) removeSourceUploadTemporaryFiles(ctx context.Context, parentID, finalName string) {

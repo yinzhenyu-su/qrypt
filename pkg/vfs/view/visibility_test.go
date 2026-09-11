@@ -102,3 +102,68 @@ func TestVisibilityDeleteExecutorOps(t *testing.T) {
 		t.Fatal("cancelled delete should leave the overlay")
 	}
 }
+
+// TestRenameShadowConvergesByName: a backend that derives ids from the
+// location reports a different id for the moved object, so the shadow must
+// converge on the name alone.
+func TestRenameShadowConvergesByName(t *testing.T) {
+	v, overlay, tasks := newTestDomain(t)
+	runtime := NewVisibility(overlay, tasks, v, nil)
+	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
+
+	runtime.UpdateRenameOverlay("/", []drive.Entry{{ID: "new-id", Name: "b.txt"}})
+	if runtime.IsHidden("/a.txt") {
+		t.Fatal("shadow must clear once the new name is listed, even with a changed id")
+	}
+}
+
+// TestRenameShadowHoldsUntilBackendConverges: while the listing still carries
+// the old name and not the new one, the stale entry stays hidden.
+func TestRenameShadowHoldsUntilBackendConverges(t *testing.T) {
+	v, overlay, tasks := newTestDomain(t)
+	runtime := NewVisibility(overlay, tasks, v, nil)
+	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
+
+	runtime.UpdateRenameOverlay("/", []drive.Entry{{ID: "old-id", Name: "a.txt"}})
+	if !runtime.IsHidden("/a.txt") {
+		t.Fatal("shadow must hold while the backend still lists only the old name")
+	}
+}
+
+// TestRenameShadowRetiredByNewObject: the shadow hides the pre-rename object,
+// not the path, so a different object committed there is visible at once.
+func TestRenameShadowRetiredByNewObject(t *testing.T) {
+	v, overlay, tasks := newTestDomain(t)
+	runtime := NewVisibility(overlay, tasks, v, nil)
+	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
+
+	runtime.RetireRenameShadow("/a.txt", "old-id")
+	if !runtime.IsHidden("/a.txt") {
+		t.Fatal("the renamed object itself must stay hidden")
+	}
+	runtime.RetireRenameShadow("/a.txt", "other-id")
+	if runtime.IsHidden("/a.txt") {
+		t.Fatal("a different object at the old path must be visible")
+	}
+}
+
+// TestRenameShadowExpires: the shadow is bounded, so a backend that never
+// reports the expected shape cannot hide the old path forever.
+func TestRenameShadowExpires(t *testing.T) {
+	v, overlay, tasks := newTestDomain(t)
+	runtime := NewVisibility(overlay, tasks, v, nil)
+	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
+
+	overlay.mu.Lock()
+	op := overlay.renameOverlays["/a.txt"]
+	op.createdAt = time.Now().Add(-2 * RenameShadowTTL)
+	overlay.renameOverlays["/a.txt"] = op
+	overlay.mu.Unlock()
+
+	if runtime.IsHidden("/a.txt") {
+		t.Fatal("expired shadow must stop hiding the old path")
+	}
+	if _, ok := overlay.renameOverlays["/a.txt"]; ok {
+		t.Fatal("expired shadow must be dropped")
+	}
+}

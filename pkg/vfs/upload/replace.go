@@ -44,17 +44,18 @@ func prepareUploadTargetFromEntries(entries []drive.Entry, name, fid, replaceUpl
 	}
 	return target, stale
 }
-func replaceUploadedFile(ctx context.Context, remote RemoteOps, uploaded drive.Entry, existing []drive.Entry, finalName string) error {
+func replaceUploadedFile(ctx context.Context, remote RemoteOps, uploaded drive.Entry, existing []drive.Entry, finalName string) (drive.Entry, error) {
 	for _, entry := range existing {
 		logging.L.InfofEvery("vfs.remove_existing_after_upload", time.Second, "[VFS] removing existing file after replacement upload parent=%q name=%q id=%q size=%d", entry.ParentID, entry.Name, entry.ID, entry.Size)
 		if err := remote.Remove(ctx, entry); err != nil {
-			return err
+			return drive.Entry{}, err
 		}
 	}
-	if _, err := remote.Rename(ctx, uploaded, finalName); err != nil {
-		return err
+	renamed, err := remote.Rename(ctx, uploaded, finalName)
+	if err != nil {
+		return drive.Entry{}, err
 	}
-	return nil
+	return renamed, nil
 }
 func TemporaryUploadName(name, fid string) string {
 	if fid == "" {

@@ -63,7 +63,7 @@ func TestPrepareUploadTarget(t *testing.T) {
 
 func TestReplaceUploadedFile(t *testing.T) {
 	remote := &recordingRemoteOps{canWrite: true}
-	err := replaceUploadedFile(context.Background(), remote, drive.Entry{ID: "uploaded"}, []drive.Entry{{ID: "old-1"}, {ID: "old-2"}}, "final.txt")
+	renamed, err := replaceUploadedFile(context.Background(), remote, drive.Entry{ID: "uploaded"}, []drive.Entry{{ID: "old-1"}, {ID: "old-2"}}, "final.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,5 +72,8 @@ func TestReplaceUploadedFile(t *testing.T) {
 	}
 	if len(remote.renamed) != 1 || remote.renamed[0] != "uploaded:final.txt" {
 		t.Fatalf("renamed = %+v, want uploaded rename", remote.renamed)
+	}
+	if renamed.ID != "uploaded" || renamed.Name != "final.txt" {
+		t.Fatalf("renamed entry = %+v, want the entry the remote reported", renamed)
 	}
 }

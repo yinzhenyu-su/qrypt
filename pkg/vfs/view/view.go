@@ -87,6 +87,12 @@ const (
 	// DirectoryCopyHideTTL hides a directory's children after a copy so the
 	// half-populated remote state is not surfaced while it fills in.
 	DirectoryCopyHideTTL = 10 * time.Minute
+	// RenameShadowTTL bounds how long a rename shadow may hide the old path.
+	// The shadow normally clears as soon as a listing shows the new name; the
+	// bound keeps a backend that never reports the expected shape (an id it
+	// changed, a listing that never catches up) from hiding the old path
+	// forever - including a new object created there afterwards.
+	RenameShadowTTL = time.Minute
 )
 
 // View is the local mirror of the remote tree: resolved entries, list caches,
@@ -151,11 +157,9 @@ type Overlay struct {
 	copyHiddenChildren map[string]map[string]time.Time
 	// deletedDirs indexes the directory entries of the deleted map so
 	// IsDeleted can walk the O(depth) ancestor chain instead of scanning
-	// every overlay entry. renameHiddenDirs does the same for recursive
-	// rename overlays (keyed by oldPath). Both are maintained by the
-	// set/remove helpers below, always with mu held.
-	deletedDirs      map[string]struct{}
-	renameHiddenDirs map[string]struct{}
+	// every overlay entry. It is maintained by the set/remove helpers below,
+	// always with mu held.
+	deletedDirs map[string]struct{}
 }
 
 // Tasks is the scheduled-delete domain state: active deletes, recorded
@@ -181,7 +185,6 @@ func NewOverlayTasks() (*Overlay, *Tasks) {
 		restoredDirs:       map[string]time.Time{},
 		copyHiddenChildren: map[string]map[string]time.Time{},
 		deletedDirs:        map[string]struct{}{},
-		renameHiddenDirs:   map[string]struct{}{},
 	}, &Tasks{
 		mu:        mu,
 		scheduler: scheduler.NewTimeKeyedScheduler(),
@@ -209,17 +212,14 @@ func (o *Overlay) removeDeleted(path string) {
 }
 
 func (o *Overlay) setRenameOverlay(op overlayOp) {
-	o.renameOverlays[op.oldPath] = op
-	if op.isDir {
-		o.renameHiddenDirs[op.oldPath] = struct{}{}
-	} else {
-		delete(o.renameHiddenDirs, op.oldPath)
+	if op.createdAt.IsZero() {
+		op.createdAt = time.Now()
 	}
+	o.renameOverlays[op.oldPath] = op
 }
 
 func (o *Overlay) removeRenameOverlay(path string) {
 	delete(o.renameOverlays, path)
-	delete(o.renameHiddenDirs, path)
 }
 
 // isDeletedPath reports whether path itself is deleted or lives under a
@@ -240,12 +240,19 @@ func (o *Overlay) isDeletedPath(path string) bool {
 }
 
 func (o *Overlay) isRenameHiddenPath(path string) bool {
-	if _, ok := o.renameOverlays[path]; ok {
-		return true
+	now := time.Now()
+	if op, ok := o.renameOverlays[path]; ok {
+		if !op.expired(now) {
+			return true
+		}
+		o.removeRenameOverlay(path)
 	}
 	for dir := parentVirtualPath(path); ; dir = parentVirtualPath(dir) {
-		if _, ok := o.renameHiddenDirs[dir]; ok {
-			return true
+		if op, ok := o.renameOverlays[dir]; ok && op.isDir {
+			if !op.expired(now) {
+				return true
+			}
+			o.removeRenameOverlay(dir)
 		}
 		if dir == "/" || dir == "." {
 			return false
@@ -271,10 +278,20 @@ func (o *Overlay) deepestDeletedAncestor(path string) (string, drive.Entry, bool
 type overlayOp struct {
 	oldPath string
 	newPath string
+	// entryID is the identity the object had before the rename, used to tell
+	// "the renamed object is gone" from "a different object now carries the
+	// old name".
 	entryID string
 	isDir   bool
 	oldGone bool
 	newSeen bool
+	// createdAt bounds how long the shadow may hide the old path.
+	createdAt time.Time
+}
+
+// expired reports whether the shadow outlived RenameShadowTTL.
+func (op overlayOp) expired(now time.Time) bool {
+	return !op.createdAt.IsZero() && now.Sub(op.createdAt) > RenameShadowTTL
 }
 
 // parentVirtualPath returns the parent of a slash-absolute virtual path

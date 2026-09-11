@@ -185,7 +185,8 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 	if needsReplace {
 		observer.State(pending.Path, "replacing_existing")
 		phaseStart = util.Now()
-		if err := replaceUploadedFile(ctx, e.remote, entry, replaceExisting, pending.Name); err != nil {
+		renamed, err := replaceUploadedFile(ctx, e.remote, entry, replaceExisting, pending.Name)
+		if err != nil {
 			observer.Event(pending.Path, "replace_existing", phaseStart, 0, map[string]any{"error": err.Error(), "uploaded_id": entry.ID})
 			finishErr = err.Error()
 			logging.L.Warnf("[VFS] upload replace existing failed op_id=%q path=%q uploaded_id=%q name=%q err=%v", pending.FID, pending.Path, entry.ID, pending.Name, err)
@@ -194,7 +195,7 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 			}
 			return err
 		}
-		entry.Name = pending.Name
+		entry = renamed
 		observer.Event(pending.Path, "replace_existing", phaseStart, 0, map[string]any{"uploaded_id": entry.ID, "replaced": len(replaceExisting)})
 	}
 	finishState, finishErr, err = e.finalizeUpload(ctx, pending, entry, snapshot, uploadStart)
