@@ -82,6 +82,10 @@ func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath st
 	return r.runtime.RenamePendingUpload(oldPath, newPath, pending)
 }
 
+func (r vfsRenamePending) RebasePendingUnder(oldPath, newPath string, entry drive.Entry) error {
+	return r.runtime.RebasePendingUploads(oldPath, newPath, entry)
+}
+
 // vfsRenameView adapts the rename view commit; read-cache invalidation
 // stays on the rename-time runtime, the view commit on the committer.
 

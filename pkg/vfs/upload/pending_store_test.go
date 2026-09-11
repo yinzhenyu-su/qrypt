@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-
 	"time"
 )
 
@@ -110,5 +109,94 @@ func TestUploadStoreAdapterCleansStaging(t *testing.T) {
 	}
 	if _, err := os.Stat(otherPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staging still exists after direct remove: %v", err)
+	}
+}
+
+// TestRebaseUploadsUnderMovesChildrenAndReparents: a renamed directory takes
+// its pending descendants with it - path, recorded parent, and journal state -
+// while records outside the subtree stay untouched.
+func TestRebaseUploadsUnderMovesChildrenAndReparents(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPendingStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := PendingUpload{Path: "/dir/sub/f.txt", FID: "child", Name: "f.txt", ParentID: "old-sub", Frozen: true}
+	root := PendingUpload{Path: "/dir/g.txt", FID: "root", Name: "g.txt", ParentID: "old-dir", Frozen: true}
+	other := PendingUpload{Path: "/other.txt", FID: "other", Name: "other.txt", ParentID: "old-dir", Frozen: true}
+	for _, pending := range []PendingUpload{child, root, other} {
+		pending.LocalPath = stagingFor(t, store, pending.FID)
+		pending.Size = 1
+		if err := store.SaveUploadExact(pending); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	moved, err := store.RebaseUploadsUnder("/dir", "/moved", "new-dir-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(moved) != 2 {
+		t.Fatalf("rebased = %+v, want the two records under /dir", moved)
+	}
+	for _, want := range []struct{ path, fid string }{{"/moved/g.txt", "root"}, {"/moved/sub/f.txt", "child"}} {
+		got, ok := store.UploadByPath(want.path)
+		if !ok {
+			t.Fatalf("rebased record %q missing", want.path)
+		}
+		if got.FID != want.fid || got.ParentID != "new-dir-id" || got.LocalPath == "" {
+			t.Fatalf("rebased record = %+v, want fid %q re-parented to new-dir-id with its staging", got, want.fid)
+		}
+		if _, ok := store.PendingByID(want.fid); !ok {
+			t.Fatalf("id index lost %q", want.fid)
+		}
+	}
+	if _, ok := store.UploadByPath("/dir/g.txt"); ok {
+		t.Fatal("old path still present after rebase")
+	}
+	if untouched, ok := store.UploadByPath("/other.txt"); !ok || untouched.ParentID != "old-dir" {
+		t.Fatalf("unrelated record = %+v ok=%v, want it untouched", untouched, ok)
+	}
+
+	// The rebase must survive a replay: reopen the store over the same dir.
+	reopened, err := NewPendingStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reopened.UploadByPath("/moved/sub/f.txt"); !ok || got.FID != "child" {
+		t.Fatalf("replayed record = %+v ok=%v, want the rebased child", got, ok)
+	}
+	if _, ok := reopened.UploadByPath("/dir/sub/f.txt"); ok {
+		t.Fatal("replay resurrected the pre-rebase path")
+	}
+}
+
+// TestRebaseUploadsUnderNoMatchIsNoop: a directory without pending uploads
+// rebases nothing and writes nothing.
+// stagingFor creates a real staging file for a record, so the durable journal
+// keeps the entry when it is replayed.
+func stagingFor(t *testing.T, store *PendingStore, fid string) string {
+	t.Helper()
+	path, err := store.CreateStaging(fid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestRebaseUploadsUnderNoMatchIsNoop(t *testing.T) {
+	store, err := NewPendingStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := store.RebaseUploadsUnder("/empty", "/gone", "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(moved) != 0 {
+		t.Fatalf("rebased = %+v, want none", moved)
 	}
 }

@@ -28,7 +28,8 @@ type renameFixture struct {
 	renamerEntry drive.Entry
 
 	// order records each coordinator call for precedence assertions.
-	order []string
+	order       []string
+	rebaseCalls int
 }
 
 func (f *renameFixture) Resolve(_ context.Context, _ string) (drive.Entry, error) {
@@ -50,6 +51,12 @@ func (f *renameFixture) RenamePending(_ context.Context, _, _ string, _ drive.En
 	f.pendingCalls++
 	f.order = append(f.order, "rename_pending")
 	return f.pendingErr
+}
+
+func (f *renameFixture) RebasePendingUnder(_, _ string, _ drive.Entry) error {
+	f.rebaseCalls++
+	f.order = append(f.order, "rebase_pending")
+	return nil
 }
 
 func (f *renameFixture) InvalidateReadCache(drive.Entry) {
@@ -161,6 +168,32 @@ func TestCoordinatorRenamePendingDispatch(t *testing.T) {
 	}
 	if fx.pendingCalls != 1 {
 		t.Fatalf("pending calls = %d, want 1", fx.pendingCalls)
+	}
+}
+
+// TestCoordinatorRenameRebasesDirectoryChildren: a renamed directory carries
+// its pending descendants onto the renamed subtree; a renamed file has no
+// descendants and must not trigger the rebase.
+func TestCoordinatorRenameRebasesDirectoryChildren(t *testing.T) {
+	dirFx := newRenameFixture()
+	dirFx.resolveEntry = drive.Entry{ID: "id-dir", ParentID: "parent-a", Name: "dir", IsDir: true}
+	dirFx.renamerEntry = drive.Entry{ID: "id-dir", ParentID: "parent-b", Name: "moved", IsDir: true}
+	if err := dirFx.coordinator().Rename(context.Background(), "/dir", "/moved"); err != nil {
+		t.Fatal(err)
+	}
+	if dirFx.rebaseCalls != 1 {
+		t.Fatalf("rebase calls = %d, want 1 for a directory rename", dirFx.rebaseCalls)
+	}
+	if len(dirFx.order) < 2 || dirFx.order[len(dirFx.order)-1] != "rebase_pending" {
+		t.Fatalf("call order = %v, want the rebase after the view commit", dirFx.order)
+	}
+
+	fileFx := newRenameFixture()
+	if err := fileFx.coordinator().Rename(context.Background(), "/a.txt", "/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if fileFx.rebaseCalls != 0 {
+		t.Fatalf("rebase calls = %d, want 0 for a file rename", fileFx.rebaseCalls)
 	}
 }
 
