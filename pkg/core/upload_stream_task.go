@@ -92,7 +92,7 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 		ID:        batch.taskID,
 		Type:      task.TypeUploadStreamBatch,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(task.TypeUploadStreamBatch),
 		Path:      first.DestPath,
 		Name:      first.Name,
 		CreatedAt: now,
@@ -101,11 +101,7 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 			ItemsTotal:        int64(len(batch.items)),
 			StagingBytesTotal: batch.bytesTotal,
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  true,
-			Dismissible: true,
-		},
+		Capabilities: taskCreationCapabilities(task.TypeUploadStreamBatch),
 		Detail: map[string]any{
 			"items":           batch.detailItems(),
 			"conflict_policy": batch.conflictPolicy,

@@ -507,15 +507,31 @@ the current handle but wants to resume later without marking an error.
 
 ### Manage Task UI
 
-Use `CreateTaskJSON` for UI-created file operations:
+Use `CreateTaskJSON` for UI-created file operations. The table below is the
+declared policy of every task type: which operation it performs, which type a
+multi-item request is promoted to, and whether it appears in the app's default
+list.
 
-```text
-upload_stream_batch     app input stream -> qrypt/dest_path
-upload_stream_direct    app source token -> qrypt/dest_path
-download_stream_batch   qrypt source_path -> app output stream
-move_remote             qrypt items[1] source_path -> qrypt dest_path
-move_batch              qrypt items[n] source_path -> qrypt dest_path
-```
+| type | operation | 多项目提升为 | App 默认列表 | 创建入口 |
+| --- | --- | --- | --- | --- |
+| `upload_remote` | upload | `upload_batch` | 是 | `CreateTaskJSON`, `CreateLocalUploadTaskJSON` |
+| `upload_batch` | upload | —（显式批量类型保持自身） | 是 | 同上 |
+| `upload_stream_batch` | upload | 不提升 | 是 | `CreateTaskJSON` |
+| `upload_stream_direct` | upload | 不提升 | 是 | `CreateTaskJSON` |
+| `download` | download | 不提升 | 是 | `CreateTaskJSON` |
+| `download_stream_batch` | download | 不提升 | 是 | `CreateTaskJSON` |
+| `delete_remote` | delete | `delete_batch` | 是 | `CreateTaskJSON` |
+| `delete_batch` | delete | —（显式批量类型保持自身） | 是 | 同上 |
+| `copy` | copy | 不提升 | 是 | `CreateTaskJSON` |
+| `move_remote` | move | `move_batch` | 是 | `CreateTaskJSON` |
+| `move_batch` | move | —（显式批量类型保持自身） | 是 | 同上 |
+
+`copy` and `download` intentionally declare no batch type: a multi-item copy or
+download keeps its single type and reports item count through `progress`. The
+mount's own bookkeeping records (deferred remote deletes, upload retries) reuse
+the `delete_remote` and `upload_remote` names but are sync scope, so they never
+appear in the default list. Operation-level creation (`operation` +
+`items`) produces the same types as the direct calls above.
 
 `ListTasksJSON` defaults to user-visible mobile tasks. The app can use the
 returned `type`, `state`, `progress`, `capabilities`, and `result.items` fields

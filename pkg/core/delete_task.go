@@ -36,15 +36,12 @@ func (c *Core) createDeleteTask(ctx context.Context, req task.Request) (task.Tas
 	items := spec.Items
 	now := util.Now()
 	firstPath := items[0].Path
-	taskType := req.Type
-	if taskType == task.TypeDeleteRemote && len(items) > 1 {
-		taskType = task.TypeDeleteBatch
-	}
+	taskType := task.Promote(req.Type, len(items))
 	item := task.Task{
 		ID:        newDeleteTaskID(),
 		Type:      taskType,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(taskType),
 		Path:      firstPath,
 		Name:      path.Base(firstPath),
 		CreatedAt: now,
@@ -52,11 +49,7 @@ func (c *Core) createDeleteTask(ctx context.Context, req task.Request) (task.Tas
 		Progress: task.Progress{
 			ItemsTotal: int64(len(items)),
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  taskType == task.TypeDeleteBatch,
-			Dismissible: taskType == task.TypeDeleteBatch,
-		},
+		Capabilities: taskCreationCapabilities(taskType),
 		Detail: map[string]any{
 			"paths":       deleteTaskPaths(items),
 			"recursive":   spec.Recursive,

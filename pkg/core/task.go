@@ -31,9 +31,28 @@ func (c *Core) newTaskManager() *task.Manager {
 	sources := []task.Source{c.fs.TaskSource()}
 	store := c.taskStore()
 	manager := task.NewManagerWithStore(store, sources...)
-	c.recoverUploadStreamTasks(context.Background(), manager)
-	c.recoverUploadStreamDirectTasks(context.Background(), manager)
+	for _, typ := range task.RecoverableTypes() {
+		if recovery := c.taskRecovery(typ); recovery != nil {
+			recovery(context.Background(), manager)
+		}
+	}
 	return manager
+}
+
+// taskRecovery returns the startup recovery for a type declared recoverable.
+// taskRecoveryPaths is asserted against the declared recoverable types, so a
+// type cannot be declared recoverable without a recovery implementation.
+func (c *Core) taskRecovery(typ task.Type) func(context.Context, *task.Manager) {
+	recovery, ok := taskRecoveryPaths[typ]
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, manager *task.Manager) { recovery(c, ctx, manager) }
+}
+
+var taskRecoveryPaths = map[task.Type]func(*Core, context.Context, *task.Manager){
+	task.TypeUploadStreamBatch:  (*Core).recoverUploadStreamTasks,
+	task.TypeUploadStreamDirect: (*Core).recoverUploadStreamDirectTasks,
 }
 
 func (c *Core) taskStore() task.Store {
@@ -175,8 +194,14 @@ func (c *Core) RetryTask(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if current, getErr := manager.GetTask(ctx, id); getErr == nil &&
-		current.Type == task.TypeUploadStreamBatch &&
+	current, currentErr := manager.GetTask(ctx, id)
+	strategy := task.RetryManager
+	if currentErr == nil {
+		if descriptor, ok := task.Describe(current.Type); ok {
+			strategy = descriptor.Retry
+		}
+	}
+	if strategy == task.RetryRecover && currentErr == nil &&
 		(current.State == task.StateFailed || current.State == task.StatePartialFailed) &&
 		c.isRecoverableUploadStreamTask(current) {
 		batch, buildErr := c.uploadStreamBatchFromTask(ctx, current)
@@ -199,10 +224,8 @@ func (c *Core) RetryTask(ctx context.Context, id string) error {
 	// backoff inside its batch runner. Re-running it through the manager
 	// would start a second runner on the same batch; instead wake the batch
 	// so it attempts again immediately.
-	if batch := c.getUploadStream(id); batch != nil {
-		if current, getErr := manager.GetTask(ctx, id); getErr == nil &&
-			current.Type == task.TypeUploadStreamDirect &&
-			current.State == task.StateRetryWait {
+	if strategy == task.RetryWakeRunner {
+		if batch := c.getUploadStream(id); batch != nil && currentErr == nil && current.State == task.StateRetryWait {
 			select {
 			case batch.retrySignal <- struct{}{}:
 			default:
@@ -233,30 +256,48 @@ func (c *Core) DismissFinishedTasks(ctx context.Context, filter task.Filter) (in
 }
 
 func (c *Core) CreateTask(ctx context.Context, req task.Request) (task.Task, error) {
-	switch req.Type {
-	case task.TypeUploadRemote, task.TypeUploadBatch:
-		return c.createUploadTask(ctx, req)
-	case task.TypeUploadStreamBatch:
-		return c.createUploadStreamTask(ctx, req)
-	case task.TypeUploadStreamDirect:
-		return c.createUploadStreamDirectTask(ctx, req)
-	case task.TypeDownload:
-		return c.createDownloadTask(ctx, req)
-	case task.TypeDownloadStreamBatch:
-		return c.createDownloadStreamTask(ctx, req)
-	case task.TypeDeleteRemote, task.TypeDeleteBatch:
-		return c.createDeleteTask(ctx, req)
-	case task.TypeCopy:
-		return c.createCopyTask(ctx, req)
-	case task.TypeMoveRemote, task.TypeMoveBatch:
-		move, err := moveSpecFromTaskRequest(req)
-		if err != nil {
-			return task.Task{}, err
-		}
-		return c.createMoveTask(ctx, move)
-	default:
+	descriptor, ok := task.Describe(req.Type)
+	if !ok {
 		return task.Task{}, fmt.Errorf("core: unsupported task type %q", req.Type)
 	}
+	create, ok := taskCreators[descriptor.Creation]
+	if !ok {
+		return task.Task{}, fmt.Errorf("core: task type %q has no creation path", req.Type)
+	}
+	return create(c, ctx, req)
+}
+
+// taskCreators maps every declared creation path to its implementation. The
+// test suite asserts the keys match the paths declared by the task type
+// descriptors exactly, so a type cannot be declared without a creation path
+// (or the reverse).
+var taskCreators = map[task.CreationPath]func(*Core, context.Context, task.Request) (task.Task, error){
+	task.CreationUpload:             (*Core).createUploadTask,
+	task.CreationUploadStream:       (*Core).createUploadStreamTask,
+	task.CreationUploadStreamDirect: (*Core).createUploadStreamDirectTask,
+	task.CreationDownload:           (*Core).createDownloadTask,
+	task.CreationDownloadStream:     (*Core).createDownloadStreamTask,
+	task.CreationDelete:             (*Core).createDeleteTask,
+	task.CreationCopy:               (*Core).createCopyTask,
+	task.CreationMove:               createMoveTaskFromRequest,
+}
+
+// createMoveTaskFromRequest adapts a move request to the move creation path,
+// which works on a resolved move spec.
+func createMoveTaskFromRequest(c *Core, ctx context.Context, req task.Request) (task.Task, error) {
+	move, err := moveSpecFromTaskRequest(req)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return c.createMoveTask(ctx, move)
+}
+
+// taskCreationCapabilities returns the capability defaults declared for a task
+// type. Create functions apply runtime-derived upgrades (a move that crosses
+// mounts, a recursive download) on top of it.
+func taskCreationCapabilities(typ task.Type) task.Capabilities {
+	descriptor, _ := task.Describe(typ)
+	return descriptor.CreationCapabilities()
 }
 
 func applyTaskRequestMetadata(item *task.Task, req task.Request) {
@@ -292,19 +333,13 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 			taskType = task.TypeUploadStreamDirect
 		}
 	case task.OperationDownload:
-		taskType = task.TypeDownloadStreamBatch
+		taskType = task.Promote(task.TypeDownloadStreamBatch, len(req.Items))
 	case task.OperationDelete:
-		taskType = task.TypeDeleteRemote
-		if len(req.Items) > 1 {
-			taskType = task.TypeDeleteBatch
-		}
+		taskType = task.Promote(task.TypeDeleteRemote, len(req.Items))
 	case task.OperationCopy:
-		taskType = task.TypeCopy
+		taskType = task.Promote(task.TypeCopy, len(req.Items))
 	case task.OperationMove:
-		taskType = task.TypeMoveRemote
-		if len(req.Items) > 1 {
-			taskType = task.TypeMoveBatch
-		}
+		taskType = task.Promote(task.TypeMoveRemote, len(req.Items))
 	default:
 		return task.Request{}, fmt.Errorf("%w: unsupported operation %q", task.ErrInvalidOperation, req.Operation)
 	}

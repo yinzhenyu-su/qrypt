@@ -88,7 +88,7 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 		ID:        batch.taskID,
 		Type:      task.TypeUploadStreamDirect,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(task.TypeUploadStreamDirect),
 		Path:      first.DestPath,
 		Name:      first.Name,
 		CreatedAt: now,
@@ -99,13 +99,9 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 			CloudBytesTotal:   batch.bytesTotal,
 			StagingBytesTotal: 0,
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  true,
-			Dismissible: true,
-		},
-		Detail: detail,
-		Result: task.Result{Items: batch.resultItemsLocked()},
+		Capabilities: taskCreationCapabilities(task.TypeUploadStreamDirect),
+		Detail:       detail,
+		Result:       task.Result{Items: batch.resultItemsLocked()},
 	}
 	destMount, _, _ := moveMounts(first.DestPath, first.DestPath, c.fs)
 	if destMount != "" {

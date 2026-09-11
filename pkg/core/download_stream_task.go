@@ -66,7 +66,7 @@ func (c *Core) createDownloadStreamTask(ctx context.Context, req task.Request) (
 		ID:        batch.taskID,
 		Type:      task.TypeDownloadStreamBatch,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(task.TypeDownloadStreamBatch),
 		Path:      first.SourcePath,
 		Name:      first.Name,
 		CreatedAt: now,
@@ -75,11 +75,7 @@ func (c *Core) createDownloadStreamTask(ctx context.Context, req task.Request) (
 			ItemsTotal:       int64(len(batch.items)),
 			OutputBytesTotal: batch.bytesTotal,
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  true,
-			Dismissible: true,
-		},
+		Capabilities: taskCreationCapabilities(task.TypeDownloadStreamBatch),
 		Detail: map[string]any{
 			"items":       batch.detailItems(),
 			"concurrency": taskConcurrency(req.Options.Concurrency),

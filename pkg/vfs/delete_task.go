@@ -113,10 +113,13 @@ func (s deleteTaskSource) records() []deleteTaskRecord {
 }
 
 func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
+	// Internal delete bookkeeping is exposed as a sync-scope task even though
+	// the task API creates this type as user-visible.
+	typ := task.TypeDeleteRemote
 	item := task.Task{
 		ID:            record.id,
-		Operation:     task.OperationDelete,
-		Type:          task.TypeDeleteRemote,
+		Operation:     task.OperationForType(typ),
+		Type:          typ,
 		State:         record.state,
 		Scope:         task.ScopeSync,
 		SchemaVersion: task.CurrentTaskSchemaVersion,

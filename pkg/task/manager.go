@@ -108,7 +108,7 @@ func (m *Manager) SubmitIdempotent(ctx context.Context, item Task, run RunFunc) 
 		return Task{}, fmt.Errorf("task: run function required")
 	}
 	if item.Operation == "" {
-		item.Operation = operationKindForType(item.Type)
+		item.Operation = OperationForType(item.Type)
 	}
 	if item.ExecutionGeneration == 0 {
 		item.ExecutionGeneration = 1

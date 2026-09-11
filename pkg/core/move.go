@@ -49,30 +49,23 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 
 	// Mirror delete tasks: an explicit batch type keeps its identity, while a
 	// multi-item remote move is promoted to the batch type.
-	taskType := req.Type
-	if taskType == task.TypeMoveRemote && len(req.Items) > 1 {
-		taskType = task.TypeMoveBatch
-	}
+	taskType := task.Promote(req.Type, len(req.Items))
 	if taskType == "" {
 		taskType = task.TypeMoveRemote
 	}
 
 	now := util.Now()
 	item := task.Task{
-		ID:        newMoveTaskID(),
-		Type:      taskType,
-		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
-		Path:      first.SourcePath,
-		Name:      path.Base(first.SourcePath),
-		Progress:  task.Progress{ItemsTotal: int64(len(req.Items))},
-		CreatedAt: now,
-		UpdatedAt: now,
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  taskType == task.TypeMoveBatch,
-			Dismissible: taskType == task.TypeMoveBatch,
-		},
+		ID:           newMoveTaskID(),
+		Type:         taskType,
+		State:        task.StateQueued,
+		Scope:        task.ScopeForType(taskType),
+		Path:         first.SourcePath,
+		Name:         path.Base(first.SourcePath),
+		Progress:     task.Progress{ItemsTotal: int64(len(req.Items))},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Capabilities: taskCreationCapabilities(taskType),
 		Detail: map[string]any{
 			"items":       copyTaskDetailItems(req.Items),
 			"overwrite":   req.Overwrite,

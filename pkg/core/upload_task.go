@@ -34,15 +34,12 @@ func (c *Core) createUploadTask(ctx context.Context, req task.Request) (task.Tas
 	items := spec.Items
 	now := util.Now()
 	first := items[0]
-	taskType := req.Type
-	if taskType == task.TypeUploadRemote && len(items) > 1 {
-		taskType = task.TypeUploadBatch
-	}
+	taskType := task.Promote(req.Type, len(items))
 	item := task.Task{
 		ID:        newUploadTaskID(),
 		Type:      taskType,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(taskType),
 		Path:      first.DestPath,
 		Name:      path.Base(first.DestPath),
 		CreatedAt: now,
@@ -50,11 +47,7 @@ func (c *Core) createUploadTask(ctx context.Context, req task.Request) (task.Tas
 		Progress: task.Progress{
 			ItemsTotal: int64(len(items)),
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  true,
-			Dismissible: true,
-		},
+		Capabilities: taskCreationCapabilities(taskType),
 		Detail: map[string]any{
 			"items":           uploadTaskDetailItems(items),
 			"concurrency":     spec.Concurrency,

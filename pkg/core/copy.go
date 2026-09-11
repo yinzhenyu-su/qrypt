@@ -48,12 +48,16 @@ func (c *Core) createCopyTask(ctx context.Context, req task.Request) (task.Task,
 		first = spec.Items[0]
 	}
 	_, _, crossQryptMount := moveMounts(first.SourcePath, first.DestPath, c.fs)
-	persistent := len(spec.Items) > 1 || spec.Recursive || crossQryptMount
+	capabilities := taskCreationCapabilities(task.TypeCopy)
+	if len(spec.Items) > 1 || spec.Recursive || crossQryptMount {
+		capabilities.Persistent = true
+		capabilities.Dismissible = true
+	}
 	item := task.Task{
 		ID:        newCopyTaskID(),
 		Type:      task.TypeCopy,
 		State:     task.StateQueued,
-		Scope:     task.ScopeUser,
+		Scope:     task.ScopeForType(task.TypeCopy),
 		Path:      first.SourcePath,
 		Name:      filepath.Base(first.SourcePath),
 		CreatedAt: now,
@@ -61,11 +65,7 @@ func (c *Core) createCopyTask(ctx context.Context, req task.Request) (task.Task,
 		Progress: task.Progress{
 			ItemsTotal: int64(len(spec.Items)),
 		},
-		Capabilities: task.Capabilities{
-			Cancelable:  true,
-			Persistent:  persistent,
-			Dismissible: persistent,
-		},
+		Capabilities: capabilities,
 		Detail: map[string]any{
 			"items":                    copyTaskDetailItems(spec.Items),
 			"overwrite":                spec.Overwrite,
