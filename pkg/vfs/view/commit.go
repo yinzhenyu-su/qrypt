@@ -65,6 +65,21 @@ func (r Committer) CommitUploadedEntry(path string, entry drive.Entry, stagingPa
 	r.view.mu.Unlock()
 }
 
+// DropUploadedEntry takes a just-committed upload entry back out of the view:
+// the entry cache drops the path, the read cache state for the entry is
+// invalidated, and the parent list cache is invalidated so the next listing
+// reflects whatever now owns the path. It is the rollback half of
+// CommitUploadedEntry, used when the pending record moved on before the commit
+// could be claimed.
+func (r Committer) DropUploadedEntry(path string, entry drive.Entry) {
+	r.invalidate(entry)
+	rt := NewRuntime(r.view)
+	r.view.mu.Lock()
+	r.view.entries.Delete(path)
+	rt.InvalidateListLocked(pathpkg.Dir(path))
+	r.view.mu.Unlock()
+}
+
 // CommitRemoteRename folds a completed remote rename/move into the view: it
 // removes the old path (rebasing cached descendants), moves local modtime,
 // invalidates the affected parent list caches, writes the new entry, and

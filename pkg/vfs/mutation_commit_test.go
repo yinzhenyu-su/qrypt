@@ -325,3 +325,39 @@ func TestCommitUploadedEntryWritesViewState(t *testing.T) {
 		t.Error("read cache not seeded by CommitUploadedEntry")
 	}
 }
+
+// TestDropUploadedEntryRemovesCommittedEntry: dropping a just-committed upload
+// takes the entry back out of the view and invalidates its read-cache state, so
+// a superseded upload leaves no readable residue behind.
+func TestDropUploadedEntryRemovesCommittedEntry(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	fs.Start(context.Background())
+
+	staging := filepath.Join(t.TempDir(), "up.staging")
+	if err := os.WriteFile(staging, []byte("uploaded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-r", Name: "remote.txt", Size: 6}}, time.Now().Add(time.Minute))
+
+	entry := drive.Entry{ID: "up-id", Name: "up.txt", Size: 8, ModTime: time.Now()}
+	committer := newVFSViewCommitter(fs)
+	committer.CommitUploadedEntry("/up.txt", entry, staging)
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
+	committer.DropUploadedEntry("/up.txt", entry)
+	if err := fs.FlushReadCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := view.Entry("/up.txt"); ok {
+		t.Fatalf("entry still cached after drop: %+v", got)
+	}
+	if _, ok := view.FreshListCache("/", time.Now().Add(5*time.Second)); ok {
+		t.Error("parent list cache not invalidated by DropUploadedEntry")
+	}
+	if cache := fs.DebugSnapshot().Mounts[0].ReadCacheState(); cache.Bytes != 0 {
+		t.Errorf("read cache not invalidated by DropUploadedEntry: %+v", cache)
+	}
+}

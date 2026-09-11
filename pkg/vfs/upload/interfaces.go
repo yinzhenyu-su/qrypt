@@ -72,9 +72,12 @@ type Runtime interface {
 // UploadView is the view surface a completed upload commits to: it seeds
 // the read cache from the staging file (when one exists) and folds the
 // uploaded entry into the effective view. Separate from Runtime so the
-// view commit is an explicit narrow dependency.
+// view commit is an explicit narrow dependency. DropUploadedEntry takes a
+// just-committed entry back out again when the pending record turned out to
+// have moved on, so a superseded upload leaves no entry behind.
 type UploadView interface {
 	CommitUploadedEntry(path string, entry drive.Entry, stagingPath string)
+	DropUploadedEntry(path string, entry drive.Entry)
 }
 
 // InvalidationSink publishes a path after its pending upload has been removed
