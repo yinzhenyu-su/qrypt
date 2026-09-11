@@ -58,7 +58,7 @@
 
 ### Requirement: Rename shadows converge
 
-系统 MUST NOT 因重命名/移动而永久隐藏旧路径。当目标路径已在后端列表中可见时，系统 MUST 清除旧路径的隐藏 shadow；隐藏状态 MUST 具有兜底过期，使之后在旧路径重新创建的对象能够被列出。
+系统 MUST NOT 因重命名/移动而永久隐藏旧路径。系统 MUST 在旧名字已从后端列表中消失且目标名字已出现时清除旧路径的隐藏 shadow；当有不同对象被提交到旧路径时 MUST 立即清除该 shadow；隐藏状态 MUST 具有兜底过期，使之后在旧路径重新创建的对象最终能够被列出。
 
 #### Scenario: A new object is created at the old path after the rename
 
