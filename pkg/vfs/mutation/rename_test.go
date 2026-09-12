@@ -16,9 +16,14 @@ type renameFixture struct {
 	parentName   string
 	parentErr    error
 
+	remoteEntry    drive.Entry
+	remoteEntryOK  bool
+	remoteEntryErr error
+
 	pending      bool
 	pendingErr   error
 	pendingCalls int
+	pendingArgs  [][3]string
 
 	invalidated    int
 	commits        [][2]string
@@ -42,13 +47,19 @@ func (f *renameFixture) Parent(_ context.Context, _ string) (drive.Entry, string
 	return f.parentEntry, f.parentName, f.parentErr
 }
 
+func (f *renameFixture) RemoteEntry(_ context.Context, _ string) (drive.Entry, bool, error) {
+	f.order = append(f.order, "remote_entry")
+	return f.remoteEntry, f.remoteEntryOK, f.remoteEntryErr
+}
+
 func (f *renameFixture) IsPending(string) bool {
 	f.order = append(f.order, "is_pending")
 	return f.pending
 }
 
-func (f *renameFixture) RenamePending(_ context.Context, _, _ string, _ drive.Entry, _ string) error {
+func (f *renameFixture) RenamePending(_ context.Context, oldPath, newPath, parentID, name string) error {
 	f.pendingCalls++
+	f.pendingArgs = append(f.pendingArgs, [3]string{newPath, parentID, name})
 	f.order = append(f.order, "rename_pending")
 	return f.pendingErr
 }
@@ -254,8 +265,74 @@ func TestCoordinatorRenameDestinationFailureNoSideEffects(t *testing.T) {
 	}
 }
 
-// TestCoordinatorRenamePendingSkipsSourceResolve: a pending source never
-// triggers a remote source resolve.
+// TestCoordinatorRenamePendingWithRemoteMovesObject: a pending source that
+// still has a backend object must move that object and re-point the pending
+// record, instead of leaving the old name behind.
+func TestCoordinatorRenamePendingWithRemoteMovesObject(t *testing.T) {
+	fx := newRenameFixture()
+	fx.pending = true
+	fx.remoteEntry = drive.Entry{ID: "id-a", ParentID: "parent-a", Name: "a.txt", Size: 7}
+	fx.remoteEntryOK = true
+	if err := fx.coordinator().Rename(context.Background(), "/a.txt", "/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.commits) != 1 || fx.commits[0] != [2]string{"/a.txt", "/b.txt"} {
+		t.Fatalf("commits = %+v, want one /a.txt -> /b.txt", fx.commits)
+	}
+	if fx.invalidated != 1 {
+		t.Fatalf("read-cache invalidations = %d, want 1", fx.invalidated)
+	}
+	if fx.pendingCalls != 1 {
+		t.Fatalf("pending renames = %d, want 1", fx.pendingCalls)
+	}
+	if got := fx.pendingArgs[0]; got != [3]string{"/b.txt", "parent-b", "b.txt"} {
+		t.Fatalf("pending rename args = %v, want [/b.txt parent-b b.txt]", got)
+	}
+}
+
+// TestCoordinatorRenamePendingWithRemotePartial: a partial remote rename
+// commits the intermediate state and moves the pending record to it while
+// keeping its recorded parent.
+func TestCoordinatorRenamePendingWithRemotePartial(t *testing.T) {
+	fx := newRenameFixture()
+	fx.pending = true
+	fx.remoteEntry = drive.Entry{ID: "id-a", ParentID: "parent-a", Name: "a.txt", Size: 7}
+	fx.remoteEntryOK = true
+	fx.renamerErr = &PartialError{MoveErr: errors.New("move")}
+	fx.renamerEntry = drive.Entry{ID: "id-a", ParentID: "parent-a", Name: "b.txt", Size: 7}
+	if err := fx.coordinator().Rename(context.Background(), "/a.txt", "/b.txt"); err == nil {
+		t.Fatal("want partial error")
+	}
+	if len(fx.commits) != 1 || fx.commits[0] != [2]string{"/a.txt", "/b.txt"} {
+		t.Fatalf("commits = %+v, want one intermediate /a.txt -> /b.txt", fx.commits)
+	}
+	if got := fx.pendingArgs[0]; got != [3]string{"/b.txt", "", "b.txt"} {
+		t.Fatalf("pending rename args = %v, want [/b.txt <keep-parent> b.txt]", got)
+	}
+}
+
+// TestCoordinatorRenamePendingWithRemoteFailure: a failing remote move leaves
+// the pending record untouched.
+func TestCoordinatorRenamePendingWithRemoteFailure(t *testing.T) {
+	fx := newRenameFixture()
+	fx.pending = true
+	fx.remoteEntry = drive.Entry{ID: "id-a", ParentID: "parent-a", Name: "a.txt", Size: 7}
+	fx.remoteEntryOK = true
+	fx.renamerErr = errors.New("remote boom")
+	if err := fx.coordinator().Rename(context.Background(), "/a.txt", "/b.txt"); err == nil {
+		t.Fatal("want remote error")
+	}
+	if len(fx.commits) != 0 {
+		t.Fatalf("commits = %+v, want 0", fx.commits)
+	}
+	if fx.pendingCalls != 0 {
+		t.Fatalf("pending renames = %d, want 0", fx.pendingCalls)
+	}
+}
+
+// TestCoordinatorRenamePendingSkipsSourceResolve: a pending source is never
+// resolved as a remote entry; the backend probe is a separate, narrower call
+// that a pending-only path (no backend object) answers without a rename.
 func TestCoordinatorRenamePendingSkipsSourceResolve(t *testing.T) {
 	fx := newRenameFixture()
 	fx.pending = true
