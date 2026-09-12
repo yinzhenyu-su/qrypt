@@ -26,8 +26,6 @@ func (stubHost) PendingUpload(string) (vfstypes.PendingUpload, bool, error) {
 	return vfstypes.PendingUpload{}, false, nil
 }
 
-func (stubHost) FlushStaging(string) error { return nil }
-
 func (stubHost) ReadCacheKey(drive.Entry) string { return "" }
 
 func (stubHost) DriverRead(context.Context, drive.Entry, int64, int64) (io.ReadCloser, error) {

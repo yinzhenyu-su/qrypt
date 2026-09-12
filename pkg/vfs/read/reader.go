@@ -89,16 +89,8 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	})
 	if pending, ok, err := r.pendingUpload(path); err == nil && ok {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
-			op.Phase = "staging_flush"
-			op.RemoteID = pending.FID
-		})
-		if err := r.host.FlushStaging(pending.LocalPath); err != nil {
-			r.observer.DebugFinishActive(activeID)
-			r.observer.DebugRecordRead(opID, path, pending.FID, offset, size, 0, "staging", 0, 0, 0, started, nil, err)
-			return nil, err
-		}
-		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_open"
+			op.RemoteID = pending.FID
 		})
 		rc, err := util.OpenRead(pending.LocalPath, offset, size)
 		if err != nil {
@@ -259,7 +251,6 @@ type readRuntime interface {
 	PutHotChunk(cacheKey string, index int64, data []byte)
 	ShouldPromoteCachedRange(cacheKey string, index int64) bool
 	RecordCachedRangeHit(cacheKey string, index, requestSize int64)
-	FlushStaging(localPath string) error
 	ChunkAvailable(cacheKey string, index int64) bool
 	GetChunkWithRange(cacheKey string, index, start, size int64) ([]byte, []byte, bool, error)
 	GetChunkRange(cacheKey string, index, start, size int64) ([]byte, bool, error)
@@ -299,10 +290,6 @@ func (rt *stateRuntime) ShouldPromoteCachedRange(cacheKey string, index int64) b
 
 func (rt *stateRuntime) RecordCachedRangeHit(cacheKey string, index, requestSize int64) {
 	rt.reader.state.recordCachedRangeHit(cacheKey, index, requestSize)
-}
-
-func (rt *stateRuntime) FlushStaging(localPath string) error {
-	return rt.reader.host.FlushStaging(localPath)
 }
 
 func (rt *stateRuntime) ChunkAvailable(cacheKey string, index int64) bool {

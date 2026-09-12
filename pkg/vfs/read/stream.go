@@ -68,16 +68,8 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 	})
 	if pending, ok, err := r.pendingUpload(path); err == nil && ok {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
-			op.Phase = "staging_flush"
-			op.RemoteID = pending.FID
-		})
-		if err := r.host.FlushStaging(pending.LocalPath); err != nil {
-			r.observer.DebugFinishActive(activeID)
-			r.observer.DebugRecordRead(opID, path, pending.FID, 0, 0, 0, "staging", 0, 0, 0, started, nil, err)
-			return nil, err
-		}
-		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "staging_open"
+			op.RemoteID = pending.FID
 		})
 		rc, err := util.OpenRead(pending.LocalPath, 0, 0)
 		if err != nil {

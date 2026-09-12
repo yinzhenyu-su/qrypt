@@ -8,12 +8,13 @@ import (
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
 	climount "github.com/yinzhenyu/qrypt/internal/cli/mount"
 	cliversion "github.com/yinzhenyu/qrypt/internal/cli/version"
-	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all" // registers all drivers via their init functions
+	buildinfo "github.com/yinzhenyu/qrypt/pkg/buildinfo" // registers all drivers via their init functions
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
 )
 
 // NewRootCommand builds the qrypt command tree.
 func NewRootCommand() *cobra.Command {
-	build := currentBuildInfo()
+	build := buildinfo.Current()
 	cmd := &cobra.Command{
 		Use:          "qrypt",
 		Short:        "Mounts encrypted cloud drives as a local filesystem",

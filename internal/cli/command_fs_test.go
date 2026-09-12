@@ -13,6 +13,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 
+	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 )
 
@@ -44,7 +45,7 @@ root_path = `+util.TOMLPath(remote)+`
 	}
 	t.Chdir(tmp)
 
-	if err := runMkdir(testCommand(), []string{"/local/dir"}); err != nil {
+	if err := clifs.NewMkdirCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(remote, "dir")); err != nil {
@@ -54,7 +55,7 @@ root_path = `+util.TOMLPath(remote)+`
 		t.Fatal(err)
 	}
 	downloadPath := filepath.Join(tmp, "download.txt")
-	if err := runGet(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err != nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err != nil {
 		t.Fatal(err)
 	}
 	downloaded, err := os.ReadFile(downloadPath)
@@ -64,17 +65,17 @@ root_path = `+util.TOMLPath(remote)+`
 	if string(downloaded) != "data" {
 		t.Fatalf("unexpected downloaded content: %q", downloaded)
 	}
-	if err := runGet(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err == nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir/file.txt", downloadPath}); err == nil {
 		t.Fatal("expected get to reject an existing local destination")
 	}
 	forceGet := testCommand()
 	forceGet.Flags().Bool("force", true, "")
-	if err := runGet(forceGet, []string{"/local/dir/file.txt", downloadPath}); err != nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(forceGet, []string{"/local/dir/file.txt", downloadPath}); err != nil {
 		t.Fatalf("forced get: %v", err)
 	}
 	stdinPut := testCommand()
 	stdinPut.SetIn(strings.NewReader("from stdin"))
-	if err := runPut(stdinPut, []string{"-", "/local/dir/stdin.txt"}); err != nil {
+	if err := clifs.NewPutCmd(cliRuntime{}).RunE(stdinPut, []string{"-", "/local/dir/stdin.txt"}); err != nil {
 		t.Fatalf("stdin put: %v", err)
 	}
 	stdinData, err := os.ReadFile(filepath.Join(remote, "dir", "stdin.txt"))
@@ -84,20 +85,20 @@ root_path = `+util.TOMLPath(remote)+`
 	if string(stdinData) != "from stdin" {
 		t.Fatalf("unexpected stdin upload: %q", stdinData)
 	}
-	if err := runMv(testCommand(), []string{"/local/dir/file.txt", "/local/dir/renamed.txt"}); err != nil {
+	if err := clifs.NewMvCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir/file.txt", "/local/dir/renamed.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(remote, "dir", "renamed.txt")); err != nil {
 		t.Fatalf("mv did not rename remote file: %v", err)
 	}
-	if err := runRm(testCommand(), []string{"/local/dir/renamed.txt"}); err != nil {
+	if err := clifs.NewRmCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir/renamed.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runRm(testCommand(), []string{"/local/dir/stdin.txt"}); err != nil {
+	if err := clifs.NewRmCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir/stdin.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	waitPathMissing(t, filepath.Join(remote, "dir", "renamed.txt"))
-	if err := runRm(testCommand(), []string{"/local/dir"}); err != nil {
+	if err := clifs.NewRmCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/dir"}); err != nil {
 		t.Fatal(err)
 	}
 	waitPathMissing(t, filepath.Join(remote, "dir"))
@@ -201,7 +202,7 @@ filename_encoding = "base32"
 	if err := root.Execute(); err != nil {
 		t.Fatalf("fs list: %v", err)
 	}
-	var entries []fsListEntry
+	var entries []clifs.ListEntry
 	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
 		t.Fatalf("unmarshal list output: %v\n%s", err, out.String())
 	}
@@ -415,10 +416,10 @@ root_path = `+util.TOMLPath(remote)+`
 	t.Chdir(tmp)
 
 	// Create nested remote directory structure.
-	if err := runMkdir(testCommand(), []string{"/local/parent"}); err != nil {
+	if err := clifs.NewMkdirCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runMkdir(testCommand(), []string{"/local/parent/sub"}); err != nil {
+	if err := clifs.NewMkdirCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/parent/sub"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -436,7 +437,7 @@ root_path = `+util.TOMLPath(remote)+`
 	// Download the whole directory recursively.
 	// LOCAL is treated as the parent directory; the remote dir name is appended.
 	downloadParent := filepath.Join(tmp, "dl")
-	if err := runGet(testCommand(), []string{"/local/parent", downloadParent}); err != nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/parent", downloadParent}); err != nil {
 		t.Fatalf("get dir: %v", err)
 	}
 
@@ -463,7 +464,7 @@ root_path = `+util.TOMLPath(remote)+`
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), unwantedContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runGet(testCommand(), []string{"/local/parent", downloadParent}); err != nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/parent", downloadParent}); err != nil {
 		t.Fatalf("get dir skip existing: %v", err)
 	}
 	// a.txt should still have the unwanted content (was not overwritten).
@@ -478,7 +479,7 @@ root_path = `+util.TOMLPath(remote)+`
 	// With --force, existing files are overwritten.
 	forceGet := testCommand()
 	forceGet.Flags().Bool("force", true, "")
-	if err := runGet(forceGet, []string{"/local/parent", downloadParent}); err != nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(forceGet, []string{"/local/parent", downloadParent}); err != nil {
 		t.Fatalf("get dir force: %v", err)
 	}
 	checkFile(filepath.Join(base, "a.txt"), "file-a")
@@ -488,7 +489,7 @@ root_path = `+util.TOMLPath(remote)+`
 	if err := os.WriteFile(filePath, []byte("block"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runGet(testCommand(), []string{"/local/parent", filePath}); err == nil {
+	if err := clifs.NewGetCmd(cliRuntime{}).RunE(testCommand(), []string{"/local/parent", filePath}); err == nil {
 		t.Fatal("expected error when local exists as a file")
 	}
 }
@@ -601,7 +602,7 @@ filename_encoding = "base32"
 	if err := root.Execute(); err != nil {
 		t.Fatalf("crypt-encode failed: %v", err)
 	}
-	var encoded fsCryptResult
+	var encoded clifs.CryptResult
 	if err := json.Unmarshal(encodeOut.Bytes(), &encoded); err != nil {
 		t.Fatalf("encode JSON invalid: %v\n%s", err, encodeOut.String())
 	}
@@ -620,7 +621,7 @@ filename_encoding = "base32"
 	if err := root.Execute(); err != nil {
 		t.Fatalf("crypt-decode failed: %v", err)
 	}
-	var decoded fsCryptResult
+	var decoded clifs.CryptResult
 	if err := json.Unmarshal(decodeOut.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode JSON invalid: %v\n%s", err, decodeOut.String())
 	}
@@ -664,7 +665,7 @@ filename_encoding = "base32"
 	if err := root.Execute(); err != nil {
 		t.Fatalf("crypt-encode without mount failed: %v", err)
 	}
-	var result fsCryptResult
+	var result clifs.CryptResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}

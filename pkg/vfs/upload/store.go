@@ -120,18 +120,7 @@ type JournalEntry struct {
 }
 
 type stagingStore struct {
-	dir   string
-	pages sync.Map
-}
-
-type page struct {
-	mu        sync.Mutex
-	fid       string
-	buf       []byte
-	dirty     bool
-	maxOffset int64
-	timer     *time.Timer
-	flush     func(string, []byte) error
+	dir string
 }
 
 func newStagingStore(dir string) (*stagingStore, error) {
@@ -177,9 +166,6 @@ func (s *stagingStore) create(fid string) (string, error) {
 }
 
 func (s *stagingStore) writeAt(path string, data []byte, off int64) (int, error) {
-	if err := s.flush(path); err != nil {
-		return 0, err
-	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return 0, err
@@ -189,9 +175,6 @@ func (s *stagingStore) writeAt(path string, data []byte, off int64) (int, error)
 }
 
 func (s *stagingStore) size(path string) (int64, error) {
-	if err := s.flush(path); err != nil {
-		return 0, err
-	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, err
@@ -200,10 +183,6 @@ func (s *stagingStore) size(path string) (int64, error) {
 }
 
 func (s *stagingStore) truncate(path string, size int64) error {
-	if err := s.flush(path); err != nil {
-		return err
-	}
-	s.pages.Delete(fidFromStagingPath(path))
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		if _, err := s.create(fidFromStagingPath(path)); err != nil {
 			return err
@@ -218,47 +197,22 @@ func (s *stagingStore) truncate(path string, size int64) error {
 }
 
 func (s *stagingStore) remove(path string) error {
-	s.pages.Delete(fidFromStagingPath(path))
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
-func (s *stagingStore) flush(path string) error {
-	if p, ok := s.pages.Load(fidFromStagingPath(path)); ok {
-		return p.(*page).flushNow()
-	}
-	return nil
-}
-
+// sync flushes staged bytes to disk. It is the only durability point for
+// staging data: writes go straight to the staging file, so anything that needs
+// the bytes to survive a crash must go through here.
 func (s *stagingStore) sync(path string) error {
-	if err := s.flush(path); err != nil {
-		return err
-	}
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	return f.Sync()
-}
-
-func (p *page) flushNow() error {
-	p.mu.Lock()
-	if !p.dirty {
-		p.mu.Unlock()
-		return nil
-	}
-	data := make([]byte, p.maxOffset)
-	copy(data, p.buf[:p.maxOffset])
-	p.dirty = false
-	if p.timer != nil {
-		p.timer.Stop()
-		p.timer = nil
-	}
-	p.mu.Unlock()
-	return p.flush(p.fid, data)
 }
 
 func fidFromStagingPath(path string) string {
@@ -340,38 +294,6 @@ func (c *PendingStore) UpdateUploadTransient(p PendingUpload) {
 	}
 	c.mu.Unlock()
 }
-func (c *PendingStore) RecordUploadFailure(path string, err error, retryDelay time.Duration) (PendingUpload, bool, error) {
-	c.txMu.Lock()
-	defer c.txMu.Unlock()
-	now := util.Now()
-	c.mu.RLock()
-	pending, ok := c.pending[path]
-	if !ok {
-		c.mu.RUnlock()
-		return PendingUpload{}, false, nil
-	}
-	next := pending
-	next.RetryCount++
-	if err != nil {
-		next.LastError = err.Error()
-	}
-	next.LastAttemptAt = now.UnixNano()
-	if retryDelay > 0 {
-		next.NextAttemptAt = now.Add(retryDelay).UnixNano()
-	} else {
-		next.NextAttemptAt = 0
-	}
-	next.UpdatedAt = now.UnixNano()
-	c.mu.RUnlock()
-	// Journal commit FIRST: on failure the old state stays in memory.
-	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
-		return pending, true, err
-	}
-	c.mu.Lock()
-	c.pending[path] = next
-	c.mu.Unlock()
-	return next, true, nil
-}
 func (c *PendingStore) RecordUploadReplacementIfUnchanged(p PendingUpload, upload UploadReplacement) (PendingUpload, bool, error) {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
@@ -393,34 +315,6 @@ func (c *PendingStore) RecordUploadReplacementIfUnchanged(p PendingUpload, uploa
 	}
 	c.mu.Lock()
 	c.pending[p.Path] = next
-	c.mu.Unlock()
-	return next, true, nil
-}
-func (c *PendingStore) RecordUploadPermanentFailure(path string, err error) (PendingUpload, bool, error) {
-	c.txMu.Lock()
-	defer c.txMu.Unlock()
-	now := util.Now()
-	c.mu.RLock()
-	pending, ok := c.pending[path]
-	if !ok {
-		c.mu.RUnlock()
-		return PendingUpload{}, false, nil
-	}
-	next := pending
-	next.RetryCount++
-	if err != nil {
-		next.LastError = err.Error()
-	}
-	next.PermanentFail = true
-	next.LastAttemptAt = now.UnixNano()
-	next.NextAttemptAt = 0
-	next.UpdatedAt = now.UnixNano()
-	c.mu.RUnlock()
-	if err := c.appendJournal(JournalEntry{Op: "dirty", PendingUpload: next}); err != nil {
-		return pending, true, err
-	}
-	c.mu.Lock()
-	c.pending[path] = next
 	c.mu.Unlock()
 	return next, true, nil
 }
@@ -1272,7 +1166,7 @@ func (c *PendingStore) CreateStaging(fid string) (string, error) { return c.stag
 func (c *PendingStore) WriteStagingAt(path string, data []byte, off int64) (int, error) {
 	return c.staging.writeAt(path, data, off)
 }
-func (c *PendingStore) FlushStaging(path string) error         { return c.staging.flush(path) }
+
 func (c *PendingStore) SyncStaging(path string) error          { return c.staging.sync(path) }
 func (c *PendingStore) StagingSize(path string) (int64, error) { return c.staging.size(path) }
 func (c *PendingStore) TruncateStaging(path string, size int64) error {

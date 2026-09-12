@@ -84,7 +84,7 @@ func prepareRuntimeConfig(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if state.cfg != nil {
-		if err := validateConfig(state.cfg); err != nil {
+		if err := config.Validate(state.cfg); err != nil {
 			return err
 		}
 		applyQryptHomeOverride(state.cfg)

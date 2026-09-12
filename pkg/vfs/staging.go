@@ -161,9 +161,6 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 		logging.L.DebugfEvery("vfs.flush_ignored", time.Second, "[VFS] flush ignored without pending path=%q", path)
 		return nil
 	}
-	if err := store.FlushStaging(pending.LocalPath); err != nil {
-		return err
-	}
 	if err := store.SyncStaging(pending.LocalPath); err != nil {
 		return err
 	}

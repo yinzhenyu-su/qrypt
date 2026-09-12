@@ -59,8 +59,8 @@ func (o *recordingObserver) counts() (begins, finishes, reads int) {
 	return len(o.begins), len(o.finishes), o.reads
 }
 
-// stagingHost serves a pending staging read: PendingUpload reports a
-// pending record and FlushStaging materializes the staging file.
+// stagingHost serves a pending staging read: PendingUpload reports a pending
+// record whose staging file the test writes before reading.
 type stagingHost struct {
 	stubHost
 	path string
@@ -69,10 +69,6 @@ type stagingHost struct {
 
 func (h *stagingHost) PendingUpload(string) (vfstypes.PendingUpload, bool, error) {
 	return vfstypes.PendingUpload{FID: "pending-id", Path: "/p.txt", LocalPath: h.path}, true, nil
-}
-
-func (h *stagingHost) FlushStaging(localPath string) error {
-	return os.WriteFile(localPath, h.data, 0o644)
 }
 
 // stubHostWithData serves reads from an in-memory blob (like stubHost but
@@ -155,6 +151,9 @@ func TestObserverStagingPath(t *testing.T) {
 	obs := &recordingObserver{}
 	host := &stagingHost{data: []byte("payload")}
 	host.path = filepath.Join(t.TempDir(), "staging.bin")
+	if err := os.WriteFile(host.path, host.data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	r := NewReader(ReaderDeps{Host: host, State: NewState(nil), Observer: obs})
 	rc, err := r.Read(context.Background(), "/p.txt", 0, 3)
 	if err != nil {

@@ -12,6 +12,8 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 
+	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
+	clijournal "github.com/yinzhenyu/qrypt/internal/cli/journal"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -23,7 +25,7 @@ func TestPrintPendingVerboseIncludesDebugState(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	printPendingVerbose(&out, []vfs.PendingUpload{{
+	clifs.PrintPendingVerbose(&out, []vfs.PendingUpload{{
 		Path:       "/file.txt",
 		Size:       4,
 		LocalPath:  localPath,
@@ -120,7 +122,7 @@ func TestJournalReplayResetsFailedUploads(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("journal replay failed: %v", err)
 	}
-	var results []journalMaintenanceResult
+	var results []clijournal.MaintenanceResult
 	if err := json.Unmarshal(out.Bytes(), &results); err != nil {
 		t.Fatalf("replay JSON invalid: %v\n%s", err, out.String())
 	}
@@ -150,7 +152,7 @@ func TestJournalPruneDropsMissingStaging(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("journal prune failed: %v", err)
 	}
-	var results []journalMaintenanceResult
+	var results []clijournal.MaintenanceResult
 	if err := json.Unmarshal(out.Bytes(), &results); err != nil {
 		t.Fatalf("prune JSON invalid: %v\n%s", err, out.String())
 	}

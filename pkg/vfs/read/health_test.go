@@ -111,11 +111,11 @@ func TestHealthRecordsResolveError(t *testing.T) {
 	}
 }
 
-// TestHealthRecordsStagingError: a staging flush failure records one
-// health result carrying the error.
-func TestHealthRecordsStagingError(t *testing.T) {
+// TestHealthRecordsStagingOpenError: a staging-side failure (the pending
+// record's staging file is gone) records one health result carrying the error.
+func TestHealthRecordsStagingOpenError(t *testing.T) {
 	health := &recordingHealth{}
-	host := &failingStagingHost{}
+	host := &missingStagingHost{}
 	r := NewReader(ReaderDeps{
 		Host:   host,
 		State:  NewState(nil),
@@ -127,8 +127,8 @@ func TestHealthRecordsStagingError(t *testing.T) {
 	if n := health.count(); n != 1 {
 		t.Fatalf("health records = %d, want 1", n)
 	}
-	if err := health.lastErr(); err == nil || !strings.Contains(err.Error(), "staging boom") {
-		t.Fatalf("staging failure recorded err = %v, want the staging error", err)
+	if err := health.lastErr(); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("staging failure recorded err = %v, want the staging open error", err)
 	}
 }
 
@@ -161,15 +161,11 @@ func TestHealthReadStreamRecordsOpen(t *testing.T) {
 	}
 }
 
-// failingStagingHost reports a pending upload whose staging flush fails.
-type failingStagingHost struct {
+// missingStagingHost reports a pending upload whose staging file is gone.
+type missingStagingHost struct {
 	stubHost
 }
 
-func (h *failingStagingHost) PendingUpload(string) (vfstypes.PendingUpload, bool, error) {
+func (h *missingStagingHost) PendingUpload(string) (vfstypes.PendingUpload, bool, error) {
 	return vfstypes.PendingUpload{FID: "pending-id", Path: "/p.txt", LocalPath: "/nonexistent/staging.bin"}, true, nil
-}
-
-func (h *failingStagingHost) FlushStaging(string) error {
-	return errors.New("staging boom")
 }

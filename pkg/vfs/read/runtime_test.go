@@ -21,7 +21,6 @@ type fakeReadRuntime struct {
 	promoteChecks int
 	hotPuts       int
 	loads         int
-	flushes       int
 	available     bool
 }
 
@@ -48,11 +47,6 @@ func (r *fakeReadRuntime) ShouldPromoteCachedRange(string, int64) bool {
 
 func (r *fakeReadRuntime) RecordCachedRangeHit(string, int64, int64) {
 	r.rangeHits++
-}
-
-func (r *fakeReadRuntime) FlushStaging(string) error {
-	r.flushes++
-	return nil
 }
 
 func (r *fakeReadRuntime) ChunkAvailable(string, int64) bool {

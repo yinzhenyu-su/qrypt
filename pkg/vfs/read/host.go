@@ -25,7 +25,6 @@ import (
 type Host interface {
 	Resolve(ctx context.Context, path string) (drive.Entry, error)
 	PendingUpload(path string) (vfstypes.PendingUpload, bool, error)
-	FlushStaging(localPath string) error
 	ReadCacheKey(entry drive.Entry) string
 	DriverRead(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error)
 }
