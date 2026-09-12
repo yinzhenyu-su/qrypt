@@ -544,6 +544,10 @@ func (l *Logger) Rotate() error {
 	return nil
 }
 
+// Close releases the sinks this logger opened from paths. A writer it was
+// handed (os.Stderr for the default logger) is borrowed and stays open: it
+// belongs to the process, not to the logger, and closing os.Stderr leaves every
+// later write to standard error failing with "file already closed".
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -555,14 +559,19 @@ func (l *Logger) Close() error {
 	if l.errLj != nil && l.errLj != l.lj {
 		return l.errLj.Close()
 	}
-	if c, ok := l.writer.(io.Closer); ok {
-		return c.Close()
-	}
 	return nil
 }
 
 var L = NewDefault()
 
+// ReplaceDefault installs next's configuration into the global logger in place,
+// so values captured before the call (a Scope, a caller's *Logger) keep writing
+// to whatever is installed now.
+//
+// It closes the previous logger's own file sinks and nothing else. The default
+// logger's writer is os.Stderr, which implements io.Closer like any *os.File:
+// closing every closable previous writer silenced the process's standard error,
+// so the CLI printed nothing at all once it installed its file logger.
 func ReplaceDefault(next *Logger) {
 	if next == nil {
 		return
@@ -570,7 +579,6 @@ func ReplaceDefault(next *Logger) {
 	L.mu.Lock()
 	oldLJ := L.lj
 	oldErrLJ := L.errLj
-	oldWriter := L.writer
 	L.level = next.level
 	L.writer = next.writer
 	L.errWriter = next.errWriter
@@ -584,9 +592,6 @@ func ReplaceDefault(next *Logger) {
 	}
 	if oldErrLJ != nil && oldErrLJ != oldLJ {
 		_ = oldErrLJ.Close()
-	}
-	if c, ok := oldWriter.(io.Closer); ok && c != oldLJ && c != oldErrLJ {
-		_ = c.Close()
 	}
 }
 

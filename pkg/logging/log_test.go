@@ -2,6 +2,10 @@ package logging
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -195,10 +199,14 @@ func (c *closeRecorder) Close() error {
 	return nil
 }
 
-func TestReplaceDefaultClosesPreviousTargetAndKeepsIdentity(t *testing.T) {
+// A logger owns the sinks it opened from paths and only those. A writer handed
+// in from outside (the default logger's os.Stderr, a test buffer) is borrowed:
+// closing it takes down a resource the logger does not own, and for os.Stderr
+// that silences the whole process.
+func TestReplaceDefaultKeepsBorrowedWriterOpen(t *testing.T) {
 	previous := L
-	previousTarget := &closeRecorder{}
-	L = &Logger{level: LevelInfo, writer: previousTarget, errWriter: previousTarget}
+	borrowed := &closeRecorder{}
+	L = &Logger{level: LevelInfo, writer: borrowed, errWriter: borrowed}
 	t.Cleanup(func() { L = previous })
 
 	captured := L
@@ -208,14 +216,113 @@ func TestReplaceDefaultClosesPreviousTargetAndKeepsIdentity(t *testing.T) {
 	}
 	ReplaceDefault(next)
 
-	if !previousTarget.closed {
-		t.Fatal("replacing the logger did not close the previous output target")
+	if borrowed.closed {
+		t.Fatal("ReplaceDefault closed a writer it did not open")
 	}
 	if L != captured {
 		t.Fatal("global logger identity changed across ReplaceDefault")
 	}
 	if captured.level != LevelWarn {
 		t.Fatalf("captured logger level = %d, want %d", captured.level, LevelWarn)
+	}
+}
+
+// The mirror image: a sink the previous logger opened itself must still be
+// released, or replacing the logger leaks the log file handle. The probe moves
+// the log file aside and then writes straight to the captured previous sink (a
+// write through the logger would reach the newly installed one instead): a
+// released sink reopens, and so recreates, the old path, while an open one keeps
+// writing to the inode that now lives under the moved name.
+func TestReplaceDefaultClosesPreviousLoggerFileSink(t *testing.T) {
+	previous := L
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "qrypt.log")
+	movedPath := filepath.Join(dir, "qrypt.log.moved")
+	oldLogger, err := New("info", logPath, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	L = oldLogger
+	t.Cleanup(func() { L = previous })
+
+	// The lumberjack sink opens its file on the first write.
+	L.Infof("first line")
+	oldSink := oldLogger.lj
+	if oldSink == nil {
+		t.Fatal("the file logger has no lumberjack sink")
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("the sink never opened its file: %v", err)
+	}
+	if err := os.Rename(logPath, movedPath); err != nil {
+		t.Skipf("cannot move an open file on this platform: %v", err)
+	}
+
+	next, err := New("info", filepath.Join(dir, "next.log"), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ReplaceDefault(next)
+
+	if _, err := oldSink.Write([]byte("second line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("the replaced logger's file sink stayed open: %v", err)
+	}
+	moved, err := os.ReadFile(movedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(moved), "second line") {
+		t.Fatalf("the replaced logger kept writing to the file it had open:\n%s", moved)
+	}
+}
+
+// ReplaceDefault's previous writer is os.Stderr for the default logger, and
+// *os.File implements io.Closer, so a close-everything cleanup leaves the
+// process unable to print: every later write to os.Stderr fails with "file
+// already closed". The probe runs in a subprocess because the damage is
+// process-wide; in-process it would silence the test binary's own diagnostics
+// and every test after it.
+func TestReplaceDefaultKeepsProcessStderrUsable(t *testing.T) {
+	if os.Getenv("QRYPT_TEST_STDERR_PROBE") == "1" {
+		next, err := New("info", filepath.Join(os.Getenv("QRYPT_TEST_STDERR_DIR"), "qrypt.log"), "", nil)
+		if err != nil {
+			fmt.Fprintln(os.Stdout, "probe: build logger:", err)
+			os.Exit(2)
+		}
+		ReplaceDefault(next)
+		if _, err := os.Stderr.WriteString("probe\n"); err != nil {
+			fmt.Fprintln(os.Stdout, "probe: stderr unusable after ReplaceDefault:", err)
+			os.Exit(3)
+		}
+		fmt.Fprintln(os.Stdout, "probe: stderr usable")
+		os.Exit(0)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestReplaceDefaultKeepsProcessStderrUsable$")
+	cmd.Env = append(os.Environ(), "QRYPT_TEST_STDERR_PROBE=1", "QRYPT_TEST_STDERR_DIR="+t.TempDir())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("stderr probe failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "probe: stderr usable") {
+		t.Fatalf("stderr probe did not confirm a usable stderr:\n%s", out)
+	}
+}
+
+// Close follows the same ownership rule as ReplaceDefault: releasing the
+// logger must not release a sink it was given.
+func TestCloseKeepsBorrowedWriterOpen(t *testing.T) {
+	borrowed := &closeRecorder{}
+	l := &Logger{level: LevelInfo, writer: borrowed, errWriter: borrowed}
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if borrowed.closed {
+		t.Fatal("Close closed a writer the logger did not open")
 	}
 }
 
