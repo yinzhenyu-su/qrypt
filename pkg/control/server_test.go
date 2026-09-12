@@ -328,12 +328,25 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if state.Process.PID != 1234 || state.Mounts[0].Identity.DriverName != "localfs" {
 		t.Fatalf("missing state metadata: %+v", state)
 	}
-	if strings.Contains(string(stateBody), `"upload_history"`) ||
-		strings.Contains(string(stateBody), `"upload_queue_length"`) ||
-		strings.Contains(string(stateBody), `"driver_metrics"`) ||
-		strings.Contains(string(stateBody), `"read_history"`) ||
-		strings.Contains(string(stateBody), `"ops":`) {
-		t.Fatalf("state should not expose legacy flat fields or ops: %s", stateBody)
+	// The legacy shape exposed these as flat mount fields; they must not come
+	// back. Checked structurally rather than by substring, because nested
+	// sections (for example counters.ops) legitimately reuse some of these
+	// names.
+	var rawState map[string]any
+	if err := json.Unmarshal(stateBody, &rawState); err != nil {
+		t.Fatal(err)
+	}
+	rawMounts, _ := rawState["mounts"].([]any)
+	if len(rawMounts) == 0 {
+		t.Fatalf("state has no mounts: %s", stateBody)
+	}
+	for _, rawMount := range rawMounts {
+		mount, _ := rawMount.(map[string]any)
+		for _, legacy := range []string{"upload_history", "upload_queue_length", "driver_metrics", "read_history", "ops"} {
+			if _, ok := mount[legacy]; ok {
+				t.Fatalf("state mount still exposes legacy flat field %q: %s", legacy, stateBody)
+			}
+		}
 	}
 
 	pendingBody, err := client.Get(context.Background(), "/v1/pending")
@@ -1072,6 +1085,63 @@ func TestServerExposesRecentEvents(t *testing.T) {
 	}
 	if !strings.Contains(string(filteredBody), "[FUSE] Read") || strings.Contains(string(filteredBody), "[CACHE]") || strings.Contains(string(filteredBody), "error msg") {
 		t.Fatalf("unexpected filtered event response: %s", filteredBody)
+	}
+}
+
+func TestServerEventsFilterByMountField(t *testing.T) {
+	oldLogger := logging.L
+	testLogger, err := logging.New("debug", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logging.L = testLogger
+	defer func() { logging.L = oldLogger }()
+
+	socketPath := testSocketPath(t)
+	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close(context.Background())
+
+	logging.L.WithMount("mount-a").Warnf("[CACHE] journal compact failed")
+	logging.L.WithMount("mount-b").Warnf("[CACHE] journal compact failed")
+	// Produced by mount-a, but its text names mount-b: a field filter must not
+	// return it for mount-b.
+	logging.L.WithMount("mount-a").Warnf("[CACHE] mirror of mount-b failed")
+	// No scope at all: filtering by any mount must not return it.
+	logging.L.Warnf("[CACHE] unattributed failure")
+
+	client, err := NewClient(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.Get(context.Background(), "/v1/events?level=warn&limit=10&mount=mount-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(body), "journal compact failed"); got != 1 {
+		t.Fatalf("mount-a should return one of the two journal lines, got %d: %s", got, body)
+	}
+	if !strings.Contains(string(body), "mirror of mount-b failed") {
+		t.Fatalf("mount-a line missing from its own filter: %s", body)
+	}
+	if strings.Contains(string(body), "unattributed failure") {
+		t.Fatalf("unattributed line should not match a mount filter: %s", body)
+	}
+
+	body, err = client.Get(context.Background(), "/v1/events?level=warn&limit=10&mount=mount-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "mirror of mount-b failed") {
+		t.Fatalf("a mount-a line was returned for mount-b because its text mentions it: %s", body)
+	}
+	if !strings.Contains(string(body), "journal compact failed") {
+		t.Fatalf("mount-b line missing from its own filter: %s", body)
 	}
 }
 

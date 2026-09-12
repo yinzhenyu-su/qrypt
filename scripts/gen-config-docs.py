@@ -40,10 +40,10 @@ STORAGE_DOC_OVERRIDES = {
 
 LOGGING_DOC_OVERRIDES = {
     "log_file": {
-        "description": "主日志路径；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。",
+        "description": "主日志路径，包含所有级别的完整记录；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。",
     },
     "error_file": {
-        "description": "错误日志路径；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。",
+        "description": "错误日志路径，只包含主日志中 warn 及以上级别的子集；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。",
     },
 }
 

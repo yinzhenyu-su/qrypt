@@ -220,11 +220,6 @@ func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
 	_ = rc.Close()
 
 	events := fs.DebugSnapshot().Mounts[0].ReadEvents()
-	// A small history ring is valid; it may retain too few events to include
-	// both the window detail and its timing fields after multiple reads.
-	if vfsread.HistoryLimit < 4 {
-		return
-	}
 	var sawWindow, sawDriverTiming bool
 	for _, event := range events {
 		if _, ok := event.Extra["prefetch_chunks"]; ok {

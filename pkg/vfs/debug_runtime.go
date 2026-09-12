@@ -82,6 +82,10 @@ func (r vfsDebugReadRuntime) AppendEvent(event drive.MetricEvent) {
 	r.st.AppendHistory(event)
 }
 
+func (r vfsDebugReadRuntime) AppendDetailEvent(event drive.MetricEvent) {
+	r.st.AppendDetailHistory(event)
+}
+
 func (r vfsDebugReadRuntime) History() []drive.MetricEvent {
 	return r.st.HistorySnapshot()
 }
@@ -197,6 +201,7 @@ type vfsDebugSnapshotRuntime struct {
 	deletes               *DeleteService
 	view                  *view.View
 	read                  *readState
+	counters              *drive.Counters
 	debugCacheSnapshot    func() diagnostics.DebugCacheSnapshot
 	debugReadHistory      func() []drive.MetricEvent
 	uploadSnapshots       func([]PendingUpload) []uploadSnapshot
@@ -212,6 +217,7 @@ func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
 		deletes:               v.deletes,
 		view:                  v.view,
 		read:                  v.read,
+		counters:              v.counters,
 		debugCacheSnapshot:    v.debugCacheSnapshot,
 		debugReadHistory:      v.debugReadHistory,
 		uploadSnapshots:       v.uploadSnapshots,
@@ -326,6 +332,7 @@ func (r vfsDebugSnapshotRuntime) Runtime() diagnostics.RuntimeSnapshot {
 	}
 	out.WindowLoads, out.Prefetches, out.RangeHitCount = r.read.RuntimeStats()
 	out.HotChunkCount, out.HotChunkBytes = r.debugHotChunks()
+	out.Counters = r.counters.Snapshot()
 	return out
 }
 

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"io"
 	"os"
@@ -523,7 +522,7 @@ func (c *Store) loadReadIndex() error {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		if cleaned := c.cleanupUnindexedReadCacheBatches(nil); cleaned > 0 {
-			logging.L.Infof("[CACHE] cleaned %d unindexed read cache batch files", cleaned)
+			c.log.Infof("[CACHE] cleaned %d unindexed read cache batch files", cleaned)
 		}
 		return nil
 	}
@@ -533,14 +532,14 @@ func (c *Store) loadReadIndex() error {
 	var index readCacheIndex
 	if err := json.Unmarshal(data, &index); err != nil {
 		if cleaned := c.cleanupUnindexedReadCacheBatches(nil); cleaned > 0 {
-			logging.L.Infof("[CACHE] cleaned %d read cache batch files after invalid index", cleaned)
+			c.log.Infof("[CACHE] cleaned %d read cache batch files after invalid index", cleaned)
 		}
 		_ = os.Remove(path)
 		return err
 	}
 	if index.Version != readCacheIndexVersion {
 		if cleaned := c.cleanupUnindexedReadCacheBatches(nil); cleaned > 0 {
-			logging.L.Infof("[CACHE] cleaned %d read cache batch files after unsupported index version", cleaned)
+			c.log.Infof("[CACHE] cleaned %d read cache batch files after unsupported index version", cleaned)
 		}
 		_ = os.Remove(path)
 		return nil
@@ -582,7 +581,7 @@ func (c *Store) loadReadIndex() error {
 		}
 	}
 	if cleaned := c.cleanupUnindexedReadCacheBatches(referenced); cleaned > 0 {
-		logging.L.Infof("[CACHE] cleaned %d unindexed read cache batch files", cleaned)
+		c.log.Infof("[CACHE] cleaned %d unindexed read cache batch files", cleaned)
 	}
 	if changed {
 		return c.saveReadIndexNow()
@@ -596,7 +595,7 @@ func (c *Store) scheduleReadIndexSave() {
 	c.debounce.Arm(readCacheIndexSaveDelay, func() {
 		if err := c.FlushReadIndex(); err != nil {
 			c.setLastPutError(err)
-			logging.L.Warnf("[CACHE] save read cache index failed: %v", err)
+			c.log.Warnf("[CACHE] save read cache index failed: %v", err)
 		}
 	})
 }
@@ -819,7 +818,7 @@ func (c *Store) evictIfNeeded() error {
 			}
 		}
 	}
-	logging.L.Infof("[CACHE] evicted %d chunks size=%d max_size=%d", evicted, total, maxSize)
+	c.log.Infof("[CACHE] evicted %d chunks size=%d max_size=%d", evicted, total, maxSize)
 	if evicted > 0 {
 		c.scheduleReadIndexSave()
 	}
@@ -892,7 +891,7 @@ func (c *Store) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
 		c.cacheWriteMu.Unlock()
 		c.cacheWriteWGMu.Unlock()
 		c.addWriteDropped()
-		logging.L.WarnfEvery("vfs.read_cache_queue_full", time.Second, "[CACHE] read cache write queue full; dropped chunk fid=%q index=%d size=%d", fid, index, len(data))
+		c.log.WarnfEvery("vfs.read_cache_queue_full", time.Second, "[CACHE] read cache write queue full; dropped chunk fid=%q index=%d size=%d", fid, index, len(data))
 		return
 	}
 	c.cacheWritesInFlight[writeKey] = struct{}{}
@@ -906,7 +905,7 @@ func (c *Store) PutChunkAsync(fid string, fileSize, index int64, data []byte) {
 		delete(c.cacheWritesInFlight, writeKey)
 		c.cacheWriteWG.Done()
 		c.addWriteDropped()
-		logging.L.WarnfEvery("vfs.read_cache_queue_full", time.Second, "[CACHE] read cache write queue full; dropped chunk fid=%q index=%d size=%d", fid, index, len(data))
+		c.log.WarnfEvery("vfs.read_cache_queue_full", time.Second, "[CACHE] read cache write queue full; dropped chunk fid=%q index=%d size=%d", fid, index, len(data))
 	}
 	c.cacheWriteMu.Unlock()
 	c.cacheWriteWGMu.Unlock()
@@ -933,7 +932,7 @@ func (c *Store) runReadCacheWriter() {
 func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			logging.L.Warnf("[CACHE] async put chunk panic recovered writes=%d panic=%v", len(writes), recovered)
+			c.log.Warnf("[CACHE] async put chunk panic recovered writes=%d panic=%v", len(writes), recovered)
 		}
 		for range writes {
 			c.cacheWriteWG.Done()
@@ -957,7 +956,7 @@ func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 	if err := c.ensureReadCacheDir(); err != nil {
 		c.setLastPutError(err)
 		for _, write := range writes {
-			logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
+			c.log.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
 		}
 		return
 	}
@@ -967,7 +966,7 @@ func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 		if err != nil {
 			c.setLastPutError(err)
 			for _, write := range groups[path] {
-				logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
+				c.log.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
 			}
 			continue
 		}
@@ -975,7 +974,7 @@ func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 			writeStarted := util.Now()
 			if err := c.writeReadCacheChunk(f, path, write); err != nil {
 				c.setLastPutError(err)
-				logging.L.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
+				c.log.Warnf("[CACHE] async put chunk failed fid=%q index=%d size=%d err=%v", write.fid, write.index, len(write.data), err)
 				continue
 			}
 			c.recordReadCacheWriteTiming(durationMillis(writeStarted.Sub(write.queuedAt)), durationMillis(util.Now().Sub(writeStarted)))
@@ -983,7 +982,7 @@ func (c *Store) handleReadCacheWrites(writes []readCacheWrite) {
 		}
 		if err := f.Close(); err != nil {
 			c.setLastPutError(err)
-			logging.L.Warnf("[CACHE] async put batch close failed path=%q err=%v", path, err)
+			c.log.Warnf("[CACHE] async put batch close failed path=%q err=%v", path, err)
 		}
 	}
 	if wrote {

@@ -525,7 +525,7 @@ func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 }
 
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
-	store, _ := newUploadStore(t.TempDir())
+	store, _ := newUploadStore(t.TempDir(), "test-mount")
 	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, upload.NewHashTracker())}
 
 	small := v.uploads.QuietWindow(PendingUpload{Size: upload.LargeUploadQuietThreshold - 1})

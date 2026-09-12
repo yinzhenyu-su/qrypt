@@ -35,8 +35,15 @@ const (
 	SequentialLimit = 1024
 	// SequentialPrefetchChunks 根据普通预取块数自动计算，确认顺序读取后每次预取的块数量。
 	SequentialPrefetchChunks = max(1, PrefetchChunks*2)
-	// HistoryLimit 是读取调试事件环形缓冲区保留的最大事件数量。
-	HistoryLimit = 2
+	// SummaryHistoryLimit 是"每次读取一条"的汇总事件保留量。它保证最近
+	// SummaryHistoryLimit 次读取的汇总始终可见。
+	SummaryHistoryLimit = 128
+	// DetailHistoryLimit 是阶段与分块明细事件的保留量。明细按最近优先：
+	// 一次整文件读取就能写满它，因此更早的明细会被冲掉，而汇总不受影响。
+	DetailHistoryLimit = 512
+	// 两份历史的内存上界约为 (SummaryHistoryLimit+DetailHistoryLimit) × 512 B
+	// ≈ 323 KiB/挂载：drive.MetricEvent 实测 504 B，加每条 8 B 写入序号。
+	// 环形缓冲从 64 起按需倍增，从未发生过读取的挂载不预付这份内存。
 )
 
 // windowLoad coalesces concurrent reads of the same cache window.
@@ -158,14 +165,68 @@ func newPrefetchState() *prefetchState {
 	}
 }
 
-// historyState is the bounded read-event ring for debug snapshots.
-// mu guards events/pos/count/sequence.
+// historyEntry pairs a debug event with its append order so the two rings
+// can be merged back into one chronological list.
+type historyEntry struct {
+	seq   uint64
+	event drive.MetricEvent
+}
+
+// eventRing is a bounded FIFO of history entries, grown lazily toward limit
+// so mounts that never read do not preallocate a full ring.
+type eventRing struct {
+	entries []historyEntry // lazily grown toward limit
+	pos     int            // ring index of the next write slot
+	count   int            // number of live entries (<= len(entries))
+}
+
+// append records one entry, growing the ring toward limit.
+func (r *eventRing) append(seq uint64, event drive.MetricEvent, limit int) {
+	if limit < 1 {
+		return
+	}
+	if r.entries == nil {
+		r.entries = make([]historyEntry, min(64, limit))
+	}
+	if r.count == len(r.entries) && len(r.entries) < limit {
+		// Ring full but not at the limit yet: double, preserving order.
+		next := make([]historyEntry, min(2*len(r.entries), limit))
+		for i := 0; i < r.count; i++ {
+			next[i] = r.entries[(r.pos-r.count+i+len(r.entries))%len(r.entries)]
+		}
+		r.entries = next
+		r.pos = r.count
+	}
+	r.entries[r.pos] = historyEntry{seq: seq, event: event}
+	r.pos = (r.pos + 1) % len(r.entries)
+	if r.count < len(r.entries) {
+		r.count++
+	}
+}
+
+// snapshot returns live entries in append order.
+func (r *eventRing) snapshot() []historyEntry {
+	if r.count == 0 {
+		return nil
+	}
+	out := make([]historyEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		out[i] = r.entries[(r.pos-r.count+i+len(r.entries))%len(r.entries)]
+	}
+	return out
+}
+
+// historyState is the bounded read-event history for debug snapshots: a
+// summary ring (one event per read) and a detail ring (per chunk and per
+// window), merged by append order when read. Keeping the two apart makes
+// "a slow read's detail burst cannot evict earlier reads' summaries" a
+// structural property instead of a capacity guess.
 type historyState struct {
-	mu       sync.Mutex
-	events   []drive.MetricEvent // ring buffer; lazily grown toward HistoryLimit
-	pos      int                 // ring index of the next write slot
-	count    int                 // number of live events (<= cap(events))
-	sequence uint64
+	mu        sync.Mutex
+	summaries eventRing
+	details   eventRing
+	appendSeq uint64
+	opSeq     uint64 // read-op sequence, atomic (NextSequence)
 }
 
 func newHistoryState() *historyState {
@@ -174,56 +235,61 @@ func newHistoryState() *historyState {
 
 // NextSequence returns the next read-op sequence number.
 func (h *historyState) NextSequence() uint64 {
-	return atomic.AddUint64(&h.sequence, 1)
+	return atomic.AddUint64(&h.opSeq, 1)
 }
 
-// Append records one read event, growing the ring toward HistoryLimit.
-func (h *historyState) Append(event drive.MetricEvent) {
+// AppendSummary records one read-summary event.
+func (h *historyState) AppendSummary(event drive.MetricEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.events == nil {
-		// Grow lazily toward the limit so idle VFS instances do not
-		// preallocate a full ring.
-		size := 64
-		if HistoryLimit < size {
-			size = HistoryLimit
-		}
-		h.events = make([]drive.MetricEvent, size)
-	}
-	if h.count == len(h.events) {
-		if len(h.events) < HistoryLimit {
-			// Ring full but not at the limit yet: double, preserving order.
-			size := len(h.events) * 2
-			if size > HistoryLimit {
-				size = HistoryLimit
-			}
-			next := make([]drive.MetricEvent, size)
-			for i := 0; i < h.count; i++ {
-				next[i] = h.events[(h.pos-h.count+i+len(h.events))%len(h.events)]
-			}
-			h.events = next
-			h.pos = h.count
-		}
-	}
-	h.events[h.pos] = event
-	h.pos = (h.pos + 1) % len(h.events)
-	if h.count < len(h.events) {
-		h.count++
-	}
+	h.appendSeq++
+	h.summaries.append(h.appendSeq, event, SummaryHistoryLimit)
 }
 
-// Snapshot returns live events in chronological order.
+// AppendDetail records one phase or per-chunk detail event.
+func (h *historyState) AppendDetail(event drive.MetricEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.appendSeq++
+	h.details.append(h.appendSeq, event, DetailHistoryLimit)
+}
+
+// Snapshot returns live events in append order, with summary and detail
+// events interleaved by when they were recorded.
 func (h *historyState) Snapshot() []drive.MetricEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.count == 0 {
+	summaries := h.summaries.snapshot()
+	details := h.details.snapshot()
+	if len(summaries) == 0 && len(details) == 0 {
 		return nil
 	}
-	out := make([]drive.MetricEvent, h.count)
-	for i := 0; i < h.count; i++ {
-		out[i] = h.events[(h.pos-h.count+i+len(h.events))%len(h.events)]
+	out := make([]drive.MetricEvent, 0, len(summaries)+len(details))
+	i, j := 0, 0
+	for i < len(summaries) && j < len(details) {
+		if summaries[i].seq < details[j].seq {
+			out = append(out, summaries[i].event)
+			i++
+			continue
+		}
+		out = append(out, details[j].event)
+		j++
+	}
+	for ; i < len(summaries); i++ {
+		out = append(out, summaries[i].event)
+	}
+	for ; j < len(details); j++ {
+		out = append(out, details[j].event)
 	}
 	return out
+}
+
+// reset clears both rings.
+func (h *historyState) reset() {
+	h.mu.Lock()
+	h.summaries = eventRing{}
+	h.details = eventRing{}
+	h.mu.Unlock()
 }
 
 // State groups the read-domain state so ownership is explicit: the fields
@@ -555,22 +621,24 @@ func (s *State) NextSequence() uint64 {
 }
 
 // AppendHistory records one read event.
+// AppendHistory records one read-summary debug event.
 func (s *State) AppendHistory(event drive.MetricEvent) {
-	s.history.Append(event)
+	s.history.AppendSummary(event)
 }
 
-// HistorySnapshot returns live read events in chronological order.
+// AppendDetailHistory records one read detail debug event (phase or chunk).
+func (s *State) AppendDetailHistory(event drive.MetricEvent) {
+	s.history.AppendDetail(event)
+}
+
+// HistorySnapshot returns live read events in append order.
 func (s *State) HistorySnapshot() []drive.MetricEvent {
 	return s.history.Snapshot()
 }
 
-// ResetHistory clears the read-event ring.
+// ResetHistory clears the read-event history.
 func (s *State) ResetHistory() {
-	s.history.mu.Lock()
-	s.history.events = nil
-	s.history.pos = 0
-	s.history.count = 0
-	s.history.mu.Unlock()
+	s.history.reset()
 }
 
 // RuntimeStats reports window/prefetch/range-hit counters for debug.

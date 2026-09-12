@@ -97,12 +97,12 @@ func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < read.HistoryLimit+5; i++ {
+	for i := 0; i < read.SummaryHistoryLimit+5; i++ {
 		_, _ = fs.Read(ctx, fmt.Sprintf("/missing-%d", i), 0, 0)
 	}
 	reads := fs.DebugSnapshot().Mounts[0].ReadEvents()
-	if len(reads) != read.HistoryLimit {
-		t.Fatalf("read history count = %d, want %d", len(reads), read.HistoryLimit)
+	if len(reads) != read.SummaryHistoryLimit {
+		t.Fatalf("read history count = %d, want %d", len(reads), read.SummaryHistoryLimit)
 	}
 	if reads[0].State != "failed" || reads[0].ErrorCategory == "" {
 		t.Fatalf("bounded history missing structured failure: %+v", reads[0])

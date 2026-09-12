@@ -27,17 +27,19 @@ const (
 )
 
 // NewPendingStore creates the persistent pending-upload store and loads any
-// journal left by a previous run.
-func NewPendingStore(dir string) (*PendingStore, error) {
+// journal left by a previous run. The optional mount name stamps the store's
+// log lines, so a multi-mount process can tell whose journal complained.
+func NewPendingStore(dir string, mount ...string) (*PendingStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
+	log := logging.L.WithMount(optionalMount(mount))
 	staging, err := newStagingStore(filepath.Join(dir, "staging"))
 	if err != nil {
 		return nil, err
 	}
 	if cleaned := staging.cleanupUploadTemps(); cleaned > 0 {
-		logging.L.Infof("[CACHE] cleaned %d orphaned staging upload files", cleaned)
+		log.Infof("[CACHE] cleaned %d orphaned staging upload files", cleaned)
 	}
 	store := &PendingStore{
 		dir:       dir,
@@ -45,6 +47,7 @@ func NewPendingStore(dir string) (*PendingStore, error) {
 		pending:   map[string]PendingUpload{},
 		idIndex:   map[string]string{},
 		journalMu: sync.Mutex{},
+		log:       log,
 	}
 	entries, err := store.loadJournal()
 	if err != nil {
@@ -52,13 +55,21 @@ func NewPendingStore(dir string) (*PendingStore, error) {
 	}
 	if store.shouldCompactJournal(entries) {
 		if err := store.compactJournal(); err != nil {
-			logging.L.Warnf("[CACHE] compact pending journal failed: %v", err)
+			log.Warnf("[CACHE] compact pending journal failed: %v", err)
 		}
 	}
 	if cleaned := store.sweepUnreferencedStaging(); cleaned > 0 {
-		logging.L.Infof("[CACHE] cleaned %d unreferenced staging files", cleaned)
+		log.Infof("[CACHE] cleaned %d unreferenced staging files", cleaned)
 	}
 	return store, nil
+}
+
+// optionalMount returns the mount name when one was supplied.
+func optionalMount(mount []string) string {
+	if len(mount) > 0 {
+		return mount[0]
+	}
+	return ""
 }
 
 // DebugJournal is a snapshot of the pending-upload journal file.
@@ -95,6 +106,9 @@ type DebugJournalPath struct {
 type PendingStore struct {
 	dir     string
 	staging *stagingStore
+	// log stamps this store's lines with its mount; it is set at construction
+	// so even journal-recovery warnings are attributable.
+	log *logging.Scope
 
 	mu        sync.RWMutex
 	journalMu sync.Mutex
@@ -408,14 +422,14 @@ func (c *PendingStore) RemoveUpload(path string) error {
 	}
 	if pending.LocalPath != "" {
 		if err := c.staging.remove(pending.LocalPath); err != nil {
-			logging.L.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
+			c.log.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
 		}
 	}
 	c.mu.Unlock()
 	// Compact is maintenance: the clean intent is already durable, so a
 	// compact failure is logged, not reported as an uncommitted delete.
 	if err := c.compactJournalLocked(); err != nil {
-		logging.L.Warnf("[CACHE] journal compact failed after remove path=%q err=%v", path, err)
+		c.log.Warnf("[CACHE] journal compact failed after remove path=%q err=%v", path, err)
 	}
 	return nil
 }
@@ -445,7 +459,7 @@ func (c *PendingStore) RemoveStagingIfUnreferenced(localPath string) {
 		return
 	}
 	if err := c.staging.remove(localPath); err != nil {
-		logging.L.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
+		c.log.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
 	}
 }
 
@@ -515,12 +529,12 @@ func (c *PendingStore) RemoveUploadsUnder(dir string) error {
 	for _, pending := range removed {
 		if pending.LocalPath != "" {
 			if err := c.staging.remove(pending.LocalPath); err != nil {
-				logging.L.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
+				c.log.Warnf("[CACHE] remove staging failed local=%q err=%v", pending.LocalPath, err)
 			}
 		}
 	}
 	if err := c.compactJournalLocked(); err != nil {
-		logging.L.Warnf("[CACHE] journal compact failed after subtree remove dir=%q err=%v", dir, err)
+		c.log.Warnf("[CACHE] journal compact failed after subtree remove dir=%q err=%v", dir, err)
 	}
 	return nil
 }
@@ -560,7 +574,7 @@ func (c *PendingStore) RemoveUploadIfUnchanged(p PendingUpload) (bool, error) {
 	}
 	// Compact is maintenance; the clean intent is already durable.
 	if err := c.compactJournalLocked(); err != nil {
-		logging.L.Warnf("[CACHE] journal compact failed after remove path=%q err=%v", p.Path, err)
+		c.log.Warnf("[CACHE] journal compact failed after remove path=%q err=%v", p.Path, err)
 	}
 	return true, nil
 }
@@ -577,7 +591,7 @@ func (c *PendingStore) removeStagingLocked(localPath string) {
 		}
 	}
 	if err := c.staging.remove(localPath); err != nil {
-		logging.L.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
+		c.log.Warnf("[CACHE] remove unreferenced staging failed local=%q err=%v", localPath, err)
 	}
 }
 
@@ -664,7 +678,7 @@ func (c *PendingStore) RebaseUploadsUnder(oldDir, newDir, parentID string) ([]Pe
 		moved = append(moved, next)
 	}
 	if err := c.compactJournalLocked(); err != nil {
-		logging.L.Warnf("[CACHE] journal compact failed after rebase dir=%q err=%v", oldDir, err)
+		c.log.Warnf("[CACHE] journal compact failed after rebase dir=%q err=%v", oldDir, err)
 	}
 	return moved, nil
 }
@@ -800,14 +814,14 @@ func (c *PendingStore) shouldCompactJournal(entries int) bool {
 		return true
 	}
 	if entries == 0 {
-		entries = countJournalEntries(c.journalPath())
+		entries = countJournalEntries(c.journalPath(), c.log)
 	}
 	c.mu.RLock()
 	pendingCount := len(c.pending)
 	c.mu.RUnlock()
 	return entries >= journalCompactMaxEntries && entries > pendingCount+32
 }
-func countJournalEntries(path string) int {
+func countJournalEntries(path string, log *logging.Scope) int {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0
@@ -820,7 +834,7 @@ func countJournalEntries(path string) int {
 		entries++
 	}
 	if err := scanner.Err(); err != nil {
-		logging.L.Warnf("[CACHE] count pending journal entries failed: %v", err)
+		log.Warnf("[CACHE] count pending journal entries failed: %v", err)
 	}
 	return entries
 }

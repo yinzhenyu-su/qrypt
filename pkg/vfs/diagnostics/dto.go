@@ -96,6 +96,9 @@ type MountSnapshotRuntime struct {
 	HotChunkLimit int   `json:"hot_chunk_limit"`
 	RangeHitCount int   `json:"range_hit_count"`
 	RangeHitLimit int   `json:"range_hit_limit"`
+	// Counters are cumulative since process start, unlike the bounded event
+	// histories above: they answer "how fast and how reliable overall".
+	Counters drive.CounterSnapshot `json:"counters"`
 }
 
 type DebugTimer struct {

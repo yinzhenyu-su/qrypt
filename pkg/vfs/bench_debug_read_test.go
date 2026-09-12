@@ -13,9 +13,9 @@ import (
 // Benchmarks for the always-on read debug instrumentation.
 //
 // recordDebugRead / recordDebugReadDetail build a drive.MetricEvent per read
-// (and per chunk) and append it to readHistory. Once the history exceeds
-// debugReadHistoryLimit, AppendEvent re-copies the entire tail slice on every
-// event (O(limit) per append) under a global mutex shared by all reads.
+// (and per chunk) and append it to the read history. Appends are O(1): the
+// ring writes into a slot and only copies while doubling toward the limit,
+// so the per-event cost does not grow once the ring is full.
 
 func benchReadHistoryVFS(prefill int) *VFS {
 	v := &VFS{read: read.NewState(nil)}
@@ -38,9 +38,9 @@ func BenchmarkReadHistoryAppendEmpty(b *testing.B) {
 	}
 }
 
-// AppendEvent once the history already hit the limit: adds the O(n) tail copy.
+// AppendEvent once the history already hit the limit: steady-state cost.
 func BenchmarkReadHistoryAppendOverLimit(b *testing.B) {
-	r := newVFSDebugReadRuntime(benchReadHistoryVFS(read.HistoryLimit).read)
+	r := newVFSDebugReadRuntime(benchReadHistoryVFS(read.SummaryHistoryLimit).read)
 	event := drive.MetricEvent{Kind: "vfs_read", Operation: "read", Phase: "read", Path: "/data.bin", Bytes: 1 << 20}
 	b.ReportAllocs()
 

@@ -12,7 +12,7 @@ import (
 // newStoresInDir opens the upload/read-cache store pair under one temp dir;
 // it is a test-only convenience for the production newStores constructor.
 func newStoresInDir(dir string, maxSize int64) (*stores, error) {
-	return newStores(dir, filepath.Join(dir, "reading"), maxSize)
+	return newStores("test-mount", dir, filepath.Join(dir, "reading"), maxSize)
 }
 
 func TestCacheRecordUploadPermanentFailure(t *testing.T) {

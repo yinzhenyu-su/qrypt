@@ -12,8 +12,13 @@ import (
 // ReadRuntime is the read-event observation surface (consumer side): the
 // mount's bounded read-event history. pkg/vfs implements it over the
 // internal read domain state.
+//
+// Summary and detail events are appended through separate methods so the
+// retention split is explicit at the call site: summaries are one per read
+// and must not be evicted by the unbounded per-chunk detail stream.
 type ReadRuntime interface {
 	AppendEvent(event drive.MetricEvent)
+	AppendDetailEvent(event drive.MetricEvent)
 	History() []drive.MetricEvent
 	ResetHistory()
 }
@@ -68,7 +73,7 @@ func RecordReadDetail(runtime ReadRuntime, ctx context.Context, path, remoteID, 
 		event.Error = err.Error()
 		event.ErrorCategory = drive.ErrorCategory(err)
 	}
-	runtime.AppendEvent(event)
+	runtime.AppendDetailEvent(event)
 }
 
 // DurationMillis converts a duration to whole milliseconds.

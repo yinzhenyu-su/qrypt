@@ -4,9 +4,27 @@ import (
 	"testing"
 )
 
-// The log functions format and sanitize (9 regex passes) the message before
-// checking the configured level, so disabled-level calls still pay for string
-// building. These benchmarks quantify that cost.
+// The log functions format and sanitize the message before writing it, so
+// every emitted line pays the redaction scan. These benchmarks quantify that
+// cost.
+
+func BenchmarkSanitizeTypicalLine(b *testing.B) {
+	line := `[VFS] upload start op_id="fid-1" path="/movies/a.mkv" size=1048576 local="/tmp/x.staging"`
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = sanitize(line)
+	}
+}
+
+func BenchmarkSanitizeCredentialLine(b *testing.B) {
+	line := `[QUARK] upload resume name="a.mkv" task="t1" upload_id="abc123" part=4`
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = sanitize(line)
+	}
+}
 
 func BenchmarkDebugfEveryWhenDisabled(b *testing.B) {
 	l := &Logger{level: LevelInfo, writer: discardWriter{}}

@@ -47,6 +47,7 @@ type VFS struct {
 	driver        drive.Driver
 	name          string
 	healthTracker *drive.HealthTracker
+	counters      *drive.Counters
 	rootID        string
 	encrypted     bool
 	testEnabled   bool
@@ -137,7 +138,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if uploadDir == "" {
 		uploadDir = opts.StorageDir
 	}
-	stores, err := newStores(uploadDir, readCacheDir, opts.CacheMaxBytes)
+	stores, err := newStores(opts.Name, uploadDir, readCacheDir, opts.CacheMaxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +151,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		driver:        driver,
 		name:          opts.Name,
 		healthTracker: drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
+		counters:      &drive.Counters{},
 		rootID:        opts.RootID,
 		encrypted:     opts.Encrypted,
 		testEnabled:   opts.TestEnabled,
@@ -171,6 +173,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		State:    v.read,
 		Observer: newVFSReadObserver(v.read, v.activeDebug),
 		Health:   vfsReadHealth{tracker: v.healthTracker},
+		Counters: v.counters,
 	})
 	v.lister = listing.NewLister(listing.ListerDeps{
 		Remote: newVFSListingRemote(v),

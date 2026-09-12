@@ -41,6 +41,19 @@ type noopHealth struct{}
 
 func (noopHealth) RecordResult(string, error) {}
 
+// CounterRecorder receives one cumulative sample per read attempt. It is
+// optional like HealthRecorder, and deliberately separate from it: health
+// records generic operation outcomes for every domain, while these samples
+// carry the read domain's byte and latency units.
+type CounterRecorder interface {
+	RecordRead(bytes int64, elapsed time.Duration, err error)
+}
+
+// noopCounters is the default CounterRecorder.
+type noopCounters struct{}
+
+func (noopCounters) RecordRead(int64, time.Duration, error) {}
+
 // ReadObserver receives read-domain debug bookkeeping. It is optional: the
 // read domain works without one (a no-op sink), and VFS wires its debug
 // layer through it. Keeping it separate from Host means debug requirements
