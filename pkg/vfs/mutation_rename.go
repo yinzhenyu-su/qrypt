@@ -29,11 +29,22 @@ type pathResolver interface {
 	parent(ctx context.Context, path string) (drive.Entry, string, error)
 }
 
+// remoteEntryResolver is the backend-only lookup the rename coordinator uses
+// to tell whether a path that has a pending record also has a backend object.
+type remoteEntryResolver interface {
+	remoteEntry(ctx context.Context, path string) (drive.Entry, bool, error)
+}
+
 // vfsRenameResolver adapts VFS resolution to mutation.Resolver.
 
-type vfsRenameResolver struct{ resolver pathResolver }
+type vfsRenameResolver struct {
+	resolver pathResolver
+	remote   remoteEntryResolver
+}
 
-func newVFSRenameResolver(v *VFS) vfsRenameResolver { return vfsRenameResolver{resolver: v} }
+func newVFSRenameResolver(v *VFS) vfsRenameResolver {
+	return vfsRenameResolver{resolver: v, remote: v}
+}
 
 func (r vfsRenameResolver) Resolve(ctx context.Context, path string) (drive.Entry, error) {
 	return r.resolver.resolve(ctx, path)
@@ -41,6 +52,10 @@ func (r vfsRenameResolver) Resolve(ctx context.Context, path string) (drive.Entr
 
 func (r vfsRenameResolver) Parent(ctx context.Context, path string) (drive.Entry, string, error) {
 	return r.resolver.parent(ctx, path)
+}
+
+func (r vfsRenameResolver) RemoteEntry(ctx context.Context, path string) (drive.Entry, bool, error) {
+	return r.remote.remoteEntry(ctx, path)
 }
 
 // vfsRenamePending adapts the pending-upload rename to mutation.PendingRenamer.
@@ -66,7 +81,7 @@ func (r vfsRenamePending) IsPending(path string) bool {
 	return err == nil
 }
 
-func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath string, parent drive.Entry, name string) error {
+func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath, parentID, name string) error {
 	// Take the path lock FIRST and re-read the pending inside it: a pending
 	// read before the lock could be stale by the time we mutate it (e.g. the
 	// frozen generation was rotated), committing an outdated FID/LocalPath.
@@ -77,8 +92,13 @@ func (r vfsRenamePending) RenamePending(ctx context.Context, oldPath, newPath st
 		return err
 	}
 	pending.Path = newPath
-	pending.ParentID = parent.ID
 	pending.Name = name
+	if parentID != "" {
+		pending.ParentID = parentID
+	}
+	// A recorded replacement target belongs to the pre-rename location; the
+	// upload engine re-detects the target at the new parent/name.
+	pending.ReplaceUpload = nil
 	return r.runtime.RenamePendingUpload(oldPath, newPath, pending)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -620,5 +621,176 @@ func TestVFSRenameFlushedPendingUpload(t *testing.T) {
 	}
 	if string(data) != "pending rename" {
 		t.Fatalf("unexpected renamed upload data: %q", data)
+	}
+}
+
+// TestVFSRenameAfterTempGenerationUploaded covers the downloader flow that
+// leaves a stale temp file: the temp name is flushed, its generation uploads
+// (a slow download stalled past the debounce, or the file was closed and
+// reopened), more data arrives, and only then is it renamed to the final name.
+// The uploaded temp object must move with the rename; it must not survive as
+// name.qkdownloading next to the final file.
+func TestVFSRenameAfterTempGenerationUploaded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 30 * time.Millisecond, RootID: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+	fs.Start(ctx)
+
+	if _, err := fs.Mkdir(ctx, "/d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Create(ctx, "/d/a.mp4.qkdownloading"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/d/a.mp4.qkdownloading", []byte("part-one"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/d/a.mp4.qkdownloading"); err != nil {
+		t.Fatal(err)
+	}
+	// Let the partial generation land under the temp name.
+	waitNoPending(t, fs)
+
+	if _, err := fs.WriteAt(ctx, "/d/a.mp4.qkdownloading", []byte("part-two"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/d/a.mp4.qkdownloading", "/d/a.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/d/a.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	assertDirNames(t, remote+"/d", "a.mp4")
+	assertListNames(t, fs, "/d", "a.mp4")
+	data, err := os.ReadFile(filepath.Join(remote, "d", "a.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "part-two" {
+		t.Fatalf("renamed content = %q, want the newest generation (part-two)", data)
+	}
+}
+
+// TestVFSRenameTempFileInsideRenamedDirectory: the same flow when the
+// downloader first renames the containing directory and then the temp file.
+func TestVFSRenameTempFileInsideRenamedDirectory(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 30 * time.Millisecond, RootID: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+	fs.Start(ctx)
+
+	if _, err := fs.Mkdir(ctx, "/d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Create(ctx, "/d/f.mp4.qkdownloading"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/d/f.mp4.qkdownloading", []byte("part-one"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/d/f.mp4.qkdownloading"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	if _, err := fs.WriteAt(ctx, "/d/f.mp4.qkdownloading", []byte("part-two"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/d", "/d-renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/d-renamed/f.mp4.qkdownloading", "/d-renamed/f.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/d-renamed/f.mp4"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	assertDirNames(t, remote+"/d-renamed", "f.mp4")
+	assertListNames(t, fs, "/d-renamed", "f.mp4")
+}
+
+// TestVFSRenameEditedRemoteFileLeavesNoOldName: editing a remote file and then
+// renaming it must not leave the original object behind under the old name.
+func TestVFSRenameEditedRemoteFileLeavesNoOldName(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "old.txt"), []byte("remote"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: 10 * time.Millisecond, RootID: remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/old.txt", []byte("local-edit"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Rename(ctx, "/old.txt", "/new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, fs)
+
+	assertDirNames(t, remote, "new.txt")
+	assertListNames(t, fs, "/", "new.txt")
+	data, err := os.ReadFile(filepath.Join(remote, "new.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "local-edit" {
+		t.Fatalf("renamed content = %q, want the newer local edit", data)
+	}
+}
+
+func assertDirNames(t *testing.T, dir string, want ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s contains %v, want %v", dir, got, want)
+	}
+}
+
+func assertListNames(t *testing.T, fs vfs.FileSystem, path string, want ...string) {
+	t.Helper()
+	entries, err := fs.List(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.Name)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("list %s = %v, want %v", path, got, want)
 	}
 }
