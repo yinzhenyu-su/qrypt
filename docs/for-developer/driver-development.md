@@ -301,6 +301,16 @@ raw driver's real support, implement `drive.CapabilityReporter` so VFS and
 debug tooling see the intended runtime capabilities instead of raw type
 assertions.
 
+A wrapper that renames things must translate names **both ways** on every
+method that returns an entry. Outgoing arguments belong to the backend's
+vocabulary (the crypt wrapper encrypts them); incoming entries belong to the
+caller's vocabulary (plaintext), with the backend name exposed through
+`drive.EntryExtraWrapper` and read back with `drive.EntryRemoteName`. `List`,
+`PutSource` and `Mkdir` in `pkg/crypt` follow this; a method that returns the
+backend's own entry verbatim hands callers a name the VFS cannot address - the
+view is keyed by path, so the ciphertext name would surface in listings as a
+file nobody can open.
+
 ## Errors
 
 Prefix driver errors with the driver name and operation:

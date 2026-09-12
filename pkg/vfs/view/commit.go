@@ -2,10 +2,29 @@ package view
 
 import (
 	pathpkg "path"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
+
+// entryForPath returns the entry as the view must store it: the view is keyed
+// by path, so an entry's name has to be that path's base. A caller handing
+// over an entry still named in the backend's vocabulary - a ciphertext name
+// from the name-encrypting wrapper, say - would otherwise put a file into
+// listings that no caller can address. The mismatch is logged rather than
+// silently absorbed, because it means an upstream caller broke the wrapper
+// return contract.
+func entryForPath(path string, entry drive.Entry) drive.Entry {
+	base := pathpkg.Base(vfstypes.CleanVirtualPath(path))
+	if entry.Name == base {
+		return entry
+	}
+	logging.L.WarnfEvery("vfs.view_entry_name_mismatch", time.Second, "[VIEW] entry name does not match its path; storing it under the path base path=%q name=%q id=%q", path, entry.Name, entry.ID)
+	entry.Name = base
+	return entry
+}
 
 // Committer is the mutation-commit boundary: it writes the effective view
 // state after a local mutation (mkdir / remove / upload / rename), farming
@@ -55,6 +74,7 @@ func (r Committer) CommitRemove(path string, entry drive.Entry) {
 // read cache from the staging file (when one exists), writes the uploaded
 // entry, unhides the copy child, and invalidates the parent list cache.
 func (r Committer) CommitUploadedEntry(path string, entry drive.Entry, stagingPath string) {
+	entry = entryForPath(path, entry)
 	if stagingPath != "" {
 		r.seed(entry, stagingPath)
 	}
@@ -115,6 +135,7 @@ func (r Committer) CommitRemoteRename(oldPath, newPath string, entry drive.Entry
 	// children until the cache expires).
 	rt.InvalidateListLocked(newPath)
 	entry = rt.ApplyLocalModTimeLocked(newPath, entry)
+	entry = entryForPath(newPath, entry)
 	r.view.entries.Set(newPath, entry)
 	r.view.mu.Unlock()
 	r.vis.AddRenameOverlay(oldPath, newPath, entry.ID, entry.IsDir)
