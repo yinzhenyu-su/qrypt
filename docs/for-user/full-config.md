@@ -97,8 +97,8 @@ sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `log_level` | string | info | Minimum log level to emit. |
-| `log_file` | string | - | 主日志路径；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。 |
-| `error_file` | string | - | 错误日志路径；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。 |
+| `log_file` | string | - | 主日志路径，包含所有级别的完整记录；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。 |
+| `error_file` | string | - | 错误日志路径，只包含主日志中 warn 及以上级别的子集；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。 |
 
 ## 调试服务
 

@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const debugReadHistoryLimit = read.HistoryLimit
+const (
+	debugReadSummaryHistoryLimit = read.SummaryHistoryLimit
+	debugReadDetailHistoryLimit  = read.DetailHistoryLimit
+)
 
 var debugStartedAt = time.Now()
 var debugStartedAtMu sync.RWMutex

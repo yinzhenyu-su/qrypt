@@ -65,6 +65,9 @@ type readCacheWrite struct {
 type Store struct {
 	dir     string
 	maxSize int64
+	// log stamps this store's lines with its mount; set at construction so
+	// index and eviction warnings are attributable.
+	log *logging.Scope
 
 	shards        [readCacheShards]shard
 	readBytes     atomic.Int64
@@ -124,10 +127,11 @@ type cacheStats struct {
 // and every public method short-circuits. The directory is still created
 // and orphaned seed files are cleaned so a previously-enabled mount leaves
 // no debris behind.
-func NewStore(dir string, maxSize int64) (*Store, error) {
+func NewStore(dir string, maxSize int64, mount ...string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
+	log := logging.L.WithMount(optionalMount(mount))
 	// Clean up incomplete cache seed files from previous runs. Completed batch
 	// files are reconciled after loading the persistent read-cache index.
 	if entries, err := os.ReadDir(dir); err == nil {
@@ -142,19 +146,20 @@ func NewStore(dir string, maxSize int64) (*Store, error) {
 			}
 		}
 		if cleaned > 0 {
-			logging.L.Infof("[CACHE] cleaned %d orphaned read cache seed files", cleaned)
+			log.Infof("[CACHE] cleaned %d orphaned read cache seed files", cleaned)
 		}
 	}
 	if maxSize <= 0 {
-		return &Store{dir: dir, debounce: newTimeDebouncer()}, nil
+		return &Store{dir: dir, debounce: newTimeDebouncer(), log: log}, nil
 	}
 	adjusted, reason := limitByDiskSpace(maxSize, dir)
 	if reason != "" {
-		logging.L.Infof("[CACHE] %s", reason)
+		log.Infof("[CACHE] %s", reason)
 	}
 	store := &Store{
 		dir:                 dir,
 		maxSize:             adjusted,
+		log:                 log,
 		cacheWriteQueue:     make(chan readCacheWrite, readCacheWriteQueueSize),
 		cacheWritesInFlight: map[string]struct{}{},
 		cacheWriteClosed:    false,
@@ -164,7 +169,7 @@ func NewStore(dir string, maxSize int64) (*Store, error) {
 		store.shards[i].chunks = map[string]*fileChunks{}
 	}
 	if err := store.loadReadIndex(); err != nil {
-		logging.L.Warnf("[CACHE] load read cache index failed: %v", err)
+		log.Warnf("[CACHE] load read cache index failed: %v", err)
 	}
 	store.cacheWriterWG.Add(1)
 	go store.runReadCacheWriter()
@@ -194,4 +199,12 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// optionalMount returns the mount name when one was supplied.
+func optionalMount(mount []string) string {
+	if len(mount) > 0 {
+		return mount[0]
+	}
+	return ""
 }

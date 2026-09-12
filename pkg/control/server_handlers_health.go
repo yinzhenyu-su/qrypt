@@ -10,6 +10,7 @@ import (
 	pathpkg "path"
 	"runtime"
 	"runtime/pprof"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -353,13 +354,20 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	events := logging.L.Events(level, limit)
 	path := r.URL.Query().Get("path")
 	component := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("component")))
-	if path != "" || component != "" {
+	mounts := debugMountQuery(r)
+	if path != "" || component != "" || len(mounts) > 0 {
 		filtered := events[:0]
 		for _, event := range events {
 			if path != "" && !strings.Contains(event.Message, path) {
 				continue
 			}
-			if component != "" && eventComponent(event.Message) != component {
+			// Component and mount match on the event's fields rather than on
+			// the message text, so a line that merely mentions another mount's
+			// name is not returned for that mount.
+			if component != "" && event.Component != component {
+				continue
+			}
+			if len(mounts) > 0 && !slices.Contains(mounts, event.Mount) {
 				continue
 			}
 			filtered = append(filtered, event)
@@ -371,17 +379,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   time.Now(),
 		Events:        events,
 	})
-}
-
-func eventComponent(message string) string {
-	if !strings.HasPrefix(message, "[") {
-		return ""
-	}
-	end := strings.Index(message, "]")
-	if end <= 1 {
-		return ""
-	}
-	return strings.ToUpper(message[1:end])
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

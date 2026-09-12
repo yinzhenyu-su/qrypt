@@ -29,6 +29,7 @@ type RuntimeSnapshot struct {
 	RangeHitCount int
 	HotChunkLimit int
 	RangeHitLimit int
+	Counters      drive.CounterSnapshot
 }
 
 // SnapshotRuntime is the full-mount snapshot surface (consumer side).
@@ -111,6 +112,7 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Runtime.HotChunkLimit = runtimeState.HotChunkLimit
 	snapshot.Runtime.RangeHitCount = runtimeState.RangeHitCount
 	snapshot.Runtime.RangeHitLimit = runtimeState.RangeHitLimit
+	snapshot.Runtime.Counters = runtimeState.Counters
 
 	return snapshot
 }

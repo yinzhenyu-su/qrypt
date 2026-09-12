@@ -319,8 +319,22 @@ go run ./cmd/qrypt debug raw '/v1/pending?mount=quark-test' --socket /tmp/qrypt.
 go run ./cmd/qrypt debug raw '/v1/staging?mount=quark-test' --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw '/v1/cache?mount=quark-test' --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw '/v1/events?level=warn&limit=100' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/events?level=warn&mount=quark-test' --socket /tmp/qrypt.sock
 go run ./cmd/qrypt debug raw '/v1/debug/faults/upload-cancel' --socket /tmp/qrypt.sock
 ```
+
+`/v1/events` filters on the event's fields, not on the message text: `mount=`
+(repeatable, matching any listed mount) selects lines produced by a
+mount-scoped call site, and `component=` matches the message's leading `[TAG]`.
+A line is therefore never returned for a mount it merely mentions in its text,
+and `path=` remains a plain substring match over the message.
+
+Mount attribution currently covers the pending-upload and read-cache stores, so
+their journal, eviction and cleanup warnings carry `mount="NAME"` in both the
+log text and the event field. Call sites that are not yet mount-scoped produce
+lines with no mount field, and `/v1/events?mount=` does not return them — an
+empty result means "no attributed line for that mount", not "that mount was
+quiet".
 
 Useful fields:
 
@@ -372,6 +386,32 @@ Useful fields:
 - `cache.mounts[].cache`: read cache counters and per-file cache details.
 - `consistency.report`: whether the path is pending, found remotely, and size
   matched.
+
+Read events are kept in two bounded rings and merged into one append-ordered
+list: **summaries** (one per read: offset, bytes, cache hits/misses, duration,
+throughput, error) retain 128 entries, and **details** (per chunk and per
+window phase timing) retain 512 entries. Summaries are never evicted by a
+read's detail burst, so the recent reads stay visible even while a whole-file
+read walks every chunk; details are recency-biased and a large sequential read
+can flush older ones. The two rings are bounded at roughly 320 KiB per mount,
+allocated only once the mount has served a read.
+
+Each mount also carries cumulative `runtime.counters`, which answer "how fast
+and how reliable overall" where the bounded histories answer "which read, and
+where did it spend its time":
+
+- `ops`, `errors`, `bytes`, `duration_ms`, `mean_ms` are totals since process
+  start — they never reset, so they do not equal anything in the bounded event
+  history and are the right baseline for spotting degradation.
+- `latency.bounds_ms` / `latency.counts` are a fixed-bucket histogram, with the
+  last count being the overflow bucket. Derive a percentile from the counts:
+  the reported value is that bucket's upper bound, so read it as "p95 is at
+  most this". `exceed` is true when the percentile falls in the overflow
+  bucket.
+- `bytes` counts what the read path materialized: a remote read counts the data
+  it fetched, while a staging passthrough counts 0 because it only opens a local
+  file and hands the stream back. The read event for that passthrough instead
+  reports the bytes the consumer drained, so the two differ by design.
 
 ## Inspect Cross-Mount Transfers
 
@@ -508,10 +548,10 @@ Common endpoints:
 | `/v1/task-events?after_seq=N&wait_ms=25000` | Incremental task snapshots with cursor replay and gap recovery | Bounded by the task event history and response batch |
 | `/v1/uploads?mount=NAME&history=1` | Active and recent uploads | Bounded history |
 | `/v1/ops?mount=NAME` | Active VFS read, chunk, window, and prefetch ops | Small, current in-flight ops only |
-| `/v1/reads?mount=NAME&limit=200&since=2m` | Recent read events | Bounded history, filtered server-side |
+| `/v1/reads?mount=NAME&limit=200&since=2m` | Recent read events: 128 summaries plus 512 phase/chunk details per mount | Bounded history, filtered server-side |
 | `/v1/staging?mount=NAME` | Staging files and orphan staging files | Grows with staging files |
 | `/v1/cache?mount=NAME` | Read cache and pending journal health | Grows with cache files |
-| `/v1/events?level=warn&limit=100` | Recent warnings/errors | Limited by `limit` |
+| `/v1/events?level=warn&limit=100&mount=NAME&component=CACHE` | Recent warnings/errors, filtered by mount and component fields | Limited by `limit` |
 | `/v1/debug/faults/upload-cancel` | Armed upload cancellation test faults | Small |
 | `/v1/driver?mount=NAME&limit=200&since=2m` | Driver debug snapshot and metrics | Driver dependent, metrics filtered server-side |
 | `/v1/mounts/health?mount=NAME` | Recent operation health | Small |

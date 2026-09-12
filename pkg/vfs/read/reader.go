@@ -21,18 +21,20 @@ type Reader struct {
 	state    *State
 	observer ReadObserver
 	health   HealthRecorder
+	counters CounterRecorder
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
-// Observer and Health are optional: nil values fall back to no-op sinks so
-// instrumentation and statistics never affect correctness. Keeping every
-// dependency in one struct (rather than positional arguments) lets the set
-// grow without reordering call sites.
+// Observer, Health and Counters are optional: nil values fall back to no-op
+// sinks so instrumentation and statistics never affect correctness. Keeping
+// every dependency in one struct (rather than positional arguments) lets the
+// set grow without reordering call sites.
 type ReaderDeps struct {
 	Host     Host
 	State    *State
 	Observer ReadObserver
 	Health   HealthRecorder
+	Counters CounterRecorder
 }
 
 // NewReader builds a read-domain reader from explicit dependencies. The
@@ -46,11 +48,15 @@ func NewReader(deps ReaderDeps) *Reader {
 	if deps.Health == nil {
 		deps.Health = noopHealth{}
 	}
+	if deps.Counters == nil {
+		deps.Counters = noopCounters{}
+	}
 	return &Reader{
 		host:     deps.Host,
 		state:    deps.State,
 		observer: deps.Observer,
 		health:   deps.Health,
+		counters: deps.Counters,
 	}
 }
 
@@ -78,6 +84,15 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	defer func() { r.health.RecordResult(drive.HealthOpRead, err) }()
 	path = CleanVirtualPath(path)
 	started := util.Now()
+	// One counter sample per read attempt, on every exit path. It measures
+	// this call: the bytes the read path materialized before returning, and
+	// the call's duration. The staging passthrough materializes nothing (it
+	// opens a local file and hands the stream back), so it counts 0 bytes;
+	// the read *event* for that path instead reports the bytes the consumer
+	// eventually drains. Counters deliberately track remote materialization,
+	// which is the part that costs bandwidth and time.
+	var countedBytes int64
+	defer func() { r.counters.RecordRead(countedBytes, util.Now().Sub(started), err) }()
 	opID := r.observer.DebugNextOpID()
 	activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 		OpID:      opID,
@@ -180,6 +195,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	}
 	r.observer.DebugFinishActive(activeID)
 	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, WindowExtra(windowChunks), nil)
+	countedBytes = int64(len(data))
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 

@@ -44,7 +44,7 @@ func initLogger(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize logging: %w", err)
 	}
-	logging.L = newLogger
+	logging.ReplaceDefault(newLogger)
 	return nil
 }
 

@@ -1120,7 +1120,24 @@ func mountedReadEvents(fs vfs.FileSystem, mount, path string, since time.Time) (
 				events = append(events, event)
 			}
 			sort.SliceStable(events, func(i, j int) bool { return events[i].At.Before(events[j].At) })
-			truncated := len(readEvents) == vfsread.HistoryLimit && readEvents[0].StartedAt.After(since)
+			// Read summaries are one per read and live in their own bounded
+			// ring: when that ring is full and its oldest entry is still newer
+			// than the measurement start, reads from the window were evicted
+			// and the numbers derived from these events may be incomplete.
+			// Details are excluded because one read's detail burst says
+			// nothing about summary retention.
+			summaries := 0
+			var oldestSummary time.Time
+			for _, event := range readEvents {
+				if event.Kind != "vfs_read" || event.Phase != "read" || event.ParentOpID != "" {
+					continue
+				}
+				summaries++
+				if oldestSummary.IsZero() || event.StartedAt.Before(oldestSummary) {
+					oldestSummary = event.StartedAt
+				}
+			}
+			truncated := summaries == vfsread.SummaryHistoryLimit && !oldestSummary.IsZero() && oldestSummary.After(since)
 			return events, truncated
 		}
 	}

@@ -24,18 +24,20 @@ type stores struct {
 	*uploadStore
 }
 
-func newStores(uploadDir, readCacheDir string, maxSize int64) (*stores, error) {
-	readCache, err := readcache.NewStore(readCacheDir, maxSize)
+// newStores builds the mount's cache and pending stores. The mount name is
+// passed through so their log lines carry it.
+func newStores(mount, uploadDir, readCacheDir string, maxSize int64) (*stores, error) {
+	readCache, err := readcache.NewStore(readCacheDir, maxSize, mount)
 	if err != nil {
 		return nil, err
 	}
-	uploads, err := newUploadStore(uploadDir)
+	uploads, err := newUploadStore(uploadDir, mount)
 	if err != nil {
 		_ = readCache.Close()
 		return nil, err
 	}
 	return &stores{readCacheStore: readCache, uploadStore: uploads}, nil
 }
-func newUploadStore(dir string) (*uploadStore, error) {
-	return upload.NewPendingStore(dir)
+func newUploadStore(dir, mount string) (*uploadStore, error) {
+	return upload.NewPendingStore(dir, mount)
 }
