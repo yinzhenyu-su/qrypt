@@ -21,8 +21,11 @@ type recordingObserver struct {
 	mu       sync.Mutex
 	begins   []vfstypes.DebugActiveOp
 	updates  []uint64
+	phases   []string
 	finishes []uint64
 	reads    int
+	sources  []string
+	readErrs []error
 }
 
 func (o *recordingObserver) DebugNextOpID() string {
@@ -38,6 +41,13 @@ func (o *recordingObserver) DebugUpdateActive(id uint64, fn func(*vfstypes.Debug
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.updates = append(o.updates, id)
+	// Record the phase the read domain moves the operation into, so the
+	// staging branch's phase sequence is asserted rather than assumed.
+	var op vfstypes.DebugActiveOp
+	fn(&op)
+	if op.Phase != "" {
+		o.phases = append(o.phases, op.Phase)
+	}
 }
 func (o *recordingObserver) DebugFinishActive(id uint64) {
 	o.mu.Lock()
@@ -48,10 +58,30 @@ func (o *recordingObserver) DebugRecordRead(opID, path, remoteID string, offset,
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.reads++
+	o.sources = append(o.sources, source)
+	o.readErrs = append(o.readErrs, err)
 }
 func (o *recordingObserver) DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
 }
 func (o *recordingObserver) DebugCacheCounters() (hits, misses int64) { return 0, 0 }
+
+func (o *recordingObserver) beginOps() []vfstypes.DebugActiveOp {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]vfstypes.DebugActiveOp(nil), o.begins...)
+}
+
+func (o *recordingObserver) recordedPhases() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.phases...)
+}
+
+func (o *recordingObserver) recordedReads() ([]string, []error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.sources...), append([]error(nil), o.readErrs...)
+}
 
 func (o *recordingObserver) counts() (begins, finishes, reads int) {
 	o.mu.Lock()
@@ -69,6 +99,57 @@ type stagingHost struct {
 
 func (h *stagingHost) PendingUpload(string) (vfstypes.PendingUpload, bool, error) {
 	return vfstypes.PendingUpload{FID: "pending-id", Path: "/p.txt", LocalPath: h.path}, true, nil
+}
+
+// TestObserverStagingOpenFailure: when the pending record's staging file is
+// gone the read path must finish exactly one active operation, record one
+// staging-sourced failure carrying the error, and move the operation through
+// resolve -> staging_open (the phase sequence the staging branch defines).
+func TestObserverStagingOpenFailure(t *testing.T) {
+	obs := &recordingObserver{}
+	r := NewReader(ReaderDeps{Host: &missingStagingHost{}, State: NewState(nil), Observer: obs})
+	if _, err := r.Read(context.Background(), "/p.txt", 0, 4); err == nil {
+		t.Fatal("want staging open error")
+	}
+	begins, finishes, reads := obs.counts()
+	if begins != 1 || finishes != 1 || reads != 1 {
+		t.Fatalf("observer counts = begins %d finishes %d reads %d, want 1/1/1", begins, finishes, reads)
+	}
+	if ops := obs.beginOps(); len(ops) != 1 || ops[0].Phase != "resolve" {
+		t.Fatalf("begin ops = %+v, want a single resolve phase", ops)
+	}
+	if phases := obs.recordedPhases(); len(phases) != 1 || phases[0] != "staging_open" {
+		t.Fatalf("phases = %v, want [staging_open]", phases)
+	}
+	sources, errs := obs.recordedReads()
+	if len(sources) != 1 || sources[0] != "staging" {
+		t.Fatalf("read sources = %v, want [staging]", sources)
+	}
+	if len(errs) != 1 || errs[0] == nil {
+		t.Fatalf("read errors = %v, want the staging open error", errs)
+	}
+}
+
+// TestObserverStreamStagingOpenFailure: ReadStream takes the same staging
+// branch and must report the same shape.
+func TestObserverStreamStagingOpenFailure(t *testing.T) {
+	obs := &recordingObserver{}
+	r := NewReader(ReaderDeps{Host: &missingStagingHost{}, State: NewState(nil), Observer: obs})
+	if _, err := r.ReadStream(context.Background(), "/p.txt"); err == nil {
+		t.Fatal("want staging open error")
+	}
+	if begins, finishes, reads := obs.counts(); begins != 1 || finishes != 1 || reads != 1 {
+		t.Fatalf("observer counts = begins %d finishes %d reads %d, want 1/1/1", begins, finishes, reads)
+	}
+	if ops := obs.beginOps(); len(ops) != 1 || ops[0].Kind != "vfs_read_stream" {
+		t.Fatalf("begin ops = %+v, want the read-stream kind", ops)
+	}
+	if phases := obs.recordedPhases(); len(phases) != 1 || phases[0] != "staging_open" {
+		t.Fatalf("phases = %v, want [staging_open]", phases)
+	}
+	if sources, errs := obs.recordedReads(); len(sources) != 1 || sources[0] != "staging" || errs[0] == nil {
+		t.Fatalf("read records = sources %v errors %v, want one staging failure", sources, errs)
+	}
 }
 
 // stubHostWithData serves reads from an in-memory blob (like stubHost but

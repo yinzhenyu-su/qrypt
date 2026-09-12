@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"errors"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
@@ -218,6 +219,72 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stagingDir, "note.txt")); err != nil {
 		t.Fatalf("non-staging file removed: %v", err)
+	}
+}
+
+// TestFlushSurfacesStagingSyncFailure: flushing staged bytes is what makes
+// them durable (SyncStaging is the only fsync on that path), so a staging file
+// that vanished must fail the flush and must leave the pending record alone -
+// a partially written record would upload the wrong generation.
+func TestFlushSurfacesStagingSyncFailure(t *testing.T) {
+	ctx := context.Background()
+	fs := newStateTestVFS(t)
+	if err := fs.Create(ctx, "/gone.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/gone.bin", []byte("data"), 0); err != nil {
+		t.Fatal(err)
+	}
+	before, ok := fs.uploads.Store().UploadByPath("/gone.bin")
+	if !ok {
+		t.Fatal("pending record missing after write")
+	}
+	if err := os.Remove(before.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+
+	err := fs.Flush(ctx, "/gone.bin")
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Flush error = %v, want a missing-staging error", err)
+	}
+	after, ok := fs.uploads.Store().UploadByPath("/gone.bin")
+	if !ok {
+		t.Fatal("pending record dropped by a failed flush")
+	}
+	if after.Size != before.Size || after.Frozen != before.Frozen || after.SourceHashes != nil || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("record mutated by a failed flush: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestFlushZeroByteStaging: an empty file (created but not written) flushes
+// into a frozen zero-byte record that is debounced past the immediate window,
+// so a save that has not written yet is not uploaded as an empty file.
+func TestFlushZeroByteStaging(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fs := newStateTestVFS(t)
+	fs.Start(ctx)
+
+	if err := fs.Create(ctx, "/empty.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/empty.bin"); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, ok := fs.uploads.Store().UploadByPath("/empty.bin")
+	if !ok {
+		t.Fatal("pending record missing after flush")
+	}
+	if pending.Size != 0 || !pending.Frozen {
+		t.Fatalf("pending = size %d frozen %v, want a frozen zero-byte record", pending.Size, pending.Frozen)
+	}
+	deadline, ok := fs.uploads.ScheduledDeadlines()["/empty.bin"]
+	if !ok {
+		t.Fatal("empty file was not scheduled")
+	}
+	if wait := time.Until(deadline); wait < zeroByteUploadDebounceDelay/2 {
+		t.Fatalf("empty file scheduled in %s, want the zero-byte debounce window (%s)", wait, zeroByteUploadDebounceDelay)
 	}
 }
 
