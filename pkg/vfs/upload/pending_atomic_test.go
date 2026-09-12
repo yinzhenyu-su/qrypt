@@ -266,7 +266,11 @@ func TestRecordFailureAppendFailureKeepsOldState(t *testing.T) {
 	store := newPendingStoreFixture(t)
 	store.addPending(t, "/a.txt", "fid-a", "a.staging")
 	store.journalFail = func() error { return errors.New("append boom") }
-	pending, ok, err := store.RecordUploadFailure("/a.txt", errors.New("boom"), time.Second)
+	queued, ok := store.UploadByPath("/a.txt")
+	if !ok {
+		t.Fatal("pending record missing")
+	}
+	pending, ok, err := store.RecordUploadFailureIfUnchanged(queued, errors.New("boom"), time.Second)
 	if err == nil {
 		t.Fatal("want append error")
 	}

@@ -19,9 +19,6 @@ func TestUploadStoreWriteAdapterStagesAndRecordsUpload(t *testing.T) {
 	if n, err := adapter.WriteStagingAt(localPath, []byte("hello"), 0); err != nil || n != len("hello") {
 		t.Fatalf("WriteStagingAt n=%d err=%v", n, err)
 	}
-	if err := adapter.FlushStaging(localPath); err != nil {
-		t.Fatal(err)
-	}
 	if err := adapter.SyncStaging(localPath); err != nil {
 		t.Fatal(err)
 	}

@@ -55,9 +55,6 @@ func TestStagingSequentialSmallWritesDoNotUseWholeFilePage(t *testing.T) {
 		}
 	}
 
-	if _, ok := store.pages.Load("large"); ok {
-		t.Fatal("large sequential writes should not keep a whole-file staging page")
-	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

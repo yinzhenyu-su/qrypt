@@ -32,7 +32,11 @@ func TestCacheRecordUploadPermanentFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok, err := cache.RecordUploadPermanentFailure(pending.Path, errors.New("bad upload parameters"))
+	queued, ok := cache.UploadByPath(pending.Path)
+	if !ok {
+		t.Fatal("pending record missing after save")
+	}
+	got, ok, err := cache.RecordUploadPermanentFailureIfUnchanged(queued, errors.New("bad upload parameters"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +130,12 @@ func TestCacheCompactsPendingJournalDuringAppend(t *testing.T) {
 	if err := cache.SaveUpload(pending); err != nil {
 		t.Fatal(err)
 	}
+	current, ok := cache.UploadByPath(pending.Path)
+	if !ok {
+		t.Fatal("pending record missing after save")
+	}
 	for i := 0; i < 1100; i++ {
-		got, ok, err := cache.RecordUploadFailure(pending.Path, errors.New("temporary failure"), 0)
+		got, ok, err := cache.RecordUploadFailureIfUnchanged(current, errors.New("temporary failure"), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -137,6 +145,7 @@ func TestCacheCompactsPendingJournalDuringAppend(t *testing.T) {
 		if got.RetryCount != i+1 {
 			t.Fatalf("retry count = %d, want %d", got.RetryCount, i+1)
 		}
+		current = got
 	}
 	journal, err := os.ReadFile(filepath.Join(cacheDir, "pending.jsonl"))
 	if err != nil {

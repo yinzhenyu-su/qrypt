@@ -460,29 +460,13 @@ func NewService(opts ServiceOptions) *Service {
 
 // --- store accessors ---
 
-func (s *Service) SaveUpload(pending PendingUpload) error { return s.store.SaveUpload(pending) }
-func (s *Service) SaveUploadExact(pending PendingUpload) error {
-	return s.store.SaveUploadExact(pending)
-}
-func (s *Service) UploadByPath(path string) (PendingUpload, bool) { return s.store.UploadByPath(path) }
-func (s *Service) PendingByID(id string) (PendingUpload, bool)    { return s.store.PendingByID(id) }
-func (s *Service) PendingUploads() []PendingUpload                { return s.store.PendingUploads() }
-func (s *Service) RemoveUpload(path string) error                 { return s.store.RemoveUpload(path) }
-func (s *Service) RemoveUploadsUnder(path string) error           { return s.store.RemoveUploadsUnder(path) }
-func (s *Service) RenameUpload(oldPath string, p PendingUpload) error {
-	return s.store.RenameUpload(oldPath, p)
-}
-func (s *Service) RemoveStagingIfUnreferenced(localPath string) {
-	s.store.RemoveStagingIfUnreferenced(localPath)
-}
+func (s *Service) PendingByID(id string) (PendingUpload, bool) { return s.store.PendingByID(id) }
+func (s *Service) PendingUploads() []PendingUpload             { return s.store.PendingUploads() }
+func (s *Service) RemoveUpload(path string) error              { return s.store.RemoveUpload(path) }
 
 // --- hash tracker ---
 
-func (s *Service) HashRemovePath(path string)  { s.hashes.RemovePath(path) }
-func (s *Service) HashRemoveUnder(path string) { s.hashes.RemoveUnder(path) }
-func (s *Service) HashRenamePath(oldPath, newPath string, p PendingUpload) {
-	s.hashes.RenamePath(oldPath, newPath, p)
-}
+func (s *Service) HashRemovePath(path string) { s.hashes.RemovePath(path) }
 
 // --- admission ---
 
@@ -574,10 +558,10 @@ func (s *Service) Retry(pending PendingUpload) error {
 	pending.PermanentFail = false
 	pending.LastError = ""
 	pending.NextAttemptAt = 0
-	if err := s.SaveUploadExact(pending); err != nil {
+	if err := s.store.SaveUploadExact(pending); err != nil {
 		return err
 	}
-	if latest, ok := s.UploadByPath(pending.Path); ok {
+	if latest, ok := s.store.UploadByPath(pending.Path); ok {
 		pending = latest
 	}
 	s.CancelUpload(pending.Path)

@@ -166,7 +166,7 @@ func TestFsRmAndMvJSON(t *testing.T) {
 
 func TestBandwidthOverrideFromFlags(t *testing.T) {
 	// both
-	fsCmd := newFsCmd()
+	fsCmd := clifs.NewCommand(cliRuntime{})
 	if err := fsCmd.ParseFlags([]string{"--bwlimit", "10M"}); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestBandwidthOverrideFromFlags(t *testing.T) {
 	}
 
 	// download only must not clobber upload set by --bwlimit
-	fsCmd = newFsCmd()
+	fsCmd = clifs.NewCommand(cliRuntime{})
 	if err := fsCmd.ParseFlags([]string{"--bwlimit", "10M", "--bwlimit-download", "5M"}); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestBandwidthOverrideFromFlags(t *testing.T) {
 	}
 
 	// invalid size
-	fsCmd = newFsCmd()
+	fsCmd = clifs.NewCommand(cliRuntime{})
 	if err := fsCmd.ParseFlags([]string{"--bwlimit", "abc"}); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestBandwidthOverrideFromFlags(t *testing.T) {
 	}
 
 	// no flags -> nil override
-	fsCmd = newFsCmd()
+	fsCmd = clifs.NewCommand(cliRuntime{})
 	if err := fsCmd.ParseFlags([]string{}); err != nil {
 		t.Fatal(err)
 	}

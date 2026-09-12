@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/drivecopy"
 )
@@ -441,7 +442,7 @@ func TestFsCopyDryRunRecursiveJSON(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("dry-run recursive failed: %v stderr=%s", err, stderr.String())
 	}
-	var plan fsCopyDryRunResult
+	var plan clifs.CopyDryRunResult
 	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
 		t.Fatalf("dry-run JSON invalid: %v\n%s", err, out.String())
 	}
@@ -456,13 +457,13 @@ func TestFsCopyDryRunRecursiveJSON(t *testing.T) {
 
 func TestFsCopyDirErrorPartialExitCode(t *testing.T) {
 	partial := &drivecopy.DriverCopyDirResult{Copied: 3, Failed: 1, Error: "one failed"}
-	err := fsCopyDirError(partial)
+	err := clifs.CopyDirError(cliRuntime{}, partial)
 	var xe *ExitError
 	if !errors.As(err, &xe) || xe.Code != ExitPartial {
 		t.Fatalf("partial failure err = %v, want ExitError{3}", err)
 	}
 	total := &drivecopy.DriverCopyDirResult{Copied: 0, Failed: 3, Error: "all failed"}
-	if err := fsCopyDirError(total); err == nil {
+	if err := clifs.CopyDirError(cliRuntime{}, total); err == nil {
 		t.Fatal("all-failed must return an error")
 	} else if errors.As(err, &xe) {
 		t.Fatalf("all-failed must not be tagged partial, got %+v", xe)
@@ -502,7 +503,7 @@ func TestFsListJSONLOutputsOneEntryPerLine(t *testing.T) {
 	}
 	var names []string
 	for _, line := range lines {
-		var entry fsListEntry
+		var entry clifs.ListEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("jsonl line invalid: %v\n%s", err, line)
 		}

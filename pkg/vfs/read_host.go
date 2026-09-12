@@ -47,10 +47,6 @@ func (h vfsReadHost) PendingUpload(path string) (vfstypes.PendingUpload, bool, e
 	return pending, true, nil
 }
 
-func (h vfsReadHost) FlushStaging(localPath string) error {
-	return h.store.FlushStaging(localPath)
-}
-
 func (h vfsReadHost) ReadCacheKey(entry drive.Entry) string {
 	return read.CacheKey(h.rootID, entry)
 }
