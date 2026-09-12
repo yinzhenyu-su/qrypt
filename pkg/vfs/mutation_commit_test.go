@@ -361,3 +361,71 @@ func TestDropUploadedEntryRemovesCommittedEntry(t *testing.T) {
 		t.Errorf("read cache not invalidated by DropUploadedEntry: %+v", cache)
 	}
 }
+
+// TestCommitEntryNamesMatchTheirPaths: the view is keyed by path, so an entry
+// that arrives named in the backend's vocabulary (a ciphertext name from the
+// name-encrypting wrapper) must be stored under its path base. Otherwise the
+// listing renders a name no caller can address - the junk file users saw on
+// encrypted mounts - while the object stays reachable only by path.
+func TestCommitEntryNamesMatchTheirPaths(t *testing.T) {
+	const ciphertextName = "13-pqvLKZ9V4FZYclyJEjiyOIjdMmu6CQSRKTqCWJx3f3axjxA2K-UaS5llXudaS"
+
+	t.Run("upload commit", func(t *testing.T) {
+		fs := newViewCommitVFS(t)
+		view := newVFSListingView(fs)
+		fs.Start(context.Background())
+		t.Cleanup(func() { _ = fs.Close(context.Background()) })
+
+		entry := drive.Entry{ID: "up-id", Name: ciphertextName, Size: 8, ModTime: time.Now()}
+		newVFSViewCommitter(fs).CommitUploadedEntry("/staged.txt", entry, "")
+
+		got, ok := view.Entry("/staged.txt")
+		if !ok {
+			t.Fatal("committed entry missing from the view")
+		}
+		if got.Name != "staged.txt" {
+			t.Fatalf("committed entry name = %q, want the path base %q", got.Name, "staged.txt")
+		}
+		if got.ID != "up-id" || got.Size != 8 {
+			t.Fatalf("committed entry = %+v, want the identity and size preserved", got)
+		}
+	})
+
+	t.Run("rename commit", func(t *testing.T) {
+		fs := newViewCommitVFS(t)
+		view := newVFSListingView(fs)
+		fs.Start(context.Background())
+		t.Cleanup(func() { _ = fs.Close(context.Background()) })
+
+		entry := drive.Entry{ID: "ren-id", Name: ciphertextName, Size: 4, ModTime: time.Now()}
+		newVFSViewCommitter(fs).CommitRemoteRename("/old.txt", "/renamed.txt", entry)
+
+		got, ok := view.Entry("/renamed.txt")
+		if !ok {
+			t.Fatal("renamed entry missing from the view")
+		}
+		if got.Name != "renamed.txt" {
+			t.Fatalf("renamed entry name = %q, want the path base %q", got.Name, "renamed.txt")
+		}
+		if got.ID != "ren-id" {
+			t.Fatalf("renamed entry = %+v, want the backend identity preserved", got)
+		}
+	})
+}
+
+// TestCommitEntryKeepsMatchingNamesUnchanged guards the other half of the
+// invariant: a consistent commit must not be rewritten or otherwise disturbed.
+func TestCommitEntryKeepsMatchingNamesUnchanged(t *testing.T) {
+	fs := newViewCommitVFS(t)
+	view := newVFSListingView(fs)
+	fs.Start(context.Background())
+	t.Cleanup(func() { _ = fs.Close(context.Background()) })
+
+	entry := drive.Entry{ID: "up-id", Name: "staged.txt", Size: 8, ModTime: time.Now()}
+	newVFSViewCommitter(fs).CommitUploadedEntry("/staged.txt", entry, "")
+
+	got, ok := view.Entry("/staged.txt")
+	if !ok || got.Name != "staged.txt" || got.ID != "up-id" {
+		t.Fatalf("entry = %+v ok=%v, want it stored unchanged", got, ok)
+	}
+}

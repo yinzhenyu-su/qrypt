@@ -293,11 +293,29 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 }
 
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
-	return d.raw.Move(ctx, entry, dstParentID)
+	moved, err := d.raw.Move(ctx, entry, dstParentID)
+	if err != nil {
+		return moved, err
+	}
+	// The backend only knows encrypted names: hand callers the plaintext name
+	// (a move does not change it) and keep the backend name reachable through
+	// Extra, exactly like List and PutSource do. Returning the backend's own
+	// entry here used to leak the ciphertext name into the view, where it
+	// surfaced as a file nobody could address.
+	moved.Extra = drive.EntryExtraWrapper{RemoteName: moved.Name, Raw: moved.Extra}
+	moved.Name = entry.Name
+	return moved, nil
 }
 
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
-	return d.raw.Rename(ctx, entry, d.cp.EncryptSegment(newName))
+	encName := d.cp.EncryptSegment(newName)
+	renamed, err := d.raw.Rename(ctx, entry, encName)
+	if err != nil {
+		return renamed, err
+	}
+	renamed.Extra = drive.EntryExtraWrapper{RemoteName: encName, Raw: renamed.Extra}
+	renamed.Name = newName
+	return renamed, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
