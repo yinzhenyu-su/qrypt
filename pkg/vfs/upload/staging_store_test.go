@@ -33,7 +33,11 @@ func TestStagingCleanupUploadTempsKeepsPendingStaging(t *testing.T) {
 		t.Fatalf("upload temp still exists, err=%v", err)
 	}
 }
-func TestStagingSequentialSmallWritesDoNotUseWholeFilePage(t *testing.T) {
+
+// TestStagingSequentialWritesPreserveOffsetsAndSize: many small writes at
+// increasing offsets land at their offsets and leave the file at the total
+// written size (the staging store writes straight to the file).
+func TestStagingSequentialWritesPreserveOffsetsAndSize(t *testing.T) {
 	store, err := newStagingStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
