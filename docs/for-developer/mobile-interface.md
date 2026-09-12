@@ -374,6 +374,21 @@ qrypt reconstructs an interrupted staging task from its pending journal.
 Use `PauseUploadItemJSON(handleID)` only when the app intentionally drops the
 current handle but wants to resume later without marking an error.
 
+Task items carry two guarantees the app can rely on when it polls or reads
+events:
+
+- **A terminal item is final.** Once an item reports `succeeded`, `failed` or
+  `canceled`, later cloud upload observations do not rewrite it: a canceled item
+  stays canceled even if the remote upload completes afterwards, and the cloud
+  progress fields keep updating for diagnostics only. Cancellation is
+  authoritative rather than best-effort.
+- **A terminal task contains only terminal items.** When a task reports a
+  terminal state, every item in the same snapshot is terminal too, and
+  `items_done` / `items_failed` agree with the item states. If the runner exits
+  while an item is still in flight, that item is failed with code `abandoned`,
+  so the app never sees a finished task whose items still offer actions such as
+  cancel or commit.
+
 Direct upload tasks do not use `OpenUploadItemJSON` / `WriteUploadItem`.
 Instead, the app creates the task with `source_path`, keeps the source permission
 valid until completion, and follows task events. Direct task result items use

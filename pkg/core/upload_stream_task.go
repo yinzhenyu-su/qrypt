@@ -835,6 +835,14 @@ func uploadStreamTaskSourcePaths(fs vfs.FileSystem, destPath string) []string {
 	return paths
 }
 
+// applyRemoteUploadState folds an observed remote upload task into a stream
+// item. Returns true when the remote task should be dismissed after the
+// update.
+//
+// A terminal item is never rewritten: the remote observation still refreshes
+// the diagnostic cloud fields, but it cannot resurrect a canceled item into
+// running (or into success), because the caller's cancel is the authoritative
+// intent and the ticker that drives this call runs concurrently with it.
 func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
 	if item == nil {
 		return false
@@ -848,6 +856,9 @@ func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
 		if id, ok := remote.Detail["result_remote_id"].(string); ok {
 			item.RemoteID = id
 		}
+	}
+	if isTerminalStreamItem(item.State) {
+		return false
 	}
 	switch remote.State {
 	case task.StateSucceeded:
@@ -1022,6 +1033,19 @@ func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingByte
 
 func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 	b.mu.Lock()
+	// The runner has exited, so an item that is still in flight can no longer
+	// progress, and a terminal task must not publish a live item. Converge
+	// those items before deciding the task's terminal state; otherwise the
+	// failure branch below would label a not-yet-finished task partial_failed
+	// while its items still report running.
+	for _, item := range b.items {
+		if isTerminalStreamItem(item.State) {
+			continue
+		}
+		item.Open = false
+		item.State = task.StateFailed
+		item.Error = &task.Error{Code: "abandoned", Message: "upload stream task finished while this item was still in progress"}
+	}
 	itemsDone, itemsFailed, _, cloudBytesDone, cloudBytesTotal, _, _ := b.summaryLocked()
 	results := b.resultItemsLocked()
 	b.mu.Unlock()
@@ -1029,6 +1053,10 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
 			taskItem.Progress.Phase = "complete"
+			// Publish the aggregate counts together with the terminal state,
+			// so no consumer sees a finished task whose counters disagree.
+			taskItem.Progress.ItemsDone = itemsDone
+			taskItem.Progress.ItemsFailed = itemsFailed
 			taskItem.Progress.CloudBytesDone = cloudBytesDone
 			taskItem.Progress.CloudBytesTotal = cloudBytesTotal
 			taskItem.Detail["phase"] = "complete"
@@ -1043,6 +1071,8 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 	}
 	update(func(taskItem *task.Task) {
 		taskItem.Progress.CurrentPath = ""
+		taskItem.Progress.ItemsDone = itemsDone
+		taskItem.Progress.ItemsFailed = itemsFailed
 		taskItem.Detail["active_paths"] = []string{}
 		taskItem.Error = &task.Error{Message: message, Retryable: true}
 		taskItem.Capabilities.Retryable = true
@@ -1076,9 +1106,23 @@ func (b *uploadStreamBatch) markCanceled(err error) {
 	}
 }
 
+// isTerminalStreamItem reports whether a stream item has reached a state it
+// cannot leave. Both stream families use this one definition of "the item is
+// done": it is the set that closes the batch's done channel, the set that
+// remote observations may not overwrite, and the set finishTask requires
+// before publishing a terminal task.
+func isTerminalStreamItem(state task.State) bool {
+	switch state {
+	case task.StateSucceeded, task.StateFailed, task.StateCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
 func (b *uploadStreamBatch) closeDoneIfTerminalLocked() {
 	for _, item := range b.items {
-		if item.State != task.StateSucceeded && item.State != task.StateFailed && item.State != task.StateCanceled {
+		if !isTerminalStreamItem(item.State) {
 			return
 		}
 	}

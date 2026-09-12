@@ -479,6 +479,17 @@ func (b *downloadStreamBatch) summaryLocked() (itemsDone, itemsFailed, bytesDone
 
 func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 	b.mu.Lock()
+	// Same invariant as the upload family: a terminal task publishes only
+	// terminal items, so anything still in flight when the runner exits is
+	// converged to failed before the state is decided.
+	for _, item := range b.items {
+		if isTerminalStreamItem(item.State) {
+			continue
+		}
+		item.Open = false
+		item.State = task.StateFailed
+		item.Error = &task.Error{Code: "abandoned", Message: "download stream task finished while this item was still in progress"}
+	}
 	itemsDone, itemsFailed, _, _, _ := b.summaryLocked()
 	results := b.resultItemsLocked()
 	b.mu.Unlock()
@@ -486,6 +497,10 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
 			taskItem.Progress.Phase = "complete"
+			// Publish the aggregate counts together with the terminal state,
+			// so no consumer sees a finished task whose counters disagree.
+			taskItem.Progress.ItemsDone = itemsDone
+			taskItem.Progress.ItemsFailed = itemsFailed
 			taskItem.Detail["phase"] = "complete"
 			taskItem.Detail["active_paths"] = []string{}
 			taskItem.Result.Items = results
@@ -495,6 +510,8 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 	message := fmt.Sprintf("download stream failed for %d of %d items", itemsFailed, len(b.items))
 	update(func(taskItem *task.Task) {
 		taskItem.Progress.CurrentPath = ""
+		taskItem.Progress.ItemsDone = itemsDone
+		taskItem.Progress.ItemsFailed = itemsFailed
 		taskItem.Detail["active_paths"] = []string{}
 		taskItem.Error = &task.Error{Message: message, Retryable: true}
 		taskItem.Capabilities.Retryable = true
@@ -530,7 +547,7 @@ func (b *downloadStreamBatch) markCanceled(err error) {
 
 func (b *downloadStreamBatch) closeDoneIfTerminalLocked() {
 	for _, item := range b.items {
-		if item.State != task.StateSucceeded && item.State != task.StateFailed && item.State != task.StateCanceled {
+		if !isTerminalStreamItem(item.State) {
 			return
 		}
 	}
