@@ -104,6 +104,23 @@ func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, st
 	return pending, nil
 }
 
+// writeTarget returns the pending generation a write must land in. A frozen
+// generation that no upload has started reading is revived in place: the copy
+// into a fresh generation exists only to keep the bytes an in-flight upload
+// streams immutable, so paying for it earlier rewrites the whole staging file
+// for nothing - and a generation whose upload is merely scheduled is often
+// replaced before it is ever read. Measured on real write patterns (16 KiB
+// chunks, flush per round): 16 rounds wrote 8.5x and 64 rounds 32.5x the
+// logical bytes, both rotating every time. Once an upload has claimed the
+// generation, the write rotates to a new file exactly as it did before.
+func (v *VFS) writeTarget(store *uploadStore, path string, pending PendingUpload) (PendingUpload, error) {
+	if reused, ok := store.TryReuseFrozenStaging(pending); ok {
+		logging.L.DebugfEvery("vfs.reuse_frozen_staging", time.Second, "[VFS] reuse frozen staging generation op_id=%q path=%q size=%d local=%q", reused.FID, path, reused.Size, reused.LocalPath)
+		return reused, nil
+	}
+	return v.rotateFrozenGenerationWithStore(path, pending, store)
+}
+
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = vfstypes.CleanVirtualPath(path)
@@ -130,7 +147,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 		}
 	}
 	if pending.Frozen {
-		pending, err = v.rotateFrozenGeneration(path, pending)
+		pending, err = v.writeTarget(store, path, pending)
 		if err != nil {
 			return 0, err
 		}
@@ -218,7 +235,7 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 		}
 	}
 	if pending.Frozen {
-		pending, err = v.rotateFrozenGeneration(path, pending)
+		pending, err = v.writeTarget(store, path, pending)
 		if err != nil {
 			return err
 		}

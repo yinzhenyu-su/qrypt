@@ -91,8 +91,8 @@ func TestStageExistingFeedsUploadSnapshotHashes(t *testing.T) {
 	assertHashesEqual(t, snapshot.Hashes, staged, algorithms, "snapshot hashes")
 }
 
-// TestRotateFrozenGenerationFeedsHashes covers the other copy that seeds
-// staging content: rotating a frozen generation while it uploads. The new
+// TestRotateFrozenGenerationFeedsHashes covers the copy that seeds staging
+// content: rotating a frozen generation an upload has started reading. The new
 // generation must hash the copied bytes, not re-read them at snapshot time.
 func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
 	ctx := context.Background()
@@ -106,6 +106,9 @@ func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
 	frozen, ok := fs.uploads.Store().UploadByPath("/file.txt")
 	if !ok || !frozen.Frozen {
 		t.Fatalf("first generation not frozen: %+v ok=%v", frozen, ok)
+	}
+	if _, ok := fs.uploads.Store().MarkUploadStarted(frozen); !ok {
+		t.Fatal("frozen generation could not be claimed by an upload")
 	}
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("!"), 11); err != nil {
 		t.Fatal(err)
