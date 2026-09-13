@@ -139,6 +139,38 @@ func (d *hashRequiringRawDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 	return []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1}
 }
 
+// windowedHashDriver streams the source in the read window sizes the real
+// upload path uses, instead of io.ReadAll's growing buffer: io.Copy (the
+// wrapper's hash pass) and the HTTP request body both read ~32 KiB, and a
+// driver's own scan can go as low as one block.
+type windowedHashDriver struct {
+	hashRequiringRawDriver
+	window   int
+	streamed int64
+}
+
+func (d *windowedHashDriver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
+	f, err := req.Source.Open(ctx)
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	defer f.Close()
+	buf := make([]byte, d.window)
+	var total int64
+	for {
+		n, err := f.Read(buf)
+		total += int64(n)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return drive.Entry{}, err
+		}
+	}
+	d.streamed = total
+	return drive.Entry{ID: "uploaded", ParentID: req.ParentID, Name: req.Name, Size: req.Source.Size()}, nil
+}
+
 type bytesReadOnlyFileSource struct {
 	data []byte
 }
@@ -164,8 +196,9 @@ func (f bytesReadOnlyFile) Close() error {
 }
 
 type countingSHA256Source struct {
-	source drive.ReadOnlyFileSource
-	opens  int
+	source    drive.ReadOnlyFileSource
+	opens     int
+	bytesRead int64
 }
 
 func newCountingSHA256Source(data []byte) *countingSHA256Source {
@@ -178,11 +211,36 @@ func (s *countingSHA256Source) Size() int64 {
 
 func (s *countingSHA256Source) Open(ctx context.Context) (drive.ReadOnlyFile, error) {
 	s.opens++
-	return s.source.Open(ctx)
+	f, err := s.source.Open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &countingReadOnlyFile{ReadOnlyFile: f, source: s}, nil
 }
 
 func (s *countingSHA256Source) Hash(algorithm drive.HashAlgorithm) ([]byte, bool) {
 	return drive.SourceHash(s.source, algorithm)
+}
+
+// countingReadOnlyFile counts the plaintext bytes readers pull through the
+// source, which is the layer the encrypted-block memo pays off at: the
+// ciphertext handed to a backend is the same either way, only the plaintext the
+// cipher had to read changes.
+type countingReadOnlyFile struct {
+	drive.ReadOnlyFile
+	source *countingSHA256Source
+}
+
+func (f *countingReadOnlyFile) Read(p []byte) (int, error) {
+	n, err := f.ReadOnlyFile.Read(p)
+	f.source.bytesRead += int64(n)
+	return n, err
+}
+
+func (f *countingReadOnlyFile) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.ReadOnlyFile.ReadAt(p, off)
+	f.source.bytesRead += int64(n)
+	return n, err
 }
 
 func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {
@@ -506,6 +564,52 @@ func TestDriverPutSourceContentDedupDoesNotOpenSourceForHash(t *testing.T) {
 	}
 	if source.opens != 1 {
 		t.Fatalf("source opens = %d, want exactly one raw uploader read", source.opens)
+	}
+}
+
+// TestDriverPutSourceReadsEachPlaintextBlockOncePerPass pins the read cost of
+// an encrypted upload end to end: the wrapper's hash pass and the backend's
+// stream pass each read every plaintext block once, however small the read
+// windows are. Consumers read ~32 KiB (io.Copy here, the HTTP request body in
+// the real backends), so without the encrypted-block memo every window re-read
+// and re-encrypted its whole 64 KiB block - the live quark path measured 3x per
+// pass, 6x for the upload.
+func TestDriverPutSourceReadsEachPlaintextBlockOncePerPass(t *testing.T) {
+	ctx := context.Background()
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Multi-block so block-boundary reads are exercised, small enough for the
+	// race layer to run alongside every other package's tests.
+	plain := testPlaintext(BlockDataSize*4 + 123)
+	for _, window := range []int{4 << 10, 32 << 10} {
+		raw := &windowedHashDriver{window: window}
+		drv := NewDriver(raw, cp, DriverOptions{ContentDedup: true})
+		source := newCountingSHA256Source(plain)
+		if _, err := drv.PutSource(ctx, drive.UploadRequest{
+			ParentID: "parent",
+			Name:     "amplification.bin",
+			Source:   source,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if source.opens != 2 {
+			t.Fatalf("window %d: source opens = %d, want 2 (prehash + raw upload)", window, source.opens)
+		}
+		blocks := int64((len(plain) + BlockDataSize - 1) / BlockDataSize)
+		wantEncrypted := int64(len(plain)) + int64(FileHeaderSize) + blocks*int64(BlockHeaderSize)
+		if raw.streamed != wantEncrypted {
+			t.Fatalf("window %d: raw driver streamed %d encrypted bytes, want %d", window, raw.streamed, wantEncrypted)
+		}
+		t.Logf("window=%d plaintext reads=%d for a %d byte source", window, source.bytesRead, len(plain))
+		// One pass per source open, plus one block of slack for a read that
+		// reaches into the next block. Six times the source size is what the
+		// unmemoized block read costs at these windows.
+		limit := 2*int64(len(plain)) + 2*int64(BlockDataSize)
+		if source.bytesRead > limit {
+			t.Fatalf("window %d: read %d plaintext bytes for a %d byte source (limit %d)", window, source.bytesRead, len(plain), limit)
+		}
 	}
 }
 
