@@ -31,6 +31,13 @@ type PendingUpload struct {
 	SourceHashes  drive.SourceHashes   `json:"source_hashes,omitempty"`
 	Staging       *UploadStagingStatus `json:"staging,omitempty"`
 	Frozen        bool                 `json:"frozen,omitempty"`
+	// UploadStarted marks that an upload has begun reading this generation's
+	// staging file, which makes the bytes immutable for the reader. It stays in
+	// memory: a crash leaves no upload in flight, so a recovered record reads
+	// back as unclaimed and the write path may reuse its staging file. It is
+	// also deliberately absent from SameUploadRecord - a requeued or retried
+	// attempt of the same generation must still compare equal.
+	UploadStarted bool `json:"-"`
 }
 
 // UploadReplacement holds the remote entry being replaced by a new upload.

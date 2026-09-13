@@ -41,6 +41,12 @@ func TestFlushRetiresGenerationDisplacedBeforeTimerFire(t *testing.T) {
 	if !ok {
 		t.Fatal("first generation missing")
 	}
+	// Only a generation an upload has started reading must stay immutable, so
+	// the write below rotates (rather than reusing the file in place) once the
+	// claim is taken.
+	if _, ok := fs.uploads.Store().MarkUploadStarted(first); !ok {
+		t.Fatal("first generation could not be claimed")
+	}
 
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("two"), 0); err != nil {
 		t.Fatal(err)

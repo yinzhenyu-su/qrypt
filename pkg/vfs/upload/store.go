@@ -308,6 +308,64 @@ func (c *PendingStore) UpdateUploadTransient(p PendingUpload) {
 	}
 	c.mu.Unlock()
 }
+
+// MarkUploadStarted records that an upload is about to read the staging file of
+// the generation described by p, which the write path must treat as immutable
+// from that point on. It fails when the record has moved on since p was taken,
+// so an upload never reads a staging file that no longer belongs to its
+// generation. The mark is in-memory only (see PendingUpload.UploadStarted).
+func (c *PendingStore) MarkUploadStarted(p PendingUpload) (PendingUpload, bool) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, ok := c.pending[p.Path]
+	if !ok || !sameUploadRecord(current, p) {
+		return PendingUpload{}, false
+	}
+	if current.UploadStarted {
+		return current, true
+	}
+	current.UploadStarted = true
+	c.pending[p.Path] = current
+	return current, true
+}
+
+// TryReuseFrozenStaging revives a frozen generation in place while no upload
+// has started reading its staging file: the next write can then append to the
+// existing bytes instead of copying the whole file into a new generation. The
+// copy exists only to keep the bytes an in-flight upload streams immutable, so
+// it is pure overhead before that upload starts - and a generation whose upload
+// is only scheduled often gets replaced before ever being read.
+//
+// The claim and MarkUploadStarted serialize on the same locks, so exactly one
+// of the two wins: a reused generation can no longer be claimed (its record
+// changed), and a claimed generation can no longer be reused.
+func (c *PendingStore) TryReuseFrozenStaging(p PendingUpload) (PendingUpload, bool) {
+	c.txMu.Lock()
+	defer c.txMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, ok := c.pending[p.Path]
+	if !ok || current.FID != p.FID || current.LocalPath != p.LocalPath {
+		return PendingUpload{}, false
+	}
+	if !current.Frozen || current.UploadStarted {
+		return PendingUpload{}, false
+	}
+	current.Frozen = false
+	// The content is about to change, so hashes recorded for the frozen bytes
+	// no longer describe the file. The next Flush recomputes them from the
+	// incremental tracker, or falls back to re-reading the file when the write
+	// is not a sequential append.
+	current.SourceHashes = nil
+	// Bumping UpdatedAt retires any queued or scheduled attempt of this
+	// generation: the worker drops a record that no longer matches the store.
+	current.UpdatedAt = util.Now().UnixNano()
+	c.pending[p.Path] = current
+	return current, true
+}
+
 func (c *PendingStore) RecordUploadReplacementIfUnchanged(p PendingUpload, upload UploadReplacement) (PendingUpload, bool, error) {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
@@ -1043,6 +1101,10 @@ func NewStoreAdapter(store *PendingStore) StoreAdapter {
 
 func (a StoreAdapter) UploadByPath(path string) (PendingUpload, bool) {
 	return a.store.UploadByPath(path)
+}
+
+func (a StoreAdapter) MarkUploadStarted(pending PendingUpload) (PendingUpload, bool) {
+	return a.store.MarkUploadStarted(pending)
 }
 
 func (a StoreAdapter) RemoveStagingIfUnreferenced(localPath string) {

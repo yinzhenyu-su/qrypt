@@ -59,6 +59,21 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 	pendingStore := e.pending
 	runtime := e.runtime
 	faults := e.faults
+	// Claim the generation before reading any of its bytes. The write path
+	// keeps a frozen generation reusable in place only while no upload has
+	// claimed it, so this is the point where the staging file becomes
+	// immutable; a record that moved on while the upload waited is superseded
+	// here, one step earlier than the post-snapshot check below.
+	claimed, ok := pendingStore.MarkUploadStarted(pending)
+	if !ok {
+		logging.L.InfofEvery("vfs.upload_superseded_before_start", time.Second, "[VFS] upload superseded before start op_id=%q path=%q size=%d local=%q", pending.FID, pending.Path, pending.Size, pending.LocalPath)
+		pendingStore.RemoveStagingIfUnreferenced(pending.LocalPath)
+		if latest, exists := pendingStore.UploadByPath(pending.Path); exists {
+			runtime.RequeueIfFrozen(latest)
+		}
+		return nil
+	}
+	pending = claimed
 	uploadStart := util.Now()
 	logging.L.InfofEvery("vfs.upload_start", time.Second, "[VFS] upload start op_id=%q path=%q parent=%q name=%q size=%d local=%q retry=%d", pending.FID, pending.Path, pending.ParentID, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount)
 	observer.Start(pending)

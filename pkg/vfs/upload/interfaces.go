@@ -53,6 +53,7 @@ type Observer interface {
 
 type Store interface {
 	UploadByPath(path string) (PendingUpload, bool)
+	MarkUploadStarted(p PendingUpload) (PendingUpload, bool)
 	RecordReplacementIfUnchanged(p PendingUpload, repl UploadReplacement) (PendingUpload, bool, error)
 	RecordFailureIfUnchanged(p PendingUpload, err error, retryDelay time.Duration) (PendingUpload, bool, error)
 	RecordPermanentFailureIfUnchanged(p PendingUpload, err error) (PendingUpload, bool, error)
