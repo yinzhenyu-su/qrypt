@@ -232,7 +232,9 @@ func TestReplaceDefaultKeepsBorrowedWriterOpen(t *testing.T) {
 // the log file aside and then writes straight to the captured previous sink (a
 // write through the logger would reach the newly installed one instead): a
 // released sink reopens, and so recreates, the old path, while an open one keeps
-// writing to the inode that now lives under the moved name.
+// writing to the inode that now lives under the moved name. The move happens
+// after ReplaceDefault - Windows refuses to move a file another process holds
+// open, so there it fails one step earlier, with the same meaning.
 func TestReplaceDefaultClosesPreviousLoggerFileSink(t *testing.T) {
 	previous := L
 	dir := t.TempDir()
@@ -251,11 +253,12 @@ func TestReplaceDefaultClosesPreviousLoggerFileSink(t *testing.T) {
 	if oldSink == nil {
 		t.Fatal("the file logger has no lumberjack sink")
 	}
+	// A failure before ReplaceDefault would leave the file open, and removing
+	// an open file fails on Windows, which would turn a failed assertion into a
+	// confusing TempDir cleanup error as well.
+	t.Cleanup(func() { _ = oldSink.Close() })
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("the sink never opened its file: %v", err)
-	}
-	if err := os.Rename(logPath, movedPath); err != nil {
-		t.Skipf("cannot move an open file on this platform: %v", err)
 	}
 
 	next, err := New("info", filepath.Join(dir, "next.log"), "", nil)
@@ -264,6 +267,9 @@ func TestReplaceDefaultClosesPreviousLoggerFileSink(t *testing.T) {
 	}
 	ReplaceDefault(next)
 
+	if err := os.Rename(logPath, movedPath); err != nil {
+		t.Fatalf("the replaced logger's file sink stayed open: %v", err)
+	}
 	if _, err := oldSink.Write([]byte("second line\n")); err != nil {
 		t.Fatal(err)
 	}
