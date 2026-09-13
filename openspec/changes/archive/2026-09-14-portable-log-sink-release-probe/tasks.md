@@ -9,4 +9,4 @@
 - [x] 2.1 `go test ./pkg/logging/ -run TestReplaceDefault -count=1` 三个用例全绿（macOS）
 - [x] 2.2 负向验证：把 `ReplaceDefault` 中 `oldLJ.Close()` 的条件改成恒 false，用例以 `the replaced logger's file sink stayed open` 失败，恢复后通过
 - [x] 2.3 `scripts/ci-check.sh` 全绿（pre-push 钩子会再跑一次）
-- [ ] 2.4 GitHub Actions 的 `Test (windows)` 由红转绿（本地 macOS 跑不到 Windows 矩阵，以 PR #1 的检查结果为准）
+- [x] 2.4 GitHub Actions 的 `Test (windows)` 由红转绿（本地 macOS 跑不到 Windows 矩阵，以 PR #1 的检查结果为准）。结果：`340a58b` 推送后 push 触发与 PR 触发的两轮检查全部 SUCCESS（fast / race / stability / static / windows）
