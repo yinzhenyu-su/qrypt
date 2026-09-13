@@ -9,7 +9,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
-	"io"
 	"os"
 	pathpkg "path"
 	"time"
@@ -80,21 +79,23 @@ func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, st
 	if err != nil {
 		return PendingUpload{}, err
 	}
-	size, err := upload.CopyStagingContent(old.LocalPath, localPath)
-	if err != nil {
-		_ = store.RemoveStaging(localPath)
-		return PendingUpload{}, err
-	}
-	now := util.Now()
+	// Build the new generation's identity first so the copy can feed the hash
+	// tracker; otherwise its upload snapshot re-reads the whole staging file.
 	pending := PendingUpload{
 		Path:      path,
 		FID:       fid,
 		ParentID:  old.ParentID,
 		Name:      old.Name,
 		LocalPath: localPath,
-		Size:      size,
-		ModTime:   now.UnixNano(),
 	}
+	size, err := upload.CopyStagingContent(old.LocalPath, localPath, v.stagingHashFeed(pending))
+	if err != nil {
+		_ = store.RemoveStaging(localPath)
+		return PendingUpload{}, err
+	}
+	now := util.Now()
+	pending.Size = size
+	pending.ModTime = now.UnixNano()
 	if err := store.SaveUpload(pending); err != nil {
 		_ = store.RemoveStaging(localPath)
 		return PendingUpload{}, err
@@ -263,6 +264,16 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 		}
 	}
 	modTime := util.Now()
+	// The pending identity is known before the content is copied, so the copy
+	// can feed the write-path hash tracker directly. Otherwise the upload
+	// snapshot has to re-read the whole staging file later just to hash it.
+	pending := PendingUpload{
+		Path:      path,
+		FID:       fid,
+		ParentID:  parent.ID,
+		Name:      name,
+		LocalPath: localPath,
+	}
 	if entry, err := remote.Resolve(ctx, path); err == nil && !entry.IsDir {
 		if !entry.ModTime.IsZero() {
 			modTime = entry.ModTime
@@ -278,7 +289,9 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 			dropStaging()
 			return err
 		}
-		_, copyErr := io.Copy(f, rc)
+		// Hash the remote bytes while they are copied into staging, so Flush
+		// can serve pending.SourceHashes without re-reading the staged file.
+		_, copyErr := upload.CopyStagingStream(f, rc, v.stagingHashFeed(pending))
 		closeErr := f.Close()
 		rc.Close()
 		if copyErr != nil {
@@ -295,21 +308,29 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 		dropStaging()
 		return err
 	}
-	pending := PendingUpload{
-		Path:      path,
-		FID:       fid,
-		ParentID:  parent.ID,
-		Name:      name,
-		LocalPath: localPath,
-		Size:      size,
-		ModTime:   modTime.UnixNano(),
-	}
+	pending.Size = size
+	pending.ModTime = modTime.UnixNano()
 	if err := store.SaveUpload(pending); err != nil {
 		dropStaging()
 		return err
 	}
 	logging.L.InfofEvery("vfs.existing_file_staged", time.Second, "[VFS] existing file staged op_id=%q path=%q parent=%q name=%q size=%d local=%q", pending.FID, path, parent.ID, name, size, localPath)
 	return nil
+}
+
+// stagingHashFeed starts hash tracking for a staging generation and returns a
+// callback that feeds copied chunks into the write-path tracker, so Flush can
+// serve pending.SourceHashes without re-reading the staged file. Offsets follow
+// the bytes actually written, which keeps the tracker's sequential invariant
+// intact: any later out-of-sequence write (or truncate) marks it dirty and the
+// upload snapshot falls back to hashing the file. Only the in-memory tracker is
+// fed, so after a crash the safe "no hashes, hash the file" path still applies.
+func (v *VFS) stagingHashFeed(pending PendingUpload) func(chunk []byte, off int64) {
+	algorithms := requiredUploadSnapshotHashes(v.driver)
+	v.hashes.Start(pending, algorithms)
+	return func(chunk []byte, off int64) {
+		v.hashes.Write(pending, chunk, off, algorithms)
+	}
 }
 
 func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (err error) {

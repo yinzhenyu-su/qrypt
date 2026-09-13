@@ -137,6 +137,13 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 
 	if !hasSourceHashes {
+		// The scan is not optional: a source that never declares hashes cannot
+		// be committed. Verified against the live API - skipping
+		// /file/update/hash makes /file/upload/finish fail with
+		// "code 43001 request cpp error[complete file failed!]". So even when
+		// the hashes cannot match anything the provider stores (a source that
+		// re-randomizes its bytes per upload, for example) the scan and the
+		// update/hash round trip must happen.
 		drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
 		hashData, err = quarkComputeSourceHashes(ctx, source, size)
 		if err != nil {

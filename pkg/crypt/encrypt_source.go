@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -53,6 +54,18 @@ type encryptedReadOnlyFile struct {
 	source encryptedReadOnlyFileSource
 	size   int64
 	pos    int64
+
+	// blockMu guards the memoized encrypted block below.
+	blockMu sync.Mutex
+	// blockIndex/blockData/blockCached memoize the most recently encrypted
+	// block. A block can only be encrypted as a whole (BlockDataSize plaintext
+	// bytes), while consumers read much smaller windows of it: io.Copy and the
+	// HTTP transport both use ~32 KiB reads. Without the memo every window
+	// re-read and re-encrypted its whole 64 KiB block, multiplying the reads of
+	// the upload source (and the EME work) by 2-17x.
+	blockIndex  uint64
+	blockData   []byte
+	blockCached bool
 }
 
 func (f *encryptedReadOnlyFile) Read(p []byte) (int, error) {
@@ -112,11 +125,7 @@ func (f *encryptedReadOnlyFile) readAtNonEmpty(p []byte, off int64) (int, error)
 	if remaining := plainSize - plainOffset; remaining < plainBlockSize {
 		plainBlockSize = remaining
 	}
-	plainBlock := make([]byte, plainBlockSize)
-	if err := readFullAt(f.plain, plainBlock, plainOffset); err != nil {
-		return 0, err
-	}
-	encBlock, err := f.source.cipher.EncryptBlock(plainBlock, uint64(blockIndex), f.source.nonce)
+	encBlock, err := f.encryptedBlock(uint64(blockIndex), plainOffset, plainBlockSize)
 	if err != nil {
 		return 0, err
 	}
@@ -125,6 +134,29 @@ func (f *encryptedReadOnlyFile) readAtNonEmpty(p []byte, off int64) (int, error)
 	}
 	n := copy(p, encBlock[blockOffset:])
 	return n, nil
+}
+
+// encryptedBlock returns the encrypted form of block blockIndex, reusing the
+// memoized copy when it is still the current block. The returned slice must be
+// treated as read-only: it is shared with the cache and with other callers.
+func (f *encryptedReadOnlyFile) encryptedBlock(blockIndex uint64, plainOffset, plainBlockSize int64) ([]byte, error) {
+	f.blockMu.Lock()
+	defer f.blockMu.Unlock()
+	if f.blockCached && f.blockIndex == blockIndex {
+		return f.blockData, nil
+	}
+	plainBlock := make([]byte, plainBlockSize)
+	if err := readFullAt(f.plain, plainBlock, plainOffset); err != nil {
+		return nil, err
+	}
+	encBlock, err := f.source.cipher.EncryptBlock(plainBlock, blockIndex, f.source.nonce)
+	if err != nil {
+		return nil, err
+	}
+	f.blockIndex = blockIndex
+	f.blockData = encBlock
+	f.blockCached = true
+	return encBlock, nil
 }
 
 func (f *encryptedReadOnlyFile) Seek(offset int64, whence int) (int64, error) {
