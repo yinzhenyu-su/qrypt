@@ -855,6 +855,12 @@ func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
 	partUploads := map[string]int{}
 	failPart2 := true
 	var completed bool
+	// part2Started closes when the hanging part-2 PUT reaches the server. The
+	// driver only issues it after part 1 was acknowledged and its ETag was
+	// persisted, so the test interrupts the attempt at a point where the
+	// resume state is guaranteed on disk instead of racing a wall clock.
+	part2Started := make(chan struct{})
+	var part2Once sync.Once
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/obj-resume" {
 			t.Fatalf("unexpected oss path: %s", r.URL.Path)
@@ -865,11 +871,10 @@ func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
 			_, _ = io.ReadAll(r.Body)
 			partsMu.Lock()
 			partUploads[partNumber]++
-			partsMu.Unlock()
-			partsMu.Lock()
 			shouldFail := failPart2 && partNumber == "2"
 			partsMu.Unlock()
 			if partNumber == "2" {
+				part2Once.Do(func() { close(part2Started) })
 				if shouldFail {
 					<-r.Context().Done()
 					return
@@ -962,9 +967,24 @@ func TestDriverPutMultipartUploadResumesPersistedParts(t *testing.T) {
 	first := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	first.InstallStateStore(store)
 	routeOSSToTestServer(first.cl.ossClient, oss)
-	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
-	if _, err := first.PutSource(firstCtx, drive.UploadRequest{ParentID: "parent", Name: "resume.bin", Source: source}); err == nil {
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := first.PutSource(firstCtx, drive.UploadRequest{ParentID: "parent", Name: "resume.bin", Source: source})
+		firstDone <- err
+	}()
+	select {
+	case <-part2Started:
+		// Part 1 is on disk and part 2 is in flight: interrupt here.
+	case err := <-firstDone:
+		t.Fatalf("first attempt ended before part 2 started: %v", err)
+	case <-time.After(30 * time.Second):
+		cancelFirst()
+		t.Fatal("first attempt never reached part 2")
+	}
+	cancelFirst()
+	if err := <-firstDone; err == nil {
 		t.Fatal("first upload unexpectedly succeeded")
 	}
 
