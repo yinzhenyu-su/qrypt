@@ -41,5 +41,10 @@ func TestMain(m *testing.M) {
 	); err != nil {
 		panic("cli: goroutine leak after tests: " + err.Error())
 	}
+	// os.Exit does not run the deferred removal above, which only the panic
+	// path reaches, so drop the isolated home explicitly here. Whatever a
+	// still-open handle keeps behind (Windows) is swept by test-layers.sh on
+	// the next layer run.
+	os.RemoveAll(home)
 	os.Exit(code)
 }
