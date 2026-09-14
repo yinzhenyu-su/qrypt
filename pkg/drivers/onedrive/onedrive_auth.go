@@ -12,8 +12,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 func (d *Driver) refresh(ctx context.Context) error {
@@ -220,7 +218,7 @@ func (d *Driver) requestRawWithAuth(ctx context.Context, method, rawURL string, 
 		if !retryableOneDriveError(ctx, err) || attempt == oneDriveRequestAttempts-1 {
 			return err
 		}
-		if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
+		if waitErr := oneDriveRetryWait(ctx, attempt); waitErr != nil {
 			return waitErr
 		}
 	}

@@ -33,13 +33,13 @@ pkg_total() { # $1 = profile, $2 = package path prefix
   fi
 }
 
-run_one() { # $1 = package, $2 = profile
-  local pkg=$1 profile=$2
+run_one() { # $1 = package, $2 = profile, $3 = log
+  local pkg=$1 profile=$2 log=$3
   if [ "$pkg" = "pkg/syncer" ]; then
     go test -coverpkg=./pkg/syncer/ -coverprofile="$profile" \
-      ./internal/cli/ ./pkg/syncer/ >/dev/null 2>&1
+      ./internal/cli/ ./pkg/syncer/ >"$log" 2>&1
   else
-    go test -coverprofile="$profile" "./$pkg" >/dev/null 2>&1
+    go test -coverprofile="$profile" "./$pkg" >"$log" 2>&1
   fi
 }
 
@@ -47,14 +47,30 @@ print_mode=false
 [ "${1:-}" = "-print" ] && print_mode=true
 
 fail=0
+run_fail=0
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
 echo "== coverage gate =="
+# The six profiles are independent test binaries and each is mostly waiting on
+# timers rather than burning CPU, so they overlap well: the gate then costs the
+# slowest package instead of the sum of all six.
+declare -A pid_of profile_of log_of
 for pkg in "${!FLOOR[@]}"; do
-  profile="$tmpdir/$(echo "$pkg" | tr '/' '_').out"
-  run_one "$pkg" "$profile"
-  total=$(pkg_total "$profile" "$pkg")
+  profile_of[$pkg]="$tmpdir/$(echo "$pkg" | tr '/' '_').out"
+  log_of[$pkg]="$tmpdir/$(echo "$pkg" | tr '/' '_').log"
+  run_one "$pkg" "${profile_of[$pkg]}" "${log_of[$pkg]}" &
+  pid_of[$pkg]=$!
+done
+
+for pkg in "${!FLOOR[@]}"; do
+  if ! wait "${pid_of[$pkg]}"; then
+    echo "  !! $pkg: coverage run failed"
+    sed 's/^/     /' "${log_of[$pkg]}"
+    run_fail=1
+    continue
+  fi
+  total=$(pkg_total "${profile_of[$pkg]}" "$pkg")
   floor=${FLOOR[$pkg]}
   printf '  %-16s %5s%%  (floor %d%%)\n' "$pkg" "$total" "$floor"
   if [ "$print_mode" = false ] && awk -v t="$total" -v f="$floor" 'BEGIN{exit !(t+0 < f+0)}'; then
@@ -63,6 +79,12 @@ for pkg in "${!FLOOR[@]}"; do
   fi
 done
 
+# -print skips the floor gate, but a package whose tests could not even run
+# is still a failure: the report would otherwise silently lose that row.
+if [ "$run_fail" -ne 0 ]; then
+  echo "== FAIL: a coverage run did not complete; see the output above =="
+  exit 1
+fi
 if [ "$print_mode" = true ]; then
   echo "(print mode: no gate applied)"
   exit 0

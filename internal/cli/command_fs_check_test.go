@@ -127,6 +127,11 @@ func TestFsCheckBothSidesLocalIsUsageError(t *testing.T) {
 	}
 }
 
+// copyTree duplicates src into dst with the source mtimes, because the check
+// fixtures compare timestamps: a plain byte copy stamps the destination with
+// "now", so the two trees only looked identical while setup and copy happened
+// to land in the same wall-clock second - and stopped looking identical the
+// moment a loaded machine pushed the copy across a second boundary.
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
 	err := filepath.WalkDir(src, func(path string, entry os.DirEntry, err error) error {
@@ -141,11 +146,18 @@ func copyTree(t *testing.T, src, dst string) {
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return err
+		}
+		return os.Chtimes(target, info.ModTime(), info.ModTime())
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +331,17 @@ func TestFsCheckDetectsTypeConflict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(local, "sub", "item", "nested", "x.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// a.txt has to mirror the source exactly, mtime included: the default
+	// comparison includes mtime, so a hand-written copy only counts as equal
+	// while both writes happen to land in the same wall-clock second.
+	src, err := os.Stat(filepath.Join(remote, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(local, "a.txt"), []byte("aaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(local, "a.txt"), src.ModTime(), src.ModTime()); err != nil {
 		t.Fatal(err)
 	}
 

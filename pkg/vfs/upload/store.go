@@ -21,6 +21,8 @@ type UploadStagingStatus = vfstypes.UploadStagingStatus
 func cleanVirtual(path string) string   { return vfstypes.CleanVirtualPath(path) }
 func isPathUnder(path, dir string) bool { return vfstypes.IsPathUnder(path, dir) }
 
+// Journal compaction watermarks. They are defaults: every store is created
+// with these and tests may lower them (see PendingStore.compactMaxEntries).
 const (
 	journalCompactMaxBytes   = 512 << 10
 	journalCompactMaxEntries = 1024
@@ -48,6 +50,9 @@ func NewPendingStore(dir string, mount ...string) (*PendingStore, error) {
 		idIndex:   map[string]string{},
 		journalMu: sync.Mutex{},
 		log:       log,
+
+		compactMaxBytes:   journalCompactMaxBytes,
+		compactMaxEntries: journalCompactMaxEntries,
 	}
 	entries, err := store.loadJournal()
 	if err != nil {
@@ -124,6 +129,30 @@ type PendingStore struct {
 	// write-ahead fault injection).
 	journalFail func() error
 	compactFail func() error
+
+	// compactMaxBytes / compactMaxEntries tune when the journal is rewritten
+	// from the in-memory pending set. NewPendingStore seeds them from the
+	// package defaults; tests lower them so the append-path compaction can be
+	// exercised without paying one fsync per appended entry.
+	compactMaxBytes   int64
+	compactMaxEntries int
+
+	// skipJournalSync drops the fsync that makes a journal write durable.
+	// Tests that race the store's state machine set it: they assert on locking
+	// and interleaving, not on crash durability, and one fsync per operation is
+	// several milliseconds on APFS - enough to dominate such a test. The zero
+	// value keeps the production behaviour, so leaving it unset is always safe.
+	skipJournalSync bool
+}
+
+// syncJournalFile flushes a journal write to disk unless the store is in the
+// no-durability mode tests use. Every journal write goes through here so the
+// durability story has exactly one place to read.
+func (c *PendingStore) syncJournalFile(f *os.File) error {
+	if c.skipJournalSync {
+		return nil
+	}
+	return f.Sync()
 }
 
 type JournalEntry struct {
@@ -809,7 +838,7 @@ func (c *PendingStore) appendJournalLocked(entry JournalEntry) error {
 		f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := c.syncJournalFile(f); err != nil {
 		f.Close()
 		return err
 	}
@@ -868,7 +897,7 @@ func (c *PendingStore) shouldCompactJournal(entries int) bool {
 	if err != nil {
 		return false
 	}
-	if info.Size() >= journalCompactMaxBytes {
+	if info.Size() >= c.compactMaxBytes {
 		return true
 	}
 	if entries == 0 {
@@ -877,7 +906,7 @@ func (c *PendingStore) shouldCompactJournal(entries int) bool {
 	c.mu.RLock()
 	pendingCount := len(c.pending)
 	c.mu.RUnlock()
-	return entries >= journalCompactMaxEntries && entries > pendingCount+32
+	return entries >= c.compactMaxEntries && entries > pendingCount+32
 }
 func countJournalEntries(path string, log *logging.Scope) int {
 	f, err := os.Open(path)
@@ -927,7 +956,7 @@ func (c *PendingStore) compactJournalLocked() error {
 		}
 	}
 	c.mu.RUnlock()
-	if err := f.Sync(); err != nil {
+	if err := c.syncJournalFile(f); err != nil {
 		f.Close()
 		return err
 	}
@@ -1074,6 +1103,8 @@ func PruneUploadJournal(dir string) (int, error) {
 			return pruned, err
 		}
 	}
+	// PruneUploadJournal is a package-level entry point with no store instance,
+	// so it always syncs: it runs once at startup, not per operation.
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

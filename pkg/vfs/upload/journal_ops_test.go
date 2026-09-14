@@ -2,6 +2,7 @@ package upload
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,5 +174,55 @@ func TestPruneUploadJournalRespectsCleanMarkers(t *testing.T) {
 		if p.Path == "/done.txt" {
 			t.Fatalf("pruned journal still loads /done.txt as pending")
 		}
+	}
+}
+
+// TestJournalCompactsDuringAppend pins that a failing upload's retries cannot
+// grow the journal without bound: compaction has to run on the append path, not
+// only when a store loads an existing journal.
+//
+// The entry watermark is lowered so the test can be small. The production 1024
+// would cost 1024 fsyncs, and the condition is the same one either way - it is
+// the "+32 above the live set" slack in shouldCompactJournal that sets the real
+// floor, so anything below it behaves identically.
+func TestJournalCompactsDuringAppend(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.compactMaxEntries = 32
+	store.addPending(t, "/draft.txt", "draft.txt", "draft.txt.staging")
+
+	// Two compaction cycles: the journal must be rewritten as it regrows past
+	// the watermark, not only the first time it crosses.
+	const attempts = 80
+	current, ok := store.UploadByPath("/draft.txt")
+	if !ok {
+		t.Fatal("pending record missing after save")
+	}
+	for i := 0; i < attempts; i++ {
+		got, ok, err := store.RecordUploadFailureIfUnchanged(current, errors.New("temporary failure"), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatal("pending not found")
+		}
+		if got.RetryCount != i+1 {
+			t.Fatalf("retry count = %d, want %d", got.RetryCount, i+1)
+		}
+		current = got
+	}
+
+	journal, err := os.ReadFile(store.journalPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One watermark window is at most 34 lines (32 slack plus the live record);
+	// 40 leaves margin while still failing an append-only journal, which would
+	// hold attempts+1 = 81 lines.
+	if lines := strings.Count(string(journal), "\n"); lines > 40 {
+		t.Fatalf("journal lines = %d after %d appends, want it compacted near the %d-entry watermark", lines, attempts, store.compactMaxEntries)
+	}
+	pending := store.PendingUploads()
+	if len(pending) != 1 || pending[0].RetryCount != attempts {
+		t.Fatalf("pending = %+v, want one entry with retry_count=%d", pending, attempts)
 	}
 }

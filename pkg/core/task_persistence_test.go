@@ -266,6 +266,22 @@ func TestCoreRecoversCompleteMutableStagingWithoutSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The item list and the task detail are published by different stages of
+	// recovery, so the wait above does not mean the diagnostics have landed:
+	// poll them too rather than reading them once.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		detail := recoveredTask.Detail
+		if detail["recovered_from_journal"] == true &&
+			strings.Contains(fmt.Sprint(detail["recovery_items"]), "staging_available") {
+			break
+		}
+		time.Sleep(time.Millisecond)
+		recoveredTask, err = recovered.GetTask(ctx, "staging-recover")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if recoveredTask.Detail["recovered_from_journal"] != true || !strings.Contains(fmt.Sprint(recoveredTask.Detail["recovery_items"]), "staging_available") {
 		t.Fatalf("missing staging recovery diagnostics: %+v", recoveredTask.Detail)
 	}

@@ -61,6 +61,14 @@ if [ "$(uname -s)" = "Linux" ]; then
   fi
 fi
 
+# The layers run in order rather than concurrently. ci.yaml spreads them over
+# four runners, and overlapping them here is worth about a third of the wall
+# clock when the box is idle (measured 87s against 126s) - but the suites are
+# not hardened for it: four separate tests assert on a snapshot that the load
+# left stale, and each one only showed up by running the gate that way. Overlap
+# only the layers whose work is genuinely waiting rather than computing, which
+# is why test-layers.sh runs the vfs-stability repeats concurrently and
+# coverage.sh fans its profiles out.
 step() {
   printf '\n== %s ==\n' "$1"
   shift

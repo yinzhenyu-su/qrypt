@@ -36,6 +36,9 @@ name = "loc"
 type = "localfs"
 [mounts.params]
 root_path = `+util.TOMLPath(remote)+`
+[mounts.upload]
+upload_delay = "10ms"
+delete_delay = "10ms"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}

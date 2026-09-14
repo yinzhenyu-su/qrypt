@@ -43,6 +43,28 @@ measure() {
           for (i=1;i<=NF;i++) if ($i=="Test") print "  FAIL " $(i+2)
         }
       ' "$tmp" | head -20
+      # The names alone do not say whether a deadline, an assertion, or a
+      # teardown failed, and replaying the whole stream just buries it under
+      # whatever else was talking (fuzz seeding is loud), so replay only the
+      # output belonging to the tests that failed.
+      printf '== failure detail ==\n'
+      awk -F'"' '
+        /"Action":"fail"/ && /"Test":"[^"]+"/ {
+          for (i=1;i<=NF;i++) if ($i=="Test") print $(i+2)
+        }
+      ' "$tmp" | sort -u | while IFS= read -r name; do
+        printf '  --- %s\n' "$name"
+        awk -F'"' -v want="$name" '
+          /"Action":"output"/ && index($0, "\"Test\":\"" want "\"") {
+            for (i=1;i<=NF;i++) {
+              if ($i=="Output") {
+                out=$(i+2); gsub(/\\t/, "  ", out); sub(/\\n$/, "", out)
+                if (out != "") print "    " out
+              }
+            }
+          }
+        ' "$tmp" | tail -25
+      done
     fi
     printf '== slowest packages ==\n'
     awk -F'"' '
@@ -86,6 +108,33 @@ measure() {
   fi
 }
 
+# run_repeated <repeats> <command...> runs the command REPEATS times as
+# independent processes and fails when any run fails. Every test in the
+# repeated suites uses its own t.TempDir(), so the runs share no state; the
+# suites are timer-bound rather than CPU-bound, so overlapping them costs a
+# fraction of the wall clock that `-count=N` spends running the same code
+# paths back to back.
+run_repeated() {
+  local repeats="$1"; shift
+  local tmp i status=0
+  tmp=$(mktemp -d)
+  local pids=() logs=()
+  for ((i = 0; i < repeats; i++)); do
+    logs+=("$tmp/run-$i.log")
+    "$@" >"${logs[$i]}" 2>&1 &
+    pids+=("$!")
+  done
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      status=1
+      printf '== FAIL: repetition %d/%d ==\n' "$((i + 1))" "$repeats"
+      cat "${logs[$i]}"
+    fi
+  done
+  rm -rf "$tmp"
+  return "$status"
+}
+
 case "${1:-fast}" in
   fast)
     # -json so the per-package wall clock is reported; the slowest 10
@@ -100,8 +149,9 @@ case "${1:-fast}" in
     ;;
   vfs-stability)
     # The async upload engine (worker shutdown, staging cleanup, journaling)
-    # is timing sensitive; a triple run catches the occasional flake.
-    measure "vfs-stability: go test -count=3 ./pkg/vfs" go test -count=3 ./pkg/vfs/
+    # is timing sensitive; three independent runs catch the occasional flake.
+    measure "vfs-stability: 3x go test -count=1 ./pkg/vfs" \
+      run_repeated 3 go test -count=1 ./pkg/vfs/
     ;;
   smoke)
     measure "smoke: localfs" scripts/smoke-localfs.sh

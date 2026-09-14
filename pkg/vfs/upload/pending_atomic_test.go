@@ -181,6 +181,11 @@ func TestRemoveUploadSuccessConsistent(t *testing.T) {
 // snapshot->journal->memory transactions).
 func TestConcurrentSaveRemoveSamePath(t *testing.T) {
 	store := newPendingStoreFixture(t)
+	// This races the locking, not the disk: every one of the 100 saves is a
+	// journal append with an fsync (several ms each), and the fsync changes
+	// nothing observable in-process, so skipping it keeps every interleaving
+	// while taking the wall clock down to the lock contention alone.
+	store.skipJournalSync = true
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -211,6 +216,9 @@ func TestConcurrentSaveRemoveSamePath(t *testing.T) {
 // under the same subtree is race-free.
 func TestConcurrentRemoveUploadsUnderAndSave(t *testing.T) {
 	store := newPendingStoreFixture(t)
+	// See TestConcurrentSaveRemoveSamePath: the fsync per save is the whole cost
+	// here and it does not affect anything the test observes.
+	store.skipJournalSync = true
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(2)

@@ -25,7 +25,20 @@ func (d *behaviorContractDriver) List(ctx context.Context, parentID string) ([]d
 	return append(entries, drive.Entry{ID: "leaked", Name: "leaked.txt", IsDir: false}), nil
 }
 
+// fastBehaviorConvergence collapses the checks' convergence retries for a test
+// driver that is synchronous: nothing is converging, so each retry would only
+// spend the budget before reporting the verdict it already had. The violating
+// test below is the reason this exists - its leak never disappears, so at the
+// production step it slept the full 1s + 2s before failing the check.
+func fastBehaviorConvergence(t *testing.T) {
+	t.Helper()
+	restore := drive.BehaviorConvergenceStep
+	drive.BehaviorConvergenceStep = time.Millisecond
+	t.Cleanup(func() { drive.BehaviorConvergenceStep = restore })
+}
+
 func TestBehaviorChecksPassOnLocalfs(t *testing.T) {
+	fastBehaviorConvergence(t)
 	d := localfs.New(t.TempDir())
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)
@@ -41,6 +54,7 @@ func TestBehaviorChecksPassOnLocalfs(t *testing.T) {
 }
 
 func TestBehaviorChecksDetectListViolation(t *testing.T) {
+	fastBehaviorConvergence(t)
 	d := &behaviorContractDriver{Driver: localfs.New(t.TempDir()), listViolation: true}
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)

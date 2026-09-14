@@ -339,33 +339,39 @@ func TestVFSSpecsRunThroughRegistry(t *testing.T) {
 		{Test: "batchmove", Mount: "local", Count: 4, Size: "64"},
 	}
 	for _, req := range requests {
-		body, err := client.PostJSON(context.Background(), "/v1/driver/test", req)
-		if err != nil {
-			t.Fatalf("%s: %v", req.Test, err)
-		}
-		var runs []contracttest.TestRun
-		if err := json.Unmarshal(body, &runs); err != nil {
-			t.Fatalf("%s: unmarshal: %v body=%s", req.Test, err, body)
-		}
-		if len(runs) != 1 {
-			t.Fatalf("%s: got %d runs, want 1", req.Test, len(runs))
-		}
-		r := runs[0]
-		if r.Spec != req.Test || r.Mount != "local" {
-			t.Fatalf("%s: run identity wrong: %+v", req.Test, r)
-		}
-		if !r.Pass {
-			t.Fatalf("%s run failed: %+v", req.Test, r)
-		}
-		if len(r.Steps) == 0 {
-			t.Fatalf("%s run has no steps", req.Test)
-		}
-		if r.Started.IsZero() || r.Finished.IsZero() || r.Duration == "" {
-			t.Fatalf("%s run missing timing: %+v", req.Test, r)
-		}
-		if strings.HasPrefix(req.Test, "batch") && len(r.Metrics) == 0 {
-			t.Fatalf("%s run has no batch metrics", req.Test)
-		}
+		// Each spec creates its own uniquely named fixture directory under the
+		// mount, so the three runs do not share any path and can overlap: the
+		// server serializing them was costing their sum for no added coverage.
+		t.Run(req.Test, func(t *testing.T) {
+			t.Parallel()
+			body, err := client.PostJSON(context.Background(), "/v1/driver/test", req)
+			if err != nil {
+				t.Fatalf("%s: %v", req.Test, err)
+			}
+			var runs []contracttest.TestRun
+			if err := json.Unmarshal(body, &runs); err != nil {
+				t.Fatalf("%s: unmarshal: %v body=%s", req.Test, err, body)
+			}
+			if len(runs) != 1 {
+				t.Fatalf("%s: got %d runs, want 1", req.Test, len(runs))
+			}
+			r := runs[0]
+			if r.Spec != req.Test || r.Mount != "local" {
+				t.Fatalf("%s: run identity wrong: %+v", req.Test, r)
+			}
+			if !r.Pass {
+				t.Fatalf("%s run failed: %+v", req.Test, r)
+			}
+			if len(r.Steps) == 0 {
+				t.Fatalf("%s run has no steps", req.Test)
+			}
+			if r.Started.IsZero() || r.Finished.IsZero() || r.Duration == "" {
+				t.Fatalf("%s run missing timing: %+v", req.Test, r)
+			}
+			if strings.HasPrefix(req.Test, "batch") && len(r.Metrics) == 0 {
+				t.Fatalf("%s run has no batch metrics", req.Test)
+			}
+		})
 	}
 }
 

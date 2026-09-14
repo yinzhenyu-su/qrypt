@@ -136,8 +136,6 @@ func TestRcloneInteropFilenames(t *testing.T) {
 // file to the original plaintext, across the block-size boundaries.
 func TestRcloneInteropQryptToRcloneData(t *testing.T) {
 	rc := rclonePath(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
 
 	sizes := []int{0, 1, 100, BlockDataSize, BlockDataSize + 1, 200000}
 	type conf struct {
@@ -146,6 +144,17 @@ func TestRcloneInteropQryptToRcloneData(t *testing.T) {
 	for _, c := range []conf{{"base32", "standard"}, {"base64", "standard"}, {"base32", "obfuscate"}} {
 		name := fmt.Sprintf("%s/%s", c.encoding, c.mode)
 		t.Run(name, func(t *testing.T) {
+			// Each variant owns its vault, config and plaintext, so the three
+			// can overlap: without this the subtest pays for its own rclone
+			// launches one after another and the whole test is their sum.
+			//
+			// The deadline has to be created here rather than in the parent:
+			// a parallel subtest keeps running after the parent body returns
+			// and runs its defers, so a parent-scoped cancel would kill these
+			// rclone calls mid-flight.
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
 			vault := filepath.Join(t.TempDir(), "vault")
 			if err := os.MkdirAll(vault, 0o755); err != nil {
 				t.Fatal(err)

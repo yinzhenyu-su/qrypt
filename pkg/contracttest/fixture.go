@@ -19,6 +19,12 @@ type Fixture struct {
 	rootID string
 	// TestDir is the created test directory (valid after NewFixture).
 	TestDir drive.Entry
+	// convergenceStep paces the visibility polls below. Backends index new and
+	// removed entries with a delay, so a poll backs off from this step; tests
+	// driving a synchronous driver (the in-memory CRUD driver) lower it,
+	// because there the retries cannot converge on anything - they only spend
+	// the budget before reporting the same verdict.
+	convergenceStep time.Duration
 }
 
 // NewFixture creates a uniquely named test directory under the driver's
@@ -29,9 +35,10 @@ func NewFixture(ctx context.Context, d drive.Driver, kind string) (*Fixture, err
 		return nil, fmt.Errorf("generate test name: %w", err)
 	}
 	fx := &Fixture{
-		d:      d,
-		name:   fmt.Sprintf("__qrypt_%s_%x", kind, suffix),
-		rootID: driverProbeRootID(ctx, d),
+		d:               d,
+		name:            fmt.Sprintf("__qrypt_%s_%x", kind, suffix),
+		rootID:          driverProbeRootID(ctx, d),
+		convergenceStep: time.Second,
 	}
 	var err error
 	fx.TestDir, err = d.Mkdir(ctx, fx.rootID, fx.name)
@@ -52,11 +59,13 @@ func (fx *Fixture) RootID() string { return fx.rootID }
 // When want is true it returns the matched entry.
 func (fx *Fixture) VerifyList(ctx context.Context, parentID, name string, want bool) (drive.Entry, error) {
 	const maxAttempts = 3
-	delay := 1 * time.Second
+	delay := fx.convergenceStep
 	var lastEntries []drive.Entry
 	for attempt := range maxAttempts {
 		if attempt > 0 {
-			time.Sleep(delay)
+			if err := waitConvergence(ctx, delay); err != nil {
+				return drive.Entry{}, err
+			}
 			delay *= 2
 		}
 		entries, err := fx.d.List(ctx, parentID)
@@ -82,6 +91,21 @@ func (fx *Fixture) VerifyList(ctx context.Context, parentID, name string, want b
 		return drive.Entry{}, fmt.Errorf("entry %q not listed under %q after %d attempts: %v", name, parentID, maxAttempts, entryNames(lastEntries))
 	}
 	return drive.Entry{}, fmt.Errorf("entry %q still listed under %q after %d attempts: %v", name, parentID, maxAttempts, entryNames(lastEntries))
+}
+
+// waitConvergence waits out one backoff step unless ctx ends first, so a
+// caller's deadline bounds the polling instead of the retry schedule: the
+// schedules below double and would otherwise add up to a minute of sleeping
+// that no cancellation can interrupt.
+func waitConvergence(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // Remove deletes one entry and reports whether cleanup succeeded.
@@ -110,13 +134,15 @@ func (fx *Fixture) Remove(ctx context.Context, entry drive.Entry, role string) (
 // It returns the leftover entries plus a per-attempt visibility timeline.
 func (fx *Fixture) ScanResidual(ctx context.Context) ([]drive.Entry, []CRUDVisibilitySample, error) {
 	const maxAttempts = 7
-	delay := 1 * time.Second
+	delay := fx.convergenceStep
 	var residual []drive.Entry
 	var timeline []CRUDVisibilitySample
 	started := time.Now()
 	for attempt := range maxAttempts {
 		if attempt > 0 {
-			time.Sleep(delay)
+			if err := waitConvergence(ctx, delay); err != nil {
+				return residual, timeline, err
+			}
 			delay *= 2
 		}
 		entries, err := fx.d.List(ctx, fx.rootID)

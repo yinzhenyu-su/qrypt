@@ -182,6 +182,7 @@ func TestListingsAreStableAcrossCalls(t *testing.T) {
 }
 
 func TestBehaviourChecksPassOnFakeDriver(t *testing.T) {
+	fastBehaviorConvergence(t)
 	d := drive.NewFakeDriver()
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)

@@ -22,8 +22,12 @@ func TestSetModTimeAppliesToUpload(t *testing.T) {
 	}
 	storage := filepath.Join(t.TempDir(), "cache")
 	v, err := vfs.New(driver, vfs.Options{
-		StorageDir:  storage,
-		UploadDelay: time.Second,
+		StorageDir: storage,
+		// The delay only has to outlast the gap between the Flush below and the
+		// SetModTime right after it - two in-process calls plus one scheduling
+		// delay - so the item is still pending when SetModTime lands. A whole
+		// second bought no extra safety; it only made the test wait it out.
+		UploadDelay: 200 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,28 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
+// assertFailPauseSticky re-checks an item after several progress ticks. The
+// cloud ticker runs concurrently with the caller, so a Fail that only survives
+// until the next tick is one the caller cannot rely on: resuming also revokes
+// the capability CommitStagedUploadItem needs, so the "interrupt, then commit
+// the staged bytes" recovery path fails with "item is running". This is the
+// assertion that pins the ticker honouring the caller's pause.
+func assertFailPauseSticky(t *testing.T, c *Core, taskID, itemID string) task.ItemResult {
+	t.Helper()
+	time.Sleep(10 * UploadStreamTaskPollInterval)
+	items, err := c.ListTaskItems(context.Background(), taskID, task.ItemFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ItemID != itemID {
+		t.Fatalf("items after the pause = %+v, want the failed item still listed", items)
+	}
+	if items[0].State != task.StateWaitingInput {
+		t.Fatalf("item state after the pause = %s, want waiting_input: the progress ticker resumed an item the caller failed", items[0].State)
+	}
+	return items[0]
+}
+
 func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -164,6 +186,15 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	}
 	if len(items) != 1 || !items[0].Capabilities.CommitInput || items[0].Capabilities.OpenInput {
 		t.Fatalf("item capabilities = %+v, want commit without input", items)
+	}
+	// The pause must outlast the ticker: it is the window in which
+	// CommitStagedUploadItem below is the only legal next call.
+	paused := assertFailPauseSticky(t, c, created.ID, "item")
+	if !paused.Capabilities.CommitInput || paused.Capabilities.OpenInput {
+		t.Fatalf("item capabilities after the pause = %+v, want commit without input", paused)
+	}
+	if paused.Error == nil || paused.Error.Code != "interrupted" {
+		t.Fatalf("item error after the pause = %+v, want the caller's failure preserved", paused.Error)
 	}
 	if err := c.CommitStagedUploadItem(ctx, created.ID, "item"); err != nil {
 		t.Fatal(err)
@@ -514,6 +545,12 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	}
 	if one.State != task.StateWaitingInput || one.ResumeOffset != int64(len("str")) {
 		t.Fatalf("task item = %+v, want waiting input resume state", one)
+	}
+	// Only 3 of 5 bytes are staged, so the pause must keep offering input
+	// rather than resume the upload: the caller is expected to reopen below.
+	paused := assertFailPauseSticky(t, c, item.ID, "item")
+	if !paused.Capabilities.OpenInput || paused.ResumeOffset != int64(len("str")) {
+		t.Fatalf("item after the pause = %+v, want open-input at the staged offset", paused)
 	}
 
 	handle, err = c.OpenUploadStreamItem(ctx, item.ID, "item")

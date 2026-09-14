@@ -441,6 +441,16 @@ func writeGraphError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
+// fastOneDriveRetry collapses the driver's retry backoff. A test that injects a
+// retryable failure wants to observe what the driver does after the attempts
+// are exhausted, not spend the default 500ms + 1s schedule getting there.
+func fastOneDriveRetry(t *testing.T) {
+	t.Helper()
+	restore := oneDriveRetryWait
+	oneDriveRetryWait = func(context.Context, int) error { return nil }
+	t.Cleanup(func() { oneDriveRetryWait = restore })
+}
+
 func newTestDriver(t *testing.T) (*Driver, *mockOneDrive) {
 	t.Helper()
 	mock := newMockOneDrive()
@@ -670,6 +680,7 @@ func TestPutSourceLargeResumes(t *testing.T) {
 
 func TestPutSourceLargeReserveCleansUpOnCreateFailure(t *testing.T) {
 	ctx := context.Background()
+	fastOneDriveRetry(t)
 	d, mock := newTestDriver(t)
 	store := drive.NewFileStateStore(t.TempDir())
 	d.InstallStateStore(store)
