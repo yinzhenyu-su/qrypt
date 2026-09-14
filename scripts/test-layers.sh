@@ -24,6 +24,37 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Reclaim temp left behind by a test binary that was killed or hit -timeout:
+# such a process never reaches its own exit path, so the isolated CLI home, the
+# shared session-log roots, and the debug-server sockets under the process temp
+# root outlive it. Running this at the start of every layer makes each
+# invocation heal the previous one. Only qrypt-named entries are swept -- `Test*`
+# directories are t.TempDir's generic naming and belong to every Go tree on the
+# host, not just this one -- and a failed run's own temp is deliberately left
+# for inspection.
+clean_orphan_temp() {
+  # Resolve the temp root the way os.TempDir() does, so the sweep looks where
+  # the tests wrote under them: $TMPDIR on Unix, %TMP% then %TEMP% on Windows
+  # (Git Bash hands those over backslashed).
+  local tmp="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
+  tmp="${tmp//\\//}"
+  [ -d "$tmp" ] || return 0
+  # Best-effort: a leftover another process still holds open is common on
+  # Windows and must not abort the layer that follows.
+  rm -rf "$tmp"/qrypt-cli-test-home-* "$tmp"/qrypt-core-test-logs \
+    "$tmp"/qrypt-mobile-test-logs "$tmp"/qrypt-mount-test.* || true
+  # Test sockets carry a nanosecond timestamp
+  # (pkg/control/server_test.go, internal/cli/debug/debug_test.go). Keeping the
+  # numeric prefix means a live server at a hand-picked path such as
+  # /tmp/qrypt.sock is never removed.
+  local sock
+  for sock in "$tmp"/qrypt-[0-9]*.sock "$tmp"/qrypt-test-[0-9]*.sock; do
+    [ -e "$sock" ] || continue
+    rm -f "$sock" || true
+  done
+}
+clean_orphan_temp
+
 measure() {
   local label="$1"; shift
   local start
