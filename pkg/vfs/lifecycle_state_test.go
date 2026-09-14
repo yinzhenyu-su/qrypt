@@ -9,17 +9,19 @@ import (
 )
 
 // newStateTestVFS builds an unstarted VFS over the fake driver with stable
-// debounce delays: long enough that the arming check always observes the
-// timer before it can fire (10ms raced on slow -race machines), short
-// enough that the started instances in this file still upload within the
-// wait deadline.
+// debounce delays. The only constraint on them is that the arming checks in
+// this file still observe the timer before it can fire: a check runs a couple
+// of calls after the flush that arms it, so the window it has to survive is a
+// goroutine scheduling delay rather than microseconds - a previous 10ms value
+// raced on slow -race machines. 200ms keeps 20x that margin while costing a
+// fifth of the second the started instances below used to wait out.
 func newStateTestVFS(t *testing.T) *VFS {
 	t.Helper()
 	fs, err := New(drive.NewFakeDriver(), Options{
 		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
-		UploadDelay:   time.Second,
-		DeleteDelay:   time.Second,
+		UploadDelay:   200 * time.Millisecond,
+		DeleteDelay:   200 * time.Millisecond,
 		UploadWorkers: 1,
 	})
 	if err != nil {

@@ -3,7 +3,9 @@ package contracttest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -77,6 +79,12 @@ func TestFixtureLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFixture: %v", err)
 	}
+	// The memory driver is synchronous, so the polls below have nothing to wait
+	// for: an entry that is not listed now never will be, and the default
+	// backoff would only spend its budget proving that. One case below asserts
+	// exactly that (a missing name must fail), which is a full 1s+2s of sleep
+	// at the default step.
+	fx.convergenceStep = time.Millisecond
 	if fx.Name() == "" || fx.RootID() == "" {
 		t.Fatalf("fixture missing identity: name=%q root=%q", fx.Name(), fx.RootID())
 	}
@@ -114,6 +122,31 @@ func TestFixtureLifecycle(t *testing.T) {
 	}
 	if len(timeline) == 0 || timeline[0].Attempt != 1 {
 		t.Fatalf("unexpected timeline: %#v", timeline)
+	}
+}
+
+// TestFixturePollsRespectContext: the visibility polls back off, and left
+// alone that schedule sleeps for a minute on a backend that never converges.
+// A cancelled context has to end them promptly with its own error rather than
+// being slept through.
+func TestFixturePollsRespectContext(t *testing.T) {
+	d := newCRUDMemoryDriver()
+	fx, err := NewFixture(context.Background(), d, "unit")
+	if err != nil {
+		t.Fatalf("NewFixture: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	if _, err := fx.VerifyList(ctx, fx.RootID(), "no-such-name", true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("VerifyList on a cancelled context = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("VerifyList slept %s after cancellation, want a prompt return", elapsed)
+	}
+	if _, _, err := fx.ScanResidual(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanResidual on a cancelled context = %v, want context.Canceled", err)
 	}
 }
 

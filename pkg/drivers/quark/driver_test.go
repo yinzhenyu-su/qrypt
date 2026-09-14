@@ -1461,8 +1461,12 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	// ubuntu runner), so the deadline is a determinism aid, not the assert. It
 	// is set well above the auth round trip so only the throttled read can hit
 	// it; a success would mean the native limiter was bypassed.
+	//
+	// 64KiB at 1B/s is 18 hours, so the deadline only has to clear the auth
+	// round trip - 500ms leaves it a wider margin than the read can ever cross,
+	// and halves what the test spends waiting for the throttle to prove itself.
 	body := strings.Repeat("s", 64*1024)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	pre := &upPreResp{}

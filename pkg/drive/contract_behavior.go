@@ -8,6 +8,28 @@ import (
 	"time"
 )
 
+// BehaviorConvergenceStep paces the retries the behavior checks use to tolerate
+// eventually-consistent backends: quark indexes a created directory with a
+// delay, yun139 keeps serving a removed file for seconds. Tests that run these
+// checks against a synchronous driver lower it - there is nothing to converge,
+// so the retries only spend the budget before reporting the same verdict.
+var BehaviorConvergenceStep = time.Second
+
+// convergenceWait waits out one backoff step unless ctx ends first. It reports
+// whether the wait ran to completion; a cancelled context ends the retry
+// schedule instead of being slept through, so the checks still report the
+// verdict they had reached rather than stalling a caller that is shutting down.
+func convergenceWait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // ContractSandbox is an isolated directory created for behavioral contract
 // checks that mutate the backend. Callers must Cleanup it.
 type ContractSandbox struct {
@@ -133,7 +155,9 @@ func CheckListDirectChildren(ctx context.Context, d Driver) []ContractViolation 
 		if attempt >= 2 {
 			return []ContractViolation{{Name: "list_direct_children", Err: fmt.Errorf("sub listing = %v, want exactly [b.txt]", entryNames(child))}}
 		}
-		time.Sleep(time.Duration(attempt+1) * time.Second)
+		if !convergenceWait(ctx, time.Duration(attempt+1)*BehaviorConvergenceStep) {
+			return []ContractViolation{{Name: "list_direct_children", Err: fmt.Errorf("sub listing = %v, want exactly [b.txt]", entryNames(child))}}
+		}
 		child, err = d.List(ctx, sub.ID)
 		if err != nil {
 			return []ContractViolation{{Name: "list_direct_children", Err: fmt.Errorf("list sub: %w", err)}}
@@ -241,7 +265,9 @@ func CheckNotFoundClassification(ctx context.Context, d Driver) []ContractViolat
 	const maxAttempts = 5
 	for attempt := range maxAttempts {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			if !convergenceWait(ctx, time.Duration(attempt)*BehaviorConvergenceStep) {
+				break
+			}
 		}
 		rc, err := d.Read(ctx, entry, 0, 1)
 		if err != nil {

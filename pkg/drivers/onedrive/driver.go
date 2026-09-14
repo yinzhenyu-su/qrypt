@@ -19,6 +19,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const (
@@ -34,6 +35,12 @@ const (
 	oneDriveSessionMaxAge      = session.DefaultMaxAge
 	oneDriveSessionExpiryEvery = 4 * time.Hour
 )
+
+// oneDriveRetryWait paces the backoff between request attempts. It is a
+// variable so in-package tests can collapse it: a test that injects a retryable
+// 5xx wants to observe the outcome, not sit through the 500ms + 1s the default
+// schedule spends getting there. Production keeps util.WaitExponential.
+var oneDriveRetryWait = util.WaitExponential
 
 type host struct {
 	oauth string

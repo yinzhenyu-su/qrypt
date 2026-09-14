@@ -26,7 +26,16 @@ jobs:
           cache: true
 
       - name: Install FUSE headers
-        run: sudo apt-get update && sudo apt-get install -y libfuse-dev
+        run: |
+          # The runner image usually already ships libfuse-dev, and apt-get
+          # update is the slow half of this step; only reach for apt when the
+          # headers the cgo build actually needs are missing.
+          if pkg-config --exists fuse; then
+            echo "libfuse-dev already present"
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y libfuse-dev
 
       - name: Fuzz (30s per fuzzer)
         run: scripts/fuzz-nightly.sh 30s
@@ -58,7 +67,16 @@ jobs:
           cache: true
 
       - name: Install FUSE headers
-        run: sudo apt-get update && sudo apt-get install -y libfuse-dev
+        run: |
+          # The runner image usually already ships libfuse-dev, and apt-get
+          # update is the slow half of this step; only reach for apt when the
+          # headers the cgo build actually needs are missing.
+          if pkg-config --exists fuse; then
+            echo "libfuse-dev already present"
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y libfuse-dev
 
       - name: Coverage gate
         if: matrix.name == 'coverage'

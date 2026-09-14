@@ -64,10 +64,15 @@ type uploadStreamItem struct {
 	Open         bool
 	State        task.State
 	Error        *task.Error
-	Recovery     string
-	PendingFID   string
-	CloudTaskID  string
-	CloudState   task.State
+	// AwaitingReopen records a caller's Fail: the input stream is paused until
+	// the caller reopens the item, so the cloud progress ticker must not resume
+	// it. Cleared by whichever handle takes the item back (a resume write, a
+	// commit, or a reopen).
+	AwaitingReopen bool
+	Recovery       string
+	PendingFID     string
+	CloudTaskID    string
+	CloudState     task.State
 }
 
 type UploadStreamItemHandle struct {
@@ -370,6 +375,8 @@ func (c *Core) OpenUploadStreamItem(ctx context.Context, taskID, itemID string) 
 	item.Open = true
 	item.State = task.StateRunning
 	item.Error = nil
+	// The caller is taking the item back, so the pause it asked for is over.
+	item.AwaitingReopen = false
 	batch.updateTaskSnapshotLocked()
 	batch.mu.Unlock()
 	if needsCreate {
@@ -446,6 +453,8 @@ func (h *UploadStreamItemHandle) Write(ctx context.Context, data []byte) (int, e
 		current.Written += int64(n)
 		current.State = task.StateRunning
 		current.Error = nil
+		// The caller is feeding the stream again.
+		current.AwaitingReopen = false
 	}
 	h.batch.updateTaskSnapshotLocked()
 	h.batch.mu.Unlock()
@@ -464,6 +473,8 @@ func (h *UploadStreamItemHandle) Commit(ctx context.Context) error {
 	destPath := item.DestPath
 	item.Open = false
 	item.State = task.StateRunning
+	// The caller is finishing the item, so nothing is awaiting a reopen.
+	item.AwaitingReopen = false
 	h.batch.updateTaskSnapshotLocked()
 	h.batch.mu.Unlock()
 	entry, err := h.batch.uploadService.FinishStream(ctx, destPath)
@@ -516,6 +527,10 @@ func (h *UploadStreamItemHandle) Fail(code, message string) error {
 	item.Open = false
 	item.State = task.StateWaitingInput
 	item.Error = &task.Error{Code: code, Message: message, Retryable: true}
+	// Mark the pause as the caller's intent. Close deliberately does not do
+	// this: it is also the teardown path (mobile's closeCollectedHandles), and
+	// a shutdown must not strand the items it is closing.
+	item.AwaitingReopen = true
 	h.closed = true
 	h.batch.updateTaskSnapshotLocked()
 	return nil
@@ -858,6 +873,14 @@ func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
 		}
 	}
 	if isTerminalStreamItem(item.State) {
+		return false
+	}
+	if item.AwaitingReopen {
+		// The caller's Fail is authoritative for the same reason a cancel is:
+		// this ticker runs concurrently with it, and resuming here would erase
+		// the pause the caller asked for (and with it the CommitInput
+		// capability that CommitStagedUploadItem needs). The diagnostic cloud
+		// fields above are still refreshed; State and Error stay the caller's.
 		return false
 	}
 	switch remote.State {
