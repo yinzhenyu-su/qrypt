@@ -21,9 +21,13 @@ type countingUploadDriver struct {
 	removed     []string
 	renamed     []string
 	failUploads int
-	failRenames int
-	blockReturn chan struct{}
-	entered     chan struct{}
+	// failAllUploads keeps every attempt failing, so the pending record's
+	// retry state stays observable instead of being cleared by a retry that
+	// succeeds (see TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds).
+	failAllUploads bool
+	failRenames    int
+	blockReturn    chan struct{}
+	entered        chan struct{}
 }
 type blockingUploadDriver struct {
 	drive.UnsupportedOperations
@@ -166,6 +170,10 @@ func (d *countingUploadDriver) PutSource(ctx context.Context, req drive.UploadRe
 		return drive.Entry{}, err
 	}
 	d.mu.Lock()
+	if d.failAllUploads {
+		d.mu.Unlock()
+		return drive.Entry{}, errors.New("temporary upload failure")
+	}
 	if d.failUploads > 0 {
 		d.failUploads--
 		d.mu.Unlock()

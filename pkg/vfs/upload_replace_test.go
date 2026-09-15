@@ -15,7 +15,11 @@ func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
 		entries: map[string]drive.Entry{
 			"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
 		},
-		failUploads: 1,
+		// Keep every attempt failing so the retry state stays visible: with a
+		// single failure the retry both clears LastError (on the replacement
+		// record) and eventually drops the pending entry, so the state below
+		// would only be observable inside a scheduling-dependent window.
+		failAllUploads: true,
 	}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
@@ -36,7 +40,7 @@ func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
 
 	waitForCondition(t, func() bool {
 		pending := fs.PendingUploads()
-		return len(pending) == 1 && pending[0].RetryCount == 1 && pending[0].LastError != ""
+		return len(pending) == 1 && pending[0].RetryCount >= 1 && pending[0].LastError != ""
 	})
 	if removed := drv.removedIDs(); len(removed) != 0 {
 		t.Fatalf("existing file removed after failed temp upload: %v", removed)
