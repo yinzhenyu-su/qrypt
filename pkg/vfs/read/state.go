@@ -130,6 +130,10 @@ type sequentialRead struct {
 	lastChunk int64
 	confirmed bool
 	requestID uint64
+	// run identifies one continuous forward pass over the file. It is handed to
+	// the read cache so a chunk consumed by the pass that admitted it is not
+	// mistaken for reuse (see readcache.Access).
+	run uint64
 }
 
 type sequentialKey struct {
@@ -142,6 +146,7 @@ type accessDecision struct {
 	stale         bool
 	adaptive      bool
 	discontinuous bool
+	run           uint64
 }
 
 // sequentialState tracks recent per-file access patterns. It is only a
@@ -151,6 +156,10 @@ type sequentialState struct {
 	mu    sync.Mutex
 	reads map[sequentialKey]sequentialRead
 	order []sequentialKey
+	// nextRun hands out process-wide run ids. Per-key counters would restart
+	// when an entry is evicted by SequentialLimit and could collide with a run
+	// id the cache still remembers for a chunk.
+	nextRun uint64
 }
 
 func newSequentialState() *sequentialState {
@@ -324,6 +333,37 @@ func (s *State) observeSequentialRead(cacheKey string, offset, size int64) bool 
 	return s.observeReadAccess(cacheKey, AccessHint{}, offset, size).sequential
 }
 
+// nextRunFor reports the run id the access at offset belongs to: the previous
+// run while the access continues it, a fresh id when it starts a new pass. It is
+// the single definition of "a new run", shared by the recording path and by the
+// hint the read cache asks for before data is fetched. Callers hold
+// sequence.mu.
+func (s *State) nextRunFor(previous sequentialRead, exists bool, offset int64) uint64 {
+	if exists && offset == previous.end {
+		return previous.run
+	}
+	return s.sequence.nextRun + 1
+}
+
+// readRunHint returns the run id the next access at offset for this file will be
+// recorded under, without recording anything.
+//
+// Reader.Read needs it for reads that carry no open-file hint: those only learn
+// their own access decision after the data is read, but the chunks are admitted
+// while it is being fetched. Predicting from the same rule the recording path
+// uses keeps a continuous stream as one run instead of one run per read. Two
+// concurrent readers of the same file can predict the same id for different
+// passes; the effect is bounded to a window being treated as reuse.
+func (s *State) readRunHint(cacheKey string, offset int64) uint64 {
+	if cacheKey == "" {
+		return 0
+	}
+	s.sequence.mu.Lock()
+	defer s.sequence.mu.Unlock()
+	previous, exists := s.sequence.reads[sequentialKey{cacheKey: cacheKey}]
+	return s.nextRunFor(previous, exists, offset)
+}
+
 func (s *State) observeReadAccess(cacheKey string, hint AccessHint, offset, size int64) accessDecision {
 	adaptive := hint.SessionID != 0 && hint.RequestID != 0
 	if cacheKey == "" || offset < 0 || size <= 0 {
@@ -343,12 +383,16 @@ func (s *State) observeReadAccess(cacheKey string, hint AccessHint, offset, size
 	defer s.sequence.mu.Unlock()
 	previous, exists := s.sequence.reads[key]
 	if adaptive && exists && hint.RequestID <= previous.requestID {
-		return accessDecision{stale: true, adaptive: true}
+		return accessDecision{stale: true, adaptive: true, run: previous.run}
 	}
 	discontinuous := !exists || offset != previous.end
 	confirmed := !hint.Concurrent && exists && previous.confirmed && offset == previous.end
 	if !hint.Concurrent && exists && offset == previous.end && offset/ChunkSize > previous.lastChunk {
 		confirmed = true
+	}
+	run := s.nextRunFor(previous, exists, offset)
+	if run > s.sequence.nextRun {
+		s.sequence.nextRun = run
 	}
 	if !exists {
 		s.sequence.order = append(s.sequence.order, key)
@@ -358,13 +402,14 @@ func (s *State) observeReadAccess(cacheKey string, hint AccessHint, offset, size
 		lastChunk: lastChunk,
 		confirmed: confirmed,
 		requestID: hint.RequestID,
+		run:       run,
 	}
 	for len(s.sequence.order) > SequentialLimit {
 		oldest := s.sequence.order[0]
 		s.sequence.order = s.sequence.order[1:]
 		delete(s.sequence.reads, oldest)
 	}
-	return accessDecision{sequential: confirmed, adaptive: adaptive, discontinuous: discontinuous}
+	return accessDecision{sequential: confirmed, adaptive: adaptive, discontinuous: discontinuous, run: run}
 }
 
 func (s *State) readAccessCurrent(cacheKey string, hint AccessHint) bool {

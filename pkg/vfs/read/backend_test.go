@@ -29,7 +29,7 @@ func (b *fakeReadWindowBackend) CacheKey(drive.Entry) string {
 	return b.cacheKey
 }
 
-func (b *fakeReadWindowBackend) StoreChunk(_ string, _ drive.Entry, index int64, chunk []byte) {
+func (b *fakeReadWindowBackend) StoreChunk(_ context.Context, _ string, _ drive.Entry, index int64, chunk []byte) {
 	b.storedKeys = append(b.storedKeys, index)
 	b.storedData = append(b.storedData, string(chunk))
 }

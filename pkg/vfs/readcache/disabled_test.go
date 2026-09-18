@@ -18,8 +18,8 @@ func TestReadCacheDisabledStoreShortCircuits(t *testing.T) {
 		t.Fatal("max_size=0 store reported enabled")
 	}
 
-	store.PutChunkAsync("fid", 64, 0, []byte("data"))
-	if err := store.PutChunk("fid", 64, 0, []byte("data")); err != nil {
+	store.PutChunkAsync("fid", 64, 0, []byte("data"), testAccess)
+	if err := store.PutChunk("fid", 64, 0, []byte("data"), testAccess); err != nil {
 		t.Fatalf("PutChunk on disabled store: %v", err)
 	}
 	if err := store.PutLocalFile("fid", 64, t.TempDir()); err != nil {
@@ -28,10 +28,10 @@ func TestReadCacheDisabledStoreShortCircuits(t *testing.T) {
 	if ok, err := store.HasChunk("fid", 0); err != nil || ok {
 		t.Fatalf("HasChunk on disabled store = %v,%v want miss", ok, err)
 	}
-	if data, ok, err := store.GetChunk("fid", 0); err != nil || ok || data != nil {
+	if data, ok, err := store.GetChunk("fid", 0, testAccess); err != nil || ok || data != nil {
 		t.Fatalf("GetChunk on disabled store = %v,%v want miss", ok, err)
 	}
-	if _, _, ok, err := store.GetChunkWithRange("fid", 0, 0, 4); err != nil || ok {
+	if _, _, ok, err := store.GetChunkWithRange("fid", 0, 0, 4, testAccess); err != nil || ok {
 		t.Fatalf("GetChunkWithRange on disabled store = %v,%v want miss", ok, err)
 	}
 	if err := store.FlushReadCache(); err != nil {

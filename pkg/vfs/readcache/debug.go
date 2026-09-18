@@ -8,18 +8,33 @@ import (
 // DebugReadCache is a point-in-time snapshot of the read cache for
 // debugging and tests.
 type DebugReadCache struct {
-	Enabled             bool                 `json:"enabled"`
-	MaxBytes            int64                `json:"max_bytes"`
-	LargeFileThreshold  int64                `json:"large_file_threshold"`
-	ChunkCount          int                  `json:"chunk_count"`
-	Bytes               int64                `json:"bytes"`
-	LargeFileBytes      int64                `json:"large_file_bytes"`
-	SmallFileBytes      int64                `json:"small_file_bytes"`
+	Enabled            bool  `json:"enabled"`
+	MaxBytes           int64 `json:"max_bytes"`
+	LargeFileThreshold int64 `json:"large_file_threshold"`
+	ChunkCount         int   `json:"chunk_count"`
+	Bytes              int64 `json:"bytes"`
+	LargeFileBytes     int64 `json:"large_file_bytes"`
+	SmallFileBytes     int64 `json:"small_file_bytes"`
+	// UnprovenBytes is content no read run has come back for; a sequential
+	// stream reading back its own read-ahead lands here. ProvenBytes is the
+	// rest and equals ProbationaryBytes + ProtectedBytes.
+	UnprovenBytes int64 `json:"unproven_bytes"`
+	ProvenBytes   int64 `json:"proven_bytes"`
+	// StreamBytes is the part of that unproven content the sequential
+	// sub-budget is charging: unproven bytes in the large-file class. An
+	// eviction pass cuts it back to a share of the large-class ceiling.
+	StreamBytes int64 `json:"stream_bytes"`
+	// ProtectedBytes and ProbationaryBytes split the proven content by segment;
+	// the drain order empties probationary before touching protected.
+	ProtectedBytes      int64                `json:"protected_bytes"`
+	ProbationaryBytes   int64                `json:"probationary_bytes"`
 	FileCount           int                  `json:"file_count"`
 	Hits                int64                `json:"hits"`
 	Misses              int64                `json:"misses"`
 	Puts                int64                `json:"puts"`
 	Evicted             int64                `json:"evicted"`
+	EvictedBytes        int64                `json:"evicted_bytes"`
+	Promotions          int64                `json:"promotions"`
 	LastGetError        string               `json:"last_get_error,omitempty"`
 	LastGetErrorAt      *time.Time           `json:"last_get_error_at,omitempty"`
 	LastPutError        string               `json:"last_put_error,omitempty"`
@@ -73,6 +88,8 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 	snapshot.Misses = c.stats.misses.Load()
 	snapshot.Puts = c.stats.puts.Load()
 	snapshot.Evicted = c.stats.evicted.Load()
+	snapshot.EvictedBytes = c.stats.evictedBytes.Load()
+	snapshot.Promotions = c.stats.promotions.Load()
 	snapshot.WriteQueueDropped = c.stats.writeDropped.Load()
 	snapshot.LastWriteMS = c.stats.lastWriteMS.Load()
 	snapshot.MaxWriteMS = c.stats.maxWriteMS.Load()
@@ -93,15 +110,32 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 		sh.mu.RLock()
 		for fid, fc := range sh.chunks {
 			fc.mu.RLock()
+			// The class is decided by the file's total cached bytes, so the
+			// unproven total has to be known before the class is.
+			var cachedBytes, unproven int64
+			for _, chunk := range fc.chunks {
+				cachedBytes += chunk.size
+				if chunk.state == stateUnproven {
+					unproven += chunk.size
+				}
+			}
 			file := DebugReadCacheFile{ID: fid, Size: fc.fileSize}
 			for _, chunk := range fc.chunks {
 				snapshot.ChunkCount++
 				snapshot.Bytes += chunk.size
 				file.ChunkCount++
 				file.Bytes += chunk.size
+				switch chunk.state {
+				case stateProtected:
+					snapshot.ProtectedBytes += chunk.size
+				case stateProbationary:
+					snapshot.ProbationaryBytes += chunk.size
+				}
 			}
-			file.Large = readCacheFileLarge(file.Size, file.Bytes)
+			snapshot.UnprovenBytes += unproven
+			file.Large = classOf(file.Size, cachedBytes) == classLarge
 			if file.Large {
+				snapshot.StreamBytes += unproven
 				snapshot.LargeFileBytes += file.Bytes
 			} else {
 				snapshot.SmallFileBytes += file.Bytes
@@ -116,5 +150,6 @@ func (c *Store) DebugSnapshot() DebugReadCache {
 	sort.Slice(snapshot.Files, func(i, j int) bool {
 		return snapshot.Files[i].ID < snapshot.Files[j].ID
 	})
+	snapshot.ProvenBytes = snapshot.ProbationaryBytes + snapshot.ProtectedBytes
 	return snapshot
 }
