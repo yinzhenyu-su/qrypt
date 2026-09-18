@@ -24,7 +24,7 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 	key := strings.Repeat("a", sha256.Size*2)
 
 	c1 := newTestStore(t, cacheDir, 10<<20)
-	if err := c1.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+	if err := c1.PutChunk(key, int64(len("cached")), 0, []byte("cached"), testAccess); err != nil {
 		t.Fatal(err)
 	}
 	if err := c1.FlushReadIndex(); err != nil {
@@ -32,7 +32,7 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 	}
 
 	c2 := newTestStore(t, cacheDir, 10<<20)
-	got, ok, err := c2.GetChunk(key, 0)
+	got, ok, err := c2.GetChunk(key, 0, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +61,11 @@ func TestReadCacheGetsChunkRange(t *testing.T) {
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
 	copy(chunk[32:48], []byte("0123456789abcdef"))
 	cache := newTestStore(t, cacheDir, 10<<20)
-	if err := cache.PutChunk(key, int64(len(chunk)), 0, chunk); err != nil {
+	if err := cache.PutChunk(key, int64(len(chunk)), 0, chunk, testAccess); err != nil {
 		t.Fatal(err)
 	}
 
-	got, ok, err := cache.GetChunkRange(key, 0, 32, 16)
+	got, ok, err := cache.GetChunkRange(key, 0, 32, 16, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
-	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached"), testAccess); err != nil {
 		t.Fatal(err)
 	}
 	matches, err := filepath.Glob(filepath.Join(cacheDir, "reading", "*.batch"))
@@ -98,7 +98,7 @@ func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok, err := cache.GetChunkRange(key, 0, 0, 6)
+	got, ok, err := cache.GetChunkRange(key, 0, 0, 6, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,13 +119,13 @@ func TestReadCachePutRecreatesReadingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached"), testAccess); err != nil {
 		t.Fatal(err)
 	}
 	if err := cache.FlushReadIndex(); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := cache.GetChunk(key, 0)
+	got, ok, err := cache.GetChunk(key, 0, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestReadCacheClearRemovesReadingData(t *testing.T) {
 	cache := newTestStore(t, cacheDir, 10<<20)
 	t.Cleanup(func() { _ = cache.Close() })
 
-	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached")); err != nil {
+	if err := cache.PutChunk(key, int64(len("cached")), 0, []byte("cached"), testAccess); err != nil {
 		t.Fatal(err)
 	}
 	if err := cache.FlushReadCache(); err != nil {
@@ -173,12 +173,12 @@ func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"), testAccess)
 	cache.WaitReadCacheWrites()
 	if err := cache.FlushReadIndex(); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := cache.GetChunk(key, 0)
+	got, ok, err := cache.GetChunk(key, 0, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,13 +191,13 @@ func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
 
-	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
-	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"), testAccess)
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"), testAccess)
 	cache.WaitReadCacheWrites()
 	if err := cache.FlushReadIndex(); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := cache.GetChunk(key, 0)
+	got, ok, err := cache.GetChunk(key, 0, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,9 +209,9 @@ func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
 		t.Fatalf("puts = %d, want 1", state.Puts)
 	}
 
-	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("new"))
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("new"), testAccess)
 	cache.WaitReadCacheWrites()
-	got, ok, err = cache.GetChunk(key, 0)
+	got, ok, err = cache.GetChunk(key, 0, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,90 +227,23 @@ func TestReadCacheCloseFlushesAsyncWrites(t *testing.T) {
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
-	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"))
+	cache.PutChunkAsync(key, int64(len("cached")), 0, []byte("cached"), testAccess)
 	if err := cache.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cache.PutChunkAsync(key, int64(len("ignored")), 1, []byte("ignored"))
+	cache.PutChunkAsync(key, int64(len("ignored")), 1, []byte("ignored"), testAccess)
 
 	reopened := newTestStore(t, cacheDir, 10<<20)
-	got, ok, err := reopened.GetChunk(key, 0)
+	got, ok, err := reopened.GetChunk(key, 0, testAccess)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok || string(got) != "cached" {
 		t.Fatalf("closed cache chunk = %q ok=%v, want cached", got, ok)
 	}
-	if _, ok, err := reopened.GetChunk(key, 1); err != nil {
+	if _, ok, err := reopened.GetChunk(key, 1, testAccess); err != nil {
 		t.Fatal(err)
 	} else if ok {
 		t.Fatal("put after close was written")
-	}
-}
-func TestReadCacheEvictionPrefersLargeChunksWhenLargePoolOverBudget(t *testing.T) {
-	cacheDir := t.TempDir()
-	smallKey := strings.Repeat("a", sha256.Size*2)
-	largeKey := strings.Repeat("b", sha256.Size*2)
-	chunk := bytes.Repeat([]byte("x"), readChunkSize)
-	cache := newTestStore(t, cacheDir, 4*readChunkSize)
-
-	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk); err != nil {
-		t.Fatal(err)
-	}
-	for i := range int64(5) {
-		if err := cache.PutChunk(largeKey, 20<<20, i, chunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, ok, err := cache.GetChunk(smallKey, 0); err != nil {
-		t.Fatal(err)
-	} else if !ok {
-		t.Fatal("small-file chunk was evicted while large-file pool was over budget")
-	}
-	var largeChunks int
-	for i := range int64(5) {
-		if _, ok, err := cache.GetChunk(largeKey, i); err != nil {
-			t.Fatal(err)
-		} else if ok {
-			largeChunks++
-		}
-	}
-	if largeChunks >= 5 {
-		t.Fatalf("large-file chunks were not evicted, still have %d", largeChunks)
-	}
-}
-func TestReadCacheEvictionTreatsUnknownLargeCachedFileAsLarge(t *testing.T) {
-	cacheDir := t.TempDir()
-	smallKey := strings.Repeat("a", sha256.Size*2)
-	legacyLargeKey := strings.Repeat("b", sha256.Size*2)
-	chunk := bytes.Repeat([]byte("x"), readChunkSize)
-	cache := newTestStore(t, cacheDir, 17*1024*1024)
-
-	if err := cache.PutChunk(smallKey, 1<<20, 0, chunk); err != nil {
-		t.Fatal(err)
-	}
-	largeChunkCount := int64(17*1024*1024/readChunkSize + 1)
-	for i := range largeChunkCount {
-		if err := cache.PutChunk(legacyLargeKey, 0, i, chunk); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, ok, err := cache.GetChunk(smallKey, 0); err != nil {
-		t.Fatal(err)
-	} else if !ok {
-		t.Fatal("small-file chunk was evicted before unknown-size large cached file")
-	}
-	var largeChunks int
-	for i := range largeChunkCount {
-		if _, ok, err := cache.GetChunk(legacyLargeKey, i); err != nil {
-			t.Fatal(err)
-		} else if ok {
-			largeChunks++
-		}
-	}
-	if largeChunks >= int(largeChunkCount) {
-		t.Fatalf("unknown-size large cached file was not treated as large, still have %d chunks", largeChunks)
 	}
 }

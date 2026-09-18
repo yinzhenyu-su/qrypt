@@ -2,10 +2,12 @@ package read
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 )
 
 type fakeReadRuntime struct {
@@ -22,6 +24,9 @@ type fakeReadRuntime struct {
 	hotPuts       int
 	loads         int
 	available     bool
+	// lookups records the access each cache lookup arrived with, so a test can
+	// assert the read run reached the cache boundary.
+	lookups []readcache.Access
 }
 
 func (r *fakeReadRuntime) CacheKey(drive.Entry) string {
@@ -53,11 +58,13 @@ func (r *fakeReadRuntime) ChunkAvailable(string, int64) bool {
 	return r.available
 }
 
-func (r *fakeReadRuntime) GetChunkWithRange(string, int64, int64, int64) ([]byte, []byte, bool, error) {
+func (r *fakeReadRuntime) GetChunkWithRange(_ string, _, _, _ int64, access readcache.Access) ([]byte, []byte, bool, error) {
+	r.lookups = append(r.lookups, access)
 	return r.rangeData, r.rangeChunk, r.rangeData != nil, nil
 }
 
-func (r *fakeReadRuntime) GetChunkRange(string, int64, int64, int64) ([]byte, bool, error) {
+func (r *fakeReadRuntime) GetChunkRange(_ string, _, _, _ int64, access readcache.Access) ([]byte, bool, error) {
+	r.lookups = append(r.lookups, access)
 	return r.rangeData, r.rangeData != nil, nil
 }
 
@@ -284,5 +291,75 @@ func TestClearReadCacheClearsInMemoryFastPaths(t *testing.T) {
 	}
 	if state.observeSequentialRead("cache", ChunkSize+16, 16) {
 		t.Fatal("sequential read state survived ClearReadCache")
+	}
+}
+
+func TestStateAccessRunsIdentifyOneContinuousPass(t *testing.T) {
+	state := NewState(nil)
+	first := state.observeReadAccess("cache", AccessHint{}, 0, ChunkSize)
+	if first.run == 0 {
+		t.Fatal("a recorded access must carry a run")
+	}
+	contiguous := state.observeReadAccess("cache", AccessHint{}, ChunkSize, 16)
+	if contiguous.run != first.run {
+		t.Fatalf("contiguous access run = %d, want the run in flight %d", contiguous.run, first.run)
+	}
+	jumped := state.observeReadAccess("cache", AccessHint{}, 8*ChunkSize, 16)
+	if jumped.run == first.run {
+		t.Fatal("an offset jump continued the previous run")
+	}
+	if jumped.run <= first.run {
+		t.Fatalf("run ids must increase: got %d after %d", jumped.run, first.run)
+	}
+}
+
+// Pruning a sequence entry must not let a later pass reuse the run id the cache
+// still remembers for that file's chunks: the cache would read the reuse as
+// evidence that a chunk was reached twice.
+func TestStateAccessRunsDoNotRepeatAfterPruning(t *testing.T) {
+	state := NewState(nil)
+	original := state.observeReadAccess("cache", AccessHint{}, 0, ChunkSize).run
+	for i := range SequentialLimit {
+		state.observeReadAccess(fmt.Sprintf("other-%d", i), AccessHint{}, 0, ChunkSize)
+	}
+	resumed := state.observeReadAccess("cache", AccessHint{}, 0, ChunkSize)
+	if resumed.run <= original {
+		t.Fatalf("resumed run = %d, want a fresh id after %d", resumed.run, original)
+	}
+}
+
+func TestStateReadRunHintPredictsTheRecordedRun(t *testing.T) {
+	state := NewState(nil)
+	if got := state.readRunHint("", 0); got != 0 {
+		t.Fatalf("hint for an empty key = %d, want 0", got)
+	}
+	first := state.observeReadAccess("cache", AccessHint{}, 0, ChunkSize)
+	if got := state.readRunHint("cache", ChunkSize); got != first.run {
+		t.Fatalf("hint for a contiguous continuation = %d, want %d", got, first.run)
+	}
+	continuing := state.observeReadAccess("cache", AccessHint{}, ChunkSize, 16)
+	if continuing.run != first.run {
+		t.Fatalf("continuation run = %d, want %d", continuing.run, first.run)
+	}
+
+	seek := int64(8 * ChunkSize)
+	hinted := state.readRunHint("cache", seek)
+	recorded := state.observeReadAccess("cache", AccessHint{}, seek, 16)
+	if hinted != recorded.run {
+		t.Fatalf("hint for a seek = %d, recorded run = %d", hinted, recorded.run)
+	}
+	if recorded.run == continuing.run {
+		t.Fatal("a seek must not continue the previous run")
+	}
+}
+
+func TestCacheAccessContextRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	if got := cacheAccess(ctx); got != (readcache.Access{}) {
+		t.Fatalf("cacheAccess on a bare context = %+v, want the zero Access", got)
+	}
+	ctx = WithCacheAccess(ctx, readcache.Access{Run: 42})
+	if got := cacheAccess(ctx); got.Run != 42 {
+		t.Fatalf("cacheAccess = %+v, want run 42", got)
 	}
 }

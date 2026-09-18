@@ -18,7 +18,7 @@ func benchWarmReadCache(b *testing.B, chunks int) *Store {
 	fid := "warm-fid"
 	data := make([]byte, readChunkSize)
 	for i := range chunks {
-		if err := store.PutChunk(fid, int64(chunks)*readChunkSize, int64(i), data); err != nil {
+		if err := store.PutChunk(fid, int64(chunks)*readChunkSize, int64(i), data, testAccess); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -36,7 +36,7 @@ func benchGetChunkRange(b *testing.B, chunks int) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		index := int64(i % chunks)
-		if _, ok, err := store.GetChunkRange(fid, index, 0, readChunkSize); err != nil {
+		if _, ok, err := store.GetChunkRange(fid, index, 0, readChunkSize, testAccess); err != nil {
 			b.Fatal(err)
 		} else if !ok {
 			b.Fatal("chunk not found")

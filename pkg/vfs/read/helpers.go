@@ -9,6 +9,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 )
 
 type readPrefetchContextKey struct{}
@@ -41,6 +42,24 @@ func WithAccessHint(ctx context.Context, hint AccessHint) context.Context {
 func AccessHintFromContext(ctx context.Context) (AccessHint, bool) {
 	hint, ok := ctx.Value(accessHintContextKey{}).(AccessHint)
 	return hint, ok && hint.SessionID != 0 && hint.RequestID != 0
+}
+
+type cacheAccessContextKey struct{}
+
+// WithCacheAccess attaches the read run this context's reads belong to. The read
+// cache uses it to tell a chunk consumed by the pass that admitted it apart from
+// one that a later pass came back for, so a sequential stream reading its own
+// read-ahead does not promote its chunks as if they were reused.
+func WithCacheAccess(ctx context.Context, access readcache.Access) context.Context {
+	return context.WithValue(ctx, cacheAccessContextKey{}, access)
+}
+
+// cacheAccess returns the read run attached to ctx, or the zero Access when
+// none was set. A zero Access is treated by the cache as an unknown run, which
+// counts as reuse.
+func cacheAccess(ctx context.Context) readcache.Access {
+	access, _ := ctx.Value(cacheAccessContextKey{}).(readcache.Access)
+	return access
 }
 
 // Priority controls how read slots are allocated under contention.

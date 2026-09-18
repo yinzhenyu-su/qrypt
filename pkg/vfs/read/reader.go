@@ -10,6 +10,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -142,8 +143,14 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	defer r.state.endForegroundRead(cacheKey)
 	hint, hinted := AccessHintFromContext(ctx)
 	decision := accessDecision{}
+	// The read run must be known before the data is fetched, because that is
+	// when chunks are admitted to the cache. A hinted read already has its
+	// decision; an unhinted one only learns it after reading, so it starts from
+	// the run the sequence state predicts and is corrected below.
+	access := readcache.Access{Run: r.state.readRunHint(cacheKey, offset)}
 	if hinted {
 		decision = r.state.observeReadAccess(cacheKey, hint, offset, size)
+		access = readcache.Access{Run: decision.run}
 		if !decision.stale && !hint.Concurrent && decision.discontinuous {
 			// A seek makes the old lookahead irrelevant. Cancel it before the
 			// target load competes for bandwidth and read slots.
@@ -157,6 +164,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 			windowChunks = 2
 		}
 	}
+	readCtx = WithCacheAccess(readCtx, access)
 	firstWindowPrefetch := (!hinted && offset%ChunkSize != 0) || (hinted && offset == 0)
 	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
 		// Warm the first lookahead window for a new file stream. Non-zero
@@ -175,6 +183,11 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		decision = r.state.observeReadAccess(cacheKey, AccessHint{}, offset, int64(len(data)))
 	} else if !r.state.readAccessCurrent(cacheKey, hint) {
 		decision.stale = true
+	}
+	if actual := (readcache.Access{Run: decision.run}); actual != access {
+		// The prediction for an unhinted read was superseded by a seek; the
+		// lookahead scheduled below belongs to the run that was recorded.
+		readCtx = WithCacheAccess(readCtx, actual)
 	}
 	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
@@ -268,8 +281,8 @@ type readRuntime interface {
 	ShouldPromoteCachedRange(cacheKey string, index int64) bool
 	RecordCachedRangeHit(cacheKey string, index, requestSize int64)
 	ChunkAvailable(cacheKey string, index int64) bool
-	GetChunkWithRange(cacheKey string, index, start, size int64) ([]byte, []byte, bool, error)
-	GetChunkRange(cacheKey string, index, start, size int64) ([]byte, bool, error)
+	GetChunkWithRange(cacheKey string, index, start, size int64, access readcache.Access) ([]byte, []byte, bool, error)
+	GetChunkRange(cacheKey string, index, start, size int64, access readcache.Access) ([]byte, bool, error)
 	WaitWindow(ctx context.Context, cacheKey string, index int64) ([]byte, bool, error)
 	LoadWindow(ctx context.Context, entry drive.Entry, startIndex int64, count int) ([]byte, error)
 	AcquireSlot(ctx context.Context) (func(), error)
@@ -312,18 +325,18 @@ func (rt *stateRuntime) ChunkAvailable(cacheKey string, index int64) bool {
 	return rt.reader.readChunkAvailable(cacheKey, index)
 }
 
-func (rt *stateRuntime) GetChunkWithRange(cacheKey string, index, start, size int64) ([]byte, []byte, bool, error) {
+func (rt *stateRuntime) GetChunkWithRange(cacheKey string, index, start, size int64, access readcache.Access) ([]byte, []byte, bool, error) {
 	if rt.reader.state.cache == nil {
 		return nil, nil, false, nil
 	}
-	return rt.reader.state.cache.GetChunkWithRange(cacheKey, index, start, size)
+	return rt.reader.state.cache.GetChunkWithRange(cacheKey, index, start, size, access)
 }
 
-func (rt *stateRuntime) GetChunkRange(cacheKey string, index, start, size int64) ([]byte, bool, error) {
+func (rt *stateRuntime) GetChunkRange(cacheKey string, index, start, size int64, access readcache.Access) ([]byte, bool, error) {
 	if rt.reader.state.cache == nil {
 		return nil, false, nil
 	}
-	return rt.reader.state.cache.GetChunkRange(cacheKey, index, start, size)
+	return rt.reader.state.cache.GetChunkRange(cacheKey, index, start, size, access)
 }
 
 func (rt *stateRuntime) WaitWindow(ctx context.Context, cacheKey string, index int64) ([]byte, bool, error) {
@@ -343,7 +356,7 @@ func (rt *stateRuntime) AcquireSlot(ctx context.Context) (func(), error) {
 type readWindowBackend interface {
 	Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error)
 	CacheKey(entry drive.Entry) string
-	StoreChunk(cacheKey string, entry drive.Entry, index int64, chunk []byte)
+	StoreChunk(ctx context.Context, cacheKey string, entry drive.Entry, index int64, chunk []byte)
 }
 
 func (r *Reader) newBackend() readWindowBackend {
@@ -362,13 +375,15 @@ func (b *readerBackend) CacheKey(entry drive.Entry) string {
 	return b.reader.host.ReadCacheKey(entry)
 }
 
-func (b *readerBackend) StoreChunk(cacheKey string, entry drive.Entry, index int64, chunk []byte) {
+func (b *readerBackend) StoreChunk(ctx context.Context, cacheKey string, entry drive.Entry, index int64, chunk []byte) {
 	if cacheKey == "" {
 		return
 	}
 	b.reader.putHotChunk(cacheKey, index, chunk)
 	if b.reader.state.cache != nil {
-		b.reader.state.cache.PutChunkAsync(cacheKey, entry.Size, index, chunk)
+		// The run travels with the read so the cache can tell this chunk's
+		// admitting pass from a later one that comes back for it.
+		b.reader.state.cache.PutChunkAsync(cacheKey, entry.Size, index, chunk, cacheAccess(ctx))
 	}
 }
 
@@ -378,6 +393,7 @@ func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, s
 
 func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int, runtime readRuntime) ([]byte, error) {
 	cacheKey := runtime.CacheKey(entry)
+	access := cacheAccess(ctx)
 	if cacheKey != "" {
 		hotStarted := util.Now()
 		if hot, ok := runtime.HotChunk(cacheKey, index); ok {
@@ -388,7 +404,7 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 		}
 		if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
 			started := util.Now()
-			if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size); err != nil {
+			if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
 				RecordChunkDetail(r.observer, ctx, entry, "cache_range_promote", index, start, size, 0, started, CacheLookupExtra("range_promote", started, nil), err)
 				return nil, err
 			} else if ok {
@@ -400,7 +416,7 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 			}
 		}
 		started := util.Now()
-		if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size); err != nil {
+		if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
 			RecordChunkDetail(r.observer, ctx, entry, "cache_range_hit", index, start, size, 0, started, CacheLookupExtra("range", started, nil), err)
 			return nil, err
 		} else if ok {
@@ -422,7 +438,7 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 		if cacheKey != "" {
 			if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
 				started := util.Now()
-				if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size); err != nil {
+				if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
 					RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_promote", index, start, size, 0, started, CacheLookupExtra("wait_window_range_promote", started, nil), err)
 					return nil, err
 				} else if ok {
@@ -434,7 +450,7 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 				}
 			}
 			started := util.Now()
-			if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size); err != nil {
+			if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
 				RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_hit", index, start, size, 0, started, CacheLookupExtra("wait_window_range", started, nil), err)
 				return nil, err
 			} else if ok {
@@ -627,7 +643,7 @@ func fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endInd
 		// backing array (same total memory, zero copy cost).
 		chunk := remaining[:chunkSize]
 		chunks[index] = chunk
-		backend.StoreChunk(backend.CacheKey(entry), entry, index, chunk)
+		backend.StoreChunk(ctx, backend.CacheKey(entry), entry, index, chunk)
 		remaining = remaining[chunkSize:]
 	}
 	return chunks, extra, nil
