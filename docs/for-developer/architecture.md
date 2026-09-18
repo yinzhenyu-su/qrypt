@@ -83,8 +83,10 @@ together and never holds domain runtime state:
 - `vfstypes` — shared types and path helpers
 - `upload` — upload engine, persistent pending store (write-ahead journal),
   and per-path debounce scheduling via the injected `KeyedScheduler`
-- `readcache` — durable read-chunk cache, index persistence (debounced via
-  the injected `Debouncer`), read/write queues; no other vfs-domain imports
+- `readcache` — durable read-chunk cache: index persistence (debounced via
+  the injected `Debouncer`), async write queue, and the admission/replacement
+  policy (`eviction.go`, which derives its budget tree from the index on each
+  drain rather than maintaining byte counters); no other vfs-domain imports
 - `delete` — delayed remote delete executor
 - `read` — read domain (window/coalescing/chunk cache) and bounded
   read-event history
@@ -223,9 +225,6 @@ operations.
 - `view_state.go`: virtual view cache state, cached path rebase, list
   invalidation, local directory TTL, and local mtime overlays
 - `stores.go`: read/upload store types and constructors
-- `read_cache_store.go`, `read_cache_writer.go`, `read_cache_index.go`, and
-  `read_cache_eviction.go`: durable read chunks, async write queue, index
-  persistence, and eviction
 - `namespace.go`: multi-mount namespace contract (interfaces, errors,
   construction, lifecycle, path resolution)
 - `namespace_read.go`, `namespace_write.go`, `namespace_task.go`,

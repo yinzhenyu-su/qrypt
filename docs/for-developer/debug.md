@@ -387,6 +387,32 @@ Useful fields:
 - `consistency.report`: whether the path is pending, found remotely, and size
   matched.
 
+### Reading The Read-Cache Replacement State
+
+`cache.mounts[].cache` carries the counters visible to the eviction policy, and
+they answer two different questions:
+
+- `unproven_bytes` / `proven_bytes` split the cache by **state**: a chunk is
+  unproven until a read run other than the one that admitted it touches it. A
+  sequential stream consuming its own read-ahead only ever produces unproven
+  content, which is why a one-pass scan shows up here rather than as hits.
+- `stream_bytes` is the **budget** view: the unproven bytes that live in the
+  large-file class, i.e. what the sequential sub-budget is currently charging.
+  It is bounded by a share of the large-class ceiling whenever a drain runs.
+  Small-class unproven content has no sub-budget, so `stream_bytes` is normally
+  smaller than `unproven_bytes`.
+- `protected_bytes` / `probationary_bytes` split the proven content by segment.
+  A drain empties probationary before touching protected, so a cache whose
+  protected bytes hold steady across a large scan is working as intended.
+- `evicted_bytes` and `promotions` are event counters: how much the cache has
+  released, and how many chunks a later run has confirmed as reused.
+
+Expect the disk footprint to look different from older builds: content read once
+in a single pass is held in the sub-budget rather than filling the whole
+large-class ceiling, so a cache serving only streaming reads will settle below
+its `max_size` instead of at it. Content that is read again is promoted and
+released from that sub-budget, so repeatedly used files still fill the cache.
+
 Read events are kept in two bounded rings and merged into one append-ordered
 list: **summaries** (one per read: offset, bytes, cache hits/misses, duration,
 throughput, error) retain 128 entries, and **details** (per chunk and per
