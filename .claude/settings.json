@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "gofmt",
+            "timeout": 30,
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *.go) gofmt -w \"$f\";; esac; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 30,
+            "command": "unfmt=$(gofmt -l . 2>/dev/null | head -5); dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' '); msg=\"\"; [ -n \"$unfmt\" ] && msg=\"gofmt 未通过: $(printf '%s' \"$unfmt\" | tr '\\n' ' ')\"; [ \"$dirty\" != \"0\" ] && msg=\"${msg:+$msg | }未提交改动 ${dirty} 项\"; if [ -n \"$msg\" ]; then jq -n --arg m \"$msg\" '{systemMessage:$m}'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
