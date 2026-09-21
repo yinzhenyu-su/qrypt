@@ -3,15 +3,20 @@
 # developers can run exactly the coverage they need:
 #
 #   ./scripts/test-layers.sh fast         # default unit suite
+#   ./scripts/test-layers.sh changed      # only what the working diff can reach
 #   ./scripts/test-layers.sh race         # concurrency-heavy packages under -race
 #   ./scripts/test-layers.sh vfs-stability # VFS upload engine flake guard (x3)
 #   ./scripts/test-layers.sh smoke        # localfs mount smoke test
 #   ./scripts/test-layers.sh all          # everything except real-netdisk tests
 #   ./scripts/test-layers.sh integration  # real provider/HTTP contract tests
 #
-# Every layer prints its wall-clock duration. If the fast layer grows past
-# ~20s, split the slow package's tests into a separate layer instead of
-# letting the default suite creep.
+# Every layer prints its wall-clock duration and warns past $BUDGET seconds.
+# `fast` runs the whole module and costs ~22s on an 8-core box, so 25s is a
+# regression tripwire rather than a target: pkg/vfs alone is ~16s of it (281
+# tests, none parallel, most of them waiting on timers), the rest of the module
+# plus compilation is ~10s. Splitting pkg/vfs out would not fix that -- it is
+# the default suite's coverage, not a stray slow package -- so a quick local
+# run is the `changed` layer's job, not a smaller `fast`.
 #
 # Real-netdisk contract tests are NOT part of go test: they need a running
 # `qrypt mount` debug server with mounted cloud accounts. Run them manually:
@@ -23,6 +28,10 @@
 # expects a real WinFsp mount.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Wall-clock regression tripwire for a single measure() step, in seconds. See
+# the header for why `fast` sits just under it.
+BUDGET=25
 
 # Reclaim temp left behind by a test binary that was killed or hit -timeout:
 # such a process never reaches its own exit path, so the isolated CLI home, the
@@ -126,16 +135,16 @@ measure() {
     rm -f "$tmp"
     local end=$(( $(date +%s) - start ))
     printf '== %s: %ds ==\n' "$label" "$end"
-    if [ "$end" -ge 20 ]; then
-      printf '== WARNING: %s took %ds; see the slowest-package list above ==\n' "$label" "$end"
+    if [ "$end" -ge "$BUDGET" ]; then
+      printf '== WARNING: %s took %ds (budget %ds); see the slowest-package list above ==\n' "$label" "$end" "$BUDGET"
     fi
     exit "$json_ok"
   fi
   "$@"
   local end=$(( $(date +%s) - start ))
   printf '== %s: %ds ==\n' "$label" "$end"
-  if [ "$end" -ge 20 ]; then
-    printf '== WARNING: %s took %ds; see the slowest-package list above ==\n' "$label" "$end"
+  if [ "$end" -ge "$BUDGET" ]; then
+    printf '== WARNING: %s took %ds (budget %ds); see the slowest-package list above ==\n' "$label" "$end" "$BUDGET"
   fi
 }
 
@@ -166,11 +175,151 @@ run_repeated() {
   return "$status"
 }
 
+# ── Delta selection ─────────────────────────────────────────────────
+# `changed` runs only the packages the working diff can reach. A package's test
+# binary is built from its own files plus every package it imports, test
+# imports included, so a change landing outside that closure cannot change its
+# result. `go list -deps -test` is the authority for the closure; a plain
+# `.Deps` listing is not enough, because pkg/vfs's tests import pkg/crypt and
+# pkg/drivers/localfs, which its non-test deps never mention.
+#
+# Every step fails safe: an unplaceable diff widens the run to the whole module
+# rather than risking a silent skip. That covers no git checkout, no HEAD yet,
+# an empty change set, a changed file under no package directory (scripts/,
+# go.mod, the //go:build tools stub at the root), or a failed go list. The
+# selection is printed so the narrowing stays auditable, and `fast` keeps
+# running everything for CI and pre-push.
+
+# diff_packages prints the import path of every package the working diff
+# touches -- staged, unstaged and untracked -- and flags files it cannot place
+# with a leading "!". A file is attributed to the innermost package directory
+# containing it, walking up so testdata and fixtures land on their package.
+# Multi-line payloads go through files rather than awk -v, which rejects them.
+diff_packages() {
+  local root work rc
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  work=$(mktemp -d) || return 1
+
+  {
+    git diff --name-only HEAD -- 2>/dev/null
+    git ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u > "$work/files"
+  go list -f '{{.Dir}}{{"\t"}}{{.ImportPath}}' ./... 2>/dev/null > "$work/dirs"
+
+  if [ ! -s "$work/files" ] || [ ! -s "$work/dirs" ]; then
+    rm -rf "$work"
+    return 1
+  fi
+
+  awk -v root="$root" '
+    NR == FNR {
+      if ($0 == "") next
+      split($0, field, "\t")
+      pkgdir[field[1]] = field[2]
+      next
+    }
+    {
+      path = root "/" $0
+      while (path != "" && path != "/") {
+        if (path in pkgdir) { print pkgdir[path]; next }
+        if (path == root) break
+        if (!sub(/\/[^\/]*$/, "", path)) break
+      }
+      print "!" $0
+    }
+  ' "$work/dirs" "$work/files"
+  rc=$?
+
+  rm -rf "$work"
+  return "$rc"
+}
+
+# affected_packages prints the packages whose test closure covers one of the
+# changed packages, and returns 1 when the diff cannot be placed.
+affected_packages() {
+  local seeds module work rc
+  seeds=$(diff_packages) || return 1
+  [ -n "$seeds" ] || return 1
+  case "$seeds" in *'!'*) return 1 ;; esac
+
+  module=$(go list -m 2>/dev/null) || return 1
+  work=$(mktemp -d) || return 1
+
+  printf '%s\n' "$seeds" > "$work/seeds"
+  go list -deps -test -f '{{.ImportPath}}{{"\t"}}{{join .Deps " "}}' ./... \
+    2>/dev/null > "$work/graph"
+
+  if [ ! -s "$work/graph" ]; then
+    rm -rf "$work"
+    return 1
+  fi
+
+  awk -F'\t' -v module="$module" '
+    NR == FNR { changed[$1] = 1; next }
+    {
+      if ($1 == "") next
+      dep[$1] = $2
+      node[$1] = 1
+    }
+    END {
+      # Own packages of this module, minus the synthetic build roots below.
+      prefix = module "/"
+      for (p in node) {
+        if (p ~ /\.test/ || p ~ / \[/) continue
+        if (p == module || index(p, prefix) == 1) mine[p] = 1
+      }
+
+      for (p in mine) {
+        delete seen
+        top = 0
+        stack[++top] = p
+        # Tests live in the ".test" build roots, so the walk starts there too --
+        # that is the only place test-only imports attach.
+        if ((p ".test") in node)              stack[++top] = p ".test"
+        if ((p " [" p ".test]") in node)      stack[++top] = p " [" p ".test]"
+        if ((p "_test [" p ".test]") in node) stack[++top] = p "_test [" p ".test]"
+
+        hit = 0
+        while (top > 0) {
+          n = stack[top--]
+          if (n in seen) continue
+          seen[n] = 1
+          if (n in changed) { hit = 1; break }
+          nd = split(dep[n], d, " ")
+          for (i = 1; i <= nd; i++)
+            if (d[i] != "" && !(d[i] in seen)) stack[++top] = d[i]
+        }
+        if (hit) print p
+      }
+    }
+  ' "$work/seeds" "$work/graph"
+  rc=$?
+
+  rm -rf "$work"
+  return "$rc"
+}
+
 case "${1:-fast}" in
   fast)
     # -json so the per-package wall clock is reported; the slowest 10
     # packages pinpoint where the fast layer's budget goes.
     measure "fast: go test -json ./..." go test -json -count=1 ./...
+    ;;
+  changed)
+    # What the working diff can actually reach; see Delta selection above for
+    # the safety rules. Falls back to the whole module when the diff cannot be
+    # placed on packages.
+    pkgs=$(affected_packages) || pkgs=""
+    if [ -z "$pkgs" ]; then
+      echo "== changed: diff cannot be placed on packages; running the whole module =="
+      measure "changed: go test -json ./... (full fallback)" go test -json -count=1 ./...
+    else
+      count=$(printf '%s\n' "$pkgs" | wc -l | tr -d ' ')
+      printf '== changed: %s package(s) reachable from the working diff ==\n' "$count"
+      printf '%s\n' "$pkgs" | sed 's/^/     /'
+      # shellcheck disable=SC2086 -- the list is deliberately split into argv.
+      measure "changed: go test -json ($count pkg)" go test -json -count=1 $pkgs
+    fi
     ;;
   race)
     measure "race: pkg/vfs drive drivers contracttest drivecopy control logging mount syncer cli core mobile crypt task cmd" \
@@ -208,7 +357,7 @@ case "${1:-fast}" in
     done
     ;;
   *)
-    echo "usage: $0 [fast|race|vfs-stability|smoke|all|integration <mount>...]" >&2
+    echo "usage: $0 [fast|changed|race|vfs-stability|smoke|all|integration <mount>...]" >&2
     exit 2
     ;;
 esac
