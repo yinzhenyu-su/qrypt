@@ -32,6 +32,7 @@ func newLifecycleVFS(t *testing.T, opts ...vfs.Options) *vfs.VFS {
 // channels (which would panic). The test would fail with a panic on the
 // second close(v.done) before the idempotency guard exists.
 func TestStartTwiceIsIdempotent(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -44,6 +45,7 @@ func TestStartTwiceIsIdempotent(t *testing.T) {
 // exit. goleak.VerifyTestMain runs after this test and fails the package if
 // any worker outlives the cancel.
 func TestStartCancelStopsWorkers(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -62,6 +64,7 @@ func TestStartCancelStopsWorkers(t *testing.T) {
 // not leak the upload workers or the read-cache writer. The AfterFunc must
 // run CloseReadCache, which waits for the cache writer to exit.
 func TestStartImmediateCancelNoLeak(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -73,6 +76,7 @@ func TestStartImmediateCancelNoLeak(t *testing.T) {
 // calling CloseReadCache both explicitly and through the cancel hook, must
 // be safe (no double close, no panic, no leak).
 func TestCancelIsIdempotent(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -90,6 +94,7 @@ func TestCancelIsIdempotent(t *testing.T) {
 // mount's workers, and one context cancellation must stop them all. A leak
 // in any mount fails goleak.VerifyTestMain.
 func TestNamespaceStartPropagatesLifecycle(t *testing.T) {
+	t.Parallel()
 	mounts := []vfs.Mount{
 		{Name: "one", FS: newLifecycleVFS(t)},
 		{Name: "two", FS: newLifecycleVFS(t)},
@@ -118,6 +123,7 @@ func TestNamespaceStartPropagatesLifecycle(t *testing.T) {
 // journal; then open a fresh VFS over the same storage, Start it twice and
 // verify the fake driver sees exactly one PutSource.
 func TestLifecycleStartResumeOnce(t *testing.T) {
+	t.Parallel()
 	cache := t.TempDir()
 
 	// Generation 1: persist a frozen pending upload without starting workers.
@@ -166,6 +172,7 @@ func TestLifecycleStartResumeOnce(t *testing.T) {
 // not stop the workers the first context started. If the second Start ever
 // replaced the lifecycle, the upload below would never drain.
 func TestStartContextOwnership(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ctx2, cancel2 := context.WithCancel(context.Background())

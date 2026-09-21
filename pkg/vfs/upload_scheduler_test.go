@@ -8,6 +8,7 @@ import (
 )
 
 func TestVFSUploadSchedulerTracksAndCancelsTimers(t *testing.T) {
+	t.Parallel()
 	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +49,7 @@ func TestVFSUploadSchedulerTracksAndCancelsTimers(t *testing.T) {
 }
 
 func TestVFSUploadSchedulerReschedulesExistingTimer(t *testing.T) {
+	t.Parallel()
 	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

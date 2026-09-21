@@ -68,6 +68,7 @@ func checkInvariants(t *testing.T, c *Store) {
 // class, so while the flow is over capacity the small-file class keeps its
 // content and the stream gives up its own oldest chunks.
 func TestEvictionKeepsSmallClassWhileLargeClassIsOverBudget(t *testing.T) {
+	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 4*readChunkSize)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
 	smallKey := strings.Repeat("a", sha256.Size*2)
@@ -104,6 +105,7 @@ func TestEvictionKeepsSmallClassWhileLargeClassIsOverBudget(t *testing.T) {
 // A file whose size was never learned still counts as large once its cached
 // bytes reach the large-file threshold, so it is subject to the class budget.
 func TestEvictionTreatsUnknownSizeCachedFileAsLarge(t *testing.T) {
+	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 17*1024*1024)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
 	smallKey := strings.Repeat("a", sha256.Size*2)
@@ -143,6 +145,7 @@ func TestEvictionTreatsUnknownSizeCachedFileAsLarge(t *testing.T) {
 // small class keeps its floor. A cache with free space is allowed to hold more
 // than the budget — the budget decides who gives way, not what may be kept.
 func TestEvictionCapsUnprovenSubBudget(t *testing.T) {
+	t.Parallel()
 	const maxSize = 8 << 20
 	cache := newTestStore(t, t.TempDir(), maxSize)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
@@ -186,6 +189,7 @@ func TestEvictionCapsUnprovenSubBudget(t *testing.T) {
 // and must not promote; a hit from a later run means the content was reached
 // again and must.
 func TestEvictionPromotesOnlyOnALaterRun(t *testing.T) {
+	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 8<<20)
 	fid := strings.Repeat("c", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
@@ -218,6 +222,7 @@ func TestEvictionPromotesOnlyOnALaterRun(t *testing.T) {
 // "promote on first hit", which is the safe direction: the alternative — never
 // promoting — would leave such a caller's content permanently evictable.
 func TestEvictionTreatsAnUnknownRunAsReuse(t *testing.T) {
+	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 8<<20)
 	fid := strings.Repeat("e", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
@@ -241,6 +246,7 @@ func TestEvictionTreatsAnUnknownRunAsReuse(t *testing.T) {
 // twice, or the view's byte totals would be reduced twice for one chunk and the
 // drain would stop short of the budget it was asked to reach.
 func TestEvictionPlanSelectsEachChunkOnce(t *testing.T) {
+	t.Parallel()
 	const maxSize = 16 << 20
 	cache := &Store{maxSize: maxSize}
 	for i := range cache.shards {
@@ -299,6 +305,7 @@ func TestEvictionPlanSelectsEachChunkOnce(t *testing.T) {
 // A drain stops at the low watermark rather than at the cap, so the writes that
 // follow it do not each trigger another pass.
 func TestEvictionDrainsToTheLowWatermark(t *testing.T) {
+	t.Parallel()
 	const maxSize = 8 << 20
 	cache := newTestStore(t, t.TempDir(), maxSize)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
@@ -343,6 +350,7 @@ func TestEvictionDrainsToTheLowWatermark(t *testing.T) {
 // being unlinked: a batch file is released as a whole, so that is the only
 // choice that returns disk space.
 func TestEvictionPrefersTheBatchThatIsNearlyEmpty(t *testing.T) {
+	t.Parallel()
 	cache := &Store{maxSize: 2 * readChunkSize}
 	for i := range cache.shards {
 		cache.shards[i].chunks = map[string]*fileChunks{}
@@ -383,6 +391,7 @@ func TestEvictionPrefersTheBatchThatIsNearlyEmpty(t *testing.T) {
 // The reclaim unit is the batch file: it is unlinked with its last chunk and not
 // before, which is why the drain order prefers to complete a batch.
 func TestEvictionReleasesBatchFileWithItsLastChunk(t *testing.T) {
+	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 64<<20)
 	fid := strings.Repeat("7", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
@@ -423,6 +432,7 @@ func TestEvictionReleasesBatchFileWithItsLastChunk(t *testing.T) {
 // Replacement state is in-memory only, so the persisted index keeps its shape
 // and an existing cache directory survives the upgrade without a wipe.
 func TestReadCacheIndexFormatIsUnchanged(t *testing.T) {
+	t.Parallel()
 	if readCacheIndexVersion != 1 {
 		t.Fatalf("readCacheIndexVersion = %d; replacement state must not need a format bump", readCacheIndexVersion)
 	}
@@ -449,6 +459,7 @@ func TestReadCacheIndexFormatIsUnchanged(t *testing.T) {
 // back for it promotes it. That is what lets the index stay format-stable: the
 // replacement state is rebuilt by use instead of migrated.
 func TestReadCacheRestartStartsContentUnproven(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	chunk := []byte("cached")
@@ -479,6 +490,7 @@ func TestReadCacheRestartStartsContentUnproven(t *testing.T) {
 // Concurrent writers keep the derived totals exact; run under -race this also
 // covers the policy's locking against the shard structure.
 func TestEvictionConcurrentWritersKeepInvariants(t *testing.T) {
+	t.Parallel()
 	cache := newTestStore(t, t.TempDir(), 64*readChunkSize)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
 

@@ -15,6 +15,7 @@ import (
 )
 
 func TestCorePersistsDeleteBatchTaskHistory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -77,6 +78,7 @@ func TestCorePersistsDeleteBatchTaskHistory(t *testing.T) {
 }
 
 func TestCorePersistsSingleUploadBatchTaskHistory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -123,6 +125,7 @@ func TestCorePersistsSingleUploadBatchTaskHistory(t *testing.T) {
 }
 
 func TestCoreRecoversInterruptedDirectUploadTask(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -194,6 +197,7 @@ func TestCoreRecoversInterruptedDirectUploadTask(t *testing.T) {
 }
 
 func TestCoreRecoversCompleteMutableStagingWithoutSource(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -298,6 +302,7 @@ func TestCoreRecoversCompleteMutableStagingWithoutSource(t *testing.T) {
 }
 
 func TestCoreReconcilesCompletedStagingUploadAfterPendingCleanup(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -360,6 +365,7 @@ func TestCoreReconcilesCompletedStagingUploadAfterPendingCleanup(t *testing.T) {
 }
 
 func TestCoreRecoversDirectUploadRetryWaitWithSameTaskID(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -416,6 +422,7 @@ func TestCoreRecoversDirectUploadRetryWaitWithSameTaskID(t *testing.T) {
 }
 
 func TestCoreRecoversInterruptedDirectUploadTaskWithLocalFSDirect(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -485,6 +492,7 @@ func TestCoreRecoversInterruptedDirectUploadTaskWithLocalFSDirect(t *testing.T) 
 }
 
 func TestCorePersistsCrossMountSingleMoveButNotSameMountMove(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()

@@ -9,6 +9,7 @@ import (
 // max_size <= 0 must never write chunks, never report hits, and must be
 // safe to flush/clear/close (the write queue and index are absent).
 func TestReadCacheDisabledStoreShortCircuits(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir, 0)
 	if err != nil {

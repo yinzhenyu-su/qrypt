@@ -15,6 +15,7 @@ import (
 // recorder entry points route to separate rings, so a read's per-chunk
 // detail burst cannot evict earlier reads' summaries from the snapshot.
 func TestVFSDebugReadHistoryKeepsSummariesUnderDetailFlood(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,7 @@ func TestVFSDebugReadHistoryKeepsSummariesUnderDetailFlood(t *testing.T) {
 }
 
 func TestVFSDebugReadRuntimeOwnsReadHistoryState(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +89,7 @@ func TestVFSDebugReadRuntimeOwnsReadHistoryState(t *testing.T) {
 }
 
 func TestVFSDebugReadRuntimeRingPreservesOrderAcrossWraps(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

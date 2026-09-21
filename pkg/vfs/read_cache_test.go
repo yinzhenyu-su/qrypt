@@ -15,6 +15,7 @@ import (
 )
 
 func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	data := []byte("cache me")
@@ -48,6 +49,7 @@ func TestVFSDebugReadCacheCountsHitsAndMisses(t *testing.T) {
 }
 
 func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cacheDir := t.TempDir()
@@ -103,6 +105,7 @@ func TestVFSDebugReadCacheReportsPendingJournalDuplicates(t *testing.T) {
 }
 
 func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	data := []byte("cache me after remount")
@@ -156,6 +159,7 @@ func TestVFSReadCachePersistsAcrossRemount(t *testing.T) {
 }
 
 func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	data := []byte("cache me")
@@ -188,6 +192,7 @@ func TestVFSReadCacheHandlesSlashIDs(t *testing.T) {
 }
 
 func TestVFSOverwriteInvalidatesReadCache(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()

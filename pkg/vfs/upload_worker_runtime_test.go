@@ -78,6 +78,7 @@ func (r *fakeUploadWorkerRuntime) ExecuteUpload(context.Context, PendingUpload) 
 func (r *fakeUploadWorkerRuntime) SendUpload(PendingUpload) {}
 
 func TestUploadPendingWithRuntimeCleansRemovedPending(t *testing.T) {
+	t.Parallel()
 	pending := PendingUpload{Path: "/file.txt", FID: "old", LocalPath: "/tmp/old"}
 	runtime := &fakeUploadWorkerRuntime{supported: true}
 	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
@@ -92,6 +93,7 @@ func TestUploadPendingWithRuntimeCleansRemovedPending(t *testing.T) {
 }
 
 func TestUploadPendingWithRuntimeRequeuesFrozenSupersededUpload(t *testing.T) {
+	t.Parallel()
 	pending := PendingUpload{Path: "/file.txt", FID: "old", LocalPath: "/tmp/old", Frozen: true}
 	latest := PendingUpload{Path: "/file.txt", FID: "new", LocalPath: "/tmp/new", Frozen: true}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: latest, latestOK: true}
@@ -107,6 +109,7 @@ func TestUploadPendingWithRuntimeRequeuesFrozenSupersededUpload(t *testing.T) {
 }
 
 func TestUploadPendingWithRuntimeDelaysForQuietWindow(t *testing.T) {
+	t.Parallel()
 	pending := PendingUpload{Path: "/file.txt", FID: "same", LocalPath: "/tmp/file"}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: pending, latestOK: true, quietDelay: 2 * time.Second}
 	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
@@ -121,6 +124,7 @@ func TestUploadPendingWithRuntimeDelaysForQuietWindow(t *testing.T) {
 }
 
 func TestUploadPendingWithRuntimeDelaysWhenAdmissionUnavailable(t *testing.T) {
+	t.Parallel()
 	pending := PendingUpload{Path: "/file.txt", FID: "same", LocalPath: "/tmp/file"}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: pending, latestOK: true, quietWindow: 3 * time.Second}
 	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
@@ -132,6 +136,7 @@ func TestUploadPendingWithRuntimeDelaysWhenAdmissionUnavailable(t *testing.T) {
 }
 
 func TestUploadPendingWithRuntimeExecutesAndReleasesAdmission(t *testing.T) {
+	t.Parallel()
 	pending := PendingUpload{Path: "/file.txt", FID: "same", LocalPath: "/tmp/file"}
 	runtime := &fakeUploadWorkerRuntime{supported: true, latest: pending, latestOK: true, acquire: true}
 	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {

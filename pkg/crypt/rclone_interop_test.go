@@ -77,6 +77,7 @@ func interopPlaintext(size int) []byte {
 // byte-identical to the names rclone v1.73.3 stores, and that rclone
 // cryptdecode recovers the plaintext from them.
 func TestRcloneInteropFilenames(t *testing.T) {
+	t.Parallel()
 	rc := rclonePath(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -135,6 +136,7 @@ func TestRcloneInteropFilenames(t *testing.T) {
 // (fixed nonce) and verifies the real rclone binary decrypts the resulting
 // file to the original plaintext, across the block-size boundaries.
 func TestRcloneInteropQryptToRcloneData(t *testing.T) {
+	t.Parallel()
 	rc := rclonePath(t)
 
 	sizes := []int{0, 1, 100, BlockDataSize, BlockDataSize + 1, 200000}
@@ -203,6 +205,7 @@ func TestRcloneInteropQryptToRcloneData(t *testing.T) {
 // re-encryption using the nonce rclone stored in the header (i.e. block
 // layout, secretbox addressing and size accounting all match exactly).
 func TestRcloneInteropRcloneToQryptData(t *testing.T) {
+	t.Parallel()
 	rc := rclonePath(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()

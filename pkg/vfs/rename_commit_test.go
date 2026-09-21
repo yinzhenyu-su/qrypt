@@ -13,6 +13,7 @@ import (
 // directory must not keep serving that directory's cached listing, which still
 // belongs to the object the rename replaced.
 func TestRenameOverExistingDropsTargetListing(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	rt := view.NewRuntime(fs.view)
 	committer := newVFSViewCommitter(fs)
@@ -33,6 +34,7 @@ func TestRenameOverExistingDropsTargetListing(t *testing.T) {
 // keeps its recent-local-dir marker at the path it was renamed to, so its
 // children keep resolving locally until the backend catches up.
 func TestRenameMovesLocalDirectoryMarker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newViewCommitVFS(t)
 	rt := view.NewRuntime(fs.view)

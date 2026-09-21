@@ -21,6 +21,7 @@ import (
 // locking it to the scheduler constants guarantees the mobile "high" and
 // "normal" JSON options keep their scheduling meaning end to end.
 func TestPriorityMappingMatchesVFSScheduler(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		client ReadPriority
 		want   vfs.ReadPriority
@@ -37,6 +38,7 @@ func TestPriorityMappingMatchesVFSScheduler(t *testing.T) {
 }
 
 func TestReadAtIntoWithPriorityBehavesLikeReadAtInto(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -69,6 +71,7 @@ func TestReadAtIntoWithPriorityBehavesLikeReadAtInto(t *testing.T) {
 }
 
 func TestReadAtIntoWithPriorityRejectsInvalidPriority(t *testing.T) {
+	t.Parallel()
 	for _, priority := range []ReadPriority{-1, 42} {
 		_, err := (&Core{}).ReadAtIntoWithPriority(context.Background(), "/x", 0, make([]byte, 1), 0, priority)
 		if err == nil {
@@ -129,6 +132,7 @@ func (d *blockingReadDriver) Metrics(context.Context, time.Time) ([]drive.Metric
 // distinct windows never coalesce, and every parked driver read holds its
 // slot until the release gate closes, so the outcome is deterministic.
 func TestReadAtIntoWithPriorityHighUsesReserveSlots(t *testing.T) {
+	t.Parallel()
 	const fileSize = 128 * read.ChunkSize
 	probe := &blockingReadProbe{
 		arrived: make(chan struct{}, 256),

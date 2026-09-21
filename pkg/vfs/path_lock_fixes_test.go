@@ -18,6 +18,7 @@ import (
 // Start storing the lifecycle context and background readers (delayed-delete
 // timers) loading it; meaningful under -race.
 func TestLifecycleContextConcurrentWithStart(t *testing.T) {
+	t.Parallel()
 	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir(), UploadDelay: time.Hour, DeleteDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +85,7 @@ func countFiles(t *testing.T, root string) int {
 // TestStageExistingCleansStagingOnRemoteError verifies the error paths of
 // stageExistingWithDeps drop the staging file instead of leaving orphans.
 func TestStageExistingCleansStagingOnRemoteError(t *testing.T) {
+	t.Parallel()
 	storage := t.TempDir()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: storage})
 	if err != nil {

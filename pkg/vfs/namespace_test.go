@@ -58,6 +58,7 @@ func (d fixedSpaceDriver) Metrics(context.Context, time.Time) ([]drive.MetricEve
 }
 
 func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remoteA := t.TempDir()
@@ -137,6 +138,7 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 }
 
 func TestNamespaceUploadTasksUseGlobalIDs(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a"), UploadDelay: time.Hour})
@@ -187,6 +189,7 @@ func TestNamespaceUploadTasksUseGlobalIDs(t *testing.T) {
 }
 
 func TestNamespaceStartDirectoryPrefetchWarmsAllMounts(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drvA := &treeListDriver{
@@ -225,6 +228,7 @@ func TestNamespaceStartDirectoryPrefetchWarmsAllMounts(t *testing.T) {
 }
 
 func TestNamespaceRejectsCrossMountRename(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
@@ -249,6 +253,7 @@ func TestNamespaceRejectsCrossMountRename(t *testing.T) {
 }
 
 func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	spaceA := drive.Space{Total: 1000, Free: 700}
@@ -279,6 +284,7 @@ func TestNamespaceSpaceAggregatesMounts(t *testing.T) {
 }
 
 func TestNamespaceSpaceQueriesMountsConcurrently(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	entered := make(chan string, 2)
@@ -325,6 +331,7 @@ func TestNamespaceSpaceQueriesMountsConcurrently(t *testing.T) {
 }
 
 func TestNamespaceMarksOnlyNamespaceRootReadOnly(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})
@@ -351,6 +358,7 @@ func TestNamespaceMarksOnlyNamespaceRootReadOnly(t *testing.T) {
 }
 
 func TestNamespaceVirtualDirectoryModTimeIsStable(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fsA, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "a")})

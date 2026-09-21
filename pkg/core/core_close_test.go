@@ -18,6 +18,7 @@ import (
 // short deadline must return immediately - it would time out if workers
 // were still running.
 func TestCoreCloseWaitsForFilesystemWorkers(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -74,6 +75,7 @@ func TestCoreCloseWaitsForFilesystemWorkers(t *testing.T) {
 // clock on loaded CI runners. The wrapper removes that race without changing
 // what Core.Close must do with the returned error.
 func TestCoreCloseTimeoutDoesNotCleanup(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()

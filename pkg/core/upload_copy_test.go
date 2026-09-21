@@ -10,6 +10,7 @@ import (
 )
 
 func TestCopyUploadSource(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		source    drive.ReadOnlyFileSource
@@ -58,6 +59,7 @@ func TestCopyUploadSource(t *testing.T) {
 }
 
 func TestCopyUploadSourceRejectsShortWrite(t *testing.T) {
+	t.Parallel()
 	writer := &recordingUploadWriter{shortWrite: true}
 	_, err := copyUploadSource(context.Background(), drive.NewBytesReadOnlyFileSource([]byte("payload")), writer)
 	if err == nil || !strings.Contains(err.Error(), "short staging write") {
@@ -69,6 +71,7 @@ func TestCopyUploadSourceRejectsShortWrite(t *testing.T) {
 }
 
 func TestCopyUploadSourceStopsOnCanceledContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	writer := &recordingUploadWriter{}
@@ -82,6 +85,7 @@ func TestCopyUploadSourceStopsOnCanceledContext(t *testing.T) {
 }
 
 func TestCopyUploadSourceReturnsReaderError(t *testing.T) {
+	t.Parallel()
 	writer := &recordingUploadWriter{}
 	_, err := copyUploadSource(context.Background(), errorUploadSource{}, writer)
 	if err == nil || !strings.Contains(err.Error(), "read upload source") {

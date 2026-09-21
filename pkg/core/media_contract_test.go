@@ -26,6 +26,7 @@ var (
 )
 
 func TestCoreMediaDTONotAliased(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		core, media reflect.Type
 	}{
@@ -69,12 +70,14 @@ func requireSameJSONSchema(t *testing.T, coreType, mediaType reflect.Type) {
 }
 
 func TestCoreMediaDTOSchemaMatchesMedia(t *testing.T) {
+	t.Parallel()
 	requireSameJSONSchema(t, reflect.TypeOf(MP4Probe{}), reflect.TypeOf(media.MP4Probe{}))
 	requireSameJSONSchema(t, reflect.TypeOf(VirtualFileInfo{}), reflect.TypeOf(media.VirtualFileInfo{}))
 	requireSameJSONSchema(t, reflect.TypeOf(VirtualReadMapping{}), reflect.TypeOf(media.VirtualReadMapping{}))
 }
 
 func TestConvertMP4ProbeJSONEquivalent(t *testing.T) {
+	t.Parallel()
 	probes := []media.MP4Probe{
 		{}, // all-zero: exercises omitempty on every field
 		{IsMP4: true},
@@ -108,6 +111,7 @@ func TestConvertMP4ProbeJSONEquivalent(t *testing.T) {
 }
 
 func TestConvertVirtualInfoAndMappingsJSONEquivalent(t *testing.T) {
+	t.Parallel()
 	probe := media.MP4Probe{
 		IsMP4:          true,
 		NeedsFastStart: true,
@@ -170,6 +174,7 @@ func newMediaTestCore(t *testing.T, remote string) *Core {
 }
 
 func TestVirtualFileHandlePassthroughLifecycle(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	content := []byte("virtual video data")
 	if err := os.WriteFile(filepath.Join(remote, "video.bin"), content, 0o644); err != nil {
@@ -218,6 +223,7 @@ func TestVirtualFileHandlePassthroughLifecycle(t *testing.T) {
 }
 
 func TestVirtualFileHandleAutoMP4FastStartLayout(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	raw := rawMP4WithMoovAfterMdat(t)
 	if err := os.WriteFile(filepath.Join(remote, "movie.mp4"), raw, 0o644); err != nil {
@@ -297,6 +303,7 @@ func TestVirtualFileHandleAutoMP4FastStartLayout(t *testing.T) {
 }
 
 func TestProbeMP4ClientMatchesLegacyProbe(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	raw := rawMP4WithMoovAfterMdat(t)
 	if err := os.WriteFile(filepath.Join(remote, "movie.mp4"), raw, 0o644); err != nil {
@@ -338,6 +345,7 @@ func TestProbeMP4ClientMatchesLegacyProbe(t *testing.T) {
 }
 
 func TestOpenVirtualFileClientErrorsOnDirectory(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(remote, "dir"), 0o755); err != nil {
 		t.Fatal(err)

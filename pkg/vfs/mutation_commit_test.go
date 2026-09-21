@@ -19,6 +19,7 @@ import (
 // is set. These three writes are the mutation-commit contract this slice
 // establishes for future commits (Rename/Remove/UploadCommitted).
 func TestCommitMkdirWritesViewState(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	ctx := context.Background()
 	view := newVFSListingView(fs)
@@ -58,6 +59,7 @@ func TestCommitMkdirWritesViewState(t *testing.T) {
 // TestMkdirConcurrentWithList: Mkdir (CommitMkdir) racing concurrent
 // listings must be race-free.
 func TestMkdirConcurrentWithList(t *testing.T) {
+	t.Parallel()
 	drv := drive.NewFakeDriver(func(d *drive.FakeDriver) { d.Delay = time.Millisecond })
 	if err := drv.Seed(map[string]string{"a.txt": "alpha"}); err != nil {
 		t.Fatal(err)
@@ -110,6 +112,7 @@ func newMkdirCoordinatorFixture(t *testing.T) *mkdirCoordinatorFixture {
 // TestMkdirCommitsExactlyOnceOnRemoteSuccess: a successful remote Mkdir
 // commits the (normalized) path exactly once.
 func TestMkdirCommitsExactlyOnceOnRemoteSuccess(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirResult = drive.Entry{ID: "new-id", ParentID: "root", Name: "newdir", IsDir: true}
 
@@ -128,6 +131,7 @@ func TestMkdirCommitsExactlyOnceOnRemoteSuccess(t *testing.T) {
 // TestMkdirCommitsNormalizedPath: a trailing-slash path commits the
 // normalized form.
 func TestMkdirCommitsNormalizedPath(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirResult = drive.Entry{ID: "new-id", ParentID: "root", Name: "newdir", IsDir: true}
 
@@ -142,6 +146,7 @@ func TestMkdirCommitsNormalizedPath(t *testing.T) {
 // TestMkdirNeverCommitsOnRemoteFailure: a failing remote Mkdir must not
 // commit anything.
 func TestMkdirNeverCommitsOnRemoteFailure(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirErr = errors.New("remote boom")
 
@@ -157,6 +162,7 @@ func TestMkdirNeverCommitsOnRemoteFailure(t *testing.T) {
 // the directory already exists, the coordinator resolves the existing
 // directory (caching its siblings) and still commits exactly once.
 func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	fx.backend.mkdirErr = errors.New("already exists")
 	fx.backend.entries = []drive.Entry{
@@ -184,6 +190,7 @@ func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
 // TestRemoveCommitsExactlyOnce: a successful local remove commits the
 // (normalized) path exactly once through ViewCommitter.
 func TestRemoveCommitsExactlyOnce(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt", fx.committer); err != nil {
 		t.Fatal(err)
@@ -196,6 +203,7 @@ func TestRemoveCommitsExactlyOnce(t *testing.T) {
 // TestRemoveCommitsNormalizedPath: a trailing-slash path commits the
 // normalized form.
 func TestRemoveCommitsNormalizedPath(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	if err := fx.fs.removeWithRuntime(context.Background(), "/b.txt//", fx.committer); err != nil {
 		t.Fatal(err)
@@ -208,6 +216,7 @@ func TestRemoveCommitsNormalizedPath(t *testing.T) {
 // TestRemoveNeverCommitsOnResolveFailure: an unresolvable path must not
 // commit anything.
 func TestRemoveNeverCommitsOnResolveFailure(t *testing.T) {
+	t.Parallel()
 	fx := newMkdirCoordinatorFixture(t)
 	if err := fx.fs.removeWithRuntime(context.Background(), "/missing.txt", fx.committer); err == nil {
 		t.Fatal("want resolve error")
@@ -221,6 +230,7 @@ func TestRemoveNeverCommitsOnResolveFailure(t *testing.T) {
 // pending upload goes through the pending-removal path and never touches
 // the view committer.
 func TestRemovePendingDoesNotCommitView(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	if err := fs.Create(ctx, "/draft.txt"); err != nil {
@@ -248,6 +258,7 @@ func TestRemovePendingDoesNotCommitView(t *testing.T) {
 // the path becomes unavailable (overlay), the entry cache drops it, and
 // the read cache is invalidated.
 func TestCommitRemoveWritesViewState(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	// Warm the entry cache for b.txt.
@@ -293,6 +304,7 @@ func TestCommitRemoveWritesViewState(t *testing.T) {
 // the entry, unhides the copy child, invalidates the parent list cache, and
 // seeds the read cache from staging when a staging path is provided.
 func TestCommitUploadedEntryWritesViewState(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	fs.Start(context.Background())
@@ -330,6 +342,7 @@ func TestCommitUploadedEntryWritesViewState(t *testing.T) {
 // takes the entry back out of the view and invalidates its read-cache state, so
 // a superseded upload leaves no readable residue behind.
 func TestDropUploadedEntryRemovesCommittedEntry(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	fs.Start(context.Background())
@@ -368,6 +381,7 @@ func TestDropUploadedEntryRemovesCommittedEntry(t *testing.T) {
 // listing renders a name no caller can address - the junk file users saw on
 // encrypted mounts - while the object stays reachable only by path.
 func TestCommitEntryNamesMatchTheirPaths(t *testing.T) {
+	t.Parallel()
 	const ciphertextName = "13-pqvLKZ9V4FZYclyJEjiyOIjdMmu6CQSRKTqCWJx3f3axjxA2K-UaS5llXudaS"
 
 	t.Run("upload commit", func(t *testing.T) {
@@ -416,6 +430,7 @@ func TestCommitEntryNamesMatchTheirPaths(t *testing.T) {
 // TestCommitEntryKeepsMatchingNamesUnchanged guards the other half of the
 // invariant: a consistent commit must not be rewritten or otherwise disturbed.
 func TestCommitEntryKeepsMatchingNamesUnchanged(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	fs.Start(context.Background())

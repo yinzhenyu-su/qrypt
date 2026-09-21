@@ -12,6 +12,7 @@ import (
 )
 
 func TestVFSUploadTaskCancelRemovesPendingUpload(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}
@@ -44,6 +45,7 @@ func TestVFSUploadTaskCancelRemovesPendingUpload(t *testing.T) {
 }
 
 func TestVFSUploadTaskRemoveClearsCompletedHistory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}
@@ -75,6 +77,7 @@ func TestVFSUploadTaskRemoveClearsCompletedHistory(t *testing.T) {
 }
 
 func TestVFSUploadTaskRetryRunsScheduledUploadNow(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}
@@ -104,6 +107,7 @@ func TestVFSUploadTaskRetryRunsScheduledUploadNow(t *testing.T) {
 	}
 }
 func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &cancelAwareUploadDriver{}
@@ -154,6 +158,7 @@ func TestVFSDebugUploadCancelRequeuesAndRetries(t *testing.T) {
 	}
 }
 func TestVFSUploadRetryUsesGrowingBackoff(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{failUploads: 2}
@@ -182,6 +187,7 @@ func TestVFSUploadRetryUsesGrowingBackoff(t *testing.T) {
 	}
 }
 func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	firstDriver := &countingUploadDriver{failUploads: 1}

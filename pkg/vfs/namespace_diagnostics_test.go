@@ -21,6 +21,7 @@ var (
 // TestNamespaceDebugResolveAdapters: namespace resolve adapters must
 // prefix mount-relative results with the mount name.
 func TestNamespaceDebugResolveAdapters(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	mount, err := New(drive.NewFakeDriver(), Options{Name: "backend-a", StorageDir: t.TempDir()})
 	if err != nil {
@@ -58,6 +59,7 @@ func TestNamespaceDebugResolveAdapters(t *testing.T) {
 // the same remote ID, the namespace-level lookup must refuse to guess
 // instead of returning whichever mount the map order hits first.
 func TestNamespaceDebugResolveByRemoteIDAmbiguity(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	mountA, err := New(drive.NewFakeDriver(), Options{Name: "backend-a", StorageDir: t.TempDir()})
 	if err != nil {

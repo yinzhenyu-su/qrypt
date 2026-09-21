@@ -16,6 +16,7 @@ func newStoresInDir(dir string, maxSize int64) (*stores, error) {
 }
 
 func TestCacheRecordUploadPermanentFailure(t *testing.T) {
+	t.Parallel()
 	cache, err := newStoresInDir(t.TempDir(), 10<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,7 @@ func TestCacheRecordUploadPermanentFailure(t *testing.T) {
 }
 
 func TestCacheCompactsDuplicatePendingJournalOnLoad(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	stagingDir := filepath.Join(cacheDir, "staging")
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {

@@ -13,6 +13,7 @@ import (
 )
 
 func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -57,6 +58,7 @@ func TestCreateTaskDeleteBatchRemovesPaths(t *testing.T) {
 }
 
 func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -97,6 +99,7 @@ func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
 }
 
 func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -144,6 +147,7 @@ func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
 // interleaving (regression: workers published progress updates outside
 // the counter lock, so a stale ItemsDone could win).
 func TestDeleteBatchTerminalSnapshotConsistent(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()

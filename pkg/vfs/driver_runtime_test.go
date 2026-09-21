@@ -8,6 +8,7 @@ import (
 )
 
 func TestVFSDriverRuntimeOwnsCapabilitiesAndBackends(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{Name: "mount", StorageDir: t.TempDir(), TestEnabled: true})
 	if err != nil {
 		t.Fatal(err)

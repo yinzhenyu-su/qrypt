@@ -10,6 +10,7 @@ import (
 // returns the same result and no call panics (double-close of internal
 // channels would panic without the closeOnce guard).
 func TestCloseIsIdempotent(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -26,6 +27,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 // TestCloseBeforeStart: a VFS that was never Started still releases its
 // construction-time resources (read-cache writer) on Close.
 func TestCloseBeforeStart(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	if err := fs.Close(context.Background()); err != nil {
 		t.Fatalf("Close before Start: %v", err)
@@ -40,6 +42,7 @@ func TestCloseBeforeStart(t *testing.T) {
 // cancelled (the Start hook calls Close itself, so this is a double-shutdown
 // race).
 func TestCloseAfterCancel(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -62,6 +65,7 @@ func TestCloseAfterCancel(t *testing.T) {
 // the package if any VFS-owned goroutine outlives Close. Writing data before
 // Close warms the upload schedule and read-cache writer paths.
 func TestCloseStopsWorkers(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	fs.Start(ctx)
@@ -86,6 +90,7 @@ func TestCloseStopsWorkers(t *testing.T) {
 // TestCloseSignalsDone: closeDone is closed after Close completes, so
 // callers can wait on it instead of polling.
 func TestCloseSignalsDone(t *testing.T) {
+	t.Parallel()
 	fs := newLifecycleVFS(t)
 	if err := fs.Close(context.Background()); err != nil {
 		t.Fatal(err)

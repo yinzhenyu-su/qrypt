@@ -9,6 +9,7 @@ import (
 )
 
 func TestVFSDebugSnapshotRuntimeCollectsSortedOverlayState(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestVFSDebugSnapshotRuntimeCollectsSortedOverlayState(t *testing.T) {
 }
 
 func TestVFSDebugSnapshotRuntimeCollectsIdentityQueuesAndPending(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{
 		Name:          "cloud",
 		StorageDir:    t.TempDir(),

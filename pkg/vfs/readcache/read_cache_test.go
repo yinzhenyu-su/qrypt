@@ -20,6 +20,7 @@ func newTestStore(t *testing.T, cacheDir string, size int64) *Store {
 }
 
 func TestReadCachePersistsBatchIndex(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 
@@ -41,6 +42,7 @@ func TestReadCachePersistsBatchIndex(t *testing.T) {
 	}
 }
 func TestReadCacheCleansStaleIndexTempOnStartup(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	readingDir := filepath.Join(cacheDir, "reading")
 	if err := os.MkdirAll(readingDir, 0o755); err != nil {
@@ -56,6 +58,7 @@ func TestReadCacheCleansStaleIndexTempOnStartup(t *testing.T) {
 	}
 }
 func TestReadCacheGetsChunkRange(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	chunk := bytes.Repeat([]byte("x"), readChunkSize)
@@ -81,6 +84,7 @@ func TestReadCacheGetsChunkRange(t *testing.T) {
 	}
 }
 func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
@@ -112,6 +116,7 @@ func TestReadCacheRangeTreatsMissingBatchAsMiss(t *testing.T) {
 	}
 }
 func TestReadCachePutRecreatesReadingDir(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
@@ -137,6 +142,7 @@ func TestReadCachePutRecreatesReadingDir(t *testing.T) {
 	}
 }
 func TestReadCacheClearRemovesReadingData(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("b", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
@@ -166,6 +172,7 @@ func TestReadCacheClearRemovesReadingData(t *testing.T) {
 	}
 }
 func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
@@ -187,6 +194,7 @@ func TestReadCacheAsyncPutRecreatesReadingDir(t *testing.T) {
 	}
 }
 func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)
@@ -224,6 +232,7 @@ func TestReadCacheAsyncPutSkipsExistingAndPendingChunks(t *testing.T) {
 	}
 }
 func TestReadCacheCloseFlushesAsyncWrites(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	key := strings.Repeat("a", sha256.Size*2)
 	cache := newTestStore(t, cacheDir, 10<<20)

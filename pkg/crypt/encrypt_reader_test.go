@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewEncryptingReader(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	r := NewEncryptingReader(strings.NewReader("hello"), c, nonce, 5)
@@ -17,6 +18,7 @@ func TestNewEncryptingReader(t *testing.T) {
 }
 
 func TestEncryptingReader_Read_Empty(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	r := NewEncryptingReader(strings.NewReader(""), c, nonce, 0)
@@ -36,6 +38,7 @@ func TestEncryptingReader_Read_Empty(t *testing.T) {
 }
 
 func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	// Use crypto/rand to fill nonce for production, but deterministic for test
@@ -72,6 +75,7 @@ func TestEncryptingReader_SingleBlockRoundTrip(t *testing.T) {
 }
 
 func TestEncryptingReader_MultiBlock(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("abcdefghijklmnopqrstuvwx"))
@@ -121,6 +125,7 @@ func TestEncryptingReader_MultiBlock(t *testing.T) {
 }
 
 func TestEncryptingReader_PartialBlock(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("partialblocktest0001"))
@@ -145,6 +150,7 @@ func TestEncryptingReader_PartialBlock(t *testing.T) {
 }
 
 func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("smallbufferrtest1234"))
@@ -204,6 +210,7 @@ func TestEncryptingReader_ReadSmallBuffer(t *testing.T) {
 // TestEncryptingReader_NonceCompatibility verifies the encrypting reader's
 // output header contains the correct nonce.
 func TestEncryptingReader_NonceCompatibility(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	var nonce [24]byte
 	copy(nonce[:], []byte("noncecompatest12345678"))

@@ -204,6 +204,7 @@ func runMixedTrace(baseline bool) *evictionSim {
 // reusable large file: its chunks were the oldest large-class entries, so the
 // scan evicted them first and then started on the small class.
 func TestEvictionKeepsReusableContentThroughASequentialScan(t *testing.T) {
+	t.Parallel()
 	replaced := runMixedTrace(false)
 	previous := runMixedTrace(true)
 

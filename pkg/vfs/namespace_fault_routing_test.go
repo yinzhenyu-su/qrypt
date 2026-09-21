@@ -14,6 +14,7 @@ import (
 // mount-scoped (mount:fault_id), so clearing a fault on one mount never
 // touches another and the owning mount is always the one cleared.
 func TestNamespaceFaultRoutingAcrossMounts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	alpha, err := New(localfs.New(t.TempDir()), Options{Name: "alpha", StorageDir: t.TempDir()})
 	if err != nil {
@@ -79,6 +80,7 @@ func TestNamespaceFaultRoutingAcrossMounts(t *testing.T) {
 // TestNamespaceFaultIDsUniquenessUnderDuplicateRegistrySequences: two
 // mounts each numbering from 1 still produce distinct namespace IDs.
 func TestNamespaceFaultIDsUniquenessUnderDuplicateRegistrySequences(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	alpha, err := New(drive.NewFakeDriver(), Options{Name: "alpha", StorageDir: t.TempDir()})
 	if err != nil {
@@ -112,6 +114,7 @@ func TestNamespaceFaultIDsUniquenessUnderDuplicateRegistrySequences(t *testing.T
 // key ("photos") must be used in the fault ID even when VFS.name differs
 // ("backend-a"); clearing via the returned ID must route correctly.
 func TestNamespaceFaultRoutingUsesMountKeyNotVFSName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// VFS.name differs from the namespace mount key.
 	backend, err := New(localfs.New(t.TempDir()), Options{Name: "backend-a", StorageDir: t.TempDir()})

@@ -32,6 +32,7 @@ func newPendingViewVFS(t *testing.T) *VFS {
 // TestPendingOnlyFileVisible: a pending upload with no remote counterpart
 // appears in the listing with its FID/size/modtime mapping.
 func TestPendingOnlyFileVisible(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	if err := fs.Create(ctx, "/new.txt"); err != nil {
@@ -61,6 +62,7 @@ func TestPendingOnlyFileVisible(t *testing.T) {
 // a remote child appears exactly once; the pending entry wins (remote
 // entry is shadowed, matching the pre-split behavior).
 func TestPendingDeduplicatesWithRemote(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	if err := fs.Create(ctx, "/both.txt"); err != nil {
@@ -92,6 +94,7 @@ func TestPendingDeduplicatesWithRemote(t *testing.T) {
 // TestDeletedPendingInvisible: a pending upload under a deleted path is
 // hidden.
 func TestDeletedPendingInvisible(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	if err := fs.Create(ctx, "/ghost.txt"); err != nil {
@@ -121,6 +124,7 @@ func TestDeletedPendingInvisible(t *testing.T) {
 // stable remote projection; a pending upload appearing or disappearing is
 // reflected immediately without cache invalidation.
 func TestPendingDynamicWithFreshCache(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	view := newVFSListingView(fs)
@@ -165,6 +169,7 @@ func TestPendingDynamicWithFreshCache(t *testing.T) {
 // TestRemoteListExcludesPending: RemoteList bypasses the view and returns
 // only driver data.
 func TestRemoteListExcludesPending(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	if err := fs.Create(ctx, "/new.txt"); err != nil {
@@ -190,6 +195,7 @@ func TestRemoteListExcludesPending(t *testing.T) {
 // TestPendingConcurrentWithList: pending projection racing concurrent
 // listings must be race-free.
 func TestPendingConcurrentWithList(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

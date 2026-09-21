@@ -3,6 +3,7 @@ package core
 import "testing"
 
 func TestUploadDestinationResolverResolvesRelativePathUnderDefault(t *testing.T) {
+	t.Parallel()
 	resolver := NewUploadDestinationResolver("cloud", "/Inbox")
 	got, err := resolver.resolve("photos/a.jpg", "")
 	if err != nil {
@@ -14,6 +15,7 @@ func TestUploadDestinationResolverResolvesRelativePathUnderDefault(t *testing.T)
 }
 
 func TestUploadDestinationResolverPreservesAbsolutePath(t *testing.T) {
+	t.Parallel()
 	resolver := NewUploadDestinationResolver("cloud", "/Inbox")
 	got, err := resolver.resolve("/other/path.txt", "")
 	if err != nil {
@@ -25,6 +27,7 @@ func TestUploadDestinationResolverPreservesAbsolutePath(t *testing.T) {
 }
 
 func TestUploadDestinationResolverRequiresDefaultForRelativePath(t *testing.T) {
+	t.Parallel()
 	resolver := NewUploadDestinationResolver("", "")
 	_, err := resolver.resolve("relative.txt", "")
 	if err == nil {

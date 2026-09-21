@@ -13,6 +13,7 @@ import (
 // trip erasing credentials: summary masks secrets with "***", and an update
 // that echoes the placeholder back must keep the previous value.
 func TestApplyConfigUpdateKeepsSecretParams(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
@@ -81,6 +82,7 @@ password = "real-secret"
 // TestApplyConfigUpdateFieldsMerge ensures an update that mentions only some
 // params keeps the others (field-level patch semantics).
 func TestApplyConfigUpdateFieldsMerge(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
@@ -119,6 +121,7 @@ root_path = "/keep"
 // TestApplyConfigUpdateUploadFieldMerge ensures a partial upload update only
 // touches the provided fields instead of zeroing the rest.
 func TestApplyConfigUpdateUploadFieldMerge(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "qrypt.toml")
 	if err := os.WriteFile(configPath, []byte(`
@@ -158,6 +161,7 @@ default_path = "/backup"
 // TestCoreReloadClosesOldCore verifies Reload shuts down the previous core's
 // resources before handing out the replacement.
 func TestCoreReloadClosesOldCore(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {

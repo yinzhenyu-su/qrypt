@@ -22,6 +22,7 @@ import (
 )
 
 func TestCreateTaskUploadStreamDirectUsesSourceUploader(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &directUploadTestDriver{}
@@ -71,6 +72,7 @@ func TestCreateTaskUploadStreamDirectUsesSourceUploader(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamDirectUsesLocalFSDirectPath(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -113,6 +115,7 @@ func TestCreateTaskUploadStreamDirectUsesLocalFSDirectPath(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamDirectFallsBackToStagingWithoutDirectCapability(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	storage := t.TempDir()
@@ -165,6 +168,7 @@ func TestCreateTaskUploadStreamDirectFallsBackToStagingWithoutDirectCapability(t
 }
 
 func TestCreateTaskUploadStreamDirectNonResumableCleansPartialAndRetries(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -271,6 +275,7 @@ func TestCreateTaskUploadStreamDirectAutoRetryKeepsTaskID(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamDirectContentURIRequiresOpener(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &directUploadTestDriver{}
@@ -296,6 +301,7 @@ func TestCreateTaskUploadStreamDirectContentURIRequiresOpener(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamDirectRejectsBadOffsetSource(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &directUploadTestDriver{}
@@ -518,6 +524,7 @@ func (r *countingSourceReader) Read(buf []byte) (int, error) {
 func (r *countingSourceReader) Close() error { return nil }
 
 func TestCreateTaskUploadStreamDirectSkippedSegmentsHashWhenDedupOff(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &directUploadTestDriver{}
@@ -564,6 +571,7 @@ func TestCreateTaskUploadStreamDirectSkippedSegmentsHashWhenDedupOff(t *testing.
 }
 
 func TestCreateTaskUploadStreamDirectPrehashesWhenDedupOn(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &directUploadTestDriver{}
@@ -611,6 +619,7 @@ func TestCreateTaskUploadStreamDirectPrehashesWhenDedupOn(t *testing.T) {
 }
 
 func TestDirectUploadSourceReleaseOpenFiles(t *testing.T) {
+	t.Parallel()
 	closed := 0
 	provider := closeTrackingProvider{onClose: func() { closed++ }}
 	source := &directUploadSource{provider: provider, token: "t", size: 4}
@@ -674,6 +683,7 @@ func (r *closeTrackingReader) Close() error {
 }
 
 func TestIsRecoverableUploadStreamTask(t *testing.T) {
+	t.Parallel()
 	c := &Core{}
 	base := task.Task{Type: task.TypeUploadStreamBatch, ID: "t1"}
 	cases := []struct {
@@ -709,6 +719,7 @@ func TestIsRecoverableUploadStreamTask(t *testing.T) {
 }
 
 func TestRequiresPrecomputedSourceHashes(t *testing.T) {
+	t.Parallel()
 	c := &Core{
 		mountContentDedup:  map[string]bool{"quark-test": true, "jianguoyun": false},
 		defaultUploadMount: "quark-test",
@@ -731,6 +742,7 @@ func TestRequiresPrecomputedSourceHashes(t *testing.T) {
 }
 
 func TestUploadStreamBatchProgressSpeedAndETA(t *testing.T) {
+	t.Parallel()
 	b := &uploadStreamBatch{}
 	// First sample only seeds bookkeeping.
 	if s, e := b.progressSpeedAndETA(0, 100_000); s != 0 || e != 0 {

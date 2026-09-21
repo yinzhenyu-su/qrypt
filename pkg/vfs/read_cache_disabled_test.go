@@ -16,6 +16,7 @@ import (
 // Reads miss the cache and hit the driver; uploads proceed and the
 // read-cache seed is a no-op; the cache directory stays empty throughout.
 func TestVFSDisabledReadCacheFullLifecycle(t *testing.T) {
+	t.Parallel()
 	driver := drive.NewFakeDriver()
 	cacheDir := filepath.Join(t.TempDir(), "reading")
 	fs, err := New(driver, Options{
@@ -132,6 +133,7 @@ func TestVFSDisabledReadCacheFullLifecycle(t *testing.T) {
 // serves reads (misses go to the driver) but never persists chunks, and
 // the debug snapshot reports the cache as disabled.
 func TestVFSDisabledReadCacheDoesNotWriteChunks(t *testing.T) {
+	t.Parallel()
 	driver := drive.NewFakeDriver()
 	cacheDir := filepath.Join(t.TempDir(), "reading")
 	fs, err := New(driver, Options{

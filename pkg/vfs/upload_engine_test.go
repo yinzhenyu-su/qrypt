@@ -12,6 +12,7 @@ import (
 )
 
 func TestUploadEngineExecutesPendingUpload(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	remote := t.TempDir()
 	fs, err := New(localfs.New(remote), Options{

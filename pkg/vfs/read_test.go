@@ -15,6 +15,7 @@ import (
 )
 
 func TestVFSReadSpansChunks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("a"), testReadChunkSize+10)
 	drv := newCountingReadDriver(data)
@@ -56,6 +57,7 @@ func TestVFSReadSpansChunks(t *testing.T) {
 }
 
 func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := []byte("small")
 	drv := newCountingReadDriver(data)
@@ -87,6 +89,7 @@ func TestVFSReadPastEOFReturnsEmptyWithoutDriverRead(t *testing.T) {
 }
 
 func TestVFSReadAllLargeBinaryPreservesEveryChunk(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := make([]byte, 8<<20)
 	for i := range data {
@@ -120,6 +123,7 @@ func TestVFSReadAllLargeBinaryPreservesEveryChunk(t *testing.T) {
 }
 
 func TestVFSReadClampsDriverReadToEntrySize(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := []byte("small")
 	drv := newCountingReadDriver(data)
@@ -150,6 +154,7 @@ func TestVFSReadClampsDriverReadToEntrySize(t *testing.T) {
 }
 
 func TestVFSReadSmallMissLoadsSingleChunk(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("b"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -175,6 +180,7 @@ func TestVFSReadSmallMissLoadsSingleChunk(t *testing.T) {
 }
 
 func TestVFSReadExactChunkMissLoadsSingleChunk(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("w"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -199,6 +205,7 @@ func TestVFSReadExactChunkMissLoadsSingleChunk(t *testing.T) {
 }
 
 func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("t"), 16*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -250,6 +257,7 @@ func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
 }
 
 func TestVFSReadWaitsForInFlightPrefetchWindow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("c"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -303,6 +311,7 @@ func TestVFSReadWaitsForInFlightPrefetchWindow(t *testing.T) {
 }
 
 func TestVFSReadStartsAdjacentPrefetchBeforeForegroundMissCompletes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("p"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -340,6 +349,7 @@ func TestVFSReadStartsAdjacentPrefetchBeforeForegroundMissCompletes(t *testing.T
 }
 
 func TestVFSActiveOpsExposeBlockedPrefetchAndWaiter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("x"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -409,6 +419,7 @@ func activeOpsContain(t *testing.T, fs *vfs.VFS, kind, phase string) bool {
 }
 
 func TestVFSReadUsesHotChunkBeforeAsyncCacheWriteCompletes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("d"), testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -442,6 +453,7 @@ func TestVFSReadUsesHotChunkBeforeAsyncCacheWriteCompletes(t *testing.T) {
 }
 
 func TestVFSReadRangeUsesPersistedCacheAfterRemount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("r"), 2*testReadChunkSize)
 	copy(data[testReadChunkSize+32:testReadChunkSize+48], []byte("0123456789abcdef"))
@@ -492,6 +504,7 @@ func TestVFSReadRangeUsesPersistedCacheAfterRemount(t *testing.T) {
 }
 
 func TestVFSReadPromotesPersistedCacheRangeToHotChunk(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("h"), testReadChunkSize)
 	copy(data[32:48], []byte("0123456789abcdef"))
@@ -577,6 +590,7 @@ func TestVFSReadPromotesPersistedCacheRangeToHotChunk(t *testing.T) {
 }
 
 func TestVFSReadRejectsDriverOverread(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("o"), testReadChunkSize)
 	drv := &overReadDriver{countingReadDriver: newCountingReadDriver(data)}
@@ -601,6 +615,7 @@ func TestVFSReadRejectsDriverOverread(t *testing.T) {
 }
 
 func TestVFSReadPrefetchesAdjacentChunksConcurrently(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("e"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -643,6 +658,7 @@ func TestVFSReadPrefetchesAdjacentChunksConcurrently(t *testing.T) {
 }
 
 func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	firstPrefetchChunk := int64(2)
 	secondPrefetchChunk := firstPrefetchChunk + int64(vfsread.SequentialPrefetchChunks)
@@ -698,6 +714,7 @@ func TestVFSSequentialReadMergesPrefetchRanges(t *testing.T) {
 }
 
 func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("a"), int((2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks))*testReadChunkSize))
 	drv := newCountingReadDriver(data)
@@ -736,6 +753,7 @@ func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
 }
 
 func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	firstPrefetchChunk := int64(3)
 	secondPrefetchChunk := firstPrefetchChunk + int64(vfsread.SequentialPrefetchChunks)
@@ -793,6 +811,7 @@ func TestVFSSequentialReadPreservesWindowAfterCachedHead(t *testing.T) {
 }
 
 func TestVFSOffsetJumpKeepsSingleChunkPrefetch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("j"), 6*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -825,6 +844,7 @@ func TestVFSOffsetJumpKeepsSingleChunkPrefetch(t *testing.T) {
 }
 
 func TestVFSHandleOffsetJumpSkipsSpeculativePrefetch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("j"), 6*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -857,6 +877,7 @@ func TestVFSHandleOffsetJumpSkipsSpeculativePrefetch(t *testing.T) {
 }
 
 func TestVFSHandleUnalignedSeekLoadsTouchedChunksTogether(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("u"), 4*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -882,6 +903,7 @@ func TestVFSHandleUnalignedSeekLoadsTouchedChunksTogether(t *testing.T) {
 }
 
 func TestVFSReadWithoutPrefetchSkipsAdjacentChunk(t *testing.T) {
+	t.Parallel()
 	ctx := vfs.WithoutReadPrefetch(context.Background())
 	data := bytes.Repeat([]byte("e"), 3*testReadChunkSize)
 	drv := newCountingReadDriver(data)

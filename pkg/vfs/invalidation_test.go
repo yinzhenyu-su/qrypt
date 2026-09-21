@@ -8,6 +8,7 @@ import (
 )
 
 func TestVFSInvalidationSubscription(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +33,7 @@ func TestVFSInvalidationSubscription(t *testing.T) {
 }
 
 func TestNamespaceInvalidationPrefixesMountName(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +61,7 @@ func TestNamespaceInvalidationPrefixesMountName(t *testing.T) {
 }
 
 func TestInvalidationListenerPanicDoesNotBlockOtherListeners(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

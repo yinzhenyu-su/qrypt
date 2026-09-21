@@ -15,6 +15,7 @@ import (
 )
 
 func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -90,6 +91,7 @@ func TestVFSStagesUploadsAndReadsBack(t *testing.T) {
 	}
 }
 func TestVFSUsesSourceUploaderForStagingSnapshot(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &fileUploadDriver{}
@@ -128,6 +130,7 @@ func TestVFSUsesSourceUploaderForStagingSnapshot(t *testing.T) {
 	}
 }
 func TestVFSUploadsWithSourceOnlyDriver(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &sourceOnlyUploadDriver{}
@@ -156,6 +159,7 @@ func TestVFSUploadsWithSourceOnlyDriver(t *testing.T) {
 	}
 }
 func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -201,6 +205,7 @@ func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
 	}
 }
 func TestVFSCoalescesFlushUploads(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}
@@ -233,6 +238,7 @@ func TestVFSCoalescesFlushUploads(t *testing.T) {
 	}
 }
 func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}
@@ -262,6 +268,7 @@ func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
 	}
 }
 func TestVFSUploadWorkersRunConcurrently(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newBlockingUploadDriver()
@@ -298,6 +305,7 @@ func TestVFSUploadWorkersRunConcurrently(t *testing.T) {
 }
 
 func TestVFSUploadWorkersShareParentTargetIndex(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}

@@ -100,6 +100,7 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 }
 
 func TestRecoveredUploadStreamItemKeepsPersistedProgress(t *testing.T) {
+	t.Parallel()
 	item := &uploadStreamItem{ID: "item", Size: 100}
 	applyPersistedUploadStreamResult(item, task.ItemResult{
 		State:            task.StateRunning,
@@ -121,6 +122,7 @@ func TestRecoveredUploadStreamItemKeepsPersistedProgress(t *testing.T) {
 }
 
 func TestUploadStreamTaskSourcePathsIncludesSingleVFSFallback(t *testing.T) {
+	t.Parallel()
 	got := uploadStreamTaskSourcePaths(&vfs.VFS{}, "/quark-test/n_xq0LMgE_iVtPN9.mp4")
 	if len(got) != 2 || got[0] != "/quark-test/n_xq0LMgE_iVtPN9.mp4" || got[1] != "/n_xq0LMgE_iVtPN9.mp4" {
 		t.Fatalf("task source paths = %#v, want namespaced and mount-local paths", got)
@@ -128,6 +130,7 @@ func TestUploadStreamTaskSourcePathsIncludesSingleVFSFallback(t *testing.T) {
 }
 
 func TestPutUploadStreamRejectsDuplicateTaskID(t *testing.T) {
+	t.Parallel()
 	c := &Core{}
 	first := &uploadStreamBatch{taskID: "upload-1"}
 	second := &uploadStreamBatch{taskID: "upload-1"}
@@ -273,6 +276,7 @@ func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
 }
 
 func TestCommitIncompleteStagingStillRequiresSource(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
@@ -312,6 +316,7 @@ func TestCommitIncompleteStagingStillRequiresSource(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamBatchUsesDefaultDestination(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -476,6 +481,7 @@ func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
 }
 
 func TestApplyRemoteUploadStateKeepsParentRunningForRetryableFailure(t *testing.T) {
+	t.Parallel()
 
 	item := &uploadStreamItem{
 		ID:    "item",

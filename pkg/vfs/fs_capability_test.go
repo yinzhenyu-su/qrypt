@@ -3,6 +3,7 @@ package vfs
 import "testing"
 
 func TestVFSAndNamespaceDeclareConsumerSurfaces(t *testing.T) {
+	t.Parallel()
 	all := []Capability{
 		CapabilityStreamRead,
 		CapabilityReleaseReadSession,
@@ -27,6 +28,7 @@ func TestVFSAndNamespaceDeclareConsumerSurfaces(t *testing.T) {
 }
 
 func TestCapabilitiesRejectsNonCapabler(t *testing.T) {
+	t.Parallel()
 	var fs struct{}
 	if got := Capabilities(fs); got != nil {
 		t.Fatalf("capabilities of non-capabler = %v, want nil", got)
@@ -43,6 +45,7 @@ func TestCapabilitiesRejectsNonCapabler(t *testing.T) {
 }
 
 func TestCapabilitiesStableSortedOrder(t *testing.T) {
+	t.Parallel()
 	caps := Capabilities((*VFS)(nil))
 	if len(caps) != len(fsCapabilities) {
 		t.Fatalf("capabilities = %d, want %d", len(caps), len(fsCapabilities))

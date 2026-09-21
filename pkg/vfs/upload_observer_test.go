@@ -7,6 +7,7 @@ import (
 )
 
 func TestVFSUploadObserverRecordsSnapshotLifecycle(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

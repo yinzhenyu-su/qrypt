@@ -85,6 +85,7 @@ func listNames(t *testing.T, fs vfs.FileSystem, path string) []string {
 // location, so reads and deletes reach the moved object instead of the old
 // path it came from.
 func TestRenameServesBackendIdentity(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs, remote := newRenameIdentityVFS(t)
 	seedRemoteFile(t, remote, "a.txt", "alpha")
@@ -114,6 +115,7 @@ func TestRenameServesBackendIdentity(t *testing.T) {
 // destination identity, so a later read or remove does not fall back to the
 // source location.
 func TestMoveAcrossDirectoriesUsesNewIdentity(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs, remote := newRenameIdentityVFS(t)
 	seedRemoteFile(t, remote, "a.txt", "alpha")
@@ -149,6 +151,7 @@ func TestMoveAcrossDirectoriesUsesNewIdentity(t *testing.T) {
 // TestDirectoryRenameFollowsDescendantIdentity: children cached before their
 // directory was renamed must not keep addressing the old location.
 func TestDirectoryRenameFollowsDescendantIdentity(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs, remote := newRenameIdentityVFS(t)
 	seedRemoteFile(t, remote, "dir/top.txt", "top")

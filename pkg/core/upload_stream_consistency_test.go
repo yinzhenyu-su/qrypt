@@ -10,6 +10,7 @@ import (
 // diagnostics, but it must not resurrect a canceled item into running (nor let
 // a later remote success turn it into succeeded).
 func TestApplyRemoteUploadStateDoesNotRewriteTerminalItem(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		remote task.State
@@ -61,6 +62,7 @@ func TestApplyRemoteUploadStateDoesNotRewriteTerminalItem(t *testing.T) {
 // Non-terminal items still follow the remote task, so the guard does not
 // freeze the normal progress path.
 func TestApplyRemoteUploadStateStillTracksNonTerminalItem(t *testing.T) {
+	t.Parallel()
 	item := &uploadStreamItem{ID: "item", DestPath: "/staged.txt", State: task.StateRunning}
 	remote := task.Task{ID: "remote-1", State: task.StateSucceeded, Progress: task.Progress{CloudBytesDone: 7, CloudBytesTotal: 7}}
 
@@ -92,6 +94,7 @@ func newTestBatch(items ...*uploadStreamItem) *uploadStreamBatch {
 // with the runner gone, an in-flight item cannot progress, so it is converged
 // to failed and the task's terminal state is decided from real outcomes.
 func TestUploadStreamFinishConvergesInFlightItems(t *testing.T) {
+	t.Parallel()
 	item := &uploadStreamItem{ID: "item", DestPath: "/staged.txt", State: task.StateRunning, Size: 7, Written: 7}
 	batch := newTestBatch(item)
 
@@ -132,6 +135,7 @@ func TestUploadStreamFinishConvergesInFlightItems(t *testing.T) {
 // A finished-but-partial batch still reports partial_failed, now with counters
 // that agree with the item states.
 func TestUploadStreamFinishReportsPartialFailureWithConsistentCounters(t *testing.T) {
+	t.Parallel()
 	done := &uploadStreamItem{ID: "done", DestPath: "/done.txt", State: task.StateSucceeded, Size: 4, Written: 4}
 	live := &uploadStreamItem{ID: "live", DestPath: "/live.txt", State: task.StateRunning, Size: 7, Written: 7}
 	batch := newTestBatch(done, live)

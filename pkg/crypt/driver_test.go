@@ -244,6 +244,7 @@ func (f *countingReadOnlyFile) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
 		t.Fatal(err)
@@ -283,6 +284,7 @@ func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {
 }
 
 func TestDriverDebugSnapshotReportsContentDedup(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
 		t.Fatal(err)
@@ -301,6 +303,7 @@ func TestDriverDebugSnapshotReportsContentDedup(t *testing.T) {
 }
 
 func TestDriverReadUsesEncryptedRange(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -350,6 +353,7 @@ func TestDriverReadUsesEncryptedRange(t *testing.T) {
 }
 
 func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -374,6 +378,7 @@ func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
 }
 
 func TestDriverListSkipsInvalidPlainFilenames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -413,6 +418,7 @@ func TestDriverListSkipsInvalidPlainFilenames(t *testing.T) {
 }
 
 func TestEncryptedReadOnlyFileSourceMatchesEncryptingReader(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -468,6 +474,7 @@ func TestEncryptedReadOnlyFileSourceMatchesEncryptingReader(t *testing.T) {
 }
 
 func TestDriverPutSourcePassesEncryptedSourceToRawSourceUploader(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -515,6 +522,7 @@ func TestDriverPutSourcePassesEncryptedSourceToRawSourceUploader(t *testing.T) {
 }
 
 func TestDriverPutSourceContentDedupProducesStableEncryptedSource(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -546,6 +554,7 @@ func TestDriverPutSourceContentDedupProducesStableEncryptedSource(t *testing.T) 
 }
 
 func TestDriverPutSourceContentDedupDoesNotOpenSourceForHash(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -575,6 +584,7 @@ func TestDriverPutSourceContentDedupDoesNotOpenSourceForHash(t *testing.T) {
 // and re-encrypted its whole 64 KiB block - the live quark path measured 3x per
 // pass, 6x for the upload.
 func TestDriverPutSourceReadsEachPlaintextBlockOncePerPass(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -614,6 +624,7 @@ func TestDriverPutSourceReadsEachPlaintextBlockOncePerPass(t *testing.T) {
 }
 
 func TestDriverPutSourceContentDedupCachesEncryptedUploadHashes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -647,6 +658,7 @@ func TestDriverPutSourceContentDedupCachesEncryptedUploadHashes(t *testing.T) {
 }
 
 func TestDriverPutSourceDefaultUsesRandomNonce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
@@ -678,6 +690,7 @@ func TestDriverPutSourceDefaultUsesRandomNonce(t *testing.T) {
 }
 
 func TestDriverPutSourceContentDedupRequiresSHA256Metadata(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {

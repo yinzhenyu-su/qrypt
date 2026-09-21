@@ -16,6 +16,7 @@ import (
 )
 
 func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := localfs.New(t.TempDir())
@@ -51,6 +52,7 @@ func TestVFSDebugSnapshotReportsDriverCapabilities(t *testing.T) {
 }
 
 func TestVFSDebugSnapshotUsesConfiguredName(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := localfs.New(t.TempDir())
@@ -87,6 +89,7 @@ func TestVFSDebugSnapshotUsesConfiguredName(t *testing.T) {
 }
 
 func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := localfs.New(t.TempDir())
@@ -110,6 +113,7 @@ func TestVFSDebugReadHistoryIsBounded(t *testing.T) {
 }
 
 func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{entries: map[string]drive.Entry{
@@ -133,6 +137,7 @@ func TestVFSDebugConsistencyPreservesZeroBytePendingSize(t *testing.T) {
 }
 
 func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newBlockingUploadDriver()
@@ -168,6 +173,7 @@ func TestVFSDebugSnapshotShowsActiveUploadProgress(t *testing.T) {
 }
 
 func TestVFSDebugStagingReportsSizeMismatch(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -205,6 +211,7 @@ func TestVFSDebugStagingReportsSizeMismatch(t *testing.T) {
 }
 
 func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -248,6 +255,7 @@ func TestEncryptedDebugConsistencyReportsForeignPlainFiles(t *testing.T) {
 }
 
 func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -275,6 +283,7 @@ func TestPlainDebugConsistencyDoesNotReportForeignFiles(t *testing.T) {
 }
 
 func TestVFSMountHealthTracksUserOperations(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{
@@ -335,6 +344,7 @@ func TestVFSMountHealthTracksUserOperations(t *testing.T) {
 }
 
 func TestVFSMountHealthIncludesDriverMetrics(t *testing.T) {
+	t.Parallel()
 	driver := &metricHealthDriver{
 		countingReadDriver: newCountingReadDriver([]byte("data")),
 		metrics: []drive.MetricEvent{{
@@ -359,6 +369,7 @@ func TestVFSMountHealthIncludesDriverMetrics(t *testing.T) {
 }
 
 func TestVFSRemoteDeleteUpdatesMountHealth(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -377,13 +388,18 @@ func TestVFSRemoteDeleteUpdatesMountHealth(t *testing.T) {
 	if err := fs.Remove(ctx, "/data.txt"); err != nil {
 		t.Fatal(err)
 	}
+	// Wait on the condition that is actually asserted, not just on the file
+	// disappearing: the delete is asynchronous, so the health counter is bumped
+	// in a later step than the remote file's removal, and the gap between the
+	// two widens whenever the package's tests run in parallel.
 	waitForCondition(t, func() bool {
-		_, err := os.Stat(filepath.Join(remote, "data.txt"))
-		return os.IsNotExist(err)
+		if _, err := os.Stat(filepath.Join(remote, "data.txt")); !os.IsNotExist(err) {
+			return false
+		}
+		return singleMountHealth(t, fs).Ops[drive.HealthOpDelete].Success >= 2
 	})
 
-	health := singleMountHealth(t, fs)
-	if got := health.Ops[drive.HealthOpDelete]; got.Success < 2 || got.Errors != 0 {
-		t.Fatalf("delete health = %+v, want queued and remote delete successes", got)
+	if got := singleMountHealth(t, fs).Ops[drive.HealthOpDelete]; got.Errors != 0 {
+		t.Fatalf("delete health = %+v, want no delete errors", got)
 	}
 }

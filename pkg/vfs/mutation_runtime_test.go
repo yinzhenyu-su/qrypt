@@ -92,6 +92,7 @@ func (r *recordingMutationRuntime) RebasePendingUploads(string, string, drive.En
 }
 
 func TestVFSMutationRuntimeCommitsMkdirAndRename(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
