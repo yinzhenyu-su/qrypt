@@ -64,6 +64,14 @@ in this order:
 3. transfer operations and recovery;
 4. runtime construction and lifecycle helpers.
 
+As of this slice, the local-file and thumbnail services live in
+`pkg/core/internal/localfile` and `pkg/core/internal/thumbnail`; storage and
+media remain in `pkg/core` until their slices land. The thumbnail service
+owes the cache key, persistence and pruning implementation; `core.Core` owns
+the `ThumbnailInfo` DTO, the client-facing error wording and the runtime
+composition (cache directory, budget and filesystem source), and adapts the
+filesystem entry type onto the service's narrow `Source` interface.
+
 An extracted service receives narrow interfaces and configuration values. It
 does not import `pkg/core`, mutate another service's state, or publish a second
 public facade. Task orchestration owns state transitions; transfer services
