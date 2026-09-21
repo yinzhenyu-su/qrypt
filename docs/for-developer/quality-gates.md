@@ -94,6 +94,35 @@ gh workflow run "Nightly Quality Gates"
 ./scripts/smoke-windows-mount.ps1     # Windows 真实挂载冒烟（需 WinFsp）
 ```
 
+## 测试并行度
+
+除少数例外，测试都带 `t.Parallel()`。`pkg/vfs` 的 281 个测试串行需 14.5s，
+并行后 5.0s；`pkg/core` 8.2s → 2.8s。fast 层墙钟因此从约 21.5s 降到约 12s。
+
+两类进程级状态让测试不能并行，且都看不出自测试自身：
+
+- **testing 拒绝的调用与全进程视角**：`t.Setenv`/`t.Chdir` 在 `t.Parallel()`
+  之后调用会 panic；`goleak.Find` 扫描进程内全部 goroutine，只要有别的测试在跑
+  就永远等不到「无泄漏」，用它的测试需要独占本包。
+- **被当作测试接缝的生产包级变量**：`pkg/core` 的 `UploadStreamTaskPollInterval`
+  和 `DirectUploadRetryBaseDelay`、`pkg/vfs/upload` 写 `pkg/logging` 的 `logging.L`。
+  哪个测试在跑就写哪个，两个并行就在赋值本身上竞争。
+
+只把写入者标为串行就够了：go 的 testing 会先把所有非并行测试跑完再恢复并行的
+那些，所以串行写入者必定早于并行读取者结束。
+
+`scripts/test-parallelism.py` 维护这件事，它顺调用图传播（`pkg/core` 的
+`newTaskBoundaryCore` 写接缝，调用它的测试即便自身没提过也要串行），也识别跨包
+赋值：
+
+```bash
+./scripts/test-parallelism.py audit ./pkg/vfs   # 只报告，有待改动时退出 1
+./scripts/test-parallelism.py apply ./pkg/vfs   # 落地
+```
+
+改完**必须**跑 `test-layers.sh race`。静态分析看不到「依赖另一个测试先把接缝
+设成特定状态」这类顺序耦合（`pkg/mobile` 的直传测试即如此），只有 race 层兜得住。
+
 ## 版本固定策略
 
 为保证同一提交在不同时间得到相同结果，CI 的全部质量工具和 GitHub
