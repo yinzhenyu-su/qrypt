@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
-	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
 func ListTasksJSON(coreID, filterRaw string) string {
@@ -17,9 +16,9 @@ func ListTasksJSON(coreID, filterRaw string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	applyDefaultMobileTaskFilter(&filter)
-	tasks, err := withCore(s, func(c *core.Core) ([]task.Task, error) { return c.ListTasks(s.ctx, filter) })
+	tasks, err := withCore(s, func(c *core.Core) ([]core.Task, error) { return c.ListTasks(s.ctx, filter) })
 	if tasks == nil {
-		tasks = []task.Task{}
+		tasks = []core.Task{}
 	}
 	return resultJSON(tasks, err)
 }
@@ -29,7 +28,7 @@ func GetTaskJSON(coreID, taskID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.GetTask(s.ctx, taskID) })
+	item, err := withCore(s, func(c *core.Core) (core.Task, error) { return c.GetTask(s.ctx, taskID) })
 	return resultJSON(item, err)
 }
 
@@ -42,7 +41,7 @@ func ListTaskItemsJSON(coreID, taskID, filterRaw string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	items, err := withCore(s, func(c *core.Core) ([]task.ItemResult, error) {
+	items, err := withCore(s, func(c *core.Core) ([]core.TaskItemResult, error) {
 		return c.ListTaskItems(s.ctx, taskID, filter)
 	})
 	return resultJSON(items, err)
@@ -53,7 +52,7 @@ func GetTaskItemJSON(coreID, taskID, itemID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	item, err := withCore(s, func(c *core.Core) (task.ItemResult, error) {
+	item, err := withCore(s, func(c *core.Core) (core.TaskItemResult, error) {
 		return c.GetTaskItem(s.ctx, taskID, itemID)
 	})
 	return resultJSON(item, err)
@@ -119,13 +118,13 @@ func CreateTaskJSON(coreID, requestRaw string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	var req task.Request
+	var req core.TaskRequest
 	if err := json.Unmarshal([]byte(requestRaw), &req); err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateTask(ctx, req) })
+	item, err := withCore(s, func(c *core.Core) (core.Task, error) { return c.CreateTask(ctx, req) })
 	return resultJSON(item, err)
 }
 
@@ -134,13 +133,13 @@ func CreateOperationJSON(coreID, requestRaw string, deadlineMS int) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	var req task.OperationRequest
+	var req core.TaskOperationRequest
 	if err := json.Unmarshal([]byte(requestRaw), &req); err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateOperation(ctx, req) })
+	item, err := withCore(s, func(c *core.Core) (core.Task, error) { return c.CreateOperation(ctx, req) })
 	return resultJSON(item, err)
 }
 
@@ -155,37 +154,37 @@ func CreateLocalUploadTaskJSON(coreID, requestRaw string, deadlineMS int) string
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	item, err := withCore(s, func(c *core.Core) (task.Task, error) { return c.CreateLocalUploadTask(ctx, req) })
+	item, err := withCore(s, func(c *core.Core) (core.Task, error) { return c.CreateLocalUploadTask(ctx, req) })
 	return resultJSON(item, err)
 }
 
-func parseTaskFilter(raw string) (task.Filter, error) {
+func parseTaskFilter(raw string) (core.TaskFilter, error) {
 	if raw == "" {
-		return task.Filter{}, nil
+		return core.TaskFilter{}, nil
 	}
-	var filter task.Filter
+	var filter core.TaskFilter
 	if err := json.Unmarshal([]byte(raw), &filter); err != nil {
-		return task.Filter{}, err
+		return core.TaskFilter{}, err
 	}
 	return filter, nil
 }
 
-func applyDefaultMobileTaskFilter(filter *task.Filter) {
+func applyDefaultMobileTaskFilter(filter *core.TaskFilter) {
 	if filter == nil || filter.ID != "" || len(filter.Types) > 0 || filter.Scope != "" {
 		return
 	}
 	// Mobile task lists default to user-visible tasks. Sync-scope tasks
 	// (VFS upload_remote/delete_remote bookkeeping) stay out of the UI list.
-	filter.Scope = task.ScopeUser
+	filter.Scope = core.TaskScopeUser
 }
 
-func parseTaskItemFilter(raw string) (task.ItemFilter, error) {
+func parseTaskItemFilter(raw string) (core.TaskItemFilter, error) {
 	if raw == "" {
-		return task.ItemFilter{}, nil
+		return core.TaskItemFilter{}, nil
 	}
-	var filter task.ItemFilter
+	var filter core.TaskItemFilter
 	if err := json.Unmarshal([]byte(raw), &filter); err != nil {
-		return task.ItemFilter{}, err
+		return core.TaskItemFilter{}, err
 	}
 	return filter, nil
 }

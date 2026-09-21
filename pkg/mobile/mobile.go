@@ -135,11 +135,7 @@ type uploadStreamItemHandle struct {
 
 type taskEventHandle struct {
 	coreID string
-	sub    interface {
-		Read(context.Context) ([]core.TaskEvent, error)
-		ReadAvailable() ([]core.TaskEvent, error)
-		Close()
-	}
+	sub    core.TaskSubscription
 }
 
 type runtimeJSON struct {

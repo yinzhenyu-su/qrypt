@@ -10,14 +10,13 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
 const uploadStreamCopyBufferSize = 256 * 1024
 
 type uploadFinishResult struct {
 	Entry entry     `json:"entry"`
-	Task  task.Task `json:"task"`
+	Task  core.Task `json:"task"`
 }
 
 // UploadLocalFileJSON uploads a stable local filesystem path by streaming it
@@ -45,10 +44,10 @@ func UploadLocalFileJSON(coreID, localPath, remotePath string, deadlineMS int) s
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	created, err := withCore(s, func(c *core.Core) (task.Task, error) {
-		return c.CreateTask(ctx, task.Request{
-			Type: task.TypeUploadStreamBatch,
-			Items: []task.Item{{
+	created, err := withCore(s, func(c *core.Core) (core.Task, error) {
+		return c.CreateTask(ctx, core.TaskRequest{
+			Type: core.TaskTypeUploadStreamBatch,
+			Items: []core.TaskItem{{
 				ItemID:   "local-1",
 				DestPath: resolvedRemotePath,
 				Name:     filepath.Base(localPath),
@@ -113,7 +112,7 @@ func UploadLocalFileJSON(coreID, localPath, remotePath string, deadlineMS int) s
 	return resultJSON(uploadFinishResult{Entry: fromDriveEntry(entryItem, resolvedRemotePath), Task: created}, nil)
 }
 
-func firstUploadStreamItemID(item task.Task) (string, error) {
+func firstUploadStreamItemID(item core.Task) (string, error) {
 	if len(item.Result.Items) == 0 {
 		return "", fmt.Errorf("mobile: upload task %s has no items", item.ID)
 	}

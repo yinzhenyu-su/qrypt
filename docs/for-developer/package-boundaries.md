@@ -35,7 +35,7 @@ bypass the layer directly below it merely to reuse an implementation type.
 | `pkg/task` | Generic task state machine, persistence and subscriptions | File-transfer implementations or client transport DTOs |
 | `pkg/core` | Stable application facade and runtime composition | Client-specific JSON/gomobile types or provider protocols |
 | `pkg/core/internal/*` | Application services hidden behind `core.Core` | Public entry points that let clients bypass `core.Core` |
-| `pkg/mobile` | Gomobile-safe sessions, handles, callbacks and JSON envelopes | VFS/media implementation types or business workflows |
+| `pkg/mobile` | Gomobile-safe sessions, handles, callbacks and JSON envelopes | VFS/media/task implementation types or business workflows |
 | `pkg/mount` | FUSE translation, handles, mount lifecycle and OS compatibility | Provider calls or provider-independent filesystem semantics |
 | `pkg/control` | Local diagnostic HTTP transport, validation and response encoding | Contract-test execution, benchmarks or runtime probing algorithms |
 | `pkg/diagnostic/*` | Explicit diagnostic checks, benchmarks and runtime probes | HTTP routing or normal filesystem execution paths |
@@ -46,9 +46,9 @@ bypass the layer directly below it merely to reuse an implementation type.
 
 `pkg/core` is the only application API consumed by `pkg/mobile`. Mobile may
 blank-import `pkg/drivers/all` as a composition-root registration mechanism,
-but it must not import `pkg/vfs`, `pkg/media`, concrete drivers, mount, control
-or CLI packages. Core exposes client-oriented handles and value types when an
-implementation object would otherwise cross this boundary.
+but it must not import `pkg/vfs`, `pkg/media`, `pkg/task`, concrete drivers,
+mount, control or CLI packages. Core exposes client-oriented handles and value
+types when an implementation object would otherwise cross this boundary.
 
 Existing mobile JSON function signatures, error envelopes and cancellation
 semantics are compatibility contracts. Moving ownership must not silently
