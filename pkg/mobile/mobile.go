@@ -11,7 +11,6 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all" // registers all drivers via their init functions
-	"github.com/yinzhenyu/qrypt/pkg/media"
 )
 
 type readCancels struct {
@@ -120,7 +119,7 @@ type fileHandle struct {
 
 type virtualHandle struct {
 	coreID string
-	file   media.VirtualFile
+	file   *core.VirtualFileHandle
 	reads  readCancels
 }
 
