@@ -30,6 +30,11 @@
 #      and read mappings, virtual-file handle) only through the client
 #      contracts pkg/core exports, never through the media implementation
 #      layer. The same directional shape applies as the VFS rule.
+#   8. pkg/mobile consumes task DTOs (requests, filters, task/item results,
+#      event types) and event subscriptions only through the pkg/core task
+#      contracts (core.Task*, TaskEvent, TaskSubscription), never through
+#      the pkg/task implementation layer. pkg/task is owned below pkg/core;
+#      the same directional shape applies as the VFS and media rules.
 #
 # Runs in CI on every PR; costs milliseconds.
 set -euo pipefail
@@ -89,6 +94,14 @@ done
 while IFS= read -r line; do
   [ -n "$line" ] && note "pkg/mobile imports the media implementation layer: $line"
 done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/media' pkg/mobile -g '!**/*_test.go' 2>/dev/null || true)
+
+# 8. pkg/mobile consumes task value types, events and subscriptions through
+#    the pkg/core task contracts (aliased Task*/TaskEvent DTOs and the
+#    TaskSubscription interface), never from the pkg/task implementation
+#    layer directly.
+while IFS= read -r line; do
+  [ -n "$line" ] && note "pkg/mobile imports the task implementation layer: $line"
+done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/task' pkg/mobile -g '!**/*_test.go' 2>/dev/null || true)
 
 if [ "$fail" -ne 0 ]; then
   echo "== FAIL: architecture boundary violated =="

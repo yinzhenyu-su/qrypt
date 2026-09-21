@@ -11,15 +11,29 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
+// Task-facing client contracts. pkg/task is the task implementation owned
+// below pkg/core; mobile consumes task DTOs only through these aliases (and
+// TaskEvent/TaskSubscription in task_events.go), never through pkg/task.
+// Aliasing keeps the mobile JSON wire format identical to pkg/task by
+// construction; task_contract_test.go pins the schema.
 type Task = task.Task
 type TaskFilter = task.Filter
 type TaskItem = task.Item
-type TaskOptions = task.Options
-type TaskRequest = task.Request
-type TaskOperationRequest = task.OperationRequest
-type TaskType = task.Type
-type TaskState = task.State
 type TaskItemFilter = task.ItemFilter
+type TaskItemResult = task.ItemResult
+type TaskOptions = task.Options
+type TaskOperationRequest = task.OperationRequest
+type TaskRequest = task.Request
+type TaskState = task.State
+type TaskType = task.Type
+
+// TaskScopeUser is the scope mobile task lists default to: app-visible tasks
+// only, hiding sync-scope bookkeeping records from the UI.
+const TaskScopeUser = task.ScopeUser
+
+// TaskTypeUploadStreamBatch is the staging upload task type mobile creates
+// through task requests when it streams a local file into qrypt.
+const TaskTypeUploadStreamBatch = task.TypeUploadStreamBatch
 
 // taskDismisser is the optional task-dismissal capability upload tasks use
 // when their source exposes it (a Core session). Named so fakes are trivial.
