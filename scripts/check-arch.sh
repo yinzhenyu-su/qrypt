@@ -26,6 +26,10 @@
 #      pkg/core and internal/cli are the debug server's host/client and
 #      may). Shared driver-level operations live in pkg/vfs/drivecopy and
 #      contract-test harnesses in pkg/contracttest.
+#   7. pkg/mobile reaches media value types (MP4 probe, virtual-file info
+#      and read mappings, virtual-file handle) only through the client
+#      contracts pkg/core exports, never through the media implementation
+#      layer. The same directional shape applies as the VFS rule.
 #
 # Runs in CI on every PR; costs milliseconds.
 set -euo pipefail
@@ -78,6 +82,13 @@ for dir in pkg/syncer; do
     [ -n "$f" ] && note "$dir depends on the debug server package pkg/control: $f"
   done < <(rg -l 'github.com/yinzhenyu/qrypt/pkg/control' "$dir" -g '!**/*_test.go' 2>/dev/null || true)
 done
+
+# 7. pkg/mobile consumes media value types through the pkg/core client
+#    contracts (core-owned probe/info/mapping DTOs and VirtualFileHandle),
+#    never from the media implementation layer directly.
+while IFS= read -r line; do
+  [ -n "$line" ] && note "pkg/mobile imports the media implementation layer: $line"
+done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/media' pkg/mobile -g '!**/*_test.go' 2>/dev/null || true)
 
 if [ "$fail" -ne 0 ]; then
   echo "== FAIL: architecture boundary violated =="

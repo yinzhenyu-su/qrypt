@@ -7,7 +7,6 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/media"
 )
 
 func ProbeMP4JSON(coreID, path string, deadlineMS int) string {
@@ -17,13 +16,13 @@ func ProbeMP4JSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	probe, err := withCore(s, func(c *core.Core) (media.MP4Probe, error) { return c.ProbeMP4(ctx, path) })
+	probe, err := withCore(s, func(c *core.Core) (core.MP4Probe, error) { return c.ProbeMP4Client(ctx, path) })
 	return resultJSON(probe, err)
 }
 
 type virtualOpenResult struct {
-	Handle string                `json:"handle"`
-	Info   media.VirtualFileInfo `json:"info"`
+	Handle string               `json:"handle"`
+	Info   core.VirtualFileInfo `json:"info"`
 }
 
 func openVirtualFile(coreID, path, mode string, deadlineMS int) (virtualOpenResult, error) {
@@ -33,7 +32,7 @@ func openVirtualFile(coreID, path, mode string, deadlineMS int) (virtualOpenResu
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	file, err := withCore(s, func(c *core.Core) (media.VirtualFile, error) { return c.OpenVirtualFile(ctx, path, mode) })
+	file, err := withCore(s, func(c *core.Core) (*core.VirtualFileHandle, error) { return c.OpenVirtualFileClient(ctx, path, mode) })
 	if err != nil {
 		return virtualOpenResult{}, wrapError(err)
 	}
@@ -84,7 +83,7 @@ func CancelVirtualReadJSON(handleID string) string {
 	return resultJSON(nil, nil)
 }
 
-func logVirtualRead(handleID string, file media.VirtualFile, info media.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
+func logVirtualRead(handleID string, file *core.VirtualFileHandle, info core.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
 	if err != nil {
 		mappings := file.ReadMappings(offset, requested)
 		logging.L.Warnf("[MOBILE] virtual read handle=%q mode=%s transformed=%t offset=%d requested=%d bytes=%d dur=%s mappings=%s err=%v",
@@ -98,11 +97,11 @@ func logVirtualRead(handleID string, file media.VirtualFile, info media.VirtualF
 	})
 }
 
-func virtualReadLogKey(handleID string, info media.VirtualFileInfo) string {
+func virtualReadLogKey(handleID string, info core.VirtualFileInfo) string {
 	return "mobile.virtual_read." + handleID + "." + info.Mode
 }
 
-func formatReadMappings(mappings []media.VirtualReadMapping) string {
+func formatReadMappings(mappings []core.VirtualReadMapping) string {
 	if len(mappings) == 0 {
 		return "-"
 	}
