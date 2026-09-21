@@ -152,6 +152,10 @@ func (c *Core) List(ctx context.Context, path string) ([]drive.Entry, error) {
 // ListPage returns a deterministic slice of a directory listing (sorted by
 // name) with a cursor for incremental browsing. limit <= 0 returns the whole
 // listing.
+//
+// ListPage is the legacy VFS-typed API, kept source-compatible for existing
+// callers. Client-facing code should use ListPageClient, which returns the
+// core-owned ListPageResult contract instead of the VFS implementation type.
 func (c *Core) ListPage(ctx context.Context, path, cursor string, limit int) (vfs.ListPageResult, error) {
 	if c == nil || c.fs == nil {
 		return vfs.ListPageResult{}, fmt.Errorf("core: closed")
@@ -199,6 +203,12 @@ func (c *Core) Remove(ctx context.Context, path string) error {
 	return c.fs.Remove(ctx, path)
 }
 
+// Capabilities reports which operations are allowed on a path.
+//
+// Capabilities is the legacy VFS-typed API, kept source-compatible for
+// existing callers. Client-facing code should use CapabilitiesClient, which
+// returns the core-owned CapabilityInfo contract instead of the VFS
+// implementation type.
 func (c *Core) Capabilities(ctx context.Context, path string) (vfs.CapabilityInfo, error) {
 	if c == nil || c.fs == nil {
 		return vfs.CapabilityInfo{}, fmt.Errorf("core: closed")
@@ -210,6 +220,11 @@ func (c *Core) Capabilities(ctx context.Context, path string) (vfs.CapabilityInf
 	return reporter.CapabilitiesForPath(ctx, path)
 }
 
+// Mounts reports the mounted filesystem domains.
+//
+// Mounts is the legacy VFS-typed API, kept source-compatible for existing
+// callers. Client-facing code should use MountsClient, which returns the
+// core-owned MountInfo contract instead of the VFS implementation type.
 func (c *Core) Mounts() ([]vfs.MountInfo, error) {
 	if c == nil || c.fs == nil {
 		return nil, fmt.Errorf("core: closed")

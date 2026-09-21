@@ -106,6 +106,7 @@ Extended walkthrough →
 ## Developer Documentation
 
 - [Architecture](docs/for-developer/architecture.md) — layer overview and design rules
+- [Package boundaries](docs/for-developer/package-boundaries.md) — ownership, forbidden dependencies, and migration criteria
 - [Driver Development](docs/for-developer/driver-development.md) — how to add a new cloud-drive backend
 - [Debugging](docs/for-developer/debug.md) — diagnostic tools and troubleshooting
 - [Fuzz Corpus](docs/for-developer/fuzz-corpus.md) — nightly fuzzing and regression corpus lifecycle
