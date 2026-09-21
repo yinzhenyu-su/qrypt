@@ -18,7 +18,10 @@
 #   3. pkg/vfs, pkg/mount, pkg/control, pkg/core never import a
 #      concrete provider (their tests may use FakeDriver/localfs)
 #   4. pkg/mobile only imports the registration aggregate pkg/drivers/all
-#   5. pkg/control is the debug-socket HTTP API only: the sync
+#   5. pkg/core is pkg/mobile's application boundary: mobile must not
+#      import pkg/vfs (or any subpackage), and consumes VFS value types
+#      only through the client contracts pkg/core exposes
+#   6. pkg/control is the debug-socket HTTP API only: the sync
 #      executor must not depend on it (it is the pure production path;
 #      pkg/core and internal/cli are the debug server's host/client and
 #      may). Shared driver-level operations live in pkg/vfs/drivecopy and
@@ -59,7 +62,16 @@ while IFS= read -r line; do
   [ -n "$line" ] && note "pkg/mobile imports a non-aggregate driver package: $line"
 done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/drivers/' pkg/mobile -g '!**/*_test.go' 2>/dev/null | grep -v 'pkg/drivers/all' || true)
 
-# 5. pkg/control stays a debug-API leaf: production executors may use
+# 5. pkg/core is pkg/mobile's application boundary. pkg/core serves other
+#    hosts too (internal/cli, pkg/mount); the rule is directional: mobile
+#    reaches filesystem value types through core, never through the VFS
+#    implementation layer (subpackage imports like pkg/vfs/read match the
+#    prefix too, so a single pattern covers every domain below it).
+while IFS= read -r line; do
+  [ -n "$line" ] && note "pkg/mobile imports the VFS implementation layer: $line"
+done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/vfs' pkg/mobile -g '!**/*_test.go' 2>/dev/null || true)
+
+# 6. pkg/control stays a debug-API leaf: production executors may use
 #    pkg/vfs/drivecopy / pkg/contracttest but never the HTTP server.
 for dir in pkg/syncer; do
   while IFS= read -r f; do

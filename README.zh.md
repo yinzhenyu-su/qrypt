@@ -106,6 +106,7 @@ b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
 ## 开发者文档
 
 - [架构概览](docs/for-developer/architecture.md) — 分层设计与规则
+- [包边界](docs/for-developer/package-boundaries.md) — 职责所有权、禁止依赖与迁移验收标准
 - [驱动开发](docs/for-developer/driver-development.md) — 如何接入新的云盘后端
 - [调试](docs/for-developer/debug.md) — 诊断工具和故障排查
 - [Fuzz 样本管理](docs/for-developer/fuzz-corpus.md) — nightly fuzzing 与回归样本流程

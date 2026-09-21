@@ -1,5 +1,10 @@
 # Architecture
 
+The target ownership rules and migration acceptance criteria are defined in
+[Package Boundaries](package-boundaries.md). This document describes the
+runtime architecture; when current code is still being migrated, the boundary
+contract is authoritative for new dependencies.
+
 qrypt is organized as a small set of layers with one-way dependencies. The
 main rule is that cloud-drive details stay below `pkg/drive`, filesystem
 semantics stay in `pkg/vfs`, and platform mount details stay in

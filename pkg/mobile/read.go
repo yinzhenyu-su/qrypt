@@ -6,7 +6,6 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type openFileOptions struct {
@@ -14,7 +13,7 @@ type openFileOptions struct {
 	Priority   string `json:"priority"`
 }
 
-func openFileWithPriority(coreID, path string, priority vfs.ReadPriority, deadlineMS int) (string, error) {
+func openFileWithPriority(coreID, path string, priority core.ReadPriority, deadlineMS int) (string, error) {
 	s, err := getSession(coreID)
 	if err != nil {
 		return "", wrapError(err)
@@ -62,14 +61,14 @@ func parseOpenFileOptions(raw string) (openFileOptions, error) {
 	return options, nil
 }
 
-func (o openFileOptions) priority() (vfs.ReadPriority, error) {
+func (o openFileOptions) priority() (core.ReadPriority, error) {
 	switch o.Priority {
 	case "", "normal":
-		return vfs.PriorityNormal, nil
+		return core.PriorityNormal, nil
 	case "high":
-		return vfs.PriorityHigh, nil
+		return core.PriorityHigh, nil
 	default:
-		return vfs.PriorityNormal, fmt.Errorf("mobile: unknown file priority %q", o.Priority)
+		return core.PriorityNormal, fmt.Errorf("mobile: unknown file priority %q", o.Priority)
 	}
 }
 
@@ -90,8 +89,9 @@ func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int,
 	}
 	ctx, done := handle.reads.begin(deadlineMS)
 	defer done()
-	ctx = vfs.WithReadPriority(ctx, handle.readPriority)
-	n, err := withCore(s, func(c *core.Core) (int, error) { return c.ReadAtInto(ctx, handle.path, offset, dst, 0) })
+	n, err := withCore(s, func(c *core.Core) (int, error) {
+		return c.ReadAtIntoWithPriority(ctx, handle.path, offset, dst, 0, handle.readPriority)
+	})
 	if err != nil {
 		return n, wrapError(err)
 	}

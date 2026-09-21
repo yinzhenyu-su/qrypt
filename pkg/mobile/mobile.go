@@ -12,7 +12,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all" // registers all drivers via their init functions
 	"github.com/yinzhenyu/qrypt/pkg/media"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 type readCancels struct {
@@ -115,7 +114,7 @@ type fileHandle struct {
 	coreID       string
 	path         string
 	size         int64
-	readPriority vfs.ReadPriority
+	readPriority core.ReadPriority
 	reads        readCancels
 }
 

@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/yinzhenyu/qrypt/pkg/limits"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 const DefaultReadChunkLimit = limits.DefaultReadRequestBytes
@@ -70,4 +71,16 @@ func (c *Core) ReadAtInto(ctx context.Context, path string, offset int64, dst []
 		return n, nil
 	}
 	return n, err
+}
+
+// ReadAtIntoWithPriority reads into dst like ReadAtInto, with a client
+// ReadPriority mapped to the VFS read scheduler inside core. Under slot
+// contention the scheduler honors PriorityHigh reads ahead of lower-priority
+// work; clients never paint scheduling values onto a context themselves.
+func (c *Core) ReadAtIntoWithPriority(ctx context.Context, path string, offset int64, dst []byte, limit int, priority ReadPriority) (int, error) {
+	if priority < PriorityLow || priority > PriorityHigh {
+		return 0, fmt.Errorf("core: unknown read priority %d", priority)
+	}
+	readCtx := vfs.WithReadPriority(ctx, priorityToVFS(priority))
+	return c.ReadAtInto(readCtx, path, offset, dst, limit)
 }

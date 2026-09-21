@@ -3,7 +3,6 @@ package mobile
 import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func ListJSON(coreID, path string, deadlineMS int) string {
@@ -41,7 +40,7 @@ func ListPageJSON(coreID, path, cursor string, limit int, deadlineMS int) string
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	result, err := withCore(s, func(c *core.Core) (vfs.ListPageResult, error) { return c.ListPage(ctx, path, cursor, limit) })
+	result, err := withCore(s, func(c *core.Core) (core.ListPageResult, error) { return c.ListPageClient(ctx, path, cursor, limit) })
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
@@ -118,7 +117,7 @@ func CapabilitiesJSON(coreID, path string, deadlineMS int) string {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	info, err := withCore(s, func(c *core.Core) (vfs.CapabilityInfo, error) { return c.Capabilities(ctx, path) })
+	info, err := withCore(s, func(c *core.Core) (core.CapabilityInfo, error) { return c.CapabilitiesClient(ctx, path) })
 	return resultJSON(info, err)
 }
 
@@ -127,7 +126,7 @@ func MountsJSON(coreID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	mounts, err := withCore(s, func(c *core.Core) ([]vfs.MountInfo, error) { return c.Mounts() })
+	mounts, err := withCore(s, func(c *core.Core) ([]core.MountInfo, error) { return c.MountsClient() })
 	return resultJSON(mounts, err)
 }
 
