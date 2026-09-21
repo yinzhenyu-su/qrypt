@@ -12,6 +12,7 @@ import (
 // and an undeclared type is refused. A type therefore cannot be accepted
 // without a creation path, or declared without one.
 func TestCreationPathsMatchDeclaredTypes(t *testing.T) {
+	t.Parallel()
 	declared := map[task.CreationPath]bool{}
 	for _, descriptor := range task.Descriptors() {
 		declared[descriptor.Creation] = true
@@ -36,6 +37,7 @@ func TestCreationPathsMatchDeclaredTypes(t *testing.T) {
 // declared recoverable type always has a recovery path and no undeclared type
 // is recovered.
 func TestRecoveryPathsMatchDeclaredRecoverableTypes(t *testing.T) {
+	t.Parallel()
 	declared := map[task.Type]bool{}
 	for _, typ := range task.RecoverableTypes() {
 		declared[typ] = true

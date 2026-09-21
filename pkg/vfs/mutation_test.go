@@ -14,6 +14,7 @@ import (
 )
 
 func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newCountingRemoveDriver()
@@ -45,6 +46,7 @@ func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
 }
 
 func TestVFSDirectoryDeleteWaitsForActiveChildDelete(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newBlockingRemoveDriver()
@@ -88,6 +90,7 @@ func TestVFSDirectoryDeleteWaitsForActiveChildDelete(t *testing.T) {
 }
 
 func TestVFSDeleteTasksExposeScheduledDeletes(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newCountingRemoveDriver()
@@ -112,6 +115,7 @@ func TestVFSDeleteTasksExposeScheduledDeletes(t *testing.T) {
 }
 
 func TestVFSDeleteTaskCancelRestoresPendingDelete(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newCountingRemoveDriver()
@@ -144,6 +148,7 @@ func TestVFSDeleteTaskCancelRestoresPendingDelete(t *testing.T) {
 }
 
 func TestVFSDeleteTaskRetryFailedDelete(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newCountingRemoveDriver()
@@ -173,6 +178,7 @@ func TestVFSDeleteTaskRetryFailedDelete(t *testing.T) {
 }
 
 func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newCountingRemoveDriver()
@@ -204,6 +210,7 @@ func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
 }
 
 func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -253,6 +260,7 @@ func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
 }
 
 func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fs, err := vfs.New(&staleMkdirListDriver{}, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
@@ -276,6 +284,7 @@ func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
 }
 
 func TestVFSMkdirReusesExistingDirectoryOnConflict(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &existingMkdirDriver{}
@@ -303,6 +312,7 @@ func TestVFSMkdirReusesExistingDirectoryOnConflict(t *testing.T) {
 }
 
 func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &staleMkdirListDriver{failFirstPut: true}
@@ -334,6 +344,7 @@ func TestVFSUploadsFileInsideLocallyKnownStaleDirectory(t *testing.T) {
 }
 
 func TestVFSStatMissingChildrenInNewLocalDirectoryDoesNotRelistRemote(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &staleMkdirListDriver{listCalls: map[string]int{}}
@@ -357,6 +368,7 @@ func TestVFSStatMissingChildrenInNewLocalDirectoryDoesNotRelistRemote(t *testing
 }
 
 func TestVFSPrepareDirectoryCopyClearsPendingChildren(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &staleMkdirListDriver{}
@@ -398,6 +410,7 @@ func TestVFSPrepareDirectoryCopyClearsPendingChildren(t *testing.T) {
 }
 
 func TestVFSPrepareDirectoryCopyHidesExistingRemoteChildrenUntilRecreated(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -450,6 +463,7 @@ func TestVFSPrepareDirectoryCopyHidesExistingRemoteChildrenUntilRecreated(t *tes
 }
 
 func TestVFSRenameMoveOverlayHidesStaleBackendEntries(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &staleMoveListDriver{}
@@ -485,6 +499,7 @@ func TestVFSRenameMoveOverlayHidesStaleBackendEntries(t *testing.T) {
 }
 
 func TestVFSRenameMoveOverlayConfirmsRemoteConvergence(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &staleMoveListDriver{}
@@ -518,6 +533,7 @@ func TestVFSRenameMoveOverlayConfirmsRemoteConvergence(t *testing.T) {
 }
 
 func TestVFSRenameUploadedFile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -554,6 +570,7 @@ func TestVFSRenameUploadedFile(t *testing.T) {
 }
 
 func TestVFSRenameUploadUpload(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -591,6 +608,7 @@ func TestVFSRenameUploadUpload(t *testing.T) {
 // move the scheduled upload to the new path - otherwise the queued entry
 // misses its latest-record lookup and the frozen pending never uploads.
 func TestVFSRenameFlushedPendingUpload(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -631,6 +649,7 @@ func TestVFSRenameFlushedPendingUpload(t *testing.T) {
 // The uploaded temp object must move with the rename; it must not survive as
 // name.qkdownloading next to the final file.
 func TestVFSRenameAfterTempGenerationUploaded(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -681,6 +700,7 @@ func TestVFSRenameAfterTempGenerationUploaded(t *testing.T) {
 // TestVFSRenameTempFileInsideRenamedDirectory: the same flow when the
 // downloader first renames the containing directory and then the temp file.
 func TestVFSRenameTempFileInsideRenamedDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -726,6 +746,7 @@ func TestVFSRenameTempFileInsideRenamedDirectory(t *testing.T) {
 // TestVFSRenameEditedRemoteFileLeavesNoOldName: editing a remote file and then
 // renaming it must not leave the original object behind under the old name.
 func TestVFSRenameEditedRemoteFileLeavesNoOldName(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()

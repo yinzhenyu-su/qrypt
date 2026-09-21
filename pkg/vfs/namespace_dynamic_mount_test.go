@@ -18,6 +18,7 @@ func newTestVFSForNamespace(t *testing.T) *VFS {
 }
 
 func TestNamespaceAddMountVisibleToOperations(t *testing.T) {
+	t.Parallel()
 	a := newTestVFSForNamespace(t)
 	b := newTestVFSForNamespace(t)
 	ns, err := NewNamespace([]Mount{{Name: "a", FS: a}})
@@ -40,6 +41,7 @@ func TestNamespaceAddMountVisibleToOperations(t *testing.T) {
 }
 
 func TestNamespaceAddMountRejectsBadMounts(t *testing.T) {
+	t.Parallel()
 	fs := newTestVFSForNamespace(t)
 	ns, err := NewNamespace([]Mount{{Name: "a", FS: fs}})
 	if err != nil {
@@ -66,6 +68,7 @@ func TestNamespaceAddMountRejectsBadMounts(t *testing.T) {
 }
 
 func TestNamespaceRemoveMountDetaches(t *testing.T) {
+	t.Parallel()
 	a := newTestVFSForNamespace(t)
 	b := newTestVFSForNamespace(t)
 	ns, err := NewNamespace([]Mount{{Name: "a", FS: a}, {Name: "b", FS: b}})
@@ -87,6 +90,7 @@ func TestNamespaceRemoveMountDetaches(t *testing.T) {
 }
 
 func TestNamespaceDynamicMountInvalidationSubscription(t *testing.T) {
+	t.Parallel()
 	a := newTestVFSForNamespace(t)
 	b := newTestVFSForNamespace(t)
 	ns, err := NewNamespace([]Mount{{Name: "a", FS: a}})

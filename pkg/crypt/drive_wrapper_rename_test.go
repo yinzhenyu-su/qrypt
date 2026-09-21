@@ -34,6 +34,7 @@ func (d *backendEchoDriver) Move(_ context.Context, entry drive.Entry, dstParent
 // which leaked a ciphertext name into the view and surfaced in the mount as a
 // file nobody could address.
 func TestWrapperRenameAndMoveReturnPlaintextNames(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
 		t.Fatal(err)

@@ -104,6 +104,7 @@ func (d *completedBlockingUploadDriver) removedIDs() []string {
 // the in-flight upload: cancel-and-remove would delete the pending record and
 // the engine would then remove the freshly uploaded remote file.
 func TestVFSUploadTaskDismissDuringActiveCompletedUploadKeepsFile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &completedBlockingUploadDriver{

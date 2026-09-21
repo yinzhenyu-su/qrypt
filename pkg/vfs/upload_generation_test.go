@@ -11,6 +11,7 @@ import (
 )
 
 func TestVFSWriteAfterFlushPreservesStagedContent(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
@@ -48,6 +49,7 @@ func TestVFSWriteAfterFlushPreservesStagedContent(t *testing.T) {
 	}
 }
 func TestVFSMutableGenerationIsNotUploadedWithoutFlush(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &fileUploadDriver{blockFirst: make(chan struct{}), firstEntered: make(chan struct{})}
@@ -105,6 +107,7 @@ func TestVFSMutableGenerationIsNotUploadedWithoutFlush(t *testing.T) {
 	}
 }
 func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cacheDir := t.TempDir()
@@ -162,6 +165,7 @@ func TestVFSUploadUsesStableSnapshotWhenFileChangesDuringUpload(t *testing.T) {
 	}
 }
 func TestVFSUploadDoesNotClearNewerPending(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	entered := make(chan struct{})

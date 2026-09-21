@@ -13,6 +13,7 @@ import (
 // ctx.Err() immediately, but every mount's teardown must still run to
 // completion instead of being starved by a serialized budget.
 func TestNamespaceCloseShortContextStillTearsDownAllMounts(t *testing.T) {
+	t.Parallel()
 	mounts := make([]*VFS, 4)
 	nsMounts := make([]Mount, len(mounts))
 	for i := range mounts {

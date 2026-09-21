@@ -35,6 +35,7 @@ func newViewCommitVFS(t *testing.T) *VFS {
 // filtered, local children are merged, local modtimes override remote ones,
 // and rename overlays are applied - all through one call.
 func TestViewCommitRemoteChildrenSemantics(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
@@ -97,6 +98,7 @@ func TestViewCommitRemoteChildrenSemantics(t *testing.T) {
 // TestViewCommitRemoteChildrenDoesNotMutateInput: the committed view must
 // not surprise the caller by mutating the input slice (fresh remote data).
 func TestViewCommitRemoteChildrenDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
@@ -122,6 +124,7 @@ func TestViewCommitRemoteChildrenDoesNotMutateInput(t *testing.T) {
 // TestViewCommitRemoteChildrenRenameOverlay: after a rename, the overlay is
 // updated and the committed view reflects the new name.
 func TestViewCommitRemoteChildrenRenameOverlay(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
@@ -152,6 +155,7 @@ func TestViewCommitRemoteChildrenRenameOverlay(t *testing.T) {
 // TestViewCommitRemoteChildrenHidesUnavailable: an explicitly hidden
 // (copy-hidden) child stays invisible in the committed view.
 func TestViewCommitRemoteChildrenHidesUnavailable(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
@@ -176,6 +180,7 @@ func TestViewCommitRemoteChildrenHidesUnavailable(t *testing.T) {
 // deleted/hidden nodes filtered, local children merged, local modtimes
 // overriding remote ones, and the input slice untouched.
 func TestProjectChildrenSemantics(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
@@ -223,6 +228,7 @@ func TestProjectChildrenSemantics(t *testing.T) {
 // TestProjectChildrenDoesNotTouchCache: projection must not commit or
 // invalidate the fresh-list cache.
 func TestProjectChildrenDoesNotTouchCache(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 
@@ -246,6 +252,7 @@ func TestProjectChildrenDoesNotTouchCache(t *testing.T) {
 // mutations must be race-free. The fake driver's Delay makes the owner hold
 // the list load long enough for waiters to pile up.
 func TestOwnerWaiterConcurrentProjection(t *testing.T) {
+	t.Parallel()
 	drv := drive.NewFakeDriver(func(d *drive.FakeDriver) { d.Delay = 2 * time.Millisecond })
 	if err := drv.Seed(map[string]string{"a.txt": "alpha", "b.txt": "beta"}); err != nil {
 		t.Fatal(err)
@@ -288,6 +295,7 @@ func TestOwnerWaiterConcurrentProjection(t *testing.T) {
 // keeps visibility (IsUnavailable) and cache identity (Entry) independent:
 // an unresolved path is an entry miss but NOT unavailable.
 func TestViewSeparatesVisibilityFromCacheIdentity(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	if view.IsUnavailable("/uncached") {
@@ -308,6 +316,7 @@ func TestViewSeparatesVisibilityFromCacheIdentity(t *testing.T) {
 // visible even while a stale backend listing still carries the old name -
 // otherwise the new object would stay hidden behind the rename shadow.
 func TestViewCommitRemoteChildrenRetiresShadowForNewObject(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 

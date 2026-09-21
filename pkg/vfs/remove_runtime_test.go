@@ -9,6 +9,7 @@ import (
 )
 
 func TestVFSRemoveCleanupRemovesPendingUpload(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +34,7 @@ func TestVFSRemoveCleanupRemovesPendingUpload(t *testing.T) {
 }
 
 func TestVFSRemoveCleanupRemovesPendingUploadsUnderDirectory(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), UploadDelay: time.Hour})
 	if err != nil {
 		t.Fatal(err)

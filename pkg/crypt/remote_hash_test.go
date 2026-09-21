@@ -12,6 +12,7 @@ import (
 )
 
 func TestEncryptedHashMatchesRealCiphertext(t *testing.T) {
+	t.Parallel()
 	// The core claim behind non-download hash verification: encrypting the
 	// plaintext locally with the nonce stored in the remote header yields the
 	// exact ciphertext stored remotely, so its hash matches the remote hash.
@@ -54,6 +55,7 @@ func TestEncryptedHashMatchesRealCiphertext(t *testing.T) {
 }
 
 func TestRemoteHashDelegatesToBackend(t *testing.T) {
+	t.Parallel()
 	raw := &recordingRawDriver{RemoteHashValue: "deadbeef"}
 	raw.RemoteHashAlg = drive.HashSHA1
 	cp, err := NewRcloneCipher("password", "salt")
@@ -71,6 +73,7 @@ func TestRemoteHashDelegatesToBackend(t *testing.T) {
 }
 
 func TestRemoteHashUnsupportedBackend(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
 		t.Fatal(err)

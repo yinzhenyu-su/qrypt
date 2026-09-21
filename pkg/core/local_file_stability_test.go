@@ -11,6 +11,7 @@ import (
 )
 
 func TestWaitLocalFileStableReturnsStableSnapshot(t *testing.T) {
+	t.Parallel()
 	localPath := filepath.Join(t.TempDir(), "stable.txt")
 	if err := os.WriteFile(localPath, []byte("stable"), 0o644); err != nil {
 		t.Fatal(err)
@@ -30,6 +31,7 @@ func TestWaitLocalFileStableReturnsStableSnapshot(t *testing.T) {
 }
 
 func TestWaitLocalFileStableWaitsAfterChange(t *testing.T) {
+	t.Parallel()
 	localPath := filepath.Join(t.TempDir(), "changing.txt")
 	if err := os.WriteFile(localPath, []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
@@ -59,6 +61,7 @@ func TestWaitLocalFileStableWaitsAfterChange(t *testing.T) {
 }
 
 func TestWaitLocalFileStableRejectsDirectory(t *testing.T) {
+	t.Parallel()
 	c := &Core{}
 	_, err := c.WaitLocalFileStable(context.Background(), t.TempDir(), LocalFileStabilityOptions{QuietMS: 1, PollMS: 1})
 	if err == nil {
@@ -67,6 +70,7 @@ func TestWaitLocalFileStableRejectsDirectory(t *testing.T) {
 }
 
 func TestWaitLocalFileStableValidationMessages(t *testing.T) {
+	t.Parallel()
 	c := &Core{}
 	_, err := c.WaitLocalFileStable(context.Background(), "/x", LocalFileStabilityOptions{QuietMS: -1})
 	if err == nil || err.Error() != "core: quiet_ms must be non-negative" {
@@ -83,6 +87,7 @@ func TestWaitLocalFileStableValidationMessages(t *testing.T) {
 }
 
 func TestWaitLocalFileStableCancellation(t *testing.T) {
+	t.Parallel()
 	localPath := filepath.Join(t.TempDir(), "cancel.txt")
 	if err := os.WriteFile(localPath, []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
@@ -104,6 +109,7 @@ func TestWaitLocalFileStableCancellation(t *testing.T) {
 }
 
 func TestLocalFileStabilityOptionsJSONFields(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(LocalFileStabilityOptions{QuietMS: 5, PollMS: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +134,7 @@ func TestLocalFileStabilityOptionsJSONFields(t *testing.T) {
 }
 
 func TestLocalFileStabilityJSONFields(t *testing.T) {
+	t.Parallel()
 	modTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	observedAt := time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC)
 	raw, err := json.Marshal(LocalFileStability{

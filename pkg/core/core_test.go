@@ -116,6 +116,7 @@ func (d *failInitDriver) Metrics(context.Context, time.Time) ([]drive.MetricEven
 }
 
 func TestBuildFileSystemInitializesMountsConcurrently(t *testing.T) {
+	t.Parallel()
 	probe := &initProbe{entered: make(chan string, 2), release: make(chan struct{})}
 	parallelInitProbeMu.Lock()
 	parallelInitProbe = probe
@@ -163,6 +164,7 @@ func TestBuildFileSystemInitializesMountsConcurrently(t *testing.T) {
 }
 
 func TestBuildFileSystemSkipsFailedMounts(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -222,6 +224,7 @@ func TestBuildFileSystemSkipsFailedMounts(t *testing.T) {
 }
 
 func TestBuildFileSystemFailsWhenEveryMountFails(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -262,6 +265,7 @@ func testRuntimeLayout(tmp string) RuntimeLayout {
 }
 
 func TestNewStorageLayoutDerivesChildrenFromWorkDir(t *testing.T) {
+	t.Parallel()
 	workDir := filepath.Join(t.TempDir(), "qrypt")
 	cfg := &config.Config{Storage: config.StorageConfig{
 		WorkDir:      workDir,
@@ -328,6 +332,7 @@ func TestNewStorageLayoutQryptHomeOverridesConfiguredPaths(t *testing.T) {
 }
 
 func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -374,6 +379,7 @@ func TestBuildFileSystemUsesRuntimeStorage(t *testing.T) {
 }
 
 func TestImportConfigSanitizesRuntimePaths(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -430,6 +436,7 @@ root_path = `+util.TOMLPath(remote)+`
 }
 
 func TestOpenInitializesRuntimeLog(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -459,6 +466,7 @@ root_path = `+util.TOMLPath(remote)+`
 }
 
 func TestStorageUsageAndClearReadCache(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -520,6 +528,7 @@ root_path = `+util.TOMLPath(remote)+`
 }
 
 func TestThumbnailCacheFileLifecycle(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -617,6 +626,7 @@ func TestThumbnailCacheFileLifecycle(t *testing.T) {
 }
 
 func TestThumbnailCachePrunesOldEntries(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -676,6 +686,7 @@ func TestThumbnailCachePrunesOldEntries(t *testing.T) {
 }
 
 func TestCoreReadAtLimit(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -731,6 +742,7 @@ func TestCoreReadAtLimit(t *testing.T) {
 }
 
 func TestCoreCRUDUsesVFSStaging(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")

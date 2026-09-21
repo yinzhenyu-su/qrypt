@@ -57,6 +57,7 @@ func assertHashesEqual(t *testing.T, got, want drive.SourceHashes, algorithms []
 // remote file hashes the copied bytes on the way in: without it Flush cannot
 // record SourceHashes and the upload snapshot re-reads the whole staging file.
 func TestStageExistingFeedsUploadSnapshotHashes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStagingHashTestFS(t)
 	content := strings.Repeat("qrypt-staging-hash-", 8192)
@@ -95,6 +96,7 @@ func TestStageExistingFeedsUploadSnapshotHashes(t *testing.T) {
 // content: rotating a frozen generation an upload has started reading. The new
 // generation must hash the copied bytes, not re-read them at snapshot time.
 func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStagingHashTestFS(t)
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("hello world"), 0); err != nil {
@@ -136,6 +138,7 @@ func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
 // out-of-sequence write after staging marks the tracker dirty, so the snapshot
 // must re-read the file and report hashes of the final content.
 func TestStageExistingOutOfOrderWriteRehashesStaging(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStagingHashTestFS(t)
 	content := strings.Repeat("qrypt-staging-hash-", 8192)

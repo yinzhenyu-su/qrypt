@@ -56,6 +56,7 @@ func (f *fakeDebouncer) fire(t *testing.T) {
 // repeated schedule calls arm once, and the fired callback flushes the
 // dirty index without any real-time wait.
 func TestStoreScheduleReadIndexSaveDebounces(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(t.TempDir(), 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +89,7 @@ func TestStoreScheduleReadIndexSaveDebounces(t *testing.T) {
 // TestStoreDebouncerSurvivesRepeatedFlush: a flush during an armed state
 // cancels the pending fire (no double flush).
 func TestStoreDebouncerSurvivesRepeatedFlush(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(t.TempDir(), 1<<20)
 	if err != nil {
 		t.Fatal(err)

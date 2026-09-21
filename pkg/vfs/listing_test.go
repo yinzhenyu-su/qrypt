@@ -10,6 +10,7 @@ import (
 )
 
 func TestVFSListCachesChildrenForStat(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	drv := &countingListDriver{lists: map[string]int{}}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
@@ -29,6 +30,7 @@ func TestVFSListCachesChildrenForStat(t *testing.T) {
 }
 
 func TestVFSStartDirectoryPrefetchWarmsRootChildDirs(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &treeListDriver{
@@ -62,6 +64,7 @@ func TestVFSStartDirectoryPrefetchWarmsRootChildDirs(t *testing.T) {
 }
 
 func TestVFSListPrefetchesNextLevelChildDirs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	drv := &treeListDriver{
 		lists: map[string]int{},
@@ -101,6 +104,7 @@ func TestVFSListPrefetchesNextLevelChildDirs(t *testing.T) {
 }
 
 func TestVFSListWaitsForInFlightDirectoryPrefetch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -163,6 +167,7 @@ func TestVFSListWaitsForInFlightDirectoryPrefetch(t *testing.T) {
 }
 
 func TestVFSForegroundListRetriesCanceledDirectoryPrefetch(t *testing.T) {
+	t.Parallel()
 	prefetchCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	entered := make(chan struct{})
@@ -225,6 +230,7 @@ func TestVFSForegroundListRetriesCanceledDirectoryPrefetch(t *testing.T) {
 }
 
 func TestVFSDirectoryPrefetchFallsBackAfterSessionContextCanceled(t *testing.T) {
+	t.Parallel()
 	prefetchCtx, cancel := context.WithCancel(context.Background())
 	drv := &treeListDriver{
 		lists: map[string]int{},
@@ -258,6 +264,7 @@ func TestVFSDirectoryPrefetchFallsBackAfterSessionContextCanceled(t *testing.T) 
 }
 
 func TestVFSDirectoryPrefetchDiscardsStalePathAfterRename(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	entered := make(chan struct{})
 	release := make(chan struct{})

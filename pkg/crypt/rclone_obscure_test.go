@@ -3,6 +3,7 @@ package crypt
 import "testing"
 
 func TestRcloneConfigObscureRoundTrip(t *testing.T) {
+	t.Parallel()
 	obscured, err := ObscureRcloneConfigValue("secret-password")
 	if err != nil {
 		t.Fatal(err)
@@ -17,6 +18,7 @@ func TestRcloneConfigObscureRoundTrip(t *testing.T) {
 }
 
 func TestNewRcloneCipherFromConfigRevealsObscuredPasswordAndSalt(t *testing.T) {
+	t.Parallel()
 	password, err := ObscureRcloneConfigValue("secret-password")
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +49,7 @@ func TestNewRcloneCipherFromConfigRevealsObscuredPasswordAndSalt(t *testing.T) {
 }
 
 func TestRevealRcloneConfigValueRejectsPlaintext(t *testing.T) {
+	t.Parallel()
 	if _, err := RevealRcloneConfigValue("plain-password"); err == nil {
 		t.Fatal("expected reveal to reject plaintext")
 	}

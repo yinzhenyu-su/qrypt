@@ -13,6 +13,7 @@ import (
 // timer. The displaced timer can no longer reach a worker, so scheduling the
 // replacement must retire its now-unreferenced staging file immediately.
 func TestFlushRetiresGenerationDisplacedBeforeTimerFire(t *testing.T) {
+	t.Parallel()
 	fs, err := New(drive.NewFakeDriver(), Options{
 		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,

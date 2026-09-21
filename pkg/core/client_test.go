@@ -59,6 +59,7 @@ var (
 // call the client result equals the conversion of the legacy result, and
 // the JSON wire format is byte-identical.
 func TestClientMethodsConvertFromLegacyThroughCore(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -124,6 +125,7 @@ func TestClientMethodsConvertFromLegacyThroughCore(t *testing.T) {
 // TestClientMethodsPreserveLegacyErrors proves error paths (closed core,
 // unsupported surfaces) pass through the client layer unchanged.
 func TestClientMethodsPreserveLegacyErrors(t *testing.T) {
+	t.Parallel()
 	closed := &Core{}
 	if _, err := closed.ListPageClient(context.Background(), "/", "", 0); err == nil {
 		t.Fatal("ListPageClient on a closed core returned nil error")
@@ -144,6 +146,7 @@ func TestClientMethodsPreserveLegacyErrors(t *testing.T) {
 // the mobile JSON schema cannot drift when the VFS structs evolve.
 
 func TestCapabilityInfoConversionPreservesFieldsAndJSON(t *testing.T) {
+	t.Parallel()
 	src := vfs.CapabilityInfo{
 		Mount:          "q",
 		Path:           "/q/docs",
@@ -192,6 +195,7 @@ func TestCapabilityInfoConversionPreservesFieldsAndJSON(t *testing.T) {
 }
 
 func TestMountInfoConversionPreservesFieldsAndJSON(t *testing.T) {
+	t.Parallel()
 	src := vfs.MountInfo{Name: "q", Path: "/q", Encrypted: true, State: "failed", Error: "boom"}
 	got := mountInfoFromVFS(src)
 	want := MountInfo{Name: "q", Path: "/q", Encrypted: true, State: "failed", Error: "boom"}
@@ -211,6 +215,7 @@ func TestMountInfoConversionPreservesFieldsAndJSON(t *testing.T) {
 }
 
 func TestListPageResultConversionPreservesFieldsAndJSON(t *testing.T) {
+	t.Parallel()
 	entries := []drive.Entry{
 		{Name: "a.txt", ID: "1", IsDir: false, Size: 3},
 		{Name: "b.txt", ID: "2", IsDir: false, Size: 4},

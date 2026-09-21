@@ -13,6 +13,7 @@ import (
 )
 
 func TestVFSRecoversPendingUploads(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -60,6 +61,7 @@ func TestVFSRecoversPendingUploads(t *testing.T) {
 	}
 }
 func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -130,6 +132,7 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 	}
 }
 func TestVFSDropsPendingWhenStagingMissingOnRecovery(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()

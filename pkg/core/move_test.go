@@ -16,6 +16,7 @@ import (
 )
 
 func TestCreateTaskSameMountMoveRenamesPath(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -54,6 +55,7 @@ func TestCreateTaskSameMountMoveRenamesPath(t *testing.T) {
 }
 
 func TestCreateTaskMoveRemoteRenamesPath(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -82,6 +84,7 @@ func TestCreateTaskMoveRemoteRenamesPath(t *testing.T) {
 }
 
 func TestCreateTaskMoveRemoteBatchesSameMountItems(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -118,6 +121,7 @@ func TestCreateTaskMoveRemoteBatchesSameMountItems(t *testing.T) {
 }
 
 func TestCreateTaskMoveRemoteBatchReportsPartialFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -152,6 +156,7 @@ func TestCreateTaskMoveRemoteBatchReportsPartialFailure(t *testing.T) {
 }
 
 func TestCreateTaskCrossQryptMountCopiesThenDeletesSource(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -192,6 +197,7 @@ func TestCreateTaskCrossQryptMountCopiesThenDeletesSource(t *testing.T) {
 }
 
 func TestCreateTaskCrossQryptMountRejectsDirectoryWithoutRecursive(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -226,6 +232,7 @@ func TestCreateTaskCrossQryptMountRejectsDirectoryWithoutRecursive(t *testing.T)
 }
 
 func TestCreateTaskCrossQryptMountBatchesItemsAndDeletesSources(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -276,6 +283,7 @@ func TestCreateTaskCrossQryptMountBatchesItemsAndDeletesSources(t *testing.T) {
 }
 
 func TestCreateTaskCrossQryptMountPreservesSourceWhenDeleteFails(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -324,6 +332,7 @@ func (d *moveDeleteFailDriver) Remove(context.Context, drive.Entry) error {
 }
 
 func TestCreateTaskCrossQryptMountMovesDirectoryToRenamedDestination(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -378,6 +387,7 @@ func TestCreateTaskCrossQryptMountMovesDirectoryToRenamedDestination(t *testing.
 // skipped, not failed, so the source would otherwise be deleted while the
 // destination keeps its old content.
 func TestCreateTaskCrossQryptMountBatchKeepsSourceWhenDestinationExists(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -442,6 +452,7 @@ func TestCreateTaskCrossQryptMountBatchKeepsSourceWhenDestinationExists(t *testi
 // failed batch must not re-run the items an earlier attempt already moved,
 // whose sources no longer exist.
 func TestCreateTaskMoveBatchRetryOnlyRunsUnfinishedItems(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -491,6 +502,7 @@ func TestCreateTaskMoveBatchRetryOnlyRunsUnfinishedItems(t *testing.T) {
 // number of workers. The probe driver holds every rename until the expected
 // number of them are in flight, so a serial implementation times out.
 func TestCreateTaskMoveBatchHonorsConcurrency(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()

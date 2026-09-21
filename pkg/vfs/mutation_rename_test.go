@@ -41,6 +41,7 @@ func newRenameCoordinatorFixture(t *testing.T) *renameCoordinatorFixture {
 // TestRenameNeverCommitsOnRemoteFailure: a failing remote Rename/Move must
 // not commit the view.
 func TestRenameNeverCommitsOnRemoteFailure(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.backend.renameErr = errors.New("remote boom")
 	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt", "/a2.txt", fx.backend, &recordingMutationRuntime{}, fx.committer); err == nil {
@@ -54,6 +55,7 @@ func TestRenameNeverCommitsOnRemoteFailure(t *testing.T) {
 // TestRenameCommitsExactlyOnce: a successful same-parent rename commits
 // exactly once with both paths normalized.
 func TestRenameCommitsExactlyOnce(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	if err := fx.fs.renameWithDeps(context.Background(), "/a.txt//", "/a2.txt", fx.backend, &recordingMutationRuntime{}, fx.committer); err != nil {
 		t.Fatal(err)
@@ -70,6 +72,7 @@ func TestRenameCommitsExactlyOnce(t *testing.T) {
 // TestRenameDirCommitsWithSubtree: a directory rename commit rebases cached
 // descendants; the committer receives the (directory) entry.
 func TestRenameDirCommitsWithSubtree(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	// Warm the cache with a directory + child.
 	committer := newVFSViewCommitter(fx.fs)
@@ -98,6 +101,7 @@ func TestRenameDirCommitsWithSubtree(t *testing.T) {
 // TestPendingRenameDoesNotTriggerRemoteCommit: renaming a pending-only path
 // updates local pending state and never touches the remote-view commit.
 func TestPendingRenameDoesNotTriggerRemoteCommit(t *testing.T) {
+	t.Parallel()
 	fs := newPendingViewVFS(t)
 	ctx := context.Background()
 	if err := fs.Create(ctx, "/draft.txt"); err != nil {
@@ -129,6 +133,7 @@ func TestPendingRenameDoesNotTriggerRemoteCommit(t *testing.T) {
 // file renames of distinct files are safe there; the fake driver's rekey
 // has its own map-iteration quirk under concurrency).
 func TestRenameConcurrentWithListResolve(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
 		if err := os.WriteFile(filepath.Join(remote, name), []byte(name), 0o644); err != nil {
@@ -167,6 +172,7 @@ func TestRenameConcurrentWithListResolve(t *testing.T) {
 // TestRenameMoveRollbackOnMoveFailure: when the rename lands but the move
 // fails and the rollback rename succeeds, the coordinator commits nothing.
 func TestRenameMoveRollbackOnMoveFailure(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	// Force a move failure: the source file resolves with a parent that
@@ -190,6 +196,7 @@ func TestRenameMoveRollbackOnMoveFailure(t *testing.T) {
 // intermediate remote state (old parent + new name) so local and remote do
 // not diverge.
 func TestRenameMovePartialCommitOnRollbackFailure(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	orig := *fx.backend
@@ -241,6 +248,7 @@ func (b *sequenceBackend) Move(ctx context.Context, entry drive.Entry, dstParent
 // TestRenameMoveSameNameCrossDirFailureNoCommit: a same-name cross-directory
 // move failure (no rename step) must commit nothing and not roll back.
 func TestRenameMoveSameNameCrossDirFailureNoCommit(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	fx.backend.moveErr = errors.New("move boom")
@@ -258,6 +266,7 @@ func TestRenameMoveSameNameCrossDirFailureNoCommit(t *testing.T) {
 // TestRenameMoveCrossDirInvalidatesBothParents: a successful cross-directory
 // rename invalidates both parent list caches (old and new).
 func TestRenameMoveCrossDirInvalidatesBothParents(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	fx := newRenameCoordinatorFixture(t)
 	fx.fs = fs
@@ -288,6 +297,7 @@ func TestRenameMoveCrossDirInvalidatesBothParents(t *testing.T) {
 // TestRenameMoveSameParentInvalidatesOnce: a same-parent rename invalidates
 // the single logical parent (the invalidation is idempotent).
 func TestRenameMoveSameParentInvalidatesOnce(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	view.CommitRemoteChildren("/", []drive.Entry{{ID: "id-a", Name: "a.txt", Size: 5}}, time.Now().Add(time.Minute))
@@ -306,6 +316,7 @@ func TestRenameMoveSameParentInvalidatesOnce(t *testing.T) {
 // commit must carry the full entry - ID, new Name, old ParentID, IsDir,
 // Size, ModTime - not a zeroed stub.
 func TestRenameMovePartialPreservesEntryMetadata(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	orig := *fx.backend
@@ -343,6 +354,7 @@ func TestRenameMovePartialPreservesEntryMetadata(t *testing.T) {
 // rollback fails, the intermediate commit must keep IsDir=true so the
 // rename overlay hides the old subtree recursively.
 func TestRenameMovePartialDirKeepsSubtreeHidden(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	orig := *fx.backend
@@ -364,6 +376,7 @@ func TestRenameMovePartialDirKeepsSubtreeHidden(t *testing.T) {
 // operation reports the move error without committing. (The caller's ctx
 // stays live through resolve; the backend simulates a cancelled move.)
 func TestRenameMoveRollbackOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	fx.backend.moveErr = context.Canceled
@@ -386,6 +399,7 @@ func TestRenameMoveRollbackOnCancelledContext(t *testing.T) {
 // cached subtree unavailable and surface the new path - not just carry
 // IsDir on a stub.
 func TestRenameMovePartialDirOverlayHidesSubtree(t *testing.T) {
+	t.Parallel()
 	fs := newViewCommitVFS(t)
 	view := newVFSListingView(fs)
 	seed := newVFSViewCommitter(fs)
@@ -444,6 +458,7 @@ func (b *cancelOnMoveBackend) Move(context.Context, drive.Entry, string) (drive.
 // context; the rollback rename must still receive a live (detached)
 // context and the operation must not commit.
 func TestRenameMoveRollbackGetsLiveContext(t *testing.T) {
+	t.Parallel()
 	fx := newRenameCoordinatorFixture(t)
 	fx.addSubDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -469,6 +484,7 @@ func TestRenameMoveRollbackGetsLiveContext(t *testing.T) {
 // upload moves with it instead of staying keyed to a path that no longer
 // exists.
 func TestDirectoryRenameRebasesPendingChildren(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()

@@ -10,6 +10,7 @@ import (
 )
 
 func TestRcloneCipher_KeyDerivation(t *testing.T) {
+	t.Parallel()
 	password := "testpassword"
 	salt := "testsalt"
 	//lint:ignore SA4006 staticcheck 2026.1 falsely reports this assignment as
@@ -25,6 +26,7 @@ func TestRcloneCipher_KeyDerivation(t *testing.T) {
 }
 
 func TestRcloneCipher_FilenameEncryption(t *testing.T) {
+	t.Parallel()
 	password := "password"
 	salt := ""
 
@@ -53,6 +55,7 @@ func TestRcloneCipher_FilenameEncryption(t *testing.T) {
 }
 
 func TestRcloneCipher_ObfuscateMode(t *testing.T) {
+	t.Parallel()
 	password := "password"
 	salt := ""
 	c, _ := NewRcloneCipher(password, salt, "base32", "obfuscate")
@@ -83,6 +86,7 @@ func TestRcloneCipher_ObfuscateMode(t *testing.T) {
 }
 
 func TestRcloneCipher_Obfuscate_EdgeCases(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
 
 	t.Run("empty string", func(t *testing.T) {
@@ -163,6 +167,7 @@ func TestRcloneCipher_Obfuscate_EdgeCases(t *testing.T) {
 }
 
 func TestRcloneCipher_Obfuscate_Determinism(t *testing.T) {
+	t.Parallel()
 	c1, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
 	c2, _ := NewRcloneCipher("password", "", "base32", "obfuscate")
 
@@ -177,6 +182,7 @@ func TestRcloneCipher_Obfuscate_Determinism(t *testing.T) {
 }
 
 func TestRcloneCipher_Obfuscate_KeySensitivity(t *testing.T) {
+	t.Parallel()
 	c1, _ := NewRcloneCipher("password1", "", "base32", "obfuscate")
 	c2, _ := NewRcloneCipher("password2", "", "base32", "obfuscate")
 
@@ -191,6 +197,7 @@ func TestRcloneCipher_Obfuscate_KeySensitivity(t *testing.T) {
 }
 
 func TestRcloneCipher_New_OptDefaults(t *testing.T) {
+	t.Parallel()
 	c, err := NewRcloneCipher("p", "")
 	if err != nil {
 		t.Fatal(err)
@@ -219,6 +226,7 @@ func TestRcloneCipher_New_OptDefaults(t *testing.T) {
 }
 
 func TestRcloneCipher_OffMode(t *testing.T) {
+	t.Parallel()
 	password := "password"
 	salt := ""
 	c, _ := NewRcloneCipher(password, salt, "base32", "off")
@@ -245,6 +253,7 @@ func TestRcloneCipher_OffMode(t *testing.T) {
 }
 
 func TestRcloneCipher_CrossEncodingDecrypt(t *testing.T) {
+	t.Parallel()
 	password := "password"
 	salt := ""
 	testNames := []string{
@@ -282,6 +291,7 @@ func TestRcloneCipher_CrossEncodingDecrypt(t *testing.T) {
 }
 
 func TestRcloneCipher_BlockDecryption(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "")
 
 	var fileNonce [24]byte
@@ -307,6 +317,7 @@ func TestRcloneCipher_BlockDecryption(t *testing.T) {
 }
 
 func TestRcloneCipher_BlockEncryption(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "")
 
 	var fileNonce [24]byte
@@ -330,6 +341,7 @@ func TestRcloneCipher_BlockEncryption(t *testing.T) {
 }
 
 func TestRcloneCipherContentDedupNonce(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("password", "salt")
 	sum := sha256.Sum256([]byte("same content"))
 	nonceA, err := c.ContentDedupNonce(sum, int64(len("same content")))
@@ -361,6 +373,7 @@ func TestRcloneCipherContentDedupNonce(t *testing.T) {
 }
 
 func TestSizeMapping(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("p", "")
 
 	testSizes := []int64{0, 1, 100, BlockDataSize, BlockDataSize + 1, 10 * 1024 * 1024}

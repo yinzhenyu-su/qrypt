@@ -27,6 +27,7 @@ func newCloseTestVFS(t *testing.T, opts ...Options) *VFS {
 // TestNamespaceCloseWaitsForAllMounts: Namespace.Close must shut down every
 // mount (workers, read-cache writer) before returning, not just cancel.
 func TestNamespaceCloseWaitsForAllMounts(t *testing.T) {
+	t.Parallel()
 	fsA := newCloseTestVFS(t)
 	fsB := newCloseTestVFS(t)
 	ns, err := NewNamespace([]Mount{{Name: "a", FS: fsA}, {Name: "b", FS: fsB}})
@@ -75,6 +76,7 @@ func TestNamespaceCloseWaitsForAllMounts(t *testing.T) {
 // and a later Close with a live context still reports the completed
 // teardown.
 func TestNamespaceCloseCollectsErrorsAndKeepsTeardown(t *testing.T) {
+	t.Parallel()
 	fsA := newCloseTestVFS(t)
 	fsB := newCloseTestVFS(t)
 	ns, err := NewNamespace([]Mount{{Name: "a", FS: fsA}, {Name: "b", FS: fsB}})
@@ -107,6 +109,7 @@ func TestNamespaceCloseCollectsErrorsAndKeepsTeardown(t *testing.T) {
 // later Start call (the closeOnce/startOnce interaction leaves cancel nil
 // and the worker group empty).
 func TestStartAfterCloseIsNoop(t *testing.T) {
+	t.Parallel()
 	fs := newCloseTestVFS(t)
 	if err := fs.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -125,6 +128,7 @@ func TestStartAfterCloseIsNoop(t *testing.T) {
 // context's cancel (which triggers Close through the Start hook) must be
 // safe: no double-close panics, every call returns cleanly.
 func TestCloseRacesContextCancel(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < 20; i++ {
 		fs := newCloseTestVFS(t)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -156,6 +160,7 @@ func TestCloseRacesContextCancel(t *testing.T) {
 // transitions, so either Start registers its workers before teardown begins
 // waiting or it sees a non-new state and refuses. Run under -race.
 func TestStartCloseConcurrent(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < 100; i++ {
 		fs := newCloseTestVFS(t)
 		var wg sync.WaitGroup
@@ -195,6 +200,7 @@ func TestStartCloseConcurrent(t *testing.T) {
 // still visits every mount and every mount's teardown runs to completion in
 // the background. A retried Close with a live context succeeds.
 func TestNamespaceCloseVisitsAllMountsOnError(t *testing.T) {
+	t.Parallel()
 	fsA := newCloseTestVFS(t)
 	fsB := newCloseTestVFS(t)
 	fsC := newCloseTestVFS(t)

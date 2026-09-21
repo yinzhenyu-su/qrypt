@@ -83,6 +83,7 @@ func writeAndFlush(t *testing.T, fs *vfs.VFS, path, content string) {
 // notice the pending was superseded, skip the stale v1 payload and upload
 // only the new generation - never clobbering v2 with v1.
 func TestUploadRetrySupersededByNewGeneration(t *testing.T) {
+	t.Parallel()
 	d := drive.NewFakeDriver()
 	fs, err := vfs.New(d, vfs.Options{
 		StorageDir:    t.TempDir(),
@@ -123,6 +124,7 @@ func TestUploadRetrySupersededByNewGeneration(t *testing.T) {
 // upload attempt is recorded before the delay, so waitPutSourceCount
 // observes it while it is still blocked.
 func TestUploadCancelDoesNotCommit(t *testing.T) {
+	t.Parallel()
 	d := drive.NewFakeDriver()
 	fs, err := vfs.New(d, vfs.Options{
 		StorageDir:    t.TempDir(),
@@ -164,6 +166,7 @@ func TestUploadCancelDoesNotCommit(t *testing.T) {
 // attempt, and then succeeds on util. The fault counter lives on the
 // shared driver, so it survives across the two VFS instances.
 func TestRecoveredPendingFailsAgainThenSucceeds(t *testing.T) {
+	t.Parallel()
 	d := drive.NewFakeDriver()
 	cache := t.TempDir()
 
@@ -210,6 +213,7 @@ func TestRecoveredPendingFailsAgainThenSucceeds(t *testing.T) {
 // delete; recreating the same path before the timer fires cancels the
 // delete and the recreated file must survive past the original deadline.
 func TestDeleteTimerRestoredFileSurvives(t *testing.T) {
+	t.Parallel()
 	d := drive.NewFakeDriver()
 	fs, err := vfs.New(d, vfs.Options{
 		StorageDir:    t.TempDir(),
@@ -268,6 +272,7 @@ func ioCopy(dst *strings.Builder, src interface {
 // last one committed, regardless of how the worker interleaves with the
 // writes.
 func TestThreeGenerationsFinalVisibility(t *testing.T) {
+	t.Parallel()
 	d := drive.NewFakeDriver()
 	fs, err := vfs.New(d, vfs.Options{
 		StorageDir:    t.TempDir(),
@@ -305,6 +310,7 @@ func TestThreeGenerationsFinalVisibility(t *testing.T) {
 // retry must notice the delete was restored and skip, leaving the new file
 // intact.
 func TestDeleteRetryAfterRestoreSkipsNewFile(t *testing.T) {
+	t.Parallel()
 	d := drive.NewFakeDriver()
 	fs, err := vfs.New(d, vfs.Options{
 		StorageDir:    t.TempDir(),

@@ -24,6 +24,7 @@ import (
 // backend; the divergence only matters for exotic backends with huge name
 // limits.
 func TestRcloneDivergence_LongNameSegmentation(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("p", "s")
 	long := strings.Repeat("a", 1200) + ".txt"
 	enc := c.EncryptSegment(long)
@@ -46,6 +47,7 @@ func TestRcloneDivergence_LongNameSegmentation(t *testing.T) {
 // suffix option) to stored names and strips it again on read
 // (cipher.go EncryptFileName/DecryptFileName).
 func TestRcloneDivergence_OffMode(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("p", "", "base32", "off")
 	if got := c.EncryptSegment("README.md"); got != "README.md" {
 		t.Fatalf("expected no-op encrypt, got %q", got)
@@ -65,6 +67,7 @@ func TestRcloneDivergence_OffMode(t *testing.T) {
 // whole name is encrypted, so the output is the 26-character EME of the full
 // string and contains no plaintext marker.
 func TestRcloneDivergence_VersionSuffix(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("testpassword", "testsalt")
 	name := "photo-v2024-01-02-030405-006.jpg"
 	got := c.EncryptSegment(name)
@@ -84,6 +87,7 @@ func TestRcloneDivergence_VersionSuffix(t *testing.T) {
 // the config layer rejects it, and if the raw constructor is asked for it the
 // output silently falls back to base32 rather than producing base32768 text.
 func TestRcloneDivergence_Base32768(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Password: "p", FileNameEncoding: "base32768"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected base32768 to be rejected by Validate")
@@ -104,6 +108,7 @@ func TestRcloneDivergence_Base32768(t *testing.T) {
 // encryptFileName/decryptFileName). A name containing "/" is therefore
 // encrypted here as a single segment with the "/" inside it.
 func TestRcloneDivergence_PathLevelAPI(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("testpassword", "testsalt")
 	name := "a/b.txt"
 	enc := c.EncryptSegment(name)

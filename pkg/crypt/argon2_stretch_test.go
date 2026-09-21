@@ -6,6 +6,7 @@ import (
 )
 
 func TestArgon2idStretch_Determinism(t *testing.T) {
+	t.Parallel()
 	password := "correct horse battery staple"
 	salt := "a1b2c3d4e5f6a7b8"
 
@@ -19,6 +20,7 @@ func TestArgon2idStretch_Determinism(t *testing.T) {
 }
 
 func TestArgon2idStretch_KeySensitivity(t *testing.T) {
+	t.Parallel()
 	salt := "a1b2c3d4e5f6a7b8"
 
 	a := argon2idStretch("password", salt)
@@ -30,6 +32,7 @@ func TestArgon2idStretch_KeySensitivity(t *testing.T) {
 }
 
 func TestArgon2idStretch_SaltSensitivity(t *testing.T) {
+	t.Parallel()
 	password := "correct horse battery staple"
 
 	a := argon2idStretch(password, "salt-a")
@@ -41,6 +44,7 @@ func TestArgon2idStretch_SaltSensitivity(t *testing.T) {
 }
 
 func TestArgon2idStretch_OutputFormat(t *testing.T) {
+	t.Parallel()
 	result := argon2idStretch("password", "salt")
 
 	b, err := hex.DecodeString(result)
@@ -53,6 +57,7 @@ func TestArgon2idStretch_OutputFormat(t *testing.T) {
 }
 
 func TestArgon2idStretch_NotEmpty(t *testing.T) {
+	t.Parallel()
 	result := argon2idStretch("password", "salt")
 	if result == "" {
 		t.Fatal("argon2idStretch must not return empty string")

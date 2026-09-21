@@ -9,6 +9,7 @@ import (
 )
 
 func TestTaskRequestForOperationMapsUploadPolicyToInternalType(t *testing.T) {
+	t.Parallel()
 	preferDirect, err := taskRequestForOperation(task.OperationRequest{
 		Operation:    task.OperationUpload,
 		Items:        []task.Item{{SourcePath: "token", DestPath: "/file.txt"}},
@@ -35,6 +36,7 @@ func TestTaskRequestForOperationMapsUploadPolicyToInternalType(t *testing.T) {
 }
 
 func TestTaskRequestForOperationPreservesDetail(t *testing.T) {
+	t.Parallel()
 	req, err := taskRequestForOperation(task.OperationRequest{
 		Operation: task.OperationUpload,
 		Items:     []task.Item{{SourcePath: "token", DestPath: "/file.txt"}},
@@ -49,6 +51,7 @@ func TestTaskRequestForOperationPreservesDetail(t *testing.T) {
 }
 
 func TestCreateOperationRejectsInvalidRequestBeforeCoreAccess(t *testing.T) {
+	t.Parallel()
 	_, err := (&Core{}).CreateOperation(context.Background(), task.OperationRequest{})
 	if !errors.Is(err, task.ErrInvalidOperation) {
 		t.Fatalf("CreateOperation() error = %v, want %v", err, task.ErrInvalidOperation)
@@ -56,6 +59,7 @@ func TestCreateOperationRejectsInvalidRequestBeforeCoreAccess(t *testing.T) {
 }
 
 func TestOperationFingerprintDoesNotIncludeIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	first := task.OperationRequest{
 		Operation:    task.OperationUpload,
 		Items:        []task.Item{{DestPath: "/file.txt"}},

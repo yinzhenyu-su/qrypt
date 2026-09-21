@@ -13,6 +13,7 @@ import (
 )
 
 func TestCreateTaskDownloadStreamBatchReadsAckAndFinishes(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -91,6 +92,7 @@ func waitForCoreTaskPhase(t *testing.T, c *Core, id, phase string) task.Task {
 }
 
 func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -153,6 +155,7 @@ func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
 }
 
 func TestDownloadStreamTaskCancelItem(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()

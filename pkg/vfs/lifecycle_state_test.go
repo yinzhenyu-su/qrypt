@@ -41,6 +41,7 @@ func newStateTestVFS(t *testing.T) *VFS {
 // TestDomainStateInitialized: every domain runtime is fully wired after New.
 // Guards against future domain fields being added without construction.
 func TestDomainStateInitialized(t *testing.T) {
+	t.Parallel()
 	fs := newStateTestVFS(t)
 	for _, state := range []struct {
 		name string
@@ -70,6 +71,7 @@ func TestDomainStateInitialized(t *testing.T) {
 // TestDomainCloseIdempotent: repeated Close calls on each domain state are
 // safe - no panic, no double-close error, no leak.
 func TestDomainCloseIdempotent(t *testing.T) {
+	t.Parallel()
 	fs := newStateTestVFS(t)
 	fs.uploads.Close()
 	fs.uploads.Close()
@@ -86,6 +88,7 @@ func TestDomainCloseIdempotent(t *testing.T) {
 // TestReadCloseNilSafe: a zero VFS (hand-constructed in tests) closes
 // without panicking even when no cache exists.
 func TestReadCloseNilSafe(t *testing.T) {
+	t.Parallel()
 	var fs VFS
 	if err := fs.read.Close(); err != nil {
 		t.Fatalf("zero VFS read.Close = %v, want nil", err)
@@ -99,6 +102,7 @@ func TestReadCloseNilSafe(t *testing.T) {
 // TestDomainCloseStopsScheduledTimers: closing the upload/delete domains
 // stops the debounce timers that would otherwise fire after shutdown.
 func TestDomainCloseStopsScheduledTimers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Upload debounce timer arms on flush, stops on Close.
@@ -169,6 +173,7 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 }
 
 func TestFlushBeforeStartDefersUploadSchedulingToResume(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStateTestVFS(t)
 	if err := fs.Create(ctx, "/pending.txt"); err != nil {
@@ -206,6 +211,7 @@ func TestFlushBeforeStartDefersUploadSchedulingToResume(t *testing.T) {
 //   - started-then-cancelled VFS: workers stopped, queue stays full, so
 //     the done case wins and the enqueue returns without delivering.
 func TestUploadQueueEnqueueExitsOnShutdown(t *testing.T) {
+	t.Parallel()
 	// Alive (no worker to compete for slots): blocked enqueue delivers once
 	// space appears.
 	alive := newStateTestVFS(t)

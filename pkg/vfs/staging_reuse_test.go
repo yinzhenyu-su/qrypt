@@ -32,6 +32,7 @@ func stagingDirFiles(t *testing.T, dir string) []string {
 // copying the whole file into a fresh generation. Every write+flush round used
 // to pay that copy (16 rounds wrote 8.5x the logical bytes, 64 rounds 32.5x).
 func TestWriteAfterFlushReusesStagingGeneration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStagingHashTestFS(t)
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("hello world"), 0); err != nil {
@@ -93,6 +94,7 @@ func TestWriteAfterFlushReusesStagingGeneration(t *testing.T) {
 // TestTruncateAfterFlushReusesStagingGeneration covers the same handoff on the
 // truncate path, which shares the frozen-generation decision with writes.
 func TestTruncateAfterFlushReusesStagingGeneration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStagingHashTestFS(t)
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("hello world"), 0); err != nil {
@@ -129,6 +131,7 @@ func TestTruncateAfterFlushReusesStagingGeneration(t *testing.T) {
 // that grew after its flush, so the reuse path is covered end to end: the
 // staging file that is uploaded holds both writes and reaches the remote.
 func TestReusedGenerationUploadsCombinedContent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	remote := t.TempDir()
 	fs, err := New(localfs.New(remote), Options{

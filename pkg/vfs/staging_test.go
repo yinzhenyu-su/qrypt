@@ -24,6 +24,7 @@ func newTestViewState(rootID string, now time.Time) *view.View {
 }
 
 func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
+	t.Parallel()
 	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +76,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 }
 
 func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
+	t.Parallel()
 	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -117,6 +119,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 }
 
 func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
@@ -152,6 +155,7 @@ func TestCreateReplacingMutablePendingRemovesOldStaging(t *testing.T) {
 }
 
 func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs, err := New(drive.NewFakeDriver(), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {
@@ -189,6 +193,7 @@ func TestCreateReplacingFrozenPendingKeepsOldStaging(t *testing.T) {
 }
 
 func TestSweepUnreferencedStaging(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cache, err := newStoresInDir(dir, 0)
 	if err != nil {
@@ -227,6 +232,7 @@ func TestSweepUnreferencedStaging(t *testing.T) {
 // that vanished must fail the flush and must leave the pending record alone -
 // a partially written record would upload the wrong generation.
 func TestFlushSurfacesStagingSyncFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newStateTestVFS(t)
 	if err := fs.Create(ctx, "/gone.bin"); err != nil {
@@ -260,6 +266,7 @@ func TestFlushSurfacesStagingSyncFailure(t *testing.T) {
 // into a frozen zero-byte record that is debounced past the immediate window,
 // so a save that has not written yet is not uploaded as an empty file.
 func TestFlushZeroByteStaging(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fs := newStateTestVFS(t)
@@ -289,6 +296,7 @@ func TestFlushZeroByteStaging(t *testing.T) {
 }
 
 func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
+	t.Parallel()
 	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -334,6 +342,7 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 }
 
 func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
+	t.Parallel()
 	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -380,6 +389,7 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 }
 
 func TestSnapshotPendingUsesPersistedHashesAfterRestart(t *testing.T) {
+	t.Parallel()
 	cache, err := newStoresInDir(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -429,6 +439,7 @@ func TestSnapshotPendingUsesPersistedHashesAfterRestart(t *testing.T) {
 }
 
 func TestSnapshotPendingUsesIncrementalHashesForSequentialWrite(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	raw := drive.NewFakeDriver()
 	if err := raw.Init(ctx); err != nil {
@@ -479,6 +490,7 @@ func TestSnapshotPendingUsesIncrementalHashesForSequentialWrite(t *testing.T) {
 }
 
 func TestSnapshotPendingFallsBackAfterNonSequentialWrite(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	raw := drive.NewFakeDriver()
 	if err := raw.Init(ctx); err != nil {
@@ -525,6 +537,7 @@ func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 }
 
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
+	t.Parallel()
 	store, _ := newUploadStore(t.TempDir(), "test-mount")
 	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, upload.NewHashTracker())}
 
@@ -539,6 +552,7 @@ func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
 }
 
 func TestUploadAdmissionLargeUploadIsExclusive(t *testing.T) {
+	t.Parallel()
 	small := PendingUpload{Path: "/small.txt", Size: upload.LargeUploadQuietThreshold - 1}
 	large := PendingUpload{Path: "/large.bin", Size: upload.LargeUploadQuietThreshold}
 

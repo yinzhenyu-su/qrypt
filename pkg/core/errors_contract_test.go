@@ -14,6 +14,7 @@ import (
 // bare error. This is the contract the CLI/control layers rely on when
 // they classify errors that travelled through VFS/core frames.
 func TestClassifyErrorWrappedPreservesCategory(t *testing.T) {
+	t.Parallel()
 	base := fmt.Errorf("quark: 403 forbidden")
 	wrapped := fmt.Errorf("vfs: upload failed: %w", fmt.Errorf("retry 1 of 3: %w", base))
 	a := ClassifyError(base)
@@ -27,6 +28,7 @@ func TestClassifyErrorWrappedPreservesCategory(t *testing.T) {
 // and must never fall into the network bucket, or retry logic would treat
 // a user interrupt as a transient provider failure.
 func TestClassifyContextCanceledIsNotNetwork(t *testing.T) {
+	t.Parallel()
 	for _, err := range []error{
 		context.Canceled,
 		fmt.Errorf("upload interrupted: %w", context.Canceled),
@@ -49,6 +51,7 @@ func TestClassifyContextCanceledIsNotNetwork(t *testing.T) {
 // to the intended buckets and never degrade to unknown as they flow
 // through the taxonomy.
 func TestClassifyProviderErrorsMapStably(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		message string
 		want    ErrorCode
@@ -77,6 +80,7 @@ func TestClassifyProviderErrorsMapStably(t *testing.T) {
 // the worker's retry-or-give-up decision cannot diverge from what the
 // control layer reports to the UI.
 func TestRetryableAndPermanentDecisionsConsistent(t *testing.T) {
+	t.Parallel()
 	categories := []string{
 		drive.ErrorCategoryAuth, drive.ErrorCategoryPermission,
 		drive.ErrorCategoryRateLimit, drive.ErrorCategoryNetwork,

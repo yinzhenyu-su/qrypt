@@ -15,6 +15,7 @@ import (
 // file is still pending is honored by the upload: the committed entry must
 // carry the requested mtime, not the backend upload time.
 func TestSetModTimeAppliesToUpload(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	driver := localfs.New(remote)
 	if err := driver.Init(context.Background()); err != nil {

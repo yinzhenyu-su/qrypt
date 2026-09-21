@@ -12,6 +12,7 @@ import (
 // TestVFSDebugSnapshotCarriesReadCounters: the per-mount snapshot exposes the
 // cumulative read counters alongside the bounded event history.
 func TestVFSDebugSnapshotCarriesReadCounters(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	data := bytes.Repeat([]byte("c"), 2*testReadChunkSize)
 	drv := newCountingReadDriver(data)
@@ -55,6 +56,7 @@ func TestVFSDebugSnapshotCarriesReadCounters(t *testing.T) {
 // TestVFSDebugSnapshotCountersOnIdleMount: a mount that never served a read
 // still reports a well-formed zero counter set.
 func TestVFSDebugSnapshotCountersOnIdleMount(t *testing.T) {
+	t.Parallel()
 	drv := newCountingReadDriver([]byte("payload"))
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
 	if err != nil {
@@ -77,6 +79,7 @@ func TestVFSDebugSnapshotCountersOnIdleMount(t *testing.T) {
 // TestVFSDebugSnapshotCountersSeparateFailures: failed reads count toward ops
 // and errors without contributing bytes.
 func TestVFSDebugSnapshotCountersSeparateFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	drv := newCountingReadDriver([]byte("payload"))
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})

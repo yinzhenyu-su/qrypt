@@ -35,6 +35,7 @@ func (noSpaceDriver) Metrics(context.Context, time.Time) ([]drive.MetricEvent, e
 }
 
 func TestDefaultVFSRuntimeFindsPendingUpload(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,7 @@ func TestDefaultVFSRuntimeFindsPendingUpload(t *testing.T) {
 }
 
 func TestDefaultVFSRuntimeRejectsUnsupportedSpace(t *testing.T) {
+	t.Parallel()
 	fs, err := New(noSpaceDriver{}, Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

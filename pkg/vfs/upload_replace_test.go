@@ -9,6 +9,7 @@ import (
 )
 
 func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{
@@ -54,6 +55,7 @@ func TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds(t *testing.T) {
 	}
 }
 func TestVFSReplaceUploadRenamesTemporaryFileAfterSuccess(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{
@@ -95,6 +97,7 @@ func TestVFSReplaceUploadRenamesTemporaryFileAfterSuccess(t *testing.T) {
 	}
 }
 func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T) {
+	t.Parallel()
 	cacheDir := t.TempDir()
 	entries := map[string]drive.Entry{
 		"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},

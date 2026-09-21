@@ -73,6 +73,7 @@ func waitCoverageDrained(t *testing.T, d coverageDrainer) {
 }
 
 func TestCoverageNamespaceWriteSurface(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	ns := newCoverageTestNamespace(t)
 
@@ -159,6 +160,7 @@ func TestCoverageNamespaceWriteSurface(t *testing.T) {
 }
 
 func TestCoverageNamespaceReadSurface(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	ns := newCoverageTestNamespace(t)
 
@@ -255,6 +257,7 @@ func TestCoverageNamespaceReadSurface(t *testing.T) {
 }
 
 func TestCoverageNamespaceTaskSurface(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	ns := newCoverageTestNamespace(t)
 
@@ -305,6 +308,7 @@ func TestCoverageNamespaceTaskSurface(t *testing.T) {
 }
 
 func TestCoverageMountsAndSpaces(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newCoverageTestVFS(t)
 	ns := newCoverageTestNamespace(t)
@@ -343,6 +347,7 @@ func TestCoverageMountsAndSpaces(t *testing.T) {
 }
 
 func TestCoverageRemoteHashSurface(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newCoverageTestVFS(t)
 	ns := newCoverageTestNamespace(t)
@@ -394,6 +399,7 @@ func TestCoverageRemoteHashSurface(t *testing.T) {
 }
 
 func TestCoverageDriverRuntimeRemaining(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newCoverageTestVFS(t)
 	runtime := newVFSDriverRuntime(fs.driver, fs.testEnabled)
@@ -450,6 +456,7 @@ func TestCoverageDriverRuntimeRemaining(t *testing.T) {
 }
 
 func TestCoverageListingAndReadHost(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newCoverageTestVFS(t)
 
@@ -491,6 +498,7 @@ func TestCoverageListingAndReadHost(t *testing.T) {
 }
 
 func TestCoverageSourceUploadSurface(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newCoverageTestVFS(t)
 	ns := newCoverageTestNamespace(t)
@@ -522,6 +530,7 @@ func TestCoverageSourceUploadSurface(t *testing.T) {
 }
 
 func TestCoverageDebugSurface(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs := newCoverageTestVFS(t)
 	ns := newCoverageTestNamespace(t)

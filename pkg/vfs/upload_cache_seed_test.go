@@ -14,6 +14,7 @@ import (
 )
 
 func TestSeedReadCacheFromStagingSkipsLargeFiles(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	raw := localfs.New(remote)
 	fs, err := New(raw, Options{StorageDir: t.TempDir(), CacheMaxBytes: 64 << 20})
@@ -51,6 +52,7 @@ func TestSeedReadCacheFromStagingSkipsLargeFiles(t *testing.T) {
 }
 
 func TestUploadSourceSeedsReadCache(t *testing.T) {
+	t.Parallel()
 	remote := t.TempDir()
 	fs, err := New(localfs.New(remote), Options{StorageDir: t.TempDir(), CacheMaxBytes: 64 << 20})
 	if err != nil {
@@ -102,6 +104,7 @@ func TestUploadSourceSeedsReadCache(t *testing.T) {
 }
 
 func TestSeedReadCacheFromSourceSkipsLargeFiles(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), CacheMaxBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)

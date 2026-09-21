@@ -128,6 +128,7 @@ var rcloneCompatDefaultSaltVectors = []rcloneVectorPair{
 // ciphertext with lower-case base32 (hex alphabet, no padding) or base64
 // (URL-safe, no padding); the salt is the raw bytes of (obscured) password2.
 func TestRcloneCompatFilenameVectors(t *testing.T) {
+	t.Parallel()
 	for _, tc := range rcloneCompatVectors {
 		t.Run(tc.label, func(t *testing.T) {
 			c, err := NewRcloneCipher(tc.password, tc.salt, tc.encoding, tc.mode)
@@ -156,6 +157,7 @@ func TestRcloneCompatFilenameVectors(t *testing.T) {
 // this implementation share the same fixed defaultSalt when no salt is
 // configured, so both derive identical keys from the bare password.
 func TestRcloneCompatDefaultSaltVector(t *testing.T) {
+	t.Parallel()
 	c, err := NewRcloneCipher("testpassword", "")
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +176,7 @@ func TestRcloneCompatDefaultSaltVector(t *testing.T) {
 // independent of the filename encoding, matching rclone (rclone obfuscates the
 // segment and only encodes when the mode is "standard").
 func TestRcloneCompatObfuscateIgnoresEncoding(t *testing.T) {
+	t.Parallel()
 	for _, tc := range rcloneCompatVectors {
 		if tc.mode != "obfuscate" {
 			continue
@@ -193,6 +196,7 @@ func TestRcloneCompatObfuscateIgnoresEncoding(t *testing.T) {
 // ciphertexts below are frozen one-shot samples: revealing them must yield the
 // original plaintext on every run.
 func TestRcloneCompatObscureVectors(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ obscured, plain string }{
 		{"GhQq9modU_NHieFDHYBkqBzvVhHG4WH7ieh6oA", "testpassword"},
 		{"oi_4wkOXRyrds3EOlzP3DFUtqvLHedI3", "testsalt"},
@@ -217,6 +221,7 @@ func TestRcloneCompatObscureVectors(t *testing.T) {
 // proves a cipher configured with the plain values and one configured with the
 // obscured values agree.
 func TestRcloneCompatConfigValuesWrittenByRclone(t *testing.T) {
+	t.Parallel()
 	obscuredPassword := "fNF2H9xJfORlv6bQxPmXMDKuTDGdhDCcS5bFcQ"
 	obscuredSalt := "aTFjB4QoB1VwiXN3wpCnSwU6fMwhaZhF"
 	if pw, err := RevealRcloneConfigValue(obscuredPassword); err != nil || pw != "testpassword" {
@@ -276,6 +281,7 @@ func rcloneFixturePlaintext(name string) []byte {
 // matching DecryptingReader must recover the exact plaintext, and the size
 // accounting (EncryptedSize/DecryptedSize) must agree with the stored bytes.
 func TestRcloneCompatDataFixtures(t *testing.T) {
+	t.Parallel()
 	dataRoot := filepath.Join("testdata", "rclone")
 	for _, encDir := range []string{"enc32", "enc64"} {
 		mapFile := "map32.txt"
@@ -354,6 +360,7 @@ func TestRcloneCompatDataFixtures(t *testing.T) {
 // rclone: 32-byte header, 16-byte secretbox overhead per block, 64 KiB data
 // per block.
 func TestRcloneCompatSizeFormula(t *testing.T) {
+	t.Parallel()
 	c, _ := NewRcloneCipher("p", "")
 	cases := []struct {
 		plain, enc int64
@@ -429,6 +436,7 @@ var rcloneCipherTestVectors = []struct {
 // TestRcloneCompatUpstreamCipherVectors checks the vectors rclone's own test
 // suite asserts, so these stay in lockstep with upstream rclone CI.
 func TestRcloneCompatUpstreamCipherVectors(t *testing.T) {
+	t.Parallel()
 	for _, tc := range rcloneCipherTestVectors {
 		c, err := NewRcloneCipher("", "", tc.encoding)
 		if err != nil {

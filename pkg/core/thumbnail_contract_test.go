@@ -13,6 +13,7 @@ import (
 // TestThumbnailInfoJSONFields pins the exported DTO's JSON shape: field
 // names, order and omitempty behavior are part of the mobile contract.
 func TestThumbnailInfoJSONFields(t *testing.T) {
+	t.Parallel()
 	hit, err := json.Marshal(ThumbnailInfo{
 		Hit:    true,
 		Path:   "/cached/thumb.jpg",
@@ -45,6 +46,7 @@ func TestThumbnailInfoJSONFields(t *testing.T) {
 // TestThumbnailFacadeErrorText pins the error identity and wording clients
 // observe through the Core facade after the service extraction.
 func TestThumbnailFacadeErrorText(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tmp := t.TempDir()
@@ -119,6 +121,7 @@ func TestThumbnailFacadeErrorText(t *testing.T) {
 // TestThumbnailClosedCoreErrors pins the lifecycle error for a nil core,
 // matching the mobile session error envelope's "core: closed".
 func TestThumbnailClosedCoreErrors(t *testing.T) {
+	t.Parallel()
 	var c *Core
 	for name, call := range map[string]func() error{
 		"get": func() error { _, err := c.GetThumbnailFile(context.Background(), "/x", "grid-128"); return err },

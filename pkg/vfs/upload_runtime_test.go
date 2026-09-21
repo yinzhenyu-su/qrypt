@@ -12,6 +12,7 @@ import (
 )
 
 func TestVFSUploadRuntimeAppliesModTimeAndCommitsEntry(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +45,7 @@ func TestVFSUploadRuntimeAppliesModTimeAndCommitsEntry(t *testing.T) {
 }
 
 func TestVFSUploadRuntimeSeedsReadCache(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), CacheMaxBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)

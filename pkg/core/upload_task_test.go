@@ -14,6 +14,7 @@ import (
 )
 
 func TestCreateTaskUploadRemoteUploadsLocalFile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -46,6 +47,7 @@ func TestCreateTaskUploadRemoteUploadsLocalFile(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteUsesDefaultDestination(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -94,6 +96,7 @@ func TestCreateTaskUploadRemoteUsesDefaultDestination(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteBatchPartialFailed(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -129,6 +132,7 @@ func TestCreateTaskUploadRemoteBatchPartialFailed(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteConflictPolicySkipExisting(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -168,6 +172,7 @@ func TestCreateTaskUploadRemoteConflictPolicySkipExisting(t *testing.T) {
 }
 
 func TestCreateTaskUploadRemoteConflictPolicyFailExisting(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -207,6 +212,7 @@ func TestCreateTaskUploadRemoteConflictPolicyFailExisting(t *testing.T) {
 }
 
 func TestUploadResultAppliesRemoteUploadTaskMetadata(t *testing.T) {
+	t.Parallel()
 	result := UploadResult{Entry: drive.Entry{ID: "pending-id", Size: 10}}
 	result.applyRemoteTask(task.Task{Detail: map[string]any{
 		"result_remote_id": "remote-id",
@@ -218,6 +224,7 @@ func TestUploadResultAppliesRemoteUploadTaskMetadata(t *testing.T) {
 }
 
 func TestVFSUploadBackendReportsNamespaceMount(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "cloud", RootID: "/", StorageDir: filepath.Join(t.TempDir(), "cache")})

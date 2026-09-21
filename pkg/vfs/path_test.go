@@ -11,6 +11,7 @@ import (
 // sentinel is deliberately not matched — drivers must wrap drive.ErrNotFound
 // (drive.HTTPError does this automatically for 404 responses).
 func TestIsNotFound(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error

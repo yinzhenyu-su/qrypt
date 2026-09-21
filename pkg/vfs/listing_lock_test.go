@@ -16,6 +16,7 @@ import (
 // read/write) if the lister applied modtimes through an unlocked interface
 // method.
 func TestListCommitRacesLocalModTimeUpdate(t *testing.T) {
+	t.Parallel()
 	drv := drive.NewFakeDriver()
 	if err := drv.Seed(map[string]string{"a.txt": "content", "b.txt": "more"}); err != nil {
 		t.Fatal(err)

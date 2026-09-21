@@ -37,6 +37,7 @@ func cacheEnabled(t *testing.T, ctx context.Context, c *Core) bool {
 // "0" must disable the mount's read cache, while an unset max_size keeps the
 // default (enabled). The store short-circuits writes and reports misses.
 func TestReadCacheMaxSizeZeroDisablesCache(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

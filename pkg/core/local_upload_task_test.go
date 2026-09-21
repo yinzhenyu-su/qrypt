@@ -13,6 +13,7 @@ import (
 )
 
 func TestCreateLocalUploadTaskWaitsStableAndUploads(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -56,6 +57,7 @@ func TestCreateLocalUploadTaskWaitsStableAndUploads(t *testing.T) {
 }
 
 func TestCreateLocalUploadTaskRequiresLocalPath(t *testing.T) {
+	t.Parallel()
 	c := &Core{}
 	_, err := c.CreateLocalUploadTask(context.Background(), LocalUploadTaskRequest{
 		Items: []LocalUploadTaskItem{{DestPath: "/missing.txt"}},

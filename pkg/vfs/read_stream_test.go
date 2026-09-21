@@ -64,6 +64,7 @@ func readAllStream(t *testing.T, fs vfs.FileSystem, path string) []byte {
 // TestReadStreamMatchesRead: streaming read returns exactly what Read
 // returns for the same committed file.
 func TestReadStreamMatchesRead(t *testing.T) {
+	t.Parallel()
 	fs := newStreamTestVFS(t)
 	content := strings.Repeat("stream-data-", 1000) // ~12 KiB, spans 2 chunks
 	writeFlushedFile(t, fs, "/a.txt", []byte(content))
@@ -87,6 +88,7 @@ func TestReadStreamMatchesRead(t *testing.T) {
 // TestReadStreamLargeFile: multi-window file (several read prefetch windows)
 // reads completely through the streaming path.
 func TestReadStreamLargeFile(t *testing.T) {
+	t.Parallel()
 	fs := newStreamTestVFS(t)
 	// 5 MiB spans 5 chunks / 1 window; push past several windows to exercise
 	// refill across window boundaries.
@@ -110,6 +112,7 @@ func TestReadStreamLargeFile(t *testing.T) {
 // TestReadStreamChunkedReads: the stream serves reads in bounded pieces; a
 // caller using small buffers still receives the full content.
 func TestReadStreamChunkedReads(t *testing.T) {
+	t.Parallel()
 	fs := newStreamTestVFS(t)
 	content := strings.Repeat("0123456789abcdef", 2048) // 32 KiB
 	writeFlushedFile(t, fs, "/chunked.txt", []byte(content))
@@ -140,6 +143,7 @@ func TestReadStreamChunkedReads(t *testing.T) {
 // TestReadStreamStaging: unflushed writes are served from staging, matching
 // Read's behavior.
 func TestReadStreamStaging(t *testing.T) {
+	t.Parallel()
 	fs := newStreamTestVFS(t)
 	if err := fs.Create(context.Background(), "/draft.txt"); err != nil {
 		t.Fatal(err)
@@ -155,6 +159,7 @@ func TestReadStreamStaging(t *testing.T) {
 
 // TestReadStreamMissing: reading a nonexistent path reports not found.
 func TestReadStreamMissing(t *testing.T) {
+	t.Parallel()
 	fs := newStreamTestVFS(t)
 	streamer := fs.(vfs.StreamReader)
 	_, err := streamer.ReadStream(context.Background(), "/nope.txt")
@@ -167,6 +172,7 @@ func TestReadStreamMissing(t *testing.T) {
 // and idempotent on the remote path (committed file; the staging path wraps
 // an *os.File whose second Close errors, matching Read).
 func TestReadStreamEarlyClose(t *testing.T) {
+	t.Parallel()
 	fs := newStreamTestVFS(t)
 	content := make([]byte, 4<<20)
 	writeFlushedFile(t, fs, "/big.bin", content)

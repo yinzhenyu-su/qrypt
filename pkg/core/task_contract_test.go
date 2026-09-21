@@ -33,6 +33,7 @@ import (
 // duplicated struct (the media DTO pattern), this fails loudly, forcing that
 // change to be reviewed for wire-format and conversion cost.
 func TestCoreTaskContractsAliasTaskTypes(t *testing.T) {
+	t.Parallel()
 	pairs := []struct {
 		core, task reflect.Type
 	}{
@@ -75,6 +76,7 @@ func TestCoreTaskContractsAliasTaskTypes(t *testing.T) {
 // The method values are compared against explicitly typed function values so
 // the pin is exact and compile-time deterministic.
 func TestCoreTaskEventMethodsKeepLegacySignatures(t *testing.T) {
+	t.Parallel()
 	wantOpen := reflect.TypeOf(func(*Core, context.Context, task.Filter) (*task.Subscription, error) { panic("pinned type") })
 	wantFrom := reflect.TypeOf(func(*Core, context.Context, task.Filter, uint64) (*task.Subscription, error) { panic("pinned type") })
 	if got := reflect.TypeOf((*Core).OpenTaskEvents); got != wantOpen {
@@ -106,6 +108,7 @@ func requireSameJSONTags(t *testing.T, coreType, taskType reflect.Type) {
 }
 
 func TestCoreTaskContractJSONTagsMatchTask(t *testing.T) {
+	t.Parallel()
 	for _, pair := range []struct {
 		core, task reflect.Type
 	}{
@@ -127,6 +130,7 @@ func TestCoreTaskContractJSONTagsMatchTask(t *testing.T) {
 // task DTOs. Regenerate the literals only when the schema itself changes
 // deliberately (mobile is a compatibility surface).
 func TestCoreTaskWireJSONPinned(t *testing.T) {
+	t.Parallel()
 	wantTask := `{"id":"t-1","operation":"upload","type":"upload_stream_batch","state":"running","scope":"user","mount":"quark","path":"/quark/a.bin","name":"a.bin","created_at":"2026-01-02T03:04:05Z","started_at":"2026-01-02T03:04:06Z","updated_at":"2026-01-02T03:04:07Z","completed_at":"2026-01-02T03:04:08Z","retry_count":3,"next_attempt_at":"2026-01-02T03:05:00Z","version":9,"schema_version":1,"execution_generation":2,"idempotency_key":"idem-1","operation_fingerprint":"fp-1","dismiss_requested":true,"progress":{"source_bytes_done":10,"source_bytes_total":20,"cloud_bytes_done":5,"cloud_bytes_total":20,"staging_bytes_done":12,"staging_bytes_total":20,"output_bytes_done":3,"output_bytes_total":20,"transfer_bytes_done":8,"transfer_bytes_total":20,"items_done":1,"items_total":2,"items_failed":1,"current_path":"/quark/a.bin","phase":"upload","speed_bps":1234,"eta_ms":5678},"capabilities":{"cancelable":true,"retryable":true,"dismissible":true,"persistent":true,"actions":["cancel","retry"]},"error":{"code":"local_io","message":"boom","retryable":true},"result":{"items":[{"path":"/quark/a.bin","item_id":"local-1","source_path":"src","dest_path":"/quark/a.bin","mount":"quark","state":"running","phase":"staging","error":{"code":"x","message":"y"},"remote_id":"rid","source_bytes_done":1,"source_bytes_total":2,"cloud_bytes_done":3,"cloud_bytes_total":4,"staging_bytes_done":5,"staging_bytes_total":6,"output_bytes_done":7,"output_bytes_total":8,"transfer_bytes_done":9,"transfer_bytes_total":10,"resume_offset":11,"capabilities":{"open_input":true,"commit_input":true,"open_output":true,"cancelable":true,"actions":["cancel"]}}]},"detail":{"auto":"x"}}`
 	at := func(y int, m time.Month, d, h, mi, s int) time.Time {
 		return time.Date(y, m, d, h, mi, s, 0, time.UTC)

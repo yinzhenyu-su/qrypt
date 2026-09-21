@@ -46,6 +46,7 @@ func (d *blockingSnapshotDriver) DebugSnapshot(ctx context.Context) (drive.Debug
 // in the driver, other Namespace operations must complete - the mount
 // list is copied under the lock and queries run after releasing it.
 func TestNamespaceDebugSnapshotDoesNotHoldLock(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &blockingSnapshotDriver{started: make(chan struct{}), block: make(chan struct{})}

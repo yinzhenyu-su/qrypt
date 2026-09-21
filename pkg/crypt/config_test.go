@@ -3,6 +3,7 @@ package crypt
 import "testing"
 
 func TestConfigDefaultsAndValidation(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Password: "pass"}.WithDefaults()
 	if cfg.FileNameEncryption != FileNameEncryptionStandard {
 		t.Fatalf("expected standard, got %q", cfg.FileNameEncryption)
@@ -16,6 +17,7 @@ func TestConfigDefaultsAndValidation(t *testing.T) {
 }
 
 func TestConfigRejectsUnsupportedMode(t *testing.T) {
+	t.Parallel()
 	err := Config{Password: "pass", FileNameEncryption: "bad", FileNameEncoding: "base32"}.Validate()
 	if err == nil {
 		t.Fatal("expected validation error")
@@ -23,6 +25,7 @@ func TestConfigRejectsUnsupportedMode(t *testing.T) {
 }
 
 func TestConfigRejectsUnsupportedPasswordHash(t *testing.T) {
+	t.Parallel()
 	err := Config{Password: "pass", PasswordHash: "sha256"}.Validate()
 	if err == nil {
 		t.Fatal("expected validation error for unsupported password_hash")
@@ -30,6 +33,7 @@ func TestConfigRejectsUnsupportedPasswordHash(t *testing.T) {
 }
 
 func TestConfigArgon2idValidate(t *testing.T) {
+	t.Parallel()
 	err := Config{Password: "pass", PasswordHash: PasswordHashArgon2id}.Validate()
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +41,7 @@ func TestConfigArgon2idValidate(t *testing.T) {
 }
 
 func TestConfigEmptyPasswordHashValidate(t *testing.T) {
+	t.Parallel()
 	err := Config{Password: "pass", PasswordHash: ""}.Validate()
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +49,7 @@ func TestConfigEmptyPasswordHashValidate(t *testing.T) {
 }
 
 func TestGenerateSalt(t *testing.T) {
+	t.Parallel()
 	s1, err := GenerateSalt()
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +70,7 @@ func TestGenerateSalt(t *testing.T) {
 }
 
 func TestNewRcloneCipherFromConfigBackwardCompat(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipherFromConfig(Config{
 		Password:     "pass",
 		Salt:         "salt",
@@ -80,6 +87,7 @@ func TestNewRcloneCipherFromConfigBackwardCompat(t *testing.T) {
 }
 
 func TestNewRcloneCipherFromConfigArgon2id(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipherFromConfig(Config{
 		Password:     "pass",
 		Salt:         "salt",
@@ -96,6 +104,7 @@ func TestNewRcloneCipherFromConfigArgon2id(t *testing.T) {
 }
 
 func TestNewRcloneCipherFromConfigArgon2idDifferentKey(t *testing.T) {
+	t.Parallel()
 	noHash, _ := NewRcloneCipherFromConfig(Config{
 		Password:     "pass",
 		Salt:         "salt",
@@ -116,6 +125,7 @@ func TestNewRcloneCipherFromConfigArgon2idDifferentKey(t *testing.T) {
 }
 
 func TestExportRclonePassword_NoHash(t *testing.T) {
+	t.Parallel()
 	pw, err := ExportRclonePassword(Config{
 		Password:     "my-password",
 		Salt:         "salt",
@@ -130,6 +140,7 @@ func TestExportRclonePassword_NoHash(t *testing.T) {
 }
 
 func TestExportRclonePassword_Argon2id(t *testing.T) {
+	t.Parallel()
 	pw, err := ExportRclonePassword(Config{
 		Password:     "my-password",
 		Salt:         "salt",
@@ -147,6 +158,7 @@ func TestExportRclonePassword_Argon2id(t *testing.T) {
 }
 
 func TestExportRclonePassword_Argon2idWithObscured(t *testing.T) {
+	t.Parallel()
 	obscured, err := ObscureRcloneConfigValue("my-password")
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +178,7 @@ func TestExportRclonePassword_Argon2idWithObscured(t *testing.T) {
 }
 
 func TestNewRcloneCipherFromConfigUsesFilenameOptions(t *testing.T) {
+	t.Parallel()
 	cp, err := NewRcloneCipherFromConfig(Config{
 		Password:           "pass",
 		Salt:               "salt",

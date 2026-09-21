@@ -12,6 +12,7 @@ import (
 )
 
 func TestCreateTaskCopyFile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -43,6 +44,7 @@ func TestCreateTaskCopyFile(t *testing.T) {
 }
 
 func TestCreateTaskCopyDirectoryRecursiveToRenamedDestination(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srcRemote := t.TempDir()
@@ -98,6 +100,7 @@ func TestCreateTaskCopyDirectoryRecursiveToRenamedDestination(t *testing.T) {
 }
 
 func TestCreateTaskCopyBatchPartialFailed(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()

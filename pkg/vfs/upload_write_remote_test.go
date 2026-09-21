@@ -33,6 +33,7 @@ func (r *fakeUploadWriteRemote) Read(context.Context, drive.Entry) (io.ReadClose
 func (r *fakeUploadWriteRemote) InvalidateReadCache(drive.Entry) {}
 
 func TestVFSStageExistingUsesUploadWriteRemote(t *testing.T) {
+	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

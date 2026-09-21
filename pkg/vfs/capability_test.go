@@ -11,6 +11,7 @@ import (
 )
 
 func TestVFSRootCapabilitiesAllowCreatingChildren(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: t.TempDir()})
 	if err != nil {
@@ -36,6 +37,7 @@ func TestVFSRootCapabilitiesAllowCreatingChildren(t *testing.T) {
 }
 
 func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	remote := t.TempDir()
 	if err := os.Mkdir(filepath.Join(remote, "dir"), 0o755); err != nil {
@@ -96,6 +98,7 @@ func TestNamespaceCapabilitiesRespectRootAndMountRoot(t *testing.T) {
 }
 
 func TestNamespaceMountsReportRuntimePathsAndEncryption(t *testing.T) {
+	t.Parallel()
 	plain, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{Name: "plain", StorageDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

@@ -92,6 +92,7 @@ func testPlaintext(size int) []byte {
 // re-reads its whole 64 KiB block (measured 17x at 4 KiB reads, 3x at the
 // 32 KiB reads io.Copy and the HTTP transport use).
 func TestEncryptedReadOnlyFileSourceReadsEachBlockOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// Keep the fixture small: the amplification factor is what matters, and
 	// the race layer runs this alongside every other package's tests.
@@ -139,6 +140,7 @@ func TestEncryptedReadOnlyFileSourceReadsEachBlockOnce(t *testing.T) {
 // boundaries, jump back into an already encrypted block, and touch the partial
 // tail block. Every read must match the reference encrypting reader.
 func TestEncryptedReadOnlyFileSourceReadAtReusesMemoizedBlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	plain := testPlaintext(BlockDataSize*3 + 77)
 	src, cp, nonce := testEncryptedSource(t, plain)

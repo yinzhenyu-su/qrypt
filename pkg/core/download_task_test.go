@@ -12,6 +12,7 @@ import (
 )
 
 func TestCreateTaskDownloadFile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -41,6 +42,7 @@ func TestCreateTaskDownloadFile(t *testing.T) {
 }
 
 func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -73,6 +75,7 @@ func TestCreateTaskDownloadRejectsExistingDestinationWithoutOverwrite(t *testing
 }
 
 func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
@@ -112,6 +115,7 @@ func TestCreateTaskDownloadBatchPartialFailed(t *testing.T) {
 }
 
 func TestCreateTaskDownloadDirectoryRecursive(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raw := drive.NewFakeDriver()
