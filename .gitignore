@@ -2,6 +2,7 @@ qrypt.toml
 .sisyphus
 dist/
 .DS_Store
+.zcode/
 /qrypt
 draft
 
