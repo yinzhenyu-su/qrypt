@@ -104,6 +104,48 @@ Every boundary migration must satisfy all of the following:
    generated output directly.
 7. Unrelated worktree changes are preserved and excluded from the merge.
 
+## Agent-assisted migration workflow
+
+Architecture ownership stays with the integrator even when implementation is
+delegated to Pi or another coding agent. Use one branch and Git worktree per
+independent slice, and state the allowed files, compatibility invariants,
+forbidden overlap with other active workers, and required verification in the
+task. Workers do not commit by default; the integrator reviews the actual diff,
+requests corrections in the same persistent session when useful, and owns the
+final commit and integration.
+
+Verification is layered rather than report-driven:
+
+1. Inspect dependency direction, public API and JSON compatibility, lifecycle,
+   cancellation, errors, concurrency, and the validity of new tests.
+2. Run focused tests and focused race tests independently of the worker.
+3. Run vet, the repository-pinned linters, build, `scripts/check-arch.sh`, and
+   `git diff --check`.
+4. Run the complete `scripts/ci-check.sh` before committing. Package-level
+   checks are not a substitute for this gate.
+
+When a new architecture rule is added, verify that a temporary violating
+import makes `scripts/check-arch.sh` fail, remove the probe, and verify the
+clean tree passes. Tests must prove the contract they claim: interface
+satisfaction does not pin an exact concrete type, and race tests must not
+mutate process-wide timing variables while background workers are active.
+
+An agent or RPC timeout is not completion or failure by itself. Recover the
+persistent session from its event log/session directory, inspect the worktree,
+and resume it instead of restarting blindly. Meanwhile, the main branch may
+receive unrelated user commits; re-check HEAD and status before integration
+and never rewrite unknown concurrent work.
+
+After cherry-picking, `git branch --merged` may not recognize the source
+branch because the commit IDs differ. A completed worktree may be removed only
+when it is clean and `git cherry main <branch>` marks its commits with `-`
+(patch-equivalent on main). Active worktrees with uncommitted changes are kept.
+
+CI failures are classified with evidence. Network/dependency failures are
+environment failures. For an unrelated VFS stability failure, reproduce the
+exact failing test repeatedly and then rerun the complete CI gate; neither an
+isolated pass nor a worker's report is sufficient to waive the gate.
+
 ## Planned slices
 
 The migration proceeds in independently mergeable slices:
@@ -117,4 +159,3 @@ The migration proceeds in independently mergeable slices:
 5. Remove residual platform policy and duplicated helpers from VFS domains.
 6. Re-audit imports, package documentation and state ownership, then tighten
    the architecture gate to encode the final graph.
-
