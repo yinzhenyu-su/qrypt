@@ -192,6 +192,15 @@ func normalizeReplayedTask(item Task) Task {
 	if item.SchemaVersion == 0 {
 		item.SchemaVersion = CurrentTaskSchemaVersion
 	}
+	// Legacy entries carry no visibility: infer it from the origin once at
+	// replay (new creations declare it explicitly).
+	if item.Visibility == "" {
+		if item.Scope == ScopeUser {
+			item.Visibility = VisibilityVisible
+		} else {
+			item.Visibility = VisibilityHidden
+		}
+	}
 	switch item.State {
 	case StateQueued, StateScheduled, StateRunning, StateRetryWait, StateCanceling,
 		legacyStateWaitingInput, legacyStateWaitingOutput:

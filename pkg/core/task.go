@@ -27,14 +27,20 @@ type TaskRequest = task.Request
 type TaskState = task.State
 type TaskType = task.Type
 
-// TaskScopeUser is the scope mobile task lists default to: user-origin tasks
-// only, keeping internal-scope bookkeeping records out of the UI list.
+// TaskScopeUser is the origin mobile task APIs default to for user-initiated
+// work (glossary: 任务来源). The app's default list filters on visibility, not
+// on this.
 const TaskScopeUser = task.ScopeUser
 
 // TaskScopeInternal is the origin of mount write-path bookkeeping records
-// (upload_remote/delete_remote projections). App default lists exclude it;
-// filtering by this scope surfaces the bookkeeping records.
+// (upload_remote/delete_remote projections). App default lists exclude them
+// by their hidden visibility declaration; the origin information stays.
 const TaskScopeInternal = task.ScopeInternal
+
+// TaskVisibilityVisible is what mobile task lists default to: the app's
+// default task list shows visible tasks regardless of origin (glossary:
+// 可见性), so hidden internal bookkeeping stays out of the UI.
+const TaskVisibilityVisible = task.VisibilityVisible
 
 // TaskTypeUploadStreamBatch is the staging upload task type mobile creates
 // through task requests when it streams a local file into qrypt.

@@ -85,10 +85,10 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 	detail["conflict_policy"] = batch.conflictPolicy
 	detail["phase"] = "queued"
 	item := task.Task{
-		ID:        batch.taskID,
-		Type:      task.TypeUploadStreamDirect,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(task.TypeUploadStreamDirect),
+		ID:    batch.taskID,
+		Type:  task.TypeUploadStreamDirect,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(task.TypeUploadStreamDirect), Visibility: task.VisibilityForType(task.TypeUploadStreamDirect),
 		Path:      first.DestPath,
 		Name:      first.Name,
 		CreatedAt: now,

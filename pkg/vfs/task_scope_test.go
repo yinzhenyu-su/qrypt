@@ -33,6 +33,12 @@ func TestVFSUploadBookkeepingTasksAreInternalScope(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Scope != task.ScopeInternal {
 		t.Fatalf("internal scope tasks = %+v, want one internal bookkeeping task", tasks)
 	}
+	if tasks[0].Visibility != task.VisibilityHidden {
+		t.Fatalf("bookkeeping visibility = %q, want hidden (stays out of the app default list)", tasks[0].Visibility)
+	}
+	if got := fs.Tasks(task.Filter{Visibility: task.VisibilityVisible}); len(got) != 0 {
+		t.Fatalf("visible tasks = %+v, want none (bookkeeping is hidden)", got)
+	}
 	if got := fs.Tasks(task.Filter{Scope: task.ScopeUser}); len(got) != 0 {
 		t.Fatalf("user scope tasks = %+v, want none", got)
 	}
@@ -73,6 +79,9 @@ func TestVFSReplayedUploadBookkeepingNormalizesToInternalScope(t *testing.T) {
 	tasks := second.Tasks(task.Filter{Scope: task.ScopeInternal})
 	if len(tasks) != 1 || tasks[0].Scope != task.ScopeInternal {
 		t.Fatalf("replayed bookkeeping tasks = %+v, want one internal-scope task", tasks)
+	}
+	if tasks[0].Visibility != task.VisibilityHidden {
+		t.Fatalf("replayed bookkeeping visibility = %q, want hidden", tasks[0].Visibility)
 	}
 	assertNoSyncScopeTasks(t, second)
 }

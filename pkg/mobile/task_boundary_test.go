@@ -15,14 +15,15 @@ import (
 )
 
 // TestParseTaskFilterKeepsExplicitFields pins the JSON keys mobile accepts
-// for a task filter and the default-scope rule: an empty filter defaults to
-// user scope; any explicit narrowing (id, types, scope) skips defaulting.
+// for a task filter and the default-visibility rule: an empty filter defaults
+// to visible tasks; any explicit narrowing (id, types, scope, visibility)
+// skips defaulting.
 func TestParseTaskFilterKeepsExplicitFields(t *testing.T) {
-	filter, err := parseTaskFilter(`{"id":"t1","types":["upload_stream_batch","download"],"states":["running"],"scope":"sync","mount":"quark","path":"/a","limit":7}`)
+	filter, err := parseTaskFilter(`{"id":"t1","types":["upload_stream_batch","download"],"states":["running"],"scope":"sync","visibility":"hidden","mount":"quark","path":"/a","limit":7}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filter.ID != "t1" || filter.Scope != "sync" || filter.Mount != "quark" || filter.Path != "/a" || filter.Limit != 7 {
+	if filter.ID != "t1" || filter.Scope != "sync" || filter.Visibility != "hidden" || filter.Mount != "quark" || filter.Path != "/a" || filter.Limit != 7 {
 		t.Fatalf("filter = %+v, want explicit fields kept", filter)
 	}
 	if len(filter.Types) != 2 || filter.Types[0] != "upload_stream_batch" || filter.Types[1] != "download" {
@@ -40,7 +41,7 @@ func TestParseTaskFilterKeepsExplicitFields(t *testing.T) {
 	}
 
 	// An empty raw filter parses to the zero filter, which then defaults to
-	// user scope (the mobile UI list contract).
+	// visible tasks (the mobile UI list contract: glossary 可见性).
 	empty, err := parseTaskFilter("")
 	if err != nil {
 		t.Fatal(err)
@@ -49,21 +50,31 @@ func TestParseTaskFilterKeepsExplicitFields(t *testing.T) {
 		t.Fatalf("empty filter = %+v, want zero", empty)
 	}
 	applyDefaultMobileTaskFilter(&empty)
-	if empty.Scope != core.TaskScopeUser {
-		t.Fatalf("default scope = %q, want %q", empty.Scope, core.TaskScopeUser)
+	if empty.Visibility != core.TaskVisibilityVisible {
+		t.Fatalf("default visibility = %q, want %q", empty.Visibility, core.TaskVisibilityVisible)
+	}
+	if empty.Scope != "" {
+		t.Fatalf("default filter gained scope %q, visibility filtering is origin-independent", empty.Scope)
+	}
+
+	// An explicit visibility declaration must survive defaulting too.
+	explicit := core.TaskFilter{Visibility: "hidden"}
+	applyDefaultMobileTaskFilter(&explicit)
+	if explicit.Visibility != "hidden" {
+		t.Fatalf("explicit visibility changed by defaulting: %q", explicit.Visibility)
 	}
 
 	// A filter narrowed by id or types must not be silently widened to a
-	// scope-restricted list.
+	// visibility-restricted list.
 	byID := core.TaskFilter{ID: "t1"}
 	applyDefaultMobileTaskFilter(&byID)
-	if byID.Scope != "" {
-		t.Fatalf("filter narrowed by id gained scope %q", byID.Scope)
+	if byID.Scope != "" || byID.Visibility != "" {
+		t.Fatalf("filter narrowed by id gained scope %q / visibility %q", byID.Scope, byID.Visibility)
 	}
 	byTypes := core.TaskFilter{Types: []core.TaskType{"download"}}
 	applyDefaultMobileTaskFilter(&byTypes)
-	if byTypes.Scope != "" {
-		t.Fatalf("filter narrowed by types gained scope %q", byTypes.Scope)
+	if byTypes.Scope != "" || byTypes.Visibility != "" {
+		t.Fatalf("filter narrowed by types gained scope %q / visibility %q", byTypes.Scope, byTypes.Visibility)
 	}
 }
 

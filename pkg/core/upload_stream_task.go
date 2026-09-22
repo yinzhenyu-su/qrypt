@@ -94,10 +94,10 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 	now := util.Now()
 	first := batch.items[0]
 	item := task.Task{
-		ID:        batch.taskID,
-		Type:      task.TypeUploadStreamBatch,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(task.TypeUploadStreamBatch),
+		ID:    batch.taskID,
+		Type:  task.TypeUploadStreamBatch,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(task.TypeUploadStreamBatch), Visibility: task.VisibilityForType(task.TypeUploadStreamBatch),
 		Path:      first.DestPath,
 		Name:      first.Name,
 		CreatedAt: now,

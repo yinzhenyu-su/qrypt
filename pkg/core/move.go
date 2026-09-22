@@ -56,10 +56,10 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 
 	now := util.Now()
 	item := task.Task{
-		ID:           newMoveTaskID(),
-		Type:         taskType,
-		State:        task.StateQueued,
-		Scope:        task.ScopeForType(taskType),
+		ID:    newMoveTaskID(),
+		Type:  taskType,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(taskType), Visibility: task.VisibilityForType(taskType),
 		Path:         first.SourcePath,
 		Name:         path.Base(first.SourcePath),
 		Progress:     task.Progress{ItemsTotal: int64(len(req.Items))},

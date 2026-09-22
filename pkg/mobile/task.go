@@ -170,13 +170,14 @@ func parseTaskFilter(raw string) (core.TaskFilter, error) {
 }
 
 func applyDefaultMobileTaskFilter(filter *core.TaskFilter) {
-	if filter == nil || filter.ID != "" || len(filter.Types) > 0 || filter.Scope != "" {
+	if filter == nil || filter.ID != "" || len(filter.Types) > 0 || filter.Scope != "" || filter.Visibility != "" {
 		return
 	}
-	// Mobile task lists default to user-origin tasks. Internal-scope
-	// bookkeeping (VFS upload_remote/delete_remote records) stays out of
-	// the UI list.
-	filter.Scope = core.TaskScopeUser
+	// Mobile task lists default to visible tasks (glossary: 可见性), a filter
+	// independent of origin: hidden bookkeeping records (VFS
+	// upload_remote/delete_remote) stay out of the UI list whatever their
+	// scope, and any origin's tasks may declare themselves visible.
+	filter.Visibility = core.TaskVisibilityVisible
 }
 
 func parseTaskItemFilter(raw string) (core.TaskItemFilter, error) {

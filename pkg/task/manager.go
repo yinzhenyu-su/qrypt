@@ -133,6 +133,12 @@ func (m *Manager) SubmitIdempotent(ctx context.Context, item Task, run RunFunc) 
 	if item.State == "" {
 		item.State = StateQueued
 	}
+	// Creation-side normalization: a task that declares no visibility gets
+	// its type's declaration (glossary: 可见性), so every managed task carries
+	// an explicit value and the app's default filter never sees a gap.
+	if item.Visibility == "" {
+		item.Visibility = VisibilityForType(item.Type)
+	}
 	normalizeManagedTaskCapabilities(&item)
 	runCtx, cancel := context.WithCancel(m.ctx)
 
