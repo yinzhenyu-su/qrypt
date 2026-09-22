@@ -437,20 +437,28 @@ func waitTaskState(t *testing.T, m *Manager, id string, want State) Task {
 func TestFilterMatchByScope(t *testing.T) {
 	userTask := Task{ID: "user-1", Type: TypeMoveRemote, Scope: ScopeUser}
 	syncTask := Task{ID: "sync-1", Type: TypeUploadRemote, Scope: ScopeSync}
+	internalTask := Task{ID: "internal-1", Type: TypeUploadRemote, Scope: ScopeInternal}
 	unspecified := Task{ID: "none-1", Type: TypeMoveRemote}
-	if !(Filter{Scope: ScopeUser}).Match(userTask) {
-		t.Fatalf("scope user filter should match user task")
+	cases := []struct {
+		filter Filter
+		task   Task
+		want   bool
+	}{
+		{Filter{Scope: ScopeUser}, userTask, true},
+		{Filter{Scope: ScopeUser}, syncTask, false},
+		{Filter{Scope: ScopeUser}, internalTask, false},
+		{Filter{Scope: ScopeUser}, unspecified, false},
+		{Filter{Scope: ScopeSync}, userTask, false},
+		{Filter{Scope: ScopeSync}, syncTask, true},
+		{Filter{Scope: ScopeSync}, internalTask, false},
+		{Filter{Scope: ScopeInternal}, userTask, false},
+		{Filter{Scope: ScopeInternal}, syncTask, false},
+		{Filter{Scope: ScopeInternal}, internalTask, true},
+		{Filter{Types: []Type{TypeUploadRemote}}, syncTask, true},
 	}
-	if (Filter{Scope: ScopeUser}).Match(syncTask) {
-		t.Fatalf("scope user filter should not match sync task")
-	}
-	if (Filter{Scope: ScopeSync}).Match(userTask) {
-		t.Fatalf("scope sync filter should not match user task")
-	}
-	if (Filter{Scope: ScopeUser}).Match(unspecified) {
-		t.Fatalf("scope user filter should not match task without scope")
-	}
-	if !(Filter{Types: []Type{TypeUploadRemote}}).Match(syncTask) {
-		t.Fatalf("type-only filter should still match regardless of scope")
+	for _, tc := range cases {
+		if got := tc.filter.Match(tc.task); got != tc.want {
+			t.Fatalf("Filter%+v.Match(%s/%s) = %v, want %v", tc.filter, tc.task.ID, tc.task.Scope, got, tc.want)
+		}
 	}
 }

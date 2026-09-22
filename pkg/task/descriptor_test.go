@@ -91,9 +91,23 @@ func TestDescriptorBatchTargetsAreFamilyHeads(t *testing.T) {
 	}
 }
 
+// Sync origin is reserved for the syncer (glossary: Sync 任务来源 = syncer
+// 作业产生). Nothing derives it: not declared types, not undeclared ones.
+func TestScopeForTypeNeverDerivesSyncScope(t *testing.T) {
+	t.Parallel()
+	for _, d := range Descriptors() {
+		if got := ScopeForType(d.Type); got == ScopeSync {
+			t.Errorf("ScopeForType(%q) = %q, sync origin is syncer-only", d.Type, got)
+		}
+	}
+	if got := ScopeForType(Type("not_a_type")); got == ScopeSync {
+		t.Errorf("ScopeForType(undeclared) = %q, sync origin is syncer-only", got)
+	}
+}
+
 func TestDescriptorScopeFollowsVisibility(t *testing.T) {
 	for _, d := range Descriptors() {
-		want := ScopeSync
+		want := ScopeInternal
 		if d.UserVisible {
 			want = ScopeUser
 		}
@@ -101,8 +115,8 @@ func TestDescriptorScopeFollowsVisibility(t *testing.T) {
 			t.Errorf("ScopeForType(%q) = %q, want %q", d.Type, got, want)
 		}
 	}
-	if got := ScopeForType(Type("not_a_type")); got != ScopeSync {
-		t.Fatalf("undeclared type scope = %q, want sync scope", got)
+	if got := ScopeForType(Type("not_a_type")); got != ScopeInternal {
+		t.Fatalf("undeclared type scope = %q, want internal scope", got)
 	}
 	if len(RecoverableTypes()) == 0 {
 		t.Fatal("no recoverable types declared; interrupted streaming work would never be recovered")

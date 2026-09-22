@@ -42,11 +42,20 @@ const (
 	StateWaitingOutput State = "waiting_output"
 )
 
+// Scope is the task's origin axis (glossary: 任务来源), independent of
+// Visibility. Any origin may be visible or invisible to the app's default
+// task list.
 type Scope string
 
 const (
+	// ScopeUser marks tasks created explicitly by a user or the app.
 	ScopeUser Scope = "user"
+	// ScopeSync marks tasks produced by the syncer. No other creation path
+	// produces this scope.
 	ScopeSync Scope = "sync"
+	// ScopeInternal marks mount write-path bookkeeping records (glossary:
+	// 挂载写入路径的内部记账记录).
+	ScopeInternal Scope = "internal"
 )
 
 type Task struct {

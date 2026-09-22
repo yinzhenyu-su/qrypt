@@ -173,8 +173,9 @@ func applyDefaultMobileTaskFilter(filter *core.TaskFilter) {
 	if filter == nil || filter.ID != "" || len(filter.Types) > 0 || filter.Scope != "" {
 		return
 	}
-	// Mobile task lists default to user-visible tasks. Sync-scope tasks
-	// (VFS upload_remote/delete_remote bookkeeping) stay out of the UI list.
+	// Mobile task lists default to user-origin tasks. Internal-scope
+	// bookkeeping (VFS upload_remote/delete_remote records) stays out of
+	// the UI list.
 	filter.Scope = core.TaskScopeUser
 }
 

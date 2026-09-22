@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -63,8 +64,46 @@ func TestCoreTaskContractsAliasTaskTypes(t *testing.T) {
 	if TaskScopeUser != task.ScopeUser {
 		t.Fatalf("TaskScopeUser = %q, want %q", TaskScopeUser, task.ScopeUser)
 	}
+	if TaskScopeInternal != task.ScopeInternal {
+		t.Fatalf("TaskScopeInternal = %q, want %q", TaskScopeInternal, task.ScopeInternal)
+	}
 	if TaskTypeUploadStreamBatch != task.TypeUploadStreamBatch {
 		t.Fatalf("TaskTypeUploadStreamBatch = %q, want %q", TaskTypeUploadStreamBatch, task.TypeUploadStreamBatch)
+	}
+}
+
+// TestTaskScopeWireValuesPinned pins the scope wire values: "sync" stays a
+// compatibility contract even though only the syncer produces it, and
+// "internal" is the mount bookkeeping origin carried on the wire. Both
+// serialization directions are pinned so old consumers keep reading the
+// values they know.
+func TestTaskScopeWireValuesPinned(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		scope task.Scope
+		want  string
+	}{
+		{task.ScopeUser, "user"},
+		{task.ScopeSync, "sync"},
+		{task.ScopeInternal, "internal"},
+	} {
+		if string(tc.scope) != tc.want {
+			t.Fatalf("scope wire value = %q, want %q", tc.scope, tc.want)
+		}
+		data, err := json.Marshal(task.Task{ID: "t", Type: task.TypeUploadRemote, State: task.StateQueued, Scope: tc.scope})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"scope":"`+tc.want+`"`) {
+			t.Fatalf("marshaled task %s, want %q scope", data, tc.want)
+		}
+		var got task.Task
+		if err := json.Unmarshal([]byte(`{"id":"t","type":"upload_remote","state":"queued","scope":"`+tc.want+`"}`), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Scope != tc.scope {
+			t.Fatalf("unmarshaled scope = %q, want %q", got.Scope, tc.scope)
+		}
 	}
 }
 
