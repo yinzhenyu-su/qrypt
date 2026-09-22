@@ -177,10 +177,10 @@ func (c *Core) removeMoveSource(ctx context.Context, source diagnostics.DriverCo
 	return nil
 }
 
-// movePriorItems returns the item results an earlier attempt recorded on a move
+// movePriorItems returns the tracked items an earlier attempt recorded on a move
 // task, so a retry re-runs only the items that did not succeed. A first run (or
 // an unreadable task) yields none and every item runs.
-func (c *Core) movePriorItems(ctx context.Context, id string) []task.ItemResult {
+func (c *Core) movePriorItems(ctx context.Context, id string) []task.ItemTracking {
 	if id == "" {
 		return nil
 	}
@@ -188,7 +188,7 @@ func (c *Core) movePriorItems(ctx context.Context, id string) []task.ItemResult 
 	if err != nil {
 		return nil
 	}
-	return current.Result.Items
+	return current.Tracking.Items
 }
 
 // moveBatchKey identifies one requested move across attempts.
@@ -201,14 +201,14 @@ type moveBatchKey struct {
 // results and monotonic progress. prior carries the item results of an earlier
 // attempt so a retry never re-resolves a source an earlier attempt already
 // moved away. Items run on taskConcurrency(req.Concurrency) workers.
-func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req moveTaskSpec, prior []task.ItemResult) error {
-	completed := make(map[moveBatchKey]task.ItemResult, len(prior))
+func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req moveTaskSpec, prior []task.ItemTracking) error {
+	completed := make(map[moveBatchKey]task.ItemTracking, len(prior))
 	for _, result := range prior {
-		if result.SourcePath != "" && result.State == task.StateSucceeded {
+		if result.SourcePath != "" && result.State == task.ItemStateSucceeded {
 			completed[moveBatchKey{source: result.SourcePath, dest: result.DestPath}] = result
 		}
 	}
-	results := make([]task.ItemResult, len(req.Items))
+	results := make([]task.ItemTracking, len(req.Items))
 	var succeeded int64
 	var bytesDone int64
 	var done int64
@@ -221,13 +221,13 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 		succeededNow := succeeded
 		bytesNow := bytesDone
 		activePaths := taskActivePaths(active)
-		snapshot := compactItemResults(results)
+		snapshot := compactTrackingItems(results)
 		update(func(t *task.Task) {
 			t.Progress.ItemsDone = doneNow
 			t.Progress.ItemsFailed = doneNow - succeededNow
 			t.Progress.TransferBytesDone = bytesNow
 			t.Progress.TransferBytesTotal = bytesNow
-			t.Result.Items = snapshot
+			t.Tracking.Items = snapshot
 			t.Detail["active_paths"] = activePaths
 		})
 	}
@@ -275,22 +275,22 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 				c.refreshMovePaths(item.SourcePath, item.DestPath)
 			}
 		}
-		itemResult := task.ItemResult{
+		itemTracking := task.ItemTracking{
 			Path:               item.SourcePath,
 			SourcePath:         item.SourcePath,
 			DestPath:           item.DestPath,
-			State:              task.StateSucceeded,
+			State:              task.ItemStateSucceeded,
 			RemoteID:           result.remoteID,
 			TransferBytesDone:  result.bytes,
 			TransferBytesTotal: result.bytes,
 		}
 		if err != nil {
-			itemResult.State = task.StateFailed
-			itemResult.Error = &task.Error{Message: err.Error()}
+			itemTracking.State = task.ItemStateFailed
+			itemTracking.Error = &task.Error{Message: err.Error()}
 		}
 		mu.Lock()
 		delete(active, i)
-		results[i] = itemResult
+		results[i] = itemTracking
 		done++
 		if err == nil {
 			succeeded++

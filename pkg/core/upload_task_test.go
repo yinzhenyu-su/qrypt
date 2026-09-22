@@ -83,10 +83,10 @@ func TestCreateTaskUploadRemoteUsesDefaultDestination(t *testing.T) {
 	if item.Mount != "cloud" {
 		t.Fatalf("task mount = %q, want cloud", item.Mount)
 	}
-	if len(item.Result.Items) != 1 {
-		t.Fatalf("result items = %d, want 1", len(item.Result.Items))
+	if len(item.Tracking.Items) != 1 {
+		t.Fatalf("tracking items = %d, want 1", len(item.Tracking.Items))
 	}
-	result := item.Result.Items[0]
+	result := item.Tracking.Items[0]
 	if result.DestPath != "/cloud/Inbox/local.txt" || result.Mount != "cloud" || result.RemoteID == "" {
 		t.Fatalf("result item = %+v, want remote confirmation", result)
 	}
@@ -163,7 +163,7 @@ func TestCreateTaskUploadRemoteConflictPolicySkipExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.State != task.StateSucceeded || len(item.Result.Items) != 1 || item.Result.Items[0].Phase != "skipped" {
+	if item.State != task.StateSucceeded || len(item.Tracking.Items) != 1 || item.Tracking.Items[0].Phase != "skipped" {
 		t.Fatalf("task = %+v, want skipped success", item)
 	}
 	if data, err := os.ReadFile(filepath.Join(remote, "existing.txt")); err != nil || string(data) != "remote" {

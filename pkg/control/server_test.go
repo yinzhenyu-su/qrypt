@@ -33,7 +33,7 @@ type fakeSnapshotter struct {
 
 type fakeTaskDebugger struct {
 	tasks   []task.Task
-	items   map[string][]task.ItemResult
+	items   map[string][]task.ItemTracking
 	manager *task.Manager
 }
 
@@ -50,8 +50,8 @@ func (f fakeTaskDebugger) ListTasks(_ context.Context, filter task.Filter) ([]ta
 	return out, nil
 }
 
-func (f fakeTaskDebugger) ListTaskItems(_ context.Context, taskID string, filter task.ItemFilter) ([]task.ItemResult, error) {
-	var out []task.ItemResult
+func (f fakeTaskDebugger) ListTaskItems(_ context.Context, taskID string, filter task.ItemFilter) ([]task.ItemTracking, error) {
+	var out []task.ItemTracking
 	for _, item := range f.items[taskID] {
 		if filter.Match(item) {
 			out = append(out, item)
@@ -730,13 +730,13 @@ func TestServerExposesTasksWithItemsAndFilters(t *testing.T) {
 	}
 	server.SetTaskDebugger(fakeTaskDebugger{
 		tasks: []task.Task{{
-			ID: "upload-1", Type: task.TypeUploadStreamBatch, State: task.StateWaitingInput,
+			ID: "upload-1", Type: task.TypeUploadStreamBatch, State: task.StateRunning,
 			Detail: map[string]any{"recovered_from_journal": true},
 		}, {
 			ID: "download-1", Type: task.TypeDownload, State: task.StateSucceeded,
 		}},
-		items: map[string][]task.ItemResult{
-			"upload-1": {{ItemID: "item-1", DestPath: "/photos/a.jpg", State: task.StateWaitingInput, ResumeOffset: 7}},
+		items: map[string][]task.ItemTracking{
+			"upload-1": {{ItemID: "item-1", DestPath: "/photos/a.jpg", State: task.ItemStateWaitingInput, ResumeOffset: 7}},
 		},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -749,7 +749,7 @@ func TestServerExposesTasksWithItemsAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := client.Get(context.Background(), "/v1/tasks?type=upload_stream_batch&state=waiting_input&limit=1")
+	body, err := client.Get(context.Background(), "/v1/tasks?type=upload_stream_batch&state=running&limit=1")
 	if err != nil {
 		t.Fatal(err)
 	}

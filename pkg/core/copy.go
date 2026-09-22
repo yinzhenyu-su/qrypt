@@ -111,7 +111,7 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 			return err
 		}
 	}
-	results := make([]task.ItemResult, len(spec.Items))
+	results := make([]task.ItemTracking, len(spec.Items))
 	var succeeded int64
 	var bytesDone int64
 	var done int64
@@ -144,22 +144,22 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 					taskItem.Detail["active_paths"] = activePaths
 				})
 				result, err := c.copyOne(ctx, item, spec)
-				resultItem := task.ItemResult{
+				itemTracking := task.ItemTracking{
 					Path:               item.SourcePath,
 					SourcePath:         item.SourcePath,
 					DestPath:           item.DestPath,
-					State:              task.StateSucceeded,
+					State:              task.ItemStateSucceeded,
 					RemoteID:           result.remoteID,
 					TransferBytesDone:  result.bytes,
 					TransferBytesTotal: result.bytes,
 				}
 				if err != nil {
-					resultItem.State = task.StateFailed
-					resultItem.Error = &task.Error{Message: err.Error()}
+					itemTracking.State = task.ItemStateFailed
+					itemTracking.Error = &task.Error{Message: err.Error()}
 				}
 				mu.Lock()
 				delete(active, i)
-				results[i] = resultItem
+				results[i] = itemTracking
 				done++
 				if result.bytes > 0 {
 					bytesDone += result.bytes
@@ -171,7 +171,7 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 				succeededNow := succeeded
 				bytesNow := bytesDone
 				activePaths = taskActivePaths(active)
-				resultSnapshot := compactItemResults(results)
+				trackingSnapshot := compactTrackingItems(results)
 				// Publish under the same lock that took the counters, so
 				// concurrent workers emit monotonic progress (update order
 				// == counter order; a stale snapshot can never win).
@@ -180,7 +180,7 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 					taskItem.Progress.ItemsFailed = doneNow - succeededNow
 					taskItem.Progress.TransferBytesDone = bytesNow
 					taskItem.Progress.TransferBytesTotal = bytesNow
-					taskItem.Result.Items = resultSnapshot
+					taskItem.Tracking.Items = trackingSnapshot
 					taskItem.Detail["last_copy_op_id"] = result.opID
 					taskItem.Detail["active_paths"] = activePaths
 				})

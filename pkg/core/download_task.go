@@ -111,7 +111,7 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 			return err
 		}
 	}
-	results := make([]task.ItemResult, len(spec.Items))
+	results := make([]task.ItemTracking, len(spec.Items))
 	var succeeded int64
 	var bytesDone int64
 	var bytesTotal int64
@@ -158,21 +158,21 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 						taskItem.Progress.OutputBytesTotal = currentBytesTotal
 					})
 				})
-				resultItem := task.ItemResult{
+				itemTracking := task.ItemTracking{
 					Path:             item.SourcePath,
 					SourcePath:       item.SourcePath,
 					DestPath:         item.DestPath,
-					State:            task.StateSucceeded,
+					State:            task.ItemStateSucceeded,
 					OutputBytesDone:  result.bytesDone,
 					OutputBytesTotal: result.bytesTotal,
 				}
 				if err != nil {
-					resultItem.State = task.StateFailed
-					resultItem.Error = &task.Error{Message: err.Error()}
+					itemTracking.State = task.ItemStateFailed
+					itemTracking.Error = &task.Error{Message: err.Error()}
 				}
 				mu.Lock()
 				delete(active, i)
-				results[i] = resultItem
+				results[i] = itemTracking
 				done++
 				bytesTotal += result.bytesTotal
 				if err == nil {
@@ -183,7 +183,7 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 				bytesNow := bytesDone
 				totalNow := bytesTotal
 				activePaths = taskActivePaths(active)
-				resultSnapshot := compactItemResults(results)
+				trackingSnapshot := compactTrackingItems(results)
 				// Publish under the same lock that took the counters, so
 				// concurrent workers emit monotonic progress (update order
 				// == counter order; a stale snapshot can never win).
@@ -192,7 +192,7 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 					taskItem.Progress.ItemsFailed = doneNow - succeededNow
 					taskItem.Progress.OutputBytesDone = bytesNow
 					taskItem.Progress.OutputBytesTotal = totalNow
-					taskItem.Result.Items = resultSnapshot
+					taskItem.Tracking.Items = trackingSnapshot
 					taskItem.Detail["active_paths"] = activePaths
 				})
 				mu.Unlock()

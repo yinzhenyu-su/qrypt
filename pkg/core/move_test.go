@@ -110,7 +110,7 @@ func TestCreateTaskMoveRemoteBatchesSameMountItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.Type != task.TypeMoveBatch || item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Result.Items) != 2 {
+	if item.Type != task.TypeMoveBatch || item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Tracking.Items) != 2 {
 		t.Fatalf("task = %+v, want two-item move success", item)
 	}
 	for _, name := range []string{"one.txt", "two.txt"} {
@@ -147,8 +147,8 @@ func TestCreateTaskMoveRemoteBatchReportsPartialFailure(t *testing.T) {
 	if item.State != task.StatePartialFailed || !item.Capabilities.Retryable || item.Progress.ItemsDone != 2 || item.Progress.ItemsFailed != 1 {
 		t.Fatalf("task = %+v, want retryable partial failure", item)
 	}
-	if len(item.Result.Items) != 2 || item.Result.Items[1].Error == nil {
-		t.Fatalf("result items = %+v, want failed item detail", item.Result.Items)
+	if len(item.Tracking.Items) != 2 || item.Tracking.Items[1].Error == nil {
+		t.Fatalf("tracking items = %+v, want failed item detail", item.Tracking.Items)
 	}
 	if _, err := os.Stat(filepath.Join(remote, "missing.txt")); !os.IsNotExist(err) {
 		t.Fatalf("missing source unexpectedly changed, stat err=%v", err)
@@ -266,7 +266,7 @@ func TestCreateTaskCrossQryptMountBatchesItemsAndDeletesSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.Type != task.TypeMoveBatch || item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Result.Items) != 2 {
+	if item.Type != task.TypeMoveBatch || item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || len(item.Tracking.Items) != 2 {
 		t.Fatalf("task = %+v, want cross-mount batch success", item)
 	}
 	if item.Progress.TransferBytesDone <= 0 || item.Progress.TransferBytesTotal <= 0 {
@@ -434,8 +434,8 @@ func TestCreateTaskCrossQryptMountBatchKeepsSourceWhenDestinationExists(t *testi
 	if item.State != task.StatePartialFailed || item.Progress.ItemsFailed != 1 {
 		t.Fatalf("task = %+v, want the skipped directory item to fail", item)
 	}
-	if len(item.Result.Items) != 2 || item.Result.Items[0].State != task.StateFailed || item.Result.Items[0].Error == nil {
-		t.Fatalf("result items = %+v, want a failed directory item", item.Result.Items)
+	if len(item.Tracking.Items) != 2 || item.Tracking.Items[0].State != task.ItemStateFailed || item.Tracking.Items[0].Error == nil {
+		t.Fatalf("tracking items = %+v, want a failed directory item", item.Tracking.Items)
 	}
 	if data, err := os.ReadFile(filepath.Join(srcRemote, "d1", "a.txt")); err != nil || string(data) != "new-a" {
 		t.Fatalf("source d1/a.txt = %q err=%v, want it preserved", data, err)

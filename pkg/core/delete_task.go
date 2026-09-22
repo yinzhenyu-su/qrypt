@@ -70,7 +70,7 @@ func (c *Core) createDeleteTask(ctx context.Context, req task.Request) (task.Tas
 
 func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec deleteTaskSpec) error {
 	items := spec.Items
-	results := make([]task.ItemResult, len(items))
+	results := make([]task.ItemTracking, len(items))
 	var succeeded int64
 	var done int64
 	var mu sync.Mutex
@@ -87,22 +87,22 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 			taskItem.Progress.Phase = "delete"
 			taskItem.Detail["active_paths"] = activePaths
 		})
-		result := task.ItemResult{Path: current, State: task.StateSucceeded}
+		result := task.ItemTracking{Path: current, State: task.ItemStateSucceeded}
 		if err := c.Remove(ctx, current); err != nil {
-			result.State = task.StateFailed
+			result.State = task.ItemStateFailed
 			result.Error = &task.Error{Message: err.Error()}
 		}
 		mu.Lock()
 		delete(active, i)
 		results[i] = result
 		done++
-		if result.State == task.StateSucceeded {
+		if result.State == task.ItemStateSucceeded {
 			succeeded++
 		}
 		doneNow := done
 		succeededNow := succeeded
 		activePaths = taskActivePaths(active)
-		resultSnapshot := compactItemResults(results)
+		trackingSnapshot := compactTrackingItems(results)
 		// The progress update runs UNDER the same lock that took the
 		// counters, so concurrent workers publish monotonic progress:
 		// a stale (lower) counter snapshot can never overwrite a newer
@@ -110,7 +110,7 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.ItemsDone = doneNow
 			taskItem.Progress.ItemsFailed = doneNow - succeededNow
-			taskItem.Result.Items = resultSnapshot
+			taskItem.Tracking.Items = trackingSnapshot
 			taskItem.Detail["active_paths"] = activePaths
 		})
 		mu.Unlock()
@@ -182,8 +182,8 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 	return fmt.Errorf("%s", message)
 }
 
-func cloneItemResults(results []task.ItemResult) []task.ItemResult {
-	out := make([]task.ItemResult, len(results))
+func cloneTrackingItems(results []task.ItemTracking) []task.ItemTracking {
+	out := make([]task.ItemTracking, len(results))
 	for i, result := range results {
 		out[i] = result
 		if result.Error != nil {
@@ -194,15 +194,15 @@ func cloneItemResults(results []task.ItemResult) []task.ItemResult {
 	return out
 }
 
-func compactItemResults(results []task.ItemResult) []task.ItemResult {
-	out := make([]task.ItemResult, 0, len(results))
+func compactTrackingItems(results []task.ItemTracking) []task.ItemTracking {
+	out := make([]task.ItemTracking, 0, len(results))
 	for _, result := range results {
 		if result.State == "" {
 			continue
 		}
 		out = append(out, result)
 	}
-	return cloneItemResults(out)
+	return cloneTrackingItems(out)
 }
 
 func deleteSpecFromTaskRequest(req task.Request) (deleteTaskSpec, error) {

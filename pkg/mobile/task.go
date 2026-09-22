@@ -41,7 +41,7 @@ func ListTaskItemsJSON(coreID, taskID, filterRaw string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	items, err := withCore(s, func(c *core.Core) ([]core.TaskItemResult, error) {
+	items, err := withCore(s, func(c *core.Core) ([]core.TaskItemTracking, error) {
 		return c.ListTaskItems(s.ctx, taskID, filter)
 	})
 	return resultJSON(items, err)
@@ -52,7 +52,7 @@ func GetTaskItemJSON(coreID, taskID, itemID string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	item, err := withCore(s, func(c *core.Core) (core.TaskItemResult, error) {
+	item, err := withCore(s, func(c *core.Core) (core.TaskItemTracking, error) {
 		return c.GetTaskItem(s.ctx, taskID, itemID)
 	})
 	return resultJSON(item, err)

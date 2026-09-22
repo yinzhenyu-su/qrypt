@@ -65,8 +65,8 @@ func TestCreateTaskDownloadStreamBatchReadsAckAndFinishes(t *testing.T) {
 	if item.State != task.StateSucceeded || item.Progress.ItemsDone != 2 || item.Progress.OutputBytesDone != int64(len("alphabeta")) {
 		t.Fatalf("task = %+v, want stream batch success", item)
 	}
-	if len(item.Result.Items) != 2 || item.Result.Items[0].ItemID != "a" || item.Result.Items[0].ResumeOffset != int64(len("alpha")) {
-		t.Fatalf("result items = %+v", item.Result.Items)
+	if len(item.Tracking.Items) != 2 || item.Tracking.Items[0].ItemID != "a" || item.Tracking.Items[0].ResumeOffset != int64(len("alpha")) {
+		t.Fatalf("tracking items = %+v", item.Tracking.Items)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err := handle.Fail("output_stream_failed", "target removed"); err != nil {
 		t.Fatal(err)
 	}
-	waitForCoreTaskPhase(t, c, item.ID, string(task.StateWaitingOutput))
+	waitForCoreTaskPhase(t, c, item.ID, string(task.ItemStateWaitingOutput))
 
 	handle, err = c.OpenDownloadStreamItem(ctx, item.ID, "item")
 	if err != nil {
@@ -188,11 +188,11 @@ func TestDownloadStreamTaskCancelItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := waitCoreTask(t, c, item.ID)
-	if got.State != task.StateFailed || len(got.Result.Items) != 1 || got.Result.Items[0].State != task.StateCanceled {
+	if got.State != task.StateFailed || len(got.Tracking.Items) != 1 || got.Tracking.Items[0].State != task.ItemStateCanceled {
 		t.Fatalf("task = %+v, want failed task with canceled item", got)
 	}
-	if got.Result.Items[0].Capabilities.Cancelable {
-		t.Fatalf("canceled item capabilities = %+v, want not cancelable", got.Result.Items[0].Capabilities)
+	if got.Tracking.Items[0].Capabilities.Cancelable {
+		t.Fatalf("canceled item capabilities = %+v, want not cancelable", got.Tracking.Items[0].Capabilities)
 	}
 	if _, err := c.OpenDownloadStreamItem(ctx, item.ID, "item"); err == nil {
 		t.Fatal("OpenDownloadStreamItem after cancel succeeded, want error")

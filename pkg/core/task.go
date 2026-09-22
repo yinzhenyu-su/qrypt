@@ -20,7 +20,7 @@ type Task = task.Task
 type TaskFilter = task.Filter
 type TaskItem = task.Item
 type TaskItemFilter = task.ItemFilter
-type TaskItemResult = task.ItemResult
+type TaskItemTracking = task.ItemTracking
 type TaskOptions = task.Options
 type TaskOperationRequest = task.OperationRequest
 type TaskRequest = task.Request
@@ -123,7 +123,7 @@ func (c *Core) GetTask(ctx context.Context, id string) (task.Task, error) {
 	return manager.GetTask(ctx, id)
 }
 
-func (c *Core) ListTaskItems(ctx context.Context, taskID string, filter task.ItemFilter) ([]task.ItemResult, error) {
+func (c *Core) ListTaskItems(ctx context.Context, taskID string, filter task.ItemFilter) ([]task.ItemTracking, error) {
 	if controller, err := c.itemController(taskID); err == nil {
 		return controller.listItems(filter), nil
 	}
@@ -131,8 +131,8 @@ func (c *Core) ListTaskItems(ctx context.Context, taskID string, filter task.Ite
 	if err != nil {
 		return nil, err
 	}
-	out := make([]task.ItemResult, 0, len(item.Result.Items))
-	for _, result := range item.Result.Items {
+	out := make([]task.ItemTracking, 0, len(item.Tracking.Items))
+	for _, result := range item.Tracking.Items {
 		if !filter.Match(result) {
 			continue
 		}
@@ -163,16 +163,16 @@ func (c *Core) CommitTaskItem(ctx context.Context, taskID, itemID string) error 
 	return controller.commitItem(ctx, itemID)
 }
 
-func (c *Core) GetTaskItem(ctx context.Context, taskID, itemID string) (task.ItemResult, error) {
+func (c *Core) GetTaskItem(ctx context.Context, taskID, itemID string) (task.ItemTracking, error) {
 	if itemID == "" {
-		return task.ItemResult{}, fmt.Errorf("core: task item id required")
+		return task.ItemTracking{}, fmt.Errorf("core: task item id required")
 	}
 	items, err := c.ListTaskItems(ctx, taskID, task.ItemFilter{ItemID: itemID, Limit: 1})
 	if err != nil {
-		return task.ItemResult{}, err
+		return task.ItemTracking{}, err
 	}
 	if len(items) == 0 {
-		return task.ItemResult{}, fmt.Errorf("%w: task item %q", task.ErrNotFound, itemID)
+		return task.ItemTracking{}, fmt.Errorf("%w: task item %q", task.ErrNotFound, itemID)
 	}
 	return items[0], nil
 }

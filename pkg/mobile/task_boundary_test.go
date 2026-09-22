@@ -105,7 +105,7 @@ func TestOpenTaskEventsFromJSONRejectsNegativeSequence(t *testing.T) {
 }
 
 // TestMobileTaskWireShapePinned pins the mobile-facing JSON of a created
-// task through the boundary: the core-owned Task/ItemResult field names the
+// task through the boundary: the core-owned Task/ItemTracking field names the
 // app relies on (state machine fields, capabilities, progress counters) and
 // the default user scope.
 func TestMobileTaskWireShapePinned(t *testing.T) {
@@ -194,7 +194,7 @@ upload_delay = "10ms"
 	}
 	items, ok := result["items"].([]any)
 	if !ok || len(items) != 1 {
-		t.Fatalf("result items = %v, want one item: %s", result["items"], getRaw)
+		t.Fatalf("tracking items = %v, want one item: %s", result["items"], getRaw)
 	}
 	item, ok := items[0].(map[string]any)
 	if !ok {

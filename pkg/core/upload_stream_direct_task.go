@@ -101,7 +101,7 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 		},
 		Capabilities: taskCreationCapabilities(task.TypeUploadStreamDirect),
 		Detail:       detail,
-		Result:       task.Result{Items: batch.resultItemsLocked()},
+		Tracking:     task.Tracking{Items: batch.trackingItemsLocked()},
 	}
 	destMount, _, _ := moveMounts(first.DestPath, first.DestPath, c.fs)
 	if destMount != "" {
@@ -199,7 +199,7 @@ func (c *Core) uploadStreamDirectBatchFromTask(item task.Task) (*uploadStreamBat
 			RelativePath: directUploadDetailString(detail, "relative_path"),
 			SourceToken:  sourceToken,
 			Size:         size,
-			State:        task.StateWaitingInput,
+			State:        task.ItemStateWaitingInput,
 		}
 		if streamItem.Name == "" {
 			streamItem.Name = path.Base(destPath)
@@ -256,7 +256,7 @@ func directUploadDetailBool(detail map[string]any, key string) bool {
 func (c *Core) runUploadStreamDirectTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
 	return c.runUploadStreamLifecycle(ctx, update, batch, func(ctx context.Context) error {
 		for _, snapshot := range batch.itemsSnapshot() {
-			if snapshot.State == task.StateSucceeded {
+			if snapshot.State == task.ItemStateSucceeded {
 				continue
 			}
 			for {
@@ -292,9 +292,9 @@ func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *u
 	update(func(item *task.Task) {
 		item.State = task.StateRetryWait
 		item.NextAttempt = next
-		item.Progress.Phase = string(task.StateRetryWait)
+		item.Progress.Phase = string(task.ItemStateRetryWait)
 		if item.Detail != nil {
-			item.Detail["phase"] = string(task.StateRetryWait)
+			item.Detail["phase"] = string(task.ItemStateRetryWait)
 		}
 	})
 	timer := time.NewTimer(time.Until(next))
@@ -314,9 +314,9 @@ func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *u
 			// A backoff can run for minutes; keep emitting updates so the
 			// task is visibly alive rather than looking stuck.
 			update(func(item *task.Task) {
-				item.Progress.Phase = string(task.StateRetryWait)
+				item.Progress.Phase = string(task.ItemStateRetryWait)
 				if item.Detail != nil {
-					item.Detail["phase"] = string(task.StateRetryWait)
+					item.Detail["phase"] = string(task.ItemStateRetryWait)
 				}
 			})
 			continue
@@ -339,8 +339,8 @@ func (b *uploadStreamBatch) scheduleDirectUploadRetry(update task.UpdateFunc, it
 	b.retryCount++
 	b.nextAttempt = time.Now().Add(directUploadRetryDelay(b.retryCount))
 	if item := b.byID[itemID]; item != nil {
-		item.State = task.StateRetryWait
-		item.CloudPhase = string(task.StateRetryWait)
+		item.State = task.ItemStateRetryWait
+		item.CloudPhase = string(task.ItemStateRetryWait)
 		item.Error = &task.Error{Message: err.Error(), Retryable: true}
 		item.SourceRead = 0
 		item.CloudWritten = 0
@@ -386,7 +386,7 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	destPath := item.DestPath
 	size := item.Size
 	item.Open = false
-	item.State = task.StateRunning
+	item.State = task.ItemStateRunning
 	item.Error = nil
 	item.SourceRead = 0
 	item.CloudWritten = 0
@@ -436,13 +436,13 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	}
 	if err != nil {
 		item.Open = false
-		item.State = task.StateFailed
+		item.State = task.ItemStateFailed
 		item.Error = &task.Error{Message: err.Error(), Retryable: true}
 		batch.updateTaskSnapshotLocked()
 		return err
 	}
 	item.Open = false
-	item.State = task.StateSucceeded
+	item.State = task.ItemStateSucceeded
 	item.Error = nil
 	item.RemoteID = entry.ID
 	item.Written = 0
@@ -505,7 +505,7 @@ func (c *Core) failUploadStreamDirectItem(batch *uploadStreamBatch, itemID strin
 	defer batch.mu.Unlock()
 	if item := batch.byID[itemID]; item != nil {
 		item.Open = false
-		item.State = task.StateFailed
+		item.State = task.ItemStateFailed
 		item.Error = &task.Error{Message: err.Error(), Retryable: true}
 	}
 	batch.updateTaskSnapshotLocked()

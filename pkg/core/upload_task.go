@@ -76,7 +76,7 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 		return err
 	}
 	items := spec.Items
-	results := make([]task.ItemResult, len(items))
+	results := make([]task.ItemTracking, len(items))
 	var succeeded int64
 	var bytesDone int64
 	var done int64
@@ -130,16 +130,16 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 						}
 					}
 				}
-				result := task.ItemResult{
+				result := task.ItemTracking{
 					Path:       item.DestPath,
 					SourcePath: item.SourcePath,
 					DestPath:   item.DestPath,
 					Mount:      item.Mount,
-					State:      task.StateSucceeded,
+					State:      task.ItemStateSucceeded,
 				}
 				var addBytes int64
 				if err != nil {
-					result.State = task.StateFailed
+					result.State = task.ItemStateFailed
 					result.Error = &task.Error{Message: err.Error()}
 				} else {
 					if uploadResult.Skipped {
@@ -164,7 +164,7 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 				succeededNow := succeeded
 				bytesNow := bytesDone
 				activePaths = taskActivePaths(active)
-				resultSnapshot := compactItemResults(results)
+				trackingSnapshot := compactTrackingItems(results)
 				// Publish under the same lock that took the counters, so
 				// concurrent workers emit monotonic progress (update order
 				// == counter order; a stale snapshot can never win).
@@ -173,7 +173,7 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 					taskItem.Progress.ItemsFailed = doneNow - succeededNow
 					taskItem.Progress.CloudBytesDone = bytesNow
 					taskItem.Progress.CloudBytesTotal = bytesNow
-					taskItem.Result.Items = resultSnapshot
+					taskItem.Tracking.Items = trackingSnapshot
 					taskItem.Detail["active_paths"] = activePaths
 				})
 				mu.Unlock()

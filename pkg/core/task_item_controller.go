@@ -12,7 +12,7 @@ type TaskItemHandle interface {
 }
 
 type taskItemController interface {
-	listItems(task.ItemFilter) []task.ItemResult
+	listItems(task.ItemFilter) []task.ItemTracking
 	cancelItem(context.Context, string) error
 	openItem(context.Context, string, task.Action) (TaskItemHandle, error)
 	commitItem(context.Context, string) error
@@ -27,10 +27,10 @@ func (c uploadStreamItemController) cancelItem(ctx context.Context, itemID strin
 	return c.core.cancelUploadStreamItem(ctx, c.batch, itemID)
 }
 
-func (c uploadStreamItemController) listItems(filter task.ItemFilter) []task.ItemResult {
+func (c uploadStreamItemController) listItems(filter task.ItemFilter) []task.ItemTracking {
 	c.batch.mu.Lock()
 	defer c.batch.mu.Unlock()
-	return filterTaskItems(c.batch.resultItemsLocked(), filter)
+	return filterTaskItems(c.batch.trackingItemsLocked(), filter)
 }
 
 func (c uploadStreamItemController) openItem(ctx context.Context, itemID string, action task.Action) (TaskItemHandle, error) {
@@ -53,10 +53,10 @@ func (c downloadStreamItemController) cancelItem(ctx context.Context, itemID str
 	return c.core.cancelDownloadStreamItem(ctx, c.batch, itemID)
 }
 
-func (c downloadStreamItemController) listItems(filter task.ItemFilter) []task.ItemResult {
+func (c downloadStreamItemController) listItems(filter task.ItemFilter) []task.ItemTracking {
 	c.batch.mu.Lock()
 	defer c.batch.mu.Unlock()
-	return filterTaskItems(c.batch.resultItemsLocked(), filter)
+	return filterTaskItems(c.batch.trackingItemsLocked(), filter)
 }
 
 func (c downloadStreamItemController) openItem(ctx context.Context, itemID string, action task.Action) (TaskItemHandle, error) {
@@ -80,8 +80,8 @@ func (c *Core) itemController(taskID string) (taskItemController, error) {
 	return nil, fmt.Errorf("core: task item controller not found")
 }
 
-func filterTaskItems(items []task.ItemResult, filter task.ItemFilter) []task.ItemResult {
-	out := make([]task.ItemResult, 0, len(items))
+func filterTaskItems(items []task.ItemTracking, filter task.ItemFilter) []task.ItemTracking {
+	out := make([]task.ItemTracking, 0, len(items))
 	for _, item := range items {
 		if !filter.Match(item) {
 			continue

@@ -113,10 +113,10 @@ func UploadLocalFileJSON(coreID, localPath, remotePath string, deadlineMS int) s
 }
 
 func firstUploadStreamItemID(item core.Task) (string, error) {
-	if len(item.Result.Items) == 0 {
+	if len(item.Tracking.Items) == 0 {
 		return "", fmt.Errorf("mobile: upload task %s has no items", item.ID)
 	}
-	id := item.Result.Items[0].ItemID
+	id := item.Tracking.Items[0].ItemID
 	if id == "" {
 		id = "local-1"
 	}

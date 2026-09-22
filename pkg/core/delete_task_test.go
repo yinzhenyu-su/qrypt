@@ -90,8 +90,8 @@ func TestCreateTaskDeleteBatchPartialFailed(t *testing.T) {
 	if item.State != task.StatePartialFailed || item.Progress.ItemsDone != 2 || item.Progress.ItemsFailed != 1 || item.Error == nil {
 		t.Fatalf("task = %+v, want partial_failed delete batch", item)
 	}
-	if len(item.Result.Items) != 2 || item.Result.Items[1].Path != "/missing.txt" || item.Result.Items[1].State != task.StateFailed || item.Result.Items[1].Error == nil {
-		t.Fatalf("result items = %+v, want missing path failure", item.Result.Items)
+	if len(item.Tracking.Items) != 2 || item.Tracking.Items[1].Path != "/missing.txt" || item.Tracking.Items[1].State != task.ItemStateFailed || item.Tracking.Items[1].Error == nil {
+		t.Fatalf("tracking items = %+v, want missing path failure", item.Tracking.Items)
 	}
 	if _, err := c.Stat(ctx, "/ok.txt"); err == nil {
 		t.Fatal("deleted path /ok.txt is still visible")
@@ -142,7 +142,7 @@ func TestCreateTaskDeleteBatchRecursiveDirectory(t *testing.T) {
 
 // TestDeleteBatchTerminalSnapshotConsistent: once a terminal state is
 // observable, the progress and result must form one consistent snapshot:
-// ItemsDone + ItemsFailed == ItemsTotal, Result.Items matches, and
+// ItemsDone + ItemsFailed == ItemsTotal, Tracking.Items matches, and
 // CompletedAt is set. Run many times to defeat the concurrent-publish
 // interleaving (regression: workers published progress updates outside
 // the counter lock, so a stale ItemsDone could win).
@@ -192,8 +192,8 @@ func TestDeleteBatchTerminalSnapshotConsistent(t *testing.T) {
 			t.Fatalf("run %d: done(%d)+failed(%d) != total(%d)", run,
 				item.Progress.ItemsDone, item.Progress.ItemsFailed, item.Progress.ItemsTotal)
 		}
-		if len(item.Result.Items) != int(item.Progress.ItemsTotal) {
-			t.Fatalf("run %d: result items = %d, want %d", run, len(item.Result.Items), item.Progress.ItemsTotal)
+		if len(item.Tracking.Items) != int(item.Progress.ItemsTotal) {
+			t.Fatalf("run %d: tracking items = %d, want %d", run, len(item.Tracking.Items), item.Progress.ItemsTotal)
 		}
 		if item.CompletedAt.IsZero() {
 			t.Fatalf("run %d: CompletedAt not set on terminal state", run)

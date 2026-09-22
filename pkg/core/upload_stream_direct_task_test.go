@@ -105,7 +105,7 @@ func TestCreateTaskUploadStreamDirectUsesLocalFSDirectPath(t *testing.T) {
 	if item.State != task.StateSucceeded {
 		t.Fatalf("task = %+v, want localfs direct upload success", item)
 	}
-	if got := item.Result.Items[0].Phase; got != "direct" {
+	if got := item.Tracking.Items[0].Phase; got != "direct" {
 		t.Fatalf("item phase = %q, want direct", got)
 	}
 	remotePath := filepath.Join(remote, "fallback.txt")
@@ -149,7 +149,7 @@ func TestCreateTaskUploadStreamDirectFallsBackToStagingWithoutDirectCapability(t
 	if item.State != task.StateSucceeded {
 		t.Fatalf("task = %+v, want staging fallback success", item)
 	}
-	if got := item.Result.Items[0].Phase; got != "queued_upload" {
+	if got := item.Tracking.Items[0].Phase; got != "queued_upload" {
 		t.Fatalf("item phase = %q, want queued_upload", got)
 	}
 	if got := drv.uploadedData(); string(got) != string(payload) {
@@ -335,8 +335,8 @@ func TestCreateTaskUploadStreamDirectRejectsBadOffsetSource(t *testing.T) {
 	if item.State != task.StateFailed {
 		t.Fatalf("task = %+v, want failed", item)
 	}
-	if len(item.Result.Items) != 1 || item.Result.Items[0].Error == nil || !strings.Contains(item.Result.Items[0].Error.Message, "source opener must honor requested offsets") {
-		t.Fatalf("task result = %+v, want offset validation failure", item.Result.Items)
+	if len(item.Tracking.Items) != 1 || item.Tracking.Items[0].Error == nil || !strings.Contains(item.Tracking.Items[0].Error.Message, "source opener must honor requested offsets") {
+		t.Fatalf("task result = %+v, want offset validation failure", item.Tracking.Items)
 	}
 	if drv.putSourceCount() != 0 {
 		t.Fatalf("PutSource calls = %d, want 0", drv.putSourceCount())
@@ -693,7 +693,6 @@ func TestIsRecoverableUploadStreamTask(t *testing.T) {
 		want  bool
 	}{
 		{"interrupted failed", task.StateFailed, &task.Error{Code: "interrupted"}, true},
-		{"waiting_input", task.StateWaitingInput, nil, true},
 		{"running", task.StateRunning, nil, true},
 		{"queued", task.StateQueued, nil, true},
 		{"scheduled", task.StateScheduled, nil, true},
@@ -710,7 +709,7 @@ func TestIsRecoverableUploadStreamTask(t *testing.T) {
 		item.State = tc.state
 		item.Error = tc.err
 		if tc.name == "retryable item failure" {
-			item.Result.Items = []task.ItemResult{{Error: &task.Error{Message: "part conflict", Retryable: true}}}
+			item.Tracking.Items = []task.ItemTracking{{Error: &task.Error{Message: "part conflict", Retryable: true}}}
 		}
 		if got := c.isRecoverableUploadStreamTask(item); got != tc.want {
 			t.Fatalf("isRecoverableUploadStreamTask(%s) = %v, want %v", tc.name, got, tc.want)

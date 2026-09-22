@@ -51,8 +51,8 @@ type TaskEventsResponse struct {
 }
 
 type DebugTask struct {
-	Task  task.Task         `json:"task"`
-	Items []task.ItemResult `json:"items"`
+	Task  task.Task           `json:"task"`
+	Items []task.ItemTracking `json:"items"`
 }
 
 type UploadsResponse struct {

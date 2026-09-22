@@ -13,13 +13,13 @@ import (
 // overhead.
 
 func benchmarkTask(n int) Task {
-	items := make([]ItemResult, n)
+	items := make([]ItemTracking, n)
 	for i := range items {
-		items[i] = ItemResult{
+		items[i] = ItemTracking{
 			Path:            fmt.Sprintf("/remote/file-%d.bin", i),
 			ItemID:          fmt.Sprintf("item-%d", i),
 			SourcePath:      fmt.Sprintf("/local/file-%d.bin", i),
-			State:           StateRunning,
+			State:           ItemStateRunning,
 			CloudBytesDone:  1 << 20,
 			CloudBytesTotal: 1 << 20,
 		}
@@ -36,7 +36,7 @@ func benchmarkTask(n int) Task {
 			ItemsTotal:      int64(n),
 			CloudBytesTotal: int64(n) << 20,
 		},
-		Result: Result{Items: items},
+		Tracking: Tracking{Items: items},
 	}
 }
 

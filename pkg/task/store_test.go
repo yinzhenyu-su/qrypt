@@ -10,33 +10,33 @@ func TestMemoryStoreReturnsTaskSnapshots(t *testing.T) {
 			Type:   TypeDeleteBatch,
 			State:  StateRunning,
 			Detail: map[string]any{"phase": "delete"},
-			Result: Result{
-				Items: []ItemResult{{
+			Tracking: Tracking{
+				Items: []ItemTracking{{
 					Path:  "/missing.txt",
-					State: StateFailed,
+					State: ItemStateFailed,
 					Error: &Error{Message: "missing"},
 				}},
 			},
 		},
 	})
 	item.Detail["phase"] = "mutated"
-	item.Result.Items[0].Error.Message = "mutated"
+	item.Tracking.Items[0].Error.Message = "mutated"
 
 	got, ok := store.GetManaged("task-1")
 	if !ok {
 		t.Fatal("task missing")
 	}
-	if got.Task.Detail["phase"] != "delete" || got.Task.Result.Items[0].Error.Message != "missing" {
+	if got.Task.Detail["phase"] != "delete" || got.Task.Tracking.Items[0].Error.Message != "missing" {
 		t.Fatalf("stored task was mutated: %+v", got.Task)
 	}
 
 	got.Task.Detail["phase"] = "mutated again"
-	got.Task.Result.Items[0].Error.Message = "mutated again"
+	got.Task.Tracking.Items[0].Error.Message = "mutated again"
 	again, ok := store.GetManaged("task-1")
 	if !ok {
 		t.Fatal("task missing after get")
 	}
-	if again.Task.Detail["phase"] != "delete" || again.Task.Result.Items[0].Error.Message != "missing" {
+	if again.Task.Detail["phase"] != "delete" || again.Task.Tracking.Items[0].Error.Message != "missing" {
 		t.Fatalf("returned task shares storage: %+v", again.Task)
 	}
 }

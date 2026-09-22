@@ -30,9 +30,9 @@ func TestPersistentStorePersistsOnlyPersistentTasks(t *testing.T) {
 		Capabilities: Capabilities{
 			Persistent: true,
 		},
-		Result: Result{Items: []ItemResult{{
+		Tracking: Tracking{Items: []ItemTracking{{
 			Path:  "/missing.txt",
-			State: StateFailed,
+			State: ItemStateFailed,
 			Error: &Error{Message: "missing"},
 		}}},
 	}})
@@ -53,7 +53,7 @@ func TestPersistentStorePersistsOnlyPersistentTasks(t *testing.T) {
 	if !ok {
 		t.Fatal("persistent task missing after replay")
 	}
-	if got.Task.State != StatePartialFailed || len(got.Task.Result.Items) != 1 || got.Task.Result.Items[0].Error == nil {
+	if got.Task.State != StatePartialFailed || len(got.Task.Tracking.Items) != 1 || got.Task.Tracking.Items[0].Error == nil {
 		t.Fatalf("replayed task = %+v", got.Task)
 	}
 }
@@ -144,9 +144,9 @@ func TestPersistentStoreJournalsOnlyDurableStateChanges(t *testing.T) {
 		mt.Task.Capabilities.Cancelable = false
 		mt.Task.Capabilities.Retryable = true
 		mt.Task.Capabilities.Dismissible = true
-		mt.Task.Result.Items = []ItemResult{{
+		mt.Task.Tracking.Items = []ItemTracking{{
 			Path:  "/a.txt",
-			State: StateFailed,
+			State: ItemStateFailed,
 			Error: &Error{Message: "boom"},
 		}}
 	})
@@ -162,8 +162,8 @@ func TestPersistentStoreJournalsOnlyDurableStateChanges(t *testing.T) {
 	if got.Task.State != StatePartialFailed || got.Task.Progress.CloudBytesDone != 1<<20 {
 		t.Fatalf("replayed task = %+v, want partial_failed with final progress", got.Task)
 	}
-	if len(got.Task.Result.Items) != 1 || got.Task.Result.Items[0].Error == nil {
-		t.Fatalf("replayed result = %+v, want failed item with error", got.Task.Result.Items)
+	if len(got.Task.Tracking.Items) != 1 || got.Task.Tracking.Items[0].Error == nil {
+		t.Fatalf("replayed result = %+v, want failed item with error", got.Task.Tracking.Items)
 	}
 }
 

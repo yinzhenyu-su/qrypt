@@ -180,12 +180,21 @@ func (s *PersistentStore) replay() error {
 	return nil
 }
 
+// legacyStateWaitingInput and legacyStateWaitingOutput are task-level
+// handshake values journaled before the handshake states became item-level
+// (glossary: 等待供数 / 等待取数 are 条目级握手状态 now).
+const (
+	legacyStateWaitingInput  State = "waiting_input"
+	legacyStateWaitingOutput State = "waiting_output"
+)
+
 func normalizeReplayedTask(item Task) Task {
 	if item.SchemaVersion == 0 {
 		item.SchemaVersion = CurrentTaskSchemaVersion
 	}
 	switch item.State {
-	case StateQueued, StateScheduled, StateRunning, StateRetryWait, StateCanceling, StateWaitingInput, StateWaitingOutput:
+	case StateQueued, StateScheduled, StateRunning, StateRetryWait, StateCanceling,
+		legacyStateWaitingInput, legacyStateWaitingOutput:
 		item.State = StateFailed
 		item.Capabilities.Cancelable = false
 		item.Capabilities.Retryable = false
