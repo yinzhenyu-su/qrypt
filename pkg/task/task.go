@@ -67,7 +67,7 @@ type Task struct {
 	Version              uint64         `json:"version,omitempty"`
 	SchemaVersion        uint16         `json:"schema_version,omitempty"`
 	ExecutionGeneration  uint64         `json:"execution_generation,omitempty"`
-	OperationKey         string         `json:"idempotency_key,omitempty"`
+	IdempotencyKey       string         `json:"idempotency_key,omitempty"`
 	OperationFingerprint string         `json:"operation_fingerprint,omitempty"`
 	DismissRequested     bool           `json:"dismiss_requested,omitempty"`
 	Progress             Progress       `json:"progress,omitempty"`
@@ -171,7 +171,7 @@ type Request struct {
 	Items                []Item         `json:"items,omitempty"`
 	Options              Options        `json:"options,omitempty"`
 	Detail               map[string]any `json:"detail,omitempty"`
-	OperationKey         string         `json:"idempotency_key,omitempty"`
+	IdempotencyKey       string         `json:"idempotency_key,omitempty"`
 	OperationFingerprint string         `json:"-"`
 }
 

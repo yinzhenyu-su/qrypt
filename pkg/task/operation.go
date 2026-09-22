@@ -36,14 +36,14 @@ const (
 )
 
 type OperationRequest struct {
-	Operation    OperationKind  `json:"operation"`
-	Scope        Scope          `json:"scope,omitempty"`
-	Items        []Item         `json:"items,omitempty"`
-	Options      Options        `json:"options,omitempty"`
-	Detail       map[string]any `json:"detail,omitempty"`
-	UploadPolicy UploadPolicy   `json:"upload_policy,omitempty"`
-	UploadSource UploadSource   `json:"upload_source,omitempty"`
-	Idempotency  string         `json:"idempotency_key,omitempty"`
+	Operation      OperationKind  `json:"operation"`
+	Scope          Scope          `json:"scope,omitempty"`
+	Items          []Item         `json:"items,omitempty"`
+	Options        Options        `json:"options,omitempty"`
+	Detail         map[string]any `json:"detail,omitempty"`
+	UploadPolicy   UploadPolicy   `json:"upload_policy,omitempty"`
+	UploadSource   UploadSource   `json:"upload_source,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
 }
 
 func (r OperationRequest) Validate() error {
@@ -66,7 +66,7 @@ func (r OperationRequest) Validate() error {
 	} else if r.UploadPolicy != "" || r.UploadSource != "" {
 		return fmt.Errorf("%w: upload options are only valid for upload operations", ErrInvalidOperation)
 	}
-	if strings.TrimSpace(r.Idempotency) != r.Idempotency {
+	if strings.TrimSpace(r.IdempotencyKey) != r.IdempotencyKey {
 		return fmt.Errorf("%w: idempotency key must not have surrounding whitespace", ErrInvalidOperation)
 	}
 	return nil

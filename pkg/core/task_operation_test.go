@@ -61,13 +61,13 @@ func TestCreateOperationRejectsInvalidRequestBeforeCoreAccess(t *testing.T) {
 func TestOperationFingerprintDoesNotIncludeIdempotencyKey(t *testing.T) {
 	t.Parallel()
 	first := task.OperationRequest{
-		Operation:    task.OperationUpload,
-		Items:        []task.Item{{DestPath: "/file.txt"}},
-		UploadPolicy: task.UploadPolicyStagingOnly,
-		Idempotency:  "first-key",
+		Operation:      task.OperationUpload,
+		Items:          []task.Item{{DestPath: "/file.txt"}},
+		UploadPolicy:   task.UploadPolicyStagingOnly,
+		IdempotencyKey: "first-key",
 	}
 	second := first
-	second.Idempotency = "second-key"
+	second.IdempotencyKey = "second-key"
 
 	firstFingerprint, err := operationFingerprint(first)
 	if err != nil {

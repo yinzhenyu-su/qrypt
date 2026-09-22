@@ -24,12 +24,12 @@ func createLegacyOperationJSON(coreID, requestRaw string, policy task.UploadPoli
 		return resultJSON(nil, wrapError(err))
 	}
 	return CreateOperationJSON(coreID, mustMarshalOperationRequest(task.OperationRequest{
-		Operation:    operation,
-		Scope:        request.Scope,
-		Items:        request.Items,
-		Options:      request.Options,
-		UploadPolicy: policy,
-		Idempotency:  request.OperationKey,
+		Operation:      operation,
+		Scope:          request.Scope,
+		Items:          request.Items,
+		Options:        request.Options,
+		UploadPolicy:   policy,
+		IdempotencyKey: request.IdempotencyKey,
 	}), deadlineMS)
 }
 
