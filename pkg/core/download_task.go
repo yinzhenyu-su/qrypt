@@ -67,10 +67,10 @@ func (c *Core) createDownloadTask(ctx context.Context, req task.Request) (task.T
 		first.DestPath = spec.LocalDirs[0]
 	}
 	item := task.Task{
-		ID:        newDownloadTaskID(),
-		Type:      task.TypeDownload,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(task.TypeDownload),
+		ID:    newDownloadTaskID(),
+		Type:  task.TypeDownload,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(task.TypeDownload), Visibility: task.VisibilityForType(task.TypeDownload),
 		Path:      first.SourcePath,
 		Name:      path.Base(first.SourcePath),
 		CreatedAt: now,

@@ -63,10 +63,10 @@ func (c *Core) createDownloadStreamTask(ctx context.Context, req task.Request) (
 	now := util.Now()
 	first := batch.items[0]
 	item := task.Task{
-		ID:        batch.taskID,
-		Type:      task.TypeDownloadStreamBatch,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(task.TypeDownloadStreamBatch),
+		ID:    batch.taskID,
+		Type:  task.TypeDownloadStreamBatch,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(task.TypeDownloadStreamBatch), Visibility: task.VisibilityForType(task.TypeDownloadStreamBatch),
 		Path:      first.SourcePath,
 		Name:      first.Name,
 		CreatedAt: now,

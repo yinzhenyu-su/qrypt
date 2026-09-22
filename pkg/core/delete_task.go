@@ -38,10 +38,10 @@ func (c *Core) createDeleteTask(ctx context.Context, req task.Request) (task.Tas
 	firstPath := items[0].Path
 	taskType := task.Promote(req.Type, len(items))
 	item := task.Task{
-		ID:        newDeleteTaskID(),
-		Type:      taskType,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(taskType),
+		ID:    newDeleteTaskID(),
+		Type:  taskType,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(taskType), Visibility: task.VisibilityForType(taskType),
 		Path:      firstPath,
 		Name:      path.Base(firstPath),
 		CreatedAt: now,

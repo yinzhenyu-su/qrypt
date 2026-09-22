@@ -219,3 +219,42 @@ func TestManagerReportsStorePersistenceFailure(t *testing.T) {
 		t.Fatalf("PersistenceError() = %v, want ErrPersistence", err)
 	}
 }
+
+// Legacy journal entries carry no visibility declaration: replay infers it
+// from the origin exactly once (user origin → visible, everything else →
+// hidden). New creations declare visibility explicitly.
+func TestReplayedTasksInferVisibilityFromOrigin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks", "tasks.jsonl")
+	store, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []Task{
+		{ID: "legacy-user", Type: TypeUploadRemote, State: StateSucceeded, Scope: ScopeUser, Capabilities: Capabilities{Persistent: true}},
+		{ID: "legacy-sync", Type: TypeUploadRemote, State: StateSucceeded, Scope: ScopeSync, Capabilities: Capabilities{Persistent: true}},
+		{ID: "legacy-internal", Type: TypeUploadRemote, State: StateSucceeded, Scope: ScopeInternal, Capabilities: Capabilities{Persistent: true}},
+		{ID: "legacy-unspecified", Type: TypeUploadRemote, State: StateSucceeded, Capabilities: Capabilities{Persistent: true}},
+		{ID: "declared-hidden-user", Type: TypeUploadRemote, State: StateSucceeded, Scope: ScopeUser, Visibility: VisibilityHidden, Capabilities: Capabilities{Persistent: true}},
+	} {
+		store.PutManaged(ManagedTask{Task: legacy})
+	}
+	reopened, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]Visibility{
+		"legacy-user":          VisibilityVisible,
+		"legacy-sync":          VisibilityHidden,
+		"legacy-internal":      VisibilityHidden,
+		"legacy-unspecified":   VisibilityHidden,
+		"declared-hidden-user": VisibilityHidden,
+	} {
+		managed, ok := reopened.GetManaged(id)
+		if !ok {
+			t.Fatalf("%s missing after replay", id)
+		}
+		if managed.Task.Visibility != want {
+			t.Errorf("%s visibility = %q, want %q", id, managed.Task.Visibility, want)
+		}
+	}
+}

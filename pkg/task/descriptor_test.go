@@ -105,18 +105,24 @@ func TestScopeForTypeNeverDerivesSyncScope(t *testing.T) {
 	}
 }
 
-func TestDescriptorScopeFollowsVisibility(t *testing.T) {
+// Scope and visibility are independent declarations (glossary: 任务来源 与
+// 可见性 正交): each lookup returns the declaration verbatim and never derives
+// one axis from the other.
+func TestDescriptorDeclaresScopeAndVisibilityIndependently(t *testing.T) {
+	t.Parallel()
 	for _, d := range Descriptors() {
-		want := ScopeInternal
-		if d.UserVisible {
-			want = ScopeUser
+		if got := ScopeForType(d.Type); got != d.Scope {
+			t.Errorf("ScopeForType(%q) = %q, want declared %q", d.Type, got, d.Scope)
 		}
-		if got := ScopeForType(d.Type); got != want {
-			t.Errorf("ScopeForType(%q) = %q, want %q", d.Type, got, want)
+		if got := VisibilityForType(d.Type); got != d.Visibility {
+			t.Errorf("VisibilityForType(%q) = %q, want declared %q", d.Type, got, d.Visibility)
 		}
 	}
 	if got := ScopeForType(Type("not_a_type")); got != ScopeInternal {
 		t.Fatalf("undeclared type scope = %q, want internal scope", got)
+	}
+	if got := VisibilityForType(Type("not_a_type")); got != VisibilityHidden {
+		t.Fatalf("undeclared type visibility = %q, want hidden", got)
 	}
 	if len(RecoverableTypes()) == 0 {
 		t.Fatal("no recoverable types declared; interrupted streaming work would never be recovered")

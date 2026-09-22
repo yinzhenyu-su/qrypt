@@ -114,8 +114,8 @@ func (s deleteTaskSource) records() []deleteTaskRecord {
 
 func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 	// Internal delete bookkeeping (glossary: 挂载写入路径的内部记账记录) is
-	// exposed as an internal-scope task: origin is declared by the creation
-	// path, not inferred from the type's user visibility.
+	// exposed as an internal-scope, hidden task: origin and visibility are
+	// declared by the creation path, not inferred from the type.
 	typ := task.TypeDeleteRemote
 	item := task.Task{
 		ID:            record.id,
@@ -123,6 +123,7 @@ func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 		Type:          typ,
 		State:         record.state,
 		Scope:         task.ScopeInternal,
+		Visibility:    task.VisibilityHidden,
 		SchemaVersion: task.CurrentTaskSchemaVersion,
 		Path:          record.path,
 		Name:          path.Base(record.path),

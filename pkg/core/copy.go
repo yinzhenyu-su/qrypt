@@ -54,10 +54,10 @@ func (c *Core) createCopyTask(ctx context.Context, req task.Request) (task.Task,
 		capabilities.Dismissible = true
 	}
 	item := task.Task{
-		ID:        newCopyTaskID(),
-		Type:      task.TypeCopy,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(task.TypeCopy),
+		ID:    newCopyTaskID(),
+		Type:  task.TypeCopy,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(task.TypeCopy), Visibility: task.VisibilityForType(task.TypeCopy),
 		Path:      first.SourcePath,
 		Name:      filepath.Base(first.SourcePath),
 		CreatedAt: now,

@@ -55,11 +55,13 @@ type Descriptor struct {
 	// upgrades (a move that crosses mounts, a recursive download) may differ.
 	Persistent  bool
 	Dismissible bool
-	// UserVisible marks the types that the task API creates for the app's
-	// default task list; ScopeForType turns it into the task's Scope. Internal
-	// bookkeeping records that describe the same operation (the mount's own
-	// upload/delete records) are created as internal scope explicitly.
-	UserVisible bool
+	// Scope declares the origin tasks of this type are created with
+	// (glossary: 任务来源). Declared directly, never derived from visibility.
+	Scope Scope
+	// Visibility declares whether tasks of this type enter the app's
+	// default task list (glossary: 可见性). Independent of Scope; creation
+	// paths may override either declaration.
+	Visibility Visibility
 	// Recoverable marks types whose interrupted work is recovered at startup.
 	Recoverable bool
 	// Retry is the strategy used when the caller retries a failed task.
@@ -69,17 +71,17 @@ type Descriptor struct {
 // descriptors is the single declaration of per-type policy. Adding a task type
 // means adding its constant and one row here.
 var descriptors = []Descriptor{
-	{Type: TypeUploadRemote, Creation: CreationUpload, Operation: OperationUpload, BatchOf: TypeUploadBatch, Persistent: true, Dismissible: true, UserVisible: true},
-	{Type: TypeUploadBatch, Creation: CreationUpload, Operation: OperationUpload, Persistent: true, Dismissible: true, UserVisible: true},
-	{Type: TypeUploadStreamBatch, Creation: CreationUploadStream, Operation: OperationUpload, Persistent: true, Dismissible: true, UserVisible: true, Recoverable: true, Retry: RetryRecover},
-	{Type: TypeUploadStreamDirect, Creation: CreationUploadStreamDirect, Operation: OperationUpload, Persistent: true, Dismissible: true, UserVisible: true, Recoverable: true, Retry: RetryWakeRunner},
-	{Type: TypeDownload, Creation: CreationDownload, Operation: OperationDownload, UserVisible: true},
-	{Type: TypeDownloadStreamBatch, Creation: CreationDownloadStream, Operation: OperationDownload, Persistent: true, Dismissible: true, UserVisible: true},
-	{Type: TypeDeleteRemote, Creation: CreationDelete, Operation: OperationDelete, BatchOf: TypeDeleteBatch, UserVisible: true},
-	{Type: TypeDeleteBatch, Creation: CreationDelete, Operation: OperationDelete, Persistent: true, Dismissible: true, UserVisible: true},
-	{Type: TypeCopy, Creation: CreationCopy, Operation: OperationCopy, UserVisible: true},
-	{Type: TypeMoveRemote, Creation: CreationMove, Operation: OperationMove, BatchOf: TypeMoveBatch, UserVisible: true},
-	{Type: TypeMoveBatch, Creation: CreationMove, Operation: OperationMove, Persistent: true, Dismissible: true, UserVisible: true},
+	{Type: TypeUploadRemote, Creation: CreationUpload, Operation: OperationUpload, BatchOf: TypeUploadBatch, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeUploadBatch, Creation: CreationUpload, Operation: OperationUpload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeUploadStreamBatch, Creation: CreationUploadStream, Operation: OperationUpload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryRecover},
+	{Type: TypeUploadStreamDirect, Creation: CreationUploadStreamDirect, Operation: OperationUpload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryWakeRunner},
+	{Type: TypeDownload, Creation: CreationDownload, Operation: OperationDownload, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeDownloadStreamBatch, Creation: CreationDownloadStream, Operation: OperationDownload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeDeleteRemote, Creation: CreationDelete, Operation: OperationDelete, BatchOf: TypeDeleteBatch, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeDeleteBatch, Creation: CreationDelete, Operation: OperationDelete, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeCopy, Creation: CreationCopy, Operation: OperationCopy, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeMoveRemote, Creation: CreationMove, Operation: OperationMove, BatchOf: TypeMoveBatch, Scope: ScopeUser, Visibility: VisibilityVisible},
+	{Type: TypeMoveBatch, Creation: CreationMove, Operation: OperationMove, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible},
 }
 
 // CreationCapabilities returns the capability defaults a task of this type is
@@ -128,15 +130,22 @@ func Promote(typ Type, items int) Type {
 	return d.BatchOf
 }
 
-// ScopeForType derives the creation origin from the type declaration:
-// user-visible types are user scope, everything else internal scope (the
-// invisible producer in the system is mount write-path bookkeeping).
-// Transitional: ADR-0001 has the creation path declare origin directly
-// instead of deriving it from visibility. ScopeSync is never derived here;
-// it belongs to the syncer.
+// ScopeForType returns the origin a task of typ is declared with: read from
+// the type's declaration, never derived from visibility. Undeclared types
+// fall back to the mount bookkeeping origin.
 func ScopeForType(typ Type) Scope {
-	if d, ok := Describe(typ); ok && d.UserVisible {
-		return ScopeUser
+	if d, ok := Describe(typ); ok {
+		return d.Scope
 	}
 	return ScopeInternal
+}
+
+// VisibilityForType returns the visibility a task of typ is declared with:
+// read from the type's declaration, independent of its origin. Undeclared
+// types fall back to hidden.
+func VisibilityForType(typ Type) Visibility {
+	if d, ok := Describe(typ); ok {
+		return d.Visibility
+	}
+	return VisibilityHidden
 }

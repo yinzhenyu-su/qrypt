@@ -76,12 +76,23 @@ const (
 	ScopeInternal Scope = "internal"
 )
 
+// Visibility (glossary: 可见性) says whether a task appears in the app's
+// default task list. It is independent of Scope: any origin may declare
+// either visibility.
+type Visibility string
+
+const (
+	VisibilityVisible Visibility = "visible"
+	VisibilityHidden  Visibility = "hidden"
+)
+
 type Task struct {
 	ID                   string         `json:"id"`
 	Operation            OperationKind  `json:"operation,omitempty"`
 	Type                 Type           `json:"type"`
 	State                State          `json:"state"`
 	Scope                Scope          `json:"scope,omitempty"`
+	Visibility           Visibility     `json:"visibility,omitempty"`
 	Mount                string         `json:"mount,omitempty"`
 	Path                 string         `json:"path,omitempty"`
 	Name                 string         `json:"name,omitempty"`
@@ -227,13 +238,14 @@ type Options struct {
 }
 
 type Filter struct {
-	ID     string  `json:"id,omitempty"`
-	Types  []Type  `json:"types,omitempty"`
-	States []State `json:"states,omitempty"`
-	Scope  Scope   `json:"scope,omitempty"`
-	Mount  string  `json:"mount,omitempty"`
-	Path   string  `json:"path,omitempty"`
-	Limit  int     `json:"limit,omitempty"`
+	ID         string     `json:"id,omitempty"`
+	Types      []Type     `json:"types,omitempty"`
+	States     []State    `json:"states,omitempty"`
+	Scope      Scope      `json:"scope,omitempty"`
+	Visibility Visibility `json:"visibility,omitempty"`
+	Mount      string     `json:"mount,omitempty"`
+	Path       string     `json:"path,omitempty"`
+	Limit      int        `json:"limit,omitempty"`
 }
 
 type ItemFilter struct {
@@ -247,6 +259,9 @@ func (f Filter) Match(t Task) bool {
 		return false
 	}
 	if f.Scope != "" && t.Scope != f.Scope {
+		return false
+	}
+	if f.Visibility != "" && t.Visibility != f.Visibility {
 		return false
 	}
 	if len(f.Types) > 0 {

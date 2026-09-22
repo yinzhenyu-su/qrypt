@@ -36,10 +36,10 @@ func (c *Core) createUploadTask(ctx context.Context, req task.Request) (task.Tas
 	first := items[0]
 	taskType := task.Promote(req.Type, len(items))
 	item := task.Task{
-		ID:        newUploadTaskID(),
-		Type:      taskType,
-		State:     task.StateQueued,
-		Scope:     task.ScopeForType(taskType),
+		ID:    newUploadTaskID(),
+		Type:  taskType,
+		State: task.StateQueued,
+		Scope: task.ScopeForType(taskType), Visibility: task.VisibilityForType(taskType),
 		Path:      first.DestPath,
 		Name:      path.Base(first.DestPath),
 		CreatedAt: now,

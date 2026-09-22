@@ -162,8 +162,8 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 		"local_path":       upload.LocalPath,
 	}
 	// Internal upload bookkeeping (glossary: 挂载写入路径的内部记账记录) is
-	// exposed as an internal-scope task: origin is declared by the creation
-	// path, not inferred from the type's user visibility.
+	// exposed as an internal-scope, hidden task: origin and visibility are
+	// declared by the creation path, not inferred from the type.
 	typ := task.TypeUploadRemote
 	item := task.Task{
 		ID:            upload.ID,
@@ -171,6 +171,7 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 		Type:          typ,
 		State:         state,
 		Scope:         task.ScopeInternal,
+		Visibility:    task.VisibilityHidden,
 		SchemaVersion: task.CurrentTaskSchemaVersion,
 		Mount:         upload.Mount,
 		Path:          upload.Path,

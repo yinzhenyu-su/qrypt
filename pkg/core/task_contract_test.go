@@ -107,6 +107,30 @@ func TestTaskScopeWireValuesPinned(t *testing.T) {
 	}
 }
 
+// TestTaskVisibilityWireValuesPinned pins the visibility wire values and
+// their JSON form (additive contract key: "visibility").
+func TestTaskVisibilityWireValuesPinned(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		visibility task.Visibility
+		want       string
+	}{
+		{task.VisibilityVisible, "visible"},
+		{task.VisibilityHidden, "hidden"},
+	} {
+		if string(tc.visibility) != tc.want {
+			t.Fatalf("visibility wire value = %q, want %q", tc.visibility, tc.want)
+		}
+		data, err := json.Marshal(task.Task{ID: "t", Type: task.TypeUploadRemote, State: task.StateQueued, Visibility: tc.visibility})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"visibility":"`+tc.want+`"`) {
+			t.Fatalf("marshaled task %s, want %q visibility", data, tc.want)
+		}
+	}
+}
+
 // TestTaskStateWireValuesPinned pins the task-level state wire values. The
 // handshake strings ("waiting_input"/"waiting_output") are intentionally not
 // among them: they are item-level only (glossary: 等待供数 / 等待取数).

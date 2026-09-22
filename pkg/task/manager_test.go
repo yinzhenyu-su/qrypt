@@ -434,6 +434,47 @@ func waitTaskState(t *testing.T, m *Manager, id string, want State) Task {
 	return Task{}
 }
 
+// Submitting without a visibility declaration falls back to the type's
+// declaration; an explicit declaration (any origin may be hidden) survives.
+func TestSubmitNormalizesVisibilityFromTypeDeclaration(t *testing.T) {
+	t.Parallel()
+	m := NewManager()
+	defer m.Close()
+	undeclared := m.Submit(context.Background(), Task{ID: "from-type", Type: TypeUploadRemote, Scope: ScopeUser}, func(context.Context, UpdateFunc) error { return nil })
+	if undeclared.Visibility != VisibilityForType(TypeUploadRemote) {
+		t.Fatalf("submitted visibility = %q, want type declaration %q", undeclared.Visibility, VisibilityForType(TypeUploadRemote))
+	}
+	explicit := m.Submit(context.Background(), Task{ID: "hidden-user", Type: TypeUploadRemote, Scope: ScopeUser, Visibility: VisibilityHidden}, func(context.Context, UpdateFunc) error { return nil })
+	if explicit.Visibility != VisibilityHidden {
+		t.Fatalf("explicit visibility = %q, want hidden preserved", explicit.Visibility)
+	}
+}
+
+// Visibility is independent of origin (glossary: 可见性): the app's default
+// list filter matches on visibility alone, so any origin's tasks may be
+// visible or hidden.
+func TestFilterMatchByVisibility(t *testing.T) {
+	cases := []struct {
+		filter Filter
+		task   Task
+		want   bool
+	}{
+		{Filter{Visibility: VisibilityVisible}, Task{ID: "u-v", Scope: ScopeUser, Visibility: VisibilityVisible}, true},
+		{Filter{Visibility: VisibilityVisible}, Task{ID: "i-v", Scope: ScopeInternal, Visibility: VisibilityVisible}, true},
+		{Filter{Visibility: VisibilityVisible}, Task{ID: "s-v", Scope: ScopeSync, Visibility: VisibilityVisible}, true},
+		{Filter{Visibility: VisibilityVisible}, Task{ID: "u-h", Scope: ScopeUser, Visibility: VisibilityHidden}, false},
+		{Filter{Visibility: VisibilityVisible}, Task{ID: "i-h", Scope: ScopeInternal, Visibility: VisibilityHidden}, false},
+		{Filter{Visibility: VisibilityHidden}, Task{ID: "i-h", Scope: ScopeInternal, Visibility: VisibilityHidden}, true},
+		{Filter{Visibility: VisibilityHidden}, Task{ID: "i-v", Scope: ScopeInternal, Visibility: VisibilityVisible}, false},
+		{Filter{}, Task{ID: "i-v", Scope: ScopeInternal, Visibility: VisibilityVisible}, true},
+	}
+	for _, tc := range cases {
+		if got := tc.filter.Match(tc.task); got != tc.want {
+			t.Fatalf("Filter%+v.Match(%s) = %v, want %v", tc.filter, tc.task.ID, got, tc.want)
+		}
+	}
+}
+
 func TestFilterMatchByScope(t *testing.T) {
 	userTask := Task{ID: "user-1", Type: TypeMoveRemote, Scope: ScopeUser}
 	syncTask := Task{ID: "sync-1", Type: TypeUploadRemote, Scope: ScopeSync}
