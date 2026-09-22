@@ -318,10 +318,25 @@ func TestCoreTaskEventReplaySequenceAfterClose(t *testing.T) {
 	lastSeq := seen[len(seen)-1].Seq
 
 	// Closing is idempotent; reads after close surface the closed channel.
+	//
+	// Drain rather than checking the first read: Subscription.Read delivers
+	// whatever Close left buffered and reports context.Canceled only on the
+	// read that finds the channel both closed and empty. Events the task
+	// produced between the assertion above and the Close are exactly that
+	// buffer, and whether any of them exist by now is a matter of scheduling.
 	sub.Close()
 	sub.Close()
-	if _, err := sub.Read(context.Background()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("read after close err = %v, want context.Canceled", err)
+	for drained := 0; ; drained++ {
+		_, err := sub.Read(context.Background())
+		if errors.Is(err, context.Canceled) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read after close err = %v, want context.Canceled", err)
+		}
+		if drained > 1000 {
+			t.Fatal("read after close never surfaced the closed channel")
+		}
 	}
 
 	// Reopen from the last seen sequence: only strictly newer events replay,
@@ -378,7 +393,19 @@ func TestCoreTaskSubscriptionReadCloseRace(t *testing.T) {
 	sub.Close() // idempotent under concurrency
 	wg.Wait()
 
-	if _, err := sub.Read(context.Background()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("read after close err = %v, want context.Canceled", err)
+	// Drain rather than checking the first read: the three tasks above queued
+	// events that Close does not discard, and Subscription.Read only reports
+	// context.Canceled on the read that finds the channel closed and empty.
+	for drained := 0; ; drained++ {
+		_, err := sub.Read(context.Background())
+		if errors.Is(err, context.Canceled) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read after close err = %v, want context.Canceled", err)
+		}
+		if drained > 1000 {
+			t.Fatal("read after close never surfaced the closed channel")
+		}
 	}
 }
