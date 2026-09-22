@@ -657,16 +657,16 @@ func cloneTask(item Task) Task {
 		err := *item.Error
 		item.Error = &err
 	}
-	if item.Result.Items != nil {
-		items := make([]ItemResult, len(item.Result.Items))
-		for i, result := range item.Result.Items {
+	if item.Tracking.Items != nil {
+		items := make([]ItemTracking, len(item.Tracking.Items))
+		for i, result := range item.Tracking.Items {
 			items[i] = result
 			if result.Error != nil {
 				err := *result.Error
 				items[i].Error = &err
 			}
 		}
-		item.Result.Items = items
+		item.Tracking.Items = items
 	}
 	return item
 }

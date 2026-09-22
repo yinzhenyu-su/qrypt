@@ -41,7 +41,7 @@ func TestCoreTaskContractsAliasTaskTypes(t *testing.T) {
 		{reflect.TypeOf(Task{}), reflect.TypeOf(task.Task{})},
 		{reflect.TypeOf(TaskFilter{}), reflect.TypeOf(task.Filter{})},
 		{reflect.TypeOf(TaskItem{}), reflect.TypeOf(task.Item{})},
-		{reflect.TypeOf(TaskItemResult{}), reflect.TypeOf(task.ItemResult{})},
+		{reflect.TypeOf(TaskItemTracking{}), reflect.TypeOf(task.ItemTracking{})},
 		{reflect.TypeOf(TaskItemFilter{}), reflect.TypeOf(task.ItemFilter{})},
 		{reflect.TypeOf(TaskOptions{}), reflect.TypeOf(task.Options{})},
 		{reflect.TypeOf(TaskOperationRequest{}), reflect.TypeOf(task.OperationRequest{})},
@@ -107,6 +107,62 @@ func TestTaskScopeWireValuesPinned(t *testing.T) {
 	}
 }
 
+// TestTaskStateWireValuesPinned pins the task-level state wire values. The
+// handshake strings ("waiting_input"/"waiting_output") are intentionally not
+// among them: they are item-level only (glossary: 等待供数 / 等待取数).
+func TestTaskStateWireValuesPinned(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		state task.State
+		want  string
+	}{
+		{task.StateQueued, "queued"},
+		{task.StateScheduled, "scheduled"},
+		{task.StateRunning, "running"},
+		{task.StateRetryWait, "retry_wait"},
+		{task.StateCanceling, "canceling"},
+		{task.StateSucceeded, "succeeded"},
+		{task.StatePartialFailed, "partial_failed"},
+		{task.StateFailed, "failed"},
+		{task.StateCanceled, "canceled"},
+	} {
+		if string(tc.state) != tc.want {
+			t.Fatalf("task state wire value = %q, want %q", tc.state, tc.want)
+		}
+	}
+}
+
+// TestItemStateWireValuesPinned pins the item-level state wire values,
+// including the stream handshake states (glossary: 等待供数 / 等待取数), both
+// as Go values and as the JSON strings consumers read.
+func TestItemStateWireValuesPinned(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		state task.ItemState
+		want  string
+	}{
+		{task.ItemStateQueued, "queued"},
+		{task.ItemStateRunning, "running"},
+		{task.ItemStateRetryWait, "retry_wait"},
+		{task.ItemStateWaitingInput, "waiting_input"},
+		{task.ItemStateWaitingOutput, "waiting_output"},
+		{task.ItemStateSucceeded, "succeeded"},
+		{task.ItemStateFailed, "failed"},
+		{task.ItemStateCanceled, "canceled"},
+	} {
+		if string(tc.state) != tc.want {
+			t.Fatalf("item state wire value = %q, want %q", tc.state, tc.want)
+		}
+		data, err := json.Marshal(task.ItemTracking{ItemID: "i", State: tc.state})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"state":"`+tc.want+`"`) {
+			t.Fatalf("marshaled item %s, want %q state", data, tc.want)
+		}
+	}
+}
+
 // TestCoreTaskEventMethodsKeepLegacySignatures pins the exact exported
 // signatures of the legacy task-event entry points. The pkg/control debug
 // server contract requires OpenTaskEventsFrom to return the concrete
@@ -154,7 +210,7 @@ func TestCoreTaskContractJSONTagsMatchTask(t *testing.T) {
 		{reflect.TypeOf(Task{}), reflect.TypeOf(task.Task{})},
 		{reflect.TypeOf(TaskFilter{}), reflect.TypeOf(task.Filter{})},
 		{reflect.TypeOf(TaskItem{}), reflect.TypeOf(task.Item{})},
-		{reflect.TypeOf(TaskItemResult{}), reflect.TypeOf(task.ItemResult{})},
+		{reflect.TypeOf(TaskItemTracking{}), reflect.TypeOf(task.ItemTracking{})},
 		{reflect.TypeOf(TaskItemFilter{}), reflect.TypeOf(task.ItemFilter{})},
 		{reflect.TypeOf(TaskOptions{}), reflect.TypeOf(task.Options{})},
 		{reflect.TypeOf(TaskOperationRequest{}), reflect.TypeOf(task.OperationRequest{})},
@@ -212,9 +268,9 @@ func TestCoreTaskWireJSONPinned(t *testing.T) {
 			Actions: []task.Action{task.ActionCancel, task.ActionRetry},
 		},
 		Error: &task.Error{Code: "local_io", Message: "boom", Retryable: true},
-		Result: task.Result{Items: []task.ItemResult{{
+		Tracking: task.Tracking{Items: []task.ItemTracking{{
 			Path: "/quark/a.bin", ItemID: "local-1", SourcePath: "src",
-			DestPath: "/quark/a.bin", Mount: "quark", State: task.StateRunning,
+			DestPath: "/quark/a.bin", Mount: "quark", State: task.ItemStateRunning,
 			Phase: "staging", Error: &task.Error{Code: "x", Message: "y"}, RemoteID: "rid",
 			SourceBytesDone: 1, SourceBytesTotal: 2, CloudBytesDone: 3, CloudBytesTotal: 4,
 			StagingBytesDone: 5, StagingBytesTotal: 6, OutputBytesDone: 7, OutputBytesTotal: 8,

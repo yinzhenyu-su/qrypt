@@ -23,7 +23,7 @@ import (
 // the capability CommitStagedUploadItem needs, so the "interrupt, then commit
 // the staged bytes" recovery path fails with "item is running". This is the
 // assertion that pins the ticker honouring the caller's pause.
-func assertFailPauseSticky(t *testing.T, c *Core, taskID, itemID string) task.ItemResult {
+func assertFailPauseSticky(t *testing.T, c *Core, taskID, itemID string) task.ItemTracking {
 	t.Helper()
 	time.Sleep(10 * UploadStreamTaskPollInterval)
 	items, err := c.ListTaskItems(context.Background(), taskID, task.ItemFilter{})
@@ -33,7 +33,7 @@ func assertFailPauseSticky(t *testing.T, c *Core, taskID, itemID string) task.It
 	if len(items) != 1 || items[0].ItemID != itemID {
 		t.Fatalf("items after the pause = %+v, want the failed item still listed", items)
 	}
-	if items[0].State != task.StateWaitingInput {
+	if items[0].State != task.ItemStateWaitingInput {
 		t.Fatalf("item state after the pause = %s, want waiting_input: the progress ticker resumed an item the caller failed", items[0].State)
 	}
 	return items[0]
@@ -102,8 +102,8 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 func TestRecoveredUploadStreamItemKeepsPersistedProgress(t *testing.T) {
 	t.Parallel()
 	item := &uploadStreamItem{ID: "item", Size: 100}
-	applyPersistedUploadStreamResult(item, task.ItemResult{
-		State:            task.StateRunning,
+	applyPersistedUploadStreamTracking(item, task.ItemTracking{
+		State:            task.ItemStateRunning,
 		SourceBytesDone:  20,
 		StagingBytesDone: 25,
 		CloudBytesDone:   10,
@@ -180,8 +180,10 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if waiting.State != task.StateWaitingInput {
-		t.Fatalf("task state = %s, want waiting_input", waiting.State)
+	// Handshake states are item-level now: the task runs while its item
+	// waits for input (glossary: 等待供数 is 条目级).
+	if waiting.State != task.StateRunning {
+		t.Fatalf("task state = %s, want running while staging", waiting.State)
 	}
 	items, err := c.ListTaskItems(ctx, created.ID, task.ItemFilter{})
 	if err != nil {
@@ -239,13 +241,28 @@ func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cur.State == task.StateWaitingInput {
+		if cur.State == task.StateRunning {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("task state = %s, want waiting_input", cur.State)
+			t.Fatalf("task state = %s, want running", cur.State)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	waitingItems, err := c.ListTaskItems(ctx, created.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for len(waitingItems) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("items = %+v, want one waiting_input item", waitingItems)
+		}
+		time.Sleep(5 * time.Millisecond)
+		waitingItems, err = c.ListTaskItems(ctx, created.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := c.DismissTask(ctx, created.ID); err != nil {
 		t.Fatalf("DismissTask of waiting_input task: %v", err)
@@ -391,7 +408,7 @@ func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.State != task.StateSucceeded || len(item.Result.Items) != 1 || item.Result.Items[0].Phase != "skipped" {
+	if item.State != task.StateSucceeded || len(item.Tracking.Items) != 1 || item.Tracking.Items[0].Phase != "skipped" {
 		t.Fatalf("task = %+v, want skipped success", item)
 	}
 	if _, err := c.OpenUploadStreamItem(ctx, item.ID, "one"); err == nil {
@@ -431,7 +448,7 @@ func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	item = waitCoreTask(t, c, item.ID)
-	if item.State != task.StateFailed || len(item.Result.Items) != 1 || item.Result.Items[0].Error == nil {
+	if item.State != task.StateFailed || len(item.Tracking.Items) != 1 || item.Tracking.Items[0].Error == nil {
 		t.Fatalf("task = %+v, want conflict failure", item)
 	}
 	if data, err := os.ReadFile(filepath.Join(remote, "existing.txt")); err != nil || string(data) != "remote" {
@@ -475,8 +492,44 @@ func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
 	if got.State != task.StateRunning || got.Progress.ItemsDone != 0 || got.Progress.StagingBytesDone != int64(len("data")) {
 		t.Fatalf("task after commit = %+v, want running with staged bytes", got)
 	}
-	if len(got.Result.Items) != 1 || got.Result.Items[0].State != task.StateRunning {
-		t.Fatalf("result after commit = %+v, want running item", got.Result.Items)
+	if len(got.Tracking.Items) != 1 || got.Tracking.Items[0].State != task.ItemStateRunning {
+		t.Fatalf("result after commit = %+v, want running item", got.Tracking.Items)
+	}
+}
+
+func TestApplyRemoteUploadStateKeepsWaitingInputForNonTerminalRemote(t *testing.T) {
+	t.Parallel()
+
+	// A staging item awaiting the app's input or commit (glossary: 等待供数)
+	// keeps its handshake state: a queued cloud upload record is a
+	// diagnostic, not an instruction to leave the handshake.
+	item := &uploadStreamItem{
+		ID:    "item",
+		State: task.ItemStateWaitingInput,
+		Size:  4,
+		// Written == Size: staging complete, waiting for the app's commit.
+	}
+	remote := task.Task{
+		ID:       "remote-1",
+		State:    task.StateScheduled,
+		Progress: task.Progress{Phase: "queued"},
+	}
+
+	if dismiss := applyRemoteUploadState(item, remote); dismiss {
+		t.Fatal("non-terminal remote requested dismissal")
+	}
+	if item.State != task.ItemStateWaitingInput {
+		t.Fatalf("item state = %s, want waiting_input kept for the handshake", item.State)
+	}
+
+	// Terminal outcomes still fold: the remote result is authoritative.
+	remote.State = task.StateSucceeded
+	remote.Progress.Phase = "complete"
+	if dismiss := applyRemoteUploadState(item, remote); !dismiss {
+		t.Fatal("succeeded remote should request dismissal")
+	}
+	if item.State != task.ItemStateSucceeded {
+		t.Fatalf("item state = %s, want succeeded", item.State)
 	}
 }
 
@@ -485,7 +538,7 @@ func TestApplyRemoteUploadStateKeepsParentRunningForRetryableFailure(t *testing.
 
 	item := &uploadStreamItem{
 		ID:    "item",
-		State: task.StateRunning,
+		State: task.ItemStateRunning,
 	}
 	remote := task.Task{
 		ID:    "remote-1",
@@ -499,7 +552,7 @@ func TestApplyRemoteUploadStateKeepsParentRunningForRetryableFailure(t *testing.
 	if dismiss := applyRemoteUploadState(item, remote); dismiss {
 		t.Fatal("retryable remote failure requested dismissal")
 	}
-	if item.State != task.StateRunning {
+	if item.State != task.ItemStateRunning {
 		t.Fatalf("parent item state = %s, want running", item.State)
 	}
 	if item.Error != nil {
@@ -537,8 +590,8 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err := handle.Fail("input_stream_failed", "source permission lost"); err != nil {
 		t.Fatal(err)
 	}
-	waitForCoreTaskPhase(t, c, item.ID, string(task.StateWaitingInput))
-	waitingItems, err := c.ListTaskItems(ctx, item.ID, task.ItemFilter{States: []task.State{task.StateWaitingInput}})
+	waitForCoreTaskPhase(t, c, item.ID, string(task.ItemStateWaitingInput))
+	waitingItems, err := c.ListTaskItems(ctx, item.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +602,7 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one.State != task.StateWaitingInput || one.ResumeOffset != int64(len("str")) {
+	if one.State != task.ItemStateWaitingInput || one.ResumeOffset != int64(len("str")) {
 		t.Fatalf("task item = %+v, want waiting input resume state", one)
 	}
 	// Only 3 of 5 bytes are staged, so the pause must keep offering input
@@ -573,8 +626,8 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	if got.State != task.StateSucceeded || got.Progress.StagingBytesDone != int64(len("stream")) {
 		t.Fatalf("task = %+v, want resumed success", got)
 	}
-	if len(got.Result.Items) != 1 || got.Result.Items[0].ResumeOffset != int64(len("stream")) {
-		t.Fatalf("result items = %+v", got.Result.Items)
+	if len(got.Tracking.Items) != 1 || got.Tracking.Items[0].ResumeOffset != int64(len("stream")) {
+		t.Fatalf("tracking items = %+v", got.Tracking.Items)
 	}
 	if data, err := os.ReadFile(filepath.Join(remote, "file.txt")); err != nil || string(data) != "stream" {
 		t.Fatalf("remote data = %q err=%v", data, err)
@@ -658,11 +711,11 @@ func TestUploadStreamTaskCancelItemRemovesStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := waitCoreTask(t, c, item.ID)
-	if got.State != task.StateFailed || len(got.Result.Items) != 1 || got.Result.Items[0].State != task.StateCanceled {
+	if got.State != task.StateFailed || len(got.Tracking.Items) != 1 || got.Tracking.Items[0].State != task.ItemStateCanceled {
 		t.Fatalf("task = %+v, want failed task with canceled item", got)
 	}
-	if got.Result.Items[0].Capabilities.Cancelable {
-		t.Fatalf("canceled item capabilities = %+v, want not cancelable", got.Result.Items[0].Capabilities)
+	if got.Tracking.Items[0].Capabilities.Cancelable {
+		t.Fatalf("canceled item capabilities = %+v, want not cancelable", got.Tracking.Items[0].Capabilities)
 	}
 	if _, err := c.Stat(ctx, "/cancel-item.txt"); err == nil {
 		t.Fatal("Stat(/cancel-item.txt) succeeded after item cancel, want staging removed")

@@ -62,7 +62,7 @@ type uploadStreamItem struct {
 	CloudPhase   string
 	RemoteID     string
 	Open         bool
-	State        task.State
+	State        task.ItemState
 	Error        *task.Error
 	// AwaitingReopen records a caller's Fail: the input stream is paused until
 	// the caller reopens the item, so the cloud progress ticker must not resume
@@ -110,9 +110,9 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 		Detail: map[string]any{
 			"items":           batch.detailItems(),
 			"conflict_policy": batch.conflictPolicy,
-			"phase":           string(task.StateWaitingInput),
+			"phase":           string(task.ItemStateWaitingInput),
 		},
-		Result: task.Result{Items: batch.resultItemsLocked()},
+		Tracking: task.Tracking{Items: batch.trackingItemsLocked()},
 	}
 	destMount, _, _ := moveMounts(first.DestPath, first.DestPath, c.fs)
 	if destMount != "" {
@@ -168,15 +168,16 @@ func (c *Core) isRecoverableUploadStreamTask(item task.Task) bool {
 	// A process died mid-staging: the task is stuck in a non-terminal state
 	// with its staging file (if any) still on disk. Recover it so the app can
 	// resume pushing bytes from its saved offset; the UI's resume affordance
-	// is useless while such a task has no runner.
-	if item.State == task.StateWaitingInput || item.State == task.StateRunning ||
+	// is useless while such a task has no runner. (Handshake states are
+	// item-level now; a task waiting for input runs as task-level running.)
+	if item.State == task.StateRunning ||
 		item.State == task.StateQueued || item.State == task.StateScheduled {
 		return true
 	}
 	if item.State != task.StateFailed && item.State != task.StatePartialFailed {
 		return false
 	}
-	for _, result := range item.Result.Items {
+	for _, result := range item.Tracking.Items {
 		if result.Error != nil && result.Error.Retryable {
 			return true
 		}
@@ -220,8 +221,8 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			pendingByPath[pending.Path] = pending
 		}
 	}
-	previous := make(map[string]task.ItemResult, len(item.Result.Items))
-	for _, result := range item.Result.Items {
+	previous := make(map[string]task.ItemTracking, len(item.Tracking.Items))
+	for _, result := range item.Tracking.Items {
 		previous[result.ItemID] = result
 	}
 	batch := &uploadStreamBatch{
@@ -251,15 +252,15 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			Name:         directUploadDetailString(detail, "name"),
 			RelativePath: directUploadDetailString(detail, "relative_path"),
 			Size:         size,
-			State:        task.StateWaitingInput,
+			State:        task.ItemStateWaitingInput,
 		}
 		prior, hasPrior := previous[itemID]
 		if hasPrior {
-			applyPersistedUploadStreamResult(streamItem, prior)
+			applyPersistedUploadStreamTracking(streamItem, prior)
 		}
-		if hasPrior && prior.State == task.StateSucceeded {
+		if hasPrior && prior.State == task.ItemStateSucceeded {
 			streamItem.Recovery = "persisted_result"
-			streamItem.State = task.StateSucceeded
+			streamItem.State = task.ItemStateSucceeded
 		} else if pending, ok := pendingByPath[destPath]; ok {
 			streamItem.PendingFID = pending.FID
 			streamItem.Recovery = "staging_available"
@@ -269,7 +270,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			}
 			if pending.Frozen {
 				streamItem.Recovery = "pending_upload"
-				streamItem.State = task.StateRunning
+				streamItem.State = task.ItemStateRunning
 				if streamItem.CloudPhase == "" {
 					streamItem.CloudPhase = "queued_upload"
 				}
@@ -280,7 +281,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			// the VFS child upload committed and cleaned its pending staging.
 			// Reconcile the visible remote result instead of asking for source
 			// bytes that qrypt already uploaded.
-			streamItem.State = task.StateSucceeded
+			streamItem.State = task.ItemStateSucceeded
 			streamItem.Written = streamItem.Size
 			streamItem.CloudWritten = remote.Size
 			streamItem.CloudTotal = remote.Size
@@ -301,7 +302,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 	return batch, nil
 }
 
-func applyPersistedUploadStreamResult(item *uploadStreamItem, prior task.ItemResult) {
+func applyPersistedUploadStreamTracking(item *uploadStreamItem, prior task.ItemTracking) {
 	if item == nil {
 		return
 	}
@@ -323,7 +324,7 @@ func (c *Core) runUploadStreamTask(ctx context.Context, update task.UpdateFunc, 
 			case <-ctx.Done():
 				_ = c.cancelUploadStreamTask(ctx, batch)
 				for _, item := range batch.itemsSnapshot() {
-					if item.State != task.StateSucceeded {
+					if item.State != task.ItemStateSucceeded {
 						_ = batch.uploadService.CancelStream(context.Background(), item.DestPath)
 					}
 				}
@@ -362,18 +363,18 @@ func (c *Core) OpenUploadStreamItem(ctx context.Context, taskID, itemID string) 
 		batch.mu.Unlock()
 		return nil, fmt.Errorf("core: upload stream item %q is already open", itemID)
 	}
-	if item.State == task.StateSucceeded {
+	if item.State == task.ItemStateSucceeded {
 		batch.mu.Unlock()
 		return nil, fmt.Errorf("core: upload stream item %q already succeeded", itemID)
 	}
-	if item.State == task.StateCanceled || item.State == task.StateFailed {
+	if item.State == task.ItemStateCanceled || item.State == task.ItemStateFailed {
 		batch.mu.Unlock()
 		return nil, fmt.Errorf("core: upload stream item %q is %s", itemID, item.State)
 	}
 	needsCreate := item.Written == 0
 	destPath := item.DestPath
 	item.Open = true
-	item.State = task.StateRunning
+	item.State = task.ItemStateRunning
 	item.Error = nil
 	// The caller is taking the item back, so the pause it asked for is over.
 	item.AwaitingReopen = false
@@ -384,7 +385,7 @@ func (c *Core) OpenUploadStreamItem(ctx context.Context, taskID, itemID string) 
 			batch.mu.Lock()
 			if current := batch.byID[itemID]; current != nil {
 				current.Open = false
-				current.State = task.StateWaitingInput
+				current.State = task.ItemStateWaitingInput
 				current.Error = &task.Error{Message: err.Error(), Retryable: true}
 			}
 			batch.updateTaskSnapshotLocked()
@@ -414,7 +415,7 @@ func (c *Core) CommitStagedUploadItem(ctx context.Context, taskID, itemID string
 		batch.mu.Unlock()
 		return fmt.Errorf("core: upload stream item %q not found", itemID)
 	}
-	if item.State != task.StateWaitingInput {
+	if item.State != task.ItemStateWaitingInput {
 		state := item.State
 		batch.mu.Unlock()
 		return fmt.Errorf("core: upload stream item %q is %s", itemID, state)
@@ -451,7 +452,7 @@ func (h *UploadStreamItemHandle) Write(ctx context.Context, data []byte) (int, e
 	h.batch.mu.Lock()
 	if current := h.batch.byID[h.itemID]; current != nil && !h.closed && n > 0 {
 		current.Written += int64(n)
-		current.State = task.StateRunning
+		current.State = task.ItemStateRunning
 		current.Error = nil
 		// The caller is feeding the stream again.
 		current.AwaitingReopen = false
@@ -472,7 +473,7 @@ func (h *UploadStreamItemHandle) Commit(ctx context.Context) error {
 	}
 	destPath := item.DestPath
 	item.Open = false
-	item.State = task.StateRunning
+	item.State = task.ItemStateRunning
 	// The caller is finishing the item, so nothing is awaiting a reopen.
 	item.AwaitingReopen = false
 	h.batch.updateTaskSnapshotLocked()
@@ -489,7 +490,7 @@ func (h *UploadStreamItemHandle) Commit(ctx context.Context) error {
 	}
 	if err != nil {
 		item.Open = false
-		item.State = task.StateWaitingInput
+		item.State = task.ItemStateWaitingInput
 		item.Error = &task.Error{Message: err.Error(), Retryable: true}
 		h.closed = true
 		h.batch.updateTaskSnapshotLocked()
@@ -525,7 +526,7 @@ func (h *UploadStreamItemHandle) Fail(code, message string) error {
 		message = "input stream failed"
 	}
 	item.Open = false
-	item.State = task.StateWaitingInput
+	item.State = task.ItemStateWaitingInput
 	item.Error = &task.Error{Code: code, Message: message, Retryable: true}
 	// Mark the pause as the caller's intent. Close deliberately does not do
 	// this: it is also the teardown path (mobile's closeCollectedHandles), and
@@ -547,8 +548,8 @@ func (h *UploadStreamItemHandle) Close() error {
 	item := h.batch.byID[h.itemID]
 	if item != nil {
 		item.Open = false
-		if item.State == task.StateRunning {
-			item.State = task.StateWaitingInput
+		if item.State == task.ItemStateRunning {
+			item.State = task.ItemStateWaitingInput
 		}
 	}
 	h.closed = true
@@ -564,7 +565,7 @@ func (h *UploadStreamItemHandle) itemLocked() (*uploadStreamItem, error) {
 	if item == nil {
 		return nil, fmt.Errorf("core: upload stream item %q not found", h.itemID)
 	}
-	if item.State == task.StateCanceled || item.State == task.StateFailed {
+	if item.State == task.ItemStateCanceled || item.State == task.ItemStateFailed {
 		return nil, fmt.Errorf("core: upload stream item %q is %s", h.itemID, item.State)
 	}
 	return item, nil
@@ -584,14 +585,14 @@ func (c *Core) cancelUploadStreamItem(ctx context.Context, batch *uploadStreamBa
 		batch.mu.Unlock()
 		return fmt.Errorf("core: upload stream item %q not found", itemID)
 	}
-	if item.State == task.StateSucceeded || item.State == task.StateCanceled {
+	if item.State == task.ItemStateSucceeded || item.State == task.ItemStateCanceled {
 		batch.mu.Unlock()
 		return nil
 	}
 	destPath := item.DestPath
 	hadStaging := item.Open || item.Written > 0
 	item.Open = false
-	item.State = task.StateCanceled
+	item.State = task.ItemStateCanceled
 	item.Error = &task.Error{Code: "canceled", Message: "task item canceled"}
 	batch.updateTaskSnapshotLocked()
 	batch.closeDoneIfTerminalLocked()
@@ -663,13 +664,13 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 			Name:         name,
 			RelativePath: reqItem.RelativePath,
 			Size:         reqItem.Size,
-			State:        task.StateWaitingInput,
+			State:        task.ItemStateWaitingInput,
 		}
 		if existing, skipped, err := uploadService.applyConflictPolicy(ctx, destPath, conflictPolicy); err != nil {
-			item.State = task.StateFailed
+			item.State = task.ItemStateFailed
 			item.Error = &task.Error{Message: err.Error()}
 		} else if skipped {
-			item.State = task.StateSucceeded
+			item.State = task.ItemStateSucceeded
 			item.RemoteID = existing.ID
 			item.CloudWritten = existing.Size
 			item.CloudTotal = existing.Size
@@ -732,10 +733,10 @@ func (b *uploadStreamBatch) recoveryItemsLocked() []map[string]any {
 	return out
 }
 
-func (b *uploadStreamBatch) resultItemsLocked() []task.ItemResult {
-	out := make([]task.ItemResult, 0, len(b.items))
+func (b *uploadStreamBatch) trackingItemsLocked() []task.ItemTracking {
+	out := make([]task.ItemTracking, 0, len(b.items))
 	for _, item := range b.items {
-		out = append(out, task.ItemResult{
+		out = append(out, task.ItemTracking{
 			Path:              item.DestPath,
 			ItemID:            item.ID,
 			DestPath:          item.DestPath,
@@ -761,15 +762,15 @@ func uploadStreamItemPhase(item *uploadStreamItem) string {
 		return item.CloudPhase
 	}
 	switch item.State {
-	case task.StateWaitingInput:
+	case task.ItemStateWaitingInput:
 		return "staging"
-	case task.StateRunning:
+	case task.ItemStateRunning:
 		return "staging"
-	case task.StateSucceeded:
+	case task.ItemStateSucceeded:
 		return "complete"
-	case task.StateFailed:
+	case task.ItemStateFailed:
 		return "failed"
-	case task.StateCanceled:
+	case task.ItemStateCanceled:
 		return "canceled"
 	default:
 		return string(item.State)
@@ -778,11 +779,9 @@ func uploadStreamItemPhase(item *uploadStreamItem) string {
 
 func uploadStreamItemCapabilities(item *uploadStreamItem) task.ItemCapabilities {
 	capabilities := task.ItemCapabilities{
-		OpenInput:   item.State == task.StateWaitingInput && item.Written != item.Size,
-		CommitInput: item.State == task.StateWaitingInput && item.Written == item.Size,
-		Cancelable: item.State != task.StateSucceeded &&
-			item.State != task.StateFailed &&
-			item.State != task.StateCanceled,
+		OpenInput:   item.State == task.ItemStateWaitingInput && item.Written != item.Size,
+		CommitInput: item.State == task.ItemStateWaitingInput && item.Written == item.Size,
+		Cancelable:  !isTerminalStreamItem(item.State),
 	}
 	capabilities.Actions = task.ActionsForItemCapabilities(capabilities)
 	return capabilities
@@ -886,7 +885,7 @@ func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
 	switch remote.State {
 	case task.StateSucceeded:
 		item.Open = false
-		item.State = task.StateSucceeded
+		item.State = task.ItemStateSucceeded
 		item.Error = nil
 		if item.CloudPhase == "" {
 			item.CloudPhase = "complete"
@@ -894,21 +893,36 @@ func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
 		return true
 	case task.StateFailed:
 		if remote.Error != nil && remote.Error.Retryable {
-			item.State = task.StateRunning
+			// The app's handshake is authoritative (glossary: 等待供数): an
+			// item awaiting input or its commit keeps the state and the
+			// CommitInput action it needs, even for a retryable failure.
+			if item.State == task.ItemStateWaitingInput {
+				return false
+			}
+			item.State = task.ItemStateRunning
 			item.Error = nil
 			return false
 		}
 		fallthrough
 	case task.StateCanceled:
 		item.Open = false
-		item.State = remote.State
+		if remote.State == task.StateCanceled {
+			item.State = task.ItemStateCanceled
+		} else {
+			item.State = task.ItemStateFailed
+		}
 		if remote.Error != nil {
 			item.Error = cloneTaskError(remote.Error)
 		} else {
 			item.Error = &task.Error{Message: fmt.Sprintf("upload %s ended with state %s", item.DestPath, remote.State)}
 		}
 	default:
-		item.State = task.StateRunning
+		// Non-terminal cloud states are diagnostics for an item still in the
+		// handshake: a queued upload record must not flip 等待供数 to running.
+		if item.State == task.ItemStateWaitingInput {
+			return false
+		}
+		item.State = task.ItemStateRunning
 		item.Error = nil
 	}
 	return false
@@ -919,16 +933,7 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 		return
 	}
 	itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal, phase, active := b.summaryLocked()
-	waitingInput := false
-	if b.channel == "staging" {
-		for _, item := range b.items {
-			if item.State == task.StateWaitingInput {
-				waitingInput = true
-				break
-			}
-		}
-	}
-	results := b.resultItemsLocked()
+	results := b.trackingItemsLocked()
 	stagingBytesTotal := b.bytesTotal
 	var sourceBytesDone, sourceBytesTotal int64
 	if b.channel == "direct" {
@@ -953,11 +958,8 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 		speedBPS, etaMs = b.progressSpeedAndETA(stagingBytesDone, stagingBytesTotal)
 	}
 	b.update(func(taskItem *task.Task) {
-		if waitingInput && len(active) == 0 {
-			taskItem.State = task.StateWaitingInput
-		} else if taskItem.State == task.StateWaitingInput {
-			taskItem.State = task.StateRunning
-		}
+		// Handshake states are item-level (glossary: 等待供数 is 条目级);
+		// the task-level machine stays running while the batch waits.
 		taskItem.Progress.ItemsDone = itemsDone
 		taskItem.Progress.ItemsFailed = itemsFailed
 		taskItem.Progress.StagingBytesDone = stagingBytesDone
@@ -979,7 +981,7 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 			taskItem.Detail["recovered_from_journal"] = true
 			taskItem.Detail["recovery_items"] = b.recoveryItemsLocked()
 		}
-		taskItem.Result.Items = results
+		taskItem.Tracking.Items = results
 	})
 }
 
@@ -1019,25 +1021,25 @@ func (b *uploadStreamBatch) progressSpeedAndETA(done, total int64) (speedBPS, et
 }
 
 func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal int64, phase string, active []string) {
-	phase = string(task.StateWaitingInput)
+	phase = string(task.ItemStateWaitingInput)
 	for _, item := range b.items {
 		stagingBytesDone += item.Written
 		cloudBytesDone += item.CloudWritten
 		cloudBytesTotal += item.CloudTotal
 		switch item.State {
-		case task.StateSucceeded:
+		case task.ItemStateSucceeded:
 			itemsDone++
-		case task.StateFailed, task.StateCanceled:
+		case task.ItemStateFailed, task.ItemStateCanceled:
 			itemsDone++
 			itemsFailed++
-		case task.StateRunning:
+		case task.ItemStateRunning:
 			phase = item.CloudPhase
 			if phase == "" {
 				phase = "upload"
 			}
 			active = append(active, item.DestPath)
-		case task.StateRetryWait:
-			phase = string(task.StateRetryWait)
+		case task.ItemStateRetryWait:
+			phase = string(task.ItemStateRetryWait)
 			active = append(active, item.DestPath)
 		}
 	}
@@ -1066,11 +1068,11 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 			continue
 		}
 		item.Open = false
-		item.State = task.StateFailed
+		item.State = task.ItemStateFailed
 		item.Error = &task.Error{Code: "abandoned", Message: "upload stream task finished while this item was still in progress"}
 	}
 	itemsDone, itemsFailed, _, cloudBytesDone, cloudBytesTotal, _, _ := b.summaryLocked()
-	results := b.resultItemsLocked()
+	results := b.trackingItemsLocked()
 	b.mu.Unlock()
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
 		update(func(taskItem *task.Task) {
@@ -1084,7 +1086,7 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 			taskItem.Progress.CloudBytesTotal = cloudBytesTotal
 			taskItem.Detail["phase"] = "complete"
 			taskItem.Detail["active_paths"] = []string{}
-			taskItem.Result.Items = results
+			taskItem.Tracking.Items = results
 		})
 		return nil
 	}
@@ -1099,7 +1101,7 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 		taskItem.Detail["active_paths"] = []string{}
 		taskItem.Error = &task.Error{Message: message, Retryable: true}
 		taskItem.Capabilities.Retryable = true
-		taskItem.Result.Items = results
+		taskItem.Tracking.Items = results
 		if itemsFailed < int64(len(b.items)) {
 			taskItem.State = task.StatePartialFailed
 			taskItem.Progress.Phase = "partial_failed"
@@ -1120,11 +1122,11 @@ func (b *uploadStreamBatch) markCanceled(err error) {
 	defer b.mu.Unlock()
 	b.canceled = true
 	for _, item := range b.items {
-		if item.State == task.StateSucceeded || item.State == task.StateFailed {
+		if item.State == task.ItemStateSucceeded || item.State == task.ItemStateFailed {
 			continue
 		}
 		item.Open = false
-		item.State = task.StateFailed
+		item.State = task.ItemStateFailed
 		item.Error = &task.Error{Code: "canceled", Message: err.Error()}
 	}
 }
@@ -1134,9 +1136,9 @@ func (b *uploadStreamBatch) markCanceled(err error) {
 // done": it is the set that closes the batch's done channel, the set that
 // remote observations may not overwrite, and the set finishTask requires
 // before publishing a terminal task.
-func isTerminalStreamItem(state task.State) bool {
+func isTerminalStreamItem(state task.ItemState) bool {
 	switch state {
-	case task.StateSucceeded, task.StateFailed, task.StateCanceled:
+	case task.ItemStateSucceeded, task.ItemStateFailed, task.ItemStateCanceled:
 		return true
 	default:
 		return false

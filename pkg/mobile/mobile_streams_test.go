@@ -44,8 +44,8 @@ root_path = `+util.TOMLPath(remote)+`
 	var created struct {
 		OK   bool `json:"ok"`
 		Data struct {
-			ID     string `json:"id"`
-			Result struct {
+			ID       string `json:"id"`
+			Tracking struct {
 				Items []struct {
 					ItemID           string `json:"item_id"`
 					OutputBytesTotal int64  `json:"output_bytes_total"`
@@ -56,7 +56,7 @@ root_path = `+util.TOMLPath(remote)+`
 	if err := json.Unmarshal([]byte(raw), &created); err != nil {
 		t.Fatal(err)
 	}
-	if !created.OK || created.Data.ID == "" || len(created.Data.Result.Items) != 1 || created.Data.Result.Items[0].ItemID != "one" {
+	if !created.OK || created.Data.ID == "" || len(created.Data.Tracking.Items) != 1 || created.Data.Tracking.Items[0].ItemID != "one" {
 		t.Fatalf("CreateTaskJSON = %s", raw)
 	}
 	openRaw := OpenDownloadItemJSON(opened.Data, created.Data.ID, "one", 0)
@@ -140,8 +140,8 @@ upload_delay = "10ms"
 	var created struct {
 		OK   bool `json:"ok"`
 		Data struct {
-			ID     string `json:"id"`
-			Result struct {
+			ID       string `json:"id"`
+			Tracking struct {
 				Items []struct {
 					ItemID string `json:"item_id"`
 				} `json:"items"`
@@ -151,7 +151,7 @@ upload_delay = "10ms"
 	if err := json.Unmarshal([]byte(raw), &created); err != nil {
 		t.Fatal(err)
 	}
-	if !created.OK || created.Data.ID == "" || len(created.Data.Result.Items) != 1 || created.Data.Result.Items[0].ItemID != "one" {
+	if !created.OK || created.Data.ID == "" || len(created.Data.Tracking.Items) != 1 || created.Data.Tracking.Items[0].ItemID != "one" {
 		t.Fatalf("CreateTaskJSON = %s", raw)
 	}
 	listItemsRaw := ListTaskItemsJSON(opened.Data, created.Data.ID, `{"states":["waiting_input"]}`)
@@ -312,7 +312,7 @@ root_path = `+util.TOMLPath(remote)+`
 		t.Fatalf("CancelTaskItemJSON = %s", cancelRaw)
 	}
 	item := waitMobileTaskState(t, opened.Data, created.Data.ID, "failed")
-	if item.Result.Items[0].State != "canceled" {
+	if item.Tracking.Items[0].State != "canceled" {
 		t.Fatalf("task = %+v, want canceled item", item)
 	}
 	if raw := StatJSON(opened.Data, "/quark/cancel.txt", 0); !strings.Contains(raw, `"ok":false`) {

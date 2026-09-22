@@ -26,7 +26,7 @@ func TestApplyRemoteUploadStateDoesNotRewriteTerminalItem(t *testing.T) {
 			item := &uploadStreamItem{
 				ID:       "item",
 				DestPath: "/staged.txt",
-				State:    task.StateCanceled,
+				State:    task.ItemStateCanceled,
 				Error:    &task.Error{Code: "canceled", Message: "task item canceled"},
 			}
 			remote := task.Task{
@@ -42,7 +42,7 @@ func TestApplyRemoteUploadStateDoesNotRewriteTerminalItem(t *testing.T) {
 			if dismiss := applyRemoteUploadState(item, remote); dismiss {
 				t.Fatal("a terminal item should not request remote dismissal")
 			}
-			if item.State != task.StateCanceled {
+			if item.State != task.ItemStateCanceled {
 				t.Fatalf("item state = %q, want canceled", item.State)
 			}
 			if item.Error == nil || item.Error.Code != "canceled" {
@@ -63,13 +63,13 @@ func TestApplyRemoteUploadStateDoesNotRewriteTerminalItem(t *testing.T) {
 // freeze the normal progress path.
 func TestApplyRemoteUploadStateStillTracksNonTerminalItem(t *testing.T) {
 	t.Parallel()
-	item := &uploadStreamItem{ID: "item", DestPath: "/staged.txt", State: task.StateRunning}
+	item := &uploadStreamItem{ID: "item", DestPath: "/staged.txt", State: task.ItemStateRunning}
 	remote := task.Task{ID: "remote-1", State: task.StateSucceeded, Progress: task.Progress{CloudBytesDone: 7, CloudBytesTotal: 7}}
 
 	if dismiss := applyRemoteUploadState(item, remote); !dismiss {
 		t.Fatal("remote success should request dismissal")
 	}
-	if item.State != task.StateSucceeded {
+	if item.State != task.ItemStateSucceeded {
 		t.Fatalf("item state = %q, want succeeded", item.State)
 	}
 }
@@ -95,7 +95,7 @@ func newTestBatch(items ...*uploadStreamItem) *uploadStreamBatch {
 // to failed and the task's terminal state is decided from real outcomes.
 func TestUploadStreamFinishConvergesInFlightItems(t *testing.T) {
 	t.Parallel()
-	item := &uploadStreamItem{ID: "item", DestPath: "/staged.txt", State: task.StateRunning, Size: 7, Written: 7}
+	item := &uploadStreamItem{ID: "item", DestPath: "/staged.txt", State: task.ItemStateRunning, Size: 7, Written: 7}
 	batch := newTestBatch(item)
 
 	var published *task.Task
@@ -114,20 +114,20 @@ func TestUploadStreamFinishConvergesInFlightItems(t *testing.T) {
 	if published.Progress.ItemsDone != 1 || published.Progress.ItemsFailed != 1 {
 		t.Fatalf("progress = %d done / %d failed, want 1/1", published.Progress.ItemsDone, published.Progress.ItemsFailed)
 	}
-	if len(published.Result.Items) != 1 {
-		t.Fatalf("published items = %+v, want one", published.Result.Items)
+	if len(published.Tracking.Items) != 1 {
+		t.Fatalf("published items = %+v, want one", published.Tracking.Items)
 	}
-	publishedItem := published.Result.Items[0]
+	publishedItem := published.Tracking.Items[0]
 	if !isTerminalStreamItem(publishedItem.State) {
 		t.Fatalf("published item state = %q, want terminal", publishedItem.State)
 	}
-	if publishedItem.State != task.StateFailed || publishedItem.Error == nil || publishedItem.Error.Code != "abandoned" {
+	if publishedItem.State != task.ItemStateFailed || publishedItem.Error == nil || publishedItem.Error.Code != "abandoned" {
 		t.Fatalf("published item = %+v, want failed with an abandoned reason", publishedItem)
 	}
 	if publishedItem.Capabilities.Cancelable {
 		t.Fatalf("abandoned item capabilities = %+v, want not cancelable", publishedItem.Capabilities)
 	}
-	if item.State != task.StateFailed {
+	if item.State != task.ItemStateFailed {
 		t.Fatalf("in-flight item left at %q, want failed", item.State)
 	}
 }
@@ -136,8 +136,8 @@ func TestUploadStreamFinishConvergesInFlightItems(t *testing.T) {
 // that agree with the item states.
 func TestUploadStreamFinishReportsPartialFailureWithConsistentCounters(t *testing.T) {
 	t.Parallel()
-	done := &uploadStreamItem{ID: "done", DestPath: "/done.txt", State: task.StateSucceeded, Size: 4, Written: 4}
-	live := &uploadStreamItem{ID: "live", DestPath: "/live.txt", State: task.StateRunning, Size: 7, Written: 7}
+	done := &uploadStreamItem{ID: "done", DestPath: "/done.txt", State: task.ItemStateSucceeded, Size: 4, Written: 4}
+	live := &uploadStreamItem{ID: "live", DestPath: "/live.txt", State: task.ItemStateRunning, Size: 7, Written: 7}
 	batch := newTestBatch(done, live)
 
 	var published *task.Task
@@ -155,7 +155,7 @@ func TestUploadStreamFinishReportsPartialFailureWithConsistentCounters(t *testin
 	if published.Progress.ItemsDone != 2 || published.Progress.ItemsFailed != 1 {
 		t.Fatalf("progress = %d done / %d failed, want 2/1", published.Progress.ItemsDone, published.Progress.ItemsFailed)
 	}
-	for _, publishedItem := range published.Result.Items {
+	for _, publishedItem := range published.Tracking.Items {
 		if !isTerminalStreamItem(publishedItem.State) {
 			t.Fatalf("published item = %+v, want every item terminal", publishedItem)
 		}

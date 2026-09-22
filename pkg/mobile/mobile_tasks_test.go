@@ -112,8 +112,8 @@ root_path = `+util.TOMLPath(remote)+`
 	if got.Progress.ItemsDone != 2 || got.Progress.ItemsFailed != 1 || got.Error == nil {
 		t.Fatalf("task = %+v, want partial delete progress", got)
 	}
-	if len(got.Result.Items) != 2 || got.Result.Items[1].Path != "/local/missing.txt" || got.Result.Items[1].State != "failed" || got.Result.Items[1].Error == nil {
-		t.Fatalf("result items = %+v, want missing path failure", got.Result.Items)
+	if len(got.Tracking.Items) != 2 || got.Tracking.Items[1].Path != "/local/missing.txt" || got.Tracking.Items[1].State != "failed" || got.Tracking.Items[1].Error == nil {
+		t.Fatalf("tracking items = %+v, want missing path failure", got.Tracking.Items)
 	}
 	removedRaw := DismissTaskJSON(opened.Data, created.Data.ID, 0)
 	var removed struct {
@@ -758,7 +758,7 @@ func readUploadEventItem(t *testing.T, handleID, taskID string, match func(mobil
 			if event.Type != "task_updated" || event.TaskID != taskID {
 				continue
 			}
-			for _, item := range event.Task.Result.Items {
+			for _, item := range event.Task.Tracking.Items {
 				if match(item) {
 					return true
 				}
@@ -788,7 +788,7 @@ type mobileTask struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
-	Result struct {
+	Tracking struct {
 		Items []mobileTaskItem `json:"items"`
 	} `json:"result"`
 }
@@ -905,8 +905,8 @@ upload_delay = "10ms"
 	if item.Progress.StagingBytesDone != 0 || item.Progress.StagingBytesTotal != 0 {
 		t.Fatalf("task progress = %+v, want no user-visible staging bytes", item.Progress)
 	}
-	if len(item.Result.Items) != 1 || item.Result.Items[0].Phase != "direct" {
-		t.Fatalf("task result = %+v, want direct result", item.Result.Items)
+	if len(item.Tracking.Items) != 1 || item.Tracking.Items[0].Phase != "direct" {
+		t.Fatalf("task result = %+v, want direct result", item.Tracking.Items)
 	}
 	if data, err := os.ReadFile(filepath.Join(remote, "direct.bin")); err != nil || string(data) != string(content) {
 		t.Fatalf("remote data = %q err=%v, want %q", data, err, content)

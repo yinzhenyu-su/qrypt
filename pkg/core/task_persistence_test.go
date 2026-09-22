@@ -61,7 +61,7 @@ func TestCorePersistsDeleteBatchTaskHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != task.StatePartialFailed || len(got.Result.Items) != 2 {
+	if got.State != task.StatePartialFailed || len(got.Tracking.Items) != 2 {
 		t.Fatalf("replayed task = %+v", got)
 	}
 
@@ -254,7 +254,7 @@ func TestCoreRecoversCompleteMutableStagingWithoutSource(t *testing.T) {
 	if _, err := recovered.GetTask(ctx, "staging-recover"); err != nil {
 		t.Fatal(err)
 	}
-	var items []task.ItemResult
+	var items []task.ItemTracking
 	deadline := time.Now().Add(5 * time.Second)
 	for len(items) == 0 && time.Now().Before(deadline) {
 		items, err = recovered.ListTaskItems(ctx, "staging-recover", task.ItemFilter{})
@@ -356,7 +356,7 @@ func TestCoreReconcilesCompletedStagingUploadAfterPendingCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].State != task.StateSucceeded || items[0].CloudBytesDone != int64(len(payload)) {
+	if len(items) != 1 || items[0].State != task.ItemStateSucceeded || items[0].CloudBytesDone != int64(len(payload)) {
 		t.Fatalf("reconciled items = %+v, want completed remote item", items)
 	}
 	if !strings.Contains(fmt.Sprint(finished.Detail["recovery_items"]), "remote_size_match") {
@@ -482,7 +482,7 @@ func TestCoreRecoversInterruptedDirectUploadTaskWithLocalFSDirect(t *testing.T) 
 	if item.State != task.StateSucceeded {
 		t.Fatalf("recovered localfs direct task = %+v, want succeeded", item)
 	}
-	if got := item.Result.Items[0].Phase; got != "direct" {
+	if got := item.Tracking.Items[0].Phase; got != "direct" {
 		t.Fatalf("recovered localfs phase = %q, want direct", got)
 	}
 	data, err := os.ReadFile(filepath.Join(remote, "fallback-recovered.txt"))

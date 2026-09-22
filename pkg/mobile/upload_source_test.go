@@ -182,8 +182,8 @@ func TestMobileSetUploadSourceOpenerDirectUpload(t *testing.T) {
 	}
 
 	item := waitMobileTaskState(t, coreID, created.Data.ID, "succeeded")
-	if len(item.Result.Items) != 1 || item.Result.Items[0].Phase != "direct" {
-		t.Fatalf("task result = %+v, want direct result", item.Result.Items)
+	if len(item.Tracking.Items) != 1 || item.Tracking.Items[0].Phase != "direct" {
+		t.Fatalf("task result = %+v, want direct result", item.Tracking.Items)
 	}
 	if data, err := os.ReadFile(filepath.Join(remote, "photo.jpg")); err != nil || string(data) != string(content) {
 		t.Fatalf("remote data = %q err=%v, want %q", data, err, content)

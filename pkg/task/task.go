@@ -25,6 +25,9 @@ const (
 	TypeMoveBatch           Type = "move_batch"
 )
 
+// State is the task-level state machine's position (glossary: State). The
+// task-level and item-level machines are separate; the item-level machine is
+// ItemState.
 type State string
 
 const (
@@ -38,8 +41,23 @@ const (
 	StatePartialFailed State = "partial_failed"
 	StateFailed        State = "failed"
 	StateCanceled      State = "canceled"
-	StateWaitingInput  State = "waiting_input"
-	StateWaitingOutput State = "waiting_output"
+)
+
+// ItemState is the item-level state machine's position. Task-level and
+// item-level are separate state machines (glossary: State); the stream
+// handshake states live here, item-level only (glossary: 等待供数 / 等待取数,
+// 条目级握手状态).
+type ItemState string
+
+const (
+	ItemStateQueued        ItemState = "queued"
+	ItemStateRunning       ItemState = "running"
+	ItemStateRetryWait     ItemState = "retry_wait"
+	ItemStateWaitingInput  ItemState = "waiting_input"
+	ItemStateWaitingOutput ItemState = "waiting_output"
+	ItemStateSucceeded     ItemState = "succeeded"
+	ItemStateFailed        ItemState = "failed"
+	ItemStateCanceled      ItemState = "canceled"
 )
 
 // Scope is the task's origin axis (glossary: 任务来源), independent of
@@ -82,7 +100,7 @@ type Task struct {
 	Progress             Progress       `json:"progress,omitempty"`
 	Capabilities         Capabilities   `json:"capabilities,omitempty"`
 	Error                *Error         `json:"error,omitempty"`
-	Result               Result         `json:"result,omitempty"`
+	Tracking             Tracking       `json:"result,omitempty"`
 	Detail               map[string]any `json:"detail,omitempty"`
 }
 
@@ -120,8 +138,12 @@ type Error struct {
 	Retryable bool   `json:"retryable,omitempty"`
 }
 
-type Result struct {
-	Items []ItemResult `json:"items,omitempty"`
+// Tracking holds the execution tracking projections (glossary: 执行追踪面)
+// of a task's items. Items are one concept with two projections: the request
+// input face is Item, this is the tracking face, covering each item's full
+// lifecycle — not just its outcome.
+type Tracking struct {
+	Items []ItemTracking `json:"items,omitempty"`
 }
 
 type EventType string
@@ -142,13 +164,13 @@ type Event struct {
 	ToSeq            uint64    `json:"to_seq,omitempty"`
 }
 
-type ItemResult struct {
+type ItemTracking struct {
 	Path               string           `json:"path,omitempty"`
 	ItemID             string           `json:"item_id,omitempty"`
 	SourcePath         string           `json:"source_path,omitempty"`
 	DestPath           string           `json:"dest_path,omitempty"`
 	Mount              string           `json:"mount,omitempty"`
-	State              State            `json:"state"`
+	State              ItemState        `json:"state"`
 	Phase              string           `json:"phase,omitempty"`
 	Error              *Error           `json:"error,omitempty"`
 	RemoteID           string           `json:"remote_id,omitempty"`
@@ -215,9 +237,9 @@ type Filter struct {
 }
 
 type ItemFilter struct {
-	ItemID string  `json:"item_id,omitempty"`
-	States []State `json:"states,omitempty"`
-	Limit  int     `json:"limit,omitempty"`
+	ItemID string      `json:"item_id,omitempty"`
+	States []ItemState `json:"states,omitempty"`
+	Limit  int         `json:"limit,omitempty"`
 }
 
 func (f Filter) Match(t Task) bool {
@@ -260,7 +282,7 @@ func (f Filter) Match(t Task) bool {
 	return true
 }
 
-func (f ItemFilter) Match(item ItemResult) bool {
+func (f ItemFilter) Match(item ItemTracking) bool {
 	if f.ItemID != "" && item.ItemID != f.ItemID {
 		return false
 	}

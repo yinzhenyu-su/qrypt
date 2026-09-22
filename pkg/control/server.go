@@ -33,7 +33,7 @@ type taskPersistenceHealth interface {
 
 type taskDebugger interface {
 	ListTasks(context.Context, task.Filter) ([]task.Task, error)
-	ListTaskItems(context.Context, string, task.ItemFilter) ([]task.ItemResult, error)
+	ListTaskItems(context.Context, string, task.ItemFilter) ([]task.ItemTracking, error)
 }
 
 type taskEventDebugger interface {

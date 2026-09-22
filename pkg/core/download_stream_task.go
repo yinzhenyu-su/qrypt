@@ -40,7 +40,7 @@ type downloadStreamItem struct {
 	Acked        int64
 	ReadOffset   int64
 	Open         bool
-	State        task.State
+	State        task.ItemState
 	Error        *task.Error
 }
 
@@ -81,7 +81,7 @@ func (c *Core) createDownloadStreamTask(ctx context.Context, req task.Request) (
 			"concurrency": taskConcurrency(req.Options.Concurrency),
 			"phase":       "queued",
 		},
-		Result: task.Result{Items: batch.resultItemsLocked()},
+		Tracking: task.Tracking{Items: batch.trackingItemsLocked()},
 	}
 	sourceMount, _, _ := moveMounts(first.SourcePath, first.SourcePath, c.fs)
 	if sourceMount != "" {
@@ -145,14 +145,14 @@ func (c *Core) OpenDownloadStreamItem(ctx context.Context, taskID, itemID string
 	if item.Open {
 		return nil, fmt.Errorf("core: download stream item %q is already open", itemID)
 	}
-	if item.State == task.StateSucceeded {
+	if item.State == task.ItemStateSucceeded {
 		return nil, fmt.Errorf("core: download stream item %q already succeeded", itemID)
 	}
-	if item.State == task.StateCanceled || item.State == task.StateFailed {
+	if item.State == task.ItemStateCanceled || item.State == task.ItemStateFailed {
 		return nil, fmt.Errorf("core: download stream item %q is %s", itemID, item.State)
 	}
 	item.Open = true
-	item.State = task.StateRunning
+	item.State = task.ItemStateRunning
 	item.ReadOffset = item.Acked
 	item.Error = nil
 	batch.updateTaskSnapshotLocked()
@@ -206,7 +206,7 @@ func (h *DownloadStreamItemHandle) Ack(bytesWritten int64) error {
 		return fmt.Errorf("core: ack exceeds read offset for item %q", item.ID)
 	}
 	item.Acked += bytesWritten
-	item.State = task.StateRunning
+	item.State = task.ItemStateRunning
 	item.Error = nil
 	h.batch.updateTaskSnapshotLocked()
 	return nil
@@ -228,7 +228,7 @@ func (h *DownloadStreamItemHandle) Commit(ctx context.Context) error {
 		return fmt.Errorf("core: download stream item %q acked %d of %d bytes", item.ID, item.Acked, item.Size)
 	}
 	item.Open = false
-	item.State = task.StateSucceeded
+	item.State = task.ItemStateSucceeded
 	item.Error = nil
 	h.closed = true
 	h.batch.updateTaskSnapshotLocked()
@@ -249,7 +249,7 @@ func (h *DownloadStreamItemHandle) Fail(code, message string) error {
 		message = "output stream failed"
 	}
 	item.Open = false
-	item.State = task.StateWaitingOutput
+	item.State = task.ItemStateWaitingOutput
 	item.ReadOffset = item.Acked
 	item.Error = &task.Error{Code: code, Message: message, Retryable: true}
 	h.closed = true
@@ -268,8 +268,8 @@ func (h *DownloadStreamItemHandle) Close() error {
 	item := h.batch.byID[h.itemID]
 	if item != nil {
 		item.Open = false
-		if item.State == task.StateRunning {
-			item.State = task.StateWaitingOutput
+		if item.State == task.ItemStateRunning {
+			item.State = task.ItemStateWaitingOutput
 			item.ReadOffset = item.Acked
 		}
 	}
@@ -286,7 +286,7 @@ func (h *DownloadStreamItemHandle) itemLocked() (*downloadStreamItem, error) {
 	if item == nil {
 		return nil, fmt.Errorf("core: download stream item %q not found", h.itemID)
 	}
-	if item.State == task.StateCanceled || item.State == task.StateFailed {
+	if item.State == task.ItemStateCanceled || item.State == task.ItemStateFailed {
 		return nil, fmt.Errorf("core: download stream item %q is %s", h.itemID, item.State)
 	}
 	return item, nil
@@ -305,12 +305,12 @@ func (c *Core) cancelDownloadStreamItem(ctx context.Context, batch *downloadStre
 	if item == nil {
 		return fmt.Errorf("core: download stream item %q not found", itemID)
 	}
-	if item.State == task.StateSucceeded || item.State == task.StateCanceled {
+	if item.State == task.ItemStateSucceeded || item.State == task.ItemStateCanceled {
 		return nil
 	}
 	item.Open = false
 	item.ReadOffset = item.Acked
-	item.State = task.StateCanceled
+	item.State = task.ItemStateCanceled
 	item.Error = &task.Error{Code: "canceled", Message: "task item canceled"}
 	batch.updateTaskSnapshotLocked()
 	batch.closeDoneIfTerminalLocked()
@@ -364,7 +364,7 @@ func (c *Core) downloadStreamBatchFromRequest(ctx context.Context, req task.Requ
 			Name:         name,
 			RelativePath: reqItem.RelativePath,
 			Size:         size,
-			State:        task.StateQueued,
+			State:        task.ItemStateQueued,
 		}
 		batch.items = append(batch.items, item)
 		batch.byID[itemID] = item
@@ -387,10 +387,10 @@ func (b *downloadStreamBatch) detailItems() []map[string]any {
 	return out
 }
 
-func (b *downloadStreamBatch) resultItemsLocked() []task.ItemResult {
-	out := make([]task.ItemResult, 0, len(b.items))
+func (b *downloadStreamBatch) trackingItemsLocked() []task.ItemTracking {
+	out := make([]task.ItemTracking, 0, len(b.items))
 	for _, item := range b.items {
-		out = append(out, task.ItemResult{
+		out = append(out, task.ItemTracking{
 			Path:             item.SourcePath,
 			ItemID:           item.ID,
 			SourcePath:       item.SourcePath,
@@ -407,10 +407,8 @@ func (b *downloadStreamBatch) resultItemsLocked() []task.ItemResult {
 
 func downloadStreamItemCapabilities(item *downloadStreamItem) task.ItemCapabilities {
 	capabilities := task.ItemCapabilities{
-		OpenOutput: item.State == task.StateQueued || item.State == task.StateWaitingOutput,
-		Cancelable: item.State != task.StateSucceeded &&
-			item.State != task.StateFailed &&
-			item.State != task.StateCanceled,
+		OpenOutput: item.State == task.ItemStateQueued || item.State == task.ItemStateWaitingOutput,
+		Cancelable: !isTerminalStreamItem(item.State),
 	}
 	capabilities.Actions = task.ActionsForItemCapabilities(capabilities)
 	return capabilities
@@ -427,7 +425,7 @@ func (b *downloadStreamBatch) updateTaskSnapshotLocked() {
 		return
 	}
 	itemsDone, itemsFailed, bytesDone, phase, active := b.summaryLocked()
-	results := b.resultItemsLocked()
+	results := b.trackingItemsLocked()
 	b.update(func(taskItem *task.Task) {
 		taskItem.Progress.ItemsDone = itemsDone
 		taskItem.Progress.ItemsFailed = itemsFailed
@@ -440,7 +438,7 @@ func (b *downloadStreamBatch) updateTaskSnapshotLocked() {
 		}
 		taskItem.Detail["phase"] = phase
 		taskItem.Detail["active_paths"] = active
-		taskItem.Result.Items = results
+		taskItem.Tracking.Items = results
 	})
 }
 
@@ -450,19 +448,19 @@ func (b *downloadStreamBatch) summaryLocked() (itemsDone, itemsFailed, bytesDone
 	for _, item := range b.items {
 		bytesDone += item.Acked
 		switch item.State {
-		case task.StateSucceeded:
+		case task.ItemStateSucceeded:
 			itemsDone++
-		case task.StateFailed, task.StateCanceled:
+		case task.ItemStateFailed, task.ItemStateCanceled:
 			itemsDone++
 			itemsFailed++
-		case task.StateWaitingOutput:
+		case task.ItemStateWaitingOutput:
 			waiting = true
-		case task.StateRunning:
+		case task.ItemStateRunning:
 			active = append(active, item.SourcePath)
 		}
 	}
 	if waiting {
-		phase = string(task.StateWaitingOutput)
+		phase = string(task.ItemStateWaitingOutput)
 	}
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
 		phase = "complete"
@@ -487,11 +485,11 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 			continue
 		}
 		item.Open = false
-		item.State = task.StateFailed
+		item.State = task.ItemStateFailed
 		item.Error = &task.Error{Code: "abandoned", Message: "download stream task finished while this item was still in progress"}
 	}
 	itemsDone, itemsFailed, _, _, _ := b.summaryLocked()
-	results := b.resultItemsLocked()
+	results := b.trackingItemsLocked()
 	b.mu.Unlock()
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
 		update(func(taskItem *task.Task) {
@@ -503,7 +501,7 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 			taskItem.Progress.ItemsFailed = itemsFailed
 			taskItem.Detail["phase"] = "complete"
 			taskItem.Detail["active_paths"] = []string{}
-			taskItem.Result.Items = results
+			taskItem.Tracking.Items = results
 		})
 		return nil
 	}
@@ -515,7 +513,7 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 		taskItem.Detail["active_paths"] = []string{}
 		taskItem.Error = &task.Error{Message: message, Retryable: true}
 		taskItem.Capabilities.Retryable = true
-		taskItem.Result.Items = results
+		taskItem.Tracking.Items = results
 		if itemsFailed < int64(len(b.items)) {
 			taskItem.State = task.StatePartialFailed
 			taskItem.Progress.Phase = "partial_failed"
@@ -536,11 +534,11 @@ func (b *downloadStreamBatch) markCanceled(err error) {
 	defer b.mu.Unlock()
 	b.canceled = true
 	for _, item := range b.items {
-		if item.State == task.StateSucceeded || item.State == task.StateFailed {
+		if item.State == task.ItemStateSucceeded || item.State == task.ItemStateFailed {
 			continue
 		}
 		item.Open = false
-		item.State = task.StateFailed
+		item.State = task.ItemStateFailed
 		item.Error = &task.Error{Code: "canceled", Message: err.Error()}
 	}
 }
