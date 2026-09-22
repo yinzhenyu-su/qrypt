@@ -1,10 +1,11 @@
 package task
 
 // Phase (glossary: 阶段标签) is display-only progress wording. It never
-// derives from State: the two vocabularies are declared independently (some
-// display words merely share a spelling with a state word, e.g. failed), and
-// no code writes a State string into a phase label. The wire values are
-// pinned by contract tests.
+// derives from State: the ban is on writing State strings or constants into
+// a phase label, not on homonyms — display words declared here may share a
+// spelling with a state word (e.g. failed). Names encode where a passthrough
+// word comes from (Cloud…/Record…) so same-looking pairs stay distinguishable.
+// The wire values are pinned by contract tests.
 type Phase string
 
 const (
@@ -16,11 +17,14 @@ const (
 	PhaseRetrying Phase = "retrying"
 	// PhaseReady (glossary: 等待取数) is data waiting for the app to read it.
 	PhaseReady Phase = "ready"
-	// PhaseStaging (glossary: 等待供数 in its paused form) is app-driven
+	// PhaseAppStaging (glossary: 等待供数 in its paused form) is app-driven
 	// staging of the bytes to transfer.
-	PhaseStaging Phase = "staging"
-	// PhaseStage is server-side staging before an upload.
-	PhaseStage    Phase = "stage"
+	PhaseAppStaging Phase = "staging"
+	// PhaseServerStage is server-side staging before an upload (distinct
+	// from PhaseAppStaging: the app stages the bytes there).
+	PhaseServerStage Phase = "stage"
+	// PhaseUpload is our transfer wording (distinct from PhaseCloudUploading,
+	// the cloud drive's passthrough wording).
 	PhaseUpload   Phase = "upload"
 	PhaseDownload Phase = "download"
 	PhaseMkdir    Phase = "mkdir"
@@ -38,18 +42,41 @@ const (
 	// PhaseQueuedUpload is staged work queued for its cloud upload.
 	PhaseQueuedUpload Phase = "queued_upload"
 	PhaseHashing      Phase = "hashing"
-	PhaseComplete     Phase = "complete"
-	// PhaseUploading and PhaseCompleted carry the cloud drive's upload
-	// wording through to display.
-	PhaseUploading Phase = "uploading"
-	PhaseCompleted Phase = "completed"
-	// PhaseStarting and PhaseSuperseded carry upload-record wording through
-	// to display for records taken over before or during their attempt.
-	PhaseStarting   Phase = "starting"
-	PhaseSuperseded Phase = "superseded"
+	// PhaseComplete is our terminal wording (distinct from
+	// PhaseCloudCompleted, the cloud drive's passthrough wording).
+	PhaseComplete Phase = "complete"
+	// PhaseCloudUploading and PhaseCloudCompleted carry the cloud drive's
+	// upload wording through to display.
+	PhaseCloudUploading Phase = "uploading"
+	PhaseCloudCompleted Phase = "completed"
+	// PhaseRecordStarting and PhaseRecordSuperseded carry upload-record
+	// wording through to display for records taken over before or during
+	// their attempt.
+	PhaseRecordStarting   Phase = "starting"
+	PhaseRecordSuperseded Phase = "superseded"
 	// PhasePartialFailed and PhaseFailed are display words that share a
 	// spelling with state words; they are declared here, never derived.
 	PhasePartialFailed Phase = "partial_failed"
 	PhaseFailed        Phase = "failed"
 	PhaseCanceled      Phase = "canceled"
 )
+
+// legacyPhase normalizes phase wording journaled by old code, which wrote
+// State vocabulary strings as phase labels. The known leaks map to their
+// display words; anything else passes through unchanged — independently
+// declared display words may share a spelling with a state word (the ban is
+// on deriving phase from State, not on homonyms).
+func legacyPhase(s string) Phase {
+	switch s {
+	case "waiting_input":
+		return PhaseAppStaging
+	case "waiting_output":
+		return PhaseReady
+	case "retry_wait":
+		return PhaseRetrying
+	case "queued":
+		return PhasePending
+	default:
+		return Phase(s)
+	}
+}

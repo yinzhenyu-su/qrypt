@@ -49,11 +49,14 @@ type Core struct {
 	uploadDir          string
 	defaultUploadMount string
 	defaultUploadPath  string
-	debugServer        *control.Server
-	tasks              *task.Manager
-	uploadSources      UploadSourceProvider
-	readChunkLimit     int
-	vfsCancel          context.CancelFunc
+	// uploadStreamPollInterval overrides how often stream tasks observe
+	// their cloud upload records; zero means defaultUploadStreamPollInterval.
+	uploadStreamPollInterval time.Duration
+	debugServer              *control.Server
+	tasks                    *task.Manager
+	uploadSources            UploadSourceProvider
+	readChunkLimit           int
+	vfsCancel                context.CancelFunc
 	// mountContentDedup records, per mount name, whether the mount is
 	// encrypted with content_dedup. Direct uploads only precompute whole-file
 	// source hashes for such mounts; the plaintext SHA-256 is required to

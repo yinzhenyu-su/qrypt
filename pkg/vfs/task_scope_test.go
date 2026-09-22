@@ -50,21 +50,23 @@ func TestVFSUploadBookkeepingTasksAreInternalScope(t *testing.T) {
 func TestVFSReplayedUploadBookkeepingNormalizesToInternalScope(t *testing.T) {
 	t.Parallel()
 	cacheDir := t.TempDir()
-	firstCtx, cancelFirst := context.WithCancel(context.Background())
-	first, err := vfs.New(&countingUploadDriver{}, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stopVFS(t, first)
-	first.Start(firstCtx)
-	if _, err := first.WriteAt(firstCtx, "/replay-scope.txt", []byte("data"), 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Flush(firstCtx, "/replay-scope.txt"); err != nil {
-		t.Fatal(err)
-	}
-	waitForCondition(t, func() bool { return len(first.PendingUploads()) == 1 })
-	cancelFirst()
+	func() {
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		defer cancelFirst()
+		first, err := vfs.New(&countingUploadDriver{}, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stopVFS(t, first)
+		first.Start(firstCtx)
+		if _, err := first.WriteAt(firstCtx, "/replay-scope.txt", []byte("data"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.Flush(firstCtx, "/replay-scope.txt"); err != nil {
+			t.Fatal(err)
+		}
+		waitForCondition(t, func() bool { return len(first.PendingUploads()) == 1 })
+	}() // first VFS fully stopped before the second opens the shared cacheDir.
 
 	second, err := vfs.New(&countingUploadDriver{}, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
 	if err != nil {

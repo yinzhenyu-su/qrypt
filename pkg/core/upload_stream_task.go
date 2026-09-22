@@ -16,7 +16,18 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-var UploadStreamTaskPollInterval = 500 * time.Millisecond
+// defaultUploadStreamPollInterval bounds how often a stream task observes
+// its cloud upload records. Tests inject a short interval per Core instance
+// instead of mutating shared state.
+const defaultUploadStreamPollInterval = 500 * time.Millisecond
+
+// uploadStreamPollEvery is the instance-configured observation interval.
+func (c *Core) uploadStreamPollEvery() time.Duration {
+	if c.uploadStreamPollInterval > 0 {
+		return c.uploadStreamPollInterval
+	}
+	return defaultUploadStreamPollInterval
+}
 
 type uploadStreamBatch struct {
 	mu sync.Mutex
@@ -110,7 +121,7 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 		Detail: map[string]any{
 			"items":           batch.detailItems(),
 			"conflict_policy": batch.conflictPolicy,
-			"phase":           task.PhaseStaging,
+			"phase":           task.PhaseAppStaging,
 		},
 		Tracking: task.Tracking{Items: batch.trackingItemsLocked()},
 	}
@@ -285,7 +296,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			streamItem.Written = streamItem.Size
 			streamItem.CloudWritten = remote.Size
 			streamItem.CloudTotal = remote.Size
-			streamItem.CloudPhase = task.PhaseCompleted
+			streamItem.CloudPhase = task.PhaseCloudCompleted
 			streamItem.RemoteID = remote.ID
 			streamItem.Recovery = "remote_size_match"
 		} else {
@@ -317,7 +328,7 @@ func applyPersistedUploadStreamTracking(item *uploadStreamItem, prior task.ItemT
 
 func (c *Core) runUploadStreamTask(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
 	return c.runUploadStreamLifecycle(ctx, update, batch, func(ctx context.Context) error {
-		ticker := time.NewTicker(UploadStreamTaskPollInterval)
+		ticker := time.NewTicker(c.uploadStreamPollEvery())
 		defer ticker.Stop()
 		for {
 			select {
@@ -504,7 +515,7 @@ func (h *UploadStreamItemHandle) Commit(ctx context.Context) error {
 	item.Error = nil
 	item.RemoteID = entry.ID
 	item.CloudTotal = entry.Size
-	if item.CloudPhase == "" || item.CloudPhase == task.PhaseStaging {
+	if item.CloudPhase == "" || item.CloudPhase == task.PhaseAppStaging {
 		item.CloudPhase = task.PhaseQueuedUpload
 	}
 	h.closed = true
@@ -763,7 +774,7 @@ func uploadStreamItemPhase(item *uploadStreamItem) task.Phase {
 	}
 	switch item.State {
 	case task.ItemStateWaitingInput, task.ItemStateRunning:
-		return task.PhaseStaging
+		return task.PhaseAppStaging
 	case task.ItemStateRetryWait:
 		return task.PhaseRetrying
 	case task.ItemStateSucceeded:
@@ -1021,7 +1032,7 @@ func (b *uploadStreamBatch) progressSpeedAndETA(done, total int64) (speedBPS, et
 }
 
 func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal int64, phase task.Phase, active []string) {
-	phase = task.PhaseStaging
+	phase = task.PhaseAppStaging
 	for _, item := range b.items {
 		stagingBytesDone += item.Written
 		cloudBytesDone += item.CloudWritten

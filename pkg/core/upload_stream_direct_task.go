@@ -449,7 +449,7 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	item.CloudWritten = entry.Size
 	item.CloudTotal = entry.Size
 	if direct {
-		if item.CloudPhase == "" || item.CloudPhase == task.PhaseUploading || item.CloudPhase == task.PhaseCompleted {
+		if item.CloudPhase == "" || item.CloudPhase == task.PhaseCloudUploading || item.CloudPhase == task.PhaseCloudCompleted {
 			item.CloudPhase = task.PhaseDirect
 		}
 	} else {

@@ -201,6 +201,12 @@ func normalizeReplayedTask(item Task) Task {
 			item.Visibility = VisibilityHidden
 		}
 	}
+	// Legacy phase labels may carry State vocabulary; normalize to display
+	// wording (glossary: 阶段标签 不得复用 State 的词汇).
+	item.Progress.Phase = legacyPhase(string(item.Progress.Phase))
+	for i := range item.Tracking.Items {
+		item.Tracking.Items[i].Phase = legacyPhase(string(item.Tracking.Items[i].Phase))
+	}
 	switch item.State {
 	case StateQueued, StateScheduled, StateRunning, StateRetryWait, StateCanceling,
 		legacyStateWaitingInput, legacyStateWaitingOutput:

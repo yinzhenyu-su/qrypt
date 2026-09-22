@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,15 +16,17 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-// assertFailPauseSticky re-checks an item after several progress ticks. The
-// cloud ticker runs concurrently with the caller, so a Fail that only survives
-// until the next tick is one the caller cannot rely on: resuming also revokes
-// the capability CommitStagedUploadItem needs, so the "interrupt, then commit
-// the staged bytes" recovery path fails with "item is running". This is the
-// assertion that pins the ticker honouring the caller's pause.
+// assertFailPauseSticky re-checks an item after several published progress
+// snapshots. The cloud ticker runs concurrently with the caller, so a Fail
+// that only survives until the next tick is one the caller cannot rely on:
+// resuming also revokes the capability CommitStagedUploadItem needs, so the
+// "interrupt, then commit the staged bytes" recovery path fails with "item
+// is running". Waiting for observed ticker output — not for a sleep to
+// outlast it — is what makes this proof reproducible. This is the assertion
+// that pins the ticker honouring the caller's pause.
 func assertFailPauseSticky(t *testing.T, c *Core, taskID, itemID string) task.ItemTracking {
 	t.Helper()
-	time.Sleep(10 * UploadStreamTaskPollInterval)
+	waitForTaskSnapshots(t, c, taskID, 10)
 	items, err := c.ListTaskItems(context.Background(), taskID, task.ItemFilter{})
 	if err != nil {
 		t.Fatal(err)
@@ -40,6 +41,7 @@ func assertFailPauseSticky(t *testing.T, c *Core, taskID, itemID string) task.It
 }
 
 func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -53,7 +55,6 @@ func TestCreateTaskUploadStreamBatchWritesAndFinishes(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -146,6 +147,7 @@ func TestPutUploadStreamRejectsDuplicateTaskID(t *testing.T) {
 }
 
 func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -156,7 +158,6 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 	payload := []byte("already staged")
 
 	created, err := c.CreateTask(ctx, task.Request{
@@ -176,15 +177,6 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	if err := handle.Fail("interrupted", "commit was interrupted"); err != nil {
 		t.Fatal(err)
 	}
-	waiting, err := c.GetTask(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Handshake states are item-level now: the task runs while its item
-	// waits for input (glossary: 等待供数 is 条目级).
-	if waiting.State != task.StateRunning {
-		t.Fatalf("task state = %s, want running while staging", waiting.State)
-	}
 	items, err := c.ListTaskItems(ctx, created.ID, task.ItemFilter{})
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +193,13 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 	if paused.Error == nil || paused.Error.Code != "interrupted" {
 		t.Fatalf("item error after the pause = %+v, want the caller's failure preserved", paused.Error)
 	}
+	// Handshake states are item-level (glossary: 等待供数 is 条目级): while
+	// the item stays paused after the caller's Fail, the task-level
+	// amendment holds — the task runs. Bounded wait on that exact pair, not
+	// a spot check at one unsynchronized point.
+	waitCoreTaskUntil(t, c, created.ID, func(item task.Task) bool {
+		return item.State == task.StateRunning && hasItemInState(item, task.ItemStateWaitingInput)
+	})
 	if err := c.CommitStagedUploadItem(ctx, created.ID, "item"); err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +213,7 @@ func TestCommitCompleteStagingWithoutReopeningSource(t *testing.T) {
 }
 
 func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
+	t.Parallel()
 	// 任务在任意阶段都可删除：waiting_input（staging 未开始写）时
 	// DismissTask 应取消并移除任务，而不是报 "not terminal"。
 	ctx, cancel := context.WithCancel(context.Background())
@@ -226,7 +226,6 @@ func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	created, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -235,52 +234,20 @@ func TestUploadStreamBatchWaitingInputDismissable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		cur, err := c.GetTask(ctx, created.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cur.State == task.StateRunning {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("task state = %s, want running", cur.State)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	waitingItems, err := c.ListTaskItems(ctx, created.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline = time.Now().Add(5 * time.Second)
-	for len(waitingItems) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("items = %+v, want one waiting_input item", waitingItems)
-		}
-		time.Sleep(5 * time.Millisecond)
-		waitingItems, err = c.ListTaskItems(ctx, created.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
-		if err != nil {
-			t.Fatal(err)
-		}
+	// Machine-state sync: wait for the staging moment the amendment is
+	// about — an item in its staging handshake (glossary: 等待供数) while the
+	// task itself runs (before the runner starts, the task is still queued).
+	// That is the stage this test dismisses at.
+	paused := waitCoreTaskUntil(t, c, created.ID, func(item task.Task) bool {
+		return item.State == task.StateRunning && hasItemInState(item, task.ItemStateWaitingInput)
+	})
+	if paused.State != task.StateRunning {
+		t.Fatalf("task state = %s, want running while staging", paused.State)
 	}
 	if err := c.DismissTask(ctx, created.ID); err != nil {
 		t.Fatalf("DismissTask of waiting_input task: %v", err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		_, getErr := c.GetTask(ctx, created.ID)
-		if errors.Is(getErr, task.ErrNotFound) {
-			break
-		}
-		if getErr != nil {
-			t.Fatal(getErr)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("task still present after cancellation cleanup, want removed")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitCoreTaskGone(t, c, created.ID)
 	entries, err := os.ReadDir(remote)
 	if err != nil {
 		t.Fatal(err)
@@ -380,6 +347,7 @@ func TestCreateTaskUploadStreamBatchUsesDefaultDestination(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -393,7 +361,6 @@ func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -420,6 +387,7 @@ func TestCreateTaskUploadStreamBatchConflictPolicySkipExisting(t *testing.T) {
 }
 
 func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -433,7 +401,6 @@ func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type: task.TypeUploadStreamBatch,
@@ -457,6 +424,7 @@ func TestCreateTaskUploadStreamBatchConflictPolicyFailExisting(t *testing.T) {
 }
 
 func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), UploadDelay: time.Hour})
@@ -466,7 +434,6 @@ func TestUploadStreamItemCommitDoesNotWaitForRemoteUpload(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -561,6 +528,7 @@ func TestApplyRemoteUploadStateKeepsParentRunningForRetryableFailure(t *testing.
 }
 
 func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -571,7 +539,6 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -590,7 +557,12 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err := handle.Fail("input_stream_failed", "source permission lost"); err != nil {
 		t.Fatal(err)
 	}
-	waitForCoreTaskPhase(t, c, item.ID, task.PhaseStaging)
+	staging := waitCoreTaskUntil(t, c, item.ID, func(item task.Task) bool {
+		return hasItemInState(item, task.ItemStateWaitingInput)
+	})
+	if staging.Progress.Phase != task.PhaseAppStaging {
+		t.Fatalf("phase = %q, want staging while waiting for input", staging.Progress.Phase)
+	}
 	waitingItems, err := c.ListTaskItems(ctx, item.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
 	if err != nil {
 		t.Fatal(err)
@@ -635,6 +607,7 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 }
 
 func TestUploadStreamTaskCancelRemovesUncommittedStaging(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -645,7 +618,6 @@ func TestUploadStreamTaskCancelRemovesUncommittedStaging(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -674,6 +646,7 @@ func TestUploadStreamTaskCancelRemovesUncommittedStaging(t *testing.T) {
 }
 
 func TestUploadStreamTaskCancelItemRemovesStaging(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -684,7 +657,6 @@ func TestUploadStreamTaskCancelItemRemovesStaging(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -818,6 +790,7 @@ func (d *completedBlockingStreamDriver) remoteCount() int {
 // observes a "succeeded but still active" upload task. The upload must not be
 // canceled by that dismiss, and the freshly uploaded remote file must survive.
 func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	storage := filepath.Join(t.TempDir(), "cache")
@@ -825,6 +798,14 @@ func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
+	released := false
+	defer func() {
+		// Never wedge teardown on an early failure: the blocking driver only
+		// unblocks when released, and stopTestVFS waits for its goroutine.
+		if !released {
+			close(drv.release)
+		}
+	}()
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: storage, CacheMaxBytes: 10 << 20, UploadDelay: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -832,7 +813,6 @@ func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
 	defer stopTestVFS(t, fs)
 	fs.Start(ctx)
 	c := newTestCore(t, fs)
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 
 	item, err := c.CreateTask(ctx, task.Request{
 		Type:  task.TypeUploadStreamBatch,
@@ -860,17 +840,25 @@ func TestUploadStreamTaskPollerDismissKeepsUploadedFile(t *testing.T) {
 		t.Fatal("driver PutSource did not start")
 	}
 
-	// Give the stream task's 500ms poller enough ticks to run its DismissTask
-	// on the succeeded-but-active internal upload.
-	time.Sleep(50 * time.Millisecond)
+	// Deterministic stand-in for the old "enough ticks" soak: the poller's
+	// refresh folds the completed-but-still-active upload and then issues its
+	// DismissTask in the same tick, publishing the snapshot only afterwards —
+	// so a published succeeded item is proof the dismiss already ran.
+	folded := waitCoreTaskUntil(t, c, item.ID, func(item task.Task) bool {
+		return hasItemInState(item, task.ItemStateSucceeded)
+	})
+	if !hasItemInState(folded, task.ItemStateSucceeded) {
+		t.Fatalf("stream items = %+v, want the completed upload folded", folded.Tracking.Items)
+	}
 
-	// The pending record must have survived the poller dismisses.
+	// The pending record must have survived the poller dismiss.
 	if pendings := fs.PendingUploads(); len(pendings) != 1 {
 		t.Fatalf("pending after poller dismiss = %+v, want 1", pendings)
 	}
 
 	// Let the engine finish the upload normally, then wait for the stream task.
 	close(drv.release)
+	released = true
 	final := waitCoreTask(t, c, item.ID)
 	if final.State != task.StateSucceeded {
 		t.Fatalf("stream task state = %s, want succeeded (task=%+v)", final.State, final)

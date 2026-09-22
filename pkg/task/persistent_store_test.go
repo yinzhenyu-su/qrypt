@@ -224,6 +224,7 @@ func TestManagerReportsStorePersistenceFailure(t *testing.T) {
 // from the origin exactly once (user origin → visible, everything else →
 // hidden). New creations declare visibility explicitly.
 func TestReplayedTasksInferVisibilityFromOrigin(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tasks", "tasks.jsonl")
 	store, err := NewPersistentStore(path)
 	if err != nil {
@@ -242,19 +243,88 @@ func TestReplayedTasksInferVisibilityFromOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[string]Visibility{
-		"legacy-user":          VisibilityVisible,
-		"legacy-sync":          VisibilityHidden,
-		"legacy-internal":      VisibilityHidden,
-		"legacy-unspecified":   VisibilityHidden,
-		"declared-hidden-user": VisibilityHidden,
+	// Journal-boundary decision: replay preserves the declared origin —
+	// legacy sync records are never clobbered into internal (mount
+	// bookkeeping never passed through this journal).
+	for id, want := range map[string]struct {
+		scope      Scope
+		visibility Visibility
+	}{
+		"legacy-user":          {ScopeUser, VisibilityVisible},
+		"legacy-sync":          {ScopeSync, VisibilityHidden},
+		"legacy-internal":      {ScopeInternal, VisibilityHidden},
+		"legacy-unspecified":   {"", VisibilityHidden},
+		"declared-hidden-user": {ScopeUser, VisibilityHidden},
 	} {
 		managed, ok := reopened.GetManaged(id)
 		if !ok {
 			t.Fatalf("%s missing after replay", id)
 		}
-		if managed.Task.Visibility != want {
-			t.Errorf("%s visibility = %q, want %q", id, managed.Task.Visibility, want)
+		if managed.Task.Scope != want.scope {
+			t.Errorf("%s scope = %q, want %q preserved", id, managed.Task.Scope, want.scope)
 		}
+		if managed.Task.Visibility != want.visibility {
+			t.Errorf("%s visibility = %q, want %q", id, managed.Task.Visibility, want.visibility)
+		}
+	}
+}
+
+// A legacy journal entry with a task-level handshake state or State
+// vocabulary written into a phase label (both journaled by old code)
+// normalizes at replay: the interrupted work fails with code "interrupted"
+// and the phase labels become display wording (glossary: 阶段标签).
+func TestReplayedLegacyHandshakeAndPhaseNormalizeOnReplay(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "tasks", "tasks.jsonl")
+	store, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []Task{
+		{ID: "waiting-input", Type: TypeUploadStreamBatch, State: legacyStateWaitingInput,
+			Progress:     Progress{Phase: Phase("waiting_input")},
+			Capabilities: Capabilities{Persistent: true}},
+		{ID: "waiting-output", Type: TypeDownloadStreamBatch, State: legacyStateWaitingOutput,
+			Progress:     Progress{Phase: Phase("waiting_output")},
+			Capabilities: Capabilities{Persistent: true}},
+		{ID: "retry-wait", Type: TypeUploadStreamDirect, State: StateRetryWait,
+			Progress:     Progress{Phase: Phase("retry_wait")},
+			Tracking:     Tracking{Items: []ItemTracking{{ItemID: "i", Phase: Phase("queued")}}},
+			Capabilities: Capabilities{Persistent: true}},
+	} {
+		store.PutManaged(ManagedTask{Task: legacy})
+	}
+	reopened, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id        string
+		wantPhase Phase
+	}{
+		{"waiting-input", PhaseAppStaging},
+		{"waiting-output", PhaseReady},
+		{"retry-wait", PhaseRetrying},
+	} {
+		managed, ok := reopened.GetManaged(tc.id)
+		if !ok {
+			t.Fatalf("%s missing after replay", tc.id)
+		}
+		if managed.Task.State != StateFailed || managed.Task.Error == nil || managed.Task.Error.Code != "interrupted" {
+			t.Errorf("%s replayed = %+v, want failed interrupted", tc.id, managed.Task)
+		}
+		if managed.Task.Progress.Phase != tc.wantPhase {
+			t.Errorf("%s phase = %q, want %q", tc.id, managed.Task.Progress.Phase, tc.wantPhase)
+		}
+	}
+	managed, ok := reopened.GetManaged("retry-wait")
+	if !ok {
+		t.Fatal("retry-wait missing after replay")
+	}
+	if len(managed.Task.Tracking.Items) != 1 {
+		t.Fatalf("replayed items = %+v, want one", managed.Task.Tracking.Items)
+	}
+	if got := managed.Task.Tracking.Items[0].Phase; got != PhasePending {
+		t.Errorf("replayed item phase = %q, want pending", got)
 	}
 }

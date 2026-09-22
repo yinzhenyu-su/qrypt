@@ -226,11 +226,11 @@ func uploadStatePhase(state string) task.Phase {
 	case "canceled":
 		return task.PhaseCanceled
 	case "starting":
-		return task.PhaseStarting
+		return task.PhaseRecordStarting
 	case upload.SnapshotStateCompleted:
-		return task.PhaseCompleted
+		return task.PhaseCloudCompleted
 	case upload.SnapshotStateSuperseded:
-		return task.PhaseSuperseded
+		return task.PhaseRecordSuperseded
 	case string(drive.UploadPhasePreparing), string(drive.UploadPhaseUploading), string(drive.UploadPhaseCommitting):
 		// Cloud drive phase wording (preparing/uploading/committing).
 		return task.Phase(state)

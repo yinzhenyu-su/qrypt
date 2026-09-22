@@ -104,16 +104,18 @@ gh workflow run "Nightly Quality Gates"
 - **testing 拒绝的调用与全进程视角**：`t.Setenv`/`t.Chdir` 在 `t.Parallel()`
   之后调用会 panic；`goleak.Find` 扫描进程内全部 goroutine，只要有别的测试在跑
   就永远等不到「无泄漏」，用它的测试需要独占本包。
-- **被当作测试接缝的生产包级变量**：`pkg/core` 的 `UploadStreamTaskPollInterval`
-  和 `DirectUploadRetryBaseDelay`、`pkg/vfs/upload` 写 `pkg/logging` 的 `logging.L`。
+- **被当作测试接缝的生产包级变量**：`pkg/core` 的 `DirectUploadRetryBaseDelay`、
+  `pkg/vfs/upload` 写 `pkg/logging` 的 `logging.L`。
   哪个测试在跑就写哪个，两个并行就在赋值本身上竞争。
+  （目标形态是实例注入：`pkg/core` 的 stream poll interval 已从包级变量改为
+  per-`Core` 字段，测试按实例设定，这类接缝随之消失。）
 
 只把写入者标为串行就够了：go 的 testing 会先把所有非并行测试跑完再恢复并行的
 那些，所以串行写入者必定早于并行读取者结束。
 
 `scripts/test-parallelism.py` 维护这件事，它顺调用图传播（`pkg/core` 的
-`newTaskBoundaryCore` 写接缝，调用它的测试即便自身没提过也要串行），也识别跨包
-赋值：
+`newTaskBoundaryCore` 曾写接缝，当时调用它的测试即便自身没提过也要串行；该接缝
+已实例注入化，这类传播点随之消失），也识别跨包赋值：
 
 ```bash
 ./scripts/test-parallelism.py audit ./pkg/vfs   # 只报告，有待改动时退出 1

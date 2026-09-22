@@ -103,8 +103,8 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 				mu.Unlock()
 				update(func(taskItem *task.Task) {
 					taskItem.Progress.CurrentPath = item.DestPath
-					taskItem.Progress.Phase = task.PhaseStage
-					taskItem.Detail["phase"] = task.PhaseStage
+					taskItem.Progress.Phase = task.PhaseServerStage
+					taskItem.Detail["phase"] = task.PhaseServerStage
 					taskItem.Detail["current_source_path"] = item.SourcePath
 					taskItem.Detail["active_paths"] = activePaths
 				})
