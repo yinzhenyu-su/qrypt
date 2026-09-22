@@ -109,9 +109,10 @@ func TestVFSDeleteTasksExposeScheduledDeletes(t *testing.T) {
 		t.Fatalf("tasks = %+v, want one delete task", tasks)
 	}
 	item := tasks[0]
-	if item.Scope != task.ScopeSync || item.State != task.StateScheduled || item.Path != "/dir/a.txt" || !item.Capabilities.Cancelable || item.Capabilities.Retryable {
-		t.Fatalf("delete task = %+v, want scheduled cancelable background task", item)
+	if item.Scope != task.ScopeInternal || item.State != task.StateScheduled || item.Path != "/dir/a.txt" || !item.Capabilities.Cancelable || item.Capabilities.Retryable {
+		t.Fatalf("delete task = %+v, want scheduled cancelable internal bookkeeping task", item)
 	}
+	assertNoSyncScopeTasks(t, fs)
 }
 
 func TestVFSDeleteTaskCancelRestoresPendingDelete(t *testing.T) {

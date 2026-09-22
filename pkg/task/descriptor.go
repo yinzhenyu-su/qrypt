@@ -58,7 +58,7 @@ type Descriptor struct {
 	// UserVisible marks the types that the task API creates for the app's
 	// default task list; ScopeForType turns it into the task's Scope. Internal
 	// bookkeeping records that describe the same operation (the mount's own
-	// upload/delete records) are created as sync scope explicitly.
+	// upload/delete records) are created as internal scope explicitly.
 	UserVisible bool
 	// Recoverable marks types whose interrupted work is recovered at startup.
 	Recoverable bool
@@ -128,12 +128,15 @@ func Promote(typ Type, items int) Type {
 	return d.BatchOf
 }
 
-// ScopeForType returns the scope a task of typ is created with: app-visible
-// types are user scope, bookkeeping types are sync scope. The app's default
-// task list filters on this scope.
+// ScopeForType derives the creation origin from the type declaration:
+// user-visible types are user scope, everything else internal scope (the
+// invisible producer in the system is mount write-path bookkeeping).
+// Transitional: ADR-0001 has the creation path declare origin directly
+// instead of deriving it from visibility. ScopeSync is never derived here;
+// it belongs to the syncer.
 func ScopeForType(typ Type) Scope {
 	if d, ok := Describe(typ); ok && d.UserVisible {
 		return ScopeUser
 	}
-	return ScopeSync
+	return ScopeInternal
 }
