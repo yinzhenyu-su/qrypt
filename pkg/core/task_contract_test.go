@@ -145,8 +145,8 @@ func TestTaskPhaseWireValuesPinned(t *testing.T) {
 		{task.PhaseScheduled, "scheduled"},
 		{task.PhaseRetrying, "retrying"},
 		{task.PhaseReady, "ready"},
-		{task.PhaseStaging, "staging"},
-		{task.PhaseStage, "stage"},
+		{task.PhaseAppStaging, "staging"},
+		{task.PhaseServerStage, "stage"},
 		{task.PhaseUpload, "upload"},
 		{task.PhaseDownload, "download"},
 		{task.PhaseMkdir, "mkdir"},
@@ -160,10 +160,10 @@ func TestTaskPhaseWireValuesPinned(t *testing.T) {
 		{task.PhaseQueuedUpload, "queued_upload"},
 		{task.PhaseHashing, "hashing"},
 		{task.PhaseComplete, "complete"},
-		{task.PhaseUploading, "uploading"},
-		{task.PhaseCompleted, "completed"},
-		{task.PhaseStarting, "starting"},
-		{task.PhaseSuperseded, "superseded"},
+		{task.PhaseCloudUploading, "uploading"},
+		{task.PhaseCloudCompleted, "completed"},
+		{task.PhaseRecordStarting, "starting"},
+		{task.PhaseRecordSuperseded, "superseded"},
 		{task.PhasePartialFailed, "partial_failed"},
 		{task.PhaseFailed, "failed"},
 		{task.PhaseCanceled, "canceled"},
@@ -338,7 +338,7 @@ func TestCoreTaskWireJSONPinned(t *testing.T) {
 		Tracking: task.Tracking{Items: []task.ItemTracking{{
 			Path: "/quark/a.bin", ItemID: "local-1", SourcePath: "src",
 			DestPath: "/quark/a.bin", Mount: "quark", State: task.ItemStateRunning,
-			Phase: task.PhaseStaging, Error: &task.Error{Code: "x", Message: "y"}, RemoteID: "rid",
+			Phase: task.PhaseAppStaging, Error: &task.Error{Code: "x", Message: "y"}, RemoteID: "rid",
 			SourceBytesDone: 1, SourceBytesTotal: 2, CloudBytesDone: 3, CloudBytesTotal: 4,
 			StagingBytesDone: 5, StagingBytesTotal: 6, OutputBytesDone: 7, OutputBytesTotal: 8,
 			TransferBytesDone: 9, TransferBytesTotal: 10, ResumeOffset: 11,
@@ -394,11 +394,6 @@ func TestCoreTaskWireJSONPinned(t *testing.T) {
 // tests, mirrors the fixture in upload_stream_task_test.go.
 func newTaskBoundaryCore(t *testing.T) *Core {
 	t.Helper()
-	// Set once before any runner exists: stream-runner goroutines read this
-	// global, so writing it later (inside createBoundaryUploadTask) would
-	// race with the previous task's still-running runner. Core.Close waits
-	// for runners, keeping a per-test write safe across tests in one binary.
-	UploadStreamTaskPollInterval = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	remote := t.TempDir()
@@ -452,6 +447,7 @@ func readTaskEventsUntil(t *testing.T, sub TaskSubscription, match func(TaskEven
 // strictly, closing the subscription is idempotent, and reopening from the
 // last seen sequence replays exactly the events that follow it.
 func TestCoreTaskEventReplaySequenceAfterClose(t *testing.T) {
+	t.Parallel()
 	c := newTaskBoundaryCore(t)
 	filter := TaskFilter{Types: []TaskType{TaskTypeUploadStreamBatch}}
 
@@ -530,6 +526,7 @@ func TestCoreTaskEventReplaySequenceAfterClose(t *testing.T) {
 // Run under -race; the assertion after the group pins that a closed
 // subscription reports context.Canceled rather than panicking.
 func TestCoreTaskSubscriptionReadCloseRace(t *testing.T) {
+	t.Parallel()
 	c := newTaskBoundaryCore(t)
 	sub, err := c.OpenTaskEventsFrom(context.Background(), TaskFilter{Types: []TaskType{TaskTypeUploadStreamBatch}}, 0)
 	if err != nil {

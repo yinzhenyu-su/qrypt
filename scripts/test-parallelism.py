@@ -9,13 +9,15 @@ neither is visible from the test body alone:
     directory, and goleak.Find -- which inspects every goroutine in the process
     and so never settles while another test is running.
   * A production package-level variable used as a test seam: core's
-    UploadStreamTaskPollInterval and DirectUploadRetryBaseDelay, vfs/upload's
-    logging.L. Whichever test is running writes it, so two of them race on the
-    assignment itself.
+    DirectUploadRetryBaseDelay, vfs/upload's logging.L. Whichever test is
+    running writes it, so two of them race on the assignment itself. (The
+    cure is instance injection: core's stream poll interval is a per-Core
+    field now, so tests stop sharing timing state.)
 
-Both propagate through helpers: newTaskBoundaryCore in pkg/core writes a seam,
-so every test calling it has to stay serial even though its own body never
-mentions one. The call graph is followed to a fixpoint for that reason.
+Both propagate through helpers: a helper that writes a seam (core's
+newTaskBoundaryCore once wrote one) keeps every test calling it serial even
+though its own body never mentions one. The call graph is followed to a
+fixpoint for that reason.
 
 `apply` puts t.Parallel() on the tests that can take it and takes it back off
 the ones above. `audit` reports the same findings without writing and exits 1

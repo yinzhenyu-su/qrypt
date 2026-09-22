@@ -437,26 +437,35 @@ func waitTaskState(t *testing.T, m *Manager, id string, want State) Task {
 // Detail["phase"] drives Progress.Phase: live updates store task.Phase
 // values while legacy journals store plain strings. Both must sync, or a
 // task whose runner only records its display wording loses progress.phase.
+// Legacy strings written from the State vocabulary normalize to display
+// wording (glossary: 阶段标签 不得复用 State 的词汇) so old content never
+// resurfaces state words as phase labels.
 func TestUpdateSyncsProgressPhaseFromDetail(t *testing.T) {
 	t.Parallel()
 	m := NewManager()
 	defer m.Close()
 	ctx := context.Background()
-	typed := m.Submit(ctx, Task{ID: "typed", Type: TypeMoveBatch, Scope: ScopeUser}, func(_ context.Context, update UpdateFunc) error {
-		update(func(taskItem *Task) { taskItem.Detail = map[string]any{"phase": PhaseComplete} })
-		return nil
-	})
-	typed = waitTaskState(t, m, typed.ID, StateSucceeded)
-	if got := typed.Progress.Phase; got != PhaseComplete {
-		t.Fatalf("progress phase after typed detail = %q, want %q", got, PhaseComplete)
-	}
-	legacy := m.Submit(ctx, Task{ID: "legacy", Type: TypeMoveBatch, Scope: ScopeUser}, func(_ context.Context, update UpdateFunc) error {
-		update(func(taskItem *Task) { taskItem.Detail = map[string]any{"phase": "move"} })
-		return nil
-	})
-	legacy = waitTaskState(t, m, legacy.ID, StateSucceeded)
-	if got := legacy.Progress.Phase; got != PhaseMove {
-		t.Fatalf("progress phase after legacy detail = %q, want %q", got, PhaseMove)
+	for _, tc := range []struct {
+		id    string
+		phase any
+		want  Phase
+	}{
+		{"typed", PhaseComplete, PhaseComplete},
+		{"legacy-display", "move", PhaseMove},
+		{"legacy-waiting-input", "waiting_input", PhaseAppStaging},
+		{"legacy-waiting-output", "waiting_output", PhaseReady},
+		{"legacy-retry-wait", "retry_wait", PhaseRetrying},
+		{"legacy-queued", "queued", PhasePending},
+		{"legacy-homonym", "failed", PhaseFailed},
+	} {
+		got := m.Submit(ctx, Task{ID: tc.id, Type: TypeMoveBatch, Scope: ScopeUser}, func(_ context.Context, update UpdateFunc) error {
+			update(func(taskItem *Task) { taskItem.Detail = map[string]any{"phase": tc.phase} })
+			return nil
+		})
+		got = waitTaskState(t, m, got.ID, StateSucceeded)
+		if got.Progress.Phase != tc.want {
+			t.Fatalf("%s: progress phase = %q, want %q", tc.id, got.Progress.Phase, tc.want)
+		}
 	}
 }
 
@@ -480,6 +489,7 @@ func TestSubmitNormalizesVisibilityFromTypeDeclaration(t *testing.T) {
 // list filter matches on visibility alone, so any origin's tasks may be
 // visible or hidden.
 func TestFilterMatchByVisibility(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		filter Filter
 		task   Task
@@ -502,6 +512,7 @@ func TestFilterMatchByVisibility(t *testing.T) {
 }
 
 func TestFilterMatchByScope(t *testing.T) {
+	t.Parallel()
 	userTask := Task{ID: "user-1", Type: TypeMoveRemote, Scope: ScopeUser}
 	syncTask := Task{ID: "sync-1", Type: TypeUploadRemote, Scope: ScopeSync}
 	internalTask := Task{ID: "internal-1", Type: TypeUploadRemote, Scope: ScopeInternal}

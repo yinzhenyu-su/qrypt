@@ -250,12 +250,14 @@ func (m *Manager) updateForGeneration(id string, generation uint64, fn func(*Tas
 		managed.Task.UpdatedAt = time.Now().UTC()
 		if managed.Task.Detail != nil {
 			// Detail carries the display wording already; retag it. Live
-			// updates store task.Phase values, legacy journals store strings.
+			// updates store task.Phase values, legacy journals store strings
+			// — and legacy strings may hold State vocabulary, which
+			// normalizes to display wording (see legacyPhase).
 			switch phase := managed.Task.Detail["phase"].(type) {
 			case Phase:
 				managed.Task.Progress.Phase = phase
 			case string:
-				managed.Task.Progress.Phase = Phase(phase)
+				managed.Task.Progress.Phase = legacyPhase(phase)
 			}
 		}
 	}
