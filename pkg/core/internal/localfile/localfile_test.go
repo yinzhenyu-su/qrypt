@@ -167,8 +167,15 @@ func TestWaitCancellationAfterChangeReturnsMostRecentSnapshot(t *testing.T) {
 	if !errors.Is(got.err, context.Canceled) {
 		t.Fatalf("Wait err = %v, want context.Canceled", got.err)
 	}
-	if got.snapshot.Size != int64(len("a")) && got.snapshot.Size != int64(len("changed")) {
-		t.Fatalf("snapshot size = %d, want a real observation of the file", got.snapshot.Size)
+	// Assert the snapshot is one of the waiter's own observations and not the
+	// Go zero value. ObservedAt is what says so, not Size: the write goroutine
+	// reaches disk through os.WriteFile, which truncates before it writes, so a
+	// poll landing in that window legitimately observes size 0. Waiting above
+	// for size 7 to be on disk does not rule it out either -- the waiter's last
+	// observation can be the truncated one, with the next tick never arriving
+	// because the cancel comes first.
+	if got.snapshot.ObservedAt.IsZero() {
+		t.Fatalf("snapshot = %+v carries no observation, want a real one", got.snapshot)
 	}
 }
 
