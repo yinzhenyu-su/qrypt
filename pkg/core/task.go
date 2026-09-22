@@ -315,7 +315,7 @@ func taskCreationCapabilities(typ task.Type) task.Capabilities {
 }
 
 func applyTaskRequestMetadata(item *task.Task, req task.Request) {
-	item.OperationKey = req.OperationKey
+	item.IdempotencyKey = req.IdempotencyKey
 	item.OperationFingerprint = req.OperationFingerprint
 }
 
@@ -327,7 +327,7 @@ func (c *Core) CreateOperation(ctx context.Context, req task.OperationRequest) (
 	if err != nil {
 		return task.Task{}, err
 	}
-	legacy.OperationKey = req.Idempotency
+	legacy.IdempotencyKey = req.IdempotencyKey
 	legacy.OperationFingerprint, err = operationFingerprint(req)
 	if err != nil {
 		return task.Task{}, err
@@ -367,7 +367,7 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 }
 
 func operationFingerprint(req task.OperationRequest) (string, error) {
-	req.Idempotency = ""
+	req.IdempotencyKey = ""
 	data, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("core: fingerprint task operation: %w", err)

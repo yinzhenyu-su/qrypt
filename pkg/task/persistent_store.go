@@ -96,7 +96,7 @@ func taskDurableKey(t Task) durableKey {
 	}
 	return durableKey{
 		operation:            t.Operation,
-		operationKey:         t.OperationKey,
+		idempotencyKey:       t.IdempotencyKey,
 		operationFingerprint: t.OperationFingerprint,
 		generation:           t.ExecutionGeneration,
 		state:                t.State,
@@ -111,7 +111,7 @@ func taskDurableKey(t Task) durableKey {
 
 type durableKey struct {
 	operation            OperationKind
-	operationKey         string
+	idempotencyKey       string
 	operationFingerprint string
 	generation           uint64
 	state                State

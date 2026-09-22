@@ -67,7 +67,7 @@ func TestManagerSubmitIdempotentReturnsExistingTask(t *testing.T) {
 	first, err := m.SubmitIdempotent(context.Background(), Task{
 		ID:                   "first",
 		Scope:                ScopeUser,
-		OperationKey:         "request-1",
+		IdempotencyKey:       "request-1",
 		OperationFingerprint: "fingerprint-1",
 	}, func(context.Context, UpdateFunc) error { return nil })
 	if err != nil {
@@ -76,7 +76,7 @@ func TestManagerSubmitIdempotentReturnsExistingTask(t *testing.T) {
 	second, err := m.SubmitIdempotent(context.Background(), Task{
 		ID:                   "second",
 		Scope:                ScopeUser,
-		OperationKey:         "request-1",
+		IdempotencyKey:       "request-1",
 		OperationFingerprint: "fingerprint-1",
 	}, func(context.Context, UpdateFunc) error { return nil })
 	if err != nil {
@@ -94,7 +94,7 @@ func TestManagerSubmitIdempotentRejectsFingerprintConflict(t *testing.T) {
 	_, err := m.SubmitIdempotent(context.Background(), Task{
 		ID:                   "first",
 		Scope:                ScopeUser,
-		OperationKey:         "request-1",
+		IdempotencyKey:       "request-1",
 		OperationFingerprint: "fingerprint-1",
 	}, func(context.Context, UpdateFunc) error { return nil })
 	if err != nil {
@@ -103,7 +103,7 @@ func TestManagerSubmitIdempotentRejectsFingerprintConflict(t *testing.T) {
 	_, err = m.SubmitIdempotent(context.Background(), Task{
 		ID:                   "second",
 		Scope:                ScopeUser,
-		OperationKey:         "request-1",
+		IdempotencyKey:       "request-1",
 		OperationFingerprint: "fingerprint-2",
 	}, func(context.Context, UpdateFunc) error { return nil })
 	if !errors.Is(err, ErrIdempotencyConflict) {
@@ -122,7 +122,7 @@ func TestPersistentManagerRetainsIdempotencyRecord(t *testing.T) {
 		ID:                   "first",
 		Scope:                ScopeUser,
 		Capabilities:         Capabilities{Persistent: true},
-		OperationKey:         "request-1",
+		IdempotencyKey:       "request-1",
 		OperationFingerprint: "fingerprint-1",
 	}, func(ctx context.Context, _ UpdateFunc) error {
 		<-ctx.Done()
@@ -144,7 +144,7 @@ func TestPersistentManagerRetainsIdempotencyRecord(t *testing.T) {
 		ID:                   "second",
 		Scope:                ScopeUser,
 		Capabilities:         Capabilities{Persistent: true},
-		OperationKey:         "request-1",
+		IdempotencyKey:       "request-1",
 		OperationFingerprint: "fingerprint-1",
 	}, func(context.Context, UpdateFunc) error { return nil })
 	if err != nil {

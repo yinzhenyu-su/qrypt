@@ -153,7 +153,7 @@ func TestCoreTaskWireJSONPinned(t *testing.T) {
 		Version:              9,
 		SchemaVersion:        1,
 		ExecutionGeneration:  2,
-		OperationKey:         "idem-1",
+		IdempotencyKey:       "idem-1",
 		OperationFingerprint: "fp-1",
 		DismissRequested:     true,
 		Progress: task.Progress{

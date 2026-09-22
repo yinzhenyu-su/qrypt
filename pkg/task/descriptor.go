@@ -45,7 +45,7 @@ type Descriptor struct {
 	// Creation is the creation path that builds tasks of this type.
 	Creation CreationPath
 	// Operation is the stable operation category a task of this type performs.
-	// It is persisted with the task and feeds the durable idempotency key.
+	// It is persisted with the task and feeds `durableKey`.
 	Operation OperationKind
 	// BatchOf is the type a multi-item request of this family is promoted to.
 	// Empty means the family has no batch type: multi-item requests keep Type.

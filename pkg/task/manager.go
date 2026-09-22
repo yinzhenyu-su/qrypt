@@ -118,7 +118,7 @@ func (m *Manager) SubmitIdempotent(ctx context.Context, item Task, run RunFunc) 
 	}
 	m.submitMu.Lock()
 	defer m.submitMu.Unlock()
-	if item.OperationKey != "" {
+	if item.IdempotencyKey != "" {
 		if existing, found, err := m.findIdempotent(item); err != nil {
 			return Task{}, err
 		} else if found {
@@ -194,11 +194,11 @@ func (m *Manager) run(ctx context.Context, id string) {
 func (m *Manager) findIdempotent(item Task) (Task, bool, error) {
 	for _, managed := range m.store.ListManaged(Filter{}) {
 		current := managed.Task
-		if current.Scope != item.Scope || current.OperationKey != item.OperationKey {
+		if current.Scope != item.Scope || current.IdempotencyKey != item.IdempotencyKey {
 			continue
 		}
 		if current.OperationFingerprint != item.OperationFingerprint {
-			return Task{}, false, fmt.Errorf("%w: key %q", ErrIdempotencyConflict, item.OperationKey)
+			return Task{}, false, fmt.Errorf("%w: key %q", ErrIdempotencyConflict, item.IdempotencyKey)
 		}
 		return current, true, nil
 	}
