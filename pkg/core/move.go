@@ -114,16 +114,16 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 		if len(req.Items) == 1 && crossQryptMount {
 			update(func(item *task.Task) {
 				item.Detail["mode"] = "copy_delete"
-				item.Detail["phase"] = "copy"
+				item.Detail["phase"] = task.PhaseCopy
 			})
 			return c.runCopyTask(runCtx, update, crossCopySpec)
 		} else if len(req.Items) == 1 {
 			update(func(item *task.Task) {
 				item.Detail["mode"] = "server_move"
-				item.Detail["phase"] = "move"
+				item.Detail["phase"] = task.PhaseMove
 			})
 			runItem.Detail["mode"] = "server_move"
-			runItem.Detail["phase"] = "move"
+			runItem.Detail["phase"] = task.PhaseMove
 			err = c.fs.Rename(runCtx, first.SourcePath, first.DestPath)
 			if err == nil {
 				c.refreshMovePaths(first.SourcePath, first.DestPath)
@@ -136,7 +136,7 @@ func (c *Core) createMoveTask(ctx context.Context, req moveTaskSpec) (task.Task,
 				item.Detail = cloneTaskDetail(runItem.Detail)
 			}
 			if err == nil && len(req.Items) == 1 {
-				item.Detail["phase"] = "complete"
+				item.Detail["phase"] = task.PhaseComplete
 			}
 		})
 		return err
@@ -251,8 +251,8 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 		mu.Unlock()
 		update(func(t *task.Task) {
 			t.Progress.CurrentPath = item.SourcePath
-			t.Progress.Phase = "move"
-			t.Detail["phase"] = "move"
+			t.Progress.Phase = task.PhaseMove
+			t.Detail["phase"] = task.PhaseMove
 			t.Detail["active_paths"] = activePaths
 			if cross {
 				t.Detail["mode"] = "copy_delete"
@@ -336,7 +336,7 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 	failed := int64(len(req.Items)) - succeeded
 	update(func(t *task.Task) {
 		t.Progress.CurrentPath = ""
-		t.Detail["phase"] = "complete"
+		t.Detail["phase"] = task.PhaseComplete
 		t.Detail["active_paths"] = []string{}
 		if failed == 0 {
 			// Every item is in place, including the ones an earlier attempt
@@ -348,12 +348,12 @@ func (c *Core) runMoveBatch(ctx context.Context, update task.UpdateFunc, req mov
 		t.Capabilities.Retryable = true
 		if succeeded > 0 {
 			t.State = task.StatePartialFailed
-			t.Progress.Phase = "partial_failed"
-			t.Detail["phase"] = "partial_failed"
+			t.Progress.Phase = task.PhasePartialFailed
+			t.Detail["phase"] = task.PhasePartialFailed
 			return
 		}
-		t.Progress.Phase = "failed"
-		t.Detail["phase"] = "failed"
+		t.Progress.Phase = task.PhaseFailed
+		t.Detail["phase"] = task.PhaseFailed
 	})
 	if failed > 0 && succeeded == 0 {
 		return fmt.Errorf("move failed for %d of %d items", failed, len(req.Items))

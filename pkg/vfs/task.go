@@ -155,7 +155,7 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 		updatedAt = timeFromUnixNano(upload.LastAttemptAt)
 	}
 	detail := map[string]any{
-		"phase":            upload.State,
+		"phase":            uploadStatePhase(upload.State),
 		"parent_remote_id": upload.ParentRemoteID,
 		"result_remote_id": upload.ResultRemoteID,
 		"instant":          upload.Instant,
@@ -186,7 +186,7 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 	item.Progress = task.Progress{
 		CloudBytesDone:  upload.BytesUploaded,
 		CloudBytesTotal: upload.BytesTotal,
-		Phase:           upload.State,
+		Phase:           uploadStatePhase(upload.State),
 	}
 	item.Capabilities = task.Capabilities{
 		Cancelable:  state != task.StateSucceeded && state != task.StateCanceled,
@@ -208,6 +208,36 @@ func taskFromUploadRecord(upload uploadTaskRecord) task.Task {
 		item.Version = uint64(item.UpdatedAt.UnixNano())
 	}
 	return item
+}
+
+// uploadStatePhase maps an upload record's state onto display wording
+// (glossary: 阶段标签): queue-state words get display words, and the cloud
+// drive's upload phases pass through as display wording.
+func uploadStatePhase(state string) task.Phase {
+	switch state {
+	case "queued":
+		return task.PhasePending
+	case "scheduled":
+		return task.PhaseScheduled
+	case "retry_wait":
+		return task.PhaseRetrying
+	case "failed":
+		return task.PhaseFailed
+	case "canceled":
+		return task.PhaseCanceled
+	case "starting":
+		return task.PhaseStarting
+	case upload.SnapshotStateCompleted:
+		return task.PhaseCompleted
+	case upload.SnapshotStateSuperseded:
+		return task.PhaseSuperseded
+	case string(drive.UploadPhasePreparing), string(drive.UploadPhaseUploading), string(drive.UploadPhaseCommitting):
+		// Cloud drive phase wording (preparing/uploading/committing).
+		return task.Phase(state)
+	default:
+		// Record-internal wording is not display vocabulary.
+		return task.PhasePending
+	}
 }
 
 func taskStateFromUpload(state string) task.State {

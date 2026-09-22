@@ -104,8 +104,8 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 		}
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = dir
-			taskItem.Progress.Phase = "mkdir"
-			taskItem.Detail["phase"] = "mkdir"
+			taskItem.Progress.Phase = task.PhaseMkdir
+			taskItem.Detail["phase"] = task.PhaseMkdir
 		})
 		if _, err := c.Mkdir(ctx, dir); err != nil {
 			return err
@@ -138,8 +138,8 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 				mu.Unlock()
 				update(func(taskItem *task.Task) {
 					taskItem.Progress.CurrentPath = item.SourcePath
-					taskItem.Progress.Phase = "copy"
-					taskItem.Detail["phase"] = "copy"
+					taskItem.Progress.Phase = task.PhaseCopy
+					taskItem.Detail["phase"] = task.PhaseCopy
 					taskItem.Detail["current_dest_path"] = item.DestPath
 					taskItem.Detail["active_paths"] = activePaths
 				})
@@ -211,8 +211,8 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 		}
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
-			taskItem.Progress.Phase = "complete"
-			taskItem.Detail["phase"] = "complete"
+			taskItem.Progress.Phase = task.PhaseComplete
+			taskItem.Detail["phase"] = task.PhaseComplete
 			taskItem.Detail["active_paths"] = []string{}
 		})
 		return nil
@@ -225,11 +225,11 @@ func (c *Core) runCopyTask(ctx context.Context, update task.UpdateFunc, spec cop
 		taskItem.Capabilities.Retryable = true
 		if succeeded > 0 {
 			taskItem.State = task.StatePartialFailed
-			taskItem.Progress.Phase = "partial_failed"
-			taskItem.Detail["phase"] = "partial_failed"
+			taskItem.Progress.Phase = task.PhasePartialFailed
+			taskItem.Detail["phase"] = task.PhasePartialFailed
 		} else {
-			taskItem.Progress.Phase = "failed"
-			taskItem.Detail["phase"] = "failed"
+			taskItem.Progress.Phase = task.PhaseFailed
+			taskItem.Detail["phase"] = task.PhaseFailed
 		}
 	})
 	if succeeded > 0 {
@@ -377,8 +377,8 @@ func (c *Core) removeCopiedSourceDirs(ctx context.Context, dirs []string, update
 		}
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = dir.Path
-			taskItem.Progress.Phase = "delete_source"
-			taskItem.Detail["phase"] = "delete_source"
+			taskItem.Progress.Phase = task.PhaseDeleteSource
+			taskItem.Detail["phase"] = task.PhaseDeleteSource
 		})
 		if source != nil {
 			if err := c.removeMoveSource(ctx, source, dir.Path, true); err != nil {

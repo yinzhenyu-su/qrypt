@@ -131,6 +131,49 @@ func TestTaskVisibilityWireValuesPinned(t *testing.T) {
 	}
 }
 
+// TestTaskPhaseWireValuesPinned pins the display vocabulary of the phase
+// labels (glossary: 阶段标签). The vocabulary is declared independently of
+// the State enums — no phase value is written from a State constant — and
+// these wire strings are what mobile/CLI consumers display.
+func TestTaskPhaseWireValuesPinned(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		phase task.Phase
+		want  string
+	}{
+		{task.PhasePending, "pending"},
+		{task.PhaseScheduled, "scheduled"},
+		{task.PhaseRetrying, "retrying"},
+		{task.PhaseReady, "ready"},
+		{task.PhaseStaging, "staging"},
+		{task.PhaseStage, "stage"},
+		{task.PhaseUpload, "upload"},
+		{task.PhaseDownload, "download"},
+		{task.PhaseMkdir, "mkdir"},
+		{task.PhaseCopy, "copy"},
+		{task.PhaseMove, "move"},
+		{task.PhaseDelete, "delete"},
+		{task.PhaseDeleteSource, "delete_source"},
+		{task.PhaseSkipped, "skipped"},
+		{task.PhaseInstant, "instant"},
+		{task.PhaseDirect, "direct"},
+		{task.PhaseQueuedUpload, "queued_upload"},
+		{task.PhaseHashing, "hashing"},
+		{task.PhaseComplete, "complete"},
+		{task.PhaseUploading, "uploading"},
+		{task.PhaseCompleted, "completed"},
+		{task.PhaseStarting, "starting"},
+		{task.PhaseSuperseded, "superseded"},
+		{task.PhasePartialFailed, "partial_failed"},
+		{task.PhaseFailed, "failed"},
+		{task.PhaseCanceled, "canceled"},
+	} {
+		if string(tc.phase) != tc.want {
+			t.Fatalf("phase wire value = %q, want %q", tc.phase, tc.want)
+		}
+	}
+}
+
 // TestTaskStateWireValuesPinned pins the task-level state wire values. The
 // handshake strings ("waiting_input"/"waiting_output") are intentionally not
 // among them: they are item-level only (glossary: 等待供数 / 等待取数).
@@ -295,7 +338,7 @@ func TestCoreTaskWireJSONPinned(t *testing.T) {
 		Tracking: task.Tracking{Items: []task.ItemTracking{{
 			Path: "/quark/a.bin", ItemID: "local-1", SourcePath: "src",
 			DestPath: "/quark/a.bin", Mount: "quark", State: task.ItemStateRunning,
-			Phase: "staging", Error: &task.Error{Code: "x", Message: "y"}, RemoteID: "rid",
+			Phase: task.PhaseStaging, Error: &task.Error{Code: "x", Message: "y"}, RemoteID: "rid",
 			SourceBytesDone: 1, SourceBytesTotal: 2, CloudBytesDone: 3, CloudBytesTotal: 4,
 			StagingBytesDone: 5, StagingBytesTotal: 6, OutputBytesDone: 7, OutputBytesTotal: 8,
 			TransferBytesDone: 9, TransferBytesTotal: 10, ResumeOffset: 11,

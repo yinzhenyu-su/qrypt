@@ -292,9 +292,9 @@ func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *u
 	update(func(item *task.Task) {
 		item.State = task.StateRetryWait
 		item.NextAttempt = next
-		item.Progress.Phase = string(task.ItemStateRetryWait)
+		item.Progress.Phase = task.PhaseRetrying
 		if item.Detail != nil {
-			item.Detail["phase"] = string(task.ItemStateRetryWait)
+			item.Detail["phase"] = task.PhaseRetrying
 		}
 	})
 	timer := time.NewTimer(time.Until(next))
@@ -314,9 +314,9 @@ func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *u
 			// A backoff can run for minutes; keep emitting updates so the
 			// task is visibly alive rather than looking stuck.
 			update(func(item *task.Task) {
-				item.Progress.Phase = string(task.ItemStateRetryWait)
+				item.Progress.Phase = task.PhaseRetrying
 				if item.Detail != nil {
-					item.Detail["phase"] = string(task.ItemStateRetryWait)
+					item.Detail["phase"] = task.PhaseRetrying
 				}
 			})
 			continue
@@ -340,7 +340,7 @@ func (b *uploadStreamBatch) scheduleDirectUploadRetry(update task.UpdateFunc, it
 	b.nextAttempt = time.Now().Add(directUploadRetryDelay(b.retryCount))
 	if item := b.byID[itemID]; item != nil {
 		item.State = task.ItemStateRetryWait
-		item.CloudPhase = string(task.ItemStateRetryWait)
+		item.CloudPhase = task.PhaseRetrying
 		item.Error = &task.Error{Message: err.Error(), Retryable: true}
 		item.SourceRead = 0
 		item.CloudWritten = 0
@@ -393,7 +393,7 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	item.CloudTotal = 0
 	precomputeHashes := c.requiresPrecomputedSourceHashes(destPath)
 	if precomputeHashes {
-		item.CloudPhase = "hashing"
+		item.CloudPhase = task.PhaseHashing
 	}
 	batch.updateTaskSnapshotLocked()
 	batch.mu.Unlock()
@@ -449,11 +449,11 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	item.CloudWritten = entry.Size
 	item.CloudTotal = entry.Size
 	if direct {
-		if item.CloudPhase == "" || item.CloudPhase == string(drive.UploadPhaseUploading) || item.CloudPhase == string(drive.UploadPhaseCompleted) {
-			item.CloudPhase = "direct"
+		if item.CloudPhase == "" || item.CloudPhase == task.PhaseUploading || item.CloudPhase == task.PhaseCompleted {
+			item.CloudPhase = task.PhaseDirect
 		}
 	} else {
-		item.CloudPhase = "queued_upload"
+		item.CloudPhase = task.PhaseQueuedUpload
 	}
 	batch.updateTaskSnapshotLocked()
 	return nil
@@ -515,7 +515,7 @@ func (p uploadStreamDirectProgress) Phase(phase drive.UploadPhase) {
 	p.batch.mu.Lock()
 	defer p.batch.mu.Unlock()
 	if item := p.batch.byID[p.itemID]; item != nil {
-		item.CloudPhase = string(phase)
+		item.CloudPhase = task.Phase(phase)
 	}
 	p.batch.updateTaskSnapshotLocked()
 }

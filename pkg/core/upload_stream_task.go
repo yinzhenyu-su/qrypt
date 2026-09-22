@@ -59,7 +59,7 @@ type uploadStreamItem struct {
 	Written      int64
 	CloudWritten int64
 	CloudTotal   int64
-	CloudPhase   string
+	CloudPhase   task.Phase
 	RemoteID     string
 	Open         bool
 	State        task.ItemState
@@ -110,7 +110,7 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 		Detail: map[string]any{
 			"items":           batch.detailItems(),
 			"conflict_policy": batch.conflictPolicy,
-			"phase":           string(task.ItemStateWaitingInput),
+			"phase":           task.PhaseStaging,
 		},
 		Tracking: task.Tracking{Items: batch.trackingItemsLocked()},
 	}
@@ -272,7 +272,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 				streamItem.Recovery = "pending_upload"
 				streamItem.State = task.ItemStateRunning
 				if streamItem.CloudPhase == "" {
-					streamItem.CloudPhase = "queued_upload"
+					streamItem.CloudPhase = task.PhaseQueuedUpload
 				}
 				streamItem.CloudTotal = streamItem.Size
 			}
@@ -285,7 +285,7 @@ func (c *Core) uploadStreamBatchFromTask(ctx context.Context, item task.Task) (*
 			streamItem.Written = streamItem.Size
 			streamItem.CloudWritten = remote.Size
 			streamItem.CloudTotal = remote.Size
-			streamItem.CloudPhase = "completed"
+			streamItem.CloudPhase = task.PhaseCompleted
 			streamItem.RemoteID = remote.ID
 			streamItem.Recovery = "remote_size_match"
 		} else {
@@ -504,8 +504,8 @@ func (h *UploadStreamItemHandle) Commit(ctx context.Context) error {
 	item.Error = nil
 	item.RemoteID = entry.ID
 	item.CloudTotal = entry.Size
-	if item.CloudPhase == "" || item.CloudPhase == "staging" {
-		item.CloudPhase = "queued_upload"
+	if item.CloudPhase == "" || item.CloudPhase == task.PhaseStaging {
+		item.CloudPhase = task.PhaseQueuedUpload
 	}
 	h.closed = true
 	h.batch.updateTaskSnapshotLocked()
@@ -674,7 +674,7 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 			item.RemoteID = existing.ID
 			item.CloudWritten = existing.Size
 			item.CloudTotal = existing.Size
-			item.CloudPhase = "skipped"
+			item.CloudPhase = task.PhaseSkipped
 		}
 		batch.items = append(batch.items, item)
 		batch.byID[itemID] = item
@@ -757,23 +757,23 @@ func (b *uploadStreamBatch) trackingItemsLocked() []task.ItemTracking {
 	return out
 }
 
-func uploadStreamItemPhase(item *uploadStreamItem) string {
+func uploadStreamItemPhase(item *uploadStreamItem) task.Phase {
 	if item.CloudPhase != "" {
 		return item.CloudPhase
 	}
 	switch item.State {
-	case task.ItemStateWaitingInput:
-		return "staging"
-	case task.ItemStateRunning:
-		return "staging"
+	case task.ItemStateWaitingInput, task.ItemStateRunning:
+		return task.PhaseStaging
+	case task.ItemStateRetryWait:
+		return task.PhaseRetrying
 	case task.ItemStateSucceeded:
-		return "complete"
+		return task.PhaseComplete
 	case task.ItemStateFailed:
-		return "failed"
+		return task.PhaseFailed
 	case task.ItemStateCanceled:
-		return "canceled"
+		return task.PhaseCanceled
 	default:
-		return string(item.State)
+		return task.PhasePending
 	}
 }
 
@@ -888,7 +888,7 @@ func applyRemoteUploadState(item *uploadStreamItem, remote task.Task) bool {
 		item.State = task.ItemStateSucceeded
 		item.Error = nil
 		if item.CloudPhase == "" {
-			item.CloudPhase = "complete"
+			item.CloudPhase = task.PhaseComplete
 		}
 		return true
 	case task.StateFailed:
@@ -950,7 +950,7 @@ func (b *uploadStreamBatch) updateTaskSnapshotLocked() {
 	// backoff, waiting) reports 0.
 	var speedBPS, etaMs int64
 	switch {
-	case phase == "hashing" && sourceBytesTotal >= 0:
+	case phase == task.PhaseHashing && sourceBytesTotal >= 0:
 		speedBPS, etaMs = b.progressSpeedAndETA(sourceBytesDone, sourceBytesTotal)
 	case cloudBytesTotal > 0:
 		speedBPS, etaMs = b.progressSpeedAndETA(cloudBytesDone, cloudBytesTotal)
@@ -1020,8 +1020,8 @@ func (b *uploadStreamBatch) progressSpeedAndETA(done, total int64) (speedBPS, et
 	return b.speedEstimate, (total - done) * 1000 / b.speedEstimate
 }
 
-func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal int64, phase string, active []string) {
-	phase = string(task.ItemStateWaitingInput)
+func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal int64, phase task.Phase, active []string) {
+	phase = task.PhaseStaging
 	for _, item := range b.items {
 		stagingBytesDone += item.Written
 		cloudBytesDone += item.CloudWritten
@@ -1035,22 +1035,22 @@ func (b *uploadStreamBatch) summaryLocked() (itemsDone, itemsFailed, stagingByte
 		case task.ItemStateRunning:
 			phase = item.CloudPhase
 			if phase == "" {
-				phase = "upload"
+				phase = task.PhaseUpload
 			}
 			active = append(active, item.DestPath)
 		case task.ItemStateRetryWait:
-			phase = string(task.ItemStateRetryWait)
+			phase = task.PhaseRetrying
 			active = append(active, item.DestPath)
 		}
 	}
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
-		phase = "complete"
+		phase = task.PhaseComplete
 	}
 	if itemsDone == int64(len(b.items)) && itemsFailed > 0 {
 		if itemsFailed == int64(len(b.items)) {
-			phase = "failed"
+			phase = task.PhaseFailed
 		} else {
-			phase = "partial_failed"
+			phase = task.PhasePartialFailed
 		}
 	}
 	return itemsDone, itemsFailed, stagingBytesDone, cloudBytesDone, cloudBytesTotal, phase, active
@@ -1077,14 +1077,14 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
-			taskItem.Progress.Phase = "complete"
+			taskItem.Progress.Phase = task.PhaseComplete
 			// Publish the aggregate counts together with the terminal state,
 			// so no consumer sees a finished task whose counters disagree.
 			taskItem.Progress.ItemsDone = itemsDone
 			taskItem.Progress.ItemsFailed = itemsFailed
 			taskItem.Progress.CloudBytesDone = cloudBytesDone
 			taskItem.Progress.CloudBytesTotal = cloudBytesTotal
-			taskItem.Detail["phase"] = "complete"
+			taskItem.Detail["phase"] = task.PhaseComplete
 			taskItem.Detail["active_paths"] = []string{}
 			taskItem.Tracking.Items = results
 		})
@@ -1104,11 +1104,11 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 		taskItem.Tracking.Items = results
 		if itemsFailed < int64(len(b.items)) {
 			taskItem.State = task.StatePartialFailed
-			taskItem.Progress.Phase = "partial_failed"
-			taskItem.Detail["phase"] = "partial_failed"
+			taskItem.Progress.Phase = task.PhasePartialFailed
+			taskItem.Detail["phase"] = task.PhasePartialFailed
 		} else {
-			taskItem.Progress.Phase = "failed"
-			taskItem.Detail["phase"] = "failed"
+			taskItem.Progress.Phase = task.PhaseFailed
+			taskItem.Detail["phase"] = task.PhaseFailed
 		}
 	})
 	if itemsFailed < int64(len(b.items)) {

@@ -139,8 +139,8 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 				mu.Unlock()
 				update(func(taskItem *task.Task) {
 					taskItem.Progress.CurrentPath = item.SourcePath
-					taskItem.Progress.Phase = "download"
-					taskItem.Detail["phase"] = "download"
+					taskItem.Progress.Phase = task.PhaseDownload
+					taskItem.Detail["phase"] = task.PhaseDownload
 					taskItem.Detail["current_dest_path"] = item.DestPath
 					taskItem.Detail["active_paths"] = activePaths
 				})
@@ -217,8 +217,8 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 	if failedCount == 0 {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
-			taskItem.Progress.Phase = "complete"
-			taskItem.Detail["phase"] = "complete"
+			taskItem.Progress.Phase = task.PhaseComplete
+			taskItem.Detail["phase"] = task.PhaseComplete
 			taskItem.Detail["active_paths"] = []string{}
 		})
 		return nil
@@ -231,11 +231,11 @@ func (c *Core) runDownloadTask(ctx context.Context, update task.UpdateFunc, spec
 		taskItem.Capabilities.Retryable = true
 		if succeeded > 0 {
 			taskItem.State = task.StatePartialFailed
-			taskItem.Progress.Phase = "partial_failed"
-			taskItem.Detail["phase"] = "partial_failed"
+			taskItem.Progress.Phase = task.PhasePartialFailed
+			taskItem.Detail["phase"] = task.PhasePartialFailed
 		} else {
-			taskItem.Progress.Phase = "failed"
-			taskItem.Detail["phase"] = "failed"
+			taskItem.Progress.Phase = task.PhaseFailed
+			taskItem.Detail["phase"] = task.PhaseFailed
 		}
 	})
 	if succeeded > 0 {

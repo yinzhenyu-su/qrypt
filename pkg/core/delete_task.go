@@ -84,7 +84,7 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 		mu.Unlock()
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = current
-			taskItem.Progress.Phase = "delete"
+			taskItem.Progress.Phase = task.PhaseDelete
 			taskItem.Detail["active_paths"] = activePaths
 		})
 		result := task.ItemTracking{Path: current, State: task.ItemStateSucceeded}
@@ -158,7 +158,7 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 	if failedCount == 0 {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
-			taskItem.Progress.Phase = "complete"
+			taskItem.Progress.Phase = task.PhaseComplete
 			taskItem.Detail["active_paths"] = []string{}
 		})
 		return nil
@@ -170,10 +170,10 @@ func (c *Core) runDeleteTask(ctx context.Context, update task.UpdateFunc, spec d
 		taskItem.Error = &task.Error{Message: message, Retryable: true}
 		if succeeded > 0 {
 			taskItem.State = task.StatePartialFailed
-			taskItem.Progress.Phase = "partial_failed"
+			taskItem.Progress.Phase = task.PhasePartialFailed
 			taskItem.Capabilities.Retryable = true
 		} else {
-			taskItem.Progress.Phase = "failed"
+			taskItem.Progress.Phase = task.PhaseFailed
 		}
 	})
 	if succeeded > 0 {
