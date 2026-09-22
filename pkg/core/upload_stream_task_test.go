@@ -512,7 +512,7 @@ func TestApplyRemoteUploadStateKeepsWaitingInputForNonTerminalRemote(t *testing.
 	remote := task.Task{
 		ID:       "remote-1",
 		State:    task.StateScheduled,
-		Progress: task.Progress{Phase: "queued"},
+		Progress: task.Progress{Phase: task.PhasePending},
 	}
 
 	if dismiss := applyRemoteUploadState(item, remote); dismiss {
@@ -524,7 +524,7 @@ func TestApplyRemoteUploadStateKeepsWaitingInputForNonTerminalRemote(t *testing.
 
 	// Terminal outcomes still fold: the remote result is authoritative.
 	remote.State = task.StateSucceeded
-	remote.Progress.Phase = "complete"
+	remote.Progress.Phase = task.PhaseComplete
 	if dismiss := applyRemoteUploadState(item, remote); !dismiss {
 		t.Fatal("succeeded remote should request dismissal")
 	}
@@ -545,7 +545,7 @@ func TestApplyRemoteUploadStateKeepsParentRunningForRetryableFailure(t *testing.
 		State: task.StateFailed,
 		Error: &task.Error{Message: "stale upload session", Retryable: true},
 		Progress: task.Progress{
-			Phase: "failed",
+			Phase: task.PhaseFailed,
 		},
 	}
 
@@ -590,7 +590,7 @@ func TestUploadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err := handle.Fail("input_stream_failed", "source permission lost"); err != nil {
 		t.Fatal(err)
 	}
-	waitForCoreTaskPhase(t, c, item.ID, string(task.ItemStateWaitingInput))
+	waitForCoreTaskPhase(t, c, item.ID, task.PhaseStaging)
 	waitingItems, err := c.ListTaskItems(ctx, item.ID, task.ItemFilter{States: []task.ItemState{task.ItemStateWaitingInput}})
 	if err != nil {
 		t.Fatal(err)

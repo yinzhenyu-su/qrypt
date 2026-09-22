@@ -130,7 +130,7 @@ type Progress struct {
 	ItemsTotal         int64  `json:"items_total,omitempty"`
 	ItemsFailed        int64  `json:"items_failed,omitempty"`
 	CurrentPath        string `json:"current_path,omitempty"`
-	Phase              string `json:"phase,omitempty"`
+	Phase              Phase  `json:"phase,omitempty"`
 	SpeedBPS           int64  `json:"speed_bps,omitempty"`
 	ETAMS              int64  `json:"eta_ms,omitempty"`
 }
@@ -182,7 +182,7 @@ type ItemTracking struct {
 	DestPath           string           `json:"dest_path,omitempty"`
 	Mount              string           `json:"mount,omitempty"`
 	State              ItemState        `json:"state"`
-	Phase              string           `json:"phase,omitempty"`
+	Phase              Phase            `json:"phase,omitempty"`
 	Error              *Error           `json:"error,omitempty"`
 	RemoteID           string           `json:"remote_id,omitempty"`
 	SourceBytesDone    int64            `json:"source_bytes_done,omitempty"`

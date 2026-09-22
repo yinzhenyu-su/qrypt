@@ -103,8 +103,8 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 				mu.Unlock()
 				update(func(taskItem *task.Task) {
 					taskItem.Progress.CurrentPath = item.DestPath
-					taskItem.Progress.Phase = "stage"
-					taskItem.Detail["phase"] = "stage"
+					taskItem.Progress.Phase = task.PhaseStage
+					taskItem.Detail["phase"] = task.PhaseStage
 					taskItem.Detail["current_source_path"] = item.SourcePath
 					taskItem.Detail["active_paths"] = activePaths
 				})
@@ -117,8 +117,8 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 				var hasRemoteTask bool
 				if err == nil {
 					update(func(taskItem *task.Task) {
-						taskItem.Progress.Phase = "upload"
-						taskItem.Detail["phase"] = "upload"
+						taskItem.Progress.Phase = task.PhaseUpload
+						taskItem.Detail["phase"] = task.PhaseUpload
 					})
 					remoteTask, hasRemoteTask, err = c.uploadCompletion().Wait(ctx, item.DestPath)
 					if err == nil {
@@ -143,9 +143,9 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 					result.Error = &task.Error{Message: err.Error()}
 				} else {
 					if uploadResult.Skipped {
-						result.Phase = "skipped"
+						result.Phase = task.PhaseSkipped
 					} else if uploadResult.Instant {
-						result.Phase = "instant"
+						result.Phase = task.PhaseInstant
 					}
 					result.RemoteID = uploadResult.Entry.ID
 					result.CloudBytesDone = uploadResult.Entry.Size
@@ -198,8 +198,8 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 	if failedCount == 0 {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
-			taskItem.Progress.Phase = "complete"
-			taskItem.Detail["phase"] = "complete"
+			taskItem.Progress.Phase = task.PhaseComplete
+			taskItem.Detail["phase"] = task.PhaseComplete
 			taskItem.Detail["active_paths"] = []string{}
 		})
 		return nil
@@ -212,11 +212,11 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 		taskItem.Capabilities.Retryable = true
 		if succeeded > 0 {
 			taskItem.State = task.StatePartialFailed
-			taskItem.Progress.Phase = "partial_failed"
-			taskItem.Detail["phase"] = "partial_failed"
+			taskItem.Progress.Phase = task.PhasePartialFailed
+			taskItem.Detail["phase"] = task.PhasePartialFailed
 		} else {
-			taskItem.Progress.Phase = "failed"
-			taskItem.Detail["phase"] = "failed"
+			taskItem.Progress.Phase = task.PhaseFailed
+			taskItem.Detail["phase"] = task.PhaseFailed
 		}
 	})
 	if succeeded > 0 {

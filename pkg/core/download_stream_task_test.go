@@ -70,7 +70,7 @@ func TestCreateTaskDownloadStreamBatchReadsAckAndFinishes(t *testing.T) {
 	}
 }
 
-func waitForCoreTaskPhase(t *testing.T, c *Core, id, phase string) task.Task {
+func waitForCoreTaskPhase(t *testing.T, c *Core, id string, phase task.Phase) task.Task {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -129,7 +129,7 @@ func TestDownloadStreamItemFailWaitsForReopen(t *testing.T) {
 	if err := handle.Fail("output_stream_failed", "target removed"); err != nil {
 		t.Fatal(err)
 	}
-	waitForCoreTaskPhase(t, c, item.ID, string(task.ItemStateWaitingOutput))
+	waitForCoreTaskPhase(t, c, item.ID, task.PhaseReady)
 
 	handle, err = c.OpenDownloadStreamItem(ctx, item.ID, "item")
 	if err != nil {

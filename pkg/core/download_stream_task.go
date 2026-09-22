@@ -442,8 +442,8 @@ func (b *downloadStreamBatch) updateTaskSnapshotLocked() {
 	})
 }
 
-func (b *downloadStreamBatch) summaryLocked() (itemsDone, itemsFailed, bytesDone int64, phase string, active []string) {
-	phase = "download"
+func (b *downloadStreamBatch) summaryLocked() (itemsDone, itemsFailed, bytesDone int64, phase task.Phase, active []string) {
+	phase = task.PhaseDownload
 	waiting := false
 	for _, item := range b.items {
 		bytesDone += item.Acked
@@ -460,16 +460,16 @@ func (b *downloadStreamBatch) summaryLocked() (itemsDone, itemsFailed, bytesDone
 		}
 	}
 	if waiting {
-		phase = string(task.ItemStateWaitingOutput)
+		phase = task.PhaseReady
 	}
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
-		phase = "complete"
+		phase = task.PhaseComplete
 	}
 	if itemsDone == int64(len(b.items)) && itemsFailed > 0 {
 		if itemsFailed == int64(len(b.items)) {
-			phase = "failed"
+			phase = task.PhaseFailed
 		} else {
-			phase = "partial_failed"
+			phase = task.PhasePartialFailed
 		}
 	}
 	return itemsDone, itemsFailed, bytesDone, phase, active
@@ -494,12 +494,12 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 	if itemsDone == int64(len(b.items)) && itemsFailed == 0 {
 		update(func(taskItem *task.Task) {
 			taskItem.Progress.CurrentPath = ""
-			taskItem.Progress.Phase = "complete"
+			taskItem.Progress.Phase = task.PhaseComplete
 			// Publish the aggregate counts together with the terminal state,
 			// so no consumer sees a finished task whose counters disagree.
 			taskItem.Progress.ItemsDone = itemsDone
 			taskItem.Progress.ItemsFailed = itemsFailed
-			taskItem.Detail["phase"] = "complete"
+			taskItem.Detail["phase"] = task.PhaseComplete
 			taskItem.Detail["active_paths"] = []string{}
 			taskItem.Tracking.Items = results
 		})
@@ -516,11 +516,11 @@ func (b *downloadStreamBatch) finishTask(update task.UpdateFunc) error {
 		taskItem.Tracking.Items = results
 		if itemsFailed < int64(len(b.items)) {
 			taskItem.State = task.StatePartialFailed
-			taskItem.Progress.Phase = "partial_failed"
-			taskItem.Detail["phase"] = "partial_failed"
+			taskItem.Progress.Phase = task.PhasePartialFailed
+			taskItem.Detail["phase"] = task.PhasePartialFailed
 		} else {
-			taskItem.Progress.Phase = "failed"
-			taskItem.Detail["phase"] = "failed"
+			taskItem.Progress.Phase = task.PhaseFailed
+			taskItem.Detail["phase"] = task.PhaseFailed
 		}
 	})
 	if itemsFailed < int64(len(b.items)) {

@@ -21,7 +21,7 @@ type deleteTaskRecord struct {
 	path      string
 	entry     drive.Entry
 	state     task.State
-	phase     string
+	phase     task.Phase
 	errorText string
 	updatedAt time.Time
 }
@@ -191,11 +191,11 @@ func (r vfsDeleteTaskRuntime) Records() []deleteTaskRecord {
 // source record (state flags -> task.State).
 func deleteTaskRecordFromView(r view.DeleteRecord) deleteTaskRecord {
 	state := task.StateFailed
-	phase := "failed"
+	phase := task.PhaseFailed
 	if r.Running {
-		state, phase = task.StateRunning, "delete"
+		state, phase = task.StateRunning, task.PhaseDelete
 	} else if r.Scheduled {
-		state, phase = task.StateScheduled, "scheduled"
+		state, phase = task.StateScheduled, task.PhaseScheduled
 	}
 	return deleteTaskRecord{
 		id:        r.ID,

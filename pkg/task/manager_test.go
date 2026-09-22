@@ -434,6 +434,32 @@ func waitTaskState(t *testing.T, m *Manager, id string, want State) Task {
 	return Task{}
 }
 
+// Detail["phase"] drives Progress.Phase: live updates store task.Phase
+// values while legacy journals store plain strings. Both must sync, or a
+// task whose runner only records its display wording loses progress.phase.
+func TestUpdateSyncsProgressPhaseFromDetail(t *testing.T) {
+	t.Parallel()
+	m := NewManager()
+	defer m.Close()
+	ctx := context.Background()
+	typed := m.Submit(ctx, Task{ID: "typed", Type: TypeMoveBatch, Scope: ScopeUser}, func(_ context.Context, update UpdateFunc) error {
+		update(func(taskItem *Task) { taskItem.Detail = map[string]any{"phase": PhaseComplete} })
+		return nil
+	})
+	typed = waitTaskState(t, m, typed.ID, StateSucceeded)
+	if got := typed.Progress.Phase; got != PhaseComplete {
+		t.Fatalf("progress phase after typed detail = %q, want %q", got, PhaseComplete)
+	}
+	legacy := m.Submit(ctx, Task{ID: "legacy", Type: TypeMoveBatch, Scope: ScopeUser}, func(_ context.Context, update UpdateFunc) error {
+		update(func(taskItem *Task) { taskItem.Detail = map[string]any{"phase": "move"} })
+		return nil
+	})
+	legacy = waitTaskState(t, m, legacy.ID, StateSucceeded)
+	if got := legacy.Progress.Phase; got != PhaseMove {
+		t.Fatalf("progress phase after legacy detail = %q, want %q", got, PhaseMove)
+	}
+}
+
 // Submitting without a visibility declaration falls back to the type's
 // declaration; an explicit declaration (any origin may be hidden) survives.
 func TestSubmitNormalizesVisibilityFromTypeDeclaration(t *testing.T) {
