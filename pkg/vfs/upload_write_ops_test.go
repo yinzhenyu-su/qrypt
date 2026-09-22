@@ -83,14 +83,6 @@ func TestVFSAppleMetadataWrittenAndUploaded(t *testing.T) {
 	if info.Name != ".DS_Store" || info.Size != 6 {
 		t.Fatalf("Stat .DS_Store = %+v", info)
 	}
-
-	// Drain before the deferred cancel returns. stopVFS only drops the read
-	// cache -- the upload worker is stopped by that cancel, which is not
-	// awaited -- so without this the worker can still be writing staging files
-	// into StorageDir when t.TempDir's cleanup runs, and the cleanup fails with
-	// "directory not empty". Every other test in this package pairs stopVFS
-	// with waitNoPending for the same reason; this one was missing it.
-	waitNoPending(t, fs)
 }
 func TestVFSRemoteAppleMetadataVisible(t *testing.T) {
 	t.Parallel()

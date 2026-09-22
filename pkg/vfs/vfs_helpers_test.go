@@ -78,15 +78,38 @@ func namesOf(entries []drive.Entry) string {
 	return strings.Join(names, ",")
 }
 
-// stopVFS synchronously drops a VFS's cache files so a test TempDir cleanup
-// never races the asynchronous shutdown: close the read-cache writer (waits
-// for queued writes) and remove the cache directory. Pair it with the
-// existing deferred context cancel (which stops upload workers) by adding
-// this right after fs is created:
+// vfsStopTimeout bounds stopVFS's wait for teardown: generous enough for a
+// loaded CI box to flush queued cache writes, short enough that a teardown
+// which never finishes fails the test instead of stalling the package.
+const vfsStopTimeout = 5 * time.Second
+
+// stopVFS synchronously releases a VFS -- or a Namespace over several -- so a
+// test's TempDir cleanup never races the asynchronous shutdown. Close cancels
+// the lifecycle context, stops the upload and delete timers, waits for upload
+// workers and background enqueues to exit, and flushes the read-cache writer,
+// so nothing is still writing into the test's directories once this returns.
+// Add it right after the filesystem is created:
 //
 //	defer stopVFS(t, fs)
+//
+// The test's own deferred context cancel stays where it is: it releases
+// whatever outlived the filesystem, and Close is idempotent alongside it.
+//
+// This used to only drop the read cache and leave the workers to that deferred
+// cancel, which is not awaited -- so a worker could still be staging a file
+// when t.TempDir's cleanup ran, and the cleanup failed with "directory not
+// empty". Waiting here is what makes the shutdown ordered.
 func stopVFS(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
+	if closer, ok := fs.(interface{ Close(context.Context) error }); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), vfsStopTimeout)
+		defer cancel()
+		if err := closer.Close(ctx); err != nil {
+			t.Errorf("close filesystem: %v", err)
+		}
+		return
+	}
+	// Filesystems without Close: drop the cache by hand, as before.
 	if closer, ok := fs.(interface{ CloseReadCache() error }); ok {
 		if err := closer.CloseReadCache(); err != nil {
 			t.Logf("close read cache: %v", err)
