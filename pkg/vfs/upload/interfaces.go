@@ -81,10 +81,12 @@ type UploadView interface {
 	DropUploadedEntry(path string, entry drive.Entry)
 }
 
-// InvalidationSink publishes a path after its pending upload has been removed
-// and the committed entry is the only identity visible to readers.
+// InvalidationSink publishes a path whose kernel view is stale (glossary:
+// 内核视图失效) after its pending upload has been removed and the committed
+// entry is the only identity visible to readers. It drops no local cache: the
+// mount layer turns the published path into a kernel notification.
 type InvalidationSink interface {
-	InvalidatePath(path string)
+	PublishStalePath(path string)
 }
 
 type Snapshotter interface {

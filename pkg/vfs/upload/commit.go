@@ -55,7 +55,7 @@ func (e *Engine) finalizeUpload(ctx context.Context, pending PendingUpload, entr
 		return SnapshotStateSuperseded, "", nil
 	}
 	if e.invalidations != nil {
-		e.invalidations.InvalidatePath(pending.Path)
+		e.invalidations.PublishStalePath(pending.Path)
 	}
 	phaseStart = util.Now()
 	stagingErr := pendingStore.RemoveStaging(pending.LocalPath)

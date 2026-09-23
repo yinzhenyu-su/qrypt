@@ -69,7 +69,7 @@ type recordingInvalidations struct {
 	store           *PendingStore
 }
 
-func (r *recordingInvalidations) InvalidatePath(path string) {
+func (r *recordingInvalidations) PublishStalePath(path string) {
 	r.paths = append(r.paths, path)
 	_, r.pendingAtNotify = r.store.UploadByPath(path)
 }

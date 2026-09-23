@@ -15,7 +15,7 @@ import (
 // interfaces over VFS internals (observer, fault controller, worker
 // runtime, write-store tracker/remote, invalidations, snapshotter).
 
-func (i vfsUploadInvalidations) InvalidatePath(path string) {
+func (i vfsUploadInvalidations) PublishStalePath(path string) {
 	i.invalidations.emit(vfstypes.CleanVirtualPath(path))
 }
 
