@@ -1,8 +1,8 @@
 // Package view owns the VFS local tree domain: the entry/list cache that
 // mirrors the remote tree, the visibility overlay (deleted / rename / copy
-// hiding) and the scheduled-delete tasks. The three state structs are the
-// mutation target of every local write; the composite Overlay+Tasks pair
-// deliberately shares one mutex (see NewOverlayTasks) so cross-domain
+// hiding) and the delayed deletes (glossary: 延迟删除). The three state structs are the
+// mutation target of every local write; the composite Overlay+DelayedDeleteState pair
+// deliberately shares one mutex (see NewOverlayDelayedDeleteState) so cross-domain
 // transitions - a delete commit marking the overlay while unscheduling the
 // timer - stay atomic.
 //
@@ -109,7 +109,7 @@ type View struct {
 }
 
 // NewView builds the view around the tree root. overlay is the paired
-// visibility state created by NewOverlayTasks; the caller owns the pairing.
+// visibility state created by NewOverlayDelayedDeleteState; the caller owns the pairing.
 func NewView(rootID string, now time.Time, overlay *Overlay) *View {
 	view := &View{
 		entries:      vfstypes.NewShardedEntryMap(),
@@ -145,8 +145,8 @@ func (v *View) ClearListCaches() {
 }
 
 // Overlay is the visibility overlay: deleted entries, rename overlays,
-// restored-dir markers and copy-hidden children. Overlay and Tasks share one
-// mutex (see NewOverlayTasks); Overlay methods that touch Tasks document the
+// restored-dir markers and copy-hidden children. Overlay and DelayedDeleteState share one
+// mutex (see NewOverlayDelayedDeleteState); Overlay methods that touch DelayedDeleteState document the
 // Locked suffix convention and never acquire the shared lock themselves when
 // the caller holds it.
 type Overlay struct {
@@ -162,10 +162,11 @@ type Overlay struct {
 	deletedDirs map[string]struct{}
 }
 
-// Tasks is the scheduled-delete domain state: active deletes, recorded
-// failures, directory takeovers and the timer scheduler. It shares the
-// Overlay mutex so delete-commit transitions are atomic.
-type Tasks struct {
+// DelayedDeleteState is the delayed-delete domain state (glossary: 延迟删除):
+// active deletes, recorded failures, directory takeovers and the timer
+// scheduler. It shares the Overlay mutex so delete-commit transitions are
+// atomic.
+type DelayedDeleteState struct {
 	mu        *sync.Mutex
 	scheduler scheduler.KeyedScheduler
 	active    map[string]drive.Entry
@@ -174,9 +175,9 @@ type Tasks struct {
 	changed   chan struct{}
 }
 
-// NewOverlayTasks builds the Overlay+Tasks composite sharing one mutex. The
+// NewOverlayDelayedDeleteState builds the Overlay+DelayedDeleteState composite sharing one mutex. The
 // pair must stay together: delete commits write both under the single lock.
-func NewOverlayTasks() (*Overlay, *Tasks) {
+func NewOverlayDelayedDeleteState() (*Overlay, *DelayedDeleteState) {
 	mu := &sync.Mutex{}
 	return &Overlay{
 		mu:                 mu,
@@ -185,7 +186,7 @@ func NewOverlayTasks() (*Overlay, *Tasks) {
 		restoredDirs:       map[string]time.Time{},
 		copyHiddenChildren: map[string]map[string]time.Time{},
 		deletedDirs:        map[string]struct{}{},
-	}, &Tasks{
+	}, &DelayedDeleteState{
 		mu:        mu,
 		scheduler: scheduler.NewTimeKeyedScheduler(),
 		active:    map[string]drive.Entry{},
@@ -307,7 +308,7 @@ func parentVirtualPath(path string) string {
 }
 
 // unavailableLocked reports whether path is hidden by any overlay facet:
-// deleted, rename-shadowed, or copy-hidden. It never touches the Tasks state.
+// deleted, rename-shadowed, or copy-hidden. It never touches the DelayedDeleteState state.
 // Callers hold mu.
 func (o *Overlay) unavailableLocked(path string) bool {
 	path = vfstypes.CleanVirtualPath(path)
@@ -336,17 +337,17 @@ func (o *Overlay) unavailableLocked(path string) bool {
 	return true
 }
 
-// --- Tasks helpers (callers hold the shared mu unless Locked-free) ---
+// --- DelayedDeleteState helpers (callers hold the shared mu unless Locked-free) ---
 
 // clearFailureLocked drops a recorded failure for path. Callers hold the
-// delete-domain lock (shared with the overlay state, see NewOverlayTasks).
-func (s *Tasks) clearFailureLocked(path string) {
+// delete-domain lock (shared with the overlay state, see NewOverlayDelayedDeleteState).
+func (s *DelayedDeleteState) clearFailureLocked(path string) {
 	delete(s.failures, path)
 }
 
 // unscheduleLocked cancels a pending delete timer for path, reporting whether
 // one existed. Callers hold the delete-domain lock.
-func (s *Tasks) unscheduleLocked(path string) bool {
+func (s *DelayedDeleteState) unscheduleLocked(path string) bool {
 	if _, ok := s.scheduler.Keys()[path]; ok {
 		s.scheduler.Cancel(path)
 		return true
@@ -354,12 +355,12 @@ func (s *Tasks) unscheduleLocked(path string) bool {
 	return false
 }
 
-func (s *Tasks) notifyChangedLocked() {
+func (s *DelayedDeleteState) notifyChangedLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
 
-func (s *Tasks) clearTakeoverLocked(path string) {
+func (s *DelayedDeleteState) clearTakeoverLocked(path string) {
 	changed := false
 	for takeover := range s.takeovers {
 		if takeover == path || vfstypes.IsPathUnder(takeover, path) {
@@ -387,17 +388,17 @@ func (o *Overlay) SetRestoredDir(path string, expiry time.Time) {
 
 // StopAll stops every pending delete timer so no delayed delete fires after
 // shutdown. Used by the VFS lifecycle.
-func (s *Tasks) StopAll() {
+func (s *DelayedDeleteState) StopAll() {
 	s.scheduler.CancelAll()
 }
 
 // Schedule arms or moves a pending delete timer for path.
-func (s *Tasks) Schedule(path string, delay time.Duration, fire func()) {
+func (s *DelayedDeleteState) Schedule(path string, delay time.Duration, fire func()) {
 	s.scheduler.Schedule(path, delay, fire)
 }
 
 // SetActive marks path as an in-flight delete.
-func (s *Tasks) SetActive(path string, entry drive.Entry) {
+func (s *DelayedDeleteState) SetActive(path string, entry drive.Entry) {
 	s.mu.Lock()
 	s.active[path] = entry
 	s.clearFailureLocked(path)
@@ -406,7 +407,7 @@ func (s *Tasks) SetActive(path string, entry drive.Entry) {
 }
 
 // SetFailure records a failed delete for path.
-func (s *Tasks) SetFailure(path, errText string) {
+func (s *DelayedDeleteState) SetFailure(path, errText string) {
 	s.mu.Lock()
 	delete(s.active, path)
 	if errText != "" {
@@ -417,14 +418,14 @@ func (s *Tasks) SetFailure(path, errText string) {
 }
 
 // ClearFailure drops any recorded failure for path.
-func (s *Tasks) ClearFailure(path string) {
+func (s *DelayedDeleteState) ClearFailure(path string) {
 	s.mu.Lock()
 	delete(s.failures, path)
 	s.mu.Unlock()
 }
 
 // Failure returns the recorded failure text for path, if any.
-func (s *Tasks) Failure(path string) (string, bool) {
+func (s *DelayedDeleteState) Failure(path string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	text, ok := s.failures[path]
@@ -432,7 +433,7 @@ func (s *Tasks) Failure(path string) (string, bool) {
 }
 
 // Scheduled reports whether path has a pending delete timer.
-func (s *Tasks) Scheduled(path string) bool {
+func (s *DelayedDeleteState) Scheduled(path string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.scheduler.Keys()[path]
@@ -440,7 +441,7 @@ func (s *Tasks) Scheduled(path string) bool {
 }
 
 // ScheduledPaths returns every path with a pending delete timer.
-func (s *Tasks) ScheduledPaths() []string {
+func (s *DelayedDeleteState) ScheduledPaths() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keys := s.scheduler.Keys()
@@ -454,7 +455,7 @@ func (s *Tasks) ScheduledPaths() []string {
 // WaitActiveChildren blocks until no active delete is pending under dir
 // (dir itself excluded) or ctx is cancelled. The waiter re-checks after every
 // notify, so a delete starting while another finishes is observed.
-func (s *Tasks) WaitActiveChildren(ctx context.Context, dir string) error {
+func (s *DelayedDeleteState) WaitActiveChildren(ctx context.Context, dir string) error {
 	for {
 		s.mu.Lock()
 		active := false
@@ -524,7 +525,7 @@ type OverlaySnapshot struct {
 // Snapshot reads the composite state in one critical section. The slices
 // come back deterministically sorted so consumers (diagnostics, tests) never
 // see map-iteration order.
-func (o *Overlay) Snapshot(t *Tasks) OverlaySnapshot {
+func (o *Overlay) Snapshot(t *DelayedDeleteState) OverlaySnapshot {
 	now := time.Now()
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -584,22 +585,22 @@ type DeleteRecord struct {
 }
 
 // DeleteTaskRecords projects the deleted overlay into delete-task records in
-// one critical section (state flags come from the shared Tasks state).
+// one critical section (state flags come from the shared DelayedDeleteState state).
 func (r Visibility) DeleteTaskRecords() []DeleteRecord {
 	now := util.Now()
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 	records := make([]DeleteRecord, 0, len(r.overlay.deleted))
 	for p, entry := range r.overlay.deleted {
-		_, running := r.tasks.active[p]
-		_, scheduled := r.tasks.scheduler.Keys()[p]
+		_, running := r.deleteState.active[p]
+		_, scheduled := r.deleteState.scheduler.Keys()[p]
 		records = append(records, DeleteRecord{
 			ID:        deleteTaskID(entry, p),
 			Path:      p,
 			Entry:     entry,
 			Running:   running,
 			Scheduled: scheduled,
-			ErrorText: r.tasks.failures[p],
+			ErrorText: r.deleteState.failures[p],
 			UpdatedAt: now,
 		})
 	}

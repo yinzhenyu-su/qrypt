@@ -48,16 +48,17 @@ func newVFSDeleteExecutorDeps(v *VFS) idelete.ExecutorDeps {
 	}
 }
 
-// vfsDeleteOverlayOps adapts the overlay + delete-task domain to
-// idelete.OverlayOps. The two states share one lock (view.NewOverlayTasks),
-// so every compound critical section runs in the view package; this adapter
-// is a thin delegation over the exported sync surface.
+// vfsDeleteOverlayOps adapts the overlay + delayed-delete domain to
+// idelete.OverlayOps (glossary: 延迟删除). The two states share one lock
+// (view.NewOverlayDelayedDeleteState), so every compound critical section runs
+// in the view package; this adapter is a thin delegation over the exported
+// sync surface.
 type vfsDeleteOverlayOps struct {
 	vis view.Visibility
 }
 
 func newVFSDeleteOverlayOps(v *VFS) vfsDeleteOverlayOps {
-	return vfsDeleteOverlayOps{vis: view.NewVisibility(v.view.Overlay(), v.deletes.tasks, v.view, nil)}
+	return vfsDeleteOverlayOps{vis: view.NewVisibility(v.view.Overlay(), v.deletes.deleteState, v.view, nil)}
 }
 
 func (r vfsDeleteOverlayOps) BeginDelete(path string, entryID string) bool {
@@ -96,14 +97,14 @@ func (r vfsDeleteUploadCleanup) RemoveUploadState(path string) {
 }
 
 type vfsDeleteScheduler struct {
-	vis   view.Visibility
-	tasks *view.Tasks
+	vis         view.Visibility
+	deleteState *view.DelayedDeleteState
 }
 
 func newVFSDeleteScheduler(v *VFS) vfsDeleteScheduler {
 	return vfsDeleteScheduler{
-		vis:   view.NewVisibility(v.view.Overlay(), v.deletes.tasks, v.view, nil),
-		tasks: v.deletes.tasks,
+		vis:         view.NewVisibility(v.view.Overlay(), v.deletes.deleteState, v.view, nil),
+		deleteState: v.deletes.deleteState,
 	}
 }
 
@@ -120,9 +121,9 @@ func (s vfsDeleteScheduler) CancelChildren(dir string) {
 }
 
 func (s vfsDeleteScheduler) StopAll() {
-	s.tasks.StopAll()
+	s.deleteState.StopAll()
 }
 
 func (v *VFS) waitForActiveChildDeletes(ctx context.Context, dir string) error {
-	return v.deletes.tasks.WaitActiveChildren(ctx, dir)
+	return v.deletes.deleteState.WaitActiveChildren(ctx, dir)
 }

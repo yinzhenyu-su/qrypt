@@ -9,8 +9,8 @@ import (
 )
 
 func TestIsDeletedUsesDirAncestorIndex(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.MarkDeleted("/a/b", drive.Entry{ID: "b", IsDir: true})
 	runtime.MarkDeleted("/plain.txt", drive.Entry{ID: "p"})
 
@@ -42,8 +42,8 @@ func TestIsDeletedUsesDirAncestorIndex(t *testing.T) {
 }
 
 func TestRestoreDeletedAncestorPicksDeepest(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.MarkDeleted("/a", drive.Entry{ID: "a", IsDir: true})
 	runtime.MarkDeleted("/a/b", drive.Entry{ID: "b", IsDir: true})
 
@@ -73,8 +73,8 @@ func TestRestoreDeletedAncestorPicksDeepest(t *testing.T) {
 }
 
 func TestIsHiddenUsesRenameDirIndex(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.AddRenameOverlay("/old", "/new", "id1", true)           // recursive
 	runtime.AddRenameOverlay("/file.txt", "/ren.txt", "id2", false) // file op
 
@@ -115,9 +115,9 @@ func TestIsHiddenUsesRenameDirIndex(t *testing.T) {
 // overlays plus a few dir overlays, IsDeleted on an unrelated path must stay
 // O(depth), not O(overlays).
 func BenchmarkIsDeletedManyOverlays(b *testing.B) {
-	overlay, tasks := NewOverlayTasks()
+	overlay, deleteState := NewOverlayDelayedDeleteState()
 	v := NewView("0", time.Now(), overlay)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	for i := range 5000 {
 		runtime.MarkDeleted("/files/f"+strconv.Itoa(i)+".txt", drive.Entry{ID: "f"})
 	}

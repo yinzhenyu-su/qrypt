@@ -8,11 +8,11 @@ import (
 )
 
 // newTestDomain builds an isolated composite domain for view-level tests:
-// a fresh paired overlay/tasks state and a view over it. No VFS assembly.
-func newTestDomain(t *testing.T) (*View, *Overlay, *Tasks) {
+// a fresh paired overlay/delayed-delete state and a view over it. No VFS assembly.
+func newTestDomain(t *testing.T) (*View, *Overlay, *DelayedDeleteState) {
 	t.Helper()
-	overlay, tasks := NewOverlayTasks()
-	return NewView("0", time.Now(), overlay), overlay, tasks
+	overlay, deleteState := NewOverlayDelayedDeleteState()
+	return NewView("0", time.Now(), overlay), overlay, deleteState
 }
 
 func TestRuntimeRebasesCachedPaths(t *testing.T) {

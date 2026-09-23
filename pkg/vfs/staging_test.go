@@ -19,7 +19,7 @@ import (
 )
 
 func newTestViewState(rootID string, now time.Time) *view.View {
-	overlay, _ := view.NewOverlayTasks()
+	overlay, _ := view.NewOverlayDelayedDeleteState()
 	return view.NewView(rootID, now, overlay)
 }
 

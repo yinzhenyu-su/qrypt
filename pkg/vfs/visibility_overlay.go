@@ -6,9 +6,9 @@ import (
 )
 
 // newVFSVisibilityRuntime builds the composite-domain sync surface for VFS
-// adapters over the paired view/overlay/tasks state.
+// adapters over the paired view/overlay/delayed-delete state.
 func newVFSVisibilityRuntime(v *VFS) view.Visibility {
-	return view.NewVisibility(v.view.Overlay(), v.deletes.tasks, v.view, v.lister)
+	return view.NewVisibility(v.view.Overlay(), v.deletes.deleteState, v.view, v.lister)
 }
 
 func (v *VFS) unhideCopyChild(parentPath, name string) {

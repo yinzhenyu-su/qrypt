@@ -8,8 +8,8 @@ import (
 )
 
 func TestVisibilityDeletesAndRestoresPath(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	entry := drive.Entry{ID: "dir", Name: "dir", IsDir: true}
 	v.mu.Lock()
 	v.entries.Set("/dir", entry)
@@ -39,8 +39,8 @@ func TestVisibilityDeletesAndRestoresPath(t *testing.T) {
 }
 
 func TestVisibilityUpdatesRenameOverlay(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.AddRenameOverlay("/old.txt", "/new.txt", "file", false)
 	if !runtime.IsHidden("/old.txt") {
 		t.Fatal("old path should be hidden while rename overlay is active")
@@ -53,8 +53,8 @@ func TestVisibilityUpdatesRenameOverlay(t *testing.T) {
 }
 
 func TestVisibilityCopyHiddenExpiresAndUnhides(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.SetCopyHidden("/dir", map[string]time.Time{
 		"hidden.txt":  time.Now().Add(time.Minute),
 		"expired.txt": time.Now().Add(-time.Minute),
@@ -73,8 +73,8 @@ func TestVisibilityCopyHiddenExpiresAndUnhides(t *testing.T) {
 }
 
 func TestVisibilityDeleteExecutorOps(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 
 	// No overlay entry yet: BeginDelete is refused.
 	if runtime.BeginDelete("/a.txt", "id-a") {
@@ -107,8 +107,8 @@ func TestVisibilityDeleteExecutorOps(t *testing.T) {
 // location reports a different id for the moved object, so the shadow must
 // converge on the name alone.
 func TestRenameShadowConvergesByName(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
 
 	runtime.UpdateRenameOverlay("/", []drive.Entry{{ID: "new-id", Name: "b.txt"}})
@@ -120,8 +120,8 @@ func TestRenameShadowConvergesByName(t *testing.T) {
 // TestRenameShadowHoldsUntilBackendConverges: while the listing still carries
 // the old name and not the new one, the stale entry stays hidden.
 func TestRenameShadowHoldsUntilBackendConverges(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
 
 	runtime.UpdateRenameOverlay("/", []drive.Entry{{ID: "old-id", Name: "a.txt"}})
@@ -133,8 +133,8 @@ func TestRenameShadowHoldsUntilBackendConverges(t *testing.T) {
 // TestRenameShadowRetiredByNewObject: the shadow hides the pre-rename object,
 // not the path, so a different object committed there is visible at once.
 func TestRenameShadowRetiredByNewObject(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
 
 	runtime.RetireRenameShadow("/a.txt", "old-id")
@@ -150,8 +150,8 @@ func TestRenameShadowRetiredByNewObject(t *testing.T) {
 // TestRenameShadowExpires: the shadow is bounded, so a backend that never
 // reports the expected shape cannot hide the old path forever.
 func TestRenameShadowExpires(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	runtime := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	runtime := NewVisibility(overlay, deleteState, v, nil)
 	runtime.AddRenameOverlay("/a.txt", "/b.txt", "old-id", false)
 
 	overlay.mu.Lock()

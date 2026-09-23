@@ -143,7 +143,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		return nil, err
 	}
 	now := util.Now()
-	overlay, deleteTasks := view.NewOverlayTasks()
+	overlay, deleteState := view.NewOverlayDelayedDeleteState()
 	vs := view.NewView(opts.RootID, now, overlay)
 	done := make(chan struct{})
 	hashes := upload.NewHashTracker()
@@ -161,7 +161,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		hashes:        hashes,
 		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
 		uploadTargets: newUploadTargetIndex(),
-		deletes:       newDeleteService(deleteTasks, opts.DeleteDelay),
+		deletes:       newDeleteService(deleteState, opts.DeleteDelay),
 		listing:       listing.NewState(),
 		activeDebug:   observe.NewActiveStore(opts.Name),
 		faults:        faultinject.NewRegistry(0),
