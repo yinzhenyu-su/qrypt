@@ -273,10 +273,10 @@ Pick the upload entry point that matches the source of the data:
 
 All upload paths create user-visible tasks: they appear in the default
 `ListTasksJSON` result (which defaults to user-scope tasks) and emit
-`task_updated` events. The VFS sync tasks that carry out the actual cloud
-upload (`upload_remote`, sync scope) stay hidden from the default list and do
+`task_updated` events. The VFS internal bookkeeping tasks that carry out the actual cloud
+upload (`upload_remote`, internal scope) stay hidden from the default list and do
 not emit events; user tasks surface their cloud progress by watching those
-sync tasks internally.
+internal tasks.
 
 Use `CreateOperationJSON` with `operation=upload` and
 `upload_policy=staging_only` when the app owns the input stream. On Android
@@ -544,7 +544,7 @@ list.
 `copy` and `download` intentionally declare no batch type: a multi-item copy or
 download keeps its single type and reports item count through `progress`. The
 mount's own bookkeeping records (deferred remote deletes, upload retries) reuse
-the `delete_remote` and `upload_remote` names but are sync scope, so they never
+the `delete_remote` and `upload_remote` names but are internal scope, so they never
 appear in the default list. Operation-level creation (`operation` +
 `items`) produces the same types as the direct calls above.
 
