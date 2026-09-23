@@ -59,6 +59,8 @@ func (v *VFS) SubscribeInvalidations(listener func(string)) func() {
 	return v.invalidations.subscribe(listener)
 }
 
+// emitInvalidation publishes one stale kernel-view path (glossary: 内核视图
+// 失效); no qrypt cache is dropped here.
 func (v *VFS) emitInvalidation(path string) {
 	v.invalidations.emit(vfstypes.CleanVirtualPath(path))
 }

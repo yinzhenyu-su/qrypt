@@ -415,6 +415,7 @@ func (v *VFS) Space(ctx context.Context) (drive.Space, error) {
 	return newVFSDriverRuntime(v.driver, v.testEnabled).Space(ctx)
 }
 
+// invalidateReadCache drops a file's cached read chunks (glossary: 读缓存失效).
 func (v *VFS) invalidateReadCache(entry drive.Entry) {
 	if entry.ID == "" {
 		return

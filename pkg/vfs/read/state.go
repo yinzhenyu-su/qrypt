@@ -728,7 +728,7 @@ func (s *State) ClearReadCache() error {
 	return s.cache.ClearReadCache()
 }
 
-// InvalidateFile drops cached chunks for one file id.
+// InvalidateFile drops cached chunks for one file id (glossary: 读缓存失效).
 func (s *State) InvalidateFile(fid string) {
 	if s.cache != nil {
 		s.cache.InvalidateFile(fid)

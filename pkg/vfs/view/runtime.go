@@ -97,15 +97,16 @@ func (r Runtime) IsRecentLocalDir(path string) bool {
 	return true
 }
 
-// RefreshPath drops the cached listing for path (next listing refetches).
+// RefreshPath drops the cached listing for path so the next listing refetches
+// (glossary: 目录缓存失效).
 func (r Runtime) RefreshPath(path string) {
 	r.view.mu.Lock()
 	delete(r.view.lists, vfstypes.CleanVirtualPath(path))
 	r.view.mu.Unlock()
 }
 
-// InvalidateListLocked drops the cached listing for path. Callers hold
-// view.mu.
+// InvalidateListLocked drops the cached listing for path (glossary: 目录缓存
+// 失效). Callers hold view.mu.
 func (r Runtime) InvalidateListLocked(path string) {
 	delete(r.view.lists, vfstypes.CleanVirtualPath(path))
 }

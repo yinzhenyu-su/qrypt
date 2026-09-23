@@ -65,11 +65,12 @@ type PathRefresher interface {
 	RefreshPath(path string)
 }
 
-// InvalidationSource publishes paths whose cached kernel view is stale after
-// a mutation completed outside the originating kernel request, such as an
-// asynchronous upload. Synchronous FUSE operations already update the kernel
-// view as part of their response. Subscribers must return promptly. The
-// returned function removes the subscription and is safe to call repeatedly.
+// InvalidationSource publishes paths whose cached kernel view is stale
+// (glossary: 内核视图失效) after a mutation completed outside the originating
+// kernel request, such as an asynchronous upload. It drops no qrypt cache.
+// Synchronous FUSE operations already update the kernel view as part of their
+// response. Subscribers must return promptly. The returned function removes
+// the subscription and is safe to call repeatedly.
 type InvalidationSource interface {
 	SubscribeInvalidations(func(path string)) func()
 }
