@@ -275,7 +275,7 @@ func (r vfsDebugSnapshotRuntime) UploadTimers() []diagnostics.DebugTimer {
 }
 
 func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
-	snap := r.view.Overlay().Snapshot(r.deletes.tasks)
+	snap := r.view.Overlay().Snapshot(r.deletes.deleteState)
 	out := diagnostics.OverlaySnapshot{}
 	for _, path := range snap.DeleteTimers {
 		out.DeleteTimers = append(out.DeleteTimers, diagnostics.DebugTimer{Path: path})

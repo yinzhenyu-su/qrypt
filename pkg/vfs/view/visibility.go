@@ -11,20 +11,20 @@ import (
 )
 
 // Visibility is the sync operation surface over the composite domain: every
-// method is one compound critical section over the shared Overlay+Tasks lock
+// method is one compound critical section over the shared Overlay+DelayedDeleteState lock
 // and the View lock (in that order), so a delete commit both marks the
 // overlay and unschedules the timer atomically.
 type Visibility struct {
-	overlay *Overlay
-	tasks   *Tasks
-	view    *View
-	lister  *listing.Lister
+	overlay     *Overlay
+	deleteState *DelayedDeleteState
+	view        *View
+	lister      *listing.Lister
 }
 
 // NewVisibility builds the sync surface. lister may be nil: it is only used
 // by AddRenameOverlay (rename shadow + prefetch suppression).
-func NewVisibility(overlay *Overlay, tasks *Tasks, view *View, lister *listing.Lister) Visibility {
-	return Visibility{overlay: overlay, tasks: tasks, view: view, lister: lister}
+func NewVisibility(overlay *Overlay, deleteState *DelayedDeleteState, view *View, lister *listing.Lister) Visibility {
+	return Visibility{overlay: overlay, deleteState: deleteState, view: view, lister: lister}
 }
 
 // MarkDeleted commits a delete into the view: the overlay hides the path
@@ -34,7 +34,7 @@ func NewVisibility(overlay *Overlay, tasks *Tasks, view *View, lister *listing.L
 func (r Visibility) MarkDeleted(path string, entry drive.Entry) {
 	r.overlay.mu.Lock()
 	r.overlay.setDeleted(path, entry)
-	r.tasks.clearFailureLocked(path)
+	r.deleteState.clearFailureLocked(path)
 	r.overlay.removeRenameOverlay(path)
 	delete(r.overlay.restoredDirs, path)
 	r.overlay.mu.Unlock()
@@ -63,10 +63,10 @@ func (r Visibility) RestoreDeletedPath(path string) (drive.Entry, bool) {
 		r.overlay.mu.Unlock()
 		return drive.Entry{}, false
 	}
-	r.tasks.clearFailureLocked(path)
-	r.tasks.clearTakeoverLocked(path)
+	r.deleteState.clearFailureLocked(path)
+	r.deleteState.clearTakeoverLocked(path)
 	r.overlay.removeDeleted(path)
-	if r.tasks.unscheduleLocked(path) {
+	if r.deleteState.unscheduleLocked(path) {
 		logging.L.Infof("[VFS] canceled pending delete for restored path=%q id=%q", path, entry.ID)
 	}
 	if entry.IsDir {
@@ -92,9 +92,9 @@ func (r Visibility) RestoreDeletedAncestor(path string) {
 		return
 	}
 	r.overlay.removeDeleted(restorePath)
-	r.tasks.clearFailureLocked(restorePath)
-	r.tasks.clearTakeoverLocked(restorePath)
-	if r.tasks.unscheduleLocked(restorePath) {
+	r.deleteState.clearFailureLocked(restorePath)
+	r.deleteState.clearTakeoverLocked(restorePath)
+	if r.deleteState.unscheduleLocked(restorePath) {
 		logging.L.Infof("[VFS] canceled pending delete for restored ancestor path=%q id=%q requested=%q", restorePath, entry.ID, path)
 	}
 	r.overlay.restoredDirs[restorePath] = time.Now().Add(RestoredDirTTL)
@@ -114,8 +114,8 @@ func (r Visibility) CancelDeletedFile(path string) {
 	entry, ok := r.overlay.deleted[path]
 	if ok && !entry.IsDir {
 		r.overlay.removeDeleted(path)
-		r.tasks.clearFailureLocked(path)
-		if r.tasks.unscheduleLocked(path) {
+		r.deleteState.clearFailureLocked(path)
+		if r.deleteState.unscheduleLocked(path) {
 			logging.L.Infof("[VFS] canceled pending delete for recreated file path=%q id=%q", path, entry.ID)
 		}
 	}
@@ -346,7 +346,7 @@ func (r Visibility) BeginDelete(path string, entryID string) bool {
 	if !ok || current.ID != entryID {
 		return false
 	}
-	for takeover := range r.tasks.takeovers {
+	for takeover := range r.deleteState.takeovers {
 		if takeover != path && vfstypes.IsPathUnder(path, takeover) {
 			return false
 		}
@@ -359,20 +359,20 @@ func (r Visibility) BeginDelete(path string, entryID string) bool {
 func (r Visibility) MarkDeleteActive(path string, entry drive.Entry) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
-	r.tasks.active[path] = entry
-	r.tasks.clearFailureLocked(path)
-	r.tasks.notifyChangedLocked()
+	r.deleteState.active[path] = entry
+	r.deleteState.clearFailureLocked(path)
+	r.deleteState.notifyChangedLocked()
 }
 
 // MarkDeleteFailed records a failed delete for path.
 func (r Visibility) MarkDeleteFailed(path string, err error) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
-	delete(r.tasks.active, path)
+	delete(r.deleteState.active, path)
 	if err != nil {
-		r.tasks.failures[path] = err.Error()
+		r.deleteState.failures[path] = err.Error()
 	}
-	r.tasks.notifyChangedLocked()
+	r.deleteState.notifyChangedLocked()
 }
 
 // MarkDeleteComplete folds a finished remote delete back into the view: the
@@ -381,12 +381,12 @@ func (r Visibility) MarkDeleteFailed(path string, err error) {
 // refetches the gone path.
 func (r Visibility) MarkDeleteComplete(path string, entry drive.Entry) {
 	r.overlay.mu.Lock()
-	delete(r.tasks.active, path)
-	r.tasks.clearFailureLocked(path)
-	r.tasks.clearTakeoverLocked(path)
+	delete(r.deleteState.active, path)
+	r.deleteState.clearFailureLocked(path)
+	r.deleteState.clearTakeoverLocked(path)
 	r.overlay.removeDeleted(path)
 	delete(r.overlay.restoredDirs, path)
-	r.tasks.notifyChangedLocked()
+	r.deleteState.notifyChangedLocked()
 	r.overlay.mu.Unlock()
 
 	r.view.mu.Lock()
@@ -399,12 +399,12 @@ func (r Visibility) MarkDeleteComplete(path string, entry drive.Entry) {
 func (r Visibility) CancelDelete(path string) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
-	delete(r.tasks.active, path)
-	r.tasks.clearFailureLocked(path)
-	r.tasks.clearTakeoverLocked(path)
-	r.tasks.scheduler.Cancel(path)
+	delete(r.deleteState.active, path)
+	r.deleteState.clearFailureLocked(path)
+	r.deleteState.clearTakeoverLocked(path)
+	r.deleteState.scheduler.Cancel(path)
 	r.overlay.removeDeleted(path)
-	r.tasks.notifyChangedLocked()
+	r.deleteState.notifyChangedLocked()
 }
 
 // --- delete scheduler operations ---
@@ -413,9 +413,9 @@ func (r Visibility) CancelDelete(path string) {
 // any prior failure recording.
 func (r Visibility) ScheduleDelete(path string, delay time.Duration, fire func()) {
 	r.overlay.mu.Lock()
-	r.tasks.clearFailureLocked(path)
+	r.deleteState.clearFailureLocked(path)
 	r.overlay.mu.Unlock()
-	r.tasks.scheduler.Schedule(path, delay, fire)
+	r.deleteState.scheduler.Schedule(path, delay, fire)
 }
 
 // TakeoverDirectory cancels every pending delete inside dir (children only,
@@ -424,22 +424,22 @@ func (r Visibility) ScheduleDelete(path string, delay time.Duration, fire func()
 func (r Visibility) TakeoverDirectory(dir string) {
 	dir = vfstypes.CleanVirtualPath(dir)
 	r.overlay.mu.Lock()
-	r.tasks.takeovers[dir] = struct{}{}
-	r.tasks.notifyChangedLocked()
+	r.deleteState.takeovers[dir] = struct{}{}
+	r.deleteState.notifyChangedLocked()
 	r.overlay.mu.Unlock()
 
 	removed := []string{}
-	for path := range r.tasks.scheduler.Keys() {
+	for path := range r.deleteState.scheduler.Keys() {
 		if path != dir && vfstypes.IsPathUnder(path, dir) {
 			removed = append(removed, path)
 		}
 	}
-	r.tasks.scheduler.CancelUnder(dir)
+	r.deleteState.scheduler.CancelUnder(dir)
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 	for _, path := range removed {
 		r.overlay.removeDeleted(path)
-		r.tasks.clearFailureLocked(path)
+		r.deleteState.clearFailureLocked(path)
 	}
 }
 

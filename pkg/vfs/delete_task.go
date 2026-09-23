@@ -164,15 +164,15 @@ func taskFromDeleteRecord(record deleteTaskRecord) task.Task {
 // this adapter maps them onto pkg/task and the VFS delete scheduler.
 type vfsDeleteTaskRuntime struct {
 	vis            view.Visibility
-	tasks          *view.Tasks
+	deleteState    *view.DelayedDeleteState
 	restoreDeleted func(string) (drive.Entry, bool)
 	scheduleDelete func(string, drive.Entry)
 }
 
 func newVFSDeleteTaskRuntime(v *VFS) vfsDeleteTaskRuntime {
 	return vfsDeleteTaskRuntime{
-		vis:            view.NewVisibility(v.view.Overlay(), v.deletes.tasks, v.view, nil),
-		tasks:          v.deletes.tasks,
+		vis:            view.NewVisibility(v.view.Overlay(), v.deletes.deleteState, v.view, nil),
+		deleteState:    v.deletes.deleteState,
 		restoreDeleted: v.restoreDeletedPath,
 		scheduleDelete: v.scheduleDelete,
 	}
@@ -213,26 +213,27 @@ func (r vfsDeleteTaskRuntime) Restore(path string) (drive.Entry, bool) {
 }
 
 func (r vfsDeleteTaskRuntime) Retry(record deleteTaskRecord) {
-	r.tasks.ClearFailure(record.path)
+	r.deleteState.ClearFailure(record.path)
 	r.scheduleDelete(record.path, record.entry)
 }
 
-// DeleteService groups the VFS delete-domain state: the debounce tasks and
-// the delete delay. Owned by the delete scheduler; initialized in New.
+// DeleteService groups the VFS delete-domain state: the delayed-delete state
+// (glossary: 延迟删除) and the delete delay. Owned by the delete scheduler;
+// initialized in New.
 type DeleteService struct {
-	tasks *view.Tasks
-	delay time.Duration
+	deleteState *view.DelayedDeleteState
+	delay       time.Duration
 }
 
 // newDeleteService builds the delete domain state together.
-func newDeleteService(tasks *view.Tasks, delay time.Duration) *DeleteService {
-	return &DeleteService{tasks: tasks, delay: delay}
+func newDeleteService(deleteState *view.DelayedDeleteState, delay time.Duration) *DeleteService {
+	return &DeleteService{deleteState: deleteState, delay: delay}
 }
 
 // Close stops the pending delete timers. Called by the VFS lifecycle;
 // in-flight deletes run on the VFS lifecycle context and cancel with it.
 func (d *DeleteService) Close() {
-	d.tasks.StopAll()
+	d.deleteState.StopAll()
 }
 
 // Compile-time interface satisfaction check.

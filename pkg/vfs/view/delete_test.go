@@ -9,16 +9,16 @@ import (
 )
 
 func TestDeleteSchedulerSchedulesAndClearsFailure(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	vis := NewVisibility(overlay, tasks, v, nil)
-	tasks.SetFailure("/file.txt", "old failure")
+	v, overlay, deleteState := newTestDomain(t)
+	vis := NewVisibility(overlay, deleteState, v, nil)
+	deleteState.SetFailure("/file.txt", "old failure")
 
 	fired := make(chan struct{}, 1)
 	vis.ScheduleDelete("/file.txt", time.Hour, func() { fired <- struct{}{} })
-	if !tasks.Scheduled("/file.txt") {
+	if !deleteState.Scheduled("/file.txt") {
 		t.Fatal("path should be scheduled")
 	}
-	if _, ok := tasks.Failure("/file.txt"); ok {
+	if _, ok := deleteState.Failure("/file.txt"); ok {
 		t.Fatal("failure should be cleared by schedule")
 	}
 	select {
@@ -26,52 +26,52 @@ func TestDeleteSchedulerSchedulesAndClearsFailure(t *testing.T) {
 		t.Fatal("delete timer fired too early")
 	default:
 	}
-	tasks.StopAll()
+	deleteState.StopAll()
 }
 
 func TestDeleteSchedulerCancelsChildDeletes(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	vis := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	vis := NewVisibility(overlay, deleteState, v, nil)
 	vis.ScheduleDelete("/dir/a.txt", time.Hour, func() {})
 	vis.ScheduleDelete("/other.txt", time.Hour, func() {})
 	vis.MarkDeleted("/dir/a.txt", drive.Entry{ID: "a"})
 	vis.MarkDeleted("/other.txt", drive.Entry{ID: "other"})
-	tasks.SetFailure("/dir/a.txt", "failed")
+	deleteState.SetFailure("/dir/a.txt", "failed")
 
 	vis.CancelChildren("/dir")
-	if tasks.Scheduled("/dir/a.txt") || vis.IsDeleted("/dir/a.txt") {
+	if deleteState.Scheduled("/dir/a.txt") || vis.IsDeleted("/dir/a.txt") {
 		t.Fatal("child delete should be cancelled")
 	}
-	if _, ok := tasks.Failure("/dir/a.txt"); ok {
+	if _, ok := deleteState.Failure("/dir/a.txt"); ok {
 		t.Fatal("child failure should be cleared")
 	}
-	if !tasks.Scheduled("/other.txt") || !vis.IsDeleted("/other.txt") {
+	if !deleteState.Scheduled("/other.txt") || !vis.IsDeleted("/other.txt") {
 		t.Fatal("sibling delete should be preserved")
 	}
-	tasks.StopAll()
+	deleteState.StopAll()
 }
 
 func TestDeleteSchedulerStopsAllTimers(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	vis := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	vis := NewVisibility(overlay, deleteState, v, nil)
 	vis.ScheduleDelete("/a.txt", time.Hour, func() {})
 	vis.ScheduleDelete("/b.txt", time.Hour, func() {})
-	tasks.StopAll()
-	if tasks.Scheduled("/a.txt") || tasks.Scheduled("/b.txt") {
+	deleteState.StopAll()
+	if deleteState.Scheduled("/a.txt") || deleteState.Scheduled("/b.txt") {
 		t.Fatal("timers should be stopped")
 	}
 }
 
 func TestDeleteTaskRecordsProjectStateFlags(t *testing.T) {
-	v, overlay, tasks := newTestDomain(t)
-	vis := NewVisibility(overlay, tasks, v, nil)
+	v, overlay, deleteState := newTestDomain(t)
+	vis := NewVisibility(overlay, deleteState, v, nil)
 	vis.MarkDeleted("/scheduled.txt", drive.Entry{ID: "scheduled", Name: "scheduled.txt"})
 	vis.MarkDeleted("/running.txt", drive.Entry{ID: "running", Name: "running.txt"})
 	vis.MarkDeleted("/failed.txt", drive.Entry{ID: "failed", Name: "failed.txt"})
-	tasks.Schedule("/scheduled.txt", time.Hour, func() {})
-	tasks.SetActive("/running.txt", drive.Entry{ID: "running", Name: "running.txt"})
-	tasks.SetFailure("/failed.txt", "remote failed")
-	defer tasks.StopAll()
+	deleteState.Schedule("/scheduled.txt", time.Hour, func() {})
+	deleteState.SetActive("/running.txt", drive.Entry{ID: "running", Name: "running.txt"})
+	deleteState.SetFailure("/failed.txt", "remote failed")
+	defer deleteState.StopAll()
 
 	records := vis.DeleteTaskRecords()
 	states := map[string]DeleteRecord{}

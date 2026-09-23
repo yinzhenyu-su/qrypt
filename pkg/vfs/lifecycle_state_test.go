@@ -59,7 +59,7 @@ func TestDomainStateInitialized(t *testing.T) {
 		{"upload.debug", fs.uploads != nil && fs.uploads.DebugState() != nil},
 		{"upload.faults", fs.faults != nil},
 		{"upload.hashes", fs.uploads != nil && fs.hashes != nil},
-		{"delete.tasks", fs.deletes != nil && fs.deletes.tasks != nil},
+		{"delete.state", fs.deletes != nil && fs.deletes.deleteState != nil},
 	} {
 		if !state.ok {
 			t.Errorf("domain state %s not initialized after New", state.name)
@@ -161,12 +161,12 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	if err := fs2.Remove(ctx, "/del.txt"); err != nil {
 		t.Fatal(err)
 	}
-	darmed := len(fs2.deletes.tasks.ScheduledPaths())
+	darmed := len(fs2.deletes.deleteState.ScheduledPaths())
 	if darmed == 0 {
 		t.Fatal("delete debounce timer not armed after remove")
 	}
 	fs2.deletes.Close()
-	dleft := len(fs2.deletes.tasks.ScheduledPaths())
+	dleft := len(fs2.deletes.deleteState.ScheduledPaths())
 	if dleft != 0 {
 		t.Fatalf("delete.Close left %d timers armed", dleft)
 	}

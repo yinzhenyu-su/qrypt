@@ -74,5 +74,5 @@ func TestVFSDebugSnapshotRuntimeCollectsIdentityQueuesAndPending(t *testing.T) {
 }
 
 func (r vfsDebugSnapshotRuntime) StopAllDeleteTimersForTest() {
-	r.deletes.tasks.StopAll()
+	r.deletes.deleteState.StopAll()
 }
