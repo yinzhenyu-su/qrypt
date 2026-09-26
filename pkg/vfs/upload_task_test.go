@@ -190,7 +190,12 @@ func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
 	t.Parallel()
 	cacheDir := t.TempDir()
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
-	firstDriver := &countingUploadDriver{failUploads: 1}
+	// Keep every attempt failing so the retry state stays visible: with a
+	// single failure the retry eventually succeeds and drops the pending
+	// entry, leaving the retry state observable only inside a
+	// scheduling-dependent window (the Windows CI flake this guards; see
+	// TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds).
+	firstDriver := &countingUploadDriver{failAllUploads: true}
 	first, err := vfs.New(firstDriver, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
@@ -205,9 +210,12 @@ func TestVFSResumePendingWaitsUntilNextAttempt(t *testing.T) {
 	}
 	waitForCondition(t, func() bool {
 		pending := first.PendingUploads()
-		return len(pending) == 1 && pending[0].RetryCount == 1 && pending[0].NextAttemptAt > time.Now().Add(200*time.Millisecond).UnixNano()
+		return len(pending) == 1 && pending[0].RetryCount >= 1 && pending[0].LastError != "" && pending[0].NextAttemptAt > time.Now().Add(200*time.Millisecond).UnixNano()
 	})
 	cancelFirst()
+	// Stop the first instance before resuming: its workers keep failing and
+	// rescheduling, and would race the second instance on the shared journal.
+	stopVFS(t, first)
 
 	secondDriver := &countingUploadDriver{}
 	second, err := vfs.New(secondDriver, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
