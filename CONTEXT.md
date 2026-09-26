@@ -31,6 +31,10 @@ _Avoid_: 用 Scope 表达可见性、background
 任务是否出现在 app 默认任务列表中。与 Scope 正交，任何来源的任务都可能可见或不可见。
 _Avoid_: Scope
 
+**Task Event（任务事件）**:
+任务订阅流中的变更通告：任务更新、任务移除与断流缺口，按序号排列、可断点续订。
+_Avoid_: event（裸词）、notification
+
 ### 幂等
 
 **Idempotency Key（幂等键）**:
@@ -159,7 +163,7 @@ _Avoid_: debounce delay
 _Avoid_: throttle、limit
 
 **Upload Snapshot（上传快照）**:
-一次上传在提交前冻结出的内容标识与哈希。领域内唯一称 snapshot 的概念；其余同名类型只是调试投影。
+一次上传在提交前冻结出的内容标识与哈希。上传域唯一称 snapshot 的概念；其余同名类型只是调试投影。
 _Avoid_: snapshot state
 
 **Direct Copy（驱动直拷）**:
@@ -230,3 +234,81 @@ _Avoid_: Invalidation（裸词）、refresh
 **List Cache Invalidation（目录缓存失效）**:
 丢弃某目录的缓存列举，使下一次列举重新拉取。
 _Avoid_: Invalidation（裸词）、refresh
+
+### 调试与诊断
+
+**调试投影（Debug Projection）**:
+从运行状态派生的只读视图，仅供观察，不参与执行决策。
+_Avoid_: 用投影驱动行为
+
+**诊断数据（Diagnostics）**:
+调试域采集面的只读数据总称：快照、对账报告、健康信息与指标事件、日志事件。
+_Avoid_: 与诊断条目互用
+
+**调试快照（Debug Snapshot）**:
+某一时刻进程与各挂载调试投影的聚合。与 Upload Snapshot 并列为仅有的两个正式 snapshot 概念。
+_Avoid_: snapshot（裸词）
+
+**对账（Reconciliation）**:
+比对两个独立状态面、暴露其分歧的诊断动作。
+_Avoid_: check、verify
+
+**一致性对账（Consistency Reconciliation）**:
+单路径的本地待传状态与远端列举之间的对账，结论取固定词表：ok、pending、uploaded_pending_cleanup、mismatch、missing、namespace_root。
+_Avoid_: status、sync check
+
+**暂存对账（Staging Reconciliation）**:
+待传记录、磁盘暂存文件与暂传日志三方之间的对账。
+_Avoid_: check
+
+**孤儿暂存文件（Orphan Staging File）**:
+不被任何待传记录引用的暂存文件。
+_Avoid_: temp file
+
+**外来条目（Foreign Entry）**:
+远端目录下不由本进程记账、来历不明的条目。
+_Avoid_: 脏数据
+
+**在途操作（In-flight Operation）**:
+此刻正在执行、尚未结束的操作记录。
+_Avoid_: active（active 另指活跃上传）
+
+**指标事件（Metric Event）**:
+读、驱动、上传各层单次执行的结构化度量记录：阶段、耗时、字节、吞吐、重试与错误分类。上传快照内的事件列表是其按上传过滤的投影。
+_Avoid_: event（裸词）、上传事件、log、trace
+
+**日志事件（Log Event）**:
+一条被保留的日志行：级别、消息文本，以及挂载、组件归属。
+_Avoid_: event（裸词）、日志条目、metric
+
+**健康（Health）**:
+运行面的好坏判定，引用必须带层次限定：进程健康（服务存活）、挂载健康（ok/degraded/unhealthy）、驱动健康（驱动自报）。基准网络探针另有独立词汇 unstable。
+_Avoid_: state（State 另指状态机位置）、health（裸词）
+
+**观察窗口（Observation Window）**:
+自上次重置以来的诊断观察区间，起点可重置，与进程启动时间无关。
+_Avoid_: uptime、session
+
+**诊断条目（Diagnostic）**:
+带严重级别与代码的机器可读结论，由规则从诊断数据推导。
+_Avoid_: diagnostics（diagnostics 另指诊断数据）
+
+**测试准入（Test Admission）**:
+挂载级开关：未开启的挂载不得运行写入型调试测试。
+_Avoid_: permission、feature
+
+**调试测试（Debug Test）**:
+真实读写远端的调试测试套件，受测试准入门禁。
+_Avoid_: feature test、contract test（contract 只指其中的驱动契约套件）
+
+**基准（Benchmark）**:
+机器可比的性能测量，目的与调试测试不同。
+_Avoid_: 压测、debug test
+
+**故障注入（Fault Injection）**:
+调试期人为制造失败的机制。
+_Avoid_: mock
+
+**调试包（Debug Bundle）**:
+面向 AI 的一次采集产物：汇总报告加各诊断数据的原始副本。
+_Avoid_: log bundle、dump

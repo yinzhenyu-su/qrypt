@@ -135,6 +135,10 @@ func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending
 		return err
 	}
 	r.hashes.RenamePath(oldPath, newPath, pending)
+	// The source path only ever existed as a local pending projection; drop its
+	// cached identity or LocalChildren keeps re-injecting the old name into
+	// every listing after the upload has moved to the new path.
+	r.viewRT.DropEntryPath(oldPath)
 	if !r.schedulingEnabled() {
 		return nil
 	}
