@@ -105,6 +105,19 @@ func (r Runtime) RefreshPath(path string) {
 	r.view.mu.Unlock()
 }
 
+// DropEntryPath forgets the cached entry at path and invalidates its parent's
+// list cache. Callers use it when a locally computed entry identity no longer
+// applies - a renamed pending upload's old name, for instance - so the entry
+// cache cannot re-inject the stale name into later listings through
+// LocalChildren.
+func (r Runtime) DropEntryPath(path string) {
+	path = vfstypes.CleanVirtualPath(path)
+	r.view.mu.Lock()
+	defer r.view.mu.Unlock()
+	r.view.entries.Delete(path)
+	delete(r.view.lists, vfstypes.CleanVirtualPath(pathpkg.Dir(path)))
+}
+
 // InvalidateListLocked drops the cached listing for path (glossary: 目录缓存
 // 失效). Callers hold view.mu.
 func (r Runtime) InvalidateListLocked(path string) {
