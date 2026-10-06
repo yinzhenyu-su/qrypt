@@ -29,9 +29,9 @@
 
 ## 系统要求
 
-| 依赖           | macOS                          | Linux                 | Windows                       |
+| 依赖           | macOS                          | Linux                         | Windows                       |
 | -------------- | ------------------------------ | --------------------- | ----------------------------- |
-| FUSE           | [macFUSE](https://macfuse.io/) | libfuse（通常已预装） | [WinFsp](https://winfsp.dev/) |
+| FUSE           | [macFUSE](https://macfuse.io/) | libfuse3 / fuse3              | [WinFsp](https://winfsp.dev/) |
 | Go（源码构建） | 1.27+                          | 1.27+                 | 1.27+                         |
 
 `fs` 命令（list、cat、get、put）不需要 FUSE，只有 `mount` 需要。
@@ -114,7 +114,9 @@ b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
 
 ## 从源码构建
 
-需要 Go 1.27+ 和 FUSE 头文件（Linux 上为 libfuse-dev，macOS 上为 macFUSE）。
+需要 Go 1.27+ 和 FUSE 头文件（Linux 上为 libfuse3-dev，运行挂载还需要
+fuse3 与 `/dev/fuse`；macOS 上为 macFUSE）。Linux 默认使用 FUSE3；老系统
+可用 `-tags fuse2` 构建兼容版本。
 
 ```
 git clone https://github.com/yinzhenyu-su/qrypt.git

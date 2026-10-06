@@ -22,20 +22,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.1"
           cache: true
 
       - name: Install FUSE headers
         run: |
-          # The runner image usually already ships libfuse-dev, and apt-get
+          # The runner image usually already ships libfuse3-dev, and apt-get
           # update is the slow half of this step; only reach for apt when the
           # headers the cgo build actually needs are missing.
-          if pkg-config --exists fuse; then
-            echo "libfuse-dev already present"
+          if pkg-config --exists fuse3; then
+            echo "libfuse3-dev already present"
             exit 0
           fi
           sudo apt-get update
-          sudo apt-get install -y libfuse-dev
+          sudo apt-get install -y libfuse3-dev fuse3
 
       - name: Fuzz (30s per fuzzer)
         run: scripts/fuzz-nightly.sh 30s
@@ -63,20 +63,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.1"
           cache: true
 
       - name: Install FUSE headers
         run: |
-          # The runner image usually already ships libfuse-dev, and apt-get
+          # The runner image usually already ships libfuse3-dev, and apt-get
           # update is the slow half of this step; only reach for apt when the
           # headers the cgo build actually needs are missing.
-          if pkg-config --exists fuse; then
-            echo "libfuse-dev already present"
+          if pkg-config --exists fuse3; then
+            echo "libfuse3-dev already present"
             exit 0
           fi
           sudo apt-get update
-          sudo apt-get install -y libfuse-dev
+          sudo apt-get install -y libfuse3-dev fuse3
 
       - name: Coverage gate
         if: matrix.name == 'coverage'
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.1"
           cache: true
 
       - name: Install WinFsp

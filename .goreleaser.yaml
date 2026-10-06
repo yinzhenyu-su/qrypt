@@ -10,14 +10,14 @@ builds:
 release:
   replace_existing_artifacts: true
   extra_files:
-    - glob: dist/qrypt_*.tar.gz
-    - glob: dist/qrypt_*.zip
+    - glob: prebuilt/qrypt_*.tar.gz
+    - glob: prebuilt/qrypt_*.zip
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   extra_files:
-    - glob: dist/qrypt_*.tar.gz
-    - glob: dist/qrypt_*.zip
+    - glob: prebuilt/qrypt_*.tar.gz
+    - glob: prebuilt/qrypt_*.zip
 
 changelog:
   sort: asc

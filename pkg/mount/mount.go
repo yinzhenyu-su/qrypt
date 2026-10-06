@@ -173,8 +173,8 @@ func mountOptionsForGOOS(opts Options, goos string) []string {
 		"-o", "entry_timeout=" + fuseTimeout(entryTimeout),
 		"-o", "negative_timeout=" + fuseTimeout(opts.NegativeTimeout),
 	}
-	// fuse2 takes -o use_ino so the kernel keeps the inode numbers handed to
-	// it by the filesystem; fuse3 removed the option (it always uses them).
+	// FUSE2 takes -o use_ino so the kernel keeps the inode numbers handed to
+	// it by the filesystem; FUSE3 removed the option (it always uses them).
 	if fuseUseInoOption != "" {
 		flags = append(flags, "-o", fuseUseInoOption)
 	}

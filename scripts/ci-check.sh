@@ -16,7 +16,7 @@ smoke) runs in GitHub Actions on windows-latest (ci.yaml test-windows),
 and the real WinFsp mount smoke runs nightly (nightly.yaml windows-mount).
 
 Options:
-  --install-system-deps  On Linux, install libfuse-dev with apt-get when needed.
+  --install-system-deps  On Linux, install libfuse3-dev and fuse3 with apt-get when needed.
   -h, --help             Show this help.
 EOF
 }
@@ -40,7 +40,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# CI pins go1.27.0 exactly; any go1.27.x patch satisfies the toolchain line.
+# CI pins Go 1.27.1; any newer 1.27.x patch also satisfies the toolchain line.
 case "$(go env GOVERSION)" in
   go1.27.*) ;;
   *)
@@ -50,12 +50,12 @@ case "$(go env GOVERSION)" in
 esac
 
 if [ "$(uname -s)" = "Linux" ]; then
-  if ! pkg-config --exists fuse 2>/dev/null; then
+  if ! pkg-config --exists fuse3 2>/dev/null; then
     if [ "$install_system_deps" = true ]; then
       sudo apt-get update
-      sudo apt-get install -y libfuse-dev
+      sudo apt-get install -y libfuse3-dev fuse3
     else
-      echo "Linux FUSE headers are missing. Re-run with --install-system-deps" >&2
+      echo "Linux FUSE3 headers are missing. Re-run with --install-system-deps" >&2
       exit 1
     fi
   fi

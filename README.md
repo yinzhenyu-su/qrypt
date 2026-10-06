@@ -116,6 +116,8 @@ Extended walkthrough →
 ## Building from Source
 
 Requires Go 1.27+ and FUSE headers (libfuse3-dev on Linux, macFUSE on macOS).
+Linux builds use FUSE3 by default; mounting also requires the fuse3 runtime and
+`/dev/fuse`. Legacy FUSE2 builds can be produced with `-tags fuse2`.
 
 ```
 git clone https://github.com/yinzhenyu-su/qrypt.git

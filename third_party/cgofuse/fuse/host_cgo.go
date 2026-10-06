@@ -21,19 +21,20 @@ package fuse
 #cgo freebsd,fuse3 CFLAGS: -DFUSE_USE_VERSION=39 -D_FILE_OFFSET_BITS=64 -I/usr/local/include/fuse3
 #cgo netbsd CFLAGS: -DFUSE_USE_VERSION=28 -D_FILE_OFFSET_BITS=64 -D_KERNTYPES
 #cgo openbsd CFLAGS: -DFUSE_USE_VERSION=28 -D_FILE_OFFSET_BITS=64
-#cgo linux,!fuse3 CFLAGS: -DFUSE_USE_VERSION=28 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse
-#cgo linux,fuse3 CFLAGS: -DFUSE_USE_VERSION=39 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse3
+#cgo linux,fuse2 CFLAGS: -DFUSE_USE_VERSION=28 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse
+#cgo linux,!fuse2 CFLAGS: -DFUSE_USE_VERSION=39 -D_FILE_OFFSET_BITS=64 -I/usr/include/fuse3
 #cgo linux LDFLAGS: -ldl
 // staticfuse links libfuse statically instead of dlopening it at runtime.
 // glibc's dlopen from a statically linked executable SIGFPEs (div by zero
 // inside dl_open_worker) on Debian trixie's glibc 2.41, which kills qrypt
 // at mount time; the fully static docker builds opt into it via -tags
-// staticfuse. With fuse2 (-tags staticfuse) distro libfuse.a does not
+// staticfuse. Linux defaults to FUSE3; use -tags fuse2 for legacy FUSE2.
+// With fuse2 (-tags staticfuse,fuse2) distro libfuse.a does not
 // export fuse_invalidate_path, so path invalidation is a no-op there;
-// fuse3 (-tags staticfuse,fuse3) exports it and restores invalidation.
+// FUSE3 exports it and restores invalidation.
 #cgo linux,staticfuse CFLAGS: -DCGOFUSE_STATIC_FUSE
-#cgo linux,staticfuse,!fuse3 LDFLAGS: -lfuse
-#cgo linux,staticfuse,fuse3 LDFLAGS: -lfuse3 -lpthread -ldl
+#cgo linux,staticfuse,fuse2 LDFLAGS: -lfuse
+#cgo linux,staticfuse,!fuse2 LDFLAGS: -lfuse3 -lpthread -ldl
 #cgo windows CFLAGS: -DFUSE_USE_VERSION=28 -I/usr/local/include/winfsp
 	// Use `set CPATH=C:\Program Files (x86)\WinFsp\inc\fuse` on Windows.
 	// The flag `I/usr/local/include/winfsp` only works on xgo and docker.
@@ -231,7 +232,11 @@ static void *cgofuse_init_fuse(void)
 #if FUSE_USE_VERSION < 30
 	h = dlopen("libfuse.so.2", RTLD_NOW);
 #else
-	h = dlopen("libfuse3.so.3", RTLD_NOW);
+	// Linux distributions ship both libfuse3.so.3 and .so.4. The
+	// cgofuse ABI used here works with either; prefer the newer soname.
+	h = dlopen("libfuse3.so.4", RTLD_NOW);
+	if (0 == h)
+		h = dlopen("libfuse3.so.3", RTLD_NOW);
 #endif
 #endif
 	if (0 == h)
