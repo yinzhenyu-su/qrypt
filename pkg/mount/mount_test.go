@@ -229,7 +229,11 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	opts := mountOptions(Options{PlatformOptions: map[string][]string{
 		"darwin": {"defer_permissions", "auto_xattr", "iosize=8388608"},
 	}})
-	for _, want := range []string{"attr_timeout=1", "entry_timeout=1", "negative_timeout=0", "use_ino"} {
+	wants := []string{"attr_timeout=1", "entry_timeout=1", "negative_timeout=0"}
+	if fuseUseInoOption != "" {
+		wants = append(wants, fuseUseInoOption)
+	}
+	for _, want := range wants {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("mount options %v missing %q", opts, want)
 		}

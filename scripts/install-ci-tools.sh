@@ -29,7 +29,10 @@ fi
 # costs the slowest tool instead of the sum. golangci-lint is much the
 # largest of the three, so it sets that floor.
 install_tool() {
-  GOBIN="$TOOLS_DIR" go install "$1"
+  # CI pins the project toolchain to Go 1.27. Do not let a tool module's
+  # go.mod silently select an older toolchain, which can no longer parse the
+  # project's Go 1.27 syntax.
+  GOTOOLCHAIN="${QRYPT_GO_TOOLCHAIN:-local}" GOBIN="$TOOLS_DIR" go install "$1"
 }
 
 pids=()

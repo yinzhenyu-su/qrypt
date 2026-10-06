@@ -67,7 +67,7 @@ gh workflow run "Nightly Quality Gates"
 
 发布产物含 windows/amd64 与 windows/arm64，但平台代码（`*_windows.go`、
 纯 Go nocgo 宿主 `host_nocgo_windows.go`、WinFsp DLL 加载）需要 CI 验证，
-分两级：
+并且发布链路必须等待 Windows 门禁通过，分两级：
 
 1. **每 PR**（ci.yaml `test-windows` job，windows-latest）：`CGO_ENABLED=0`
    `go build -tags nocgo`（与发布产物同款标签）、`go vet ./...`、主模块
@@ -80,6 +80,10 @@ gh workflow run "Nightly Quality Gates"
    经 FUSE 路径写文件，校验 `qrypt fs cat` 解密读回、后端只存加密乱码
    文件名、再经 FUSE 路径读回。这是 nocgo 宿主 + WinFsp 集成唯一覆盖
    的路径。
+
+发布时，`ci.yaml` 还会在 Windows runner 上解压并运行实际的 amd64 发布包，
+通过同一份 WinFsp 挂载冒烟后才进入 release；Windows arm64 目前仍只做交叉编译
+验证。
 
 注意：Windows 下 race 检测需要 cgo 工具链（runner 无 gcc），所以
 `-race` 只在 Linux 跑。
