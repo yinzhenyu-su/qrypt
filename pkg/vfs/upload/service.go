@@ -1,8 +1,11 @@
 package upload
 
 import (
+	"container/heap"
+	"context"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +17,8 @@ import (
 
 const (
 	LargeUploadQuietThreshold = 16 << 20
-	LargeUploadQuietDelay     = 5 * time.Second
+	LargeUploadQuietDelay     = 60 * time.Second
+	TemporaryUploadQuietDelay = 5 * time.Minute
 	maxUploadRetryDelay       = 15 * time.Minute
 	snapshotHistoryLimit      = 100
 )
@@ -400,56 +404,51 @@ type ServiceOptions struct {
 	Store         *PendingStore
 	Done          chan struct{}
 	HashOps       HashOps
-	// Scheduler drives the per-path upload debounce timers. When nil, the
-	// real timer-backed scheduler (pkg/vfs/scheduler) is used; tests
-	// inject a fake for deterministic scheduling without real time.
+	// Scheduler is an optional callback scheduling test seam. When nil,
+	// production workers pull from the journal-backed deadline index.
 	Scheduler UploadScheduler
 }
 
 // --- service ---
 
-// Service groups the upload-domain state: the persistent store, the pending
-// queue, the debounce scheduler, debug snapshots, hash tracking and
+// Service groups the upload-domain state: the persistent store, the pull
+// deadline index, debug snapshots, hash tracking and
 // admission. Fault injection lives in pkg/vfs/faultinject; the
 // engine consumes it through the FaultController interface.
 type Service struct {
 	store    *PendingStore
 	queue    chan PendingUpload
 	schedule UploadScheduler
-	// scheduledMu keeps the upload generation paired with each scheduler
-	// task. Schedule replaces both under this lock, so a displaced timer's
-	// staging ownership can be retired exactly once.
+	// scheduledMu owns deadlines, path claims and the worker wake broadcast.
 	scheduledMu sync.Mutex
 	scheduled   map[string]*scheduledUpload
+	deadlines   uploadDeadlines
+	wake        chan struct{}
+	claimed     map[string]bool
+	closed      bool
 	debug       *DebugState
 	hashes      HashOps
 	admit       Admission
 	delay       time.Duration
 	workers     int
 	done        chan struct{}
-
-	// enqueueMu guards enqueueWG.Add against a concurrent Wait: Close
-	// locks it, marks the service stopped, and waits; sendUpload locks it
-	// before spawning a background enqueue goroutine.
-	enqueueMu sync.Mutex
-	enqueueWG sync.WaitGroup
-	stopped   bool
 }
 
 type scheduledUpload struct {
-	pending PendingUpload
+	pending  PendingUpload
+	deadline time.Time
+	index    int
 }
 
 // NewService builds the upload domain state together.
 func NewService(opts ServiceOptions) *Service {
-	if opts.Scheduler == nil {
-		opts.Scheduler = scheduler.NewTimeKeyedScheduler()
-	}
 	return &Service{
 		store:     opts.Store,
 		queue:     make(chan PendingUpload, 128),
 		schedule:  opts.Scheduler,
 		scheduled: map[string]*scheduledUpload{},
+		wake:      make(chan struct{}),
+		claimed:   map[string]bool{},
 		debug:     NewDebugState(),
 		hashes:    opts.HashOps,
 		delay:     opts.UploadDelay,
@@ -486,7 +485,18 @@ func (s *Service) Store() *PendingStore          { return s.store }
 
 // ScheduledDeadlines returns the pending upload-debounce deadlines per
 // path (debug/diagnostics surface).
-func (s *Service) ScheduledDeadlines() map[string]time.Time { return s.schedule.Deadlines() }
+func (s *Service) ScheduledDeadlines() map[string]time.Time {
+	if s.schedule != nil {
+		return s.schedule.Deadlines()
+	}
+	s.scheduledMu.Lock()
+	defer s.scheduledMu.Unlock()
+	deadlines := make(map[string]time.Time, len(s.scheduled))
+	for path, task := range s.scheduled {
+		deadlines[path] = task.deadline
+	}
+	return deadlines
+}
 
 // --- debug state ---
 
@@ -523,27 +533,24 @@ func (s *Service) DebugState() *DebugState { return s.debug }
 
 func (s *Service) Close() {
 	s.scheduledMu.Lock()
-	s.schedule.CancelAll()
+	s.closed = true
+	if s.schedule != nil {
+		s.schedule.CancelAll()
+	}
 	// Do not retire cancelled tasks here: a callback may already own its
 	// generation even though CancelAll can no longer see its timer. Current
 	// pending staging remains journal-owned; an older unreferenced generation
 	// in the replace-before-next-flush window is reclaimed by the startup
 	// sweep when the store is opened again.
 	clear(s.scheduled)
+	s.deadlines = nil
+	s.notifyLocked()
 	s.scheduledMu.Unlock()
-	s.enqueueMu.Lock()
-	s.stopped = true
-	s.enqueueMu.Unlock()
 }
 
-// Wait blocks until background enqueue goroutines spawned when the upload
-// queue was full have exited. Call after Close so no new goroutines are
-// created; the VFS closes its done channel to wake the stragglers.
-func (s *Service) Wait() {
-	s.enqueueMu.Lock()
-	defer s.enqueueMu.Unlock()
-	s.enqueueWG.Wait()
-}
+// Wait is retained for lifecycle callers. Pull scheduling creates no
+// background enqueue goroutines; the VFS owns and joins its workers.
+func (s *Service) Wait() {}
 
 func (s *Service) SetDone(done chan struct{}) { s.done = done }
 
@@ -592,6 +599,10 @@ func (s *Service) QuietWindow(p PendingUpload) time.Duration {
 	if p.Size >= LargeUploadQuietThreshold && qw < LargeUploadQuietDelay {
 		qw = LargeUploadQuietDelay
 	}
+	name := strings.ToLower(p.Path)
+	if (strings.HasSuffix(name, ".qkdownloading") || strings.HasSuffix(name, ".bc!")) && qw < TemporaryUploadQuietDelay {
+		qw = TemporaryUploadQuietDelay
+	}
 	return qw
 }
 
@@ -606,11 +617,16 @@ func (s *Service) Enqueue(p PendingUpload) {
 		logging.L.WarnfEvery("vfs.enqueue_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q size=%d retry=%d last_error=%q", p.FID, p.Path, p.Size, p.RetryCount, p.LastError)
 		return
 	}
-	s.EnqueueAfter(p, uploadDelayForRecord(p, s.delay))
+	s.EnqueueAfter(p, max(s.QuietDelay(p), uploadDelayForRecord(p, 0)))
 }
 
-// EnqueueAfter sends a pending upload to the worker pool after a delay.
+// EnqueueAfter updates one path's deadline and wakes idle workers.
 func (s *Service) EnqueueAfter(p PendingUpload, delay time.Duration) {
+	if s.schedule == nil {
+		delay = max(delay, s.QuietDelay(p), time.Until(time.Unix(0, p.NextAttemptAt)))
+		s.scheduleUpload(p, delay)
+		return
+	}
 	if delay > 0 {
 		s.scheduleUpload(p, delay)
 		return
@@ -621,36 +637,54 @@ func (s *Service) EnqueueAfter(p PendingUpload, delay time.Duration) {
 func (s *Service) CancelUpload(path string) {
 	path = cleanVirtual(path)
 	s.scheduledMu.Lock()
-	s.schedule.Cancel(path)
-	delete(s.scheduled, path)
+	if s.schedule != nil {
+		s.schedule.Cancel(path)
+	}
+	s.removeScheduledLocked(path)
+	s.notifyLocked()
 	s.scheduledMu.Unlock()
 }
 
 func (s *Service) CancelChildUploads(dir string) {
 	dir = cleanVirtual(dir)
 	s.scheduledMu.Lock()
-	s.schedule.CancelUnder(dir)
+	if s.schedule != nil {
+		s.schedule.CancelUnder(dir)
+	}
 	for path := range s.scheduled {
 		if path == dir || isPathUnder(path, dir) {
-			delete(s.scheduled, path)
+			s.removeScheduledLocked(path)
 		}
 	}
+	s.notifyLocked()
 	s.scheduledMu.Unlock()
 }
 
 func (s *Service) scheduleUpload(p PendingUpload, delay time.Duration) {
-	task := &scheduledUpload{pending: p}
+	task := &scheduledUpload{pending: p, deadline: time.Now().Add(delay), index: -1}
 	s.scheduledMu.Lock()
-	old := s.scheduled[p.Path]
-	replaced := s.schedule.Schedule(p.Path, delay, func() {
-		s.scheduledMu.Lock()
-		if s.scheduled[p.Path] == task {
-			delete(s.scheduled, p.Path)
-		}
+	if s.closed {
 		s.scheduledMu.Unlock()
-		s.sendUpload(p)
-	})
+		return
+	}
+	old := s.scheduled[p.Path]
+	s.removeScheduledLocked(p.Path)
+	replaced := old != nil
+	if s.schedule != nil {
+		replaced = s.schedule.Schedule(p.Path, delay, func() {
+			s.scheduledMu.Lock()
+			if s.scheduled[p.Path] == task {
+				delete(s.scheduled, p.Path)
+			}
+			s.scheduledMu.Unlock()
+			s.sendUpload(p)
+		})
+	}
 	s.scheduled[p.Path] = task
+	if s.schedule == nil && !s.claimed[p.Path] {
+		heap.Push(&s.deadlines, task)
+	}
+	s.notifyLocked()
 	s.scheduledMu.Unlock()
 
 	if replaced {
@@ -672,22 +706,100 @@ func (s *Service) sendUpload(p PendingUpload) {
 	case s.queue <- p:
 		logging.L.DebugfEvery("vfs.Upload_enqueued", time.Second, "[VFS] upload enqueued op_id=%q path=%q size=%d retry=%d", p.FID, p.Path, p.Size, p.RetryCount)
 	default:
-		logging.L.Warnf("[VFS] upload queue full; blocking enqueue in background op_id=%q path=%q size=%d", p.FID, p.Path, p.Size)
-		s.enqueueMu.Lock()
-		if s.stopped {
-			s.enqueueMu.Unlock()
-			return
-		}
-		s.enqueueWG.Add(1)
-		s.enqueueMu.Unlock()
-		go func() {
-			defer s.enqueueWG.Done()
-			select {
-			case s.queue <- p:
-			case <-s.done:
-			}
-		}()
+		// The injected scheduler's compatibility inbox must never create a
+		// goroutine per waiting file either. Production workers use Receive.
+		s.scheduleUpload(p, 10*time.Millisecond)
 	}
+}
+
+// notifyLocked broadcasts a coalesced state change to idle workers. There
+// are no per-file timers or blocked senders; the journal owns the backlog.
+func (s *Service) notifyLocked() {
+	close(s.wake)
+	s.wake = make(chan struct{})
+}
+
+func (s *Service) removeScheduledLocked(path string) {
+	if task := s.scheduled[path]; task != nil && s.schedule == nil && task.index >= 0 {
+		heap.Remove(&s.deadlines, task.index)
+	}
+	delete(s.scheduled, path)
+}
+
+// Receive lets an idle worker claim the earliest eligible path. Only the
+// path's current journal record can be uploaded, and another worker cannot
+// claim that path until CompleteReceive releases it. Restart recovery uses
+// Resume to rebuild these disposable deadlines from the journal.
+func (s *Service) Receive(ctx context.Context) (PendingUpload, bool) {
+	for {
+		if ctx.Err() != nil {
+			return PendingUpload{}, false
+		}
+		s.scheduledMu.Lock()
+		if s.closed {
+			s.scheduledMu.Unlock()
+			return PendingUpload{}, false
+		}
+		now := time.Now()
+		var selected string
+		var earliest time.Time
+		if len(s.deadlines) > 0 {
+			task := s.deadlines[0]
+			selected, earliest = task.pending.Path, task.deadline
+		}
+		if selected != "" && !earliest.After(now) {
+			s.removeScheduledLocked(selected)
+			pending, ok := s.store.UploadByPath(selected)
+			if ok && pending.Frozen && !pending.PermanentFail {
+				delay := max(s.QuietDelay(pending), time.Until(time.Unix(0, pending.NextAttemptAt)))
+				if delay > 0 {
+					task := &scheduledUpload{pending: pending, deadline: now.Add(delay), index: -1}
+					s.scheduled[selected] = task
+					heap.Push(&s.deadlines, task)
+				} else {
+					s.claimed[selected] = true
+					s.scheduledMu.Unlock()
+					return pending, true
+				}
+			}
+			s.scheduledMu.Unlock()
+			continue
+		}
+		wake := s.wake
+		done := s.done
+		s.scheduledMu.Unlock()
+		var timer *time.Timer
+		var due <-chan time.Time
+		if !earliest.IsZero() {
+			timer = time.NewTimer(time.Until(earliest))
+			due = timer.C
+		}
+		select {
+		case <-ctx.Done():
+		case <-done:
+			if timer != nil {
+				timer.Stop()
+			}
+			return PendingUpload{}, false
+		case <-wake:
+		case <-due:
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+}
+
+// CompleteReceive also wakes workers waiting for a newer generation of
+// this path. Call on every processing outcome, including deferral/failure.
+func (s *Service) CompleteReceive(path string) {
+	s.scheduledMu.Lock()
+	delete(s.claimed, path)
+	if task := s.scheduled[path]; task != nil && s.schedule == nil && task.index < 0 {
+		heap.Push(&s.deadlines, task)
+	}
+	s.notifyLocked()
+	s.scheduledMu.Unlock()
 }
 
 func uploadDelayForRecord(p PendingUpload, fallback time.Duration) time.Duration {
@@ -769,7 +881,10 @@ func (s *Service) TaskRecords(pending []PendingUpload) []UploadTaskRecord {
 	}
 	s.debug.Mu.Unlock()
 
-	timerPaths := s.schedule.Keys()
+	timerPaths := make(map[string]bool)
+	for path := range s.ScheduledDeadlines() {
+		timerPaths[path] = true
+	}
 
 	records := make([]UploadTaskRecord, 0, len(pending)+len(active)+len(history))
 	seenPath := map[string]bool{}

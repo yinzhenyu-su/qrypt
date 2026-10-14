@@ -674,6 +674,10 @@ func TestVFSRenameAfterTempGenerationUploaded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Let the partial generation land under the temp name.
+	// Explicit retry bypasses the five-minute temporary-name quiet window.
+	if err := fs.RetryTask(ctx, fs.PendingUploads()[0].FID); err != nil {
+		t.Fatal(err)
+	}
 	waitNoPending(t, fs)
 
 	if _, err := fs.WriteAt(ctx, "/d/a.mp4.qkdownloading", []byte("part-two"), 0); err != nil {
@@ -722,6 +726,9 @@ func TestVFSRenameTempFileInsideRenamedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := fs.Flush(ctx, "/d/f.mp4.qkdownloading"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.RetryTask(ctx, fs.PendingUploads()[0].FID); err != nil {
 		t.Fatal(err)
 	}
 	waitNoPending(t, fs)

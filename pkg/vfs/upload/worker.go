@@ -56,6 +56,11 @@ func PendingWithRuntime(ctx context.Context, pending PendingUpload, runtime Work
 		if delay <= 0 {
 			delay = fallbackDelay
 		}
+		// Content is already quiet. Waiting for admission must not restart
+		// a thirty-second (or five-minute) content-stability window.
+		if delay <= 0 || delay > 250*time.Millisecond {
+			delay = 250 * time.Millisecond
+		}
 		logging.L.DebugfEvery("vfs.upload_wait_for_admission", time.Second, "[VFS] upload delayed until admission is available op_id=%q path=%q size=%d delay=%s", pending.FID, pending.Path, pending.Size, delay)
 		runtime.RequeueAfter(pending, delay)
 		return nil

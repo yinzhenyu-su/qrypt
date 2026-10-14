@@ -261,6 +261,7 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 			return
 		}
 		_ = v.uploadPending(ctx, pending)
+		v.uploads.CompleteReceive(pending.Path)
 	}
 }
 

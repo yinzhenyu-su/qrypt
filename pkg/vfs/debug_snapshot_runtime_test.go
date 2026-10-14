@@ -64,7 +64,7 @@ func TestVFSDebugSnapshotRuntimeCollectsIdentityQueuesAndPending(t *testing.T) {
 		t.Fatalf("identity = %+v", identity)
 	}
 	queues := runtime.Queues()
-	if queues.UploadWorkers != 3 || queues.UploadCap == 0 {
+	if queues.UploadWorkers != 3 || queues.UploadCap != 0 || queues.UploadLength != 1 {
 		t.Fatalf("queues = %+v", queues)
 	}
 	pending := runtime.PendingUploads()

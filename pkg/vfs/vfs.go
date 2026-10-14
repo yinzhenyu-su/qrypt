@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const uploadDebounceDelay = 5 * time.Second
+const uploadDebounceDelay = 30 * time.Second
 const zeroByteUploadDebounceDelay = 10 * time.Second
 const defaultUploadWorkers = 4
 const deleteDebounceDelay = 2 * time.Second
@@ -250,8 +250,8 @@ func (v *VFS) Start(ctx context.Context) {
 //
 // Close stops accepting new background work, cancels the lifecycle context
 // (upload workers exit, in-flight remote operations abort), stops
-// upload/delete timers, waits for upload workers and background enqueue
-// goroutines to exit, and closes the read-cache writer, flushing queued
+// upload scheduling/delete timers, waits for upload workers to exit,
+// and closes the read-cache writer, flushing queued
 // writes. Teardown runs in a single background flow: Close returns when it
 // completes, or early with ctx.Err() if ctx is done first - the teardown
 // keeps running and a later Close call waits for it to finish.

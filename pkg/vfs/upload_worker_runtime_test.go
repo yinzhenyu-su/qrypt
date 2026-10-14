@@ -130,7 +130,7 @@ func TestUploadPendingWithRuntimeDelaysWhenAdmissionUnavailable(t *testing.T) {
 	if err := upload.PendingWithRuntime(context.Background(), pending, runtime, 1, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.requeueDelays) != 1 || runtime.requeueDelays[0] != 3*time.Second {
+	if len(runtime.requeueDelays) != 1 || runtime.requeueDelays[0] != 250*time.Millisecond {
 		t.Fatalf("requeue delays = %+v", runtime.requeueDelays)
 	}
 }

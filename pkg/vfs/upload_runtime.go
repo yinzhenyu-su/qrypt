@@ -141,12 +141,7 @@ func newVFSUploadWorkerRuntime(v *VFS) vfsUploadWorkerRuntime {
 }
 
 func (r vfsUploadWorkerRuntime) Receive(ctx context.Context) (PendingUpload, bool) {
-	select {
-	case <-ctx.Done():
-		return PendingUpload{}, false
-	case pending := <-r.uploads.Queue():
-		return pending, true
-	}
+	return r.uploads.Receive(ctx)
 }
 
 func (r vfsUploadWorkerRuntime) StopUploadTimers() {

@@ -237,8 +237,8 @@ func (r vfsDebugSnapshotRuntime) Identity(name string) diagnostics.MountSnapshot
 
 func (r vfsDebugSnapshotRuntime) Queues() diagnostics.MountSnapshotQueues {
 	return diagnostics.MountSnapshotQueues{
-		UploadLength:  len(r.uploads.Queue()),
-		UploadCap:     cap(r.uploads.Queue()),
+		UploadLength:  len(r.uploads.PendingUploads()),
+		UploadCap:     0, // Journal-backed backlog has no channel capacity.
 		UploadWorkers: r.uploads.WorkerCount(),
 		UploadDelay:   r.uploads.DefaultDelay().String(),
 		DeleteDelay:   r.deletes.delay.String(),
