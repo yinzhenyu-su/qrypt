@@ -29,11 +29,10 @@ type sftpToken struct {
 	PartSize    int64  `json:"part_size,omitempty"`
 }
 
-// installSessionIndex 接入绑定索引并启动过期回收：进度以远端 staging 文件的
+// installSessionIndex 接入绑定索引，连接可用后才启动过期回收：进度以远端 staging 文件的
 // 连续大小为准（stat），本地只保存"内容键 → staging 路径"的绑定用于回收。
 func (d *Driver) installSessionIndex(store drive.StateStore) {
 	d.sessionStoreMu.Lock()
-	defer d.sessionStoreMu.Unlock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
 		d.sessionCancel = nil
@@ -43,10 +42,31 @@ func (d *Driver) installSessionIndex(store drive.StateStore) {
 			logging.L.Warnf("[SFTP] upload session state failed err=%v", err)
 		},
 	})
+	d.sessionStoreMu.Unlock()
+	d.startSessionExpirer()
+}
+
+// startSessionExpirer supports both installation orders without issuing
+// remote cleanup before a successful Init. Capture the index so replacing
+// the state store cannot race a callback's read of d.sessions.
+func (d *Driver) startSessionExpirer() {
+	d.sessionStoreMu.Lock()
+	defer d.sessionStoreMu.Unlock()
+	if d.sessions == nil || d.sessionCancel != nil {
+		return
+	}
+	d.mu.RLock()
+	connected := d.client != nil
+	d.mu.RUnlock()
+	if !connected {
+		return
+	}
+	index := d.sessions
 	ctx, cancel := context.WithCancel(context.Background())
 	d.sessionCancel = cancel
-	d.expireSessions()
-	go session.RunExpirer(ctx, sftpSessionExpiryEvery, d.expireSessions)
+	expire := func() { d.expireSessions(index) }
+	expire()
+	go session.RunExpirer(ctx, sftpSessionExpiryEvery, expire)
 }
 
 // stagingPath 返回一次上传的确定性远端暂存路径：同一内容键永远同一路径，
@@ -58,13 +78,13 @@ func stagingPath(parent, sessionKey string) string {
 // expireSessions 回收超过 maxAge 未活动的绑定；每个过期绑定先清理远端
 // staging 文件（幂等），成功后才删除绑定。删除绑定失败或远端清理失败都会
 // 保留绑定，等待下一轮。
-func (d *Driver) expireSessions() {
-	if d.sessions == nil {
+func (d *Driver) expireSessions(index *session.Index) {
+	if index == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	d.sessions.Expire(sftpSessionMaxAge, time.Now(), func(binding session.Session) error {
+	index.Expire(sftpSessionMaxAge, time.Now(), func(binding session.Session) error {
 		return d.reclaimUploadSession(ctx, binding)
 	})
 }

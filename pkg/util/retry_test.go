@@ -69,3 +69,26 @@ func TestExponentialBackoffKeepsLegacyJitteredValues(t *testing.T) {
 		}
 	}
 }
+
+func TestExponentialBackoffSaturatesWithoutOverflow(t *testing.T) {
+	for _, attempt := range []int{40, 64, 32409, 32615} {
+		if got := ExponentialBackoffWithOptions(attempt, 500*time.Millisecond, 0, false); got != time.Duration(1<<63-1) {
+			t.Fatalf("uncapped backoff(%d) = %s, want duration maximum", attempt, got)
+		}
+		if got := ExponentialBackoffWithOptions(attempt, 500*time.Millisecond, 15*time.Minute, false); got != 15*time.Minute {
+			t.Fatalf("capped backoff(%d) = %s, want 15m", attempt, got)
+		}
+		if got := ExponentialBackoff(attempt); got <= 0 {
+			t.Fatalf("jittered backoff(%d) = %s, want positive", attempt, got)
+		}
+	}
+}
+
+func TestExponentialBackoffOddCapAndLargeBase(t *testing.T) {
+	if got := ExponentialBackoffWithOptions(1, time.Nanosecond, 3*time.Nanosecond, false); got != 2*time.Nanosecond {
+		t.Fatalf("odd-cap doubling = %s, want 2ns", got)
+	}
+	if got := ExponentialBackoffWithOptions(0, time.Minute, time.Second, false); got != time.Second {
+		t.Fatalf("base over cap = %s, want 1s", got)
+	}
+}

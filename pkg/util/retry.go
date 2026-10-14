@@ -48,22 +48,29 @@ func ExponentialBackoffWithOptions(attempt int, base, maxDelay time.Duration, ji
 	if base <= 0 {
 		base = DefaultBaseDelay
 	}
-	delay := base
+	// Saturate before multiplication: clamping the returned value cannot
+	// repair an overflowed duration (which may already be negative or zero).
+	limit := time.Duration(1<<63 - 1)
+	if maxDelay > 0 {
+		limit = maxDelay
+	}
+	delay := min(base, limit)
 	for i := 0; i < attempt; i++ {
-		if maxDelay > 0 && delay >= maxDelay/2 {
-			delay = maxDelay
+		if delay > limit/2 {
+			delay = limit
 			break
 		}
 		delay *= 2
 	}
-	if maxDelay > 0 && delay > maxDelay {
-		delay = maxDelay
-	}
 	if jitter {
-		factor := float64(75+(attempt*7)%50) / 100.0
-		delay = time.Duration(float64(delay) * factor)
-		if maxDelay > 0 && delay > maxDelay {
-			delay = maxDelay
+		// Reduce before multiplying so even the attempt counter cannot
+		// overflow. Clamp in floating point before converting to Duration.
+		factor := float64(75+(attempt%50)*7%50) / 100.0
+		jittered := float64(delay) * factor
+		if jittered >= float64(limit) {
+			delay = limit
+		} else {
+			delay = time.Duration(jittered)
 		}
 	}
 	return delay

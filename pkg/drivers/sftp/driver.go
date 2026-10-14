@@ -91,14 +91,17 @@ func (d *Driver) Init(ctx context.Context) error {
 		return err
 	}
 	d.sessionMu.Lock()
-	defer d.sessionMu.Unlock()
 	connection, client, err := d.connect(ctx)
 	if err != nil {
+		d.sessionMu.Unlock()
 		return err
 	}
 	d.mu.Lock()
 	d.connection, d.client = connection, client
 	d.mu.Unlock()
+	d.sessionMu.Unlock()
+	// Reclamation may reconnect, so do not hold sessionMu while starting it.
+	d.startSessionExpirer()
 	return nil
 }
 
