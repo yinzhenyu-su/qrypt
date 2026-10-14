@@ -3,7 +3,7 @@
 package tools
 
 const (
-	StaticcheckVersion  = "v0.8.1"
-	GolangCILintVersion = "v2.13.1"
+	StaticcheckVersion  = "v0.8.2"
+	GolangCILintVersion = "v2.14.0"
 	GovulncheckVersion  = "v1.6.0"
 )
