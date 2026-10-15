@@ -25,7 +25,7 @@ func newStreamTestVFS(t *testing.T) vfs.FileSystem {
 	fs.Start(ctx)
 	t.Cleanup(func() {
 		cancel()
-		_ = fs.CloseReadCache()
+		stopVFS(t, fs)
 	})
 	return fs
 }
