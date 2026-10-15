@@ -1,6 +1,9 @@
 qrypt.toml
 .sisyphus
 dist/
+# Downloaded release artifacts and GoReleaser output (see .goreleaser.yaml).
+/prebuilt/
+/release/
 .DS_Store
 .zcode/
 /qrypt
