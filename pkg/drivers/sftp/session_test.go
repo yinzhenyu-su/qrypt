@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 	"time"
@@ -37,12 +38,15 @@ func TestSessionExpiryStartsOnlyAfterConnectionAndReclaims(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			server := newMockSFTPServer(t)
-			remote := filepath.Join(server.root, ".qrypt-sftp-upload-expired")
-			if err := os.WriteFile(remote, []byte("partial"), 0o600); err != nil {
+			local := filepath.Join(server.root, ".qrypt-sftp-upload-expired")
+			if err := os.WriteFile(local, []byte("partial"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			store := expiredSessionStore(t, remote)
 			d := New(Options{Address: server.listener.Addr().String(), Username: server.user, PrivateKey: server.keyPath, KnownHosts: server.knownHostsPath, RootPath: server.root})
+			// Persist protocol paths, not host paths: on Windows the remote
+			// absolute path is /C:/... rather than C:\\... .
+			remote := path.Join(d.rootPath, filepath.Base(local))
+			store := expiredSessionStore(t, remote)
 			t.Cleanup(func() {
 				if err := d.Drop(context.Background()); err != nil {
 					t.Error(err)
@@ -53,7 +57,7 @@ func TestSessionExpiryStartsOnlyAfterConnectionAndReclaims(t *testing.T) {
 				if d.sessionCancel != nil {
 					t.Fatal("expiry started before connection initialization")
 				}
-				if _, err := os.Stat(remote); err != nil {
+				if _, err := os.Stat(local); err != nil {
 					t.Fatalf("pre-init install touched staging: %v", err)
 				}
 			}
@@ -66,7 +70,7 @@ func TestSessionExpiryStartsOnlyAfterConnectionAndReclaims(t *testing.T) {
 			if d.sessionCancel == nil {
 				t.Fatal("expiry did not start after initialization")
 			}
-			if _, err := os.Stat(remote); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(local); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("expired staging not reclaimed: %v", err)
 			}
 			if _, ok := d.sessions.Get("expired"); ok {
