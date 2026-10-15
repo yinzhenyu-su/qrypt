@@ -55,6 +55,24 @@ gh workflow run "Nightly Quality Gates"
   `fromJson("***")` 展开失败、matrix job 不创建。
   同步本机配置：`gh variable set CONTRACT_MOUNTS_JSON --body '["yun139","115"]'`。
 
+从本地配置更新 contract secret（需要 Go 和已登录且有仓库 secrets 写权限的 `gh`）：
+
+```bash
+# 先读取仓库 variable 并检查选择，不写入 secret
+bash scripts/sync-contract-config.sh --dry-run
+# 默认读取当前目录 ./qrypt.toml，更新当前仓库 secret
+bash scripts/sync-contract-config.sh
+# 可显式指定配置和目标仓库
+bash scripts/sync-contract-config.sh --config ./qrypt.toml --repo OWNER/REPO
+```
+
+脚本按 variable 中的 mount `name` 精确筛选，保留全局设置和选中 mount 的完整配置
+（包括 params、加密设置），顺序与 variable 一致。缺失、重复或未设置
+`test_enabled = true` 的 mount 会使更新失败。若全局 `upload.default_mount`
+不在选择中，会移除它及 `default_path`，保留其他上传设置。
+base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64`，
+不打印配置、不创建明文或 base64 临时文件，也不修改本地配置或仓库 variable。
+
 ## Fuzz 与 corpus
 
 - nightly fuzz 失败时 `**/testdata/fuzz/**` 上传为 `fuzz-corpus`
