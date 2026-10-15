@@ -176,3 +176,45 @@ func TestByteLimiterCancelDoesNotLeaveDebt(t *testing.T) {
 		t.Fatalf("second wait should not inherit canceled reservation: %v", err)
 	}
 }
+
+func TestBandwidthLimiterDoesNotDeliverCanceledBytes(t *testing.T) {
+	for _, kind := range []string{"reader", "seeker", "closer"} {
+		for _, timeout := range []bool{false, true} {
+			name := kind + "/canceled"
+			if timeout {
+				name = kind + "/deadline"
+			}
+			t.Run(name, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				wantErr := error(context.Canceled)
+				if timeout {
+					cancel()
+					ctx, cancel = context.WithTimeout(context.Background(), 5*time.Millisecond)
+					wantErr = context.DeadlineExceeded
+				} else {
+					cancel()
+				}
+				defer cancel()
+				limiter := NewBandwidthLimiter(BandwidthLimits{UploadBytesPerSecond: 1, DownloadBytesPerSecond: 1})
+				var reader io.Reader
+				switch kind {
+				case "reader":
+					reader = limiter.LimitUpload(ctx, struct{ io.Reader }{strings.NewReader("slow")})
+				case "seeker":
+					reader = limiter.LimitUpload(ctx, strings.NewReader("slow"))
+				case "closer":
+					rc := limiter.LimitDownload(ctx, io.NopCloser(strings.NewReader("slow")))
+					defer rc.Close()
+					reader = rc
+				}
+				// io.Copy forwards n > 0 to the writer before checking the read
+				// error, just as HTTP can transmit a canceled request's bytes.
+				var delivered strings.Builder
+				n, err := io.Copy(&delivered, reader)
+				if n != 0 || delivered.Len() != 0 || !errors.Is(err, wantErr) {
+					t.Fatalf("delivered %d bytes (%q), error = %v; want no bytes and %v", n, delivered.String(), err, wantErr)
+				}
+			})
+		}
+	}
+}

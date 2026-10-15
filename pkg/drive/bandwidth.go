@@ -89,13 +89,18 @@ type limitedReader struct {
 }
 
 func (r *limitedReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
 	if len(p) > bandwidthLimitMaxChunk {
 		p = p[:bandwidthLimitMaxChunk]
 	}
 	n, err := r.reader.Read(p)
 	if n > 0 {
 		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
-			return n, waitErr
+			// Bytes are not deliverable until their bandwidth wait succeeds.
+			// Returning n > 0 would let io.Copy send them despite cancellation.
+			return 0, waitErr
 		}
 	}
 	return n, err
@@ -108,13 +113,16 @@ type limitedReadSeeker struct {
 }
 
 func (r *limitedReadSeeker) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
 	if len(p) > bandwidthLimitMaxChunk {
 		p = p[:bandwidthLimitMaxChunk]
 	}
 	n, err := r.reader.Read(p)
 	if n > 0 {
 		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
-			return n, waitErr
+			return 0, waitErr
 		}
 	}
 	return n, err
@@ -131,13 +139,16 @@ type limitedReadCloser struct {
 }
 
 func (r *limitedReadCloser) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
 	if len(p) > bandwidthLimitMaxChunk {
 		p = p[:bandwidthLimitMaxChunk]
 	}
 	n, err := r.rc.Read(p)
 	if n > 0 {
 		if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
-			return n, waitErr
+			return 0, waitErr
 		}
 	}
 	return n, err
@@ -181,6 +192,9 @@ func (l *byteLimiter) WaitN(ctx context.Context, n int) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now := l.clock.Now()
 	if l.next.Before(now) {
 		l.next = now
@@ -196,6 +210,9 @@ func (l *byteLimiter) WaitN(ctx context.Context, n int) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timer:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		l.next = next
 		return nil
 	}

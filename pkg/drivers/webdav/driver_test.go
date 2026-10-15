@@ -391,17 +391,21 @@ func TestWebDAVReadUsesBandwidthLimiter(t *testing.T) {
 	ts.mu.Unlock()
 	drv.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 1}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	rc, err := drv.Read(ctx, drive.Entry{ID: "/slow.txt", Size: 4}, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rc.Close()
+	// Start cancellation only after response headers arrive: slow HTTP setup
+	// must not consume the window intended to exercise the bandwidth wait.
+	timer := time.AfterFunc(20*time.Millisecond, cancel)
+	defer timer.Stop()
 
 	_, err = io.ReadAll(rc)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("read error = %v, want context deadline exceeded", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("read error = %v, want context canceled", err)
 	}
 }
 
