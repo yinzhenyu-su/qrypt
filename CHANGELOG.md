@@ -1,5 +1,105 @@
 # Changelog
 
+## v0.5.2 (2026-10-15)
+
+### Features
+- feat(scripts): sync selected contract config to repository secret
+- feat(task): 可见性独立成轴，app 默认列表按可见性过滤
+- feat(task): Internal 归属落地，挂载记账任务来源改为 internal
+- feat(scripts): test-layers 新增 changed 层，pre-commit 按改动路径选包
+- feat(observability): make reads, logs and counters usable signals
+- feat(core): run batch moves concurrently and report the batch type
+- feat(core): support multi-item batch move tasks
+- feat(scripts): support ABI=arm64 fast AAR builds for dev iteration
+
+### Bug fixes
+- fix(drive): stop delivering bytes after bandwidth cancellation
+- fix(sftp): use protocol paths in session expiry tests
+- fix(ci): update analyzers for Go 1.27 export format
+- fix(sftp): defer session expiry and prevent retry overflow
+- fix(vfs): pull staged uploads with bounded scheduling
+- fix(vfs): format delayed delete state constructor
+- fix(ci): make FUSE3 default and validate Windows release artifacts
+- fix(vfs): 清理 pending 改名后残留的旧条目缓存
+- fix(test,task): review 收口——测试时序确定化与 legacy phase 归一
+- fix(test): 修掉两处赌调度的时序断言
+- fix(vfs): stopVFS 同步关闭 VFS，不再让 TempDir 清理撞上异步关闭
+- fix(vfs): wait for a stable retry state in the replace-upload test
+- fix(logging): keep borrowed sinks open when replacing the logger
+- fix(crypt): stop leaking backend names through Rename and Move
+- fix(core): keep stream task and item state consistent at terminality
+- fix(vfs): move the backend object when renaming a pending path
+- fix(control): drop the dead events initializer
+- fix(vfs): commit the backend-reported rename identity
+- fix(drivers): report the renamed or moved entry at its new location
+- fix(vfs): carry pending uploads through a directory rename
+- fix(vfs): drop the committed view entry of a superseded upload
+- fix(vfs): reschedule a renamed pending upload under its new path
+- fix(core): use runtime tmp dir for direct driver copy buffers and refresh cache after delete
+- fix(deps): bump golang.org/x/crypto to v0.56.0 (GO-2026-6354/6355)
+- fix(ci): accept any go1.27.x patch in local ci-check
+- fix(git): read pushed refs from pre-push stdin, not argv
+- fix(test): de-flake nightly race/regression gates
+- fix(ci): accept short base32 backend names in the Windows mount smoke
+- fix(mount): pin WinFsp ownership to the mounting user so writes work
+- fix(mount): let WinFsp create the mount point directory itself
+- fix(test): de-flake mobile task state waits on slow Windows runners
+- fix(ci): unblock red GitHub Actions checks
+- fix(core): recover upload stream tasks stuck in non-terminal states
+
+### Others
+- chore(deps): bump Go toolchain to 1.27.2 and refresh x/ deps
+- test(vfs): 稳定 ResumePending 重试状态断言，修复 Windows CI 抖动
+- refactor(view): 延迟删除域状态更名 DelayedDeleteState
+- refactor(vfs): 失效语义拆词，InvalidatePath 更名 PublishStalePath
+- docs(mobile): 挂载记账任务来源措辞回归 internal scope
+- docs(domain): 词汇表提取 VFS 域名词，失效拆成三义
+- refactor(task): Phase 独立展示词汇，阶段标签不再复用 State 串
+- refactor(task): Item 概念收敛，追踪面更名并拆出条目级握手状态
+- refactor(task): 幂等命名收敛，Go 侧统一 IdempotencyKey
+- perf(test): 并行化 pkg/vfs、pkg/core、pkg/crypt 的测试
+- chore(scripts): 新增测试并行度维护脚本
+- refactor(core): extract thumbnail service
+- refactor(mobile): route task contracts through core
+- refactor(core): extract local file stability service
+- refactor(mobile): route media through core contracts
+- refactor(architecture): establish mobile core boundary
+- docs(readcache): 归档按读运行区分复用的淘汰策略文档
+- perf(readcache): 按读运行区分缓存复用并重构淘汰策略
+- test(ci): reclaim the local temp a completed test run leaves behind
+- perf(ci): trim local gate runtime and fix upload pause contract
+- docs(openspec): archive the log sink probe portability fix
+- test(logging): make the file-sink release probe portable
+- test(crypt): pin the read cost of an encrypted upload
+- perf(vfs): reuse a frozen staging generation until an upload starts
+- perf(upload): reduce upload read amplification in crypt and staging
+- docs(openspec): archive the logger sink ownership fix
+- docs(openspec): archive the crypt wrapper name fix
+- docs(openspec): archive the stream task consistency fix
+- docs(openspec): archive the observability changes
+- docs(openspec): archive the pending-rename backend-object change
+- docs(openspec): archive the upload dead-code removal
+- docs(openspec): archive the staging boundary change
+- test(vfs): pin the staging boundaries left open by the dead-code removal
+- refactor(vfs): delete unreachable upload-path code and forwarding layers
+- docs(openspec): archive the task type descriptor change
+- refactor(task): declare a task type's policy in one table
+- docs(openspec): archive the mobile upload task observer change
+- docs(openspec): archive the rename identity change
+- docs(openspec): align the shadow convergence rules with the implementation
+- docs(openspec): capture the rename identity change
+- refactor(drive): return the resulting entry from rename/move
+- chore(git): ignore the local debug journal
+- chore(openspec): add omp workflow skills and commands
+- fix: persist and observe resumable upload progress
+- refactor(task): simplify task API
+- docs(openspec): archive simplify-upload-pipeline change with upload-pipeline spec
+- refactor(upload): simplify upload pipeline
+- chore(git): add pre-commit/pre-push hooks running local CI checks
+- test(core): assert waiting_input staging tasks are dismissible
+
+---
+
 ## v0.5.0 (2026-08-27)
 
 ### Features
