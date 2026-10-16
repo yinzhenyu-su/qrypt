@@ -258,6 +258,32 @@ func (c *Core) RetryTask(ctx context.Context, id string) error {
 			return nil
 		}
 	}
+	// Rebuild a stopped direct runner from its persisted, already-selected
+	// destinations. Never feed it through rename allocation again.
+	if strategy == task.RetryWakeRunner && currentErr == nil &&
+		(current.State == task.StateCanceled || (current.State == task.StateFailed && recoverableDirectUploadFailure(current))) {
+		if c.getUploadStream(id) != nil {
+			return fmt.Errorf("core: upload task %q is still stopping", id)
+		}
+		batch, err := c.uploadStreamDirectBatchFromTask(current)
+		if err != nil {
+			return err
+		}
+		if !c.putUploadStream(batch) {
+			return fmt.Errorf("core: upload task %q already active", id)
+		}
+		_, ok, err := manager.RecoverTask(ctx, id, func(runCtx context.Context, update task.UpdateFunc) error {
+			return c.runUploadStreamDirectTask(runCtx, update, batch)
+		})
+		if err != nil || !ok {
+			c.removeUploadStream(id)
+		}
+		if err == nil && !ok {
+			return fmt.Errorf("core: upload task %q is not recoverable", id)
+		}
+		return err
+	}
+
 	return manager.RetryTask(ctx, id)
 }
 
@@ -405,4 +431,18 @@ func moveSpecFromTaskRequest(req task.Request) (moveTaskSpec, error) {
 		Recursive:   req.Options.Recursive,
 		Concurrency: req.Options.Concurrency,
 	}, nil
+}
+
+// Persistent stores clear task-level executable capabilities on restart, but
+// item error metadata retains whether the original upload can be retried.
+func recoverableDirectUploadFailure(item task.Task) bool {
+	if item.Capabilities.Retryable {
+		return true
+	}
+	for _, result := range item.Tracking.Items {
+		if result.Error != nil && result.Error.Retryable {
+			return true
+		}
+	}
+	return false
 }

@@ -68,8 +68,10 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 	}
 	batch.channel = "direct"
 	batch.autoRetry = directUploadDetailBool(req.Detail, "auto_retry")
+	batch.retryLimit = int(directUploadDetailInt64(req.Detail, "auto_retry_limit"))
 	for i, reqItem := range req.Items {
 		if reqItem.SourcePath == "" {
+			batch.releaseDestinations()
 			return task.Task{}, fmt.Errorf("core: direct upload stream item requires source_path")
 		}
 		batch.items[i].SourceToken = reqItem.SourcePath
@@ -115,9 +117,13 @@ func (c *Core) createUploadStreamDirectTask(ctx context.Context, req task.Reques
 		c.removeUploadStream(batch.taskID)
 		return task.Task{}, err
 	}
-	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	submitted, err := manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runUploadStreamDirectTask(runCtx, update, batch)
 	})
+	if err != nil || submitted.ID != batch.taskID {
+		c.removeUploadStream(batch.taskID)
+	}
+	return submitted, err
 }
 
 func (c *Core) recoverUploadStreamDirectTasks(ctx context.Context, manager *task.Manager) {
@@ -169,6 +175,7 @@ func (c *Core) uploadStreamDirectBatchFromTask(item task.Task) (*uploadStreamBat
 		channel:        "direct",
 		conflictPolicy: conflictPolicy,
 		autoRetry:      directUploadDetailBool(item.Detail, "auto_retry"),
+		retryLimit:     int(directUploadDetailInt64(item.Detail, "auto_retry_limit")),
 		retryCount:     item.RetryCount,
 		nextAttempt:    item.NextAttempt,
 		ready:          make(chan struct{}),
@@ -272,7 +279,7 @@ func (c *Core) runUploadStreamDirectTask(ctx context.Context, update task.Update
 					_ = c.cancelUploadStreamTask(ctx, batch)
 					return ctx.Err()
 				}
-				if !batch.autoRetry {
+				if !batch.shouldRetryDirectUpload(err) {
 					break
 				}
 				batch.scheduleDirectUploadRetry(update, snapshot.ID, err)
@@ -280,6 +287,18 @@ func (c *Core) runUploadStreamDirectTask(ctx context.Context, update task.Update
 		}
 		return nil
 	})
+}
+
+func directUploadTaskError(err error) *task.Error {
+	info := ClassifyError(err)
+	retryable := info.Retryable || info.Category == drive.ErrorCategoryUnknown
+	return &task.Error{Code: string(info.Code), Message: err.Error(), Retryable: retryable}
+}
+
+func (b *uploadStreamBatch) shouldRetryDirectUpload(err error) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.autoRetry && directUploadTaskError(err).Retryable && (b.retryLimit <= 0 || b.retryCount < b.retryLimit)
 }
 
 func waitDirectUploadRetry(ctx context.Context, update task.UpdateFunc, batch *uploadStreamBatch) error {
@@ -341,7 +360,7 @@ func (b *uploadStreamBatch) scheduleDirectUploadRetry(update task.UpdateFunc, it
 	if item := b.byID[itemID]; item != nil {
 		item.State = task.ItemStateRetryWait
 		item.CloudPhase = task.PhaseRetrying
-		item.Error = &task.Error{Message: err.Error(), Retryable: true}
+		item.Error = directUploadTaskError(err)
 		item.SourceRead = 0
 		item.CloudWritten = 0
 		item.CloudTotal = 0
@@ -357,7 +376,7 @@ func (b *uploadStreamBatch) scheduleDirectUploadRetry(update task.UpdateFunc, it
 		// Advertise immediate retry while backing off: the client shows a
 		// "retry now" affordance and Core.RetryTask wakes the batch early.
 		item.Capabilities.Retryable = true
-		item.Error = &task.Error{Message: err.Error(), Retryable: true}
+		item.Error = directUploadTaskError(err)
 	})
 }
 
@@ -437,7 +456,7 @@ func (c *Core) uploadStreamDirectItem(ctx context.Context, batch *uploadStreamBa
 	if err != nil {
 		item.Open = false
 		item.State = task.ItemStateFailed
-		item.Error = &task.Error{Message: err.Error(), Retryable: true}
+		item.Error = directUploadTaskError(err)
 		batch.updateTaskSnapshotLocked()
 		return err
 	}
@@ -506,7 +525,7 @@ func (c *Core) failUploadStreamDirectItem(batch *uploadStreamBatch, itemID strin
 	if item := batch.byID[itemID]; item != nil {
 		item.Open = false
 		item.State = task.ItemStateFailed
-		item.Error = &task.Error{Message: err.Error(), Retryable: true}
+		item.Error = directUploadTaskError(err)
 	}
 	batch.updateTaskSnapshotLocked()
 }

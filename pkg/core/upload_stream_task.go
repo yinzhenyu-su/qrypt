@@ -30,7 +30,8 @@ func (c *Core) uploadStreamPollEvery() time.Duration {
 }
 
 type uploadStreamBatch struct {
-	mu sync.Mutex
+	mu                  sync.Mutex
+	destinationReleases []func()
 	// Keep one service boundary for the batch; the service is stateless and
 	// retains the same stream lifecycle semantics without Core forwarding.
 	uploadService  *UploadService
@@ -47,6 +48,7 @@ type uploadStreamBatch struct {
 	doneOnce       sync.Once
 	canceled       bool
 	autoRetry      bool
+	retryLimit     int
 	retryCount     int
 	nextAttempt    time.Time
 	recovered      bool
@@ -137,9 +139,13 @@ func (c *Core) createUploadStreamTask(ctx context.Context, req task.Request) (ta
 		c.removeUploadStream(batch.taskID)
 		return task.Task{}, err
 	}
-	return manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
+	submitted, err := manager.SubmitIdempotent(ctx, item, func(runCtx context.Context, update task.UpdateFunc) error {
 		return c.runUploadStreamTask(runCtx, update, batch)
 	})
+	if err != nil || submitted.ID != batch.taskID {
+		c.removeUploadStream(batch.taskID)
+	}
+	return submitted, err
 }
 
 func (c *Core) recoverUploadStreamTasks(ctx context.Context, manager *task.Manager) {
@@ -620,7 +626,7 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 	}
 	conflictPolicy := normalizeUploadConflictPolicy(req.Options.ConflictPolicy)
 	switch conflictPolicy {
-	case "", "overwrite", "replace", "fail", "error", "skip":
+	case "", "overwrite", "replace", "fail", "error", "skip", "rename":
 	default:
 		return nil, fmt.Errorf("core: unsupported upload conflict_policy %q", req.Options.ConflictPolicy)
 	}
@@ -638,6 +644,12 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 		done:           make(chan struct{}),
 		retrySignal:    make(chan struct{}, 1),
 	}
+	complete := false
+	defer func() {
+		if !complete {
+			batch.releaseDestinations()
+		}
+	}()
 	for i, reqItem := range req.Items {
 		destPath := reqItem.DestPath
 		if destPath == "" {
@@ -677,7 +689,9 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 			Size:         reqItem.Size,
 			State:        task.ItemStateWaitingInput,
 		}
-		if existing, skipped, err := uploadService.applyConflictPolicy(ctx, destPath, conflictPolicy); err != nil {
+		finalPath, existing, skipped, release, err := uploadService.prepareDestination(ctx, destPath, conflictPolicy)
+		batch.destinationReleases = append(batch.destinationReleases, release)
+		if err != nil {
 			item.State = task.ItemStateFailed
 			item.Error = &task.Error{Message: err.Error()}
 		} else if skipped {
@@ -687,6 +701,10 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 			item.CloudTotal = existing.Size
 			item.CloudPhase = task.PhaseSkipped
 		}
+		if err == nil && finalPath != destPath {
+			item.DestPath = finalPath
+			item.Name = path.Base(finalPath)
+		}
 		batch.items = append(batch.items, item)
 		batch.byID[itemID] = item
 		batch.bytesTotal += reqItem.Size
@@ -694,6 +712,7 @@ func (c *Core) uploadStreamBatchFromRequest(ctx context.Context, req task.Reques
 	batch.mu.Lock()
 	batch.closeDoneIfTerminalLocked()
 	batch.mu.Unlock()
+	complete = true
 	return batch, nil
 }
 
@@ -1112,6 +1131,9 @@ func (b *uploadStreamBatch) finishTask(update task.UpdateFunc) error {
 		taskItem.Detail["active_paths"] = []string{}
 		taskItem.Error = &task.Error{Message: message, Retryable: true}
 		taskItem.Capabilities.Retryable = true
+		if b.channel == "direct" && len(results) == 1 && results[0].Error != nil {
+			taskItem.Capabilities.Retryable = results[0].Error.Retryable
+		}
 		taskItem.Tracking.Items = results
 		if itemsFailed < int64(len(b.items)) {
 			taskItem.State = task.StatePartialFailed
@@ -1174,6 +1196,13 @@ func (c *Core) putUploadStream(batch *uploadStreamBatch) bool {
 	if _, exists := c.uploadStreams[batch.taskID]; exists {
 		return false
 	}
+	if len(batch.destinationReleases) == 0 {
+		c.uploadDestinations.mu.Lock()
+		for _, item := range batch.items {
+			batch.destinationReleases = append(batch.destinationReleases, c.uploadDestinations.reserve(item.DestPath))
+		}
+		c.uploadDestinations.mu.Unlock()
+	}
 	c.uploadStreams[batch.taskID] = batch
 	return true
 }
@@ -1186,8 +1215,12 @@ func (c *Core) getUploadStream(taskID string) *uploadStreamBatch {
 
 func (c *Core) removeUploadStream(taskID string) {
 	c.streamsMu.Lock()
-	defer c.streamsMu.Unlock()
+	batch := c.uploadStreams[taskID]
 	delete(c.uploadStreams, taskID)
+	c.streamsMu.Unlock()
+	if batch != nil {
+		batch.releaseDestinations()
+	}
 }
 
 func newUploadStreamTaskID() string {

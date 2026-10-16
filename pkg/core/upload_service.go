@@ -18,8 +18,9 @@ import (
 // through the internal filesystem API instead of treating FUSE as the upload
 // entry point.
 type UploadService struct {
-	resolver UploadDestinationResolver
-	backend  UploadBackend
+	resolver     UploadDestinationResolver
+	backend      UploadBackend
+	destinations *uploadDestinationReservations
 }
 
 type UploadBackend interface {
@@ -99,11 +100,13 @@ func (c *Core) UploadService() (*UploadService, error) {
 	if c == nil || c.fs == nil {
 		return nil, fmt.Errorf("core: closed")
 	}
-	return NewUploadService(NewUploadDestinationResolver(c.defaultUploadMount, c.defaultUploadPath), NewVFSUploadBackend(c.fs)), nil
+	service := NewUploadService(NewUploadDestinationResolver(c.defaultUploadMount, c.defaultUploadPath), NewVFSUploadBackend(c.fs))
+	service.destinations = &c.uploadDestinations
+	return service, nil
 }
 
 func NewUploadService(resolver UploadDestinationResolver, backend UploadBackend) *UploadService {
-	return &UploadService{resolver: resolver, backend: backend}
+	return &UploadService{resolver: resolver, backend: backend, destinations: &uploadDestinationReservations{}}
 }
 
 func (s *UploadService) UploadLocalFile(ctx context.Context, req UploadLocalFileRequest) (drive.Entry, error) {
@@ -122,7 +125,9 @@ func (s *UploadService) UploadLocalFileResult(ctx context.Context, req UploadLoc
 	if err != nil {
 		return UploadResult{}, err
 	}
-	if existing, skipped, err := s.applyConflictPolicy(ctx, resolvedRemotePath, req.ConflictPolicy); err != nil {
+	resolvedRemotePath, existing, skipped, release, err := s.prepareDestination(ctx, resolvedRemotePath, req.ConflictPolicy)
+	defer release()
+	if err != nil {
 		return UploadResult{}, err
 	} else if skipped {
 		return s.resultForEntry(resolvedRemotePath, existing, true), nil
