@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.3 (2026-10-16)
+
+### Features
+- feat(fs): flatten 123pan directory size and render dash in listings
+- feat(drivers): add 123pan driver and harden upload staging
+
+### Bug fixes
+- fix(mount): handle Finder metadata at namespace root
+
+---
+
 ## v0.5.2 (2026-10-15)
 
 ### Features
