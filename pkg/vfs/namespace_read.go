@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -66,6 +67,9 @@ func (n *Namespace) StartDirectoryPrefetch(ctx context.Context) {
 }
 
 func (n *Namespace) Stat(ctx context.Context, path string) (drive.Entry, error) {
+	if isVirtualRootAppleMetadataPath(path) {
+		return virtualRootAppleMetadataEntry(path), nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return drive.Entry{}, err
@@ -114,6 +118,9 @@ func (n *Namespace) RemoteList(ctx context.Context, path string) ([]drive.Entry,
 }
 
 func (n *Namespace) Read(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
+	if isVirtualRootAppleMetadataPath(path) {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return nil, err
@@ -151,6 +158,9 @@ func (n *Namespace) ReleaseReadSession(sessionID uint64) {
 }
 
 func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
+	if isVirtualRootAppleMetadataPath(path) {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return nil, err

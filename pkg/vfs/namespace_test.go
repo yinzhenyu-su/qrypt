@@ -2,6 +2,7 @@ package vfs_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -134,6 +135,45 @@ func TestNamespaceRoutesByFirstPathSegment(t *testing.T) {
 	}
 	if string(readBack) != "from localfs" {
 		t.Fatalf("unexpected readback: %q", readBack)
+	}
+}
+
+func TestNamespaceConsumesFinderMetadataOnlyAtVirtualRoot(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fs, err := vfs.New(localfs.New(t.TempDir()), vfs.Options{StorageDir: filepath.Join(t.TempDir(), "storage")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "123", FS: fs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/.DS_Store", "/._123", "/.Trashes"} {
+		entry, err := ns.Stat(ctx, path)
+		if err != nil || entry.Name == "" {
+			t.Fatalf("Stat(%q) = %+v, %v; want virtual metadata entry", path, entry, err)
+		}
+		if path == "/.Trashes" && !entry.IsDir {
+			t.Fatalf("Stat(%q) = %+v; want virtual directory", path, entry)
+		}
+		if err := ns.Create(ctx, path); err != nil {
+			t.Fatalf("Create(%q): %v", path, err)
+		}
+		if n, err := ns.WriteAt(ctx, path, []byte("finder"), 0); err != nil || n != len("finder") {
+			t.Fatalf("WriteAt(%q) = %d, %v; want consumed write", path, n, err)
+		}
+		if err := ns.Flush(ctx, path); err != nil {
+			t.Fatalf("Flush(%q): %v", path, err)
+		}
+		if err := ns.Remove(ctx, path); err != nil {
+			t.Fatalf("Remove(%q): %v", path, err)
+		}
+	}
+
+	if _, err := ns.Stat(ctx, "/123/.DS_Store"); !errors.Is(err, vfs.ErrNotFound) {
+		t.Fatalf("Stat mounted metadata = %v, want remote not-found", err)
 	}
 }
 
