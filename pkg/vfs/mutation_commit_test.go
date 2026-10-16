@@ -187,6 +187,61 @@ func TestMkdirCommitsOnceAfterAlreadyExistsRecovery(t *testing.T) {
 
 // --- ViewCommitter CommitRemove coordinator behavior ---
 
+func TestRemovePendingClearsCachedProjection(t *testing.T) {
+	t.Parallel()
+	fs := newViewCommitVFS(t)
+	ctx := context.Background()
+	const path = "/._test-probe.txt"
+	if err := fs.Create(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, path, []byte("metadata"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	// Resolving a missing sibling caches the parent's pending projections.
+	if _, err := fs.Stat(ctx, "/missing-sibling.txt"); !errors.Is(err, drive.ErrNotFound) {
+		t.Fatalf("missing sibling: %v", err)
+	}
+	if _, ok := viewpkg.NewRuntime(fs.view).CachedEntry(path); !ok {
+		t.Fatal("pending projection was not cached")
+	}
+	if err := fs.Remove(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(ctx, path); !errors.Is(err, drive.ErrNotFound) {
+		t.Fatalf("Stat after remove: %v, want not found", err)
+	}
+	if rc, err := fs.Read(ctx, path, 0, 8); !errors.Is(err, drive.ErrNotFound) {
+		if rc != nil {
+			_ = rc.Close()
+		}
+		t.Fatalf("Read after remove: %v, want not found", err)
+	}
+	entries, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name == "._test-probe.txt" {
+			t.Fatal("removed pending file remains listed")
+		}
+	}
+	// A later probe with the same name must create a usable new generation.
+	if err := fs.Create(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, path, []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := fs.Stat(ctx, path)
+	if err != nil || entry.Size != 3 {
+		t.Fatalf("recreated file = %+v, err = %v", entry, err)
+	}
+}
+
 // TestRemoveCommitsExactlyOnce: a successful local remove commits the
 // (normalized) path exactly once through ViewCommitter.
 func TestRemoveCommitsExactlyOnce(t *testing.T) {

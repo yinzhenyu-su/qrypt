@@ -93,6 +93,9 @@ func (r vfsRemoveCleanup) RemovePendingFile(path string) (bool, error) {
 		return true, err
 	}
 	r.uploads.CancelUpload(path)
+	// Resolution may have cached the pending projection with its staging ID.
+	// Drop it and the parent listing after the durable removal succeeds.
+	r.viewRT.DropEntryPath(path)
 	r.viewRT.ClearLocalModTime(path)
 	r.hashes.RemovePath(path)
 	return true, nil
