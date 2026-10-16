@@ -9,6 +9,9 @@ import (
 )
 
 func (n *Namespace) Create(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err
@@ -20,6 +23,9 @@ func (n *Namespace) Create(ctx context.Context, path string) error {
 }
 
 func (n *Namespace) WriteAt(ctx context.Context, path string, data []byte, off int64) (int, error) {
+	if isVirtualRootAppleMetadataPath(path) {
+		return len(data), nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return 0, err
@@ -31,6 +37,9 @@ func (n *Namespace) WriteAt(ctx context.Context, path string, data []byte, off i
 }
 
 func (n *Namespace) Flush(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err
@@ -42,6 +51,9 @@ func (n *Namespace) Flush(ctx context.Context, path string) error {
 }
 
 func (n *Namespace) Mkdir(ctx context.Context, path string) (drive.Entry, error) {
+	if isVirtualRootAppleMetadataPath(path) {
+		return virtualRootAppleMetadataEntry(path), nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return drive.Entry{}, err
@@ -53,6 +65,9 @@ func (n *Namespace) Mkdir(ctx context.Context, path string) (drive.Entry, error)
 }
 
 func (n *Namespace) Remove(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err
@@ -64,6 +79,9 @@ func (n *Namespace) Remove(ctx context.Context, path string) error {
 }
 
 func (n *Namespace) RemoveDir(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err
@@ -75,6 +93,9 @@ func (n *Namespace) RemoveDir(ctx context.Context, path string) error {
 }
 
 func (n *Namespace) Rename(ctx context.Context, oldPath, newPath string) error {
+	if isVirtualRootAppleMetadataPath(oldPath) || isVirtualRootAppleMetadataPath(newPath) {
+		return nil
+	}
 	oldMount, oldRest, oldRoot, err := n.resolve(oldPath)
 	if err != nil {
 		return err
@@ -93,6 +114,9 @@ func (n *Namespace) Rename(ctx context.Context, oldPath, newPath string) error {
 }
 
 func (n *Namespace) Truncate(ctx context.Context, path string, size int64) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err
@@ -104,6 +128,9 @@ func (n *Namespace) Truncate(ctx context.Context, path string, size int64) error
 }
 
 func (n *Namespace) SetModTime(ctx context.Context, path string, modTime time.Time) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err
@@ -115,6 +142,9 @@ func (n *Namespace) SetModTime(ctx context.Context, path string, modTime time.Ti
 }
 
 func (n *Namespace) PrepareDirectoryCopy(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
 	mount, rest, root, err := n.resolve(path)
 	if err != nil {
 		return err

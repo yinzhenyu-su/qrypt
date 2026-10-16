@@ -18,6 +18,45 @@ var ErrReadOnly = errors.New("vfs: read-only namespace path")
 var ErrNotFound = drive.ErrNotFound
 var ErrCrossMount = errors.New("vfs: cross-mount rename")
 
+// isVirtualRootAppleMetadataPath identifies Finder's metadata probes against
+// the namespace root. The namespace root contains mount names, not a remote
+// directory, so these paths must never be resolved as mount names. Metadata
+// below a mount (for example /123/.DS_Store) remains a real remote path.
+func isVirtualRootAppleMetadataPath(path string) bool {
+	name, rest, root := splitNamespacePath(path)
+	if root || rest != "/" {
+		return false
+	}
+	if isVirtualRootAppleMetadataDirName(name) {
+		return true
+	}
+	switch name {
+	case ".DS_Store", ".VolumeIcon.icns", ".metadata_never_index", ".com.apple.timemachine.donotpresent":
+		return true
+	default:
+		return strings.HasPrefix(name, "._")
+	}
+}
+
+func isVirtualRootAppleMetadataDirName(name string) bool {
+	switch name {
+	case ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems", ".DocumentRevisions-V100", "__MACOSX":
+		return true
+	default:
+		return false
+	}
+}
+
+func virtualRootAppleMetadataEntry(path string) drive.Entry {
+	name, _, _ := splitNamespacePath(path)
+	return drive.Entry{
+		ID:    "virtual-root-apple-metadata:" + name,
+		Name:  name,
+		IsDir: isVirtualRootAppleMetadataDirName(name),
+		Size:  0,
+	}
+}
+
 // Reader is the read-only subset of FileSystem.
 type Reader interface {
 	Stat(ctx context.Context, path string) (drive.Entry, error)
