@@ -100,15 +100,19 @@ func runList(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				return err
 			}
 		}
+		human, _ := cmd.Flags().GetBool("human")
 		for _, entry := range entries {
 			kind := "file"
-			if entry.IsDir {
-				kind = "dir "
-			}
 			size := fmt.Sprintf("%10d", entry.Size)
-			human, _ := cmd.Flags().GetBool("human")
 			if human {
 				size = fmt.Sprintf("%10s", cliruntime.FormatBytes(entry.Size))
+			}
+			if entry.IsDir {
+				// A directory has no meaningful byte size: providers report
+				// anything from 0 to a lagging content aggregate, so print a
+				// dash instead of a number that looks like it means something.
+				kind = "dir "
+				size = fmt.Sprintf("%10s", "-")
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s", kind, size, entry.Name)
 			if includeRemoteNames {

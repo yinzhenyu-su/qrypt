@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -552,6 +553,67 @@ root_path = `+util.TOMLPath(filepath.Join(tmp, "missing"))+`
 	}
 	if !strings.Contains(fullOut.String(), "local") || strings.Contains(fullOut.String(), "broken") {
 		t.Fatalf("expected only the healthy mount in the namespace listing, got %q", fullOut.String())
+	}
+}
+
+func TestFSListRendersDirectorySizeAsDash(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(filepath.Join(remote, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
+[storage]
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
+
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root_path = `+util.TOMLPath(remote)+`
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wantDir := fmt.Sprintf("dir  %10s dir", "-")
+	for _, tc := range []struct {
+		args     []string
+		wantFile string
+	}{
+		{
+			args:     []string{"fs", "--config", configPath, "list", "/local"},
+			wantFile: fmt.Sprintf("file %10d a.txt", int64(5)),
+		},
+		{
+			args:     []string{"fs", "--config", configPath, "list", "--human", "/local"},
+			wantFile: fmt.Sprintf("file %10s a.txt", cliruntime.FormatBytes(5)),
+		},
+	} {
+		root := NewRootCommand()
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs(tc.args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		got := out.String()
+		if !strings.Contains(got, wantDir+"\n") {
+			t.Fatalf("%v: expected %q in listing, got %q", tc.args, wantDir, got)
+		}
+		if !strings.Contains(got, tc.wantFile+"\n") {
+			t.Fatalf("%v: expected %q in listing, got %q", tc.args, tc.wantFile, got)
+		}
+		if strings.Contains(got, "4096") {
+			t.Fatalf("%v: directory size leaked into the listing: %q", tc.args, got)
+		}
 	}
 }
 
