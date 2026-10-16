@@ -302,7 +302,9 @@ func TestMeasureMountedSeekScenariosRecordOverlap(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			measurement, _, err := measureMountedSeekScenario(
 				context.Background(), fs, "local", file, virtualPath,
-				16<<20, 1<<20, 0, scenario, 2, 100*time.Millisecond, "cold", 1, 1,
+				// This verifies overlap, not timeout behavior. Allow the normal
+				// shutdown budget for race-instrumented readers on busy runners.
+				16<<20, 1<<20, 0, scenario, 2, DefaultMountedSeekOverlapTimeout, "cold", 1, 1,
 			)
 			if err != nil {
 				t.Fatal(err)
