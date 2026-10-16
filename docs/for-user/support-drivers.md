@@ -17,6 +17,7 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `yun139` | 移动云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
 | `115_open` | 115 云盘（开放平台） | `refresh_token` |
+| `123` | 123 云盘 | `username` + `password` |
 | `189` | 天翼云盘 189 | `cookie` 或 `username` + `password` |
 | `webdav` | WebDAV | `url` + `username` + `password` |
 | `sftp` | SFTP | `address` + `username` + `password` 或 `address` + `username` + `private_key` |
@@ -266,6 +267,29 @@ refresh_token = "eg2t4.<hex>.<hex>"
 | `access_token` | string (secret) | 否 | 115 open platform access token (optional; refreshed automatically when missing or expired) |
 | `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
 | `limit_rate` | integer | 否 | Limit all API requests to N per second，默认 `2` |
+
+---
+
+## 123
+
+123 云盘。
+
+```toml
+[mounts.params]
+username = "13800138000"
+password = "your-password"
+# root_path = "/qrypt"
+# root_id = "0"
+# base_url = "https://yun.123pan.com/b/api"
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `username` | string | 是 | 123pan account (phone number or email) |
+| `password` | string (secret) | 是 | 123pan account password |
+| `root_path` | string | 否 | Virtual root path on the drive (ignored when root_id is set)，默认 `/` |
+| `root_id` | string | 否 | Pre-resolved folder ID; when set, root_path is ignored |
+| `base_url` | string | 否 | Custom API base URL |
 
 ---
 

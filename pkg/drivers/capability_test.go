@@ -11,6 +11,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/p115"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/p115open"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/p123"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/s3"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/scopedfs"
@@ -91,6 +92,18 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 		{
 			name: "quark",
 			drv:  quark.New("cookie", quark.Options{}),
+			want: []drive.Capability{
+				drive.CapabilityPathResolver,
+				drive.CapabilityResumableUploader,
+				drive.CapabilityServerSideCopy,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "123",
+			drv:  p123.New(p123.Options{Username: "user", Password: "password"}),
 			want: []drive.Capability{
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
