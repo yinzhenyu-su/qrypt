@@ -2097,6 +2097,55 @@ func TestListStopsOnEmptyPageEvenWithPendingTotal(t *testing.T) {
 	}
 }
 
+func TestDirectoryEntriesHaveZeroSize(t *testing.T) {
+	f := newFakeAPI(t)
+	installLogin(f, "tok")
+	// 123pan returns a lagging content aggregate for directories.
+	f.json("/b/api/file/list/new", `{"code":0,"data":{"Next":"-1","Total":2,"InfoList":[
+		{"FileId":11,"FileName":"dir","Type":1,"Size":4096,"ParentFileId":0,"Etag":"","S3KeyFlag":"9-0","UpdateAt":"2026-01-02T00:00:00+08:00"},
+		{"FileId":12,"FileName":"a.txt","Type":0,"Size":5,"ParentFileId":0,"Etag":"E","S3KeyFlag":"9-0","UpdateAt":"2026-01-03T00:00:00+08:00"}
+	]}}`)
+
+	d := f.driver(Options{Username: "u", Password: "p"})
+	entries, err := d.List(context.Background(), "0")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	dir, file := entries[0], entries[1]
+	if !dir.IsDir || dir.Size != 0 {
+		t.Fatalf("directory entry = %+v, want IsDir with Size 0", dir)
+	}
+	meta, ok := metaFromEntry(dir)
+	if !ok {
+		t.Fatal("directory entry missing provider metadata")
+	}
+	if meta.Size != 0 {
+		t.Fatalf("directory extra size = %d, want 0 so Entry and Extra agree", meta.Size)
+	}
+	if file.IsDir || file.Size != 5 {
+		t.Fatalf("file entry = %+v, want Size 5", file)
+	}
+}
+
+func TestDirectorySizeFlatteningKeepsTrashPayloadUsable(t *testing.T) {
+	f := newFakeAPI(t)
+	installLogin(f, "tok")
+	f.json("/b/api/file/trash", `{"code":0,"data":{}}`)
+
+	d := f.driver(Options{Username: "u", Password: "p"})
+	entry := drive.Entry{
+		ID: "11", ParentID: "5", Name: "dir", IsDir: true,
+		Extra: fileMeta{FileID: 11, Name: "dir", Type: fileTypeDir, Size: 4096, ParentID: 5},
+	}
+	if err := d.Remove(context.Background(), entry); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	body := f.lastBodyFor("/b/api/file/trash")
+	if !strings.Contains(body, `"FileId":11`) || !strings.Contains(body, `"Type":1`) {
+		t.Fatalf("trash body = %s", body)
+	}
+}
+
 func TestAPIFailureIsClassified(t *testing.T) {
 	f := newFakeAPI(t)
 	installLogin(f, "tok")

@@ -72,12 +72,25 @@ func (f remoteFile) entry(parentID string) drive.Entry {
 		ParentID:  parentID,
 		Name:      f.FileName,
 		IsDir:     f.isDir(),
-		Size:      f.Size,
+		Size:      f.entrySize(),
 		ModTime:   f.modTime(),
 		CreatedAt: created,
 		UpdatedAt: updated,
 		Extra:     fileMetaFromFile(f, parentID),
 	}
+}
+
+// entrySize is the byte size qrypt exposes for this object. 123pan reports a
+// lagging content aggregate for directories (it keeps reporting the sum after a
+// child is removed), which is neither a real file size nor stable, so a
+// directory is flattened to zero per the driver contract. The flattening is
+// applied to the provider metadata too, so Entry.Size and Extra can never
+// disagree.
+func (f remoteFile) entrySize() int64 {
+	if f.isDir() {
+		return 0
+	}
+	return f.Size
 }
 
 // fileMeta is the provider metadata Read and Remove need beyond a plain
@@ -98,7 +111,7 @@ func fileMetaFromFile(f remoteFile, parentID string) fileMeta {
 		FileID:    f.FileID,
 		Name:      f.FileName,
 		Type:      f.Type,
-		Size:      f.Size,
+		Size:      f.entrySize(),
 		Etag:      f.Etag,
 		S3KeyFlag: f.S3KeyFlag,
 	}
