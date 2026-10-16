@@ -198,6 +198,14 @@ func (s *stagingStore) path(fid string) string {
 func (s *stagingStore) create(fid string) (string, error) {
 	path := s.path(fid)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if errors.Is(err, os.ErrNotExist) {
+		// The runtime storage may have been removed after initialization.
+		// Recreate only the directory; existing pending content is never replaced.
+		if err := os.MkdirAll(s.dir, 0o755); err != nil {
+			return "", err
+		}
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	}
 	if err != nil {
 		return "", err
 	}

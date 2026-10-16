@@ -55,10 +55,12 @@ sha256_file() {
   fi
 }
 
-qrypt fs list / | grep -q "local"
+# Consume the full output: grep -q can close the pipe early and make qrypt
+# exit with SIGPIPE under pipefail, even when the expected text was found.
+qrypt fs list / | grep "local" >/dev/null
 qrypt fs mkdir /local/docs
 qrypt fs put "$LOCAL" /local/docs/hello.txt
-qrypt fs stat /local/docs/hello.txt | grep -q "name: hello.txt"
+qrypt fs stat /local/docs/hello.txt | grep "name: hello.txt" >/dev/null
 qrypt fs cat /local/docs/hello.txt | cmp -s "$LOCAL" -
 qrypt fs get /local/docs/hello.txt "$DOWNLOADED"
 cmp -s "$LOCAL" "$DOWNLOADED"
@@ -91,7 +93,7 @@ qrypt fs rm /local/docs/large.bin
 qrypt fs rm /local/docs/renamed.txt
 qrypt fs rm /local/docs
 
-if qrypt fs pending | grep -q .; then
+if qrypt fs pending | grep . >/dev/null; then
   echo "pending uploads remain after smoke test" >&2
   qrypt fs pending --verbose >&2
   exit 1

@@ -502,7 +502,8 @@
             "onedrive_app",
             "webdav",
             "sftp",
-            "s3"
+            "s3",
+            "123"
           ]
         },
         "test_enabled": {
@@ -818,6 +819,28 @@
             "properties": {
               "params": {
                 "$ref": "#/definitions/s3Params"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "123"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/p123Params"
               }
             }
           }
@@ -1526,6 +1549,45 @@
           "type": "string",
           "default": "4h",
           "x-example": "1h"
+        }
+      },
+      "additionalProperties": false
+    },
+    "p123Params": {
+      "type": "object",
+      "required": [
+        "username",
+        "password"
+      ],
+      "properties": {
+        "username": {
+          "description": "123pan account (phone number or email).",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "13800138000"
+        },
+        "password": {
+          "description": "123pan account password.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-password"
+        },
+        "root_path": {
+          "description": "Virtual root path on the drive (ignored when root_id is set).",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt"
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID; when set, root_path is ignored.",
+          "type": "string",
+          "x-example": "0"
+        },
+        "base_url": {
+          "description": "Custom API base URL.",
+          "type": "string",
+          "x-example": "https://yun.123pan.com/b/api"
         }
       },
       "additionalProperties": false
