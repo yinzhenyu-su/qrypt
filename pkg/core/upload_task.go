@@ -113,10 +113,17 @@ func (c *Core) runUploadTask(ctx context.Context, update task.UpdateFunc, spec u
 					DestPath:       item.DestPath,
 					ConflictPolicy: spec.ConflictPolicy,
 				})
+				if err == nil {
+					item.DestPath = uploadResult.Path
+				}
 				var remoteTask task.Task
 				var hasRemoteTask bool
 				if err == nil {
 					update(func(taskItem *task.Task) {
+						if len(items) == 1 {
+							taskItem.Path = item.DestPath
+							taskItem.Name = filepath.Base(item.DestPath)
+						}
 						taskItem.Progress.Phase = task.PhaseUpload
 						taskItem.Detail["phase"] = task.PhaseUpload
 					})
@@ -267,7 +274,7 @@ func (c *Core) uploadSpecFromTaskRequest(ctx context.Context, req task.Request) 
 	}
 	spec := uploadTaskSpec{Concurrency: taskConcurrency(req.Options.Concurrency)}
 	switch normalizeUploadConflictPolicy(req.Options.ConflictPolicy) {
-	case "", "overwrite", "replace", "fail", "error", "skip":
+	case "", "overwrite", "replace", "fail", "error", "skip", "rename":
 		spec.ConflictPolicy = normalizeUploadConflictPolicy(req.Options.ConflictPolicy)
 	default:
 		return uploadTaskSpec{}, fmt.Errorf("core: unsupported upload conflict_policy %q", req.Options.ConflictPolicy)

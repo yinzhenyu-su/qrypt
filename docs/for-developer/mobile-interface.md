@@ -327,6 +327,12 @@ Create the task:
 }
 ```
 
+`detail.auto_retry_limit` optionally bounds the number of automatic direct-upload
+retries (0/unset preserves the existing unlimited budget). The Android automatic
+uploader sets this to 5. Classified permanent errors stop immediately. The retry
+count and final selected destination survive task recovery; retries do not run
+`rename` allocation again.
+
 `detail.auto_retry=true` keeps the same persistent task and item IDs across
 retryable failures. The task enters `retry_wait`, persists `retry_count` and
 `next_attempt_at`, and retries with exponential backoff capped at five minutes.
@@ -439,10 +445,19 @@ When creating an upload task, `options.conflict_policy` supports:
 ```text
 overwrite  upload and replace existing remote content (default)
 replace    alias of overwrite
+rename     keep both: choose the first available name, e.g. photo (1).jpg
 fail       fail the item if the destination already exists
 error      alias of fail
 skip       keep the existing remote item and mark the result item phase skipped
 ```
+
+For `rename`, task and result paths expose the final selected destination.
+Names preserve the last extension; hidden files such as `.env` become `.env (1)`.
+Destinations are reserved across in-flight uploads in the same Core instance,
+including multiple items in one request. Non-overwrite policies reject a reserved
+name that has not yet been written, rather than replacing the in-flight upload.
+These reservations do not coordinate
+independent Core instances or external cloud clients.
 
 After an upload item completes, inspect `task.result.items[*]`. Successful items
 include `dest_path`, `mount`, `remote_id`, and cloud byte counts. A skipped item

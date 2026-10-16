@@ -63,10 +63,11 @@ type Core struct {
 	// derive the dedup nonce (crypt nonceForSource). Mounts without it skip
 	// the pre-upload full read and let their backend compute any hashes the
 	// protocol needs inline.
-	mountContentDedup map[string]bool
-	streamsMu         sync.Mutex
-	downloadStreams   map[string]*downloadStreamBatch
-	uploadStreams     map[string]*uploadStreamBatch
+	mountContentDedup  map[string]bool
+	uploadDestinations uploadDestinationReservations
+	streamsMu          sync.Mutex
+	downloadStreams    map[string]*downloadStreamBatch
+	uploadStreams      map[string]*uploadStreamBatch
 }
 
 type RuntimeLayout struct {
