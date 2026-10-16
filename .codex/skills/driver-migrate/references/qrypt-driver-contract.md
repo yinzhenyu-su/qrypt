@@ -94,7 +94,8 @@ Interfaces that are *not* constants and are discovered by type assertion:
   only for non-directories, so a directory's size never reaches FUSE regardless
   of what the driver returned.
 - `pkg/vfs/drivecopy` rebuilds the source entry from stat info and therefore
-  drops `Extra`. `Read`/`Copy` must tolerate a missing `Extra`.
+  drops `Extra`. `Read`/`Copy` must tolerate a missing `Extra`: re-resolve
+  required provider metadata, for example through the parent listing.
 
 ## Entry Semantics
 
@@ -109,13 +110,19 @@ Interfaces that are *not* constants and are discovered by type assertion:
 - `IsDir`: exact.
 - `Size`: bytes, and **0 for directories**. Providers may report a lagging
   content aggregate for a directory (e.g. 123pan keeps the sum after a child is
-  removed); flatten it to 0 wherever you build the entry.
+  removed); flatten it to 0 in the entry and provider metadata carried in Extra.
 - `ModTime`: provider metadata, zero when unknown. Never fabricate `time.Now()`.
 - `CreatedAt`/`UpdatedAt`: provider metadata when present.
 - `Extra`: provider metadata the driver needs later (content hash, storage flag,
   parent id). Keep it consistent with the public fields: if a merge step patches
   `Entry.Size`, patch the provider object it was built from, not the entry
   afterwards, or `Read` will see a stale zero size and return EOF.
+
+## Pagination
+
+Terminate on the provider cursor/`next`, an empty page, or a reached total.
+A safety page cap must raise an error, never return a short listing: callers
+treat missing entries as absent and may delete or re-upload them.
 
 ## Read Semantics
 
@@ -283,6 +290,17 @@ Trust level, by area:
 - Never copy: OpenList's driver abstractions, caches, meta tables, path
   handling, and error types. Rebuild around qrypt's `Driver`/`Entry` and the
   local `pkg/drivers/<name>` shape.
+
+Observed 123pan examples to check rather than assume for other providers:
+
+- Trashed objects can retain working download URLs; use a live-state endpoint
+  such as `/restful/goapi/v1/file/details` to classify deletion.
+- Same-content creation can provide server-side copy through provider dedup.
+- Completion branches use mutually exclusive `upload_complete` and
+  `upload_complete/v2` endpoints; do not call both.
+- A create response can populate `data.Info.FileId` while the top-level id is 0.
+- Separate file/directory namespaces can allow same-name entries; check before
+  creating a directory.
 
 Keep the observed provider behavior in code comments where it differs from
 OpenList, so the next reader does not "fix" it back.
