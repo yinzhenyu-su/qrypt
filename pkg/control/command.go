@@ -3,11 +3,13 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // CommandService is the mutable application surface exposed to local CLI
@@ -19,12 +21,15 @@ type CommandService interface {
 }
 
 type CommandServer struct {
-	network  string
-	address  string
-	service  CommandService
-	server   *http.Server
-	listener net.Listener
-	stop     context.CancelFunc
+	network   string
+	address   string
+	service   CommandService
+	server    *http.Server
+	listener  net.Listener
+	stop      context.CancelFunc
+	closeOnce sync.Once
+	closeDone chan struct{}
+	closeErr  error
 }
 
 func NewCommandServer(endpoint string, service CommandService) (*CommandServer, error) {
@@ -68,6 +73,7 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/control/tasks/cancel", s.handleCancelTask)
 	mux.HandleFunc("/v1/control/tasks/retry", s.handleRetryTask)
 	s.server = &http.Server{Handler: mux}
+	s.closeDone = make(chan struct{})
 	ctx, stop := context.WithCancel(ctx)
 	s.stop = stop
 	go func() {
@@ -79,19 +85,34 @@ func (s *CommandServer) Start(ctx context.Context) error {
 }
 
 func (s *CommandServer) Close(ctx context.Context) error {
-	if s.stop != nil {
-		s.stop()
+	if s == nil || s.closeDone == nil {
+		return nil
 	}
-	if s.server != nil {
-		_ = s.server.Shutdown(ctx)
-	}
-	if s.listener != nil {
-		_ = s.listener.Close()
-	}
-	if s.network == "unix" && s.address != "" {
-		_ = os.Remove(s.address)
-	}
-	return nil
+	s.closeOnce.Do(func() {
+		defer close(s.closeDone)
+		var errs []error
+		if s.stop != nil {
+			s.stop()
+		}
+		if s.server != nil {
+			if err := s.server.Shutdown(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if s.listener != nil {
+			if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				errs = append(errs, err)
+			}
+		}
+		if s.network == "unix" && s.address != "" {
+			if err := os.Remove(s.address); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
+		}
+		s.closeErr = errors.Join(errs...)
+	})
+	<-s.closeDone
+	return s.closeErr
 }
 
 type taskActionRequest struct {

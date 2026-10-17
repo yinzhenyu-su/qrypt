@@ -95,7 +95,6 @@ MOUNT_LOG="$WORKDIR/mount.log"
 MOUNT_PID=""
 mkdir -p "$MOUNT_POINT"
 export QRYPT_HOME="$WORKDIR/runtime"
-SOCKET="$QRYPT_HOME/run/debug.sock"
 
 is_mounted() {
   if command -v mountpoint >/dev/null 2>&1; then
@@ -148,7 +147,7 @@ while :; do
     tail -n 100 "$MOUNT_LOG" >&2 || true
     exit 1
   fi
-  if is_mounted && [ -S "$SOCKET" ] && \
+  if is_mounted && \
       "$BINARY" debug raw /v1/health --config "$CONFIG" >/dev/null 2>&1; then
     break
   fi

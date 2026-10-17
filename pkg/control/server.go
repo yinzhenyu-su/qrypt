@@ -2,11 +2,13 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/logging"
@@ -50,6 +52,9 @@ type Server struct {
 	listener   net.Listener
 	stop       context.CancelFunc
 	mutable    bool
+	closeOnce  sync.Once
+	closeDone  chan struct{}
+	closeErr   error
 }
 
 // SetTaskDebugger attaches the application task journal to the local debug API.
@@ -141,6 +146,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
 	mux.HandleFunc("/v1/debug/stacks", s.handleGoroutines)
 	s.server = &http.Server{Handler: mux}
+	s.closeDone = make(chan struct{})
 	// Derive our own context so the goroutine below exits on Close even when
 	// the caller passed a background context (context.Background().Done() is
 	// nil, which would block the <-ctx.Done() receive forever).
@@ -190,21 +196,36 @@ func isNumericPort(port string) bool {
 }
 
 func (s *Server) Close(ctx context.Context) error {
-	// Notify the ctx.Done goroutine started by Start so it cannot leak even
-	// if the original Start context was background.
-	if s.stop != nil {
-		s.stop()
+	if s == nil || s.closeDone == nil {
+		return nil
 	}
-	if s.server != nil {
-		_ = s.server.Shutdown(ctx)
-	}
-	if s.listener != nil {
-		_ = s.listener.Close()
-	}
-	if s.socketPath != "" {
-		_ = os.Remove(s.socketPath)
-	}
-	return nil
+	s.closeOnce.Do(func() {
+		defer close(s.closeDone)
+		var errs []error
+		// Notify the ctx.Done goroutine started by Start so it cannot leak even
+		// if the original Start context was background.
+		if s.stop != nil {
+			s.stop()
+		}
+		if s.server != nil {
+			if err := s.server.Shutdown(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if s.listener != nil {
+			if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				errs = append(errs, err)
+			}
+		}
+		if s.socketPath != "" {
+			if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
+		}
+		s.closeErr = errors.Join(errs...)
+	})
+	<-s.closeDone
+	return s.closeErr
 }
 
 func (s *Server) SocketPath() string {
