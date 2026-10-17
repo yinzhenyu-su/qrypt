@@ -49,6 +49,7 @@ func TestCoreTaskContractsAliasTaskTypes(t *testing.T) {
 		{reflect.TypeOf(TaskState("")), reflect.TypeOf(task.State(""))},
 		{reflect.TypeOf(TaskType("")), reflect.TypeOf(task.Type(""))},
 		{reflect.TypeOf(TaskEvent{}), reflect.TypeOf(task.Event{})},
+		{reflect.TypeFor[TaskController](), reflect.TypeFor[task.Controller]()},
 	}
 	for _, tc := range pairs {
 		if tc.core != tc.task {

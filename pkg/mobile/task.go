@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 
 	"github.com/yinzhenyu/qrypt/pkg/core"
-	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
-func withTaskController(s *session, fn func(task.TaskController) error) error {
+// withTaskController narrows task actions to the shared control contract while
+// keeping Core access under the session lock used by reload and close.
+func withTaskController(s *session, fn func(core.TaskController) error) error {
 	return withCoreErr(s, func(c *core.Core) error {
 		return fn(c)
 	})
@@ -72,7 +73,7 @@ func CancelTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, withTaskController(s, func(controller task.TaskController) error {
+	return resultJSON(nil, withTaskController(s, func(controller core.TaskController) error {
 		return controller.CancelTask(ctx, taskID)
 	}))
 }
@@ -94,7 +95,7 @@ func RetryTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, withTaskController(s, func(controller task.TaskController) error {
+	return resultJSON(nil, withTaskController(s, func(controller core.TaskController) error {
 		return controller.RetryTask(ctx, taskID)
 	}))
 }

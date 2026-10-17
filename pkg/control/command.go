@@ -18,7 +18,7 @@ import (
 // control contract. It is intentionally separate from Snapshotter and
 // taskDebugger: debug clients can observe a Core without receiving mutation
 // methods.
-type CommandService = task.TaskController
+type CommandService = task.Controller
 
 type CommandServer struct {
 	network   string

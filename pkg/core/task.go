@@ -18,9 +18,6 @@ import (
 // construction; task_contract_test.go pins the schema.
 type Task = task.Task
 type TaskFilter = task.Filter
-
-var _ task.TaskController = (*Core)(nil)
-
 type TaskItem = task.Item
 type TaskItemFilter = task.ItemFilter
 type TaskItemTracking = task.ItemTracking
@@ -29,6 +26,11 @@ type TaskOperationRequest = task.OperationRequest
 type TaskRequest = task.Request
 type TaskState = task.State
 type TaskType = task.Type
+
+// TaskController is the shared task mutation contract exposed to clients.
+type TaskController = task.Controller
+
+var _ TaskController = (*Core)(nil)
 
 // TaskScopeUser is the origin mobile task APIs default to for user-initiated
 // work (glossary: 任务来源). The app's default list filters on visibility, not
