@@ -18,6 +18,9 @@ import (
 // construction; task_contract_test.go pins the schema.
 type Task = task.Task
 type TaskFilter = task.Filter
+
+var _ task.TaskController = (*Core)(nil)
+
 type TaskItem = task.Item
 type TaskItemFilter = task.ItemFilter
 type TaskItemTracking = task.ItemTracking

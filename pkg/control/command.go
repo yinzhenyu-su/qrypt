@@ -10,15 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
-// CommandService is the mutable application surface exposed to local CLI
-// commands. It is intentionally separate from Snapshotter and taskDebugger:
-// debug clients can observe a Core without receiving mutation methods.
-type CommandService interface {
-	CancelTask(context.Context, string) error
-	RetryTask(context.Context, string) error
-}
+// CommandService is retained as the transport-facing name for the shared task
+// control contract. It is intentionally separate from Snapshotter and
+// taskDebugger: debug clients can observe a Core without receiving mutation
+// methods.
+type CommandService = task.TaskController
 
 type CommandServer struct {
 	network   string
