@@ -49,7 +49,7 @@ func RunVFSResumeTest(ctx context.Context, fs vfs.FileSystem, mount string, size
 		Size:         size,
 		Started:      time.Now(),
 		Steps:        make([]FSTestStep, 0, 8),
-		RetryCommand: fmt.Sprintf("qrypt debug test resume --mount %s --socket PATH --size %d", mount, size),
+		RetryCommand: fmt.Sprintf("qrypt probe test resume --mount %s --size %d", mount, size),
 	}
 	defer func() {
 		result.Finished = time.Now()

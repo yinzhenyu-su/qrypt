@@ -26,6 +26,9 @@ const (
 	// must preserve the source mtime so sync converges instead of
 	// re-copying every run.
 	CapabilityServerSideCopy Capability = "server_side_copy"
+	// CapabilityOfflineDownload means the provider can import a remote source
+	// into the cloud without qrypt downloading the bytes locally first.
+	CapabilityOfflineDownload Capability = "offline_download"
 )
 
 // Capabilities returns the driver-declared optional behavior in a stable order.

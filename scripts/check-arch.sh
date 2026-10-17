@@ -21,10 +21,10 @@
 #   5. pkg/core is pkg/mobile's application boundary: mobile must not
 #      import pkg/vfs (or any subpackage), and consumes VFS value types
 #      only through the client contracts pkg/core exposes
-#   6. pkg/control is the debug-socket HTTP API only: the sync
-#      executor must not depend on it (it is the pure production path;
-#      pkg/core and internal/cli are the debug server's host/client and
-#      may). Shared driver-level operations live in pkg/vfs/drivecopy and
+#   6. pkg/control owns local debug, probe, and control HTTP transports: the
+#      sync executor must not depend on it (it is the pure production path;
+#      pkg/core and internal/cli are the server's host/client and may).
+#      Shared driver-level operations live in pkg/vfs/drivecopy and
 #      contract-test harnesses in pkg/contracttest.
 #   7. pkg/mobile reaches media value types (MP4 probe, virtual-file info
 #      and read mappings, virtual-file handle) only through the client
@@ -80,7 +80,7 @@ while IFS= read -r line; do
   [ -n "$line" ] && note "pkg/mobile imports the VFS implementation layer: $line"
 done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/vfs' pkg/mobile -g '!**/*_test.go' 2>/dev/null || true)
 
-# 6. pkg/control stays a debug-API leaf: production executors may use
+# 6. pkg/control stays a local-transport leaf: production executors may use
 #    pkg/vfs/drivecopy / pkg/contracttest but never the HTTP server.
 for dir in pkg/syncer; do
   while IFS= read -r f; do

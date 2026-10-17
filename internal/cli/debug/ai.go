@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
+	"github.com/yinzhenyu/qrypt/pkg/contracttest"
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
@@ -270,7 +271,7 @@ func cleanDebugMountNames(values []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, value := range values {
-		name := strings.Trim(strings.TrimSpace(value), "/")
+		name := contracttest.NormalizeMountName(value)
 		if name == "" || seen[name] {
 			continue
 		}

@@ -93,13 +93,18 @@ step "Format" bash -c '
 '
 
 step "Generated docs in sync" bash -c '
+  generated_before=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-generated-docs.XXXXXX")
+  trap "rm -rf \"$generated_before\"" EXIT
+  cp docs/for-user/full-config.md "$generated_before/full-config.md"
+  cp docs/for-user/support-drivers.md "$generated_before/support-drivers.md"
   python3 scripts/gen-config-docs.py
   python3 scripts/gen-driver-docs.py
-  if ! git diff --quiet -- docs/for-user/; then
-    echo "docs/for-user is stale; re-run:"
+  if ! cmp -s "$generated_before/full-config.md" docs/for-user/full-config.md ||
+     ! cmp -s "$generated_before/support-drivers.md" docs/for-user/support-drivers.md; then
+    echo "generated user docs are stale; re-run:"
     echo "  python3 scripts/gen-config-docs.py"
     echo "  python3 scripts/gen-driver-docs.py"
-    git diff --stat docs/for-user/
+    git diff --stat -- docs/for-user/full-config.md docs/for-user/support-drivers.md
     exit 1
   fi
 '

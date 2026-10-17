@@ -24,7 +24,7 @@ func RunDriverMultipartTest(ctx context.Context, mount string, d drive.Driver, s
 		Mount:        mount,
 		Started:      time.Now(),
 		Steps:        make([]CRUDTestStep, 0, 7),
-		RetryCommand: fmt.Sprintf("qrypt debug test multipart --mount %s --socket PATH", mount),
+		RetryCommand: fmt.Sprintf("qrypt probe test multipart --mount %s", mount),
 	}
 	defer func() {
 		result.Finished = time.Now()

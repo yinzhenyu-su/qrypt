@@ -90,7 +90,7 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 		Mount:        mount,
 		Started:      time.Now(),
 		Steps:        make([]FSTestStep, 0, 8),
-		RetryCommand: fmt.Sprintf("qrypt debug test fs --mount %s --socket PATH", mount),
+		RetryCommand: fmt.Sprintf("qrypt probe test fs --mount %s", mount),
 	}
 	defer func() {
 		result.Finished = time.Now()

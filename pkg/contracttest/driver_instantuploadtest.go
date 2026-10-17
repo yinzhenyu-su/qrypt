@@ -42,7 +42,7 @@ func RunDriverInstantUploadTest(ctx context.Context, mount string, d drive.Drive
 		Mount:        mount,
 		Started:      time.Now(),
 		Steps:        make([]CRUDTestStep, 0, 6),
-		RetryCommand: fmt.Sprintf("qrypt debug test instantupload --mount %s --socket PATH", mount),
+		RetryCommand: fmt.Sprintf("qrypt probe test instantupload --mount %s", mount),
 	}
 	defer func() {
 		result.Finished = time.Now()

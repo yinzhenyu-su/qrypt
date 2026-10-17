@@ -64,11 +64,19 @@ func ImportedConfigPath(runtime RuntimeLayout) (string, error) {
 }
 
 func OpenImported(ctx context.Context, runtime RuntimeLayout) (*Core, error) {
+	return OpenImportedWithOptions(ctx, runtime, Options{})
+}
+
+// OpenImportedWithOptions opens the imported config with caller-specific
+// lifecycle options. Mobile uses this to keep debug server startup explicit.
+func OpenImportedWithOptions(ctx context.Context, runtime RuntimeLayout, opts Options) (*Core, error) {
 	path, err := ImportedConfigPath(runtime)
 	if err != nil {
 		return nil, err
 	}
-	return Open(ctx, Options{ConfigPath: path, Runtime: runtime})
+	opts.ConfigPath = path
+	opts.Runtime = runtime
+	return Open(ctx, opts)
 }
 
 func sanitizeImportedConfig(cfg *config.Config) {

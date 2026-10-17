@@ -177,8 +177,9 @@ func openCore(configPath, runtimeRaw string) (string, error) {
 
 func openWithRuntime(configPath string, runtime core.RuntimeLayout) (string, error) {
 	c, err := core.Open(context.Background(), core.Options{
-		ConfigPath: configPath,
-		Runtime:    runtime,
+		ConfigPath:            configPath,
+		Runtime:               runtime,
+		DisableDebugAutoStart: true,
 	})
 	if err != nil {
 		return "", wrapError(err)
@@ -227,7 +228,9 @@ func OpenImportedJSON(runtimeRaw string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	c, err := core.OpenImported(context.Background(), runtime)
+	c, err := core.OpenImportedWithOptions(context.Background(), runtime, core.Options{
+		DisableDebugAutoStart: true,
+	})
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}

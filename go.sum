@@ -1,5 +1,7 @@
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
+github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/OpenListTeam/115-sdk-go v0.2.4 h1:dVoEz3Pm996n/ZCuRckQvz36w938uNHjPrS7E/SVpBM=
 github.com/OpenListTeam/115-sdk-go v0.2.4/go.mod h1:cfvitk2lwe6036iNi2h+iNxwxWDifKZsSvNtrur5BqU=
 github.com/SheltonZhu/115driver v1.3.3 h1:Bqs86D2MziYPgIOuOJF+HzG4d7GBr71ZhSCrs/U17UU=

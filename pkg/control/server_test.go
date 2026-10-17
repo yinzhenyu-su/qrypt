@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -215,7 +217,7 @@ func (f fakeSnapshotter) DebugStaging(ctx context.Context, path string) (diagnos
 }
 
 func TestServerExposesStateAndPending(t *testing.T) {
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	source := fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{
 		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Unix(1, 0),
@@ -306,11 +308,28 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close(context.Background())
-	if _, err := os.Stat(socketPath); err != nil {
-		t.Fatalf("expected socket file: %v", err)
+	// A unix endpoint is a socket file; a Windows named pipe has no filesystem
+	// presence, and the requests below are what prove that one is serving.
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(socketPath); err != nil {
+			t.Fatalf("expected socket file: %v", err)
+		}
 	}
 
 	client, err := NewClient(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandSocket := testEndpoint(t)
+	commandServer, err := NewProbeServer(commandSocket, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commandServer.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer commandServer.Close(context.Background())
+	commandClient, err := NewClient(commandSocket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +459,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected filtered driver metrics response: %s", driverMetricsBody)
 	}
 
-	testBody, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
+	testBody, err := commandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +467,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(testBody), "driver lacks capability") {
 		t.Fatalf("unexpected driver test response: %s", testBody)
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+	if _, err := commandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount error, got %v", err)
 	}
@@ -456,7 +475,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		Name:   "disabled",
 		Driver: fakeSpaceDriver{},
 	}}}
-	disabledSocket := testSocketPath(t)
+	disabledSocket := testEndpoint(t)
 	disabledServer, err := NewServer(disabledSocket, disabledSource)
 	if err != nil {
 		t.Fatal(err)
@@ -466,20 +485,29 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := disabledServer.Start(disabledCtx); err != nil {
 		t.Fatal(err)
 	}
-	defer disabledServer.Close(context.Background())
-	disabledClient, err := NewClient(disabledSocket)
+	disabledCommandSocket := testEndpoint(t)
+	disabledCommandServer, err := NewProbeServer(disabledCommandSocket, disabledSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := disabledClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
-		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
+	if err := disabledCommandServer.Start(disabledCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer disabledCommandServer.Close(context.Background())
+	defer disabledServer.Close(context.Background())
+	disabledCommandClient, err := NewClient(disabledCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledCommandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "disabled" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled mount test error, got %v", err)
 	}
-	if _, err := disabledClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
-		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
+	if _, err := disabledCommandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "disabled" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled mount benchmark error, got %v", err)
 	}
-	benchBody, err := client.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
+	benchBody, err := commandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +520,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if _, err := client.PostJSON(context.Background(), "/v1/driver/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
 		t.Fatal("expected old driver benchmark endpoint to be unavailable")
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+	if _, err := commandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount benchmark error, got %v", err)
 	}
@@ -508,7 +536,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		{Name: "local", Driver: drvA, TestEnabled: true},
 		{Name: "cloud", Driver: drvB, TestEnabled: true},
 	}}
-	xferSocket := testSocketPath(t)
+	xferSocket := testEndpoint(t)
 	xferServer, err := NewServer(xferSocket, xferSource)
 	if err != nil {
 		t.Fatal(err)
@@ -518,12 +546,21 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := xferServer.Start(xferCtx); err != nil {
 		t.Fatal(err)
 	}
-	defer xferServer.Close(context.Background())
-	xferClient, err := NewClient(xferSocket)
+	xferCommandSocket := testEndpoint(t)
+	xferCommandServer, err := NewProbeServer(xferCommandSocket, xferSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	xferBenchBody, err := xferClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{
+	if err := xferCommandServer.Start(xferCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer xferCommandServer.Close(context.Background())
+	defer xferServer.Close(context.Background())
+	xferCommandClient, err := NewClient(xferCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xferBenchBody, err := xferCommandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{
 		Test:    "xfer",
 		Source:  "local",
 		Dest:    "cloud",
@@ -543,7 +580,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		{Name: "local", Driver: drvA, TestEnabled: true},
 		{Name: "cloud", Driver: drvB},
 	}}
-	disabledXferSocket := testSocketPath(t)
+	disabledXferSocket := testEndpoint(t)
 	disabledXferServer, err := NewServer(disabledXferSocket, disabledXferSource)
 	if err != nil {
 		t.Fatal(err)
@@ -553,16 +590,25 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := disabledXferServer.Start(disabledXferCtx); err != nil {
 		t.Fatal(err)
 	}
-	defer disabledXferServer.Close(context.Background())
-	disabledXferClient, err := NewClient(disabledXferSocket)
+	disabledXferCommandSocket := testEndpoint(t)
+	disabledXferCommandServer, err := NewProbeServer(disabledXferCommandSocket, disabledXferSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := disabledXferClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{
+	if err := disabledXferCommandServer.Start(disabledXferCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer disabledXferCommandServer.Close(context.Background())
+	defer disabledXferServer.Close(context.Background())
+	disabledXferCommandClient, err := NewClient(disabledXferCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledXferCommandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{
 		Test:   "xfer",
 		Source: "local",
 		Dest:   "cloud",
-	}); err == nil || !strings.Contains(err.Error(), `mount "cloud" is not enabled for debug tests`) {
+	}); err == nil || !strings.Contains(err.Error(), `mount "cloud" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled xfer mount error, got %v", err)
 	}
 	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
@@ -698,7 +744,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected stack response: %s", stackBody)
 	}
 	resetSource := &fakeResetSnapshotter{fakeSnapshotter: fakeSnapshotter{snapshot: source.snapshot}}
-	resetSocket := testSocketPath(t)
+	resetSocket := testEndpoint(t)
 	resetServer, err := NewServer(resetSocket, resetSource)
 	if err != nil {
 		t.Fatal(err)
@@ -709,11 +755,20 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resetServer.Close(context.Background())
-	resetClient, err := NewClient(resetSocket)
+	resetCommandSocket := testEndpoint(t)
+	resetCommandServer, err := NewProbeServer(resetCommandSocket, resetSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resetBody, err := resetClient.PostJSON(context.Background(), "/v1/debug/reset", map[string]string{})
+	if err := resetCommandServer.Start(resetCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer resetCommandServer.Close(context.Background())
+	resetCommandClient, err := NewClient(resetCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetBody, err := resetCommandClient.PostJSON(context.Background(), "/v1/debug/reset", map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +779,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 }
 
 func TestServerExposesTasksWithItemsAndFilters(t *testing.T) {
-	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	server, err := NewServer(testEndpoint(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,7 +834,7 @@ func TestServerExposesTaskEventsWithCursorAndFilter(t *testing.T) {
 		Scope: task.ScopeUser,
 	}, func(context.Context, task.UpdateFunc) error { return nil })
 
-	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	server, err := NewServer(testEndpoint(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,7 +899,7 @@ func TestServerTaskEventsReportGap(t *testing.T) {
 		})
 	}
 
-	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	server, err := NewServer(testEndpoint(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +1006,7 @@ func TestServerHealthReportsTaskPersistenceDegraded(t *testing.T) {
 }
 
 func TestServerFiltersDebugEndpointsByMount(t *testing.T) {
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	source := fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{
 		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Unix(1, 0),
@@ -1050,7 +1105,7 @@ func TestServerExposesRecentEvents(t *testing.T) {
 	logging.L = testLogger
 	defer func() { logging.L = oldLogger }()
 
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
@@ -1097,7 +1152,7 @@ func TestServerEventsFilterByMountField(t *testing.T) {
 	logging.L = testLogger
 	defer func() { logging.L = oldLogger }()
 
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
@@ -1146,7 +1201,7 @@ func TestServerEventsFilterByMountField(t *testing.T) {
 }
 
 func TestServerRemovesSocketOnClose(t *testing.T) {
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
@@ -1157,14 +1212,44 @@ func TestServerRemovesSocketOnClose(t *testing.T) {
 	if err := server.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		// A named pipe leaves nothing to stat, so assert the retired endpoint the
+		// way a client sees it: once Close returns the instance is gone, so a dial
+		// must fail outright instead of spinning on FILE_BUSY (which the transport
+		// reports as a deadline rather than a connection).
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		conn, dialErr := dialEndpoint(ctx, socketPath)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if dialErr == nil || errors.Is(dialErr, context.DeadlineExceeded) {
+			t.Fatalf("endpoint %q still accepts connections after Close", socketPath)
+		}
+		return
+	}
 	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
 		t.Fatalf("expected socket to be removed, got %v", err)
 	}
 }
 
-func testSocketPath(t *testing.T) string {
+// testEndpointSeq disambiguates endpoints created inside one clock tick: the
+// Windows wall clock advances in ~16ms steps, so a bare timestamp repeats when
+// two tests start back to back -- and the second listener then collides with
+// the first (FILE_FLAG_FIRST_PIPE_INSTANCE reports the duplicate pipe name as
+// access denied).
+var testEndpointSeq atomic.Uint64
+
+// testEndpoint returns a local control endpoint the current platform can
+// serve: a unix socket path with a filesystem presence on unix, a named pipe
+// name on Windows, whose transport rejects unix endpoints.
+func testEndpoint(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(os.TempDir(), "qrypt-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".sock")
+	token := strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.FormatUint(testEndpointSeq.Add(1), 10)
+	if runtime.GOOS == "windows" {
+		return `pipe:\\.\pipe\qrypt-test-` + token
+	}
+	path := filepath.Join(os.TempDir(), "qrypt-"+token+".sock")
 	t.Cleanup(func() { _ = os.Remove(path) })
 	return path
 }

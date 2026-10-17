@@ -31,7 +31,3 @@ func installFlagErrorHelp(cmd *cobra.Command) {
 		installFlagErrorHelp(child)
 	}
 }
-
-func missingSocketError(cmd *cobra.Command) error {
-	return fmt.Errorf("--socket PATH is required for runtime debug commands\n\nStart qrypt with a debug socket first:\n  qrypt mount --socket /tmp/qrypt.sock\n\nThen retry:\n  %s --socket /tmp/qrypt.sock", cmd.CommandPath())
-}

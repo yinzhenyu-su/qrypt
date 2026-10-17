@@ -232,7 +232,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	result := &MountedReadTestResult{
 		OpID: newDebugOperationID("read"), Mount: mount,
 		Started: time.Now(), Steps: make([]FSTestStep, 0, 4+samples*(2+seekCount*2)),
-		RetryCommand: fmt.Sprintf("qrypt debug test read --mount %s --mount-point PATH --size %d --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s --socket PATH", mount, size, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout),
+		RetryCommand: fmt.Sprintf("qrypt probe test read --mount %s --mount-point PATH --size %d --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s", mount, size, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout),
 	}
 	defer func() {
 		result.Finished = time.Now()

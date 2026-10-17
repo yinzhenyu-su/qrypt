@@ -15,7 +15,7 @@ bundle before sharing it.
 
 ## Run One Test With A Temporary Mount
 
-Use `scripts/mount-debug-test.sh` when you need to run one `debug test` against
+Use `scripts/mount-debug-test.sh` when you need to run one `probe test` against
 a real qrypt mount from the current checkout, but do not need to keep the mount
 running for interactive investigation. This is useful for repeatable driver and
 VFS regression checks such as `batchupload`, `batchmove`, and `fs`: the script
@@ -24,12 +24,12 @@ for both to become ready, runs the selected test, then unmounts and removes the
 temporary local files. Read caches, thumbnail caches, upload staging, driver
 state, logs, and temporary data are also redirected below that temporary
 directory instead of using the config's `[storage]` paths. For valid test
-arguments, standard output contains only the `qrypt debug test` result, so it
+arguments, standard output contains only the `qrypt probe test` result, so it
 can be captured or compared directly.
 
 The selected mount must exist in the config and have `test_enabled = true`.
 The script supports single-mount tests only; use the normal `qrypt mount` and
-`qrypt debug test xfer` commands when testing transfers between two mounts. Use
+`qrypt probe test xfer` commands when testing transfers between two mounts. Use
 the manual workflow later in this guide when the mount must remain available
 for `collect`, `watch`, raw endpoints, or an interactive reproduction.
 
@@ -83,25 +83,19 @@ produce much larger reports.
 Start qrypt with a local debug socket:
 
 ```sh
-go run ./cmd/qrypt mount --config ./qrypt.toml --socket /tmp/qrypt.sock
+go run ./cmd/qrypt mount --config ./qrypt.toml
 ```
 
-Or enable the debug server from the config:
-
-```toml
-[debug]
-enabled = true
-listen = "127.0.0.1:19090"
-```
-
-Then connect over HTTP:
+Mount always starts the built-in per-config local endpoint. Unix-like systems
+use a filesystem socket; Windows uses a named pipe. Then connect using the
+normal command:
 
 ```sh
-go run ./cmd/qrypt debug collect --url http://127.0.0.1:19090 --mount quark-test
+go run ./cmd/qrypt debug collect --mount quark-test
 ```
 
 When the same config is discoverable or passed with `--config`, debug commands
-can use `[debug].listen` by default:
+resolve the built-in endpoint automatically:
 
 ```sh
 go run ./cmd/qrypt debug collect --config ./qrypt.toml --mount quark-test
@@ -110,21 +104,23 @@ go run ./cmd/qrypt debug collect --config ./qrypt.toml --mount quark-test
 Then collect one focused report:
 
 ```sh
-go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --mount quark-test
+go run ./cmd/qrypt debug collect --mount quark-test
 ```
 
 If a specific path is involved, include it:
 
 ```sh
-go run ./cmd/qrypt debug collect /quark-test/example.bin --socket /tmp/qrypt.sock --mount quark-test
+go run ./cmd/qrypt debug collect /quark-test/example.bin --mount quark-test
 ```
 
-The socket file is created with `0600` permissions. qrypt refuses to replace a
-live socket and removes stale socket files during startup.
+On Unix-like systems the socket file is created with `0600` permissions.
+qrypt refuses to replace a live endpoint and removes stale Unix socket files
+during startup. Windows named pipes use the operating system's pipe access
+control instead of filesystem permissions.
 
-HTTP debug listeners must bind to loopback addresses such as `127.0.0.1` or
-`localhost`. This keeps Android and remote-device debugging usable through
-tools such as `adb forward` without exposing the debug API on the LAN.
+Android and remote-device debugging uses the Android app's explicit loopback
+debug server and tools such as `adb forward`; the CLI mount endpoint is local
+and does not expose the debug API on the LAN.
 
 ### Enable Debug Logs
 
@@ -144,27 +140,26 @@ for warnings and failures after a reproduction.
 
 ### Windows
 
-On Windows, qrypt uses an AF_UNIX socket. In PowerShell, choose a path under the
-current user's temporary directory:
+On Windows, qrypt uses a named pipe derived from the per-config runtime
+identity; the CLI does not require an endpoint path:
 
 ```powershell
-$socket = "$env:TEMP\qrypt.sock"
-qrypt.exe mount --config .\qrypt.toml --socket $socket
+qrypt.exe mount --config .\qrypt.toml
 ```
 
 Keep the mount process running, then use the same path in another PowerShell
 window:
 
 ```powershell
-$socket = "$env:TEMP\qrypt.sock"
-qrypt.exe debug collect --socket $socket --mount local
-qrypt.exe debug collect /local/example.txt --socket $socket --mount local
-qrypt.exe debug raw health --socket $socket
+qrypt.exe debug collect --mount local
+qrypt.exe debug collect /local/example.txt --mount local
+qrypt.exe debug raw health
 ```
 
-This requires a Windows version with AF_UNIX support. The `--socket` value is a
-filesystem path, not a Windows named pipe. Paths such as `\\.\pipe\qrypt` are
-not supported.
+The runtime identity is created from the resolved qrypt configuration and is
+shared by mount, debug, probe, and control commands. Named pipe access is
+restricted by the Windows pipe security descriptor; no password is required
+for the default same-user local workflow.
 
 ## Choose A Command
 
@@ -174,19 +169,20 @@ not supported.
 | Sample state while reproducing a timing issue | `debug watch --mount NAME` |
 | Create a shareable zip artifact | `debug bundle --mount NAME --out FILE` |
 | Query one socket endpoint | `debug raw ENDPOINT` |
-| Verify driver credentials | `debug test auth --mount NAME` |
-| Verify driver CRUD behavior | `debug test crud --mount NAME` |
-| Verify VFS upload behavior | `debug test fs --mount NAME` |
-| Measure full mounted-file read latency and throughput | `debug test read --mount NAME --mount-point PATH` |
-| Verify same-directory batch upload caching | `debug test batchupload --mount NAME` |
-| Measure same-mount batch moves | `debug test batchmove --mount NAME` |
-| Verify resumable upload recovery | `debug test resume --mount NAME` |
-| Run the full contract suite | `debug test contract --socket SOCKET --mount NAME` |
-| Compare performance or regressions | `debug bench ...` |
+| Verify driver credentials | `probe test auth --mount NAME` |
+| Verify driver CRUD behavior | `probe test crud --mount NAME` |
+| Verify VFS upload behavior | `probe test fs --mount NAME` |
+| Measure full mounted-file read latency and throughput | `probe test read --mount NAME --mount-point PATH` |
+| Verify same-directory batch upload caching | `probe test batchupload --mount NAME` |
+| Measure same-mount batch moves | `probe test batchmove --mount NAME` |
+| Verify resumable upload recovery | `probe test resume --mount NAME` |
+| Run the full contract suite | `probe test contract --mount NAME` |
+| Compare performance or regressions | `probe bench ...` |
 
-`debug test contract` runs the complete suite against the named mount
+`probe test contract` runs the complete suite against the named mount
 (auth, contract, crud, fs, instantupload, resume, multipart) and requires a
-running mount server (`qrypt mount -s /tmp/qrypt.sock`). The mount must
+running mount server (`qrypt mount --config ./qrypt.toml`). The built-in
+per-config probe socket is resolved automatically. The mount must
 have `test_enabled = true` in its `[[mounts]]` block; unlisted mounts are
 rejected with 403. This is the same suite the Contract Tests CI workflow
 runs nightly against real providers.
@@ -203,18 +199,18 @@ problems.
 If you need to trigger a controlled VFS write, run:
 
 ```sh
-go run ./cmd/qrypt debug test fs --socket /tmp/qrypt.sock --mount quark-test --size 30m
+go run ./cmd/qrypt probe test fs --mount quark-test --size 30m
 ```
 
-`debug test fs` creates temporary files through the VFS, writes data, flushes,
+`probe test fs` creates temporary files through the VFS, writes data, flushes,
 waits for upload, reads back, and removes the test data. It writes to the
 selected mount, so use it only when temporary remote writes are acceptable.
 
 For small-file and move workloads, run:
 
 ```sh
-go run ./cmd/qrypt debug test batchupload --socket /tmp/qrypt.sock --mount quark-test --count 50 --size 4k
-go run ./cmd/qrypt debug test batchmove --socket /tmp/qrypt.sock --mount quark-test --count 50 --size 4k
+go run ./cmd/qrypt probe test batchupload --mount quark-test --count 50 --size 4k
+go run ./cmd/qrypt probe test batchmove --mount quark-test --count 50 --size 4k
 ```
 
 `batchupload` writes and flushes every file through VFS, waits for the upload
@@ -236,7 +232,7 @@ The wrapper supplies its temporary mount point automatically. When invoking
 qrypt directly, pass the real FUSE mount directory explicitly:
 
 ```sh
-go run ./cmd/qrypt debug test read --socket /tmp/qrypt.sock --mount quark-test --mount-point /Volumes/qrypt --size 256m --block-size 1m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
+go run ./cmd/qrypt probe test read --mount quark-test --mount-point /Volumes/qrypt --size 256m --block-size 1m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
 ```
 
 The test creates and uploads a deterministic temporary file before timing,
@@ -300,10 +296,10 @@ same size, cache mode, probe count, and seek size.
 If the issue is about interrupted uploads or resumable upload sessions, run:
 
 ```sh
-go run ./cmd/qrypt debug test resume --socket /tmp/qrypt.sock --mount quark-test --size 64m
+go run ./cmd/qrypt probe test resume --mount quark-test --size 64m
 ```
 
-`debug test resume` writes one temporary file, injects a one-shot upload
+`probe test resume` writes one temporary file, injects a one-shot upload
 `context canceled` fault after upload progress starts, waits for qrypt to retry,
 then checks that the final remote file has the expected size. A passing result
 means the VFS upload path recovered from the cancellation. The JSON `outcome`
@@ -314,13 +310,12 @@ To inspect the current state without continuous sampling, use these raw
 endpoints:
 
 ```sh
-go run ./cmd/qrypt debug raw '/v1/uploads?mount=quark-test&history=1' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/pending?mount=quark-test' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/staging?mount=quark-test' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/cache?mount=quark-test' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/events?level=warn&limit=100' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/events?level=warn&mount=quark-test' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/debug/faults/upload-cancel' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/uploads?mount=quark-test&history=1'
+go run ./cmd/qrypt debug raw '/v1/pending?mount=quark-test'
+go run ./cmd/qrypt debug raw '/v1/staging?mount=quark-test'
+go run ./cmd/qrypt debug raw '/v1/cache?mount=quark-test'
+go run ./cmd/qrypt debug raw '/v1/events?level=warn&limit=100'
+go run ./cmd/qrypt debug raw '/v1/events?level=warn&mount=quark-test'
 ```
 
 `/v1/events` filters on the event's fields, not on the message text: `mount=`
@@ -348,18 +343,18 @@ Useful fields:
   whether compaction is recommended.
 - `events.events[]`: recent warnings and errors.
 - `faults[]`: currently armed debug upload-cancel faults. This should normally
-  be empty outside an active `debug test resume` run.
+  be empty outside an active `probe test resume` run.
 
 For one report instead of separate raw calls:
 
 ```sh
-go run ./cmd/qrypt debug collect --socket /tmp/qrypt.sock --mount quark-test
+go run ./cmd/qrypt debug collect --mount quark-test
 ```
 
 For time-series samples during a reproduction window:
 
 ```sh
-go run ./cmd/qrypt debug watch --socket /tmp/qrypt.sock --mount quark-test --duration 120s --interval 2s
+go run ./cmd/qrypt debug watch --mount quark-test --duration 120s --interval 2s
 ```
 
 ## Inspect Reads And Read Cache
@@ -368,15 +363,15 @@ For stale reads, unexpectedly slow reads, or cache behavior, start with a path
 focused report:
 
 ```sh
-go run ./cmd/qrypt debug collect /quark-test/path/file.bin --socket /tmp/qrypt.sock --mount quark-test
+go run ./cmd/qrypt debug collect /quark-test/path/file.bin --mount quark-test
 ```
 
 Raw endpoints:
 
 ```sh
-go run ./cmd/qrypt debug raw '/v1/reads?mount=quark-test&path=/quark-test/path/file.bin' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/cache?mount=quark-test&path=/quark-test/path/file.bin' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/consistency?path=/quark-test/path/file.bin' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/reads?mount=quark-test&path=/quark-test/path/file.bin'
+go run ./cmd/qrypt debug raw '/v1/cache?mount=quark-test&path=/quark-test/path/file.bin'
+go run ./cmd/qrypt debug raw '/v1/consistency?path=/quark-test/path/file.bin'
 ```
 
 Useful fields:
@@ -446,7 +441,6 @@ For copy or transfer issues, provide both endpoints and both mount names:
 ```sh
 go run ./cmd/qrypt debug collect /local/source.bin \
   --dest /quark/archive/source.bin \
-  --socket /tmp/qrypt.sock \
   --mount local \
   --mount quark
 ```
@@ -454,9 +448,9 @@ go run ./cmd/qrypt debug collect /local/source.bin \
 Useful commands:
 
 ```sh
-go run ./cmd/qrypt debug test xfer --source local --dest quark --size 16m --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug test xfer --source local --dest quark --size 16m --vfs --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug bench xfer --source local --dest quark --size 16m --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
+go run ./cmd/qrypt probe test xfer --source local --dest quark --size 16m
+go run ./cmd/qrypt probe test xfer --source local --dest quark --size 16m --vfs
+go run ./cmd/qrypt probe bench xfer --source local --dest quark --size 16m --samples 3 --sample-interval 2s
 ```
 
 `test xfer` and `bench xfer` create temporary remote objects. The `--vfs` mode
@@ -471,23 +465,23 @@ not local staging or VFS upload.
 Read-only auth check:
 
 ```sh
-go run ./cmd/qrypt debug test auth --mount quark-test --socket /tmp/qrypt.sock
+go run ./cmd/qrypt probe test auth --mount quark-test
 ```
 
 Write-capable CRUD check:
 
 ```sh
-go run ./cmd/qrypt debug test crud --mount quark-test --socket /tmp/qrypt.sock
+go run ./cmd/qrypt probe test crud --mount quark-test
 ```
 
 Driver state and health:
 
 ```sh
-go run ./cmd/qrypt debug raw '/v1/driver?mount=quark-test' --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/mounts/health?mount=quark-test' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw '/v1/driver?mount=quark-test'
+go run ./cmd/qrypt debug raw '/v1/mounts/health?mount=quark-test'
 ```
 
-`debug test auth` does not create remote objects. `debug test crud` creates
+`probe test auth` does not create remote objects. `probe test crud` creates
 temporary remote objects and cleans them up best-effort.
 
 ## Create A Shareable Bundle
@@ -496,14 +490,13 @@ Use `bundle` when you want a zip file that another contributor or AI assistant
 can inspect:
 
 ```sh
-go run ./cmd/qrypt debug bundle --socket /tmp/qrypt.sock --mount quark-test --out /tmp/qrypt-debug.zip
+go run ./cmd/qrypt debug bundle --mount quark-test --out /tmp/qrypt-debug.zip
 ```
 
 For a path-specific issue:
 
 ```sh
 go run ./cmd/qrypt debug bundle /quark-test/path/file.bin \
-  --socket /tmp/qrypt.sock \
   --mount quark-test \
   --out /tmp/qrypt-path-debug.zip
 ```
@@ -513,7 +506,6 @@ For a transfer issue:
 ```sh
 go run ./cmd/qrypt debug bundle /local/source.bin \
   --dest /quark/archive/source.bin \
-  --socket /tmp/qrypt.sock \
   --mount local \
   --mount quark \
   --out /tmp/qrypt-transfer-debug.zip
@@ -523,7 +515,6 @@ For timing-sensitive issues, include a watch window:
 
 ```sh
 go run ./cmd/qrypt debug bundle /quark-test/path/file.bin \
-  --socket /tmp/qrypt.sock \
   --mount quark-test \
   --watch 30s \
   --out /tmp/qrypt-watch-debug.zip
@@ -556,8 +547,8 @@ files.
 Use `debug raw` when you need one endpoint directly:
 
 ```sh
-go run ./cmd/qrypt debug raw health --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug raw '/v1/state?mount=quark-test' --socket /tmp/qrypt.sock
+go run ./cmd/qrypt debug raw health
+go run ./cmd/qrypt debug raw '/v1/state?mount=quark-test'
 ```
 
 Common endpoints:
@@ -566,7 +557,6 @@ Common endpoints:
 | --- | --- | --- |
 | `/v1/health` | Debug socket health, including task-journal persistence status | Small |
 | `/v1/runtime` | Go runtime and memory summary | Small |
-| `/v1/debug/reset` | Reset debug epoch and clear VFS read history | Small |
 | `/v1/debug/stacks` | Goroutine stack dump | Text, can be large |
 | `/v1/state?mount=NAME` | Mount snapshot | Can grow with pending, cache, events |
 | `/v1/pending?mount=NAME` | Pending upload files | Grows with pending count |
@@ -578,7 +568,6 @@ Common endpoints:
 | `/v1/staging?mount=NAME` | Staging files and orphan staging files | Grows with staging files |
 | `/v1/cache?mount=NAME` | Read cache and pending journal health | Grows with cache files |
 | `/v1/events?level=warn&limit=100&mount=NAME&component=CACHE` | Recent warnings/errors, filtered by mount and component fields | Limited by `limit` |
-| `/v1/debug/faults/upload-cancel` | Armed upload cancellation test faults | Small |
 | `/v1/driver?mount=NAME&limit=200&since=2m` | Driver debug snapshot and metrics | Driver dependent, metrics filtered server-side |
 | `/v1/mounts/health?mount=NAME` | Recent operation health | Small |
 | `/v1/resolve?path=PATH` | Resolve a virtual path | Small |
@@ -594,11 +583,11 @@ mounts are relevant.
 Use benchmarks when you need comparable performance artifacts:
 
 ```sh
-go run ./cmd/qrypt debug bench crud --mount quark-test --socket /tmp/qrypt.sock
-go run ./cmd/qrypt debug bench crud --mount quark-test --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
-go run ./cmd/qrypt debug bench fs --mount quark-test --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
-go run ./cmd/qrypt debug bench xfer --source local --dest quark --size 16m --socket /tmp/qrypt.sock --samples 3 --sample-interval 2s
-go run ./cmd/qrypt debug bench compare --base baseline.json --current current.json
+go run ./cmd/qrypt probe bench crud --mount quark-test
+go run ./cmd/qrypt probe bench crud --mount quark-test --samples 3 --sample-interval 2s
+go run ./cmd/qrypt probe bench fs --mount quark-test --samples 3 --sample-interval 2s
+go run ./cmd/qrypt probe bench xfer --source local --dest quark --size 16m --samples 3 --sample-interval 2s
+go run ./cmd/qrypt probe bench compare --base baseline.json --current current.json
 ```
 
 Benchmark reports include `summary`, `assessment`, `environment.network_probe`,
@@ -639,16 +628,16 @@ signed upload URLs, encrypted request blobs, or full response bodies.
 
 - `collect`, `watch`, `bundle`, and normal `raw` GET endpoints are observation
   tools.
-- `debug test` and `debug bench` may create, upload, read, rename, or delete
+- `probe test` and `probe bench` may create, upload, read, rename, or delete
   temporary remote objects.
-- `debug test` and `debug bench` only run against mounts with
+- `probe test` and `probe bench` only run against mounts with
   `test_enabled = true` in `[[mounts]]`. Transfer tests require both source and
   destination mounts to opt in.
-- `debug test fs --size` accepts bytes or `k`, `m`, `g` suffixes. Large values
+- `probe test fs --size` accepts bytes or `k`, `m`, `g` suffixes. Large values
   consume upload time and provider bandwidth.
-- `debug test batchupload` and `debug test batchmove` accept `--count` (default
+- `probe test batchupload` and `probe test batchmove` accept `--count` (default
   50, maximum 100) and `--size` (default 4 KiB per file, maximum 1 MiB).
-- `debug test read` requires `--mount-point`. It accepts `--size` (default
+- `probe test read` requires `--mount-point`. It accepts `--size` (default
   256 MiB, maximum 2 GiB), `--block-size` (default 1 MiB), `--samples` (default
   1, maximum 10), `--cache-mode cold|warm|both` (default `both`),
   `--pattern sequential|seek|both` (default `sequential`), `--seek-count`
@@ -657,7 +646,7 @@ signed upload URLs, encrypted request blobs, or full response bodies.
   `--seek-warmup-chunks` (default 2, maximum 16), and
   `--seek-overlap-timeout` (default 2s, range 100ms to 30s). It creates and
   removes a temporary remote file of the requested size.
-- `debug test resume --size` has the same size format. It intentionally cancels
+- `probe test resume --size` has the same size format. It intentionally cancels
   one upload attempt through the VFS debug fault injector, then waits for normal
   retry or resumable-upload recovery.
 - `--all-mounts` can significantly increase report size.

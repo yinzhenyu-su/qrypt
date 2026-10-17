@@ -27,12 +27,14 @@ func newStateTestVFS(t *testing.T) *VFS {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Drop cache files before the TempDir cleanup so an uploaded/read
-	// chunk can never race the RemoveAll (this package's internal tests
-	// use CloseReadCache + ClearReadCache; the external vfs_test package
-	// wraps the same pair in stopVFS).
+	// Wait for workers and journal/cache writes before TempDir cleanup.
+	// Cancelling the lifecycle context alone starts asynchronous teardown.
 	t.Cleanup(func() {
-		_ = fs.CloseReadCache()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := fs.Close(ctx); err != nil {
+			t.Errorf("close filesystem: %v", err)
+		}
 		_ = fs.ClearReadCache()
 	})
 	return fs

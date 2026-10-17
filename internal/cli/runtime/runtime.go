@@ -13,9 +13,9 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 type ConfigState struct {
@@ -29,7 +29,7 @@ const (
 )
 
 // OpenedFileSystem is the surface OpenFileSystem returns. The one-shot fs
-// commands need file operations plus upload inspection and debug snapshots
+// commands need file operations plus upload inspection and task state
 // (idle-wait, pending uploads, activity counts), so the seam carries them
 // typed instead of re-discovering them via any-assertions. The filesystem is
 // already Started when a caller receives it; the returned cleanup function
@@ -37,7 +37,7 @@ const (
 type OpenedFileSystem interface {
 	vfs.FileSystem
 	vfs.UploadInspector
-	diagnostics.DebugSnapshotProvider
+	TaskSource() task.Source
 }
 
 // MountFileSystem is a built-but-not-started filesystem. The mount command
@@ -48,11 +48,19 @@ type MountFileSystem interface {
 	vfs.Lifecycle
 }
 
+// CoreHost is the application runtime owned by a long-lived command such as
+// mount. Keeping the Core boundary here lets the CLI reuse its lifecycle and
+// task services without exposing pkg/core implementation details to command
+// packages.
+type CoreHost interface {
+	FileSystem() vfs.FileSystem
+	Close(context.Context) error
+}
+
 // ErrorFactory shapes usage, exit, and debug-socket errors for commands.
 type ErrorFactory interface {
 	UsageError(cmd *cobra.Command, format string, args ...any) error
 	ExitError(code int, err error) error
-	MissingSocketError(cmd *cobra.Command) error
 }
 
 // FlagRegistrar wires the cobra flags that command subpackages share.
@@ -72,6 +80,7 @@ type DebugReporter interface {
 // FileSystemBuilder builds or opens the filesystem and resolves config.
 type FileSystemBuilder interface {
 	BuildFileSystemForMount(ctx context.Context, cfg *config.Config, mountName string) (MountFileSystem, func(), error)
+	OpenCoreForMount(ctx context.Context, cfg *config.Config, configPath, mountName, debugListen, controlListen string) (CoreHost, error)
 	CommandConfig(cmd *cobra.Command) (ConfigState, error)
 	CommandConfigPath(cmd *cobra.Command) (string, error)
 	ConfigNotFoundError() error

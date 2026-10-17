@@ -42,8 +42,8 @@ gh workflow run "Nightly Quality Gates"
    分类、列表稳定性、`RunBehaviorChecks`、debug snapshot 无凭证；
    能力集合本身被 pin，新增能力必须显式。
 2. **真实 provider（nightly / 手动）**：Contract Tests workflow 按 mount
-   并行跑，每个 job 启动一个共享 mount 服务器（`qrypt mount -s`），
-   `test_enabled = true` 的 mount 通过 403 保护之外的入口执行。
+   并行跑，每个 job 启动一个共享 mount 服务器（socket 由配置自动解析），
+   `test_enabled = true` 的 mount 通过 `qrypt probe test` 入口执行。
 
 ## 配置项
 

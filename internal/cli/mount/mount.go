@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
-	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -31,46 +30,26 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			ctx, stop := rt.ShutdownContext(cmd)
 			defer stop()
 
-			socket, _ := cmd.Flags().GetString("socket")
-			debugListen := socket
-			if debugListen == "" && state.Cfg.Debug.Enabled {
-				debugListen = state.Cfg.Debug.EffectiveListen()
-			}
+			debugListen := ""
 			mountPointFlag, _ := cmd.Flags().GetString("mount-point")
 			selectedMount := ""
 			if len(args) == 1 {
 				selectedMount = args[0]
 			}
 
-			fs, cleanup, err := rt.BuildFileSystemForMount(ctx, state.Cfg, selectedMount)
+			coreHost, err := rt.OpenCoreForMount(ctx, state.Cfg, state.Path, selectedMount, debugListen, "")
 			if err != nil {
 				return err
 			}
 			defer func() {
-				// Shut down in dependency order: the unmount defer runs first
-				// (stops new FUSE requests), then wait for the filesystem's
-				// workers to finish, then clean up external resources.
-				if err := fs.Close(context.Background()); err != nil {
-					logging.L.Warnf("[CLI] filesystem close: %v", err)
+				// Core owns the filesystem, task manager, debug server and
+				// external driver cleanup. It is closed only after the unmount
+				// defer has stopped new FUSE requests.
+				if err := coreHost.Close(context.Background()); err != nil {
+					logging.L.Warnf("[CLI] core close: %v", err)
 				}
-				cleanup()
 			}()
-			fs.Start(ctx)
-
-			if debugListen != "" {
-				snapshotter, ok := fs.(control.Snapshotter)
-				if !ok {
-					return fmt.Errorf("debug socket requires filesystem debug snapshots")
-				}
-				controlServer, err := control.NewServer(debugListen, snapshotter)
-				if err != nil {
-					return err
-				}
-				if err := controlServer.Start(ctx); err != nil {
-					return err
-				}
-				defer controlServer.Close(context.Background())
-			}
+			fs := coreHost.FileSystem()
 
 			mountPoint := ""
 			if mountPointFlag != "" {
@@ -129,6 +108,5 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	}
 	rt.WithRuntimeConfigFlag(cmd)
 	cmd.Flags().String("mount-point", "", "local FUSE mount point (defaults to config mount_point)")
-	cmd.Flags().StringP("socket", "s", "", "local debug control socket (start a debug server)")
 	return cmd
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// Fixture owns a unique test directory on a driver. All debug test specs
+// Fixture owns a unique test directory on a driver. All probe test specs
 // share it so the mkdir / list-verify / cleanup / residual-scan lifecycle
 // lives in one place instead of being duplicated per test.
 type Fixture struct {

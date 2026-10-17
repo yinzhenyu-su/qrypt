@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,81 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
+
+type idleWaitDeleteDriver struct {
+	*drive.FakeDriver
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (d *idleWaitDeleteDriver) Remove(ctx context.Context, entry drive.Entry) error {
+	close(d.entered)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-d.release:
+		return d.FakeDriver.Remove(ctx, entry)
+	}
+}
+
+// A fired delete timer is no longer scheduled, but the remote operation must
+// finish before the CLI considers the filesystem idle and closes it.
+func TestWaitFileSystemIdleWaitsForRunningDelete(t *testing.T) {
+	for _, isDir := range []bool{false, true} {
+		t.Run(fmt.Sprint("directory=", isDir), func(t *testing.T) {
+			drv := &idleWaitDeleteDriver{
+				FakeDriver: drive.NewFakeDriver(),
+				entered:    make(chan struct{}), release: make(chan struct{}),
+			}
+			if isDir {
+				if _, err := drv.Mkdir(context.Background(), "0", "target"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := drv.Seed(map[string]string{"target": "data"}); err != nil {
+				t.Fatal(err)
+			}
+			fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), DeleteDelay: time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := fs.Close(context.Background()); err != nil {
+					t.Error(err)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			fs.Start(ctx)
+			if isDir {
+				err = fs.RemoveDir(ctx, "/target")
+			} else {
+				err = fs.Remove(ctx, "/target")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-drv.entered:
+			case <-ctx.Done():
+				t.Fatal("remote delete did not start")
+			}
+			if err := waitFileSystemIdle(ctx, fs, 20*time.Millisecond); err == nil {
+				t.Fatal("filesystem reported idle while remote delete is blocked")
+			}
+			close(drv.release)
+			if err := waitFileSystemIdle(ctx, fs, time.Second); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := drv.List(ctx, "0")
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("remote entries = %v, err = %v; deletion must finish before idle", entries, err)
+			}
+		})
+	}
+}
 
 // TestWaitFileSystemIdleNoTimeoutWaitsForSlowUpload: an unbounded idle wait
 // (timeout <= 0) keeps waiting until queued uploads land, while a bounded

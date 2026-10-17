@@ -135,7 +135,7 @@ func RunDriverCRUDTest(ctx context.Context, mount string, d drive.Driver) *CRUDT
 		Mount:        mount,
 		Started:      time.Now(),
 		Steps:        make([]CRUDTestStep, 0, 24),
-		RetryCommand: fmt.Sprintf("qrypt debug test crud --mount %s --socket PATH", mount),
+		RetryCommand: fmt.Sprintf("qrypt probe test crud --mount %s", mount),
 	}
 	defer func() {
 		result.Finished = time.Now()

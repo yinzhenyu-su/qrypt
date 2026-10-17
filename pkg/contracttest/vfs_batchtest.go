@@ -117,7 +117,7 @@ func newBatchTest(ctx context.Context, fs vfs.FileSystem, spec, mount string, co
 		result: &BatchTestResult{
 			OpID: newDebugOperationID(spec), Spec: spec, Mount: mount, Started: time.Now(),
 			Steps:        make([]FSTestStep, 0, 12),
-			RetryCommand: fmt.Sprintf("qrypt debug test %s --mount %s --count %d --size %d --socket PATH", spec, mount, count, size),
+			RetryCommand: fmt.Sprintf("qrypt probe test %s --mount %s --count %d --size %d", spec, mount, count, size),
 		},
 	}
 }
@@ -129,7 +129,7 @@ func (t *batchTest) validateOptions() bool {
 	if t.size == 0 {
 		t.size = DefaultBatchTestSize
 	}
-	t.result.RetryCommand = fmt.Sprintf("qrypt debug test %s --mount %s --count %d --size %d --socket PATH", t.result.Spec, t.mount, t.count, t.size)
+	t.result.RetryCommand = fmt.Sprintf("qrypt probe test %s --mount %s --count %d --size %d", t.result.Spec, t.mount, t.count, t.size)
 	var err error
 	if t.count < 1 || t.count > MaxBatchTestCount {
 		err = fmt.Errorf("count must be between 1 and %d", MaxBatchTestCount)

@@ -163,6 +163,9 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Mount = contracttest.NormalizeMountName(req.Mount)
+	req.Source = contracttest.NormalizeMountName(req.Source)
+	req.Dest = contracttest.NormalizeMountName(req.Dest)
 	drivers := provider.Drivers()
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
@@ -234,7 +237,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(results) == 0 {
-			http.Error(w, "no mounts enabled for debug tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
+			http.Error(w, "no mounts enabled for probe tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
 			return
 		}
 		writeJSON(w, results)
@@ -290,7 +293,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func debugTestDisabledError(mount string) string {
-	return fmt.Sprintf("mount %q is not enabled for debug tests; set test_enabled = true in [[mounts]]", mount)
+	return fmt.Sprintf("mount %q is not enabled for probe tests; set test_enabled = true in [[mounts]]", mount)
 }
 
 func findDebugTestDriver(drivers []diagnostics.NamedDriver, mount string) (diagnostics.NamedDriver, bool) {
@@ -317,6 +320,9 @@ func (s *Server) handleBench(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Mount = contracttest.NormalizeMountName(req.Mount)
+	req.Source = contracttest.NormalizeMountName(req.Source)
+	req.Dest = contracttest.NormalizeMountName(req.Dest)
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 	samples := req.Samples
 	if samples <= 0 {
@@ -407,7 +413,7 @@ func (s *Server) writeCRUDBenchmark(w http.ResponseWriter, r *http.Request, prov
 		return
 	}
 	if len(reports) == 0 {
-		http.Error(w, "no mounts enabled for debug tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
+		http.Error(w, "no mounts enabled for probe tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
 		return
 	}
 	writeJSON(w, reports)

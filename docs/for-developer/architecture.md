@@ -33,7 +33,7 @@ pkg/mount
   FUSE callback adapter and platform mount lifecycle over pkg/vfs
 
 pkg/control
-  debug socket HTTP API hosted by pkg/core or internal/cli
+  local debug/command HTTP transports hosted by pkg/core or internal/cli
 
 pkg/crypt
   rclone-compatible encryption wrapper around pkg/drive.Driver
@@ -68,13 +68,14 @@ packages should remain narrow and avoid depending on higher runtime layers:
   shared by the sync executor, `pkg/core`, and the CLI; the debug server calls
   through the same helpers
 - `pkg/contracttest` — the driver contract/benchmark harness (spec
-  registry, fixture, xfer/fstest runners, benchmark reports). The debug server
+  registry, fixture, xfer/fstest runners, benchmark reports). The probe server
   schedules these through the exported `Specs()` registry; the CLI's
-  `debug test`/`debug bench` commands consume the same report types
+  `probe test`/`probe bench` commands consume the same report types
 
-`pkg/control` is the debug-socket HTTP API only. The sync executor must
-not depend on it (rule 5 in `check-arch.sh`); `pkg/core` and `internal/cli`
-are its host and client and may. Driver-level copy logic lives in
+`pkg/control` owns only local HTTP transport and route encoding. Its debug
+server is read-only; its command server is the separately constructed mutable
+surface. The sync executor must not depend on it (rule 5 in `check-arch.sh`);
+`pkg/core` and `internal/cli` are its host and client and may. Driver-level copy logic lives in
 `pkg/vfs/drivecopy`, contract harnesses in `pkg/contracttest` — never
 back in `pkg/control`.
 
