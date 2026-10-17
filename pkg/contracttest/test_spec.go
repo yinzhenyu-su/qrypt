@@ -3,6 +3,7 @@ package contracttest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -29,6 +30,12 @@ type DriverTestRequest struct {
 	SeekScenario       string `json:"seek_scenario,omitempty"`
 	SeekWarmup         int    `json:"seek_warmup_chunks,omitempty"`
 	SeekOverlapTimeout string `json:"seek_overlap_timeout,omitempty"`
+}
+
+// NormalizeMountName accepts either a configured mount name or the same name
+// written as a slash-delimited virtual path, and returns the canonical name.
+func NormalizeMountName(name string) string {
+	return strings.Trim(strings.TrimSpace(name), "/")
 }
 
 // Specs returns the registered test specs (identity, capability

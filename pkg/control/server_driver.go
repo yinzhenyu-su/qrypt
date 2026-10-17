@@ -163,6 +163,9 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Mount = contracttest.NormalizeMountName(req.Mount)
+	req.Source = contracttest.NormalizeMountName(req.Source)
+	req.Dest = contracttest.NormalizeMountName(req.Dest)
 	drivers := provider.Drivers()
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
@@ -317,6 +320,9 @@ func (s *Server) handleBench(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Mount = contracttest.NormalizeMountName(req.Mount)
+	req.Source = contracttest.NormalizeMountName(req.Source)
+	req.Dest = contracttest.NormalizeMountName(req.Dest)
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 	samples := req.Samples
 	if samples <= 0 {

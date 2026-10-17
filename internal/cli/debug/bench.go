@@ -90,15 +90,18 @@ func runDebugDriverBench(cmd *cobra.Command, test string) error {
 	req := contracttest.DriverTestRequest{Test: strings.ToLower(test)}
 	if flag := cmd.Flags().Lookup("mount"); flag != nil {
 		req.Mount, _ = cmd.Flags().GetString("mount")
+		req.Mount = contracttest.NormalizeMountName(req.Mount)
 	}
 	if flag := cmd.Flags().Lookup("size"); flag != nil {
 		req.Size, _ = cmd.Flags().GetString("size")
 	}
 	if flag := cmd.Flags().Lookup("source"); flag != nil {
 		req.Source, _ = cmd.Flags().GetString("source")
+		req.Source = contracttest.NormalizeMountName(req.Source)
 	}
 	if flag := cmd.Flags().Lookup("dest"); flag != nil {
 		req.Dest, _ = cmd.Flags().GetString("dest")
+		req.Dest = contracttest.NormalizeMountName(req.Dest)
 	}
 	if flag := cmd.Flags().Lookup("vfs"); flag != nil {
 		req.VFS, _ = cmd.Flags().GetBool("vfs")
