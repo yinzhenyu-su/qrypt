@@ -34,9 +34,13 @@ type Options struct {
 	UploadSources  UploadSourceProvider
 	// Bandwidth overrides the config [bandwidth] section when set (CLI flags).
 	Bandwidth *config.BandwidthLimits
-	// DebugListen overrides the configured debug listener when non-empty.
-	// An empty value preserves config-driven behavior.
+	// DebugListen explicitly selects a debug endpoint for the caller. CLI mount
+	// supplies the built-in local endpoint; Mobile disables automatic startup
+	// and starts its loopback HTTP endpoint explicitly.
 	DebugListen string
+	// DisableDebugAutoStart prevents config-driven debug startup. Mobile uses
+	// this because it owns the explicit loopback debug server lifecycle.
+	DisableDebugAutoStart bool
 	// ControlListen starts the local mutable command server when non-empty.
 	// Control is never enabled implicitly by the debug configuration.
 	ControlListen string
@@ -146,17 +150,19 @@ func OpenConfig(ctx context.Context, cfg *config.Config, opts Options) (*Core, e
 	}
 	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
-	debugListen := opts.DebugListen
-	if debugListen == "" && cfg.Debug.Enabled {
-		debugListen = DebugSocketPath(cfg, runtime)
-	}
-	if debugListen != "" {
-		if err := c.StartDebugServer(ctx, debugListen); err != nil {
-			// A previous process may still hold the debug socket (e.g. a
-			// sticky service restarted after the app was relaunched). Debug
-			// is a diagnostics-only surface: log and continue with a working
-			// core instead of failing the whole open.
-			logging.L.Warnf("core: debug server on %s failed: %v (continuing without debug server)", debugListen, err)
+	if !opts.DisableDebugAutoStart {
+		debugListen := opts.DebugListen
+		if debugListen == "" && cfg.Debug.Enabled {
+			debugListen = DebugSocketPath(cfg, runtime)
+		}
+		if debugListen != "" {
+			if err := c.StartDebugServer(ctx, debugListen); err != nil {
+				// A previous process may still hold the debug socket (e.g. a
+				// sticky service restarted after the app was relaunched). Debug
+				// is a diagnostics-only surface: log and continue with a working
+				// core instead of failing the whole open.
+				logging.L.Warnf("core: debug server on %s failed: %v (continuing without debug server)", debugListen, err)
+			}
 		}
 	}
 	if opts.ControlListen != "" {
@@ -429,12 +435,7 @@ func DefaultRunDir() string {
 }
 
 // DebugSocketPath returns the built-in local debug endpoint for a runtime.
-// An explicit [debug].listen value still wins so existing TCP diagnostics can
-// be retained without making socket paths part of normal CLI usage.
 func DebugSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
-	if cfg != nil && strings.TrimSpace(cfg.Debug.Listen) != "" {
-		return cfg.Debug.EffectiveListen()
-	}
 	return runtimeEndpoint(NewStorageLayout(cfg, runtime).RunDir, "debug")
 }
 

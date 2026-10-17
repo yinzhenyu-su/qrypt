@@ -107,7 +107,6 @@ sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `enabled` | boolean | false | Enable the HTTP debug server. |
-| `listen` | string | 127.0.0.1:19090 | HTTP 调试入口监听地址；未设置时使用 `127.0.0.1:19090`。 |
 
 ## 时间同步（NTP）
 

@@ -28,14 +28,13 @@ func TestDebugRequiredFlags(t *testing.T) {
 	if err := os.WriteFile(debugConfigPath, []byte(`
 [debug]
 enabled = true
-listen = "127.0.0.1:19090"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root = NewRootCommand()
 	root.SetArgs([]string{"debug", "collect", "--config", debugConfigPath})
 	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
-		t.Fatalf("expected debug collect to use configured debug endpoint, got %v", err)
+		t.Fatalf("expected debug collect to use built-in debug endpoint, got %v", err)
 	}
 
 	root = NewRootCommand()

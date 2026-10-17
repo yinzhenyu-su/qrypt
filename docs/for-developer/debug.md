@@ -86,24 +86,16 @@ Start qrypt with a local debug socket:
 go run ./cmd/qrypt mount --config ./qrypt.toml
 ```
 
-For a custom TCP debug endpoint, enable it in the config:
-
-```toml
-[debug]
-enabled = true
-listen = "127.0.0.1:19090"
-```
-
-Then connect using the normal command:
+Mount always starts the built-in per-config local endpoint. Unix-like systems
+use a filesystem socket; Windows uses a named pipe. Then connect using the
+normal command:
 
 ```sh
 go run ./cmd/qrypt debug collect --mount quark-test
 ```
 
 When the same config is discoverable or passed with `--config`, debug commands
-use `[debug].listen` automatically. Without a custom listener, mount uses its
-built-in per-config local endpoint automatically. Unix-like systems use a
-filesystem socket; Windows uses a named pipe:
+resolve the built-in endpoint automatically:
 
 ```sh
 go run ./cmd/qrypt debug collect --config ./qrypt.toml --mount quark-test
@@ -126,9 +118,9 @@ qrypt refuses to replace a live endpoint and removes stale Unix socket files
 during startup. Windows named pipes use the operating system's pipe access
 control instead of filesystem permissions.
 
-HTTP debug listeners must bind to loopback addresses such as `127.0.0.1` or
-`localhost`. This keeps Android and remote-device debugging usable through
-tools such as `adb forward` without exposing the debug API on the LAN.
+Android and remote-device debugging uses the Android app's explicit loopback
+debug server and tools such as `adb forward`; the CLI mount endpoint is local
+and does not expose the debug API on the LAN.
 
 ### Enable Debug Logs
 

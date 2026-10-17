@@ -56,7 +56,11 @@ func ReloadConfigJSON(coreID string, deadlineMS int) string {
 
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	newCore, err := core.Open(ctx, core.Options{ConfigPath: configPath, Runtime: runtime})
+	newCore, err := core.Open(ctx, core.Options{
+		ConfigPath:            configPath,
+		Runtime:               runtime,
+		DisableDebugAutoStart: true,
+	})
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}

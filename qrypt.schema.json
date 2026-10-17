@@ -328,11 +328,6 @@
           "description": "Enable the HTTP debug server.",
           "type": "boolean",
           "default": false
-        },
-        "listen": {
-          "description": "Address where the HTTP debug server listens.",
-          "type": "string",
-          "default": "127.0.0.1:19090"
         }
       },
       "additionalProperties": false

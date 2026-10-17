@@ -161,15 +161,7 @@ qrypt probe test TEST [probe flags]
 qrypt probe bench TEST [benchmark flags]
 ```
 
-如需使用自定义 HTTP 调试入口，可以在配置中启用：
-
-```toml
-[debug]
-enabled = true
-listen = "127.0.0.1:19090"
-```
-
-未配置自定义入口时，mount 会自动启动按配置隔离的本地 endpoint；Unix-like 系统使用 socket 文件，Windows 使用 named pipe。启用上面的配置后，debug 命令使用该 HTTP endpoint：
+mount 会自动启动按配置隔离的本地 endpoint；Unix-like 系统使用 socket 文件，Windows 使用 named pipe：
 
 ```sh
 qrypt debug collect --mount NAME

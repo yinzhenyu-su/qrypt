@@ -292,7 +292,6 @@ func TestLoadDebugConfig(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 [debug]
 enabled = true
-listen = "127.0.0.1:19090"
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -305,8 +304,19 @@ listen = "127.0.0.1:19090"
 	if !cfg.Debug.Enabled {
 		t.Fatal("expected debug to be enabled")
 	}
-	if cfg.Debug.EffectiveListen() != "127.0.0.1:19090" {
-		t.Fatalf("unexpected debug listen: %q", cfg.Debug.EffectiveListen())
+}
+
+func TestLoadLegacyDebugListenConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	if err := os.WriteFile(path, []byte(`
+[debug]
+enabled = true
+listen = "127.0.0.1:19090"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("legacy debug.listen should be ignored during migration: %v", err)
 	}
 }
 

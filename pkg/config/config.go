@@ -142,17 +142,7 @@ type LoggingConfig struct {
 }
 
 type DebugConfig struct {
-	Enabled bool   `toml:"enabled"`
-	Listen  string `toml:"listen"`
-}
-
-const DefaultDebugListen = "127.0.0.1:19090"
-
-func (c DebugConfig) EffectiveListen() string {
-	if c.Listen != "" {
-		return c.Listen
-	}
-	return DefaultDebugListen
+	Enabled bool `toml:"enabled"`
 }
 
 type TimeConfig struct {
@@ -199,9 +189,17 @@ func Load(path string) (*Config, error) {
 	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, 0, len(undecoded))
 		for _, key := range undecoded {
+			// debug.listen was removed in favor of platform-native built-in
+			// endpoints. Ignore it during one migration window so existing
+			// configs remain loadable; Save omits the removed field.
+			if key.String() == "debug.listen" {
+				continue
+			}
 			keys = append(keys, key.String())
 		}
-		return nil, fmt.Errorf("unknown configuration keys: %s", strings.Join(keys, ", "))
+		if len(keys) > 0 {
+			return nil, fmt.Errorf("unknown configuration keys: %s", strings.Join(keys, ", "))
+		}
 	}
 	return &cfg, nil
 }
