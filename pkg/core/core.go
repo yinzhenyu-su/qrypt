@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,14 @@ type Options struct {
 	UploadSources  UploadSourceProvider
 	// Bandwidth overrides the config [bandwidth] section when set (CLI flags).
 	Bandwidth *config.BandwidthLimits
+	// DebugListen overrides the configured debug listener when non-empty.
+	// An empty value preserves config-driven behavior.
+	DebugListen string
+	// ControlListen starts the local mutable command server when non-empty.
+	// Control is never enabled implicitly by the debug configuration.
+	ControlListen string
+	// ProbeListen starts the active test/benchmark server when non-empty.
+	ProbeListen string
 }
 
 type UploadSourceProvider interface {
@@ -53,6 +63,8 @@ type Core struct {
 	// their cloud upload records; zero means defaultUploadStreamPollInterval.
 	uploadStreamPollInterval time.Duration
 	debugServer              *control.Server
+	controlServer            *control.CommandServer
+	probeServer              *control.Server
 	tasks                    *task.Manager
 	uploadSources            UploadSourceProvider
 	readChunkLimit           int
@@ -72,6 +84,7 @@ type Core struct {
 
 type RuntimeLayout struct {
 	RootDir      string
+	RunDir       string
 	ConfigDir    string
 	ReadCacheDir string
 	ThumbnailDir string
@@ -89,6 +102,19 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Runtime.RunDir == "" {
+		opts.Runtime.RunDir = RuntimeRunDir(opts.ConfigPath, cfg)
+	}
+	return OpenConfig(ctx, cfg, opts)
+}
+
+// OpenConfig opens a Core from an already loaded configuration. Composition
+// roots such as the mount command use this when they have already resolved
+// the config and need the Core to own the complete runtime lifecycle.
+func OpenConfig(ctx context.Context, cfg *config.Config, opts Options) (*Core, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("core: config required")
 	}
 	runtime := NewStorageLayout(cfg, opts.Runtime)
 	if err := ensureRuntimeLayout(runtime); err != nil {
@@ -120,13 +146,29 @@ func Open(ctx context.Context, opts Options) (*Core, error) {
 	}
 	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
-	if cfg.Debug.Enabled {
-		if err := c.StartDebugServer(ctx, cfg.Debug.EffectiveListen()); err != nil {
+	debugListen := opts.DebugListen
+	if debugListen == "" && cfg.Debug.Enabled {
+		debugListen = DebugSocketPath(cfg, runtime)
+	}
+	if debugListen != "" {
+		if err := c.StartDebugServer(ctx, debugListen); err != nil {
 			// A previous process may still hold the debug socket (e.g. a
 			// sticky service restarted after the app was relaunched). Debug
 			// is a diagnostics-only surface: log and continue with a working
 			// core instead of failing the whole open.
-			logging.L.Warnf("core: debug server on %s failed: %v (continuing without debug server)", cfg.Debug.EffectiveListen(), err)
+			logging.L.Warnf("core: debug server on %s failed: %v (continuing without debug server)", debugListen, err)
+		}
+	}
+	if opts.ControlListen != "" {
+		if err := c.StartControlServer(ctx, opts.ControlListen); err != nil {
+			_ = c.Close(context.Background())
+			return nil, err
+		}
+	}
+	if opts.ProbeListen != "" {
+		if err := c.StartProbeServer(ctx, opts.ProbeListen); err != nil {
+			_ = c.Close(context.Background())
+			return nil, err
 		}
 	}
 	return c, nil
@@ -248,6 +290,18 @@ func (c *Core) Close(ctx context.Context) error {
 		return nil
 	}
 	var errs []error
+	// Stop accepting new debug/control requests before tearing down the
+	// filesystem and task manager. This prevents a late local request from
+	// racing with the resources it observes or mutates.
+	if err := c.StopControlServer(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := c.StopDebugServer(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := c.StopProbeServer(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	// The task manager owns long-running goroutines (stream pollers, batch
 	// runners) whose contexts derive from the manager, not from any
 	// caller-passed context; close it even when no cleanup is registered
@@ -276,15 +330,10 @@ func (c *Core) Close(ctx context.Context) error {
 			return errors.Join(append(errs, err)...)
 		}
 	}
-	if c.cleanup == nil {
-		c.fs = nil
-		return errors.Join(errs...)
+	if c.cleanup != nil {
+		c.cleanup()
+		c.cleanup = nil
 	}
-	if err := c.StopDebugServer(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	c.cleanup()
-	c.cleanup = nil
 	c.fs = nil
 	return errors.Join(errs...)
 }
@@ -375,6 +424,49 @@ func DefaultCacheDir() string {
 	return filepath.Join(qryptHomeDir(), "cache")
 }
 
+func DefaultRunDir() string {
+	return filepath.Join(qryptHomeDir(), "run")
+}
+
+// DebugSocketPath returns the built-in local debug endpoint for a runtime.
+// An explicit [debug].listen value still wins so existing TCP diagnostics can
+// be retained without making socket paths part of normal CLI usage.
+func DebugSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
+	if cfg != nil && strings.TrimSpace(cfg.Debug.Listen) != "" {
+		return cfg.Debug.EffectiveListen()
+	}
+	return filepath.Join(NewStorageLayout(cfg, runtime).RunDir, "debug.sock")
+}
+
+func ControlSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
+	return filepath.Join(NewStorageLayout(cfg, runtime).RunDir, "control.sock")
+}
+
+func ProbeSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
+	return filepath.Join(NewStorageLayout(cfg, runtime).RunDir, "probe.sock")
+}
+
+// RuntimeRunDir returns the per-configuration runtime directory used for
+// built-in local endpoints. Explicit storage roots and QRYPT_HOME retain their
+// existing process-wide isolation semantics; otherwise separate config files
+// get separate run directories beside the config file.
+func RuntimeRunDir(configPath string, cfg *config.Config) string {
+	if home := strings.TrimSpace(os.Getenv("QRYPT_HOME")); home != "" {
+		return filepath.Join(filepath.Clean(util.ExpandHome(home)), "run")
+	}
+	if cfg != nil && strings.TrimSpace(cfg.Storage.WorkDir) != "" {
+		return filepath.Join(util.ExpandHome(cfg.Storage.WorkDir), "run")
+	}
+	if strings.TrimSpace(configPath) != "" {
+		absolute, err := filepath.Abs(util.ExpandHome(configPath))
+		if err == nil {
+			key := sha256.Sum256([]byte(absolute))
+			return filepath.Join(filepath.Dir(absolute), "run", hex.EncodeToString(key[:6]))
+		}
+	}
+	return DefaultRunDir()
+}
+
 func DefaultUploadDir() string {
 	return filepath.Join(qryptHomeDir(), "upload")
 }
@@ -436,6 +528,7 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 	}
 	layout := RuntimeLayout{
 		RootDir:      workDir,
+		RunDir:       filepath.Join(workDir, "run"),
 		ReadCacheDir: readCacheDir,
 		ThumbnailDir: thumbnailDir,
 		UploadDir:    uploadDir,
@@ -450,6 +543,9 @@ func NewStorageLayout(cfg *config.Config, runtime RuntimeLayout) RuntimeLayout {
 func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 	if override.RootDir != "" {
 		base.RootDir = util.ExpandHome(override.RootDir)
+	}
+	if override.RunDir != "" {
+		base.RunDir = util.ExpandHome(override.RunDir)
 	}
 	if override.ConfigDir != "" {
 		base.ConfigDir = util.ExpandHome(override.ConfigDir)
@@ -481,7 +577,7 @@ func mergeRuntimeLayout(base, override RuntimeLayout) RuntimeLayout {
 }
 
 func ensureRuntimeLayout(layout RuntimeLayout) error {
-	for _, dir := range []string{layout.ConfigDir, layout.ReadCacheDir, layout.ThumbnailDir, layout.UploadDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
+	for _, dir := range []string{layout.ConfigDir, layout.RunDir, layout.ReadCacheDir, layout.ThumbnailDir, layout.UploadDir, layout.StateDir, layout.DriverDir, layout.LogDir, layout.TmpDir} {
 		if dir == "" {
 			continue
 		}

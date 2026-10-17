@@ -48,7 +48,7 @@ func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthT
 		AuthStatus:   "unknown",
 		Capabilities: drive.Capabilities(d),
 		Steps:        make([]AuthTestStep, 0, 5),
-		RetryCommand: fmt.Sprintf("qrypt debug test auth --mount %s --socket PATH", mount),
+		RetryCommand: fmt.Sprintf("qrypt probe test auth --mount %s", mount),
 		Started:      time.Now(),
 	}
 	defer func() {

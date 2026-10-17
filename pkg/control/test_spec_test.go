@@ -22,7 +22,7 @@ import (
 func newTestServer(t *testing.T, source fakeSnapshotter) (*Server, *Client) {
 	t.Helper()
 	socketPath := testSocketPath(t)
-	server, err := NewServer(socketPath, source)
+	server, err := NewProbeServer(socketPath, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestVFSSpecsRunThroughRegistry(t *testing.T) {
 	t.Cleanup(cancel)
 	t.Cleanup(func() { stopVFS(t, v) })
 
-	server, err := NewServer(testSocketPath(t), ns)
+	server, err := NewProbeServer(testSocketPath(t), ns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestMountedReadSpecRejectsBackendDirectoryThroughServer(t *testing.T) {
 	t.Cleanup(cancel)
 	t.Cleanup(func() { stopVFS(t, v) })
 
-	server, err := NewServer(testSocketPath(t), v)
+	server, err := NewProbeServer(testSocketPath(t), v)
 	if err != nil {
 		t.Fatal(err)
 	}

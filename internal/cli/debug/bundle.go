@@ -49,7 +49,7 @@ func NewBundleCmd(rt cliruntime.Runtime) *cobra.Command {
 				return fmt.Errorf("--watch must not be negative")
 			}
 			if watchDuration == 0 && cmd.Flags().Changed("watch-interval") {
-				return fmt.Errorf("--watch-interval requires --watch\n\nExample:\n  qrypt debug bundle --socket /tmp/qrypt.sock --out /tmp/qrypt-debug.zip --watch 30s --watch-interval 2s")
+				return fmt.Errorf("--watch-interval requires --watch\n\nExample:\n  qrypt debug bundle --out /tmp/qrypt-debug.zip --watch 30s --watch-interval 2s")
 			}
 			if watchDuration > 0 {
 				if err := cliruntime.ValidateSamplingWindow(watchDuration, watchInterval, "watch", "watch-interval"); err != nil {

@@ -52,6 +52,7 @@ type Server struct {
 	server     *http.Server
 	listener   net.Listener
 	stop       context.CancelFunc
+	mutable    bool
 }
 
 // SetTaskDebugger attaches the application task journal to the local debug API.
@@ -115,7 +116,12 @@ func (s *Server) Start(ctx context.Context) error {
 	s.listener = listener
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
-	mux.HandleFunc("/v1/debug/reset", s.handleDebugReset)
+	if s.mutable {
+		mux.HandleFunc("/v1/debug/reset", s.handleDebugReset)
+		mux.HandleFunc("/v1/bench", s.handleBench)
+		mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
+		mux.HandleFunc("/v1/debug/faults/upload-cancel", s.handleDebugUploadCancelFaults)
+	}
 	mux.HandleFunc("/v1/state", s.handleState)
 	mux.HandleFunc("/v1/pending", s.handlePending)
 	mux.HandleFunc("/v1/tasks", s.handleTasks)
@@ -123,9 +129,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/uploads", s.handleUploads)
 	mux.HandleFunc("/v1/ops", s.handleOps)
 	mux.HandleFunc("/v1/reads", s.handleReads)
-	mux.HandleFunc("/v1/bench", s.handleBench)
 	mux.HandleFunc("/v1/driver", s.handleDriver)
-	mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
 	mux.HandleFunc("/v1/mounts/health", s.handleMountHealth)
 	mux.HandleFunc("/v1/events", s.handleEvents)
 	mux.HandleFunc("/v1/list", s.handleList)
@@ -134,7 +138,6 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/cache", s.handleCache)
 	mux.HandleFunc("/v1/read-memory", s.handleReadMemory)
 	mux.HandleFunc("/v1/staging", s.handleStaging)
-	mux.HandleFunc("/v1/debug/faults/upload-cancel", s.handleDebugUploadCancelFaults)
 	mux.HandleFunc("/v1/consistency", s.handleConsistency)
 	mux.HandleFunc("/v1/runtime", s.handleRuntime)
 	mux.HandleFunc("/v1/upload-memory", s.handleUploadMemory)

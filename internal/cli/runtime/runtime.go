@@ -48,11 +48,19 @@ type MountFileSystem interface {
 	vfs.Lifecycle
 }
 
+// CoreHost is the application runtime owned by a long-lived command such as
+// mount. Keeping the Core boundary here lets the CLI reuse its lifecycle and
+// task services without exposing pkg/core implementation details to command
+// packages.
+type CoreHost interface {
+	FileSystem() vfs.FileSystem
+	Close(context.Context) error
+}
+
 // ErrorFactory shapes usage, exit, and debug-socket errors for commands.
 type ErrorFactory interface {
 	UsageError(cmd *cobra.Command, format string, args ...any) error
 	ExitError(code int, err error) error
-	MissingSocketError(cmd *cobra.Command) error
 }
 
 // FlagRegistrar wires the cobra flags that command subpackages share.
@@ -72,6 +80,7 @@ type DebugReporter interface {
 // FileSystemBuilder builds or opens the filesystem and resolves config.
 type FileSystemBuilder interface {
 	BuildFileSystemForMount(ctx context.Context, cfg *config.Config, mountName string) (MountFileSystem, func(), error)
+	OpenCoreForMount(ctx context.Context, cfg *config.Config, configPath, mountName, debugListen, controlListen string) (CoreHost, error)
 	CommandConfig(cmd *cobra.Command) (ConfigState, error)
 	CommandConfigPath(cmd *cobra.Command) (string, error)
 	ConfigNotFoundError() error

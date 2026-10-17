@@ -20,12 +20,13 @@ func TestConfigFlagScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mount.Flag("socket") == nil {
-		t.Error("mount does not support --socket")
+	if mount.Flag("socket") != nil || mount.Flag("control-socket") != nil {
+		t.Error("mount must use built-in runtime endpoints")
 	}
 
 	for _, args := range [][]string{
 		{"mount"},
+		{"control", "task", "cancel"},
 		{"fs", "list"},
 		{"fs", "journal"},
 		{"config", "show"},

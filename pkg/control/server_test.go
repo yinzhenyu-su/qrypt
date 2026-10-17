@@ -314,6 +314,19 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	commandSocket := testSocketPath(t)
+	commandServer, err := NewProbeServer(commandSocket, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commandServer.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer commandServer.Close(context.Background())
+	commandClient, err := NewClient(commandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stateBody, err := client.Get(context.Background(), "/v1/state")
 	if err != nil {
 		t.Fatal(err)
@@ -440,7 +453,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected filtered driver metrics response: %s", driverMetricsBody)
 	}
 
-	testBody, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
+	testBody, err := commandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +461,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		!strings.Contains(string(testBody), "driver lacks capability") {
 		t.Fatalf("unexpected driver test response: %s", testBody)
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+	if _, err := commandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount error, got %v", err)
 	}
@@ -466,20 +479,29 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := disabledServer.Start(disabledCtx); err != nil {
 		t.Fatal(err)
 	}
-	defer disabledServer.Close(context.Background())
-	disabledClient, err := NewClient(disabledSocket)
+	disabledCommandSocket := testSocketPath(t)
+	disabledCommandServer, err := NewProbeServer(disabledCommandSocket, disabledSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := disabledClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
-		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
+	if err := disabledCommandServer.Start(disabledCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer disabledCommandServer.Close(context.Background())
+	defer disabledServer.Close(context.Background())
+	disabledCommandClient, err := NewClient(disabledCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledCommandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "disabled" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled mount test error, got %v", err)
 	}
-	if _, err := disabledClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
-		!strings.Contains(err.Error(), `mount "disabled" is not enabled for debug tests`) {
+	if _, err := disabledCommandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "disabled"}); err == nil ||
+		!strings.Contains(err.Error(), `mount "disabled" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled mount benchmark error, got %v", err)
 	}
-	benchBody, err := client.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
+	benchBody, err := commandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +514,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if _, err := client.PostJSON(context.Background(), "/v1/driver/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "local"}); err == nil {
 		t.Fatal("expected old driver benchmark endpoint to be unavailable")
 	}
-	if _, err := client.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
+	if _, err := commandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{Test: "crud", Mount: "missing"}); err == nil ||
 		!strings.Contains(err.Error(), `mount "missing" not found`) {
 		t.Fatalf("expected missing mount benchmark error, got %v", err)
 	}
@@ -518,12 +540,21 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := xferServer.Start(xferCtx); err != nil {
 		t.Fatal(err)
 	}
-	defer xferServer.Close(context.Background())
-	xferClient, err := NewClient(xferSocket)
+	xferCommandSocket := testSocketPath(t)
+	xferCommandServer, err := NewProbeServer(xferCommandSocket, xferSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	xferBenchBody, err := xferClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{
+	if err := xferCommandServer.Start(xferCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer xferCommandServer.Close(context.Background())
+	defer xferServer.Close(context.Background())
+	xferCommandClient, err := NewClient(xferCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xferBenchBody, err := xferCommandClient.PostJSON(context.Background(), "/v1/bench", contracttest.DriverTestRequest{
 		Test:    "xfer",
 		Source:  "local",
 		Dest:    "cloud",
@@ -553,16 +584,25 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := disabledXferServer.Start(disabledXferCtx); err != nil {
 		t.Fatal(err)
 	}
-	defer disabledXferServer.Close(context.Background())
-	disabledXferClient, err := NewClient(disabledXferSocket)
+	disabledXferCommandSocket := testSocketPath(t)
+	disabledXferCommandServer, err := NewProbeServer(disabledXferCommandSocket, disabledXferSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := disabledXferClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{
+	if err := disabledXferCommandServer.Start(disabledXferCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer disabledXferCommandServer.Close(context.Background())
+	defer disabledXferServer.Close(context.Background())
+	disabledXferCommandClient, err := NewClient(disabledXferCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disabledXferCommandClient.PostJSON(context.Background(), "/v1/driver/test", contracttest.DriverTestRequest{
 		Test:   "xfer",
 		Source: "local",
 		Dest:   "cloud",
-	}); err == nil || !strings.Contains(err.Error(), `mount "cloud" is not enabled for debug tests`) {
+	}); err == nil || !strings.Contains(err.Error(), `mount "cloud" is not enabled for probe tests`) {
 		t.Fatalf("expected disabled xfer mount error, got %v", err)
 	}
 	if _, err := client.Get(context.Background(), "/v1/driver/test?test=crud"); err == nil {
@@ -709,11 +749,20 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resetServer.Close(context.Background())
-	resetClient, err := NewClient(resetSocket)
+	resetCommandSocket := testSocketPath(t)
+	resetCommandServer, err := NewProbeServer(resetCommandSocket, resetSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resetBody, err := resetClient.PostJSON(context.Background(), "/v1/debug/reset", map[string]string{})
+	if err := resetCommandServer.Start(resetCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer resetCommandServer.Close(context.Background())
+	resetCommandClient, err := NewClient(resetCommandSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetBody, err := resetCommandClient.PostJSON(context.Background(), "/v1/debug/reset", map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}

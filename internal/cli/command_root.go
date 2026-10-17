@@ -3,6 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 	cliconfig "github.com/yinzhenyu/qrypt/internal/cli/config"
+	clicontrol "github.com/yinzhenyu/qrypt/internal/cli/control"
 	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
 	clidriver "github.com/yinzhenyu/qrypt/internal/cli/driver"
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
@@ -42,6 +43,8 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(clidriver.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clifs.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clidebug.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clidebug.NewProbeCommand(cliRuntime{}))
+	cmd.AddCommand(clicontrol.NewCommand(cliRuntime{}))
 	cmd.AddCommand(cliversion.NewCommand(cliRuntime{}, build))
 	installFlagErrorHelp(cmd)
 

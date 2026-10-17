@@ -9,77 +9,80 @@ import (
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/control"
+	"github.com/yinzhenyu/qrypt/pkg/core"
 )
 
 func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "debug",
-		Short: "Collect AI-oriented diagnostic data",
-		Args: cliruntime.CommandGroupArgs(rt, map[string]string{
-			"driver": "debug driver was removed; use 'qrypt debug test crud --socket PATH' or 'qrypt debug test xfer --source SRC --dest DST --socket PATH'",
-			"probe":  "debug probe was removed; use 'qrypt debug test crud --socket PATH' or 'qrypt debug test xfer --source SRC --dest DST --socket PATH'",
-		}),
-		RunE: cliruntime.ShowHelp,
+		Short: "Collect read-only diagnostic data",
+		Args:  cliruntime.CommandGroupArgs(rt, nil),
+		RunE:  cliruntime.ShowHelp,
 	}
 	rt.WithPersistentConfigFlag(cmd)
-	cmd.AddCommand(NewBenchCmd(rt))
 	cmd.AddCommand(withDebugSocketFlag(rt, NewBundleCmd(rt)))
 	cmd.AddCommand(withDebugSocketFlag(rt, NewCollectCmd(rt)))
 	cmd.AddCommand(newRemovedDebugInspectCmd())
 	cmd.AddCommand(withDebugSocketFlag(rt, NewWatchCmd(rt)))
 	cmd.AddCommand(withDebugSocketFlag(rt, NewUploadMemoryCmd(rt)))
 	cmd.AddCommand(withDebugSocketFlag(rt, NewReadMemoryCmd(rt)))
-	cmd.AddCommand(NewTestCmd(rt))
 	cmd.AddCommand(withDebugSocketFlag(rt, newDebugRawCmd(rt)))
 	return cmd
 }
 
-type DebugSocketContextKey struct{}
+// NewProbeCommand owns active diagnostics that may write remote or VFS test
+// data. It deliberately shares the implementation with the former debug
+// test/bench commands while using the mutable control socket.
+func NewProbeCommand(rt cliruntime.Runtime) *cobra.Command {
+	cmd := &cobra.Command{Use: "probe", Short: "Run active diagnostics and benchmarks", Args: cliruntime.CommandGroupArgs(rt, nil), RunE: cliruntime.ShowHelp}
+	rt.WithPersistentConfigFlag(cmd)
+	cmd.AddCommand(NewBenchCmd(rt))
+	cmd.AddCommand(NewTestCmd(rt))
+	return cmd
+}
+
+type EndpointContextKey struct{}
+
+// DebugSocketContextKey is retained as a source-compatible alias for tests
+// and integrations that used the old internal command seam. It now carries
+// either the debug or control endpoint.
+type DebugSocketContextKey = EndpointContextKey
 
 func withDebugSocketFlag(rt cliruntime.Runtime, cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().StringP("socket", "s", "", "debug socket path (required)")
-	cmd.Flags().String("url", "", "debug HTTP URL")
+	return withEndpoint(rt, cmd, func(state cliruntime.ConfigState) string {
+		return core.DebugSocketPath(state.Cfg, core.RuntimeLayout{RunDir: core.RuntimeRunDir(state.Path, state.Cfg)})
+	})
+}
+
+func withProbeSocketFlag(rt cliruntime.Runtime, cmd *cobra.Command) *cobra.Command {
+	return withEndpoint(rt, cmd, func(state cliruntime.ConfigState) string {
+		return core.ProbeSocketPath(state.Cfg, core.RuntimeLayout{RunDir: core.RuntimeRunDir(state.Path, state.Cfg)})
+	})
+}
+
+func withEndpoint(rt cliruntime.Runtime, cmd *cobra.Command, resolve func(cliruntime.ConfigState) string) *cobra.Command {
 	run := cmd.RunE
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		socket, err := cmd.Flags().GetString("socket")
+		state, err := rt.CommandConfig(cmd)
 		if err != nil {
 			return err
 		}
-		debugURL, err := cmd.Flags().GetString("url")
-		if err != nil {
-			return err
+		if state.Cfg == nil {
+			return rt.ConfigNotFoundError()
 		}
-		if socket != "" && debugURL != "" {
-			return fmt.Errorf("--socket and --url are mutually exclusive")
-		}
-		endpoint := socket
-		if endpoint == "" {
-			endpoint = debugURL
-		}
-		if endpoint == "" {
-			state, err := rt.CommandConfig(cmd)
-			if err != nil {
-				return err
-			}
-			if state.Cfg != nil && state.Cfg.Debug.Enabled {
-				endpoint = state.Cfg.Debug.EffectiveListen()
-			}
-		}
-		if endpoint == "" {
-			return rt.MissingSocketError(cmd)
-		}
+		endpoint := resolve(state)
 		ctx := cmd.Context()
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cmd.SetContext(context.WithValue(ctx, DebugSocketContextKey{}, endpoint))
+		cmd.SetContext(context.WithValue(ctx, EndpointContextKey{}, endpoint))
 		return run(cmd, args)
 	}
 	return cmd
 }
 
 func debugSocketFromContext(ctx context.Context) string {
-	socket, _ := ctx.Value(DebugSocketContextKey{}).(string)
+	socket, _ := ctx.Value(EndpointContextKey{}).(string)
 	return socket
 }
 
@@ -134,15 +137,14 @@ func newDebugRawCmd(rt cliruntime.Runtime) *cobra.Command {
 		Args:              cliruntime.ExactNamedArgs(rt, "ENDPOINT"),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			socket := debugSocketFromContext(cmd.Context())
 			endpoint := args[0]
 			switch {
 			case endpoint == "":
 				return fmt.Errorf("endpoint required")
 			case strings.HasPrefix(endpoint, "/v1/"):
 			case endpoint[0] == '/':
-				return fmt.Errorf("debug raw expects a /v1 endpoint, got virtual path %q; use 'qrypt debug collect %s --socket %s' or 'qrypt debug raw /v1/resolve?path=%s --socket %s'",
-					endpoint, endpoint, socket, url.QueryEscape(endpoint), socket)
+				return fmt.Errorf("debug raw expects a /v1 endpoint, got virtual path %q; use 'qrypt debug collect %s' or 'qrypt debug raw /v1/resolve?path=%s'",
+					endpoint, endpoint, url.QueryEscape(endpoint))
 			case len(endpoint) >= 3 && endpoint[:3] == "v1/":
 				endpoint = "/" + endpoint
 			default:
@@ -165,9 +167,9 @@ func newRemovedDebugInspectCmd() *cobra.Command {
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("debug inspect was removed; use 'qrypt debug collect REMOTE --socket PATH' for path diagnostics")
+				return fmt.Errorf("debug inspect was removed; use 'qrypt debug collect REMOTE' for path diagnostics")
 			}
-			return fmt.Errorf("debug inspect was removed; use 'qrypt debug collect %s --socket PATH' instead", args[0])
+			return fmt.Errorf("debug inspect was removed; use 'qrypt debug collect %s' instead", args[0])
 		},
 	}
 }

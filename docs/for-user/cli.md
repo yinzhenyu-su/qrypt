@@ -71,10 +71,10 @@ printf '%s' "$PASSWORD" | qrypt config export-rclone-password --password-stdin
 ## 挂载
 
 ```sh
-qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH] [--socket PATH]
+qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH]
 ```
 
-省略 `MOUNT_NAME` 时挂载配置中的全部云盘；指定 `MOUNT_NAME` 时只挂载该云盘，根目录就是该云盘内容。省略 `--mount-point` 时读取配置中的 `[mount].mount_point`。`--socket` 启动本机调试接口。
+省略 `MOUNT_NAME` 时挂载配置中的全部云盘；指定 `MOUNT_NAME` 时只挂载该云盘，根目录就是该云盘内容。省略 `--mount-point` 时读取配置中的 `[mount].mount_point`。运行时 socket 使用配置目录下的内置路径，无需手工指定。
 
 ## 文件系统操作
 
@@ -147,21 +147,21 @@ qrypt driver schema NAME [--json]
 
 ## 调试
 
-运行时调试命令使用 `--socket PATH`、`--url URL` 或配置中的
-`[debug].listen` 连接运行中的 debug server。`collect`、`watch` 和
-`bundle` 还需要说明要检查哪个挂载：平时请用 `--mount NAME`；确实需要
-检查全部挂载时，再用 `--all-mounts`。
+运行时调试命令使用配置目录下的内置 debug socket 连接运行中的 debug
+server。`collect`、`watch` 和 `bundle` 还需要说明要检查哪个挂载：平时请用
+`--mount NAME`；确实需要检查全部挂载时，再用 `--all-mounts`。
 
 ```sh
-qrypt debug collect [REMOTE] [--dest DESTINATION] --socket PATH --mount NAME
-qrypt debug collect [REMOTE] [--dest DESTINATION] --url http://127.0.0.1:19090 --mount NAME
-qrypt debug watch [REMOTE] [--jsonl] --socket PATH --mount NAME
-qrypt debug test TEST --socket PATH
-qrypt debug raw ENDPOINT --socket PATH
-qrypt debug bundle [REMOTE] [--dest DESTINATION] --socket PATH --mount NAME --out FILE [--force]
+qrypt debug collect [REMOTE] [--dest DESTINATION] --mount NAME
+qrypt debug watch [REMOTE] [--jsonl] --mount NAME
+qrypt debug raw ENDPOINT
+qrypt debug bundle [REMOTE] [--dest DESTINATION] --mount NAME --out FILE [--force]
+
+qrypt probe test TEST [probe flags]
+qrypt probe bench TEST [benchmark flags]
 ```
 
-也可以在配置中启用 HTTP 调试入口：
+如需使用自定义 HTTP 调试入口，可以在配置中启用：
 
 ```toml
 [debug]
@@ -169,7 +169,7 @@ enabled = true
 listen = "127.0.0.1:19090"
 ```
 
-启用后，debug 命令可以省略 `--url`：
+未配置自定义入口时，mount 会自动启动配置目录下的 Unix socket；启用上面的配置后，debug 命令使用该 HTTP endpoint：
 
 ```sh
 qrypt debug collect --mount NAME
@@ -181,7 +181,14 @@ qrypt debug collect --mount NAME
 
 跨挂载传输问题应同时提供源路径和 `--dest`；报告会分别收集两端路径状态、读取/上传历史和挂载能力。
 
-driver 和 VFS 测试通过 `debug test` 显式执行，`TEST` 可为 `auth`、`batchupload`、`batchmove`、`crud`、`instantupload`、`multipart`、`fs`、`read`、`resume` 或 `xfer`。这些测试只会使用在 `[[mounts]]` 中设置了 `test_enabled = true` 的挂载；`xfer` 要求 source 和 dest 都启用。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`fs` 会检查 VFS 写入、上传、读取和清理流程；`read` 从实际 FUSE 挂载目录读取自动生成的远端文件，报告冷/热缓存的首包延迟、持续与峰值速度、读取调用延迟和缓存命中情况；使用 `mount-debug-test.sh` 时临时挂载目录会自动传入。`batchupload` 会在同一父目录批量写入小文件，并检查目录解析缓存是否复用；`batchmove` 会先等待这些文件上传完成，再通过 VFS `Rename` 将它们从源目录逐个移动到目标目录。两个批量测试都支持 `--count`（默认 50，最大 100）和 `--size`（默认 4 KiB，最大 1 MiB）。`resume` 会故意取消一次上传，用来确认断点续传或重试恢复是否正常。`multipart` 会上传一个 34 MiB 的伪随机文件（可用 `--size` 调整）并逐字节读回校验，覆盖分片/块上传路径——普通 CRUD 测试的小文件不会触达这部分。注意读回校验受网盘下载速度影响：在限速的网盘上（如 115 非会员，约 100 KB/s）34 MiB 全量读回可能耗时数分钟，建议先跑小 `--size` 验证或按需调整。所有测试都会使用带随机后缀的临时目录并在结束时清理。
+driver 和 VFS 测试通过 `probe test` 显式执行，基准测试通过 `probe bench` 执行。`TEST` 可为 `auth`、`batchupload`、`batchmove`、`crud`、`instantupload`、`multipart`、`fs`、`read`、`resume` 或 `xfer`。这些测试只会使用在 `[[mounts]]` 中设置了 `test_enabled = true` 的挂载；`xfer` 要求 source 和 dest 都启用。`auth` 是只读认证探测，其他测试可能创建临时远端对象。`fs` 会检查 VFS 写入、上传、读取和清理流程；`read` 从实际 FUSE 挂载目录读取自动生成的远端文件，报告冷/热缓存的首包延迟、持续与峰值速度、读取调用延迟和缓存命中情况；使用 `mount-debug-test.sh` 时临时挂载目录会自动传入。`batchupload` 会在同一父目录批量写入小文件，并检查目录解析缓存是否复用；`batchmove` 会先等待这些文件上传完成，再通过 VFS `Rename` 将它们从源目录逐个移动到目标目录。两个批量测试都支持 `--count`（默认 50，最大 100）和 `--size`（默认 4 KiB，最大 1 MiB）。`resume` 会故意取消一次上传，用来确认断点续传或重试恢复是否正常。`multipart` 会上传一个 34 MiB 的伪随机文件（可用 `--size` 调整）并逐字节读回校验，覆盖分片/块上传路径——普通 CRUD 测试的小文件不会触达这部分。注意读回校验受网盘下载速度影响：在限速的网盘上（如 115 非会员，约 100 KB/s）34 MiB 全量读回可能耗时数分钟，建议先跑小 `--size` 验证或按需调整。所有测试都会使用带随机后缀的临时目录并在结束时清理。
+
+运行中的任务可以通过 Control socket 操作：
+
+```sh
+qrypt control task cancel TASK_ID
+qrypt control task retry TASK_ID
+```
 
 离线 journal 检查使用 `fs journal`，可传配置文件或明确的缓存目录。
 

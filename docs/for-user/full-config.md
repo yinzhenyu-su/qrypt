@@ -140,6 +140,6 @@ qrypt 依赖精确的系统时间进行文件操作。当系统时间可能不�
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `name` | string | - | Mount name — used as the directory name under the mount point. |
-| `test_enabled` | boolean | false | Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects. |
+| `test_enabled` | boolean | false | Allow probe test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects. |
 
 每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见上文对应章节。

@@ -20,7 +20,7 @@
 #
 # Real-netdisk contract tests are NOT part of go test: they need a running
 # `qrypt mount` debug server with mounted cloud accounts. Run them manually:
-#   qrypt debug test contract --socket /tmp/qrypt.sock --mount <name>
+#   qrypt probe test contract --config ./qrypt.toml --mount <name>
 #
 # Windows CI (ci.yaml test-windows, windows-latest) runs the main-module
 # package list from the race layer instead of `fast`, because `go test
@@ -52,10 +52,9 @@ clean_orphan_temp() {
   # Windows and must not abort the layer that follows.
   rm -rf "$tmp"/qrypt-cli-test-home-* "$tmp"/qrypt-core-test-logs \
     "$tmp"/qrypt-mobile-test-logs "$tmp"/qrypt-mount-test.* || true
-  # Test sockets carry a nanosecond timestamp
-  # (pkg/control/server_test.go, internal/cli/debug/debug_test.go). Keeping the
-  # numeric prefix means a live server at a hand-picked path such as
-  # /tmp/qrypt.sock is never removed.
+  # Test sockets carry a nanosecond timestamp. Runtime sockets for the
+  # mount-debug helper live under its temporary QRYPT_HOME and are removed
+  # with that work directory.
   local sock
   for sock in "$tmp"/qrypt-[0-9]*.sock "$tmp"/qrypt-test-[0-9]*.sock; do
     [ -e "$sock" ] || continue
@@ -345,7 +344,7 @@ case "${1:-fast}" in
     # Requires a running debug server with real cloud mounts; see the
     # contract-test comment above. Each mount runs the full CRUD/contract
     # suite, so pass only the mounts you actually have configured.
-    : "${QRYPT_CONTRACT_SOCKET:?integration layer needs QRYPT_CONTRACT_SOCKET (e.g. /tmp/qrypt.sock)}"
+    : "${QRYPT_CONTRACT_CONFIG:?integration layer needs QRYPT_CONTRACT_CONFIG (path to qrypt.toml)}"
     mounts=("$@")
     if [ "${#mounts[@]}" -le 1 ]; then
       echo "usage: $0 integration <mount> [mount...]" >&2
@@ -353,7 +352,7 @@ case "${1:-fast}" in
     fi
     for m in "${mounts[@]:1}"; do
       measure "integration: contract $m" \
-        go run ./cmd/qrypt debug test contract --socket "$QRYPT_CONTRACT_SOCKET" --mount "$m"
+        go run ./cmd/qrypt probe test contract --config "$QRYPT_CONTRACT_CONFIG" --mount "$m"
     done
     ;;
   *)

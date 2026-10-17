@@ -507,7 +507,7 @@
           ]
         },
         "test_enabled": {
-          "description": "Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
+          "description": "Allow probe test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
           "type": "boolean",
           "default": false
         },

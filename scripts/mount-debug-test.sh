@@ -10,9 +10,9 @@ usage() {
 Usage:
   scripts/mount-debug-test.sh [OPTIONS] MOUNT TEST [TEST_OPTIONS...]
 
-Mount qrypt at a temporary directory, run one debug test, then unmount and
+Mount qrypt at a temporary directory, run one probe test, then unmount and
 remove all temporary local files. TEST_OPTIONS are passed directly to
-`qrypt debug test TEST`.
+`qrypt probe test TEST`.
 
 Options:
   --config PATH             qrypt config file (default: repository qrypt.toml)
@@ -63,7 +63,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$#" -eq 2 ] && { [ "$2" = "-h" ] || [ "$2" = "--help" ]; }; then
-  (cd "$ROOT" && go run ./cmd/qrypt debug test --help)
+  (cd "$ROOT" && go run ./cmd/qrypt probe test --help)
   exit $?
 fi
 
@@ -91,11 +91,11 @@ TEMP_BASE="${TEMP_BASE%/}"
 WORKDIR="$(mktemp -d "$TEMP_BASE/qrypt-mount-test.XXXXXX")"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 MOUNT_POINT="$WORKDIR/mount"
-SOCKET="$WORKDIR/qrypt.sock"
 MOUNT_LOG="$WORKDIR/mount.log"
 MOUNT_PID=""
 mkdir -p "$MOUNT_POINT"
 export QRYPT_HOME="$WORKDIR/runtime"
+SOCKET="$QRYPT_HOME/run/debug.sock"
 
 is_mounted() {
   if command -v mountpoint >/dev/null 2>&1; then
@@ -138,8 +138,7 @@ BINARY="$WORKDIR/qrypt"
 
 "$BINARY" mount "$MOUNT_NAME" \
   --config "$CONFIG" \
-  --mount-point "$MOUNT_POINT" \
-  --socket "$SOCKET" >"$MOUNT_LOG" 2>&1 &
+  --mount-point "$MOUNT_POINT" >"$MOUNT_LOG" 2>&1 &
 MOUNT_PID=$!
 
 deadline=$((SECONDS + STARTUP_TIMEOUT))
@@ -150,7 +149,7 @@ while :; do
     exit 1
   fi
   if is_mounted && [ -S "$SOCKET" ] && \
-      "$BINARY" debug raw /v1/health --config "$CONFIG" --socket "$SOCKET" >/dev/null 2>&1; then
+      "$BINARY" debug raw /v1/health --config "$CONFIG" >/dev/null 2>&1; then
     break
   fi
   if [ "$SECONDS" -ge "$deadline" ]; then
@@ -166,9 +165,8 @@ if [ "$TEST_NAME" = "read" ]; then
   TEST_MOUNT_ARGS=(--mount-point "$MOUNT_POINT")
 fi
 
-"$BINARY" debug test "$TEST_NAME" \
+"$BINARY" probe test "$TEST_NAME" \
   --config "$CONFIG" \
-  --socket "$SOCKET" \
   --mount "$MOUNT_NAME" \
   "${TEST_MOUNT_ARGS[@]}" \
   "$@"
