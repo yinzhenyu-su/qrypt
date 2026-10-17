@@ -175,14 +175,15 @@ run_repeated() {
 }
 
 # ── Delta selection ─────────────────────────────────────────────────
-# `changed` runs only the packages the working diff can reach. A package's test
+# `changed` runs only the packages the selected diff can reach. A package's test
 # binary is built from its own files plus every package it imports, test
 # imports included, so a change landing outside that closure cannot change its
 # result. `go list -deps -test` is the authority for the closure; a plain
 # `.Deps` listing is not enough, because pkg/vfs's tests import pkg/crypt and
 # pkg/drivers/localfs, which its non-test deps never mention.
 #
-# Every step fails safe: an unplaceable diff widens the run to the whole module
+# QRYPT_DIFF_BASE may point at a commit for push-time validation; otherwise the
+# working-tree diff against HEAD is used. Every step fails safe: an unplaceable diff widens the run to the whole module
 # rather than risking a silent skip. That covers no git checkout, no HEAD yet,
 # an empty change set, a changed file under no package directory (scripts/,
 # go.mod, the //go:build tools stub at the root), or a failed go list. The
@@ -200,7 +201,7 @@ diff_packages() {
   work=$(mktemp -d) || return 1
 
   {
-    git diff --name-only HEAD -- 2>/dev/null
+    git diff --name-only "${QRYPT_DIFF_BASE:-HEAD}" -- 2>/dev/null
     git ls-files --others --exclude-standard 2>/dev/null
   } | sort -u > "$work/files"
   go list -f '{{.Dir}}{{"\t"}}{{.ImportPath}}' ./... 2>/dev/null > "$work/dirs"
