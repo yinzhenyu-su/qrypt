@@ -13,9 +13,9 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
 
 type ConfigState struct {
@@ -29,7 +29,7 @@ const (
 )
 
 // OpenedFileSystem is the surface OpenFileSystem returns. The one-shot fs
-// commands need file operations plus upload inspection and debug snapshots
+// commands need file operations plus upload inspection and task state
 // (idle-wait, pending uploads, activity counts), so the seam carries them
 // typed instead of re-discovering them via any-assertions. The filesystem is
 // already Started when a caller receives it; the returned cleanup function
@@ -37,7 +37,7 @@ const (
 type OpenedFileSystem interface {
 	vfs.FileSystem
 	vfs.UploadInspector
-	diagnostics.DebugSnapshotProvider
+	TaskSource() task.Source
 }
 
 // MountFileSystem is a built-but-not-started filesystem. The mount command
