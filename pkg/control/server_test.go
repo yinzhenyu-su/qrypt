@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -215,7 +217,7 @@ func (f fakeSnapshotter) DebugStaging(ctx context.Context, path string) (diagnos
 }
 
 func TestServerExposesStateAndPending(t *testing.T) {
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	source := fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{
 		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Unix(1, 0),
@@ -306,15 +308,19 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close(context.Background())
-	if _, err := os.Stat(socketPath); err != nil {
-		t.Fatalf("expected socket file: %v", err)
+	// A unix endpoint is a socket file; a Windows named pipe has no filesystem
+	// presence, and the requests below are what prove that one is serving.
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(socketPath); err != nil {
+			t.Fatalf("expected socket file: %v", err)
+		}
 	}
 
 	client, err := NewClient(socketPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	commandSocket := testSocketPath(t)
+	commandSocket := testEndpoint(t)
 	commandServer, err := NewProbeServer(commandSocket, source)
 	if err != nil {
 		t.Fatal(err)
@@ -469,7 +475,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		Name:   "disabled",
 		Driver: fakeSpaceDriver{},
 	}}}
-	disabledSocket := testSocketPath(t)
+	disabledSocket := testEndpoint(t)
 	disabledServer, err := NewServer(disabledSocket, disabledSource)
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +485,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := disabledServer.Start(disabledCtx); err != nil {
 		t.Fatal(err)
 	}
-	disabledCommandSocket := testSocketPath(t)
+	disabledCommandSocket := testEndpoint(t)
 	disabledCommandServer, err := NewProbeServer(disabledCommandSocket, disabledSource)
 	if err != nil {
 		t.Fatal(err)
@@ -530,7 +536,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		{Name: "local", Driver: drvA, TestEnabled: true},
 		{Name: "cloud", Driver: drvB, TestEnabled: true},
 	}}
-	xferSocket := testSocketPath(t)
+	xferSocket := testEndpoint(t)
 	xferServer, err := NewServer(xferSocket, xferSource)
 	if err != nil {
 		t.Fatal(err)
@@ -540,7 +546,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := xferServer.Start(xferCtx); err != nil {
 		t.Fatal(err)
 	}
-	xferCommandSocket := testSocketPath(t)
+	xferCommandSocket := testEndpoint(t)
 	xferCommandServer, err := NewProbeServer(xferCommandSocket, xferSource)
 	if err != nil {
 		t.Fatal(err)
@@ -574,7 +580,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		{Name: "local", Driver: drvA, TestEnabled: true},
 		{Name: "cloud", Driver: drvB},
 	}}
-	disabledXferSocket := testSocketPath(t)
+	disabledXferSocket := testEndpoint(t)
 	disabledXferServer, err := NewServer(disabledXferSocket, disabledXferSource)
 	if err != nil {
 		t.Fatal(err)
@@ -584,7 +590,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if err := disabledXferServer.Start(disabledXferCtx); err != nil {
 		t.Fatal(err)
 	}
-	disabledXferCommandSocket := testSocketPath(t)
+	disabledXferCommandSocket := testEndpoint(t)
 	disabledXferCommandServer, err := NewProbeServer(disabledXferCommandSocket, disabledXferSource)
 	if err != nil {
 		t.Fatal(err)
@@ -738,7 +744,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatalf("unexpected stack response: %s", stackBody)
 	}
 	resetSource := &fakeResetSnapshotter{fakeSnapshotter: fakeSnapshotter{snapshot: source.snapshot}}
-	resetSocket := testSocketPath(t)
+	resetSocket := testEndpoint(t)
 	resetServer, err := NewServer(resetSocket, resetSource)
 	if err != nil {
 		t.Fatal(err)
@@ -749,7 +755,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resetServer.Close(context.Background())
-	resetCommandSocket := testSocketPath(t)
+	resetCommandSocket := testEndpoint(t)
 	resetCommandServer, err := NewProbeServer(resetCommandSocket, resetSource)
 	if err != nil {
 		t.Fatal(err)
@@ -773,7 +779,7 @@ func TestServerExposesStateAndPending(t *testing.T) {
 }
 
 func TestServerExposesTasksWithItemsAndFilters(t *testing.T) {
-	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	server, err := NewServer(testEndpoint(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +834,7 @@ func TestServerExposesTaskEventsWithCursorAndFilter(t *testing.T) {
 		Scope: task.ScopeUser,
 	}, func(context.Context, task.UpdateFunc) error { return nil })
 
-	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	server, err := NewServer(testEndpoint(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +899,7 @@ func TestServerTaskEventsReportGap(t *testing.T) {
 		})
 	}
 
-	server, err := NewServer(testSocketPath(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
+	server, err := NewServer(testEndpoint(t), fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1006,7 @@ func TestServerHealthReportsTaskPersistenceDegraded(t *testing.T) {
 }
 
 func TestServerFiltersDebugEndpointsByMount(t *testing.T) {
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	source := fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{
 		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
 		GeneratedAt:   time.Unix(1, 0),
@@ -1099,7 +1105,7 @@ func TestServerExposesRecentEvents(t *testing.T) {
 	logging.L = testLogger
 	defer func() { logging.L = oldLogger }()
 
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
@@ -1146,7 +1152,7 @@ func TestServerEventsFilterByMountField(t *testing.T) {
 	logging.L = testLogger
 	defer func() { logging.L = oldLogger }()
 
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
@@ -1195,7 +1201,7 @@ func TestServerEventsFilterByMountField(t *testing.T) {
 }
 
 func TestServerRemovesSocketOnClose(t *testing.T) {
-	socketPath := testSocketPath(t)
+	socketPath := testEndpoint(t)
 	server, err := NewServer(socketPath, fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}})
 	if err != nil {
 		t.Fatal(err)
@@ -1206,14 +1212,44 @@ func TestServerRemovesSocketOnClose(t *testing.T) {
 	if err := server.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		// A named pipe leaves nothing to stat, so assert the retired endpoint the
+		// way a client sees it: once Close returns the instance is gone, so a dial
+		// must fail outright instead of spinning on FILE_BUSY (which the transport
+		// reports as a deadline rather than a connection).
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		conn, dialErr := dialEndpoint(ctx, socketPath)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if dialErr == nil || errors.Is(dialErr, context.DeadlineExceeded) {
+			t.Fatalf("endpoint %q still accepts connections after Close", socketPath)
+		}
+		return
+	}
 	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
 		t.Fatalf("expected socket to be removed, got %v", err)
 	}
 }
 
-func testSocketPath(t *testing.T) string {
+// testEndpointSeq disambiguates endpoints created inside one clock tick: the
+// Windows wall clock advances in ~16ms steps, so a bare timestamp repeats when
+// two tests start back to back -- and the second listener then collides with
+// the first (FILE_FLAG_FIRST_PIPE_INSTANCE reports the duplicate pipe name as
+// access denied).
+var testEndpointSeq atomic.Uint64
+
+// testEndpoint returns a local control endpoint the current platform can
+// serve: a unix socket path with a filesystem presence on unix, a named pipe
+// name on Windows, whose transport rejects unix endpoints.
+func testEndpoint(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(os.TempDir(), "qrypt-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".sock")
+	token := strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.FormatUint(testEndpointSeq.Add(1), 10)
+	if runtime.GOOS == "windows" {
+		return `pipe:\\.\pipe\qrypt-test-` + token
+	}
+	path := filepath.Join(os.TempDir(), "qrypt-"+token+".sock")
 	t.Cleanup(func() { _ = os.Remove(path) })
 	return path
 }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
@@ -19,11 +20,19 @@ func TestRuntimeRunDirIsolatedByConfigPath(t *testing.T) {
 	if filepath.Base(filepath.Dir(first)) != "run" || filepath.Base(filepath.Dir(second)) != "run" {
 		t.Fatalf("unexpected runtime directories: %q, %q", first, second)
 	}
-	if got := DebugSocketPath(cfg, RuntimeLayout{RunDir: first}); got != filepath.Join(first, "debug.sock") {
-		t.Fatalf("debug socket = %q", got)
+	// Endpoints are platform-native (see runtimeEndpointForOS): a socket path
+	// on unix, a named pipe on Windows. Either way they must hang off this
+	// config's own run directory, so two configs cannot rendezvous.
+	wantDebug, wantControl := filepath.Join(first, "debug.sock"), filepath.Join(first, "control.sock")
+	if runtime.GOOS == "windows" {
+		wantDebug = runtimeEndpointForOS(first, "debug", runtime.GOOS)
+		wantControl = runtimeEndpointForOS(first, "control", runtime.GOOS)
 	}
-	if got := ControlSocketPath(cfg, RuntimeLayout{RunDir: first}); got != filepath.Join(first, "control.sock") {
-		t.Fatalf("control socket = %q", got)
+	if got := DebugSocketPath(cfg, RuntimeLayout{RunDir: first}); got != wantDebug {
+		t.Fatalf("debug endpoint = %q, want %q", got, wantDebug)
+	}
+	if got := ControlSocketPath(cfg, RuntimeLayout{RunDir: first}); got != wantControl {
+		t.Fatalf("control endpoint = %q, want %q", got, wantControl)
 	}
 }
 
