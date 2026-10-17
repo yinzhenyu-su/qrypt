@@ -435,15 +435,15 @@ func DebugSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
 	if cfg != nil && strings.TrimSpace(cfg.Debug.Listen) != "" {
 		return cfg.Debug.EffectiveListen()
 	}
-	return filepath.Join(NewStorageLayout(cfg, runtime).RunDir, "debug.sock")
+	return runtimeEndpoint(NewStorageLayout(cfg, runtime).RunDir, "debug")
 }
 
 func ControlSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
-	return filepath.Join(NewStorageLayout(cfg, runtime).RunDir, "control.sock")
+	return runtimeEndpoint(NewStorageLayout(cfg, runtime).RunDir, "control")
 }
 
 func ProbeSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
-	return filepath.Join(NewStorageLayout(cfg, runtime).RunDir, "probe.sock")
+	return runtimeEndpoint(NewStorageLayout(cfg, runtime).RunDir, "probe")
 }
 
 // RuntimeRunDir returns the per-configuration runtime directory used for

@@ -45,6 +45,13 @@ func TestCommandServerTaskActions(t *testing.T) {
 	}
 }
 
+func TestCommandServerRejectsTCPEndpoint(t *testing.T) {
+	service := &commandServiceStub{}
+	if _, err := NewCommandServer("tcp:127.0.0.1:19090", service); err == nil {
+		t.Fatal("expected TCP command endpoint to be rejected")
+	}
+}
+
 func jsonReader(value any) *jsonReadCloser {
 	data, _ := json.Marshal(value)
 	return &jsonReadCloser{Reader: bytes.NewReader(data)}

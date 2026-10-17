@@ -4,6 +4,7 @@ go 1.27.2
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/OpenListTeam/115-sdk-go v0.2.4
 	github.com/SheltonZhu/115driver v1.3.3
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible

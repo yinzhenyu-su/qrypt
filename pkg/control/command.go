@@ -19,7 +19,8 @@ type CommandService interface {
 }
 
 type CommandServer struct {
-	endpoint string
+	network  string
+	address  string
 	service  CommandService
 	server   *http.Server
 	listener net.Listener
@@ -37,26 +38,30 @@ func NewCommandServer(endpoint string, service CommandService) (*CommandServer, 
 	if err != nil {
 		return nil, err
 	}
-	if network != "unix" {
-		return nil, fmt.Errorf("control: command server requires a unix socket")
+	if network == "tcp" {
+		return nil, fmt.Errorf("control: command server requires a local endpoint")
 	}
-	return &CommandServer{endpoint: address, service: service}, nil
+	return &CommandServer{network: network, address: address, service: service}, nil
 }
 
 func (s *CommandServer) Start(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(s.endpoint), 0o755); err != nil {
-		return err
+	if s.network == "unix" {
+		if err := os.MkdirAll(filepath.Dir(s.address), 0o755); err != nil {
+			return err
+		}
+		if err := removeStaleSocket(s.address); err != nil {
+			return err
+		}
 	}
-	if err := removeStaleSocket(s.endpoint); err != nil {
-		return err
-	}
-	listener, err := net.Listen("unix", s.endpoint)
+	listener, err := listenEndpointNetwork(s.network, s.address)
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(s.endpoint, 0o600); err != nil {
-		_ = listener.Close()
-		return err
+	if s.network == "unix" {
+		if err := os.Chmod(s.address, 0o600); err != nil {
+			_ = listener.Close()
+			return err
+		}
 	}
 	s.listener = listener
 	mux := http.NewServeMux()
@@ -83,8 +88,8 @@ func (s *CommandServer) Close(ctx context.Context) error {
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
-	if s.endpoint != "" {
-		_ = os.Remove(s.endpoint)
+	if s.network == "unix" && s.address != "" {
+		_ = os.Remove(s.address)
 	}
 	return nil
 }

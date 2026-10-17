@@ -102,7 +102,8 @@ go run ./cmd/qrypt debug collect --mount quark-test
 
 When the same config is discoverable or passed with `--config`, debug commands
 use `[debug].listen` automatically. Without a custom listener, mount uses its
-built-in per-config Unix socket automatically:
+built-in per-config local endpoint automatically. Unix-like systems use a
+filesystem socket; Windows uses a named pipe:
 
 ```sh
 go run ./cmd/qrypt debug collect --config ./qrypt.toml --mount quark-test
@@ -120,8 +121,10 @@ If a specific path is involved, include it:
 go run ./cmd/qrypt debug collect /quark-test/example.bin --mount quark-test
 ```
 
-The socket file is created with `0600` permissions. qrypt refuses to replace a
-live socket and removes stale socket files during startup.
+On Unix-like systems the socket file is created with `0600` permissions.
+qrypt refuses to replace a live endpoint and removes stale Unix socket files
+during startup. Windows named pipes use the operating system's pipe access
+control instead of filesystem permissions.
 
 HTTP debug listeners must bind to loopback addresses such as `127.0.0.1` or
 `localhost`. This keeps Android and remote-device debugging usable through
@@ -145,8 +148,8 @@ for warnings and failures after a reproduction.
 
 ### Windows
 
-On Windows, qrypt uses an AF_UNIX socket under the built-in runtime directory;
-the CLI does not require a socket path:
+On Windows, qrypt uses a named pipe derived from the per-config runtime
+identity; the CLI does not require an endpoint path:
 
 ```powershell
 qrypt.exe mount --config .\qrypt.toml
@@ -161,9 +164,10 @@ qrypt.exe debug collect /local/example.txt --mount local
 qrypt.exe debug raw health
 ```
 
-This requires a Windows version with AF_UNIX support. The runtime directory is
-created from the resolved qrypt configuration and is shared by mount, debug,
-probe, and control commands.
+The runtime identity is created from the resolved qrypt configuration and is
+shared by mount, debug, probe, and control commands. Named pipe access is
+restricted by the Windows pipe security descriptor; no password is required
+for the default same-user local workflow.
 
 ## Choose A Command
 

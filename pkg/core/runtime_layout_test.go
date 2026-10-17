@@ -38,3 +38,10 @@ func TestRuntimeRunDirHonorsStorageAndHomeOverrides(t *testing.T) {
 		t.Fatalf("home runtime directory = %q", got)
 	}
 }
+
+func TestRuntimeEndpointUsesNamedPipeOnWindows(t *testing.T) {
+	got := runtimeEndpointForOS(`C:\Users\test\qrypt\run\abc123`, "control", "windows")
+	if got != `pipe:\\.\pipe\qrypt-d723a13b1dc1-control` {
+		t.Fatalf("Windows endpoint = %q", got)
+	}
+}

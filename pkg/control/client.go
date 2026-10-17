@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-
-	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 type Client struct {
@@ -23,21 +21,28 @@ func NewClient(socketPath string) (*Client, error) {
 	if socketPath == "" {
 		return nil, fmt.Errorf("control: socket path required")
 	}
-	if baseURL, ok := clientHTTPBaseURL(socketPath); ok {
+	parsed, err := parseEndpoint(socketPath)
+	if err != nil {
+		return nil, err
+	}
+	if baseURL, ok := clientHTTPBaseURL(socketPath, parsed); ok {
 		return &Client{
+			socketPath: baseURL,
 			baseURL:    baseURL,
 			httpClient: &http.Client{},
 		}, nil
 	}
-	socketPath = util.ExpandHome(socketPath)
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var dialer net.Dialer
-			return dialer.DialContext(ctx, "unix", socketPath)
+			return dialEndpoint(ctx, socketPath)
 		},
 	}
+	clientEndpoint := parsed.address
+	if parsed.network == "pipe" {
+		clientEndpoint = "pipe:" + parsed.address
+	}
 	return &Client{
-		socketPath: socketPath,
+		socketPath: clientEndpoint,
 		httpClient: &http.Client{
 			Transport: transport,
 		},
@@ -92,16 +97,16 @@ func (c *Client) url(path string) string {
 	return "http://qrypt" + path
 }
 
-func clientHTTPBaseURL(endpoint string) (string, bool) {
+func clientHTTPBaseURL(endpoint string, parsed endpointInfo) (string, bool) {
 	endpoint = strings.TrimSpace(endpoint)
+	if parsed.network != "tcp" {
+		return "", false
+	}
 	switch {
-	case strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://"):
+	case strings.HasPrefix(endpoint, "http://"):
 		return endpoint, true
 	case strings.HasPrefix(endpoint, "tcp:"):
-		return "http://" + strings.TrimPrefix(endpoint, "tcp:"), true
+		return "http://" + parsed.address, true
 	}
-	if _, port, err := net.SplitHostPort(endpoint); err == nil && isNumericPort(port) {
-		return "http://" + endpoint, true
-	}
-	return "", false
+	return "http://" + parsed.address, true
 }

@@ -169,7 +169,7 @@ enabled = true
 listen = "127.0.0.1:19090"
 ```
 
-未配置自定义入口时，mount 会自动启动配置目录下的 Unix socket；启用上面的配置后，debug 命令使用该 HTTP endpoint：
+未配置自定义入口时，mount 会自动启动按配置隔离的本地 endpoint；Unix-like 系统使用 socket 文件，Windows 使用 named pipe。启用上面的配置后，debug 命令使用该 HTTP endpoint：
 
 ```sh
 qrypt debug collect --mount NAME
