@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -206,6 +207,10 @@ func TestVFSKeepsLocalModTimeAfterUpload(t *testing.T) {
 }
 func TestVFSCoalescesFlushUploads(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testVFSCoalescesFlushUploads)
+}
+
+func testVFSCoalescesFlushUploads(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}
@@ -239,6 +244,12 @@ func TestVFSCoalescesFlushUploads(t *testing.T) {
 }
 func TestVFSCoalescesSpacedFlushUploads(t *testing.T) {
 	t.Parallel()
+	// Advance virtual time between writes: scheduler load must not turn a
+	// 30ms spacing into a pause longer than the 80ms quiet window.
+	synctest.Test(t, testVFSCoalescesSpacedFlushUploads)
+}
+
+func testVFSCoalescesSpacedFlushUploads(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := &countingUploadDriver{}

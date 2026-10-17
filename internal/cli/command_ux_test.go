@@ -21,43 +21,30 @@ func TestDebugRequiredFlags(t *testing.T) {
 	root := NewRootCommand()
 	root.SetArgs([]string{"debug", "collect"})
 	if err := root.Execute(); err == nil {
-		t.Fatal("expected debug collect without --socket to fail")
-	}
-
-	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "collect", "--socket", "/tmp/qrypt.sock"})
-	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
-		t.Fatalf("expected debug collect without mount scope to fail clearly, got %v", err)
-	}
-
-	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "collect", "--url", "http://127.0.0.1:19090"})
-	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
-		t.Fatalf("expected debug collect with --url but without mount scope to fail clearly, got %v", err)
+		t.Fatal("expected debug collect without config to fail")
 	}
 
 	debugConfigPath := filepath.Join(t.TempDir(), "qrypt.toml")
 	if err := os.WriteFile(debugConfigPath, []byte(`
 [debug]
 enabled = true
-listen = "127.0.0.1:19090"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root = NewRootCommand()
 	root.SetArgs([]string{"debug", "collect", "--config", debugConfigPath})
 	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "specify --mount NAME or --all-mounts") {
-		t.Fatalf("expected debug collect to use configured debug endpoint, got %v", err)
+		t.Fatalf("expected debug collect to use built-in debug endpoint, got %v", err)
 	}
 
 	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "raw", "health", "--socket", "/tmp/qrypt.sock", "--url", "http://127.0.0.1:19090"})
-	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("expected --socket and --url conflict, got %v", err)
+	root.SetArgs([]string{"debug", "raw", "health", "--config", debugConfigPath, "--url", "http://127.0.0.1:19090"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("expected removed endpoint flag to be rejected, got %v", err)
 	}
 
 	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "bundle", "--socket", "/tmp/qrypt.sock", "--all-mounts"})
+	root.SetArgs([]string{"debug", "bundle", "--config", debugConfigPath, "--all-mounts"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected debug bundle without --out to fail")
 	}
@@ -65,15 +52,15 @@ listen = "127.0.0.1:19090"
 	root = NewRootCommand()
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"debug", "test"})
+	root.SetArgs([]string{"probe", "test"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("expected debug test without subcommand to show help: %v", err)
 	}
 
 	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "test", "crud"})
+	root.SetArgs([]string{"probe", "test", "crud"})
 	if err := root.Execute(); err == nil {
-		t.Fatal("expected debug test without --socket to fail")
+		t.Fatal("expected probe test without config to fail")
 	}
 
 	dir := t.TempDir()
@@ -101,7 +88,7 @@ listen = "127.0.0.1:19090"
 	root = NewRootCommand()
 	var out bytes.Buffer
 	root.SetOut(&out)
-	root.SetArgs([]string{"debug", "bench", "compare", "--base", basePath, "--current", currentPath})
+	root.SetArgs([]string{"probe", "bench", "compare", "--base", basePath, "--current", currentPath})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("debug bench compare failed: %v", err)
 	}
@@ -111,7 +98,7 @@ listen = "127.0.0.1:19090"
 	}
 
 	root = NewRootCommand()
-	root.SetArgs([]string{"debug", "test", "xfer", "--socket", "/tmp/qrypt.sock"})
+	root.SetArgs([]string{"probe", "test", "xfer"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("expected xfer test without source/dest to fail")
 	}
@@ -126,12 +113,12 @@ func TestReadableCommandErrors(t *testing.T) {
 		{
 			name: "removed inspect",
 			args: []string{"debug", "inspect"},
-			want: "debug inspect was removed; use 'qrypt debug collect REMOTE --socket PATH'",
+			want: "debug inspect was removed; use 'qrypt debug collect REMOTE'",
 		},
 		{
-			name: "missing debug socket",
+			name: "missing debug config",
 			args: []string{"debug", "collect"},
-			want: "--socket PATH is required for runtime debug commands",
+			want: "config file not found",
 		},
 		{
 			name: "missing fs copy args",
@@ -144,9 +131,9 @@ func TestReadableCommandErrors(t *testing.T) {
 			want: "missing DESTINATION",
 		},
 		{
-			name: "missing bundle output",
-			args: []string{"debug", "bundle", "--socket", "/tmp/qrypt.sock"},
-			want: "missing --out FILE",
+			name: "missing debug config for bundle",
+			args: []string{"debug", "bundle"},
+			want: "config file not found",
 		},
 		{
 			name: "unknown fs subcommand",
@@ -154,9 +141,9 @@ func TestReadableCommandErrors(t *testing.T) {
 			want: `unknown command "copie" for "qrypt fs"`,
 		},
 		{
-			name: "removed debug driver",
+			name: "probe replaces debug driver",
 			args: []string{"debug", "driver"},
-			want: "debug driver was removed",
+			want: `unknown command "driver" for "qrypt debug"`,
 		},
 		{
 			name: "unknown flag",

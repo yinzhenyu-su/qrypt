@@ -50,6 +50,28 @@ type ServerSideCopier interface {
 	Copy(ctx context.Context, src Entry, dstParentID, dstName string) (Entry, error)
 }
 
+// OfflineDownloader is an optional provider capability for cloud-side
+// imports. The provider owns the remote task and its task identifier; qrypt
+// only adapts its lifecycle into the application task model.
+type OfflineDownloader interface {
+	CreateOfflineDownload(ctx context.Context, req OfflineDownloadRequest) (OfflineDownload, error)
+	GetOfflineDownload(ctx context.Context, id string) (OfflineDownload, error)
+	CancelOfflineDownload(ctx context.Context, id string) error
+}
+
+type OfflineDownloadRequest struct {
+	Source      string
+	Destination string
+}
+
+type OfflineDownload struct {
+	ID          string
+	State       string
+	Destination string
+	RemoteID    string
+	Error       string
+}
+
 type EntryRawExtraer interface {
 	EntryRawExtra() any
 }

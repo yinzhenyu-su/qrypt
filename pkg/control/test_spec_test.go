@@ -21,8 +21,8 @@ import (
 // snapshotter and returns an HTTP client bound to it.
 func newTestServer(t *testing.T, source fakeSnapshotter) (*Server, *Client) {
 	t.Helper()
-	socketPath := testSocketPath(t)
-	server, err := NewServer(socketPath, source)
+	socketPath := testEndpoint(t)
+	server, err := NewProbeServer(socketPath, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestVFSSpecsRunThroughRegistry(t *testing.T) {
 	t.Cleanup(cancel)
 	t.Cleanup(func() { stopVFS(t, v) })
 
-	server, err := NewServer(testSocketPath(t), ns)
+	server, err := NewProbeServer(testEndpoint(t), ns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestMountedReadSpecRejectsBackendDirectoryThroughServer(t *testing.T) {
 	t.Cleanup(cancel)
 	t.Cleanup(func() { stopVFS(t, v) })
 
-	server, err := NewServer(testSocketPath(t), v)
+	server, err := NewProbeServer(testEndpoint(t), v)
 	if err != nil {
 		t.Fatal(err)
 	}

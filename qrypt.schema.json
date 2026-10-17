@@ -328,11 +328,6 @@
           "description": "Enable the HTTP debug server.",
           "type": "boolean",
           "default": false
-        },
-        "listen": {
-          "description": "Address where the HTTP debug server listens.",
-          "type": "string",
-          "default": "127.0.0.1:19090"
         }
       },
       "additionalProperties": false
@@ -507,7 +502,7 @@
           ]
         },
         "test_enabled": {
-          "description": "Allow debug test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
+          "description": "Allow probe test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
           "type": "boolean",
           "default": false
         },

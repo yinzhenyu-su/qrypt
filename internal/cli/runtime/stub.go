@@ -15,13 +15,13 @@ import (
 // overrides the methods the command under test actually exercises.
 type TestRuntime struct {
 	BuildFileSystemForMountFn         func(context.Context, *config.Config, string) (MountFileSystem, func(), error)
+	OpenCoreForMountFn                func(context.Context, *config.Config, string, string, string, string) (CoreHost, error)
 	CommandConfigFn                   func(*cobra.Command) (ConfigState, error)
 	CommandConfigPathFn               func(*cobra.Command) (string, error)
 	ConfigNotFoundErrorFn             func() error
 	DefaultCacheDirFn                 func() string
 	DebugReportSchemaVersionFn        func() int
 	ExitErrorFn                       func(int, error) error
-	MissingSocketErrorFn              func(*cobra.Command) error
 	MountOptionsFromConfigFn          func(*config.Config) (mount.Options, error)
 	MountPointFromConfigFn            func(*config.Config) (string, error)
 	OpenFileSystemFn                  func(*cobra.Command) (context.Context, OpenedFileSystem, func(), error)
@@ -33,6 +33,13 @@ type TestRuntime struct {
 	WithPersistentConfigFlagFn        func(*cobra.Command) *cobra.Command
 	WithPersistentRuntimeConfigFlagFn func(*cobra.Command) *cobra.Command
 	WithRuntimeConfigFlagFn           func(*cobra.Command) *cobra.Command
+}
+
+func (t TestRuntime) OpenCoreForMount(ctx context.Context, cfg *config.Config, configPath, mountName, debugListen, controlListen string) (CoreHost, error) {
+	if t.OpenCoreForMountFn == nil {
+		panic(unsetRuntimeMethod("OpenCoreForMount"))
+	}
+	return t.OpenCoreForMountFn(ctx, cfg, configPath, mountName, debugListen, controlListen)
 }
 
 func (t TestRuntime) BuildFileSystemForMount(ctx context.Context, cfg *config.Config, mountName string) (MountFileSystem, func(), error) {
@@ -82,13 +89,6 @@ func (t TestRuntime) ExitError(code int, err error) error {
 		panic(unsetRuntimeMethod("ExitError"))
 	}
 	return t.ExitErrorFn(code, err)
-}
-
-func (t TestRuntime) MissingSocketError(cmd *cobra.Command) error {
-	if t.MissingSocketErrorFn == nil {
-		panic(unsetRuntimeMethod("MissingSocketError"))
-	}
-	return t.MissingSocketErrorFn(cmd)
 }
 
 func (t TestRuntime) MountOptionsFromConfig(cfg *config.Config) (mount.Options, error) {

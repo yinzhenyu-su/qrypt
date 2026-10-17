@@ -3,14 +3,14 @@ package contracttest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
-// DriverTestRequest is the JSON body for the /v1/driver/test and
-// /v1/driver/benchmark endpoints.
+// DriverTestRequest is the JSON body for the local probe endpoints.
 type DriverTestRequest struct {
 	Test               string `json:"test"`
 	Mount              string `json:"mount,omitempty"`
@@ -30,6 +30,12 @@ type DriverTestRequest struct {
 	SeekScenario       string `json:"seek_scenario,omitempty"`
 	SeekWarmup         int    `json:"seek_warmup_chunks,omitempty"`
 	SeekOverlapTimeout string `json:"seek_overlap_timeout,omitempty"`
+}
+
+// NormalizeMountName accepts either a configured mount name or the same name
+// written as a slash-delimited virtual path, and returns the canonical name.
+func NormalizeMountName(name string) string {
+	return strings.Trim(strings.TrimSpace(name), "/")
 }
 
 // Specs returns the registered test specs (identity, capability
@@ -57,7 +63,7 @@ type TestStep struct {
 	DurationMS    int64  `json:"duration_ms"`
 }
 
-// TestRun is the unified envelope every debug test returns. It carries the
+// TestRun is the unified envelope every probe test returns. It carries the
 // scheduling context (spec, mount, capability matrix, skip reason) plus the
 // step trace, residual objects, and driver metrics.
 type TestRun struct {
@@ -104,7 +110,7 @@ type TestEnv struct {
 	FileSys vfs.FileSystem
 }
 
-// TestSpec describes one debug test: its identity, the driver capabilities
+// TestSpec describes one probe test: its identity, the driver capabilities
 // it requires (the scheduler filters mounts by these before running), and a
 // runner that produces a unified TestRun.
 type TestSpec struct {

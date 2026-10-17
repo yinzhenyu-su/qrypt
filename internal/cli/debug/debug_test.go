@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,9 +52,22 @@ func (debugReportTestSource) DebugSnapshot() diagnostics.DebugSnapshot {
 	}
 }
 
+// debugTestEndpoint returns a control endpoint the current platform can serve:
+// a unix socket path on unix, a named pipe name on Windows, whose transport
+// rejects unix endpoints.
+func debugTestEndpoint(t *testing.T) string {
+	t.Helper()
+	token := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if runtime.GOOS == "windows" {
+		return `pipe:\\.\pipe\qrypt-test-` + token
+	}
+	path := filepath.Join(os.TempDir(), "qrypt-test-"+token+".sock")
+	t.Cleanup(func() { _ = os.Remove(path) })
+	return path
+}
+
 func TestDebugCollectOmitsTransferContextWithoutSource(t *testing.T) {
-	socketPath := filepath.Join(os.TempDir(), "qrypt-test-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".sock")
-	defer os.Remove(socketPath)
+	socketPath := debugTestEndpoint(t)
 	server, err := control.NewServer(socketPath, debugReportTestSource{})
 	if err != nil {
 		t.Fatal(err)

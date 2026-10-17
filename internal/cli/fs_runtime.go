@@ -10,6 +10,7 @@ import (
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
@@ -25,6 +26,7 @@ type builtFS interface {
 	vfs.FileSystem
 	vfs.Lifecycle
 	vfs.UploadInspector
+	TaskSource() task.Source
 	diagnostics.DebugSnapshotProvider
 }
 
@@ -87,9 +89,12 @@ func waitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, tim
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		uploads, deleteTimers := fileSystemActivity(fs)
+		uploads, deletes, err := fileSystemActivity(ctx, fs)
+		if err != nil {
+			return err
+		}
 		pending := cliruntime.PendingFiles(fs)
-		if len(pending) == 0 && uploads == 0 && deleteTimers == 0 {
+		if len(pending) == 0 && uploads == 0 && deletes == 0 {
 			return nil
 		}
 		select {
@@ -102,12 +107,25 @@ func waitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, tim
 	}
 }
 
-func fileSystemActivity(fs cliruntime.OpenedFileSystem) (uploads, deleteTimers int) {
-	for _, mount := range fs.DebugSnapshot().Mounts {
-		uploads += len(mount.ActiveUploads())
-		deleteTimers += len(mount.ActiveDeleteTimers())
+func fileSystemActivity(ctx context.Context, fs cliruntime.OpenedFileSystem) (uploads, deletes int, err error) {
+	items, err := fs.TaskSource().ListTasks(ctx, task.Filter{})
+	if err != nil {
+		return 0, 0, err
 	}
-	return uploads, deleteTimers
+	for _, item := range items {
+		switch item.Type {
+		case task.TypeDeleteRemote:
+			// Delete records remain until completion or cancellation, including
+			// the handoff from timer to executor. A failed delete must not be
+			// reported as successfully drained either.
+			deletes++
+		case task.TypeUploadRemote:
+			if item.State == task.StateRunning || item.State == task.StateCanceling {
+				uploads++
+			}
+		}
+	}
+	return uploads, deletes, nil
 }
 
 // bandwidthOverrideFromFlags maps the fs --bwlimit flags onto bandwidth

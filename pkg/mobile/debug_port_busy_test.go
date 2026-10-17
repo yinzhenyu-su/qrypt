@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// 模拟旧进程 core 占着 debug 端口,新 core 打开应降级而非失败
-func TestMobileOpenSecondCoreWithPortBusy(t *testing.T) {
+// Multiple Mobile cores can open without implicitly binding a debug port.
+func TestMobileOpenSecondCore(t *testing.T) {
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -21,7 +21,7 @@ func TestMobileOpenSecondCoreWithPortBusy(t *testing.T) {
 	}
 	defer func() { _ = closeCore(first) }()
 
-	// 第二个 core 用同一 runtime(debug listen 127.0.0.1:19090 相同)
+	// The second core uses a separate runtime and does not auto-start debug.
 	second, err := openCore(configPath, testRuntimeJSON(t.TempDir()))
 	if err != nil {
 		t.Fatalf("second core open failed while first holds debug port: %v", err)

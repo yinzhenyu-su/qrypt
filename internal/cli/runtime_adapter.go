@@ -9,6 +9,7 @@ import (
 	clidebug "github.com/yinzhenyu/qrypt/internal/cli/debug"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
 )
 
@@ -16,6 +17,25 @@ type cliRuntime struct{}
 
 func (cliRuntime) BuildFileSystemForMount(ctx context.Context, cfg *config.Config, mountName string) (cliruntime.MountFileSystem, func(), error) {
 	return buildFileSystemFromConfigMount(ctx, cfg, mountName)
+}
+
+func (cliRuntime) OpenCoreForMount(ctx context.Context, cfg *config.Config, configPath, mountName, debugListen, controlListen string) (cliruntime.CoreHost, error) {
+	runtime := core.RuntimeLayout{RunDir: core.RuntimeRunDir(configPath, cfg)}
+	if debugListen == "" {
+		debugListen = core.DebugSocketPath(cfg, runtime)
+	}
+	if controlListen == "" {
+		controlListen = core.ControlSocketPath(cfg, runtime)
+	}
+	probeListen := core.ProbeSocketPath(cfg, runtime)
+	return core.OpenConfig(ctx, cfg, core.Options{
+		ConfigPath:    configPath,
+		Runtime:       runtime,
+		MountName:     mountName,
+		DebugListen:   debugListen,
+		ControlListen: controlListen,
+		ProbeListen:   probeListen,
+	})
 }
 
 func (cliRuntime) OpenFileSystem(cmd *cobra.Command) (context.Context, cliruntime.OpenedFileSystem, func(), error) {
@@ -48,10 +68,6 @@ func (cliRuntime) DebugReportSchemaVersion() int {
 
 func (cliRuntime) ExitError(code int, err error) error {
 	return &ExitError{Code: code, Err: err}
-}
-
-func (cliRuntime) MissingSocketError(cmd *cobra.Command) error {
-	return missingSocketError(cmd)
 }
 
 func (cliRuntime) MountOptionsFromConfig(cfg *config.Config) (mount.Options, error) {

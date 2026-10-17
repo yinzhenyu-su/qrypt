@@ -6,6 +6,14 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core"
 )
 
+// withTaskController narrows task actions to the shared control contract while
+// keeping Core access under the session lock used by reload and close.
+func withTaskController(s *session, fn func(core.TaskController) error) error {
+	return withCoreErr(s, func(c *core.Core) error {
+		return fn(c)
+	})
+}
+
 func ListTasksJSON(coreID, filterRaw string) string {
 	s, err := getSession(coreID)
 	if err != nil {
@@ -65,7 +73,9 @@ func CancelTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.CancelTask(ctx, taskID) }))
+	return resultJSON(nil, withTaskController(s, func(controller core.TaskController) error {
+		return controller.CancelTask(ctx, taskID)
+	}))
 }
 
 func CancelTaskItemJSON(coreID, taskID, itemID string, deadlineMS int) string {
@@ -85,7 +95,9 @@ func RetryTaskJSON(coreID, taskID string, deadlineMS int) string {
 	}
 	ctx, cancel := s.timeoutContext(deadlineMS)
 	defer cancel()
-	return resultJSON(nil, withCoreErr(s, func(c *core.Core) error { return c.RetryTask(ctx, taskID) }))
+	return resultJSON(nil, withTaskController(s, func(controller core.TaskController) error {
+		return controller.RetryTask(ctx, taskID)
+	}))
 }
 
 func DismissTaskJSON(coreID, taskID string, deadlineMS int) string {
