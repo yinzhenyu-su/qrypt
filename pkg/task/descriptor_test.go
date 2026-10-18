@@ -16,6 +16,8 @@ var declaredTypes = []Type{
 	TypeCopy,
 	TypeMoveRemote,
 	TypeMoveBatch,
+	TypeOfflineDownload,
+	TypeOfflineFetch,
 }
 
 func TestDescriptorsCoverEveryDeclaredType(t *testing.T) {

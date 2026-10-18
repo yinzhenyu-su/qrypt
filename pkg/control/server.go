@@ -18,6 +18,12 @@ import (
 
 const APIVersion = "v1"
 
+// controlShutdownGrace bounds the background drain that Close starts. The
+// initiating caller may return as soon as its own context expires, but the
+// drain itself must still finish so no goroutine or listener outlives the
+// server.
+const controlShutdownGrace = 5 * time.Second
+
 type Snapshotter interface {
 	DebugSnapshot() diagnostics.DebugSnapshot
 }
@@ -51,6 +57,7 @@ type Server struct {
 	server     *http.Server
 	listener   net.Listener
 	stop       context.CancelFunc
+	cancelBase context.CancelFunc
 	mutable    bool
 	closeOnce  sync.Once
 	closeDone  chan struct{}
@@ -145,7 +152,17 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/upload-memory", s.handleUploadMemory)
 	mux.HandleFunc("/v1/goroutines", s.handleGoroutines)
 	mux.HandleFunc("/v1/debug/stacks", s.handleGoroutines)
-	s.server = &http.Server{Handler: mux}
+	// BaseContext is cancelled by Close so long-poll handlers (task events,
+	// offline wait) observe shutdown even while http.Server.Shutdown is still
+	// waiting for them.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	s.cancelBase = cancelBase
+	s.server = &http.Server{
+		Handler: mux,
+		BaseContext: func(net.Listener) context.Context {
+			return baseCtx
+		},
+	}
 	s.closeDone = make(chan struct{})
 	// Derive our own context so the goroutine below exits on Close even when
 	// the caller passed a background context (context.Background().Done() is
@@ -195,37 +212,62 @@ func isNumericPort(port string) bool {
 	return true
 }
 
+// Close stops the server. Exactly one drain runs; every caller waits for that
+// drain or for its own context, whichever happens first, so a caller with a
+// deadline is never held hostage by another caller's blocking shutdown.
 func (s *Server) Close(ctx context.Context) error {
 	if s == nil || s.closeDone == nil {
 		return nil
 	}
 	s.closeOnce.Do(func() {
-		defer close(s.closeDone)
-		var errs []error
 		// Notify the ctx.Done goroutine started by Start so it cannot leak even
 		// if the original Start context was background.
 		if s.stop != nil {
 			s.stop()
 		}
-		if s.server != nil {
-			if err := s.server.Shutdown(ctx); err != nil {
-				errs = append(errs, err)
-			}
+		// Cancel handler contexts first: long-poll requests must stop waiting
+		// before Shutdown can drain them.
+		if s.cancelBase != nil {
+			s.cancelBase()
 		}
-		if s.listener != nil {
-			if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-				errs = append(errs, err)
-			}
-		}
-		if s.socketPath != "" {
-			if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, err)
-			}
-		}
-		s.closeErr = errors.Join(errs...)
+		go s.shutdown()
 	})
-	<-s.closeDone
-	return s.closeErr
+	select {
+	case <-s.closeDone:
+		return s.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// shutdown drains connections and releases the listener. It always terminates
+// because the graceful phase is bounded and a timed-out drain forces the
+// remaining connections closed.
+func (s *Server) shutdown() {
+	defer close(s.closeDone)
+	var errs []error
+	if s.server != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), controlShutdownGrace)
+		err := s.server.Shutdown(shutdownCtx)
+		cancel()
+		if err != nil {
+			errs = append(errs, err)
+			if closeErr := s.server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				errs = append(errs, closeErr)
+			}
+		}
+	}
+	if s.listener != nil {
+		if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	if s.socketPath != "" {
+		if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	s.closeErr = errors.Join(errs...)
 }
 
 func (s *Server) SocketPath() string {

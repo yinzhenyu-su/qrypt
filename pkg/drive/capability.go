@@ -29,6 +29,16 @@ const (
 	// CapabilityOfflineDownload means the provider can import a remote source
 	// into the cloud without qrypt downloading the bytes locally first.
 	CapabilityOfflineDownload Capability = "offline_download"
+	// CapabilityOfflineInspect means the provider can resolve a source into a
+	// file list without creating a task.
+	CapabilityOfflineInspect Capability = "offline_inspect"
+	// CapabilityOfflineSelection means the provider can import a subset of the
+	// files a source resolves to.
+	CapabilityOfflineSelection Capability = "offline_selection"
+	// CapabilityAcceleratedFetch means the provider can hand out an accelerated
+	// download session for a staged source, letting the caller stream it before
+	// the cloud-side import finishes.
+	CapabilityAcceleratedFetch Capability = "accelerated_fetch"
 )
 
 // Capabilities returns the driver-declared optional behavior in a stable order.

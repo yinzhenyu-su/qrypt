@@ -31,6 +31,8 @@ const (
 	CreationDelete
 	CreationCopy
 	CreationMove
+	CreationOfflineDownload
+	CreationOfflineFetch
 )
 
 // Descriptor declares one task type's policy in a single place: how requests of
@@ -82,6 +84,12 @@ var descriptors = []Descriptor{
 	{Type: TypeCopy, Creation: CreationCopy, Operation: OperationCopy, Scope: ScopeUser, Visibility: VisibilityVisible},
 	{Type: TypeMoveRemote, Creation: CreationMove, Operation: OperationMove, BatchOf: TypeMoveBatch, Scope: ScopeUser, Visibility: VisibilityVisible},
 	{Type: TypeMoveBatch, Creation: CreationMove, Operation: OperationMove, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible},
+	// Offline types are durable provider-backed tasks: they survive restart
+	// (Recoverable) so their provider observation resumes, and they are retried
+	// by re-running the runner, which rebuilds provider work from persisted
+	// detail (see pkg/core offline runner).
+	{Type: TypeOfflineDownload, Creation: CreationOfflineDownload, Operation: OperationDownload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryManager},
+	{Type: TypeOfflineFetch, Creation: CreationOfflineFetch, Operation: OperationDownload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryManager},
 }
 
 // CreationCapabilities returns the capability defaults a task of this type is

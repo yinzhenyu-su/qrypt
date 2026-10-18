@@ -18,6 +18,10 @@ _Avoid_: action（action 另指任务当前可用的动作）、type
 任务的执行形态分类。类型名后缀（remote、batch、stream、direct）为历史遗留命名，不携带统一语义。
 _Avoid_: 从类型名后缀推断行为
 
+**Offline Task（离线任务）**:
+由网盘侧离线下载服务承载的任务，仍归属于 `download` 操作。`offline_download` 只在云端暂存；`offline_fetch` 额外把结果传输到最终目的地。provider 任务标识与观测状态保存在任务 detail 的稳定键下，不进入通用任务 schema。
+_Avoid_: 为离线任务新增 OperationKind
+
 **Scope（任务来源）**:
 任务的产生来源，与可见性无关。
 

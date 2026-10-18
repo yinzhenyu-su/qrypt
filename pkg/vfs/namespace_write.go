@@ -22,6 +22,22 @@ func (n *Namespace) Create(ctx context.Context, path string) error {
 	return mount.Create(ctx, rest)
 }
 
+// DiscardUpload drops a pending staging generation on the resolved mount
+// without touching its remote entry.
+func (n *Namespace) DiscardUpload(path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root || rest == "/" {
+		return ErrReadOnly
+	}
+	return mount.DiscardUpload(rest)
+}
+
 func (n *Namespace) WriteAt(ctx context.Context, path string, data []byte, off int64) (int, error) {
 	if isVirtualRootAppleMetadataPath(path) {
 		return len(data), nil

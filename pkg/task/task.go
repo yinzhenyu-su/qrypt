@@ -23,6 +23,8 @@ const (
 	TypeCopy                Type = "copy"
 	TypeMoveRemote          Type = "move_remote"
 	TypeMoveBatch           Type = "move_batch"
+	TypeOfflineDownload     Type = "offline_download"
+	TypeOfflineFetch        Type = "offline_fetch"
 )
 
 // State is the task-level state machine's position (glossary: State). The
@@ -208,13 +210,14 @@ type ItemCapabilities struct {
 }
 
 type Request struct {
-	Type                 Type           `json:"type"`
-	Scope                Scope          `json:"scope,omitempty"`
-	Items                []Item         `json:"items,omitempty"`
-	Options              Options        `json:"options,omitempty"`
-	Detail               map[string]any `json:"detail,omitempty"`
-	IdempotencyKey       string         `json:"idempotency_key,omitempty"`
-	OperationFingerprint string         `json:"-"`
+	Type                 Type                     `json:"type"`
+	Scope                Scope                    `json:"scope,omitempty"`
+	Items                []Item                   `json:"items,omitempty"`
+	Options              Options                  `json:"options,omitempty"`
+	Detail               map[string]any           `json:"detail,omitempty"`
+	Offline              *OfflineOperationRequest `json:"offline,omitempty"`
+	IdempotencyKey       string                   `json:"idempotency_key,omitempty"`
+	OperationFingerprint string                   `json:"-"`
 }
 
 type Item struct {

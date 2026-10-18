@@ -97,6 +97,7 @@ func taskDurableKey(t Task) durableKey {
 	return durableKey{
 		operation:            t.Operation,
 		idempotencyKey:       t.IdempotencyKey,
+		idempotencyKeys:      idempotencyKeysDigest(t.Detail),
 		operationFingerprint: t.OperationFingerprint,
 		generation:           t.ExecutionGeneration,
 		state:                t.State,
@@ -106,12 +107,33 @@ func taskDurableKey(t Task) durableKey {
 		persistent:           t.Capabilities.Persistent,
 		errorCode:            code,
 		errorMessage:         message,
+		offlineDetail:        offlineDetailDigest(t.Detail),
 	}
+}
+
+// offlineDetailDigest reduces the durable offline metadata carried in
+// Task.Detail to a string so a provider identifier or phase change is journaled
+// even when the task state does not move. Other detail keys are ignored: they
+// are progress bookkeeping, and including them would journal on every tick.
+func offlineDetailDigest(detail map[string]any) string {
+	if detail == nil {
+		return ""
+	}
+	offline, ok := detail[OfflineDetailKey]
+	if !ok || offline == nil {
+		return ""
+	}
+	data, err := json.Marshal(offline)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 type durableKey struct {
 	operation            OperationKind
 	idempotencyKey       string
+	idempotencyKeys      string
 	operationFingerprint string
 	generation           uint64
 	state                State
@@ -121,6 +143,7 @@ type durableKey struct {
 	persistent           bool
 	errorCode            string
 	errorMessage         string
+	offlineDetail        string
 }
 
 func (s *PersistentStore) DismissManaged(id string) bool {

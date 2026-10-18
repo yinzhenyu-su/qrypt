@@ -69,10 +69,15 @@ type Core struct {
 	debugServer              *control.Server
 	controlServer            *control.CommandServer
 	probeServer              *control.Server
-	tasks                    *task.Manager
-	uploadSources            UploadSourceProvider
-	readChunkLimit           int
-	vfsCancel                context.CancelFunc
+	// tasksMu guards the lazy construction of tasks. Recovery runs inside
+	// newTaskManager and starts runners that read the task back, so a second
+	// concurrent taskManager() call must wait for the first to publish it
+	// instead of building a duplicate manager and store.
+	tasksMu        sync.Mutex
+	tasks          *task.Manager
+	uploadSources  UploadSourceProvider
+	readChunkLimit int
+	vfsCancel      context.CancelFunc
 	// mountContentDedup records, per mount name, whether the mount is
 	// encrypted with content_dedup. Direct uploads only precompute whole-file
 	// source hashes for such mounts; the plaintext SHA-256 is required to
@@ -84,6 +89,25 @@ type Core struct {
 	streamsMu          sync.Mutex
 	downloadStreams    map[string]*downloadStreamBatch
 	uploadStreams      map[string]*uploadStreamBatch
+	// fuseMountPoint is the local mount point the Core's own FUSE tree is
+	// exposed at, when configured. Offline fetch maps a destination inside it
+	// back to the namespace so the write goes through the destination mount
+	// instead of recursing through FUSE.
+	fuseMountPoint string
+	// offlinePollInterval overrides the offline provider observation interval.
+	// Zero means defaultOfflinePollInterval; tests inject a short interval.
+	offlinePollInterval time.Duration
+	// offlineMissingWindow overrides how long a disappeared provider task is
+	// given to re-resolve its destination. Zero means the default.
+	offlineMissingWindow time.Duration
+	// offlineMu guards offlineActive, the task ids whose offline runner is
+	// executing. Recovery and retry consult it to avoid two runners.
+	offlineMu     sync.Mutex
+	offlineActive map[string]struct{}
+	// offlineCreateMu serializes the active de-duplication lookup with the
+	// task submission. Without it two simultaneous matching requests could
+	// both observe "no active task" and create two provider tasks.
+	offlineCreateMu sync.Mutex
 }
 
 type RuntimeLayout struct {
@@ -148,7 +172,7 @@ func OpenConfig(ctx context.Context, cfg *config.Config, opts Options) (*Core, e
 	if readChunkLimit <= 0 {
 		readChunkLimit = DefaultReadChunkLimit
 	}
-	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), vfsCancel: vfsCancel}
+	c := &Core{fs: fs, cleanup: cleanup, configPath: opts.ConfigPath, runtimeLayout: runtime, readCacheDir: runtime.ReadCacheDir, thumbnailDir: runtime.ThumbnailDir, thumbnailMax: thumbnailMax, uploadDir: runtime.UploadDir, defaultUploadMount: cfg.Upload.DefaultMount, defaultUploadPath: cfg.Upload.DefaultPath, uploadSources: opts.UploadSources, readChunkLimit: readChunkLimit, mountContentDedup: contentDedupByMount(cfg), fuseMountPoint: cfg.EffectiveMountPoint(), vfsCancel: vfsCancel}
 	c.tasks = c.newTaskManager()
 	if !opts.DisableDebugAutoStart {
 		debugListen := opts.DebugListen
@@ -312,8 +336,11 @@ func (c *Core) Close(ctx context.Context) error {
 	// runners) whose contexts derive from the manager, not from any
 	// caller-passed context; close it even when no cleanup is registered
 	// (directly constructed cores used by tests).
-	if c.tasks != nil {
-		c.tasks.Close()
+	c.tasksMu.Lock()
+	tasks := c.tasks
+	c.tasksMu.Unlock()
+	if tasks != nil {
+		tasks.Close()
 	}
 	// Stop the VFS workers even if the caller's context is still alive
 	// (e.g. a background context from the mobile session layer).
@@ -450,7 +477,9 @@ func ProbeSocketPath(cfg *config.Config, runtime RuntimeLayout) string {
 // RuntimeRunDir returns the per-configuration runtime directory used for
 // built-in local endpoints. Explicit storage roots and QRYPT_HOME retain their
 // existing process-wide isolation semantics; otherwise separate config files
-// get separate run directories beside the config file.
+// get separate run directories under the writable application runtime base
+// (~/.qrypt/run). The config file's own directory is never used: qrypt must
+// work with a read-only config such as /etc/qrypt.toml.
 func RuntimeRunDir(configPath string, cfg *config.Config) string {
 	if home := strings.TrimSpace(os.Getenv("QRYPT_HOME")); home != "" {
 		return filepath.Join(filepath.Clean(util.ExpandHome(home)), "run")
@@ -462,7 +491,7 @@ func RuntimeRunDir(configPath string, cfg *config.Config) string {
 		absolute, err := filepath.Abs(util.ExpandHome(configPath))
 		if err == nil {
 			key := sha256.Sum256([]byte(absolute))
-			return filepath.Join(filepath.Dir(absolute), "run", hex.EncodeToString(key[:6]))
+			return filepath.Join(DefaultRunDir(), hex.EncodeToString(key[:6]))
 		}
 	}
 	return DefaultRunDir()

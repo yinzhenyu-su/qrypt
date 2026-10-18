@@ -280,6 +280,39 @@ stable list of runtime capabilities. It is the canonical capability inventory
 for VFS-facing behavior. Construction-time hooks such as state-store injection
 and bandwidth limiter installation are intentionally not reported there.
 
+### Offline download
+
+A provider that can import a remote source into cloud storage implements
+`drive.OfflineDownloader` and declares `drive.CapabilityOfflineDownload`. The
+provider owns its own task identifier and maps its status model into
+`drive.OfflineState` (`queued`/`running`/`succeeded`/`failed`/`canceled`);
+provider-specific identifiers and status stay in `drive.OfflineDownload` and the
+qrypt task detail, never in the common task schema.
+
+Independent optional capabilities refine the surface:
+
+- `drive.CapabilityOfflineInspect` + `drive.OfflineInspector` — resolve a source
+  into a file list without creating a task. Return `drive.ErrOfflineInspectPending`
+  while an asynchronous parse is still running so the caller can retry.
+- `drive.CapabilityOfflineSelection` — import a subset of the parsed files.
+  `drive.OfflineSelection` is the provider-neutral selector; a provider that does
+  not declare it must reject anything except `all`.
+- `drive.CapabilityAcceleratedFetch` — hand out an accelerated download session
+  at submit time. A missing session must degrade to the normal download URL, not
+  fail the fetch.
+- `drive.OfflineFetcher` — hand out a signed download URL for staged content.
+  Return a URL plus its expiry; the caller refreshes on expiry.
+- `drive.OfflineRetrier` — re-queue a failed/canceled provider task in place
+  instead of making the caller re-create it.
+
+Surface provider failures as `drive.OfflineError` with a stable
+`drive.OfflineErrorCode`; `drive.NewOfflineError` derives the retryable flag.
+Quota, policy, auth, unsupported-source, and crypto failures are non-retryable;
+only transient provider problems (`offline_provider_unavailable`,
+`offline_provider_task_missing`) are retryable. Wrappers (`pkg/crypt`,
+bandwidth) must preserve the offline capabilities and forward the optional
+offline interfaces to the raw driver.
+
 Debug and health output must not include tokens, cookies, authorization
 headers, signed URLs, raw request headers, or full provider responses that may
 contain secrets.

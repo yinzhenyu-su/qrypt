@@ -106,6 +106,38 @@ base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64
 注意：Windows 下 race 检测需要 cgo 工具链（runner 无 gcc），所以
 `-race` 只在 Linux 跑。
 
+## 离线下载冒烟（手动，需要网盘账号）
+
+离线下载的自动化覆盖是确定性的假 provider 集成测试
+（`pkg/core/offline_runner_test.go`，覆盖提交、首次观察、轮询、完成对账、取消、
+重试、重启恢复、去重、fetch 暂存+传输、URL 刷新、清理与终态保护）和 Quark 请求
+加密 golden 测试（`pkg/drivers/quark/offline_crypto_test.go`），两者都不需要任何
+外部凭据。
+
+真实 Quark 账号的冒烟测试**不在自动化 CI 内**，因为它需要一个已登录的 Quark
+账号 cookie（并可能触发风控）。在有账号的机器上手动执行：
+
+```bash
+# 需要一个配置了 quark mount 的 qrypt.toml（cookie 有效）
+qrypt mount &                                   # 离线命令需要运行中的 Core
+qrypt offline add 'magnet:?xt=urn:btih:...' --parse-to /quark/downloads
+qrypt offline fetch 'https://example.com/small.iso' \
+  --parse-to /quark/downloads --download-to ./small.iso   # 加速与非加速两条路径
+qrypt offline show <task-id> --json             # 确认 staging/transfer 两个阶段
+qrypt fs get /quark/downloads/small.iso ./small.iso
+```
+
+前提：账号 cookie（`mounts.params.cookie`）有效、账号未触达下载配额/策略限制；
+未登录或缺少 cookie 时会返回 `offline_auth_required`。用一个直链小文件（例如一张
+PNG）作为来源；把 HTML 页面 URL 当作文件来源时 Quark 会返回 provider code `25009`
+（未映射的通用失败），这不是 qrypt 的问题。
+
+该冒烟已在本机用真实账号手动执行并通过：`offline add`（云端暂存）+ `fs get`、
+`offline fetch`（加速会话缺失时回退到普通下载 URL、本地传输、成功后清理云端副本）、
+`--keep-cloud` 保留、`--download-to /加密挂载/...` 经 VFS 加密上传并 `fs get` 解密取回
+（哈希一致）、`--mkdir` 新建暂存目录、`list` 默认视图、`show`、`wait --timeout`、
+`cancel`（运行中任务）、`retry`（失败任务原地重排）。
+
 ## 本地等价命令
 
 ```bash

@@ -35,6 +35,25 @@ func NewJSONRequest(ctx context.Context, method, rawURL string, body any) (*http
 	return req, nil
 }
 
+// NewRawRequest builds an HTTP request whose body is the supplied bytes, with
+// Content-Type set to application/json when the body is non-empty. It is the
+// escape hatch for pre-encoded bodies (for example a driver's masked request
+// wrapper) that must not be JSON-marshalled again.
+func NewRawRequest(ctx context.Context, method, rawURL string, body []byte) (*http.Request, error) {
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
 // ReadBody reads and closes the response body. The caller owns the returned
 // bytes; use it instead of the io.ReadAll + resp.Body.Close() pair so a
 // single place owns read/close semantics.

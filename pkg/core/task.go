@@ -80,9 +80,16 @@ func (c *Core) taskRecovery(typ task.Type) func(context.Context, *task.Manager) 
 	return func(ctx context.Context, manager *task.Manager) { recovery(c, ctx, manager) }
 }
 
-var taskRecoveryPaths = map[task.Type]func(*Core, context.Context, *task.Manager){
-	task.TypeUploadStreamBatch:  (*Core).recoverUploadStreamTasks,
-	task.TypeUploadStreamDirect: (*Core).recoverUploadStreamDirectTasks,
+// taskRecoveryPaths is built in init to avoid an initialization cycle: the
+// recovery functions reach back into the task manager (recovery lists managed
+// tasks), which reaches this table.
+var taskRecoveryPaths = map[task.Type]func(*Core, context.Context, *task.Manager){}
+
+func init() {
+	taskRecoveryPaths[task.TypeUploadStreamBatch] = (*Core).recoverUploadStreamTasks
+	taskRecoveryPaths[task.TypeUploadStreamDirect] = (*Core).recoverUploadStreamDirectTasks
+	taskRecoveryPaths[task.TypeOfflineDownload] = (*Core).recoverOfflineDownloadTasks
+	taskRecoveryPaths[task.TypeOfflineFetch] = (*Core).recoverOfflineFetchTasks
 }
 
 func (c *Core) taskStore() task.Store {
@@ -100,6 +107,8 @@ func (c *Core) taskManager() (*task.Manager, error) {
 	if c == nil || c.fs == nil {
 		return nil, fmt.Errorf("core: closed")
 	}
+	c.tasksMu.Lock()
+	defer c.tasksMu.Unlock()
 	if c.tasks == nil {
 		c.tasks = c.newTaskManager()
 	}
@@ -109,10 +118,16 @@ func (c *Core) taskManager() (*task.Manager, error) {
 // TaskPersistenceError reports a degraded task journal without conflating it
 // with the result of the file operation represented by a task.
 func (c *Core) TaskPersistenceError() error {
-	if c == nil || c.tasks == nil {
+	if c == nil {
 		return nil
 	}
-	return c.tasks.PersistenceError()
+	c.tasksMu.Lock()
+	tasks := c.tasks
+	c.tasksMu.Unlock()
+	if tasks == nil {
+		return nil
+	}
+	return tasks.PersistenceError()
 }
 
 func (c *Core) ListTasks(ctx context.Context, filter task.Filter) ([]task.Task, error) {
@@ -225,6 +240,11 @@ func (c *Core) RetryTask(ctx context.Context, id string) error {
 		return err
 	}
 	current, currentErr := manager.GetTask(ctx, id)
+	if currentErr == nil && (current.Type == task.TypeOfflineDownload || current.Type == task.TypeOfflineFetch) {
+		if handled, retryErr := c.retryOfflineTask(ctx, current); handled {
+			return retryErr
+		}
+	}
 	strategy := task.RetryManager
 	if currentErr == nil {
 		if descriptor, ok := task.Describe(current.Type); ok {
@@ -336,6 +356,8 @@ var taskCreators = map[task.CreationPath]func(*Core, context.Context, task.Reque
 	task.CreationDelete:             (*Core).createDeleteTask,
 	task.CreationCopy:               (*Core).createCopyTask,
 	task.CreationMove:               createMoveTaskFromRequest,
+	task.CreationOfflineDownload:    (*Core).createOfflineDownloadTask,
+	task.CreationOfflineFetch:       (*Core).createOfflineFetchTask,
 }
 
 // createMoveTaskFromRequest adapts a move request to the move creation path,
@@ -389,7 +411,15 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 			taskType = task.TypeUploadStreamDirect
 		}
 	case task.OperationDownload:
-		taskType = task.Promote(task.TypeDownloadStreamBatch, len(req.Items))
+		if req.Offline != nil {
+			if req.Offline.DownloadTo != "" {
+				taskType = task.TypeOfflineFetch
+			} else {
+				taskType = task.TypeOfflineDownload
+			}
+		} else {
+			taskType = task.Promote(task.TypeDownloadStreamBatch, len(req.Items))
+		}
 	case task.OperationDelete:
 		taskType = task.Promote(task.TypeDeleteRemote, len(req.Items))
 	case task.OperationCopy:
@@ -405,6 +435,7 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 		Items:   req.Items,
 		Options: req.Options,
 		Detail:  req.Detail,
+		Offline: req.Offline,
 	}, nil
 }
 

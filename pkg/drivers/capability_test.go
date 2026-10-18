@@ -93,6 +93,10 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "quark",
 			drv:  quark.New("cookie", quark.Options{}),
 			want: []drive.Capability{
+				drive.CapabilityAcceleratedFetch,
+				drive.CapabilityOfflineDownload,
+				drive.CapabilityOfflineInspect,
+				drive.CapabilityOfflineSelection,
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,

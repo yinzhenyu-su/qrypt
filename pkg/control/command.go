@@ -21,15 +21,17 @@ import (
 type CommandService = task.Controller
 
 type CommandServer struct {
-	network   string
-	address   string
-	service   CommandService
-	server    *http.Server
-	listener  net.Listener
-	stop      context.CancelFunc
-	closeOnce sync.Once
-	closeDone chan struct{}
-	closeErr  error
+	network    string
+	address    string
+	service    CommandService
+	offline    OfflineService
+	server     *http.Server
+	listener   net.Listener
+	stop       context.CancelFunc
+	cancelBase context.CancelFunc
+	closeOnce  sync.Once
+	closeDone  chan struct{}
+	closeErr   error
 }
 
 func NewCommandServer(endpoint string, service CommandService) (*CommandServer, error) {
@@ -72,7 +74,20 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/control/tasks/cancel", s.handleCancelTask)
 	mux.HandleFunc("/v1/control/tasks/retry", s.handleRetryTask)
-	s.server = &http.Server{Handler: mux}
+	mux.HandleFunc("/v1/control/offline/tasks", s.handleOfflineTasks)
+	mux.HandleFunc("/v1/control/offline/tasks/", s.handleOfflineTask)
+	mux.HandleFunc("/v1/control/offline/inspect", s.handleOfflineInspect)
+	mux.HandleFunc("/v1/control/offline/wait", s.handleOfflineWait)
+	// BaseContext is cancelled by Close so the offline wait long-poll handler
+	// stops even while http.Server.Shutdown is draining.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	s.cancelBase = cancelBase
+	s.server = &http.Server{
+		Handler: mux,
+		BaseContext: func(net.Listener) context.Context {
+			return baseCtx
+		},
+	}
 	s.closeDone = make(chan struct{})
 	ctx, stop := context.WithCancel(ctx)
 	s.stop = stop
@@ -84,35 +99,54 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	return nil
 }
 
+// Close stops the command server. One drain runs; each caller waits for it or
+// for its own context, so a deadline is never defeated by a concurrent caller.
 func (s *CommandServer) Close(ctx context.Context) error {
 	if s == nil || s.closeDone == nil {
 		return nil
 	}
 	s.closeOnce.Do(func() {
-		defer close(s.closeDone)
-		var errs []error
 		if s.stop != nil {
 			s.stop()
 		}
-		if s.server != nil {
-			if err := s.server.Shutdown(ctx); err != nil {
-				errs = append(errs, err)
-			}
+		if s.cancelBase != nil {
+			s.cancelBase()
 		}
-		if s.listener != nil {
-			if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-				errs = append(errs, err)
-			}
-		}
-		if s.network == "unix" && s.address != "" {
-			if err := os.Remove(s.address); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, err)
-			}
-		}
-		s.closeErr = errors.Join(errs...)
+		go s.shutdown()
 	})
-	<-s.closeDone
-	return s.closeErr
+	select {
+	case <-s.closeDone:
+		return s.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *CommandServer) shutdown() {
+	defer close(s.closeDone)
+	var errs []error
+	if s.server != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), controlShutdownGrace)
+		err := s.server.Shutdown(shutdownCtx)
+		cancel()
+		if err != nil {
+			errs = append(errs, err)
+			if closeErr := s.server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				errs = append(errs, closeErr)
+			}
+		}
+	}
+	if s.listener != nil {
+		if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	if s.network == "unix" && s.address != "" {
+		if err := os.Remove(s.address); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	s.closeErr = errors.Join(errs...)
 }
 
 type taskActionRequest struct {
