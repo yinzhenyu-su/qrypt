@@ -3,7 +3,6 @@ package mount
 import (
 	"context"
 	"fmt"
-	"os"
 	"runtime"
 	"time"
 
@@ -65,7 +64,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 	// directory as STATUS_OBJECT_NAME_COLLISION ("mount point in use") and
 	// creates the directory itself at mount time.
 	if runtime.GOOS != "windows" {
-		if err := os.MkdirAll(opts.MountPoint, 0o755); err != nil {
+		if err := ensureMountPoint(opts.MountPoint); err != nil {
 			return nil, err
 		}
 	}

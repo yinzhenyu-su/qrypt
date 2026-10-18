@@ -76,6 +76,8 @@ qrypt mount [MOUNT_NAME] [--config PATH] [--mount-point PATH]
 
 省略 `MOUNT_NAME` 时挂载配置中的全部云盘；指定 `MOUNT_NAME` 时只挂载该云盘，根目录就是该云盘内容。省略 `--mount-point` 时读取配置中的 `[mount].mount_point`。运行时 socket 使用配置目录下的内置路径，无需手工指定。
 
+`Ctrl+C`、`SIGTERM` 以及关闭终端或断开 SSH（`SIGHUP`）都会触发优雅卸载。若上一次挂载的进程是被强行结束的（`kill -9`、进程崩溃、OOM、`SIGQUIT`），内核会留下一个连接已断的挂载点，再次挂载时该目录不可访问（Linux 报 `mkdir <挂载点>: file exists`，macOS 报 `mount point ... is itself on a macFUSE volume`）：qrypt 会识别这种残留挂载、先断开再重建挂载点（日志记录 `detached stale mount`），无需手工删除目录；断开尝试有超时保护，不会让 `qrypt mount` 卡住。只有在自动断开失败时才会报错，并按提示恢复（Linux：`fusermount3 -u <挂载点>`；macOS：`diskutil unmount force <挂载点>`）后重试。
+
 ## 文件系统操作
 
 ```sh
