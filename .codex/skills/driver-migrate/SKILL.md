@@ -147,22 +147,25 @@ Unit tests first, with fakes:
 
 Live verification against a real account:
 
-- The mount needs `test_enabled = true` for `debug test`.
+- The mount needs `test_enabled = true` for `probe test`.
 - Run `auth`, `contract`, `crud`, `fs`, `instantupload`, `resume`, and
   `multipart` separately; `contract` is not an alias for all suites. Report
   each result and capability-based skip reason, test sizes, residual objects,
   and cleanup failures. Add read/batch/xfer tests where relevant.
 - `./scripts/mount-debug-test.sh <mount> <spec> [flags]` builds qrypt, mounts
   into an isolated temporary tree (its own cache/staging/state), runs one
-  `debug test` spec, then tears it down. Prefer it over hand-rolled temporary
-  configs when no existing service/socket was requested.
-- For an existing socket, first verify the mount/driver, running server build,
-  test enablement, staging availability, and pending work using read-only
-  diagnostics. Building a new CLI does not upgrade that server. Do not replace
-  or restart the user's service without authorization.
-- Against a running mount, use `qrypt debug collect --mount NAME --socket PATH`
-  for structured diagnostics. Individual endpoints and additional test specs
-  are documented in `docs/for-developer/debug.md`.
+  `probe test` spec, then tears it down. Prefer it over hand-rolled temporary
+  configs when no existing running mount was requested.
+- For an existing running mount, first verify the mount/driver, running server
+  build, test enablement, staging availability, and pending work using read-only
+  diagnostics. The CLI resolves the built-in per-config endpoint from the same
+  config; building a new CLI does not upgrade the running server, so a stale
+  server keeps serving the old surface. Do not replace or restart the user's
+  service without authorization.
+- Against a running mount, use `qrypt debug collect --mount NAME` for structured
+  diagnostics; pass `--config PATH` when the config is not auto-discovered.
+  Individual endpoints and additional test specs are documented in
+  `docs/for-developer/debug.md`.
 - One-shot `fs` commands debounce: uploads flush after `upload_delay` (default
   30s), deletes after `delete_delay` (default 2s). Lower those in the config or
   wait before believing a result — a pending write is not a driver bug.

@@ -54,7 +54,7 @@ enabled = true
 	root.SetErr(&bytes.Buffer{})
 	root.SetArgs([]string{"probe", "test"})
 	if err := root.Execute(); err != nil {
-		t.Fatalf("expected debug test without subcommand to show help: %v", err)
+		t.Fatalf("expected probe test without subcommand to show help: %v", err)
 	}
 
 	root = NewRootCommand()
@@ -90,7 +90,7 @@ enabled = true
 	root.SetOut(&out)
 	root.SetArgs([]string{"probe", "bench", "compare", "--base", basePath, "--current", currentPath})
 	if err := root.Execute(); err != nil {
-		t.Fatalf("debug bench compare failed: %v", err)
+		t.Fatalf("probe bench compare failed: %v", err)
 	}
 	if !strings.Contains(out.String(), `"kind": "benchmark_comparison"`) ||
 		!strings.Contains(out.String(), `"summary.event_count"`) {
