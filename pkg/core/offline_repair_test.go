@@ -533,6 +533,14 @@ func TestOfflineLocalWriterAbortUsesPinnedRoot(t *testing.T) {
 	// Force both Sync and Close to fail, as a disk error would.
 	_ = local.file.Close()
 
+	// The writer pins the destination root with a directory handle, and Windows
+	// refuses to rename or remove a directory that still has one open, so the
+	// scenario below is unreachable there. Release the handle on every exit
+	// path: a bare skip would leave root undeletable and turn TempDir's cleanup
+	// failure into a reported test failure. Abort is idempotent, so this is a
+	// no-op when the body below already ran it.
+	t.Cleanup(func() { _ = writer.Abort() })
+
 	moved := root + "-moved"
 	if err := os.Rename(root, moved); err != nil {
 		t.Skipf("cannot rename an open destination root: %v", err)
