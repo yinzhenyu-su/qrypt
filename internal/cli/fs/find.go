@@ -21,8 +21,11 @@ type FindResult struct {
 
 func NewFindCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "find [REMOTE] NAME",
-		Short:             "Recursively find entries whose name contains NAME",
+		Use:   "find [REMOTE] NAME",
+		Short: "Recursively find entries whose name contains NAME",
+		Long:  `Recursively search REMOTE (default /) for entries whose name contains NAME, case-insensitively, and print each match's full path.`,
+		Example: `  qrypt fs find photo /cloud
+  qrypt fs find --json ".jpg" /cloud/photos`,
 		Args:              cliruntime.RangeArgs(rt, 1, 2),
 		RunE:              runFind(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,

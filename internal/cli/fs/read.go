@@ -20,8 +20,11 @@ import (
 
 func NewListCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "list [REMOTE]",
-		Short:             "List a directory",
+		Use:   "list [REMOTE]",
+		Short: "List a directory",
+		Long:  `List the entries of REMOTE, or the namespace root when REMOTE is omitted.`,
+		Example: `  qrypt fs list /cloud/photos
+  qrypt fs list /cloud/photos --human`,
 		Args:              cliruntime.MaxArgs(rt, 1),
 		RunE:              runList(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -183,8 +186,11 @@ func JoinRemotePath(parent, name string) string {
 
 func NewCatCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "cat REMOTE",
-		Short:             "Write a remote file to stdout",
+		Use:   "cat REMOTE",
+		Short: "Write a remote file to stdout",
+		Long:  `Write the decrypted contents of REMOTE to stdout; use --raw for the backend bytes without decryption or read-cache transforms.`,
+		Example: `  qrypt fs cat /cloud/docs/report.pdf
+  qrypt fs cat /cloud/docs/report.pdf --raw`,
 		Args:              cliruntime.ExactNamedArgs(rt, "REMOTE"),
 		RunE:              runCat(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -225,8 +231,12 @@ func NewGetCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get REMOTE LOCAL",
 		Short: "Download a remote file or directory",
-		Args:  cliruntime.ExactNamedArgs(rt, "REMOTE", "LOCAL"),
-		RunE:  runGet(rt),
+		Long: `Download REMOTE to the local path LOCAL. A directory is downloaded
+recursively under LOCAL; an existing local file is skipped unless --force.`,
+		Example: `  qrypt fs get /cloud/photos/cat.jpg ./cat.jpg
+  qrypt fs get /cloud/photos ./photos --force`,
+		Args: cliruntime.ExactNamedArgs(rt, "REMOTE", "LOCAL"),
+		RunE: runGet(rt),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp

@@ -92,6 +92,9 @@ type OfflineOperationRequest struct {
 	// cloud-only task.
 	Workers   int   `json:"workers,omitempty"`
 	ChunkSize int64 `json:"chunk_size,omitempty"`
+	// Flat forces a fetch to place every file by its own name instead of
+	// mirroring the staged layout. It needs a download destination.
+	Flat bool `json:"flat,omitempty"`
 }
 
 // Offline transfer tuning. A fetch copies staged content with bounded Range

@@ -180,4 +180,7 @@ func addFSBandwidthFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().String("bwlimit", "", "limit both download and upload bandwidth (e.g. 10M)")
 	cmd.PersistentFlags().String("bwlimit-download", "", "limit download bandwidth (e.g. 10M)")
 	cmd.PersistentFlags().String("bwlimit-upload", "", "limit upload bandwidth (e.g. 10M)")
+	for _, name := range []string{"bwlimit", "bwlimit-download", "bwlimit-upload"} {
+		cliruntime.MarkAdvancedFlag(cmd.PersistentFlags().Lookup(name))
+	}
 }

@@ -79,6 +79,26 @@ type OfflineFetcher interface {
 	OfflineDownloadURL(ctx context.Context, req OfflineFetchRequest) (OfflineDownloadTarget, error)
 }
 
+// OfflineLayout is the persisted identity a provider needs to resolve the same
+// staged output tree after a restart. TaskID is the provider task identifier,
+// RootID is the entry the task produced, ParentID is the directory that
+// contains it, and Available reports that the staged result set was already
+// complete when the layout was persisted.
+type OfflineLayout struct {
+	TaskID    string `json:"task_id,omitempty"`
+	RootID    string `json:"root_id,omitempty"`
+	ParentID  string `json:"parent_id,omitempty"`
+	Available bool   `json:"available,omitempty"`
+}
+
+// OfflineLayoutRestorer is an optional provider capability: restore a task's
+// persisted output identity into a fresh driver instance so a recovered fetch
+// can resolve staged relative paths and discover omitted files. Providers
+// without it keep their layout in process memory and may lose it on restart.
+type OfflineLayoutRestorer interface {
+	RestoreOfflineLayout(layout OfflineLayout)
+}
+
 // OfflineRetrier is an optional provider capability: re-queue a provider task
 // in place after it failed or was canceled, keeping the same provider task
 // identifier. A provider without it is retried by re-creating the task from

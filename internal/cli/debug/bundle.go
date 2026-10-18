@@ -20,7 +20,12 @@ func NewBundleCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bundle [REMOTE]",
 		Short: "Write an AI-oriented debug bundle zip",
-		Args:  cliruntime.MaxArgs(rt, 1),
+		Long: `Write a zip bundle of AI-oriented diagnostics: the collect report,
+diagnostics, and raw debug endpoints, optionally including a watch report and
+path or destination diagnostics for REMOTE.`,
+		Example: `  qrypt debug bundle --out /tmp/qrypt-debug.zip
+  qrypt debug bundle /cloud/photos --out /tmp/qrypt-debug.zip --watch 30s`,
+		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			socket := debugSocketFromContext(ctx)

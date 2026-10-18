@@ -26,6 +26,9 @@ Use with a config file (reads encryption settings from the named mount):
 
 Or compute directly from raw inputs (no config file needed):
   qrypt config export-rclone-password --password-file ./password.txt --salt "mysalt"`,
+		Example: `  qrypt config export-rclone-password mymount
+  qrypt config export-rclone-password --password-file ./password.txt --salt "mysalt"
+  qrypt config export-rclone-password --password-stdin --password-hash argon2id --salt "mysalt"`,
 		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rawPassword, direct, err := DirectPasswordFromFlags(cmd)

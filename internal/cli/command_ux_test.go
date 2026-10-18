@@ -148,7 +148,12 @@ func TestReadableCommandErrors(t *testing.T) {
 		{
 			name: "unknown flag",
 			args: []string{"fs", "list", "--bad"},
-			want: "Run 'qrypt fs list --help' for valid flags.",
+			want: "Next:\n  qrypt fs list --help",
+		},
+		{
+			name: "near-miss subcommand suggests the intended one",
+			args: []string{"fs", "copie"},
+			want: "Did you mean this?",
 		},
 	}
 	for _, tt := range tests {

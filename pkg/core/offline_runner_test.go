@@ -34,10 +34,22 @@ type fakeOfflineProvider struct {
 	states          []drive.OfflineState
 	files           []drive.OfflineFile
 	filesEveryState bool
+	// availableAt and filesAt override p.available / filesEveryState per
+	// scripted observation, so a test can make availability (and the result
+	// list) appear on a later poll.
+	availableAt []bool
+	filesAt     []bool
+	// retryStates overrides the script used after an in-place retry.
+	retryStates []drive.OfflineState
+	// getErrs injects one error into the next GetOfflineDownload calls.
+	getErrs []error
+	// createFiles makes the create response carry the scripted result files.
+	createFiles bool
 	// repeatLast keeps returning the script's final observation; when false the
 	// script is consumed and the task then reports as disappeared.
 	repeatLast  bool
 	createFID   string
+	available   bool
 	failCreate  *drive.OfflineError
 	preview     drive.OfflinePreview
 	downloadURL string
@@ -47,6 +59,7 @@ type fakeOfflineProvider struct {
 	cancelled    []string
 	retried      []string
 	urlRequests  []drive.OfflineFetchRequest
+	restored     []drive.OfflineLayout
 
 	// hideResultsFor hides the result files from the first N listings of their
 	// parent directory, emulating an eventually consistent provider listing.
@@ -83,14 +96,25 @@ func (p *fakeOfflineProvider) OfflineSourceKinds() []drive.OfflineSourceKind {
 }
 
 func (p *fakeOfflineProvider) script(id string) []drive.OfflineDownload {
-	states := p.states
+	return p.scriptStates(id, p.states)
+}
+
+func (p *fakeOfflineProvider) scriptStates(id string, states []drive.OfflineState) []drive.OfflineDownload {
 	if len(states) == 0 {
 		states = []drive.OfflineState{drive.OfflineStateQueued, drive.OfflineStateSucceeded}
 	}
 	out := make([]drive.OfflineDownload, 0, len(states))
-	for _, state := range states {
-		obs := drive.OfflineDownload{ID: id, State: state}
-		if state == drive.OfflineStateSucceeded || p.filesEveryState {
+	for index, state := range states {
+		available := p.available
+		if p.availableAt != nil {
+			available = index < len(p.availableAt) && p.availableAt[index]
+		}
+		obs := drive.OfflineDownload{ID: id, State: state, Available: available}
+		withFiles := state == drive.OfflineStateSucceeded || p.filesEveryState
+		if p.filesAt != nil {
+			withFiles = index < len(p.filesAt) && p.filesAt[index]
+		}
+		if withFiles {
 			obs.Files = append([]drive.OfflineFile(nil), p.files...)
 		}
 		out = append(out, obs)
@@ -108,12 +132,23 @@ func (p *fakeOfflineProvider) CreateOfflineDownload(_ context.Context, req drive
 	p.nextID++
 	id := fmt.Sprintf("ptask-%d", p.nextID)
 	p.observations[id] = p.script(id)
-	return drive.OfflineDownload{ID: id, State: drive.OfflineStateQueued, RemoteID: p.createFID}, nil
+	created := drive.OfflineDownload{ID: id, State: drive.OfflineStateQueued, RemoteID: p.createFID, Available: p.available}
+	if p.createFiles {
+		created.Files = append([]drive.OfflineFile(nil), p.files...)
+	}
+	return created, nil
 }
 
 func (p *fakeOfflineProvider) GetOfflineDownload(_ context.Context, id string) (drive.OfflineDownload, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.getErrs) > 0 {
+		err := p.getErrs[0]
+		p.getErrs = p.getErrs[1:]
+		if err != nil {
+			return drive.OfflineDownload{}, err
+		}
+	}
 	seq := p.observations[id]
 	if len(seq) == 0 {
 		return drive.OfflineDownload{}, drive.NewOfflineError(drive.OfflineErrProviderTaskMissing, "", "task gone")
@@ -136,11 +171,18 @@ func (p *fakeOfflineProvider) RetryOfflineDownload(_ context.Context, id string)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.retried = append(p.retried, id)
-	p.observations[id] = []drive.OfflineDownload{
-		{ID: id, State: drive.OfflineStateQueued},
-		{ID: id, State: drive.OfflineStateSucceeded, Files: append([]drive.OfflineFile(nil), p.files...)},
+	states := p.retryStates
+	if states == nil {
+		states = []drive.OfflineState{drive.OfflineStateQueued, drive.OfflineStateSucceeded}
 	}
+	p.observations[id] = p.scriptStates(id, states)
 	return nil
+}
+
+func (p *fakeOfflineProvider) RestoreOfflineLayout(layout drive.OfflineLayout) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.restored = append(p.restored, layout)
 }
 
 func (p *fakeOfflineProvider) InspectOfflineDownload(context.Context, drive.OfflineDownloadRequest) (drive.OfflinePreview, error) {
@@ -753,7 +795,11 @@ func TestOfflineFetchAccelerated(t *testing.T) {
 	provider.issueSession = true
 	provider.downloadURL = download.URL
 	provider.createFID = "0/downloads/accel.bin"
-	// A never-terminal script proves the transfer does not wait for success.
+	provider.available = true
+	provider.filesEveryState = true
+	provider.files = []drive.OfflineFile{{Name: "accel.bin", Size: 11, RemoteID: "0/downloads/accel.bin"}}
+	// A never-terminal script proves the transfer does not wait for success
+	// once the provider reports the staged results are available.
 	provider.states = []drive.OfflineState{drive.OfflineStateQueued, drive.OfflineStateRunning}
 	if err := provider.Seed(map[string]string{"downloads/": "", "downloads/accel.bin": "remote"}); err != nil {
 		t.Fatal(err)
@@ -1239,6 +1285,7 @@ func TestOfflineFetchAcceleratedObservesFilesFirst(t *testing.T) {
 	provider.issueSession = true
 	provider.downloadURL = download.URL
 	provider.files = []drive.OfflineFile{{Name: "accel2.bin", Size: 11, RemoteID: "0/downloads/accel2.bin"}}
+	provider.available = true
 	// The files are reported from the first observation, and the task never
 	// reaches a terminal state: only a pre-terminal accelerated URL can finish.
 	provider.filesEveryState = true

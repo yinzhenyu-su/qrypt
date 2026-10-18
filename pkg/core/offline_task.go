@@ -128,13 +128,13 @@ func (c *Core) retryOfflineTask(ctx context.Context, current task.Task) (bool, e
 	// transfer/cleanup retry keeps the staging task and just re-runs the
 	// transfer, so it does not touch the provider.
 	if detail.Phase == "" || detail.Phase == offlinePhaseStaging || detail.Phase == offlinePhaseComplete {
-		if detail.ProviderID != "" {
-			if !retryProviderInPlace(ctx, driver, detail.ProviderID) {
-				detail.PreviousProviderIDs = append(detail.PreviousProviderIDs, detail.ProviderID)
-				detail.ProviderID = ""
-			}
+		if detail.ProviderID != "" && !retryProviderInPlace(ctx, driver, detail.ProviderID) {
+			detail.PreviousProviderIDs = append(detail.PreviousProviderIDs, detail.ProviderID)
+			detail.ProviderID = ""
+			detail.ProviderRootID = ""
 		}
 		detail.Phase = offlinePhaseStaging
+		detail.Available = false
 		detail.ResultFiles = nil
 		detail.TransferDone = false
 		detail.CleanupDone = false

@@ -203,11 +203,24 @@ func (d *Driver) CreateOfflineDownload(ctx context.Context, req drive.OfflineDow
 	if result.SpeedupDLInfo.SpeedupSession != "" {
 		d.rememberOfflineSession(result.TaskID, result.SpeedupDLInfo.SpeedupSession)
 	}
+	// download_task_finish=1 means the resource is already cached, so the
+	// staged results are complete from the start and a fetch may transfer
+	// without waiting for the task to terminalize.
+	available := parsed.ResourceInfo.DownloadTaskFinish == 1
+	// The submit response's dir_fid is the directory that actually contains
+	// the produced root; persist and return that same identity so a fresh
+	// driver resolves the same parent after recovery.
+	parentID := result.DirFid
+	if parentID == "" {
+		parentID = dirFid
+	}
+	d.rememberOfflineLayout(result.TaskID, result.Fid, parentID, available)
 	observation := drive.OfflineDownload{
 		ID:          result.TaskID,
 		State:       drive.OfflineStateQueued,
-		Destination: dirFid,
+		Destination: parentID,
 		RemoteID:    result.Fid,
+		Available:   available,
 	}
 	return observation, nil
 }
@@ -250,6 +263,38 @@ func (d *Driver) GetOfflineDownload(ctx context.Context, id string) (drive.Offli
 	case drive.OfflineStateFailed:
 		observation.ErrorCode = string(drive.OfflineErrProvider)
 		observation.Error = fmt.Sprintf("quark: offline task failed (status %d)", task.TaskStatus)
+	}
+	// A succeeded task, or one the provider reported as already cached, has a
+	// complete staged result set: resolve each file's relative path and pick up
+	// any file the result list omitted.
+	// A terminal failure or cancel is authoritative: return it before any
+	// layout work so a listing error cannot mask the provider's state.
+	if observation.State == drive.OfflineStateFailed || observation.State == drive.OfflineStateCanceled {
+		return observation, nil
+	}
+	layout := d.offlineLayout(id)
+	if observation.State == drive.OfflineStateSucceeded || layout.Available {
+		files, err := d.resolveOfflineLayout(ctx, layout, observation.Files)
+		if err != nil {
+			if ctx.Err() != nil {
+				return drive.OfflineDownload{}, ctx.Err()
+			}
+			// Keep a classified provider failure (auth, quota, path, ...)
+			// intact; only an unclassified walk failure is transient.
+			var classified *drive.OfflineError
+			if errors.As(err, &classified) {
+				return drive.OfflineDownload{}, err
+			}
+			var apiErr *APIError
+			if errors.As(err, &apiErr) {
+				return drive.OfflineDownload{}, offlineErrorFromCode(apiErr.Code, apiErr.Message)
+			}
+			return drive.OfflineDownload{}, drive.NewOfflineError(
+				drive.OfflineErrProviderUnavailable, "",
+				fmt.Sprintf("quark: resolve staged layout: %v", err))
+		}
+		observation.Available = true
+		observation.Files = files
 	}
 	return observation, nil
 }
@@ -485,10 +530,180 @@ func (d *Driver) offlineSession(taskID string) (string, bool) {
 	return session, ok
 }
 
+// rememberOfflineLayout remembers, for a provider task, the entry the task
+// produced, its staging parent, and whether its staged results are complete.
+func (d *Driver) rememberOfflineLayout(taskID, rootID, parentID string, available bool) {
+	if taskID == "" {
+		return
+	}
+	d.offlineMu.Lock()
+	defer d.offlineMu.Unlock()
+	if d.offlineLayouts == nil {
+		d.offlineLayouts = map[string]drive.OfflineLayout{}
+	}
+	// This is an explicit snapshot for one task generation, not a merge.
+	// In particular a restore after an in-place retry may clear availability
+	// that a previous generation reported.
+	d.offlineLayouts[taskID] = drive.OfflineLayout{
+		TaskID:    taskID,
+		RootID:    rootID,
+		ParentID:  parentID,
+		Available: available,
+	}
+}
+
+func (d *Driver) offlineLayout(taskID string) drive.OfflineLayout {
+	d.offlineMu.Lock()
+	defer d.offlineMu.Unlock()
+	return d.offlineLayouts[taskID]
+}
+
+// RestoreOfflineLayout reseeds this driver from persisted task metadata so a
+// recovered fetch resolves the task's original output tree instead of starting
+// from an empty, process-local map.
+func (d *Driver) RestoreOfflineLayout(layout drive.OfflineLayout) {
+	d.rememberOfflineLayout(layout.TaskID, layout.RootID, layout.ParentID, layout.Available)
+}
+
 func (d *Driver) forgetOfflineSession(taskID string) {
 	d.offlineMu.Lock()
 	defer d.offlineMu.Unlock()
 	delete(d.offlineSessions, taskID)
+	delete(d.offlineLayouts, taskID)
+}
+
+// offlineTreeEntry is one staged entry discovered under the task's output root.
+type offlineTreeEntry struct {
+	fid   string
+	name  string
+	path  string
+	size  int64
+	isDir bool
+}
+
+// offlineMaxLayoutDepth bounds the provider tree walk. Exhausting it is an
+// error: a truncated tree must never be published as a complete result set.
+const offlineMaxLayoutDepth = 32
+
+// resolveOfflineLayout fills each result file's staged relative path from the
+// task's output root and appends files the result list omitted. Paths are
+// relative to the staging destination, so a resource folder keeps its own name.
+// It is only meaningful once the provider reports the results are complete.
+func (d *Driver) resolveOfflineLayout(ctx context.Context, layout drive.OfflineLayout, files []drive.OfflineFile) ([]drive.OfflineFile, error) {
+	if layout.RootID == "" {
+		return files, nil
+	}
+	tree := map[string]offlineTreeEntry{}
+	visited := map[string]bool{}
+	if layout.ParentID != "" {
+		entries, err := d.List(ctx, layout.ParentID)
+		if err != nil {
+			return nil, err
+		}
+		var root *drive.Entry
+		for index := range entries {
+			if entries[index].ID == layout.RootID {
+				root = &entries[index]
+				break
+			}
+		}
+		switch {
+		case root == nil:
+			// A known root must be a child of the known staging parent. A
+			// listing that does not show it is lagging or incomplete; walking
+			// the root without its parent-derived prefix would silently drop
+			// the resource folder, so treat the view as unusable and retry.
+			return nil, fmt.Errorf("staged root %s is not listed under parent %s", layout.RootID, layout.ParentID)
+		case root.IsDir:
+			if err := d.collectOfflineTree(ctx, root.ID, root.Name, tree, visited, 0); err != nil {
+				return nil, err
+			}
+		default:
+			// A single-file source's root is the file itself, not a directory.
+			tree[root.ID] = offlineTreeEntry{
+				fid: root.ID, name: root.Name, path: root.Name, size: root.Size,
+			}
+		}
+	} else if err := d.collectOfflineTree(ctx, layout.RootID, "", tree, visited, 0); err != nil {
+		return nil, err
+	}
+	if len(tree) == 0 {
+		return files, nil
+	}
+	seen := make(map[string]bool, len(files))
+	out := make([]drive.OfflineFile, 0, len(files)+len(tree))
+	for _, file := range files {
+		if entry, ok := tree[file.RemoteID]; ok {
+			file.Path = entry.path
+			if file.Name == "" {
+				file.Name = entry.name
+			}
+			if file.Size == 0 {
+				file.Size = entry.size
+			}
+		}
+		if file.RemoteID != "" {
+			seen[file.RemoteID] = true
+		}
+		out = append(out, file)
+	}
+	// The provider's result list can omit staged files (for example ancillary
+	// entries beside the main content). They are still inside the task's own
+	// output root, so include them rather than mirroring a truncated tree.
+	extra := make([]offlineTreeEntry, 0)
+	for fid, entry := range tree {
+		if seen[fid] || entry.isDir {
+			continue
+		}
+		extra = append(extra, entry)
+	}
+	sort.Slice(extra, func(a, b int) bool { return extra[a].path < extra[b].path })
+	for _, entry := range extra {
+		out = append(out, drive.OfflineFile{
+			Index:    len(out),
+			Name:     entry.name,
+			Size:     entry.size,
+			RemoteID: entry.fid,
+			Path:     entry.path,
+		})
+	}
+	return out, nil
+}
+
+// collectOfflineTree walks the staged tree below fid, recording every entry's
+// path relative to the output root. A listing failure, a cycle, or a tree
+// deeper than offlineMaxLayoutDepth is returned rather than swallowed.
+func (d *Driver) collectOfflineTree(ctx context.Context, fid, prefix string, out map[string]offlineTreeEntry, visited map[string]bool, depth int) error {
+	if fid == "" {
+		return nil
+	}
+	if depth > offlineMaxLayoutDepth {
+		return fmt.Errorf("staged tree below %s exceeds %d levels", fid, offlineMaxLayoutDepth)
+	}
+	if visited[fid] {
+		return fmt.Errorf("staged tree has a cycle at %s", fid)
+	}
+	visited[fid] = true
+	entries, err := d.List(ctx, fid)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.ID == "" {
+			continue
+		}
+		rel := entry.Name
+		if prefix != "" {
+			rel = prefix + "/" + entry.Name
+		}
+		out[entry.ID] = offlineTreeEntry{fid: entry.ID, name: entry.Name, path: rel, size: entry.Size, isDir: entry.IsDir}
+		if entry.IsDir {
+			if err := d.collectOfflineTree(ctx, entry.ID, rel, out, visited, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // quarkOfflineState maps Quark's task status onto the canonical offline state.

@@ -14,8 +14,12 @@ func NewTestCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "test",
 		Short: "Run active probe tests",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Run active driver or VFS probe tests against mounted drives. These tests
+may write remote test data, so they run against the mutable control socket.`,
+		Example: `  qrypt probe test auth --mount cloud
+  qrypt probe test crud --mount cloud`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "auth", "Run a read-only auth driver test")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "batchmove", "Move a batch of uploaded files through VFS")))
@@ -32,9 +36,31 @@ func NewTestCmd(rt cliruntime.Runtime) *cobra.Command {
 }
 
 func newDebugTestCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Command {
+	long := map[string]string{
+		"auth":          "Run a read-only auth driver test that verifies the mount can authenticate and list its root.",
+		"batchmove":     "Upload a batch of small files through VFS and move them, verifying batch operation correctness.",
+		"batchupload":   "Upload a batch of small files through VFS, verifying batch upload correctness.",
+		"crud":          "Run a CRUD driver test that creates, reads, updates, and deletes a remote object.",
+		"contract":      "Run the driver behavioral contract suite against the mount.",
+		"fs":            "Run a VFS filesystem smoke test on one mount at the requested size.",
+		"instantupload": "Run an instant-upload driver test, verifying a known file is saved without re-uploading its bytes.",
+		"multipart":     "Run a multipart or chunked upload driver test at the requested size.",
+		"read":          "Measure a complete read through a mounted filesystem, exercising cold and warm caches and seek behavior.",
+		"resume":        "Run a VFS resumable-upload test that interrupts and then resumes an upload.",
+		"xfer":          "Run a transfer driver test from --source to --dest.",
+	}[test]
+	example := "  qrypt probe test " + test + " --mount cloud"
+	switch test {
+	case "xfer":
+		example = "  qrypt probe test xfer --source local --dest cloud"
+	case "read":
+		example = "  qrypt probe test read --mount cloud --mount-point /mnt/qrypt/cloud"
+	}
 	cmd := &cobra.Command{
 		Use:               test,
 		Short:             short,
+		Long:              long,
+		Example:           example,
 		Args:              cliruntime.NoArgs(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {

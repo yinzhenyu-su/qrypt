@@ -187,9 +187,13 @@ type Driver struct {
 	// Offline adapter state. wgKeys overrides the built-in wg data-key table;
 	// offlineSessions holds accelerated download sessions keyed by provider
 	// task id (in-memory: a lost session degrades to the normal URL).
+	// offlineLayouts remembers, per task id, the entry the task produced, its
+	// staging parent, and whether the staged results are already complete. Core
+	// re-seeds it from persisted task metadata after a restart.
 	wgKeys          map[int]string
 	offlineMu       sync.Mutex
 	offlineSessions map[string]string
+	offlineLayouts  map[string]drive.OfflineLayout
 }
 
 type Options struct {

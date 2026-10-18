@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
@@ -16,8 +17,12 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "control",
 		Short: "Control tasks in a running Core",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Control tasks that a running Core owns, such as canceling or retrying a
+task, over the local control socket. A Core must be running.`,
+		Example: `  qrypt control task cancel <task-id>
+  qrypt control task retry <task-id>`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	rt.WithPersistentConfigFlag(cmd)
 	cmd.AddCommand(newTaskCommand(rt))
@@ -28,8 +33,12 @@ func newTaskCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "task",
 		Short: "Cancel or retry a task",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Cancel or retry a task by id. Cancellation is cooperative; retry starts a
+fresh attempt for a failed or canceled task.`,
+		Example: `  qrypt control task cancel <task-id>
+  qrypt control task retry <task-id>`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	cmd.AddCommand(withControlEndpoint(rt, newTaskActionCommand(rt, "cancel")))
 	cmd.AddCommand(withControlEndpoint(rt, newTaskActionCommand(rt, "retry")))
@@ -37,10 +46,17 @@ func newTaskCommand(rt cliruntime.Runtime) *cobra.Command {
 }
 
 func newTaskActionCommand(rt cliruntime.Runtime, action string) *cobra.Command {
+	long := map[string]string{
+		"cancel": "Request cancellation of a task by id. Cancellation is cooperative; observe the task to confirm it stops.",
+		"retry":  "Retry a failed or canceled task by id, starting a fresh attempt under the same task id.",
+	}[action]
 	cmd := &cobra.Command{
 		Use:   action + " TASK_ID",
 		Short: "" + action + " a task",
-		Args:  cliruntime.ExactNamedArgs(rt, "TASK_ID"),
+		Long:  long,
+		Example: fmt.Sprintf(`  qrypt control task %s <task-id>
+  qrypt control task %s <task-id> --config ./qrypt.toml`, action, action),
+		Args: cliruntime.ExactNamedArgs(rt, "TASK_ID"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := control.NewClient(endpointFromContext(cmd.Context()))
 			if err != nil {

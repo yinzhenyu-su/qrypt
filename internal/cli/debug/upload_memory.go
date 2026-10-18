@@ -17,6 +17,8 @@ func NewUploadMemoryCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "upload-memory",
 		Short:             "Inspect upload memory diagnostics",
+		Long:              `Report recent upload part metrics, optionally including upload history, with a lookback window and repeat interval.`,
+		Example:           `  qrypt debug upload-memory --history --since 5m`,
 		Args:              cliruntime.NoArgs(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {

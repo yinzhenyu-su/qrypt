@@ -81,6 +81,7 @@ type OfflineCreateRequest struct {
 	// defaults. They are rejected for a cloud-only task.
 	Workers        int    `json:"workers,omitempty"`
 	ChunkSize      int64  `json:"chunk_size,omitempty"`
+	Flat           bool   `json:"flat,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
@@ -103,6 +104,7 @@ func (r OfflineCreateRequest) OperationRequest() task.OperationRequest {
 			KeepCloud:  r.KeepCloud,
 			Workers:    r.Workers,
 			ChunkSize:  r.ChunkSize,
+			Flat:       r.Flat,
 		},
 		IdempotencyKey: r.IdempotencyKey,
 	}

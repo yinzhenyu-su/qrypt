@@ -26,6 +26,8 @@ Differences are reported relative to the argument order: missing_in_b means
 a file exists on A but not B; extra_in_b means it exists on B but not A.
 
 Exit code: 0 when identical, 4 when differences are found, 1 on errors.`,
+		Example: `  qrypt fs check /cloud/photos ./photos
+  qrypt fs check /cloud/photos ./photos --compare hash`,
 		Args:              cliruntime.ExactNamedArgs(rt, "A", "B"),
 		RunE:              runCheck(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,

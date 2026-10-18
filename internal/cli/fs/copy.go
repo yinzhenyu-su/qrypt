@@ -18,6 +18,8 @@ func NewCopyCmd(rt cliruntime.Runtime) *cobra.Command {
 		Use:               "copy SOURCE DESTINATION",
 		Aliases:           []string{"cp"},
 		Short:             "Copy a remote file directly between mounted backends",
+		Long:              `Copy SOURCE to DESTINATION directly between mounted backends, without downloading through the local machine. Use --recursive for directories.`,
+		Example:           `  qrypt fs copy /cloud/photos/cat.jpg /backup/photos/cat.jpg`,
 		Args:              cliruntime.ExactNamedArgs(rt, "SOURCE", "DESTINATION"),
 		RunE:              RunCopy(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,

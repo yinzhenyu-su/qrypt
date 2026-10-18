@@ -24,6 +24,7 @@ const (
 	OfflineErrProviderUnavailable  OfflineErrorCode = "offline_provider_unavailable"
 	OfflineErrProviderTaskMissing  OfflineErrorCode = "offline_provider_task_missing"
 	OfflineErrSameDestination      OfflineErrorCode = "offline_same_destination"
+	OfflineErrPathInvalid          OfflineErrorCode = "offline_path_invalid"
 	OfflineErrWaitTimeout          OfflineErrorCode = "offline_wait_timeout"
 	OfflineErrCrypto               OfflineErrorCode = "offline_crypto_error"
 	OfflineErrProvider             OfflineErrorCode = "offline_provider_error"

@@ -33,6 +33,9 @@ When --config is omitted, qrypt searches ./qrypt.toml, ~/.qrypt/qrypt.toml,
 then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 (default: ~/.config/qrypt/qrypt.toml) on Unix, or
 %AppData%\qrypt\qrypt.toml on Windows.`,
+		Example: `  qrypt mount --config ./qrypt.toml
+  qrypt fs list /cloud/photos
+  qrypt fs get /cloud/photos/cat.jpg ./cat.jpg`,
 		Args: commandGroupArgs(nil),
 		RunE: func(c *cobra.Command, args []string) error {
 			return c.Help()
@@ -48,7 +51,9 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(clicontrol.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clioffline.NewCommand(cliRuntime{}))
 	cmd.AddCommand(cliversion.NewCommand(cliRuntime{}, build))
-	installFlagErrorHelp(cmd)
+	cmd.AddCommand(NewSchemaCommand(cmd))
+	installHelpDefaults(cmd)
+	installDeepHelp(cmd)
 
 	return cmd
 }

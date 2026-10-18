@@ -122,7 +122,7 @@ base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64
 qrypt mount &                                   # 离线命令需要运行中的 Core
 qrypt offline add 'magnet:?xt=urn:btih:...' --parse-to /quark/downloads
 qrypt offline fetch 'https://example.com/small.iso' \
-  --parse-to /quark/downloads --download-to ./small.iso   # 加速与非加速两条路径
+  --parse-to /quark/downloads --download-to ./small.iso --wait   # 加速与非加速两条路径
 qrypt offline show <task-id> --json             # 确认 staging/transfer 两个阶段
 qrypt fs get /quark/downloads/small.iso ./small.iso
 ```
@@ -133,7 +133,8 @@ PNG）作为来源；把 HTML 页面 URL 当作文件来源时 Quark 会返回 p
 （未映射的通用失败），这不是 qrypt 的问题。
 
 该冒烟已在本机用真实账号手动执行并通过：`offline add`（云端暂存）+ `fs get`、
-`offline fetch`（加速会话缺失时回退到普通下载 URL、本地传输、成功后清理云端副本）、
+`offline fetch`（默认后台返回、`--wait` 阻塞并显示进度；加速会话缺失时回退到普通下载 URL、
+本地传输、按网盘侧相对路径镜像目录结构、成功后清理云端副本）、
 `--keep-cloud` 保留、`--download-to /加密挂载/...` 经 VFS 加密上传并 `fs get` 解密取回
 （哈希一致）、`--mkdir` 新建暂存目录、`list` 默认视图、`show`、`wait --timeout`、
 `cancel`（运行中任务）、`retry`（失败任务原地重排）。

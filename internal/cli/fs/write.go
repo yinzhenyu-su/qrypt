@@ -13,8 +13,12 @@ func NewPutCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "put LOCAL REMOTE",
 		Short: "Upload a local file; use - to read from stdin",
-		Args:  cliruntime.ExactNamedArgs(rt, "LOCAL", "REMOTE"),
-		RunE:  runPut(rt),
+		Long: `Upload the local file LOCAL to REMOTE. Pass - as LOCAL to read the
+contents from standard input.`,
+		Example: `  qrypt fs put ./report.pdf /cloud/docs/report.pdf
+  cat report.pdf | qrypt fs put - /cloud/docs/report.pdf`,
+		Args: cliruntime.ExactNamedArgs(rt, "LOCAL", "REMOTE"),
+		RunE: runPut(rt),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 0 {
 				return nil, cobra.ShellCompDirectiveDefault

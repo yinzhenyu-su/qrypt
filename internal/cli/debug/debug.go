@@ -16,8 +16,13 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "debug",
 		Short: "Collect read-only diagnostic data",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Collect read-only diagnostic data from a running Core's debug socket:
+health, state, uploads, reads, events, cache, and staging snapshots.`,
+		Example: `  qrypt debug collect /cloud/photos
+  qrypt debug bundle --out /tmp/qrypt-debug.zip
+  qrypt debug watch /cloud/photos --duration 30s`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	rt.WithPersistentConfigFlag(cmd)
 	cmd.AddCommand(withDebugSocketFlag(rt, NewBundleCmd(rt)))
@@ -34,7 +39,14 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 // data. It deliberately shares the implementation with the former debug
 // test/bench commands while using the mutable control socket.
 func NewProbeCommand(rt cliruntime.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "probe", Short: "Run active diagnostics and benchmarks", Args: cliruntime.CommandGroupArgs(rt, nil), RunE: cliruntime.ShowHelp}
+	cmd := &cobra.Command{
+		Use:   "probe",
+		Short: "Run active diagnostics and benchmarks",
+		Long: `Run active diagnostics and benchmarks that may write remote or VFS test
+data. Unlike debug, these commands use the mutable control socket.`,
+		Example: `  qrypt probe test crud --mount cloud
+  qrypt probe bench fs --mount cloud --size 64m`,
+		Args: cliruntime.CommandGroupArgs(rt, nil), RunE: cliruntime.ShowHelp}
 	rt.WithPersistentConfigFlag(cmd)
 	cmd.AddCommand(NewBenchCmd(rt))
 	cmd.AddCommand(NewTestCmd(rt))
@@ -132,8 +144,12 @@ func debugSocket404Detail(err error) (body string, routeMissing bool) {
 
 func newDebugRawCmd(rt cliruntime.Runtime) *cobra.Command {
 	return &cobra.Command{
-		Use:               "raw ENDPOINT",
-		Short:             "Fetch a raw debug socket endpoint",
+		Use:   "raw ENDPOINT",
+		Short: "Fetch a raw debug socket endpoint",
+		Long: `Fetch one debug socket endpoint verbatim. ENDPOINT is a /v1 path such as
+/v1/health or /v1/state; the leading /v1/ is added when omitted.`,
+		Example: `  qrypt debug raw /v1/health
+  qrypt debug raw state`,
 		Args:              cliruntime.ExactNamedArgs(rt, "ENDPOINT"),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {

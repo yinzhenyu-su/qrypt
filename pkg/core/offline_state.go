@@ -64,6 +64,9 @@ type offlineResultFile struct {
 	Name     string `json:"name,omitempty"`
 	Size     int64  `json:"size,omitempty"`
 	RemoteID string `json:"remote_id,omitempty"`
+	// Path is the file's staged location relative to the parse destination.
+	// Empty when the provider does not report one; callers fall back to Name.
+	Path string `json:"path,omitempty"`
 }
 
 // offlineDetail is the durable, provider-neutral metadata of an offline task.
@@ -85,13 +88,23 @@ type offlineDetail struct {
 	DownloadDir   string `json:"download_dir,omitempty"`
 	KeepCloud     bool   `json:"keep_cloud,omitempty"`
 	Accelerated   bool   `json:"accelerated,omitempty"`
+	// Flat records that the fetch asked for name-only placement instead of
+	// mirroring the staged layout.
+	Flat bool `json:"flat,omitempty"`
 	// TransferWorkers and TransferChunk are the persisted transfer tuning, so
 	// a recovered or retried fetch keeps the caller's choice. Zero means the
 	// Core defaults.
 	TransferWorkers int   `json:"transfer_workers,omitempty"`
 	TransferChunk   int64 `json:"transfer_chunk,omitempty"`
 
-	ProviderID          string              `json:"provider_id,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
+	// ProviderRootID is the provider identity of the entry the task produced
+	// (the resource root the provider reports at submit). A fetch walks down
+	// from it to resolve each result file's staged relative path.
+	ProviderRootID string `json:"provider_root_id,omitempty"`
+	// Available records that the provider reported a complete staged result
+	// set, so a fresh driver can resolve the same layout after a restart.
+	Available           bool                `json:"available,omitempty"`
 	PreviousProviderIDs []string            `json:"previous_provider_ids,omitempty"`
 	Phase               offlinePhase        `json:"phase,omitempty"`
 	Observation         *offlineObservation `json:"observation,omitempty"`
@@ -181,6 +194,7 @@ func offlineResultFilesFromDrive(files []drive.OfflineFile) []offlineResultFile 
 			Name:     file.Name,
 			Size:     file.Size,
 			RemoteID: file.RemoteID,
+			Path:     file.Path,
 		})
 	}
 	return out
@@ -197,6 +211,7 @@ func offlineFilesFromDetail(files []offlineResultFile) []drive.OfflineFile {
 			Name:     file.Name,
 			Size:     file.Size,
 			RemoteID: file.RemoteID,
+			Path:     file.Path,
 		})
 	}
 	return out
@@ -212,18 +227,43 @@ func mergeOfflineResultFiles(existing, incoming []offlineResultFile) []offlineRe
 	if len(existing) == 0 {
 		return incoming
 	}
+	// Stable identities win first: a later observation commonly repeats only
+	// RemoteID/Name, and matching by name would leak one file's path onto every
+	// sibling that shares a name.
+	byID := make(map[string]offlineResultFile, len(existing))
+	byPath := make(map[string]offlineResultFile, len(existing))
 	byName := make(map[string]offlineResultFile, len(existing))
+	nameCount := make(map[string]int, len(existing))
 	byIndex := make(map[int]offlineResultFile, len(existing))
+	indexCount := make(map[int]int, len(existing))
 	for _, file := range existing {
+		if file.RemoteID != "" {
+			byID[file.RemoteID] = file
+		}
+		if file.Path != "" {
+			byPath[file.Path] = file
+		}
 		if file.Name != "" {
 			byName[file.Name] = file
+			nameCount[file.Name]++
 		}
 		byIndex[file.Index] = file
+		indexCount[file.Index]++
 	}
 	out := make([]offlineResultFile, 0, len(incoming))
 	for _, file := range incoming {
-		previous, ok := byName[file.Name]
-		if !ok && file.Name == "" {
+		var previous offlineResultFile
+		var ok bool
+		if file.RemoteID != "" {
+			previous, ok = byID[file.RemoteID]
+		}
+		if !ok && file.Path != "" {
+			previous, ok = byPath[file.Path]
+		}
+		if !ok && file.Name != "" && nameCount[file.Name] == 1 {
+			previous, ok = byName[file.Name]
+		}
+		if !ok && file.Name == "" && file.RemoteID == "" && file.Path == "" && indexCount[file.Index] == 1 {
 			previous, ok = byIndex[file.Index]
 		}
 		if ok {
@@ -235,6 +275,9 @@ func mergeOfflineResultFiles(existing, incoming []offlineResultFile) []offlineRe
 			}
 			if file.Name == "" {
 				file.Name = previous.Name
+			}
+			if file.Path == "" {
+				file.Path = previous.Path
 			}
 			if file.Index == 0 && previous.Index != 0 {
 				file.Index = previous.Index
@@ -251,10 +294,15 @@ func offlineResultItems(detail offlineDetail) []task.ItemTracking {
 	}
 	items := make([]task.ItemTracking, 0, len(detail.ResultFiles))
 	for i, file := range detail.ResultFiles {
+		staged := file.Path
+		if staged == "" {
+			staged = file.Name
+		}
 		item := task.ItemTracking{
 			ItemID:           offlineResultItemID(i, file),
-			Path:             offlineJoinPath(detail.ParseDir, file.Name),
-			DestPath:         offlineJoinPath(detail.ParseDir, file.Name),
+			Path:             offlineJoinPath(detail.ParseDir, staged),
+			SourcePath:       file.Path,
+			DestPath:         offlineJoinPath(detail.ParseDir, staged),
 			Mount:            detail.ParseMount,
 			State:            task.ItemStateSucceeded,
 			Phase:            task.PhaseComplete,
