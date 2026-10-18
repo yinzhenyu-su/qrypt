@@ -88,12 +88,14 @@ jobs:
       - name: Start mount server
         run: |
           go build -ldflags="${QRYPT_LDFLAGS}" -o /tmp/qrypt ./cmd/qrypt/
-          nohup /tmp/qrypt mount -s /tmp/qrypt.sock >/tmp/qrypt-mount.log 2>&1 &
+          # mount, debug, probe and control share the built-in per-config
+          # endpoint derived from the config path; no --socket flag exists.
+          nohup /tmp/qrypt mount --config ./qrypt.toml >/tmp/qrypt-mount.log 2>&1 &
 
-      - name: Wait for socket
+      - name: Wait for debug server
         run: |
           for i in $(seq 1 120); do
-            [ -S /tmp/qrypt.sock ] && exit 0
+            /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1 && exit 0
             sleep 1
           done
           echo "mount server did not start:"; cat /tmp/qrypt-mount.log
@@ -111,7 +113,7 @@ jobs:
           out=$(mktemp)
           attempts=2
           for i in $(seq 1 "$attempts"); do
-            if /tmp/qrypt debug test contract --socket /tmp/qrypt.sock --mount "$MOUNT" >"$out" 2>&1; then
+            if /tmp/qrypt probe test contract --config ./qrypt.toml --mount "$MOUNT" >"$out" 2>&1; then
               cat "$out"
               exit 0
             fi
@@ -123,13 +125,12 @@ jobs:
             echo "== mount \"$MOUNT\" missing from the server; restarting mount server for a fresh init attempt =="
             pkill -f '^/tmp/qrypt mount' || true
             sleep 2
-            rm -f /tmp/qrypt.sock
-            nohup /tmp/qrypt mount -s /tmp/qrypt.sock >/tmp/qrypt-mount.log 2>&1 &
+            nohup /tmp/qrypt mount --config ./qrypt.toml >/tmp/qrypt-mount.log 2>&1 &
             for j in $(seq 1 120); do
-              [ -S /tmp/qrypt.sock ] && break
+              /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1 && break
               sleep 1
             done
-            if [ ! -S /tmp/qrypt.sock ]; then
+            if ! /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1; then
               echo "mount server did not restart:"
               cat /tmp/qrypt-mount.log
               exit 1
