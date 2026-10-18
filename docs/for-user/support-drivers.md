@@ -199,6 +199,7 @@ cookie = "k1=v1; k2=v2"
 # root_path = "/qrypt"
 # base_url = "https://drive.quark.cn"
 # v2_url = "https://drive-m.quark.cn"
+# wg_keys = "14100:e21247a68938d36f"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
@@ -207,6 +208,7 @@ cookie = "k1=v1; k2=v2"
 | `root_path` | string | 否 | Virtual root path on the drive，默认 `/` |
 | `base_url` | string | 否 | Custom API base URL |
 | `v2_url` | string | 否 | Custom API v2 URL |
+| `wg_keys` | string | 否 | Override wg data keys for offline requests as secureNo:hexkey pairs separated by commas |
 
 ---
 

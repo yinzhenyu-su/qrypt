@@ -70,6 +70,19 @@ func (c *Client) PostJSON(ctx context.Context, path string, value any) ([]byte, 
 	return c.do(req, path)
 }
 
+// TransportError is a non-2xx control response. It preserves the response
+// status and body so a caller (the CLI) can classify the server's failure,
+// while Error() keeps the historical message shape.
+type TransportError struct {
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *TransportError) Error() string {
+	return fmt.Sprintf("control: %s returned status %d: %s", e.Path, e.Status, e.Body)
+}
+
 func (c *Client) do(req *http.Request, path string) ([]byte, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -81,7 +94,7 @@ func (c *Client) do(req *http.Request, path string) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("control: %s returned status %d: %s", path, resp.StatusCode, string(body))
+		return nil, &TransportError{Path: path, Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 	return body, nil
 }

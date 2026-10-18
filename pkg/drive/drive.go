@@ -53,23 +53,142 @@ type ServerSideCopier interface {
 // OfflineDownloader is an optional provider capability for cloud-side
 // imports. The provider owns the remote task and its task identifier; qrypt
 // only adapts its lifecycle into the application task model.
+//
+// The request carries a provider-neutral source plus the mount-relative
+// destination the caller resolved; the result carries the provider's
+// normalized observation. Providers map their own status model into
+// OfflineState and keep provider-specific fields in the task detail layer.
 type OfflineDownloader interface {
 	CreateOfflineDownload(ctx context.Context, req OfflineDownloadRequest) (OfflineDownload, error)
 	GetOfflineDownload(ctx context.Context, id string) (OfflineDownload, error)
 	CancelOfflineDownload(ctx context.Context, id string) error
 }
 
-type OfflineDownloadRequest struct {
-	Source      string
-	Destination string
+// OfflineSourceKindReporter is an optional interface a provider implements to
+// declare the normalized source kinds it accepts. A provider that does not
+// implement it is not pre-filtered; callers defer to the provider's own error
+// at creation time.
+type OfflineSourceKindReporter interface {
+	OfflineSourceKinds() []OfflineSourceKind
 }
 
+// OfflineSourceKinds reports the source kinds d accepts, or nil when d does not
+// report them. Callers that receive nil must not pre-reject a source; the
+// provider decides at creation time.
+func OfflineSourceKinds(d Driver) []OfflineSourceKind {
+	if d == nil {
+		return nil
+	}
+	reporter, ok := d.(OfflineSourceKindReporter)
+	if !ok {
+		return nil
+	}
+	return reporter.OfflineSourceKinds()
+}
+
+// OfflineSourceKind is the normalized form of a source qrypt passes to a
+// provider. Providers report the kinds they accept; a kind no provider accepts
+// is rejected before any provider task is created.
+type OfflineSourceKind string
+
+const (
+	OfflineSourceMagnet  OfflineSourceKind = "magnet"
+	OfflineSourceHTTP    OfflineSourceKind = "http"
+	OfflineSourceFTP     OfflineSourceKind = "ftp"
+	OfflineSourceTorrent OfflineSourceKind = "torrent"
+)
+
+// OfflineSelectionMode names how a caller chooses which parsed files a
+// provider should import.
+type OfflineSelectionMode string
+
+const (
+	// OfflineSelectionAll imports every parsed file. It is the zero value.
+	OfflineSelectionAll OfflineSelectionMode = "all"
+	// OfflineSelectionLargest imports the Largest largest files.
+	OfflineSelectionLargest OfflineSelectionMode = "largest"
+	// OfflineSelectionInclude imports files matching Include and not Exclude.
+	OfflineSelectionInclude OfflineSelectionMode = "include"
+)
+
+// OfflineSelection is the provider-neutral file selection applied to a parsed
+// resource before submission. The zero value means "all files".
+type OfflineSelection struct {
+	Mode    OfflineSelectionMode `json:"mode,omitempty"`
+	Largest int                  `json:"largest,omitempty"`
+	Include []string             `json:"include,omitempty"`
+	Exclude []string             `json:"exclude,omitempty"`
+}
+
+// OfflineDownloadRequest is the provider-neutral input for staging a source in
+// a provider's cloud storage. Destination is a mount-relative path the
+// provider resolves to its own directory identity.
+type OfflineDownloadRequest struct {
+	// SourceKind is the normalized source kind; empty means the provider
+	// should infer it from Source.
+	SourceKind OfflineSourceKind `json:"source_kind,omitempty"`
+	// Source is a magnet link or URL.
+	Source string `json:"source"`
+	// Title overrides the provider-side resource title when non-empty.
+	Title string `json:"title,omitempty"`
+	// Destination is the mount-relative staging directory path.
+	Destination string `json:"destination"`
+	// DestinationID is the provider's own identity for Destination when the
+	// caller already resolved it (for example the fid VFS Stat/Mkdir returned).
+	// Providers that can use it directly avoid re-resolving the path, which is
+	// important when their directory listing is eventually consistent.
+	DestinationID string `json:"destination_id,omitempty"`
+	// Selection chooses which parsed files to import; zero value means all.
+	Selection OfflineSelection `json:"selection,omitempty"`
+	// Accelerated asks the provider to obtain an accelerated download session
+	// for the staged resource. The caller sets it only when the provider
+	// declared CapabilityAcceleratedFetch; providers may ignore it.
+	Accelerated bool `json:"accelerated,omitempty"`
+}
+
+// OfflineState is the canonical provider observation state. Providers map
+// their own status model into exactly these values.
+type OfflineState string
+
+const (
+	OfflineStateQueued    OfflineState = "queued"
+	OfflineStateRunning   OfflineState = "running"
+	OfflineStateSucceeded OfflineState = "succeeded"
+	OfflineStateFailed    OfflineState = "failed"
+	OfflineStateCanceled  OfflineState = "canceled"
+)
+
+// OfflineProgress is the provider-reported progress of the staging task.
+// Percent is 0..100 and is zero when the provider reports no progress model.
+type OfflineProgress struct {
+	Percent    float64 `json:"percent,omitempty"`
+	BytesDone  int64   `json:"bytes_done,omitempty"`
+	BytesTotal int64   `json:"bytes_total,omitempty"`
+	FilesDone  int64   `json:"files_done,omitempty"`
+	FilesTotal int64   `json:"files_total,omitempty"`
+}
+
+// OfflineFile is one result file reported by the provider. RemoteID is the
+// provider's identity for the stored entry when it exposes one.
+type OfflineFile struct {
+	Index    int    `json:"index,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	RemoteID string `json:"remote_id,omitempty"`
+}
+
+// OfflineDownload is a provider's normalized observation of one cloud-side
+// offline task. ID and State are always set; the remaining fields are filled
+// in as the provider exposes them.
 type OfflineDownload struct {
-	ID          string
-	State       string
-	Destination string
-	RemoteID    string
-	Error       string
+	ID          string          `json:"id"`
+	State       OfflineState    `json:"state"`
+	Progress    OfflineProgress `json:"progress,omitempty"`
+	Destination string          `json:"destination,omitempty"`
+	RemoteID    string          `json:"remote_id,omitempty"`
+	Files       []OfflineFile   `json:"files,omitempty"`
+	ErrorCode   string          `json:"error_code,omitempty"`
+	Error       string          `json:"error,omitempty"`
 }
 
 type EntryRawExtraer interface {

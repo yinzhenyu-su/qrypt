@@ -62,12 +62,68 @@ func (d *Driver) Capabilities() []drive.Capability {
 	if drive.HasCapability(d.raw, drive.CapabilitySpace) {
 		caps = append(caps, drive.CapabilitySpace)
 	}
+	// Offline capabilities stay visible through the wrapper: the
+	// encrypted-parse-destination rejection is a Core policy, not a capability
+	// strip, so an encrypted mount surfaces the encryption-specific error
+	// rather than "offline download unsupported".
+	for _, capability := range []drive.Capability{
+		drive.CapabilityOfflineDownload,
+		drive.CapabilityOfflineInspect,
+		drive.CapabilityOfflineSelection,
+		drive.CapabilityAcceleratedFetch,
+	} {
+		if drive.HasCapability(d.raw, capability) {
+			caps = append(caps, capability)
+		}
+	}
 	return caps
 }
 
 func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }
 
 func (d *Driver) Drop(ctx context.Context) error { return d.raw.Drop(ctx) }
+
+// OfflineSourceKinds forwards the raw driver's reported source kinds, or nil
+// when the raw driver does not report them, so callers defer to the provider's
+// own error at creation time.
+func (d *Driver) OfflineSourceKinds() []drive.OfflineSourceKind {
+	reporter, ok := d.raw.(drive.OfflineSourceKindReporter)
+	if !ok {
+		return nil
+	}
+	return reporter.OfflineSourceKinds()
+}
+
+// CreateOfflineDownload forwards to the raw driver when it implements the
+// optional offline contract; otherwise the wrapper reports ErrUnsupported and
+// its Capabilities must not declare CapabilityOfflineDownload.
+func (d *Driver) CreateOfflineDownload(ctx context.Context, req drive.OfflineDownloadRequest) (drive.OfflineDownload, error) {
+	offline, ok := d.raw.(drive.OfflineDownloader)
+	if !ok {
+		return drive.OfflineDownload{}, drive.ErrUnsupported
+	}
+	return offline.CreateOfflineDownload(ctx, req)
+}
+
+// GetOfflineDownload forwards to the raw driver when it implements the optional
+// offline contract.
+func (d *Driver) GetOfflineDownload(ctx context.Context, id string) (drive.OfflineDownload, error) {
+	offline, ok := d.raw.(drive.OfflineDownloader)
+	if !ok {
+		return drive.OfflineDownload{}, drive.ErrUnsupported
+	}
+	return offline.GetOfflineDownload(ctx, id)
+}
+
+// CancelOfflineDownload forwards to the raw driver when it implements the
+// optional offline contract.
+func (d *Driver) CancelOfflineDownload(ctx context.Context, id string) error {
+	offline, ok := d.raw.(drive.OfflineDownloader)
+	if !ok {
+		return drive.ErrUnsupported
+	}
+	return offline.CancelOfflineDownload(ctx, id)
+}
 
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	return d.raw.Space(ctx)

@@ -24,6 +24,12 @@ type dismissibleSource interface {
 
 type RunFunc func(ctx context.Context, update UpdateFunc) error
 
+// ErrCanceled marks a run that ended in the canceled state even though its own
+// context is still active, such as a provider reporting that it canceled the
+// task. It lets a runner request the canonical canceled state without
+// canceling unrelated contexts or being mistaken for a failure.
+var ErrCanceled = errors.New("task: canceled")
+
 type UpdateFunc func(func(*Task))
 
 type Manager struct {
@@ -157,15 +163,17 @@ func (m *Manager) run(ctx context.Context, id string) {
 		return
 	}
 	generation := managed.Task.ExecutionGeneration
-	m.updateForGeneration(id, generation, func(item *Task) {
-		item.State = StateRunning
-		item.StartedAt = time.Now().UTC()
-		item.UpdatedAt = item.StartedAt
-	})
+	run, dismiss := m.startRun(id, generation, ctx)
+	if !run {
+		if dismiss && m.store.DismissManaged(id) {
+			m.broadcastTaskRemoved(Task{ID: id})
+		}
+		return
+	}
 	err := managed.Run(ctx, func(fn func(*Task)) {
 		m.updateForGeneration(id, generation, fn)
 	})
-	dismiss := false
+	dismiss = false
 	m.updateForGeneration(id, generation, func(item *Task) {
 		now := time.Now().UTC()
 		item.UpdatedAt = now
@@ -173,14 +181,49 @@ func (m *Manager) run(ctx context.Context, id string) {
 		item.Capabilities.Cancelable = false
 		item.Capabilities.Dismissible = true
 		if err != nil {
-			if ctx.Err() != nil {
+			if errors.Is(err, ErrCanceled) {
 				item.State = StateCanceled
-				item.Error = &Error{Message: ctx.Err().Error()}
+				if item.Error == nil || item.Error.Code == "" {
+					item.Error = &Error{Message: err.Error()}
+				} else if item.Error.Message == "" {
+					item.Error.Message = err.Error()
+				}
+				dismiss = item.DismissRequested
+				return
+			}
+			if ctx.Err() != nil {
+				if item.State == StateCanceling {
+					// An explicit cancel request set Canceling before it
+					// canceled the context: keep the canonical canceled state.
+					item.State = StateCanceled
+					item.Error = &Error{Message: ctx.Err().Error()}
+				} else {
+					// The manager is shutting down (or the run context was
+					// interrupted) without a user cancel. Record the same
+					// interrupted failure replay would produce, so recoverable
+					// work is resumed instead of being silently canceled.
+					item.State = StateFailed
+					if item.Error == nil || item.Error.Code == "" {
+						item.Error = &Error{Code: "interrupted", Message: "task was interrupted before completion"}
+					} else {
+						item.Error.Message = err.Error()
+					}
+					item.Capabilities.Retryable = false
+				}
 				dismiss = item.DismissRequested
 				return
 			}
 			item.State = StateFailed
-			item.Error = &Error{Message: err.Error(), Retryable: item.Capabilities.Retryable}
+			// A runner that classified its own failure (offline runners set a
+			// stable Error.Code and its retryability before returning) keeps
+			// both; the manager only fills in the message. Otherwise the error
+			// is built from the returned error and the task's retry capability,
+			// as before.
+			if item.Error != nil && item.Error.Code != "" {
+				item.Error.Message = err.Error()
+			} else {
+				item.Error = &Error{Message: err.Error(), Retryable: item.Capabilities.Retryable}
+			}
 			dismiss = item.DismissRequested
 			return
 		}
@@ -197,18 +240,82 @@ func (m *Manager) run(ctx context.Context, id string) {
 	}
 }
 
+// startRun atomically decides whether the runner may start. A task that was
+// canceled (or whose context was canceled by shutdown) before the runner
+// started is terminated here without invoking the run function: canceled work
+// must not produce its side effects. An explicit user cancel stays canceled;
+// an interruption becomes the same failed/interrupted state replay produces.
+func (m *Manager) startRun(id string, generation uint64, ctx context.Context) (run, dismiss bool) {
+	m.updateForGeneration(id, generation, func(item *Task) {
+		dismiss = item.DismissRequested
+		if isTerminalState(item.State) {
+			return
+		}
+		if item.State == StateCanceling || ctx.Err() != nil {
+			now := time.Now().UTC()
+			item.UpdatedAt = now
+			item.CompletedAt = now
+			item.Capabilities.Cancelable = false
+			item.Capabilities.Dismissible = true
+			if item.State == StateCanceling {
+				item.State = StateCanceled
+				if item.Error == nil || item.Error.Code == "" {
+					message := "task was canceled before it started"
+					if ctx.Err() != nil {
+						message = ctx.Err().Error()
+					}
+					item.Error = &Error{Message: message}
+				}
+				return
+			}
+			item.State = StateFailed
+			if item.Error == nil || item.Error.Code == "" {
+				item.Error = &Error{Code: "interrupted", Message: "task was interrupted before completion"}
+			}
+			item.Capabilities.Retryable = false
+			return
+		}
+		item.State = StateRunning
+		item.StartedAt = time.Now().UTC()
+		item.UpdatedAt = item.StartedAt
+		run = true
+	})
+	return run, dismiss
+}
+
 func (m *Manager) findIdempotent(item Task) (Task, bool, error) {
 	for _, managed := range m.store.ListManaged(Filter{}) {
 		current := managed.Task
-		if current.Scope != item.Scope || current.IdempotencyKey != item.IdempotencyKey {
+		if current.Scope != item.Scope {
 			continue
 		}
-		if current.OperationFingerprint != item.OperationFingerprint {
+		fingerprint, matched := IdempotencyKeyFingerprint(current, item.IdempotencyKey)
+		if !matched {
+			continue
+		}
+		if fingerprint != item.OperationFingerprint {
 			return Task{}, false, fmt.Errorf("%w: key %q", ErrIdempotencyConflict, item.IdempotencyKey)
 		}
 		return current, true, nil
 	}
 	return Task{}, false, nil
+}
+
+// FindIdempotent resolves an explicit idempotency key against the tasks this
+// manager already owns, without creating or running anything. It returns
+// ErrIdempotencyConflict when the key is bound to different content, and
+// found=false when the key is unused. Callers use it to honour keyed
+// idempotency without bypassing their own active-work de-duplication.
+func (m *Manager) FindIdempotent(item Task) (Task, bool, error) {
+	if m == nil || item.IdempotencyKey == "" {
+		return Task{}, false, nil
+	}
+	if item.Scope == "" {
+		item.Scope = ScopeForType(item.Type)
+	}
+	m.submitMu.Lock()
+	defer m.submitMu.Unlock()
+	return m.findIdempotent(item)
 }
 
 func normalizeManagedTaskCapabilities(item *Task) {
@@ -390,6 +497,25 @@ func (m *Manager) RetryTask(ctx context.Context, id string) error {
 		}
 	}
 	return fmt.Errorf("%w: %q", ErrNotFound, id)
+}
+
+// UpdateTask mutates a managed task outside a runner and broadcasts the update.
+// It is the mutable counterpart of GetTask for callers that must adjust durable
+// metadata before recovering a task (offline retry rewrites provider detail).
+func (m *Manager) UpdateTask(id string, fn func(*Task)) (Task, bool) {
+	if id == "" || fn == nil {
+		return Task{}, false
+	}
+	managed, ok := m.store.UpdateManaged(id, func(managed *ManagedTask) {
+		fn(&managed.Task)
+		normalizeManagedTaskCapabilities(&managed.Task)
+		managed.Task.UpdatedAt = time.Now().UTC()
+	})
+	if !ok {
+		return Task{}, false
+	}
+	m.broadcastTaskUpdated(managed.Task)
+	return managed.Task, true
 }
 
 func (m *Manager) RecoverTask(ctx context.Context, id string, run RunFunc) (Task, bool, error) {

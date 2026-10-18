@@ -3,6 +3,7 @@ package crypt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -130,6 +131,35 @@ func (d *resumableRawDriver) Capabilities() []drive.Capability {
 		drive.CapabilityWriter,
 	}
 }
+
+// offlineRawDriver implements the optional offline contract and declares every
+// offline capability, so the crypt wrapper's preservation can be asserted.
+type offlineRawDriver struct {
+	recordingRawDriver
+}
+
+func (d *offlineRawDriver) Capabilities() []drive.Capability {
+	return []drive.Capability{
+		drive.CapabilityOfflineDownload,
+		drive.CapabilityOfflineInspect,
+		drive.CapabilityOfflineSelection,
+		drive.CapabilityAcceleratedFetch,
+	}
+}
+
+func (d *offlineRawDriver) OfflineSourceKinds() []drive.OfflineSourceKind {
+	return []drive.OfflineSourceKind{drive.OfflineSourceMagnet}
+}
+
+func (d *offlineRawDriver) CreateOfflineDownload(context.Context, drive.OfflineDownloadRequest) (drive.OfflineDownload, error) {
+	return drive.OfflineDownload{ID: "raw-task", State: drive.OfflineStateQueued}, nil
+}
+
+func (d *offlineRawDriver) GetOfflineDownload(context.Context, string) (drive.OfflineDownload, error) {
+	return drive.OfflineDownload{ID: "raw-task", State: drive.OfflineStateRunning}, nil
+}
+
+func (d *offlineRawDriver) CancelOfflineDownload(context.Context, string) error { return nil }
 
 type hashRequiringRawDriver struct {
 	sourceWritableRawDriver
@@ -280,6 +310,66 @@ func TestDriverCapabilitiesFollowRawRuntimeCapabilities(t *testing.T) {
 	resumable := NewDriver(&resumableRawDriver{}, cp, DriverOptions{})
 	if !drive.HasCapability(resumable, drive.CapabilityResumableUploader) {
 		t.Fatal("crypt wrapper over resumable raw should report resumable uploader capability")
+	}
+}
+
+// TestDriverPreservesOfflineCapabilitiesAndContract: the crypt wrapper must keep
+// offline capabilities visible (so an encrypted parse destination surfaces the
+// encryption error, not "unsupported"), forward the optional contract when the
+// raw driver implements it, and report ErrUnsupported otherwise.
+func TestDriverPreservesOfflineCapabilitiesAndContract(t *testing.T) {
+	t.Parallel()
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain := NewDriver(&recordingRawDriver{}, cp, DriverOptions{})
+	for _, capability := range []drive.Capability{
+		drive.CapabilityOfflineDownload,
+		drive.CapabilityOfflineInspect,
+		drive.CapabilityOfflineSelection,
+		drive.CapabilityAcceleratedFetch,
+	} {
+		if drive.HasCapability(plain, capability) {
+			t.Fatalf("crypt wrapper over non-offline raw must not report %q", capability)
+		}
+	}
+	plainOffline, ok := any(plain).(drive.OfflineDownloader)
+	if !ok {
+		t.Fatal("crypt wrapper must always satisfy OfflineDownloader and report ErrUnsupported when unsupported")
+	}
+	if _, err := plainOffline.GetOfflineDownload(context.Background(), "t"); !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("unsupported raw offline lookup err = %v, want ErrUnsupported", err)
+	}
+
+	wrapped := NewDriver(&offlineRawDriver{}, cp, DriverOptions{})
+	for _, capability := range []drive.Capability{
+		drive.CapabilityOfflineDownload,
+		drive.CapabilityOfflineInspect,
+		drive.CapabilityOfflineSelection,
+		drive.CapabilityAcceleratedFetch,
+	} {
+		if !drive.HasCapability(wrapped, capability) {
+			t.Fatalf("crypt wrapper must preserve %q", capability)
+		}
+	}
+	if got := drive.OfflineSourceKinds(wrapped); len(got) != 1 || got[0] != drive.OfflineSourceMagnet {
+		t.Fatalf("wrapped source kinds = %v, want [magnet]", got)
+	}
+	offline, ok := any(wrapped).(drive.OfflineDownloader)
+	if !ok {
+		t.Fatal("crypt wrapper must satisfy OfflineDownloader when the raw driver does")
+	}
+	got, err := offline.GetOfflineDownload(context.Background(), "raw-task")
+	if err != nil {
+		t.Fatalf("GetOfflineDownload: %v", err)
+	}
+	if got.State != drive.OfflineStateRunning {
+		t.Fatalf("state = %q, want running", got.State)
+	}
+	if err := offline.CancelOfflineDownload(context.Background(), "raw-task"); err != nil {
+		t.Fatalf("CancelOfflineDownload: %v", err)
 	}
 }
 

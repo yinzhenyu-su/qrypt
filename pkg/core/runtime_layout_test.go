@@ -3,6 +3,7 @@ package core
 import (
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
@@ -19,6 +20,15 @@ func TestRuntimeRunDirIsolatedByConfigPath(t *testing.T) {
 	}
 	if filepath.Base(filepath.Dir(first)) != "run" || filepath.Base(filepath.Dir(second)) != "run" {
 		t.Fatalf("unexpected runtime directories: %q, %q", first, second)
+	}
+	// A read-only config directory must not be a prerequisite: the default
+	// runtime base is the application's own writable run directory, with a
+	// per-config subdirectory for isolation.
+	if got, want := filepath.Dir(first), DefaultRunDir(); got != want {
+		t.Fatalf("runtime base = %q, want the writable application base %q", got, want)
+	}
+	if filepath.IsAbs(dir) && strings.HasPrefix(first, filepath.Join(dir, "run")) {
+		t.Fatalf("runtime directory %q must not live under the config directory %q", first, dir)
 	}
 	// Endpoints are platform-native (see runtimeEndpointForOS): a socket path
 	// on unix, a named pipe on Windows. Either way they must hang off this

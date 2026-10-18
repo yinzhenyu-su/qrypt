@@ -8,6 +8,7 @@ import (
 	clidriver "github.com/yinzhenyu/qrypt/internal/cli/driver"
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
 	climount "github.com/yinzhenyu/qrypt/internal/cli/mount"
+	clioffline "github.com/yinzhenyu/qrypt/internal/cli/offline"
 	cliversion "github.com/yinzhenyu/qrypt/internal/cli/version"
 	buildinfo "github.com/yinzhenyu/qrypt/pkg/buildinfo" // registers all drivers via their init functions
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
@@ -45,6 +46,7 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(clidebug.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clidebug.NewProbeCommand(cliRuntime{}))
 	cmd.AddCommand(clicontrol.NewCommand(cliRuntime{}))
+	cmd.AddCommand(clioffline.NewCommand(cliRuntime{}))
 	cmd.AddCommand(cliversion.NewCommand(cliRuntime{}, build))
 	installFlagErrorHelp(cmd)
 

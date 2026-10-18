@@ -146,6 +146,13 @@ type UploadInspector interface {
 	PendingUploads() []PendingUpload
 }
 
+// UploadDiscarder drops an unflushed staging generation for path. It must not
+// touch any remote entry: callers use it after a failed write so a partial
+// generation is neither published nor recovered as an upload.
+type UploadDiscarder interface {
+	DiscardUpload(path string) error
+}
+
 type RemoteLister interface {
 	RemoteList(ctx context.Context, path string) ([]drive.Entry, error)
 }

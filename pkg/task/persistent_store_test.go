@@ -167,6 +167,50 @@ func TestPersistentStoreJournalsOnlyDurableStateChanges(t *testing.T) {
 	}
 }
 
+// TestPersistentStoreJournalsOfflineDetail proves the durable offline metadata
+// (notably the provider identifier persisted before polling) is journaled even
+// when the task state does not change, so a restart can resume by provider id.
+func TestPersistentStoreJournalsOfflineDetail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks", "tasks.jsonl")
+	store, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutManaged(ManagedTask{Task: Task{
+		ID:           "offline",
+		Type:         TypeOfflineDownload,
+		Operation:    OperationDownload,
+		State:        StateRunning,
+		Capabilities: Capabilities{Persistent: true, Cancelable: true},
+		Detail: map[string]any{OfflineDetailKey: map[string]any{
+			"source": "magnet:?xt=urn:btih:abc",
+		}},
+	}})
+	// The provider identifier arrives with no state transition.
+	store.UpdateManaged("offline", func(mt *ManagedTask) {
+		mt.Task.Detail[OfflineDetailKey] = map[string]any{
+			"source":      "magnet:?xt=urn:btih:abc",
+			"provider_id": "ptask-1",
+		}
+	})
+
+	reopened, err := NewPersistentStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reopened.GetManaged("offline")
+	if !ok {
+		t.Fatal("offline task missing after replay")
+	}
+	detail, ok := got.Task.Detail[OfflineDetailKey].(map[string]any)
+	if !ok {
+		t.Fatalf("offline detail missing after replay: %+v", got.Task.Detail)
+	}
+	if detail["provider_id"] != "ptask-1" {
+		t.Fatalf("provider id after replay = %v, want ptask-1", detail["provider_id"])
+	}
+}
+
 func TestPersistentStoreReportsStickyPersistenceFailure(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "tasks")

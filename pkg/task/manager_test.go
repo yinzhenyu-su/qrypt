@@ -3,9 +3,55 @@ package task
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// queuedGateStore blocks the runner's first GetManaged until release, so a test
+// can deterministically cancel a task while it is still queued.
+type queuedGateStore struct {
+	Store
+	calls   atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *queuedGateStore) GetManaged(id string) (ManagedTask, bool) {
+	if s.calls.Add(1) == 1 {
+		close(s.entered)
+		<-s.release
+	}
+	return s.Store.GetManaged(id)
+}
+
+func TestManagerQueuedExplicitCancelStaysCanceled(t *testing.T) {
+	store := &queuedGateStore{Store: NewMemoryStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	manager := NewManagerWithStore(store)
+	var started atomic.Bool
+	manager.Submit(context.Background(), Task{ID: "queued", Type: TypeDownload}, func(ctx context.Context, _ UpdateFunc) error {
+		started.Store(true)
+		return ctx.Err()
+	})
+	<-store.entered
+	if err := manager.CancelTask(context.Background(), "queued"); err != nil {
+		close(store.release)
+		manager.Close()
+		t.Fatal(err)
+	}
+	close(store.release)
+	manager.Close()
+	got, err := manager.GetTask(context.Background(), "queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateCanceled {
+		t.Fatalf("explicit cancellation before runner start became %s: %+v", got.State, got.Error)
+	}
+	if started.Load() {
+		t.Fatal("a task canceled while queued must not start its runner")
+	}
+}
 
 func TestManagerSubmitDetachesFromSubmitContext(t *testing.T) {
 	m := NewManager()
@@ -139,6 +185,43 @@ func TestManagerCancelOwnTask(t *testing.T) {
 	got := waitTaskState(t, m, "download-1", StateCanceled)
 	if got.State != StateCanceled {
 		t.Fatalf("task state = %s, want canceled", got.State)
+	}
+}
+
+func TestManagerCloseRecordsInterruptedNotCanceled(t *testing.T) {
+	m := NewManager()
+	entered := make(chan struct{})
+	m.Submit(context.Background(), Task{ID: "running-1", Type: TypeDownload, Capabilities: Capabilities{Cancelable: true}}, func(ctx context.Context, update UpdateFunc) error {
+		close(entered)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	<-entered
+	m.Close()
+	got, err := m.GetTask(context.Background(), "running-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateFailed {
+		t.Fatalf("state after shutdown = %s, want failed/interrupted", got.State)
+	}
+	if got.Error == nil || got.Error.Code != "interrupted" {
+		t.Fatalf("error after shutdown = %+v, want interrupted", got.Error)
+	}
+}
+
+func TestManagerRunnerCanRequestCanonicalCancellation(t *testing.T) {
+	m := NewManager()
+	defer m.Close()
+	m.Submit(context.Background(), Task{ID: "provider-canceled", Type: TypeDownload, Capabilities: Capabilities{Cancelable: true}}, func(ctx context.Context, update UpdateFunc) error {
+		update(func(item *Task) {
+			item.Error = &Error{Code: "canceled", Message: "provider canceled the task"}
+		})
+		return ErrCanceled
+	})
+	got := waitTaskState(t, m, "provider-canceled", StateCanceled)
+	if got.Error == nil || got.Error.Code != "canceled" {
+		t.Fatalf("canceled task error = %+v, want the runner's code", got.Error)
 	}
 }
 

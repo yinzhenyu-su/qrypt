@@ -48,6 +48,19 @@ func (v *VFS) PendingUploads() []PendingUpload {
 	return v.uploads.PendingUploads()
 }
 
+// DiscardUpload removes the pending upload state for path without touching the
+// remote entry. A failed transfer uses it so an incomplete staging generation
+// is not recovered and published later.
+func (v *VFS) DiscardUpload(path string) error {
+	path = vfstypes.CleanVirtualPath(path)
+	v.uploads.CancelUpload(path)
+	if err := v.uploads.RemoveUpload(path); err != nil {
+		return err
+	}
+	v.hashes.RemovePath(path)
+	return nil
+}
+
 // VFS wrapper methods delegating to uploadService. These exist for
 // backward compatibility with internal callers; the upload schedule
 // implementation lives in internal/upload.

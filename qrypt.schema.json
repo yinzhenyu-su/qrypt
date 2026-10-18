@@ -1031,6 +1031,11 @@
           "description": "Custom API v2 URL.",
           "type": "string",
           "x-example": "https://drive-m.quark.cn"
+        },
+        "wg_keys": {
+          "description": "Override wg data keys for offline requests as secureNo:hexkey pairs separated by commas.",
+          "type": "string",
+          "x-example": "14100:e21247a68938d36f"
         }
       },
       "additionalProperties": false
