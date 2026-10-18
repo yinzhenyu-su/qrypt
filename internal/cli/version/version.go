@@ -14,7 +14,10 @@ func NewCommand(rt cliruntime.ErrorFactory, info BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show build version information",
-		Args:  cliruntime.NoArgs(rt),
+		Long:  `Show the build version, commit, build time, Go version, and platform, or emit them as JSON with --json.`,
+		Example: `  qrypt version
+  qrypt version --json`,
+		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {

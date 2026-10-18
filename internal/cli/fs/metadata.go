@@ -12,6 +12,8 @@ func NewStatCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "stat REMOTE",
 		Short:             "Show path metadata",
+		Long:              `Show the size, type, and modification time of REMOTE.`,
+		Example:           `  qrypt fs stat /cloud/photos/cat.jpg`,
 		Args:              cliruntime.ExactNamedArgs(rt, "REMOTE"),
 		RunE:              runStat(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -45,6 +47,8 @@ func NewMkdirCmd(rt cliruntime.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "mkdir REMOTE",
 		Short:             "Create a directory",
+		Long:              `Create the directory REMOTE.`,
+		Example:           `  qrypt fs mkdir /cloud/photos/2026`,
 		Args:              cliruntime.ExactNamedArgs(rt, "REMOTE"),
 		RunE:              runMkdir(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -68,6 +72,8 @@ func NewRmCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "rm REMOTE",
 		Short:             "Remove a file or empty directory",
+		Long:              `Remove the file or empty directory REMOTE, waiting for the deletion to reach the backend.`,
+		Example:           `  qrypt fs rm /cloud/docs/old-report.pdf`,
 		Args:              cliruntime.ExactNamedArgs(rt, "REMOTE"),
 		RunE:              runRm(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -124,6 +130,8 @@ func NewMvCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "mv SOURCE DESTINATION",
 		Short:             "Rename or move a path",
+		Long:              `Rename or move SOURCE to DESTINATION.`,
+		Example:           `  qrypt fs mv /cloud/docs/draft.pdf /cloud/docs/final.pdf`,
 		Args:              cliruntime.ExactNamedArgs(rt, "SOURCE", "DESTINATION"),
 		RunE:              runMv(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,

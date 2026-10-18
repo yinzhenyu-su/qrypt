@@ -15,8 +15,13 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Create and inspect configuration",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Create a starter config, inspect the resolved config, validate it, and
+export the rclone-compatible encryption password for a mount.`,
+		Example: `  qrypt config init ./qrypt.toml
+  qrypt config show
+  qrypt config validate --config ./qrypt.toml`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	cmd.AddCommand(NewInitCmd(rt))
 	cmd.AddCommand(NewPathCmd(rt))
@@ -30,7 +35,11 @@ func NewValidateCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate configuration without connecting to remote drives",
-		Args:  cliruntime.NoArgs(rt),
+		Long: `Check that the config file parses and passes static validation. No remote
+drive is contacted, so this is safe to run before mounting.`,
+		Example: `  qrypt config validate
+  qrypt config validate --config ./qrypt.toml`,
+		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := rt.CommandConfig(cmd)
 			if err != nil {
@@ -54,7 +63,11 @@ func NewInitCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init [PATH]",
 		Short: "Write a starter config",
-		Args:  cliruntime.MaxArgs(rt, 1),
+		Long: `Write a commented starter config (and its local storage directory) to
+PATH, or ./qrypt.toml when PATH is omitted.`,
+		Example: `  qrypt config init
+  qrypt config init ./qrypt.toml --force`,
+		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
 			outPath := "./qrypt.toml"

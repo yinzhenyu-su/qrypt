@@ -103,6 +103,39 @@ func TestPrepareOfflineSourceReadsRelativeTorrentInTheCLI(t *testing.T) {
 	}
 }
 
+// TestOfflineProgressRenderer pins the shared progress renderer: it draws to its
+// writer (stderr), skips identical redraws, and terminates the line on finish.
+func TestOfflineProgressRenderer(t *testing.T) {
+	t.Parallel()
+
+	var buf strings.Builder
+	progress := newOfflineProgress(&buf)
+	item := task.Task{
+		State: task.StateRunning,
+		Progress: task.Progress{
+			Phase:              task.PhaseDownload,
+			TransferBytesDone:  512,
+			TransferBytesTotal: 1024,
+			ItemsDone:          1,
+			ItemsTotal:         2,
+		},
+	}
+	progress.render(item)
+	first := buf.String()
+	if !strings.Contains(first, "download") || !strings.Contains(first, "files 1/2") {
+		t.Fatalf("progress line = %q", first)
+	}
+	progress.render(item)
+	if buf.String() != first {
+		t.Fatalf("identical progress was redrawn: %q", buf.String())
+	}
+	progress.finish()
+	if !strings.HasSuffix(buf.String(), "\n") {
+		t.Fatalf("finish did not terminate the line: %q", buf.String())
+	}
+}
+
+// TestResolveLocalDestination covers relative, namespace, and absolute inputs.
 func TestResolveLocalDestination(t *testing.T) {
 	t.Parallel()
 
@@ -243,6 +276,9 @@ func TestCommandSurface(t *testing.T) {
 	}
 	if fetch.Flags().Lookup("keep-cloud") == nil || fetch.Flags().Lookup("no-wait") == nil {
 		t.Fatal("fetch must expose --keep-cloud and --no-wait")
+	}
+	if fetch.Flags().Lookup("wait") == nil || fetch.Flags().Lookup("flat") == nil {
+		t.Fatal("fetch must expose --wait and --flat")
 	}
 	if add.Flags().Lookup("parse-to") == nil && add.Flags().Lookup("mount") == nil {
 		t.Fatal("add must expose --parse-to or --mount")

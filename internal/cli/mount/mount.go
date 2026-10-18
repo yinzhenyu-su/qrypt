@@ -18,7 +18,9 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 		Use:   "mount [MOUNT_NAME]",
 		Short: "Mount configured drives with FUSE",
 		Long:  "Mount all configured drives as one local FUSE filesystem, or mount one configured drive by name. Uses mount_point from config unless --mount-point is set.",
-		Args:  cliruntime.MaxArgs(rt, 1),
+		Example: `  qrypt mount
+  qrypt mount cloud --mount-point /mnt/qrypt`,
+		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := rt.CommandConfig(cmd)
 			if err != nil {

@@ -41,6 +41,9 @@ var (
 	// ErrOfflineSourceUnsupported means the provider does not accept the
 	// normalized source kind.
 	ErrOfflineSourceUnsupported = errors.New("core: unsupported offline source kind")
+	// ErrOfflinePathInvalid means a staged result path cannot be placed safely
+	// at the final destination.
+	ErrOfflinePathInvalid = errors.New("core: offline staged path is not usable")
 	// ErrOfflineNotRunning means no Core owns the task store for the request.
 	ErrOfflineNotRunning = errors.New("core: no running Core owns the offline task store")
 )
@@ -70,6 +73,9 @@ type offlineSpec struct {
 	downloadMount string
 	keepCloud     bool
 	accelerated   bool
+	// flat forces a fetch to place every file by its own name instead of
+	// mirroring the staged layout.
+	flat bool
 	// transferWorkers and transferChunk tune the URL transfer: how many
 	// bounded Range requests run at once and how many bytes each covers. Zero
 	// means the Core defaults.
@@ -278,6 +284,7 @@ func (c *Core) resolveOfflineSpec(ctx context.Context, req task.OfflineOperation
 		}
 		spec.transferWorkers = req.Workers
 		spec.transferChunk = req.ChunkSize
+		spec.flat = req.Flat
 		spec.downloadTo = req.DownloadTo
 		spec.downloadMount = downloadMount
 		spec.downloadDir = downloadDir
@@ -285,6 +292,8 @@ func (c *Core) resolveOfflineSpec(ctx context.Context, req task.OfflineOperation
 		// A provider without accelerated fetch still fetches through its
 		// normal download URL; the flag only enables the accelerated attempt.
 		spec.accelerated = drive.HasCapability(driver, drive.CapabilityAcceleratedFetch)
+	} else if req.Flat {
+		return offlineSpec{}, fmt.Errorf("%w: --flat needs a download destination", task.ErrInvalidOperation)
 	}
 	return spec, nil
 }
@@ -619,6 +628,7 @@ func (s offlineSpec) detail() offlineDetail {
 		detail.DownloadDir = s.downloadDir
 		detail.KeepCloud = s.keepCloud
 		detail.Accelerated = s.accelerated
+		detail.Flat = s.flat
 		detail.TransferWorkers = s.transferWorkers
 		detail.TransferChunk = s.transferChunk
 	}

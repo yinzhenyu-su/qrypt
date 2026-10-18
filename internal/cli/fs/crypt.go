@@ -26,6 +26,8 @@ stored on the backend, using the mount's [mounts.encryption] settings.
 Useful to verify what a plaintext name looks like on the remote drive.
 
 MOUNT defaults to the first mount with encryption configured.`,
+		Example: `  qrypt fs crypt-encode /cloud/photos/cat.jpg
+  qrypt fs crypt-encode cloud /cloud/photos/cat.jpg`,
 		Args:              cliruntime.RangeArgs(rt, 1, 2),
 		RunE:              func(cmd *cobra.Command, args []string) error { return RunCrypt(rt, cmd, args, false) },
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -43,6 +45,8 @@ plaintext virtual path, using the mount's [mounts.encryption] settings.
 Useful to identify which local file a backend filename belongs to.
 
 MOUNT defaults to the first mount with encryption configured.`,
+		Example: `  qrypt fs crypt-decode cloud /cloud/photos/8f3a2b...
+  qrypt fs crypt-decode 8f3a2b...`,
 		Args:              cliruntime.RangeArgs(rt, 1, 2),
 		RunE:              func(cmd *cobra.Command, args []string) error { return RunCrypt(rt, cmd, args, true) },
 		ValidArgsFunction: cliruntime.NoFileCompletions,

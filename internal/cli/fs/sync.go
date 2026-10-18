@@ -28,6 +28,8 @@ compared against the VFS plaintext view (encryption is transparent).
 
 Exit code: 0 on success (also for --dry-run plans), 3 when some files
 failed, 2 on usage errors, 1 on overall failures.`,
+		Example: `  qrypt fs sync ./photos /cloud/photos
+  qrypt fs sync /cloud/photos ./photos --delete --dry-run`,
 		Args:              cliruntime.ExactNamedArgs(rt, "SOURCE", "DESTINATION"),
 		RunE:              runSync(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,

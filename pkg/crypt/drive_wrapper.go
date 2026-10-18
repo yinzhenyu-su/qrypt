@@ -115,6 +115,14 @@ func (d *Driver) GetOfflineDownload(ctx context.Context, id string) (drive.Offli
 	return offline.GetOfflineDownload(ctx, id)
 }
 
+// RestoreOfflineLayout forwards persisted output identity to a raw provider
+// that can use it; a provider without the capability ignores it.
+func (d *Driver) RestoreOfflineLayout(layout drive.OfflineLayout) {
+	if restorer, ok := d.raw.(drive.OfflineLayoutRestorer); ok {
+		restorer.RestoreOfflineLayout(layout)
+	}
+}
+
 // CancelOfflineDownload forwards to the raw driver when it implements the
 // optional offline contract.
 func (d *Driver) CancelOfflineDownload(ctx context.Context, id string) error {

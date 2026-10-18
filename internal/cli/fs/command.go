@@ -10,8 +10,13 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fs",
 		Short: "Run one-shot filesystem operations",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Run one-shot filesystem operations against the configured mounts: list,
+read, write, transfer, compare, and inspect files without mounting.`,
+		Example: `  qrypt fs list /cloud/photos
+  qrypt fs get /cloud/photos/cat.jpg ./cat.jpg
+  qrypt fs put ./report.pdf /cloud/docs/report.pdf`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	rt.WithPersistentRuntimeConfigFlag(cmd)
 	rt.WithFSBandwidthFlags(cmd)

@@ -21,9 +21,21 @@ type offlineTestServer struct {
 	taskStatus  map[string]any
 	downloadReq map[string]any
 
-	taskID      string
-	session     string
-	downloadURL string
+	taskID       string
+	rootFid      string
+	submitDirFid string
+	taskState    int
+	session      string
+	downloadURL  string
+
+	// queued makes /task report a still-running task; sortTree answers
+	// /file/sort per parent fid; resultList overrides the /task result list.
+	queued     bool
+	notInstant bool
+	sortTree   map[string][]map[string]any
+	sortFail   map[string]bool
+	sortCode   map[string]int
+	resultList []map[string]any
 }
 
 func (s *offlineTestServer) handler() http.Handler {
@@ -31,6 +43,10 @@ func (s *offlineTestServer) handler() http.Handler {
 		switch r.URL.Path {
 		case "/offline/download/parse":
 			s.parse = s.decodeWG(r)
+			finish := 1
+			if s.notInstant {
+				finish = 0
+			}
 			writeJSON(s.t, w, map[string]any{
 				"status": 200, "code": 0,
 				"token": "parse-token_m", "finished": true,
@@ -39,11 +55,19 @@ func (s *offlineTestServer) handler() http.Handler {
 					{"file_no": 0, "file_name": "ep1.mkv", "size": 1000},
 					{"file_no": 1, "file_name": "ep2.mkv", "size": 234},
 				},
-				"resource_info": map[string]any{"download_task_finish": 1},
+				"resource_info": map[string]any{"download_task_finish": finish},
 			})
 		case "/offline/download/submit":
 			s.submit = s.decodeWG(r)
-			data := map[string]any{"task_id": s.taskID, "fid": "fid-1", "dir_fid": "dir-1"}
+			rootFid := s.rootFid
+			if rootFid == "" {
+				rootFid = "fid-1"
+			}
+			dirFid := s.submitDirFid
+			if dirFid == "" {
+				dirFid = "dir-1"
+			}
+			data := map[string]any{"task_id": s.taskID, "fid": rootFid, "dir_fid": dirFid}
 			if s.session != "" {
 				data["speedup_dl_info"] = map[string]any{"speedup_session": s.session}
 			}
@@ -56,14 +80,38 @@ func (s *offlineTestServer) handler() http.Handler {
 				"path_files": []map[string]any{{"fid": "system-dir", "pdir_fid": "0"}},
 			}})
 		case "/task":
+			status := 2
+			if s.taskState != 0 {
+				status = s.taskState
+			} else if s.queued {
+				status = 0
+			}
+			list := s.resultList
+			if list == nil {
+				list = []map[string]any{{"fid": "fid-1", "file_name": "ep1.mkv", "size": 1000}}
+			}
 			writeJSON(s.t, w, map[string]any{
 				"status": 200, "code": 0,
 				"data": map[string]any{
-					"task_id": r.URL.Query().Get("task_id"), "status": 2, "progress": 1000,
-					"offdl_result": map[string]any{"list": []map[string]any{
-						{"fid": "fid-1", "file_name": "ep1.mkv", "size": 1000},
-					}},
+					"task_id": r.URL.Query().Get("task_id"), "status": status, "progress": 1000,
+					"offdl_result": map[string]any{"list": list},
 				},
+			})
+		case "/file/sort":
+			parent := r.URL.Query().Get("pdir_fid")
+			if s.sortFail[parent] {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if code := s.sortCode[parent]; code != 0 {
+				writeJSON(s.t, w, map[string]any{"status": 400, "code": code, "message": "provider rejected the listing"})
+				return
+			}
+			entries := s.sortTree[parent]
+			writeJSON(s.t, w, map[string]any{
+				"status": 200, "code": 0,
+				"metadata": map[string]any{"_total": len(entries)},
+				"data":     map[string]any{"list": entries},
 			})
 		case "/file/download":
 			_ = json.NewDecoder(r.Body).Decode(&s.downloadReq)
@@ -337,5 +385,120 @@ func TestOfflineSystemPathDirectoryFid(t *testing.T) {
 	}
 	if got := empty.dirFid(); got != "" {
 		t.Fatalf("empty fid = %q, want empty", got)
+	}
+}
+
+// TestOfflineDownloadResolvesStagedPaths verifies a completed task resolves each
+// result file's staged relative path from the output root and picks up a file
+// the result list omitted.
+func TestOfflineDownloadResolvesStagedPaths(t *testing.T) {
+	t.Parallel()
+
+	fake := &offlineTestServer{
+		t: t, taskID: "task-layout", downloadURL: "https://cdn.example/x",
+		sortTree: map[string][]map[string]any{
+			"dir-1": {
+				{"fid": "fid-1", "file_name": "release", "file": false},
+			},
+			"fid-1": {
+				{"fid": "fid-ep1", "file_name": "ep1.mkv", "size": 1000, "file": true},
+				{"fid": "fid-readme", "file_name": "readme.txt", "size": 5, "file": true},
+			},
+		},
+		resultList: []map[string]any{{"fid": "fid-ep1", "file_name": "ep1.mkv", "size": 1000}},
+	}
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+	driver := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
+
+	if _, err := driver.CreateOfflineDownload(context.Background(), drive.OfflineDownloadRequest{
+		SourceKind: drive.OfflineSourceMagnet, Source: "magnet:?xt=urn:btih:abcdef", Destination: "/",
+	}); err != nil {
+		t.Fatalf("CreateOfflineDownload: %v", err)
+	}
+	obs, err := driver.GetOfflineDownload(context.Background(), "task-layout")
+	if err != nil {
+		t.Fatalf("GetOfflineDownload: %v", err)
+	}
+	if !obs.Available {
+		t.Fatal("a succeeded task should report availability")
+	}
+	byID := map[string]drive.OfflineFile{}
+	for _, file := range obs.Files {
+		byID[file.RemoteID] = file
+	}
+	if got := byID["fid-ep1"].Path; got != "release/ep1.mkv" {
+		t.Fatalf("ep1 path = %q, want release/ep1.mkv", got)
+	}
+	if got := byID["fid-readme"].Path; got != "release/readme.txt" {
+		t.Fatalf("discovered readme path = %q, want release/readme.txt", got)
+	}
+}
+
+// TestOfflineDownloadReportsAvailabilityBeforeTerminal verifies an instant-save
+// resource reports availability while the task is still queued.
+func TestOfflineDownloadReportsAvailabilityBeforeTerminal(t *testing.T) {
+	t.Parallel()
+
+	fake := &offlineTestServer{
+		t: t, taskID: "task-instant", downloadURL: "https://cdn.example/x", queued: true,
+		sortTree: map[string][]map[string]any{
+			"dir-1": {{"fid": "fid-1", "file_name": "release", "file": false}},
+			"fid-1": {{"fid": "fid-ep1", "file_name": "ep1.mkv", "size": 1000, "file": true}},
+		},
+		resultList: []map[string]any{{"fid": "fid-ep1", "file_name": "ep1.mkv", "size": 1000}},
+	}
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+	driver := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
+
+	created, err := driver.CreateOfflineDownload(context.Background(), drive.OfflineDownloadRequest{
+		SourceKind: drive.OfflineSourceMagnet, Source: "magnet:?xt=urn:btih:abcdef", Destination: "/",
+	})
+	if err != nil {
+		t.Fatalf("CreateOfflineDownload: %v", err)
+	}
+	if !created.Available {
+		t.Fatal("an instant-save resource should report availability at submit")
+	}
+	obs, err := driver.GetOfflineDownload(context.Background(), "task-instant")
+	if err != nil {
+		t.Fatalf("GetOfflineDownload: %v", err)
+	}
+	if obs.State != drive.OfflineStateQueued {
+		t.Fatalf("state = %q, want queued", obs.State)
+	}
+	if !obs.Available {
+		t.Fatal("a queued instant-save task should still report availability")
+	}
+}
+
+// TestOfflineDownloadNoAvailabilityWhenNotInstant verifies a non-instant,
+// still-running task reports no availability.
+func TestOfflineDownloadNoAvailabilityWhenNotInstant(t *testing.T) {
+	t.Parallel()
+
+	fake := &offlineTestServer{
+		t: t, taskID: "task-plain", downloadURL: "https://cdn.example/x", queued: true, notInstant: true,
+	}
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+	driver := New("k=v", Options{BaseURL: server.URL, V2URL: server.URL})
+
+	created, err := driver.CreateOfflineDownload(context.Background(), drive.OfflineDownloadRequest{
+		SourceKind: drive.OfflineSourceMagnet, Source: "magnet:?xt=urn:btih:abcdef", Destination: "/",
+	})
+	if err != nil {
+		t.Fatalf("CreateOfflineDownload: %v", err)
+	}
+	if created.Available {
+		t.Fatal("a non-instant resource should not report availability at submit")
+	}
+	obs, err := driver.GetOfflineDownload(context.Background(), "task-plain")
+	if err != nil {
+		t.Fatalf("GetOfflineDownload: %v", err)
+	}
+	if obs.Available {
+		t.Fatal("a running non-instant task should not report availability")
 	}
 }

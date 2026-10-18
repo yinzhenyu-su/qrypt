@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
@@ -112,7 +113,11 @@ func CommandGroupArgs(rt ErrorFactory, hints map[string]string) cobra.Positional
 		if hint := hints[args[0]]; hint != "" {
 			return rt.UsageError(cmd, "%s", hint)
 		}
-		return rt.UsageError(cmd, "unknown command %q for %q\n\nRun '%s --help' to see available commands.", args[0], cmd.CommandPath(), cmd.CommandPath())
+		message := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+		if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
+			message += "\n\nDid you mean this?\n\t" + strings.Join(suggestions, "\n\t")
+		}
+		return rt.UsageError(cmd, "%s", message)
 	}
 }
 
@@ -162,6 +167,38 @@ func ExactNamedArgs(rt ErrorFactory, names ...string) cobra.PositionalArgs {
 
 func NoFileCompletions(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// helpGroupAnnotation tags a flag with its help group. Only the advanced group
+// is meaningful today: those flags are hidden from the default help and revealed
+// by the deep-help form.
+const helpGroupAnnotation = "qrypt.io/help-group"
+
+// MarkAdvancedFlag hides a flag from the default help. The flag still works when
+// passed; the deep-help form (`--advanced`) reveals it alongside the common
+// flags.
+func MarkAdvancedFlag(flag *pflag.Flag) {
+	if flag == nil {
+		return
+	}
+	if flag.Annotations == nil {
+		flag.Annotations = map[string][]string{}
+	}
+	flag.Annotations[helpGroupAnnotation] = []string{"advanced"}
+	flag.Hidden = true
+}
+
+// IsAdvancedFlag reports whether a flag was marked advanced.
+func IsAdvancedFlag(flag *pflag.Flag) bool {
+	if flag == nil {
+		return false
+	}
+	for _, group := range flag.Annotations[helpGroupAnnotation] {
+		if group == "advanced" {
+			return true
+		}
+	}
+	return false
 }
 
 func NonNegativeIntFlag(cmd *cobra.Command, name string) (int, error) {

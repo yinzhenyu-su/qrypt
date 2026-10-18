@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 // Offline runner tuning. The poll interval starts at defaultOfflinePollInterval
@@ -39,6 +42,13 @@ type offlineRun struct {
 	pollInterval    time.Duration
 	missingWindow   time.Duration
 	transientErrors int
+	// available records that the provider reported the staged result set is
+	// complete, so a fetch may transfer before the task terminalizes.
+	available bool
+	// localRoot is the pinned local destination root for the duration of one
+	// transfer. It is nil for namespace destinations and between phases.
+	localRoot     *os.Root
+	localRootPath string
 }
 
 func (c *Core) newOfflineRun(ctx context.Context, taskID string, fetch bool) (*offlineRun, error) {
@@ -58,6 +68,17 @@ func (c *Core) newOfflineRun(ctx context.Context, taskID string, fetch bool) (*o
 	if c.offlineMissingWindow > 0 {
 		missingWindow = c.offlineMissingWindow
 	}
+	// A fresh driver instance has no in-process memory of this task's output
+	// tree. Hand it the identity Core persisted so it can resolve the same
+	// staged layout after recovery.
+	if restorer, ok := driver.(drive.OfflineLayoutRestorer); ok && detail.ProviderID != "" {
+		restorer.RestoreOfflineLayout(drive.OfflineLayout{
+			TaskID:    detail.ProviderID,
+			RootID:    detail.ProviderRootID,
+			ParentID:  detail.ParseRemoteID,
+			Available: detail.Available,
+		})
+	}
 	return &offlineRun{
 		core:          c,
 		taskID:        taskID,
@@ -66,6 +87,7 @@ func (c *Core) newOfflineRun(ctx context.Context, taskID string, fetch bool) (*o
 		driver:        driver,
 		pollInterval:  c.offlinePollEvery(),
 		missingWindow: missingWindow,
+		available:     detail.Available,
 	}, nil
 }
 
@@ -118,31 +140,47 @@ func (r *offlineRun) runFetch(ctx context.Context, update task.UpdateFunc) error
 		if err := r.ensureProvider(ctx, update); err != nil {
 			return r.fail(update, err)
 		}
-		// A provider whose create call does not report the staged files (Quark
-		// reports them only from its task endpoint) needs one observation
-		// before an accelerated transfer can ask for a download URL, so the
-		// transfer can start while the provider task is still running.
-		if r.detail.Accelerated && len(r.detail.ResultFiles) == 0 {
-			r.observeStagedFiles(ctx, update)
-		}
-		acceleratedURL, acceleratedErr := r.tryAcceleratedURL(ctx)
-		if acceleratedErr == nil && acceleratedURL.URL != "" {
-			r.detail.Phase = offlinePhaseTransfer
-			r.persist(update, r.detail)
-		} else {
-			observation, err := r.pollToTerminal(ctx, update)
+		// Always take a fresh observation. The create response can already say
+		// the staged results are complete, but it may also be stale: a latest
+		// failed or canceled state must win before any transfer or cleanup.
+		observation, err := r.observeStagedFiles(ctx, update)
+		if err != nil {
+			if ctx.Err() != nil {
+				return r.failInterrupted(update, ctx.Err())
+			}
+			// A single lookup may be transient; the polling loop owns retries
+			// and the missing-task window instead of turning that into a
+			// no-files failure here.
+			observation, err = r.pollToTerminal(ctx, update)
 			if err != nil {
 				return r.fail(update, err)
 			}
-			if observation.State == drive.OfflineStateCanceled {
-				return r.failCanceled(update)
+		} else if !offlineProviderTerminal(observation.State) && !r.fetchReady() {
+			observation, err = r.pollToTerminal(ctx, update)
+			if err != nil {
+				return r.fail(update, err)
 			}
+		}
+		switch observation.State {
+		case drive.OfflineStateCanceled:
+			return r.failCanceled(update)
+		case drive.OfflineStateSucceeded:
 			if err := r.completeStaging(ctx, update, observation); err != nil {
 				return r.fail(update, err)
 			}
-			r.detail.Phase = offlinePhaseTransfer
-			r.persist(update, r.detail)
+		case drive.OfflineStateFailed:
+			if err := r.completeStaging(ctx, update, observation); err != nil {
+				return r.fail(update, err)
+			}
+		default:
+			// Availability means the complete result set is known; without it
+			// there is nothing safe to transfer.
+			if !r.fetchReady() {
+				return r.fail(update, fmt.Errorf("core: offline fetch result set is not available"))
+			}
 		}
+		r.detail.Phase = offlinePhaseTransfer
+		r.persist(update, r.detail)
 	}
 	if r.detail.Phase == offlinePhaseTransfer {
 		if err := r.transferPhase(ctx, update); err != nil {
@@ -199,13 +237,20 @@ func (r *offlineRun) ensureProvider(ctx context.Context, update task.UpdateFunc)
 	if created.Destination != "" {
 		r.detail.ParseRemoteID = created.Destination
 	}
-	// A provider may report the staged files (or a single fid) immediately.
-	// Keep them so an accelerated fetch can request a download URL before the
-	// task completes; later observations merge into the same identities.
+	// The provider's submit response names the entry the task produced (the
+	// resource root). A fetch walks down from it to resolve each result file's
+	// staged relative path.
+	if created.RemoteID != "" {
+		r.detail.ProviderRootID = created.RemoteID
+	}
+	if created.Available {
+		r.available = true
+		r.detail.Available = true
+	}
+	// A provider may report the staged files immediately; keep them so a fetch
+	// can resolve the layout without a second observation.
 	if len(created.Files) > 0 {
 		r.detail.ResultFiles = mergeOfflineResultFiles(r.detail.ResultFiles, offlineResultFilesFromDrive(created.Files))
-	} else if created.RemoteID != "" && len(r.detail.ResultFiles) == 0 {
-		r.detail.ResultFiles = []offlineResultFile{{RemoteID: created.RemoteID}}
 	}
 	r.detail.setObservation(observationFromDownload(created))
 	r.persist(update, r.detail)
@@ -223,22 +268,40 @@ func (r *offlineRun) ensureProvider(ctx context.Context, update task.UpdateFunc)
 	return nil
 }
 
-// observeStagedFiles records one provider observation so an accelerated
-// transfer can resolve the staged files before the task reaches a terminal
-// state. A provider that reports nothing yet is not an error here: polling
-// continues and reports the failure if the task never resolves.
-func (r *offlineRun) observeStagedFiles(ctx context.Context, update task.UpdateFunc) {
+// observeStagedFiles records one provider observation so a fetch can resolve
+// the staged files and the provider's availability signal before the task
+// reaches a terminal state. A lookup error is returned so the caller can retry
+// through the polling loop instead of treating it as an empty result set.
+func (r *offlineRun) observeStagedFiles(ctx context.Context, update task.UpdateFunc) (drive.OfflineDownload, error) {
 	provider, err := r.provider()
 	if err != nil {
-		return
+		return drive.OfflineDownload{}, err
 	}
 	observation, err := provider.GetOfflineDownload(ctx, r.detail.ProviderID)
 	if err != nil {
-		return
+		return drive.OfflineDownload{}, err
+	}
+	r.recordObservation(update, observation)
+	return observation, nil
+}
+
+// fetchReady reports whether a fetch may transfer: the provider signaled a
+// complete staged result set and that set has at least one file.
+func (r *offlineRun) fetchReady() bool {
+	return r.available && len(r.detail.ResultFiles) > 0
+}
+
+// recordObservation folds one provider observation into the retained detail.
+func (r *offlineRun) recordObservation(update task.UpdateFunc, observation drive.OfflineDownload) {
+	if observation.Available {
+		// Availability is monotonic: a later thin observation that omits the
+		// flag must not discard a complete set the provider already reported.
+		r.available = true
+		r.detail.Available = true
 	}
 	r.detail.setObservation(observationFromDownload(observation))
 	if len(observation.Files) > 0 {
-		r.detail.ResultFiles = offlineResultFilesFromDrive(observation.Files)
+		r.detail.ResultFiles = mergeOfflineResultFiles(r.detail.ResultFiles, offlineResultFilesFromDrive(observation.Files))
 	}
 	r.persist(update, r.detail)
 	r.applyObservation(update, observation, offlinePhaseStaging)
@@ -295,16 +358,14 @@ func (r *offlineRun) pollToTerminal(ctx context.Context, update task.UpdateFunc)
 			continue
 		}
 		r.transientErrors = 0
-		r.detail.setObservation(observationFromDownload(observation))
-		// Retain any files the provider reports before completion so a later
-		// disappearance can still be reconciled against the destination.
-		if len(observation.Files) > 0 {
-			r.detail.ResultFiles = offlineResultFilesFromDrive(observation.Files)
-		}
-		r.persist(update, r.detail)
-		r.applyObservation(update, observation, offlinePhaseStaging)
+		r.recordObservation(update, observation)
 		switch observation.State {
 		case drive.OfflineStateSucceeded, drive.OfflineStateFailed, drive.OfflineStateCanceled:
+			return observation, nil
+		}
+		// A fetch may stop polling once the complete result set is known; a
+		// cloud-only download still waits for the provider's terminal state.
+		if r.fetch && r.fetchReady() {
 			return observation, nil
 		}
 		hint := interval
@@ -398,29 +459,26 @@ func (r *offlineRun) verifyDestination(ctx context.Context) bool {
 	return false
 }
 
-// destinationHasResults lists the staging directory once and matches it against
-// the reported result files. Reconciliation may only claim success when every
-// file this task expects is present; other entries in the directory are not
-// evidence about this task.
+// destinationHasResults lists the staging directory tree and matches it against
+// the reported result files by staged relative path. Reconciliation may only
+// claim success when every file this task expects is present; other entries in
+// the directory are not evidence about this task.
 func (r *offlineRun) destinationHasResults(ctx context.Context) bool {
-	entries, err := r.core.fs.List(ctx, trimTrailingSlash(r.stagingRoot()))
-	if err != nil {
-		return false
-	}
-	available := map[string]int64{}
-	for _, entry := range entries {
-		available[entry.Name] = entry.Size
-	}
 	if len(r.detail.ResultFiles) == 0 {
 		return false
 	}
+	available, err := r.listStagedTree(ctx, r.stagingRoot(), 0)
+	if err != nil {
+		return false
+	}
 	for _, file := range r.detail.ResultFiles {
-		if file.Name == "" {
-			// An unnamed identity (for example the fid from a create
-			// response) cannot be verified against a listing.
+		rel := strings.ReplaceAll(stagedPathOf(file), "\\", "/")
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" {
+			// An unnamed identity cannot be verified against a listing.
 			return false
 		}
-		size, ok := available[file.Name]
+		size, ok := available[rel]
 		if !ok {
 			return false
 		}
@@ -429,6 +487,33 @@ func (r *offlineRun) destinationHasResults(ctx context.Context) bool {
 		}
 	}
 	return true
+}
+
+// listStagedTree maps every file under root, recursively, to its size keyed by
+// its path relative to root.
+func (r *offlineRun) listStagedTree(ctx context.Context, root string, depth int) (map[string]int64, error) {
+	out := map[string]int64{}
+	if depth > offlineMaxPathDepth {
+		return out, nil
+	}
+	entries, err := r.core.fs.List(ctx, trimTrailingSlash(root))
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir {
+			nested, err := r.listStagedTree(ctx, vfstypes.JoinVirtualPath(root, entry.Name), depth+1)
+			if err != nil {
+				return nil, err
+			}
+			for name, size := range nested {
+				out[entry.Name+"/"+name] = size
+			}
+			continue
+		}
+		out[entry.Name] = entry.Size
+	}
+	return out, nil
 }
 
 // cancelProviderTask removes the provider task on cancellation, using a context
@@ -542,25 +627,6 @@ func (r *offlineRun) applyObservation(update task.UpdateFunc, observation drive.
 	})
 }
 
-// tryAcceleratedURL asks for an accelerated download URL before the provider
-// task completes. A missing session degrades to the normal path instead of
-// failing the fetch.
-func (r *offlineRun) tryAcceleratedURL(ctx context.Context) (drive.OfflineDownloadTarget, error) {
-	if !r.detail.Accelerated {
-		return drive.OfflineDownloadTarget{}, fmt.Errorf("accelerated fetch is not enabled")
-	}
-	fetcher, ok := r.driver.(drive.OfflineFetcher)
-	if !ok {
-		return drive.OfflineDownloadTarget{}, fmt.Errorf("provider does not expose download URLs")
-	}
-	return fetcher.OfflineDownloadURL(ctx, drive.OfflineFetchRequest{
-		ID:          r.detail.ProviderID,
-		Destination: r.detail.ParseDir,
-		Files:       offlineFilesFromDetail(r.detail.ResultFiles),
-		Accelerated: true,
-	})
-}
-
 func observationFromDownload(download drive.OfflineDownload) offlineObservation {
 	return offlineObservation{
 		State:         string(download.State),
@@ -574,9 +640,23 @@ func observationFromDownload(download drive.OfflineDownload) offlineObservation 
 	}
 }
 
+// offlineProviderTerminal reports whether a provider state ends observation.
+func offlineProviderTerminal(state drive.OfflineState) bool {
+	switch state {
+	case drive.OfflineStateSucceeded, drive.OfflineStateFailed, drive.OfflineStateCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
 func offlineMissing(err error) bool {
+	// Only an explicit "task not found" may be reconciled from the destination.
+	// A transient provider-unavailable error (including an incomplete layout
+	// walk) must stay an error: reconciling retained result files could
+	// synthesize success for a partial set and then transfer and clean it up.
 	offline, ok := drive.AsOfflineError(err)
-	return ok && (offline.Code == drive.OfflineErrProviderTaskMissing || offline.Code == drive.OfflineErrProviderUnavailable)
+	return ok && offline.Code == drive.OfflineErrProviderTaskMissing
 }
 
 func offlineRetryable(err error) bool {
@@ -597,6 +677,8 @@ func offlineErrorCode(err error) (string, bool) {
 	switch {
 	case errors.Is(err, ErrOfflineSameDestination):
 		return string(drive.OfflineErrSameDestination), false
+	case errors.Is(err, ErrOfflinePathInvalid):
+		return string(drive.OfflineErrPathInvalid), false
 	case errors.Is(err, ErrOfflineUnsupported), errors.Is(err, ErrOfflineSourceUnsupported):
 		return string(drive.OfflineErrSourceUnsupported), false
 	case errors.Is(err, ErrOfflineEncryptedParseDestination):

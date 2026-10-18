@@ -362,6 +362,7 @@ provider; the cloud-side result stays on the provider.`,
 	cmd.Flags().String("idempotency-key", "", "explicit idempotency key")
 	cmd.Flags().Bool("wait", false, "wait for the task to reach a terminal state")
 	cmd.Flags().Bool("json", false, "output the task snapshot as JSON")
+	cliruntime.MarkAdvancedFlag(cmd.Flags().Lookup("idempotency-key"))
 	addSelectionFlags(cmd)
 	return withOfflineEndpoint(rt, cmd)
 }
@@ -372,10 +373,14 @@ func newFetchCommand(rt cliruntime.Runtime) *cobra.Command {
 		Short: "Stage a source in the cloud, then transfer it to a final destination",
 		Long: `Stage a source on the provider, then transfer the result to --download-to.
 The destination may be a qrypt namespace path, a path inside the mount tree, or
-a plain local path. If it is an existing directory (or ends with a path
-separator), each selected file is written under it by name.`,
+a plain local path. When it is a directory, each selected file is written under
+it at its staged relative path, recreating the provider's folders; --flat writes
+by file name instead. By default the command prints the task and returns while
+the transfer continues in the Core; --wait blocks until the destination is
+written and renders progress.`,
 		Example: `  qrypt offline fetch "magnet:?xt=urn:btih:..." --parse-to /quark/downloads --download-to ~/Downloads
-  qrypt offline fetch https://example.com/file.iso --parse-to /quark/downloads --download-to ./out/ --keep-cloud`,
+  qrypt offline fetch https://example.com/file.iso --parse-to /quark/downloads --download-to ./out/ --keep-cloud
+  qrypt offline fetch "magnet:?xt=urn:btih:..." --mount quark --download-to ~/Downloads --wait`,
 		Args: sourceArgs(rt, "fetch"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireProviderSelection(rt, cmd); err != nil {
@@ -390,7 +395,7 @@ separator), each selected file is written under it by name.`,
 				return rt.UsageError(cmd, "%s", err.Error())
 			}
 			jsonOut, _ := cmd.Flags().GetBool("json")
-			noWait, _ := cmd.Flags().GetBool("no-wait")
+			wait, _ := cmd.Flags().GetBool("wait")
 			downloadTo, err := resolveLocalDestination(cliruntime.FlagStringValue(cmd, "download-to"))
 			if err != nil {
 				return rt.UsageError(cmd, "resolve --download-to: %s", err.Error())
@@ -415,6 +420,7 @@ separator), each selected file is written under it by name.`,
 			req.Mkdir, _ = cmd.Flags().GetBool("mkdir")
 			req.New, _ = cmd.Flags().GetBool("new")
 			req.KeepCloud, _ = cmd.Flags().GetBool("keep-cloud")
+			req.Flat, _ = cmd.Flags().GetBool("flat")
 			workers, chunkSize, err := transferTuning(cmd)
 			if err != nil {
 				return rt.UsageError(cmd, "%s", err.Error())
@@ -425,12 +431,25 @@ separator), each selected file is written under it by name.`,
 			if err != nil {
 				return finishError(rt, noCoreError(err))
 			}
-			if noWait {
-				// --no-wait returns once staging is admitted; the Core task
-				// continues in the background.
-				return writeTask(cmd, jsonOut, created)
+			if !wait {
+				// By default the command returns once the provider task is
+				// observable; the Core task keeps transferring in the
+				// background. Use --wait to block until the destination is
+				// written.
+				current, err := awaitFirstObservation(cmd.Context(), client, created, false)
+				if err != nil {
+					return finishError(rt, noCoreError(err))
+				}
+				if err := writeTask(cmd, jsonOut, current); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "transfer continues in the background; observe it with 'qrypt offline show %s' or block with 'qrypt offline wait %s'\n", current.ID, current.ID)
+				if current.State == task.StateFailed || current.State == task.StateCanceled {
+					return rt.ExitError(exitFailure, fmt.Errorf("offline fetch %s ended as %s", current.ID, current.State))
+				}
+				return nil
 			}
-			current, err := waitWithReconnect(cmd, created.ID, 0)
+			current, err := waitWithReconnect(cmd, created.ID, 0, newOfflineProgress(cmd.ErrOrStderr()))
 			if err != nil {
 				// An interrupt detaches the wait without canceling the task.
 				return finishError(rt, noCoreError(err))
@@ -450,12 +469,17 @@ separator), each selected file is written under it by name.`,
 	cmd.Flags().Bool("keep-cloud", false, "keep the staged cloud copy after a successful transfer")
 	cmd.Flags().Int("workers", 0, fmt.Sprintf("concurrent download connections (1-%d, 0 = default %d)", task.MaxOfflineTransferWorkers, task.DefaultOfflineTransferWorkers))
 	cmd.Flags().String("chunk-size", "", fmt.Sprintf("bytes each download request covers, e.g. 4M (%s-%s, empty = default %s)", task.OfflineByteSize(task.MinOfflineTransferChunk), task.OfflineByteSize(task.MaxOfflineTransferChunk), task.OfflineByteSize(task.DefaultOfflineTransferChunk)))
-	cmd.Flags().Bool("no-wait", false, "return once staging is admitted instead of waiting for the transfer")
+	cmd.Flags().Bool("wait", false, "block until the final destination is written, rendering progress")
+	cmd.Flags().Bool("no-wait", false, "deprecated no-op; returning before the transfer finishes is now the default")
+	cmd.Flags().Bool("flat", false, "write every file by its own name instead of mirroring the staged folders")
 	cmd.Flags().Bool("mkdir", false, "create the parse destination if it does not exist")
 	cmd.Flags().String("name", "", "provider-side resource title")
 	cmd.Flags().Bool("new", false, "bypass active de-duplication and create a new task")
 	cmd.Flags().String("idempotency-key", "", "explicit idempotency key")
 	cmd.Flags().Bool("json", false, "output the task snapshot as JSON")
+	cliruntime.MarkAdvancedFlag(cmd.Flags().Lookup("workers"))
+	cliruntime.MarkAdvancedFlag(cmd.Flags().Lookup("chunk-size"))
+	cliruntime.MarkAdvancedFlag(cmd.Flags().Lookup("idempotency-key"))
 	addSelectionFlags(cmd)
 	return withOfflineEndpoint(rt, cmd)
 }
@@ -515,6 +539,9 @@ func newListCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List offline tasks (active and failed by default)",
+		Long: `List offline tasks. Active and failed tasks are shown by default; use
+--all to include succeeded and canceled ones, and --state or --mount to
+narrow the result.`,
 		Example: `  qrypt offline list
   qrypt offline list --all --state failed --limit 50`,
 		Args: cliruntime.NoArgs(rt),
@@ -550,7 +577,7 @@ func newListCommand(rt cliruntime.Runtime) *cobra.Command {
 }
 
 func newShowCommand(rt cliruntime.Runtime) *cobra.Command {
-	return taskIDCommand(rt, "show", "Show one offline task", func(cmd *cobra.Command, client *control.Client, id string) error {
+	return taskIDCommand(rt, "show", "Show one offline task", "Show one offline task by id, including its state and, when available, the provider observation.", func(cmd *cobra.Command, client *control.Client, id string) error {
 		jsonOut, _ := cmd.Flags().GetBool("json")
 		current, err := client.GetOfflineTask(cmd.Context(), id)
 		if err != nil {
@@ -561,7 +588,7 @@ func newShowCommand(rt cliruntime.Runtime) *cobra.Command {
 }
 
 func newCancelCommand(rt cliruntime.Runtime) *cobra.Command {
-	return taskIDCommand(rt, "cancel", "Cancel an offline task", func(cmd *cobra.Command, client *control.Client, id string) error {
+	return taskIDCommand(rt, "cancel", "Cancel an offline task", "Request cancellation of an offline task. Cancellation is cooperative; observe the task to confirm it reaches the canceled state.", func(cmd *cobra.Command, client *control.Client, id string) error {
 		if err := client.CancelOfflineTask(cmd.Context(), id); err != nil {
 			return finishError(rt, noCoreError(err))
 		}
@@ -571,7 +598,7 @@ func newCancelCommand(rt cliruntime.Runtime) *cobra.Command {
 }
 
 func newRetryCommand(rt cliruntime.Runtime) *cobra.Command {
-	return taskIDCommand(rt, "retry", "Retry a failed or canceled offline task", func(cmd *cobra.Command, client *control.Client, id string) error {
+	return taskIDCommand(rt, "retry", "Retry a failed or canceled offline task", "Retry a failed or canceled offline task, starting a fresh attempt under the same task id.", func(cmd *cobra.Command, client *control.Client, id string) error {
 		if err := client.RetryOfflineTask(cmd.Context(), id); err != nil {
 			return finishError(rt, noCoreError(err))
 		}
@@ -592,7 +619,7 @@ interrupt stops only the observation; the Core task keeps running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonOut, _ := cmd.Flags().GetBool("json")
 			timeout, _ := cmd.Flags().GetDuration("timeout")
-			current, err := waitWithReconnect(cmd, args[0], timeout)
+			current, err := waitWithReconnect(cmd, args[0], timeout, newOfflineProgress(cmd.ErrOrStderr()))
 			if err != nil {
 				return finishError(rt, noCoreError(err))
 			}
@@ -610,10 +637,11 @@ interrupt stops only the observation; the Core task keeps running.`,
 	return withOfflineEndpoint(rt, cmd)
 }
 
-func taskIDCommand(rt cliruntime.Runtime, use, short string, run func(*cobra.Command, *control.Client, string) error, withJSON bool) *cobra.Command {
+func taskIDCommand(rt cliruntime.Runtime, use, short, long string, run func(*cobra.Command, *control.Client, string) error, withJSON bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     use + " TASK_ID",
 		Short:   short,
+		Long:    long,
 		Example: fmt.Sprintf("  qrypt offline %s offline-1a2b3c4d", use),
 		Args:    taskIDArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -630,47 +658,84 @@ func taskIDCommand(rt cliruntime.Runtime, use, short string, run func(*cobra.Com
 	return withOfflineEndpoint(rt, cmd)
 }
 
-// waitWithReconnect observes a task to a terminal state, reconnecting to a
-// restarted Core and resuming by task id. The local timeout is enforced across
-// reconnects and surfaces as the same typed timeout the Core uses.
-func waitWithReconnect(cmd *cobra.Command, id string, timeout time.Duration) (task.Task, error) {
+// waitWithReconnect observes a task to a terminal state, rendering progress and
+// reconnecting to a restarted Core and resuming by task id. The local timeout is
+// enforced across reconnects and surfaces as the same typed timeout the Core
+// uses.
+func waitWithReconnect(cmd *cobra.Command, id string, timeout time.Duration, progress *offlineProgress) (task.Task, error) {
 	deadline := time.Time{}
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)
 	}
 	for {
 		if err := cmd.Context().Err(); err != nil {
+			progress.finish()
 			return task.Task{}, err
 		}
-		if !deadline.IsZero() && !time.Now().Before(deadline) {
-			return task.Task{}, drive.NewOfflineError(drive.OfflineErrWaitTimeout, "", fmt.Sprintf("offline task %s did not finish within %s", id, timeout))
-		}
-		remaining := int64(0)
-		if !deadline.IsZero() {
-			remaining = time.Until(deadline).Milliseconds()
-			if remaining < 1 {
-				remaining = 1
+		remaining, hasRemaining := time.Duration(0), !deadline.IsZero()
+		if hasRemaining {
+			remaining = time.Until(deadline)
+			if remaining <= 0 {
+				progress.finish()
+				return task.Task{}, drive.NewOfflineError(drive.OfflineErrWaitTimeout, "", fmt.Sprintf("offline task %s did not finish within %s", id, timeout))
 			}
 		}
 		client, err := offlineClient(cmd)
 		if err != nil {
+			progress.finish()
 			return task.Task{}, err
 		}
-		current, err := client.WaitOfflineTask(cmd.Context(), control.OfflineWaitRequest{ID: id, TimeoutMillis: remaining})
+		// Bound each request by the poll interval and by whatever remains of
+		// the caller's timeout. A server that accepts the connection and then
+		// stalls must not outlive the wait's own deadline.
+		requestTimeout := 700 * time.Millisecond
+		if hasRemaining && remaining < requestTimeout {
+			requestTimeout = remaining
+		}
+		requestCtx, cancel := context.WithTimeout(cmd.Context(), requestTimeout)
+		current, err := client.GetOfflineTask(requestCtx, id)
+		cancel()
 		if err == nil {
-			return current, nil
+			progress.render(current)
+			if offlineTaskDone(current.State) {
+				progress.finish()
+				return current, nil
+			}
+		} else {
+			if ctxErr := cmd.Context().Err(); ctxErr != nil {
+				progress.finish()
+				return task.Task{}, ctxErr
+			}
+			if hasRemaining && !time.Now().Before(deadline) {
+				progress.finish()
+				return task.Task{}, drive.NewOfflineError(drive.OfflineErrWaitTimeout, "", fmt.Sprintf("offline task %s did not finish within %s", id, timeout))
+			}
+			if !isConnectionError(err) && !errors.Is(err, context.DeadlineExceeded) {
+				progress.finish()
+				return task.Task{}, err
+			}
 		}
-		if cmd.Context().Err() != nil {
-			return task.Task{}, cmd.Context().Err()
+		// Poll for progress; after a Core restart (a connection error) back off
+		// a little before reconnecting and resuming by task id.
+		delay := 700 * time.Millisecond
+		if err != nil {
+			delay = time.Second
 		}
-		if !isConnectionError(err) {
-			return task.Task{}, err
+		if hasRemaining {
+			left := time.Until(deadline)
+			if left <= 0 {
+				progress.finish()
+				return task.Task{}, drive.NewOfflineError(drive.OfflineErrWaitTimeout, "", fmt.Sprintf("offline task %s did not finish within %s", id, timeout))
+			}
+			if left < delay {
+				delay = left
+			}
 		}
-		// The Core went away (restart); reconnect and resume by task id.
 		select {
 		case <-cmd.Context().Done():
+			progress.finish()
 			return task.Task{}, cmd.Context().Err()
-		case <-time.After(time.Second):
+		case <-time.After(delay):
 		}
 	}
 }

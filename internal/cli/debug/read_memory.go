@@ -17,6 +17,8 @@ func NewReadMemoryCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "read-memory",
 		Short:             "Inspect read-path memory diagnostics",
+		Long:              `Report recent read-path metrics, such as in-flight and cached reads, with an optional path filter, lookback window, and repeat interval.`,
+		Example:           `  qrypt debug read-memory --path /cloud/photos --since 5m`,
 		Args:              cliruntime.NoArgs(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {

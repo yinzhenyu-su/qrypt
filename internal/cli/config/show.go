@@ -16,7 +16,11 @@ func NewShowCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show config with secrets masked",
-		Args:  cliruntime.NoArgs(rt),
+		Long: `Print the resolved config file with secret values (passwords, salts,
+and driver secrets) replaced by ******.`,
+		Example: `  qrypt config show
+  qrypt config show --config ./qrypt.toml`,
+		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath, err := rt.CommandConfigPath(cmd)
 			if err != nil {

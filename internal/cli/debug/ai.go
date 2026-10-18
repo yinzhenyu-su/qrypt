@@ -134,7 +134,12 @@ func NewCollectCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect [REMOTE]",
 		Short: "Collect AI-oriented diagnostic JSON",
-		Args:  cliruntime.MaxArgs(rt, 1),
+		Long: `Collect a single AI-oriented diagnostic JSON document: health, state,
+uploads, reads, events, cache, staging, and, for a given REMOTE, path and
+destination resolution.`,
+		Example: `  qrypt debug collect
+  qrypt debug collect /cloud/photos --dest /cloud/backup`,
+		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) == 1 {
@@ -164,7 +169,11 @@ func NewWatchCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch [REMOTE]",
 		Short: "Sample debug state during a reproduction window",
-		Args:  cliruntime.MaxArgs(rt, 1),
+		Long: `Sample debug state repeatedly for a bounded window and report the
+transitions and diagnostics observed, optionally scoped to a REMOTE path.`,
+		Example: `  qrypt debug watch /cloud/photos --duration 30s --interval 2s
+  qrypt debug watch --duration 1m --jsonl`,
+		Args: cliruntime.MaxArgs(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) == 1 {

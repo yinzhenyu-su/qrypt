@@ -65,7 +65,12 @@ func NewCommand(rt Runtime, use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "Inspect and maintain the offline upload journal",
-		Args:  cliruntime.NoArgs(rt),
+		Long: `Inspect the offline upload journal and repair it: replay failed uploads
+so the next mount retries them, or prune entries whose staging data is gone.`,
+		Example: `  qrypt fs journal
+  qrypt fs journal replay --mount cloud
+  qrypt fs journal prune --mount cloud`,
+		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, err := TargetsFromCmd(rt, cmd)
 			if err != nil {
@@ -136,7 +141,10 @@ func NewReplayCmd(rt Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "replay",
 		Short: "Reset failed offline uploads so the next mount retries them",
-		Args:  cliruntime.NoArgs(rt),
+		Long:  `Reset failed offline uploads in the journal so the next mount retries them.`,
+		Example: `  qrypt fs journal replay
+  qrypt fs journal replay --mount cloud`,
+		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, err := TargetsFromCmd(rt, cmd)
 			if err != nil {
@@ -172,7 +180,10 @@ func NewPruneCmd(rt Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Drop offline uploads whose staging data is gone",
-		Args:  cliruntime.NoArgs(rt),
+		Long:  `Drop journal entries for offline uploads whose local staging data no longer exists.`,
+		Example: `  qrypt fs journal prune
+  qrypt fs journal prune --mount cloud`,
+		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, err := TargetsFromCmd(rt, cmd)
 			if err != nil {

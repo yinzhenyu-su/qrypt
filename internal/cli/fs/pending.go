@@ -14,8 +14,12 @@ func NewPendingCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pending",
 		Short: "Show pending uploads",
-		Args:  cliruntime.NoArgs(rt),
-		RunE:  runPending(rt),
+		Long: `Show the files waiting to be uploaded from the local staging area, with
+their sizes and local paths; --verbose adds retry and staging status.`,
+		Example: `  qrypt fs pending
+  qrypt fs pending --verbose`,
+		Args: cliruntime.NoArgs(rt),
+		RunE: runPending(rt),
 	}
 	cmd.Flags().Bool("verbose", false, "show detailed output")
 	cmd.Flags().Bool("json", false, "write JSON output")

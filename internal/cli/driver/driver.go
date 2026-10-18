@@ -12,8 +12,12 @@ func NewCommand(rt cliruntime.ErrorFactory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "driver",
 		Short: "List drivers and show parameter schemas",
-		Args:  cliruntime.CommandGroupArgs(rt, nil),
-		RunE:  cliruntime.ShowHelp,
+		Long: `Inspect the storage drivers built into this binary and the parameters each
+one accepts, without reading a config file or contacting a remote.`,
+		Example: `  qrypt driver list
+  qrypt driver schema quark`,
+		Args: cliruntime.CommandGroupArgs(rt, nil),
+		RunE: cliruntime.ShowHelp,
 	}
 	cmd.AddCommand(NewListCmd(rt))
 	cmd.AddCommand(NewSchemaCmd(rt))
@@ -25,6 +29,10 @@ func NewListCmd(rt cliruntime.ErrorFactory) *cobra.Command {
 		Use:   "list",
 		Args:  cliruntime.NoArgs(rt),
 		Short: "List available drivers",
+		Long: `List the names of every storage driver built into this binary, one per
+line, or as JSON with --json.`,
+		Example: `  qrypt driver list
+  qrypt driver list --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			asJSON, _ := cmd.Flags().GetBool("json")
 			if asJSON {
@@ -45,6 +53,10 @@ func NewSchemaCmd(rt cliruntime.ErrorFactory) *cobra.Command {
 		Use:   "schema NAME",
 		Args:  cliruntime.ExactNamedArgs(rt, "NAME"),
 		Short: "Show driver parameters",
+		Long: `Show the parameters a driver accepts, marking required and secret ones,
+or emit the same schema as JSON with --json.`,
+		Example: `  qrypt driver schema quark
+  qrypt driver schema s3 --json`,
 		ValidArgsFunction: cobra.FixedCompletions(
 			drive.Names(),
 			cobra.ShellCompDirectiveNoFileComp,

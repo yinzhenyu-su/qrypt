@@ -14,6 +14,8 @@ func NewPathCmd(rt cliruntime.Runtime) *cobra.Command {
 		Long: `Print which config file would be used: an explicit --config PATH wins,
 otherwise the first existing file in the search order
 (./qrypt.toml, ~/.qrypt/qrypt.toml, platform config dir).`,
+		Example: `  qrypt config path
+  qrypt config path --json`,
 		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath, err := rt.CommandConfigPath(cmd)

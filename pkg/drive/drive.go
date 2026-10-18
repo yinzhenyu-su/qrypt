@@ -169,17 +169,24 @@ type OfflineProgress struct {
 }
 
 // OfflineFile is one result file reported by the provider. RemoteID is the
-// provider's identity for the stored entry when it exposes one.
+// provider's identity for the stored entry when it exposes one. Path is the
+// file's location relative to the staging destination (POSIX style, no leading
+// slash) when the provider can report it; a provider that cannot leaves it
+// empty and the caller falls back to Name.
 type OfflineFile struct {
 	Index    int    `json:"index,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Size     int64  `json:"size,omitempty"`
 	RemoteID string `json:"remote_id,omitempty"`
+	Path     string `json:"path,omitempty"`
 }
 
 // OfflineDownload is a provider's normalized observation of one cloud-side
 // offline task. ID and State are always set; the remaining fields are filled
-// in as the provider exposes them.
+// in as the provider exposes them. Available reports that the provider's staged
+// result set is complete and no longer changing (for example an instant-import
+// resource), so a fetch may resolve the layout and transfer before the task
+// reaches a terminal state.
 type OfflineDownload struct {
 	ID          string          `json:"id"`
 	State       OfflineState    `json:"state"`
@@ -187,6 +194,7 @@ type OfflineDownload struct {
 	Destination string          `json:"destination,omitempty"`
 	RemoteID    string          `json:"remote_id,omitempty"`
 	Files       []OfflineFile   `json:"files,omitempty"`
+	Available   bool            `json:"available,omitempty"`
 	ErrorCode   string          `json:"error_code,omitempty"`
 	Error       string          `json:"error,omitempty"`
 }

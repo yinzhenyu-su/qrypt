@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
@@ -51,6 +52,25 @@ func (r *offlineRun) transferPhase(ctx context.Context, update task.UpdateFunc) 
 	if len(targets) == 0 {
 		return fmt.Errorf("core: offline fetch has no files to transfer")
 	}
+	// Pin the local destination root once, before validation and directory
+	// creation, and use that handle for every file. Re-opening the path per
+	// file would follow a destination root that an attacker renamed and
+	// replaced with a symlink between files.
+	if r.detail.DownloadMount == "" {
+		rootPath := localTargetRoot(targets, asDirectory)
+		if err := os.MkdirAll(rootPath, 0o755); err != nil {
+			return fmt.Errorf("core: create offline download directory %s: %w", rootPath, err)
+		}
+		root, err := os.OpenRoot(rootPath)
+		if err != nil {
+			return fmt.Errorf("core: open offline download directory %s: %w", rootPath, err)
+		}
+		r.localRoot, r.localRootPath = root, rootPath
+		defer func() {
+			r.localRoot, r.localRootPath = nil, ""
+			_ = root.Close()
+		}()
+	}
 	if err := r.ensureDownloadDirectory(ctx, targets, asDirectory); err != nil {
 		return err
 	}
@@ -77,13 +97,18 @@ type offlineFetchTarget struct {
 	file   offlineResultFile
 	target string
 	size   int64
+	// localRoot is the local destination root that confines this target's
+	// later open. It is empty for a namespace destination.
+	localRoot string
 }
 
 // fetchTargets resolves which provider files map to which destination paths.
 // The destination is treated as a directory when more than one file is
 // selected, when it names an existing directory, or when it ends in a path
-// separator; each file is then written under it by name. Otherwise a single
-// file is written to the destination path itself.
+// separator; each file is then placed at its staged relative path under it
+// (or by its own name when the provider reports no path, or when a flat layout
+// was requested). Otherwise a single file is written to the destination path
+// itself.
 func (r *offlineRun) fetchTargets(ctx context.Context) ([]offlineFetchTarget, bool, error) {
 	files := r.detail.ResultFiles
 	if len(files) == 0 {
@@ -100,23 +125,83 @@ func (r *offlineRun) fetchTargets(ctx context.Context) ([]offlineFetchTarget, bo
 		// one for Core operations.
 		base = r.destinationRoot()
 	}
-	targets := make([]offlineFetchTarget, 0, len(files))
-	for _, file := range files {
-		destination := base
-		if asDirectory {
-			name := file.Name
-			if name == "" {
-				name = offlineResultItemID(file.Index, file)
-			}
-			if r.detail.DownloadMount != "" {
-				destination = joinNamespaceDestination(base, name)
-			} else {
-				destination = joinDestination(base, name)
-			}
+	if !asDirectory {
+		if len(files) != 1 {
+			return nil, false, offlinePathInvalidError("destination %q names a single file but %d results were selected", r.detail.DownloadTo, len(files))
 		}
-		targets = append(targets, offlineFetchTarget{file: file, target: destination, size: file.Size})
+		components, err := r.placementComponents(files[0])
+		if err != nil {
+			return nil, false, err
+		}
+		if len(components) > 1 {
+			return nil, false, offlinePathInvalidError("destination %q names a single file but the staged path %q has directories", r.detail.DownloadTo, stagedPathOf(files[0]))
+		}
+		target := offlineFetchTarget{file: files[0], target: base, size: files[0].Size}
+		if r.detail.DownloadMount == "" {
+			target.localRoot = filepath.Dir(base)
+		}
+		return []offlineFetchTarget{target}, false, nil
+	}
+	targets := make([]offlineFetchTarget, 0, len(files))
+	seen := make(map[string]int, len(files))
+	for index, file := range files {
+		components, err := r.placementComponents(file)
+		if err != nil {
+			return nil, false, err
+		}
+		var destination string
+		target := offlineFetchTarget{file: file, size: file.Size}
+		if r.detail.DownloadMount != "" {
+			destination = joinNamespaceDestination(base, strings.Join(components, "/"))
+		} else {
+			destination = joinDestination(base, filepath.Join(components...))
+			target.localRoot = base
+		}
+		target.target = destination
+		if previous, ok := seen[destination]; ok {
+			return nil, false, offlinePathInvalidError("results %d and %d resolve to the same destination %q", previous+1, index+1, destination)
+		}
+		seen[destination] = index
+		targets = append(targets, target)
 	}
 	return targets, asDirectory, nil
+}
+
+// localTargetRoot is the single local directory that confines every target of
+// this transfer.
+func localTargetRoot(targets []offlineFetchTarget, asDirectory bool) string {
+	if len(targets) == 0 {
+		return ""
+	}
+	if !asDirectory {
+		return filepath.Dir(targets[0].target)
+	}
+	return targets[0].localRoot
+}
+
+// placementComponents returns the destination path components for one result
+// file: the validated staged relative path, or the validated file name when the
+// provider reports no path or a flat layout was requested.
+func (r *offlineRun) placementComponents(file offlineResultFile) ([]string, error) {
+	if !r.detail.Flat && file.Path != "" {
+		return sanitizeOfflineRelPath(file.Path)
+	}
+	name := file.Name
+	if name == "" {
+		name = offlineResultItemID(file.Index, file)
+	}
+	component, err := sanitizeOfflineComponent(name)
+	if err != nil {
+		return nil, err
+	}
+	return []string{component}, nil
+}
+
+func stagedPathOf(file offlineResultFile) string {
+	if file.Path != "" {
+		return file.Path
+	}
+	return file.Name
 }
 
 // downloadDestinationIsDirectory reports whether the caller's final
@@ -141,42 +226,239 @@ func (r *offlineRun) downloadDestinationIsDirectory(ctx context.Context) bool {
 	return false
 }
 
-// joinDestination joins a local directory destination and a name with native
-// path rules, so a relative destination such as "./downloads/" stays relative
-// and a Windows path keeps its own separator.
+// joinDestination joins a local directory destination and a relative path with
+// native path rules, so a relative destination such as "./downloads/" stays
+// relative and a Windows path keeps its own separator.
 func joinDestination(destination, name string) string {
 	return filepath.Join(destination, name)
 }
 
-// joinNamespaceDestination joins a virtual destination and a name with
+// joinNamespaceDestination joins a virtual destination and a relative path with
 // namespace rules, independent of the host OS.
 func joinNamespaceDestination(destination, name string) string {
 	return vfstypes.JoinVirtualPath(vfstypes.CleanVirtualPath(destination), name)
 }
 
-// ensureDownloadDirectory creates the destination directory when the transfer
-// writes into one, and otherwise only the single file's parent. A missing
-// destination directory is created automatically, unlike a missing parse
-// destination.
+// ensureDownloadDirectory creates the destination directories the transfer
+// writes into. A missing destination directory is created automatically, unlike
+// a missing parse destination. Each file's parent chain is created and checked
+// for symbolic-link escapes so a hostile staged path cannot leave the root.
 func (r *offlineRun) ensureDownloadDirectory(ctx context.Context, targets []offlineFetchTarget, asDirectory bool) error {
 	if !asDirectory {
-		// A single file target: create the parent directory only.
+		// A single file target: its parent is the user-named destination, so
+		// only the final component needs confinement and a symlink check.
+		if r.detail.DownloadMount == "" {
+			return preflightLocalTarget(r.localRoot, r.localRootPath, targets[0].target)
+		}
 		return r.ensureParentDirectory(ctx, targets[0].target)
 	}
 	if r.detail.DownloadMount != "" {
-		path := r.destinationRoot()
-		if _, err := r.core.fs.Stat(ctx, path); err != nil {
+		base := r.destinationRoot()
+		if _, err := r.core.fs.Stat(ctx, base); err != nil {
 			if !vfstypes.IsNotFound(err) {
 				return err
 			}
-			if _, err := r.core.fs.Mkdir(ctx, path); err != nil {
-				return fmt.Errorf("core: create offline download directory %s: %w", path, err)
+			if _, err := r.core.fs.Mkdir(ctx, base); err != nil {
+				return fmt.Errorf("core: create offline download directory %s: %w", base, err)
+			}
+		}
+		for _, target := range targets {
+			if err := r.ensureNamespaceDirChain(ctx, base, target.target); err != nil {
+				return err
 			}
 		}
 		return nil
 	}
-	if err := os.MkdirAll(r.detail.DownloadTo, 0o755); err != nil {
-		return fmt.Errorf("core: create offline download directory %s: %w", r.detail.DownloadTo, err)
+	// Inspect every target before creating anything, so a hostile later target
+	// cannot be discovered after an earlier file was written.
+	for _, target := range targets {
+		if err := preflightLocalTarget(r.localRoot, r.localRootPath, target.target); err != nil {
+			return err
+		}
+	}
+	for _, target := range targets {
+		if err := ensureLocalDirChain(r.localRoot, r.localRootPath, filepath.Dir(target.target)); err != nil {
+			return err
+		}
+	}
+	// Re-check after directory creation, then ask the actual destination
+	// filesystem whether any two final targets alias. A second preflight sees a
+	// case/normalization alias that turned one target into another's parent.
+	for _, target := range targets {
+		if err := preflightLocalTarget(r.localRoot, r.localRootPath, target.target); err != nil {
+			return err
+		}
+	}
+	return r.validateLocalAliases(targets)
+}
+
+// validateLocalAliases mirrors every target inside a fresh, session-owned
+// scratch directory under the pinned root. Creating each candidate with
+// O_CREATE|O_EXCL lets the actual filesystem reveal aliases the name cannot
+// show: ASCII case, Unicode canonical equivalence, and any other mapping the
+// destination volume applies. Nothing is written at a real target path and the
+// scratch tree is removed through the same pinned root.
+func (r *offlineRun) validateLocalAliases(targets []offlineFetchTarget) error {
+	if r.localRoot == nil {
+		return nil
+	}
+	scratch, err := r.createLocalScratch()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.localRoot.RemoveAll(scratch) }()
+	for index, target := range targets {
+		rel, relErr := filepath.Rel(r.localRootPath, target.target)
+		if relErr != nil {
+			return offlinePathInvalidError("destination %q is not under %q", target.target, r.localRootPath)
+		}
+		scratchRel := filepath.Join(scratch, rel)
+		if err := ensureLocalDirChain(r.localRoot, r.localRootPath, filepath.Join(r.localRootPath, filepath.Dir(scratchRel))); err != nil {
+			return err
+		}
+		file, openErr := r.localRoot.OpenFile(scratchRel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if openErr != nil {
+			if errors.Is(openErr, os.ErrExist) {
+				return offlinePathInvalidError("result %d destination %q aliases another result", index+1, target.target)
+			}
+			if info, infoErr := r.localRoot.Lstat(scratchRel); infoErr == nil && info.IsDir() {
+				return offlinePathInvalidError("destination %q is a directory", target.target)
+			}
+			return openErr
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// createLocalScratch makes a uniquely named empty directory inside the pinned
+// root, retrying if a target or another transfer already owns the name.
+func (r *offlineRun) createLocalScratch() (string, error) {
+	for range 10 {
+		name := fmt.Sprintf(".qrypt-offline-scratch-%d-%d", os.Getpid(), time.Now().UnixNano())
+		err := r.localRoot.Mkdir(name, 0o700)
+		if err == nil {
+			return name, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("core: could not reserve an offline scratch directory")
+}
+
+// preflightLocalTarget verifies that no existing component of target under
+// root is a symbolic link and that the final component is not a directory. It
+// checks the whole target list before a transfer creates any file.
+func preflightLocalTarget(root *os.Root, rootPath, target string) error {
+	if root == nil {
+		return nil
+	}
+	rel, err := filepath.Rel(rootPath, target)
+	if err != nil {
+		return offlinePathInvalidError("destination %q is not under %q", target, rootPath)
+	}
+	separator := string(filepath.Separator)
+	if rel == ".." || strings.HasPrefix(rel, ".."+separator) {
+		return offlinePathInvalidError("destination %q is outside %q", target, rootPath)
+	}
+	if rel == "." {
+		return offlinePathInvalidError("destination %q names a directory", target)
+	}
+	parts := strings.Split(rel, separator)
+	currentRel := ""
+	for index, part := range parts {
+		currentRel = filepath.Join(currentRel, part)
+		info, err := root.Lstat(currentRel)
+		switch {
+		case os.IsNotExist(err):
+			continue
+		case err != nil:
+			return err
+		case info.Mode()&os.ModeSymlink != 0:
+			return offlinePathInvalidError("destination %q resolves through a symbolic link at %q", target, filepath.Join(rootPath, currentRel))
+		case index == len(parts)-1:
+			if info.IsDir() {
+				return offlinePathInvalidError("destination %q is a directory", target)
+			}
+		case !info.IsDir():
+			return offlinePathInvalidError("destination %q is not a directory", filepath.Join(rootPath, currentRel))
+		}
+	}
+	return nil
+}
+
+// ensureLocalDirChain creates the missing directory levels from root down to dir
+// one level at a time through the pinned root, refusing an existing symlinked
+// or non-directory ancestor so a staged path cannot escape it.
+func ensureLocalDirChain(root *os.Root, rootPath, dir string) error {
+	if root == nil {
+		return nil
+	}
+	rel, err := filepath.Rel(rootPath, dir)
+	if err != nil {
+		return offlinePathInvalidError("destination directory %q is not under %q", dir, rootPath)
+	}
+	if rel == "." {
+		return nil
+	}
+	separator := string(filepath.Separator)
+	if rel == ".." || strings.HasPrefix(rel, ".."+separator) {
+		return offlinePathInvalidError("destination directory %q is outside %q", dir, rootPath)
+	}
+	currentRel := ""
+	for _, part := range strings.Split(rel, separator) {
+		currentRel = filepath.Join(currentRel, part)
+		info, err := root.Lstat(currentRel)
+		switch {
+		case err == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return offlinePathInvalidError("destination %q resolves through a symbolic link at %q", dir, filepath.Join(rootPath, currentRel))
+			}
+			if !info.IsDir() {
+				return offlinePathInvalidError("destination %q is not a directory", filepath.Join(rootPath, currentRel))
+			}
+		case os.IsNotExist(err):
+			if mkErr := root.Mkdir(currentRel, 0o755); mkErr != nil && !os.IsExist(mkErr) {
+				return fmt.Errorf("core: create offline download directory %s: %w", filepath.Join(rootPath, currentRel), mkErr)
+			}
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureNamespaceDirChain creates the missing virtual directory levels from base
+// down to target's parent inside the Core's own namespace.
+func (r *offlineRun) ensureNamespaceDirChain(ctx context.Context, base, target string) error {
+	base = trimTrailingSlash(vfstypes.CleanVirtualPath(base))
+	parent := pathpkg.Dir(vfstypes.CleanVirtualPath(target))
+	if parent == base || parent == "." {
+		return nil
+	}
+	if base != "" && base != "/" && !strings.HasPrefix(parent, base+"/") {
+		return offlinePathInvalidError("destination directory %q is outside %q", parent, base)
+	}
+	rest := strings.TrimPrefix(parent, base)
+	for _, part := range strings.Split(rest, "/") {
+		if part == "" {
+			continue
+		}
+		if base == "" {
+			base = "/"
+		}
+		base = vfstypes.JoinVirtualPath(base, part)
+		if _, err := r.core.fs.Stat(ctx, base); err != nil {
+			if !vfstypes.IsNotFound(err) {
+				return err
+			}
+			if _, err := r.core.fs.Mkdir(ctx, base); err != nil {
+				return fmt.Errorf("core: create offline download directory %s: %w", base, err)
+			}
+		}
 	}
 	return nil
 }
@@ -230,7 +512,14 @@ func (r *offlineRun) openWriter(ctx context.Context, target offlineFetchTarget) 
 	if r.detail.DownloadMount != "" {
 		return r.openNamespaceWriter(ctx, target)
 	}
-	return openLocalWriter(target.target)
+	if r.localRoot == nil {
+		return nil, fmt.Errorf("core: offline download destination root is not pinned")
+	}
+	rel, err := filepath.Rel(r.localRootPath, target.target)
+	if err != nil {
+		return nil, offlinePathInvalidError("destination %q is not under %q", target.target, r.localRootPath)
+	}
+	return openLocalWriterIn(r.localRoot, rel, target.target, false)
 }
 
 // transferFile streams one provider file to its destination. An accelerated
@@ -320,10 +609,11 @@ func (r *offlineRun) transferFromStaging(ctx context.Context, update task.Update
 
 // stagedPath is the Core-view path of a staged result file.
 func (r *offlineRun) stagedPath(file offlineResultFile) (string, bool) {
-	if r.detail.ParseDir == "" || file.Name == "" {
+	rel := stagedPathOf(file)
+	if r.detail.ParseDir == "" || rel == "" {
 		return "", false
 	}
-	return vfstypes.JoinVirtualPath(r.stagingRoot(), file.Name), true
+	return vfstypes.JoinVirtualPath(r.stagingRoot(), rel), true
 }
 
 // copyToWriter streams reader into the destination writer, reporting progress.
@@ -978,7 +1268,8 @@ func (r *offlineRun) reportTransferProgress(update task.UpdateFunc, done int64) 
 
 // cleanupPhase removes the cloud copy this fetch staged, unless retention was
 // requested. Only the fids recorded from this task's own provider observation
-// are removed.
+// are removed, plus the resource folder the provider created for them once it
+// holds nothing else.
 func (r *offlineRun) cleanupPhase(ctx context.Context, update task.UpdateFunc) error {
 	if r.detail.KeepCloud {
 		return nil
@@ -986,6 +1277,7 @@ func (r *offlineRun) cleanupPhase(ctx context.Context, update task.UpdateFunc) e
 	if len(r.detail.ResultFiles) == 0 {
 		return nil
 	}
+	removedFIDs := make(map[string]bool, len(r.detail.ResultFiles))
 	removed := 0
 	for _, file := range r.detail.ResultFiles {
 		if file.RemoteID == "" {
@@ -995,15 +1287,107 @@ func (r *offlineRun) cleanupPhase(ctx context.Context, update task.UpdateFunc) e
 		if err := r.driver.Remove(ctx, entry); err != nil {
 			if errors.Is(err, drive.ErrNotFound) {
 				removed++
+				removedFIDs[file.RemoteID] = true
 				continue
 			}
 			logging.L.Warnf("[OFFLINE] cleanup of staged fid %s failed: %v", file.RemoteID, err)
 			continue
 		}
 		removed++
+		removedFIDs[file.RemoteID] = true
 	}
 	r.detail.CleanupDone = removed == len(r.detail.ResultFiles)
+	if r.detail.CleanupDone {
+		r.cleanupStagedRootFolder(ctx, removedFIDs)
+	}
 	return nil
+}
+
+// cleanupStagedRootFolder removes the resource folder the provider created for
+// this task once every file under it is one this cleanup removed. A magnet makes
+// the provider create that folder, so removing only its files would leave an
+// empty shell behind. The parse destination itself is never removed, and a folder
+// that still holds an unrelated entry is left untouched.
+func (r *offlineRun) cleanupStagedRootFolder(ctx context.Context, removed map[string]bool) {
+	rootID := r.detail.ProviderRootID
+	folder := r.stagedRootFolder()
+	if rootID == "" || folder == "" {
+		return
+	}
+	for attempt := 0; attempt < offlineVerifyAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepContext(ctx, offlineVerifyInterval); err != nil {
+				return
+			}
+			r.core.fs.RefreshPath(folder)
+		}
+		owned, err := r.stagedTreeOwned(ctx, folder, removed, 0)
+		if err != nil || !owned {
+			return
+		}
+		// The provider's directory delete is recursive, so one call removes the
+		// folder and any now-empty subdirectories under it.
+		if err := r.driver.Remove(ctx, drive.Entry{ID: rootID, Name: pathpkg.Base(folder)}); err != nil {
+			if errors.Is(err, drive.ErrNotFound) {
+				return
+			}
+			logging.L.Warnf("[OFFLINE] cleanup of staged folder %s failed: %v", folder, err)
+			continue
+		}
+		return
+	}
+}
+
+// stagedTreeOwned reports whether every file under folder is one this cleanup
+// removed. Directories are not evidence about ownership, so they are walked.
+func (r *offlineRun) stagedTreeOwned(ctx context.Context, folder string, removed map[string]bool, depth int) (bool, error) {
+	if depth > offlineMaxPathDepth {
+		return false, nil
+	}
+	entries, err := r.core.fs.List(ctx, folder)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir {
+			owned, err := r.stagedTreeOwned(ctx, vfstypes.JoinVirtualPath(folder, entry.Name), removed, depth+1)
+			if err != nil || !owned {
+				return false, err
+			}
+			continue
+		}
+		if !removed[entry.ID] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// stagedRootFolder returns the Core-view path of the single top-level folder the
+// staged result files share, or "" when they have none. Files staged directly in
+// the parse destination, or under several top-level entries, yield "" so the
+// parse destination is never removed.
+func (r *offlineRun) stagedRootFolder() string {
+	root := ""
+	for _, file := range r.detail.ResultFiles {
+		rel := strings.Trim(strings.ReplaceAll(stagedPathOf(file), "\\", "/"), "/")
+		index := strings.IndexByte(rel, '/')
+		if index <= 0 {
+			return ""
+		}
+		first := rel[:index]
+		if root == "" {
+			root = first
+			continue
+		}
+		if root != first {
+			return ""
+		}
+	}
+	if root == "" {
+		return ""
+	}
+	return vfstypes.JoinVirtualPath(r.stagingRoot(), root)
 }
 
 // openLocalWriter opens a plain local destination for a fresh transfer. The
@@ -1012,24 +1396,61 @@ func (r *offlineRun) cleanupPhase(ctx context.Context, update task.UpdateFunc) e
 // resume prefix, and an unrelated file at the same path is not task-owned data.
 // A restart re-fetches the file instead of silently skipping missing ranges.
 func openLocalWriter(path string) (offlineWriter, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	rootPath := filepath.Dir(path)
+	if err := os.MkdirAll(rootPath, 0o755); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		return nil, err
 	}
-	return &offlineLocalWriter{file: file, path: path}, nil
+	rel, err := filepath.Rel(rootPath, path)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	writer, err := openLocalWriterIn(root, rel, path, true)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return writer, nil
+}
+
+// openLocalWriterIn opens a local destination through an already-pinned root.
+// The writer never reopens or removes by pathname: Abort goes through the same
+// root handle, so replacing the destination root with a symlink cannot redirect
+// a write or a deletion outside it.
+func openLocalWriterIn(root *os.Root, rel, path string, ownsRoot bool) (offlineWriter, error) {
+	separator := string(filepath.Separator)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+separator) {
+		return nil, offlinePathInvalidError("destination %q is outside the pinned root", path)
+	}
+	file, err := root.OpenFile(rel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	return &offlineLocalWriter{file: file, root: root, rel: rel, ownsRoot: ownsRoot}, nil
 }
 
 // offlineLocalWriter writes with pwrite so concurrent chunk workers can land in
-// any order without sharing a file offset.
+// any order without sharing a file offset. root is borrowed for a shared
+// transfer and owned only by the standalone openLocalWriter helper.
 type offlineLocalWriter struct {
 	file     *os.File
-	path     string
+	root     *os.Root
+	rel      string
+	ownsRoot bool
 	offset   int64
 	finished bool
 	aborted  bool
+}
+
+func (w *offlineLocalWriter) closeRoot() {
+	if w.ownsRoot && w.root != nil {
+		_ = w.root.Close()
+		w.root = nil
+	}
 }
 
 func (w *offlineLocalWriter) Offset() int64 { return w.offset }
@@ -1043,7 +1464,8 @@ func (w *offlineLocalWriter) Close() error {
 		return nil
 	}
 	// Flush before closing so a failure to persist the final bytes surfaces as
-	// a transfer error instead of a silently successful file.
+	// a transfer error instead of a silently successful file. Keep the pinned
+	// root open on failure so Abort can remove the partial file through it.
 	syncErr := w.file.Sync()
 	closeErr := w.file.Close()
 	w.file = nil
@@ -1054,6 +1476,7 @@ func (w *offlineLocalWriter) Close() error {
 		return closeErr
 	}
 	w.finished = true
+	w.closeRoot()
 	return nil
 }
 
@@ -1069,10 +1492,11 @@ func (w *offlineLocalWriter) Abort() error {
 		_ = w.file.Close()
 		w.file = nil
 	}
-	if w.path == "" {
-		return nil
+	var err error
+	if w.root != nil && w.rel != "" {
+		err = w.root.Remove(w.rel)
 	}
-	err := os.Remove(w.path)
+	w.closeRoot()
 	if err != nil && os.IsNotExist(err) {
 		return nil
 	}

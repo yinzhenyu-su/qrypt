@@ -21,8 +21,11 @@ type SpaceEntry struct {
 
 func NewDfCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "df [MOUNT]",
-		Short:             "Show space usage of the configured drives",
+		Use:   "df [MOUNT]",
+		Short: "Show space usage of the configured drives",
+		Long:  `Show total, free, and used space for the configured drives, or for one MOUNT when given.`,
+		Example: `  qrypt fs df
+  qrypt fs df cloud --bytes`,
 		Args:              cliruntime.MaxArgs(rt, 1),
 		RunE:              runDf(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
@@ -138,8 +141,11 @@ type DiskUsageResult struct {
 
 func NewDuCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "du [REMOTE]",
-		Short:             "Show disk usage of a directory tree",
+		Use:   "du [REMOTE]",
+		Short: "Show disk usage of a directory tree",
+		Long:  `Show the file count and total bytes of the tree at REMOTE, or of the namespace root when REMOTE is omitted.`,
+		Example: `  qrypt fs du /cloud/photos
+  qrypt fs du /cloud/photos --bytes`,
 		Args:              cliruntime.MaxArgs(rt, 1),
 		RunE:              runDu(rt),
 		ValidArgsFunction: cliruntime.NoFileCompletions,
