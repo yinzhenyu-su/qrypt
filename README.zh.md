@@ -39,7 +39,22 @@
 
 ## 快速开始
 
-1. 从 [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 下载对应系统的压缩包
+1. 安装 qrypt：
+
+   ```bash
+   # Linux / macOS
+   curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh
+   ```
+
+   ```powershell
+   # Windows
+   irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1 | iex
+   ```
+
+   安装脚本会自动选择适合你系统的版本，无需管理员权限。想手动安装可从
+   [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 下载压缩包。
+   之后用 `qrypt upgrade` 更新、`qrypt uninstall` 卸载（详见[快速上手](docs/for-user/quickstart.md)）。
+
 2. 创建 `qrypt.toml`：
 
 ```toml
@@ -98,7 +113,7 @@ b4l6gr1s6t1q0tas6dl0q0mb0s62kbj0
 
 ## 用户文档
 
-- [快速上手](docs/for-user/quickstart.md) — 最小配置，5 分钟跑通，含加密效果演示
+- [快速上手](docs/for-user/quickstart.md) — 安装、升级与卸载，最小配置，5 分钟跑通，含加密效果演示
 - [命令行参考](docs/for-user/cli.md) — 命令、参数、输入输出和配置查找规则
 - [完整配置参考](docs/for-user/full-config.md) — 全部配置项说明
 - [支持的驱动](docs/for-user/support-drivers.md) — 各云盘驱动的参数列表
