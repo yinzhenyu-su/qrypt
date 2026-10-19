@@ -230,6 +230,7 @@ func TestManagerDismissTaskCancelsActiveOrRemovesTerminalTask(t *testing.T) {
 	defer m.Close()
 	entered := make(chan struct{})
 	canceled := make(chan struct{})
+	release := make(chan struct{})
 	m.Submit(context.Background(), Task{
 		ID:    "running",
 		Type:  TypeDeleteBatch,
@@ -241,6 +242,10 @@ func TestManagerDismissTaskCancelsActiveOrRemovesTerminalTask(t *testing.T) {
 		close(entered)
 		<-ctx.Done()
 		close(canceled)
+		// Hold the run open until the assertion below has read the canonical
+		// state. Once this returns the manager retires the dismissed task, so
+		// reading the state afterwards raced that removal.
+		<-release
 		return ctx.Err()
 	})
 	<-entered
@@ -250,6 +255,7 @@ func TestManagerDismissTaskCancelsActiveOrRemovesTerminalTask(t *testing.T) {
 	if got, err := m.GetTask(context.Background(), "running"); err != nil || got.State != StateCanceling {
 		t.Fatalf("GetTask after active dismiss = %+v err=%v, want canceling", got, err)
 	}
+	close(release)
 	select {
 	case <-canceled:
 	case <-time.After(time.Second):
