@@ -601,8 +601,22 @@ func (d *Driver) uploadPart(ctx context.Context, pre *upPreResp, partNumber int,
 		etag := resp.Header.Get("Etag")
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			logging.L.DebugfEvery("quark.upload_part.done", time.Second, "[QUARK] upload part done task=%q part=%d bytes=%d auth=%s oss=%s", pre.Data.TaskID, partNumber, length, authDur, ossDur)
-			return etag, nil
+			if etag != "" {
+				logging.L.DebugfEvery("quark.upload_part.done", time.Second, "[QUARK] upload part done task=%q part=%d bytes=%d auth=%s oss=%s", pre.Data.TaskID, partNumber, length, authDur, ossDur)
+				return etag, nil
+			}
+			// A multipart part without an ETag cannot be completed: the ETag
+			// goes into the completion body, so accepting this response would
+			// persist a resume record that can never finish the upload.
+			if attempt < ossMaxRetries {
+				logging.L.WarnfEvery("quark.upload_part_no_etag_retry", time.Second, "[QUARK] upload part returned no ETag; retry task=%q part=%d attempt=%d", pre.Data.TaskID, partNumber, attempt+1)
+				if err := sleepContext(ctx, ossRetryDelay(attempt)); err != nil {
+					return "", err
+				}
+				continue
+			}
+			logging.L.Warnf("[QUARK] upload part has no ETag task=%q part=%d attempts=%d", pre.Data.TaskID, partNumber, attempt+1)
+			return "", fmt.Errorf("upload part %d: response carried no ETag", partNumber)
 		}
 		if attempt < ossMaxRetries {
 			logging.L.WarnfEvery("quark.upload_part_status_retry", time.Second, "[QUARK] upload part status retry task=%q part=%d attempt=%d status=%d", pre.Data.TaskID, partNumber, attempt+1, resp.StatusCode)
