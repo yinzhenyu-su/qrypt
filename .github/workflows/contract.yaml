@@ -149,4 +149,10 @@ jobs:
 
       - name: Dump mount server log on failure
         if: failure()
-        run: cat /tmp/qrypt-mount.log
+        run: |
+          cat /tmp/qrypt-mount.log
+          # Names, types and the test flag only: [[mounts]] params hold real
+          # credentials and must never be printed.
+          echo "== mounts in the contract config =="
+          awk '/^\[\[mounts\]\]/ { in_mount=1 } /^\[/ && $0 !~ /^\[\[mounts\]\]/ { in_mount=0 }
+               in_mount && /^[[:space:]]*(name|type|test_enabled)[[:space:]]*=/ { print }' ./qrypt.toml
