@@ -15,13 +15,16 @@
 #   QRYPT_INSTALL_API       GitHub API base        (default https://api.github.com)
 #   QRYPT_INSTALL_DOWNLOAD  release download base  (default https://github.com/<repo>/releases/download)
 #   QRYPT_INSTALL_HOME      home directory         (default $HOME)
-#   GITHUB_TOKEN / GH_TOKEN optional token, raising the API rate limit
+#   QRYPT_INSTALL_LATEST_URL release "latest" location (default https://github.com/<repo>/releases/latest)
+#   QRYPT_INSTALL_LATEST_TAG skip the lookup and use this tag
+#   GITHUB_TOKEN / GH_TOKEN optional token, for the API fallback
 set -eu
 
 REPO="${QRYPT_INSTALL_REPO:-yinzhenyu-su/qrypt}"
 API_BASE="${QRYPT_INSTALL_API:-https://api.github.com}"
 DOWNLOAD_BASE="${QRYPT_INSTALL_DOWNLOAD:-https://github.com/$REPO/releases/download}"
 HOME_DIR="${QRYPT_INSTALL_HOME:-$HOME}"
+LATEST_URL="${QRYPT_INSTALL_LATEST_URL:-https://github.com/$REPO/releases/latest}"
 TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
 # These must match pkg/install (enforced by the naming drift test).
@@ -137,15 +140,35 @@ api_get() { # <url> <dest>
     fi
 }
 
+# latest_tag_from_redirect follows the release "latest" location to its tag. A
+# plain website redirect costs no API quota, so an unauthenticated re-run is not
+# at the mercy of the API rate limit.
+latest_tag_from_redirect() {
+    effective="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$LATEST_URL" 2>/dev/null)" || return 1
+    case "$effective" in
+        */tag/*) printf '%s\n' "${effective##*/tag/}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# latest_tag_from_api is the fallback: it needs a token once the anonymous rate
+# limit is exhausted, but it works where the releases website does not.
+latest_tag_from_api() {
+    api_get "$API_BASE/repos/$REPO/releases/latest" "$TMP/latest.json" || return 1
+    sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/latest.json" | head -n 1
+}
+
 latest_tag() {
     if [ -n "${QRYPT_INSTALL_LATEST_TAG:-}" ]; then
         printf '%s\n' "$QRYPT_INSTALL_LATEST_TAG"
         return 0
     fi
-    api_get "$API_BASE/repos/$REPO/releases/latest" "$TMP/latest.json" ||
-        error "failed to query the latest release (rate limit? set GITHUB_TOKEN)"
-    tag="$(sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/latest.json" | head -n 1)"
-    [ -n "$tag" ] || error "could not read the latest release tag"
+    tag="$(latest_tag_from_redirect || true)"
+    if [ -z "$tag" ]; then
+        tag="$(latest_tag_from_api || true)"
+    fi
+    [ -n "$tag" ] ||
+        error "could not read the latest release tag (is $LATEST_URL reachable? set GITHUB_TOKEN to use the API)"
     printf '%s\n' "$tag"
 }
 
