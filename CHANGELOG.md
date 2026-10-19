@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.5.5 (2026-10-19)
+
+### Features
+- feat(install): 装最新版、Windows PATH 与占用替换
+- feat(cli): 新增 qrypt upgrade 与安装/卸载（含 Windows）
+- feat(cli): 分层帮助体系与命令自描述
+
+### Bug fixes
+- fix(quark): 分片响应缺少 ETag 不再当作成功
+- fix(ci): 契约测试失败不再被吞掉；webdav 读取 404 归类为未找到
+- fix(ci): keep pinned-root abort test from failing Windows cleanup
+- fix(mount): recover a mount point left stale by a killed process
+- fix(ci): 使用配置文件端点与 probe 命令更新契约测试流程
+
+### Others
+- test(core): 去重用例失败时打印去重视角
+- test(task): 修复 DismissTask 用例的竞态 flaky
+- test: 修复两个竞态导致的 flaky 测试
+- ci(contract): 失败时打印配置里的 mount 清单（仅 name/type/test_enabled，不含凭证）
+- chore(openspec): 归档 fix-install-rerun-and-windows-path
+- test(uninstall): 仅在非 Windows 运行 Unix 布局的卸载测试
+- docs(skill): 更新驱动迁移指南中的 probe 命令与诊断流程
+- refactor(cli): separate local debug probe and task control services
+- docs(skill): consolidate driver migration guidance
+
+---
+
 ## v0.5.3 (2026-10-16)
 
 ### Features
