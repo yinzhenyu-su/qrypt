@@ -173,9 +173,12 @@ func TestVFSDeleteTaskRetryFailedDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCondition(t, func() bool { return len(drv.removedIDs()) == 1 })
-	if tasks := fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}}); len(tasks) != 0 {
-		t.Fatalf("tasks after retry success = %+v, want none", tasks)
-	}
+	// The remote call returning and the delete record retiring are separate
+	// steps - the record is cleared after the driver returns - so wait for the
+	// bookkeeping to settle instead of reading it once (this raced under load).
+	waitForCondition(t, func() bool {
+		return len(fs.Tasks(task.Filter{Types: []task.Type{task.TypeDeleteRemote}})) == 0
+	})
 }
 
 func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
