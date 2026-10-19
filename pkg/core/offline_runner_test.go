@@ -515,16 +515,23 @@ func TestOfflineCancelAndRetry(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	waitCoreTaskUntil(t, c, created.ID, func(item task.Task) bool { return item.State == task.StateRunning })
+	// Cancel only once the run has submitted the provider task. The task flips
+	// to Running before the run body executes, so cancelling immediately raced
+	// the submit: when the cancel wins, the run never creates a provider task
+	// and there is legitimately nothing to remove.
+	waitCoreCondition(t, func() bool { return len(provider.createdRequests()) == 1 })
 	if err := c.CancelTask(ctx, created.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 	waitCoreTaskUntil(t, c, created.ID, func(item task.Task) bool { return item.State == task.StateCanceled })
-	provider.mu.Lock()
-	cancelled := append([]string(nil), provider.cancelled...)
-	provider.mu.Unlock()
-	if len(cancelled) == 0 || cancelled[0] != "ptask-1" {
-		t.Fatalf("provider cancels = %v, want ptask-1", cancelled)
-	}
+	// The runner removes the provider task from its own goroutine, after the
+	// canonical state flips, so wait for that call instead of reading it once
+	// (reading it immediately raced the runner under load).
+	waitCoreCondition(t, func() bool {
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		return len(provider.cancelled) > 0 && provider.cancelled[0] == "ptask-1"
+	})
 
 	// Retry re-queues the provider task in place and advances the generation.
 	if err := c.RetryTask(ctx, created.ID); err != nil {
