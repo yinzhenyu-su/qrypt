@@ -300,6 +300,39 @@ func TestOfflineDownloadLifecycle(t *testing.T) {
 	}
 }
 
+// logOfflineDedupState reports what active de-duplication sees: the offline
+// tasks the lookup would list, plus the de-duplication fingerprint of each task
+// involved. It runs only on the failure path, so a rare flake names its cause
+// instead of just the outcome.
+func logOfflineDedupState(t *testing.T, c *Core, ids ...string) {
+	t.Helper()
+	ctx := context.Background()
+	listed, err := c.ListTasks(ctx, task.Filter{Types: []task.Type{task.TypeOfflineDownload, task.TypeOfflineFetch}})
+	if err != nil {
+		t.Logf("de-dup ListTasks: %v", err)
+	} else {
+		t.Logf("de-dup ListTasks sees %d offline task(s):", len(listed))
+		for _, item := range listed {
+			t.Logf("  listed id=%q type=%s state=%s terminal=%v", item.ID, item.Type, item.State, offlineTaskTerminal(item.State))
+		}
+	}
+	for _, id := range ids {
+		item, err := c.GetTask(ctx, id)
+		if err != nil {
+			t.Logf("  task %q: GetTask: %v", id, err)
+			continue
+		}
+		detail, ok := decodeOfflineDetail(item.Detail)
+		if !ok {
+			t.Logf("  task %q: state=%s detail undecodable (%d entries)", id, item.State, len(item.Detail))
+			continue
+		}
+		t.Logf("  task %q: state=%s terminal=%v fingerprint=%q source=%q kind=%q identity=%q parse_mount=%q parse_dir=%q selection=%+v",
+			id, item.State, offlineTaskTerminal(item.State), offlineFingerprint(detail),
+			detail.Source, detail.SourceKind, detail.SourceIdentity, detail.ParseMount, detail.ParseDir, detail.Selection)
+	}
+}
+
 func TestOfflineActiveDeduplicationAndNew(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -323,9 +356,11 @@ func TestOfflineActiveDeduplicationAndNew(t *testing.T) {
 		t.Fatalf("second create: %v", err)
 	}
 	if second.ID != first.ID {
+		logOfflineDedupState(t, c, first.ID, second.ID)
 		t.Fatalf("active de-duplication returned %q, want %q", second.ID, first.ID)
 	}
 	if requests := provider.createdRequests(); len(requests) != 1 {
+		logOfflineDedupState(t, c, first.ID, second.ID)
 		t.Fatalf("de-duplicated submission created %d provider tasks: %+v", len(requests), requests)
 	}
 
@@ -336,6 +371,7 @@ func TestOfflineActiveDeduplicationAndNew(t *testing.T) {
 		t.Fatalf("--new create: %v", err)
 	}
 	if third.ID == first.ID {
+		logOfflineDedupState(t, c, first.ID, third.ID)
 		t.Fatal("--new must bypass de-duplication")
 	}
 
