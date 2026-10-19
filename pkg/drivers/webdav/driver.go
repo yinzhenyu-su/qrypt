@@ -76,6 +76,17 @@ func (e webdavStatusError) Error() string {
 	return fmt.Sprintf("webdav: %s: unexpected status %d for %s", e.op, e.status, e.url)
 }
 
+// Unwrap classifies a missing resource (404, or 410 for a purged one) as
+// drive.ErrNotFound. WebDAV reports "not found" only through the status line,
+// so without this a read after remove surfaces as a transport failure instead
+// of a missing entry.
+func (e webdavStatusError) Unwrap() error {
+	if e.status == http.StatusNotFound || e.status == http.StatusGone {
+		return drive.ErrNotFound
+	}
+	return nil
+}
+
 const webdavRequestMaxAttempts = 3
 
 var webdavRetryWait = util.Wait
@@ -276,11 +287,11 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		if entry.Size > 0 && offset >= entry.Size {
 			return io.NopCloser(bytes.NewReader(nil)), nil
 		}
-		return nil, fmt.Errorf("webdav: read: unexpected status %d for %s", resp.StatusCode, entry.ID)
+		return nil, webdavStatusError{op: "read", status: resp.StatusCode, url: entry.ID}
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		resp.Body.Close()
-		return nil, fmt.Errorf("webdav: read: unexpected status %d for %s", resp.StatusCode, entry.ID)
+		return nil, webdavStatusError{op: "read", status: resp.StatusCode, url: entry.ID}
 	}
 	return d.limiter.LimitDownload(ctx, resp.Body), nil
 }

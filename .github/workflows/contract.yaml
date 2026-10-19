@@ -110,14 +110,22 @@ jobs:
           # transient network blip, in which case the suite fails immediately
           # with `mount "X" not found`. Restart the mount server once so the
           # mount gets a fresh init attempt before declaring the run failed.
+          #
+          # The probe's status is captured in the `else` branch on purpose: `$?`
+          # read after the whole `if` is always 0 (an `if` whose condition is
+          # false and has no `else` returns 0), which silently turned every
+          # suite failure - including real contract violations - into a green
+          # job.
           out=$(mktemp)
           attempts=2
+          rc=1
           for i in $(seq 1 "$attempts"); do
             if /tmp/qrypt probe test contract --config ./qrypt.toml --mount "$MOUNT" >"$out" 2>&1; then
               cat "$out"
               exit 0
+            else
+              rc=$?
             fi
-            rc=$?
             cat "$out"
             if [ "$i" -ge "$attempts" ] || ! grep -q "not found" "$out"; then
               exit "$rc"
@@ -136,6 +144,8 @@ jobs:
               exit 1
             fi
           done
+          # Unreachable in practice; the last attempt always exits above.
+          exit "$rc"
 
       - name: Dump mount server log on failure
         if: failure()
