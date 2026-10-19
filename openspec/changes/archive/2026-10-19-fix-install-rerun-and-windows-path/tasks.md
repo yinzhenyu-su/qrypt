@@ -30,7 +30,7 @@
 - [x] 5.1 Run the local gate and the install checks — verify `scripts/ci-check.sh` and `scripts/check-install.sh` both pass
 - [x] 5.2 Run the container and PowerShell smoke tests where available — verify `scripts/smoke-install.sh --docker` passes and `pwsh ./scripts/smoke-install.ps1` passes
 - [x] 5.3 Confirm the naming/layout contract between the scripts and the Go packages still holds — verify `go test ./pkg/install/ ./pkg/selfupdate/ ./internal/cli/upgrade/ -count=1` passes
-- [ ] 5.4 Confirm on CI that the Windows job (naming drift and `smoke-install.ps1`) and the Linux install smoke are green
+- [x] 5.4 Confirm on CI that the Windows job (naming drift and `smoke-install.ps1`) and the Linux install smoke are green
 
 ## Workflow follow-up
 
