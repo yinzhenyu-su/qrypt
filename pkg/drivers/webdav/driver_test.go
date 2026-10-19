@@ -809,6 +809,35 @@ func TestWebDAV_InitRetriesTemporaryPropfindStatus(t *testing.T) {
 	}
 }
 
+// A read of a resource the server no longer has must classify as
+// drive.ErrNotFound, so the driver contract's read-after-remove check passes
+// instead of seeing a bare transport failure.
+func TestWebDAV_ReadMissingClassifiesNotFound(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %s, want GET", r.Method)
+				}
+				http.Error(w, "missing", status)
+			}))
+			defer srv.Close()
+
+			drv := New(Options{URL: srv.URL + "/", Username: "test", Password: "test"})
+			rc, err := drv.Read(context.Background(), drive.Entry{ID: "/gone.txt", Name: "gone.txt", Size: 3}, 0, 0)
+			if rc != nil {
+				rc.Close()
+			}
+			if !errors.Is(err, drive.ErrNotFound) {
+				t.Fatalf("Read error = %v, want drive.ErrNotFound", err)
+			}
+			if !strings.Contains(err.Error(), "unexpected status") {
+				t.Fatalf("Read error = %v, want the status detail preserved", err)
+			}
+		})
+	}
+}
+
 func TestWebDAV_SpaceRetriesTemporaryPropfindStatus(t *testing.T) {
 	withoutWebDAVRetryWait(t)
 	var calls int
