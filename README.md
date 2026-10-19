@@ -44,12 +44,12 @@ is at one of the standard paths (see [CLI Reference](docs/for-user/cli.md)).
 
    ```bash
    # Linux / macOS
-   curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh
+   curl -fsSL https://github.com/yinzhenyu-su/qrypt/releases/latest/download/install.sh | sh
    ```
 
    ```powershell
    # Windows
-   irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1 | iex
+   powershell -c "irm https://github.com/yinzhenyu-su/qrypt/releases/latest/download/install.ps1|iex"
    ```
 
    The installer picks the right build for your system and needs no administrator

@@ -17,8 +17,9 @@
 #   QRYPT_INSTALL_API           GitHub API base        (default https://api.github.com)
 #   QRYPT_INSTALL_DOWNLOAD      release download base  (default https://github.com/<repo>/releases/download)
 #   QRYPT_INSTALL_HOME          home directory         (default $env:USERPROFILE)
-#   QRYPT_INSTALL_LATEST_TAG    skip the API lookup and use this tag
-#   GITHUB_TOKEN / GH_TOKEN     optional token, raising the API rate limit
+#   QRYPT_INSTALL_LATEST_URL    release "latest" location (default https://github.com/<repo>/releases/latest)
+#   QRYPT_INSTALL_LATEST_TAG    skip the lookup and use this tag
+#   GITHUB_TOKEN / GH_TOKEN     optional token, for the API fallback
 [CmdletBinding()]
 param(
     [string]$Version = "",
@@ -35,6 +36,7 @@ $Repo = if ($env:QRYPT_INSTALL_REPO) { $env:QRYPT_INSTALL_REPO } else { 'yinzhen
 $ApiBase = if ($env:QRYPT_INSTALL_API) { $env:QRYPT_INSTALL_API } else { 'https://api.github.com' }
 $DownloadBase = if ($env:QRYPT_INSTALL_DOWNLOAD) { $env:QRYPT_INSTALL_DOWNLOAD } else { "https://github.com/$Repo/releases/download" }
 $HomeDir = if ($env:QRYPT_INSTALL_HOME) { $env:QRYPT_INSTALL_HOME } else { $env:USERPROFILE }
+$LatestUrl = if ($env:QRYPT_INSTALL_LATEST_URL) { $env:QRYPT_INSTALL_LATEST_URL } else { "https://github.com/$Repo/releases/latest" }
 
 # These must match pkg/install (enforced by the naming drift test).
 $RelRealDir = '.qrypt/bin'
@@ -122,10 +124,30 @@ function Write-Manifest([string]$VersionNumber, [string]$OsName, [string]$ArchNa
     Write-Output "marker_name=$MarkerName"
 }
 
-function Get-LatestTag {
-    if ($env:QRYPT_INSTALL_LATEST_TAG) {
-        return $env:QRYPT_INSTALL_LATEST_TAG
+# Get-LatestTagFromRedirect follows the release "latest" location to its tag.
+# It is a plain website redirect, not the API, so it costs no API quota.
+function Get-LatestTagFromRedirect {
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($null -eq $curl) {
+        return $null
     }
+    try {
+        $effective = & $curl.Source -fsSL -o NUL -w '%{url_effective}' $LatestUrl 2>$null
+    } catch {
+        return $null
+    }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$effective)) {
+        return $null
+    }
+    if ([string]$effective -match '/tag/([^/]+)/?$') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+# Get-LatestTagFromApi is the fallback: it needs a token when the anonymous rate
+# limit is exhausted, but it works where the releases website does not.
+function Get-LatestTagFromApi {
     $headers = @{}
     $token = if ($env:GH_TOKEN) { $env:GH_TOKEN } elseif ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { '' }
     if ($token) {
@@ -141,6 +163,20 @@ function Get-LatestTag {
         throw 'could not read the latest release tag'
     }
     return [string]$tagProperty.Value
+}
+
+function Get-LatestTag {
+    if ($env:QRYPT_INSTALL_LATEST_TAG) {
+        return $env:QRYPT_INSTALL_LATEST_TAG
+    }
+    $tag = Get-LatestTagFromRedirect
+    if ([string]::IsNullOrWhiteSpace([string]$tag)) {
+        $tag = Get-LatestTagFromApi
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$tag)) {
+        throw "could not read the latest release tag (is $LatestUrl reachable? set GITHUB_TOKEN to use the API)"
+    }
+    return $tag
 }
 
 function Invoke-Download([string]$Uri, [string]$Destination) {
@@ -189,8 +225,89 @@ function Test-PathHasDirectory([string]$PathValue, [string]$Directory) {
     return $false
 }
 
+# Read-Env returns the raw user-scope environment value without expanding %VAR%
+# references, or $null when it is unset. Reading raw is what keeps the installer
+# from rewriting entries it did not add, and it is how pkg/install reads the same
+# value.
+function Read-Env([string]$Name) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    if ($null -eq $key) {
+        return $null
+    }
+    try {
+        $value = $key.GetValue($Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -eq $value) {
+            return $null
+        }
+        return [string]$value
+    } finally {
+        $key.Dispose()
+    }
+}
+
+# Write-Env writes a user-scope environment value, preserving the registry kind so
+# an existing REG_EXPAND_SZ stays expandable instead of being flattened to a
+# plain string. [Environment]::SetEnvironmentVariable does neither, which is why
+# the value goes through the registry directly, matching pkg/install.
+function Write-Env([string]$Name, [string]$Value) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if ($null -eq $key) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    }
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]::String
+        if ($null -ne $key.GetValue($Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
+            $kind = $key.GetValueKind($Name)
+        }
+        $key.SetValue($Name, $Value, $kind)
+    } finally {
+        $key.Dispose()
+    }
+    Publish-Env
+}
+
+# Initialize-NativeMethods loads the two Win32 calls the installer needs:
+# SendMessageTimeout, to announce a changed environment, and MoveFileEx, to ask
+# Windows to delete a displaced binary after the next restart. It reports
+# whether the type is available; a restricted session may refuse to compile it.
+function Initialize-NativeMethods {
+    if ('Qrypt.NativeMethods' -as [Type]) {
+        return $true
+    }
+    try {
+        Add-Type -Namespace Qrypt -Name NativeMethods -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(
+    IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+
+[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+'@
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Publish-Env broadcasts WM_SETTINGCHANGE so processes started afterwards pick up
+# the changed environment. It is best-effort: a session without a message pump
+# must not fail the install.
+function Publish-Env {
+    try {
+        if (-not (Initialize-NativeMethods)) {
+            return
+        }
+        $result = [UIntPtr]::Zero
+        [void][Qrypt.NativeMethods]::SendMessageTimeout(
+            [IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+    } catch {
+        # Best-effort: a restricted session or a missing desktop is not a failure.
+    }
+}
+
 function Add-UserPath([string]$Directory) {
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $current = Read-Env 'Path'
     if (Test-PathHasDirectory $current $Directory) {
         return $false
     }
@@ -199,7 +316,7 @@ function Add-UserPath([string]$Directory) {
     } else {
         $current.TrimEnd(';') + ';' + $Directory
     }
-    [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
+    Write-Env 'Path' $updated
     return $true
 }
 
@@ -209,7 +326,7 @@ function Show-PathInstructions {
 }
 
 function Configure-Path {
-    if (Test-PathHasDirectory ([Environment]::GetEnvironmentVariable('Path', 'User')) $RealDir) {
+    if (Test-PathHasDirectory (Read-Env 'Path') $RealDir) {
         Write-Info "$RealDir is already on PATH"
     } else {
         try {
@@ -240,6 +357,58 @@ function Test-ExistingBinary {
     }
 }
 
+# Remove-StaleDisplaced removes the ".old" remnants a prior reinstall or upgrade
+# left beside the binary, so none of them blocks this run. qrypt uninstall sweeps
+# these files too.
+function Remove-StaleDisplaced([string]$Path) {
+    $directory = Split-Path -Parent $Path
+    $base = (Split-Path -Leaf $Path) + '.old'
+    Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq $base -or $_.Name -like "$base.*" } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
+# Invoke-DeferredDelete removes a displaced binary now, and when it is the running
+# image (and therefore still locked) asks Windows to delete it after the next
+# restart.
+function Invoke-DeferredDelete([string]$Path) {
+    try {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch {
+        if (-not (Initialize-NativeMethods)) {
+            return
+        }
+        [void][Qrypt.NativeMethods]::MoveFileEx($Path, $null, 4)
+    }
+}
+
+# Set-BinaryInPlace replaces the installed binary with the staged file. A running
+# executable cannot be overwritten in place, so the old image is renamed aside
+# and the displaced file is deleted now or after the next restart - the same
+# dance pkg/selfupdate performs, with the same names qrypt uninstall sweeps.
+function Set-BinaryInPlace([string]$Staged, [string]$Target) {
+    Remove-StaleDisplaced $Target
+    if (-not (Test-Path -LiteralPath $Target)) {
+        [System.IO.File]::Move($Staged, $Target)
+        return
+    }
+    $displaced = "$Target.old"
+    try {
+        [System.IO.File]::Move($Target, $displaced)
+    } catch {
+        $displaced = "$Target.old.$PID"
+        [System.IO.File]::Move($Target, $displaced)
+    }
+    try {
+        [System.IO.File]::Move($Staged, $Target)
+    } catch {
+        # Put the original back so a failed install leaves a working binary.
+        [System.IO.File]::Move($displaced, $Target)
+        throw
+    }
+    Invoke-DeferredDelete $displaced
+}
+
 function Install-Binary([string]$Archive, [string]$InnerName, [string]$TemporaryDirectory) {
     $extractDir = Join-Path $TemporaryDirectory 'extract'
     Expand-Archive -LiteralPath $Archive -DestinationPath $extractDir -Force
@@ -254,11 +423,7 @@ function Install-Binary([string]$Archive, [string]$InnerName, [string]$Temporary
     $staged = Join-Path $RealDir ('.qrypt-new-' + [guid]::NewGuid().ToString('N'))
     Copy-Item -LiteralPath $innerFile.FullName -Destination $staged
     try {
-        if (Test-Path -LiteralPath $Binary) {
-            [System.IO.File]::Replace($staged, $Binary, $null)
-        } else {
-            [System.IO.File]::Move($staged, $Binary)
-        }
+        Set-BinaryInPlace $staged $Binary
     } catch {
         Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
         throw "could not install the binary: $_"

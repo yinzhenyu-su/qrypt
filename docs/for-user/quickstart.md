@@ -15,31 +15,31 @@ qrypt 是一个加密虚拟文件系统。它把云盘挂载到你电脑上的�
 **Linux / macOS**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh
+curl -fsSL https://github.com/yinzhenyu-su/qrypt/releases/latest/download/install.sh | sh
 ```
 
-**Windows**（在 PowerShell 中运行）
+**Windows**（在任意终端中运行，不必先打开 PowerShell）
 
 ```powershell
-irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1 | iex
+powershell -c "irm https://github.com/yinzhenyu-su/qrypt/releases/latest/download/install.ps1|iex"
 ```
 
-安装无需管理员权限。装好后**打开一个新终端**，运行下面的命令确认：
+安装无需管理员权限。这两条命令每次都安装最新的正式版本，所以想升级时重新运行即可。装好后**打开一个新终端**，运行下面的命令确认：
 
 ```sh
 qrypt version
 ```
 
-需要安装指定版本时：
+需要安装指定版本时，脚本取自对应版本的 release：
 
 ```sh
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh -s -- --version v0.5.0
+curl -fsSL https://github.com/yinzhenyu-su/qrypt/releases/download/v0.5.0/install.sh | sh -s -- --version v0.5.0
 ```
 
 ```powershell
 # Windows
-$s = irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1
+$s = irm https://github.com/yinzhenyu-su/qrypt/releases/download/v0.5.0/install.ps1
 & ([scriptblock]::Create($s)) -Version v0.5.0
 ```
 

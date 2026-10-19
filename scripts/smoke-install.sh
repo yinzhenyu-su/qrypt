@@ -48,8 +48,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 SERVE="$WORK/serve"
-mkdir -p "$SERVE/dl/$TAG" "$SERVE/api/repos/$REPO/releases"
-: >"$SERVE/dl/$TAG/$CHECKSUM"
+mkdir -p "$SERVE/api/repos/$REPO/releases"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -59,35 +58,101 @@ sha256_of() {
     fi
 }
 
-# make_release <os> <arch> publishes a stub release for that platform. The stub
-# answers `version`, so the installed command is runnable; the point is to
-# exercise download/verify/extract/install/link, not a real FUSE build.
+# make_release <version> <os> <arch> publishes a stub release for that platform.
+# The stub answers `version`, so the installed command is runnable; the point is
+# to exercise download/verify/extract/install/link, not a real FUSE build.
 make_release() {
-    local os="$1" arch="$2"
+    local version="$1" os="$2" arch="$3"
+    local tag="v$version"
     local inner="qrypt-$os-$arch"
-    local asset="qrypt_${VERSION}_${os}_${arch}.tar.gz"
+    local asset="qrypt_${version}_${os}_${arch}.tar.gz"
+    local checksum="qrypt_${version}_checksums.txt"
     local stub="$WORK/$inner"
-    cat >"$stub" <<'STUB_EOF'
+    cat >"$stub" <<STUB_EOF
 #!/bin/sh
-case "${1:-}" in
-    version) echo "qrypt v0.5.3" ;;
+case "\${1:-}" in
+    version) echo "qrypt v$version" ;;
     *) echo "qrypt" ;;
 esac
 STUB_EOF
     chmod 755 "$stub"
-    tar -C "$WORK" -czf "$SERVE/dl/$TAG/$asset" "$inner"
-    printf '%s  %s\n' "$(sha256_of "$SERVE/dl/$TAG/$asset")" "$asset" >>"$SERVE/dl/$TAG/$CHECKSUM"
+    mkdir -p "$SERVE/dl/$tag"
+    : >"$SERVE/dl/$tag/$checksum"
+    tar -C "$WORK" -czf "$SERVE/dl/$tag/$asset" "$inner"
+    printf '%s  %s\n' "$(sha256_of "$SERVE/dl/$tag/$asset")" "$asset" >>"$SERVE/dl/$tag/$checksum"
 }
 
-make_release "$OS" "$ARCH"
-# The container runs a linux build, so publish one for that platform too.
-[ "$OS" = linux ] || make_release linux "$ARCH"
-cp "$SERVE/dl/$TAG/$CHECKSUM" "$WORK/good-checksums"
+# publish_latest <tag> points both the release "latest" location and the API at
+# <tag>, so the installer resolves the same version either way.
+publish_latest() {
+    printf '%s\n' "$1" >"$SERVE/latest-tag.txt"
+    printf '{\n  "tag_name": "%s",\n  "draft": false,\n  "prerelease": false\n}\n' "$1" \
+        >"$SERVE/api/repos/$REPO/releases/latest"
+}
 
-printf '{\n  "tag_name": "%s",\n  "draft": false,\n  "prerelease": false\n}\n' "$TAG" >"$SERVE/api/repos/$REPO/releases/latest"
+make_release "$VERSION" "$OS" "$ARCH"
+# The container runs a linux build, so publish one for that platform too.
+[ "$OS" = linux ] || make_release "$VERSION" linux "$ARCH"
+cp "$SERVE/dl/$TAG/$CHECKSUM" "$WORK/good-checksums"
+publish_latest "$TAG"
+
+# The release server. It serves the published files, answers the release "latest"
+# location with a 302 to the current tag (which is what the installer follows
+# instead of the API), and 403s the API when $SERVE/api-403 exists so the
+# rate-limit case can be exercised.
+cat >"$WORK/server.py" <<'PY'
+import http.server
+import os
+import socketserver
+import sys
+
+root, host, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=root, **kwargs)
+
+    def send_text(self, status, body):
+        payload = body.encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        path = self.path.split('?', 1)[0]
+        if path == '/releases/latest':
+            tag_file = os.path.join(root, 'latest-tag.txt')
+            if os.path.exists(tag_file):
+                with open(tag_file) as handle:
+                    tag = handle.read().strip()
+                self.send_response(302)
+                self.send_header('Location', '/releases/tag/' + tag)
+                self.end_headers()
+                return
+            self.send_text(404, 'no latest tag')
+            return
+        if path.startswith('/releases/tag/'):
+            self.send_text(200, path.rsplit('/', 1)[-1])
+            return
+        if path.startswith('/api/') and os.path.exists(os.path.join(root, 'api-403')):
+            self.send_text(403, 'rate limited')
+            return
+        super().do_GET()
+
+    def log_message(self, *args):
+        pass
+
+
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer((host, port), Handler) as httpd:
+    httpd.serve_forever()
+PY
 
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
-python3 -m http.server "$PORT" --bind 0.0.0.0 --directory "$SERVE" >"$WORK/server.log" 2>&1 &
+python3 "$WORK/server.py" "$SERVE" 0.0.0.0 "$PORT" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 # Wait for the server to accept connections.
 for _ in $(seq 1 50); do
@@ -104,6 +169,7 @@ invoke() {
     SHELL="$shell" \
         QRYPT_INSTALL_REPO="$REPO" \
         QRYPT_INSTALL_API="$base/api" \
+        QRYPT_INSTALL_LATEST_URL="$base/releases/latest" \
         QRYPT_INSTALL_DOWNLOAD="$base/dl" \
         QRYPT_INSTALL_HOME="$home" \
         PATH="$path" \
@@ -119,12 +185,13 @@ run_install() {
 
 assert_layout() {
     home="$1"
+    want="${2:-v$VERSION}"
     [ -x "$home/.qrypt/bin/qrypt" ] || { echo "FAIL: real binary missing" >&2; return 1; }
     [ -L "$home/.local/bin/qrypt" ] || { echo "FAIL: symlink missing" >&2; return 1; }
     [ "$(readlink "$home/.local/bin/qrypt")" = "$home/.qrypt/bin/qrypt" ] ||
         { echo "FAIL: symlink target wrong" >&2; return 1; }
     out="$("$home/.local/bin/qrypt" version)"
-    [ "$out" = "qrypt v0.5.3" ] || { echo "FAIL: installed command output: $out" >&2; return 1; }
+    [ "$out" = "qrypt $want" ] || { echo "FAIL: installed command output: $out" >&2; return 1; }
     grep -qF '# >>> qrypt >>>' "$home/.zprofile" || { echo "FAIL: PATH block missing" >&2; return 1; }
 }
 
@@ -234,7 +301,35 @@ fi
 grep -q "another qrypt is on PATH" "$WORK/install.log" ||
     { echo "FAIL: a shadowing copy was not reported:" >&2; cat "$WORK/install.log" >&2; exit 1; }
 
-# 8. Optional: the same flow inside a clean container.
+# 8. Re-running after a newer release is published installs the newer release.
+NEW_VERSION="0.5.4"
+make_release "$NEW_VERSION" "$OS" "$ARCH"
+[ "$OS" = linux ] || make_release "$NEW_VERSION" linux "$ARCH"
+publish_latest "v$NEW_VERSION"
+if ! run_install "$HOME1" "$BASE"; then
+    echo "FAIL: re-run after a newer release failed; log:" >&2
+    cat "$WORK/install.log" >&2
+    exit 1
+fi
+assert_layout "$HOME1" "v$NEW_VERSION"
+blocks="$(grep -cF '# >>> qrypt >>>' "$HOME1/.zprofile")"
+[ "$blocks" = "1" ] || { echo "FAIL: $blocks PATH blocks after the upgrade re-run" >&2; exit 1; }
+
+# 9. The API rate limit does not stop the newest release from being installed:
+#    the tag comes from the release redirect, so a 403 from the API is never hit.
+touch "$SERVE/api-403"
+HOME7="$WORK/home7"
+mkdir -p "$HOME7"
+: >"$HOME7/.zprofile"
+if ! run_install "$HOME7" "$BASE"; then
+    echo "FAIL: install failed while the API was rate limited; log:" >&2
+    cat "$WORK/install.log" >&2
+    exit 1
+fi
+assert_layout "$HOME7" "v$NEW_VERSION"
+rm -f "$SERVE/api-403"
+
+# 10. Optional: the same flow inside a clean container.
 if [ "$RUN_DOCKER" = 1 ]; then
     if ! command -v docker >/dev/null 2>&1; then
         echo "smoke-install: docker not found; skipping container run" >&2
@@ -251,6 +346,7 @@ if [ "$RUN_DOCKER" = 1 ]; then
             -v "$ROOT:/src:ro" \
             -e QRYPT_INSTALL_REPO="$REPO" \
             -e QRYPT_INSTALL_API="http://$SRV_HOST:$PORT/api" \
+            -e QRYPT_INSTALL_LATEST_URL="http://$SRV_HOST:$PORT/releases/latest" \
             -e QRYPT_INSTALL_DOWNLOAD="http://$SRV_HOST:$PORT/dl" \
             alpine:3.20 sh -c '
                 set -eu

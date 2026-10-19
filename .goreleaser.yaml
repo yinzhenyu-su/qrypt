@@ -12,6 +12,8 @@ release:
   extra_files:
     - glob: prebuilt/qrypt_*.tar.gz
     - glob: prebuilt/qrypt_*.zip
+    - glob: scripts/install.sh
+    - glob: scripts/install.ps1
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"

@@ -43,12 +43,12 @@
 
    ```bash
    # Linux / macOS
-   curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh
+   curl -fsSL https://github.com/yinzhenyu-su/qrypt/releases/latest/download/install.sh | sh
    ```
 
    ```powershell
    # Windows
-   irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1 | iex
+   powershell -c "irm https://github.com/yinzhenyu-su/qrypt/releases/latest/download/install.ps1|iex"
    ```
 
    安装脚本会自动选择适合你系统的版本，无需管理员权限。想手动安装可从
