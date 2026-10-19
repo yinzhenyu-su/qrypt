@@ -105,8 +105,20 @@ jobs:
           go-version: "1.27.2"
           cache: true
 
+      # The Chocolatey community feed intermittently returns 503, which
+      # silently leaves WinFsp uninstalled and turns the smoke into a false
+      # negative. Install the upstream MSI instead.
       - name: Install WinFsp
-        run: choco install winfsp -y --no-progress
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod -Uri https://api.github.com/repos/winfsp/winfsp/releases/latest
+          $asset = $release.assets | Where-Object { $_.name -like 'winfsp-*.msi' } | Select-Object -First 1
+          if (-not $asset) { throw "WinFsp MSI not found in $($release.tag_name)" }
+          $msi = Join-Path $env:RUNNER_TEMP $asset.name
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $msi
+          $process = Start-Process msiexec.exe -ArgumentList "/i", "`"$msi`"", "/qn", "/norestart" -Wait -PassThru
+          # 3010 means a reboot is required but the driver is installed.
+          if ($process.ExitCode -notin @(0, 3010)) { throw "WinFsp MSI exited with $($process.ExitCode)" }
 
       - name: Build (nocgo)
         env:
