@@ -90,9 +90,10 @@ base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64
 1. **每 PR**（ci.yaml `test-windows` job，windows-latest）：`CGO_ENABLED=0`
    `go build -tags nocgo`（与发布产物同款标签）、`go vet ./...`、主模块
    单测（只用主模块包列表，不用 `go test ./...`——vendored cgofuse 的
-   Windows 宿主测试需要真实 WinFsp）、以及 localfs fs 冒烟
-   （`scripts/smoke-localfs.sh`，仅 `qrypt fs` 命令、不挂载）。无 WinFsp
-   依赖，跑得快。
+   Windows 宿主测试需要真实 WinFsp）、localfs fs 冒烟
+   （`scripts/smoke-localfs.sh`，仅 `qrypt fs` 命令、不挂载）、以及
+   `install.ps1` 的命名漂移检查与安装冒烟（`scripts/smoke-install.ps1`）。
+   无 WinFsp 依赖，跑得快。
 2. **每夜**（nightly.yaml `windows-mount` job）：安装 WinFsp（choco），
    以 localfs + 加密配置真实挂载（`scripts/smoke-windows-mount.ps1`），
    经 FUSE 路径写文件，校验 `qrypt fs cat` 解密读回、后端只存加密乱码
@@ -147,7 +148,19 @@ PNG）作为来源；把 HTML 页面 URL 当作文件来源时 Quark 会返回 p
 ./scripts/fuzz-nightly.sh 10s         # 本地 fuzz（每 fuzzer 10s）
 ./scripts/smoke-localfs.sh            # localfs 挂载冒烟
 ./scripts/smoke-windows-mount.ps1     # Windows 真实挂载冒烟（需 WinFsp）
+./scripts/check-install.sh            # 安装脚本：shellcheck + 与 updater 的发布命名漂移检查（含 install.ps1，需 pwsh）
+./scripts/smoke-install.sh            # 安装脚本端到端冒烟（加 --docker 在容器里跑一遍）
+pwsh ./scripts/smoke-install.ps1      # Windows 安装脚本端到端冒烟（需在 Windows 上运行）
 ```
+
+`check-install.sh` 在 `ci.yaml` 的 `static` 任务中运行；`smoke-install.sh --docker`
+在 `stability` 任务中运行。`scripts/install.sh`（Linux / macOS）与
+`scripts/install.ps1`（Windows）是首次安装脚本：下载并校验 release，把二进制装到
+用户可写目录并配置 `PATH`（Unix 用 `~/.local/bin` 符号链接 + rc 片段，Windows 用
+`%USERPROFILE%\.qrypt\bin` + 用户级注册表 `PATH`）。`pkg/install` 固定两侧安装布局，
+并有 Go 测试比对 `install.sh`/`install.ps1` 与 `pkg/selfupdate` 的资源命名，
+不一致时 CI 失败（PowerShell 侧在 Windows 任务或任何装有 `pwsh` 的环境运行）。
+`smoke-install.ps1` 在 `test-windows` 任务中运行。
 
 ## 测试并行度
 

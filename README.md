@@ -40,7 +40,24 @@ is at one of the standard paths (see [CLI Reference](docs/for-user/cli.md)).
 
 ## Quick Start
 
-1. Download the [latest release](https://github.com/yinzhenyu-su/qrypt/releases) for your platform.
+1. Install qrypt:
+
+   ```bash
+   # Linux / macOS
+   curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh
+   ```
+
+   ```powershell
+   # Windows
+   irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1 | iex
+   ```
+
+   The installer picks the right build for your system and needs no administrator
+   rights. Prefer to install by hand? Download the
+   [latest release](https://github.com/yinzhenyu-su/qrypt/releases). Update or
+   remove qrypt later with `qrypt upgrade` and `qrypt uninstall` (see the
+   [quickstart](docs/for-user/quickstart.md)).
+
 2. Create `qrypt.toml`:
 
 ```toml
@@ -98,7 +115,7 @@ Extended walkthrough →
 
 ## User Documentation
 
-- [Quickstart](docs/for-user/quickstart.md) — minimal config, encryption demo, Windows notes
+- [Quickstart](docs/for-user/quickstart.md) — install, upgrade and uninstall, minimal config, encryption demo, Windows notes
 - [CLI Reference](docs/for-user/cli.md) — commands, arguments, config discovery paths
 - [Full Config Reference](docs/for-user/full-config.md) — all configuration options
 - [Supported Drivers](docs/for-user/support-drivers.md) — driver parameters and examples

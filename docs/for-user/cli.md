@@ -280,3 +280,34 @@ qrypt completion zsh
 qrypt completion fish
 qrypt completion powershell
 ```
+
+## 升级
+
+```sh
+qrypt upgrade
+qrypt upgrade --check
+qrypt upgrade --to v0.5.0   # 进阶：安装指定版本（可降级）
+qrypt upgrade --force       # 进阶：当前不是发行版时仍继续
+```
+
+`qrypt upgrade` 拉取当前平台最新的正式 release，校验 `qrypt_<版本>_checksums.txt` 中的 sha256，校验通过后原子替换正在运行的可执行文件。文件先下载到临时目录，校验成功前不会改动现有二进制，因此下载失败或校验不匹配都会保留当前版本。
+
+- `--check` 只报告当前版本与最新版本，不下载也不写入。
+- `--to <版本>` 安装指定 release（例如 `v0.5.0`），可与当前版本相同或更旧。
+- `--force` 在无法比较的构建（如 `v0.5.3-10-g9d16c54` 这类 `git describe` 版本）下仍继续；默认会拒绝。
+- `--json` 输出单个 JSON 结果（含当前版本、目标版本与结果状态），进度信息写入标准错误。
+
+替换的是当前运行的可执行文件本身，指向它的符号链接保持有效。可执行文件不可写时，命令不会自行提权，而是打印需要以相应权限重跑的命令（Unix 上形如 `sudo <路径> upgrade`）。
+
+退出码遵循通用约定：成功或已是最新为 0，运行时错误（网络、校验、权限）为 1，用法错误（如 `--to` 无法解析）为 2。
+
+### 卸载
+
+```sh
+qrypt uninstall
+qrypt uninstall --yes
+qrypt uninstall --purge --yes   # 进阶：连同 ~/.qrypt 下的数据一起删除
+```
+
+`qrypt uninstall` 卸载安装脚本创建的 qrypt，并移除安装脚本写入的 `PATH` 配置。默认**保留**你的 qrypt 数据（配置、缓存、日志、会话）；加 `--purge` 才会一并删除。默认会先确认，`--yes` 跳过确认；没有可删除内容时命令成功返回并提示 `nothing to remove`。退出码：成功或放弃为 0，运行时错误为 1，用法错误为 2。
+

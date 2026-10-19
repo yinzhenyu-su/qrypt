@@ -109,6 +109,7 @@ step "Generated docs in sync" bash -c '
   fi
 '
 
+step "Install script" scripts/check-install.sh
 step "Fast suite" scripts/test-layers.sh fast
 step "Race suite" scripts/test-layers.sh race
 step "VFS stability" scripts/test-layers.sh vfs-stability

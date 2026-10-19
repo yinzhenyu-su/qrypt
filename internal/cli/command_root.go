@@ -9,6 +9,8 @@ import (
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
 	climount "github.com/yinzhenyu/qrypt/internal/cli/mount"
 	clioffline "github.com/yinzhenyu/qrypt/internal/cli/offline"
+	cliuninstall "github.com/yinzhenyu/qrypt/internal/cli/uninstall"
+	cliupgrade "github.com/yinzhenyu/qrypt/internal/cli/upgrade"
 	cliversion "github.com/yinzhenyu/qrypt/internal/cli/version"
 	buildinfo "github.com/yinzhenyu/qrypt/pkg/buildinfo" // registers all drivers via their init functions
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
@@ -50,6 +52,8 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(clidebug.NewProbeCommand(cliRuntime{}))
 	cmd.AddCommand(clicontrol.NewCommand(cliRuntime{}))
 	cmd.AddCommand(clioffline.NewCommand(cliRuntime{}))
+	cmd.AddCommand(cliupgrade.NewCommand(cliRuntime{}, build))
+	cmd.AddCommand(cliuninstall.NewCommand(cliRuntime{}))
 	cmd.AddCommand(cliversion.NewCommand(cliRuntime{}, build))
 	cmd.AddCommand(NewSchemaCommand(cmd))
 	installHelpDefaults(cmd)

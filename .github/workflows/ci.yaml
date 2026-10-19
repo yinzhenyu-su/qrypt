@@ -89,6 +89,7 @@ jobs:
             git diff --stat -- docs/for-user/full-config.md docs/for-user/support-drivers.md
             exit 1
           fi
+          scripts/check-install.sh
 
       - name: Fast suite
         if: matrix.name == 'fast'
@@ -103,6 +104,10 @@ jobs:
         run: |
           scripts/test-layers.sh vfs-stability
           scripts/test-layers.sh smoke
+
+      - name: Install script smoke
+        if: matrix.name == 'stability'
+        run: scripts/smoke-install.sh --docker
 
       # PR-stage coverage visibility: non-blocking snapshot of the six
       # core packages with a highlight on packages changed by this PR.
@@ -137,7 +142,14 @@ jobs:
       # vendored cgofuse tests, whose Windows host expects a real WinFsp
       # mount. CGO_ENABLED=0 selects the pure-Go nocgo host.
       - name: Unit tests (main module)
-        run: go test -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./pkg/contracttest ./pkg/vfs/drivecopy ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
+        run: go test -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... ./pkg/contracttest ./pkg/vfs/drivecopy ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli ./internal/cli/uninstall ./internal/cli/upgrade ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./pkg/install ./pkg/selfupdate ./cmd/qrypt
+
+      - name: Installer naming drift (PowerShell)
+        run: go test -count=1 ./pkg/install -run 'TestPowerShellInstallerNamingMatchesUpdater'
+
+      - name: Install script smoke (PowerShell)
+        shell: pwsh
+        run: ./scripts/smoke-install.ps1 -Installer ./scripts/install.ps1 -Binary ./qrypt.exe
 
       - name: LocalFS smoke
         shell: bash

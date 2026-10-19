@@ -10,7 +10,54 @@ qrypt 是一个加密虚拟文件系统。它把云盘挂载到你电脑上的�
 
 ## 下载与安装
 
-从 [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 下载对应系统的压缩包：
+### 一键安装
+
+**Linux / macOS**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh
+```
+
+**Windows**（在 PowerShell 中运行）
+
+```powershell
+irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1 | iex
+```
+
+安装无需管理员权限。装好后**打开一个新终端**，运行下面的命令确认：
+
+```sh
+qrypt version
+```
+
+需要安装指定版本时：
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.sh | sh -s -- --version v0.5.0
+```
+
+```powershell
+# Windows
+$s = irm https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/scripts/install.ps1
+& ([scriptblock]::Create($s)) -Version v0.5.0
+```
+
+### 卸载
+
+```sh
+qrypt uninstall
+```
+
+默认保留你的配置和数据。要连同数据一起删除：
+
+```sh
+qrypt uninstall --purge --yes
+```
+
+### 手动安装
+
+不使用脚本时，从 [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 下载对应系统的压缩包：
 
 | 系统                  | 文件名                               |
 | --------------------- | ------------------------------------ |
@@ -31,7 +78,8 @@ qrypt 是一个加密虚拟文件系统。它把云盘挂载到你电脑上的�
 ./qrypt --help
 ```
 
-> **Windows**：使用 `.\qrypt.exe --help`，或放入 `PATH` 后直接运行 `qrypt --help`。
+> **Windows**：使用 `.\qrypt.exe --help`，或放入 `PATH` 后直接运行 `qrypt --help`。建议放在你有写权限的目录。
+
 
 ## 编写配置文件
 
