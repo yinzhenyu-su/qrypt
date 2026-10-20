@@ -65,7 +65,19 @@ then the platform config directory: $XDG_CONFIG_HOME/qrypt/qrypt.toml
 	cmd.AddCommand(cliuninstall.NewCommand(cliRuntime{}))
 	cmd.AddCommand(cliversion.NewCommand(cliRuntime{}, build))
 	cmd.AddCommand(NewSchemaCommand(cmd))
+	cmd.CompletionOptions.DisableDefaultCmd = true
+	cmd.AddCommand(newCompletionCommand())
 	cmd.PersistentFlags().String("lang", "auto", "display language: en, zh-CN, or auto")
+	// Cobra normally adds these during Execute, after localization has run.
+	// Initialize them first so their summaries and help pages are covered by
+	// the same catalog and coverage checks as the rest of the tree.
+	cmd.InitDefaultHelpCmd()
+	for _, child := range cmd.Commands() {
+		if child.Name() == "help" {
+			child.Example = i18n.New(i18n.LangEN).T("cmd.help.example")
+		}
+	}
+	i18n.InitDefaultFlags(cmd)
 	installHelpDefaults(cmd)
 	installDeepHelp(cmd)
 	i18n.Attach(cmd, lang)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
@@ -15,12 +16,13 @@ import (
 // single document on stdout.
 type offlineProgress struct {
 	out      io.Writer
+	loc      *i18n.Localizer
 	last     string
 	rendered bool
 }
 
-func newOfflineProgress(out io.Writer) *offlineProgress {
-	return &offlineProgress{out: out}
+func newOfflineProgress(out io.Writer, loc *i18n.Localizer) *offlineProgress {
+	return &offlineProgress{out: out, loc: loc}
 }
 
 // render draws the current progress, skipping a line identical to the previous
@@ -29,7 +31,7 @@ func (p *offlineProgress) render(item task.Task) {
 	if p == nil {
 		return
 	}
-	line := offlineProgressLine(item)
+	line := offlineProgressLine(item, p.loc)
 	if line == "" || line == p.last {
 		return
 	}
@@ -48,7 +50,7 @@ func (p *offlineProgress) finish() {
 }
 
 // offlineProgressLine formats one progress line for a task.
-func offlineProgressLine(item task.Task) string {
+func offlineProgressLine(item task.Task, loc *i18n.Localizer) string {
 	phase := strings.TrimSpace(string(item.Progress.Phase))
 	if phase == "" {
 		phase = string(item.State)
@@ -67,7 +69,7 @@ func offlineProgressLine(item task.Task) string {
 			offlinePercent(item.Progress.CloudBytesDone, item.Progress.CloudBytesTotal)))
 	}
 	if item.Progress.ItemsTotal > 0 {
-		parts = append(parts, fmt.Sprintf("files %d/%d", item.Progress.ItemsDone, item.Progress.ItemsTotal))
+		parts = append(parts, loc.T("out.offline.progress_files", item.Progress.ItemsDone, item.Progress.ItemsTotal))
 	}
 	return "  " + strings.Join(parts, "  ")
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
@@ -254,18 +255,18 @@ func CommandWaitTimeout(cmd *cobra.Command) time.Duration {
 	return timeout
 }
 
-func PrintEntryStat(w io.Writer, entry drive.Entry) {
+func PrintEntryStat(w io.Writer, loc *i18n.Localizer, entry drive.Entry) {
 	kind := "file"
 	if entry.IsDir {
 		kind = "dir"
 	}
-	fmt.Fprintf(w, "type: %s\n", kind)
-	fmt.Fprintf(w, "name: %s\n", entry.Name)
-	fmt.Fprintf(w, "id: %s\n", entry.ID)
-	fmt.Fprintf(w, "parent_id: %s\n", entry.ParentID)
-	fmt.Fprintf(w, "size: %d\n", entry.Size)
+	fmt.Fprintln(w, loc.T("out.fs.stat.type", kind))
+	fmt.Fprintln(w, loc.T("out.fs.stat.name", entry.Name))
+	fmt.Fprintln(w, loc.T("out.fs.stat.id", entry.ID))
+	fmt.Fprintln(w, loc.T("out.fs.stat.parent_id", entry.ParentID))
+	fmt.Fprintln(w, loc.T("out.fs.stat.size", entry.Size))
 	if !entry.ModTime.IsZero() {
-		fmt.Fprintf(w, "mod_time: %s\n", entry.ModTime.Format(time.RFC3339))
+		fmt.Fprintln(w, loc.T("out.fs.stat.mod_time", entry.ModTime.Format(time.RFC3339)))
 	}
 }
 

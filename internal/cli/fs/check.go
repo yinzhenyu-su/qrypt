@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
@@ -121,7 +122,7 @@ func runCheck(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				return err
 			}
 		} else if len(differences) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "ok: %d files match\n", filesChecked)
+			fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.check.ok", filesChecked))
 		} else {
 			for _, d := range differences {
 				fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s", d.Reason, d.Path)

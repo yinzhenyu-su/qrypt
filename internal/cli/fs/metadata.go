@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 )
 
@@ -38,7 +39,7 @@ func runStat(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 		if asJSON {
 			return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), entry)
 		}
-		cliruntime.PrintEntryStat(cmd.OutOrStdout(), entry)
+		cliruntime.PrintEntryStat(cmd.OutOrStdout(), i18n.FromCommand(cmd), entry)
 		return nil
 	}
 }
@@ -121,7 +122,7 @@ func runRm(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				Removed bool   `json:"removed"`
 			}{Path: args[0], Removed: true})
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "removed %s\n", args[0])
+		fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.rm.removed", args[0]))
 		return nil
 	}
 }
@@ -158,7 +159,7 @@ func runMv(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				Renamed     bool   `json:"renamed"`
 			}{Source: args[0], Destination: args[1], Renamed: true})
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "renamed %s -> %s\n", args[0], args[1])
+		fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.mv.renamed", args[0], args[1]))
 		return nil
 	}
 }

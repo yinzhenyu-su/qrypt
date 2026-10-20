@@ -11,10 +11,15 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
+
+func bundleWrittenMessage(loc *i18n.Localizer, path string) string {
+	return loc.T("out.debug.bundle.wrote", path)
+}
 
 func NewBundleCmd(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
@@ -184,7 +189,7 @@ path or destination diagnostics for REMOTE.`,
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Wrote debug bundle to %s\n", outPath)
+			fmt.Fprintln(cmd.ErrOrStderr(), bundleWrittenMessage(i18n.FromCommand(cmd), outPath))
 			return nil
 		},
 		ValidArgsFunction: cliruntime.NoFileCompletions,

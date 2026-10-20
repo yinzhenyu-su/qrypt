@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -71,10 +72,10 @@ func RunCopy(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				return nil
 			}
 			if !result.Pass {
-				PrintCopyDirSummary(cmd.ErrOrStderr(), result)
+				PrintCopyDirSummary(cmd.ErrOrStderr(), i18n.FromCommand(cmd), result)
 				return CopyDirError(rt, result)
 			}
-			PrintCopyDirSummary(cmd.OutOrStdout(), result)
+			PrintCopyDirSummary(cmd.OutOrStdout(), i18n.FromCommand(cmd), result)
 			return nil
 		}
 		if dryRun {
@@ -93,10 +94,10 @@ func RunCopy(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return nil
 		}
 		if !result.Pass {
-			PrintCopySummary(cmd.ErrOrStderr(), result)
+			PrintCopySummary(cmd.ErrOrStderr(), i18n.FromCommand(cmd), result)
 			return CopyError(result)
 		}
-		PrintCopySummary(cmd.OutOrStdout(), result)
+		PrintCopySummary(cmd.OutOrStdout(), i18n.FromCommand(cmd), result)
 		return nil
 	}
 }
@@ -145,7 +146,7 @@ func RunCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.Reader, sourc
 	if asJSON {
 		return cliruntime.WritePrettyJSON(cmd.OutOrStdout(), result)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "dry run: would copy %d files (%d bytes) %s -> %s\n", result.Files, result.Bytes, source, destination)
+	fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.copy.dry_run", result.Files, result.Bytes, source, destination))
 	for _, path := range result.Entries {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", path)
 	}
@@ -154,11 +155,11 @@ func RunCopyDryRun(cmd *cobra.Command, ctx context.Context, fs vfs.Reader, sourc
 
 func PrintCopySummary(w interface {
 	Write([]byte) (int, error)
-}, result *drivecopy.DriverCopyResult) {
-	fmt.Fprintf(w, "copied %s -> %s\n", result.SourcePath, result.DestPath)
-	fmt.Fprintf(w, "mounts: %s -> %s\n", result.SourceMount, result.DestMount)
-	fmt.Fprintf(w, "bytes: %d\n", result.Bytes)
-	fmt.Fprintf(w, "duration: %s\n", result.Duration)
+}, loc *i18n.Localizer, result *drivecopy.DriverCopyResult) {
+	fmt.Fprintln(w, loc.T("out.fs.copy.copied", result.SourcePath, result.DestPath))
+	fmt.Fprintln(w, loc.T("out.fs.copy.mounts", result.SourceMount, result.DestMount))
+	fmt.Fprintln(w, loc.T("out.fs.copy.bytes", result.Bytes))
+	fmt.Fprintln(w, loc.T("out.fs.copy.duration", result.Duration))
 	for _, event := range result.Timeline {
 		if event.Phase != "read_source_to_temp" && event.Phase != "driver_put_source" {
 			continue
@@ -177,15 +178,15 @@ func CopyError(result *drivecopy.DriverCopyResult) error {
 
 func PrintCopyDirSummary(w interface {
 	Write([]byte) (int, error)
-}, result *drivecopy.DriverCopyDirResult) {
-	fmt.Fprintf(w, "copied directory %s -> %s\n", result.SourcePath, result.DestPath)
-	fmt.Fprintf(w, "files copied: %d\n", result.Copied)
-	fmt.Fprintf(w, "files skipped: %d\n", result.Skipped)
-	fmt.Fprintf(w, "files failed: %d\n", result.Failed)
-	fmt.Fprintf(w, "bytes: %d\n", result.Bytes)
-	fmt.Fprintf(w, "duration: %s\n", result.Duration)
+}, loc *i18n.Localizer, result *drivecopy.DriverCopyDirResult) {
+	fmt.Fprintln(w, loc.T("out.fs.copy.dir_copied", result.SourcePath, result.DestPath))
+	fmt.Fprintln(w, loc.T("out.fs.copy.files_copied", result.Copied))
+	fmt.Fprintln(w, loc.T("out.fs.copy.files_skipped", result.Skipped))
+	fmt.Fprintln(w, loc.T("out.fs.copy.files_failed", result.Failed))
+	fmt.Fprintln(w, loc.T("out.fs.copy.bytes", result.Bytes))
+	fmt.Fprintln(w, loc.T("out.fs.copy.duration", result.Duration))
 	if result.Error != "" {
-		fmt.Fprintf(w, "error: %s\n", result.Error)
+		fmt.Fprintln(w, loc.T("out.fs.copy.error", result.Error))
 	}
 }
 

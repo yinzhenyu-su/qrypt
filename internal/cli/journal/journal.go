@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/core"
@@ -163,7 +164,7 @@ func NewReplayCmd(rt Runtime) *cobra.Command {
 				}
 				results = append(results, MaintenanceResult{Mount: target.Name, Dir: target.Dir, Replayed: len(replayed), Entries: paths})
 				if !asJSON {
-					fmt.Fprintf(cmd.OutOrStdout(), "journal %s: replayed %d failed upload(s)\n", target.Name, len(replayed))
+					fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.journal.replayed", target.Name, len(replayed)))
 				}
 			}
 			if asJSON {
@@ -198,7 +199,7 @@ func NewPruneCmd(rt Runtime) *cobra.Command {
 				}
 				results = append(results, MaintenanceResult{Mount: target.Name, Dir: target.Dir, Pruned: pruned})
 				if !asJSON {
-					fmt.Fprintf(cmd.OutOrStdout(), "journal %s: pruned %d stale upload(s)\n", target.Name, pruned)
+					fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.fs.journal.pruned", target.Name, pruned))
 				}
 			}
 			if asJSON {
