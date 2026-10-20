@@ -261,6 +261,7 @@ def generate():
     lines.append("- **先体验 qrypt**：使用 `localfs`，不需要云盘账号，配置示例见[快速上手](quickstart.md)。")
     lines.append("- **使用网盘**：从下方列表中选择对应驱动。多数网盘需要从网页端登录后获取 cookie 或 token，具体字段见各驱动小节。")
     lines.append("- **使用标准协议或自建服务**：选择 `webdav`、`sftp` 或 `s3`。")
+    lines.append("- **按能力选驱动**：见[能力对照](#能力对照)。")
     lines.append("")
     lines.append("网盘凭证通常有时效，过期后需要重新获取。请将凭证保存在本机配置文件中，不要提交到版本库。")
     lines.append("")
@@ -268,9 +269,6 @@ def generate():
     lines.append("")
     lines.append(build_driver_list_table(drivers))
     lines.append("")
-
-    for _, definition in drivers:
-        lines.append(build_driver_section(definition))
 
     lines.append("## 能力对照")
     lines.append("")
@@ -284,6 +282,9 @@ def generate():
     lines.append("")
     lines.append("`quark` 的离线下载同时支持解析、选择性转存和加速取回。")
     lines.append("")
+
+    for _, definition in drivers:
+        lines.append(build_driver_section(definition))
 
     content = "\n".join(lines)
     idx = content.find("\n---\n")
