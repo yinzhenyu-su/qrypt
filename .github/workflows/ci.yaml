@@ -63,7 +63,7 @@ jobs:
         if: matrix.name == 'static'
         env:
           QRYPT_TOOLS_DIR: ${{ github.workspace }}/.cache/qrypt-tools
-        run: scripts/install-ci-tools.sh
+        run: scripts/ci/install-tools.sh
 
       - name: Static checks
         if: matrix.name == 'static'
@@ -73,48 +73,61 @@ jobs:
           go vet ./...
           "$QRYPT_TOOLS_DIR/staticcheck" ./...
           "$QRYPT_TOOLS_DIR/golangci-lint" run ./...
-          scripts/check-arch.sh
+          scripts/ci/check-arch.sh
           "$QRYPT_TOOLS_DIR/govulncheck" ./...
           unformatted=$(gofmt -l .)
           test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
+          generated_schema_before=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-generated-schema.XXXXXX")
+          cp pkg/drive/builtin_schema_gen.go "$generated_schema_before/builtin_schema_gen.go"
+          cp internal/cli/i18n/catalog_gen.go "$generated_schema_before/catalog_gen.go"
+          python3 scripts/schema/check-schema.py
+          python3 scripts/schema/gen-drive-schema.py
+          python3 scripts/schema/check-cli-i18n.py
+          python3 scripts/schema/gen-cli-i18n.py
+          if ! cmp -s "$generated_schema_before/builtin_schema_gen.go" pkg/drive/builtin_schema_gen.go || \
+             ! cmp -s "$generated_schema_before/catalog_gen.go" internal/cli/i18n/catalog_gen.go; then
+            echo "generated schema artifacts are stale; re-run the generators"
+            exit 1
+          fi
+          python3 scripts/schema/test-gen-docs.py
           generated_before=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-generated-docs.XXXXXX")
           trap 'rm -rf "$generated_before"' EXIT
           cp docs/for-user/full-config.md "$generated_before/full-config.md"
           cp docs/for-user/support-drivers.md "$generated_before/support-drivers.md"
-          python3 scripts/gen-config-docs.py
-          python3 scripts/gen-driver-docs.py
+          python3 scripts/schema/gen-config-docs.py
+          python3 scripts/schema/gen-driver-docs.py
           if ! cmp -s "$generated_before/full-config.md" docs/for-user/full-config.md || \
              ! cmp -s "$generated_before/support-drivers.md" docs/for-user/support-drivers.md; then
             echo "generated user docs are stale; re-run the generators"
             git diff --stat -- docs/for-user/full-config.md docs/for-user/support-drivers.md
             exit 1
           fi
-          scripts/check-install.sh
+          scripts/install/check-install.sh
 
       - name: Fast suite
         if: matrix.name == 'fast'
-        run: scripts/test-layers.sh fast
+        run: scripts/ci/test-layers.sh fast
 
       - name: Race suite
         if: matrix.name == 'race'
-        run: scripts/test-layers.sh race
+        run: scripts/ci/test-layers.sh race
 
       - name: VFS stability and smoke
         if: matrix.name == 'stability'
         run: |
-          scripts/test-layers.sh vfs-stability
-          scripts/test-layers.sh smoke
+          scripts/ci/test-layers.sh vfs-stability
+          scripts/ci/test-layers.sh smoke
 
       - name: Install script smoke
         if: matrix.name == 'stability'
-        run: scripts/smoke-install.sh --docker
+        run: scripts/install/smoke-install.sh --docker
 
       # PR-stage coverage visibility: non-blocking snapshot of the six
       # core packages with a highlight on packages changed by this PR.
-      # The hard floor gate runs in nightly only (scripts/coverage.sh).
+      # The hard floor gate runs in nightly only (scripts/ci/check-coverage.sh).
       - name: Coverage report (PR snapshot)
         if: github.event_name == 'pull_request' && matrix.name == 'static'
-        run: bash scripts/pr-coverage-report.sh "${{ github.event.pull_request.base.sha }}"
+        run: bash scripts/ci/report-coverage.sh "${{ github.event.pull_request.base.sha }}"
 
   # Windows compile + unit-test gate. Windows is otherwise only a
   # cross-compiled release target built on ubuntu runners, so a broken
@@ -149,7 +162,7 @@ jobs:
 
       - name: Install script smoke (PowerShell)
         shell: pwsh
-        run: ./scripts/smoke-install.ps1 -Installer ./scripts/install.ps1 -Binary ./qrypt.exe
+        run: ./scripts/install/smoke-install.ps1 -Installer ./scripts/install/install.ps1 -Binary ./qrypt.exe
 
       - name: LocalFS smoke
         shell: bash
@@ -160,7 +173,7 @@ jobs:
           # /local/... virtual paths reach the CLI unchanged.
           export TMPDIR="${RUNNER_TEMP//\\//}"
           export MSYS2_ARG_CONV_EXCL="*"
-          scripts/smoke-localfs.sh
+          scripts/ci/smoke-localfs.sh
 
   update-changelog:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -174,7 +187,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate changelog
-        run: bash scripts/gen-changelog.sh "${{ inputs.version || github.ref_name }}"
+        run: bash scripts/release/gen-changelog.sh "${{ inputs.version || github.ref_name }}"
 
       - name: Commit and push
         run: |
@@ -250,11 +263,13 @@ jobs:
           commit="$(git rev-parse --short HEAD)"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
-          echo "QRYPT_VERSION=${version}" >> "$GITHUB_ENV"
-          echo "QRYPT_COMMIT=${commit}" >> "$GITHUB_ENV"
-          echo "QRYPT_BUILD_TIME=${build_time}" >> "$GITHUB_ENV"
-          echo "QRYPT_DIRTY=${dirty}" >> "$GITHUB_ENV"
-          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}" >> "$GITHUB_ENV"
+          {
+            echo "QRYPT_VERSION=${version}"
+            echo "QRYPT_COMMIT=${commit}"
+            echo "QRYPT_BUILD_TIME=${build_time}"
+            echo "QRYPT_DIRTY=${dirty}"
+            echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}"
+          } >> "$GITHUB_ENV"
 
       - name: Build ${{ matrix.target }} with Docker
         if: matrix.kind == 'linux-docker'
@@ -323,11 +338,13 @@ jobs:
           commit="$(git rev-parse --short HEAD)"
           build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
-          echo "QRYPT_VERSION=${version}" >> "$GITHUB_ENV"
-          echo "QRYPT_COMMIT=${commit}" >> "$GITHUB_ENV"
-          echo "QRYPT_BUILD_TIME=${build_time}" >> "$GITHUB_ENV"
-          echo "QRYPT_DIRTY=${dirty}" >> "$GITHUB_ENV"
-          echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}" >> "$GITHUB_ENV"
+          {
+            echo "QRYPT_VERSION=${version}"
+            echo "QRYPT_COMMIT=${commit}"
+            echo "QRYPT_BUILD_TIME=${build_time}"
+            echo "QRYPT_DIRTY=${dirty}"
+            echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}"
+          } >> "$GITHUB_ENV"
 
       - name: Build darwin/amd64
         run: |
@@ -394,7 +411,7 @@ jobs:
         shell: pwsh
         run: |
           $binary = (Resolve-Path "release/qrypt-windows-amd64.exe").Path
-          ./scripts/smoke-windows-mount.ps1 -Binary $binary
+          ./scripts/ci/smoke-windows-mount.ps1 -Binary $binary
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'

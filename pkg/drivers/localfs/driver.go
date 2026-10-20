@@ -27,15 +27,7 @@ func init() {
 			return nil, fmt.Errorf("localfs: missing root_path")
 		}
 		return New(root), nil
-	},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Required:    true,
-			Description: "Local filesystem root directory path",
-			Example:     "/tmp/qrypt-remote",
-		},
-	)
+	})
 }
 
 func New(root string) *Driver {

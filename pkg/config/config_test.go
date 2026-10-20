@@ -10,6 +10,9 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/p189"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/sftp"
 )
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {
@@ -651,5 +654,88 @@ func TestSaveConcurrentWritersNeverCorrupt(t *testing.T) {
 	}
 	if len(loaded.Mounts) != 1 {
 		t.Fatalf("loaded mounts = %+v, want exactly one complete writer's config", loaded.Mounts)
+	}
+}
+
+func TestValidateMountAlternativeRequirements(t *testing.T) {
+	tests := []struct {
+		name    string
+		driver  string
+		params  ParamMap
+		wantErr string
+	}{
+		{
+			name:   "189 cookie",
+			driver: "189",
+			params: ParamMap{"cookie": "k=v"},
+		},
+		{
+			name:   "189 username and password",
+			driver: "189",
+			params: ParamMap{"username": "user", "password": "pass"},
+		},
+		{
+			name:    "189 no credentials",
+			driver:  "189",
+			params:  ParamMap{},
+			wantErr: "alternative parameter groups",
+		},
+		{
+			name:   "sftp password",
+			driver: "sftp",
+			params: ParamMap{"address": "host:22", "username": "user", "password": "pass"},
+		},
+		{
+			name:   "sftp private key",
+			driver: "sftp",
+			params: ParamMap{"address": "host:22", "username": "user", "private_key": "key"},
+		},
+		{
+			name:    "sftp no credential",
+			driver:  "sftp",
+			params:  ParamMap{"address": "host:22", "username": "user"},
+			wantErr: "alternative parameter groups",
+		},
+		{
+			name:   "onedrive app client id",
+			driver: "onedrive_app",
+			params: ParamMap{"client_id": "client", "client_secret": "secret", "tenant_id": "tenant", "email": "user@example.com"},
+		},
+		{
+			name:   "onedrive app client key",
+			driver: "onedrive_app",
+			params: ParamMap{"client_key": "client", "client_secret": "secret", "tenant_id": "tenant", "email": "user@example.com"},
+		},
+		{
+			name:    "onedrive app no client",
+			driver:  "onedrive_app",
+			params:  ParamMap{"client_secret": "secret", "tenant_id": "tenant", "email": "user@example.com"},
+			wantErr: "alternative parameter groups",
+		},
+		{
+			name:    "onedrive app missing common required",
+			driver:  "onedrive_app",
+			params:  ParamMap{"client_id": "client"},
+			wantErr: `missing required parameter "client_secret"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateMount(&Config{}, 0, MountConfig{
+				Name:   "test",
+				Type:   tt.driver,
+				Params: tt.params,
+			})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateMount() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateMount() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
 	}
 }

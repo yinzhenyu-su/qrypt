@@ -116,11 +116,33 @@ func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
 	if !knownDrivers[mountCfg.Type] {
 		return fmt.Errorf("config: mount %q has unknown driver %q", mountCfg.Name, mountCfg.Type)
 	}
+	spec := drive.ParamSpecFor(mountCfg.Type)
 	allowedParams := make(map[string]bool)
-	for _, param := range drive.ParamSchema(mountCfg.Type) {
+	for _, param := range spec.Params {
 		allowedParams[param.Name] = true
-		if param.Required && strings.TrimSpace(mountCfg.Params[param.Name]) == "" {
-			return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, param.Name)
+	}
+	for _, name := range spec.Required {
+		if strings.TrimSpace(mountCfg.Params[name]) == "" {
+			return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, name)
+		}
+	}
+	if len(spec.AnyOf) > 0 {
+		satisfied := false
+		for _, group := range spec.AnyOf {
+			complete := true
+			for _, name := range group {
+				if strings.TrimSpace(mountCfg.Params[name]) == "" {
+					complete = false
+					break
+				}
+			}
+			if complete {
+				satisfied = true
+				break
+			}
+		}
+		if !satisfied {
+			return fmt.Errorf("config: mount %q must satisfy one of the alternative parameter groups", mountCfg.Name)
 		}
 	}
 	for name := range mountCfg.Params {

@@ -231,7 +231,7 @@ func TestCancelUnderRemovesSubtree(t *testing.T) {
 // TestConcurrentScheduleCancel: racing Schedule/Cancel/Keys/Deadlines must
 // be race-free and converge to a consistent final state.
 func TestConcurrentScheduleCancel(t *testing.T) {
-	s := NewTimeKeyedScheduler()
+	s := newTestScheduler()
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	var calls atomic.Int64
@@ -262,8 +262,13 @@ func TestConcurrentScheduleCancel(t *testing.T) {
 	}
 	wg.Wait()
 
-	// The last Schedule may still be pending; allow 0 or 1 fires.
-	time.Sleep(30 * time.Millisecond)
+	// Fire every timer created during the storm. Only the generation that is
+	// still current may run; all replaced or cancelled generations must be
+	// stale no-ops. Firing after the goroutines stop keeps this deterministic:
+	// no callback can fire while a newer generation is being installed.
+	for _, timer := range s.factory.all() {
+		timer.fire()
+	}
 	if got := calls.Load(); got > 1 {
 		t.Fatalf("callback ran %d times, want at most 1", got)
 	}

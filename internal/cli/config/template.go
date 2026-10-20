@@ -6,11 +6,16 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func GenerateTemplate(starterRoot string) ([]byte, error) {
+	return GenerateTemplateLocalized(starterRoot, i18n.New(i18n.LangEN))
+}
+
+func GenerateTemplateLocalized(starterRoot string, loc *i18n.Localizer) ([]byte, error) {
 	type driverExample struct {
 		Name    string
 		Params  []drive.ParamDef
@@ -20,7 +25,7 @@ func GenerateTemplate(starterRoot string) ([]byte, error) {
 	for _, name := range drive.Names() {
 		schema := drive.ParamSchema(name)
 		de := driverExample{Name: name, Params: schema}
-		de.Example = renderDriverExample(name, schema)
+		de.Example = renderDriverExample(schema, loc)
 		drivers = append(drivers, de)
 	}
 
@@ -42,12 +47,36 @@ func GenerateTemplate(starterRoot string) ([]byte, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	content := localizeConfigSections(buf.String(), loc)
+	return []byte(content), nil
 }
 
-func renderDriverExample(name string, params []drive.ParamDef) string {
+var configSectionLabels = []struct {
+	english string
+	key     string
+}{
+	{"# ── Mount ", "config.section.mount"},
+	{"# ── Logging ", "config.section.logging"},
+	{"# ── Runtime storage root ", "config.section.storage"},
+	{"# ── Time source (NTP first, system clock fallback) ", "config.section.time"},
+	{"# ── Read cache settings ", "config.section.read_cache"},
+	{"# ── Thumbnail cache settings ", "config.section.thumbnail_cache"},
+	{"# ── Upload settings ", "config.section.upload"},
+	{"# ── Bandwidth limits (empty = unlimited) ", "config.section.bandwidth"},
+	{"# ── Starter local filesystem mount ", "config.section.starter_mount"},
+	{"# ── Encryption (uncomment to enable) ", "config.section.encryption"},
+}
+
+func localizeConfigSections(content string, loc *i18n.Localizer) string {
+	for _, label := range configSectionLabels {
+		content = strings.ReplaceAll(content, label.english, "# ── "+loc.T(label.key)+" ")
+	}
+	return content
+}
+
+func renderDriverExample(params []drive.ParamDef, loc *i18n.Localizer) string {
 	if len(params) == 0 {
-		return "#   no parameters required\n"
+		return "#   " + loc.T("config.section.no_params") + "\n"
 	}
 	var b strings.Builder
 	for _, p := range params {
@@ -55,7 +84,7 @@ func renderDriverExample(name string, params []drive.ParamDef) string {
 		if p.Secret {
 			secret = " [secret]"
 		}
-		fmt.Fprintf(&b, "#   %s%s: %s\n", p.Name, secret, p.Description)
+		fmt.Fprintf(&b, "#   %s%s: %s\n", p.Name, secret, p.DescriptionFor(loc.Lang()))
 	}
 	b.WriteString("#   [mounts.params]\n")
 	for _, p := range params {
@@ -78,7 +107,7 @@ func renderDriverExample(name string, params []drive.ParamDef) string {
 	return b.String()
 }
 
-const configTemplate = `#:schema ./qrypt.schema.json
+const configTemplate = `#:schema ./schema/qrypt.schema.json
 version = "1"
 
 # ── Mount ────────────────────────────────────────────────────────

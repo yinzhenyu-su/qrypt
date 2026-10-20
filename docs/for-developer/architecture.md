@@ -44,7 +44,7 @@ depends on `pkg/core`; they are not peer layers, and `pkg/core` never depends
 on `pkg/mobile`. Provider drivers must not import VFS, mount, control, or CLI
 packages. VFS and mount code must not import concrete provider packages. These
 rules are enforced automatically by
-`scripts/check-arch.sh` in CI (every PR); when the boundary is violated the
+`scripts/ci/check-arch.sh` in CI (every PR); when the boundary is violated the
 build fails.
 
 ### Reusable Support Packages

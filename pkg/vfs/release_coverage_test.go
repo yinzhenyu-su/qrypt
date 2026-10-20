@@ -2,7 +2,7 @@ package vfs
 
 // Coverage tests for the namespace/runtime surfaces added by the v0.5.0
 // view-domain refactor. These keep pkg/vfs above its release coverage floor
-// (scripts/coverage.sh, 75%) by exercising the thin adapter layers that the
+// (scripts/ci/check-coverage.sh, 75%) by exercising the thin adapter layers that the
 // feature tests do not reach.
 
 import (

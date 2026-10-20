@@ -14,17 +14,17 @@ import (
 // relative to this package directory (go test runs with the package directory
 // as the working directory).
 const (
-	installerScript           = "../../scripts/install.sh"
-	installerPowerShellScript = "../../scripts/install.ps1"
+	installerScript           = "../../scripts/install/install.sh"
+	installerPowerShellScript = "../../scripts/install/install.ps1"
 )
 
-// TestInstallerNamingMatchesUpdater fails when scripts/install.sh and
+// TestInstallerNamingMatchesUpdater fails when scripts/install/install.sh and
 // pkg/selfupdate disagree about how a release is named: the asset file, the
 // checksum file, and the in-archive binary name. The script exposes its rule
 // through --print-manifest precisely so this contract can be checked.
 func TestInstallerNamingMatchesUpdater(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("scripts/install.sh targets linux and darwin only")
+		t.Skip("scripts/install/install.sh targets linux and darwin only")
 	}
 
 	version := selfupdate.MustParseVersion("v0.5.3")
@@ -58,7 +58,7 @@ func TestInstallerNamingMatchesUpdater(t *testing.T) {
 // uninstall command depends on.
 func TestInstallerLayoutMatchesConstants(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("scripts/install.sh targets linux and darwin only")
+		t.Skip("scripts/install/install.sh targets linux and darwin only")
 	}
 	got := runManifest(t, "v0.5.3", "linux", "amd64")
 	checks := map[string]string{
@@ -75,7 +75,7 @@ func TestInstallerLayoutMatchesConstants(t *testing.T) {
 }
 
 // TestPowerShellInstallerNamingMatchesUpdater applies the same contract to
-// scripts/install.ps1. The Windows CI job runs it with pwsh available; other
+// scripts/install/install.ps1. The Windows CI job runs it with pwsh available; other
 // environments skip it rather than requiring PowerShell.
 func TestPowerShellInstallerNamingMatchesUpdater(t *testing.T) {
 	pwsh, err := exec.LookPath("pwsh")

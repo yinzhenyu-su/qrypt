@@ -99,7 +99,7 @@ Every boundary migration must satisfy all of the following:
 3. Architecture checks reject the dependency that was removed.
 4. Focused tests cover behavior and lifecycle/error paths affected by the
    migration.
-5. `scripts/ci-check.sh` passes before merge.
+5. `scripts/ci/check-all.sh` passes before merge.
 6. Generated documentation is changed through its generator, never by editing
    generated output directly.
 7. Unrelated worktree changes are preserved and excluded from the merge.
@@ -119,13 +119,13 @@ Verification is layered rather than report-driven:
 1. Inspect dependency direction, public API and JSON compatibility, lifecycle,
    cancellation, errors, concurrency, and the validity of new tests.
 2. Run focused tests and focused race tests independently of the worker.
-3. Run vet, the repository-pinned linters, build, `scripts/check-arch.sh`, and
+3. Run vet, the repository-pinned linters, build, `scripts/ci/check-arch.sh`, and
    `git diff --check`.
-4. Run the complete `scripts/ci-check.sh` before committing. Package-level
+4. Run the complete `scripts/ci/check-all.sh` before committing. Package-level
    checks are not a substitute for this gate.
 
 When a new architecture rule is added, verify that a temporary violating
-import makes `scripts/check-arch.sh` fail, remove the probe, and verify the
+import makes `scripts/ci/check-arch.sh` fail, remove the probe, and verify the
 clean tree passes. Tests must prove the contract they claim: interface
 satisfaction does not pin an exact concrete type, and race tests must not
 mutate process-wide timing variables while background workers are active.

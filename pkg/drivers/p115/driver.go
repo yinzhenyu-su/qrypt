@@ -75,22 +75,7 @@ func init() {
 			RootPath:  params["root_path"],
 			LimitRate: 2,
 		}), nil
-	},
-		drive.ParamDef{
-			Name:        "cookie",
-			Type:        "string",
-			Secret:      true,
-			Description: "115 cloud drive authentication cookie (required on first run; later can be loaded from state)",
-			Example:     "k1=v1; k2=v2",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path, resolved to the provider folder ID at startup",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-	)
+	})
 }
 
 type Options struct {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/mount"
@@ -70,8 +71,9 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			}
 
 			mountPointExpanded := util.ExpandHome(mountPoint)
+			loc := i18n.FromCommand(cmd)
 			logging.L.Infof("Mounting at %s ...", mountPointExpanded)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Mounting at %s ...\n", mountPointExpanded)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.mounting", mountPointExpanded))
 			mountOpts.MountPoint = mountPointExpanded
 			mountOpts.Foreground = true
 			session, err := mount.NewMounter().Mount(ctx, fs, mountOpts)
@@ -89,7 +91,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			unmount := func() {
 				unmountOnce.Do(func() {
 					logging.L.Infof("Unmounting %s ...", mountPointExpanded)
-					fmt.Fprintln(cmd.ErrOrStderr(), "Unmounting ...")
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.unmounting", mountPointExpanded))
 					uctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 					if err := mount.NewMounter().Unmount(uctx, session); err != nil {
@@ -99,7 +101,7 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			}
 			defer unmount()
 			logging.L.Infof("Mounted at %s. Press Ctrl+C to unmount.", mountPointExpanded)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Mounted at %s. Press Ctrl+C to unmount.\n", mountPointExpanded)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.mount.mounted", mountPointExpanded))
 			if prefetcher, ok := fs.(interface{ StartDirectoryPrefetch(context.Context) }); ok {
 				prefetcher.StartDirectoryPrefetch(ctx)
 			}

@@ -1,5 +1,5 @@
 // Package uninstall implements `qrypt uninstall`, which reverses an
-// installation created by scripts/install.sh.
+// installation created by scripts/install/install.sh.
 package uninstall
 
 import (

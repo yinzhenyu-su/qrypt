@@ -27,10 +27,10 @@ gh workflow run "Nightly Quality Gates"
 
 ## Coverage 门禁
 
-- **nightly 硬性 gate**（`scripts/coverage.sh`）：六包低于 floor 即失败
+- **nightly 硬性 gate**（`scripts/ci/check-coverage.sh`）：六包低于 floor 即失败
   （vfs 75 / core 72 / drive 62 / sync 79 / config 74 / crypt 79）。提高
   floor 是刻意行为：改 `FLOOR` map 并提交说明。
-- **PR 快照**（`scripts/pr-coverage-report.sh`，ci.yaml 中仅 PR 运行）：
+- **PR 快照**（`scripts/ci/report-coverage.sh`，ci.yaml 中仅 PR 运行）：
   非阻塞，把六包覆盖率和"本 PR 有变更"的包写进 PR summary，便于在
   合并前观察趋势。`pkg/syncer` 用 `-coverpkg` 对 CLI 集成测试口径
   （单包 ~15% 是假象）。
@@ -59,11 +59,11 @@ gh workflow run "Nightly Quality Gates"
 
 ```bash
 # 先读取仓库 variable 并检查选择，不写入 secret
-bash scripts/sync-contract-config.sh --dry-run
+bash scripts/dev/sync-contract-config.sh --dry-run
 # 默认读取当前目录 ./qrypt.toml，更新当前仓库 secret
-bash scripts/sync-contract-config.sh
+bash scripts/dev/sync-contract-config.sh
 # 可显式指定配置和目标仓库
-bash scripts/sync-contract-config.sh --config ./qrypt.toml --repo OWNER/REPO
+bash scripts/dev/sync-contract-config.sh --config ./qrypt.toml --repo OWNER/REPO
 ```
 
 脚本按 variable 中的 mount `name` 精确筛选，保留全局设置和选中 mount 的完整配置
@@ -91,11 +91,11 @@ base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64
    `go build -tags nocgo`（与发布产物同款标签）、`go vet ./...`、主模块
    单测（只用主模块包列表，不用 `go test ./...`——vendored cgofuse 的
    Windows 宿主测试需要真实 WinFsp）、localfs fs 冒烟
-   （`scripts/smoke-localfs.sh`，仅 `qrypt fs` 命令、不挂载）、以及
-   `install.ps1` 的命名漂移检查与安装冒烟（`scripts/smoke-install.ps1`）。
+   （`scripts/ci/smoke-localfs.sh`，仅 `qrypt fs` 命令、不挂载）、以及
+   `install.ps1` 的命名漂移检查与安装冒烟（`scripts/install/smoke-install.ps1`）。
    无 WinFsp 依赖，跑得快。
 2. **每夜**（nightly.yaml `windows-mount` job）：安装 WinFsp（choco），
-   以 localfs + 加密配置真实挂载（`scripts/smoke-windows-mount.ps1`），
+   以 localfs + 加密配置真实挂载（`scripts/ci/smoke-windows-mount.ps1`），
    经 FUSE 路径写文件，校验 `qrypt fs cat` 解密读回、后端只存加密乱码
    文件名、再经 FUSE 路径读回。这是 nocgo 宿主 + WinFsp 集成唯一覆盖
    的路径。
@@ -143,19 +143,22 @@ PNG）作为来源；把 HTML 页面 URL 当作文件来源时 Quark 会返回 p
 ## 本地等价命令
 
 ```bash
-./scripts/test-layers.sh              # 分层测试（fast/contract/race 等）
-./scripts/coverage.sh -print          # 覆盖率快照（不 gate）
-./scripts/fuzz-nightly.sh 10s         # 本地 fuzz（每 fuzzer 10s）
-./scripts/smoke-localfs.sh            # localfs 挂载冒烟
-./scripts/smoke-windows-mount.ps1     # Windows 真实挂载冒烟（需 WinFsp）
-./scripts/check-install.sh            # 安装脚本：shellcheck + 与 updater 的发布命名漂移检查（含 install.ps1，需 pwsh）
-./scripts/smoke-install.sh            # 安装脚本端到端冒烟（加 --docker 在容器里跑一遍）
-pwsh ./scripts/smoke-install.ps1      # Windows 安装脚本端到端冒烟（需在 Windows 上运行）
+./scripts/ci/test-layers.sh                # 分层测试（fast/contract/race 等）
+./scripts/ci/check-coverage.sh -print      # 覆盖率快照（不 gate）
+./scripts/ci/fuzz-nightly.sh 10s           # 本地 fuzz（每 fuzzer 10s）
+./scripts/ci/smoke-localfs.sh              # localfs 挂载冒烟
+./scripts/ci/smoke-windows-mount.ps1       # Windows 真实挂载冒烟（需 WinFsp）
+./scripts/install/check-install.sh         # 安装脚本：shellcheck + 与 updater 的发布命名漂移检查（含 install.ps1，需 pwsh）
+./scripts/install/smoke-install.sh         # 安装脚本端到端冒烟（加 --docker 在容器里跑一遍）
+pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟（需在 Windows 上运行）
 ```
 
+脚本按用途分目录（`ci/`、`schema/`、`install/`、`release/`、`dev/`），
+命名约定和每个目录的职责见 [`scripts/README.md`](../../scripts/README.md)。
+
 `check-install.sh` 在 `ci.yaml` 的 `static` 任务中运行；`smoke-install.sh --docker`
-在 `stability` 任务中运行。`scripts/install.sh`（Linux / macOS）与
-`scripts/install.ps1`（Windows）是首次安装脚本：下载并校验 release，把二进制装到
+在 `stability` 任务中运行。`scripts/install/install.sh`（Linux / macOS）与
+`scripts/install/install.ps1`（Windows）是首次安装脚本：下载并校验 release，把二进制装到
 用户可写目录并配置 `PATH`（Unix 用 `~/.local/bin` 符号链接 + rc 片段，Windows 用
 `%USERPROFILE%\.qrypt\bin` + 用户级注册表 `PATH`）。`pkg/install` 固定两侧安装布局，
 并有 Go 测试比对 `install.sh`/`install.ps1` 与 `pkg/selfupdate` 的资源命名，
@@ -181,16 +184,16 @@ pwsh ./scripts/smoke-install.ps1      # Windows 安装脚本端到端冒烟（�
 只把写入者标为串行就够了：go 的 testing 会先把所有非并行测试跑完再恢复并行的
 那些，所以串行写入者必定早于并行读取者结束。
 
-`scripts/test-parallelism.py` 维护这件事，它顺调用图传播（`pkg/core` 的
+`scripts/ci/test-parallelism.py` 维护这件事，它顺调用图传播（`pkg/core` 的
 `newTaskBoundaryCore` 曾写接缝，当时调用它的测试即便自身没提过也要串行；该接缝
 已实例注入化，这类传播点随之消失），也识别跨包赋值：
 
 ```bash
-./scripts/test-parallelism.py audit ./pkg/vfs   # 只报告，有待改动时退出 1
-./scripts/test-parallelism.py apply ./pkg/vfs   # 落地
+./scripts/ci/test-parallelism.py audit ./pkg/vfs   # 只报告，有待改动时退出 1
+./scripts/ci/test-parallelism.py apply ./pkg/vfs   # 落地
 ```
 
-改完**必须**跑 `test-layers.sh race`。静态分析看不到「依赖另一个测试先把接缝
+改完**必须**跑 `scripts/ci/test-layers.sh race`。静态分析看不到「依赖另一个测试先把接缝
 设成特定状态」这类顺序耦合（`pkg/mobile` 的直传测试即如此），只有 race 层兜得住。
 
 ## 版本固定策略

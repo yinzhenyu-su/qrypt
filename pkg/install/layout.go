@@ -3,7 +3,7 @@
 // symlink under ~/.local/bin plus a marker block in a shell startup file;
 // Windows keeps the binary at %USERPROFILE%\.qrypt\bin\qrypt.exe and adds that
 // directory to the user-scope registry PATH. The bootstrap scripts
-// (scripts/install.sh and scripts/install.ps1) write this layout and the
+// (scripts/install/install.sh and scripts/install/install.ps1) write this layout and the
 // uninstall command reads it back, so both sides must agree on the constants
 // here. A drift test in this package also checks that both scripts and
 // pkg/selfupdate agree about release asset naming.

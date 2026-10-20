@@ -83,54 +83,7 @@ func init() {
 			OrderBy:        params["order_by"],
 			OrderDirection: params["order_direction"],
 		}), nil
-	},
-		drive.ParamDef{
-			Name:        "refresh_token",
-			Type:        "string",
-			Required:    true,
-			Secret:      true,
-			Description: "Aliyun Drive refresh token for OAuth authentication",
-			Example:     "your-refresh-token",
-		},
-		drive.ParamDef{
-			Name:        "drive_id",
-			Type:        "string",
-			Required:    true,
-			Description: "Aliyun Drive ID",
-			Example:     "your-drive-id",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path, resolved to the provider folder ID at startup",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "api_base_url",
-			Type:        "string",
-			Description: "Custom API base URL",
-			Example:     "https://openapi.alipan.com",
-		},
-		drive.ParamDef{
-			Name:        "auth_url",
-			Type:        "string",
-			Description: "Custom OAuth token URL",
-			Example:     "https://openapi.alipan.com/oauth/authorize",
-		},
-		drive.ParamDef{
-			Name:        "order_by",
-			Type:        "string",
-			Description: "File listing sort field",
-			Example:     "name",
-		},
-		drive.ParamDef{
-			Name:        "order_direction",
-			Type:        "string",
-			Description: "Sort direction (ASC or DESC)",
-			Example:     "ASC",
-		},
-	)
+	})
 }
 
 type Options struct {

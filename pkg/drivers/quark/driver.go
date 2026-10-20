@@ -28,41 +28,7 @@ func init() {
 			V2URL:    params["v2_url"],
 			WGKeys:   parseWGKeys(params["wg_keys"]),
 		}), nil
-	},
-		drive.ParamDef{
-			Name:        "cookie",
-			Type:        "string",
-			Required:    true,
-			Secret:      true,
-			Description: "Quark cloud drive authentication cookie",
-			Example:     "k1=v1; k2=v2",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path on the drive",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "base_url",
-			Type:        "string",
-			Description: "Custom API base URL",
-			Example:     "https://drive.quark.cn",
-		},
-		drive.ParamDef{
-			Name:        "v2_url",
-			Type:        "string",
-			Description: "Custom API v2 URL",
-			Example:     "https://drive-m.quark.cn",
-		},
-		drive.ParamDef{
-			Name:        "wg_keys",
-			Type:        "string",
-			Description: "Override wg data keys for offline requests as secureNo:hexkey pairs separated by commas",
-			Example:     "14100:e21247a68938d36f",
-		},
-	)
+	})
 }
 
 // parseWGKeys parses a "secureNo:hexkey,secureNo:hexkey" override list.
