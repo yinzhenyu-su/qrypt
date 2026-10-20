@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/syncer"
@@ -258,6 +259,8 @@ func runGet(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 
 		localPath := util.ExpandHome(args[1])
 		force, _ := cmd.Flags().GetBool("force")
+		loc := i18n.FromCommand(cmd)
+		errOut := cmd.ErrOrStderr()
 
 		entry, err := fs.Stat(ctx, args[0])
 		if err != nil {
@@ -270,11 +273,11 @@ func runGet(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 				return err
 			}
 			if total == 0 {
-				fmt.Fprintf(os.Stderr, "  %s: empty directory\n", filepath.Base(args[0]))
+				fmt.Fprintln(errOut, loc.T("out.fs.get.empty_dir", filepath.Base(args[0])))
 				return nil
 			}
-			bar := newProgressBar(total)
-			fmt.Fprintf(os.Stderr, "  downloading %s/\n", filepath.Base(args[0]))
+			bar := newProgressBar(total, loc, errOut)
+			fmt.Fprintln(errOut, loc.T("out.fs.get.downloading_dir", filepath.Base(args[0])))
 			bar.render()
 			if err := getDir(ctx, fs, args[0], targetPath, force, bar); err != nil {
 				return err
@@ -283,7 +286,7 @@ func runGet(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return nil
 		}
 
-		return get(ctx, fs, args[0], localPath, force, false)
+		return get(ctx, fs, args[0], localPath, force, false, loc, errOut)
 	}
 }
 
@@ -304,7 +307,7 @@ func copyRemoteFile(ctx context.Context, fs vfs.Reader, remotePath string, out i
 	return err
 }
 
-func get(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force, quiet bool) error {
+func get(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force, quiet bool, loc *i18n.Localizer, out io.Writer) error {
 	if info, err := os.Stat(localPath); err == nil {
 		if info.IsDir() {
 			return fmt.Errorf("local destination %q is a directory", localPath)
@@ -323,7 +326,7 @@ func get(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force
 			return err
 		}
 		size = entry.Size
-		fmt.Fprintf(os.Stderr, "  downloading %s (%s)\n", filepath.Base(remotePath), util.FormatBytes(size))
+		fmt.Fprintln(out, loc.T("out.fs.get.downloading_file", filepath.Base(remotePath), util.FormatBytes(size)))
 	}
 
 	err := util.WriteAtomic(localPath, ".qrypt-download-*", 0o644, force, func(file *os.File) error {
@@ -334,7 +337,7 @@ func get(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force
 	}
 
 	if !quiet {
-		fmt.Fprintf(os.Stderr, "  downloaded  %s (%s)\n", filepath.Base(remotePath), util.FormatBytes(size))
+		fmt.Fprintln(out, loc.T("out.fs.get.downloaded_file", filepath.Base(remotePath), util.FormatBytes(size)))
 	}
 	return nil
 }
@@ -372,13 +375,13 @@ func getDir(ctx context.Context, fs vfs.Reader, remotePath, localPath string, fo
 			}
 		} else if force {
 			bar.fileStarted(entry.Name)
-			if err := get(ctx, fs, childRemote, childLocal, true, true); err != nil {
+			if err := get(ctx, fs, childRemote, childLocal, true, true, bar.loc, bar.out); err != nil {
 				return err
 			}
 			bar.fileDownloaded(entry.Name)
 		} else if _, err := os.Stat(childLocal); os.IsNotExist(err) {
 			bar.fileStarted(entry.Name)
-			if err := get(ctx, fs, childRemote, childLocal, false, true); err != nil {
+			if err := get(ctx, fs, childRemote, childLocal, false, true, bar.loc, bar.out); err != nil {
 				return err
 			}
 			bar.fileDownloaded(entry.Name)
@@ -394,10 +397,12 @@ type progressBar struct {
 	completed int
 	skipped   int
 	current   string
+	loc       *i18n.Localizer
+	out       io.Writer
 }
 
-func newProgressBar(total int) *progressBar {
-	return &progressBar{total: total}
+func newProgressBar(total int, loc *i18n.Localizer, out io.Writer) *progressBar {
+	return &progressBar{total: total, loc: loc, out: out}
 }
 
 func (p *progressBar) fileStarted(name string) {
@@ -436,12 +441,12 @@ func (p *progressBar) render() {
 
 	status := fmt.Sprintf("[%s] %d/%d", bar, p.completed, p.total)
 	if p.skipped > 0 {
-		status += fmt.Sprintf(" (%d skipped)", p.skipped)
+		status += p.loc.T("out.fs.get.progress_skipped", p.skipped)
 	}
 	if p.current != "" {
 		status += "  " + p.current
 	}
-	fmt.Fprintf(os.Stderr, "\r  %s", status)
+	fmt.Fprintf(p.out, "\r  %s", status)
 }
 
 func (p *progressBar) done(dirName string) {
@@ -450,11 +455,11 @@ func (p *progressBar) done(dirName string) {
 	var summary string
 	switch {
 	case skipped == 0:
-		summary = fmt.Sprintf("%d downloaded", downloaded)
+		summary = p.loc.T("out.fs.get.downloaded", downloaded)
 	case downloaded == 0:
-		summary = fmt.Sprintf("%d skipped", skipped)
+		summary = p.loc.T("out.fs.get.skipped", skipped)
 	default:
-		summary = fmt.Sprintf("%d downloaded, %d skipped", downloaded, skipped)
+		summary = p.loc.T("out.fs.get.downloaded_skipped", downloaded, skipped)
 	}
-	fmt.Fprintf(os.Stderr, "\r  [%s] %d/%d  %s\n", strings.Repeat("#", 20), p.completed, p.total, summary)
+	fmt.Fprintf(p.out, "\r  [%s] %d/%d  %s\n", strings.Repeat("#", 20), p.completed, p.total, summary)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
@@ -102,7 +103,7 @@ func FinishSync(rt cliruntime.Runtime, cmd *cobra.Command, result syncer.Result,
 			return err
 		}
 	} else {
-		syncer.PrintSummary(cmd.OutOrStdout(), result)
+		PrintSyncSummary(cmd.OutOrStdout(), result, i18n.FromCommand(cmd))
 	}
 	if result.Summary.Failed > 0 {
 		return rt.ExitError(cliruntime.ExitPartial, fmt.Errorf("sync finished with %d failed item(s)", result.Summary.Failed))

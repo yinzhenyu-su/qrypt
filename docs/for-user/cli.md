@@ -8,7 +8,7 @@
   2. `~/.qrypt/qrypt.toml`
   3. Unix：`$XDG_CONFIG_HOME/qrypt/qrypt.toml`，默认 `~/.config/qrypt/qrypt.toml`
   4. Windows：`%AppData%\qrypt\qrypt.toml`
-- 界面语言按 `--lang` → `QRYPT_LANG` → 系统 locale → 英文的顺序选择，支持 `en` 和 `zh-CN`。需要稳定英文输出时设置 `QRYPT_LANG=en` 或传入 `--lang en`。
+- 界面语言按 `--lang` → `QRYPT_LANG` → 系统 locale → 英文的顺序选择，支持 `en` 和 `zh-CN`。帮助、内置命令以及 `fs`/`offline` 的人类可读输出会随语言切换；`--json` 输出、诊断报告、表格头、状态/类型等稳定代码、错误信息和日志保持英文。需要稳定英文输出时设置 `QRYPT_LANG=en` 或传入 `--lang en`；脚本解析结构化结果时应使用 `--json`。
 - `REMOTE` 表示 qrypt 虚拟文件系统路径；`LOCAL` 表示本机路径。
 - `fs get` 的 `LOCAL` 为 `-` 时写入标准输出。
 - `fs put` 的 `LOCAL` 为 `-` 时读取标准输入。

@@ -2,6 +2,8 @@ package debug
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -249,5 +251,28 @@ func TestValidateDriverBenchRequest(t *testing.T) {
 	}
 	if err := ValidateDriverBenchRequest(contracttest.DriverTestRequest{Test: "xfer", Source: "src", Dest: "dst", Samples: 1}); err != nil {
 		t.Fatalf("expected xfer benchmark request to be valid: %v", err)
+	}
+}
+
+func TestBundleWrittenMessageLocalized(t *testing.T) {
+	if got := bundleWrittenMessage(i18n.New(i18n.LangEN), "x.zip"); got != "Wrote debug bundle to x.zip" {
+		t.Fatalf("English message = %q", got)
+	}
+	if got := bundleWrittenMessage(i18n.New(i18n.LangZHCN), "x.zip"); got != "已写入调试包：x.zip" {
+		t.Fatalf("Chinese message = %q", got)
+	}
+}
+
+func TestDebugReportJSONStaysEnglish(t *testing.T) {
+	report := NewDebugAIReport(context.Background(), "debug collect", "/cloud/a")
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, key := range []string{`"schema_version"`, `"generated_at"`, `"command"`, `"path"`} {
+		if !strings.Contains(text, key) {
+			t.Errorf("debug JSON missing English key %s: %s", key, text)
+		}
 	}
 }

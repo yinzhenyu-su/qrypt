@@ -3,6 +3,7 @@ package offline
 import (
 	"errors"
 	"fmt"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,7 +110,7 @@ func TestOfflineProgressRenderer(t *testing.T) {
 	t.Parallel()
 
 	var buf strings.Builder
-	progress := newOfflineProgress(&buf)
+	progress := newOfflineProgress(&buf, i18n.New(i18n.LangEN))
 	item := task.Task{
 		State: task.StateRunning,
 		Progress: task.Progress{

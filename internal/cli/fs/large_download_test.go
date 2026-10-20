@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
@@ -66,7 +67,7 @@ func TestGetLargeLocalFilePreservesEveryChunk(t *testing.T) {
 	fs.Start(ctx)
 
 	dest := filepath.Join(t.TempDir(), "large.downloaded.bin")
-	if err := get(ctx, fs, "/large.bin", dest, false, true); err != nil {
+	if err := get(ctx, fs, "/large.bin", dest, false, true, i18n.New(i18n.LangEN), &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(dest)

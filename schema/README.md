@@ -23,9 +23,12 @@ schema/i18n/cli.zh-CN.json
 ```
 
 They are keyed by command/flag path and rendered output keys. The two files
-must contain the same keys; untranslated values fall back to English. Update
-them with `scripts/schema/gen-cli-i18n.py` and validate with
-`scripts/schema/check-cli-i18n.py`.
+must contain the same keys. Every non-example `zh-CN` value must be a real
+translation rather than an English copy, translated format strings must keep
+the same verbs, and `.example` command snippets must stay identical to the
+English commands. Missing values still fall back to English at runtime, but
+`scripts/schema/check-cli-i18n.py` rejects missing or untranslated entries in
+CI. Update the generated catalog with `scripts/schema/gen-cli-i18n.py`.
 
 ## Driver metadata
 

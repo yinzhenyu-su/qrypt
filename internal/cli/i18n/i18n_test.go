@@ -1,6 +1,36 @@
 package i18n
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+func TestLocalizeCommandTreeSnapshotsEnglish(t *testing.T) {
+	root := &cobra.Command{
+		Use:     "qrypt",
+		Short:   "Mounts encrypted cloud drives as a local filesystem",
+		Long:    "English long description",
+		Example: "qrypt mount",
+	}
+	root.PersistentFlags().String("lang", "auto", "display language: en, zh-CN, or auto")
+	Attach(root, LangZHCN)
+	LocalizeCommandTree(root)
+
+	if root.Short == "Mounts encrypted cloud drives as a local filesystem" {
+		t.Fatalf("root summary was not localized: %q", root.Short)
+	}
+	if got, ok := EnglishCommandField(root, "short"); !ok || got != "Mounts encrypted cloud drives as a local filesystem" {
+		t.Fatalf("English short snapshot = %q, %v", got, ok)
+	}
+	flag := root.PersistentFlags().Lookup("lang")
+	if flag == nil || flag.Usage == "display language: en, zh-CN, or auto" {
+		t.Fatalf("lang flag was not localized: %+v", flag)
+	}
+	if got, ok := EnglishFlagUsage(flag); !ok || got != "display language: en, zh-CN, or auto" {
+		t.Fatalf("English flag snapshot = %q, %v", got, ok)
+	}
+}
 
 func TestNormalize(t *testing.T) {
 	tests := map[string]string{

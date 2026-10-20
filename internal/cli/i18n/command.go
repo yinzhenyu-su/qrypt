@@ -11,6 +11,25 @@ import (
 // entries derived from the command path and flag names.
 func LocalizeCommandTree(root *cobra.Command) {
 	localizeCommandTree(root, FromCommand(root))
+	LocalizeUsageTemplate(root)
+}
+
+// InitDefaultFlags adds Cobra's generated help flag to every command and the
+// root version flag before localization runs. Cobra otherwise adds them during
+// Execute, after command metadata has already been replaced.
+func InitDefaultFlags(root *cobra.Command) {
+	if root == nil {
+		return
+	}
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		cmd.InitDefaultHelpFlag()
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
+	root.InitDefaultVersionFlag()
 }
 
 func localizeCommandTree(cmd *cobra.Command, loc *Localizer) {
@@ -19,6 +38,7 @@ func localizeCommandTree(cmd *cobra.Command, loc *Localizer) {
 		if *target == "" {
 			return
 		}
+		snapshotCommandField(cmd, field, *target)
 		catalogKey := "cmd." + key + "." + field
 		if text := loc.T(catalogKey); text != catalogKey {
 			*target = text
@@ -32,7 +52,13 @@ func localizeCommandTree(cmd *cobra.Command, loc *Localizer) {
 		if flag.Usage == "" {
 			return
 		}
-		catalogKey := "flag." + key + "." + flag.Name + ".usage"
+		snapshotFlagUsage(flag)
+		catalogKey := flagUsageKey(key, flag.Name)
+		// Generated flags keep Cobra's English wording for English output;
+		// their catalog entries exist for other languages and coverage checks.
+		if loc.Lang() == LangEN && isGeneratedUsageFlag(flag.Name) {
+			return
+		}
 		if text := loc.T(catalogKey); text != catalogKey {
 			flag.Usage = text
 		}
@@ -41,6 +67,19 @@ func localizeCommandTree(cmd *cobra.Command, loc *Localizer) {
 	for _, child := range cmd.Commands() {
 		localizeCommandTree(child, loc)
 	}
+}
+
+func flagUsageKey(commandKey, flagName string) string {
+	switch flagName {
+	case "help", "version":
+		return "flag." + flagName + ".usage"
+	default:
+		return "flag." + commandKey + "." + flagName + ".usage"
+	}
+}
+
+func isGeneratedUsageFlag(flagName string) bool {
+	return flagName == "help" || flagName == "version"
 }
 
 // CommandKey returns the catalog key segment for a command path.

@@ -3,6 +3,7 @@ package offline
 import (
 	"context"
 	"errors"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,7 +38,7 @@ func TestWaitWithReconnectTimeoutBoundsStalledRequest(t *testing.T) {
 	done := make(chan result, 1)
 	start := time.Now()
 	go func() {
-		_, err := waitWithReconnect(cmd, "offline-stalled", 100*time.Millisecond, newOfflineProgress(&discardWriter{}))
+		_, err := waitWithReconnect(cmd, "offline-stalled", 100*time.Millisecond, newOfflineProgress(&discardWriter{}, i18n.New(i18n.LangEN)))
 		done <- result{err: err}
 	}()
 

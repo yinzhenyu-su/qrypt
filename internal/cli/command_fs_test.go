@@ -15,6 +15,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 
 	clifs "github.com/yinzhenyu/qrypt/internal/cli/fs"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 )
 
@@ -619,7 +620,7 @@ root_path = `+util.TOMLPath(remote)+`
 
 func TestPrintEntryStat(t *testing.T) {
 	var out bytes.Buffer
-	cliruntime.PrintEntryStat(&out, drive.Entry{
+	cliruntime.PrintEntryStat(&out, i18n.New(i18n.LangEN), drive.Entry{
 		ID:       "id",
 		ParentID: "parent",
 		Name:     "file.txt",
@@ -630,6 +631,20 @@ func TestPrintEntryStat(t *testing.T) {
 	for _, want := range []string{"type: file", "name: file.txt", "id: id", "parent_id: parent", "size: 12", "mod_time: 1970-01-01T00:02:03Z"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("stat output missing %q:\n%s", want, text)
+		}
+	}
+
+	var zh bytes.Buffer
+	cliruntime.PrintEntryStat(&zh, i18n.New(i18n.LangZHCN), drive.Entry{
+		ID:       "id",
+		ParentID: "parent",
+		Name:     "file.txt",
+		Size:     12,
+		ModTime:  time.Unix(123, 0).UTC(),
+	})
+	for _, want := range []string{"类型：file", "名称：file.txt", "ID：id", "父 ID：parent", "大小：12", "修改时间：1970-01-01T00:02:03Z"} {
+		if !strings.Contains(zh.String(), want) {
+			t.Fatalf("Chinese stat output missing %q:\n%s", want, zh.String())
 		}
 	}
 }
@@ -758,5 +773,105 @@ root_path = `+util.TOMLPath(remote)+`
 	root.SetArgs([]string{"fs", "--config", configPath, "crypt-encode", "plain", "hello.txt"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("crypt-encode on unencrypted mount must fail")
+	}
+}
+
+func TestFSHumanOutputChinese(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(filepath.Join(remote, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"remove.txt", "move.txt"} {
+		if err := os.WriteFile(filepath.Join(remote, name), []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
+[storage]
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
+
+[upload]
+upload_delay = "10ms"
+delete_delay = "10ms"
+
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root_path = `+util.TOMLPath(remote)+`
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"fs", "--config", configPath, "rm", "/local/remove.txt"}, "已删除"},
+		{[]string{"fs", "--config", configPath, "mv", "/local/move.txt", "/local/moved.txt"}, "已重命名"},
+		{[]string{"fs", "--config", configPath, "du", "/local"}, "个文件"},
+		{[]string{"fs", "--config", configPath, "df"}, "总计"},
+		{[]string{"fs", "--config", configPath, "check", "/local/empty", filepath.Join(tmp, "local-empty")}, "一致："},
+	} {
+		if err := os.MkdirAll(filepath.Join(tmp, "local-empty"), 0o755); err != nil && tc.want == "一致：" {
+			t.Fatal(err)
+		}
+		out := runLocalizedCommand(t, "zh-CN", tc.args...)
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%v output missing %q:\n%s", tc.args, tc.want, out)
+		}
+	}
+}
+
+func TestFSJSONOutputStaysEnglishUnderChineseLocale(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+mount_point = `+util.TOMLPath(filepath.Join(tmp, "mnt"))+`
+[storage]
+read_cache_dir = `+util.TOMLPath(filepath.Join(tmp, "cache", "read"))+`
+upload_dir = `+util.TOMLPath(filepath.Join(tmp, "upload"))+`
+state_dir = `+util.TOMLPath(filepath.Join(tmp, "state"))+`
+
+[[mounts]]
+name = "local"
+type = "localfs"
+[mounts.params]
+root_path = `+util.TOMLPath(remote)+`
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := NewRootCommand("--lang", "zh-CN")
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"fs", "--config", configPath, "stat", "--json", "/local/file.txt"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("fs stat --json: %v\n%s", err, stderr.String())
+	}
+	var stat map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &stat); err != nil {
+		t.Fatalf("stat JSON: %v\n%s", err, stdout.String())
+	}
+	for _, key := range []string{"name", "size", "is_dir"} {
+		if _, ok := stat[key]; !ok {
+			t.Errorf("stat JSON missing English key %q: %v", key, stat)
+		}
+	}
+	if strings.Contains(stdout.String(), "名称") || strings.Contains(stdout.String(), "类型") {
+		t.Fatalf("stat JSON contains localized labels:\n%s", stdout.String())
 	}
 }

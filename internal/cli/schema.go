@@ -68,23 +68,46 @@ func writeCommandSchema(out io.Writer, cmd *cobra.Command) error {
 	return cliruntime.WritePrettyJSON(out, schemaFor(cmd))
 }
 
-func englishText(loc *i18n.Localizer, key, fallback string) string {
-	if text := loc.T(key); text != key {
+func englishCommandText(english *i18n.Localizer, cmd *cobra.Command, field string) string {
+	key := "cmd." + i18n.CommandKey(cmd) + "." + field
+	if text := english.T(key); text != key {
 		return text
 	}
-	return fallback
+	if snapshot, ok := i18n.EnglishCommandField(cmd, field); ok {
+		return snapshot
+	}
+	switch field {
+	case "short":
+		return cmd.Short
+	case "long":
+		return cmd.Long
+	case "example":
+		return cmd.Example
+	default:
+		return ""
+	}
+}
+
+func englishFlagUsage(english *i18n.Localizer, cmd *cobra.Command, flag *pflag.Flag) string {
+	key := "flag." + i18n.CommandKey(cmd) + "." + flag.Name + ".usage"
+	if text := english.T(key); text != key {
+		return text
+	}
+	if snapshot, ok := i18n.EnglishFlagUsage(flag); ok {
+		return snapshot
+	}
+	return flag.Usage
 }
 
 func schemaFor(cmd *cobra.Command) commandSchema {
 	english := i18n.New(i18n.LangEN)
-	key := i18n.CommandKey(cmd)
 	schema := commandSchema{
 		Name:        cmd.Name(),
 		Path:        cmd.CommandPath(),
-		Summary:     englishText(english, "cmd."+key+".short", cmd.Short),
-		Description: englishText(english, "cmd."+key+".long", cmd.Long),
+		Summary:     englishCommandText(english, cmd, "short"),
+		Description: englishCommandText(english, cmd, "long"),
 		Usage:       cmd.UseLine(),
-		Example:     englishText(english, "cmd."+key+".example", cmd.Example),
+		Example:     englishCommandText(english, cmd, "example"),
 		Aliases:     append([]string(nil), cmd.Aliases...),
 	}
 	for _, child := range cmd.Commands() {
@@ -95,11 +118,17 @@ func schemaFor(cmd *cobra.Command) commandSchema {
 	}
 	sort.Slice(schema.Commands, func(a, b int) bool { return schema.Commands[a].Name < schema.Commands[b].Name })
 	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		// Generated flags are an implementation detail of help rendering and
+		// were not part of the structured command surface before they became
+		// localizable. Keep the machine-readable shape stable.
+		if flag.Name == "help" || flag.Name == "version" {
+			return
+		}
 		entry := flagSchema{
 			Name:      flag.Name,
 			Shorthand: flag.Shorthand,
 			Type:      flag.Value.Type(),
-			Usage:     englishText(english, "flag."+key+"."+flag.Name+".usage", flag.Usage),
+			Usage:     englishFlagUsage(english, cmd, flag),
 			Default:   flag.DefValue,
 		}
 		if cliruntime.IsAdvancedFlag(flag) {

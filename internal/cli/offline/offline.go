@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/control"
@@ -443,13 +444,13 @@ written and renders progress.`,
 				if err := writeTask(cmd, jsonOut, current); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "transfer continues in the background; observe it with 'qrypt offline show %s' or block with 'qrypt offline wait %s'\n", current.ID, current.ID)
+				fmt.Fprintln(cmd.ErrOrStderr(), i18n.FromCommand(cmd).T("out.offline.background", current.ID, current.ID))
 				if current.State == task.StateFailed || current.State == task.StateCanceled {
 					return rt.ExitError(exitFailure, fmt.Errorf("offline fetch %s ended as %s", current.ID, current.State))
 				}
 				return nil
 			}
-			current, err := waitWithReconnect(cmd, created.ID, 0, newOfflineProgress(cmd.ErrOrStderr()))
+			current, err := waitWithReconnect(cmd, created.ID, 0, newOfflineProgress(cmd.ErrOrStderr(), i18n.FromCommand(cmd)))
 			if err != nil {
 				// An interrupt detaches the wait without canceling the task.
 				return finishError(rt, noCoreError(err))
@@ -592,7 +593,7 @@ func newCancelCommand(rt cliruntime.Runtime) *cobra.Command {
 		if err := client.CancelOfflineTask(cmd.Context(), id); err != nil {
 			return finishError(rt, noCoreError(err))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "cancel requested for %s\n", id)
+		fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.offline.cancel_requested", id))
 		return nil
 	}, false)
 }
@@ -602,7 +603,7 @@ func newRetryCommand(rt cliruntime.Runtime) *cobra.Command {
 		if err := client.RetryOfflineTask(cmd.Context(), id); err != nil {
 			return finishError(rt, noCoreError(err))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "retry requested for %s\n", id)
+		fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.offline.retry_requested", id))
 		return nil
 	}, false)
 }
@@ -619,7 +620,7 @@ interrupt stops only the observation; the Core task keeps running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonOut, _ := cmd.Flags().GetBool("json")
 			timeout, _ := cmd.Flags().GetDuration("timeout")
-			current, err := waitWithReconnect(cmd, args[0], timeout, newOfflineProgress(cmd.ErrOrStderr()))
+			current, err := waitWithReconnect(cmd, args[0], timeout, newOfflineProgress(cmd.ErrOrStderr(), i18n.FromCommand(cmd)))
 			if err != nil {
 				return finishError(rt, noCoreError(err))
 			}
