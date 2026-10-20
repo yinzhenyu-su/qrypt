@@ -146,21 +146,7 @@ func init() {
 			UseOnlineAPI: useOnlineAPI,
 			DownloadUA:   params["download_user_agent"],
 		}), nil
-	},
-		drive.ParamDef{Name: "refresh_token", Type: "string", Required: true, Secret: true, Description: "Baidu Netdisk refresh token", Example: "your-refresh-token"},
-		drive.ParamDef{Name: "access_token", Type: "string", Secret: true, Description: "Optional initial access token; refreshed automatically when needed"},
-		drive.ParamDef{Name: "root_path", Type: "string", Description: "Baidu Netdisk path used as this mount root", Default: "/", Example: "/qrypt"},
-		drive.ParamDef{Name: "order_by", Type: "string", Description: "List ordering field: name, time, or size", Default: "name"},
-		drive.ParamDef{Name: "order_direction", Type: "string", Description: "List ordering direction: asc or desc", Default: "asc"},
-		drive.ParamDef{Name: "use_online_api", Type: "bool", Description: "Use OpenList-compatible online token refresh API", Default: "true"},
-		drive.ParamDef{Name: "online_api", Type: "string", Description: "Online token refresh API URL", Default: defaultOnlineAPI},
-		drive.ParamDef{Name: "upload_api", Type: "string", Description: "Baidu PCS upload API base URL", Default: defaultUploadAPI},
-		drive.ParamDef{Name: "client_id", Type: "string", Secret: true, Description: "Baidu app API Key used as OAuth client_id when use_online_api=false"},
-		drive.ParamDef{Name: "client_secret", Type: "string", Secret: true, Description: "Baidu app Secret Key used as OAuth client_secret when use_online_api=false"},
-		drive.ParamDef{Name: "api_base_url", Type: "string", Description: "Custom Baidu REST API base URL", Default: defaultAPIBaseURL},
-		drive.ParamDef{Name: "oauth_url", Type: "string", Description: "Custom Baidu OAuth token URL", Default: defaultOAuthURL},
-		drive.ParamDef{Name: "download_user_agent", Type: "string", Description: "User-Agent used for Baidu download requests", Default: defaultDownloadUA},
-	)
+	})
 }
 
 func New(opts Options) *Driver {

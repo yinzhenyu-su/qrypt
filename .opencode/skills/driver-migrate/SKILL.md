@@ -102,15 +102,15 @@ Keep the probe out of the repository and delete it when done.
 - `init()` calls `drive.Register(name, factory, ParamDef...)`, with
   `Required`, `Secret`, `Default`, and `Example` set for every user-facing param.
 - `pkg/drivers/all/all.go`: add the blank import.
-- `qrypt.schema.json`: add the name to the `type` `enum` under
+- `schema/qrypt.schema.json`: add the name to the `type` `enum` under
   `definitions.mountConfig`; add an `allOf` `if/then` block that `$ref`s the new
   params; add `definitions.<name>Params` whose descriptions match the `ParamDef`s.
-- `scripts/gen-driver-docs.py`: add a `DRIVER_META` entry and put its key in
+- `scripts/schema/gen-driver-docs.py`: add a `DRIVER_META` entry and put its key in
   `DRIVER_ORDER`.
 - `pkg/drivers/capability_test.go`: add an entry with the exact expected
   capability list.
-- Regenerate docs: `python3 scripts/gen-driver-docs.py` and
-  `python3 scripts/gen-config-docs.py` (CI fails when `docs/for-user/` is stale).
+- Regenerate docs: `python3 scripts/schema/gen-driver-docs.py` and
+  `python3 scripts/schema/gen-config-docs.py` (CI fails when `docs/for-user/` is stale).
 - Avoid new modules; prefer what `go.mod` already has (for S3,
   `github.com/aws/aws-sdk-go-v2/service/s3` is present).
 
@@ -152,7 +152,7 @@ Live verification against a real account:
   `multipart` separately; `contract` is not an alias for all suites. Report
   each result and capability-based skip reason, test sizes, residual objects,
   and cleanup failures. Add read/batch/xfer tests where relevant.
-- `./scripts/mount-debug-test.sh <mount> <spec> [flags]` builds qrypt, mounts
+- `./scripts/dev/debug-mount.sh <mount> <spec> [flags]` builds qrypt, mounts
   into an isolated temporary tree (its own cache/staging/state), runs one
   `probe test` spec, then tears it down. Prefer it over hand-rolled temporary
   configs when no existing running mount was requested.
@@ -178,7 +178,7 @@ Live verification against a real account:
   mount's shared state/cache/staging/upload data. Retain redacted failure
   reports and list any residual objects rather than broadening cleanup.
 
-Run `scripts/ci-check.sh` for the full local gate before committing; see
+Run `scripts/ci/check-all.sh` for the full local gate before committing; see
 `docs/for-developer/quality-gates.md` for its maintained checks.
 For race/runner flakes, repeat the failing test with `-race` before rerunning
 the full gate. Prefer explicit synchronization; tests not checking timeout

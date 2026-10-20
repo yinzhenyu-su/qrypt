@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 )
 
@@ -67,14 +68,23 @@ func writeCommandSchema(out io.Writer, cmd *cobra.Command) error {
 	return cliruntime.WritePrettyJSON(out, schemaFor(cmd))
 }
 
+func englishText(loc *i18n.Localizer, key, fallback string) string {
+	if text := loc.T(key); text != key {
+		return text
+	}
+	return fallback
+}
+
 func schemaFor(cmd *cobra.Command) commandSchema {
+	english := i18n.New(i18n.LangEN)
+	key := i18n.CommandKey(cmd)
 	schema := commandSchema{
 		Name:        cmd.Name(),
 		Path:        cmd.CommandPath(),
-		Summary:     cmd.Short,
-		Description: cmd.Long,
+		Summary:     englishText(english, "cmd."+key+".short", cmd.Short),
+		Description: englishText(english, "cmd."+key+".long", cmd.Long),
 		Usage:       cmd.UseLine(),
-		Example:     cmd.Example,
+		Example:     englishText(english, "cmd."+key+".example", cmd.Example),
 		Aliases:     append([]string(nil), cmd.Aliases...),
 	}
 	for _, child := range cmd.Commands() {
@@ -89,7 +99,7 @@ func schemaFor(cmd *cobra.Command) commandSchema {
 			Name:      flag.Name,
 			Shorthand: flag.Shorthand,
 			Type:      flag.Value.Type(),
-			Usage:     flag.Usage,
+			Usage:     englishText(english, "flag."+key+"."+flag.Name+".usage", flag.Usage),
 			Default:   flag.DefValue,
 		}
 		if cliruntime.IsAdvancedFlag(flag) {

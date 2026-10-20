@@ -94,7 +94,7 @@ jobs:
 
       - name: Wait for debug server
         run: |
-          for i in $(seq 1 120); do
+          for _ in $(seq 1 120); do
             /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1 && exit 0
             sleep 1
           done
@@ -134,7 +134,7 @@ jobs:
             pkill -f '^/tmp/qrypt mount' || true
             sleep 2
             nohup /tmp/qrypt mount --config ./qrypt.toml >/tmp/qrypt-mount.log 2>&1 &
-            for j in $(seq 1 120); do
+            for _ in $(seq 1 120); do
               /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1 && break
               sleep 1
             done

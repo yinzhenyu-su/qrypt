@@ -74,29 +74,7 @@ func init() {
 			return nil, fmt.Errorf("139: missing authorization")
 		}
 		return New(auth, params["root_path"], params["root_id"]), nil
-	},
-		drive.ParamDef{
-			Name:        "authorization",
-			Type:        "string",
-			Required:    true,
-			Secret:      true,
-			Description: "139 cloud drive authorization token",
-			Example:     "your-authorization-token",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path, resolved to the provider folder ID at startup",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "root_id",
-			Type:        "string",
-			Description: "Pre-resolved folder ID (skips root_path resolution)",
-			Example:     "FtozqWiFB1yWOWUGc9oNCf6M0h5fRwcQl",
-		},
-	)
+	})
 }
 
 func New(authorization, rootPath, rootID string) *Driver {

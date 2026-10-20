@@ -15,7 +15,7 @@ bundle before sharing it.
 
 ## Run One Test With A Temporary Mount
 
-Use `scripts/mount-debug-test.sh` when you need to run one `probe test` against
+Use `scripts/dev/debug-mount.sh` when you need to run one `probe test` against
 a real qrypt mount from the current checkout, but do not need to keep the mount
 running for interactive investigation. This is useful for repeatable driver and
 VFS regression checks such as `batchupload`, `batchmove`, and `fs`: the script
@@ -36,22 +36,22 @@ for `collect`, `watch`, raw endpoints, or an interactive reproduction.
 Run a test with the repository `qrypt.toml`:
 
 ```sh
-./scripts/mount-debug-test.sh quark-test batchmove --count 50 --size 4k
-./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
-./scripts/mount-debug-test.sh quark-test read --size 256m --cache-mode cold --pattern seek --seek-scenario prefetch
+./scripts/dev/debug-mount.sh quark-test batchmove --count 50 --size 4k
+./scripts/dev/debug-mount.sh quark-test read --size 256m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
+./scripts/dev/debug-mount.sh quark-test read --size 256m --cache-mode cold --pattern seek --seek-scenario prefetch
 ```
 
 Pass a different config before the mount name:
 
 ```sh
-./scripts/mount-debug-test.sh --config ./path/to/qrypt.toml quark-test fs --size 30m
+./scripts/dev/debug-mount.sh --config ./path/to/qrypt.toml quark-test fs --size 30m
 ```
 
 List all available test cases or inspect the wrapper options:
 
 ```sh
-./scripts/mount-debug-test.sh quark-test --help
-./scripts/mount-debug-test.sh --help
+./scripts/dev/debug-mount.sh quark-test --help
+./scripts/dev/debug-mount.sh --help
 ```
 
 ## Mental Model
@@ -225,7 +225,7 @@ To measure the complete mounted-file read path, including the OS filesystem,
 FUSE/macFUSE adapter, VFS read cache and remote driver, run:
 
 ```sh
-./scripts/mount-debug-test.sh quark-test read --size 256m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
+./scripts/dev/debug-mount.sh quark-test read --size 256m --samples 3 --cache-mode both --pattern both --seek-count 10 --seek-size 1m
 ```
 
 The wrapper supplies its temporary mount point automatically. When invoking
@@ -274,7 +274,7 @@ Use `--seek-scenario` to control the load present when each seek starts:
 For example:
 
 ```sh
-./scripts/mount-debug-test.sh quark-test read \
+./scripts/dev/debug-mount.sh quark-test read \
   --size 256m --cache-mode cold --pattern seek \
   --seek-scenario concurrent --seek-warmup-chunks 2 \
   --seek-overlap-timeout 2s

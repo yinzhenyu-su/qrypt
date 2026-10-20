@@ -1,0 +1,2567 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/yinzhenyu-su/qrypt/main/schema/qrypt.schema.json",
+  "title": "Qrypt",
+  "description": "Configuration schema for qrypt — an encrypted virtual filesystem for cloud drives.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "description": "Config format version. Currently only \"1\" is recognised.",
+      "type": "string",
+      "enum": [
+        "1"
+      ],
+      "default": "1",
+      "x-taplo": {
+        "hidden": true
+      }
+    },
+    "mount": {
+      "$ref": "#/definitions/mountOptionsConfig"
+    },
+    "mount_point": {
+      "description": "FUSE mount point (e.g. ~/Qrypt).",
+      "type": "string",
+      "default": "~/Qrypt"
+    },
+    "volume_name": {
+      "description": "Volume label shown in the OS file manager.",
+      "type": "string",
+      "default": "Qrypt"
+    },
+    "read_only": {
+      "description": "Mount the filesystem read-only.",
+      "type": "boolean",
+      "default": false
+    },
+    "allow_other": {
+      "description": "Allow other local users to access the FUSE mount.",
+      "type": "boolean",
+      "default": false
+    },
+    "default_permissions": {
+      "description": "Ask the kernel to enforce mode/uid/gid permissions.",
+      "type": "boolean",
+      "default": false
+    },
+    "attr_timeout": {
+      "description": "FUSE attribute cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+      "type": "string",
+      "default": "1s"
+    },
+    "entry_timeout": {
+      "description": "FUSE entry cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+      "type": "string",
+      "default": "1s"
+    },
+    "negative_timeout": {
+      "description": "FUSE negative lookup cache timeout (e.g. \"0s\", \"1s\").",
+      "type": "string",
+      "default": "0s"
+    },
+    "total_space": {
+      "description": "Total capacity reported to the OS (e.g. \"1T\", \"500G\").",
+      "type": "string",
+      "default": "1T",
+      "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+    },
+    "free_space": {
+      "description": "Free space reported to the OS (e.g. \"800G\").",
+      "type": "string",
+      "default": "800G",
+      "pattern": "^\\d+[KMGTP]?$|^\\d+$"
+    },
+    "encryption": {
+      "$ref": "#/definitions/encryptionConfig"
+    },
+    "storage": {
+      "$ref": "#/definitions/storageConfig"
+    },
+    "read_cache": {
+      "$ref": "#/definitions/readCacheConfig"
+    },
+    "thumbnail_cache": {
+      "$ref": "#/definitions/thumbnailCacheConfig"
+    },
+    "upload": {
+      "$ref": "#/definitions/uploadConfig"
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default values inherited by every mount unless overridden.",
+      "properties": {
+        "encryption": {
+          "$ref": "#/definitions/encryptionConfig"
+        }
+      },
+      "additionalProperties": false
+    },
+    "logging": {
+      "$ref": "#/definitions/loggingConfig"
+    },
+    "debug": {
+      "$ref": "#/definitions/debugConfig"
+    },
+    "time": {
+      "$ref": "#/definitions/timeConfig"
+    },
+    "bandwidth": {
+      "$ref": "#/definitions/bandwidthConfig"
+    },
+    "mounts": {
+      "description": "List of cloud-drive mounts exposed under the mount point.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/mountConfig"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "encryptionConfig": {
+      "type": "object",
+      "description": "rclone-compatible encryption settings.",
+      "properties": {
+        "password": {
+          "description": "Encryption password.",
+          "type": "string",
+          "minLength": 1,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "加密密码"
+            }
+          }
+        },
+        "salt": {
+          "description": "Encryption salt (empty = derive from password).",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "加密 salt；留空时由密码派生"
+            }
+          }
+        },
+        "password_obscured": {
+          "description": "Set true when password is copied from rclone's obscured config value.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "密码来自 rclone obscured 配置时设为 true"
+            }
+          }
+        },
+        "salt_obscured": {
+          "description": "Set true when salt is copied from rclone's obscured password2 config value.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "salt 来自 rclone obscured password2 配置时设为 true"
+            }
+          }
+        },
+        "filename_encryption": {
+          "description": "File-name encryption mode.",
+          "type": "string",
+          "default": "standard",
+          "enum": [
+            "standard",
+            "off",
+            "obfuscate"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "文件名加密模式"
+            }
+          }
+        },
+        "filename_encoding": {
+          "description": "Encoding for encrypted file names.",
+          "type": "string",
+          "default": "base32",
+          "enum": [
+            "base32",
+            "base64"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "加密文件名的编码方式"
+            }
+          }
+        },
+        "content_dedup": {
+          "description": "When true, enables deterministic encryption so identical plaintext produces identical ciphertext, allowing the backend to deduplicate content (instant upload). May leak content equality to the storage provider.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "启用确定性加密，使相同明文产生相同密文，便于网盘去重和秒传；会向存储提供方泄露内容相同关系"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Encryption",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "加密配置",
+          "description": "在顶层 `[encryption]` 中设置，作为所有云盘的加密默认值。每个 mount 可以在 `[mounts.encryption]` 中单独覆盖。\n\n格式与 rclone 兼容，可直接使用 rclone 的加密配置。"
+        }
+      }
+    },
+    "storageConfig": {
+      "type": "object",
+      "description": "Runtime storage directories.",
+      "properties": {
+        "work_dir": {
+          "description": "Root directory for all runtime data. Unset child directories are derived below this path.",
+          "type": "string",
+          "default": "~/.qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "所有运行数据的根目录；未单独配置的子目录会从这里派生。"
+            }
+          },
+          "x-doc-default": "`~/.qrypt`"
+        },
+        "read_cache_dir": {
+          "description": "Optional override for read cache files. Defaults to <work_dir>/cache/read.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "读取缓存目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/cache/read`"
+        },
+        "thumbnail_cache_dir": {
+          "description": "Optional override for generated thumbnail cache files. Defaults to <work_dir>/cache/thumbnail.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "缩略图缓存目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/cache/thumbnail`"
+        },
+        "upload_dir": {
+          "description": "Optional override for upload staging and pending journal files. Defaults to <work_dir>/upload.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "上传 staging 和 pending journal 目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/upload`"
+        },
+        "state_dir": {
+          "description": "Optional override for persistent driver and runtime state. Defaults to <work_dir>/state.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "驱动及运行状态目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/state`"
+        },
+        "log_dir": {
+          "description": "Optional override for runtime logs. Defaults to <work_dir>/logs.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "运行日志目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/logs`"
+        },
+        "tmp_dir": {
+          "description": "Optional override for temporary runtime files. Defaults to <work_dir>/tmp.",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "临时文件目录的可选覆盖。"
+            }
+          },
+          "x-doc-default": "`<work_dir>/tmp`"
+        }
+      },
+      "additionalProperties": false,
+      "title": "Storage",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "存储目录",
+          "description": "在 `[storage]` 中设置运行数据根目录。当移动端或其他宿主传入 runtime layout 时，这些目录会被运行时布局覆盖。"
+        }
+      }
+    },
+    "readCacheConfig": {
+      "type": "object",
+      "description": "Read cache settings.",
+      "properties": {
+        "max_size": {
+          "description": "Maximum read-cache size (e.g. \"512M\", \"2G\", \"1T\"). Set to \"0\" to disable the read cache; when unset the default 2G applies.",
+          "type": "string",
+          "default": "2G",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "读取缓存上限；设为 `0` 可关闭，未设置时默认 2G"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Read cache",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "读取缓存",
+          "description": "在 `[read_cache]` 中设置读取缓存默认值。每个 mount 可以在 `[mounts.read_cache]` 中单独覆盖。"
+        }
+      }
+    },
+    "thumbnailCacheConfig": {
+      "type": "object",
+      "description": "Thumbnail cache settings.",
+      "properties": {
+        "max_size": {
+          "description": "Maximum generated-thumbnail cache size (e.g. \"64M\", \"256M\", \"1G\"). Set to \"0\" to disable thumbnail caching; when unset the default 256M applies.",
+          "type": "string",
+          "default": "256M",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "缩略图缓存上限；设为 `0` 可关闭，未设置时默认 256M"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Thumbnail cache",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "缩略图缓存",
+          "description": "在 `[thumbnail_cache]` 中设置缩略图缓存默认值。生成的缩略图保存在 `thumbnail_cache_dir`（默认 `<work_dir>/cache/thumbnail`）。"
+        }
+      }
+    },
+    "uploadConfig": {
+      "type": "object",
+      "description": "Upload and delete scheduling settings.",
+      "properties": {
+        "upload_delay": {
+          "description": "Debounce delay before flushing a new file to the cloud (e.g. \"5s\", \"1m\").",
+          "type": "string",
+          "default": "0s",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "新文件上传前的防抖延迟"
+            }
+          }
+        },
+        "upload_workers": {
+          "description": "Number of concurrent upload workers per mount.",
+          "type": "integer",
+          "default": 4,
+          "minimum": 0,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "每个 mount 的并发上传 worker 数"
+            }
+          }
+        },
+        "delete_delay": {
+          "description": "Debounce delay before deleting a file from the cloud (e.g. \"2s\").",
+          "type": "string",
+          "default": "0s",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "删除云端文件前的防抖延迟"
+            }
+          }
+        },
+        "default_mount": {
+          "description": "Default mount used when upload tasks receive an empty or relative destination path. Only supported in top-level [upload].",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "上传任务收到空路径或相对路径时使用的默认 mount，仅支持顶层 `[upload]`"
+            }
+          }
+        },
+        "default_path": {
+          "description": "Default directory under upload.default_mount used when upload tasks receive an empty or relative destination path. qrypt creates this directory if missing, but does not create missing parent directories. Only supported in top-level [upload].",
+          "type": "string",
+          "default": "/",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "默认目录，位于 `upload.default_mount` 下；目录不存在时会创建，但不会创建缺失的父目录。仅支持顶层 `[upload]`"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Upload",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "上传",
+          "description": "在 `[upload]` 中设置上传和删除调度默认值，以及任务上传的默认目标。调度参数可以在 `[mounts.upload]` 中单独覆盖；`default_mount` 和 `default_path` 只支持顶层 `[upload]`。"
+        }
+      }
+    },
+    "mountUploadConfig": {
+      "type": "object",
+      "description": "Per-mount upload and delete scheduling overrides.",
+      "properties": {
+        "upload_delay": {
+          "description": "Debounce delay before flushing a new file to the cloud (e.g. \"5s\", \"1m\").",
+          "type": "string",
+          "default": "0s"
+        },
+        "upload_workers": {
+          "description": "Number of concurrent upload workers per mount.",
+          "type": "integer",
+          "default": 4,
+          "minimum": 0
+        },
+        "delete_delay": {
+          "description": "Debounce delay before deleting a file from the cloud (e.g. \"2s\").",
+          "type": "string",
+          "default": "0s"
+        }
+      },
+      "additionalProperties": false
+    },
+    "loggingConfig": {
+      "type": "object",
+      "description": "Logging settings.",
+      "properties": {
+        "log_level": {
+          "description": "Minimum log level to emit.",
+          "type": "string",
+          "default": "info",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error",
+            "off"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "最低日志级别"
+            }
+          }
+        },
+        "log_file": {
+          "description": "Path to the main log file. When unset, defaults to <storage.log_dir>/qrypt.log or <storage.work_dir>/logs/qrypt.log.",
+          "type": "string",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "主日志路径，包含所有级别的完整记录；未设置时使用 `<storage.log_dir>/qrypt.log`，或 `<storage.work_dir>/logs/qrypt.log`。"
+            }
+          }
+        },
+        "error_file": {
+          "description": "Path to the error log file. When unset, defaults to <storage.log_dir>/qrypt-error.log or <storage.work_dir>/logs/qrypt-error.log.",
+          "type": "string",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "错误日志路径，只包含主日志中 warn 及以上级别的子集；未设置时使用 `<storage.log_dir>/qrypt-error.log`，或 `<storage.work_dir>/logs/qrypt-error.log`。"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Logging",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "日志",
+          "description": "日志级别和日志文件路径。"
+        }
+      }
+    },
+    "debugConfig": {
+      "type": "object",
+      "description": "Runtime debug server settings for the local Unix socket or Windows named pipe.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the local debug server (Unix socket or Windows named pipe).",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "启用本地调试服务（Unix socket 或 Windows named pipe）"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Debug service",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "调试服务",
+          "description": "在 `[debug]` 中启用本地调试入口。调试命令通过对应配置的 Unix socket 或 Windows named pipe 连接。"
+        }
+      }
+    },
+    "timeConfig": {
+      "type": "object",
+      "description": "Time source settings. qrypt uses NTP timestamps when available and falls back to the system clock.",
+      "properties": {
+        "ntp_enabled": {
+          "description": "Enable background NTP clock sync for operation timestamps.",
+          "type": "boolean",
+          "default": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "为操作时间戳启用后台 NTP 校时"
+            }
+          }
+        },
+        "ntp_servers": {
+          "description": "NTP servers, including port.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "ntp1.aliyun.com:123",
+            "ntp2.aliyun.com:123",
+            "ntp1.tencent.com:123",
+            "ntp2.tencent.com:123",
+            "ntp1.ntsc.ac.cn:123",
+            "ntp2.ntsc.ac.cn:123",
+            "ntp1.cstnet.cn:123",
+            "0.cn.pool.ntp.org:123",
+            "time.cloudflare.com:123",
+            "time.google.com:123"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "NTP 服务器列表，包含端口"
+            }
+          }
+        },
+        "ntp_timeout": {
+          "description": "Per-server NTP timeout.",
+          "type": "string",
+          "default": "1500ms",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "单个 NTP 服务器的超时时间"
+            }
+          }
+        },
+        "ntp_poll_interval": {
+          "description": "Background NTP refresh interval.",
+          "type": "string",
+          "default": "30m",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "后台 NTP 刷新间隔"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Time sync (NTP)",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "时间同步（NTP）",
+          "description": "qrypt 依赖精确的系统时间进行文件操作。当系统时间可能不准确时（如嵌入式设备或刚开机），建议启用 NTP。"
+        }
+      }
+    },
+    "bandwidthConfig": {
+      "type": "object",
+      "description": "Per-direction bandwidth limits.",
+      "properties": {
+        "download": {
+          "description": "Download speed cap (e.g. \"10Mbps\", \"5MB/s\", empty = unlimited).",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "下载限速，例如 `10Mbps`、`5MB/s`；留空表示不限制"
+            }
+          }
+        },
+        "upload": {
+          "description": "Upload speed cap (e.g. \"2Mbps\", empty = unlimited).",
+          "type": "string",
+          "default": "",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "上传限速，例如 `2Mbps`；留空表示不限制"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Bandwidth",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "带宽控制",
+          "description": "限制文件上传和下载的带宽。单位如 `10Mbps`、`5MBps`，留空表示不限制。"
+        }
+      }
+    },
+    "mountOptionsConfig": {
+      "type": "object",
+      "description": "Mount runtime options.",
+      "properties": {
+        "mount_point": {
+          "description": "FUSE mount point (e.g. ~/Qrypt).",
+          "type": "string",
+          "default": "~/Qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "挂载点路径，所有云盘会出现在这个目录下"
+            }
+          }
+        },
+        "volume_name": {
+          "description": "Volume label shown in the OS file manager.",
+          "type": "string",
+          "default": "Qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "文件管理器中显示的卷标"
+            }
+          }
+        },
+        "options": {
+          "description": "Platform-specific FUSE mount options. Each item is passed as one -o value, such as auto_xattr or iosize=4194304.",
+          "type": "object",
+          "examples": [
+            {
+              "darwin": [
+                "defer_permissions",
+                "auto_xattr",
+                "iosize=4194304"
+              ],
+              "windows": [
+                "FileInfoTimeout=1000"
+              ]
+            }
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "x-i18n": {
+            "zh-CN": {
+              "description": "按目标平台填写挂载参数；每个数组元素会作为一个 `-o` 参数传递。"
+            }
+          }
+        },
+        "read_only": {
+          "description": "Mount the filesystem read-only.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "以只读方式挂载"
+            }
+          }
+        },
+        "allow_other": {
+          "description": "Allow other local users to access the FUSE mount.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "允许其他本地用户访问挂载点"
+            }
+          }
+        },
+        "default_permissions": {
+          "description": "Ask the kernel to enforce mode/uid/gid permissions.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "由内核检查 mode/uid/gid 权限"
+            }
+          }
+        },
+        "attr_timeout": {
+          "description": "FUSE attribute cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+          "type": "string",
+          "default": "1s",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "FUSE 属性缓存时间"
+            }
+          }
+        },
+        "entry_timeout": {
+          "description": "FUSE entry cache timeout (e.g. \"1s\", \"500ms\", \"0s\").",
+          "type": "string",
+          "default": "1s",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "FUSE 目录项缓存时间"
+            }
+          }
+        },
+        "negative_timeout": {
+          "description": "FUSE negative lookup cache timeout (e.g. \"0s\", \"1s\").",
+          "type": "string",
+          "default": "0s",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "FUSE 负查找缓存时间"
+            }
+          }
+        },
+        "total_space": {
+          "description": "Total capacity reported to the OS (e.g. \"1T\", \"500G\").",
+          "type": "string",
+          "default": "1T",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "向操作系统报告的总容量"
+            }
+          }
+        },
+        "free_space": {
+          "description": "Free space reported to the OS (e.g. \"800G\").",
+          "type": "string",
+          "default": "800G",
+          "pattern": "^\\d+[KMGTP]?$|^\\d+$",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "向操作系统报告的可用空间"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Mount",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "挂载",
+          "description": "挂载相关配置集中在 `[mount]` 下。旧的顶层写法仍兼容，但建议只用这一节。"
+        }
+      }
+    },
+    "mountConfig": {
+      "type": "object",
+      "description": "A single cloud-drive mount.",
+      "properties": {
+        "name": {
+          "description": "Mount name — used as the directory name under the mount point.",
+          "type": "string",
+          "minLength": 1,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "mount 名称，也是挂载点下的目录名"
+            }
+          }
+        },
+        "type": {
+          "description": "Backend driver type.",
+          "type": "string",
+          "enum": [
+            "localfs",
+            "quark",
+            "yun139",
+            "115",
+            "115_open",
+            "189",
+            "aliyundrive",
+            "baidu_netdisk",
+            "onedrive",
+            "onedrive_app",
+            "webdav",
+            "sftp",
+            "s3",
+            "123"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "驱动类型"
+            }
+          }
+        },
+        "test_enabled": {
+          "description": "Allow probe test and benchmark commands to use this mount. Disabled by default because those commands may create, upload, rename, or delete temporary remote objects.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "允许 probe 测试和基准命令使用此 mount；默认关闭，因为这些命令可能创建、上传、重命名或删除临时远端对象"
+            }
+          }
+        },
+        "params": {
+          "description": "Driver-specific key/value parameters (e.g. cookie and root_path).",
+          "type": "object",
+          "patternProperties": {
+            "^.*$": {
+              "type": "string"
+            }
+          },
+          "minProperties": 1,
+          "additionalProperties": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "驱动特有参数（如 cookie、root_path）"
+            }
+          }
+        },
+        "encryption": {
+          "$ref": "#/definitions/encryptionConfig",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "该 mount 的加密覆盖"
+            }
+          },
+          "description": "Per-mount encryption overrides."
+        },
+        "read_cache": {
+          "$ref": "#/definitions/readCacheConfig",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "该 mount 的读取缓存覆盖"
+            }
+          },
+          "description": "Per-mount read-cache overrides."
+        },
+        "upload": {
+          "$ref": "#/definitions/mountUploadConfig",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "该 mount 的上传覆盖"
+            }
+          },
+          "description": "Per-mount upload overrides."
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "aliyundrive"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/aliyundriveParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "baidu_netdisk"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/baiduNetdiskParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "localfs"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/localfsParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "quark"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/quarkParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "115"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/p115Params"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "115_open"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/p115openParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "yun139"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/yun139Params"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "webdav"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/webdavParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "sftp"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/sftpParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "onedrive"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/onedriveParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "onedrive_app"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/onedriveAppParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "189"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/p189Params"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "s3"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/s3Params"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "123"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/p123Params"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false,
+      "title": "Mounts",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "云盘挂载",
+          "description": "每个 `[[mounts]]` 条目对应一个云盘服务。驱动类型和参数请参考："
+        }
+      }
+    },
+    "localfsParams": {
+      "type": "object",
+      "required": [
+        "root_path"
+      ],
+      "properties": {
+        "root_path": {
+          "description": "Local filesystem root directory path.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "/tmp/qrypt-remote",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "本地文件系统根目录路径"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Local filesystem",
+      "x-driver": {
+        "type": "localfs",
+        "order": 1
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "本地目录"
+        }
+      }
+    },
+    "aliyundriveParams": {
+      "type": "object",
+      "required": [
+        "refresh_token",
+        "drive_id"
+      ],
+      "properties": {
+        "refresh_token": {
+          "description": "Aliyun Drive refresh token for OAuth authentication.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-refresh-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘 refresh token，用于 OAuth 认证"
+            }
+          }
+        },
+        "drive_id": {
+          "description": "Aliyun Drive drive ID.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "your-drive-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "阿里云盘 drive ID"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "虚拟根路径，启动时解析为网盘文件夹 ID"
+            }
+          }
+        },
+        "order_by": {
+          "description": "File listing sort field.",
+          "type": "string",
+          "enum": [
+            "name",
+            "size",
+            "updated_at",
+            "created_at"
+          ],
+          "x-example": "name",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "列表排序字段"
+            }
+          }
+        },
+        "order_direction": {
+          "description": "Sort direction (ASC or DESC).",
+          "type": "string",
+          "enum": [
+            "ASC",
+            "DESC"
+          ],
+          "x-example": "ASC",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "排序方向（ASC 或 DESC）"
+            }
+          }
+        },
+        "api_base_url": {
+          "description": "Custom API base URL.",
+          "type": "string",
+          "x-example": "https://openapi.alipan.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API 基础 URL"
+            }
+          }
+        },
+        "auth_url": {
+          "description": "Custom OAuth token URL.",
+          "type": "string",
+          "x-example": "https://openapi.alipan.com/oauth/authorize",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 OAuth token URL"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Aliyun Drive",
+      "x-driver": {
+        "type": "aliyundrive",
+        "order": 2
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "阿里云盘"
+        }
+      }
+    },
+    "baiduNetdiskParams": {
+      "type": "object",
+      "required": [
+        "refresh_token"
+      ],
+      "properties": {
+        "refresh_token": {
+          "description": "Baidu Netdisk refresh token.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-refresh-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘 refresh token，用于 OAuth 认证"
+            }
+          }
+        },
+        "access_token": {
+          "description": "Optional initial Baidu Netdisk access token; refreshed automatically when needed.",
+          "type": "string",
+          "x-secret": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "可选的初始 access token；过期后自动刷新"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Baidu Netdisk path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "作为挂载根的百度网盘路径"
+            }
+          }
+        },
+        "order_by": {
+          "description": "List ordering field: name, time, or size.",
+          "type": "string",
+          "default": "name",
+          "enum": [
+            "name",
+            "time",
+            "size"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "列表排序字段"
+            }
+          }
+        },
+        "order_direction": {
+          "description": "List ordering direction: asc or desc.",
+          "type": "string",
+          "default": "asc",
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "排序方向（asc 或 desc）"
+            }
+          }
+        },
+        "use_online_api": {
+          "description": "Use OpenList-compatible online token refresh API.",
+          "type": "boolean",
+          "default": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "使用 OpenList 兼容的在线 token 刷新接口"
+            }
+          }
+        },
+        "online_api": {
+          "description": "Online token refresh API URL.",
+          "type": "string",
+          "x-example": "https://api.oplist.org/baiduyun/renewapi",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "在线 token 刷新接口 URL"
+            }
+          }
+        },
+        "upload_api": {
+          "description": "Baidu PCS upload API base URL.",
+          "type": "string",
+          "x-example": "https://d.pcs.baidu.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "百度 PCS 上传接口基础 URL"
+            }
+          }
+        },
+        "client_id": {
+          "description": "Baidu app API Key used as OAuth client_id when use_online_api=false.",
+          "type": "string",
+          "x-secret": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 应用 client ID"
+            }
+          }
+        },
+        "client_secret": {
+          "description": "Baidu app Secret Key used as OAuth client_secret when use_online_api=false.",
+          "type": "string",
+          "x-secret": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 应用 client secret"
+            }
+          }
+        },
+        "api_base_url": {
+          "description": "Custom Baidu REST API base URL.",
+          "type": "string",
+          "x-example": "https://pan.baidu.com/rest/2.0",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API 基础 URL"
+            }
+          }
+        },
+        "oauth_url": {
+          "description": "Custom Baidu OAuth token URL.",
+          "type": "string",
+          "x-example": "https://openapi.baidu.com/oauth/2.0/token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 OAuth token URL"
+            }
+          }
+        },
+        "download_user_agent": {
+          "description": "User-Agent used for Baidu download requests.",
+          "type": "string",
+          "default": "pan.baidu.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "百度网盘下载请求使用的 User-Agent"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Baidu Netdisk",
+      "x-driver": {
+        "type": "baidu_netdisk",
+        "order": 3
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "百度网盘"
+        }
+      }
+    },
+    "quarkParams": {
+      "type": "object",
+      "required": [
+        "cookie"
+      ],
+      "properties": {
+        "cookie": {
+          "description": "Quark cloud drive authentication cookie.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "k1=v1; k2=v2",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘认证 cookie，从网页端登录后获取"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path on the drive.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘上的虚拟根路径"
+            }
+          }
+        },
+        "base_url": {
+          "description": "Custom API base URL.",
+          "type": "string",
+          "x-example": "https://drive.quark.cn",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API 基础 URL"
+            }
+          }
+        },
+        "v2_url": {
+          "description": "Custom API v2 URL.",
+          "type": "string",
+          "x-example": "https://drive-m.quark.cn",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API v2 URL"
+            }
+          }
+        },
+        "wg_keys": {
+          "description": "Override wg data keys for offline requests as secureNo:hexkey pairs separated by commas.",
+          "type": "string",
+          "x-example": "14100:e21247a68938d36f",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "离线请求使用的 wg data keys，格式为 secureNo:hexkey，逗号分隔"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Quark Drive",
+      "x-driver": {
+        "type": "quark",
+        "order": 6
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "夸克网盘"
+        }
+      }
+    },
+    "yun139Params": {
+      "type": "object",
+      "required": [
+        "authorization"
+      ],
+      "properties": {
+        "authorization": {
+          "description": "139 cloud drive authorization token.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-authorization-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "移动云盘 authorization token，从网页端登录后获取"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "虚拟根路径，启动时解析为网盘文件夹 ID"
+            }
+          }
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID (skips root_path resolution).",
+          "type": "string",
+          "x-example": "FtozqWiFB1yWOWUGc9oNCf6M0h5fRwcQl",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "预解析的文件夹 ID；设置后忽略 root_path"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "China Mobile Cloud",
+      "x-driver": {
+        "type": "yun139",
+        "order": 7
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "移动云盘"
+        }
+      }
+    },
+    "p115Params": {
+      "type": "object",
+      "required": [
+        "cookie"
+      ],
+      "properties": {
+        "cookie": {
+          "description": "115 cloud drive authentication cookie.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "k1=v1; k2=v2",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘认证 cookie，从网页端登录后获取"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "虚拟根路径，启动时解析为网盘文件夹 ID"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "115 Drive",
+      "x-driver": {
+        "type": "115",
+        "order": 8
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "115 云盘"
+        }
+      }
+    },
+    "p115openParams": {
+      "type": "object",
+      "required": [
+        "refresh_token"
+      ],
+      "properties": {
+        "refresh_token": {
+          "description": "115 open platform refresh token (obtained by authorizing an app on open.115.com).",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "eg2t4.<hex>.<hex>",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘 refresh token，用于 OAuth 认证"
+            }
+          }
+        },
+        "access_token": {
+          "description": "115 open platform access token (optional; refreshed automatically when missing or expired).",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "eg2t4.<hex>.<hex>",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "可选的初始 access token；过期后自动刷新"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path, resolved to the provider folder ID at startup.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "虚拟根路径，启动时解析为网盘文件夹 ID"
+            }
+          }
+        },
+        "limit_rate": {
+          "description": "Limit all API requests to N per second.",
+          "type": "integer",
+          "default": "2",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "限制 API 请求速率（每秒 N 次）"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "115 Open Platform",
+      "x-driver": {
+        "type": "115_open",
+        "order": 9
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "115 云盘（开放平台）",
+          "intro": "115 云盘（开放平台 API，`refresh_token` 认证）。使用官方 [115 开放平台](https://open.115.com) 的 Bearer token 认证，token 过期自动刷新并持久化，无需手动更新 cookie。\n\n**获取 refresh_token**:在 [open.115.com](https://open.115.com) 注册应用，或使用公共应用 ID，通过 PKCE 设备码扫码（115 App 扫码授权）获得 `access_token` 与 `refresh_token`。注意：同一应用同一账号最多持有 2 个 refresh_token，第 3 次获取会使第 1 个失效；每次刷新都会轮换（旧 refresh_token 立即作废）。"
+        }
+      }
+    },
+    "p189Params": {
+      "type": "object",
+      "properties": {
+        "cookie": {
+          "description": "189 cloud drive authentication cookie.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "k1=v1; k2=v2",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘认证 cookie，从网页端登录后获取"
+            }
+          }
+        },
+        "username": {
+          "description": "189 cloud drive account (phone number).",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "18912345678",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "189 云盘账号（手机号）"
+            }
+          }
+        },
+        "password": {
+          "description": "189 cloud drive password.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-password",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "189 云盘密码"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path on the drive.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘上的虚拟根路径（设置 root_id 时忽略）"
+            }
+          }
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID (skips root_path resolution).",
+          "type": "string",
+          "x-example": "-11",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "预解析的文件夹 ID；设置后忽略 root_path"
+            }
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cookie"
+          ]
+        },
+        {
+          "required": [
+            "username",
+            "password"
+          ]
+        }
+      ],
+      "additionalProperties": false,
+      "title": "189 Cloud Drive",
+      "x-driver": {
+        "type": "189",
+        "order": 11
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "天翼云盘 189"
+        }
+      }
+    },
+    "webdavParams": {
+      "type": "object",
+      "required": [
+        "url",
+        "username",
+        "password"
+      ],
+      "properties": {
+        "url": {
+          "description": "WebDAV server base URL.",
+          "type": "string",
+          "minLength": 1,
+          "example": "https://nextcloud.example.com/remote.php/dav/files/user",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "WebDAV 服务器基础 URL"
+            }
+          }
+        },
+        "username": {
+          "description": "WebDAV authentication username.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "user",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "WebDAV 用户名"
+            }
+          }
+        },
+        "password": {
+          "description": "WebDAV authentication password or app token.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-password-or-app-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "WebDAV 密码或应用 token"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Optional path under the WebDAV base URL used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "WebDAV 基础 URL 下的可选子路径"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "WebDAV",
+      "x-driver": {
+        "type": "webdav",
+        "order": 12
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "WebDAV"
+        }
+      }
+    },
+    "sftpParams": {
+      "type": "object",
+      "required": [
+        "address",
+        "username"
+      ],
+      "properties": {
+        "address": {
+          "description": "SFTP server address, including port.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "sftp.example.com:22",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "SFTP 服务器地址，包含端口"
+            }
+          }
+        },
+        "username": {
+          "description": "SFTP username.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "user",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "SFTP 用户名"
+            }
+          }
+        },
+        "password": {
+          "description": "SFTP password; use password or private_key.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "your-password",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "SFTP 密码；与 private_key 二选一"
+            }
+          }
+        },
+        "private_key": {
+          "description": "Path to or PEM-encoded SSH private key; use private_key or password.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "~/.ssh/id_ed25519",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "SSH 私钥路径或 PEM 内容；与 password 二选一"
+            }
+          }
+        },
+        "passphrase": {
+          "description": "SSH private key passphrase.",
+          "type": "string",
+          "x-secret": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "SSH 私钥口令"
+            }
+          }
+        },
+        "known_hosts": {
+          "description": "Optional OpenSSH known_hosts file used to verify the SFTP server host key; when omitted, ~/.ssh/known_hosts is used if present.",
+          "type": "string",
+          "x-example": "~/.ssh/known_hosts",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "可选的 OpenSSH known_hosts 文件；省略时使用 ~/.ssh/known_hosts"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Remote directory used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/data/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "作为挂载根的远程目录"
+            }
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "address",
+            "username",
+            "password"
+          ]
+        },
+        {
+          "required": [
+            "address",
+            "username",
+            "private_key"
+          ]
+        }
+      ],
+      "additionalProperties": false,
+      "title": "SFTP",
+      "x-driver": {
+        "type": "sftp",
+        "order": 13
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "SFTP"
+        }
+      }
+    },
+    "onedriveParams": {
+      "type": "object",
+      "required": [
+        "refresh_token"
+      ],
+      "properties": {
+        "refresh_token": {
+          "description": "OneDrive refresh token.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-refresh-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘 refresh token，用于 OAuth 认证"
+            }
+          }
+        },
+        "access_token": {
+          "description": "Optional initial OneDrive access token; refreshed automatically when needed.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "optional-access-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "可选的初始 access token；过期后自动刷新"
+            }
+          }
+        },
+        "region": {
+          "description": "Microsoft cloud region.",
+          "type": "string",
+          "default": "global",
+          "enum": [
+            "global",
+            "cn",
+            "us",
+            "de"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Microsoft 云区域（global、cn、us 或 de）"
+            }
+          }
+        },
+        "root_path": {
+          "description": "OneDrive path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "作为挂载根的 OneDrive 路径"
+            }
+          }
+        },
+        "use_online_api": {
+          "description": "Use OpenList-compatible online token refresh API.",
+          "type": "boolean",
+          "default": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "使用 OpenList 兼容的在线 token 刷新接口"
+            }
+          }
+        },
+        "online_api": {
+          "description": "Online token refresh API URL.",
+          "type": "string",
+          "x-example": "https://api.oplist.org/onedrive/renewapi",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "在线 token 刷新接口 URL"
+            }
+          }
+        },
+        "client_id": {
+          "description": "OAuth client ID used when use_online_api=false; mutually exclusive with client_key.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "your-client-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 应用 client ID"
+            }
+          }
+        },
+        "client_key": {
+          "description": "Alias for client_id.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "your-client-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "client_id 的别名"
+            }
+          }
+        },
+        "client_secret": {
+          "description": "OAuth client secret used when use_online_api=false.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "your-client-secret",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 应用 client secret"
+            }
+          }
+        },
+        "redirect_uri": {
+          "description": "OAuth redirect URI used when your Microsoft app requires it.",
+          "type": "string",
+          "x-example": "https://your-app/callback",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 回调地址"
+            }
+          }
+        },
+        "api_base_url": {
+          "description": "Custom Microsoft Graph API base URL.",
+          "type": "string",
+          "x-example": "https://graph.microsoft.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API 基础 URL"
+            }
+          }
+        },
+        "oauth_base_url": {
+          "description": "Custom Microsoft OAuth base URL.",
+          "type": "string",
+          "x-example": "https://login.microsoftonline.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 Microsoft OAuth 基础 URL"
+            }
+          }
+        },
+        "is_sharepoint": {
+          "description": "Use SharePoint site drive instead of the current user's drive.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "挂载 SharePoint 站点，而不是当前用户的 OneDrive"
+            }
+          }
+        },
+        "site_id": {
+          "description": "SharePoint site ID when is_sharepoint=true.",
+          "type": "string",
+          "x-example": "your-sharepoint-site-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "SharePoint 站点 ID（is_sharepoint=true 时使用）"
+            }
+          }
+        },
+        "custom_host": {
+          "description": "Custom host for download URLs.",
+          "type": "string",
+          "x-example": "download.example.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "下载链接使用的自定义域名（如 CDN）"
+            }
+          }
+        },
+        "chunk_size": {
+          "description": "Large upload chunk size in MiB.",
+          "type": "integer",
+          "default": 5,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "大文件上传分片大小（MiB）"
+            }
+          }
+        },
+        "disable_disk_usage": {
+          "description": "Disable OneDrive quota query.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "关闭网盘容量查询"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "OneDrive",
+      "x-driver": {
+        "type": "onedrive",
+        "order": 4
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "OneDrive"
+        }
+      }
+    },
+    "onedriveAppParams": {
+      "type": "object",
+      "required": [
+        "client_secret",
+        "tenant_id",
+        "email"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "client_id"
+          ]
+        },
+        {
+          "required": [
+            "client_key"
+          ]
+        }
+      ],
+      "properties": {
+        "client_id": {
+          "description": "Microsoft Entra application client ID; mutually exclusive with client_key.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-client-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 应用 client ID"
+            }
+          }
+        },
+        "client_key": {
+          "description": "Alias for client_id.",
+          "type": "string",
+          "x-secret": true,
+          "x-example": "your-client-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "client_id 的别名"
+            }
+          }
+        },
+        "client_secret": {
+          "description": "Microsoft Entra application client secret.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-client-secret",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "OAuth 应用 client secret"
+            }
+          }
+        },
+        "tenant_id": {
+          "description": "Microsoft Entra tenant ID.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "your-tenant-id",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Microsoft Entra 租户 ID"
+            }
+          }
+        },
+        "email": {
+          "description": "User principal name or email whose drive should be mounted.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "user@example.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "要挂载的账号邮箱"
+            }
+          }
+        },
+        "region": {
+          "description": "Microsoft cloud region.",
+          "type": "string",
+          "default": "global",
+          "enum": [
+            "global",
+            "cn",
+            "us",
+            "de"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Microsoft 云区域（global、cn、us 或 de）"
+            }
+          }
+        },
+        "root_path": {
+          "description": "OneDrive path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "作为挂载根的 OneDrive 路径"
+            }
+          }
+        },
+        "api_base_url": {
+          "description": "Custom Microsoft Graph API base URL.",
+          "type": "string",
+          "x-example": "https://graph.microsoft.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API 基础 URL"
+            }
+          }
+        },
+        "oauth_base_url": {
+          "description": "Custom Microsoft OAuth base URL.",
+          "type": "string",
+          "x-example": "https://login.microsoftonline.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 Microsoft OAuth 基础 URL"
+            }
+          }
+        },
+        "custom_host": {
+          "description": "Custom host for download URLs.",
+          "type": "string",
+          "x-example": "download.example.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "下载链接使用的自定义域名（如 CDN）"
+            }
+          }
+        },
+        "chunk_size": {
+          "description": "Large upload chunk size in MiB.",
+          "type": "integer",
+          "default": 5,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "大文件上传分片大小（MiB）"
+            }
+          }
+        },
+        "disable_disk_usage": {
+          "description": "Disable OneDrive quota query.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "关闭网盘容量查询"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "OneDrive App",
+      "x-driver": {
+        "type": "onedrive_app",
+        "order": 5
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "OneDrive 应用权限"
+        }
+      }
+    },
+    "s3Params": {
+      "type": "object",
+      "required": [
+        "bucket",
+        "endpoint",
+        "access_key_id",
+        "secret_access_key"
+      ],
+      "properties": {
+        "bucket": {
+          "description": "S3 bucket name.",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "my-bucket",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "S3 bucket 名称"
+            }
+          }
+        },
+        "endpoint": {
+          "description": "S3 endpoint URL.",
+          "type": "string",
+          "minLength": 1,
+          "example": "https://s3.us-east-1.amazonaws.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "S3 服务端点 URL"
+            }
+          }
+        },
+        "region": {
+          "description": "AWS region.",
+          "type": "string",
+          "default": "us-east-1",
+          "x-example": "us-east-1",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "AWS 区域"
+            }
+          }
+        },
+        "access_key_id": {
+          "description": "S3 access key ID.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "AKIA...",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "S3 访问密钥 ID"
+            }
+          }
+        },
+        "secret_access_key": {
+          "description": "S3 secret access key.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "...",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "S3 访问密钥 Secret"
+            }
+          }
+        },
+        "session_token": {
+          "description": "S3 session token (for temporary credentials).",
+          "type": "string",
+          "x-secret": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "S3 临时凭证的 session token"
+            }
+          }
+        },
+        "custom_host": {
+          "description": "Custom host for download URLs (e.g. CDN domain).",
+          "type": "string",
+          "example": "cdn.example.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "下载链接使用的自定义域名（如 CDN）"
+            }
+          }
+        },
+        "force_path_style": {
+          "description": "Force path-style addressing (required for MinIO and most non-AWS S3).",
+          "type": "boolean",
+          "default": false,
+          "x-example": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "强制使用 path-style 寻址（MinIO 和多数非 AWS S3 需要）"
+            }
+          }
+        },
+        "list_object_version": {
+          "description": "S3 list API version: v1 or v2.",
+          "type": "string",
+          "default": "v1",
+          "enum": [
+            "v1",
+            "v2"
+          ],
+          "x-i18n": {
+            "zh-CN": {
+              "description": "S3 列表 API 版本：v1 或 v2"
+            }
+          }
+        },
+        "placeholder": {
+          "description": "Placeholder filename for empty directories.",
+          "type": "string",
+          "default": ".qrypt",
+          "x-example": ".qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "空目录使用的占位文件名"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Root path prefix within the bucket.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/my-mount",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Bucket 内的根路径前缀"
+            }
+          }
+        },
+        "sign_url_expire": {
+          "description": "Presigned URL expiration duration.",
+          "type": "string",
+          "default": "4h",
+          "x-example": "1h",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "预签名下载链接有效期"
+            }
+          },
+          "x-param-type": "duration"
+        }
+      },
+      "additionalProperties": false,
+      "title": "Amazon S3 / S3-compatible",
+      "x-driver": {
+        "type": "s3",
+        "order": 14
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "Amazon S3 / 兼容 S3"
+        }
+      }
+    },
+    "p123Params": {
+      "type": "object",
+      "required": [
+        "username",
+        "password"
+      ],
+      "properties": {
+        "username": {
+          "description": "123pan account (phone number or email).",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "13800138000",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "123 云盘账号（手机号或邮箱）"
+            }
+          }
+        },
+        "password": {
+          "description": "123pan account password.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-password",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "123 云盘密码"
+            }
+          }
+        },
+        "root_path": {
+          "description": "Virtual root path on the drive (ignored when root_id is set).",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘上的虚拟根路径（设置 root_id 时忽略）"
+            }
+          }
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID; when set, root_path is ignored.",
+          "type": "string",
+          "x-example": "0",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "预解析的文件夹 ID；设置后忽略 root_path"
+            }
+          }
+        },
+        "base_url": {
+          "description": "Custom API base URL.",
+          "type": "string",
+          "x-example": "https://yun.123pan.com/b/api",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 API 基础 URL"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "123pan",
+      "x-driver": {
+        "type": "123",
+        "order": 10
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "123 云盘"
+        }
+      }
+    }
+  }
+}

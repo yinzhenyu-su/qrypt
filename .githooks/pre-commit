@@ -2,8 +2,8 @@
 # Fast local gate before every commit: format, vet, affected suite.
 # The suite is narrowed to the packages the staged diff can reach, so a
 # localized commit costs seconds instead of the ~22s a full module run takes.
-# pre-push runs scripts/ci-check.sh over everything either way, which is where
-# the narrowing is paid for; run `scripts/test-layers.sh fast` to force the
+# pre-push runs scripts/ci/check-all.sh over everything either way, which is where
+# the narrowing is paid for; run `scripts/ci/test-layers.sh fast` to force the
 # whole module here too. Skip with: git commit --no-verify
 set -euo pipefail
 [ -n "${QRYPT_SKIP_HOOKS:-}" ] && exit 0
@@ -21,4 +21,4 @@ echo "== pre-commit: go vet =="
 go vet ./...
 
 echo "== pre-commit: affected suite =="
-scripts/test-layers.sh changed
+scripts/ci/test-layers.sh changed

@@ -84,41 +84,7 @@ func init() {
 			}
 		}
 		return d, nil
-	},
-		drive.ParamDef{
-			Name:        "cookie",
-			Type:        "string",
-			Secret:      true,
-			Description: "189 cloud drive authentication cookie (alternative to username/password)",
-			Example:     "k1=v1; k2=v2",
-		},
-		drive.ParamDef{
-			Name:        "username",
-			Type:        "string",
-			Description: "189 cloud drive account (phone number)",
-			Example:     "18912345678",
-		},
-		drive.ParamDef{
-			Name:        "password",
-			Type:        "string",
-			Secret:      true,
-			Description: "189 cloud drive password",
-			Example:     "your-password",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path on the drive",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "root_id",
-			Type:        "string",
-			Description: "Pre-resolved folder ID (skips root_path resolution)",
-			Example:     "-11",
-		},
-	)
+	})
 }
 
 func (d *Driver) Init(ctx context.Context) error {

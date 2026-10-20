@@ -53,15 +53,7 @@ func init() {
 			return nil, fmt.Errorf("sftp: one of password or private_key is required")
 		}
 		return New(Options{Address: address, Username: username, Password: params["password"], PrivateKey: params["private_key"], Passphrase: params["passphrase"], KnownHosts: params["known_hosts"], RootPath: params["root_path"]}), nil
-	},
-		drive.ParamDef{Name: "address", Required: true, Description: "SFTP server address, including port", Example: "sftp.example.com:22"},
-		drive.ParamDef{Name: "username", Required: true, Description: "SFTP username", Example: "user"},
-		drive.ParamDef{Name: "password", Secret: true, Description: "SFTP password", Example: "your-password"},
-		drive.ParamDef{Name: "private_key", Secret: true, Description: "Path to or PEM-encoded SSH private key", Example: "~/.ssh/id_ed25519"},
-		drive.ParamDef{Name: "passphrase", Secret: true, Description: "SSH private key passphrase"},
-		drive.ParamDef{Name: "known_hosts", Description: "OpenSSH known_hosts file used to verify the SFTP server; when omitted, ~/.ssh/known_hosts is used if present", Example: "~/.ssh/known_hosts"},
-		drive.ParamDef{Name: "root_path", Description: "Remote directory used as this mount root", Default: "/", Example: "/data/qrypt"},
-	)
+	})
 }
 
 func New(opts Options) *Driver {

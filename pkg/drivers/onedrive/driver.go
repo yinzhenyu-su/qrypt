@@ -154,25 +154,7 @@ func init() {
 			ChunkSize:        chunkSize,
 			DisableDiskUsage: params["disable_disk_usage"] == "true",
 		}), nil
-	},
-		drive.ParamDef{Name: "refresh_token", Type: "string", Required: true, Secret: true, Description: "OneDrive refresh token", Example: "your-refresh-token"},
-		drive.ParamDef{Name: "access_token", Type: "string", Secret: true, Description: "Optional initial OneDrive access token; refreshed automatically when needed"},
-		drive.ParamDef{Name: "region", Type: "string", Description: "Microsoft cloud region: global, cn, us, or de", Default: "global", Example: "global"},
-		drive.ParamDef{Name: "root_path", Type: "string", Description: "OneDrive path used as this mount root", Default: "/", Example: "/qrypt"},
-		drive.ParamDef{Name: "use_online_api", Type: "bool", Description: "Use OpenList-compatible online token refresh API", Default: "true"},
-		drive.ParamDef{Name: "online_api", Type: "string", Description: "Online token refresh API URL", Example: defaultOnlineAPI},
-		drive.ParamDef{Name: "client_id", Type: "string", Secret: true, Description: "OAuth client ID used when use_online_api=false"},
-		drive.ParamDef{Name: "client_key", Type: "string", Secret: true, Description: "Alias for client_id"},
-		drive.ParamDef{Name: "client_secret", Type: "string", Secret: true, Description: "OAuth client secret used when use_online_api=false"},
-		drive.ParamDef{Name: "redirect_uri", Type: "string", Description: "OAuth redirect URI used when your Microsoft app requires it", Example: defaultRedirectURI},
-		drive.ParamDef{Name: "api_base_url", Type: "string", Description: "Custom Microsoft Graph API base URL", Example: "https://graph.microsoft.com"},
-		drive.ParamDef{Name: "oauth_base_url", Type: "string", Description: "Custom Microsoft OAuth base URL", Example: "https://login.microsoftonline.com"},
-		drive.ParamDef{Name: "is_sharepoint", Type: "bool", Description: "Use SharePoint site drive instead of the current user's drive", Default: "false"},
-		drive.ParamDef{Name: "site_id", Type: "string", Description: "SharePoint site ID when is_sharepoint=true"},
-		drive.ParamDef{Name: "custom_host", Type: "string", Description: "Custom host for download URLs"},
-		drive.ParamDef{Name: "chunk_size", Type: "int", Description: "Large upload chunk size in MiB", Default: "5", Example: "10"},
-		drive.ParamDef{Name: "disable_disk_usage", Type: "bool", Description: "Disable OneDrive quota query", Default: "false"},
-	)
+	})
 	drive.Register("onedrive_app", func(params drive.Params) (drive.Driver, error) {
 		clientID := params["client_id"]
 		if clientID == "" {
@@ -212,20 +194,7 @@ func init() {
 			ChunkSize:        chunkSize,
 			DisableDiskUsage: params["disable_disk_usage"] == "true",
 		}), nil
-	},
-		drive.ParamDef{Name: "client_id", Type: "string", Required: true, Secret: true, Description: "Microsoft Entra application client ID"},
-		drive.ParamDef{Name: "client_key", Type: "string", Secret: true, Description: "Alias for client_id"},
-		drive.ParamDef{Name: "client_secret", Type: "string", Required: true, Secret: true, Description: "Microsoft Entra application client secret"},
-		drive.ParamDef{Name: "tenant_id", Type: "string", Required: true, Description: "Microsoft Entra tenant ID"},
-		drive.ParamDef{Name: "email", Type: "string", Required: true, Description: "User principal name or email whose drive should be mounted", Example: "user@example.com"},
-		drive.ParamDef{Name: "region", Type: "string", Description: "Microsoft cloud region: global, cn, us, or de", Default: "global", Example: "global"},
-		drive.ParamDef{Name: "root_path", Type: "string", Description: "OneDrive path used as this mount root", Default: "/", Example: "/qrypt"},
-		drive.ParamDef{Name: "api_base_url", Type: "string", Description: "Custom Microsoft Graph API base URL", Example: "https://graph.microsoft.com"},
-		drive.ParamDef{Name: "oauth_base_url", Type: "string", Description: "Custom Microsoft OAuth base URL", Example: "https://login.microsoftonline.com"},
-		drive.ParamDef{Name: "custom_host", Type: "string", Description: "Custom host for download URLs"},
-		drive.ParamDef{Name: "chunk_size", Type: "int", Description: "Large upload chunk size in MiB", Default: "5", Example: "10"},
-		drive.ParamDef{Name: "disable_disk_usage", Type: "bool", Description: "Disable OneDrive quota query", Default: "false"},
-	)
+	})
 }
 
 func New(opts Options) *Driver {

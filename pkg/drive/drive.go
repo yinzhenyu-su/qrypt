@@ -409,13 +409,14 @@ type Factory func(Params) (Driver, error)
 // Each driver should declare its expected params via Register so the CLI
 // can provide meaningful validation, help output, and documentation.
 type ParamDef struct {
-	Name        string `json:"name"`
-	Type        string `json:"type,omitempty"` // "string" (default), "int", "bool", "duration"
-	Required    bool   `json:"required,omitempty"`
-	Secret      bool   `json:"secret,omitempty"` // masked in debug output and help
-	Description string `json:"description,omitempty"`
-	Default     string `json:"default,omitempty"`
-	Example     string `json:"example,omitempty"`
+	Name            string            `json:"name"`
+	Type            string            `json:"type,omitempty"` // "string" (default), "int", "bool", "duration"
+	Required        bool              `json:"required,omitempty"`
+	Secret          bool              `json:"secret,omitempty"` // masked in debug output and help
+	Description     string            `json:"description,omitempty"`
+	DescriptionI18n map[string]string `json:"-"`
+	Default         string            `json:"default,omitempty"`
+	Example         string            `json:"example,omitempty"`
 }
 
 var (
@@ -446,9 +447,7 @@ func New(name string, params Params) (Driver, error) {
 
 // ParamSchema returns the parameter schema for a registered driver.
 func ParamSchema(name string) []ParamDef {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-	return paramSchemas[name]
+	return ParamSpecFor(name).Params
 }
 
 // Registered reports whether name identifies an available driver.

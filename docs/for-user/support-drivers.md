@@ -1,8 +1,14 @@
 # 支持的驱动
 
-以下文档由 `qrypt.schema.json` 自动生成。
-
 qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]]` 条目使用，`type` 字段指定驱动类型，`params` 中填写对应参数。
+
+## 如何选择驱动
+
+- **先体验 qrypt**：使用 `localfs`，不需要云盘账号，配置示例见[快速上手](quickstart.md)。
+- **使用网盘**：从下方列表中选择对应驱动。多数网盘需要从网页端登录后获取 cookie 或 token，具体字段见各驱动小节。
+- **使用标准协议或自建服务**：选择 `webdav`、`sftp` 或 `s3`。
+
+网盘凭证通常有时效，过期后需要重新获取。请将凭证保存在本机配置文件中，不要提交到版本库。
 
 ## 驱动列表
 
@@ -12,7 +18,7 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `aliyundrive` | 阿里云盘 | `refresh_token` + `drive_id` |
 | `baidu_netdisk` | 百度网盘 | `refresh_token` |
 | `onedrive` | OneDrive | `refresh_token` |
-| `onedrive_app` | OneDrive 应用权限 | `client_id` 或 `client_key` |
+| `onedrive_app` | OneDrive 应用权限 | `client_secret` + `tenant_id` + `email` + (`client_id` 或 `client_key`) |
 | `quark` | 夸克网盘 | `cookie` |
 | `yun139` | 移动云盘 | `authorization` |
 | `115` | 115 云盘 | `cookie` |
@@ -20,9 +26,8 @@ qrypt 支持以下云盘后端。每个驱动通过配置文件中的 `[[mounts]
 | `123` | 123 云盘 | `username` + `password` |
 | `189` | 天翼云盘 189 | `cookie` 或 `username` + `password` |
 | `webdav` | WebDAV | `url` + `username` + `password` |
-| `sftp` | SFTP | `address` + `username` + `password` 或 `address` + `username` + `private_key` |
+| `sftp` | SFTP | `address` + `username` + (`password` 或 `private_key`) |
 | `s3` | Amazon S3 / 兼容 S3 | `bucket` + `endpoint` + `access_key_id` + `secret_access_key` |
-
 
 ## localfs
 
@@ -35,7 +40,7 @@ root_path = "/tmp/qrypt-remote"
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `root_path` | string | 是 | Local filesystem root directory path |
+| `root_path` | string | 是 | 本地文件系统根目录路径 |
 
 ---
 
@@ -48,21 +53,17 @@ root_path = "/tmp/qrypt-remote"
 refresh_token = "your-refresh-token"
 drive_id = "your-drive-id"
 # root_path = "/qrypt"
-# order_by = "name"
-# order_direction = "ASC"
-# api_base_url = "https://openapi.alipan.com"
-# auth_url = "https://openapi.alipan.com/oauth/authorize"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `refresh_token` | string (secret) | 是 | Aliyun Drive refresh token for OAuth authentication |
-| `drive_id` | string | 是 | Aliyun Drive drive ID |
-| `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
-| `order_by` | string | 否 | File listing sort field |
-| `order_direction` | string | 否 | Sort direction (ASC or DESC) |
-| `api_base_url` | string | 否 | Custom API base URL |
-| `auth_url` | string | 否 | Custom OAuth token URL |
+| `refresh_token` | string (secret) | 是 | 网盘 refresh token，用于 OAuth 认证 |
+| `drive_id` | string | 是 | 阿里云盘 drive ID |
+| `root_path` | string | 否 | 虚拟根路径，启动时解析为网盘文件夹 ID，默认 `/` |
+| `order_by` | string | 否 | 列表排序字段 |
+| `order_direction` | string | 否 | 排序方向（ASC 或 DESC） |
+| `api_base_url` | string | 否 | 自定义 API 基础 URL |
+| `auth_url` | string | 否 | 自定义 OAuth token URL |
 
 ---
 
@@ -74,31 +75,23 @@ drive_id = "your-drive-id"
 [mounts.params]
 refresh_token = "your-refresh-token"
 # root_path = "/qrypt"
-# order_by = "name"
-# order_direction = "asc"
-# use_online_api = true
-# online_api = "https://api.oplist.org/baiduyun/renewapi"
-# upload_api = "https://d.pcs.baidu.com"
-# api_base_url = "https://pan.baidu.com/rest/2.0"
-# oauth_url = "https://openapi.baidu.com/oauth/2.0/token"
-# download_user_agent = "pan.baidu.com"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `refresh_token` | string (secret) | 是 | Baidu Netdisk refresh token |
-| `access_token` | string (secret) | 否 | Optional initial Baidu Netdisk access token; refreshed automatically when needed |
-| `root_path` | string | 否 | Baidu Netdisk path used as this mount root，默认 `/` |
-| `order_by` | string | 否 | List ordering field: name, time, or size，默认 `name` |
-| `order_direction` | string | 否 | List ordering direction: asc or desc，默认 `asc` |
-| `use_online_api` | boolean | 否 | Use OpenList-compatible online token refresh API，默认 `true` |
-| `online_api` | string | 否 | Online token refresh API URL |
-| `upload_api` | string | 否 | Baidu PCS upload API base URL |
-| `client_id` | string (secret) | 否 | Baidu app API Key used as OAuth client_id when use_online_api=false |
-| `client_secret` | string (secret) | 否 | Baidu app Secret Key used as OAuth client_secret when use_online_api=false |
-| `api_base_url` | string | 否 | Custom Baidu REST API base URL |
-| `oauth_url` | string | 否 | Custom Baidu OAuth token URL |
-| `download_user_agent` | string | 否 | User-Agent used for Baidu download requests，默认 `pan.baidu.com` |
+| `refresh_token` | string (secret) | 是 | 网盘 refresh token，用于 OAuth 认证 |
+| `access_token` | string (secret) | 否 | 可选的初始 access token；过期后自动刷新 |
+| `root_path` | string | 否 | 作为挂载根的百度网盘路径，默认 `/` |
+| `order_by` | string | 否 | 列表排序字段，默认 `name` |
+| `order_direction` | string | 否 | 排序方向（asc 或 desc），默认 `asc` |
+| `use_online_api` | boolean | 否 | 使用 OpenList 兼容的在线 token 刷新接口，默认 `true` |
+| `online_api` | string | 否 | 在线 token 刷新接口 URL |
+| `upload_api` | string | 否 | 百度 PCS 上传接口基础 URL |
+| `client_id` | string (secret) | 否 | OAuth 应用 client ID |
+| `client_secret` | string (secret) | 否 | OAuth 应用 client secret |
+| `api_base_url` | string | 否 | 自定义 API 基础 URL |
+| `oauth_url` | string | 否 | 自定义 OAuth token URL |
+| `download_user_agent` | string | 否 | 百度网盘下载请求使用的 User-Agent，默认 `pan.baidu.com` |
 
 ---
 
@@ -109,43 +102,28 @@ OneDrive。
 ```toml
 [mounts.params]
 refresh_token = "your-refresh-token"
-# access_token = "optional-access-token"
-# region = "global"
 # root_path = "/qrypt"
-# use_online_api = true
-# online_api = "https://api.oplist.org/onedrive/renewapi"
-# client_id = "your-client-id"
-# client_key = "your-client-id"
-# client_secret = "your-client-secret"
-# redirect_uri = "https://your-app/callback"
-# api_base_url = "https://graph.microsoft.com"
-# oauth_base_url = "https://login.microsoftonline.com"
-# is_sharepoint = false
-# site_id = "your-sharepoint-site-id"
-# custom_host = "download.example.com"
-# chunk_size = 5
-# disable_disk_usage = false
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `refresh_token` | string (secret) | 是 | OneDrive refresh token |
-| `access_token` | string (secret) | 否 | Optional initial OneDrive access token; refreshed automatically when needed |
-| `region` | string | 否 | Microsoft cloud region，默认 `global` |
-| `root_path` | string | 否 | OneDrive path used as this mount root，默认 `/` |
-| `use_online_api` | boolean | 否 | Use OpenList-compatible online token refresh API，默认 `true` |
-| `online_api` | string | 否 | Online token refresh API URL |
-| `client_id` | string (secret) | 否 | OAuth client ID used when use_online_api=false; mutually exclusive with client_key |
-| `client_key` | string (secret) | 否 | Alias for client_id |
-| `client_secret` | string (secret) | 否 | OAuth client secret used when use_online_api=false |
-| `redirect_uri` | string | 否 | OAuth redirect URI used when your Microsoft app requires it |
-| `api_base_url` | string | 否 | Custom Microsoft Graph API base URL |
-| `oauth_base_url` | string | 否 | Custom Microsoft OAuth base URL |
-| `is_sharepoint` | boolean | 否 | Use SharePoint site drive instead of the current user's drive，默认 `false` |
-| `site_id` | string | 否 | SharePoint site ID when is_sharepoint=true |
-| `custom_host` | string | 否 | Custom host for download URLs |
-| `chunk_size` | integer | 否 | Large upload chunk size in MiB，默认 `5` |
-| `disable_disk_usage` | boolean | 否 | Disable OneDrive quota query，默认 `false` |
+| `refresh_token` | string (secret) | 是 | 网盘 refresh token，用于 OAuth 认证 |
+| `access_token` | string (secret) | 否 | 可选的初始 access token；过期后自动刷新 |
+| `region` | string | 否 | Microsoft 云区域（global、cn、us 或 de），默认 `global` |
+| `root_path` | string | 否 | 作为挂载根的 OneDrive 路径，默认 `/` |
+| `use_online_api` | boolean | 否 | 使用 OpenList 兼容的在线 token 刷新接口，默认 `true` |
+| `online_api` | string | 否 | 在线 token 刷新接口 URL |
+| `client_id` | string (secret) | 否 | OAuth 应用 client ID |
+| `client_key` | string (secret) | 否 | client_id 的别名 |
+| `client_secret` | string (secret) | 否 | OAuth 应用 client secret |
+| `redirect_uri` | string | 否 | OAuth 回调地址 |
+| `api_base_url` | string | 否 | 自定义 API 基础 URL |
+| `oauth_base_url` | string | 否 | 自定义 Microsoft OAuth 基础 URL |
+| `is_sharepoint` | boolean | 否 | 挂载 SharePoint 站点，而不是当前用户的 OneDrive，默认 `false` |
+| `site_id` | string | 否 | SharePoint 站点 ID（is_sharepoint=true 时使用） |
+| `custom_host` | string | 否 | 下载链接使用的自定义域名（如 CDN） |
+| `chunk_size` | integer | 否 | 大文件上传分片大小（MiB），默认 `5` |
+| `disable_disk_usage` | boolean | 否 | 关闭网盘容量查询，默认 `false` |
 
 ---
 
@@ -158,34 +136,28 @@ OneDrive 应用权限。
 # 认证方式任选其一：`client_id` 或 `client_key`
 client_id = "your-client-id"
 # client_key = "your-client-id"
-# client_secret = "your-client-secret"
-# tenant_id = "your-tenant-id"
-# email = "user@example.com"
-# region = "global"
+client_secret = "your-client-secret"
+tenant_id = "your-tenant-id"
+email = "user@example.com"
 # root_path = "/qrypt"
-# api_base_url = "https://graph.microsoft.com"
-# oauth_base_url = "https://login.microsoftonline.com"
-# custom_host = "download.example.com"
-# chunk_size = 5
-# disable_disk_usage = false
 ```
 
-必填条件：`client_id` 或 `client_key`。
+必填条件：`client_secret` + `tenant_id` + `email` + (`client_id` 或 `client_key`)。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `client_id` | string (secret) | 条件 | Microsoft Entra application client ID; mutually exclusive with client_key |
-| `client_key` | string (secret) | 条件 | Alias for client_id |
-| `client_secret` | string (secret) | 否 | Microsoft Entra application client secret |
-| `tenant_id` | string | 否 | Microsoft Entra tenant ID |
-| `email` | string | 否 | User principal name or email whose drive should be mounted |
-| `region` | string | 否 | Microsoft cloud region，默认 `global` |
-| `root_path` | string | 否 | OneDrive path used as this mount root，默认 `/` |
-| `api_base_url` | string | 否 | Custom Microsoft Graph API base URL |
-| `oauth_base_url` | string | 否 | Custom Microsoft OAuth base URL |
-| `custom_host` | string | 否 | Custom host for download URLs |
-| `chunk_size` | integer | 否 | Large upload chunk size in MiB，默认 `5` |
-| `disable_disk_usage` | boolean | 否 | Disable OneDrive quota query，默认 `false` |
+| `client_id` | string (secret) | 条件 | OAuth 应用 client ID |
+| `client_key` | string (secret) | 条件 | client_id 的别名 |
+| `client_secret` | string (secret) | 是 | OAuth 应用 client secret |
+| `tenant_id` | string | 是 | Microsoft Entra 租户 ID |
+| `email` | string | 是 | 要挂载的账号邮箱 |
+| `region` | string | 否 | Microsoft 云区域（global、cn、us 或 de），默认 `global` |
+| `root_path` | string | 否 | 作为挂载根的 OneDrive 路径，默认 `/` |
+| `api_base_url` | string | 否 | 自定义 API 基础 URL |
+| `oauth_base_url` | string | 否 | 自定义 Microsoft OAuth 基础 URL |
+| `custom_host` | string | 否 | 下载链接使用的自定义域名（如 CDN） |
+| `chunk_size` | integer | 否 | 大文件上传分片大小（MiB），默认 `5` |
+| `disable_disk_usage` | boolean | 否 | 关闭网盘容量查询，默认 `false` |
 
 ---
 
@@ -197,18 +169,15 @@ client_id = "your-client-id"
 [mounts.params]
 cookie = "k1=v1; k2=v2"
 # root_path = "/qrypt"
-# base_url = "https://drive.quark.cn"
-# v2_url = "https://drive-m.quark.cn"
-# wg_keys = "14100:e21247a68938d36f"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `cookie` | string (secret) | 是 | Quark cloud drive authentication cookie |
-| `root_path` | string | 否 | Virtual root path on the drive，默认 `/` |
-| `base_url` | string | 否 | Custom API base URL |
-| `v2_url` | string | 否 | Custom API v2 URL |
-| `wg_keys` | string | 否 | Override wg data keys for offline requests as secureNo:hexkey pairs separated by commas |
+| `cookie` | string (secret) | 是 | 网盘认证 cookie，从网页端登录后获取 |
+| `root_path` | string | 否 | 网盘上的虚拟根路径，默认 `/` |
+| `base_url` | string | 否 | 自定义 API 基础 URL |
+| `v2_url` | string | 否 | 自定义 API v2 URL |
+| `wg_keys` | string | 否 | 离线请求使用的 wg data keys，格式为 secureNo:hexkey，逗号分隔 |
 
 ---
 
@@ -220,14 +189,13 @@ cookie = "k1=v1; k2=v2"
 [mounts.params]
 authorization = "your-authorization-token"
 # root_path = "/qrypt"
-# root_id = "FtozqWiFB1yWOWUGc9oNCf6M0h5fRwcQl"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `authorization` | string (secret) | 是 | 139 cloud drive authorization token |
-| `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
-| `root_id` | string | 否 | Pre-resolved folder ID (skips root_path resolution) |
+| `authorization` | string (secret) | 是 | 移动云盘 authorization token，从网页端登录后获取 |
+| `root_path` | string | 否 | 虚拟根路径，启动时解析为网盘文件夹 ID，默认 `/` |
+| `root_id` | string | 否 | 预解析的文件夹 ID；设置后忽略 root_path |
 
 ---
 
@@ -243,8 +211,8 @@ cookie = "k1=v1; k2=v2"
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `cookie` | string (secret) | 是 | 115 cloud drive authentication cookie |
-| `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
+| `cookie` | string (secret) | 是 | 网盘认证 cookie，从网页端登录后获取 |
+| `root_path` | string | 否 | 虚拟根路径，启动时解析为网盘文件夹 ID，默认 `/` |
 
 ---
 
@@ -258,17 +226,15 @@ cookie = "k1=v1; k2=v2"
 ```toml
 [mounts.params]
 refresh_token = "eg2t4.<hex>.<hex>"
-# access_token = "eg2t4.<hex>.<hex>"
 # root_path = "/qrypt"
-# limit_rate = 2
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `refresh_token` | string (secret) | 是 | 115 open platform refresh token (obtained by authorizing an app on open.115.com) |
-| `access_token` | string (secret) | 否 | 115 open platform access token (optional; refreshed automatically when missing or expired) |
-| `root_path` | string | 否 | Virtual root path, resolved to the provider folder ID at startup，默认 `/` |
-| `limit_rate` | integer | 否 | Limit all API requests to N per second，默认 `2` |
+| `refresh_token` | string (secret) | 是 | 网盘 refresh token，用于 OAuth 认证 |
+| `access_token` | string (secret) | 否 | 可选的初始 access token；过期后自动刷新 |
+| `root_path` | string | 否 | 虚拟根路径，启动时解析为网盘文件夹 ID，默认 `/` |
+| `limit_rate` | integer | 否 | 限制 API 请求速率（每秒 N 次），默认 `2` |
 
 ---
 
@@ -281,17 +247,15 @@ refresh_token = "eg2t4.<hex>.<hex>"
 username = "13800138000"
 password = "your-password"
 # root_path = "/qrypt"
-# root_id = "0"
-# base_url = "https://yun.123pan.com/b/api"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `username` | string | 是 | 123pan account (phone number or email) |
-| `password` | string (secret) | 是 | 123pan account password |
-| `root_path` | string | 否 | Virtual root path on the drive (ignored when root_id is set)，默认 `/` |
-| `root_id` | string | 否 | Pre-resolved folder ID; when set, root_path is ignored |
-| `base_url` | string | 否 | Custom API base URL |
+| `username` | string | 是 | 123 云盘账号（手机号或邮箱） |
+| `password` | string (secret) | 是 | 123 云盘密码 |
+| `root_path` | string | 否 | 网盘上的虚拟根路径（设置 root_id 时忽略），默认 `/` |
+| `root_id` | string | 否 | 预解析的文件夹 ID；设置后忽略 root_path |
+| `base_url` | string | 否 | 自定义 API 基础 URL |
 
 ---
 
@@ -306,18 +270,17 @@ cookie = "k1=v1; k2=v2"
 # username = "18912345678"
 # password = "your-password"
 # root_path = "/qrypt"
-# root_id = "-11"
 ```
 
 必填条件：`cookie` 或 `username` + `password`。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `cookie` | string (secret) | 条件 | 189 cloud drive authentication cookie |
-| `username` | string | 条件 | 189 cloud drive account (phone number) |
-| `password` | string (secret) | 条件 | 189 cloud drive password |
-| `root_path` | string | 否 | Virtual root path on the drive，默认 `/` |
-| `root_id` | string | 否 | Pre-resolved folder ID (skips root_path resolution) |
+| `cookie` | string (secret) | 条件 | 网盘认证 cookie，从网页端登录后获取 |
+| `username` | string | 条件 | 189 云盘账号（手机号） |
+| `password` | string (secret) | 条件 | 189 云盘密码 |
+| `root_path` | string | 否 | 网盘上的虚拟根路径（设置 root_id 时忽略），默认 `/` |
+| `root_id` | string | 否 | 预解析的文件夹 ID；设置后忽略 root_path |
 
 ---
 
@@ -335,10 +298,10 @@ password = "your-password-or-app-token"
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `url` | string | 是 | WebDAV server base URL |
-| `username` | string | 是 | WebDAV authentication username |
-| `password` | string (secret) | 是 | WebDAV authentication password or app token |
-| `root_path` | string | 否 | Optional path under the WebDAV base URL used as this mount root，默认 `/` |
+| `url` | string | 是 | WebDAV 服务器基础 URL |
+| `username` | string | 是 | WebDAV 用户名 |
+| `password` | string (secret) | 是 | WebDAV 密码或应用 token |
+| `root_path` | string | 否 | WebDAV 基础 URL 下的可选子路径，默认 `/` |
 
 ---
 
@@ -348,26 +311,25 @@ SFTP。
 
 ```toml
 [mounts.params]
-# 认证方式任选其一：`address` + `username` + `password` 或 `address` + `username` + `private_key`
+# 认证方式任选其一：`password` 或 `private_key`
 address = "sftp.example.com:22"
 username = "user"
 password = "your-password"
 # private_key = "~/.ssh/id_ed25519"
-# known_hosts = "~/.ssh/known_hosts"
 # root_path = "/data/qrypt"
 ```
 
-必填条件：`address` + `username` + `password` 或 `address` + `username` + `private_key`。
+必填条件：`address` + `username` + (`password` 或 `private_key`)。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `address` | string | 条件 | SFTP server address, including port |
-| `username` | string | 条件 | SFTP username |
-| `password` | string (secret) | 条件 | SFTP password; use password or private_key |
-| `private_key` | string (secret) | 条件 | Path to or PEM-encoded SSH private key; use private_key or password |
-| `passphrase` | string (secret) | 否 | SSH private key passphrase |
-| `known_hosts` | string | 否 | Optional OpenSSH known_hosts file used to verify the SFTP server host key; when omitted, ~/.ssh/known_hosts is used if present |
-| `root_path` | string | 否 | Remote directory used as this mount root，默认 `/` |
+| `address` | string | 是 | SFTP 服务器地址，包含端口 |
+| `username` | string | 是 | SFTP 用户名 |
+| `password` | string (secret) | 条件 | SFTP 密码；与 private_key 二选一 |
+| `private_key` | string (secret) | 条件 | SSH 私钥路径或 PEM 内容；与 password 二选一 |
+| `passphrase` | string (secret) | 否 | SSH 私钥口令 |
+| `known_hosts` | string | 否 | 可选的 OpenSSH known_hosts 文件；省略时使用 ~/.ssh/known_hosts |
+| `root_path` | string | 否 | 作为挂载根的远程目录，默认 `/` |
 
 ---
 
@@ -379,28 +341,49 @@ Amazon S3 / 兼容 S3。
 [mounts.params]
 bucket = "my-bucket"
 endpoint = "https://s3.us-east-1.amazonaws.com"
-# region = "us-east-1"
 access_key_id = "AKIA..."
 secret_access_key = "..."
-# custom_host = "cdn.example.com"
-# force_path_style = true
-# list_object_version = "v1"
-# placeholder = ".qrypt"
 # root_path = "/my-mount"
-# sign_url_expire = "1h"
 ```
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `bucket` | string | 是 | S3 bucket name |
-| `endpoint` | string | 是 | S3 endpoint URL |
-| `region` | string | 否 | AWS region，默认 `us-east-1` |
-| `access_key_id` | string (secret) | 是 | S3 access key ID |
-| `secret_access_key` | string (secret) | 是 | S3 secret access key |
-| `session_token` | string (secret) | 否 | S3 session token (for temporary credentials) |
-| `custom_host` | string | 否 | Custom host for download URLs (e.g. CDN domain) |
-| `force_path_style` | boolean | 否 | Force path-style addressing (required for MinIO and most non-AWS S3)，默认 `false` |
-| `list_object_version` | string | 否 | S3 list API version: v1 or v2，默认 `v1` |
-| `placeholder` | string | 否 | Placeholder filename for empty directories，默认 `.qrypt` |
-| `root_path` | string | 否 | Root path prefix within the bucket，默认 `/` |
-| `sign_url_expire` | string | 否 | Presigned URL expiration duration，默认 `4h` |
+| `bucket` | string | 是 | S3 bucket 名称 |
+| `endpoint` | string | 是 | S3 服务端点 URL |
+| `region` | string | 否 | AWS 区域，默认 `us-east-1` |
+| `access_key_id` | string (secret) | 是 | S3 访问密钥 ID |
+| `secret_access_key` | string (secret) | 是 | S3 访问密钥 Secret |
+| `session_token` | string (secret) | 否 | S3 临时凭证的 session token |
+| `custom_host` | string | 否 | 下载链接使用的自定义域名（如 CDN） |
+| `force_path_style` | boolean | 否 | 强制使用 path-style 寻址（MinIO 和多数非 AWS S3 需要），默认 `false` |
+| `list_object_version` | string | 否 | S3 列表 API 版本：v1 或 v2，默认 `v1` |
+| `placeholder` | string | 否 | 空目录使用的占位文件名，默认 `.qrypt` |
+| `root_path` | string | 否 | Bucket 内的根路径前缀，默认 `/` |
+| `sign_url_expire` | string | 否 | 预签名下载链接有效期，默认 `4h` |
+
+## 能力对照
+
+以下矩阵用于选型参考，不影响基本使用。
+
+| 驱动 | 写入 | 断点续传 | 服务端复制 | 服务端哈希 | 保留修改时间 | 空间查询 | 离线下载 |
+|---|---|---|---|---|---|---|---|
+| `localfs` | ✅ | — | ✅ | — | ✅ | ✅ | — |
+| `aliyundrive` | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
+| `baidu_netdisk` | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
+| `onedrive` | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
+| `onedrive_app` | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
+| `quark` | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| `yun139` | ✅ | ✅ | — | — | — | ✅ | — |
+| `115` | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
+| `115_open` | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| `123` | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
+| `189` | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| `webdav` | ✅ | — | ✅ | — | — | ✅ | — |
+| `sftp` | ✅ | ✅ | — | — | ✅ | ✅ | — |
+| `s3` | ✅ | ✅ | ✅ | — | — | — | — |
+
+✅ 支持，— 不支持；不支持的能力会由上层降级或返回 unsupported。
+
+**写入**：创建、删除、移动、重命名；**服务端复制**：由存储端直接复制，不经过本地下载再上传；**服务端哈希**：可直接读取存储端内容哈希用于校验；**保留修改时间**：上传或复制后保留源文件 mtime。
+
+`quark` 的离线下载同时支持解析、选择性转存和加速取回。

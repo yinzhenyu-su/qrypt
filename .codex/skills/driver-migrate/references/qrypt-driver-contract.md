@@ -229,9 +229,9 @@ Rules:
   debug snapshots.
 - Validation is dynamic: `pkg/config/validation.go` accepts exactly the params
   in `ParamSchema(mount.Type)` and requires those marked `Required`.
-- `qrypt.schema.json` is a committed, hand-maintained mirror: the `type` `enum`,
+- `schema/qrypt.schema.json` is the committed schema source: the `type` `enum`,
   an `allOf` `if/then` per driver, and `definitions.<name>Params`. Docs are
-  generated from it by `scripts/gen-driver-docs.py` and CI checks they are in sync.
+  generated from it by `scripts/schema/gen-driver-docs.py` and CI checks they are in sync.
 - `root_id` vs `root_path`: an explicit id wins and skips path resolution.
   Resolve `root_path` from the account root, and commit the resolved root only
   after success so a retried `Init` does not fall back to the account root.

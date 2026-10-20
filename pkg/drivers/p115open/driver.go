@@ -93,36 +93,7 @@ func init() {
 			RootPath:     params["root_path"],
 			LimitRate:    2,
 		}), nil
-	},
-		drive.ParamDef{
-			Name:        "refresh_token",
-			Type:        "string",
-			Required:    true,
-			Secret:      true,
-			Description: "115 open platform refresh token (obtained by authorizing an app on open.115.com)",
-			Example:     "eg2t4.<hex>.<hex>",
-		},
-		drive.ParamDef{
-			Name:        "access_token",
-			Type:        "string",
-			Secret:      true,
-			Description: "115 open platform access token (optional; refreshed automatically when missing or expired)",
-			Example:     "eg2t4.<hex>.<hex>",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path, resolved to the provider folder ID at startup",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "limit_rate",
-			Type:        "int",
-			Description: "Limit all API requests to N per second",
-			Default:     "2",
-		},
-	)
+	})
 }
 
 type Options struct {

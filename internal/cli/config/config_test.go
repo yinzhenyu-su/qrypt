@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	qconfig "github.com/yinzhenyu/qrypt/pkg/config"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/all"
 )
@@ -78,6 +79,19 @@ func TestGeneratedConfigPassesValidation(t *testing.T) {
 	}
 	if cfg.Storage.ReadCacheDir != "" || cfg.Storage.ThumbnailCacheDir != "" || cfg.Storage.UploadDir != "" || cfg.Storage.StateDir != "" || cfg.Storage.LogDir != "" || cfg.Storage.TmpDir != "" {
 		t.Fatalf("generated config should derive storage children from work_dir: %+v", cfg.Storage)
+	}
+}
+
+func TestGeneratedConfigLocalized(t *testing.T) {
+	content, err := GenerateTemplateLocalized(t.TempDir(), i18n.New(i18n.LangZHCN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, want := range []string{"挂载", "本地文件系统根目录路径"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("localized config missing %q", want)
+		}
 	}
 }
 

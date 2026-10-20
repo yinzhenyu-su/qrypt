@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -51,7 +52,7 @@ drive is contacted, so this is safe to run before mounting.`,
 			if err := config.Validate(state.Cfg); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Config valid: %s\n", state.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", i18n.FromCommand(cmd).T("out.config.valid", state.Path))
 			return nil
 		},
 	}
@@ -86,7 +87,7 @@ PATH, or ./qrypt.toml when PATH is omitted.`,
 				return fmt.Errorf("%s already exists (use --force to overwrite)", outPath)
 			}
 
-			content, err := GenerateTemplate(starterRoot)
+			content, err := GenerateTemplateLocalized(starterRoot, i18n.FromCommand(cmd))
 			if err != nil {
 				return err
 			}
@@ -101,8 +102,9 @@ PATH, or ./qrypt.toml when PATH is omitted.`,
 				return err
 			}
 
-			fmt.Fprintf(cmd.ErrOrStderr(), "Wrote config to %s\n", outPath)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Created local storage at %s\n", starterRoot)
+			loc := i18n.FromCommand(cmd)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.config.wrote", outPath))
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", loc.T("out.config.storage_created", starterRoot))
 			return nil
 		},
 	}

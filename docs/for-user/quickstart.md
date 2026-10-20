@@ -1,6 +1,6 @@
 # qrypt 快速上手
 
-本文档将带你用最小的配置在 5 分钟内跑通 qrypt，直观感受它的工作方式。
+本文档带你用最少的配置完成第一次体验，了解 qrypt 的基本用法。
 
 ## 简介
 
@@ -30,56 +30,7 @@ powershell -c "irm https://github.com/yinzhenyu-su/qrypt/releases/latest/downloa
 qrypt version
 ```
 
-需要安装指定版本时，脚本取自对应版本的 release：
-
-```sh
-# Linux / macOS
-curl -fsSL https://github.com/yinzhenyu-su/qrypt/releases/download/v0.5.0/install.sh | sh -s -- --version v0.5.0
-```
-
-```powershell
-# Windows
-$s = irm https://github.com/yinzhenyu-su/qrypt/releases/download/v0.5.0/install.ps1
-& ([scriptblock]::Create($s)) -Version v0.5.0
-```
-
-### 卸载
-
-```sh
-qrypt uninstall
-```
-
-默认保留你的配置和数据。要连同数据一起删除：
-
-```sh
-qrypt uninstall --purge --yes
-```
-
-### 手动安装
-
-不使用脚本时，从 [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 下载对应系统的压缩包：
-
-| 系统                  | 文件名                               |
-| --------------------- | ------------------------------------ |
-| macOS (Intel)         | `qrypt_`_版本_`_darwin_amd64.tar.gz` |
-| macOS (Apple Silicon) | `qrypt_`_版本_`_darwin_arm64.tar.gz` |
-| Linux (amd64)         | `qrypt_`_版本_`_linux_amd64.tar.gz`  |
-| Linux (arm64)         | `qrypt_`_版本_`_linux_arm64.tar.gz`  |
-| Windows (amd64)       | `qrypt_`_版本_`_windows_amd64.zip`   |
-| Windows (arm64)       | `qrypt_`_版本_`_windows_arm64.zip`   |
-
-解压后得到一个名为 `qrypt` 的可执行文件（Windows 上为 `qrypt.exe`）。
-
-你可以把它放到 `PATH` 中的某个目录，也可以直接在文件所在目录下运行。
-
-验证安装：
-
-```
-./qrypt --help
-```
-
-> **Windows**：使用 `.\qrypt.exe --help`，或放入 `PATH` 后直接运行 `qrypt --help`。建议放在你有写权限的目录。
-
+qrypt 会根据系统语言显示中文或英文。想固定语言时使用 `--lang en` / `--lang zh-CN`，或设置 `QRYPT_LANG=en` / `QRYPT_LANG=zh-CN`。
 
 ## 编写配置文件
 
@@ -88,6 +39,8 @@ qrypt 需要一个配置文件来知道挂载到哪里、接入哪些云盘。
 创建一个名为 `qrypt.toml` 的文件，写入以下内容：
 
 ```toml
+version = "1"
+
 [mount]
 mount_point = "~/Qrypt"
 
@@ -102,10 +55,9 @@ root_path = "/tmp/qrypt-data"
 password = "my-password"
 filename_encryption = "standard"
 filename_encoding = "base32"
-# content_dedup = false  # true improves instant upload/dedup but leaks content equality
 ```
 
-这个配置文件定义了一个云盘，指向本机的 `/tmp/qrypt-data` 目录，并开启了加密。
+上面的配置定义了一个本地目录作为云盘后端，并启用了文件名和内容加密。
 
 > **Windows**：将 `root_path` 改为本地的一个目录，例如：
 >
@@ -136,10 +88,8 @@ filename_encoding = "base32"
 运行以下命令，qrypt 会读取配置文件并展示文件系统的顶层结构：
 
 ```
-./qrypt fs list /
+qrypt fs list /
 ```
-
-> **Windows**：`.\qrypt.exe fs list /`
 
 你应该能看到类似这样的输出：
 
@@ -162,13 +112,13 @@ local/
 
 | 源文件（根据上一步调整） | 命令                                               |
 | ------------------------ | -------------------------------------------------- |
-| macOS / Linux            | `./qrypt fs put /tmp/hello.txt /local/hello.txt`   |
-| Windows                  | `.\qrypt.exe fs put C:\hello.txt /local/hello.txt` |
+| macOS / Linux            | `qrypt fs put /tmp/hello.txt /local/hello.txt` |
+| Windows                  | `qrypt fs put C:\hello.txt /local/hello.txt`   |
 
 读取刚才上传的文件：
 
 ```
-./qrypt fs cat /local/hello.txt
+qrypt fs cat /local/hello.txt
 ```
 
 终端会输出：
@@ -180,7 +130,7 @@ hello qrypt
 查看云盘中的文件列表：
 
 ```
-./qrypt fs list /local
+qrypt fs list /local
 ```
 
 ## 查看加密效果
@@ -208,7 +158,7 @@ hello qrypt
 前面的操作没有挂载也能进行。如果你想通过文件管理器直接操作，可以挂载它：
 
 ```
-./qrypt mount
+qrypt mount
 ```
 
 > **macOS 用户**：需要先安装 [macFUSE](https://macfuse.io/) 才能使用挂载功能。
@@ -216,6 +166,58 @@ hello qrypt
 > **Windows 用户**：需要先安装 [WinFsp](https://winfsp.dev/) 才能使用挂载功能。
 
 挂载成功后，打开文件管理器并进入 `~/Qrypt`，你会看到一个 `local` 文件夹。你可以像操作普通文件夹一样拖入文件、双击打开、删除文件。所有操作都会被 qrypt 处理后转发到后端目录，文件在存储时会被加密。
+
+## 其他安装方式
+
+### 安装指定版本
+
+下面以 `v0.5.5` 为例。需要其他版本时，把命令中的版本号换成 [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 上的目标版本即可。
+
+```sh
+# Linux / macOS
+curl -fsSL https://github.com/yinzhenyu-su/qrypt/releases/download/v0.5.5/install.sh | sh -s -- --version v0.5.5
+```
+
+```powershell
+# Windows
+$s = irm https://github.com/yinzhenyu-su/qrypt/releases/download/v0.5.5/install.ps1
+& ([scriptblock]::Create($s)) -Version v0.5.5
+```
+
+### 手动安装
+
+不使用脚本时，从 [releases 页面](https://github.com/yinzhenyu-su/qrypt/releases) 下载对应系统的压缩包：
+
+| 系统                  | 文件名                               |
+| --------------------- | ------------------------------------ |
+| macOS (Intel)         | `qrypt_`_版本_`_darwin_amd64.tar.gz` |
+| macOS (Apple Silicon) | `qrypt_`_版本_`_darwin_arm64.tar.gz` |
+| Linux (amd64)         | `qrypt_`_版本_`_linux_amd64.tar.gz`  |
+| Linux (arm64)         | `qrypt_`_版本_`_linux_arm64.tar.gz`  |
+| Windows (amd64)       | `qrypt_`_版本_`_windows_amd64.zip`   |
+| Windows (arm64)       | `qrypt_`_版本_`_windows_arm64.zip`   |
+
+解压后得到一个名为 `qrypt` 的可执行文件（Windows 上为 `qrypt.exe`）。
+
+把它放到 `PATH` 中的某个目录后即可直接运行 `qrypt`；也可以在当前目录运行 `./qrypt`（Windows 为 `.\qrypt.exe`）。
+
+验证安装：
+
+```
+qrypt version
+```
+
+### 卸载
+
+```sh
+qrypt uninstall
+```
+
+默认保留你的配置和数据。要连同数据一起删除：
+
+```sh
+qrypt uninstall --purge --yes
+```
 
 ## qrypt 的工作方式
 
@@ -230,5 +232,5 @@ hello qrypt
 你已经体验了 qrypt 的基本流程。接下来可以：
 
 - 换成真实云盘（[支持的驱动列表](support-drivers.md)）——把 `type` 改为 `aliyundrive`、`quark`、`yun139`、`webdav`、`s3` 或 `baidu_netdisk`，并填写对应的认证参数
-- 了解其他配置项（[完整配置参考](../README.md)）——缓存、带宽控制、日志等
+- 了解其他配置项（[完整配置参考](full-config.md)）——缓存、带宽控制、日志等
 - 配置开机自动挂载

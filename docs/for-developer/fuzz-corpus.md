@@ -6,10 +6,10 @@ qrypt 用 Go 原生 property fuzzing 加固可靠性敏感逻辑。失败输入�
 
 ## 流程
 
-1. **发现**：`scripts/fuzz-nightly.sh`（本地手动或 nightly workflow）对每个 fuzzer
+1. **发现**：`scripts/ci/fuzz-nightly.sh`（本地手动或 nightly workflow）对每个 fuzzer
    跑固定预算。任何一个 fuzzer 失败，脚本退出码为 1。
-   - 本地：`./scripts/fuzz-nightly.sh`（默认每 fuzzer 30s）或
-     `./scripts/fuzz-nightly.sh 10s`（自定义预算）
+   - 本地：`./scripts/ci/fuzz-nightly.sh`（默认每 fuzzer 30s）或
+     `./scripts/ci/fuzz-nightly.sh 10s`（自定义预算）
    - CI：`.github/workflows/nightly.yaml` 的 `fuzz` job，失败时把整个
      `**/testdata/fuzz/**` 上传为 `fuzz-corpus` artifact
 
@@ -47,7 +47,7 @@ qrypt 用 Go 原生 property fuzzing 加固可靠性敏感逻辑。失败输入�
 
 - fuzzer 放被测逻辑所属包，命名 `Fuzz<Area><Property>`（如 `FuzzCleanVirtualPath`）
 - 断言只做**性质不变式**（往返、非负、稳定分类），不依赖具体实现细节
-- 加入 `scripts/fuzz-nightly.sh` 的 `FUZZERS` map
+- 加入 `scripts/ci/fuzz-nightly.sh` 的 `FUZZERS` map
 - 普通 `go test ./...` 必须能在 seed 模式下通过（默认 corpus 为空时秒过）
 
 ## 优先级

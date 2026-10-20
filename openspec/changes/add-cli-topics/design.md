@@ -8,7 +8,7 @@ See `proposal.md` — Why. Current state that shapes the approach:
 - `improve-cli-help` (a separate, in-flight change) establishes the help ladder this sits on top of:
   error next-steps, group help, per-command help, and `qrypt schema`. Topic help is the deferred level
   of that ladder.
-- The user reference is `docs/for-user/cli.md`; `scripts/ci-check.sh` already regenerates and diffs
+- The user reference is `docs/for-user/cli.md`; `scripts/ci/check-all.sh` already regenerates and diffs
   some generated user docs.
 
 ## Goals / Non-Goals

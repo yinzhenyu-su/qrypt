@@ -28,5 +28,5 @@ CLI. Curated topic help closes that gap without leaving the tool.
 
 - `internal/cli`: the `help` command (or a `topics` command) and an embedded topic source.
 - `docs/for-user/cli.md`: aligned with the embedded topic source.
-- `scripts/ci-check.sh`: a drift check that fails when the topic source and the docs disagree.
+- `scripts/ci/check-all.sh`: a drift check that fails when the topic source and the docs disagree.
 - Tests for topic rendering, the unknown-topic path, and the drift check.

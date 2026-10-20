@@ -85,42 +85,7 @@ func init() {
 			RootID:   params["root_id"],
 			BaseURL:  params["base_url"],
 		}), nil
-	},
-		drive.ParamDef{
-			Name:        "username",
-			Type:        "string",
-			Required:    true,
-			Description: "123pan account (phone number or email)",
-			Example:     "13800138000",
-		},
-		drive.ParamDef{
-			Name:        "password",
-			Type:        "string",
-			Required:    true,
-			Secret:      true,
-			Description: "123pan account password",
-			Example:     "your-password",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Virtual root path on the drive (ignored when root_id is set)",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-		drive.ParamDef{
-			Name:        "root_id",
-			Type:        "string",
-			Description: "Pre-resolved folder ID; when set, root_path is ignored",
-			Example:     "0",
-		},
-		drive.ParamDef{
-			Name:        "base_url",
-			Type:        "string",
-			Description: "Custom API base URL",
-			Example:     "https://yun.123pan.com/b/api",
-		},
-	)
+	})
 }
 
 // New builds a 123pan driver. Credentials are validated on Init.

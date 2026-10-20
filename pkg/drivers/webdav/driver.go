@@ -129,37 +129,7 @@ func init() {
 			Password: params["password"],
 			RootPath: params["root_path"],
 		}), nil
-	},
-		drive.ParamDef{
-			Name:        "url",
-			Type:        "string",
-			Required:    true,
-			Description: "WebDAV server base URL",
-			Example:     "https://nextcloud.example.com/remote.php/dav/files/user",
-		},
-		drive.ParamDef{
-			Name:        "username",
-			Type:        "string",
-			Required:    true,
-			Description: "WebDAV authentication username",
-			Example:     "user",
-		},
-		drive.ParamDef{
-			Name:        "password",
-			Type:        "string",
-			Required:    true,
-			Secret:      true,
-			Description: "WebDAV authentication password or app token",
-			Example:     "your-password-or-app-token",
-		},
-		drive.ParamDef{
-			Name:        "root_path",
-			Type:        "string",
-			Description: "Optional path under the WebDAV base URL used as this mount root",
-			Default:     "/",
-			Example:     "/qrypt",
-		},
-	)
+	})
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {

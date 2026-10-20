@@ -966,13 +966,13 @@ in app-private persistent storage, and tmp data in tmp directories.
 Generate an Android AAR:
 
 ```sh
-scripts/build-android-aar.sh
+scripts/dev/build-android-aar.sh
 ```
 
 Optional output directory:
 
 ```sh
-scripts/build-android-aar.sh /tmp/qrypt-aar
+scripts/dev/build-android-aar.sh /tmp/qrypt-aar
 ```
 
 The script requires `gomobile` and a completed `gomobile init`.

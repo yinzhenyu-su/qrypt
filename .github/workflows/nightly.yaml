@@ -38,7 +38,7 @@ jobs:
           sudo apt-get install -y libfuse3-dev fuse3
 
       - name: Fuzz (30s per fuzzer)
-        run: scripts/fuzz-nightly.sh 30s
+        run: scripts/ci/fuzz-nightly.sh 30s
 
       # A fuzz failure writes corpus entries under testdata/fuzz; the
       # regression inputs must be committed, so surface them as an artifact
@@ -80,17 +80,17 @@ jobs:
 
       - name: Coverage gate
         if: matrix.name == 'coverage'
-        run: scripts/coverage.sh
+        run: scripts/ci/check-coverage.sh
 
       - name: Race suite
         if: matrix.name == 'race'
-        run: scripts/test-layers.sh race
+        run: scripts/ci/test-layers.sh race
 
       - name: Regression suite
         if: matrix.name == 'regression'
         run: |
-          scripts/test-layers.sh fast
-          scripts/test-layers.sh smoke
+          scripts/ci/test-layers.sh fast
+          scripts/ci/test-layers.sh smoke
 
   # Deep Windows verification: a real WinFsp mount through the pure-Go
   # nocgo host. Too slow/flaky for every PR; the PR-level Windows gate
@@ -127,4 +127,4 @@ jobs:
 
       - name: Mount smoke (localfs)
         shell: pwsh
-        run: ./scripts/smoke-windows-mount.ps1
+        run: ./scripts/ci/smoke-windows-mount.ps1
