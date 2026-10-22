@@ -8,6 +8,7 @@
 - feat: 本地化 CLI 并重构文档、schema 与脚本结构
 
 ### Bug fixes
+- fix(release): 修正 changelog 生成丢条目与漏分类
 - fix(ci): install WinFsp from the upstream MSI, not the Chocolatey feed
 
 ### Others
