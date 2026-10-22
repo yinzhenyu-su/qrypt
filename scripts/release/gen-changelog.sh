@@ -42,9 +42,9 @@ while IFS= read -r c; do
   case "$c" in
     docs:*|chore:*|Merge*) continue ;;
   esac
-  if printf '%s' "$c" | grep -q '^feat('; then features="${features}- ${c}
+  if printf '%s' "$c" | grep -Eq '^feat(\([^)]*\))?:'; then features="${features}- ${c}
 "
-  elif printf '%s' "$c" | grep -q '^fix('; then fixes="${fixes}- ${c}
+  elif printf '%s' "$c" | grep -Eq '^fix(\([^)]*\))?:'; then fixes="${fixes}- ${c}
 "
   else others="${others}- ${c}
 "; fi
@@ -56,19 +56,19 @@ if [ -n "$features" ]; then
   section="$section
 
 ### Features
-$(printf '%b' "$features" | sed '$d')"
+$(printf '%s' "${features%$'\n'}")"
 fi
 if [ -n "$fixes" ]; then
   section="$section
 
 ### Bug fixes
-$(printf '%b' "$fixes" | sed '$d')"
+$(printf '%s' "${fixes%$'\n'}")"
 fi
 if [ -n "$others" ]; then
   section="$section
 
 ### Others
-$(printf '%b' "$others" | sed '$d')"
+$(printf '%s' "${others%$'\n'}")"
 fi
 
 # ── prepend 到 CHANGELOG.md ─────────────────────────────────────────────
