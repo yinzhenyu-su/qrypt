@@ -24,10 +24,11 @@ type DeleteScheduler interface {
 
 // RemoveCleanup handles pending-upload cleanup for removals.
 type RemoveCleanup interface {
-	// RemovePendingFile removes a pending-only file (local state). It
-	// reports handled=true when the path was a pending upload, in which
-	// case no remote view commit or remote delete applies.
-	RemovePendingFile(path string) (handled bool, err error)
+	// RemovePendingFile removes a pending file's local state. It reports
+	// handled=true when the path was a pending upload. A non-nil remote is the
+	// backend object of an edited remote file, which still needs deletion;
+	// nil means the removal is local-only.
+	RemovePendingFile(ctx context.Context, path string) (handled bool, remote *drive.Entry, err error)
 	// PrepareDirectory atomically prepares a directory removal: cancel
 	// child uploads, remove pending uploads under the subtree, and cancel
 	// child deletes. It must succeed before the directory is hidden or a
@@ -59,9 +60,20 @@ func NewRemoveCoordinator(resolve RemoveResolver, view RemoveView, schedule Dele
 func (c *RemoveCoordinator) RemoveFile(ctx context.Context, path string) error {
 	path = vfstypes.CleanVirtualPath(path)
 
-	handled, err := c.cleanup.RemovePendingFile(path)
-	if err != nil || handled {
+	handled, remote, err := c.cleanup.RemovePendingFile(ctx, path)
+	if err != nil {
 		return err
+	}
+	if handled {
+		if remote != nil {
+			// The path had both a backend object and a newer local pending:
+			// dropping the pending alone would let the old backend content
+			// reappear. Remove the object from the view and schedule its
+			// remote delete by identity.
+			c.view.CommitRemove(path, *remote)
+			c.schedule.ScheduleDelete(path, *remote)
+		}
+		return nil
 	}
 
 	entry, err := c.resolve.Resolve(ctx, path)

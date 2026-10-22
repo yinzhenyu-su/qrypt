@@ -2,12 +2,14 @@ package vfs_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
@@ -29,6 +31,11 @@ func TestVFSCoalescesChildDeletesIntoDirectoryDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := fs.Remove(ctx, "/dir/sub/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	// Removing the now-empty child directory leaves only paths hidden by the
+	// delete overlay, so the parent rmdir may coalesce their backend deletes.
+	if err := fs.Remove(ctx, "/dir/sub"); err != nil {
 		t.Fatal(err)
 	}
 	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
@@ -69,6 +76,14 @@ func TestVFSDirectoryDeleteWaitsForActiveChildDelete(t *testing.T) {
 	case <-drv.childStarted:
 	case <-time.After(time.Second):
 		t.Fatal("child remote delete did not start")
+	}
+	// Hide the remaining children so rmdir may coalesce their deletes while
+	// the active child delete drains.
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(ctx, "/dir/sub"); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
@@ -181,23 +196,80 @@ func TestVFSDeleteTaskRetryFailedDelete(t *testing.T) {
 	})
 }
 
+func TestVFSRemoveEditedRemoteFileDeletesBackendObject(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "keep.txt"), []byte("remote"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := vfs.New(localfs.New(remote), vfs.Options{
+		StorageDir:  t.TempDir(),
+		UploadDelay: time.Hour,
+		DeleteDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, fs)
+	fs.Start(ctx)
+
+	if _, err := fs.WriteAt(ctx, "/keep.txt", []byte("local"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if pending := fs.PendingUploads(); len(pending) != 1 {
+		t.Fatalf("pending = %+v, want the edited generation", pending)
+	}
+	if err := fs.Remove(ctx, "/keep.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(ctx, "/keep.txt"); err == nil {
+		t.Fatal("removed path is still visible")
+	}
+	if pending := fs.PendingUploads(); len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none after removal", pending)
+	}
+	waitForCondition(t, func() bool {
+		_, err := os.Stat(filepath.Join(remote, "keep.txt"))
+		return os.IsNotExist(err)
+	})
+}
+
+func TestVFSRemoveDirRejectsVisibleChildren(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.RemoveDir(ctx, "/dir"); !errors.Is(err, vfs.ErrDirNotEmpty) {
+		t.Fatalf("RemoveDir err = %v, want ErrDirNotEmpty", err)
+	}
+	if _, err := fs.Stat(ctx, "/dir/a.txt"); err != nil {
+		t.Fatalf("directory child disappeared after rejected rmdir: %v", err)
+	}
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("remote deletes = %v, want none", removed)
+	}
+}
+
 func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	drv := newCountingRemoveDriver()
+	drv.entries["empty"] = drive.Entry{ID: "empty", ParentID: "0", Name: "empty", IsDir: true}
 	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 30 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
+	if err := fs.RemoveDir(ctx, "/empty"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fs.Mkdir(ctx, "/dir/sub"); err != nil {
+	if _, err := fs.Mkdir(ctx, "/empty"); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(60 * time.Millisecond)
@@ -208,12 +280,32 @@ func TestVFSMkdirRestoresPendingDeletedDirectory(t *testing.T) {
 	if removed := drv.removedIDs(); len(removed) != 0 {
 		t.Fatalf("remote deletes = %v, want none", removed)
 	}
-	if _, err := fs.Stat(ctx, "/dir/sub"); err != nil {
-		t.Fatalf("restored child directory should remain visible: %v", err)
+	if _, err := fs.Stat(ctx, "/empty"); err != nil {
+		t.Fatalf("restored directory should remain visible: %v", err)
 	}
 }
 
-func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
+func TestVFSCloseBeforeStartStopsDelayedDeletes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	drv := newCountingRemoveDriver()
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove(ctx, "/dir/a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if removed := drv.removedIDs(); len(removed) != 0 {
+		t.Fatalf("remote deletes after Close-before-Start = %v, want none", removed)
+	}
+}
+
+func TestVFSRemoveDirRejectsPendingChildren(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -240,26 +332,25 @@ func TestVFSRemoveDirDropsPendingChildren(t *testing.T) {
 	if err := fs.Flush(ctx, "/dir/pending.txt"); err != nil {
 		t.Fatal(err)
 	}
+	if err := fs.RemoveDir(ctx, "/dir"); !errors.Is(err, vfs.ErrDirNotEmpty) {
+		t.Fatalf("RemoveDir err = %v, want ErrDirNotEmpty", err)
+	}
+	if pending := fs.PendingUploads(); len(pending) != 1 || pending[0].Path != "/dir/pending.txt" {
+		t.Fatalf("pending children after rejected rmdir = %+v, want the original upload", pending)
+	}
+	if _, err := fs.Stat(ctx, "/dir/pending.txt"); err != nil {
+		t.Fatalf("pending child disappeared after rejected rmdir: %v", err)
+	}
+
+	// Deleting the child explicitly makes the directory removable.
+	if err := fs.Remove(ctx, "/dir/pending.txt"); err != nil {
+		t.Fatal(err)
+	}
 	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.Mkdir(ctx, "/dir"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fs.Stat(ctx, "/dir/pending.txt"); err == nil {
-		t.Fatal("pending child should not survive directory removal")
-	}
-	entries, err := fs.List(ctx, "/dir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if entry.Name == "pending.txt" {
-			t.Fatalf("pending child leaked into restored directory list: %v", entries)
-		}
-	}
 	if pending := fs.PendingUploads(); len(pending) != 0 {
-		t.Fatalf("pending files = %v, want none", pending)
+		t.Fatalf("pending files after explicit child removal = %v, want none", pending)
 	}
 }
 

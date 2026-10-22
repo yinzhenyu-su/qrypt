@@ -35,6 +35,11 @@
 #      contracts (core.Task*, TaskEvent, TaskSubscription), never through
 #      the pkg/task implementation layer. pkg/task is owned below pkg/core;
 #      the same directional shape applies as the VFS and media rules.
+#   9. Every top-level package under pkg/ is registered below. A new package
+#      turns this gate red until it is listed, so its owner and boundary
+#      rules get decided when it appears rather than reviewed months later.
+#      This is the only bookkeeping list here; add the rules it needs next
+#      to it in the same commit.
 #
 # Runs in CI on every PR; costs milliseconds.
 set -euo pipefail
@@ -104,6 +109,37 @@ done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/media' pkg/mobile -g '!**/*_test.
 while IFS= read -r line; do
   [ -n "$line" ] && note "pkg/mobile imports the task implementation layer: $line"
 done < <(rg -n 'github.com/yinzhenyu/qrypt/pkg/task' pkg/mobile -g '!**/*_test.go' 2>/dev/null || true)
+
+# 9. Every top-level package under pkg/ must be registered above. Keep this
+#    list alphabetical; a package that appears without an entry fails the gate
+#    so someone decides who owns it instead of it drifting in unreviewed.
+REGISTERED_PKGS="
+buildinfo
+config
+contracttest
+control
+core
+crypt
+drive
+drivers
+install
+limits
+logging
+media
+mobile
+mount
+selfupdate
+syncer
+task
+util
+vfs
+"
+for dir in pkg/*/; do
+  name=$(basename "$dir")
+  if ! grep -qx "$name" <<<"$REGISTERED_PKGS"; then
+    note "pkg/$name is not registered in check-arch.sh (register it with its boundary rules)"
+  fi
+done
 
 if [ "$fail" -ne 0 ]; then
   echo "== FAIL: architecture boundary violated =="

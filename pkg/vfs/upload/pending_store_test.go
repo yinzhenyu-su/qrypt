@@ -132,20 +132,20 @@ func TestRebaseUploadsUnderMovesChildrenAndReparents(t *testing.T) {
 		}
 	}
 
-	moved, err := store.RebaseUploadsUnder("/dir", "/moved", "new-dir-id")
+	moved, err := store.RebaseUploadsUnder("/dir", "/moved", map[string]string{"/moved": "new-dir-id", "/moved/sub": "new-sub-id"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(moved) != 2 {
 		t.Fatalf("rebased = %+v, want the two records under /dir", moved)
 	}
-	for _, want := range []struct{ path, fid string }{{"/moved/g.txt", "root"}, {"/moved/sub/f.txt", "child"}} {
+	for _, want := range []struct{ path, fid, parent string }{{"/moved/g.txt", "root", "new-dir-id"}, {"/moved/sub/f.txt", "child", "new-sub-id"}} {
 		got, ok := store.UploadByPath(want.path)
 		if !ok {
 			t.Fatalf("rebased record %q missing", want.path)
 		}
-		if got.FID != want.fid || got.ParentID != "new-dir-id" || got.LocalPath == "" {
-			t.Fatalf("rebased record = %+v, want fid %q re-parented to new-dir-id with its staging", got, want.fid)
+		if got.FID != want.fid || got.ParentID != want.parent || got.LocalPath == "" {
+			t.Fatalf("rebased record = %+v, want fid %q re-parented to %q with its staging", got, want.fid, want.parent)
 		}
 		if _, ok := store.PendingByID(want.fid); !ok {
 			t.Fatalf("id index lost %q", want.fid)
@@ -192,11 +192,41 @@ func TestRebaseUploadsUnderNoMatchIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	moved, err := store.RebaseUploadsUnder("/empty", "/gone", "id")
+	moved, err := store.RebaseUploadsUnder("/empty", "/gone", map[string]string{"/gone": "id"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(moved) != 0 {
 		t.Fatalf("rebased = %+v, want none", moved)
+	}
+}
+
+func TestRenameUploadRejectsOccupiedPendingDestination(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewPendingStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/source", "/target"} {
+		p := PendingUpload{Path: path, FID: path, LocalPath: stagingFor(t, store, path[1:])}
+		if err := store.SaveUpload(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, _ := store.UploadByPath("/source")
+	target, _ := store.UploadByPath("/target")
+	source.Path = "/target"
+	if err := store.RenameUpload("/source", source); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("rename error = %v, want os.ErrExist", err)
+	}
+	reopened, err := NewPendingStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reopened.UploadByPath("/target"); !ok || got.FID != target.FID {
+		t.Fatalf("target overwritten after replay: %+v, exists=%v", got, ok)
+	}
+	if got, ok := reopened.UploadByPath("/source"); !ok || got.FID != source.FID {
+		t.Fatalf("source lost after replay: %+v, exists=%v", got, ok)
 	}
 }

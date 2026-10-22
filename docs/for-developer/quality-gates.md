@@ -28,8 +28,9 @@ gh workflow run "Nightly Quality Gates"
 ## Coverage 门禁
 
 - **nightly 硬性 gate**（`scripts/ci/check-coverage.sh`）：六包低于 floor 即失败
-  （vfs 75 / core 72 / drive 62 / sync 79 / config 74 / crypt 79）。提高
-  floor 是刻意行为：改 `FLOOR` map 并提交说明。
+  （vfs 81 / core 75 / drive 69 / sync 82 / config 77 / crypt 79）。floor 取
+  “实测值 - 1 点”，即门禁只放过 1 点抖动，真实退化会被抓住；提高 floor 是刻意行为：
+  先 `-print` 重新测量，再改 `FLOOR` map 并提交说明。
 - **PR 快照**（`scripts/ci/report-coverage.sh`，ci.yaml 中仅 PR 运行）：
   非阻塞，把六包覆盖率和"本 PR 有变更"的包写进 PR summary，便于在
   合并前观察趋势。`pkg/syncer` 用 `-coverpkg` 对 CLI 集成测试口径

@@ -101,21 +101,30 @@ func (h vfsListingView) projectChildren(parentPath string, entries []drive.Entry
 }
 
 // mergePendingChildren merges pending upload records into a projected
-// listing: a pending file is visible under its parent unless a remote or
-// local child with the same name already exists or the path is deleted.
-// The pending projection is dynamic - it is recomputed on every read, so a
-// pending record appearing or vanishing never requires cache invalidation.
+// listing. A pending file with no remote counterpart is appended; a pending
+// file that replaces an existing remote child keeps the remote entry's
+// identity but takes the pending size and mtime. Stat and Read already serve
+// the pending generation, so the listing must agree with them instead of
+// reporting the older remote size. The projection is dynamic - it is
+// recomputed on every read, so a pending record appearing or vanishing never
+// requires cache invalidation.
 func (h vfsListingView) mergePendingChildren(parentPath string, entries []drive.Entry) []drive.Entry {
 	parentPath = vfstypes.CleanVirtualPath(parentPath)
-	seen := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		seen[entry.Name] = true
+	byName := make(map[string]int, len(entries))
+	for i, entry := range entries {
+		byName[entry.Name] = i
 	}
 	for _, pending := range h.store.PendingUploads() {
-		if pathpkg.Dir(pending.Path) != parentPath || seen[pending.Name] || h.vis.IsDeleted(pending.Path) {
+		if pathpkg.Dir(pending.Path) != parentPath || h.vis.IsDeleted(pending.Path) {
 			continue
 		}
 		modTime := pendingModTime(pending)
+		if i, ok := byName[pending.Name]; ok {
+			entries[i].Size = pending.Size
+			entries[i].ModTime = modTime
+			entries[i].UpdatedAt = modTime
+			continue
+		}
 		entries = append(entries, drive.Entry{
 			ID:        pending.FID,
 			ParentID:  pending.ParentID,
@@ -124,7 +133,7 @@ func (h vfsListingView) mergePendingChildren(parentPath string, entries []drive.
 			ModTime:   modTime,
 			UpdatedAt: modTime,
 		})
-		seen[pending.Name] = true
+		byName[pending.Name] = len(entries) - 1
 	}
 	return entries
 }

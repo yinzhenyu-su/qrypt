@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -390,6 +392,17 @@ func (c *PendingStore) TryReuseFrozenStaging(p PendingUpload) (PendingUpload, bo
 	if !current.Frozen || current.UploadStarted {
 		return PendingUpload{}, false
 	}
+	// Reuse keeps the record's identity, so it must not carry state that
+	// describes a different generation's remote candidate or a terminal
+	// failure. A recorded replacement candidate holds the bytes of the frozen
+	// generation; changing the staging file in place would make the engine
+	// publish that stale candidate instead of the new content (see
+	// upload.Engine.Execute). A permanent failure would keep the revived
+	// generation out of the worker queue. Rotation creates a clean generation
+	// for both cases.
+	if current.ReplaceUpload != nil || current.PermanentFail {
+		return PendingUpload{}, false
+	}
 	current.Frozen = false
 	// The content is about to change, so hashes recorded for the frozen bytes
 	// no longer describe the file. The next Flush recomputes them from the
@@ -717,6 +730,12 @@ func (c *PendingStore) RenameUpload(oldPath string, next PendingUpload) error {
 // renameUploadLocked journals one transactional "rename" entry and applies it
 // to memory. Caller must hold txMu.
 func (c *PendingStore) renameUploadLocked(oldPath string, next PendingUpload) error {
+	c.mu.RLock()
+	_, occupied := c.pending[next.Path]
+	c.mu.RUnlock()
+	if next.Path != oldPath && occupied {
+		return fmt.Errorf("%w: pending destination %s", os.ErrExist, next.Path)
+	}
 	// Journal commit FIRST, as ONE transactional "rename" entry: replay
 	// deletes the old path and sets the new path atomically, so a
 	// crash between the old clean and the new dirty intents can never
@@ -739,11 +758,11 @@ func (c *PendingStore) renameUploadLocked(oldPath string, next PendingUpload) er
 
 // RebaseUploadsUnder moves every pending upload at or below a renamed
 // directory to the matching path under newDir and re-parents each record to
-// parentID (empty parentID keeps the recorded one). Staging files are
+// its actual parent ID (keyed by new parent path). Staging files are
 // untouched: a rebased record keeps its LocalPath. Records are rebased one at
 // a time, so a journal failure leaves the remaining records at their old path
 // instead of dropping them. It returns the rebased records.
-func (c *PendingStore) RebaseUploadsUnder(oldDir, newDir, parentID string) ([]PendingUpload, error) {
+func (c *PendingStore) RebaseUploadsUnder(oldDir, newDir string, parentIDs map[string]string) ([]PendingUpload, error) {
 	c.txMu.Lock()
 	defer c.txMu.Unlock()
 	oldDir = cleanVirtual(oldDir)
@@ -760,13 +779,25 @@ func (c *PendingStore) RebaseUploadsUnder(oldDir, newDir, parentID string) ([]Pe
 		return nil, nil
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Path < targets[j].Path })
+	// Validate the whole target set before any journal entry is appended.
+	c.mu.RLock()
+	for _, pending := range targets {
+		nextPath := newDir + strings.TrimPrefix(pending.Path, oldDir)
+		if parentIDs[pathpkg.Dir(nextPath)] == "" {
+			c.mu.RUnlock()
+			return nil, fmt.Errorf("%w: missing parent for %s", os.ErrNotExist, nextPath)
+		}
+		if _, exists := c.pending[nextPath]; exists && !isPathUnder(nextPath, oldDir) {
+			c.mu.RUnlock()
+			return nil, fmt.Errorf("%w: pending destination %s", os.ErrExist, nextPath)
+		}
+	}
+	c.mu.RUnlock()
 	moved := make([]PendingUpload, 0, len(targets))
 	for _, pending := range targets {
 		next := pending
 		next.Path = newDir + strings.TrimPrefix(pending.Path, oldDir)
-		if parentID != "" {
-			next.ParentID = parentID
-		}
+		next.ParentID = parentIDs[pathpkg.Dir(next.Path)]
 		if err := c.renameUploadLocked(pending.Path, next); err != nil {
 			return moved, err
 		}

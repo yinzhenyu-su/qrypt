@@ -202,6 +202,8 @@ operations.
   boundary and its runtime/fault/scheduler seams
 - `upload_snapshot.go`: frozen staging snapshot validation, upload hashing,
   read-cache seeding, and the upload-engine snapshot/recheck step
+- `upload_recovery.go`: persisted staging checks and pending-upload resume
+  after restart; corrupt frozen generations remain available for recovery
 - `upload_commit.go`: upload commit phase - read-cache seed, view commit,
   pending/staging cleanup, and stale-commit rollback
 - `upload_runtime.go`: upload runtime and observer adapters over VFS state
@@ -400,7 +402,9 @@ all new code:
 
 - New logic goes behind the caller's own narrow interface first; do not widen
   a package API to satisfy one caller.
-- A new public API needs at least two real call sites before it is exported.
+- A new public API needs at least two real call sites before it is exported,
+  unless an exported method is necessary for a narrow cross-package boundary;
+  do not add a second call site solely to satisfy this rule.
 - A new state field must document its owner and lock discipline.
 - Every concurrency bug fix ships with a regression test.
 - Split a large file's existing responsibilities before adding new code to it.

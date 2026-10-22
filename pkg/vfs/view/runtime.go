@@ -97,6 +97,26 @@ func (r Runtime) IsRecentLocalDir(path string) bool {
 	return true
 }
 
+// HasRecentLocalChild reports whether a still-valid locally created directory
+// is a direct child of dir. Directory removal uses it to see children a
+// not-yet-caught-up backend listing may omit.
+func (r Runtime) HasRecentLocalChild(dir string) bool {
+	dir = vfstypes.CleanVirtualPath(dir)
+	now := time.Now()
+	r.view.mu.Lock()
+	defer r.view.mu.Unlock()
+	for knownPath, expires := range r.view.localDirs {
+		if now.After(expires) {
+			delete(r.view.localDirs, knownPath)
+			continue
+		}
+		if knownPath != dir && pathpkg.Dir(knownPath) == dir {
+			return true
+		}
+	}
+	return false
+}
+
 // RefreshPath drops the cached listing for path so the next listing refetches
 // (glossary: 目录缓存失效).
 func (r Runtime) RefreshPath(path string) {
@@ -185,6 +205,20 @@ func (r Runtime) CommitEntryLocalModTime(path string, entry drive.Entry, modTime
 	r.SetLocalModTimeLocked(path, modTime)
 	r.InvalidateListLocked(pathpkg.Dir(path))
 	r.view.mu.Unlock()
+}
+
+// clearLocalDirs drops the recent-local-dir marker for path and every
+// descendant. A removed directory must not keep shadowing its backend
+// listings or make an ancestor look non-empty.
+func (r Runtime) clearLocalDirs(path string) {
+	r.view.mu.Lock()
+	defer r.view.mu.Unlock()
+	path = vfstypes.CleanVirtualPath(path)
+	for knownPath := range r.view.localDirs {
+		if knownPath == path || vfstypes.IsPathUnder(knownPath, path) {
+			delete(r.view.localDirs, knownPath)
+		}
+	}
 }
 
 // ClearLocalModTime drops the local modtime override for path and every

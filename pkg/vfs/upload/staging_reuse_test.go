@@ -71,6 +71,36 @@ func TestTryReuseFrozenStagingRevivesUnclaimedGeneration(t *testing.T) {
 	}
 }
 
+// TestTryReuseFrozenStagingRejectsStaleReplacementCandidate pins that a
+// generation with a recorded replacement candidate is never revived in place:
+// the candidate holds the frozen bytes, so writing into the same staging file
+// would make the engine publish the old candidate instead of the new content.
+func TestTryReuseFrozenStagingRejectsStaleReplacementCandidate(t *testing.T) {
+	store, frozen := frozenTestStore(t)
+	frozen.ReplaceUpload = &UploadReplacement{ID: "candidate", Name: "tmp", Size: 5}
+	if err := store.SaveUploadExact(frozen); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.TryReuseFrozenStaging(frozen); ok {
+		t.Fatal("generation with a replacement candidate was reused in place")
+	}
+}
+
+// TestTryReuseFrozenStagingRejectsPermanentFailure pins the other terminal
+// state: reviving a permanently failed record in place would keep
+// PermanentFail set, and the worker queue skips such records forever.
+func TestTryReuseFrozenStagingRejectsPermanentFailure(t *testing.T) {
+	store, frozen := frozenTestStore(t)
+	frozen.PermanentFail = true
+	frozen.LastError = "auth failed"
+	if err := store.SaveUploadExact(frozen); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.TryReuseFrozenStaging(frozen); ok {
+		t.Fatal("permanently failed generation was reused in place")
+	}
+}
+
 // TestTryReuseFrozenStagingRejectsClaimedGeneration covers the mirror order:
 // once an upload claimed the generation its staging file must stay immutable,
 // so the next write has to rotate.

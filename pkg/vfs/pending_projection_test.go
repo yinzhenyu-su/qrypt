@@ -93,6 +93,40 @@ func TestPendingDeduplicatesWithRemote(t *testing.T) {
 
 // TestDeletedPendingInvisible: a pending upload under a deleted path is
 // hidden.
+// TestPendingReplacingRemoteReportsPendingSize pins that a listing for a
+// file with newer pending content reports the pending size and mtime, the
+// same values Stat and Read serve. Keeping the remote size here made tools
+// read a truncated prefix of the pending content.
+func TestPendingReplacingRemoteReportsPendingSize(t *testing.T) {
+	t.Parallel()
+	fs := newPendingViewVFS(t)
+	ctx := context.Background()
+	if err := fs.Create(ctx, "/both.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/both.txt", []byte("new-content"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Flush(ctx, "/both.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	view := newVFSListingView(fs)
+	got := view.ProjectChildren("/", []drive.Entry{{ID: "remote-id", Name: "both.txt", Size: 1}})
+	if len(got) != 1 {
+		t.Fatalf("projected = %+v, want one entry", got)
+	}
+	if got[0].Size != int64(len("new-content")) {
+		t.Fatalf("both.txt size = %d, want pending size %d", got[0].Size, len("new-content"))
+	}
+	if got[0].ID != "remote-id" {
+		t.Fatalf("both.txt id = %q, want the remote identity %q", got[0].ID, "remote-id")
+	}
+	if got[0].ModTime.IsZero() {
+		t.Fatal("pending modtime was not projected")
+	}
+}
+
 func TestDeletedPendingInvisible(t *testing.T) {
 	t.Parallel()
 	fs := newPendingViewVFS(t)

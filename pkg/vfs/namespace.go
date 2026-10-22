@@ -17,6 +17,8 @@ import (
 var ErrReadOnly = errors.New("vfs: read-only namespace path")
 var ErrNotFound = drive.ErrNotFound
 var ErrCrossMount = errors.New("vfs: cross-mount rename")
+var ErrIsDir = errors.New("vfs: path is a directory")
+var ErrDirNotEmpty = errors.New("vfs: directory not empty")
 
 // isVirtualRootAppleMetadataPath identifies Finder's metadata probes against
 // the namespace root. The namespace root contains mount names, not a remote

@@ -67,7 +67,9 @@ func (r Committer) CommitMkdir(path string, entry drive.Entry) {
 func (r Committer) CommitRemove(path string, entry drive.Entry) {
 	r.vis.MarkDeleted(path, entry)
 	r.invalidate(entry)
-	NewRuntime(r.view).ClearLocalModTime(path)
+	rt := NewRuntime(r.view)
+	rt.ClearLocalModTime(path)
+	rt.clearLocalDirs(path)
 }
 
 // CommitUploadedEntry folds a completed upload into the view: it seeds the

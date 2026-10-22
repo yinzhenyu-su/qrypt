@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	pathpkg "path"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -35,7 +36,7 @@ type PendingRenamer interface {
 		ctx context.Context,
 		oldPath, newPath, parentID, name string,
 	) error
-	RebasePendingUnder(oldPath, newPath string, entry drive.Entry) error
+	RebasePendingUnder(ctx context.Context, oldPath, newPath string, entry drive.Entry) error
 }
 
 // RenameView is the view surface a rename coordinator commits to.
@@ -88,6 +89,9 @@ func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error
 	// downloader's .qkdownloading temp file, say) while the pending
 	// generation uploads to the new one.
 	if c.pending.IsPending(oldPath) {
+		if oldPath != newPath && c.pending.IsPending(newPath) {
+			return fmt.Errorf("%w: pending destination %s", os.ErrExist, newPath)
+		}
 		parent, name, err := c.resolve.Parent(ctx, newPath)
 		if err != nil {
 			return err
@@ -128,7 +132,7 @@ func (c *Coordinator) Rename(ctx context.Context, oldPath, newPath string) error
 		// Pending uploads written inside the directory before it was renamed
 		// follow the subtree; their recorded parent would otherwise point at a
 		// directory entry that no longer exists under that name.
-		return c.pending.RebasePendingUnder(oldPath, newPath, renamed)
+		return c.pending.RebasePendingUnder(ctx, oldPath, newPath, renamed)
 	}
 	return nil
 }
