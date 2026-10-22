@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.6 (2026-10-22)
+
+### Features
+- feat(tests): 添加离线命令和读取缓存的单元测试
+- feat(cli): 补全中文本地化
+- feat: 本地化 CLI 并重构文档、schema 与脚本结构
+
+### Bug fixes
+- fix(ci): install WinFsp from the upstream MSI, not the Chocolatey feed
+
+### Others
+- test(syncer): 补充哈希比较测试以通过 nightly 覆盖率门禁
+
+---
+
 ## v0.5.5 (2026-10-19)
 
 ### Features
