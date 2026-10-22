@@ -131,7 +131,7 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 		t.Fatalf("recovered data mismatch: got %d bytes, want %d", len(data), len(content))
 	}
 }
-func TestVFSDoesNotUploadFrozenStagingWithMismatchedSize(t *testing.T) {
+func TestVFSRecoversFrozenStagingGrowthAsUnflushedContent(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -156,7 +156,9 @@ func TestVFSDoesNotUploadFrozenStagingWithMismatchedSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Simulate a crash that left the staging file longer than the durably
-	// recorded frozen generation. The recovery must not upload this content.
+	// recorded frozen generation: the write path appends past a claimed
+	// generation, so these bytes are unflushed content. Recovery must keep
+	// them local instead of publishing them, and must not fail the record.
 	f, err := os.OpenFile(pending[0].LocalPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -177,14 +179,27 @@ func TestVFSDoesNotUploadFrozenStagingWithMismatchedSize(t *testing.T) {
 	second.Start(ctx)
 	waitForCondition(t, func() bool {
 		pending := second.PendingUploads()
-		return len(pending) == 1 && pending[0].PermanentFail && pending[0].LastError != ""
+		return len(pending) == 1 && !pending[0].Frozen && pending[0].Size == int64(len("committed tail"))
 	})
+	if pending := second.PendingUploads(); pending[0].PermanentFail || pending[0].LastError != "" {
+		t.Fatalf("frozen growth was failed instead of repaired: %+v", pending[0])
+	}
 	time.Sleep(100 * time.Millisecond)
 	if _, err := os.Stat(filepath.Join(remote, "frozen.txt")); !os.IsNotExist(err) {
-		t.Fatalf("mismatched frozen staging was uploaded, stat err=%v", err)
+		t.Fatalf("unflushed staging growth was uploaded, stat err=%v", err)
 	}
-	if pending := second.PendingUploads(); len(pending) != 1 {
-		t.Fatalf("recovery dropped the mismatched staging record: %+v", pending)
+
+	// An explicit flush is what re-seals and publishes the recovered content.
+	if err := second.Flush(ctx, "/frozen.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitNoPending(t, second)
+	data, err := os.ReadFile(filepath.Join(remote, "frozen.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "committed tail" {
+		t.Fatalf("uploaded content = %q, want %q", data, "committed tail")
 	}
 }
 

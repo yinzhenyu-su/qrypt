@@ -93,8 +93,10 @@ func TestStageExistingFeedsUploadSnapshotHashes(t *testing.T) {
 }
 
 // TestRotateFrozenGenerationFeedsHashes covers the copy that seeds staging
-// content: rotating a frozen generation an upload has started reading. The new
-// generation must hash the copied bytes, not re-read them at snapshot time.
+// content: rotating a frozen generation an upload has started reading because
+// the write touches the bytes being published. The new generation must hash the
+// copied bytes, not re-read them at snapshot time. (A write past the claimed
+// size does not rotate - see appendsToFrozenGeneration.)
 func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -112,12 +114,19 @@ func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
 	if _, ok := fs.uploads.Store().MarkUploadStarted(frozen); !ok {
 		t.Fatal("frozen generation could not be claimed by an upload")
 	}
+	// A recorded replacement candidate makes the frozen generation
+	// non-reusable, so the next write rotates exactly as it does when an
+	// upload is already streaming. The write itself stays sequential, which is
+	// what keeps the copy's hash feed usable.
+	if _, _, err := fs.uploads.Store().RecordUploadReplacementIfUnchanged(frozen, upload.UploadReplacement{ID: "candidate", ParentID: "0", Name: "file.txt.candidate", Size: 11}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("!"), 11); err != nil {
 		t.Fatal(err)
 	}
 	rotated, ok := fs.uploads.Store().UploadByPath("/file.txt")
 	if !ok || rotated.FID == frozen.FID {
-		t.Fatalf("write to a frozen pending did not rotate the generation: %+v", rotated)
+		t.Fatalf("write past a claimed pending with a replacement candidate did not rotate the generation: %+v", rotated)
 	}
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
