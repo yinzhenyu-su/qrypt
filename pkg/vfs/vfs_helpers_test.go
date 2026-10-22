@@ -2,13 +2,34 @@ package vfs_test
 
 import (
 	"context"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 )
+
+// Uploads can take longer than a few seconds on a loaded Windows runner.
+// Waiting for completion must not confuse an in-flight upload with a stall.
+func TestWaitNoPendingAllowsSlowUpload(t *testing.T) {
+	d := drive.NewFakeDriver()
+	d.PutDelay = 4 * time.Second
+	fs, err := vfs.New(d, vfs.Options{StorageDir: t.TempDir(), UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer stopVFS(t, fs)
+	fs.Start(ctx)
+	writeAndFlush(t, fs, "/slow.txt", "content")
+	waitNoPending(t, fs)
+	if got, err := readRemoteFile(t, d, "slow.txt"); err != nil || got != "content" {
+		t.Fatalf("remote content = %q, err = %v", got, err)
+	}
+}
 
 func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 	t.Helper()
@@ -16,7 +37,9 @@ func waitNoPending(t *testing.T, fs vfs.FileSystem) {
 	if !ok {
 		t.Fatal("filesystem does not expose upload state")
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	// A real upload (especially encrypted I/O on a loaded Windows runner) may
+	// outlast the short polling budget used for purely in-memory conditions.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(inspector.PendingUploads()) == 0 && activeUploadCount(fs) == 0 {
 			return
