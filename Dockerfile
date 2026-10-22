@@ -12,7 +12,7 @@
 # Debian-based build: its libfuse3-dev ships libfuse3.a, so the Linux
 # binaries link statically (glibc) and run on any distribution, musl or
 # glibc hosts alike. (Alpine's fuse-dev only provides the shared library.)
-FROM golang:1.27.2 AS build
+FROM golang:1.27.3 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libfuse3-dev && rm -rf /var/lib/apt/lists/*
 

@@ -42,7 +42,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# CI pins Go 1.27.2; any newer 1.27.x patch also satisfies the toolchain line.
+# CI pins Go 1.27.3; any newer 1.27.x patch also satisfies the toolchain line.
 case "$(go env GOVERSION)" in
   go1.27.*) ;;
   *)
