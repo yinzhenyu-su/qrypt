@@ -1,4 +1,4 @@
-- 提交前确保通过 ci check 中的测试
+- 提交前确保通过本地 CI；在 `main` 分支提交前，必须使用与 `.github/workflows/ci.yaml` 相同的 Go 版本运行 `scripts/ci/check-all.sh`，退出码为 0 且输出 `== local CI check passed ==` 后才能提交。检查后若继续修改待提交内容，须重新运行；受环境限制未跑完时，应报告阻塞并暂停提交。
 - 优先使用 go 1.27+ 的语法
 
 ## 文档编写
@@ -16,7 +16,7 @@
 - 语气平和自然，不直接照搬用户原话。优先使用用户能理解的表述；用户文档中的参数说明应中文化，schema 和 CLI 输出仍可保留英文。
 - 生成文档（如 `docs/for-user/support-drivers.md`、`docs/for-user/full-config.md`）不要手改；修改生成器后重新生成。运行时事实（如驱动能力）从 Go 代码派生，避免维护第二份真相。
 - 拆分长内容：命令语法留在 `cli.md`，完整语义放独立 feature guide；故障处理放 troubleshooting；实现细节放 developer docs。
-- 修改后至少重新生成文档并确认稳定、检查相对链接、运行 `git diff --check`；涉及生成器或代码时运行 `scripts/ci/check-all.sh`。
+- 修改后至少重新生成文档并确认稳定、检查相对链接、运行 `git diff --check`；本地 CI 要求见文件开头。
 
 ## Agent skills
 
