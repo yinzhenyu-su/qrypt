@@ -150,8 +150,13 @@ func (v *VFS) snapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 	if err != nil {
 		return upload.Snapshot{}, err
 	}
-	if info.Size() != pending.Size {
-		return upload.Snapshot{}, fmt.Errorf("vfs: pending changed during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
+	// A frozen generation may have grown by appends after it was claimed. The
+	// upload source is bound to (path, pending.Size), so the prefix this
+	// snapshot describes is unaffected by bytes past that size; a shrink is
+	// not acceptable, because the recorded size and hashes would describe
+	// content that is no longer there.
+	if info.Size() < pending.Size {
+		return upload.Snapshot{}, fmt.Errorf("vfs: pending staging shrank during upload snapshot: file has %d, expected %d", info.Size(), pending.Size)
 	}
 	algorithms := requiredUploadSnapshotHashes(v.driver)
 	if sourceHashesCover(pending.SourceHashes, algorithms) {
@@ -176,7 +181,10 @@ func (v *VFS) snapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 	if err != nil {
 		return upload.Snapshot{}, err
 	}
-	if _, err := io.Copy(io.MultiWriter(writers...), src); err != nil {
+	// Bound the fallback read to the snapshot size: a frozen generation can
+	// have grown by appends since it was claimed, and hashing past the claimed
+	// size would describe a prefix the upload does not publish.
+	if _, err := io.CopyN(io.MultiWriter(writers...), src, pending.Size); err != nil {
 		return upload.Snapshot{}, err
 	}
 	sums := make(drive.SourceHashes, len(hashes))

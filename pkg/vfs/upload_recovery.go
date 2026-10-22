@@ -19,16 +19,24 @@ func (v *VFS) Resume(ctx context.Context) {
 			continue
 		} else if err == nil && info.Size() != pending.Size {
 			oldSize := pending.Size
-			if pending.Frozen {
-				// Never adopt a changed length for a durably flushed generation.
-				// Keep its bytes for explicit recovery rather than uploading a
-				// truncated or partially reconstructed file.
-				v.failFrozenStaging(pending, fmt.Sprintf("vfs: staged content size %d does not match recorded size %d", info.Size(), oldSize))
+			if pending.Frozen && info.Size() < pending.Size {
+				// A frozen generation that lost bytes cannot be published: the
+				// recorded size and hashes describe content that is no longer
+				// there. Growth is different - appends past the claimed size
+				// leave that prefix intact - so it takes the repair path below
+				// and is re-sealed with a fresh hash on the next flush.
+				v.failFrozenStaging(pending, fmt.Sprintf("vfs: staged content shrank from %d to %d bytes", oldSize, info.Size()))
 				continue
 			}
 			pending.Staging = nil
 			pending.Size = info.Size()
 			pending.SourceHashes = nil
+			// Growth is unflushed content: the write path appends past a
+			// claimed generation, so these bytes were never re-sealed into a
+			// hash-checked generation. Keep them local (mutable) and let the
+			// next explicit flush freeze and publish them, instead of
+			// uploading bytes no flush ever confirmed.
+			pending.Frozen = false
 			pending.UpdatedAt = util.Now().UnixNano()
 			if err := v.uploads.Store().SaveUpload(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)

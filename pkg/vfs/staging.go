@@ -107,6 +107,29 @@ func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, st
 	return pending, nil
 }
 
+// appendsToFrozenGeneration reports whether a write can land in the frozen
+// generation in place instead of rotating to a fresh staging file.
+//
+// A claimed generation is read through drive.NewLocalReadOnlyFileSourceWithHashes,
+// which binds the source to (path, size), so the upload publishes exactly the
+// bytes below that size and never reads past it. Bytes written at or beyond the
+// claimed size therefore cannot reach the in-flight upload, and copying the
+// whole file to protect a prefix that nobody reads is pure waste: a large append
+// that outlives one upload quiet window would otherwise rewrite the file once
+// per upload cycle. Anything below the frozen size still rotates, because those
+// bytes are the ones being published.
+//
+// A recorded replacement candidate keeps the conservative path: the candidate
+// holds the frozen generation's bytes, and a switch that is already under way
+// must not see the staging file it was built from grow underneath it.
+func appendsToFrozenGeneration(pending PendingUpload, off int64, n int) bool {
+	return pending.Frozen &&
+		pending.UploadStarted &&
+		pending.ReplaceUpload == nil &&
+		n > 0 &&
+		off >= pending.Size
+}
+
 // writeTarget returns the pending generation a write must land in. A frozen
 // generation that no upload has started reading is revived in place: the copy
 // into a fresh generation exists only to keep the bytes an in-flight upload
@@ -121,7 +144,45 @@ func (v *VFS) writeTarget(store *uploadStore, path string, pending PendingUpload
 		logging.L.DebugfEvery("vfs.reuse_frozen_staging", time.Second, "[VFS] reuse frozen staging generation op_id=%q path=%q size=%d local=%q", reused.FID, path, reused.Size, reused.LocalPath)
 		return reused, nil
 	}
-	return v.rotateFrozenGenerationWithStore(path, pending, store)
+	// The copy is the only whole-file cost left in the write path, so make it
+	// countable: reason says which refusal forced it, and the running totals let
+	// a session be judged by the last line instead of by grepping every event.
+	// The line is rate limited because a burst of copies is already a
+	// pathological I/O pattern and the counters are cumulative, so a suppressed
+	// event is still accounted for by the next line.
+	reason := frozenCopyReason(pending)
+	started := time.Now()
+	next, err := v.rotateFrozenGenerationWithStore(path, pending, store)
+	elapsed := time.Since(started).Round(time.Microsecond)
+	if err != nil {
+		logging.L.WarnfEvery("vfs.frozen_copy_failed", time.Second, "[VFS] frozen generation copy failed op_id=%q path=%q reason=%s size=%d duration=%s err=%v", pending.FID, path, reason, pending.Size, elapsed, err)
+		return next, err
+	}
+	copied := pending.Size
+	copies := v.stagingCopies.Add(1)
+	total := v.stagingCopyBytes.Add(uint64(copied))
+	logging.L.InfofEvery("vfs.frozen_copy", time.Second, "[VFS] frozen generation copied op_id=%q path=%q reason=%s bytes=%d duration=%s copies=%d bytes_total=%d", pending.FID, path, reason, copied, elapsed, copies, total)
+	return next, nil
+}
+
+// frozenCopyReason names why TryReuseFrozenStaging refused to revive the
+// generation in place. It mirrors that method's conditions so the log stays
+// accurate without widening the store API: a refusal it does not model (the
+// record moved on between the caller's read and the lookup) falls through to
+// record_moved.
+func frozenCopyReason(pending PendingUpload) string {
+	switch {
+	case pending.ReplaceUpload != nil:
+		return "replacement_candidate"
+	case pending.PermanentFail:
+		return "permanent_failure"
+	case pending.UploadStarted:
+		return "claimed"
+	case !pending.Frozen:
+		return "unfrozen"
+	default:
+		return "record_moved"
+	}
 }
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
@@ -155,11 +216,13 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 			return 0, err
 		}
 	}
-	if pending.Frozen {
+	if pending.Frozen && !appendsToFrozenGeneration(pending, off, len(data)) {
 		pending, err = v.writeTarget(store, path, pending)
 		if err != nil {
 			return 0, err
 		}
+	} else if pending.Frozen {
+		logging.L.DebugfEvery("vfs.append_frozen_generation", time.Second, "[VFS] append past claimed generation op_id=%q path=%q off=%d len=%d claimed=%d", pending.FID, path, off, len(data), pending.Size)
 	}
 	n, err = store.WriteStagingAt(pending.LocalPath, data, off)
 	if err != nil {

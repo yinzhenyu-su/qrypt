@@ -47,9 +47,17 @@ type VFS struct {
 	name          string
 	healthTracker *drive.HealthTracker
 	counters      *drive.Counters
-	rootID        string
-	encrypted     bool
-	testEnabled   bool
+	// stagingCopies/stagingCopyBytes count whole-staging-file copies the write
+	// path had to make because a write could not land in the frozen generation
+	// (a rewrite inside the published prefix, a recorded replacement candidate,
+	// or an unclaimed generation that lost identity). They exist so the copy
+	// cost can be read off the "frozen generation copied" log line instead of
+	// being inferred from a profiler or from timing.
+	stagingCopies    atomic.Uint64
+	stagingCopyBytes atomic.Uint64
+	rootID           string
+	encrypted        bool
+	testEnabled      bool
 
 	// Domain state is grouped by ownership: each runtime is initialized in
 	// New, mutated only by its domain's code paths, and shut down by the VFS
