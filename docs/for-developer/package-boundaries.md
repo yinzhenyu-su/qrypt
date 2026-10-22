@@ -37,8 +37,8 @@ bypass the layer directly below it merely to reuse an implementation type.
 | `pkg/core/internal/*` | Application services hidden behind `core.Core` | Public entry points that let clients bypass `core.Core` |
 | `pkg/mobile` | Gomobile-safe sessions, handles, callbacks and JSON envelopes | VFS/media/task implementation types or business workflows |
 | `pkg/mount` | FUSE translation, handles, mount lifecycle and OS compatibility | Provider calls or provider-independent filesystem semantics |
+| `pkg/media` | Media probing and virtual-file mapping: MP4 probe, virtual-file info and read mappings, virtual-file handles | VFS domain state, task orchestration or provider protocol |
 | `pkg/control` | Local debug/probe/control HTTP transports, validation, route adapters and response encoding | Provider behavior, task orchestration or reusable diagnostic algorithms |
-| `pkg/diagnostic/*` | Explicit diagnostic checks, benchmarks and runtime probes | HTTP routing or normal filesystem execution paths |
 | `pkg/syncer` | Sync comparison, planning, snapshots and execution | Debug HTTP or client adaptation |
 | `internal/cli` | Cobra commands and desktop process integration | Reusable domain behavior |
 
