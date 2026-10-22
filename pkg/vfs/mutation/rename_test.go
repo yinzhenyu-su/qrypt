@@ -3,6 +3,7 @@ package mutation
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -20,10 +21,12 @@ type renameFixture struct {
 	remoteEntryOK  bool
 	remoteEntryErr error
 
-	pending      bool
-	pendingErr   error
-	pendingCalls int
-	pendingArgs  [][3]string
+	pending            bool
+	pendingSource      string
+	pendingDestination bool
+	pendingErr         error
+	pendingCalls       int
+	pendingArgs        [][3]string
 
 	invalidated    int
 	commits        [][2]string
@@ -52,9 +55,15 @@ func (f *renameFixture) RemoteEntry(_ context.Context, _ string) (drive.Entry, b
 	return f.remoteEntry, f.remoteEntryOK, f.remoteEntryErr
 }
 
-func (f *renameFixture) IsPending(string) bool {
+func (f *renameFixture) IsPending(path string) bool {
 	f.order = append(f.order, "is_pending")
-	return f.pending
+	if !f.pending {
+		return false
+	}
+	if f.pendingSource == "" {
+		f.pendingSource = path
+	}
+	return path == f.pendingSource || f.pendingDestination
 }
 
 func (f *renameFixture) RenamePending(_ context.Context, oldPath, newPath, parentID, name string) error {
@@ -64,7 +73,7 @@ func (f *renameFixture) RenamePending(_ context.Context, oldPath, newPath, paren
 	return f.pendingErr
 }
 
-func (f *renameFixture) RebasePendingUnder(_, _ string, _ drive.Entry) error {
+func (f *renameFixture) RebasePendingUnder(_ context.Context, _, _ string, _ drive.Entry) error {
 	f.rebaseCalls++
 	f.order = append(f.order, "rebase_pending")
 	return nil
@@ -179,6 +188,23 @@ func TestCoordinatorRenamePendingDispatch(t *testing.T) {
 	}
 	if fx.pendingCalls != 1 {
 		t.Fatalf("pending calls = %d, want 1", fx.pendingCalls)
+	}
+}
+
+func TestCoordinatorRenamePendingRejectsOccupiedDestinationBeforeRemoteMove(t *testing.T) {
+	fx := newRenameFixture()
+	fx.pending = true
+	fx.pendingDestination = true
+	if err := fx.coordinator().Rename(context.Background(), "/a.txt", "/b.txt"); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("rename error = %v, want existing pending destination", err)
+	}
+	if fx.pendingCalls != 0 || fx.invalidated != 0 || len(fx.commits) != 0 {
+		t.Fatalf("rename had side effects: pending=%d invalidated=%d commits=%v", fx.pendingCalls, fx.invalidated, fx.commits)
+	}
+	for _, step := range fx.order {
+		if step == "renamemove" {
+			t.Fatal("remote moved before pending destination check")
+		}
 	}
 }
 

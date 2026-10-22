@@ -8,12 +8,14 @@ import (
 	"crypto/sha256"
 	"errors"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,6 +23,88 @@ import (
 func newTestViewState(rootID string, now time.Time) *view.View {
 	overlay, _ := view.NewOverlayDelayedDeleteState()
 	return view.NewView(rootID, now, overlay)
+}
+
+// failListDriver wraps a real driver and can fail List on demand, simulating
+// a transient listing/network error during the write path.
+type failListDriver struct {
+	*localfs.Driver
+	mu   sync.Mutex
+	fail bool
+}
+
+func (d *failListDriver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	fail := d.fail
+	d.mu.Unlock()
+	if fail {
+		return nil, errors.New("transient list failure")
+	}
+	return d.Driver.List(ctx, parentID)
+}
+
+func (d *failListDriver) setFail(fail bool) {
+	d.mu.Lock()
+	d.fail = fail
+	d.mu.Unlock()
+}
+
+// TestWriteAndTruncateDoNotTreatResolveErrorsAsAbsence pins the write-path
+// error class: only a definitive NotFound may initialize an empty staging
+// file. A transient List error must fail the operation and leave the remote
+// content untouched.
+func TestWriteAndTruncateDoNotTreatResolveErrorsAsAbsence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "data.txt"), []byte("abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drv := &failListDriver{Driver: localfs.New(remote)}
+	fs, err := New(drv, Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drv.setFail(true)
+	if _, err := fs.WriteAt(ctx, "/data.txt", []byte("XY"), 2); err == nil {
+		t.Fatal("WriteAt succeeded despite a List failure")
+	}
+	if pending := fs.PendingUploads(); len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none after failed write", pending)
+	}
+	if err := fs.Truncate(ctx, "/data.txt", 0); err == nil {
+		t.Fatal("Truncate succeeded despite a List failure")
+	}
+	drv.setFail(false)
+	data, err := os.ReadFile(filepath.Join(remote, "data.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "abcdef" {
+		t.Fatalf("remote content after failed writes = %q, want the original", data)
+	}
+}
+
+func TestWriteToDirectoryRejected(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	remote := t.TempDir()
+	if err := os.Mkdir(filepath.Join(remote, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := New(localfs.New(remote), Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt(ctx, "/dir", []byte("x"), 0); !errors.Is(err, ErrIsDir) {
+		t.Fatalf("WriteAt directory err = %v, want ErrIsDir", err)
+	}
+	if err := fs.Truncate(ctx, "/dir", 0); !errors.Is(err, ErrIsDir) {
+		t.Fatalf("Truncate directory err = %v, want ErrIsDir", err)
+	}
+	if pending := fs.PendingUploads(); len(pending) != 0 {
+		t.Fatalf("pending = %+v, want none", pending)
+	}
 }
 
 func TestRotateFrozenGenerationCopiesContent(t *testing.T) {

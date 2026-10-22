@@ -517,6 +517,12 @@ func fuseErr(err error) int {
 	if errors.Is(err, vfs.ErrCrossMount) {
 		return -fuse.EXDEV
 	}
+	if errors.Is(err, vfs.ErrIsDir) {
+		return -fuse.EISDIR
+	}
+	if errors.Is(err, vfs.ErrDirNotEmpty) {
+		return -fuse.ENOTEMPTY
+	}
 	return -fuse.EIO
 }
 

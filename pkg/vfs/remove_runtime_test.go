@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestVFSRemoveCleanupRemovesPendingUpload(t *testing.T) {
 		t.Fatalf("pending count = %d, want 1", len(fs.PendingUploads()))
 	}
 	cleanup := newVFSRemoveCleanup(fs)
-	handled, err := cleanup.RemovePendingFile("/pending.txt")
+	handled, _, err := cleanup.RemovePendingFile(context.Background(), "/pending.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +34,7 @@ func TestVFSRemoveCleanupRemovesPendingUpload(t *testing.T) {
 	}
 }
 
-func TestVFSRemoveCleanupRemovesPendingUploadsUnderDirectory(t *testing.T) {
+func TestVFSRemoveCleanupRejectsPendingUploadsUnderDirectory(t *testing.T) {
 	t.Parallel()
 	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir(), UploadDelay: time.Hour})
 	if err != nil {
@@ -49,11 +50,11 @@ func TestVFSRemoveCleanupRemovesPendingUploadsUnderDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanup := newVFSRemoveCleanup(fs)
-	if err := cleanup.PrepareDirectory("/dir"); err != nil {
-		t.Fatal(err)
+	if err := cleanup.PrepareDirectory("/dir"); !errors.Is(err, ErrDirNotEmpty) {
+		t.Fatalf("PrepareDirectory err = %v, want ErrDirNotEmpty", err)
 	}
 	pending := fs.PendingUploads()
-	if len(pending) != 1 || pending[0].Path != "/other.txt" {
-		t.Fatalf("pending = %+v, want only /other.txt", pending)
+	if len(pending) != 2 {
+		t.Fatalf("pending = %+v, want both uploads preserved", pending)
 	}
 }

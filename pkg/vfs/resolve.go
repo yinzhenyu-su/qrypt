@@ -31,9 +31,12 @@ func (v *VFS) remoteEntry(ctx context.Context, path string) (drive.Entry, bool, 
 	name, parentPath := vfstypes.SplitVirtualPath(path)
 	parent, err := v.resolve(ctx, parentPath)
 	if err != nil {
-		// An unresolvable parent cannot hold a backend object at path: it may
-		// exist only locally, or not at all yet.
-		return drive.Entry{}, false, nil
+		if errors.Is(err, drive.ErrNotFound) {
+			// A locally created parent may not yet exist on the backend.
+			return drive.Entry{}, false, nil
+		}
+		// A transient failure cannot prove that the backend object is absent.
+		return drive.Entry{}, false, err
 	}
 	entries, err := v.listChildren(ctx, parentPath, parent.ID)
 	if err != nil {

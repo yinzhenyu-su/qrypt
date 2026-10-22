@@ -17,7 +17,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -69,9 +68,13 @@ type VFS struct {
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
-	activeDebug   *observe.ActiveStore
-	faults        *faultinject.Registry
-	pathLocks     *pathlock.State
+	activeDebug *observe.ActiveStore
+	faults      *faultinject.Registry
+	pathLocks   *pathlock.State
+	// subtreeMu serializes directory removal (check through view commit)
+	// against mutations that can introduce descendants. Ordinary writes take
+	// a read lock so unrelated file writes remain concurrent.
+	subtreeMu     sync.RWMutex
 	invalidations invalidationState
 
 	// done is closed when the VFS shuts down (Close or context cancel in
@@ -275,10 +278,18 @@ func (v *VFS) teardown() {
 	v.lifecycleMu.Lock()
 	switch v.lifecycle {
 	case lifecycleNew:
-		// Never started: only the construction-time read-cache writer needs
-		// closing; nothing to cancel or wait on.
+		// Never started: no workers exist, but operations accepted before
+		// Start may already have armed delayed-delete timers (Remove does not
+		// require a running lifecycle). Stop them so a closed VFS cannot
+		// delete remote content later, then close the construction-time
+		// read-cache writer.
 		v.lifecycle = lifecycleClosed
 		v.lifecycleMu.Unlock()
+		v.uploads.Close()
+		v.deletes.Close()
+		// done is not closed here: no worker or enqueue goroutine can exist
+		// before Start (Flush defers scheduling), and tests use done to model
+		// shutdown directly. Closing it here would double-close that channel.
 		var errs []error
 		if err := v.read.Close(); err != nil {
 			errs = append(errs, err)
@@ -379,32 +390,6 @@ func (v *VFS) ClearReadCacheForMount(name string) error {
 
 func (v *VFS) CloseReadCache() error {
 	return v.read.Close()
-}
-
-func (v *VFS) Resume(ctx context.Context) {
-	for _, pending := range v.uploads.Store().PendingUploads() {
-		if info, err := os.Stat(pending.LocalPath); err == nil && info.Size() != pending.Size {
-			oldSize := pending.Size
-			pending.Size = info.Size()
-			pending.SourceHashes = nil
-			pending.UpdatedAt = util.Now().UnixNano()
-			if err := v.uploads.Store().SaveUpload(pending); err != nil {
-				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
-			} else {
-				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
-			}
-		}
-		if pending.PermanentFail {
-			logging.L.WarnfEvery("vfs.resume_pending_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
-			continue
-		}
-		if !pending.Frozen {
-			logging.L.InfofEvery("vfs.resume_pending_mutable", time.Second, "[VFS] keep unflushed pending local; waiting for next flush op_id=%q path=%q name=%q size=%d local=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath)
-			continue
-		}
-		logging.L.InfofEvery("vfs.resume_pending", time.Second, "[VFS] resume pending upload op_id=%q path=%q name=%q size=%d local=%q retry=%d last_error=%q", pending.FID, pending.Path, pending.Name, pending.Size, pending.LocalPath, pending.RetryCount, pending.LastError)
-		v.enqueue(pending)
-	}
 }
 
 func (v *VFS) recordHealthResult(op string, err error) {

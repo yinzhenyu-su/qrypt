@@ -101,6 +101,7 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 	snapshot, ok, err := e.freezeSnapshot(pending)
 	if err != nil {
 		finishErr = err.Error()
+		e.recordFailureUnlessCanceled(ctx, pending, err)
 		return err
 	}
 	if !ok {
@@ -118,6 +119,7 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 		observer.Event(pending.Path, "prepare_remote", phaseStart, 0, map[string]any{"error": err.Error()})
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload remote preparation failed path=%q parent=%q name=%q err=%v", pending.Path, pending.ParentID, pending.Name, err)
+		e.recordFailureUnlessCanceled(ctx, pending, err)
 		return err
 	} else {
 		defer e.targets.release(lease)
@@ -163,18 +165,14 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 		observer.HealthResult(drive.HealthOpUpload, err)
 		if err != nil {
 			finishErr = err.Error()
-			if ctx.Err() == nil {
-				e.recordFailure(pending, err)
-			}
+			e.recordFailureUnlessCanceled(ctx, pending, err)
 			return err
 		}
 	}
 	if err := validateUploadedEntry(entry, uploadName, pending.Size); err != nil {
 		finishErr = err.Error()
 		logging.L.Warnf("[VFS] upload returned invalid entry op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, err)
-		if ctx.Err() == nil {
-			e.recordFailure(pending, err)
-		}
+		e.recordFailureUnlessCanceled(ctx, pending, err)
 		return err
 	}
 	if len(replaceExisting) > 0 && pending.ReplaceUpload == nil {
@@ -182,6 +180,7 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 		if saveErr != nil {
 			finishErr = saveErr.Error()
 			logging.L.Warnf("[VFS] upload replace state save failed op_id=%q path=%q uploaded_id=%q err=%v", pending.FID, pending.Path, entry.ID, saveErr)
+			e.recordFailureUnlessCanceled(ctx, pending, saveErr)
 			return saveErr
 		}
 		if !ok {
@@ -205,9 +204,7 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 			observer.Event(pending.Path, "replace_existing", phaseStart, 0, map[string]any{"error": err.Error(), "uploaded_id": entry.ID})
 			finishErr = err.Error()
 			logging.L.Warnf("[VFS] upload replace existing failed op_id=%q path=%q uploaded_id=%q name=%q err=%v", pending.FID, pending.Path, entry.ID, pending.Name, err)
-			if ctx.Err() == nil {
-				e.recordFailure(pending, err)
-			}
+			e.recordFailureUnlessCanceled(ctx, pending, err)
 			return err
 		}
 		entry = renamed
@@ -217,13 +214,19 @@ func (e *Engine) Execute(ctx context.Context, pending PendingUpload) error {
 	return err
 }
 
+func (e *Engine) recordFailureUnlessCanceled(ctx context.Context, pending PendingUpload, err error) {
+	if ctx.Err() == nil {
+		e.recordFailure(pending, err)
+	}
+}
+
 // recordFailure persists a failed upload attempt on the pending record.
 // Permanent failures are recorded without requeueing; retryable failures
 // are requeued with the driver retry delay. When the pending record moved
 // on the staging file is dropped. Returns false when the failure could
 // not be recorded (save error or record moved on).
 func (e *Engine) recordFailure(pending PendingUpload, err error) bool {
-	if drive.IsNonRetryable(err) {
+	if uploadFailurePermanent(err) {
 		_, ok, saveErr := e.pending.RecordPermanentFailureIfUnchanged(pending, err)
 		if saveErr != nil {
 			logging.L.Warnf("[VFS] upload failed permanently and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
@@ -248,6 +251,27 @@ func (e *Engine) recordFailure(pending PendingUpload, err error) bool {
 		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
 	}
 	return ok
+}
+
+// uploadFailurePermanent reports whether a failed upload attempt must not be
+// retried. Drivers mark some failures with drive.NonRetryable, but the shared
+// error categories already classify authentication, permission, invalid-input
+// and unsupported failures as deterministic. Unknown categories stay
+// retryable: a transient condition should not strand accepted content, and the
+// retry cap bounds the noise.
+func uploadFailurePermanent(err error) bool {
+	if drive.IsNonRetryable(err) {
+		return true
+	}
+	switch drive.ErrorCategory(err) {
+	case drive.ErrorCategoryAuth,
+		drive.ErrorCategoryPermission,
+		drive.ErrorCategoryInvalidRequest,
+		drive.ErrorCategoryUnsupported:
+		return true
+	default:
+		return false
+	}
 }
 
 // freezeSnapshot snapshots the pending local file and confirms the pending

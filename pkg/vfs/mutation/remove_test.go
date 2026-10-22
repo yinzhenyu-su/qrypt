@@ -14,9 +14,11 @@ type removeFixture struct {
 	resolveEntry drive.Entry
 	resolveErr   error
 
-	pendingHandled bool
-	pendingErr     error
-	pendingCalls   int
+	pendingHandled   bool
+	pendingErr       error
+	pendingCalls     int
+	pendingRemote    drive.Entry
+	pendingHasRemote bool
 
 	prepareErr   error
 	prepareCalls int
@@ -45,10 +47,13 @@ func (f *removeFixture) ScheduleDelete(path string, entry drive.Entry) {
 	f.scheduledEntry = entry
 }
 
-func (f *removeFixture) RemovePendingFile(_ string) (bool, error) {
+func (f *removeFixture) RemovePendingFile(context.Context, string) (bool, *drive.Entry, error) {
 	f.order = append(f.order, "pending")
 	f.pendingCalls++
-	return f.pendingHandled, f.pendingErr
+	if f.pendingHasRemote {
+		return f.pendingHandled, &f.pendingRemote, f.pendingErr
+	}
+	return f.pendingHandled, nil, f.pendingErr
 }
 
 func (f *removeFixture) PrepareDirectory(_ string) error {

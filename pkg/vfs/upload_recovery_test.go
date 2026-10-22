@@ -131,6 +131,63 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 		t.Fatalf("recovered data mismatch: got %d bytes, want %d", len(data), len(content))
 	}
 }
+func TestVFSDoesNotUploadFrozenStagingWithMismatchedSize(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	remote := t.TempDir()
+	cache := t.TempDir()
+
+	first, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.WriteAt(ctx, "/frozen.txt", []byte("committed"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Flush(ctx, "/frozen.txt"); err != nil {
+		t.Fatal(err)
+	}
+	pending := first.PendingUploads()
+	if len(pending) != 1 || !pending[0].Frozen {
+		t.Fatalf("pending = %+v, want one frozen generation", pending)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash that left the staging file longer than the durably
+	// recorded frozen generation. The recovery must not upload this content.
+	f, err := os.OpenFile(pending[0].LocalPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte(" tail")); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopVFS(t, second)
+	second.Start(ctx)
+	waitForCondition(t, func() bool {
+		pending := second.PendingUploads()
+		return len(pending) == 1 && pending[0].PermanentFail && pending[0].LastError != ""
+	})
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(remote, "frozen.txt")); !os.IsNotExist(err) {
+		t.Fatalf("mismatched frozen staging was uploaded, stat err=%v", err)
+	}
+	if pending := second.PendingUploads(); len(pending) != 1 {
+		t.Fatalf("recovery dropped the mismatched staging record: %+v", pending)
+	}
+}
+
 func TestVFSDropsPendingWhenStagingMissingOnRecovery(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())

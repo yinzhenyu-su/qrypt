@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
@@ -17,6 +18,8 @@ import (
 // --- staging_write.go ---
 
 func (v *VFS) Create(ctx context.Context, path string) (err error) {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	defer func() { v.recordHealthResult(drive.HealthOpCreate, err) }()
 	if err := newVFSDriverRuntime(v.driver, v.testEnabled).RequireCapability(drive.CapabilitySourceUploader, "upload"); err != nil {
 		return err
@@ -122,6 +125,8 @@ func (v *VFS) writeTarget(store *uploadStore, path string, pending PendingUpload
 }
 
 func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) (n int, err error) {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
@@ -130,7 +135,11 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	hashes := newVFSUploadWriteHashTracker(v.hashes, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
-		if entry, resolveErr := v.resolve(ctx, path); resolveErr == nil && !entry.IsDir {
+		entry, exists, resolveErr := v.existingFileForWrite(ctx, path)
+		if resolveErr != nil {
+			return 0, resolveErr
+		}
+		if exists {
 			v.invalidateReadCache(entry)
 			logging.L.InfofEvery("vfs.stage_existing_for_write", time.Second, "[VFS] staging existing file for write path=%q id=%q size=%d", path, entry.ID, entry.Size)
 			if err := v.stageExisting(ctx, path); err != nil {
@@ -169,6 +178,8 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 }
 
 func (v *VFS) Flush(ctx context.Context, path string) (err error) {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
@@ -215,6 +226,8 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 }
 
 func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error) {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	defer func() { v.recordHealthResult(drive.HealthOpWrite, err) }()
 	if size < 0 {
 		return fmt.Errorf("vfs: truncate size must be non-negative")
@@ -254,6 +267,25 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 	return store.SaveUpload(pending)
 }
 
+// existingFileForWrite reports whether path currently resolves to a regular
+// file that a write must stage before modifying. Only a definitive NotFound
+// means "does not exist": every other resolve error is returned unchanged so a
+// transient listing failure can never replace remote content with an empty
+// staging file. A directory is rejected with ErrIsDir.
+func (v *VFS) existingFileForWrite(ctx context.Context, path string) (drive.Entry, bool, error) {
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		if errors.Is(err, drive.ErrNotFound) {
+			return drive.Entry{}, false, nil
+		}
+		return drive.Entry{}, false, err
+	}
+	if entry.IsDir {
+		return drive.Entry{}, false, fmt.Errorf("%w: %s", ErrIsDir, path)
+	}
+	return entry, true, nil
+}
+
 func (v *VFS) stageExisting(ctx context.Context, path string) error {
 	return v.stageExistingWithStore(ctx, path, v.uploads.Store())
 }
@@ -291,7 +323,18 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 		Name:      name,
 		LocalPath: localPath,
 	}
-	if entry, err := remote.Resolve(ctx, path); err == nil && !entry.IsDir {
+	entry, resolveErr := remote.Resolve(ctx, path)
+	switch {
+	case resolveErr == nil && entry.IsDir:
+		dropStaging()
+		return fmt.Errorf("%w: %s", ErrIsDir, path)
+	case resolveErr != nil && !errors.Is(resolveErr, drive.ErrNotFound):
+		// A transient resolve/list failure does not prove the remote file is
+		// gone. Treat it as an error so the caller cannot upload an empty or
+		// partial staging file over the existing content.
+		dropStaging()
+		return resolveErr
+	case resolveErr == nil:
 		if !entry.ModTime.IsZero() {
 			modTime = entry.ModTime
 		}

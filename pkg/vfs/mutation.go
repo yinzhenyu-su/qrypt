@@ -2,20 +2,27 @@ package vfs
 
 import (
 	"context"
+	"fmt"
+	pathpkg "path"
 	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
 
 func (v *VFS) PrepareDirectoryCopy(ctx context.Context, path string) error {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	return v.prepareDirectoryCopyWithRuntime(ctx, path, newVFSDirectoryCopyRuntime(v))
 }
 
 func (v *VFS) Mkdir(ctx context.Context, path string) (entry drive.Entry, err error) {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	return v.mkdirWithDeps(ctx, path, newVFSDriverRuntime(v.driver, v.testEnabled).MutationBackend(), newVFSViewCommitter(v), newVFSViewCommitter(v))
 }
 
@@ -32,6 +39,8 @@ func (v *VFS) RemoveDir(ctx context.Context, path string) (err error) {
 }
 
 func (v *VFS) Rename(ctx context.Context, oldPath, newPath string) (err error) {
+	v.subtreeMu.RLock()
+	defer v.subtreeMu.RUnlock()
 	return v.renameWithDeps(ctx, oldPath, newPath, newVFSDriverRuntime(v.driver, v.testEnabled).MutationBackend(), newVFSMutationRuntime(v), newVFSViewCommitter(v))
 }
 
@@ -94,7 +103,7 @@ type mutationRuntime interface {
 	RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error
 	// RebasePendingUploads moves the pending uploads of the renamed
 	// directory's descendants onto the renamed subtree.
-	RebasePendingUploads(oldPath, newPath string, entry drive.Entry) error
+	RebasePendingUploads(ctx context.Context, oldPath, newPath string, entry drive.Entry) error
 }
 
 // readCacheInvalidator drops a committed entry's read-cache state. *VFS
@@ -111,6 +120,7 @@ type vfsMutationRuntime struct {
 	store             *uploadStore
 	hashes            *upload.HashTracker
 	uploads           *uploadService
+	listChildren      func(context.Context, string) ([]drive.Entry, error)
 	schedulingEnabled func() bool
 }
 
@@ -121,6 +131,7 @@ func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
 		store:             v.uploads.Store(),
 		hashes:            v.hashes,
 		uploads:           v.uploads,
+		listChildren:      v.driver.List,
 		schedulingEnabled: v.uploadSchedulingEnabled,
 	}
 }
@@ -162,8 +173,47 @@ func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending
 // exists. The recorded parent is the entry the rename reported; drivers that
 // keep entry IDs stable across a move (cloud APIs) upload straight into the
 // renamed directory.
-func (r vfsMutationRuntime) RebasePendingUploads(oldPath, newPath string, entry drive.Entry) error {
-	moved, err := r.store.RebaseUploadsUnder(oldPath, newPath, entry.ID)
+func (r vfsMutationRuntime) RebasePendingUploads(ctx context.Context, oldPath, newPath string, entry drive.Entry) error {
+	// A provider may change directory IDs when moving it (localfs uses full
+	// paths as IDs). Resolve each distinct new parent from the backend rather
+	// than assigning the moved directory's ID to every nested descendant.
+	parents := map[string]string{vfstypes.CleanVirtualPath(newPath): entry.ID}
+	for _, pending := range r.store.PendingUploads() {
+		if !vfstypes.IsPathUnder(pending.Path, oldPath) {
+			continue
+		}
+		nextPath := vfstypes.CleanVirtualPath(newPath + strings.TrimPrefix(pending.Path, oldPath))
+		parentPath := pathpkg.Dir(nextPath)
+		if _, ok := parents[parentPath]; ok {
+			continue
+		}
+		// Resolve each segment once, starting at the renamed directory. The
+		// view's rebased cache may still hold old IDs, so use driver listings.
+		relative := strings.TrimPrefix(parentPath, vfstypes.CleanVirtualPath(newPath)+"/")
+		currentPath := vfstypes.CleanVirtualPath(newPath)
+		for _, name := range strings.Split(relative, "/") {
+			nextParent := vfstypes.JoinVirtualPath(currentPath, name)
+			if _, ok := parents[nextParent]; !ok {
+				children, err := r.listChildren(ctx, parents[currentPath])
+				if err != nil {
+					return err
+				}
+				found := false
+				for _, child := range children {
+					if child.Name == name && child.IsDir {
+						parents[nextParent] = child.ID
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("%w: renamed parent %s", drive.ErrNotFound, nextParent)
+				}
+			}
+			currentPath = nextParent
+		}
+	}
+	moved, err := r.store.RebaseUploadsUnder(oldPath, newPath, parents)
 	if err != nil {
 		return err
 	}
