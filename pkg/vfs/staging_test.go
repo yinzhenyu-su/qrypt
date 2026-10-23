@@ -126,7 +126,7 @@ func TestRotateFrozenGenerationCopiesContent(t *testing.T) {
 	}
 	v := &VFS{
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		uploads:   newUploadDomain(cache.uploadStore, Options{}, nil),
 		pathLocks: pathlock.New(),
 		view:      newTestViewState("0", time.Now()),
 	}
@@ -167,7 +167,7 @@ func TestRotateFrozenGenerationFailureKeepsOldPending(t *testing.T) {
 	}
 	v := &VFS{
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		uploads:   newUploadDomain(cache.uploadStore, Options{}, nil),
 		pathLocks: pathlock.New(),
 		view:      newTestViewState("0", time.Now()),
 	}
@@ -387,7 +387,7 @@ func TestSnapshotPendingReturnsStagingPathDirectly(t *testing.T) {
 	}
 	v := &VFS{
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		uploads:   newUploadDomain(cache.uploadStore, Options{}, nil),
 		pathLocks: pathlock.New(),
 		view:      newTestViewState("0", time.Now()),
 	}
@@ -439,7 +439,7 @@ func TestSnapshotPendingComputesDriverRequiredHashes(t *testing.T) {
 	v := &VFS{
 		driver:    drv,
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		uploads:   newUploadDomain(cache.uploadStore, Options{}, nil),
 		pathLocks: pathlock.New(),
 		view:      newTestViewState("0", time.Now()),
 	}
@@ -485,7 +485,7 @@ func TestSnapshotPendingUsesPersistedHashesAfterRestart(t *testing.T) {
 	v := &VFS{
 		driver:    &snapshotHashDriver{Driver: drive.NewFakeDriver(), hashes: []drive.HashAlgorithm{drive.HashMD5, drive.HashSHA1}},
 		read:      read.NewState(cache.readCacheStore),
-		uploads:   newUploadService(cache.uploadStore, Options{}, nil, upload.NewHashTracker()),
+		uploads:   newUploadDomain(cache.uploadStore, Options{}, nil),
 		pathLocks: pathlock.New(),
 		view:      newTestViewState("0", time.Now()),
 	}
@@ -623,7 +623,7 @@ func (d *snapshotHashDriver) RequiredUploadHashes() []drive.HashAlgorithm {
 func TestPendingQuietWindowUsesLargeFileMinimum(t *testing.T) {
 	t.Parallel()
 	store, _ := newUploadStore(t.TempDir(), "test-mount")
-	v := &VFS{uploads: newUploadService(store, Options{UploadDelay: 10 * time.Millisecond}, nil, upload.NewHashTracker())}
+	v := &VFS{uploads: newUploadDomain(store, Options{UploadDelay: 10 * time.Millisecond}, nil)}
 
 	small := v.uploads.QuietWindow(PendingUpload{Size: upload.LargeUploadQuietThreshold - 1})
 	if small != 10*time.Millisecond {

@@ -12,7 +12,7 @@ func TestVFSUploadObserverRecordsSnapshotLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	observer := newVFSUploadObserver(fs.uploads, fs.healthTracker)
+	observer := newVFSUploadObserver(fs.uploads.Service, fs.healthTracker)
 	pending := PendingUpload{
 		FID:      "fid",
 		Path:     "/observer.txt",

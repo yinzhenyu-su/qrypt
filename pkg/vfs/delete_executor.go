@@ -5,7 +5,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/delete"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"time"
 )
@@ -43,7 +42,7 @@ func newVFSDeleteExecutorDeps(v *VFS) idelete.ExecutorDeps {
 		Driver:                   newVFSDriverRuntime(v.driver, v.testEnabled),
 		Overlay:                  newVFSDeleteOverlayOps(v),
 		Health:                   v.healthTracker,
-		Upload:                   newVFSDeleteUploadCleanup(v.uploads.Store(), v.hashes),
+		Upload:                   newVFSDeleteUploadCleanup(v.uploads),
 		WaitForDescendantDeletes: v.waitForActiveChildDeletes,
 	}
 }
@@ -82,17 +81,16 @@ func (r vfsDeleteOverlayOps) CancelDelete(path string) {
 }
 
 type vfsDeleteUploadCleanup struct {
-	store  *uploadStore
-	hashes *upload.HashTracker
+	uploads *uploadDomain
 }
 
-func newVFSDeleteUploadCleanup(store *uploadStore, hashes *upload.HashTracker) vfsDeleteUploadCleanup {
-	return vfsDeleteUploadCleanup{store: store, hashes: hashes}
+func newVFSDeleteUploadCleanup(uploads *uploadDomain) vfsDeleteUploadCleanup {
+	return vfsDeleteUploadCleanup{uploads: uploads}
 }
 
 func (r vfsDeleteUploadCleanup) RemoveUploadState(path string) {
-	if err := r.store.RemoveUpload(path); err == nil {
-		r.hashes.RemovePath(path)
+	if err := r.uploads.RemoveUpload(path); err == nil {
+		r.uploads.hashes.RemovePath(path)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
@@ -114,11 +113,9 @@ func (r vfsRemoveScheduler) ScheduleDelete(path string, entry drive.Entry) {
 
 type vfsRemoveCleanup struct {
 	locks   *pathlock.State
-	store   *uploadStore
-	uploads *uploadService
+	uploads *uploadDomain
 	viewRT  view.Runtime
 	vis     view.Visibility
-	hashes  *upload.HashTracker
 	deletes vfsDeleteScheduler
 	remote  remoteEntryResolver
 }
@@ -126,11 +123,9 @@ type vfsRemoveCleanup struct {
 func newVFSRemoveCleanup(v *VFS) vfsRemoveCleanup {
 	return vfsRemoveCleanup{
 		locks:   v.pathLocks,
-		store:   v.uploads.Store(),
 		uploads: v.uploads,
 		viewRT:  view.NewRuntime(v.view),
 		vis:     newVFSVisibilityRuntime(v),
-		hashes:  v.hashes,
 		deletes: newVFSDeleteScheduler(v),
 		remote:  v,
 	}
@@ -144,7 +139,7 @@ func (r vfsRemoveCleanup) RemovePendingFile(ctx context.Context, path string) (b
 	// never committed or scheduled for deletion.
 	unlock := r.locks.Lock(path)
 	defer unlock()
-	if _, ok := r.store.UploadByPath(path); !ok {
+	if _, ok := r.uploads.Store().UploadByPath(path); !ok {
 		return false, nil, nil
 	}
 	// Resolve the backend object while the pending record still exists: the
@@ -159,7 +154,7 @@ func (r vfsRemoveCleanup) RemovePendingFile(ctx context.Context, path string) (b
 	// Durable store commit FIRST; timer/hash/modtime cleanup runs only
 	// after it succeeds, so a failed commit never leaves the path half
 	// cleaned.
-	if err := r.store.RemoveUpload(path); err != nil {
+	if err := r.uploads.Store().RemoveUpload(path); err != nil {
 		return true, nil, err
 	}
 	r.uploads.CancelUpload(path)
@@ -167,7 +162,7 @@ func (r vfsRemoveCleanup) RemovePendingFile(ctx context.Context, path string) (b
 	// Drop it and the parent listing after the durable removal succeeds.
 	r.viewRT.DropEntryPath(path)
 	r.viewRT.ClearLocalModTime(path)
-	r.hashes.RemovePath(path)
+	r.uploads.hashes.RemovePath(path)
 	if hasRemote {
 		return true, &remote, nil
 	}
@@ -180,7 +175,7 @@ func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
 	// directory. ensureDirectoryEmpty ran before this, but a write accepted in
 	// between must not be discarded silently: reject and leave the pending
 	// content and timers untouched.
-	for _, pending := range r.store.PendingUploads() {
+	for _, pending := range r.uploads.Store().PendingUploads() {
 		if pending.Path == path || !vfstypes.IsPathUnder(pending.Path, path) {
 			continue
 		}
@@ -189,7 +184,7 @@ func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
 		}
 		return fmt.Errorf("%w: %s", ErrDirNotEmpty, path)
 	}
-	r.hashes.RemoveUnder(path)
+	r.uploads.hashes.RemoveUnder(path)
 	r.uploads.CancelChildUploads(path)
 	r.deletes.TakeoverDirectory(path)
 	return nil

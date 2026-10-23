@@ -60,7 +60,7 @@ func TestDomainStateInitialized(t *testing.T) {
 		{"upload.schedule", fs.uploads != nil && fs.uploads.ScheduledDeadlines() != nil},
 		{"upload.debug", fs.uploads != nil && fs.uploads.DebugState() != nil},
 		{"upload.faults", fs.faults != nil},
-		{"upload.hashes", fs.uploads != nil && fs.hashes != nil},
+		{"upload.hashes", fs.uploads != nil && fs.uploads.hashes != nil},
 		{"delete.state", fs.deletes != nil && fs.deletes.deleteState != nil},
 	} {
 		if !state.ok {
@@ -203,51 +203,4 @@ func TestFlushBeforeStartDefersUploadSchedulingToResume(t *testing.T) {
 	if got := len(fs.uploads.ScheduledDeadlines()); got != 1 {
 		t.Fatalf("Start Resume armed %d upload timers, want 1", got)
 	}
-}
-
-// TestUploadQueueEnqueueExitsOnShutdown asserts the shutdown semantics of
-// a blocked enqueue directly through enqueueBlocking, using two VFS
-// instances to keep the scenarios free of worker competition:
-//   - unstarted VFS: done is open, so a blocked enqueue parks on the full
-//     queue and delivers once space appears;
-//   - started-then-cancelled VFS: workers stopped, queue stays full, so
-//     the done case wins and the enqueue returns without delivering.
-func TestUploadQueueEnqueueExitsOnShutdown(t *testing.T) {
-	t.Parallel()
-	// Alive (no worker to compete for slots): blocked enqueue delivers once
-	// space appears.
-	alive := newStateTestVFS(t)
-	aliveRuntime := newVFSUploadWorkerRuntime(alive)
-	for i := 0; i < cap(alive.uploads.Queue()); i++ {
-		alive.uploads.Queue() <- PendingUpload{Path: "/fill", FID: "fill"}
-	}
-	delivered := make(chan bool, 1)
-	go func() { delivered <- aliveRuntime.enqueueBlocking(PendingUpload{Path: "/waited", FID: "waited"}) }()
-	time.Sleep(20 * time.Millisecond) // let it park on the full queue
-	<-alive.uploads.Queue()           // make room; no worker races for it
-	select {
-	case ok := <-delivered:
-		if !ok {
-			t.Fatal("blocked enqueue reported not delivered while VFS alive")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("blocked enqueue did not deliver after space appeared")
-	}
-
-	// Shutdown: close the lifecycle done channel (what Start's AfterFunc does
-	// on cancel) while the queue is full, so only the done case is
-	// satisfiable. No worker is running, so the assertion is deterministic.
-	fs := newStateTestVFS(t)
-	runtime := newVFSUploadWorkerRuntime(fs)
-	for i := 0; i < cap(fs.uploads.Queue()); i++ {
-		fs.uploads.Queue() <- PendingUpload{Path: "/fill", FID: "fill"}
-	}
-	close(fs.done)
-	if runtime.enqueueBlocking(PendingUpload{Path: "/blocked", FID: "blocked"}) {
-		t.Fatal("enqueue delivered after shutdown")
-	}
-
-	fs.deletes.Close()
-	fs.uploads.Close()
-	_ = fs.read.Close()
 }

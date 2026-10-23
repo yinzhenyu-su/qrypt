@@ -40,7 +40,6 @@ func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending 
 
 func newVFSUploadRuntime(v *VFS) vfsUploadRuntime {
 	return vfsUploadRuntime{
-		hashes:            v.hashes,
 		uploads:           v.uploads,
 		viewRT:            view.NewRuntime(v.view),
 		schedulingEnabled: v.uploadSchedulingEnabled,
@@ -48,7 +47,7 @@ func newVFSUploadRuntime(v *VFS) vfsUploadRuntime {
 }
 
 func (r vfsUploadRuntime) ClearUploadHashes(fid string) {
-	r.hashes.RemoveFID(fid)
+	r.uploads.hashes.RemoveFID(fid)
 }
 
 func (r vfsUploadRuntime) RetryDelay(retryCount int) time.Duration {
@@ -117,10 +116,6 @@ func (o vfsUploadObserver) Finish(path, state, lastError string) {
 
 func newVFSUploadSnapshotter(v *VFS) vfsUploadSnapshotter {
 	return vfsUploadSnapshotter{
-		locks:           v.pathLocks,
-		store:           v.uploads.Store(),
-		hashes:          v.hashes,
-		driver:          v.driver,
 		snapshotPending: v.snapshotPending,
 	}
 }
@@ -129,95 +124,24 @@ func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (upload.Sna
 	return s.snapshotPending(pending)
 }
 
-func newVFSUploadWorkerRuntime(v *VFS) vfsUploadWorkerRuntime {
-	return vfsUploadWorkerRuntime{
-		uploads:           v.uploads,
-		deletes:           v.deletes,
-		driver:            v.driver,
-		done:              v.done,
-		schedulingEnabled: v.uploadSchedulingEnabled,
-		engine:            v.uploadEngine,
-	}
-}
-
-func (r vfsUploadWorkerRuntime) Receive(ctx context.Context) (PendingUpload, bool) {
-	return r.uploads.Receive(ctx)
-}
-
-func (r vfsUploadWorkerRuntime) StopUploadTimers() {
-	r.uploads.Close()
-}
-
-func (r vfsUploadWorkerRuntime) StopDeleteTimers() {
-	r.deletes.Close()
-}
-
-func (r vfsUploadWorkerRuntime) SourceUploadSupported() bool {
-	return drive.HasCapability(r.driver, drive.CapabilitySourceUploader)
-}
-
-func (r vfsUploadWorkerRuntime) LatestUpload(path string) (PendingUpload, bool) {
-	return r.uploads.Store().UploadByPath(path)
-}
-
-func (r vfsUploadWorkerRuntime) RemoveStagingIfUnreferenced(localPath string) {
-	r.uploads.Store().RemoveStagingIfUnreferenced(localPath)
-}
-
-func (r vfsUploadWorkerRuntime) Requeue(pending PendingUpload) {
-	if r.schedulingEnabled() {
-		r.uploads.Enqueue(pending)
-	}
-}
-
-func (r vfsUploadWorkerRuntime) RequeueAfter(pending PendingUpload, delay time.Duration) {
-	if r.schedulingEnabled() {
-		r.uploads.EnqueueAfter(pending, delay)
-	}
-}
-
-func (r vfsUploadWorkerRuntime) QuietDelay(pending PendingUpload) time.Duration {
-	return r.uploads.QuietDelay(pending)
-}
-
-func (r vfsUploadWorkerRuntime) QuietWindow(pending PendingUpload) time.Duration {
-	return r.uploads.QuietWindow(pending)
-}
-
-func (r vfsUploadWorkerRuntime) TryAcquire(pending PendingUpload, workers int) bool {
-	return r.uploads.TryAcquire(pending, workers)
-}
-
-func (r vfsUploadWorkerRuntime) Release(pending PendingUpload) {
-	r.uploads.Release(pending)
-}
-
-func (r vfsUploadWorkerRuntime) ExecuteUpload(ctx context.Context, pending PendingUpload) error {
-	return r.engine.Execute(ctx, pending)
-}
-
-func (r vfsUploadWorkerRuntime) SendUpload(pending PendingUpload) {
-	r.uploads.Enqueue(pending)
-}
-
-func newVFSUploadWriteHashTracker(hashes *upload.HashTracker, driver drive.Driver) vfsUploadWriteHashTracker {
-	return vfsUploadWriteHashTracker{hashes: hashes, driver: driver}
+func newVFSUploadWriteHashTracker(uploads *uploadDomain, driver drive.Driver) vfsUploadWriteHashTracker {
+	return vfsUploadWriteHashTracker{uploads: uploads, driver: driver}
 }
 
 func (t vfsUploadWriteHashTracker) Start(pending PendingUpload) {
-	t.hashes.Start(pending, requiredUploadSnapshotHashes(t.driver))
+	t.uploads.hashes.Start(pending, requiredUploadSnapshotHashes(t.driver))
 }
 
 func (t vfsUploadWriteHashTracker) Write(pending PendingUpload, data []byte, off int64) {
-	t.hashes.Write(pending, data, off, requiredUploadSnapshotHashes(t.driver))
+	t.uploads.hashes.Write(pending, data, off, requiredUploadSnapshotHashes(t.driver))
 }
 
 func (t vfsUploadWriteHashTracker) Dirty(pending PendingUpload) {
-	t.hashes.Dirty(pending)
+	t.uploads.hashes.Dirty(pending)
 }
 
 func (t vfsUploadWriteHashTracker) RemoveFID(fid string) {
-	t.hashes.RemoveFID(fid)
+	t.uploads.hashes.RemoveFID(fid)
 }
 
 type uploadWriteRemote interface {

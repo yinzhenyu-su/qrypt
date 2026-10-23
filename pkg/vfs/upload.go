@@ -6,7 +6,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
@@ -53,12 +52,7 @@ func (v *VFS) PendingUploads() []PendingUpload {
 // is not recovered and published later.
 func (v *VFS) DiscardUpload(path string) error {
 	path = vfstypes.CleanVirtualPath(path)
-	v.uploads.CancelUpload(path)
-	if err := v.uploads.RemoveUpload(path); err != nil {
-		return err
-	}
-	v.hashes.RemovePath(path)
-	return nil
+	return v.uploads.discard(path)
 }
 
 // VFS wrapper methods delegating to uploadService. These exist for
@@ -88,11 +82,12 @@ func (v *VFS) uploadSchedulingEnabled() bool {
 
 // newUploadEngine builds the upload engine wired to VFS adapters.
 func newUploadEngine(v *VFS) *upload.Engine {
+	domain := v.uploads
 	return upload.NewEngine(upload.EngineDeps{
 		Remote:        newVFSDriverRuntime(v.driver, v.testEnabled).RemoteMutationBackend(),
-		Targets:       v.uploadTargets,
-		Observer:      newVFSUploadObserver(v.uploads, v.healthTracker),
-		Pending:       upload.NewStoreAdapter(v.uploads.Store()),
+		Targets:       domain.targets,
+		Observer:      newVFSUploadObserver(domain.Service, v.healthTracker),
+		Pending:       upload.NewStoreAdapter(domain.Store()),
 		Runtime:       newVFSUploadRuntime(v),
 		View:          newVFSViewCommitter(v),
 		Invalidations: vfsUploadInvalidations{invalidations: &v.invalidations},
@@ -114,8 +109,7 @@ type vfsUploadFaultController struct {
 // --- upload_runtime.go ---
 
 type vfsUploadRuntime struct {
-	hashes            *upload.HashTracker
-	uploads           *uploadService
+	uploads           *uploadDomain
 	viewRT            view.Runtime
 	schedulingEnabled func() bool
 }
@@ -133,10 +127,6 @@ type vfsUploadObserver struct {
 // --- upload_snapshot.go ---
 
 type vfsUploadSnapshotter struct {
-	locks           *pathlock.State
-	store           *uploadStore
-	hashes          *upload.HashTracker
-	driver          drive.Driver
 	snapshotPending func(PendingUpload) (upload.Snapshot, error)
 }
 
@@ -165,7 +155,7 @@ func (v *VFS) snapshotPending(pending PendingUpload) (upload.Snapshot, error) {
 			Hashes: cloneSourceHashes(pending.SourceHashes),
 		}, nil
 	}
-	if hashes, ok := v.hashes.Snapshot(pending, algorithms); ok {
+	if hashes, ok := v.uploads.hashes.Snapshot(pending, algorithms); ok {
 		return upload.Snapshot{
 			Path:        pending.LocalPath,
 			Hashes:      hashes,
@@ -273,12 +263,11 @@ func (v *VFS) seedReadCacheFromSource(ctx context.Context, entry drive.Entry, so
 // --- upload_worker.go ---
 
 func (v *VFS) uploadWorker(ctx context.Context) {
-	runtime := newVFSUploadWorkerRuntime(v)
 	for {
-		pending, ok := runtime.Receive(ctx)
+		pending, ok := v.uploads.Receive(ctx)
 		if !ok {
-			runtime.StopUploadTimers()
-			runtime.StopDeleteTimers()
+			v.uploads.Close()
+			v.deletes.Close()
 			return
 		}
 		_ = v.uploadPending(ctx, pending)
@@ -287,32 +276,12 @@ func (v *VFS) uploadWorker(ctx context.Context) {
 }
 
 func (v *VFS) uploadPending(ctx context.Context, pending PendingUpload) error {
-	return upload.PendingWithRuntime(ctx, pending, newVFSUploadWorkerRuntime(v), v.uploads.WorkerCount(), v.uploads.DefaultDelay())
+	return v.uploads.ProcessPending(ctx, pending, upload.ProcessOptions{
+		SourceUploadSupported: drive.HasCapability(v.driver, drive.CapabilitySourceUploader),
+		SchedulingEnabled:     v.uploadSchedulingEnabled,
+		Execute:               v.uploads.engine.Execute,
+	})
 }
-
-// vfsUploadWorkerRuntime adapts VFS internals to upload.WorkerRuntime.
-type vfsUploadWorkerRuntime struct {
-	uploads           *uploadService
-	deletes           *DeleteService
-	driver            drive.Driver
-	done              chan struct{}
-	schedulingEnabled func() bool
-	engine            *upload.Engine
-}
-
-// enqueueBlocking delivers a pending to the worker queue, blocking until it
-// is accepted or the VFS shuts down; reports whether it was delivered.
-func (r vfsUploadWorkerRuntime) enqueueBlocking(pending PendingUpload) bool {
-	select {
-	case r.uploads.Queue() <- pending:
-		return true
-	case <-r.done:
-		return false
-	}
-}
-
-// Compile-time check that the adapter satisfies upload.WorkerRuntime.
-var _ upload.WorkerRuntime = (*vfsUploadWorkerRuntime)(nil)
 
 func pendingUploadFromWriteStore(store *uploadStore, path string) (PendingUpload, error) {
 	path = vfstypes.CleanVirtualPath(path)
@@ -324,8 +293,8 @@ func pendingUploadFromWriteStore(store *uploadStore, path string) (PendingUpload
 }
 
 type vfsUploadWriteHashTracker struct {
-	hashes *upload.HashTracker
-	driver drive.Driver
+	uploads *uploadDomain
+	driver  drive.Driver
 }
 
 type vfsUploadWriteRemote struct {
