@@ -146,6 +146,10 @@ _Avoid_: version
 已被快照、字节对读取方不可变的上传代。
 _Avoid_: locked
 
+**Claimed Upload Generation（已认领上传代）**:
+上传执行器已原子取得处理权、即将读取其字节的上传代。认领后，同路径的新写入不得改变该代将要发布的内容。
+_Avoid_: active upload、locked generation
+
 **Superseded（被取代）**:
 被更新的上传代顶掉、回滚且不留条目的上传结局。
 _Avoid_: cancelled
@@ -165,6 +169,10 @@ _Avoid_: debounce delay
 **Admission（上传准入）**:
 并发上传的准入策略：同时只跑一个大文件，或多个小文件。
 _Avoid_: throttle、limit
+
+**Upload Eligibility（上传资格）**:
+上传代可以进入远端执行的条件集合：它仍是当前冻结代、未永久失败、等待期限已到，并已取得上传准入。
+_Avoid_: ready、queued
 
 **Upload Snapshot（上传快照）**:
 一次上传在提交前冻结出的内容标识与哈希。上传域唯一称 snapshot 的概念；其余同名类型只是调试投影。
