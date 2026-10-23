@@ -23,6 +23,21 @@ Composition roots may register concrete drivers through `pkg/drivers/all`.
 All other dependencies point toward lower-level contracts. A package must not
 bypass the layer directly below it merely to reuse an implementation type.
 
+`scripts/ci/check-arch.sh` enforces this contract from Go package metadata.
+Every top-level package under `pkg` declares the other top-level packages its
+production code may import; packages not present in that policy fail the gate.
+Tests follow the same private-application and provider-direction rules, while
+remaining free to use test adapters such as `localfs` where the production
+policy deliberately forbids concrete drivers.
+
+The gate also parses the upload module's Go declarations: `VFS` may own upload
+state through `upload.Domain`, while `upload.Domain` must not expose its store,
+hash tracker, scheduler service or engine through exported fields or method
+results. This is a type/ownership check, not a blacklist of receiver or method
+names. The compiler and this gate do not prove that re-exported value types
+preserve every semantic client contract; compatibility tests remain responsible
+for those contracts.
+
 ## Ownership table
 
 | Package | Owns | Must not own |
@@ -124,9 +139,9 @@ Verification is layered rather than report-driven:
 4. Run the complete `scripts/ci/check-all.sh` before committing. Package-level
    checks are not a substitute for this gate.
 
-When a new architecture rule is added, verify that a temporary violating
-import makes `scripts/ci/check-arch.sh` fail, remove the probe, and verify the
-clean tree passes. Tests must prove the contract they claim: interface
+When a new architecture rule is added, add a focused checker test that makes
+the forbidden import or ownership shape fail, then verify the clean repository
+passes `scripts/ci/check-arch.sh`. Tests must prove the contract they claim: interface
 satisfaction does not pin an exact concrete type, and race tests must not
 mutate process-wide timing variables while background workers are active.
 
