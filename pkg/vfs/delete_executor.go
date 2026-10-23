@@ -5,6 +5,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	idelete "github.com/yinzhenyu/qrypt/pkg/vfs/delete"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"time"
 )
@@ -81,17 +82,15 @@ func (r vfsDeleteOverlayOps) CancelDelete(path string) {
 }
 
 type vfsDeleteUploadCleanup struct {
-	uploads *uploadDomain
+	uploads *upload.Domain
 }
 
-func newVFSDeleteUploadCleanup(uploads *uploadDomain) vfsDeleteUploadCleanup {
+func newVFSDeleteUploadCleanup(uploads *upload.Domain) vfsDeleteUploadCleanup {
 	return vfsDeleteUploadCleanup{uploads: uploads}
 }
 
 func (r vfsDeleteUploadCleanup) RemoveUploadState(path string) {
-	if err := r.uploads.RemoveUpload(path); err == nil {
-		r.uploads.hashes.RemovePath(path)
-	}
+	r.uploads.RemoveAfterRemoteDelete(path)
 }
 
 type vfsDeleteScheduler struct {

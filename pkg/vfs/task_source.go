@@ -10,16 +10,16 @@ import (
 // TaskSource returns a task.Source backed by the upload and delete services.
 func (v *VFS) TaskSource() task.Source {
 	return &vfsTaskSourceAdapter{
-		uploads: v.uploads.Service,
+		uploads: v.uploads,
 		deletes: deleteTaskSource{runtime: newVFSDeleteTaskRuntime(v)},
 	}
 }
 
 // vfsTaskSourceAdapter implements task.Source for a single-drive VFS.
-// It delegates to service-level task sources: uploadServiceTaskSource
+// It delegates to domain-level task sources: uploadServiceTaskSource
 // and deleteTaskSource.
 type vfsTaskSourceAdapter struct {
-	uploads *uploadService
+	uploads *upload.Domain
 	deletes deleteTaskSource
 }
 
@@ -80,13 +80,13 @@ func (a *vfsTaskSourceAdapter) apply(id string, fn func(vfsTaskSource) error) er
 	return ErrNotFound
 }
 
-// uploadServiceTaskSource implements vfsTaskSource backed by *uploadService.
+// uploadServiceTaskSource implements vfsTaskSource backed by the upload domain.
 type uploadServiceTaskSource struct {
-	svc *uploadService
+	svc *upload.Domain
 }
 
 func (s uploadServiceTaskSource) List(filter task.Filter) []task.Task {
-	records := s.svc.TaskRecords(s.svc.PendingUploads())
+	records := s.svc.TaskRecords()
 	tasks := make([]task.Task, 0, len(records))
 	seen := map[string]bool{}
 	for _, r := range records {
@@ -117,23 +117,17 @@ func (s uploadServiceTaskSource) Cancel(ctx context.Context, id string) error {
 }
 
 func (s uploadServiceTaskSource) cancelAndRemove(path string) error {
-	s.svc.CancelUpload(path)
-	if err := s.svc.RemoveUpload(path); err != nil {
-		return err
-	}
-	s.svc.HashRemovePath(path)
-	return nil
+	return s.svc.Discard(path)
 }
 
 func (s uploadServiceTaskSource) Retry(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	pending, ok := s.svc.PendingByID(id)
-	if !ok {
+	if _, ok := s.svc.PendingByID(id); !ok {
 		return ErrNotFound
 	}
-	return s.svc.Retry(pending)
+	return s.svc.RetryByID(id)
 }
 
 func (s uploadServiceTaskSource) Dismiss(ctx context.Context, id string) error {

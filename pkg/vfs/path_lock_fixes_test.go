@@ -92,7 +92,7 @@ func TestStageExistingCleansStagingOnRemoteError(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote := &failingReadRemote{entry: drive.Entry{ID: "remote", Name: "file.txt", Size: 5, ModTime: time.Now()}}
-	err = fs.stageExistingWithDeps(context.Background(), "/file.txt", fs.uploads.Store(), remote)
+	err = fs.stageExistingWithDeps(context.Background(), "/file.txt", fs.uploads, remote)
 	if err == nil {
 		t.Fatal("expected stageExistingWithDeps to fail")
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
@@ -114,20 +115,18 @@ type readCacheInvalidator interface {
 }
 
 type vfsMutationRuntime struct {
-	invalidator       readCacheInvalidator
-	viewRT            view.Runtime
-	uploads           *uploadDomain
-	listChildren      func(context.Context, string) ([]drive.Entry, error)
-	schedulingEnabled func() bool
+	invalidator  readCacheInvalidator
+	viewRT       view.Runtime
+	uploads      *upload.Domain
+	listChildren func(context.Context, string) ([]drive.Entry, error)
 }
 
 func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
 	return vfsMutationRuntime{
-		invalidator:       v,
-		viewRT:            view.NewRuntime(v.view),
-		uploads:           v.uploads,
-		listChildren:      v.driver.List,
-		schedulingEnabled: v.uploadSchedulingEnabled,
+		invalidator:  v,
+		viewRT:       view.NewRuntime(v.view),
+		uploads:      v.uploads,
+		listChildren: v.driver.List,
 	}
 }
 
@@ -137,26 +136,15 @@ func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
 
 func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
 	r.viewRT.MoveLocalModTime(oldPath, newPath)
-	if err := r.uploads.Store().RenameUpload(oldPath, pending); err != nil {
+	if err := r.uploads.RenamePending(oldPath, newPath, pending); err != nil {
 		return err
 	}
-	r.uploads.hashes.RenamePath(oldPath, newPath, pending)
 	// The source path only ever existed as a local pending projection; drop its
 	// cached identity or LocalChildren keeps re-injecting the old name into
 	// every listing after the upload has moved to the new path.
 	r.viewRT.DropEntryPath(oldPath)
-	if !r.schedulingEnabled() {
-		return nil
-	}
-	// Debounce timers and the worker queue are keyed by path: the entry
-	// scheduled for the pre-rename path can only miss its latest-record
-	// lookup and be dropped, leaving the frozen pending unscheduled forever.
-	// Drop it and schedule the renamed record instead. Mutable (unflushed)
-	// records stay unscheduled - their next flush schedules them.
-	r.uploads.CancelUpload(oldPath)
 	if pending.Frozen {
 		logging.L.InfofEvery("vfs.rename_reschedule_upload", time.Second, "[VFS] reschedule renamed upload op_id=%q path=%q old_path=%q size=%d", pending.FID, newPath, oldPath, pending.Size)
-		r.uploads.Enqueue(pending)
 	}
 	return nil
 }
@@ -173,7 +161,7 @@ func (r vfsMutationRuntime) RebasePendingUploads(ctx context.Context, oldPath, n
 	// paths as IDs). Resolve each distinct new parent from the backend rather
 	// than assigning the moved directory's ID to every nested descendant.
 	parents := map[string]string{vfstypes.CleanVirtualPath(newPath): entry.ID}
-	for _, pending := range r.uploads.Store().PendingUploads() {
+	for _, pending := range r.uploads.PendingUploads() {
 		if !vfstypes.IsPathUnder(pending.Path, oldPath) {
 			continue
 		}
@@ -208,21 +196,15 @@ func (r vfsMutationRuntime) RebasePendingUploads(ctx context.Context, oldPath, n
 			currentPath = nextParent
 		}
 	}
-	moved, err := r.uploads.Store().RebaseUploadsUnder(oldPath, newPath, parents)
+	moved, err := r.uploads.RebasePending(oldPath, newPath, parents)
 	if err != nil {
 		return err
 	}
-	for _, next := range moved {
-		oldChild := oldPath + strings.TrimPrefix(next.Path, newPath)
-		r.viewRT.MoveLocalModTime(oldChild, next.Path)
-		r.uploads.hashes.RenamePath(oldChild, next.Path, next)
-		if !r.schedulingEnabled() {
-			continue
-		}
-		r.uploads.CancelUpload(oldChild)
+	for _, item := range moved {
+		next := item.Pending
+		r.viewRT.MoveLocalModTime(item.OldPath, next.Path)
 		if next.Frozen {
-			logging.L.InfofEvery("vfs.rename_rebase_upload", time.Second, "[VFS] reschedule rebased upload op_id=%q path=%q old_path=%q size=%d", next.FID, next.Path, oldChild, next.Size)
-			r.uploads.Enqueue(next)
+			logging.L.InfofEvery("vfs.rename_rebase_upload", time.Second, "[VFS] reschedule rebased upload op_id=%q path=%q old_path=%q size=%d", next.FID, next.Path, item.OldPath, next.Size)
 		}
 	}
 	return nil

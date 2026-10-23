@@ -173,7 +173,7 @@ another domain's internal state.
 
 - `vfs.go`: VFS construction, lifecycle, health, cache controls, shared path
   helpers, pending-upload lookup, and path locking. Upload state is owned by
-  one `uploadDomain`, which contains the service/store, hash tracker, target
+  one `pkg/vfs/upload.Domain`, which contains the service/store, hash tracker, target
   index and engine; `debug` and `pathLocks` stay top-level because they are
   single-state and cross-domain.
 - `driver_runtime.go`: driver capability checks and driver-backed backend
@@ -183,7 +183,7 @@ another domain's internal state.
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
 - `read_range.go`: range reads, chunk slicing, and bounded driver reads
-- `read_window.go`: read window load/coalescing, in-flight wait handling,
+- `pkg/vfs/read/reader.go`: read window load/coalescing, in-flight wait handling,
   read-path staging flush, chunk availability, read-slot admission,
   prefetch reservations, cache/window/hot-chunk/range-hit state, and the
   read-window driver read / chunk-cache write backend
@@ -193,9 +193,9 @@ another domain's internal state.
   helpers
 - `staging.go`: local write staging, create/write/flush/truncate/mtime
   operations, and write-side pending/staging/hash transitions
-- `upload_domain.go`: the single upload owner assembled from service/store,
+- `pkg/vfs/upload/domain.go`: the single upload owner assembled from service/store,
   hash tracker, target index and engine
-- `upload.go`: VFS-facing upload methods, engine assembly, worker loop,
+- `upload.go`: VFS-facing upload methods, domain assembly, worker loop,
   snapshot hashing and read-cache seeding
 - `pkg/vfs/upload/worker.go`: current-generation, quiet-window and admission
   checks behind `Service.ProcessPending`
@@ -302,7 +302,7 @@ and optional `drive` capabilities only.
 
 ## Upload State Flow
 
-A pending upload moves through stages owned by `uploadDomain`. The journal is
+A pending upload moves through stages owned by `pkg/vfs/upload.Domain`. The journal is
 the source of truth; schedules and worker claims are disposable runtime
 indexes over it:
 

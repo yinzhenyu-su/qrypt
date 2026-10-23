@@ -90,18 +90,18 @@ func TestAppendToClaimedGenerationKeepsStagingFile(t *testing.T) {
 	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
 		t.Fatal(err)
 	}
-	frozen, ok := fs.uploads.Store().UploadByPath("/doc.txt")
+	frozen, ok := fs.uploads.PendingByPath("/doc.txt")
 	if !ok || !frozen.Frozen || frozen.UploadStarted {
 		t.Fatalf("pending before claim = %+v ok=%v, want a frozen unclaimed generation", frozen, ok)
 	}
-	claimed, ok := fs.uploads.Store().MarkUploadStarted(frozen)
+	claimed, ok := fs.uploads.ClaimPending(frozen)
 	if !ok {
 		t.Fatal("claim rejected the frozen generation")
 	}
 	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte(" world"), claimed.Size); err != nil {
 		t.Fatal(err)
 	}
-	after, ok := fs.uploads.Store().UploadByPath("/doc.txt")
+	after, ok := fs.uploads.PendingByPath("/doc.txt")
 	if !ok {
 		t.Fatal("pending disappeared after the append")
 	}
@@ -135,18 +135,18 @@ func TestWriteInsideClaimedPrefixRotatesGeneration(t *testing.T) {
 	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
 		t.Fatal(err)
 	}
-	frozen, ok := fs.uploads.Store().UploadByPath("/doc.txt")
+	frozen, ok := fs.uploads.PendingByPath("/doc.txt")
 	if !ok {
 		t.Fatal("pending missing before claim")
 	}
-	claimed, ok := fs.uploads.Store().MarkUploadStarted(frozen)
+	claimed, ok := fs.uploads.ClaimPending(frozen)
 	if !ok {
 		t.Fatal("claim rejected the frozen generation")
 	}
 	if _, err := fs.WriteAt(ctx, "/doc.txt", []byte("HELLO"), 0); err != nil {
 		t.Fatal(err)
 	}
-	after, ok := fs.uploads.Store().UploadByPath("/doc.txt")
+	after, ok := fs.uploads.PendingByPath("/doc.txt")
 	if !ok {
 		t.Fatal("pending disappeared after the overwrite")
 	}
@@ -175,11 +175,11 @@ func TestWriteInsideClaimedPrefixRotatesGeneration(t *testing.T) {
 	if err := fs.Flush(ctx, "/doc.txt"); err != nil {
 		t.Fatal(err)
 	}
-	frozen2, ok := fs.uploads.Store().UploadByPath("/doc.txt")
+	frozen2, ok := fs.uploads.PendingByPath("/doc.txt")
 	if !ok || !frozen2.Frozen {
 		t.Fatalf("pending before second claim = %+v ok=%v, want a frozen generation", frozen2, ok)
 	}
-	claimed2, ok := fs.uploads.Store().MarkUploadStarted(frozen2)
+	claimed2, ok := fs.uploads.ClaimPending(frozen2)
 	if !ok {
 		t.Fatal("second claim rejected the frozen generation")
 	}

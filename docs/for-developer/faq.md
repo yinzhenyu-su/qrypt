@@ -141,11 +141,11 @@ size `S`) differ by 2-3x:
    it to the destination driver. This 1x is inherent to the
    write-then-upload model.
 
-3. **Reading the source may write the read cache** (`read_window.go`
+3. **Reading the source may write the read cache** (`pkg/vfs/read/reader.go`
    `StoreChunk` -> `PutChunkAsync`). Unlike cache seeding, the read path has
    **no large-file skip**: every fetched chunk is persisted even though a
    one-shot copy will never reuse it. Eviction later reclaims large entries
-   (`read_cache_eviction.go`), but the write has already happened. This is
+   (`pkg/vfs/readcache/eviction.go`), but the write has already happened. This is
    pure amplification for a copy.
 
 4. **Cache seeding writes the staging file again** (`pkg/vfs/upload.go`

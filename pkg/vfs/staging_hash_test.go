@@ -65,13 +65,13 @@ func TestStageExistingFeedsUploadSnapshotHashes(t *testing.T) {
 		entry: drive.Entry{ID: "remote", Name: "file.txt", Size: int64(len(content))},
 		data:  content,
 	}
-	if err := fs.stageExistingWithDeps(ctx, "/file.txt", fs.uploads.Store(), remote); err != nil {
+	if err := fs.stageExistingWithDeps(ctx, "/file.txt", fs.uploads, remote); err != nil {
 		t.Fatal(err)
 	}
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	pending, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	pending, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded")
 	}
@@ -107,31 +107,31 @@ func TestRotateFrozenGenerationFeedsHashes(t *testing.T) {
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	frozen, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	frozen, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok || !frozen.Frozen {
 		t.Fatalf("first generation not frozen: %+v ok=%v", frozen, ok)
 	}
-	if _, ok := fs.uploads.Store().MarkUploadStarted(frozen); !ok {
+	if _, ok := fs.uploads.ClaimPending(frozen); !ok {
 		t.Fatal("frozen generation could not be claimed by an upload")
 	}
 	// A recorded replacement candidate makes the frozen generation
 	// non-reusable, so the next write rotates exactly as it does when an
 	// upload is already streaming. The write itself stays sequential, which is
 	// what keeps the copy's hash feed usable.
-	if _, _, err := fs.uploads.Store().RecordUploadReplacementIfUnchanged(frozen, upload.UploadReplacement{ID: "candidate", ParentID: "0", Name: "file.txt.candidate", Size: 11}); err != nil {
+	if _, _, err := fs.uploads.RecordReplacement(frozen, upload.UploadReplacement{ID: "candidate", ParentID: "0", Name: "file.txt.candidate", Size: 11}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fs.WriteAt(ctx, "/file.txt", []byte("!"), 11); err != nil {
 		t.Fatal(err)
 	}
-	rotated, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	rotated, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok || rotated.FID == frozen.FID {
 		t.Fatalf("write past a claimed pending with a replacement candidate did not rotate the generation: %+v", rotated)
 	}
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	current, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	current, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded")
 	}
@@ -155,7 +155,7 @@ func TestStageExistingOutOfOrderWriteRehashesStaging(t *testing.T) {
 		entry: drive.Entry{ID: "remote", Name: "file.txt", Size: int64(len(content))},
 		data:  content,
 	}
-	if err := fs.stageExistingWithDeps(ctx, "/file.txt", fs.uploads.Store(), remote); err != nil {
+	if err := fs.stageExistingWithDeps(ctx, "/file.txt", fs.uploads, remote); err != nil {
 		t.Fatal(err)
 	}
 	// Overwrite the first bytes in place: offset 0 is no longer the tracker's
@@ -166,7 +166,7 @@ func TestStageExistingOutOfOrderWriteRehashesStaging(t *testing.T) {
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	pending, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	pending, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded")
 	}

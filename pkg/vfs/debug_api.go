@@ -463,7 +463,7 @@ func (v *VFS) debugMountSnapshot(name string) diagnostics.MountSnapshot {
 }
 
 func (v *VFS) debugCacheSnapshot() diagnostics.DebugCacheSnapshot {
-	return diagnostics.CacheSnapshot(newVFSDebugCacheRuntime(v.read, v.uploads.Store()))
+	return diagnostics.CacheSnapshot(newVFSDebugCacheRuntime(v.read, v.uploads))
 }
 
 func (v *VFS) DebugStaging(ctx context.Context, path string) (diagnostics.DebugStagingReport, error) {
@@ -481,9 +481,9 @@ func (v *VFS) debugStagingMount(name, path string) diagnostics.DebugStagingMount
 }
 
 func (v *VFS) uploadSnapshots(pending []PendingUpload) []uploadSnapshot {
-	return upload.ComposeSnapshots(pending, v.uploads.DebugState().ActiveSnapshots(), v.uploads.ScheduledDeadlines())
+	return upload.ComposeSnapshots(pending, v.uploads.DebugActiveSnapshots(), v.uploads.ScheduledDeadlines())
 }
 
 func (v *VFS) uploadSnapshotHistory() []uploadSnapshot {
-	return v.uploads.DebugState().HistorySnapshots()
+	return v.uploads.DebugHistorySnapshots()
 }

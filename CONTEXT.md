@@ -142,6 +142,10 @@ _Avoid_: temp file、write-back
 同一虚拟路径的一次暂存内容版本。新写入开启新代；旧代的上传被顶掉即为被取代。
 _Avoid_: version
 
+**Upload Generation Consistency（上传代一致性）**:
+待传记录、暂存文件、增量哈希、调度状态与执行状态始终共同指向同一上传代；跨域操作必须通过上传域提供的组合转换保持这一约束。
+_Avoid_: upload state consistency、generation sync
+
 **Frozen（冻结代）**:
 已被快照、字节对读取方不可变的上传代。
 _Avoid_: locked

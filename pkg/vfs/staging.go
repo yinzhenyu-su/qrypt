@@ -31,10 +31,10 @@ func (v *VFS) Create(ctx context.Context, path string) (err error) {
 }
 
 func (v *VFS) createLocked(ctx context.Context, path string) error {
-	return v.createLockedWithStore(ctx, path, v.uploads.Store(), newVFSUploadWriteHashTracker(v.uploads, v.driver))
+	return v.createLockedWithStore(ctx, path, v.uploads, newVFSUploadWriteHashTracker(v.uploads, v.driver))
 }
 
-func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *uploadStore, hashes vfsUploadWriteHashTracker) error {
+func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upload.Domain, hashes vfsUploadWriteHashTracker) error {
 	path = vfstypes.CleanVirtualPath(path)
 	v.restoreDeletedAncestor(pathpkg.Dir(path))
 	v.cancelDeletedFile(path)
@@ -43,7 +43,7 @@ func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upl
 		return err
 	}
 	v.unhideCopyChild(pathpkg.Dir(path), name)
-	old, hadOld := store.UploadByPath(path)
+	old, hadOld := store.PendingByPath(path)
 	fid := upload.NewStagingFID(path)
 	localPath, err := store.CreateStaging(fid)
 	if err != nil {
@@ -51,7 +51,7 @@ func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upl
 	}
 	now := util.Now()
 	pending := PendingUpload{Path: path, FID: fid, ParentID: parent.ID, Name: name, LocalPath: localPath, ModTime: now.UnixNano()}
-	if err := store.SaveUpload(pending); err != nil {
+	if err := store.SavePending(pending); err != nil {
 		_ = store.RemoveStaging(localPath)
 		return err
 	}
@@ -73,10 +73,10 @@ func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *upl
 // Parent/Name are reused from the old pending because the path already went
 // through createLocked once.
 func (v *VFS) rotateFrozenGeneration(path string, old PendingUpload) (PendingUpload, error) {
-	return v.rotateFrozenGenerationWithStore(path, old, v.uploads.Store())
+	return v.rotateFrozenGenerationWithStore(path, old, v.uploads)
 }
 
-func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, store *uploadStore) (PendingUpload, error) {
+func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, store *upload.Domain) (PendingUpload, error) {
 	fid := upload.NewStagingFID(path)
 	localPath, err := store.CreateStaging(fid)
 	if err != nil {
@@ -99,7 +99,7 @@ func (v *VFS) rotateFrozenGenerationWithStore(path string, old PendingUpload, st
 	now := util.Now()
 	pending.Size = size
 	pending.ModTime = now.UnixNano()
-	if err := store.SaveUpload(pending); err != nil {
+	if err := store.SavePending(pending); err != nil {
 		_ = store.RemoveStaging(localPath)
 		return PendingUpload{}, err
 	}
@@ -139,8 +139,8 @@ func appendsToFrozenGeneration(pending PendingUpload, off int64, n int) bool {
 // chunks, flush per round): 16 rounds wrote 8.5x and 64 rounds 32.5x the
 // logical bytes, both rotating every time. Once an upload has claimed the
 // generation, the write rotates to a new file exactly as it did before.
-func (v *VFS) writeTarget(store *uploadStore, path string, pending PendingUpload) (PendingUpload, error) {
-	if reused, ok := store.TryReuseFrozenStaging(pending); ok {
+func (v *VFS) writeTarget(store *upload.Domain, path string, pending PendingUpload) (PendingUpload, error) {
+	if reused, ok := store.TryReuseFrozen(pending); ok {
 		logging.L.DebugfEvery("vfs.reuse_frozen_staging", time.Second, "[VFS] reuse frozen staging generation op_id=%q path=%q size=%d local=%q", reused.FID, path, reused.Size, reused.LocalPath)
 		return reused, nil
 	}
@@ -192,7 +192,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
-	store := v.uploads.Store()
+	store := v.uploads
 	hashes := newVFSUploadWriteHashTracker(v.uploads, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
@@ -234,7 +234,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	}
 	now := util.Now()
 	pending.ModTime = now.UnixNano()
-	store.UpdateUploadTransient(pending)
+	store.UpdatePendingTransient(pending)
 	v.setLocalModTime(path, now)
 	logging.L.DebugfEvery("vfs.write_staged", time.Second, "[VFS] write staged op_id=%q path=%q off=%d len=%d written=%d size=%d local=%q", pending.FID, path, off, len(data), n, pending.Size, pending.LocalPath)
 	return n, nil
@@ -247,7 +247,7 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
-	store := v.uploads.Store()
+	store := v.uploads
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
 		logging.L.DebugfEvery("vfs.flush_ignored", time.Second, "[VFS] flush ignored without pending path=%q", path)
@@ -261,7 +261,7 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 		return err
 	}
 	pending.Size = size
-	if sourceHashes, ok := v.uploads.hashes.Snapshot(pending, requiredUploadSnapshotHashes(v.driver)); ok {
+	if sourceHashes, ok := v.uploads.SnapshotHashes(pending, requiredUploadSnapshotHashes(v.driver)); ok {
 		pending.SourceHashes = sourceHashes
 	}
 	pending.Frozen = true
@@ -270,10 +270,10 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 		pending.ModTime = now.UnixNano()
 		v.setLocalModTime(path, now)
 	}
-	if err := store.SaveUpload(pending); err != nil {
+	if err := store.SavePending(pending); err != nil {
 		return err
 	}
-	if latest, ok := store.UploadByPath(path); ok {
+	if latest, ok := store.PendingByPath(path); ok {
 		pending = latest
 	}
 	delay := v.uploads.DefaultDelay()
@@ -298,7 +298,7 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 	path = vfstypes.CleanVirtualPath(path)
 	unlock := v.lockPath(path)
 	defer unlock()
-	store := v.uploads.Store()
+	store := v.uploads
 	hashes := newVFSUploadWriteHashTracker(v.uploads, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
@@ -327,7 +327,7 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 	if entry, err := v.resolve(ctx, path); err == nil && !entry.IsDir {
 		v.invalidateReadCache(entry)
 	}
-	return store.SaveUpload(pending)
+	return store.SavePending(pending)
 }
 
 // existingFileForWrite reports whether path currently resolves to a regular
@@ -350,14 +350,14 @@ func (v *VFS) existingFileForWrite(ctx context.Context, path string) (drive.Entr
 }
 
 func (v *VFS) stageExisting(ctx context.Context, path string) error {
-	return v.stageExistingWithStore(ctx, path, v.uploads.Store())
+	return v.stageExistingWithStore(ctx, path, v.uploads)
 }
 
-func (v *VFS) stageExistingWithStore(ctx context.Context, path string, store *uploadStore) error {
+func (v *VFS) stageExistingWithStore(ctx context.Context, path string, store *upload.Domain) error {
 	return v.stageExistingWithDeps(ctx, path, store, newVFSUploadWriteRemote(v))
 }
 
-func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *uploadStore, remote uploadWriteRemote) error {
+func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upload.Domain, remote uploadWriteRemote) error {
 	parent, name, err := remote.Parent(ctx, path)
 	if err != nil {
 		return err
@@ -433,7 +433,7 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 	}
 	pending.Size = size
 	pending.ModTime = modTime.UnixNano()
-	if err := store.SaveUpload(pending); err != nil {
+	if err := store.SavePending(pending); err != nil {
 		dropStaging()
 		return err
 	}
@@ -450,9 +450,9 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 // fed, so after a crash the safe "no hashes, hash the file" path still applies.
 func (v *VFS) stagingHashFeed(pending PendingUpload) func(chunk []byte, off int64) {
 	algorithms := requiredUploadSnapshotHashes(v.driver)
-	v.uploads.hashes.Start(pending, algorithms)
+	v.uploads.StartHashes(pending, algorithms)
 	return func(chunk []byte, off int64) {
-		v.uploads.hashes.Write(pending, chunk, off, algorithms)
+		v.uploads.WriteHashes(pending, chunk, off, algorithms)
 	}
 }
 
@@ -464,7 +464,7 @@ func (v *VFS) SetModTime(ctx context.Context, path string, modTime time.Time) (e
 	}
 	unlock := v.lockPath(path)
 	defer unlock()
-	store := v.uploads.Store()
+	store := v.uploads
 	if _, err := pendingUploadFromWriteStore(store, path); err == nil {
 		v.setLocalModTime(path, modTime)
 		return nil

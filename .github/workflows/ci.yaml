@@ -64,11 +64,6 @@ jobs:
         env:
           QRYPT_TOOLS_DIR: ${{ github.workspace }}/.cache/qrypt-tools
         run: |
-          if ! command -v shellcheck >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y shellcheck
-          fi
-          shellcheck --version
           scripts/ci/install-tools.sh
 
       - name: Static checks
@@ -76,6 +71,7 @@ jobs:
         env:
           QRYPT_TOOLS_DIR: ${{ github.workspace }}/.cache/qrypt-tools
         run: |
+          export PATH="$QRYPT_TOOLS_DIR:$PATH"
           go vet ./...
           "$QRYPT_TOOLS_DIR/staticcheck" ./...
           "$QRYPT_TOOLS_DIR/golangci-lint" run ./...

@@ -129,7 +129,7 @@ type vfsTaskSource interface {
 
 func (v *VFS) taskSources() []vfsTaskSource {
 	return []vfsTaskSource{
-		uploadServiceTaskSource{svc: v.uploads.Service},
+		uploadServiceTaskSource{svc: v.uploads},
 		deleteTaskSource{runtime: newVFSDeleteTaskRuntime(v)},
 	}
 }

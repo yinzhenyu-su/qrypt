@@ -2,9 +2,78 @@ package upload
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
 )
+
+func TestServiceProcessPendingRemovesUnreferencedStagingForMissingRecord(t *testing.T) {
+	t.Parallel()
+	store := newPendingStoreFixture(t)
+	localPath, err := store.CreateStaging("missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, []byte("orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pending := PendingUpload{Path: "/missing.txt", FID: "missing", LocalPath: localPath, Frozen: true}
+	svc := NewService(ServiceOptions{Store: store, UploadWorkers: 1})
+
+	if err := svc.ProcessPending(context.Background(), pending, ProcessOptions{
+		SourceUploadSupported: true,
+		Execute: func(context.Context, PendingUpload) error {
+			t.Fatal("missing record executed")
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(localPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging stat error = %v, want not exist", err)
+	}
+}
+
+func TestServiceProcessPendingReleasesAdmissionAfterExecution(t *testing.T) {
+	t.Parallel()
+	store := newPendingStoreFixture(t)
+	svc := NewService(ServiceOptions{Store: store, UploadWorkers: 1})
+	executeErr := errors.New("upload failed")
+
+	for i, path := range []string{"/first.txt", "/second.txt"} {
+		pending := PendingUpload{
+			Path:      path,
+			FID:       path,
+			LocalPath: store.StagingPath(path),
+			Frozen:    true,
+			UpdatedAt: time.Now().Add(-time.Hour).UnixNano(),
+		}
+		if err := store.SaveUploadExact(pending); err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		err := svc.ProcessPending(context.Background(), pending, ProcessOptions{
+			SourceUploadSupported: true,
+			Execute: func(context.Context, PendingUpload) error {
+				calls++
+				if i == 0 {
+					return executeErr
+				}
+				return nil
+			},
+		})
+		if i == 0 && !errors.Is(err, executeErr) {
+			t.Fatalf("first execution error = %v, want %v", err, executeErr)
+		}
+		if i == 1 && err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("execution %d calls = %d, want 1", i, calls)
+		}
+	}
+}
 
 func TestServiceProcessPendingExecutesCurrentGeneration(t *testing.T) {
 	t.Parallel()

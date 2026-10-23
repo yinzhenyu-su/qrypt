@@ -8,41 +8,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
-
-func TestVFSUploadRuntimeAppliesModTimeAndCommitsEntry(t *testing.T) {
-	t.Parallel()
-	fs, err := New(localfs.New(t.TempDir()), Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime := newVFSUploadRuntime(fs)
-	modTime := time.Unix(1234, 0)
-	pending := PendingUpload{
-		Path:    "/uploaded.txt",
-		Name:    "uploaded.txt",
-		ModTime: modTime.UnixNano(),
-	}
-	entry := runtime.ApplyUploadModTime(pending, drive.Entry{ID: "uploaded-id", Name: "uploaded.txt", Size: 7})
-	if !entry.ModTime.Equal(modTime) {
-		t.Fatalf("entry modtime = %s, want %s", entry.ModTime, modTime)
-	}
-	if got := view.NewRuntime(fs.view).LocalModTimeFor(pending.Path); !got.Equal(modTime) {
-		t.Fatalf("local modtime = %s, want %s", got, modTime)
-	}
-
-	view.NewRuntime(fs.view).CommitChildren("/", []drive.Entry{{ID: "old", Name: "uploaded.txt"}}, time.Now().Add(time.Hour))
-	newVFSViewCommitter(fs).CommitUploadedEntry(pending.Path, entry, "")
-	rt := view.NewRuntime(fs.view)
-	committed, ok := rt.CachedEntry(pending.Path)
-	if !ok || committed.ID != entry.ID {
-		t.Fatalf("committed entry = %+v, ok=%v", committed, ok)
-	}
-	if _, listCached := rt.FreshList("/", time.Now().Add(time.Minute)); listCached {
-		t.Fatal("parent list cache was not invalidated")
-	}
-}
 
 func TestVFSUploadRuntimeSeedsReadCache(t *testing.T) {
 	t.Parallel()

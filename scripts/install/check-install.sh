@@ -14,6 +14,14 @@ if ! command -v shellcheck >/dev/null 2>&1; then
     exit 1
 fi
 
+expected_shellcheck=$(sed -nE 's/^[[:space:]]*ShellcheckVersion[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' tools.go)
+actual_shellcheck=$(shellcheck --version | sed -nE 's/^version: ([^[:space:]]+).*/\1/p')
+if [ -z "$expected_shellcheck" ] || [ "$actual_shellcheck" != "$expected_shellcheck" ]; then
+    echo "check-install: ShellCheck $expected_shellcheck is required; found ${actual_shellcheck:-unknown}" >&2
+    echo "update ShellcheckVersion in tools.go together with CI when upgrading" >&2
+    exit 1
+fi
+
 shellcheck scripts/install/install.sh scripts/install/smoke-install.sh scripts/install/check-install.sh
 
 go test ./pkg/install/ -run 'TestInstaller|TestPowerShellInstallerNamingMatchesUpdater' -count=1

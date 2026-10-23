@@ -35,11 +35,11 @@ func TestNestedDirectoryRenameUploadsToNestedParent(t *testing.T) {
 	if err := fs.Rename(ctx, "/dir", "/moved"); err != nil {
 		t.Fatal(err)
 	}
-	pending, ok := fs.uploads.Store().UploadByPath("/moved/sub/a.txt")
+	pending, ok := fs.uploads.PendingByPath("/moved/sub/a.txt")
 	if !ok {
 		t.Fatal("pending disappeared")
 	}
-	if err := fs.uploads.engine.Execute(ctx, pending); err != nil {
+	if err := fs.uploads.Execute(ctx, pending); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(remote, "moved", "sub", "a.txt")); err != nil || string(got) != "nested" {
@@ -59,15 +59,15 @@ func TestPendingRenamePreservesOccupiedDestination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	before, _ := fs.uploads.Store().UploadByPath("/target")
+	before, _ := fs.uploads.PendingByPath("/target")
 	if err := fs.Rename(ctx, "/source", "/target"); err == nil {
 		t.Fatal("rename overwrote a pending destination")
 	}
-	after, ok := fs.uploads.Store().UploadByPath("/target")
+	after, ok := fs.uploads.PendingByPath("/target")
 	if !ok || before.FID != after.FID {
 		t.Fatalf("target pending replaced: before=%q after=%q", before.FID, after.FID)
 	}
-	if _, ok := fs.uploads.Store().UploadByPath("/source"); !ok {
+	if _, ok := fs.uploads.PendingByPath("/source"); !ok {
 		t.Fatal("source pending lost")
 	}
 }
@@ -112,7 +112,7 @@ func TestPendingRemoveRetainsContentOnParentListError(t *testing.T) {
 	if err := fs.Remove(ctx, "/dir/a"); !errors.Is(err, drv.err) {
 		t.Fatalf("remove error = %v, want %v", err, drv.err)
 	}
-	if _, ok := fs.uploads.Store().UploadByPath("/dir/a"); !ok {
+	if _, ok := fs.uploads.PendingByPath("/dir/a"); !ok {
 		t.Fatal("pending content lost")
 	}
 }
