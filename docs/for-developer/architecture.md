@@ -84,11 +84,12 @@ back in `pkg/control`.
 `pkg/vfs` is the public filesystem facade (VFS/Namespace API and stable file
 capabilities). Its implementation
 lives in `pkg/vfs` sub-packages, one per domain; `pkg/vfs` wires them
-together and never holds domain runtime state:
+together and holds one owner object per domain rather than the domain's
+individual runtime collaborators:
 
 - `vfstypes` — shared types and path helpers
 - `upload` — upload engine, persistent pending store (write-ahead journal),
-  and per-path debounce scheduling via the injected `KeyedScheduler`
+  per-path scheduling, quiet-window checks, and upload admission
 - `readcache` — durable read-chunk cache: index persistence (debounced via
   the injected `Debouncer`), async write queue, and the admission/replacement
   policy (`eviction.go`, which derives its budget tree from the index on each
@@ -166,16 +167,15 @@ assembly.
 ## VFS Responsibilities
 
 `pkg/vfs` owns provider-independent filesystem semantics. Files are grouped
-by domain; the `vfsXxxRuntime` types are thin method-grouping views over the
-shared `VFS` state, used to keep each domain's helpers close to its public
-operations.
+by domain. Cross-domain adapters expose only the view, driver, invalidation or
+fault-injection seam needed by the receiving domain; they do not reconstruct
+another domain's internal state.
 
 - `vfs.go`: VFS construction, lifecycle, health, cache controls, shared path
-  helpers, pending-upload lookup, and path locking. Domain state is grouped
-  by ownership into `readState`/`uploadState`/`deleteState` (initialized
-  together in `New`, mutated only by their domain's code paths); `debug`
-  and `pathLocks` stay top-level because they are single-state and
-  cross-domain.
+  helpers, pending-upload lookup, and path locking. Upload state is owned by
+  one `uploadDomain`, which contains the service/store, hash tracker, target
+  index and engine; `debug` and `pathLocks` stay top-level because they are
+  single-state and cross-domain.
 - `driver_runtime.go`: driver capability checks and driver-backed backend
   factory for list, mutation, remote mutation, and debug driver exposure
 - `listing.go`: public list operations, directory cache, list coalescing,
@@ -191,34 +191,28 @@ operations.
 - `read_fast_path.go`: hot chunk cache and cached-range promotion helpers
 - `read_keys.go` and `read_debug_helpers.go`: read cache keys and diagnostic
   helpers
-- `staging.go` and `staging_write.go`: local write staging, create/write/
-  flush/truncate/mtime operations, and write-side pending/staging/hash state
-- `upload_write_store.go`: write-side store/hash-tracker/remote-read adapters
-  used by staging write operations
-- `upload_worker.go`: upload worker loop, quiet-window checks, admission, and
-  the worker runtime boundary
-- `upload_engine.go`: one pending upload execution (remote preparation,
-  driver upload, replacement, failure recording), plus the upload engine
-  boundary and its runtime/fault/scheduler seams
-- `upload_snapshot.go`: frozen staging snapshot validation, upload hashing,
-  read-cache seeding, and the upload-engine snapshot/recheck step
+- `staging.go`: local write staging, create/write/flush/truncate/mtime
+  operations, and write-side pending/staging/hash transitions
+- `upload_domain.go`: the single upload owner assembled from service/store,
+  hash tracker, target index and engine
+- `upload.go`: VFS-facing upload methods, engine assembly, worker loop,
+  snapshot hashing and read-cache seeding
+- `pkg/vfs/upload/worker.go`: current-generation, quiet-window and admission
+  checks behind `Service.ProcessPending`
+- `pkg/vfs/upload/engine.go` and `commit.go`: one claimed generation's remote
+  preparation, upload, replacement, failure recording, commit and rollback
 - `upload_recovery.go`: persisted staging checks and pending-upload resume
   after restart; corrupt frozen generations remain available for recovery
-- `upload_commit.go`: upload commit phase - read-cache seed, view commit,
-  pending/staging cleanup, and stale-commit rollback
-- `upload_runtime.go`: upload runtime and observer adapters over VFS state
-- `upload_fault.go`: debug upload-cancel fault injection
-- `upload_schedule.go`: upload enqueue, debounce, retry delay, cancellation,
-  and concurrency admission (engine scheduler seam + VFS helpers)
-- `pending_upload_store.go`: pending upload state/staging cleanup adapter used
-  by the upload engine
-- `remote_mutation_backend.go`: upload-side remote mutation adapter around
+- `upload_runtime.go`: view, observer, snapshot, fault and write-hash adapters
+  at the upload domain's cross-domain seams
+- `driver_runtime.go`: upload-side remote mutation adapter around
   driver calls used by the upload engine and upload replacement policy
-- `upload_replace.go`: temporary upload naming and existing-file replacement
-- `upload_schedule.go` and `upload_admission.go`: upload enqueue, debounce,
-  retry delay, cancellation, and concurrency admission
-- `upload_store.go` and `upload_journal.go`: pending upload state, journal
-  persistence, and staging ownership
+- `pkg/vfs/upload/replace.go`: temporary upload naming and existing-file
+  replacement
+- `pkg/vfs/upload/service.go`: upload enqueue, quiet-window scheduling,
+  cancellation, worker claims and concurrency admission
+- `pkg/vfs/upload/store.go`: pending upload state, journal persistence and
+  staging ownership
 - `mutation.go`: public mutation operations, remote mkdir/list/rename/move
   backend, and local view/cache/pending-upload state boundaries for mkdir,
   rename, remove, and directory-copy flows
@@ -308,31 +302,34 @@ and optional `drive` capabilities only.
 
 ## Upload State Flow
 
-A pending upload moves through stages with explicit state ownership. Each
-stage owns exactly one piece of state and hands it to the next:
+A pending upload moves through stages owned by `uploadDomain`. The journal is
+the source of truth; schedules and worker claims are disposable runtime
+indexes over it:
 
-1. **Staging** (`staging.go`, `staging_write.go`): `WriteAt`/`Flush` write
-   the local staging file and update the `PendingUpload` record. Ownership:
-   `stagingStore` owns the disk file, `uploadStore` owns the pending record
-   and its journal; the record holds the staging reference.
-2. **Schedule** (`upload_schedule.go`): `enqueueAfter` arms a debounce timer
-   in `uploadScheduleState`. Ownership: the timer; cancelled on reschedule,
-   upload cancel, or shutdown (`uploadState.Close`).
-3. **Worker** (`upload_worker.go`): the timer fires into `uploadState.queue`;
-   a worker admits the record (quiet window, admission) and runs the engine.
-4. **Engine - snapshot** (`upload_engine.go`, `upload_snapshot.go`):
+1. **Staging** (`staging.go`): `WriteAt`/`Flush` write
+   the local staging file and update the `PendingUpload` record and matching
+   incremental hash state. The record holds the staging reference.
+2. **Schedule** (`pkg/vfs/upload/service.go`): `EnqueueAfter` replaces the
+   path's deadline in the journal-backed minimum-heap index. It does not move
+   pending content into a production channel or create a timer per file.
+3. **Worker** (`upload.go`, `pkg/vfs/upload/worker.go`): `Service.Receive`
+   claims an eligible path, reloads its current journal record, and
+   `ProcessPending` applies current-generation, quiet-window and admission
+   checks before calling the engine.
+4. **Engine - claim/snapshot** (`pkg/vfs/upload/engine.go`, `upload.go`): the
+   engine atomically marks the generation claimed before
    `freezeSnapshot` syncs/stats/hashes the staging file into an
    `uploadSnapshot`, then rechecks the pending record. Ownership: the
    snapshot freezes staging contents; the record must still be the latest
    for the path or the upload is skipped (removed/superseded).
-5. **Engine - remote** (`upload_engine.go`): `prepareUploadTarget` decides
+5. **Engine - remote** (`pkg/vfs/upload/engine.go`): target preparation decides
    replace semantics, then `PutSource` streams the snapshot. Failures are
    recorded via `recordFailure` (permanent vs retryable) and the record
    decides requeue.
-6. **Replace** (`upload_replace.go`): `replaceUploadedFile` applies an
+6. **Replace** (`pkg/vfs/upload/replace.go`): `replaceUploadedFile` applies an
    existing-file replacement under the final name.
-7. **Commit/Cleanup** (`upload_commit.go`): `finalizeUpload` seeds the read
-   cache, commits the entry into `viewState.entries`, removes the pending
+7. **Commit/Cleanup** (`pkg/vfs/upload/commit.go`): `finalizeUpload` seeds the
+   read cache, commits the entry into the effective view, removes the pending
    record (`RemoveIfUnchanged` - a moved-on record rolls the upload back
    via `rollbackUploadedEntry`), then removes the staging file.
 

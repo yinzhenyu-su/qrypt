@@ -10,6 +10,18 @@ Flush 同步暂存内容、保存冻结代，然后更新按虚拟路径合并�
 被另一个 worker 领取。新的上传代可以继续落盘，并在旧代结束后调度。
 上传快照及提交时的上传代核对继续负责防止旧上传覆盖新写入。
 
+## 上传代一致性
+
+上传代一致性要求待传记录、暂存文件、增量哈希、调度状态与执行中的上传
+始终指向同一上传代。`uploadDomain` 是这些状态的单一所有者；VFS 和 mutation、
+delete 等相邻 domain 只能通过它执行组合操作，不分别持有 store、scheduler、
+hash tracker 或 engine。
+
+调度项只是可丢弃的索引，journal 中的待传记录才是当前上传代的事实来源。
+worker 领取路径后必须重新读取 journal 并验证上传资格；engine 在读取字节前
+原子认领上传代，并在远端写入前与提交时再次核对。核对发现新上传代时，旧代
+进入被取代结局，回滚其远端结果，并调度仍符合上传资格的新代。
+
 生产调度不使用待传内容 channel，不为每个文件建立定时器，也不在拥塞时
 创建等待入队的 goroutine。worker 只等待共享的变更通知或最近的到期时间，
 等待者和活动定时器数量受 upload_workers 限制。停止时取消领取和上传，
@@ -25,7 +37,7 @@ Flush 同步暂存内容、保存冻结代，然后更新按虚拟路径合并�
 重试状态，到期后再领取；准入繁忙时最多等待 250 毫秒重新检查，不重启内容
 静默窗口。未 Flush 的可变上传代仍遵循原来的恢复契约：保持本地，等待 Flush。
 
-UploadScheduler 注入和 Queue/SetQueue 保留用于既有确定性测试及兼容诊断，
+UploadScheduler 注入和 Queue 保留用于确定性调度测试及兼容诊断，
 生产 worker 通过 Service.Receive 领取，不消费该测试 inbox。
 诊断 upload_length 显示磁盘待传记录数量，upload_cap 为 0 表示无 channel 容量限制，
 实际并发仍由 upload_workers 和上传准入限制。
