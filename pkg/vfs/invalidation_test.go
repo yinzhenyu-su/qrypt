@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
@@ -57,6 +58,39 @@ func TestNamespaceInvalidationPrefixesMountName(t *testing.T) {
 	fs.emitInvalidation("/ignored.bin")
 	if want := []string{"/quark/videos/movie.bin"}; !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths after unsubscribe = %v, want %v", paths, want)
+	}
+}
+
+func TestNamespaceInvalidationConcurrentSubscriptions(t *testing.T) {
+	t.Parallel()
+	ns, err := NewNamespace(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const subscriberCount = 64
+	start := make(chan struct{})
+	unsubscribes := make([]func(), subscriberCount)
+	var wg sync.WaitGroup
+	for i := range subscriberCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			unsubscribes[i] = ns.SubscribeInvalidations(func(string) {})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	ns.mu.RLock()
+	got := len(ns.subs)
+	ns.mu.RUnlock()
+	if got != subscriberCount {
+		t.Fatalf("subscriptions = %d, want %d", got, subscriberCount)
+	}
+	for _, unsubscribe := range unsubscribes {
+		unsubscribe()
 	}
 }
 

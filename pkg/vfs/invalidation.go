@@ -101,12 +101,12 @@ func (n *Namespace) SubscribeInvalidations(listener func(string)) func() {
 	}
 	var once sync.Once
 	sub := &invalidationSubscription{active: true, unsubs: map[string]func(){}, listener: listener}
-	n.mu.RLock()
+	n.mu.Lock()
 	n.subs[sub] = struct{}{}
 	for name, fs := range n.mounts {
 		sub.attach(name, fs)
 	}
-	n.mu.RUnlock()
+	n.mu.Unlock()
 	return func() {
 		once.Do(func() {
 			n.mu.Lock()

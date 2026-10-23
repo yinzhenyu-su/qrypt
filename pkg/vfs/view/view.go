@@ -180,20 +180,20 @@ type DelayedDeleteState struct {
 func NewOverlayDelayedDeleteState() (*Overlay, *DelayedDeleteState) {
 	mu := &sync.Mutex{}
 	return &Overlay{
-		mu:                 mu,
-		deleted:            map[string]drive.Entry{},
-		renameOverlays:     map[string]overlayOp{},
-		restoredDirs:       map[string]time.Time{},
-		copyHiddenChildren: map[string]map[string]time.Time{},
-		deletedDirs:        map[string]struct{}{},
-	}, &DelayedDeleteState{
-		mu:        mu,
-		scheduler: scheduler.NewTimeKeyedScheduler(),
-		active:    map[string]drive.Entry{},
-		failures:  map[string]string{},
-		takeovers: map[string]struct{}{},
-		changed:   make(chan struct{}),
-	}
+			mu:                 mu,
+			deleted:            map[string]drive.Entry{},
+			renameOverlays:     map[string]overlayOp{},
+			restoredDirs:       map[string]time.Time{},
+			copyHiddenChildren: map[string]map[string]time.Time{},
+			deletedDirs:        map[string]struct{}{},
+		}, &DelayedDeleteState{
+			mu:        mu,
+			scheduler: scheduler.NewTimeKeyedScheduler(),
+			active:    map[string]drive.Entry{},
+			failures:  map[string]string{},
+			takeovers: map[string]struct{}{},
+			changed:   make(chan struct{}),
+		}
 }
 
 // --- overlay map maintenance helpers (callers must hold o.mu) ---
