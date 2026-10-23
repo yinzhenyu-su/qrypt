@@ -43,7 +43,8 @@ Arrows show compile-time dependency direction. In particular, `pkg/mobile`
 depends on `pkg/core`; they are not peer layers, and `pkg/core` never depends
 on `pkg/mobile`. Provider drivers must not import VFS, mount, control, or CLI
 packages. VFS and mount code must not import concrete provider packages. These
-rules are enforced automatically by
+direct dependency and ownership rules are enforced automatically from Go
+package metadata and declarations by
 `scripts/ci/check-arch.sh` in CI (every PR); when the boundary is violated the
 build fails.
 
@@ -74,7 +75,7 @@ packages should remain narrow and avoid depending on higher runtime layers:
 
 `pkg/control` owns only local HTTP transport and route encoding. Its debug
 server is read-only; its command server is the separately constructed mutable
-surface. The sync executor must not depend on it (rule 5 in `check-arch.sh`);
+surface. The sync executor's dependency policy must not include it;
 `pkg/core` and `internal/cli` are its host and client and may. Driver-level copy logic lives in
 `pkg/vfs/drivecopy`, contract harnesses in `pkg/contracttest` — never
 back in `pkg/control`.
