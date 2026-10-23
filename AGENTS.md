@@ -1,5 +1,5 @@
 - 提交前确保通过本地 CI；在 `main` 分支提交前，必须使用与 `.github/workflows/ci.yaml` 相同的 Go 版本运行 `scripts/ci/check-all.sh`，退出码为 0 且输出 `== local CI check passed ==` 后才能提交。检查后若继续修改待提交内容，须重新运行；受环境限制未跑完时，应报告阻塞并暂停提交。
-- 修改或新增 Go 文件后，必须在验证或提交前对所有改动的 `.go` 文件运行 `gofmt -w`，并确认 `gofmt -l` 对这些文件无输出；之后若继续修改 Go 文件，须重新格式化并检查。
+- 修改或新增 Go 文件后，必须在验证或提交前使用当前模块 toolchain 的格式化器（`GOFMT="$(go env GOROOT)/bin/gofmt"`）对所有改动的 `.go` 文件运行 `"$GOFMT" -w`，并确认 `"$GOFMT" -l` 对这些文件无输出；之后若继续修改 Go 文件，须重新格式化并检查。
 - 优先使用 go 1.27+ 的语法
 
 ## 文档编写

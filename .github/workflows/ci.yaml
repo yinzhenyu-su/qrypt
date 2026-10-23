@@ -77,7 +77,8 @@ jobs:
           "$QRYPT_TOOLS_DIR/golangci-lint" run ./...
           scripts/ci/check-arch.sh
           "$QRYPT_TOOLS_DIR/govulncheck" ./...
-          unformatted=$(gofmt -l .)
+          gofmt_bin="$(go env GOROOT)/bin/gofmt"
+          unformatted=$("$gofmt_bin" -l .)
           test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
           generated_schema_before=$(mktemp -d "${TMPDIR:-/tmp}/qrypt-generated-schema.XXXXXX")
           cp pkg/drive/builtin_schema_gen.go "$generated_schema_before/builtin_schema_gen.go"
