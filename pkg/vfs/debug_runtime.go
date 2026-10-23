@@ -213,7 +213,7 @@ func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
 	return vfsDebugSnapshotRuntime{
 		driverRT:              newVFSDriverRuntime(v.driver, v.testEnabled),
 		rootID:                v.rootID,
-		uploads:               v.uploads,
+		uploads:               v.uploads.Service,
 		deletes:               v.deletes,
 		view:                  v.view,
 		read:                  v.read,

@@ -31,7 +31,7 @@ func (v *VFS) Create(ctx context.Context, path string) (err error) {
 }
 
 func (v *VFS) createLocked(ctx context.Context, path string) error {
-	return v.createLockedWithStore(ctx, path, v.uploads.Store(), newVFSUploadWriteHashTracker(v.hashes, v.driver))
+	return v.createLockedWithStore(ctx, path, v.uploads.Store(), newVFSUploadWriteHashTracker(v.uploads, v.driver))
 }
 
 func (v *VFS) createLockedWithStore(ctx context.Context, path string, store *uploadStore, hashes vfsUploadWriteHashTracker) error {
@@ -193,7 +193,7 @@ func (v *VFS) WriteAt(ctx context.Context, path string, data []byte, off int64) 
 	unlock := v.lockPath(path)
 	defer unlock()
 	store := v.uploads.Store()
-	hashes := newVFSUploadWriteHashTracker(v.hashes, v.driver)
+	hashes := newVFSUploadWriteHashTracker(v.uploads, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
 		entry, exists, resolveErr := v.existingFileForWrite(ctx, path)
@@ -261,7 +261,7 @@ func (v *VFS) Flush(ctx context.Context, path string) (err error) {
 		return err
 	}
 	pending.Size = size
-	if sourceHashes, ok := v.hashes.Snapshot(pending, requiredUploadSnapshotHashes(v.driver)); ok {
+	if sourceHashes, ok := v.uploads.hashes.Snapshot(pending, requiredUploadSnapshotHashes(v.driver)); ok {
 		pending.SourceHashes = sourceHashes
 	}
 	pending.Frozen = true
@@ -299,7 +299,7 @@ func (v *VFS) Truncate(ctx context.Context, path string, size int64) (err error)
 	unlock := v.lockPath(path)
 	defer unlock()
 	store := v.uploads.Store()
-	hashes := newVFSUploadWriteHashTracker(v.hashes, v.driver)
+	hashes := newVFSUploadWriteHashTracker(v.uploads, v.driver)
 	pending, err := pendingUploadFromWriteStore(store, path)
 	if err != nil {
 		if err := v.stageExisting(ctx, path); err != nil {
@@ -450,9 +450,9 @@ func (v *VFS) stageExistingWithDeps(ctx context.Context, path string, store *upl
 // fed, so after a crash the safe "no hashes, hash the file" path still applies.
 func (v *VFS) stagingHashFeed(pending PendingUpload) func(chunk []byte, off int64) {
 	algorithms := requiredUploadSnapshotHashes(v.driver)
-	v.hashes.Start(pending, algorithms)
+	v.uploads.hashes.Start(pending, algorithms)
 	return func(chunk []byte, off int64) {
-		v.hashes.Write(pending, chunk, off, algorithms)
+		v.uploads.hashes.Write(pending, chunk, off, algorithms)
 	}
 }
 

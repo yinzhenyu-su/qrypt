@@ -39,7 +39,7 @@ func TestNestedDirectoryRenameUploadsToNestedParent(t *testing.T) {
 	if !ok {
 		t.Fatal("pending disappeared")
 	}
-	if err := fs.uploadEngine.Execute(ctx, pending); err != nil {
+	if err := fs.uploads.engine.Execute(ctx, pending); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(remote, "moved", "sub", "a.txt")); err != nil || string(got) != "nested" {

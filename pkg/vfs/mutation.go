@@ -9,7 +9,6 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 )
@@ -117,9 +116,7 @@ type readCacheInvalidator interface {
 type vfsMutationRuntime struct {
 	invalidator       readCacheInvalidator
 	viewRT            view.Runtime
-	store             *uploadStore
-	hashes            *upload.HashTracker
-	uploads           *uploadService
+	uploads           *uploadDomain
 	listChildren      func(context.Context, string) ([]drive.Entry, error)
 	schedulingEnabled func() bool
 }
@@ -128,8 +125,6 @@ func newVFSMutationRuntime(v *VFS) vfsMutationRuntime {
 	return vfsMutationRuntime{
 		invalidator:       v,
 		viewRT:            view.NewRuntime(v.view),
-		store:             v.uploads.Store(),
-		hashes:            v.hashes,
 		uploads:           v.uploads,
 		listChildren:      v.driver.List,
 		schedulingEnabled: v.uploadSchedulingEnabled,
@@ -142,10 +137,10 @@ func (r vfsMutationRuntime) InvalidateReadCache(entry drive.Entry) {
 
 func (r vfsMutationRuntime) RenamePendingUpload(oldPath, newPath string, pending PendingUpload) error {
 	r.viewRT.MoveLocalModTime(oldPath, newPath)
-	if err := r.store.RenameUpload(oldPath, pending); err != nil {
+	if err := r.uploads.Store().RenameUpload(oldPath, pending); err != nil {
 		return err
 	}
-	r.hashes.RenamePath(oldPath, newPath, pending)
+	r.uploads.hashes.RenamePath(oldPath, newPath, pending)
 	// The source path only ever existed as a local pending projection; drop its
 	// cached identity or LocalChildren keeps re-injecting the old name into
 	// every listing after the upload has moved to the new path.
@@ -178,7 +173,7 @@ func (r vfsMutationRuntime) RebasePendingUploads(ctx context.Context, oldPath, n
 	// paths as IDs). Resolve each distinct new parent from the backend rather
 	// than assigning the moved directory's ID to every nested descendant.
 	parents := map[string]string{vfstypes.CleanVirtualPath(newPath): entry.ID}
-	for _, pending := range r.store.PendingUploads() {
+	for _, pending := range r.uploads.Store().PendingUploads() {
 		if !vfstypes.IsPathUnder(pending.Path, oldPath) {
 			continue
 		}
@@ -213,14 +208,14 @@ func (r vfsMutationRuntime) RebasePendingUploads(ctx context.Context, oldPath, n
 			currentPath = nextParent
 		}
 	}
-	moved, err := r.store.RebaseUploadsUnder(oldPath, newPath, parents)
+	moved, err := r.uploads.Store().RebaseUploadsUnder(oldPath, newPath, parents)
 	if err != nil {
 		return err
 	}
 	for _, next := range moved {
 		oldChild := oldPath + strings.TrimPrefix(next.Path, newPath)
 		r.viewRT.MoveLocalModTime(oldChild, next.Path)
-		r.hashes.RenamePath(oldChild, next.Path, next)
+		r.uploads.hashes.RenamePath(oldChild, next.Path, next)
 		if !r.schedulingEnabled() {
 			continue
 		}

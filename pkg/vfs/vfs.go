@@ -14,7 +14,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/observe"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"path/filepath"
@@ -63,16 +62,13 @@ type VFS struct {
 	// New, mutated only by its domain's code paths, and shut down by the VFS
 	// lifecycle. activeDebug (single-state) and pathLocks (cross-domain)
 	// stay top-level.
-	view          *view.View
-	read          *readState
-	reader        *read.Reader
-	uploads       *uploadService
-	uploadTargets *uploadTargetIndex
-	uploadEngine  *upload.Engine
-	deletes       *DeleteService
-	listing       *listingState
-	lister        *listing.Lister
-	hashes        *upload.HashTracker
+	view    *view.View
+	read    *readState
+	reader  *read.Reader
+	uploads *uploadDomain
+	deletes *DeleteService
+	listing *listingState
+	lister  *listing.Lister
 	// activeDebug tracks in-flight debug operations; it is the debug
 	// domain's only top-level state (read history and upload debug live in
 	// their domains).
@@ -157,7 +153,6 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	overlay, deleteState := view.NewOverlayDelayedDeleteState()
 	vs := view.NewView(opts.RootID, now, overlay)
 	done := make(chan struct{})
-	hashes := upload.NewHashTracker()
 	v := &VFS{
 		driver:        driver,
 		name:          opts.Name,
@@ -169,9 +164,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		done:          done,
 		view:          vs,
 		read:          read.NewState(stores.readCacheStore),
-		hashes:        hashes,
-		uploads:       newUploadService(stores.uploadStore, opts, done, hashes),
-		uploadTargets: newUploadTargetIndex(),
+		uploads:       newUploadDomain(stores.uploadStore, opts, done),
 		deletes:       newDeleteService(deleteState, opts.DeleteDelay),
 		listing:       listing.NewState(),
 		activeDebug:   observe.NewActiveStore(opts.Name),
@@ -192,7 +185,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		State:  v.listing,
 		Health: vfsListingHealth{tracker: v.healthTracker},
 	})
-	v.uploadEngine = newUploadEngine(v)
+	v.uploads.bind(v)
 	return v, nil
 }
 

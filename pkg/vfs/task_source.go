@@ -10,7 +10,7 @@ import (
 // TaskSource returns a task.Source backed by the upload and delete services.
 func (v *VFS) TaskSource() task.Source {
 	return &vfsTaskSourceAdapter{
-		uploads: v.uploads,
+		uploads: v.uploads.Service,
 		deletes: deleteTaskSource{runtime: newVFSDeleteTaskRuntime(v)},
 	}
 }

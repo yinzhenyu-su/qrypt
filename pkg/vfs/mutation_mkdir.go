@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"time"
@@ -98,18 +97,14 @@ var _ mutation.MkdirView = vfsMkdirView{}
 
 type vfsDirectoryCopyRuntime struct {
 	driver  drive.Driver
-	store   *uploadStore
-	uploads *uploadService
-	hashes  *upload.HashTracker
+	uploads *uploadDomain
 	view    *view.View
 }
 
 func newVFSDirectoryCopyRuntime(v *VFS) vfsDirectoryCopyRuntime {
 	return vfsDirectoryCopyRuntime{
 		driver:  v.driver,
-		store:   v.uploads.Store(),
 		uploads: v.uploads,
-		hashes:  v.hashes,
 		view:    v.view,
 	}
 }
@@ -122,11 +117,11 @@ func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
 	// Durable store commit first; timer/hash cleanup runs only after it
 	// succeeds, so a failed commit never leaves the children's timers
 	// cancelled while their pendings are still visible.
-	if err := r.store.RemoveUploadsUnder(path); err != nil {
+	if err := r.uploads.Store().RemoveUploadsUnder(path); err != nil {
 		return err
 	}
 	r.uploads.CancelChildUploads(path)
-	r.hashes.RemoveUnder(path)
+	r.uploads.hashes.RemoveUnder(path)
 	return nil
 }
 
