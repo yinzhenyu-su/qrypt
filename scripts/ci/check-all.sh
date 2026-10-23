@@ -87,7 +87,8 @@ step "Architecture boundaries" scripts/ci/check-arch.sh
 step "Vulncheck" "$TOOLS_DIR/govulncheck" ./...
 
 step "Format" bash -c '
-  unformatted=$(gofmt -l .)
+  gofmt_bin="$(go env GOROOT)/bin/gofmt"
+  unformatted=$("$gofmt_bin" -l .)
   if [ -n "$unformatted" ]; then
     echo "gofmt needed on:"
     echo "$unformatted"
