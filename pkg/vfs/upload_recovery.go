@@ -13,7 +13,7 @@ import (
 // Resume checks persisted staging before scheduling frozen uploads. Mutable
 // generations remain local until the next explicit flush.
 func (v *VFS) Resume(ctx context.Context) {
-	for _, pending := range v.uploads.Store().PendingUploads() {
+	for _, pending := range v.uploads.PendingUploads() {
 		if info, err := os.Stat(pending.LocalPath); err != nil && pending.Frozen {
 			v.failFrozenStaging(pending, fmt.Sprintf("vfs: staged content is unavailable: %v", err))
 			continue
@@ -38,7 +38,7 @@ func (v *VFS) Resume(ctx context.Context) {
 			// uploading bytes no flush ever confirmed.
 			pending.Frozen = false
 			pending.UpdatedAt = util.Now().UnixNano()
-			if err := v.uploads.Store().SaveUpload(pending); err != nil {
+			if err := v.uploads.SavePending(pending); err != nil {
 				logging.L.Warnf("[VFS] repair pending staging size failed op_id=%q path=%q old_size=%d staging_size=%d err=%v", pending.FID, pending.Path, oldSize, pending.Size, err)
 			} else {
 				logging.L.InfofEvery("vfs.repair_pending_staging_size", time.Second, "[VFS] repaired pending staging size op_id=%q path=%q old_size=%d staging_size=%d", pending.FID, pending.Path, oldSize, pending.Size)
@@ -64,7 +64,7 @@ func (v *VFS) failFrozenStaging(pending PendingUpload, reason string) {
 	pending.PermanentFail = true
 	pending.LastError = reason
 	pending.UpdatedAt = util.Now().UnixNano()
-	if err := v.uploads.Store().SaveUpload(pending); err != nil {
+	if err := v.uploads.SavePending(pending); err != nil {
 		logging.L.Warnf("[VFS] record frozen staging failure failed op_id=%q path=%q local=%q reason=%q save_err=%v", pending.FID, pending.Path, pending.LocalPath, reason, err)
 	} else {
 		logging.L.Warnf("[VFS] frozen staging unavailable op_id=%q path=%q local=%q reason=%q; left for explicit recovery", pending.FID, pending.Path, pending.LocalPath, reason)

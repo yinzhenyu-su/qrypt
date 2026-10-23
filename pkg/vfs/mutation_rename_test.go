@@ -123,7 +123,7 @@ func TestPendingRenameDoesNotTriggerRemoteCommit(t *testing.T) {
 		t.Fatalf("CommitRemoteRename called %d times for a pending rename, want 0", len(committer.renamed))
 	}
 	// The pending record moved.
-	if _, ok := fs.uploads.Store().UploadByPath("/draft2.txt"); !ok {
+	if _, ok := fs.uploads.PendingByPath("/draft2.txt"); !ok {
 		t.Fatal("pending upload not renamed to /draft2.txt")
 	}
 }
@@ -504,7 +504,7 @@ func TestDirectoryRenameRebasesPendingChildren(t *testing.T) {
 	if err := fs.Flush(ctx, "/dir/f.txt"); err != nil {
 		t.Fatal(err)
 	}
-	staged, ok := fs.uploads.Store().UploadByPath("/dir/f.txt")
+	staged, ok := fs.uploads.PendingByPath("/dir/f.txt")
 	if !ok || !staged.Frozen {
 		t.Fatalf("staged child = %+v ok=%v, want a frozen pending record", staged, ok)
 	}
@@ -512,14 +512,14 @@ func TestDirectoryRenameRebasesPendingChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pending := fs.uploads.Store().PendingUploads()
+	pending := fs.uploads.PendingUploads()
 	if len(pending) != 1 {
 		t.Fatalf("pending = %+v, want the one staged child", pending)
 	}
 	if pending[0].Path != "/moved/f.txt" {
 		t.Fatalf("pending path = %q, want the renamed directory", pending[0].Path)
 	}
-	if _, ok := fs.uploads.Store().UploadByPath("/dir/f.txt"); ok {
+	if _, ok := fs.uploads.PendingByPath("/dir/f.txt"); ok {
 		t.Fatal("pre-rename pending path still recorded")
 	}
 	if pending[0].FID != staged.FID || pending[0].LocalPath != staged.LocalPath || pending[0].Size != staged.Size || !pending[0].Frozen {

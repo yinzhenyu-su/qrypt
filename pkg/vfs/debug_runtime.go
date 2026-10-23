@@ -23,10 +23,10 @@ import (
 
 type vfsDebugCacheRuntime struct {
 	st    *readState
-	store *uploadStore
+	store *upload.Domain
 }
 
-func newVFSDebugCacheRuntime(st *readState, store *uploadStore) vfsDebugCacheRuntime {
+func newVFSDebugCacheRuntime(st *readState, store *upload.Domain) vfsDebugCacheRuntime {
 	return vfsDebugCacheRuntime{st: st, store: store}
 }
 
@@ -100,7 +100,7 @@ func (r vfsDebugResolveRuntime) Resolve(ctx context.Context, path string) (drive
 
 type vfsDebugResolveRuntime struct {
 	resolver        pathResolver
-	store           *uploadStore
+	store           *upload.Domain
 	view            *view.View
 	rootID          string
 	driver          drive.Driver
@@ -110,7 +110,7 @@ type vfsDebugResolveRuntime struct {
 func newVFSDebugResolveRuntime(v *VFS) vfsDebugResolveRuntime {
 	return vfsDebugResolveRuntime{
 		resolver:        v,
-		store:           v.uploads.Store(),
+		store:           v.uploads,
 		view:            v.view,
 		rootID:          v.rootID,
 		driver:          v.driver,
@@ -119,7 +119,7 @@ func newVFSDebugResolveRuntime(v *VFS) vfsDebugResolveRuntime {
 }
 
 func (r vfsDebugResolveRuntime) PendingUpload(path string) (PendingUpload, bool) {
-	pending, ok := r.store.UploadByPath(vfstypes.CleanVirtualPath(path))
+	pending, ok := r.store.PendingByPath(vfstypes.CleanVirtualPath(path))
 	return pending, ok
 }
 
@@ -197,7 +197,7 @@ func (r vfsDebugResolveRuntime) UploadInProgress(path string) bool {
 type vfsDebugSnapshotRuntime struct {
 	driverRT              vfsDriverRuntime
 	rootID                string
-	uploads               *uploadService
+	uploads               *upload.Domain
 	deletes               *DeleteService
 	view                  *view.View
 	read                  *readState
@@ -213,7 +213,7 @@ func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
 	return vfsDebugSnapshotRuntime{
 		driverRT:              newVFSDriverRuntime(v.driver, v.testEnabled),
 		rootID:                v.rootID,
-		uploads:               v.uploads.Service,
+		uploads:               v.uploads,
 		deletes:               v.deletes,
 		view:                  v.view,
 		read:                  v.read,
@@ -246,7 +246,7 @@ func (r vfsDebugSnapshotRuntime) Queues() diagnostics.MountSnapshotQueues {
 }
 
 func (r vfsDebugSnapshotRuntime) PendingUploads() []PendingUpload {
-	return r.uploads.Store().PendingUploads()
+	return r.uploads.PendingUploads()
 }
 
 func (r vfsDebugSnapshotRuntime) DriverSnapshot(ctx context.Context) (drive.DebugSnapshot, bool) {
@@ -337,13 +337,13 @@ func (r vfsDebugSnapshotRuntime) Runtime() diagnostics.RuntimeSnapshot {
 }
 
 type vfsDebugStagingRuntime struct {
-	store           *uploadStore
+	store           *upload.Domain
 	uploadSnapshots func([]PendingUpload) []uploadSnapshot
 }
 
 func newVFSDebugStagingRuntime(v *VFS) vfsDebugStagingRuntime {
 	return vfsDebugStagingRuntime{
-		store:           v.uploads.Store(),
+		store:           v.uploads,
 		uploadSnapshots: v.uploadSnapshots,
 	}
 }

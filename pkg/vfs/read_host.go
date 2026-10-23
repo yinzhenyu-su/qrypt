@@ -11,6 +11,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/observe"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -27,12 +28,12 @@ type readState = read.State
 type vfsReadHost struct {
 	resolver pathResolver
 	driver   drive.Driver
-	store    *uploadStore
+	store    *upload.Domain
 	rootID   string
 }
 
 func newVFSReadHost(v *VFS) vfsReadHost {
-	return vfsReadHost{resolver: v, driver: v.driver, store: v.uploads.Store(), rootID: v.rootID}
+	return vfsReadHost{resolver: v, driver: v.driver, store: v.uploads, rootID: v.rootID}
 }
 
 func (h vfsReadHost) Resolve(ctx context.Context, path string) (drive.Entry, error) {
@@ -40,7 +41,7 @@ func (h vfsReadHost) Resolve(ctx context.Context, path string) (drive.Entry, err
 }
 
 func (h vfsReadHost) PendingUpload(path string) (vfstypes.PendingUpload, bool, error) {
-	pending, ok := h.store.UploadByPath(vfstypes.CleanVirtualPath(path))
+	pending, ok := h.store.PendingByPath(vfstypes.CleanVirtualPath(path))
 	if !ok {
 		return vfstypes.PendingUpload{}, false, fmt.Errorf("vfs: no pending file for %s", path)
 	}

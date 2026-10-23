@@ -51,7 +51,7 @@ func (v *VFS) remoteEntry(ctx context.Context, path string) (drive.Entry, bool, 
 		if entry.Name != name {
 			continue
 		}
-		if _, pending := v.uploads.Store().PendingByID(entry.ID); pending {
+		if _, pending := v.uploads.PendingByRemoteID(entry.ID); pending {
 			return drive.Entry{}, false, nil
 		}
 		return entry, true, nil

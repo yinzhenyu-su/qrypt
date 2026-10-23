@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/listing"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	pathpkg "path"
@@ -45,11 +46,11 @@ func (h vfsListingRemote) ListChildren(ctx context.Context, parentID string) ([]
 type vfsListingView struct {
 	vis   view.Visibility
 	rt    view.Runtime
-	store *uploadStore
+	store *upload.Domain
 }
 
 func newVFSListingView(v *VFS) vfsListingView {
-	return vfsListingView{vis: newVFSVisibilityRuntime(v), rt: view.NewRuntime(v.view), store: v.uploads.Store()}
+	return vfsListingView{vis: newVFSVisibilityRuntime(v), rt: view.NewRuntime(v.view), store: v.uploads}
 }
 
 func (h vfsListingView) IsUnavailable(path string) bool {

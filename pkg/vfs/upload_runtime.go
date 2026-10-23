@@ -6,7 +6,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"io"
 	"time"
 )
@@ -38,82 +37,6 @@ func (c vfsUploadFaultController) ApplyCancelFault(ctx context.Context, pending 
 	return uploadCtx, cancelProgress, cleanup
 }
 
-func newVFSUploadRuntime(v *VFS) vfsUploadRuntime {
-	return vfsUploadRuntime{
-		uploads:           v.uploads,
-		viewRT:            view.NewRuntime(v.view),
-		schedulingEnabled: v.uploadSchedulingEnabled,
-	}
-}
-
-func (r vfsUploadRuntime) ClearUploadHashes(fid string) {
-	r.uploads.hashes.RemoveFID(fid)
-}
-
-func (r vfsUploadRuntime) RetryDelay(retryCount int) time.Duration {
-	return upload.RetryDelay(retryCount, r.uploads.DefaultDelay())
-}
-
-func (r vfsUploadRuntime) Requeue(pending PendingUpload) {
-	if r.schedulingEnabled() {
-		r.uploads.Enqueue(pending)
-	}
-}
-
-func (r vfsUploadRuntime) RequeueIfFrozen(pending PendingUpload) {
-	if pending.Frozen {
-		r.Requeue(pending)
-	}
-}
-
-func (r vfsUploadRuntime) ApplyUploadModTime(pending PendingUpload, entry drive.Entry) drive.Entry {
-	if modTime := r.viewRT.LocalModTimeFor(pending.Path); !modTime.IsZero() {
-		entry.ModTime = modTime
-		return entry
-	}
-	if modTime := pendingModTime(pending); !modTime.IsZero() {
-		entry.ModTime = modTime
-		r.viewRT.SetLocalModTime(pending.Path, modTime)
-	}
-	return entry
-}
-
-func newVFSUploadObserver(svc *uploadService, tracker *drive.HealthTracker) vfsUploadObserver {
-	return vfsUploadObserver{svc: svc, tracker: tracker}
-}
-
-func (o vfsUploadObserver) Start(pending PendingUpload) {
-	o.svc.DebugState().Start(pending)
-}
-
-func (o vfsUploadObserver) State(path, state string) {
-	o.svc.DebugState().SetState(path, state)
-}
-
-func (o vfsUploadObserver) Extra(path, key string, value any) {
-	o.svc.DebugState().SetExtra(path, key, value)
-}
-
-func (o vfsUploadObserver) Metadata(path, resultRemoteID string, hashes []string) {
-	o.svc.DebugState().SetMetadata(path, resultRemoteID, hashes)
-}
-
-func (o vfsUploadObserver) Event(path, phase string, start time.Time, bytes int64, extra map[string]any) {
-	o.svc.DebugState().RecordEvent(path, phase, start, bytes, extra)
-}
-
-func (o vfsUploadObserver) Uploaded(path string, n int) {
-	o.svc.DebugState().UpdateBytes(path, n)
-}
-
-func (o vfsUploadObserver) HealthResult(op string, err error) {
-	o.tracker.RecordResult(op, err)
-}
-
-func (o vfsUploadObserver) Finish(path, state, lastError string) {
-	o.svc.DebugState().Finish(path, state, lastError)
-}
-
 func newVFSUploadSnapshotter(v *VFS) vfsUploadSnapshotter {
 	return vfsUploadSnapshotter{
 		snapshotPending: v.snapshotPending,
@@ -124,24 +47,24 @@ func (s vfsUploadSnapshotter) SnapshotPending(pending PendingUpload) (upload.Sna
 	return s.snapshotPending(pending)
 }
 
-func newVFSUploadWriteHashTracker(uploads *uploadDomain, driver drive.Driver) vfsUploadWriteHashTracker {
+func newVFSUploadWriteHashTracker(uploads *upload.Domain, driver drive.Driver) vfsUploadWriteHashTracker {
 	return vfsUploadWriteHashTracker{uploads: uploads, driver: driver}
 }
 
 func (t vfsUploadWriteHashTracker) Start(pending PendingUpload) {
-	t.uploads.hashes.Start(pending, requiredUploadSnapshotHashes(t.driver))
+	t.uploads.StartHashes(pending, requiredUploadSnapshotHashes(t.driver))
 }
 
 func (t vfsUploadWriteHashTracker) Write(pending PendingUpload, data []byte, off int64) {
-	t.uploads.hashes.Write(pending, data, off, requiredUploadSnapshotHashes(t.driver))
+	t.uploads.WriteHashes(pending, data, off, requiredUploadSnapshotHashes(t.driver))
 }
 
 func (t vfsUploadWriteHashTracker) Dirty(pending PendingUpload) {
-	t.uploads.hashes.Dirty(pending)
+	t.uploads.DirtyHashes(pending)
 }
 
 func (t vfsUploadWriteHashTracker) RemoveFID(fid string) {
-	t.uploads.hashes.RemoveFID(fid)
+	t.uploads.RemoveHashesByFID(fid)
 }
 
 type uploadWriteRemote interface {

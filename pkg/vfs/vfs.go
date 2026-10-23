@@ -14,6 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/observe"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/pathlock"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/read"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"path/filepath"
@@ -65,7 +66,7 @@ type VFS struct {
 	view    *view.View
 	read    *readState
 	reader  *read.Reader
-	uploads *uploadDomain
+	uploads *upload.Domain
 	deletes *DeleteService
 	listing *listingState
 	lister  *listing.Lister
@@ -164,7 +165,6 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		done:          done,
 		view:          vs,
 		read:          read.NewState(stores.readCacheStore),
-		uploads:       newUploadDomain(stores.uploadStore, opts, done),
 		deletes:       newDeleteService(deleteState, opts.DeleteDelay),
 		listing:       listing.NewState(),
 		activeDebug:   observe.NewActiveStore(opts.Name),
@@ -172,6 +172,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		pathLocks:     pathlock.New(),
 		closeDone:     make(chan struct{}),
 	}
+	v.uploads = newUploadDomain(v, stores.uploadStore, opts, done)
 	v.reader = read.NewReader(read.ReaderDeps{
 		Host:     newVFSReadHost(v),
 		State:    v.read,
@@ -185,7 +186,6 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		State:  v.listing,
 		Health: vfsListingHealth{tracker: v.healthTracker},
 	})
-	v.uploads.bind(v)
 	return v, nil
 }
 
@@ -413,7 +413,7 @@ func (v *VFS) invalidateReadCache(entry drive.Entry) {
 }
 
 func (v *VFS) pendingUpload(path string) (PendingUpload, error) {
-	return pendingUploadFromWriteStore(v.uploads.Store(), path)
+	return pendingUploadFromWriteStore(v.uploads, path)
 }
 
 func (v *VFS) lockPath(path string) func() {

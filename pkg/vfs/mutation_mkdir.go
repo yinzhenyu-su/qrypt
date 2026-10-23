@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/mutation"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/view"
 	"time"
@@ -97,7 +98,7 @@ var _ mutation.MkdirView = vfsMkdirView{}
 
 type vfsDirectoryCopyRuntime struct {
 	driver  drive.Driver
-	uploads *uploadDomain
+	uploads *upload.Domain
 	view    *view.View
 }
 
@@ -117,12 +118,7 @@ func (r vfsDirectoryCopyRuntime) CleanupPendingChildren(path string) error {
 	// Durable store commit first; timer/hash cleanup runs only after it
 	// succeeds, so a failed commit never leaves the children's timers
 	// cancelled while their pendings are still visible.
-	if err := r.uploads.Store().RemoveUploadsUnder(path); err != nil {
-		return err
-	}
-	r.uploads.CancelChildUploads(path)
-	r.uploads.hashes.RemoveUnder(path)
-	return nil
+	return r.uploads.RemovePendingUnder(path)
 }
 
 func (r vfsDirectoryCopyRuntime) PrepareLocalDirectoryCopy(path string, hideNames map[string]time.Time) {

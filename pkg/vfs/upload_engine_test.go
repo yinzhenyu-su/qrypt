@@ -39,7 +39,7 @@ func TestUploadEngineExecutesPendingUpload(t *testing.T) {
 		t.Fatalf("pending uploads = %d, want 1", len(pending))
 	}
 
-	if err := newUploadEngine(fs).Execute(ctx, pending[0]); err != nil {
+	if err := fs.uploads.Execute(ctx, pending[0]); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(filepath.Join(remote, "engine.txt")); err != nil || string(data) != "engine upload" {

@@ -38,7 +38,7 @@ func TestVFSStageExistingUsesUploadWriteRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := fs.uploads.Store()
+	store := fs.uploads
 	modTime := time.Now().Add(-time.Hour).Truncate(time.Second)
 	remote := &fakeUploadWriteRemote{
 		entry: drive.Entry{ID: "remote", Name: "file.txt", Size: 5, ModTime: modTime},
@@ -51,7 +51,7 @@ func TestVFSStageExistingUsesUploadWriteRemote(t *testing.T) {
 	if remote.reads != 1 {
 		t.Fatalf("remote reads = %d, want 1", remote.reads)
 	}
-	pending, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	pending, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded")
 	}

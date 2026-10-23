@@ -18,7 +18,7 @@ smoke) runs in GitHub Actions on windows-latest (ci.yaml test-windows),
 and the real WinFsp mount smoke runs nightly (nightly.yaml windows-mount).
 
 Options:
-  --install-system-deps  Install missing Linux FUSE3/ShellCheck packages or macOS ShellCheck.
+  --install-system-deps  Install missing Linux FUSE3 packages. CI tools use the project cache.
   -h, --help             Show this help.
 EOF
 }
@@ -52,40 +52,15 @@ case "$(go env GOVERSION)" in
 esac
 
 platform="$(uname -s)"
-if [ "$platform" = "Linux" ]; then
-	missing_packages=()
-	if ! pkg-config --exists fuse3 2>/dev/null; then
-		missing_packages+=(libfuse3-dev fuse3)
-	fi
-	if ! command -v shellcheck >/dev/null 2>&1; then
-		missing_packages+=(shellcheck)
-	fi
-	if [ "${#missing_packages[@]}" -gt 0 ]; then
-		if [ "$install_system_deps" = true ]; then
-			sudo apt-get update
-			sudo apt-get install -y "${missing_packages[@]}"
-		else
-			echo "Linux CI dependencies are missing: ${missing_packages[*]}" >&2
-			echo "Re-run with --install-system-deps" >&2
-			exit 1
-		fi
-	fi
-elif [ "$platform" = "Darwin" ] && ! command -v shellcheck >/dev/null 2>&1; then
+if [ "$platform" = "Linux" ] && ! pkg-config --exists fuse3 2>/dev/null; then
 	if [ "$install_system_deps" = true ]; then
-		if ! command -v brew >/dev/null 2>&1; then
-			echo "Homebrew is required to install ShellCheck automatically on macOS." >&2
-			echo "Install Homebrew or install ShellCheck manually." >&2
-			exit 1
-		fi
-		brew install shellcheck
+		sudo apt-get update
+		sudo apt-get install -y libfuse3-dev fuse3
 	else
-		echo "ShellCheck is required on macOS. Install it with 'brew install shellcheck'," >&2
-		echo "or re-run with --install-system-deps." >&2
+		echo "Linux CI dependencies are missing: libfuse3-dev fuse3" >&2
+		echo "Re-run with --install-system-deps" >&2
 		exit 1
 	fi
-elif ! command -v shellcheck >/dev/null 2>&1; then
-	echo "ShellCheck is required. Install it with your platform package manager." >&2
-	exit 1
 fi
 
 # The layers run in order rather than concurrently. ci.yaml spreads them over
@@ -105,6 +80,7 @@ step() {
 step "Vet" go vet ./...
 scripts/ci/install-tools.sh
 TOOLS_DIR="${QRYPT_TOOLS_DIR:-${HOME}/.cache/qrypt-tools}"
+export PATH="$TOOLS_DIR:$PATH"
 step "Staticcheck" "$TOOLS_DIR/staticcheck" ./...
 step "Golangci-lint" "$TOOLS_DIR/golangci-lint" run ./...
 step "Architecture boundaries" scripts/ci/check-arch.sh

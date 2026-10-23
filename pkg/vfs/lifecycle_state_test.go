@@ -55,12 +55,10 @@ func TestDomainStateInitialized(t *testing.T) {
 		{"read.history", fs.read != nil && fs.read.History() != nil},
 		{"read.runtime", fs.read != nil && fs.read.StatesReady()},
 		{"listing.states", fs.listing != nil && fs.listing.StatesReady()},
-		{"upload.store", fs.uploads != nil && fs.uploads.Store() != nil},
-		{"upload.queue", fs.uploads != nil && fs.uploads.Queue() != nil},
+		{"upload.domain", fs.uploads != nil},
 		{"upload.schedule", fs.uploads != nil && fs.uploads.ScheduledDeadlines() != nil},
-		{"upload.debug", fs.uploads != nil && fs.uploads.DebugState() != nil},
+		{"upload.debug", fs.uploads != nil && fs.uploads.DebugJournal() != nil},
 		{"upload.faults", fs.faults != nil},
-		{"upload.hashes", fs.uploads != nil && fs.uploads.hashes != nil},
 		{"delete.state", fs.deletes != nil && fs.deletes.deleteState != nil},
 	} {
 		if !state.ok {
@@ -152,12 +150,12 @@ func TestDomainCloseStopsScheduledTimers(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := fs2.uploads.Store().UploadByPath("/del.txt"); !ok {
+		if _, ok := fs2.uploads.PendingByPath("/del.txt"); !ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, ok := fs2.uploads.Store().UploadByPath("/del.txt"); ok {
+	if _, ok := fs2.uploads.PendingByPath("/del.txt"); ok {
 		t.Fatalf("upload did not complete before delete check")
 	}
 	if err := fs2.Remove(ctx, "/del.txt"); err != nil {
@@ -190,7 +188,7 @@ func TestFlushBeforeStartDefersUploadSchedulingToResume(t *testing.T) {
 	if got := len(fs.uploads.ScheduledDeadlines()); got != 0 {
 		t.Fatalf("Flush before Start armed %d upload timers, want 0", got)
 	}
-	if got := len(fs.uploads.Queue()); got != 0 {
+	if got := fs.uploads.QueuedCount(); got != 0 {
 		t.Fatalf("Flush before Start enqueued %d uploads, want 0", got)
 	}
 

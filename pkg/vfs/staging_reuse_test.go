@@ -41,7 +41,7 @@ func TestWriteAfterFlushReusesStagingGeneration(t *testing.T) {
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	frozen, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	frozen, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok || !frozen.Frozen {
 		t.Fatalf("first generation not frozen: %+v ok=%v", frozen, ok)
 	}
@@ -54,7 +54,7 @@ func TestWriteAfterFlushReusesStagingGeneration(t *testing.T) {
 	if _, err := fs.WriteAt(ctx, "/file.txt", appended, int64(len(before))); err != nil {
 		t.Fatal(err)
 	}
-	reused, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	reused, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded")
 	}
@@ -80,7 +80,7 @@ func TestWriteAfterFlushReusesStagingGeneration(t *testing.T) {
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	current, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	current, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded after reuse")
 	}
@@ -103,7 +103,7 @@ func TestTruncateAfterFlushReusesStagingGeneration(t *testing.T) {
 	if err := fs.Flush(ctx, "/file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	frozen, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	frozen, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok || !frozen.Frozen {
 		t.Fatalf("generation not frozen after flush: %+v ok=%v", frozen, ok)
 	}
@@ -111,7 +111,7 @@ func TestTruncateAfterFlushReusesStagingGeneration(t *testing.T) {
 	if err := fs.Truncate(ctx, "/file.txt", 5); err != nil {
 		t.Fatal(err)
 	}
-	reused, ok := fs.uploads.Store().UploadByPath("/file.txt")
+	reused, ok := fs.uploads.PendingByPath("/file.txt")
 	if !ok {
 		t.Fatal("pending upload not recorded")
 	}
@@ -158,7 +158,7 @@ func TestReusedGenerationUploadsCombinedContent(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending uploads = %+v, want one generation", pending)
 	}
-	if err := newUploadEngine(fs).Execute(ctx, pending[0]); err != nil {
+	if err := fs.uploads.Execute(ctx, pending[0]); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(remote, "doc.txt"))

@@ -40,6 +40,9 @@
 #      rules get decided when it appears rather than reviewed months later.
 #      This is the only bookkeeping list here; add the rules it needs next
 #      to it in the same commit.
+#  10. pkg/vfs/upload is the sole owner of upload store, hashes, scheduler and
+#      engine. The VFS shell depends on upload.Domain and cannot reach through
+#      it to those implementation objects.
 #
 # Runs in CI on every PR; costs milliseconds.
 set -euo pipefail
@@ -70,6 +73,17 @@ for dir in pkg/vfs pkg/mount pkg/control pkg/core; do
     [ -n "$f" ] && note "$dir imports a concrete driver: $f"
   done < <(rg -l 'github.com/yinzhenyu/qrypt/pkg/drivers/' "$dir" -g '!**/*_test.go' 2>/dev/null || true)
 done
+
+# 10. Upload generation consistency is a domain invariant, so the owner must
+#     remain in pkg/vfs/upload. Tests may inspect fixtures directly; production
+#     VFS code may only use the upload.Domain transition/query surface.
+while IFS= read -r line; do
+  [ -n "$line" ] && note "pkg/vfs bypasses the upload domain owner: $line"
+done < <(rg -n 'uploads\.(Store|Service|Queue|DebugState)\(|uploads\.(hashes|engine)' pkg/vfs \
+  -g '*.go' -g '!**/*_test.go' -g '!upload/**' 2>/dev/null || true)
+while IFS= read -r line; do
+  [ -n "$line" ] && note "upload owner is declared outside pkg/vfs/upload: $line"
+done < <(rg -n '^type uploadDomain struct' pkg/vfs -g '*.go' -g '!**/*_test.go' -g '!upload/**' 2>/dev/null || true)
 
 # 4. pkg/mobile only wires in the driver registration aggregate.
 while IFS= read -r line; do
