@@ -63,7 +63,13 @@ jobs:
         if: matrix.name == 'static'
         env:
           QRYPT_TOOLS_DIR: ${{ github.workspace }}/.cache/qrypt-tools
-        run: scripts/ci/install-tools.sh
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+          scripts/ci/install-tools.sh
 
       - name: Static checks
         if: matrix.name == 'static'
