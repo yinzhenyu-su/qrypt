@@ -82,12 +82,13 @@ func New(cookie string, opts Options) *Driver {
 	}
 	d.cl.onCookieUpdate = d.saveUpdatedCookie
 	d.cl.onAuthRetry = d.recoverCredential
+	d.cred = driverutil.NewCredentialBinding("quark", decodeCredentialPayload, d.applyCredentialBinding)
 	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
 	configCookie := d.cookie
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		d.loadCredentialSession()
 		d.subscribeCredentialSession()
 	} else {
@@ -119,9 +120,9 @@ func (d *Driver) Init(ctx context.Context) error {
 	// belongs to a previous credential; record it so siblings and later starts
 	// reuse the working value.
 	if d.cookieSource == "config" {
-		if d.credential == nil {
+		if d.cred.Session() == nil {
 			d.persistCookieState(d.cookie, "config")
-		} else if len(d.credential.Snapshot().Payload) == 0 {
+		} else if len(d.cred.Snapshot().Payload) == 0 {
 			d.commitCredentialCookie(d.cookie)
 		}
 	}
@@ -129,10 +130,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	if d.credentialCancel != nil {
-		d.credentialCancel()
-		d.credentialCancel = nil
-	}
+	d.cred.Close()
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -158,7 +156,7 @@ func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.
 // InstallCredentialSession lets every mount of one configured credential share
 // a single rotated cookie.
 func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
-	d.credential = session
+	d.cred.Install(session)
 }
 
 type Driver struct {
@@ -177,13 +175,9 @@ type Driver struct {
 	rootID       string
 	limiter      *drive.BandwidthLimiter
 	stateStore   drive.StateStore
-	// credential is the shared session installed for mounts that reference a
-	// [[credentials]] entry. When nil the driver keeps its per-mount state
-	// store behaviour (legacy inline credentials).
-	credential         drive.CredentialSession
-	credentialCancel   func()
-	credentialMu       sync.Mutex
-	credentialVersion  uint64
+	// cred owns the shared-session lifecycle for mounts that reference a
+	// [[credentials]] entry; nil keeps the per-mount state store behaviour.
+	cred               *driverutil.CredentialBinding[credentialPayload]
 	cookieSource       string
 	cookieUpdated      time.Time
 	debugMu            sync.Mutex
@@ -292,7 +286,7 @@ func (d *Driver) credentialDebugExtra() map[string]any {
 		drive.DebugExtraLastError:          d.getLastError(),
 		drive.DebugExtraInstantUploadCount: d.instantUploadCount,
 	}
-	driverutil.AppendCredentialDebug(extra, d.credential)
+	d.cred.Debug(extra)
 	return extra
 }
 
@@ -403,7 +397,7 @@ func (d *Driver) validateWithFallback(ctx context.Context, configCookie string, 
 // rememberCookie persists the active cookie either in the shared credential
 // session or, for legacy inline mounts, in the per-mount state file.
 func (d *Driver) rememberCookie(cookie, source string) {
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		d.commitCredentialCookie(cookie)
 		return
 	}
@@ -413,82 +407,42 @@ func (d *Driver) rememberCookie(cookie, source string) {
 // loadCredentialSession adopts the shared session's cookie when it belongs to
 // the configured account.
 func (d *Driver) loadCredentialSession() {
-	snapshot := d.credential.Snapshot()
-	cookie := decodeCredentialCookie(snapshot.Payload)
-	if cookie == "" {
-		if len(snapshot.Payload) > 0 {
-			logging.L.Warnf("[QUARK] decode shared credential session: invalid payload")
-		}
-		return
-	}
-	if config := cookieAccount(d.configCookie); config != "" {
-		if session := cookieAccount(cookie); session != "" && session != config {
-			return
-		}
-	}
-	d.cookie = cookie
-	d.cl.setCookie(cookie)
-	d.cookieSource = "state"
-	d.cookieUpdated = snapshot.UpdatedAt
-	d.credentialVersion = snapshot.Version
+	d.cred.Load()
 }
 
 // subscribeCredentialSession follows rotations committed by sibling mounts.
 func (d *Driver) subscribeCredentialSession() {
-	if d.credential == nil || d.credentialCancel != nil {
-		return
-	}
-	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+	d.cred.Subscribe()
 }
 
-// applyCredentialSnapshot moves local state to a newer shared session. Older
-// snapshots are ignored so an out-of-order notification cannot undo a rotation.
+// applyCredentialSnapshot is kept for callers/tests; the binding performs the
+// version guard.
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	cookie := decodeCredentialCookie(snapshot.Payload)
-	if cookie == "" {
-		if len(snapshot.Payload) > 0 {
-			logging.L.Warnf("[QUARK] decode shared credential notification: invalid payload")
-		}
-		return
-	}
-	d.credentialMu.Lock()
-	if snapshot.Version <= d.credentialVersion {
-		d.credentialMu.Unlock()
-		return
-	}
-	d.credentialVersion = snapshot.Version
-	d.cookie = cookie
-	d.cookieSource = "credential"
-	d.cookieUpdated = snapshot.UpdatedAt
-	d.credentialMu.Unlock()
-	d.cl.setCookie(cookie)
+	d.cred.Apply(snapshot)
 }
 
-// commitCredentialCookie publishes a rotated cookie to every mount sharing the
-// credential. A version conflict means a sibling committed first, so adopt its
-// value instead of overwriting it.
+// applyCredentialBinding applies one decoded payload to the client.
+func (d *Driver) applyCredentialBinding(value credentialPayload, snapshot drive.CredentialSnapshot, source string) bool {
+	if value.Cookie == "" {
+		return false
+	}
+	if config := cookieAccount(d.configCookie); config != "" {
+		if account := cookieAccount(value.Cookie); account != "" && account != config {
+			return false
+		}
+	}
+	d.cookie = value.Cookie
+	d.cl.setCookie(value.Cookie)
+	d.cookieSource = source
+	d.cookieUpdated = snapshot.UpdatedAt
+	return true
+}
+
 // recoverCredential adopts a session a sibling mount rotated after this mount's
 // last request failed with 401.
 func (d *Driver) recoverCredential() bool {
-	if d.credential != nil {
-		d.credentialMu.Lock()
-		version := d.credentialVersion
-		d.credentialMu.Unlock()
-		next, adopted, err := drive.AdoptLatestCredential(d.credential, version, func(payload []byte) error {
-			if cookie := decodeCredentialCookie(payload); cookie != "" {
-				d.cl.setCookie(cookie)
-			}
-			return nil
-		})
-		if err == nil && adopted {
-			d.credentialMu.Lock()
-			if next > d.credentialVersion {
-				d.credentialVersion = next
-				d.cookieSource = "credential"
-			}
-			d.credentialMu.Unlock()
-			return true
-		}
+	if d.cred.Recover() {
+		return true
 	}
 	// Final fallback: the configured cookie is authoritative when no sibling
 	// session can recover the request.
@@ -502,19 +456,12 @@ func (d *Driver) recoverCredential() bool {
 }
 
 func (d *Driver) commitCredentialCookie(cookie string) {
-	if d.credential == nil || cookie == "" {
+	if d.cred.Session() == nil || cookie == "" {
 		return
 	}
-	snapshot := d.credential.Snapshot()
-	_, err := d.credential.Update(snapshot.Version, encodeCredentialCookie(cookie), cookieAccount(cookie))
-	if err == nil {
-		return
+	if err := d.cred.Commit(encodeCredentialCookie(cookie), cookieAccount(cookie)); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
+		logging.L.Warnf("[QUARK] commit shared credential failed: %v", err)
 	}
-	if errors.Is(err, drive.ErrCredentialVersionConflict) {
-		d.applyCredentialSnapshot(d.credential.Snapshot())
-		return
-	}
-	logging.L.Warnf("[QUARK] commit shared credential failed: %v", err)
 }
 
 type credentialPayload struct {
@@ -527,6 +474,15 @@ func encodeCredentialCookie(cookie string) []byte {
 		return nil
 	}
 	return data
+}
+
+func decodeCredentialPayload(payload []byte) (credentialPayload, error) {
+	var decoded credentialPayload
+	if len(payload) == 0 {
+		return decoded, nil
+	}
+	err := json.Unmarshal(payload, &decoded)
+	return decoded, err
 }
 
 func decodeCredentialCookie(payload []byte) string {
@@ -569,7 +525,7 @@ func cookieAccount(cookie string) string {
 }
 
 func (d *Driver) saveUpdatedCookie(cookie string) {
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		d.commitCredentialCookie(cookie)
 		return
 	}
