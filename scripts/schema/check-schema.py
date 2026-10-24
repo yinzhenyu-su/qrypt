@@ -12,6 +12,7 @@ DEFAULT_SCHEMA = ROOT / "schema" / "qrypt.schema.json"
 CONFIG_DEFINITIONS = [
     "mountOptionsConfig",
     "mountConfig",
+    "credentialConfig",
     "encryptionConfig",
     "storageConfig",
     "readCacheConfig",
@@ -66,6 +67,17 @@ def check_schema(schema):
         for entry in all_of
     }
 
+    credential_config = definitions.get("credentialConfig", {})
+    credential_all_of = credential_config.get("allOf", [])
+    credential_all_of_types = {
+        entry.get("if", {}).get("properties", {}).get("type", {}).get("const")
+        for entry in credential_all_of
+    }
+    credential_all_of_refs = {
+        entry.get("then", {}).get("properties", {}).get("params", {}).get("$ref")
+        for entry in credential_all_of
+    }
+
     for name, definition in driver_defs.items():
         driver = definition.get("x-driver", {})
         driver_type = driver.get("type")
@@ -84,6 +96,10 @@ def check_schema(schema):
             errors.append(f"{name}: missing allOf if/then block for {driver_type!r}")
         if f"#/definitions/{name}" not in all_of_refs:
             errors.append(f"{name}: missing allOf $ref to #/definitions/{name}")
+        if driver_type not in credential_all_of_types:
+            errors.append(f"{name}: missing credentialConfig allOf block for {driver_type!r}")
+        if f"#/definitions/{name}" not in credential_all_of_refs:
+            errors.append(f"{name}: missing credentialConfig allOf $ref to #/definitions/{name}")
 
         props = definition.get("properties", {})
         for pname, prop in props.items():
@@ -96,6 +112,11 @@ def check_schema(schema):
                 "string", "int", "bool", "duration",
             }:
                 errors.append(f"{name}.{pname}: unsupported x-param-type {runtime_type!r}")
+            scope = prop.get("x-param-scope")
+            if scope is None:
+                errors.append(f"{name}.{pname}: missing x-param-scope")
+            elif scope not in {"credential", "mount", "both"}:
+                errors.append(f"{name}.{pname}: unsupported x-param-scope {scope!r}")
 
         for group_name in ("required", "anyOf"):
             groups = definition.get(group_name)
