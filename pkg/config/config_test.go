@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -739,5 +741,36 @@ func TestValidateMountAlternativeRequirements(t *testing.T) {
 				t.Fatalf("ValidateMount() error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSaveContextCancelledDoesNotWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	cfg := &Config{
+		Version: "1",
+		Mounts: []MountConfig{{
+			Name:   "local",
+			Type:   "localfs",
+			Params: ParamMap{"root_path": t.TempDir()},
+		}},
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := SaveContext(ctx, path, cfg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("config changed after a canceled save")
 	}
 }

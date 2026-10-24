@@ -29,6 +29,12 @@ var reservedMountNames = map[string]bool{
 	"list":   true,
 }
 
+// ReservedMountName reports whether name is a mount subcommand and therefore
+// cannot be used as a mount name in the `qrypt mount NAME` shorthand.
+func ReservedMountName(name string) bool {
+	return reservedMountNames[name]
+}
+
 func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mount [MOUNT_NAME]",

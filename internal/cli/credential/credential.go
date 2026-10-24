@@ -36,6 +36,7 @@ several directories without copying the secret.`,
 	}
 	rt.WithPersistentConfigFlag(cmd)
 	cmd.AddCommand(newAddCmd(rt))
+	cmd.AddCommand(newLoginCmd(rt))
 	cmd.AddCommand(newListCmd(rt))
 	cmd.AddCommand(newShowCmd(rt))
 	cmd.AddCommand(newSetCmd(rt))
@@ -111,19 +112,21 @@ func newListCmd(rt cliruntime.Runtime) *cobra.Command {
 			accounts := map[string]string{}
 			for _, cred := range state.Cfg.Credentials {
 				account, source, version, updated := "-", "-", "-", "-"
-				if info, ok := core.CredentialSessionState(state.Cfg, layout, cred.Name); ok {
-					if info.Account != "" {
-						account = info.Account
-						key := cred.Type + "\x00" + info.Account
-						if other, seen := accounts[key]; seen {
-							fmt.Fprintf(cmd.ErrOrStderr(), "warning: credentials %q and %q resolve to the same %s account; merge them to share one lifecycle\n", other, cred.Name, cred.Type)
-						} else {
-							accounts[key] = cred.Name
-						}
+				provider, _ := drive.LoginProviderFor(cred.Type)
+				info := core.ResolveCredentialAccount(state.Cfg, layout, cred.Name, provider)
+				if info.Account != "" {
+					account = info.Account
+					key := cred.Type + "\x00" + info.Account
+					if other, seen := accounts[key]; seen {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: credentials %q and %q resolve to the same %s account; merge them to share one lifecycle\n", other, cred.Name, cred.Type)
+					} else {
+						accounts[key] = cred.Name
 					}
-					if info.Source != "" {
-						source = info.Source
-					}
+				}
+				if info.Source != "" {
+					source = info.Source
+				}
+				if info.Source == core.CredentialAccountSourceSession {
 					version = fmt.Sprintf("%d", info.Version)
 					if !info.UpdatedAt.IsZero() {
 						updated = info.UpdatedAt.Format(time.RFC3339)
@@ -158,13 +161,22 @@ func newShowCmd(rt cliruntime.Runtime) *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "name: %s\ntype: %s\nused_by: %s\n", cred.Name, cred.Type, strings.Join(state.Cfg.CredentialUsedBy(cred.Name), ","))
 			layout := core.NewStorageLayout(state.Cfg, core.RuntimeLayout{})
-			if info, ok := core.CredentialSessionState(state.Cfg, layout, cred.Name); ok {
-				updated := "-"
+			provider, _ := drive.LoginProviderFor(cred.Type)
+			info := core.ResolveCredentialAccount(state.Cfg, layout, cred.Name, provider)
+			account, source, version, updated := info.Account, info.Source, "-", "-"
+			if account == "" {
+				account = "-"
+			}
+			if source == "" {
+				source = "-"
+			}
+			if info.Source == core.CredentialAccountSourceSession {
+				version = fmt.Sprintf("%d", info.Version)
 				if !info.UpdatedAt.IsZero() {
 					updated = info.UpdatedAt.Format(time.RFC3339)
 				}
-				fmt.Fprintf(out, "account: %s\nsource: %s\nversion: %d\nupdated_at: %s\n", info.Account, info.Source, info.Version, updated)
 			}
+			fmt.Fprintf(out, "account: %s\nsource: %s\nversion: %s\nupdated_at: %s\n", account, source, version, updated)
 			for _, param := range credentialParams(cred) {
 				fmt.Fprintf(out, "%s = %s\n", param.name, param.value)
 			}
