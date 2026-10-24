@@ -72,8 +72,13 @@ func validateCredentialTestOverrides(cred config.CredentialConfig, overrides map
 		if !ok {
 			return fmt.Errorf("credential %q: unknown parameter %q", cred.Name, name)
 		}
-		if param.Scope != drive.ParamScopeMount {
-			return fmt.Errorf("credential %q: parameter %q is not mount-scope; test overrides may only supply mount-scope parameters", cred.Name, name)
+		if param.Scope == drive.ParamScopeCredential {
+			return fmt.Errorf("credential %q: parameter %q is credential-scope and cannot be overridden", cred.Name, name)
+		}
+		if param.Secret {
+			if _, inCredential := cred.Params[name]; inCredential {
+				return fmt.Errorf("credential %q: parameter %q is a stored secret and cannot be overridden", cred.Name, name)
+			}
 		}
 	}
 	return nil
