@@ -56,12 +56,10 @@ type Driver struct {
 	downloadUA         string
 	limiter            *drive.BandwidthLimiter
 	stateStore         drive.StateStore
-	// credential is the shared session installed for mounts that reference a
-	// [[credentials]] entry; nil keeps the legacy per-mount token state.
-	credential         drive.CredentialSession
-	credentialCancel   func()
-	credentialMu       sync.Mutex
-	credentialVersion  uint64
+	// cred owns the shared-session lifecycle for mounts that reference a
+	// [[credentials]] entry; a nil session keeps the legacy per-mount token
+	// state.
+	cred               *driverutil.CredentialBinding[credentialPayload]
 	tokenSource        string
 	tokenUpdated       time.Time
 	tokenMu            sync.Mutex
@@ -183,7 +181,7 @@ func New(opts Options) *Driver {
 	if downloadUA == "" {
 		downloadUA = defaultDownloadUA
 	}
-	return &Driver{
+	d := &Driver{
 		httpClient:         &http.Client{Timeout: 60 * time.Second},
 		refreshToken:       opts.RefreshToken,
 		accessToken:        opts.AccessToken,
@@ -202,13 +200,15 @@ func New(opts Options) *Driver {
 		tokenSource:        "config",
 		metrics:            driverutil.NewBuffer(500),
 	}
+	d.cred = driverutil.NewCredentialBinding("baidu_netdisk", decodeCredentialPayload, d.applyCredentialBinding)
+	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
 	if d.refreshToken == "" {
 		return fmt.Errorf("baidu_netdisk: refresh_token is required")
 	}
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		d.loadCredentialSession()
 		d.subscribeCredentialSession()
 	} else {
@@ -234,10 +234,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	if d.credentialCancel != nil {
-		d.credentialCancel()
-		d.credentialCancel = nil
-	}
+	d.cred.Close()
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -258,7 +255,7 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 // InstallCredentialSession lets every mount of one configured Baidu credential
 // share one token pair and coalesce refreshes.
 func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
-	d.credential = session
+	d.cred.Install(session)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -285,7 +282,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraLastError:          lastError,
 		drive.DebugExtraInstantUploadCount: instantUploadCount,
 	}
-	driverutil.AppendCredentialDebug(extra, d.credential)
+	d.cred.Debug(extra)
 	return drive.DebugSnapshot{
 		Driver:      "baidu_netdisk",
 		Health:      health,
@@ -361,7 +358,7 @@ func (d *Driver) ensureToken(ctx context.Context) error {
 }
 
 func (d *Driver) refresh(ctx context.Context) error {
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		return d.refreshShared(ctx)
 	}
 	return d.refreshDirect(ctx)
@@ -421,7 +418,7 @@ func (d *Driver) refreshDirect(ctx context.Context) error {
 	}
 	d.tokenSource = "refresh"
 	d.tokenUpdated = time.Now()
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		return nil
 	}
 	if err := d.saveTokenState(); err != nil {
@@ -433,17 +430,13 @@ func (d *Driver) refreshDirect(ctx context.Context) error {
 // refreshShared coalesces refreshes across every mount sharing the credential.
 // The session's refresh token is authoritative so a rotated chain is not lost.
 func (d *Driver) refreshShared(ctx context.Context) error {
-	_, err := d.credential.Refresh(ctx, func(current drive.CredentialSnapshot) ([]byte, string, error) {
-		payload, decodeErr := decodeCredentialPayload(current.Payload)
-		if decodeErr != nil && len(current.Payload) > 0 {
-			return nil, "", decodeErr
+	_, err := d.cred.Refresh(ctx, func(value credentialPayload, current drive.CredentialSnapshot) ([]byte, string, error) {
+		if value.RefreshToken != "" {
+			d.refreshToken = value.RefreshToken
 		}
-		if payload.RefreshToken != "" {
-			d.refreshToken = payload.RefreshToken
-		}
-		if payload.AccessToken != "" {
-			d.accessToken = payload.AccessToken
-			d.tokenExpires = payload.ExpiresAt
+		if value.AccessToken != "" {
+			d.accessToken = value.AccessToken
+			d.tokenExpires = value.ExpiresAt
 		}
 		if d.accessToken != "" && !d.tokenExpires.IsZero() && time.Now().Before(d.tokenExpires.Add(-defaultTokenSkew)) {
 			return current.Payload, d.account, nil
@@ -461,58 +454,30 @@ func (d *Driver) refreshShared(ctx context.Context) error {
 	return err
 }
 
+// loadCredentialSession adopts the shared session's token pair and account.
 func (d *Driver) loadCredentialSession() {
-	snapshot := d.credential.Snapshot()
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[baidu_netdisk] decode shared credential session: %v", err)
-		return
-	}
-	if payload.AccessToken == "" && payload.RefreshToken == "" {
-		return
-	}
-	d.accessToken = payload.AccessToken
-	d.refreshToken = payload.RefreshToken
-	d.tokenExpires = payload.ExpiresAt
-	d.tokenSource = "state"
-	d.tokenUpdated = snapshot.UpdatedAt
-	d.credentialVersion = snapshot.Version
-	if snapshot.Account != "" {
-		d.account = snapshot.Account
-	}
+	d.cred.Load()
 }
 
+// subscribeCredentialSession follows rotations committed by sibling mounts.
 func (d *Driver) subscribeCredentialSession() {
-	if d.credential == nil || d.credentialCancel != nil {
-		return
-	}
-	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+	d.cred.Subscribe()
 }
 
-func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[baidu_netdisk] decode shared credential notification: %v", err)
-		return
+// applyCredentialBinding applies one decoded payload to the client.
+func (d *Driver) applyCredentialBinding(value credentialPayload, snapshot drive.CredentialSnapshot, source string) bool {
+	if value.AccessToken == "" && value.RefreshToken == "" {
+		return false
 	}
-	if payload.AccessToken == "" && payload.RefreshToken == "" {
-		return
-	}
-	d.credentialMu.Lock()
-	if snapshot.Version <= d.credentialVersion {
-		d.credentialMu.Unlock()
-		return
-	}
-	d.credentialVersion = snapshot.Version
-	d.accessToken = payload.AccessToken
-	d.refreshToken = payload.RefreshToken
-	d.tokenExpires = payload.ExpiresAt
-	d.tokenSource = "credential"
+	d.accessToken = value.AccessToken
+	d.refreshToken = value.RefreshToken
+	d.tokenExpires = value.ExpiresAt
+	d.tokenSource = source
 	d.tokenUpdated = snapshot.UpdatedAt
 	if snapshot.Account != "" {
 		d.account = snapshot.Account
 	}
-	d.credentialMu.Unlock()
+	return true
 }
 
 type credentialPayload struct {

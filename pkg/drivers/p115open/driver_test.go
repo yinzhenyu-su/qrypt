@@ -52,7 +52,7 @@ func TestRequiredUploadHashesIncludesSHA1(t *testing.T) {
 }
 
 func TestDebugSnapshotReportsInstantUploadCount(t *testing.T) {
-	d := &Driver{}
+	d := New(Options{})
 	snapshot, err := d.DebugSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
