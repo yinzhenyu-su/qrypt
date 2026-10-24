@@ -32,14 +32,13 @@ type Driver struct {
 	rootPath   string
 	limiter    *drive.BandwidthLimiter
 	stateStore drive.StateStore
-	// credential is the shared session installed for mounts that reference a
-	// [[credentials]] entry; nil keeps the legacy per-mount state store.
-	credential        drive.CredentialSession
-	credentialCancel  func()
-	credentialMu      sync.Mutex
-	credentialVersion uint64
-	cookieSource      string
-	cookieUpdated     time.Time
+	// cred owns the shared-session lifecycle for mounts that reference a
+	// [[credentials]] entry; no installed session keeps the per-mount state
+	// store behaviour.
+	cred          *driverutil.CredentialBinding[credentialPayload]
+	credOnce      sync.Once
+	cookieSource  string
+	cookieUpdated time.Time
 
 	// Upload session binding store：只保存 "内容键 → uploadFileId"；
 	// p189 无分片进度查询接口，恢复时同句柄全量重传（分片按编号幂等覆盖）。
@@ -94,13 +93,31 @@ func init() {
 				d.rootID = id
 			}
 		}
+		d.cred = newCredentialBinding(d)
 		return d, nil
 	})
 }
 
+// newCredentialBinding wires the shared-session binding to this driver.
+func newCredentialBinding(d *Driver) *driverutil.CredentialBinding[credentialPayload] {
+	return driverutil.NewCredentialBinding("189", decodeCredentialPayload, d.applyCredentialBinding)
+}
+
+// credentialBinding returns the shared-session binding, creating it for
+// drivers built without the registered constructor (tests construct Driver
+// literals).
+func (d *Driver) credentialBinding() *driverutil.CredentialBinding[credentialPayload] {
+	d.credOnce.Do(func() {
+		if d.cred == nil {
+			d.cred = newCredentialBinding(d)
+		}
+	})
+	return d.cred
+}
+
 func (d *Driver) Init(ctx context.Context) error {
 	configCookie := d.cl.cookieValue()
-	if d.credential != nil {
+	if d.credentialBinding().Session() != nil {
 		d.loadCredentialSession()
 		d.subscribeCredentialSession()
 	} else {
@@ -111,7 +128,7 @@ func (d *Driver) Init(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("189: login init: %w", err)
 	}
-	if d.credential != nil && len(d.credential.Snapshot().Payload) == 0 {
+	if cred := d.credentialBinding(); cred.Session() != nil && len(cred.Snapshot().Payload) == 0 {
 		if cookie := d.cl.cookieValue(); cookie != "" {
 			d.commitCredentialCookie(cookie)
 		}
@@ -138,10 +155,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	if d.credentialCancel != nil {
-		d.credentialCancel()
-		d.credentialCancel = nil
-	}
+	d.credentialBinding().Close()
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -162,7 +176,7 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 // InstallCredentialSession lets every mount of one configured 189 credential
 // share one cookie and password-relogin state.
 func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
-	d.credential = session
+	d.credentialBinding().Install(session)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -204,7 +218,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraCredentialSource:  credentialSource,
 		drive.DebugExtraCredentialUpdated: d.cookieUpdated,
 	}
-	driverutil.AppendCredentialDebug(extra, d.credential)
+	d.credentialBinding().Debug(extra)
 	return drive.DebugSnapshot{
 		Driver:      "189",
 		Health:      drive.HealthLevelOK,
@@ -275,7 +289,7 @@ func (d *Driver) saveUpdatedCookie(cookie string) {
 	if cookie == "" {
 		return
 	}
-	if d.credential != nil {
+	if d.credentialBinding().Session() != nil {
 		d.commitCredentialCookie(cookie)
 		return
 	}
@@ -290,7 +304,7 @@ func (d *Driver) saveUpdatedCookie(cookie string) {
 }
 
 func (d *Driver) savePasswordReloginState(failedAt time.Time, lastError string) {
-	if d.credential != nil {
+	if d.credentialBinding().Session() != nil {
 		d.commitCredentialState(d.cl.cookieValue(), failedAt, lastError)
 		return
 	}
@@ -304,80 +318,30 @@ func (d *Driver) savePasswordReloginState(failedAt time.Time, lastError string) 
 
 // recoverCredential adopts a newer shared cookie after an auth failure.
 func (d *Driver) recoverCredential() bool {
-	if d.credential == nil {
-		return false
-	}
-	d.credentialMu.Lock()
-	version := d.credentialVersion
-	d.credentialMu.Unlock()
-	next, adopted, err := drive.AdoptLatestCredential(d.credential, version, d.applyCredentialPayload)
-	if err != nil || !adopted {
-		return false
-	}
-	d.credentialMu.Lock()
-	if next > d.credentialVersion {
-		d.credentialVersion = next
-		d.cookieSource = "credential"
-	}
-	d.credentialMu.Unlock()
-	return true
+	return d.credentialBinding().Recover()
 }
 
-// applyCredentialPayload applies a shared-session payload to the client.
-func (d *Driver) applyCredentialPayload(payload []byte) error {
-	decoded, err := decodeCredentialPayload(payload)
-	if err != nil || decoded.Cookie == "" {
-		return err
-	}
-	d.cl.setCookie(decoded.Cookie)
-	d.cl.setPasswordReloginFailure(decoded.PasswordReloginFailedAt, decoded.PasswordReloginError)
-	return nil
-}
-
+// loadCredentialSession adopts the shared session's cookie and password
+// relogin state when this mount starts.
 func (d *Driver) loadCredentialSession() {
-	snapshot := d.credential.Snapshot()
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[189] decode shared credential session: %v", err)
-		return
-	}
-	if payload.Cookie == "" {
-		return
-	}
-	d.cl.setCookie(payload.Cookie)
-	d.cl.setPasswordReloginFailure(payload.PasswordReloginFailedAt, payload.PasswordReloginError)
-	d.cookieSource = "state"
-	d.cookieUpdated = snapshot.UpdatedAt
-	d.credentialVersion = snapshot.Version
+	d.credentialBinding().Load()
 }
 
+// subscribeCredentialSession follows rotations committed by sibling mounts.
 func (d *Driver) subscribeCredentialSession() {
-	if d.credential == nil || d.credentialCancel != nil {
-		return
-	}
-	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+	d.credentialBinding().Subscribe()
 }
 
-func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[189] decode shared credential notification: %v", err)
-		return
+// applyCredentialBinding applies one decoded payload to the client.
+func (d *Driver) applyCredentialBinding(value credentialPayload, snapshot drive.CredentialSnapshot, source string) bool {
+	if value.Cookie == "" {
+		return false
 	}
-	if payload.Cookie == "" {
-		return
-	}
-	d.credentialMu.Lock()
-	if snapshot.Version <= d.credentialVersion {
-		d.credentialMu.Unlock()
-		return
-	}
-	d.credentialVersion = snapshot.Version
-	d.cookieSource = "credential"
+	d.cl.setCookie(value.Cookie)
+	d.cl.setPasswordReloginFailure(value.PasswordReloginFailedAt, value.PasswordReloginError)
+	d.cookieSource = source
 	d.cookieUpdated = snapshot.UpdatedAt
-	d.credentialMu.Unlock()
-	d.cl.setCookie(payload.Cookie)
-	d.cl.setPasswordReloginFailure(payload.PasswordReloginFailedAt, payload.PasswordReloginError)
+	return true
 }
 
 // commitCredentialCookie publishes a rotated cookie together with the current
@@ -391,10 +355,10 @@ func (d *Driver) commitCredentialCookie(cookie string) {
 }
 
 func (d *Driver) commitCredentialState(cookie string, failedAt time.Time, lastError string) {
-	if d.credential == nil || cookie == "" {
+	cred := d.credentialBinding()
+	if cred.Session() == nil || cookie == "" {
 		return
 	}
-	snapshot := d.credential.Snapshot()
 	payload, err := encodeCredentialPayload(credentialPayload{
 		Cookie:                  cookie,
 		PasswordReloginFailedAt: failedAt,
@@ -403,15 +367,9 @@ func (d *Driver) commitCredentialState(cookie string, failedAt time.Time, lastEr
 	if err != nil {
 		return
 	}
-	_, err = d.credential.Update(snapshot.Version, payload, d.cl.username)
-	if err == nil {
-		return
+	if err := cred.Commit(payload, d.cl.username); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
+		logging.L.Warnf("[189] commit shared credential failed: %v", err)
 	}
-	if errors.Is(err, drive.ErrCredentialVersionConflict) {
-		d.applyCredentialSnapshot(d.credential.Snapshot())
-		return
-	}
-	logging.L.Warnf("[189] commit shared credential failed: %v", err)
 }
 
 type credentialPayload struct {

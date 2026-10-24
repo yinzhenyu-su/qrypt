@@ -80,13 +80,10 @@ type Driver struct {
 	accessToken  string
 	refreshToken string
 
-	// credential is the shared session installed for mounts that reference a
-	// [[credentials]] entry; nil keeps per-mount tokens.
-	credential        drive.CredentialSession
-	credentialCancel  func()
-	credentialMu      sync.Mutex
-	credentialVersion uint64
-	tokenSource       string
+	// cred owns the shared-session lifecycle for mounts that reference a
+	// [[credentials]] entry; a nil session keeps per-mount tokens.
+	cred        *driverutil.CredentialBinding[credentialPayload]
+	tokenSource string
 
 	chunkSize        int64
 	disableDiskUsage bool
@@ -236,7 +233,7 @@ func New(opts Options) *Driver {
 	if client == nil {
 		client = httputil.NewClient(0, 60*time.Second)
 	}
-	return &Driver{
+	d := &Driver{
 		region:           region,
 		apiBaseURL:       apiBaseURL,
 		oauthBaseURL:     oauthBaseURL,
@@ -259,10 +256,12 @@ func New(opts Options) *Driver {
 		client:           client,
 		metrics:          driverutil.NewBuffer(500),
 	}
+	d.cred = driverutil.NewCredentialBinding("onedrive", decodeCredentialPayload, d.applyCredentialBinding)
+	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		d.loadCredentialSession()
 		d.subscribeCredentialSession()
 	}
@@ -295,10 +294,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	if d.credentialCancel != nil {
-		d.credentialCancel()
-		d.credentialCancel = nil
-	}
+	d.cred.Close()
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -316,7 +312,7 @@ func (d *Driver) Drop(ctx context.Context) error {
 // InstallCredentialSession lets every mount of one configured OneDrive
 // credential share one token pair and coalesce refreshes.
 func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
-	d.credential = session
+	d.cred.Install(session)
 }
 
 func (d *Driver) InstallStateStore(store drive.StateStore) {

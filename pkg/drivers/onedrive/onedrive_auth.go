@@ -17,17 +17,13 @@ import (
 )
 
 func (d *Driver) refresh(ctx context.Context) error {
-	if d.credential == nil {
+	if d.cred.Session() == nil {
 		return d.refreshDirect(ctx)
 	}
-	snapshot, err := d.credential.Refresh(ctx, func(current drive.CredentialSnapshot) ([]byte, string, error) {
-		payload, decodeErr := decodeCredentialPayload(current.Payload)
-		if decodeErr != nil && len(current.Payload) > 0 {
-			return nil, "", decodeErr
-		}
-		if payload.RefreshToken != "" {
+	_, err := d.cred.Refresh(ctx, func(value credentialPayload, _ drive.CredentialSnapshot) ([]byte, string, error) {
+		if value.RefreshToken != "" {
 			d.mu.Lock()
-			d.refreshToken = payload.RefreshToken
+			d.refreshToken = value.RefreshToken
 			d.mu.Unlock()
 		}
 		if err := d.refreshDirect(ctx); err != nil {
@@ -39,11 +35,7 @@ func (d *Driver) refresh(ctx context.Context) error {
 		})
 		return encoded, d.accountID(), encodeErr
 	})
-	if err != nil {
-		return err
-	}
-	d.applyCredentialSnapshot(snapshot)
-	return nil
+	return err
 }
 
 func (d *Driver) refreshDirect(ctx context.Context) error {

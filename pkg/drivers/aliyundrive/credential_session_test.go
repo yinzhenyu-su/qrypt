@@ -152,6 +152,7 @@ func TestRememberAccountAnnotatesSession(t *testing.T) {
 	}
 	driver := New(Options{RefreshToken: "config"})
 	driver.InstallCredentialSession(session)
+	driver.loadCredentialSession()
 	driver.userID = "user-1"
 	driver.rememberAccount()
 
