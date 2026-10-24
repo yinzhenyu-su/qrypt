@@ -292,16 +292,9 @@ because existing remote data may become unreadable.`,
 			if err != nil {
 				return err
 			}
-			if mount.Encryption != nil && nextEncryption == nil {
-				// Defensive: the CLI has no flag that removes encryption, and an
-				// encrypted mount must not silently become plaintext.
-				return fmt.Errorf("mount %q is encrypted and cannot be switched back to plaintext", mount.Name)
-			}
-			if !reflect.DeepEqual(mount.Encryption, nextEncryption) && mount.Encryption != nil {
-				force, _ := cmd.Flags().GetBool("force")
-				if !force {
-					return fmt.Errorf("changing encryption on mount %q requires --force; existing remote data may become unreadable", mount.Name)
-				}
+			force, _ := cmd.Flags().GetBool("force")
+			if err := guardEncryptionChange(mount.Encryption, nextEncryption, force); err != nil {
+				return fmt.Errorf("mount %q: %w", mount.Name, err)
 			}
 			mount.Encryption = nextEncryption
 			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
@@ -325,7 +318,6 @@ because existing remote data may become unreadable.`,
 	cmd.Flags().String("filename-encryption", "", "filename mode: standard, obfuscate, or off")
 	cmd.Flags().String("filename-encoding", "", "filename encoding: base32 or base64")
 	cmd.Flags().Bool("content-dedup", false, "enable content de-duplication")
-	cmd.Flags().Bool("remove-encryption", false, "rejected: an encrypted mount cannot become plaintext")
 	cmd.Flags().Bool("force", false, "confirm an encryption change that may make existing data unreadable")
 	return cmd
 }
@@ -333,9 +325,6 @@ because existing remote data may become unreadable.`,
 // applyEncryptionFlags merges the encryption flags onto the current mount
 // encryption. Existing encryption is never removed by this command.
 func applyEncryptionFlags(cmd *cobra.Command, current *crypt.Config) (*crypt.Config, error) {
-	if remove, _ := cmd.Flags().GetBool("remove-encryption"); remove {
-		return nil, fmt.Errorf("encryption cannot be removed once configured; create a new mount instead")
-	}
 	password, passwordProvided, err := cliutil.PasswordFromFlags(cmd)
 	if err != nil {
 		return nil, err
@@ -372,6 +361,21 @@ func applyEncryptionFlags(cmd *cobra.Command, current *crypt.Config) (*crypt.Con
 		return nil, fmt.Errorf("--password is required to configure encryption")
 	}
 	return &next, nil
+}
+
+// guardEncryptionChange rejects turning an encrypted mount into plaintext and
+// requires --force for any other change to an existing encryption block.
+func guardEncryptionChange(current, next *crypt.Config, force bool) error {
+	if current == nil {
+		return nil
+	}
+	if next == nil {
+		return fmt.Errorf("an encrypted mount cannot be switched back to plaintext")
+	}
+	if !reflect.DeepEqual(current, next) && !force {
+		return fmt.Errorf("changing encryption requires --force; existing remote data may become unreadable")
+	}
+	return nil
 }
 
 func newRemoveCmd(rt cliruntime.Runtime) *cobra.Command {

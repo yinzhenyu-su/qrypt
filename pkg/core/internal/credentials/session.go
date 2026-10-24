@@ -3,10 +3,12 @@ package credentials
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -38,6 +40,9 @@ func newSession(store fileStore, spec Spec) *Session {
 	}
 	state, err := store.load(spec.Name)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logging.L.Warnf("[CREDENTIALS] load session %q: %v; starting from static params", spec.Name, err)
+		}
 		session.updatedAt = time.Now().UTC()
 		return session
 	}

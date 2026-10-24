@@ -339,10 +339,13 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
 				if c.onAuthRecovery != nil && c.onAuthRecovery() {
-					if retryErr := c.personalPostOnce(ctx, path, bodyData, result); retryErr == nil {
+					retryErr := c.personalPostOnce(ctx, path, bodyData, result)
+					if retryErr == nil {
 						return nil
-					} else {
-						lastErr = retryErr
+					}
+					err = retryErr
+					if !isAuthExpiredError(err) {
+						lastErr = err
 						continue
 					}
 				}
@@ -377,10 +380,13 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
 				if c.onAuthRecovery != nil && c.onAuthRecovery() {
-					if retryErr := c.userPostOnce(ctx, path, bodyData, result); retryErr == nil {
+					retryErr := c.userPostOnce(ctx, path, bodyData, result)
+					if retryErr == nil {
 						return nil
-					} else {
-						lastErr = retryErr
+					}
+					err = retryErr
+					if !isAuthExpiredError(err) {
+						lastErr = err
 						continue
 					}
 				}

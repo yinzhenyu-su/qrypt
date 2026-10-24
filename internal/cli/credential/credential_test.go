@@ -72,6 +72,9 @@ func TestCredentialAddListShowSetRemove(t *testing.T) {
 	if !strings.Contains(out, "main") || !strings.Contains(out, "docs") {
 		t.Fatalf("list output = %q, want the credential and its mount", out)
 	}
+	if !strings.Contains(out, "SOURCE") || !strings.Contains(out, "UPDATED") {
+		t.Fatalf("list output = %q, want lifecycle columns", out)
+	}
 
 	out, err = run(t, rt, "show", "main")
 	if err != nil {
@@ -174,6 +177,12 @@ func TestCredentialTestCommand(t *testing.T) {
 	rt := testRuntime(cfg, path)
 	if _, err := run(t, rt, "test", "local", "--param", "root_path="+t.TempDir()); err != nil {
 		t.Fatalf("credential test: %v", err)
+	}
+	if _, err := run(t, rt, "test", "main", "--param", "cookie=override"); err == nil {
+		t.Fatal("credential test must not override a credential-scope secret")
+	}
+	if _, err := run(t, rt, "test", "local", "--param", "nonsense=x"); err == nil {
+		t.Fatal("credential test must reject unknown parameters")
 	}
 }
 
