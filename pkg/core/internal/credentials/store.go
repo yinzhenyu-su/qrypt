@@ -77,7 +77,7 @@ func (s fileStore) save(name string, next sessionFile, expected uint64) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		// A corrupt session must not block every future write; preserve it
 		// for diagnosis and overwrite with the new value.
-		if quarantineErr := s.quarantine(name); quarantineErr != nil {
+		if quarantineErr := s.quarantineLocked(name); quarantineErr != nil {
 			return quarantineErr
 		}
 	}
@@ -117,9 +117,26 @@ func (s fileStore) write(name string, file sessionFile) error {
 	})
 }
 
-// quarantine moves an unreadable session file aside so the next save can
-// replace it.
+// quarantine takes the session lock and moves an unreadable file aside. The
+// file is re-read under the lock so a concurrent writer that just replaced it
+// with a valid session is not quarantined by mistake.
 func (s fileStore) quarantine(name string) error {
+	if s.dir == "" {
+		return nil
+	}
+	release, err := s.lock(name)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, loadErr := s.load(name); loadErr == nil || errors.Is(loadErr, os.ErrNotExist) {
+		return nil
+	}
+	return s.quarantineLocked(name)
+}
+
+// quarantineLocked is quarantine for callers that already hold the lock.
+func (s fileStore) quarantineLocked(name string) error {
 	path := s.path(name)
 	if path == "" {
 		return nil
