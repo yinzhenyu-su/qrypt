@@ -266,7 +266,7 @@ func (c *Core) resolveShareSurface(mount string) (shareSurface, error) {
 		case 1:
 			name = available[0].Name
 		default:
-			return shareSurface{}, fmt.Errorf("%w: candidates: %s", ErrShareMountRequired, shareMountNames(available))
+			return shareSurface{}, fmt.Errorf("%w: candidates: %s; pass --mount <name>", ErrShareMountRequired, shareMountNames(available))
 		}
 	}
 

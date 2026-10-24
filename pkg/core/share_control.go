@@ -58,6 +58,11 @@ func (s shareControlService) RemoveShareLink(ctx context.Context, mount, id stri
 	return classifyShareControlError(s.core.RemoveShareLink(ctx, mount, id))
 }
 
+func (s shareControlService) ResolveShareLink(ctx context.Context, req shareapi.ResolveRequest) (shareapi.ResolveResult, error) {
+	result, err := s.core.ResolveShareLink(ctx, req)
+	return result, classifyShareControlError(err)
+}
+
 func (s shareControlService) InspectShareLink(ctx context.Context, req shareapi.InspectRequest) (shareapi.InspectResult, error) {
 	preview, err := s.core.InspectShareLink(ctx, req)
 	return preview, classifyShareControlError(err)

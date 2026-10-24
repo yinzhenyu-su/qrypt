@@ -123,6 +123,30 @@ func (s *CommandServer) handleShareLink(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// handleShareResolve reports which mounts can act on a link without contacting
+// a provider. The CLI uses it to ask for a missing --mount.
+func (s *CommandServer) handleShareResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	service, ok := s.shareServiceOrError(w)
+	if !ok {
+		return
+	}
+	var req shareapi.ResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid share resolve request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := service.ResolveShareLink(r.Context(), req)
+	if err != nil {
+		writeShareError(w, err)
+		return
+	}
+	writeJSON(w, result)
+}
+
 func (s *CommandServer) handleShareInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
