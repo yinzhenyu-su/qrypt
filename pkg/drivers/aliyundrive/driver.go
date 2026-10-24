@@ -14,7 +14,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
-	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const (
@@ -35,12 +34,9 @@ type Driver struct {
 	partSize       int64
 	limiter        *drive.BandwidthLimiter
 	stateStore     drive.StateStore
-	// credential is the shared session installed for mounts that reference a
+	// cred owns the shared-session lifecycle for mounts that reference a
 	// [[credentials]] entry; nil keeps the legacy per-mount token state.
-	credential         drive.CredentialSession
-	credentialCancel   func()
-	credentialMu       sync.Mutex
-	credentialVersion  uint64
+	cred               *driverutil.CredentialBinding[credentialPayload]
 	tokenSource        string
 	tokenUpdated       time.Time
 	configRefreshToken string
@@ -135,11 +131,12 @@ func New(opts Options) *Driver {
 	}
 	d.cl.onRefresh = d.saveRefreshedToken
 	d.cl.authRefresh = d.refreshCredential
+	d.cred = driverutil.NewCredentialBinding("aliyundrive", decodeCredentialPayload, d.applyCredentialBinding)
 	return d
 }
 
 func (d *Driver) Init(ctx context.Context) error {
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		d.loadCredentialSession()
 		d.subscribeCredentialSession()
 	} else {
@@ -175,10 +172,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	if d.credentialCancel != nil {
-		d.credentialCancel()
-		d.credentialCancel = nil
-	}
+	d.cred.Close()
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -199,7 +193,7 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 // InstallCredentialSession lets every mount of one configured credential share
 // one rotated access/refresh token pair and coalesce refreshes.
 func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
-	d.credential = session
+	d.cred.Install(session)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -326,7 +320,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraLastError:          d.getLastError(),
 		drive.DebugExtraInstantUploadCount: d.instantUploadCount,
 	}
-	driverutil.AppendCredentialDebug(extra, d.credential)
+	d.cred.Debug(extra)
 	return drive.DebugSnapshot{
 		Driver:      "aliyundrive",
 		Health:      health,
@@ -391,77 +385,49 @@ func (d *Driver) loadTokenState() {
 // rememberAccount annotates the shared session with the provider user ID once
 // it is known; the first refresh happens before user/get.
 func (d *Driver) rememberAccount() {
-	if d.credential == nil || d.userID == "" {
+	if d.cred.Session() == nil || d.userID == "" {
 		return
 	}
-	snapshot := d.credential.Snapshot()
+	snapshot := d.cred.Snapshot()
 	if snapshot.Account == d.userID || len(snapshot.Payload) == 0 {
 		return
 	}
-	if _, err := d.credential.Update(snapshot.Version, snapshot.Payload, d.userID); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
+	if err := d.cred.Commit(snapshot.Payload, d.userID); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
 		d.setLastError(fmt.Errorf("aliyundrive: annotate credential account: %w", err))
 	}
 }
 
 func (d *Driver) loadCredentialSession() {
-	snapshot := d.credential.Snapshot()
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[aliyundrive] decode shared credential session: %v", err)
-		return
-	}
-	if payload.AccessToken == "" && payload.RefreshToken == "" {
-		return
-	}
-	d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
-	d.tokenSource = "state"
-	d.tokenUpdated = snapshot.UpdatedAt
-	d.credentialVersion = snapshot.Version
+	d.cred.Load()
 }
 
 func (d *Driver) subscribeCredentialSession() {
-	if d.credential == nil || d.credentialCancel != nil {
-		return
-	}
-	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+	d.cred.Subscribe()
 }
 
-func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[aliyundrive] decode shared credential notification: %v", err)
-		return
-	}
+// applyCredentialBinding applies one decoded payload to the client, rejecting
+// payloads without a usable token pair.
+func (d *Driver) applyCredentialBinding(payload credentialPayload, snapshot drive.CredentialSnapshot, source string) bool {
 	if payload.AccessToken == "" && payload.RefreshToken == "" {
-		return
+		return false
 	}
-	d.credentialMu.Lock()
-	if snapshot.Version <= d.credentialVersion {
-		d.credentialMu.Unlock()
-		return
-	}
-	d.credentialVersion = snapshot.Version
-	d.tokenSource = "credential"
-	d.tokenUpdated = snapshot.UpdatedAt
-	d.credentialMu.Unlock()
 	d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
+	d.tokenSource = source
+	d.tokenUpdated = snapshot.UpdatedAt
+	return true
 }
 
 // refreshCredential refreshes one shared session. Concurrent mounts wait for the
 // same provider call, which matters because providers may rotate the refresh
 // token itself.
 func (d *Driver) refreshCredential(ctx context.Context, force bool) error {
-	if d.credential == nil {
+	if d.cred.Session() == nil {
 		return d.cl.refreshDirect(ctx)
 	}
-	_, err := d.credential.Refresh(ctx, func(current drive.CredentialSnapshot) ([]byte, string, error) {
-		payload, decodeErr := decodeCredentialPayload(current.Payload)
-		if decodeErr != nil && len(current.Payload) > 0 {
-			return nil, "", decodeErr
-		}
+	_, err := d.cred.Refresh(ctx, func(payload credentialPayload, snapshot drive.CredentialSnapshot) ([]byte, string, error) {
 		if !force && payload.AccessToken != "" && payload.RefreshToken != "" && tokenFresh(payload.ExpiresAt) {
 			d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
-			return current.Payload, d.userID, nil
+			return snapshot.Payload, d.userID, nil
 		}
 		if payload.AccessToken == "" && payload.RefreshToken == "" {
 			payload.AccessToken, payload.RefreshToken = d.cl.tokens()
@@ -525,7 +491,7 @@ func decodeCredentialPayload(data []byte) (credentialPayload, error) {
 func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
 	d.tokenSource = "refresh"
 	d.tokenUpdated = time.Now()
-	if d.credential != nil {
+	if d.cred.Session() != nil {
 		// The shared session commit happens in refreshCredential after the
 		// refresh call returns; committing here would race its own version.
 		return
