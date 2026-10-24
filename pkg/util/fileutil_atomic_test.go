@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -102,5 +103,82 @@ func TestWriteAtomicWithOptionsRejectsInvalidInput(t *testing.T) {
 	}
 	if err := WriteAtomicWithOptions(filepath.Join(t.TempDir(), "output"), AtomicWriteOptions{}, nil); err == nil {
 		t.Fatal("nil callback accepted")
+	}
+}
+
+func TestWriteAtomicWithOptionsContextAbortsBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := WriteAtomicWithOptionsContext(ctx, path, AtomicWriteOptions{
+		Pattern: ".output-*",
+		Mode:    0o600,
+		Replace: true,
+	}, func(file *os.File) error {
+		if _, err := file.WriteString("new"); err != nil {
+			return err
+		}
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old" {
+		t.Fatalf("destination = %q, want the previous content", data)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".output-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temporary files left behind: %v", leftovers)
+	}
+}
+
+func TestWriteAtomicContextRequiresNonNullContext(t *testing.T) {
+	var ctx context.Context
+	err := WriteAtomicWithOptionsContext(ctx, filepath.Join(t.TempDir(), "out"), AtomicWriteOptions{}, func(*os.File) error { return nil })
+	if err == nil {
+		t.Fatal("nil context accepted")
+	}
+}
+
+func TestWriteAtomicRenameIsCommitPoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := writeAtomic(path, AtomicWriteOptions{
+		Pattern: ".output-*",
+		Mode:    0o600,
+		Replace: true,
+	}, func(file *os.File) error {
+		_, err := file.WriteString("new")
+		return err
+	}, ctx.Err, func(tmpPath, destination string, replace bool) error {
+		// Cancellation after the final pre-rename check is past the commit
+		// point; the rename is the linearization point and must still land.
+		cancel()
+		return defaultAtomicRename(tmpPath, destination, replace)
+	})
+	if err != nil {
+		t.Fatalf("writeAtomic() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("destination = %q, want the committed content", data)
 	}
 }

@@ -16,7 +16,9 @@ require (
 	github.com/go-resty/resty/v2 v2.14.0
 	github.com/pkg/sftp v1.13.10
 	github.com/rfjakob/eme v1.2.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/winfsp/cgofuse v1.6.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.58.0
@@ -42,8 +44,6 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.17 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	golang.org/x/mobile v0.0.0-20260709172247-6129f5bee9d5 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.60.0 // indirect

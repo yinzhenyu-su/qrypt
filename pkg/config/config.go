@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -221,8 +222,35 @@ var saveMu sync.Mutex
 // Save writes cfg to path atomically: the data is written to a temporary
 // file in the same directory, synced, and renamed over the target. A reader
 // never observes a truncated or half-written config. Concurrent saves are
-// serialized.
+// serialized. This compatibility entry point has no cancellation; callers that
+// own a context should use SaveContext.
 func Save(path string, cfg *Config) error {
+	return save(path, cfg, nil, util.WriteAtomicWithOptions)
+}
+
+// SaveContext is Save with cancellation checks before serialization, after
+// acquiring the save lock, and immediately before the atomic rename. A canceled
+// context leaves the destination byte-for-byte unchanged and removes the
+// temporary file. The rename is the commit point.
+func SaveContext(ctx context.Context, path string, cfg *Config) error {
+	if ctx == nil {
+		return fmt.Errorf("config: context required")
+	}
+	return save(path, cfg, ctx.Err, func(path string, opts util.AtomicWriteOptions, write func(*os.File) error) error {
+		return util.WriteAtomicWithOptionsContext(ctx, path, opts, write)
+	})
+}
+
+func save(path string, cfg *Config, check func() error, writeAtomic func(string, util.AtomicWriteOptions, func(*os.File) error) error) error {
+	checkErr := func() error {
+		if check == nil {
+			return nil
+		}
+		return check()
+	}
+	if err := checkErr(); err != nil {
+		return err
+	}
 	if cfg == nil {
 		return fmt.Errorf("config: configuration is empty")
 	}
@@ -230,9 +258,15 @@ func Save(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	if err := checkErr(); err != nil {
+		return err
+	}
 	saveMu.Lock()
 	defer saveMu.Unlock()
-	return util.WriteAtomicWithOptions(path, util.AtomicWriteOptions{
+	if err := checkErr(); err != nil {
+		return err
+	}
+	return writeAtomic(path, util.AtomicWriteOptions{
 		Pattern:      filepath.Base(path) + ".tmp-*",
 		Mode:         0o600,
 		Replace:      true,

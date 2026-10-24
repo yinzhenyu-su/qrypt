@@ -98,12 +98,15 @@ printf '%s' "$PASSWORD" | qrypt config export-rclone-password --password-stdin
 同一账号挂载多个目录时，凭据只维护一份：
 
 ```sh
+qrypt credential login --type quark
 qrypt credential add main --type quark --param cookie="..."
 qrypt credential list
 qrypt credential show main
 qrypt credential set main --param cookie="..."
 qrypt credential remove main
 ```
+
+`credential login` 通过扫码获取 cookie 并保存为共享凭据，详见[夸克网盘扫码登录](quark-login.md)。也可以在已有 cookie 时直接 `credential add`。
 
 凭据保存账号级参数（cookie、refresh token、用户名密码等），轮换与刷新由 qrypt 统一维护。`credential remove` 要求先移除引用它的挂载；加 `--purge` 会同时删除已持久化的会话目录。`qrypt credential test NAME [--param k=v]` 可以只认证一次而不挂载，用于确认凭据和网络是否可用。
 

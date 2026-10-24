@@ -4,6 +4,7 @@
 package cliutil
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -107,20 +108,94 @@ func PasswordFromFlags(cmd *cobra.Command) (password string, provided bool, err 
 
 // SaveConfig applies mutate to a shallow copy of the loaded config, validates
 // it, and only then writes the file. A rejected update leaves both the file and
-// the caller's config untouched.
+// the caller's config untouched. This compatibility entry point has no
+// cancellation; callers that own a context should use SaveConfigContext.
 func SaveConfig(state cliruntime.ConfigState, mutate func(*config.Config) error) error {
+	return saveConfig(state, mutate, nil, config.Save)
+}
+
+// SaveConfigContext is SaveConfig with cancellation checks before the mutation,
+// after it, after validation, and inside the atomic write. A canceled context
+// leaves the file and the caller's config untouched.
+func SaveConfigContext(ctx context.Context, state cliruntime.ConfigState, mutate func(*config.Config) error) error {
+	if ctx == nil {
+		return fmt.Errorf("config: context required")
+	}
+	return saveConfig(state, mutate, ctx.Err, func(path string, cfg *config.Config) error {
+		return config.SaveContext(ctx, path, cfg)
+	})
+}
+
+func saveConfig(state cliruntime.ConfigState, mutate func(*config.Config) error, check func() error, saveFn func(string, *config.Config) error) error {
+	checkErr := func() error {
+		if check == nil {
+			return nil
+		}
+		return check()
+	}
+	if err := checkErr(); err != nil {
+		return err
+	}
 	candidate := *state.Cfg
 	candidate.Credentials = append([]config.CredentialConfig(nil), state.Cfg.Credentials...)
 	candidate.Mounts = append([]config.MountConfig(nil), state.Cfg.Mounts...)
 	if err := mutate(&candidate); err != nil {
 		return err
 	}
+	if err := checkErr(); err != nil {
+		return err
+	}
 	if err := config.Validate(&candidate); err != nil {
 		return err
 	}
-	if err := config.Save(state.Path, &candidate); err != nil {
+	if err := checkErr(); err != nil {
+		return err
+	}
+	if err := saveFn(state.Path, &candidate); err != nil {
 		return err
 	}
 	*state.Cfg = candidate
 	return nil
+}
+
+// SaveNewConfig validates a configuration that does not exist on disk yet and
+// writes it exactly once. It mirrors SaveConfig's validate-then-save order for
+// bootstrap flows that have no loaded ConfigState to mutate. This compatibility
+// entry point has no cancellation; use SaveNewConfigContext when a context is
+// available.
+func SaveNewConfig(path string, cfg *config.Config) error {
+	return saveNewConfig(path, cfg, nil, config.Save)
+}
+
+// SaveNewConfigContext is SaveNewConfig with cancellation checks before and
+// after validation and inside the atomic write.
+func SaveNewConfigContext(ctx context.Context, path string, cfg *config.Config) error {
+	if ctx == nil {
+		return fmt.Errorf("config: context required")
+	}
+	return saveNewConfig(path, cfg, ctx.Err, func(path string, cfg *config.Config) error {
+		return config.SaveContext(ctx, path, cfg)
+	})
+}
+
+func saveNewConfig(path string, cfg *config.Config, check func() error, saveFn func(string, *config.Config) error) error {
+	checkErr := func() error {
+		if check == nil {
+			return nil
+		}
+		return check()
+	}
+	if err := checkErr(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("config: path is required")
+	}
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
+	if err := checkErr(); err != nil {
+		return err
+	}
+	return saveFn(path, cfg)
 }
