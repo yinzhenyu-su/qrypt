@@ -19,6 +19,9 @@ func TestCredential(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 	if !ok {
 		return fmt.Errorf("config: credential %q not found", name)
 	}
+	if err := validateCredentialTestOverrides(cred, overrides); err != nil {
+		return err
+	}
 	params := drive.Params{}
 	for key, value := range cred.Params {
 		params[key] = value
@@ -53,5 +56,25 @@ func TestCredential(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		return fmt.Errorf("credential %q: %w", name, err)
 	}
 	_ = driver.Drop(runCtx)
+	return nil
+}
+
+// validateCredentialTestOverrides only accepts mount-scope params, so a test
+// cannot replace the credential's own secrets with --param.
+func validateCredentialTestOverrides(cred config.CredentialConfig, overrides map[string]string) error {
+	spec := drive.ParamSpecFor(cred.Type)
+	known := make(map[string]drive.ParamDef, len(spec.Params))
+	for _, param := range spec.Params {
+		known[param.Name] = param
+	}
+	for name := range overrides {
+		param, ok := known[name]
+		if !ok {
+			return fmt.Errorf("credential %q: unknown parameter %q", cred.Name, name)
+		}
+		if !param.AllowsMount() {
+			return fmt.Errorf("credential %q: parameter %q is not mount-scope; test overrides may only supply mount-scope parameters", cred.Name, name)
+		}
+	}
 	return nil
 }

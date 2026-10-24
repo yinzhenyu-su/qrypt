@@ -312,6 +312,18 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	if d.getLastError() != "" {
 		health = "degraded"
 	}
+	extra := map[string]any{
+		drive.DebugExtraCredentialSource:   d.tokenSource,
+		drive.DebugExtraCredentialUpdated:  d.tokenUpdated,
+		drive.DebugExtraLastError:          d.getLastError(),
+		drive.DebugExtraInstantUploadCount: d.instantUploadCount,
+	}
+	if d.credential != nil {
+		snapshot := d.credential.Snapshot()
+		extra[drive.DebugExtraCredentialName] = d.credential.Name()
+		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
+		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
+	}
 	return drive.DebugSnapshot{
 		Driver:      "aliyundrive",
 		Health:      health,
@@ -324,12 +336,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"order_by":              d.orderBy,
 			"order_direction":       d.orderDirection,
 		},
-		Extra: map[string]any{
-			drive.DebugExtraCredentialSource:   d.tokenSource,
-			drive.DebugExtraCredentialUpdated:  d.tokenUpdated,
-			drive.DebugExtraLastError:          d.getLastError(),
-			drive.DebugExtraInstantUploadCount: d.instantUploadCount,
-		},
+		Extra: extra,
 	}, nil
 }
 

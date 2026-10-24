@@ -107,20 +107,29 @@ func newListCmd(rt cliruntime.Runtime) *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			layout := core.NewStorageLayout(state.Cfg, core.RuntimeLayout{})
-			fmt.Fprintln(out, "NAME\tTYPE\tACCOUNT\tUSED BY")
+			fmt.Fprintln(out, "NAME\tTYPE\tACCOUNT\tSOURCE\tVERSION\tUPDATED\tUSED BY")
 			accounts := map[string]string{}
 			for _, cred := range state.Cfg.Credentials {
-				account := "-"
-				if info, ok := core.CredentialSessionState(state.Cfg, layout, cred.Name); ok && info.Account != "" {
-					account = info.Account
-					key := cred.Type + "\x00" + info.Account
-					if other, seen := accounts[key]; seen {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: credentials %q and %q resolve to the same %s account; merge them to share one lifecycle\n", other, cred.Name, cred.Type)
-					} else {
-						accounts[key] = cred.Name
+				account, source, version, updated := "-", "-", "-", "-"
+				if info, ok := core.CredentialSessionState(state.Cfg, layout, cred.Name); ok {
+					if info.Account != "" {
+						account = info.Account
+						key := cred.Type + "\x00" + info.Account
+						if other, seen := accounts[key]; seen {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: credentials %q and %q resolve to the same %s account; merge them to share one lifecycle\n", other, cred.Name, cred.Type)
+						} else {
+							accounts[key] = cred.Name
+						}
+					}
+					if info.Source != "" {
+						source = info.Source
+					}
+					version = fmt.Sprintf("%d", info.Version)
+					if !info.UpdatedAt.IsZero() {
+						updated = info.UpdatedAt.Format(time.RFC3339)
 					}
 				}
-				fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", cred.Name, cred.Type, account, strings.Join(state.Cfg.CredentialUsedBy(cred.Name), ","))
+				fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", cred.Name, cred.Type, account, source, version, updated, strings.Join(state.Cfg.CredentialUsedBy(cred.Name), ","))
 			}
 			return nil
 		},
@@ -150,7 +159,11 @@ func newShowCmd(rt cliruntime.Runtime) *cobra.Command {
 			fmt.Fprintf(out, "name: %s\ntype: %s\nused_by: %s\n", cred.Name, cred.Type, strings.Join(state.Cfg.CredentialUsedBy(cred.Name), ","))
 			layout := core.NewStorageLayout(state.Cfg, core.RuntimeLayout{})
 			if info, ok := core.CredentialSessionState(state.Cfg, layout, cred.Name); ok {
-				fmt.Fprintf(out, "account: %s\nversion: %d\n", info.Account, info.Version)
+				updated := "-"
+				if !info.UpdatedAt.IsZero() {
+					updated = info.UpdatedAt.Format(time.RFC3339)
+				}
+				fmt.Fprintf(out, "account: %s\nsource: %s\nversion: %d\nupdated_at: %s\n", info.Account, info.Source, info.Version, updated)
 			}
 			for _, param := range credentialParams(cred) {
 				fmt.Fprintf(out, "%s = %s\n", param.name, param.value)
@@ -360,7 +373,7 @@ account; otherwise nothing is migrated. The legacy file is kept unless
 			}
 			out := cmd.OutOrStdout()
 			if !result.Adopted {
-				fmt.Fprintln(out, i18n.FromCommand(cmd).T("out.credential.migrate.skipped", args[0]))
+				fmt.Fprintln(out, i18n.FromCommand(cmd).T("out.credential.migrate.skipped", args[0], result.Reason))
 				return nil
 			}
 			fmt.Fprintln(out, i18n.FromCommand(cmd).T("out.credential.migrate.adopted", args[0], result.Account))
