@@ -44,7 +44,8 @@ for those contracts.
 
 | Package | Owns | Must not own |
 | --- | --- | --- |
-| `pkg/drive` | Provider contracts, capabilities, provider-neutral errors and health | Filesystem semantics, concrete providers, UI/runtime policy |
+| `pkg/drive` | Provider contracts, capabilities, provider-neutral errors and health, shared-credential contract | Filesystem semantics, concrete providers, UI/runtime policy |
+| `pkg/core/internal/credentials` | Process-wide credential session lifecycle: versioned commits, persistence, subscriptions, coalesced refresh | Provider protocols, filesystem semantics, client transports |
 | `pkg/drivers/<name>` | One provider's protocol, authentication and provider-specific session state | VFS, mount, control or CLI behavior |
 | `pkg/crypt` | Encryption wrapper implementing drive contracts | VFS cache or application task state |
 | `pkg/vfs` | Provider-independent filesystem facade, namespace routing and assembly of VFS domains | Provider APIs, mobile contracts or platform mount policy |

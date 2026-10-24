@@ -9,6 +9,8 @@ package p115open
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -51,14 +53,22 @@ type Driver struct {
 	tokenSource        string
 	tokenUpdated       time.Time
 	tokenMu            sync.Mutex
-	userID             int64
-	debugMu            sync.Mutex
-	lastError          string
-	instantUploads     atomic.Int64
-	bandwidthLimiter   *drive.BandwidthLimiter
-	ossMu              sync.Mutex
-	ossToken           *sdk.UploadGetTokenResp
-	ossTokenAt         time.Time
+	// credential is the shared session installed for mounts that reference a
+	// [[credentials]] entry; nil keeps the legacy per-mount token state.
+	credential        drive.CredentialSession
+	credentialCancel  func()
+	credentialMu      sync.Mutex
+	credentialVersion uint64
+	suppressCommit    bool
+	tokenExpires      time.Time
+	userID            int64
+	debugMu           sync.Mutex
+	lastError         string
+	instantUploads    atomic.Int64
+	bandwidthLimiter  *drive.BandwidthLimiter
+	ossMu             sync.Mutex
+	ossToken          *sdk.UploadGetTokenResp
+	ossTokenAt        time.Time
 
 	// Upload session binding store：只保存 "内容键 → OSS 上传句柄"，
 	// 分片进度用服务端 ListParts 重建。
@@ -118,7 +128,12 @@ func New(opts Options) *Driver {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
-	d.loadTokenState()
+	if d.credential != nil {
+		d.loadCredentialSession()
+		d.subscribeCredentialSession()
+	} else {
+		d.loadTokenState()
+	}
 	if d.refreshToken == "" && d.accessToken == "" {
 		return fmt.Errorf("115_open: Init: missing refresh_token")
 	}
@@ -133,6 +148,12 @@ func (d *Driver) Init(ctx context.Context) error {
 		}),
 	)
 	d.cl.SetUserAgent(downloadUserAgent)
+	if d.credential != nil && d.needsRefresh(time.Now()) {
+		if err := d.refreshShared(ctx); err != nil {
+			d.setLastError(fmt.Sprintf("115_open: refresh token: %v", err))
+			return fmt.Errorf("115_open: refresh token: %w", err)
+		}
+	}
 	if err := d.waitLimit(ctx); err != nil {
 		return err
 	}
@@ -144,7 +165,11 @@ func (d *Driver) Init(ctx context.Context) error {
 	if info != nil {
 		d.userID = info.UserID
 	}
-	d.saveTokens(d.accessToken, d.refreshToken, d.tokenSource)
+	if d.credential == nil {
+		d.saveTokens(d.accessToken, d.refreshToken, d.tokenSource)
+	} else if len(d.credential.Snapshot().Payload) == 0 {
+		d.commitTokens(d.accessToken, d.refreshToken)
+	}
 	if d.rootID == "" {
 		d.rootID = "0"
 	}
@@ -159,6 +184,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(context.Context) error {
+	if d.credentialCancel != nil {
+		d.credentialCancel()
+		d.credentialCancel = nil
+	}
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -174,6 +203,12 @@ func (d *Driver) Drop(context.Context) error {
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
 	d.installSessionIndex(store)
+}
+
+// InstallCredentialSession lets every mount of one configured 115-open
+// credential share one token pair and coalesce refreshes.
+func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
+	d.credential = session
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -195,6 +230,12 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	}
 	if !d.tokenUpdated.IsZero() {
 		extra[drive.DebugExtraCredentialUpdated] = d.tokenUpdated
+	}
+	if d.credential != nil {
+		snapshot := d.credential.Snapshot()
+		extra[drive.DebugExtraCredentialName] = d.credential.Name()
+		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
+		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
 	}
 	health := drive.HealthLevelOK
 	if lastError != "" {
@@ -256,7 +297,10 @@ func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive
 
 func (d *Driver) recordSDK(ctx context.Context, operation string, request map[string]any, fn func() error) error {
 	start := time.Now()
-	err := fn()
+	err := d.ensureToken(ctx)
+	if err == nil {
+		err = fn()
+	}
 	event := drive.MetricEvent{
 		Layer:     "driver.sdk",
 		Operation: operation,
@@ -320,6 +364,15 @@ func (d *Driver) saveTokens(accessToken, refreshToken, source string) {
 	d.tokenSource = source
 	d.tokenUpdated = time.Now()
 	d.tokenMu.Unlock()
+	if d.credential != nil {
+		d.credentialMu.Lock()
+		suppressed := d.suppressCommit
+		d.credentialMu.Unlock()
+		if !suppressed {
+			d.commitTokens(accessToken, refreshToken)
+		}
+		return
+	}
 	if d.stateStore == nil {
 		return
 	}
@@ -336,6 +389,179 @@ func (d *Driver) saveTokens(accessToken, refreshToken, source string) {
 var _ drive.Driver = (*Driver)(nil)
 var _ drive.BandwidthLimitInstaller = (*Driver)(nil)
 var _ drive.StateStoreInstaller = (*Driver)(nil)
+
+const tokenRefreshSkew = 5 * time.Minute
+
+// needsRefresh reports whether the shared access token is missing or close to
+// expiry.
+func (d *Driver) needsRefresh(now time.Time) bool {
+	d.tokenMu.Lock()
+	accessToken, expires := d.accessToken, d.tokenExpires
+	d.tokenMu.Unlock()
+	if accessToken == "" {
+		return true
+	}
+	if expires.IsZero() {
+		return false
+	}
+	return now.After(expires.Add(-tokenRefreshSkew))
+}
+
+func (d *Driver) ensureToken(ctx context.Context) error {
+	if d.credential == nil || !d.needsRefresh(time.Now()) {
+		return nil
+	}
+	return d.refreshShared(ctx)
+}
+
+// refreshShared coalesces refreshes across every mount of the credential.
+func (d *Driver) refreshShared(ctx context.Context) error {
+	snapshot, err := d.credential.Refresh(ctx, func(current drive.CredentialSnapshot) ([]byte, string, error) {
+		payload, decodeErr := decodeCredentialPayload(current.Payload)
+		if decodeErr != nil && len(current.Payload) > 0 {
+			return nil, "", decodeErr
+		}
+		if payload.RefreshToken != "" {
+			d.cl.SetRefreshToken(payload.RefreshToken)
+			d.tokenMu.Lock()
+			d.refreshToken = payload.RefreshToken
+			d.tokenMu.Unlock()
+		}
+		if payload.AccessToken != "" {
+			d.cl.SetAccessToken(payload.AccessToken)
+			d.tokenMu.Lock()
+			d.accessToken = payload.AccessToken
+			d.tokenMu.Unlock()
+		}
+		d.credentialMu.Lock()
+		d.suppressCommit = true
+		d.credentialMu.Unlock()
+		resp, refreshErr := d.cl.RefreshToken(ctx)
+		d.credentialMu.Lock()
+		d.suppressCommit = false
+		d.credentialMu.Unlock()
+		if refreshErr != nil {
+			return nil, "", refreshErr
+		}
+		expires := time.Now().Add(time.Hour)
+		if resp.ExpiresIn > 0 {
+			expires = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
+		}
+		d.tokenMu.Lock()
+		d.accessToken = resp.AccessToken
+		d.refreshToken = resp.RefreshToken
+		d.tokenExpires = expires
+		d.tokenMu.Unlock()
+		return encodeCredentialPayload(credentialPayload{
+			AccessToken:  resp.AccessToken,
+			RefreshToken: resp.RefreshToken,
+			ExpiresAt:    expires,
+		})
+	})
+	if err != nil {
+		return err
+	}
+	d.applyCredentialSnapshot(snapshot)
+	return nil
+}
+
+func (d *Driver) commitTokens(accessToken, refreshToken string) {
+	if d.credential == nil || accessToken == "" || refreshToken == "" {
+		return
+	}
+	d.tokenMu.Lock()
+	expires := d.tokenExpires
+	d.tokenMu.Unlock()
+	payload, _, err := encodeCredentialPayload(credentialPayload{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    expires,
+	})
+	if err != nil {
+		return
+	}
+	snapshot := d.credential.Snapshot()
+	_, err = d.credential.Update(snapshot.Version, payload, "")
+	if err == nil {
+		return
+	}
+	if errors.Is(err, drive.ErrCredentialVersionConflict) {
+		d.applyCredentialSnapshot(d.credential.Snapshot())
+		return
+	}
+	logging.L.Warnf("[115_open] commit shared credential failed: %v", err)
+}
+
+func (d *Driver) loadCredentialSession() {
+	snapshot := d.credential.Snapshot()
+	payload, err := decodeCredentialPayload(snapshot.Payload)
+	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+		return
+	}
+	d.accessToken = payload.AccessToken
+	d.refreshToken = payload.RefreshToken
+	d.tokenExpires = payload.ExpiresAt
+	d.tokenSource = "state"
+	d.tokenUpdated = snapshot.UpdatedAt
+	d.credentialVersion = snapshot.Version
+}
+
+func (d *Driver) subscribeCredentialSession() {
+	if d.credential == nil || d.credentialCancel != nil {
+		return
+	}
+	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+}
+
+func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
+	payload, err := decodeCredentialPayload(snapshot.Payload)
+	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+		return
+	}
+	d.credentialMu.Lock()
+	if snapshot.Version <= d.credentialVersion {
+		d.credentialMu.Unlock()
+		return
+	}
+	d.credentialVersion = snapshot.Version
+	d.tokenMu.Lock()
+	d.accessToken = payload.AccessToken
+	d.refreshToken = payload.RefreshToken
+	d.tokenExpires = payload.ExpiresAt
+	d.tokenSource = "credential"
+	d.tokenUpdated = snapshot.UpdatedAt
+	d.tokenMu.Unlock()
+	cl := d.cl
+	d.credentialMu.Unlock()
+	if cl != nil {
+		if payload.AccessToken != "" {
+			cl.SetAccessToken(payload.AccessToken)
+		}
+		if payload.RefreshToken != "" {
+			cl.SetRefreshToken(payload.RefreshToken)
+		}
+	}
+}
+
+type credentialPayload struct {
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+}
+
+func encodeCredentialPayload(payload credentialPayload) ([]byte, string, error) {
+	data, err := json.Marshal(payload)
+	return data, "", err
+}
+
+func decodeCredentialPayload(data []byte) (credentialPayload, error) {
+	var payload credentialPayload
+	if len(data) == 0 {
+		return payload, nil
+	}
+	err := json.Unmarshal(data, &payload)
+	return payload, err
+}
 
 func (d *Driver) waitLimit(ctx context.Context) error {
 	if d.limiter != nil {

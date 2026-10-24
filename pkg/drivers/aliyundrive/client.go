@@ -42,7 +42,10 @@ type client struct {
 	deviceID     string
 	signature    string
 	onRefresh    func(accessToken, refreshToken string)
-	metrics      *driverutil.Buffer
+	// authRefresh, when set, performs the refresh through the shared credential
+	// session so concurrent mounts coalesce into one provider call.
+	authRefresh func(ctx context.Context) error
+	metrics     *driverutil.Buffer
 }
 
 type clientOptions struct {
@@ -80,6 +83,13 @@ func (c *client) tokens() (accessToken, refreshToken string) {
 }
 
 func (c *client) refresh(ctx context.Context) error {
+	if c.authRefresh != nil {
+		return c.authRefresh(ctx)
+	}
+	return c.refreshDirect(ctx)
+}
+
+func (c *client) refreshDirect(ctx context.Context) error {
 	_, refreshToken := c.tokens()
 	if refreshToken == "" {
 		return fmt.Errorf("aliyundrive: refresh token is required")

@@ -233,6 +233,9 @@ const (
 	DebugExtraLegacyRapidUploadCount = "rapid_upload_count"
 	DebugExtraCredentialSource       = "credential_source"
 	DebugExtraCredentialUpdated      = "credential_updated"
+	DebugExtraCredentialName         = "credential"
+	DebugExtraCredentialVersion      = "credential_version"
+	DebugExtraCredentialAccount      = "credential_account"
 	DebugExtraLastError              = "last_error"
 )
 

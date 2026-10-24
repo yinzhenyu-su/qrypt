@@ -45,7 +45,10 @@ type client struct {
 	metaSem        chan struct{}
 	ossSem         chan struct{}
 	onCookieUpdate func(cookie string)
-	metrics        *driverutil.Buffer
+	// onAuthRetry reloads a newer shared credential after a 401 and reports
+	// whether the request should be retried once.
+	onAuthRetry func() bool
+	metrics     *driverutil.Buffer
 	// wgKeys overrides the built-in wg data-key table for offline request
 	// encryption (secureNo → 16-byte hex key).
 	wgKeys map[int]string
@@ -340,6 +343,10 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 			if cookie.Name == "__puus" || cookie.Name == "__pus" {
 				c.updateCookie(cookie.Name, cookie.Value)
 			}
+		}
+		if resp.StatusCode == http.StatusUnauthorized && cookieSnapshot == "" && attempt == 0 && c.onAuthRetry != nil && c.onAuthRetry() {
+			c.recordMetric(ctx, event)
+			continue
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt < httpMaxRetries {
 			c.recordMetric(ctx, event)

@@ -584,6 +584,287 @@ func TestLoadCookieStateOverridesConfigCookie(t *testing.T) {
 	}
 }
 
+// TestLoadCookieStateCredentialBinding pins which persisted sessions may
+// replace the configured credential: rotation state survives restarts only for
+// the same configured cookie, while a replaced credential (another account,
+// or a freshly exported cookie) always wins.
+func TestLoadCookieStateCredentialBinding(t *testing.T) {
+	const (
+		accountA = "__uid=account-a; __puus=a"
+		accountB = "__uid=account-b; __puus=b"
+	)
+	tests := []struct {
+		name         string
+		configCookie string
+		state        cookieState
+		wantCookie   string
+		wantSource   string
+	}{
+		{
+			name:         "adopts rotated session for the configured credential",
+			configCookie: accountA,
+			state:        cookieState{Cookie: "__uid=account-a; __puus=a-rotated", Seed: cookieFingerprint(accountA), Account: "account-a"},
+			wantCookie:   "__uid=account-a; __puus=a-rotated",
+			wantSource:   "state",
+		},
+		{
+			name:         "adopts rotated session when config pairs were reordered",
+			configCookie: "__puus=a; __uid=account-a",
+			state:        cookieState{Cookie: "__uid=account-a; __puus=a-rotated", Seed: cookieFingerprint(accountA), Account: "account-a"},
+			wantCookie:   "__uid=account-a; __puus=a-rotated",
+			wantSource:   "state",
+		},
+		{
+			name:         "rejects legacy state for another account",
+			configCookie: accountB,
+			state:        cookieState{Cookie: "__uid=account-a; __puus=a-rotated"},
+			wantCookie:   accountB,
+			wantSource:   "config",
+		},
+		{
+			name:         "rejects seeded state after the account was switched",
+			configCookie: accountB,
+			state:        cookieState{Cookie: "__uid=account-a; __puus=a-rotated", Seed: cookieFingerprint(accountA), Account: "account-a"},
+			wantCookie:   accountB,
+			wantSource:   "config",
+		},
+		{
+			name:         "rejects seeded state after the cookie was re-exported",
+			configCookie: "__uid=account-a; __puus=a-fresh",
+			state:        cookieState{Cookie: "__uid=account-a; __puus=a-rotated", Seed: cookieFingerprint(accountA), Account: "account-a"},
+			wantCookie:   "__uid=account-a; __puus=a-fresh",
+			wantSource:   "config",
+		},
+		{
+			name:         "keeps state when no config cookie exists",
+			configCookie: "",
+			state:        cookieState{Cookie: "__uid=account-a; __puus=a-rotated", Seed: cookieFingerprint(accountA), Account: "account-a"},
+			wantCookie:   "__uid=account-a; __puus=a-rotated",
+			wantSource:   "state",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := drive.NewFileStateStore(t.TempDir())
+			if err := store.SaveJSON("quark_cookie.json", tt.state); err != nil {
+				t.Fatal(err)
+			}
+			driver := New(tt.configCookie, Options{})
+			driver.InstallStateStore(store)
+			driver.loadCookieState()
+			if got := driver.cl.cookieValue(); got != tt.wantCookie {
+				t.Fatalf("cookie = %q, want %q", got, tt.wantCookie)
+			}
+			if got := driver.cookieSource; got != tt.wantSource {
+				t.Fatalf("cookieSource = %q, want %q", got, tt.wantSource)
+			}
+		})
+	}
+}
+
+func TestSaveUpdatedCookieBindsSeedAndAccount(t *testing.T) {
+	store := drive.NewFileStateStore(t.TempDir())
+	configCookie := "__uid=account-a; __puus=config"
+	driver := New(configCookie, Options{})
+	driver.InstallStateStore(store)
+	driver.cl.updateCookie("__puus", "rotated")
+
+	var state cookieState
+	if err := store.LoadJSON("quark_cookie.json", &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Seed != cookieFingerprint(configCookie) {
+		t.Fatalf("seed = %q, want fingerprint of the config cookie", state.Seed)
+	}
+	if state.Account != "account-a" {
+		t.Fatalf("account = %q, want account-a", state.Account)
+	}
+	if !strings.Contains(state.Cookie, "__puus=rotated") {
+		t.Fatalf("cookie = %q, want rotated __puus", state.Cookie)
+	}
+}
+
+// TestPersistedCookieStateKeepsAccountsSeparate guards the multi-account
+// invariant: two mounts of the same driver with different cookies keep their
+// own rotated session across a restart.
+func TestPersistedCookieStateKeepsAccountsSeparate(t *testing.T) {
+	configA := "__uid=account-a; __puus=a"
+	configB := "__uid=account-b; __puus=b"
+	storeA := drive.NewFileStateStore(t.TempDir())
+	storeB := drive.NewFileStateStore(t.TempDir())
+
+	firstA := New(configA, Options{})
+	firstA.InstallStateStore(storeA)
+	firstA.cl.updateCookie("__puus", "a-rotated")
+
+	firstB := New(configB, Options{})
+	firstB.InstallStateStore(storeB)
+	firstB.cl.updateCookie("__puus", "b-rotated")
+
+	reloadA := New(configA, Options{})
+	reloadA.InstallStateStore(storeA)
+	reloadA.loadCookieState()
+	reloadB := New(configB, Options{})
+	reloadB.InstallStateStore(storeB)
+	reloadB.loadCookieState()
+
+	if got := reloadA.cl.cookieValue(); got != "__uid=account-a; __puus=a-rotated" {
+		t.Fatalf("account a cookie = %q after restart, want its own rotated session", got)
+	}
+	if got := reloadB.cl.cookieValue(); got != "__uid=account-b; __puus=b-rotated" {
+		t.Fatalf("account b cookie = %q after restart, want its own rotated session", got)
+	}
+	if reloadA.cookieSource != "state" || reloadB.cookieSource != "state" {
+		t.Fatalf("cookie sources = %q/%q, want state/state", reloadA.cookieSource, reloadB.cookieSource)
+	}
+}
+
+func TestSharedCredentialSessionPropagatesRotation(t *testing.T) {
+	session := newFakeCredentialSession("main")
+	first := New("__uid=account-a; __puus=one", Options{})
+	first.InstallCredentialSession(session)
+	first.subscribeCredentialSession()
+	second := New("__uid=account-a; __puus=one", Options{})
+	second.InstallCredentialSession(session)
+	second.subscribeCredentialSession()
+
+	first.cl.updateCookie("__puus", "two")
+
+	if got := second.cl.cookieValue(); !strings.Contains(got, "__puus=two") {
+		t.Fatalf("sibling cookie = %q, want the rotated value", got)
+	}
+	if second.cookieSource != "credential" {
+		t.Fatalf("sibling source = %q, want credential", second.cookieSource)
+	}
+	snapshot := session.Snapshot()
+	if snapshot.Account != "account-a" || snapshot.Version != 1 {
+		t.Fatalf("session snapshot = %+v, want account-a at version 1", snapshot)
+	}
+	if second.credentialVersion != snapshot.Version {
+		t.Fatalf("sibling version = %d, want %d", second.credentialVersion, snapshot.Version)
+	}
+}
+
+func TestSharedCredentialSessionIgnoresAnotherAccount(t *testing.T) {
+	session := newFakeCredentialSession("main")
+	if _, err := session.Update(0, []byte(`{"cookie":"__uid=account-a; __puus=one"}`), "account-a"); err != nil {
+		t.Fatal(err)
+	}
+	driver := New("__uid=account-b; __puus=config", Options{})
+	driver.InstallCredentialSession(session)
+	driver.subscribeCredentialSession()
+	driver.loadCredentialSession()
+
+	if got := driver.cl.cookieValue(); got != "__uid=account-b; __puus=config" {
+		t.Fatalf("cookie = %q, want the configured account", got)
+	}
+}
+
+func TestAuthFailureAdoptsSiblingRotation(t *testing.T) {
+	session := newFakeCredentialSession("main")
+	if _, err := session.Update(0, []byte(`{"cookie":"__uid=account-a; __puus=rotated"}`), "account-a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var cookies []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cookies = append(cookies, r.Header.Get("Cookie"))
+		attempt := len(cookies)
+		mu.Unlock()
+		if attempt == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, w, map[string]any{"status": 200, "code": 0, "data": map[string]any{"list": []any{}}})
+	}))
+	defer api.Close()
+
+	driver := New("__uid=account-a; __puus=stale", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.InstallCredentialSession(session)
+
+	var resp sortResp
+	if err := driver.cl.request(context.Background(), http.MethodGet, "/file/sort", map[string]string{"pdir_fid": "0"}, nil, &resp); err != nil {
+		t.Fatalf("request after sibling rotation = %v, want success", err)
+	}
+	if len(cookies) != 2 {
+		t.Fatalf("attempts = %d, want 2 (stale + adopted)", len(cookies))
+	}
+	if !strings.Contains(cookies[1], "__puus=rotated") {
+		t.Fatalf("retry cookie = %q, want the adopted rotation", cookies[1])
+	}
+}
+
+func TestAuthFailureWithoutNewerSessionSurfaces(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer api.Close()
+	driver := New("__uid=account-a; __puus=stale", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.InstallCredentialSession(newFakeCredentialSession("main"))
+
+	var resp sortResp
+	err := driver.cl.request(context.Background(), http.MethodGet, "/file/sort", map[string]string{"pdir_fid": "0"}, nil, &resp)
+	if err == nil {
+		t.Fatal("request without a newer session should surface the auth failure")
+	}
+}
+
+type fakeCredentialSession struct {
+	name    string
+	mu      sync.Mutex
+	payload []byte
+	version uint64
+	account string
+	subs    []func(drive.CredentialSnapshot)
+}
+
+func newFakeCredentialSession(name string) *fakeCredentialSession {
+	return &fakeCredentialSession{name: name}
+}
+
+func (s *fakeCredentialSession) Name() string { return s.name }
+
+func (s *fakeCredentialSession) Snapshot() drive.CredentialSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return drive.CredentialSnapshot{
+		Payload: append([]byte(nil), s.payload...),
+		Version: s.version,
+		Account: s.account,
+	}
+}
+
+func (s *fakeCredentialSession) Update(expected uint64, payload []byte, account string) (drive.CredentialSnapshot, error) {
+	s.mu.Lock()
+	if expected != s.version {
+		snapshot := drive.CredentialSnapshot{Payload: append([]byte(nil), s.payload...), Version: s.version, Account: s.account}
+		s.mu.Unlock()
+		return snapshot, drive.ErrCredentialVersionConflict
+	}
+	s.payload = append([]byte(nil), payload...)
+	s.account = account
+	s.version++
+	snapshot := drive.CredentialSnapshot{Payload: append([]byte(nil), s.payload...), Version: s.version, Account: s.account}
+	subs := append([]func(drive.CredentialSnapshot){}, s.subs...)
+	s.mu.Unlock()
+	for _, fn := range subs {
+		fn(snapshot)
+	}
+	return snapshot, nil
+}
+
+func (s *fakeCredentialSession) Subscribe(fn func(drive.CredentialSnapshot)) func() {
+	s.mu.Lock()
+	s.subs = append(s.subs, fn)
+	s.mu.Unlock()
+	return func() {}
+}
+
+func (s *fakeCredentialSession) Refresh(context.Context, func(drive.CredentialSnapshot) ([]byte, string, error)) (drive.CredentialSnapshot, error) {
+	return drive.CredentialSnapshot{}, errors.New("refresh unsupported")
+}
+
 func TestOSSClientHasNoWholeRequestTimeout(t *testing.T) {
 	client := newOSSClient()
 	if client.Timeout != 0 {

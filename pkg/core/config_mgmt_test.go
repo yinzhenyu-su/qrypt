@@ -81,6 +81,102 @@ password = "real-secret"
 
 // TestApplyConfigUpdateFieldsMerge ensures an update that mentions only some
 // params keeps the others (field-level patch semantics).
+func TestApplyConfigUpdateSharedCredential(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[[credentials]]
+name = "main"
+type = "quark"
+[credentials.params]
+cookie = "real-cookie"
+
+[[mounts]]
+name = "a"
+type = "quark"
+credential = "main"
+[mounts.params]
+root_path = "/A"
+
+[[mounts]]
+name = "b"
+type = "quark"
+credential = "main"
+[mounts.params]
+root_path = "/B"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &Core{configPath: configPath}
+
+	summary, err := c.configSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Credentials) != 1 {
+		t.Fatalf("credentials = %+v, want one entry", summary.Credentials)
+	}
+	cred := summary.Credentials[0]
+	if cred.Name != "main" || cred.Type != "quark" {
+		t.Fatalf("credential summary = %+v", cred)
+	}
+	if cred.Params["cookie"] != maskedSecretValue {
+		t.Fatalf("cookie = %q, want masked", cred.Params["cookie"])
+	}
+	if strings.Join(cred.UsedBy, ",") != "a,b" {
+		t.Fatalf("used_by = %v, want both mounts", cred.UsedBy)
+	}
+	for _, mount := range summary.Mounts {
+		if mount.Credential != "main" {
+			t.Fatalf("mount %q credential = %q, want main", mount.Name, mount.Credential)
+		}
+	}
+
+	// Echoing the mask keeps the stored secret, while a real value replaces it.
+	if _, err := c.ApplyConfigUpdate(ConfigUpdateRequest{Credentials: []ConfigCredentialUpdate{{
+		Action: "update",
+		Name:   "main",
+		Type:   "quark",
+		Params: map[string]string{"cookie": maskedSecretValue},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `cookie = "real-cookie"`) {
+		t.Fatalf("masked echo clobbered the credential:\n%s", data)
+	}
+
+	if _, err := c.ApplyConfigUpdate(ConfigUpdateRequest{Credentials: []ConfigCredentialUpdate{{
+		Action: "update",
+		Name:   "main",
+		Type:   "quark",
+		Params: map[string]string{"cookie": "rotated-cookie"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := c.loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := cfg.ResolveMountParams(cfg.Mounts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params["cookie"] != "rotated-cookie" || params["root_path"] != "/B" {
+		t.Fatalf("effective params = %+v, want updated credential and mount path", params)
+	}
+
+	if _, err := c.ApplyConfigUpdate(ConfigUpdateRequest{Credentials: []ConfigCredentialUpdate{{
+		Action: "remove", Name: "main",
+	}}}); err == nil || !strings.Contains(err.Error(), "still referenced") {
+		t.Fatalf("removing a referenced credential error = %v, want a reference error", err)
+	}
+}
+
 func TestApplyConfigUpdateFieldsMerge(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

@@ -54,6 +54,12 @@ type Driver struct {
 	downloadUA         string
 	limiter            *drive.BandwidthLimiter
 	stateStore         drive.StateStore
+	// credential is the shared session installed for mounts that reference a
+	// [[credentials]] entry; nil keeps the legacy per-mount token state.
+	credential         drive.CredentialSession
+	credentialCancel   func()
+	credentialMu       sync.Mutex
+	credentialVersion  uint64
 	tokenSource        string
 	tokenUpdated       time.Time
 	tokenMu            sync.Mutex
@@ -199,7 +205,12 @@ func (d *Driver) Init(ctx context.Context) error {
 	if d.refreshToken == "" {
 		return fmt.Errorf("baidu_netdisk: refresh_token is required")
 	}
-	d.loadTokenState()
+	if d.credential != nil {
+		d.loadCredentialSession()
+		d.subscribeCredentialSession()
+	} else {
+		d.loadTokenState()
+	}
 	if !d.useOnlineAPI && (d.clientID == "" || d.clientSecret == "") {
 		return fmt.Errorf("baidu_netdisk: client_id and client_secret are required when use_online_api=false")
 	}
@@ -219,6 +230,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
+	if d.credentialCancel != nil {
+		d.credentialCancel()
+		d.credentialCancel = nil
+	}
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -234,6 +249,12 @@ func (d *Driver) Drop(ctx context.Context) error {
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
 	d.installSessionIndex(store)
+}
+
+// InstallCredentialSession lets every mount of one configured Baidu credential
+// share one token pair and coalesce refreshes.
+func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
+	d.credential = session
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -254,6 +275,18 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	if lastError != "" {
 		health = "degraded"
 	}
+	extra := map[string]any{
+		drive.DebugExtraCredentialSource:   d.tokenSource,
+		drive.DebugExtraCredentialUpdated:  d.tokenUpdated,
+		drive.DebugExtraLastError:          lastError,
+		drive.DebugExtraInstantUploadCount: instantUploadCount,
+	}
+	if d.credential != nil {
+		snapshot := d.credential.Snapshot()
+		extra[drive.DebugExtraCredentialName] = d.credential.Name()
+		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
+		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
+	}
 	return drive.DebugSnapshot{
 		Driver:      "baidu_netdisk",
 		Health:      health,
@@ -265,12 +298,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"use_online_api":        d.useOnlineAPI,
 			"upload_api":            d.uploadAPI,
 		},
-		Extra: map[string]any{
-			drive.DebugExtraCredentialSource:   d.tokenSource,
-			drive.DebugExtraCredentialUpdated:  d.tokenUpdated,
-			drive.DebugExtraLastError:          lastError,
-			drive.DebugExtraInstantUploadCount: instantUploadCount,
-		},
+		Extra: extra,
 	}, nil
 }
 
@@ -334,6 +362,13 @@ func (d *Driver) ensureToken(ctx context.Context) error {
 }
 
 func (d *Driver) refresh(ctx context.Context) error {
+	if d.credential != nil {
+		return d.refreshShared(ctx)
+	}
+	return d.refreshDirect(ctx)
+}
+
+func (d *Driver) refreshDirect(ctx context.Context) error {
 	d.tokenMu.Lock()
 	defer d.tokenMu.Unlock()
 	if d.refreshToken == "" {
@@ -387,10 +422,103 @@ func (d *Driver) refresh(ctx context.Context) error {
 	}
 	d.tokenSource = "refresh"
 	d.tokenUpdated = time.Now()
+	if d.credential != nil {
+		return nil
+	}
 	if err := d.saveTokenState(); err != nil {
 		return fmt.Errorf("baidu_netdisk: save token state: %w", err)
 	}
 	return nil
+}
+
+// refreshShared coalesces refreshes across every mount sharing the credential.
+// The session's refresh token is authoritative so a rotated chain is not lost.
+func (d *Driver) refreshShared(ctx context.Context) error {
+	_, err := d.credential.Refresh(ctx, func(current drive.CredentialSnapshot) ([]byte, string, error) {
+		payload, decodeErr := decodeCredentialPayload(current.Payload)
+		if decodeErr != nil && len(current.Payload) > 0 {
+			return nil, "", decodeErr
+		}
+		if payload.RefreshToken != "" {
+			d.refreshToken = payload.RefreshToken
+		}
+		if payload.AccessToken != "" {
+			d.accessToken = payload.AccessToken
+			d.tokenExpires = payload.ExpiresAt
+		}
+		if d.accessToken != "" && !d.tokenExpires.IsZero() && time.Now().Before(d.tokenExpires.Add(-defaultTokenSkew)) {
+			return current.Payload, "", nil
+		}
+		if refreshErr := d.refreshDirect(ctx); refreshErr != nil {
+			return nil, "", refreshErr
+		}
+		return encodeCredentialPayload(credentialPayload{
+			AccessToken:  d.accessToken,
+			RefreshToken: d.refreshToken,
+			ExpiresAt:    d.tokenExpires,
+		})
+	})
+	return err
+}
+
+func (d *Driver) loadCredentialSession() {
+	snapshot := d.credential.Snapshot()
+	payload, err := decodeCredentialPayload(snapshot.Payload)
+	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+		return
+	}
+	d.accessToken = payload.AccessToken
+	d.refreshToken = payload.RefreshToken
+	d.tokenExpires = payload.ExpiresAt
+	d.tokenSource = "state"
+	d.tokenUpdated = snapshot.UpdatedAt
+	d.credentialVersion = snapshot.Version
+}
+
+func (d *Driver) subscribeCredentialSession() {
+	if d.credential == nil || d.credentialCancel != nil {
+		return
+	}
+	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+}
+
+func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
+	payload, err := decodeCredentialPayload(snapshot.Payload)
+	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+		return
+	}
+	d.credentialMu.Lock()
+	if snapshot.Version <= d.credentialVersion {
+		d.credentialMu.Unlock()
+		return
+	}
+	d.credentialVersion = snapshot.Version
+	d.accessToken = payload.AccessToken
+	d.refreshToken = payload.RefreshToken
+	d.tokenExpires = payload.ExpiresAt
+	d.tokenSource = "credential"
+	d.tokenUpdated = snapshot.UpdatedAt
+	d.credentialMu.Unlock()
+}
+
+type credentialPayload struct {
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+}
+
+func encodeCredentialPayload(payload credentialPayload) ([]byte, string, error) {
+	data, err := json.Marshal(payload)
+	return data, "", err
+}
+
+func decodeCredentialPayload(data []byte) (credentialPayload, error) {
+	var payload credentialPayload
+	if len(data) == 0 {
+		return payload, nil
+	}
+	err := json.Unmarshal(data, &payload)
+	return payload, err
 }
 
 func (d *Driver) loadTokenState() {
