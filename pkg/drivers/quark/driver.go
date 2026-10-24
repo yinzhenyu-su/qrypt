@@ -61,14 +61,17 @@ func New(cookie string, opts Options) *Driver {
 		rootID = "0"
 	}
 	d := &Driver{
-		cl:              newClient(cookie, clientOptions{BaseURL: opts.BaseURL, V2URL: opts.V2URL, WGKeys: opts.WGKeys}),
-		cookie:          cookie,
-		rootPath:        opts.RootPath,
-		rootID:          rootID,
-		cookieSource:    "config",
-		debugUploads:    map[string]quarkUploadDebug{},
-		wgKeys:          opts.WGKeys,
-		offlineSessions: map[string]string{},
+		cl:                newClient(cookie, clientOptions{BaseURL: opts.BaseURL, V2URL: opts.V2URL, WGKeys: opts.WGKeys}),
+		cookie:            cookie,
+		rootPath:          opts.RootPath,
+		rootID:            rootID,
+		cookieSource:      "config",
+		debugUploads:      map[string]quarkUploadDebug{},
+		wgKeys:            opts.WGKeys,
+		offlineSessions:   map[string]string{},
+		sharePollTimeout:  quarkSharePollTimeout,
+		sharePollInterval: quarkSharePollInterval,
+		shareSaves:        map[string][]drive.ShareEntry{},
 	}
 	d.cl.onCookieUpdate = d.saveUpdatedCookie
 	return d
@@ -160,6 +163,17 @@ type Driver struct {
 	offlineMu       sync.Mutex
 	offlineSessions map[string]string
 	offlineLayouts  map[string]drive.OfflineLayout
+
+	// sharePollTimeout bounds synchronous share-link tasks. Tests shorten it
+	// to exercise the timeout branch without waiting the production window.
+	sharePollTimeout  time.Duration
+	sharePollInterval time.Duration
+
+	// shareSaveMu guards shareSaves: the selected entries of an asynchronous
+	// provider save, keyed by task id. The task response reports only successful
+	// FIDs, so without the request entries a partial save would look complete.
+	shareSaveMu sync.Mutex
+	shareSaves  map[string][]drive.ShareEntry
 }
 
 type Options struct {

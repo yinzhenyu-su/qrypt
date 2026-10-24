@@ -25,6 +25,8 @@ const (
 	TypeMoveBatch           Type = "move_batch"
 	TypeOfflineDownload     Type = "offline_download"
 	TypeOfflineFetch        Type = "offline_fetch"
+	TypeShareSave           Type = "share_save"
+	TypeShareFetch          Type = "share_fetch"
 )
 
 // State is the task-level state machine's position (glossary: State). The
@@ -216,6 +218,7 @@ type Request struct {
 	Options              Options                  `json:"options,omitempty"`
 	Detail               map[string]any           `json:"detail,omitempty"`
 	Offline              *OfflineOperationRequest `json:"offline,omitempty"`
+	Share                *ShareOperationRequest   `json:"share,omitempty"`
 	IdempotencyKey       string                   `json:"idempotency_key,omitempty"`
 	OperationFingerprint string                   `json:"-"`
 }

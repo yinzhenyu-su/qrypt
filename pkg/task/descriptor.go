@@ -33,6 +33,8 @@ const (
 	CreationMove
 	CreationOfflineDownload
 	CreationOfflineFetch
+	CreationShareSave
+	CreationShareFetch
 )
 
 // Descriptor declares one task type's policy in a single place: how requests of
@@ -90,6 +92,11 @@ var descriptors = []Descriptor{
 	// detail (see pkg/core offline runner).
 	{Type: TypeOfflineDownload, Creation: CreationOfflineDownload, Operation: OperationDownload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryManager},
 	{Type: TypeOfflineFetch, Creation: CreationOfflineFetch, Operation: OperationDownload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryManager},
+	// Share save is a durable provider-backed copy of share content into the
+	// acting account's drive: recoverable like offline work, retried by
+	// re-running its runner from persisted detail.
+	{Type: TypeShareSave, Creation: CreationShareSave, Operation: OperationShare, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryManager},
+	{Type: TypeShareFetch, Creation: CreationShareFetch, Operation: OperationDownload, Persistent: true, Dismissible: true, Scope: ScopeUser, Visibility: VisibilityVisible, Recoverable: true, Retry: RetryManager},
 }
 
 // CreationCapabilities returns the capability defaults a task of this type is
