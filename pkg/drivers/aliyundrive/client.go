@@ -45,7 +45,7 @@ type client struct {
 	onRefresh       func(accessToken, refreshToken string)
 	// authRefresh, when set, performs the refresh through the shared credential
 	// session so concurrent mounts coalesce into one provider call.
-	authRefresh func(ctx context.Context) error
+	authRefresh func(ctx context.Context, force bool) error
 	metrics     *driverutil.Buffer
 }
 
@@ -85,7 +85,16 @@ func (c *client) tokens() (accessToken, refreshToken string) {
 
 func (c *client) refresh(ctx context.Context) error {
 	if c.authRefresh != nil {
-		return c.authRefresh(ctx)
+		return c.authRefresh(ctx, false)
+	}
+	return c.refreshDirect(ctx)
+}
+
+// refreshForced refreshes even when the access token still looks fresh; the
+// provider has already rejected it (for example AccessTokenInvalid).
+func (c *client) refreshForced(ctx context.Context) error {
+	if c.authRefresh != nil {
+		return c.authRefresh(ctx, true)
 	}
 	return c.refreshDirect(ctx)
 }
@@ -158,7 +167,7 @@ func (c *client) request(ctx context.Context, method, path string, body, result 
 	}
 	switch apiErr.code {
 	case "AccessTokenInvalid":
-		if refreshErr := c.refresh(ctx); refreshErr != nil {
+		if refreshErr := c.refreshForced(ctx); refreshErr != nil {
 			return refreshErr
 		}
 		return c.rawJSON(ctx, method, url, c.currentAccessToken(), body, result)

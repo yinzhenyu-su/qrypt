@@ -3,6 +3,7 @@ package aliyundrive
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -63,6 +64,7 @@ type tokenState struct {
 	AccessToken  string    `json:"access_token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	UserID       string    `json:"user_id,omitempty"`
 	// ConfigRefreshToken records the config refresh token that produced this
 	// state, so a rotated pair (state newer than config) can be distinguished
 	// from a user-swapped config token (config newer than state).
@@ -153,6 +155,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		return fmt.Errorf("aliyundrive: user get: %w", err)
 	}
 	d.userID = user.UserID
+	d.rememberAccount()
 	if err := d.cl.configureDevice(user.UserID); err != nil {
 		return err
 	}
@@ -380,6 +383,24 @@ func (d *Driver) loadTokenState() {
 		d.tokenSource = "state"
 	}
 	d.tokenUpdated = state.UpdatedAt
+	if state.UserID != "" {
+		d.userID = state.UserID
+	}
+}
+
+// rememberAccount annotates the shared session with the provider user ID once
+// it is known; the first refresh happens before user/get.
+func (d *Driver) rememberAccount() {
+	if d.credential == nil || d.userID == "" {
+		return
+	}
+	snapshot := d.credential.Snapshot()
+	if snapshot.Account == d.userID || len(snapshot.Payload) == 0 {
+		return
+	}
+	if _, err := d.credential.Update(snapshot.Version, snapshot.Payload, d.userID); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
+		d.setLastError(fmt.Errorf("aliyundrive: annotate credential account: %w", err))
+	}
 }
 
 func (d *Driver) loadCredentialSession() {
@@ -429,7 +450,7 @@ func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 // refreshCredential refreshes one shared session. Concurrent mounts wait for the
 // same provider call, which matters because providers may rotate the refresh
 // token itself.
-func (d *Driver) refreshCredential(ctx context.Context) error {
+func (d *Driver) refreshCredential(ctx context.Context, force bool) error {
 	if d.credential == nil {
 		return d.cl.refreshDirect(ctx)
 	}
@@ -438,9 +459,9 @@ func (d *Driver) refreshCredential(ctx context.Context) error {
 		if decodeErr != nil && len(current.Payload) > 0 {
 			return nil, "", decodeErr
 		}
-		if payload.AccessToken != "" && payload.RefreshToken != "" && tokenFresh(payload.ExpiresAt) {
+		if !force && payload.AccessToken != "" && payload.RefreshToken != "" && tokenFresh(payload.ExpiresAt) {
 			d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
-			return current.Payload, "", nil
+			return current.Payload, d.userID, nil
 		}
 		if payload.AccessToken == "" && payload.RefreshToken == "" {
 			payload.AccessToken, payload.RefreshToken = d.cl.tokens()
@@ -461,7 +482,7 @@ func (d *Driver) refreshCredential(ctx context.Context) error {
 		if encodeErr != nil {
 			return nil, "", encodeErr
 		}
-		return encoded, "", nil
+		return encoded, d.userID, nil
 	})
 	return err
 }
@@ -516,6 +537,7 @@ func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
 		AccessToken:        accessToken,
 		RefreshToken:       refreshToken,
 		ExpiresAt:          d.cl.tokenExpiry(),
+		UserID:             d.userID,
 		ConfigRefreshToken: d.configRefreshToken,
 		UpdatedAt:          d.tokenUpdated,
 	}); err != nil {
