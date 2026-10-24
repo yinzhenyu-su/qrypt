@@ -113,8 +113,8 @@ func TestMountAddSetListRemove(t *testing.T) {
 	if secure.Encryption == nil || secure.Encryption.Password != "other" {
 		t.Fatalf("encryption password = %+v after set", secure.Encryption)
 	}
-	if _, err := runMount(t, rt, "set", "secure", "--remove-encryption", "--force"); err == nil {
-		t.Fatal("switching an encrypted mount back to plaintext must not be supported")
+	if _, err := runMount(t, rt, "set", "secure", "--remove-encryption", "--force"); err == nil || !strings.Contains(err.Error(), "cannot be removed") {
+		t.Fatalf("remove-encryption error = %v, want the plaintext-transition rejection", err)
 	}
 	if _, err := runMount(t, rt, "set", "secure", "--salt", "changed"); err == nil {
 		t.Fatal("changing encryption parameters without --force should fail")

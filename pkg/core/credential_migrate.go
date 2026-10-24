@@ -93,6 +93,7 @@ func MigrateCredentialSession(cfg *config.Config, layout RuntimeLayout, mountNam
 // session. Secrets never appear here.
 type CredentialSessionInfo struct {
 	Account   string    `json:"account,omitempty"`
+	Source    string    `json:"source,omitempty"`
 	Version   uint64    `json:"version"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
@@ -116,6 +117,7 @@ func CredentialSessionState(cfg *config.Config, layout RuntimeLayout, name strin
 	}
 	return CredentialSessionInfo{
 		Account:   snapshot.Account,
+		Source:    "state",
 		Version:   snapshot.Version,
 		UpdatedAt: snapshot.UpdatedAt,
 	}, true

@@ -12,6 +12,11 @@ func (d *Driver) ExportCredentialSession(store drive.StateStore, params drive.Pa
 	if state.Cookie == "" {
 		return nil, "", false, nil
 	}
+	// Without a recorded username the legacy state cannot be attributed to
+	// this credential; refuse rather than adopt another account's cookie.
+	if state.Username == "" || state.Username != params["username"] {
+		return nil, "", false, nil
+	}
 	payload, err := encodeCredentialPayload(credentialPayload{
 		Cookie:                  state.Cookie,
 		PasswordReloginFailedAt: state.PasswordReloginFailedAt,

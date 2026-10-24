@@ -1,9 +1,12 @@
 package p189
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/credentialtest"
 )
 
@@ -62,4 +65,36 @@ func decodeInto(t *testing.T, raw []byte, out *credentialPayload) error {
 	}
 	*out = decoded
 	return nil
+}
+
+func TestAuthRecoveryAdoptsSiblingRotation(t *testing.T) {
+	session := credentialtest.New("main")
+	payload, err := encodeCredentialPayload(credentialPayload{Cookie: "UID=account; SEID=state"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Update(0, payload, "user"); err != nil {
+		t.Fatal(err)
+	}
+	driver := newCredentialTestDriver("UID=account; SEID=old")
+	driver.InstallCredentialSession(session)
+	driver.cl.onAuthRecovery = driver.recoverCredential
+
+	calls := 0
+	err = driver.cl.retryOnAuthError(context.Background(), func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("%w: 401", drive.ErrAuth)
+		}
+		if !strings.Contains(driver.cl.cookieValue(), "SEID=state") {
+			t.Fatalf("cookie = %q, want the adopted session", driver.cl.cookieValue())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retryOnAuthError: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want one retry after adopting the session", calls)
+	}
 }

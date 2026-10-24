@@ -3,14 +3,13 @@ package mount
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/cliutil"
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
@@ -176,12 +175,12 @@ Mount names add, set, remove, and list are reserved for subcommands.`,
 			if !ok {
 				return fmt.Errorf("credential %q not found; create it with qrypt credential add", credentialName)
 			}
-			params, err := parseMountParams(cmd, "param")
+			params, err := cliutil.ParseParams(cmd, "param")
 			if err != nil {
 				return err
 			}
 			testEnabled, _ := cmd.Flags().GetBool("test-enabled")
-			password, passwordProvided, err := encryptionPasswordFromFlags(cmd)
+			password, passwordProvided, err := cliutil.PasswordFromFlags(cmd)
 			if err != nil {
 				return err
 			}
@@ -211,7 +210,7 @@ Mount names add, set, remove, and list are reserved for subcommands.`,
 					ContentDedup:       contentDedup,
 				}
 			}
-			if err := saveMountConfig(state, func(candidate *config.Config) error {
+			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
 				return candidate.UpsertMount(mount)
 			}); err != nil {
 				return err
@@ -272,7 +271,7 @@ because existing remote data may become unreadable.`,
 				mount.Credential = credential.Name
 				mount.Type = credential.Type
 			}
-			params, err := parseMountParams(cmd, "param")
+			params, err := cliutil.ParseParams(cmd, "param")
 			if err != nil {
 				return err
 			}
@@ -305,7 +304,7 @@ because existing remote data may become unreadable.`,
 				}
 			}
 			mount.Encryption = nextEncryption
-			if err := saveMountConfig(state, func(candidate *config.Config) error {
+			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
 				return candidate.UpsertMount(mount)
 			}); err != nil {
 				return err
@@ -326,6 +325,7 @@ because existing remote data may become unreadable.`,
 	cmd.Flags().String("filename-encryption", "", "filename mode: standard, obfuscate, or off")
 	cmd.Flags().String("filename-encoding", "", "filename encoding: base32 or base64")
 	cmd.Flags().Bool("content-dedup", false, "enable content de-duplication")
+	cmd.Flags().Bool("remove-encryption", false, "rejected: an encrypted mount cannot become plaintext")
 	cmd.Flags().Bool("force", false, "confirm an encryption change that may make existing data unreadable")
 	return cmd
 }
@@ -333,7 +333,10 @@ because existing remote data may become unreadable.`,
 // applyEncryptionFlags merges the encryption flags onto the current mount
 // encryption. Existing encryption is never removed by this command.
 func applyEncryptionFlags(cmd *cobra.Command, current *crypt.Config) (*crypt.Config, error) {
-	password, passwordProvided, err := encryptionPasswordFromFlags(cmd)
+	if remove, _ := cmd.Flags().GetBool("remove-encryption"); remove {
+		return nil, fmt.Errorf("encryption cannot be removed once configured; create a new mount instead")
+	}
+	password, passwordProvided, err := cliutil.PasswordFromFlags(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +390,7 @@ func newRemoveCmd(rt cliruntime.Runtime) *cobra.Command {
 			if state.Cfg == nil {
 				return rt.ConfigNotFoundError()
 			}
-			if err := saveMountConfig(state, func(candidate *config.Config) error {
+			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
 				return candidate.RemoveMount(args[0])
 			}); err != nil {
 				return err
@@ -438,111 +441,4 @@ func newListCmd(rt cliruntime.Runtime) *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func parseMountParams(cmd *cobra.Command, flag string) (config.ParamMap, error) {
-	values, err := cmd.Flags().GetStringArray(flag)
-	if err != nil {
-		return nil, err
-	}
-	params := config.ParamMap{}
-	stdinUsed := false
-	for _, item := range values {
-		key, raw, ok := strings.Cut(item, "=")
-		key = strings.TrimSpace(key)
-		if !ok || key == "" {
-			return nil, fmt.Errorf("invalid parameter %q: expected key=value", item)
-		}
-		value, err := mountParamValue(cmd, raw, &stdinUsed)
-		if err != nil {
-			return nil, err
-		}
-		params[key] = value
-	}
-	return params, nil
-}
-
-// mountParamValue supports key=value, key=@path, and key=- so secrets do not
-// have to appear in shell history.
-func mountParamValue(cmd *cobra.Command, raw string, stdinUsed *bool) (string, error) {
-	switch {
-	case raw == "-":
-		if *stdinUsed {
-			return "", fmt.Errorf("standard input can only supply one parameter")
-		}
-		*stdinUsed = true
-		data, err := io.ReadAll(cmd.InOrStdin())
-		if err != nil {
-			return "", fmt.Errorf("read parameter from standard input: %w", err)
-		}
-		return trimMountParamLine(string(data)), nil
-	case strings.HasPrefix(raw, "@"):
-		data, err := os.ReadFile(util.ExpandHome(strings.TrimPrefix(raw, "@")))
-		if err != nil {
-			return "", fmt.Errorf("read parameter file: %w", err)
-		}
-		return trimMountParamLine(string(data)), nil
-	default:
-		return raw, nil
-	}
-}
-
-func trimMountParamLine(value string) string {
-	return strings.TrimSuffix(strings.TrimSuffix(value, "\n"), "\r")
-}
-
-// encryptionPasswordFromFlags resolves --password, --password-file, and
-// --password-stdin into one password. provided reports whether any source was
-// given at all.
-func encryptionPasswordFromFlags(cmd *cobra.Command) (password string, provided bool, err error) {
-	sources := 0
-	for _, name := range []string{"password", "password-file", "password-stdin"} {
-		if cmd.Flags().Changed(name) {
-			sources++
-		}
-	}
-	if sources > 1 {
-		return "", false, fmt.Errorf("use only one of --password, --password-file, or --password-stdin")
-	}
-	if sources == 0 {
-		return "", false, nil
-	}
-	password, _ = cmd.Flags().GetString("password")
-	if file, _ := cmd.Flags().GetString("password-file"); file != "" {
-		raw, readErr := os.ReadFile(util.ExpandHome(file))
-		if readErr != nil {
-			return "", false, fmt.Errorf("read password file: %w", readErr)
-		}
-		password = trimMountParamLine(string(raw))
-	}
-	if stdin, _ := cmd.Flags().GetBool("password-stdin"); stdin {
-		raw, readErr := io.ReadAll(cmd.InOrStdin())
-		if readErr != nil {
-			return "", false, fmt.Errorf("read password from standard input: %w", readErr)
-		}
-		password = trimMountParamLine(string(raw))
-	}
-	if password == "" {
-		return "", false, fmt.Errorf("encryption password is empty")
-	}
-	return password, true, nil
-}
-
-// saveMountConfig applies a mount mutation to a shallow copy of the loaded
-// config, validates it, and only then writes the file.
-func saveMountConfig(state cliruntime.ConfigState, mutate func(*config.Config) error) error {
-	candidate := *state.Cfg
-	candidate.Credentials = append([]config.CredentialConfig(nil), state.Cfg.Credentials...)
-	candidate.Mounts = append([]config.MountConfig(nil), state.Cfg.Mounts...)
-	if err := mutate(&candidate); err != nil {
-		return err
-	}
-	if err := config.Validate(&candidate); err != nil {
-		return err
-	}
-	if err := config.Save(state.Path, &candidate); err != nil {
-		return err
-	}
-	*state.Cfg = candidate
-	return nil
 }
