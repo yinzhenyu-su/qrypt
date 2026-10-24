@@ -20,6 +20,7 @@ func (d *Driver) ExportCredentialSession(store drive.StateStore, params drive.Pa
 	payload, err := encodeCredentialPayload(credentialPayload{
 		AccessToken:  state.AccessToken,
 		RefreshToken: state.RefreshToken,
+		ExpiresAt:    state.ExpiresAt,
 	})
 	if err != nil {
 		return nil, "", false, err

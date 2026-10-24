@@ -210,7 +210,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		health = drive.HealthLevelDegraded
 		extra[drive.DebugExtraLastError] = lastError
 	}
-	appendCredentialDebug(extra, d.credential)
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return drive.DebugSnapshot{
 		Driver:      "115",
 		Health:      health,
@@ -411,6 +411,9 @@ func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	cookie := decodeCredentialCookie(snapshot.Payload)
 	if cookie == "" {
+		if len(snapshot.Payload) > 0 {
+			logging.L.Warnf("[115] decode shared credential session: invalid payload")
+		}
 		return
 	}
 	d.cookies = mergeCookieHeaders(d.cookies, cookie)
@@ -429,6 +432,9 @@ func (d *Driver) subscribeCredentialSession() {
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	cookie := decodeCredentialCookie(snapshot.Payload)
 	if cookie == "" {
+		if len(snapshot.Payload) > 0 {
+			logging.L.Warnf("[115] decode shared credential notification: invalid payload")
+		}
 		return
 	}
 	d.credentialMu.Lock()
@@ -517,7 +523,7 @@ func (d *Driver) commitCredentialCookie(cookie string) {
 		return
 	}
 	snapshot := d.credential.Snapshot()
-	_, err := d.credential.Update(snapshot.Version, encodeCredentialCookie(cookie), "")
+	_, err := d.credential.Update(snapshot.Version, encodeCredentialCookie(cookie), cookieAccountValue(cookie))
 	if err == nil {
 		return
 	}

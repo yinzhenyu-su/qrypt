@@ -11,6 +11,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
@@ -203,12 +204,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraCredentialSource:  credentialSource,
 		drive.DebugExtraCredentialUpdated: d.cookieUpdated,
 	}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return drive.DebugSnapshot{
 		Driver:      "189",
 		Health:      drive.HealthLevelOK,
@@ -341,7 +337,11 @@ func (d *Driver) applyCredentialPayload(payload []byte) error {
 func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || payload.Cookie == "" {
+	if err != nil {
+		logging.L.Warnf("[189] decode shared credential session: %v", err)
+		return
+	}
+	if payload.Cookie == "" {
 		return
 	}
 	d.cl.setCookie(payload.Cookie)
@@ -360,7 +360,11 @@ func (d *Driver) subscribeCredentialSession() {
 
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || payload.Cookie == "" {
+	if err != nil {
+		logging.L.Warnf("[189] decode shared credential notification: %v", err)
+		return
+	}
+	if payload.Cookie == "" {
 		return
 	}
 	d.credentialMu.Lock()
@@ -399,7 +403,7 @@ func (d *Driver) commitCredentialState(cookie string, failedAt time.Time, lastEr
 	if err != nil {
 		return
 	}
-	_, err = d.credential.Update(snapshot.Version, payload, "")
+	_, err = d.credential.Update(snapshot.Version, payload, d.cl.username)
 	if err == nil {
 		return
 	}

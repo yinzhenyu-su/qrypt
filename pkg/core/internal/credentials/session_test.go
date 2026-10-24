@@ -226,4 +226,11 @@ func TestCorruptSessionStartsEmpty(t *testing.T) {
 	if snapshot := session.Snapshot(); snapshot.Version != 0 || len(snapshot.Payload) != 0 {
 		t.Fatalf("snapshot = %+v, want an empty session from a corrupt file", snapshot)
 	}
+	if _, err := session.Update(0, []byte(`{"cookie":"recovered"}`), "account-a"); err != nil {
+		t.Fatalf("save over a corrupt session: %v", err)
+	}
+	reloaded := newSession(fileStore{dir: dir}, Spec{Name: "main", ParamsSeed: "seed"})
+	if got := string(reloaded.Snapshot().Payload); got != `{"cookie":"recovered"}` {
+		t.Fatalf("reloaded payload = %q, want the recovered session", got)
+	}
 }
