@@ -926,7 +926,16 @@ func (c *client) retryOnAuthError(ctx context.Context, fn func(context.Context) 
 	// Another mount may have rotated the shared cookie; adopt it before
 	// falling back to a password login.
 	if c.onAuthRecovery != nil && c.onAuthRecovery() {
-		return fn(ctx)
+		retryErr := fn(ctx)
+		if retryErr == nil {
+			return nil
+		}
+		if !isAuthError(retryErr) {
+			return retryErr
+		}
+		// The adopted session also failed; continue into the static
+		// (username/password or configured cookie) recovery below.
+		err = retryErr
 	}
 	if c.username != "" {
 		if cooldownErr := c.passwordReloginCooldownError(err); cooldownErr != nil {

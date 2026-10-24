@@ -65,8 +65,17 @@ type CredentialExporter interface {
 // version the caller should remember. Without a newer payload the original
 // error is returned so a genuine authentication failure still surfaces.
 func RetryOnAuth(session CredentialSession, version uint64, apply func(payload []byte) error, op func() error) (uint64, error) {
+	return RetryOnAuthWhen(session, version, apply, func(err error) bool {
+		return ErrorCategory(err) == ErrorCategoryAuth
+	}, op)
+}
+
+// RetryOnAuthWhen is RetryOnAuth with a driver-supplied auth predicate, for
+// providers whose SDK reports authentication failures with its own error type
+// instead of drive.ErrAuth.
+func RetryOnAuthWhen(session CredentialSession, version uint64, apply func(payload []byte) error, isAuth func(error) bool, op func() error) (uint64, error) {
 	err := op()
-	if err == nil || session == nil || ErrorCategory(err) != ErrorCategoryAuth {
+	if err == nil || session == nil || isAuth == nil || !isAuth(err) {
 		return version, err
 	}
 	next, adopted, adoptErr := AdoptLatestCredential(session, version, apply)

@@ -18,6 +18,7 @@ type CredentialAdoption struct {
 	Account      string
 	StateAdopted bool
 	LegacyFile   string
+	Reason       string
 }
 
 // AdoptMountCredential moves a mount's inline credential-scope parameters into
@@ -41,6 +42,7 @@ func AdoptMountCredential(cfg *config.Config, layout RuntimeLayout, mountName, c
 	result.Account = migration.Account
 	result.StateAdopted = migration.Adopted
 	result.LegacyFile = migration.LegacyFile
+	result.Reason = migration.Reason
 	return result, nil
 }
 

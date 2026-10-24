@@ -3,6 +3,8 @@ package credentials
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -208,5 +210,20 @@ func TestParamsSeedIsStable(t *testing.T) {
 	}
 	if first == ParamsSeed("115", map[string]string{"cookie": "a", "base_url": "https://x"}) {
 		t.Fatal("params seed ignored the driver type")
+	}
+}
+
+func TestCorruptSessionStartsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "credentials", "main")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "session.json"), []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := newSession(fileStore{dir: dir}, Spec{Name: "main", ParamsSeed: "seed"})
+	if snapshot := session.Snapshot(); snapshot.Version != 0 || len(snapshot.Payload) != 0 {
+		t.Fatalf("snapshot = %+v, want an empty session from a corrupt file", snapshot)
 	}
 }

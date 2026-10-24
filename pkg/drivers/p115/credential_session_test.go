@@ -1,11 +1,10 @@
 package p115
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/yinzhenyu/qrypt/pkg/drive"
+	driver115 "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/credentialtest"
 )
 
@@ -63,7 +62,7 @@ func TestAuthRetryAdoptsSiblingRotation(t *testing.T) {
 			if strings.Contains(driver.cookies, "SEID=state") {
 				t.Fatal("cookie was adopted before the auth failure")
 			}
-			return fmt.Errorf("%w", drive.ErrAuth)
+			return driver115.ErrNotLogin
 		}
 		if !strings.Contains(driver.cookies, "SEID=state") {
 			t.Fatalf("cookie = %q, want the adopted session", driver.cookies)
