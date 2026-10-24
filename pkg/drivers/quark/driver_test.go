@@ -740,8 +740,8 @@ func TestSharedCredentialSessionPropagatesRotation(t *testing.T) {
 	if snapshot.Account != "account-a" || snapshot.Version != 1 {
 		t.Fatalf("session snapshot = %+v, want account-a at version 1", snapshot)
 	}
-	if second.credentialVersion != snapshot.Version {
-		t.Fatalf("sibling version = %d, want %d", second.credentialVersion, snapshot.Version)
+	if second.cred.Version() != snapshot.Version {
+		t.Fatalf("sibling version = %d, want %d", second.cred.Version(), snapshot.Version)
 	}
 }
 
