@@ -40,7 +40,20 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `name` | string | - | mount 名称，也是挂载点下的目录名 |
+| `credential` | string | - | 引用的 `[[credentials]]` 名称；与 `params` 中的凭据级参数互斥 |
 | `test_enabled` | boolean | false | 允许 probe 测试和基准命令使用此 mount；默认关闭，因为这些命令可能创建、上传、重命名或删除临时远端对象 |
+
+## 共享凭据
+
+可在多个挂载之间共享的一份账号凭据
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `name` | string | - | 凭据名称，mount 通过 `credential` 字段引用 |
+| `type` | string | - | 凭据对应的驱动类型 |
+| `params` | object | - | 凭据级驱动参数（如 cookie、refresh_token） |
+
+凭据级参数（见[支持的驱动](support-drivers.md)中的“作用域”列）写在 `[credentials.params]`，路径级参数写在 `[mounts.params]`；同一凭据可以被任意多个挂载引用。
 
 每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。
 

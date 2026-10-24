@@ -11,7 +11,9 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/p115"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/p189"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/sftp"
 )
 

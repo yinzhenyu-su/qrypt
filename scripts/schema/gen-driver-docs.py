@@ -27,6 +27,14 @@ CAPABILITY_COLUMNS = [
     ("offline_download", "离线下载"),
 ]
 
+# Where a parameter may be configured: a shared credential, a mount, or both
+# (mount value wins).
+SCOPE_LABELS = {
+    "credential": "凭据",
+    "mount": "挂载",
+    "both": "两者",
+}
+
 
 def load_schema():
     with open(SCHEMA_PATH, encoding="utf-8") as f:
@@ -210,8 +218,8 @@ def build_driver_section(definition):
     example_toml = "\n".join(example_lines)
 
     table_rows = []
-    table_rows.append("| 参数 | 类型 | 必填 | 说明 |")
-    table_rows.append("|---|---|---|---|")
+    table_rows.append("| 参数 | 类型 | 作用域 | 必填 | 说明 |")
+    table_rows.append("|---|---|---|---|---|")
     for pname, prop in props.items():
         if pname in always_required:
             is_required = "是"
@@ -226,7 +234,8 @@ def build_driver_section(definition):
         default_val = fmt_default(prop.get("default"))
         if default_val:
             desc += f"，默认 `{default_val}`"
-        table_rows.append(f"| `{pname}` | {type_str} | {is_required} | {desc} |")
+        scope = SCOPE_LABELS.get(prop.get("x-param-scope"), "两者")
+        table_rows.append(f"| `{pname}` | {type_str} | {scope} | {is_required} | {desc} |")
     param_table = "\n".join(table_rows)
     if len(alternatives) > 1:
         param_table = f"必填条件：{format_required_condition(definition)}。\n\n{param_table}"
@@ -264,6 +273,25 @@ def generate():
     lines.append("- **按能力选驱动**：见[能力对照](#能力对照)。")
     lines.append("")
     lines.append("网盘凭证通常有时效，过期后需要重新获取。请将凭证保存在本机配置文件中，不要提交到版本库。")
+    lines.append("")
+    lines.append("## 共享凭据")
+    lines.append("")
+    lines.append("同一账号挂载多个目录时，把账号级参数写进 `[[credentials]]` 一次，再让多个 `[[mounts]]` 通过 `credential` 引用它；路径级参数（如 `root_path`）仍写在各自的 `[mounts.params]` 中。凭据的轮换与刷新由 qrypt 统一维护，不会因为多挂载而各走各的。参数表中的“作用域”列说明每个参数应放在哪一侧：**凭据**、**挂载**或**两者**（两者时挂载值优先）。")
+    lines.append("")
+    lines.append("```toml")
+    lines.append('[[credentials]]')
+    lines.append('name = "main"')
+    lines.append('type = "quark"')
+    lines.append('[credentials.params]')
+    lines.append('cookie = "..."')
+    lines.append('')
+    lines.append('[[mounts]]')
+    lines.append('name = "docs"')
+    lines.append('type = "quark"')
+    lines.append('credential = "main"')
+    lines.append('[mounts.params]')
+    lines.append('root_path = "/Docs"')
+    lines.append("```")
     lines.append("")
     lines.append("## 驱动列表")
     lines.append("")

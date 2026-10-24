@@ -93,6 +93,54 @@ printf '%s' "$PASSWORD" | qrypt config export-rclone-password --password-stdin
 
 直接输入密码时优先使用 `--password-file` 或 `--password-stdin`。`--password` 会暴露在 shell 历史和进程参数中。
 
+### 共享凭据
+
+同一账号挂载多个目录时，凭据只维护一份：
+
+```sh
+qrypt credential add main --type quark --param cookie="..."
+qrypt credential list
+qrypt credential show main
+qrypt credential set main --param cookie="..."
+qrypt credential remove main
+```
+
+凭据保存账号级参数（cookie、refresh token、用户名密码等），轮换与刷新由 qrypt 统一维护。`credential remove` 要求先移除引用它的挂载；加 `--purge` 会同时删除已持久化的会话目录。`qrypt credential test NAME [--param k=v]` 可以只认证一次而不挂载，用于确认凭据和网络是否可用。
+
+已有内联凭据的旧挂载可以一次性转换：
+
+```sh
+qrypt credential adopt docs --name main
+qrypt credential adopt docs --name main --delete-legacy
+```
+
+它会把挂载里的凭据级参数移到新凭据、让挂载引用该凭据，并在账号匹配时采纳旧的轮换状态；`--delete-legacy` 才会删除旧的挂载状态文件。
+
+参数值支持 `key=@文件路径` 和 `key=-`（从标准输入读取），避免密钥进入 shell 历史：
+
+```sh
+qrypt credential add main --type quark --param cookie=@cookie.txt
+printf '%s' "$COOKIE" | qrypt credential add main --type quark --param cookie=-
+```
+
+### 管理挂载
+
+```sh
+qrypt mount add docs --credential main --param root_path=/Docs
+qrypt mount add photos --credential main --param root_path=/Photos --password "..."
+qrypt mount add vault --credential main --param root_path=/Vault --password "..." \
+  --salt "..." --filename-encryption obfuscate --filename-encoding base64 --content-dedup
+qrypt mount list
+qrypt mount set docs --param root_path=/Documents
+qrypt mount set docs --credential other-main
+qrypt mount set docs --password "new-secret" --force
+qrypt mount remove docs [--purge]
+```
+
+`mount add` 的驱动类型来自所选凭据，只需配置 `root_path` 等挂载级属性。加密参数与 `[mounts.encryption]` 一一对应：`--password` 启用加密，`--salt`、`--filename-encryption`（`standard`/`obfuscate`/`off`）、`--filename-encoding`（`base32`/`base64`）、`--content-dedup` 调整细节；除密码外的加密参数都必须与密码一起使用，密码可以通过 `--password`、`--password-file` 或 `--password-stdin` 提供。`mount set` 同样支持这些加密参数，但一旦启用加密就不能再退回明文模式；修改已有加密的密码、盐或文件名模式必须加 `--force`，因为远端已有数据可能无法再读取。`mount remove --purge` 会同时删除该挂载的本地状态目录；挂载名 `add`、`set`、`remove`、`list` 保留给子命令，名称冲突时用 `qrypt mount --name NAME` 单独挂载。
+
+配置文件的修改不会热更新到正在运行的挂载进程；执行 `qrypt config validate` 确认配置后，重启 `qrypt mount` 才会生效。
+
 ## 挂载
 
 ```sh
