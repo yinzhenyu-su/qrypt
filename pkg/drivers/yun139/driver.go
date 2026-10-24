@@ -40,12 +40,11 @@ type Driver struct {
 	rootPath   string
 	limiter    *drive.BandwidthLimiter
 	stateStore drive.StateStore
-	// credential is the shared session installed for mounts that reference a
-	// [[credentials]] entry; nil keeps the legacy per-mount state store.
-	credential          drive.CredentialSession
-	credentialCancel    func()
-	credentialMu        sync.Mutex
-	credentialVersion   uint64
+	// cred owns the shared-session lifecycle for mounts that reference a
+	// [[credentials]] entry; no installed session keeps the per-mount state
+	// store behaviour.
+	cred                *driverutil.CredentialBinding[credentialPayload]
+	credOnce            sync.Once
 	authSource          string
 	authUpdated         time.Time
 	configAuthorization string
@@ -95,11 +94,28 @@ func New(authorization, rootPath, rootID string) *Driver {
 	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
 	d.cl.onAuthRecovery = d.recoverCredential
 	d.cl.onAuthFallback = d.recoverStaticAuthorization
+	d.cred = newCredentialBinding(d)
 	return d
 }
 
+// newCredentialBinding wires the shared-session binding to this driver.
+func newCredentialBinding(d *Driver) *driverutil.CredentialBinding[credentialPayload] {
+	return driverutil.NewCredentialBinding("139", decodeCredentialPayload, d.applyCredentialBinding)
+}
+
+// credentialBinding returns the shared-session binding, creating it for
+// drivers built without New (tests construct Driver literals).
+func (d *Driver) credentialBinding() *driverutil.CredentialBinding[credentialPayload] {
+	d.credOnce.Do(func() {
+		if d.cred == nil {
+			d.cred = newCredentialBinding(d)
+		}
+	})
+	return d.cred
+}
+
 func (d *Driver) Init(ctx context.Context) error {
-	if d.credential != nil {
+	if d.credentialBinding().Session() != nil {
 		d.loadCredentialSession()
 		d.subscribeCredentialSession()
 	} else {
@@ -111,7 +127,7 @@ func (d *Driver) Init(ctx context.Context) error {
 	if err := d.cl.refreshTokenIfNeeded(ctx); err != nil {
 		return fmt.Errorf("139: refresh authorization: %w", err)
 	}
-	if d.credential != nil && len(d.credential.Snapshot().Payload) == 0 {
+	if cred := d.credentialBinding(); cred.Session() != nil && len(cred.Snapshot().Payload) == 0 {
 		d.commitCredentialAuthorization(d.cl.getAuthorization())
 	}
 	if err := d.cl.ensurePersonalCloudHost(); err != nil {
@@ -131,10 +147,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
-	if d.credentialCancel != nil {
-		d.credentialCancel()
-		d.credentialCancel = nil
-	}
+	d.credentialBinding().Close()
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -155,7 +168,7 @@ func (d *Driver) InstallStateStore(store drive.StateStore) {
 // InstallCredentialSession lets every mount of one configured 139 credential
 // share a single refreshed authorization.
 func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
-	d.credential = session
+	d.credentialBinding().Install(session)
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -198,7 +211,7 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 	if authorization == "" {
 		return
 	}
-	if d.credential != nil {
+	if d.credentialBinding().Session() != nil {
 		d.commitCredentialAuthorization(authorization)
 		return
 	}
@@ -216,30 +229,7 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 
 // recoverCredential adopts a newer shared authorization after an auth failure.
 func (d *Driver) recoverCredential() bool {
-	if d.credential == nil {
-		return false
-	}
-	d.credentialMu.Lock()
-	version := d.credentialVersion
-	d.credentialMu.Unlock()
-	next, adopted, err := drive.AdoptLatestCredential(d.credential, version, func(payload []byte) error {
-		authorization := decodeCredentialAuthorization(payload)
-		if authorization == "" {
-			return nil
-		}
-		d.cl.setAuthorization(authorization)
-		return nil
-	})
-	if err != nil || !adopted {
-		return false
-	}
-	d.credentialMu.Lock()
-	if next > d.credentialVersion {
-		d.credentialVersion = next
-		d.authSource = "credential"
-	}
-	d.credentialMu.Unlock()
-	return true
+	return d.credentialBinding().Recover()
 }
 
 // recoverStaticAuthorization falls back to the configured authorization after
@@ -253,66 +243,40 @@ func (d *Driver) recoverStaticAuthorization() bool {
 	return true
 }
 
+// loadCredentialSession adopts the shared session's authorization when this
+// mount starts.
 func (d *Driver) loadCredentialSession() {
-	snapshot := d.credential.Snapshot()
-	authorization := decodeCredentialAuthorization(snapshot.Payload)
-	if authorization == "" {
-		if len(snapshot.Payload) > 0 {
-			logging.L.Warnf("[139] decode shared credential session: invalid payload")
-		}
-		return
-	}
-	d.cl.setAuthorization(authorization)
-	d.authSource = "state"
-	d.authUpdated = snapshot.UpdatedAt
-	d.credentialVersion = snapshot.Version
+	d.credentialBinding().Load()
 }
 
+// subscribeCredentialSession follows refreshes committed by sibling mounts.
 func (d *Driver) subscribeCredentialSession() {
-	if d.credential == nil || d.credentialCancel != nil {
-		return
-	}
-	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+	d.credentialBinding().Subscribe()
 }
 
-func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	authorization := decodeCredentialAuthorization(snapshot.Payload)
-	if authorization == "" {
-		if len(snapshot.Payload) > 0 {
-			logging.L.Warnf("[139] decode shared credential notification: invalid payload")
-		}
-		return
+// applyCredentialBinding applies one decoded payload to the client.
+func (d *Driver) applyCredentialBinding(value credentialPayload, snapshot drive.CredentialSnapshot, source string) bool {
+	if value.Authorization == "" {
+		return false
 	}
-	d.credentialMu.Lock()
-	if snapshot.Version <= d.credentialVersion {
-		d.credentialMu.Unlock()
-		return
-	}
-	d.credentialVersion = snapshot.Version
-	d.authSource = "credential"
+	d.cl.setAuthorization(value.Authorization)
+	d.authSource = source
 	d.authUpdated = snapshot.UpdatedAt
-	d.credentialMu.Unlock()
-	d.cl.setAuthorization(authorization)
+	return true
 }
 
 func (d *Driver) commitCredentialAuthorization(authorization string) {
-	if d.credential == nil || authorization == "" {
+	cred := d.credentialBinding()
+	if cred.Session() == nil || authorization == "" {
 		return
 	}
-	snapshot := d.credential.Snapshot()
 	payload, err := encodeCredentialAuthorization(authorization)
 	if err != nil {
 		return
 	}
-	_, err = d.credential.Update(snapshot.Version, payload, d.cl.getAccount())
-	if err == nil {
-		return
+	if err := cred.Commit(payload, d.cl.getAccount()); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
+		logging.L.Warnf("[139] commit shared credential failed: %v", err)
 	}
-	if errors.Is(err, drive.ErrCredentialVersionConflict) {
-		d.applyCredentialSnapshot(d.credential.Snapshot())
-		return
-	}
-	logging.L.Warnf("[139] commit shared credential failed: %v", err)
 }
 
 type credentialPayload struct {
@@ -323,15 +287,13 @@ func encodeCredentialAuthorization(authorization string) ([]byte, error) {
 	return json.Marshal(credentialPayload{Authorization: authorization})
 }
 
-func decodeCredentialAuthorization(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
+func decodeCredentialPayload(data []byte) (credentialPayload, error) {
+	var payload credentialPayload
+	if len(data) == 0 {
+		return payload, nil
 	}
-	var decoded credentialPayload
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return ""
-	}
-	return decoded.Authorization
+	err := json.Unmarshal(data, &payload)
+	return payload, err
 }
 
 func (d *Driver) setLastError(err error) {
@@ -570,7 +532,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraLastError:          lastError,
 		drive.DebugExtraInstantUploadCount: instantUploadCount,
 	}
-	driverutil.AppendCredentialDebug(extra, d.credential)
+	d.credentialBinding().Debug(extra)
 	return drive.DebugSnapshot{
 		Driver:      "yun139",
 		Health:      health,

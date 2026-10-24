@@ -415,12 +415,6 @@ func (d *Driver) subscribeCredentialSession() {
 	d.cred.Subscribe()
 }
 
-// applyCredentialSnapshot is kept for callers/tests; the binding performs the
-// version guard.
-func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	d.cred.Apply(snapshot)
-}
-
 // applyCredentialBinding applies one decoded payload to the client.
 func (d *Driver) applyCredentialBinding(value credentialPayload, snapshot drive.CredentialSnapshot, source string) bool {
 	if value.Cookie == "" {
@@ -483,17 +477,6 @@ func decodeCredentialPayload(payload []byte) (credentialPayload, error) {
 	}
 	err := json.Unmarshal(payload, &decoded)
 	return decoded, err
-}
-
-func decodeCredentialCookie(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var decoded credentialPayload
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return ""
-	}
-	return decoded.Cookie
 }
 
 // cookieFingerprint returns a stable digest of a cookie header. Pairs are

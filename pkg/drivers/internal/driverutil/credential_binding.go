@@ -148,6 +148,22 @@ func (b *CredentialBinding[T]) Commit(payload []byte, account string) error {
 	return err
 }
 
+// Replace overwrites the session with payload regardless of the binding's
+// local version, for cases where the persisted payload cannot be decoded and
+// must be healed (for example after a schema change).
+func (b *CredentialBinding[T]) Replace(payload []byte, account string) error {
+	session := b.Session()
+	if session == nil {
+		return nil
+	}
+	snapshot := session.Snapshot()
+	if _, err := session.Update(snapshot.Version, payload, account); err != nil {
+		return err
+	}
+	b.applySnapshot(session.Snapshot(), CredentialSourceCredential, false)
+	return nil
+}
+
 // Refresh coalesces a provider refresh and applies the committed result.
 func (b *CredentialBinding[T]) Refresh(ctx context.Context, fn func(value T, snapshot drive.CredentialSnapshot) ([]byte, string, error)) (drive.CredentialSnapshot, error) {
 	session := b.Session()

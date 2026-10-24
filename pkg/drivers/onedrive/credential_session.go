@@ -6,50 +6,25 @@ import (
 	"net/http"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 func (d *Driver) loadCredentialSession() {
-	snapshot := d.credential.Snapshot()
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[onedrive] decode shared credential session: %v", err)
-		return
-	}
-	if payload.AccessToken == "" && payload.RefreshToken == "" {
-		return
-	}
-	d.setTokens(payload.AccessToken, payload.RefreshToken)
-	d.credentialVersion = snapshot.Version
-	d.tokenSource = "state"
+	d.cred.Load()
 }
 
 func (d *Driver) subscribeCredentialSession() {
-	if d.credential == nil || d.credentialCancel != nil {
-		return
-	}
-	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+	d.cred.Subscribe()
 }
 
-func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
-	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil {
-		logging.L.Warnf("[onedrive] decode shared credential notification: %v", err)
-		return
+// applyCredentialBinding applies one decoded token pair to the client.
+func (d *Driver) applyCredentialBinding(value credentialPayload, _ drive.CredentialSnapshot, source string) bool {
+	if value.AccessToken == "" && value.RefreshToken == "" {
+		return false
 	}
-	if payload.AccessToken == "" && payload.RefreshToken == "" {
-		return
-	}
-	d.credentialMu.Lock()
-	if snapshot.Version <= d.credentialVersion {
-		d.credentialMu.Unlock()
-		return
-	}
-	d.credentialVersion = snapshot.Version
-	d.tokenSource = "credential"
-	d.credentialMu.Unlock()
-	d.setTokens(payload.AccessToken, payload.RefreshToken)
+	d.setTokens(value.AccessToken, value.RefreshToken)
+	d.tokenSource = source
+	return true
 }
 
 // loadAccount records the provider account for diagnostics. App mode already
@@ -109,6 +84,6 @@ func (d *Driver) debugExtra() map[string]any {
 		source = credentialSource(d.useOnlineAPI)
 	}
 	extra := map[string]any{drive.DebugExtraCredentialSource: source}
-	driverutil.AppendCredentialDebug(extra, d.credential)
+	d.cred.Debug(extra)
 	return extra
 }
