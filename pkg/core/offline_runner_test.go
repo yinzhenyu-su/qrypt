@@ -45,6 +45,9 @@ type fakeOfflineProvider struct {
 	getErrs []error
 	// createFiles makes the create response carry the scripted result files.
 	createFiles bool
+	// observeFID makes every scripted observation report a produced root that
+	// was not known at create time.
+	observeFID string
 	// repeatLast keeps returning the script's final observation; when false the
 	// script is consumed and the task then reports as disappeared.
 	repeatLast  bool
@@ -109,7 +112,7 @@ func (p *fakeOfflineProvider) scriptStates(id string, states []drive.OfflineStat
 		if p.availableAt != nil {
 			available = index < len(p.availableAt) && p.availableAt[index]
 		}
-		obs := drive.OfflineDownload{ID: id, State: state, Available: available}
+		obs := drive.OfflineDownload{ID: id, State: state, Available: available, RemoteID: p.observeFID}
 		withFiles := state == drive.OfflineStateSucceeded || p.filesEveryState
 		if p.filesAt != nil {
 			withFiles = index < len(p.filesAt) && p.filesAt[index]

@@ -16,6 +16,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityPathResolver,
 		drive.CapabilityRemoteNameResolver,
 		drive.CapabilityServerSideCopy,
+		drive.CapabilityOfflineDownload,
 	}
 }
 
