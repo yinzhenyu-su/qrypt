@@ -11,7 +11,7 @@
 _Avoid_: job
 
 **Operation（操作）**:
-任务所属的稳定操作类别：upload、download、delete、copy、move 五者之一。
+任务所属的稳定操作类别：upload、download、delete、copy、move、share 六者之一。
 _Avoid_: action（action 另指任务当前可用的动作）、type
 
 **Task Type（任务类型）**:
@@ -236,6 +236,28 @@ _Avoid_: feature、permission
 **Path Capability（路径能力）**:
 单个路径上的动作许可矩阵：可读、可列、可上传、可建目录、可改名、可移动、可删除、可查空间。
 _Avoid_: permission、Consumer Capability
+
+### 分享与接收
+
+**分享链接（Share Link）**:
+由某个挂载的账号创建、指向该网盘内已有内容的链接。qrypt 只保存链接身份（`link_id`）与策略（有效期、提取码、访问上限），不解释 provider 的加密字段。
+_Avoid_: 分享（裸词）、share URL、pwd_id（那是 provider 的叫法）
+
+**分享会话（Share Session）**:
+打开链接后 provider 返回的不透明凭据，用于后续列目录与转存。只出现在接收任务的 detail 里，不进公共 schema，也不打印。
+_Avoid_: token（泛指）、stoken
+
+**分享条目票据（Share Entry Ticket）**:
+转存时随单个条目一起下发的 provider 侧票据（Quark 的 `share_fid_token`），qrypt 原样携带、不解释；不同 provider 可以没有。
+_Avoid_: fid token、转存 token
+
+**转存（Save-As）**:
+provider 侧的复制：把分享内容复制进执行账号的网盘目录，字节不经过本机。
+_Avoid_: 下载、导入、同步
+
+**接收任务（Receive Task）**:
+一条 `receive` 命令产生的持久任务：`share_save`（只转存）或 `share_fetch`（转存后再下载，或直接下载）。`share_save` 使用 `share` 操作，`share_fetch` 仍使用 `download` 操作。与离线任务一样可观察、可取消、可重试、可恢复。
+_Avoid_: 分享任务（分享任务另指导出链接）
 
 ### 失效
 

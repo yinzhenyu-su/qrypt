@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	shareapi "github.com/yinzhenyu/qrypt/pkg/share"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
@@ -25,6 +26,7 @@ type CommandServer struct {
 	address    string
 	service    CommandService
 	offline    OfflineService
+	share      shareapi.Service
 	server     *http.Server
 	listener   net.Listener
 	stop       context.CancelFunc
@@ -78,6 +80,12 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/control/offline/tasks/", s.handleOfflineTask)
 	mux.HandleFunc("/v1/control/offline/inspect", s.handleOfflineInspect)
 	mux.HandleFunc("/v1/control/offline/wait", s.handleOfflineWait)
+	mux.HandleFunc("/v1/control/share/links", s.handleShareLinks)
+	mux.HandleFunc("/v1/control/share/links/", s.handleShareLink)
+	mux.HandleFunc("/v1/control/share/inspect", s.handleShareInspect)
+	mux.HandleFunc("/v1/control/share/tasks", s.handleShareTasks)
+	mux.HandleFunc("/v1/control/share/tasks/", s.handleShareTask)
+	mux.HandleFunc("/v1/control/share/wait", s.handleShareWait)
 	// BaseContext is cancelled by Close so the offline wait long-poll handler
 	// stops even while http.Server.Shutdown is draining.
 	baseCtx, cancelBase := context.WithCancel(context.Background())

@@ -124,6 +124,7 @@ is at one of these paths (see [CLI Reference](docs/for-user/cli.md)).
 - [Quickstart](docs/for-user/quickstart.md) — install, upgrade and uninstall, minimal config, a first run in about 5 minutes, encryption demo
 - [CLI Reference](docs/for-user/cli.md) — commands, arguments, config discovery paths
 - [Offline Download](docs/for-user/offline-download.md) — hand magnet links or downloads to the cloud drive
+- [Share & Receive](docs/for-user/share.md) — share a drive link, or save/download someone else's link
 - [Troubleshooting](docs/for-user/troubleshooting.md) — stale mounts, upload queue, and other common issues
 - [Full Config Reference](docs/for-user/full-config.md) — all configuration options
 - [Supported Drivers](docs/for-user/support-drivers.md) — driver parameters and examples
