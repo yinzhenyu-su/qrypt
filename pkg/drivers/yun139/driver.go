@@ -245,6 +245,9 @@ func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	authorization := decodeCredentialAuthorization(snapshot.Payload)
 	if authorization == "" {
+		if len(snapshot.Payload) > 0 {
+			logging.L.Warnf("[139] decode shared credential session: invalid payload")
+		}
 		return
 	}
 	d.cl.setAuthorization(authorization)
@@ -263,6 +266,9 @@ func (d *Driver) subscribeCredentialSession() {
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	authorization := decodeCredentialAuthorization(snapshot.Payload)
 	if authorization == "" {
+		if len(snapshot.Payload) > 0 {
+			logging.L.Warnf("[139] decode shared credential notification: invalid payload")
+		}
 		return
 	}
 	d.credentialMu.Lock()
@@ -286,7 +292,7 @@ func (d *Driver) commitCredentialAuthorization(authorization string) {
 	if err != nil {
 		return
 	}
-	_, err = d.credential.Update(snapshot.Version, payload, "")
+	_, err = d.credential.Update(snapshot.Version, payload, d.cl.getAccount())
 	if err == nil {
 		return
 	}
@@ -552,12 +558,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraLastError:          lastError,
 		drive.DebugExtraInstantUploadCount: instantUploadCount,
 	}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return drive.DebugSnapshot{
 		Driver:      "yun139",
 		Health:      health,

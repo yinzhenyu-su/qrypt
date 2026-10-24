@@ -15,6 +15,7 @@ func TestSharedCredentialSessionPropagatesAuthorization(t *testing.T) {
 	second.InstallCredentialSession(session)
 	second.subscribeCredentialSession()
 
+	first.cl.account = "account-a"
 	first.saveUpdatedAuthorization("auth-two")
 
 	if got := second.cl.getAuthorization(); got != "auth-two" {
@@ -22,6 +23,9 @@ func TestSharedCredentialSessionPropagatesAuthorization(t *testing.T) {
 	}
 	if second.authSource != "credential" {
 		t.Fatalf("sibling source = %q, want credential", second.authSource)
+	}
+	if snapshot := session.Snapshot(); snapshot.Account != "account-a" {
+		t.Fatalf("session account = %q, want account-a", snapshot.Account)
 	}
 }
 

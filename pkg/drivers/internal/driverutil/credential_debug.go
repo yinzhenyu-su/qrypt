@@ -1,12 +1,10 @@
-package p115
+package driverutil
 
-import (
-	"github.com/yinzhenyu/qrypt/pkg/drive"
-)
+import "github.com/yinzhenyu/qrypt/pkg/drive"
 
-// appendCredentialDebug adds shared-credential identity to a debug snapshot
+// AppendCredentialDebug adds shared-credential identity to a debug snapshot
 // without exposing any secret value.
-func appendCredentialDebug(extra map[string]any, session drive.CredentialSession) {
+func AppendCredentialDebug(extra map[string]any, session drive.CredentialSession) {
 	if session == nil {
 		return
 	}

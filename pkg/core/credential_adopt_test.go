@@ -107,3 +107,32 @@ func TestPurgeStatePaths(t *testing.T) {
 		t.Fatal("a non-single-component name should be rejected")
 	}
 }
+
+func TestAdoptMountCredentialReportsNoLegacyMigration(t *testing.T) {
+	cfg := &config.Config{
+		Storage: config.StorageConfig{WorkDir: t.TempDir()},
+		Mounts: []config.MountConfig{{
+			Name: "dav",
+			Type: "webdav",
+			Params: config.ParamMap{
+				"url":      "https://dav.example",
+				"username": "user",
+				"password": "secret",
+			},
+		}},
+	}
+	layout := NewStorageLayout(cfg, RuntimeLayout{})
+	adoption, err := AdoptMountCredential(cfg, layout, "dav", "dav-main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adoption.StateAdopted {
+		t.Fatalf("adoption = %+v, want config-only conversion", adoption)
+	}
+	if adoption.Reason == "" {
+		t.Fatal("a config-only conversion should report why no state was migrated")
+	}
+	if _, ok := cfg.CredentialFor("dav-main"); !ok {
+		t.Fatal("credential was not created")
+	}
+}

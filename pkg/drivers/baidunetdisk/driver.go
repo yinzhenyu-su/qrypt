@@ -18,6 +18,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httpclient"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const (
@@ -281,12 +282,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraLastError:          lastError,
 		drive.DebugExtraInstantUploadCount: instantUploadCount,
 	}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return drive.DebugSnapshot{
 		Driver:      "baidu_netdisk",
 		Health:      health,
@@ -464,7 +460,11 @@ func (d *Driver) refreshShared(ctx context.Context) error {
 func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+	if err != nil {
+		logging.L.Warnf("[baidu_netdisk] decode shared credential session: %v", err)
+		return
+	}
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
 		return
 	}
 	d.accessToken = payload.AccessToken
@@ -484,7 +484,11 @@ func (d *Driver) subscribeCredentialSession() {
 
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+	if err != nil {
+		logging.L.Warnf("[baidu_netdisk] decode shared credential notification: %v", err)
+		return
+	}
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
 		return
 	}
 	d.credentialMu.Lock()

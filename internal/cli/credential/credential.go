@@ -294,7 +294,11 @@ given.`,
 			if err := config.Save(state.Path, state.Cfg); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.credential.adopted", args[0], adoption.Credential))
+			if adoption.StateAdopted {
+				fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.credential.adopted", args[0], adoption.Credential))
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.credential.adopted_without_state", args[0], adoption.Credential, adoption.Reason))
+			}
 			return nil
 		},
 	}
