@@ -168,6 +168,7 @@ func (d *Driver) Init(ctx context.Context) error {
 	}
 	if info != nil {
 		d.userID = info.UserID
+		d.rememberAccount()
 	}
 	if d.credential == nil {
 		d.saveTokens(d.accessToken, d.refreshToken, d.tokenSource)
@@ -480,7 +481,7 @@ func (d *Driver) commitTokens(accessToken, refreshToken string) {
 		return
 	}
 	snapshot := d.credential.Snapshot()
-	_, err = d.credential.Update(snapshot.Version, payload, "")
+	_, err = d.credential.Update(snapshot.Version, payload, d.accountID())
 	if err == nil {
 		return
 	}
@@ -489,6 +490,29 @@ func (d *Driver) commitTokens(accessToken, refreshToken string) {
 		return
 	}
 	logging.L.Warnf("[115_open] commit shared credential failed: %v", err)
+}
+
+// accountID is the provider user ID once UserInfo has run.
+func (d *Driver) accountID() string {
+	if d.userID == 0 {
+		return ""
+	}
+	return strconv.FormatInt(d.userID, 10)
+}
+
+// rememberAccount annotates an existing session after UserInfo resolves the
+// user ID; the first refresh happens before user info.
+func (d *Driver) rememberAccount() {
+	if d.credential == nil || d.accountID() == "" {
+		return
+	}
+	snapshot := d.credential.Snapshot()
+	if snapshot.Account == d.accountID() || len(snapshot.Payload) == 0 {
+		return
+	}
+	if _, err := d.credential.Update(snapshot.Version, snapshot.Payload, d.accountID()); err != nil && !errors.Is(err, drive.ErrCredentialVersionConflict) {
+		logging.L.Warnf("[115_open] annotate credential account: %v", err)
+	}
 }
 
 func (d *Driver) loadCredentialSession() {

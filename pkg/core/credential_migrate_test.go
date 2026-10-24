@@ -108,3 +108,33 @@ func TestMigrateCredentialSessionSkipsStateWithoutAccount(t *testing.T) {
 		t.Fatal("skipped migration should explain why")
 	}
 }
+
+func TestMigrateCredentialSessionUnsupportedDriverReportsReason(t *testing.T) {
+	cfg := &config.Config{
+		Storage: config.StorageConfig{WorkDir: t.TempDir()},
+		Credentials: []config.CredentialConfig{{
+			Name: "dav",
+			Type: "webdav",
+			Params: config.ParamMap{
+				"url":      "https://dav.example",
+				"username": "user",
+				"password": "secret",
+			},
+		}},
+		Mounts: []config.MountConfig{{
+			Name: "dav", Type: "webdav", Credential: "dav",
+			Params: config.ParamMap{"root_path": "/"},
+		}},
+	}
+	layout := NewStorageLayout(cfg, RuntimeLayout{})
+	result, err := MigrateCredentialSession(cfg, layout, "dav", "dav", false)
+	if err != nil {
+		t.Fatalf("migrate on an unsupported driver should not error: %v", err)
+	}
+	if result.Adopted {
+		t.Fatalf("result = %+v, want no adoption", result)
+	}
+	if result.Reason == "" {
+		t.Fatal("unsupported migration should explain why")
+	}
+}

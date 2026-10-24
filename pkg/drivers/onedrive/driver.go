@@ -67,6 +67,7 @@ type Driver struct {
 	appMode      bool
 	tenantID     string
 	email        string
+	account      string
 	customHost   string
 
 	useOnlineAPI bool
@@ -281,6 +282,7 @@ func (d *Driver) Init(ctx context.Context) error {
 			return err
 		}
 	}
+	d.loadAccount(ctx)
 	root, err := d.itemByPath(ctx, d.rootPath)
 	if err != nil {
 		return fmt.Errorf("%s: resolve root_path %q: %w", d.driverName(), d.rootPath, err)
