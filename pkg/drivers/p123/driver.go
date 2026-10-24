@@ -426,6 +426,18 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	tokenSource := d.tokenSource
 	tokenUpdated := d.tokenUpdated
 	d.tokenStateMu.Unlock()
+	extra := map[string]any{
+		drive.DebugExtraInstantUploadCount: d.instantUploads.Load(),
+		drive.DebugExtraCredentialSource:   tokenSource,
+		drive.DebugExtraCredentialUpdated:  tokenUpdated,
+		drive.DebugExtraLastError:          lastErr,
+	}
+	if d.credential != nil {
+		snapshot := d.credential.Snapshot()
+		extra[drive.DebugExtraCredentialName] = d.credential.Name()
+		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
+		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
+	}
 	return drive.DebugSnapshot{
 		Driver:      "123",
 		Health:      health,
@@ -436,12 +448,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"cached_download_urls":  urlCount,
 			"token_relogins":        d.cl.reloginCount.Load(),
 		},
-		Extra: map[string]any{
-			drive.DebugExtraInstantUploadCount: d.instantUploads.Load(),
-			drive.DebugExtraCredentialSource:   tokenSource,
-			drive.DebugExtraCredentialUpdated:  tokenUpdated,
-			drive.DebugExtraLastError:          lastErr,
-		},
+		Extra: extra,
 	}, nil
 }
 

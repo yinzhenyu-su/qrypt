@@ -23,6 +23,7 @@ type CredentialMigration struct {
 	Account    string
 	Adopted    bool
 	LegacyFile string
+	Reason     string
 }
 
 // MigrateCredentialSession adopts a mount's legacy rotation state into the
@@ -61,11 +62,13 @@ func MigrateCredentialSession(cfg *config.Config, layout RuntimeLayout, mountNam
 	payload, account, adoptable, err := exporter.ExportCredentialSession(legacy, params)
 	if err != nil {
 		if drive.IsStateNotExist(err) {
+			result.Reason = "no legacy session found"
 			return result, nil
 		}
 		return result, fmt.Errorf("read legacy credential state: %w", err)
 	}
 	if !adoptable {
+		result.Reason = "legacy session does not belong to this credential account"
 		return result, nil
 	}
 	manager := credentials.Open(layout.StateDir)
@@ -84,7 +87,9 @@ func MigrateCredentialSession(cfg *config.Config, layout RuntimeLayout, mountNam
 	result.Account = account
 	result.LegacyFile = exporter.LegacyCredentialFile()
 	if deleteLegacy {
-		_ = os.Remove(filepath.Join(layout.DriverDir, mountName, result.LegacyFile))
+		if err := os.Remove(filepath.Join(layout.DriverDir, mountName, result.LegacyFile)); err != nil && !os.IsNotExist(err) {
+			return result, fmt.Errorf("credential adopted but removing legacy state: %w", err)
+		}
 	}
 	return result, nil
 }

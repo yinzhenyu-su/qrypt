@@ -11,6 +11,7 @@ import (
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/core"
+	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/quark"
 )
 
@@ -113,9 +114,7 @@ func TestMountAddSetListRemove(t *testing.T) {
 	if secure.Encryption == nil || secure.Encryption.Password != "other" {
 		t.Fatalf("encryption password = %+v after set", secure.Encryption)
 	}
-	if _, err := runMount(t, rt, "set", "secure", "--remove-encryption", "--force"); err == nil || !strings.Contains(err.Error(), "cannot be removed") {
-		t.Fatalf("remove-encryption error = %v, want the plaintext-transition rejection", err)
-	}
+
 	if _, err := runMount(t, rt, "set", "secure", "--salt", "changed"); err == nil {
 		t.Fatal("changing encryption parameters without --force should fail")
 	}
@@ -173,5 +172,21 @@ func TestMountAddSetListRemove(t *testing.T) {
 	lastRT := mountTestRuntime(last, path)
 	if _, err := runMount(t, lastRT, "remove", "only"); err == nil || !strings.Contains(err.Error(), "last mount") {
 		t.Fatalf("removing the last mount error = %v, want a last-mount error", err)
+	}
+}
+
+func TestGuardEncryptionChange(t *testing.T) {
+	encrypted := &crypt.Config{Password: "secret"}
+	if err := guardEncryptionChange(encrypted, nil, true); err == nil || !strings.Contains(err.Error(), "plaintext") {
+		t.Fatalf("encrypted to plaintext error = %v, want a plaintext rejection", err)
+	}
+	if err := guardEncryptionChange(encrypted, &crypt.Config{Password: "other"}, false); err == nil {
+		t.Fatal("changing encryption without --force should fail")
+	}
+	if err := guardEncryptionChange(encrypted, &crypt.Config{Password: "other"}, true); err != nil {
+		t.Fatalf("changing encryption with --force: %v", err)
+	}
+	if err := guardEncryptionChange(nil, encrypted, false); err != nil {
+		t.Fatalf("adding encryption should not require --force: %v", err)
 	}
 }

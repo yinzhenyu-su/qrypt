@@ -73,6 +73,9 @@ func TestMigrateCredentialSessionSkipsAnotherAccount(t *testing.T) {
 	if result.Adopted {
 		t.Fatalf("result = %+v, want a skipped migration for another account", result)
 	}
+	if result.Reason == "" {
+		t.Fatal("skipped migration should explain why")
+	}
 	if _, err := os.Stat(filepath.Join(layout.StateDir, "credentials", "main", "session.json")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected session file created for a mismatched account: %v", err)
 	}
@@ -100,5 +103,8 @@ func TestMigrateCredentialSessionSkipsStateWithoutAccount(t *testing.T) {
 	}
 	if result.Adopted {
 		t.Fatalf("result = %+v, want a state without an account marker to be skipped", result)
+	}
+	if result.Reason == "" {
+		t.Fatal("skipped migration should explain why")
 	}
 }

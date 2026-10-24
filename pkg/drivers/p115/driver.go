@@ -39,6 +39,7 @@ type Driver struct {
 	rootID           string
 	rootPath         string
 	cookies          string
+	configCookie     string
 	limitRate        float64
 	limiter          *rate.Limiter
 	bandwidthLimiter *drive.BandwidthLimiter
@@ -101,6 +102,7 @@ func New(opts Options) *Driver {
 		rootID:       opts.RootID,
 		rootPath:     opts.RootPath,
 		cookies:      opts.Cookie,
+		configCookie: opts.Cookie,
 		limitRate:    opts.LimitRate,
 		metrics:      driverutil.NewBuffer(500),
 		cookieSource: "config",
@@ -458,7 +460,7 @@ func (d *Driver) withAuthRetry(fn func() error) error {
 	d.credentialMu.Lock()
 	version := d.credentialVersion
 	d.credentialMu.Unlock()
-	next, err := drive.RetryOnAuth(d.credential, version, d.applyCredentialPayload, fn)
+	next, err := drive.RetryOnAuthWhen(d.credential, version, d.applyCredentialPayload, isCredentialAuthFailure, fn)
 	if next > version {
 		d.credentialMu.Lock()
 		if next > d.credentialVersion {
@@ -467,7 +469,29 @@ func (d *Driver) withAuthRetry(fn func() error) error {
 		}
 		d.credentialMu.Unlock()
 	}
+	if err == nil || !isCredentialAuthFailure(err) {
+		return err
+	}
+	// A retry with the sibling session failed; fall back to the configured
+	// cookie when it differs from the one currently in use.
+	if d.configCookie != "" && d.configCookie != d.cookies {
+		d.cookies = d.configCookie
+		d.cookieSource = "config"
+		if d.cl != nil {
+			cred := &driver115.Credential{}
+			if parseErr := cred.FromCookie(d.configCookie); parseErr == nil {
+				d.cl.ImportCredential(cred)
+			}
+		}
+		return fn()
+	}
 	return err
+}
+
+// isCredentialAuthFailure treats the SDK's own "not logged in" error as an
+// auth failure in addition to the shared classifier.
+func isCredentialAuthFailure(err error) bool {
+	return errors.Is(err, driver115.ErrNotLogin) || drive.ErrorCategory(err) == drive.ErrorCategoryAuth
 }
 
 // applyCredentialPayload merges a session cookie into the driver and SDK state.
