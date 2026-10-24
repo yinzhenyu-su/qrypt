@@ -49,6 +49,7 @@ type Driver struct {
 
 type cookieState struct {
 	Cookie                  string    `json:"cookie,omitempty"`
+	Username                string    `json:"username,omitempty"`
 	UpdatedAt               time.Time `json:"updated_at,omitempty"`
 	PasswordReloginFailedAt time.Time `json:"password_relogin_failed_at,omitempty"`
 	PasswordReloginError    string    `json:"password_relogin_error,omitempty"`
@@ -86,6 +87,7 @@ func init() {
 		}
 		d.cl.onCookieUpdate = d.saveUpdatedCookie
 		d.cl.onPasswordReloginState = d.savePasswordReloginState
+		d.cl.onAuthRecovery = d.recoverCredential
 		if rid := params["root_id"]; rid != "" {
 			if id, err := strconv.ParseInt(rid, 10, 64); err == nil {
 				d.rootID = id
@@ -304,6 +306,38 @@ func (d *Driver) savePasswordReloginState(failedAt time.Time, lastError string) 
 	}
 }
 
+// recoverCredential adopts a newer shared cookie after an auth failure.
+func (d *Driver) recoverCredential() bool {
+	if d.credential == nil {
+		return false
+	}
+	d.credentialMu.Lock()
+	version := d.credentialVersion
+	d.credentialMu.Unlock()
+	next, adopted, err := drive.AdoptLatestCredential(d.credential, version, d.applyCredentialPayload)
+	if err != nil || !adopted {
+		return false
+	}
+	d.credentialMu.Lock()
+	if next > d.credentialVersion {
+		d.credentialVersion = next
+		d.cookieSource = "credential"
+	}
+	d.credentialMu.Unlock()
+	return true
+}
+
+// applyCredentialPayload applies a shared-session payload to the client.
+func (d *Driver) applyCredentialPayload(payload []byte) error {
+	decoded, err := decodeCredentialPayload(payload)
+	if err != nil || decoded.Cookie == "" {
+		return err
+	}
+	d.cl.setCookie(decoded.Cookie)
+	d.cl.setPasswordReloginFailure(decoded.PasswordReloginFailedAt, decoded.PasswordReloginError)
+	return nil
+}
+
 func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	payload, err := decodeCredentialPayload(snapshot.Payload)
@@ -405,6 +439,7 @@ func (d *Driver) saveState() error {
 	d.cl.authMu.Unlock()
 	return d.stateStore.SaveJSON("189_cookie.json", cookieState{
 		Cookie:                  d.cl.cookieValue(),
+		Username:                d.cl.username,
 		UpdatedAt:               d.cookieUpdated,
 		PasswordReloginFailedAt: failedAt,
 		PasswordReloginError:    lastError,

@@ -2,11 +2,14 @@ package core
 
 import (
 	"context"
-	"github.com/yinzhenyu/qrypt/pkg/util"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yinzhenyu/qrypt/pkg/config"
+	"github.com/yinzhenyu/qrypt/pkg/core/internal/credentials"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 // TestApplyConfigUpdateKeepsSecretParams guards against the settings-UI round
@@ -286,5 +289,45 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 	}
 	if old.fs != nil {
 		t.Fatal("Reload must detach the old core's filesystem")
+	}
+}
+
+func TestConfigSummaryCredentialLifecycle(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "qrypt.toml")
+	cfg := &config.Config{
+		Storage: config.StorageConfig{WorkDir: tmp},
+		Credentials: []config.CredentialConfig{{
+			Name: "main", Type: "quark", Params: config.ParamMap{"cookie": "k=v"},
+		}},
+		Mounts: []config.MountConfig{{
+			Name: "docs", Type: "quark", Credential: "main",
+			Params: config.ParamMap{"root_path": "/Docs"},
+		}},
+	}
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	layout := NewStorageLayout(cfg, RuntimeLayout{})
+	session := credentials.Open(layout.StateDir).Session(credentials.Spec{
+		Name:       "main",
+		ParamsSeed: credentials.ParamsSeed("quark", cfg.Credentials[0].Params),
+	})
+	if _, err := session.Update(0, []byte(`{"cookie":"rotated"}`), "account-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Core{configPath: configPath, runtimeLayout: layout}
+	summary, err := c.configSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Credentials) != 1 {
+		t.Fatalf("credentials = %+v, want one entry", summary.Credentials)
+	}
+	entry := summary.Credentials[0]
+	if entry.Source != "state" || entry.Version != 1 || entry.Account != "account-a" || entry.UpdatedAt.IsZero() {
+		t.Fatalf("credential lifecycle summary = %+v", entry)
 	}
 }

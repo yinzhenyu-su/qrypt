@@ -469,6 +469,7 @@
   "flag.mount.set.password-file.usage": "read the encryption password from a file",
   "flag.mount.set.password-stdin.usage": "read the encryption password from standard input",
   "flag.mount.set.password.usage": "encryption password (adds or replaces encryption)",
+  "flag.mount.set.remove-encryption.usage": "rejected: an encrypted mount cannot become plaintext",
   "flag.mount.set.remove-param.usage": "mount parameter name to delete (repeatable)",
   "flag.mount.set.salt.usage": "encryption salt",
   "flag.mount.set.test-enabled.usage": "allow probe and benchmark commands to use this mount",

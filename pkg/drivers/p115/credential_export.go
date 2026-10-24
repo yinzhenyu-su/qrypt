@@ -16,10 +16,10 @@ func (d *Driver) ExportCredentialSession(store drive.StateStore, params drive.Pa
 	if state.Cookie == "" {
 		return nil, "", false, nil
 	}
-	if configAccount := cookieAccountValue(params["cookie"]); configAccount != "" {
-		if stateAccount := cookieAccountValue(state.Cookie); stateAccount != "" && stateAccount != configAccount {
-			return nil, "", false, nil
-		}
+	configAccount := cookieAccountValue(params["cookie"])
+	stateAccount := cookieAccountValue(state.Cookie)
+	if configAccount == "" || stateAccount == "" || stateAccount != configAccount {
+		return nil, "", false, nil
 	}
 	return encodeCredentialCookie(state.Cookie), cookieAccountValue(state.Cookie), true, nil
 }

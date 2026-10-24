@@ -91,3 +91,14 @@ func TestMigrateCredentialSessionDeletesLegacyOnRequest(t *testing.T) {
 		t.Fatalf("legacy file still present after --delete-legacy: %v", err)
 	}
 }
+
+func TestMigrateCredentialSessionSkipsStateWithoutAccount(t *testing.T) {
+	cfg, layout, _ := migrationFixture(t, "__puus=rotated")
+	result, err := MigrateCredentialSession(cfg, layout, "docs", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Adopted {
+		t.Fatalf("result = %+v, want a state without an account marker to be skipped", result)
+	}
+}
