@@ -163,7 +163,7 @@ qrypt fs crypt-decode [MOUNT] "b4l6g..."     # 密文 → 明文（反查本地�
 
 ## 离线下载
 
-`offline` 命令组通过本机控制 socket 把远程资源交给网盘侧的离线下载服务，并在同一个任务模型里观察、控制和拉取结果。需要运行中的 `qrypt mount`，当前支持该能力的驱动为 `quark`。
+`offline` 命令组通过本机控制 socket 把远程资源交给网盘侧的离线下载服务，并在同一个任务模型里观察、控制和拉取结果。需要运行中的 `qrypt mount`，当前支持该能力的驱动为 `quark`、`115` 和 `115_open`。
 
 ```sh
 qrypt offline add SOURCE [--parse-to /MOUNT/DIR | --mount NAME] [--mkdir]

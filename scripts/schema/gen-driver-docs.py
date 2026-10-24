@@ -280,7 +280,7 @@ def generate():
     lines.append("")
     lines.append("**写入**：创建、删除、移动、重命名；**服务端复制**：由存储端直接复制，不经过本地下载再上传；**服务端哈希**：可直接读取存储端内容哈希用于校验；**保留修改时间**：上传或复制后保留源文件 mtime。")
     lines.append("")
-    lines.append("`quark` 的离线下载同时支持解析、选择性转存和加速取回。")
+    lines.append("`quark` 的离线下载同时支持解析、选择性转存和加速取回；`115` / `115_open` 支持提交、观察和取回，但不支持解析预览、文件选择和加速。")
     lines.append("")
 
     for _, definition in drivers:
