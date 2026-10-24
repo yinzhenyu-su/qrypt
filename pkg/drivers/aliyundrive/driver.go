@@ -12,6 +12,8 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 const (
@@ -58,8 +60,9 @@ type cachedDownloadURL struct {
 }
 
 type tokenState struct {
-	AccessToken  string `json:"access_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
 	// ConfigRefreshToken records the config refresh token that produced this
 	// state, so a rotated pair (state newer than config) can be distinguished
 	// from a user-swapped config token (config newer than state).
@@ -140,8 +143,10 @@ func (d *Driver) Init(ctx context.Context) error {
 	} else {
 		d.loadTokenState()
 	}
-	if err := d.cl.refresh(ctx); err != nil {
-		return err
+	if d.needsRefresh() {
+		if err := d.cl.refresh(ctx); err != nil {
+			return err
+		}
 	}
 	var user userResp
 	if err := d.cl.request(ctx, http.MethodPost, "/v2/user/get", map[string]any{}, &user); err != nil {
@@ -318,12 +323,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraLastError:          d.getLastError(),
 		drive.DebugExtraInstantUploadCount: d.instantUploadCount,
 	}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return drive.DebugSnapshot{
 		Driver:      "aliyundrive",
 		Health:      health,
@@ -376,7 +376,7 @@ func (d *Driver) loadTokenState() {
 	// differs from the token the state was derived from is an account switch.
 	stateDerived := state.ConfigRefreshToken == "" || state.ConfigRefreshToken == d.configRefreshToken
 	if (state.AccessToken != "" || state.RefreshToken != "") && stateDerived {
-		d.cl.setTokens(state.AccessToken, state.RefreshToken)
+		d.cl.setTokensWithExpiry(state.AccessToken, state.RefreshToken, state.ExpiresAt)
 		d.tokenSource = "state"
 	}
 	d.tokenUpdated = state.UpdatedAt
@@ -385,10 +385,14 @@ func (d *Driver) loadTokenState() {
 func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+	if err != nil {
+		logging.L.Warnf("[aliyundrive] decode shared credential session: %v", err)
 		return
 	}
-	d.cl.setTokens(payload.AccessToken, payload.RefreshToken)
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
+		return
+	}
+	d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
 	d.tokenSource = "state"
 	d.tokenUpdated = snapshot.UpdatedAt
 	d.credentialVersion = snapshot.Version
@@ -403,7 +407,11 @@ func (d *Driver) subscribeCredentialSession() {
 
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+	if err != nil {
+		logging.L.Warnf("[aliyundrive] decode shared credential notification: %v", err)
+		return
+	}
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
 		return
 	}
 	d.credentialMu.Lock()
@@ -415,7 +423,7 @@ func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	d.tokenSource = "credential"
 	d.tokenUpdated = snapshot.UpdatedAt
 	d.credentialMu.Unlock()
-	d.cl.setTokens(payload.AccessToken, payload.RefreshToken)
+	d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
 }
 
 // refreshCredential refreshes one shared session. Concurrent mounts wait for the
@@ -429,6 +437,10 @@ func (d *Driver) refreshCredential(ctx context.Context) error {
 		payload, decodeErr := decodeCredentialPayload(current.Payload)
 		if decodeErr != nil && len(current.Payload) > 0 {
 			return nil, "", decodeErr
+		}
+		if payload.AccessToken != "" && payload.RefreshToken != "" && tokenFresh(payload.ExpiresAt) {
+			d.cl.setTokensWithExpiry(payload.AccessToken, payload.RefreshToken, payload.ExpiresAt)
+			return current.Payload, "", nil
 		}
 		if payload.AccessToken == "" && payload.RefreshToken == "" {
 			payload.AccessToken, payload.RefreshToken = d.cl.tokens()
@@ -444,6 +456,7 @@ func (d *Driver) refreshCredential(ctx context.Context) error {
 		encoded, encodeErr := encodeCredentialPayload(credentialPayload{
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,
+			ExpiresAt:    d.cl.tokenExpiry(),
 		})
 		if encodeErr != nil {
 			return nil, "", encodeErr
@@ -454,8 +467,25 @@ func (d *Driver) refreshCredential(ctx context.Context) error {
 }
 
 type credentialPayload struct {
-	AccessToken  string `json:"access_token,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+}
+
+const tokenRefreshSkew = 5 * time.Minute
+
+// tokenFresh reports whether a persisted access token can be reused.
+func tokenFresh(expiresAt time.Time) bool {
+	return !expiresAt.IsZero() && time.Now().Before(expiresAt.Add(-tokenRefreshSkew))
+}
+
+// needsRefresh reports whether Init must contact the token endpoint.
+func (d *Driver) needsRefresh() bool {
+	accessToken, _ := d.cl.tokens()
+	if accessToken == "" {
+		return true
+	}
+	return !tokenFresh(d.cl.tokenExpiry())
 }
 
 func encodeCredentialPayload(payload credentialPayload) ([]byte, error) {
@@ -485,6 +515,7 @@ func (d *Driver) saveRefreshedToken(accessToken, refreshToken string) {
 	if err := d.stateStore.SaveJSON("aliyundrive_token.json", tokenState{
 		AccessToken:        accessToken,
 		RefreshToken:       refreshToken,
+		ExpiresAt:          d.cl.tokenExpiry(),
 		ConfigRefreshToken: d.configRefreshToken,
 		UpdatedAt:          d.tokenUpdated,
 	}); err != nil {

@@ -25,8 +25,8 @@ func TestSharedCredentialSessionPropagatesCookie(t *testing.T) {
 	if second.cookieSource != "credential" {
 		t.Fatalf("sibling source = %q, want credential", second.cookieSource)
 	}
-	if snapshot := session.Snapshot(); snapshot.Version != 1 {
-		t.Fatalf("session version = %d, want 1", snapshot.Version)
+	if snapshot := session.Snapshot(); snapshot.Version != 1 || snapshot.Account != "account" {
+		t.Fatalf("session snapshot = %+v, want version 1 with account", snapshot)
 	}
 }
 

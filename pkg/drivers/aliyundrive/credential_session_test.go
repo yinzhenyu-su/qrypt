@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/credentialtest"
@@ -31,9 +32,10 @@ func TestSharedCredentialSessionIsAdopted(t *testing.T) {
 
 func TestSharedCredentialSessionCommitsRefresh(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "a2",
 			"refresh_token": "r2",
+			"expires_in":    3600,
 		})
 	}))
 	defer api.Close()
@@ -55,6 +57,44 @@ func TestSharedCredentialSessionCommitsRefresh(t *testing.T) {
 	}
 	if driver.tokenSource != "credential" {
 		t.Fatalf("source = %q, want credential after the commit", driver.tokenSource)
+	}
+	if payload.ExpiresAt.IsZero() {
+		t.Fatal("committed payload has no expiry; a restart would refresh again")
+	}
+}
+
+func TestSharedCredentialSessionSkipsFreshRefresh(t *testing.T) {
+	calls := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "must not refresh a fresh token", http.StatusInternalServerError)
+	}))
+	defer api.Close()
+
+	payload, err := encodeCredentialPayload(credentialPayload{
+		AccessToken:  "a1",
+		RefreshToken: "r1",
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := credentialtest.New("main")
+	if _, err := session.Update(0, payload, ""); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "config", AuthURL: api.URL})
+	driver.InstallCredentialSession(session)
+	driver.subscribeCredentialSession()
+
+	if err := driver.refreshCredential(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("provider refresh calls = %d, want 0 for an unexpired token", calls)
+	}
+	if access, _ := driver.cl.tokens(); access != "a1" {
+		t.Fatalf("access token = %q, want the session token", access)
 	}
 }
 
