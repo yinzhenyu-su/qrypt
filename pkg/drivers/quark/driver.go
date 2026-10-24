@@ -19,6 +19,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
 
 func init() {
@@ -291,12 +292,7 @@ func (d *Driver) credentialDebugExtra() map[string]any {
 		drive.DebugExtraLastError:          d.getLastError(),
 		drive.DebugExtraInstantUploadCount: d.instantUploadCount,
 	}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return extra
 }
 
@@ -420,6 +416,9 @@ func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	cookie := decodeCredentialCookie(snapshot.Payload)
 	if cookie == "" {
+		if len(snapshot.Payload) > 0 {
+			logging.L.Warnf("[QUARK] decode shared credential session: invalid payload")
+		}
 		return
 	}
 	if config := cookieAccount(d.configCookie); config != "" {
@@ -447,6 +446,9 @@ func (d *Driver) subscribeCredentialSession() {
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	cookie := decodeCredentialCookie(snapshot.Payload)
 	if cookie == "" {
+		if len(snapshot.Payload) > 0 {
+			logging.L.Warnf("[QUARK] decode shared credential notification: invalid payload")
+		}
 		return
 	}
 	d.credentialMu.Lock()

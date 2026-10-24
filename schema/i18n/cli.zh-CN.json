@@ -661,6 +661,7 @@
   "out.config.wrote": "已写入配置：%s",
   "out.credential.added": "已添加凭据 %s",
   "out.credential.adopted": "已将挂载 %s 迁移到凭据 %s",
+  "out.credential.adopted_without_state": "已将挂载 %s 转换为凭据 %s；未迁移旧会话：%s",
   "out.credential.migrate.adopted": "已迁移 %s 的旧会话（账号 %s）",
   "out.credential.migrate.skipped": "未迁移 %s 的旧会话：%s",
   "out.credential.removed": "已删除凭据 %s",

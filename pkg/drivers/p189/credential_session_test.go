@@ -23,6 +23,7 @@ func TestSharedCredentialSessionPropagatesCookie(t *testing.T) {
 	second.InstallCredentialSession(session)
 	second.subscribeCredentialSession()
 
+	first.cl.username = "user"
 	first.saveUpdatedCookie("UID=account; SEID=two")
 
 	if got := second.cl.cookieValue(); !strings.Contains(got, "SEID=two") {
@@ -30,6 +31,9 @@ func TestSharedCredentialSessionPropagatesCookie(t *testing.T) {
 	}
 	if second.cookieSource != "credential" {
 		t.Fatalf("sibling source = %q, want credential", second.cookieSource)
+	}
+	if snapshot := session.Snapshot(); snapshot.Account != "user" {
+		t.Fatalf("session account = %q, want user", snapshot.Account)
 	}
 }
 

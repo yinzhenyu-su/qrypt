@@ -75,7 +75,11 @@ func (s fileStore) save(name string, next sessionFile, expected uint64) error {
 		return drive.ErrCredentialVersionConflict
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		// A corrupt session must not block every future write; preserve it
+		// for diagnosis and overwrite with the new value.
+		if quarantineErr := s.quarantine(name); quarantineErr != nil {
+			return quarantineErr
+		}
 	}
 	return s.write(name, next)
 }
@@ -111,6 +115,19 @@ func (s fileStore) write(name string, file sessionFile) error {
 		_, err := f.Write(data)
 		return err
 	})
+}
+
+// quarantine moves an unreadable session file aside so the next save can
+// replace it.
+func (s fileStore) quarantine(name string) error {
+	path := s.path(name)
+	if path == "" {
+		return nil
+	}
+	if err := os.Rename(path, path+".corrupt"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (s fileStore) lock(name string) (func(), error) {

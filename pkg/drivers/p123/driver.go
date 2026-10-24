@@ -14,6 +14,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
@@ -432,12 +433,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 		drive.DebugExtraCredentialUpdated:  tokenUpdated,
 		drive.DebugExtraLastError:          lastErr,
 	}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return drive.DebugSnapshot{
 		Driver:      "123",
 		Health:      health,
@@ -530,7 +526,11 @@ func (d *Driver) saveToken(token string, expire time.Time) {
 func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || payload.Token == "" || payload.Username != d.cl.username {
+	if err != nil {
+		logging.L.Warnf("[123] decode shared credential session: %v", err)
+		return
+	}
+	if payload.Token == "" || payload.Username != d.cl.username {
 		return
 	}
 	if !payload.Expire.IsZero() && time.Now().After(payload.Expire) {
@@ -553,7 +553,11 @@ func (d *Driver) subscribeCredentialSession() {
 
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || payload.Token == "" || payload.Username != d.cl.username {
+	if err != nil {
+		logging.L.Warnf("[123] decode shared credential notification: %v", err)
+		return
+	}
+	if payload.Token == "" || payload.Username != d.cl.username {
 		return
 	}
 	if !payload.Expire.IsZero() && time.Now().After(payload.Expire) {

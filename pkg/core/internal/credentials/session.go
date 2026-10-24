@@ -42,6 +42,9 @@ func newSession(store fileStore, spec Spec) *Session {
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			logging.L.Warnf("[CREDENTIALS] load session %q: %v; starting from static params", spec.Name, err)
+			if quarantineErr := store.quarantine(spec.Name); quarantineErr != nil {
+				logging.L.Warnf("[CREDENTIALS] quarantine session %q: %v", spec.Name, quarantineErr)
+			}
 		}
 		session.updatedAt = time.Now().UTC()
 		return session

@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 func (d *Driver) loadCredentialSession() {
 	snapshot := d.credential.Snapshot()
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+	if err != nil {
+		logging.L.Warnf("[onedrive] decode shared credential session: %v", err)
+		return
+	}
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
 		return
 	}
 	d.setTokens(payload.AccessToken, payload.RefreshToken)
@@ -26,7 +32,11 @@ func (d *Driver) subscribeCredentialSession() {
 
 func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	payload, err := decodeCredentialPayload(snapshot.Payload)
-	if err != nil || (payload.AccessToken == "" && payload.RefreshToken == "") {
+	if err != nil {
+		logging.L.Warnf("[onedrive] decode shared credential notification: %v", err)
+		return
+	}
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
 		return
 	}
 	d.credentialMu.Lock()
@@ -65,11 +75,6 @@ func (d *Driver) debugExtra() map[string]any {
 		source = credentialSource(d.useOnlineAPI)
 	}
 	extra := map[string]any{drive.DebugExtraCredentialSource: source}
-	if d.credential != nil {
-		snapshot := d.credential.Snapshot()
-		extra[drive.DebugExtraCredentialName] = d.credential.Name()
-		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
-		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
-	}
+	driverutil.AppendCredentialDebug(extra, d.credential)
 	return extra
 }

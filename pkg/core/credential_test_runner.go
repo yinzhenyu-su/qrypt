@@ -72,7 +72,7 @@ func validateCredentialTestOverrides(cred config.CredentialConfig, overrides map
 		if !ok {
 			return fmt.Errorf("credential %q: unknown parameter %q", cred.Name, name)
 		}
-		if !param.AllowsMount() {
+		if param.Scope != drive.ParamScopeMount {
 			return fmt.Errorf("credential %q: parameter %q is not mount-scope; test overrides may only supply mount-scope parameters", cred.Name, name)
 		}
 	}

@@ -184,6 +184,9 @@ func TestCredentialTestCommand(t *testing.T) {
 	if _, err := run(t, rt, "test", "local", "--param", "nonsense=x"); err == nil {
 		t.Fatal("credential test must reject unknown parameters")
 	}
+	if _, err := run(t, rt, "test", "main", "--param", "base_url=https://example"); err == nil {
+		t.Fatal("credential test must reject both-scope parameters")
+	}
 }
 
 func TestCredentialRemovePurge(t *testing.T) {
