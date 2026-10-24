@@ -79,6 +79,14 @@ type Driver struct {
 	accessToken  string
 	refreshToken string
 
+	// credential is the shared session installed for mounts that reference a
+	// [[credentials]] entry; nil keeps per-mount tokens.
+	credential        drive.CredentialSession
+	credentialCancel  func()
+	credentialMu      sync.Mutex
+	credentialVersion uint64
+	tokenSource       string
+
 	chunkSize        int64
 	disableDiskUsage bool
 
@@ -253,6 +261,10 @@ func New(opts Options) *Driver {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
+	if d.credential != nil {
+		d.loadCredentialSession()
+		d.subscribeCredentialSession()
+	}
 	if d.isSharepoint && d.siteID == "" {
 		return fmt.Errorf("onedrive: site_id is required when is_sharepoint=true")
 	}
@@ -281,6 +293,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
+	if d.credentialCancel != nil {
+		d.credentialCancel()
+		d.credentialCancel = nil
+	}
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -295,6 +311,12 @@ func (d *Driver) Drop(ctx context.Context) error {
 
 // InstallStateStore 接入绑定索引并启动过期回收：本地只保存
 // "内容键 → uploadUrl"，进度在恢复时用 nextExpectedRanges 查询。
+// InstallCredentialSession lets every mount of one configured OneDrive
+// credential share one token pair and coalesce refreshes.
+func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
+	d.credential = session
+}
+
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.sessionStoreMu.Lock()
 	defer d.sessionStoreMu.Unlock()
@@ -343,9 +365,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			"email":                 d.email,
 			"chunk_size":            d.chunkSize,
 		},
-		Extra: map[string]any{
-			drive.DebugExtraCredentialSource: credentialSource(d.useOnlineAPI),
-		},
+		Extra: d.debugExtra(),
 	}, nil
 }
 

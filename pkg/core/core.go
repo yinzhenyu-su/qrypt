@@ -16,6 +16,7 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/control"
+	"github.com/yinzhenyu/qrypt/pkg/core/internal/credentials"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
@@ -636,6 +637,8 @@ type mountBuildResult struct {
 }
 
 func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, opts Options) (BuiltFileSystem, func(), error) {
+	credentialManager := credentials.Open(layout.StateDir)
+	warnDuplicateCredentialAccounts(cfg, credentialManager)
 	var mountConfigs []config.MountConfig
 	var mountFailures []vfs.MountFailure
 	for i, mountCfg := range cfg.Mounts {
@@ -669,7 +672,7 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = buildMount(ctx, cfg, layout, limiter, mountCfg)
+			results[i] = buildMount(ctx, cfg, layout, limiter, credentialManager, mountCfg)
 		}()
 	}
 	wg.Wait()
@@ -733,10 +736,11 @@ func buildNamespace(ctx context.Context, cfg *config.Config, layout RuntimeLayou
 	}, nil
 }
 
-func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, mountCfg config.MountConfig) (result mountBuildResult) {
-	params := drive.Params{}
-	for key, value := range mountCfg.Params {
-		params[key] = value
+func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, limiter *drive.BandwidthLimiter, credentialManager *credentials.Manager, mountCfg config.MountConfig) (result mountBuildResult) {
+	params, err := cfg.ResolveMountParams(mountCfg)
+	if err != nil {
+		result.err = err
+		return result
 	}
 	readCache := cfg.ReadCacheFor(mountCfg.Name)
 	upload := cfg.UploadFor(mountCfg.Name)
@@ -754,6 +758,16 @@ func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, l
 	}
 	result.driver = raw
 	installDriverStateStore(raw, stateDir)
+	if mountCfg.Credential != "" && credentialManager != nil {
+		if cred, ok := cfg.CredentialFor(mountCfg.Credential); ok {
+			if installer, ok := raw.(drive.CredentialSessionInstaller); ok {
+				installer.InstallCredentialSession(credentialManager.Session(credentials.Spec{
+					Name:       cred.Name,
+					ParamsSeed: credentials.ParamsSeed(cred.Type, cred.Params),
+				}))
+			}
+		}
+	}
 	if err := raw.Init(ctx); err != nil {
 		result.err = err
 		return result
@@ -822,6 +836,29 @@ func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error
 		return "", nil
 	}
 	return driver.ResolvePath(ctx, "/")
+}
+
+// warnDuplicateCredentialAccounts logs when two configured credentials resolve
+// to the same provider account. They would rotate independently, which defeats
+// the shared-session model, so the operator should merge them into one entry.
+func warnDuplicateCredentialAccounts(cfg *config.Config, manager *credentials.Manager) {
+	seen := map[string]string{}
+	for _, cred := range cfg.Credentials {
+		session := manager.Session(credentials.Spec{
+			Name:       cred.Name,
+			ParamsSeed: credentials.ParamsSeed(cred.Type, cred.Params),
+		})
+		account := session.Snapshot().Account
+		if account == "" {
+			continue
+		}
+		key := cred.Type + "\x00" + account
+		if other, ok := seen[key]; ok {
+			logging.L.Warnf("[CORE] credentials %q and %q resolve to the same %s account; they rotate independently and should be merged", other, cred.Name, cred.Type)
+			continue
+		}
+		seen[key] = cred.Name
+	}
 }
 
 func driverStateDir(layout RuntimeLayout, mountName string) string {

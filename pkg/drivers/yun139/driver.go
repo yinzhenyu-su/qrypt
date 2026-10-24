@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,11 +35,17 @@ const (
 
 type Driver struct {
 	drive.UnsupportedOperations
-	cl                  *client
-	rootID              string
-	rootPath            string
-	limiter             *drive.BandwidthLimiter
-	stateStore          drive.StateStore
+	cl         *client
+	rootID     string
+	rootPath   string
+	limiter    *drive.BandwidthLimiter
+	stateStore drive.StateStore
+	// credential is the shared session installed for mounts that reference a
+	// [[credentials]] entry; nil keeps the legacy per-mount state store.
+	credential          drive.CredentialSession
+	credentialCancel    func()
+	credentialMu        sync.Mutex
+	credentialVersion   uint64
 	authSource          string
 	authUpdated         time.Time
 	configAuthorization string
@@ -90,12 +97,20 @@ func New(authorization, rootPath, rootID string) *Driver {
 }
 
 func (d *Driver) Init(ctx context.Context) error {
-	d.loadAuthState()
+	if d.credential != nil {
+		d.loadCredentialSession()
+		d.subscribeCredentialSession()
+	} else {
+		d.loadAuthState()
+	}
 	if _, _, err := d.cl.decodeAuth(); err != nil {
 		return fmt.Errorf("139: invalid authorization: %w", err)
 	}
 	if err := d.cl.refreshTokenIfNeeded(ctx); err != nil {
 		return fmt.Errorf("139: refresh authorization: %w", err)
+	}
+	if d.credential != nil && len(d.credential.Snapshot().Payload) == 0 {
+		d.commitCredentialAuthorization(d.cl.getAuthorization())
 	}
 	if err := d.cl.ensurePersonalCloudHost(); err != nil {
 		return fmt.Errorf("139: resolve host: %w", err)
@@ -114,6 +129,10 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(ctx context.Context) error {
+	if d.credentialCancel != nil {
+		d.credentialCancel()
+		d.credentialCancel = nil
+	}
 	d.sessionStoreMu.Lock()
 	if d.sessionCancel != nil {
 		d.sessionCancel()
@@ -129,6 +148,12 @@ func (d *Driver) Drop(ctx context.Context) error {
 func (d *Driver) InstallStateStore(store drive.StateStore) {
 	d.stateStore = store
 	d.installSessionIndex(store)
+}
+
+// InstallCredentialSession lets every mount of one configured 139 credential
+// share a single refreshed authorization.
+func (d *Driver) InstallCredentialSession(session drive.CredentialSession) {
+	d.credential = session
 }
 
 func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.BandwidthLimitDirection {
@@ -171,6 +196,10 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 	if authorization == "" {
 		return
 	}
+	if d.credential != nil {
+		d.commitCredentialAuthorization(authorization)
+		return
+	}
 	d.authSource = "refresh"
 	d.authUpdated = time.Now()
 	if d.stateStore == nil {
@@ -181,6 +210,81 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 		ConfigAuthorization: d.configAuthorization,
 		UpdatedAt:           d.authUpdated,
 	})
+}
+
+func (d *Driver) loadCredentialSession() {
+	snapshot := d.credential.Snapshot()
+	authorization := decodeCredentialAuthorization(snapshot.Payload)
+	if authorization == "" {
+		return
+	}
+	d.cl.setAuthorization(authorization)
+	d.authSource = "state"
+	d.authUpdated = snapshot.UpdatedAt
+	d.credentialVersion = snapshot.Version
+}
+
+func (d *Driver) subscribeCredentialSession() {
+	if d.credential == nil || d.credentialCancel != nil {
+		return
+	}
+	d.credentialCancel = d.credential.Subscribe(d.applyCredentialSnapshot)
+}
+
+func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
+	authorization := decodeCredentialAuthorization(snapshot.Payload)
+	if authorization == "" {
+		return
+	}
+	d.credentialMu.Lock()
+	if snapshot.Version <= d.credentialVersion {
+		d.credentialMu.Unlock()
+		return
+	}
+	d.credentialVersion = snapshot.Version
+	d.authSource = "credential"
+	d.authUpdated = snapshot.UpdatedAt
+	d.credentialMu.Unlock()
+	d.cl.setAuthorization(authorization)
+}
+
+func (d *Driver) commitCredentialAuthorization(authorization string) {
+	if d.credential == nil || authorization == "" {
+		return
+	}
+	snapshot := d.credential.Snapshot()
+	payload, err := encodeCredentialAuthorization(authorization)
+	if err != nil {
+		return
+	}
+	_, err = d.credential.Update(snapshot.Version, payload, "")
+	if err == nil {
+		return
+	}
+	if errors.Is(err, drive.ErrCredentialVersionConflict) {
+		d.applyCredentialSnapshot(d.credential.Snapshot())
+		return
+	}
+	logging.L.Warnf("[139] commit shared credential failed: %v", err)
+}
+
+type credentialPayload struct {
+	Authorization string `json:"authorization"`
+}
+
+func encodeCredentialAuthorization(authorization string) ([]byte, error) {
+	return json.Marshal(credentialPayload{Authorization: authorization})
+}
+
+func decodeCredentialAuthorization(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var decoded credentialPayload
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return ""
+	}
+	return decoded.Authorization
 }
 
 func (d *Driver) setLastError(err error) {
@@ -413,6 +517,18 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	if lastError != "" {
 		health = "degraded"
 	}
+	extra := map[string]any{
+		drive.DebugExtraCredentialSource:   d.authSource,
+		drive.DebugExtraCredentialUpdated:  d.authUpdated,
+		drive.DebugExtraLastError:          lastError,
+		drive.DebugExtraInstantUploadCount: instantUploadCount,
+	}
+	if d.credential != nil {
+		snapshot := d.credential.Snapshot()
+		extra[drive.DebugExtraCredentialName] = d.credential.Name()
+		extra[drive.DebugExtraCredentialVersion] = snapshot.Version
+		extra[drive.DebugExtraCredentialAccount] = snapshot.Account
+	}
 	return drive.DebugSnapshot{
 		Driver:      "yun139",
 		Health:      health,
@@ -421,12 +537,7 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 			drive.DebugStatRootID:   d.rootID,
 			drive.DebugStatRootPath: d.rootPath,
 		},
-		Extra: map[string]any{
-			drive.DebugExtraCredentialSource:   d.authSource,
-			drive.DebugExtraCredentialUpdated:  d.authUpdated,
-			drive.DebugExtraLastError:          lastError,
-			drive.DebugExtraInstantUploadCount: instantUploadCount,
-		},
+		Extra: extra,
 	}, nil
 }
 
