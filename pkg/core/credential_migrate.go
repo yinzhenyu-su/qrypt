@@ -1,7 +1,6 @@
 package core
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,10 +10,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/core/internal/credentials"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
-
-// ErrCredentialMigrationUnsupported marks drivers that keep no exportable
-// legacy session; callers may treat it as "nothing to migrate".
-var ErrCredentialMigrationUnsupported = errors.New("core: credential migration unsupported")
 
 // CredentialMigration reports the outcome of moving one mount's legacy
 // per-mount session into a shared credential.
@@ -56,7 +51,8 @@ func MigrateCredentialSession(cfg *config.Config, layout RuntimeLayout, mountNam
 	}
 	exporter, ok := driver.(drive.CredentialExporter)
 	if !ok {
-		return result, fmt.Errorf("%w: driver %q", ErrCredentialMigrationUnsupported, mount.Type)
+		result.Reason = "driver does not support legacy session migration"
+		return result, nil
 	}
 	legacy := drive.NewFileStateStore(filepath.Join(layout.DriverDir, mountName))
 	payload, account, adoptable, err := exporter.ExportCredentialSession(legacy, params)

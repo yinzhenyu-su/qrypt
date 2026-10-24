@@ -33,10 +33,11 @@ func (d *Driver) refresh(ctx context.Context) error {
 		if err := d.refreshDirect(ctx); err != nil {
 			return nil, "", err
 		}
-		return encodeCredentialPayload(credentialPayload{
+		encoded, _, encodeErr := encodeCredentialPayload(credentialPayload{
 			AccessToken:  d.currentAccessToken(),
 			RefreshToken: d.currentRefreshToken(),
 		})
+		return encoded, d.accountID(), encodeErr
 	})
 	if err != nil {
 		return err

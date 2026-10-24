@@ -66,3 +66,17 @@ func TestAuthRecoveryAdoptsSiblingAuthorization(t *testing.T) {
 		t.Fatalf("authorization = %q, want the adopted session", got)
 	}
 }
+
+func TestRecoverStaticAuthorization(t *testing.T) {
+	driver := New("auth-config", "", "")
+	driver.cl.setAuthorization("auth-stale")
+	if !driver.recoverStaticAuthorization() {
+		t.Fatal("static authorization fallback should report a retry")
+	}
+	if got := driver.cl.getAuthorization(); got != "auth-config" {
+		t.Fatalf("authorization = %q, want the configured value", got)
+	}
+	if driver.authSource != "config" {
+		t.Fatalf("source = %q, want config", driver.authSource)
+	}
+}

@@ -100,6 +100,7 @@ type client struct {
 	authRefreshURL        string
 	onAuthorizationUpdate func(authorization string)
 	onAuthRecovery        func() bool
+	onAuthFallback        func() bool
 	mu                    sync.RWMutex
 	tokenExpiry           time.Time
 	metrics               *driverutil.Buffer
@@ -351,6 +352,13 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 				}
 				if refreshErr := c.refreshToken(ctx); refreshErr != nil {
 					lastErr = fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
+					if c.onAuthFallback != nil && c.onAuthFallback() {
+						if retryErr := c.personalPostOnce(ctx, path, bodyData, result); retryErr == nil {
+							return nil
+						} else {
+							lastErr = retryErr
+						}
+					}
 					continue
 				}
 				if retryErr := c.personalPostOnce(ctx, path, bodyData, result); retryErr == nil {
@@ -392,6 +400,13 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 				}
 				if refreshErr := c.refreshToken(ctx); refreshErr != nil {
 					lastErr = fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
+					if c.onAuthFallback != nil && c.onAuthFallback() {
+						if retryErr := c.userPostOnce(ctx, path, bodyData, result); retryErr == nil {
+							return nil
+						} else {
+							lastErr = retryErr
+						}
+					}
 					continue
 				}
 				if retryErr := c.userPostOnce(ctx, path, bodyData, result); retryErr == nil {

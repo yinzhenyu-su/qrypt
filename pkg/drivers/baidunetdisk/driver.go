@@ -41,6 +41,7 @@ type Driver struct {
 	httpClient         *http.Client
 	refreshToken       string
 	accessToken        string
+	account            string
 	configRefreshToken string
 	clientID           string
 	clientSecret       string
@@ -105,6 +106,7 @@ type tokenState struct {
 	AccessToken  string    `json:"access_token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	Account      string    `json:"account,omitempty"`
 	// ConfigRefreshToken records the config refresh token that produced this
 	// state, so a rotated pair (state newer than config) can be distinguished
 	// from a user-swapped config token (config newer than state).
@@ -221,6 +223,7 @@ func (d *Driver) Init(ctx context.Context) error {
 			return err
 		}
 	}
+	d.loadAccount(ctx)
 	if d.rootPath != "/" {
 		if _, err := d.statRoot(ctx); err != nil {
 			d.setLastError(err)
@@ -443,16 +446,17 @@ func (d *Driver) refreshShared(ctx context.Context) error {
 			d.tokenExpires = payload.ExpiresAt
 		}
 		if d.accessToken != "" && !d.tokenExpires.IsZero() && time.Now().Before(d.tokenExpires.Add(-defaultTokenSkew)) {
-			return current.Payload, "", nil
+			return current.Payload, d.account, nil
 		}
 		if refreshErr := d.refreshDirect(ctx); refreshErr != nil {
 			return nil, "", refreshErr
 		}
-		return encodeCredentialPayload(credentialPayload{
+		encoded, _, encodeErr := encodeCredentialPayload(credentialPayload{
 			AccessToken:  d.accessToken,
 			RefreshToken: d.refreshToken,
 			ExpiresAt:    d.tokenExpires,
 		})
+		return encoded, d.account, encodeErr
 	})
 	return err
 }
@@ -473,6 +477,9 @@ func (d *Driver) loadCredentialSession() {
 	d.tokenSource = "state"
 	d.tokenUpdated = snapshot.UpdatedAt
 	d.credentialVersion = snapshot.Version
+	if snapshot.Account != "" {
+		d.account = snapshot.Account
+	}
 }
 
 func (d *Driver) subscribeCredentialSession() {
@@ -502,6 +509,9 @@ func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	d.tokenExpires = payload.ExpiresAt
 	d.tokenSource = "credential"
 	d.tokenUpdated = snapshot.UpdatedAt
+	if snapshot.Account != "" {
+		d.account = snapshot.Account
+	}
 	d.credentialMu.Unlock()
 }
 
@@ -523,6 +533,29 @@ func decodeCredentialPayload(data []byte) (credentialPayload, error) {
 	}
 	err := json.Unmarshal(data, &payload)
 	return payload, err
+}
+
+// loadAccount records a human-readable account name for diagnostics. It is
+// best-effort: a provider or online-api hiccup must not fail the mount.
+func (d *Driver) loadAccount(ctx context.Context) {
+	var resp struct {
+		Errno       int    `json:"errno"`
+		BaiduName   string `json:"baidu_name"`
+		NetdiskName string `json:"netdisk_name"`
+		UK          int64  `json:"uk"`
+	}
+	if err := d.request(ctx, http.MethodGet, "https://pan.baidu.com/rest/2.0/xpan/nas", map[string]string{"method": "uinfo"}, nil, &resp); err != nil {
+		logging.L.Warnf("[baidu_netdisk] fetch account: %v", err)
+		return
+	}
+	switch {
+	case resp.NetdiskName != "":
+		d.account = resp.NetdiskName
+	case resp.BaiduName != "":
+		d.account = resp.BaiduName
+	case resp.UK != 0:
+		d.account = strconv.FormatInt(resp.UK, 10)
+	}
 }
 
 func (d *Driver) loadTokenState() {
@@ -552,6 +585,9 @@ func (d *Driver) loadTokenState() {
 		d.tokenExpires = state.ExpiresAt
 	}
 	d.tokenUpdated = state.UpdatedAt
+	if state.Account != "" {
+		d.account = state.Account
+	}
 }
 
 func (d *Driver) saveTokenState() error {
@@ -562,6 +598,7 @@ func (d *Driver) saveTokenState() error {
 		AccessToken:        d.accessToken,
 		RefreshToken:       d.refreshToken,
 		ExpiresAt:          d.tokenExpires,
+		Account:            d.account,
 		ConfigRefreshToken: d.configRefreshToken,
 		UpdatedAt:          d.tokenUpdated,
 	})

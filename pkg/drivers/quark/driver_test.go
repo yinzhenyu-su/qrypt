@@ -745,6 +745,23 @@ func TestSharedCredentialSessionPropagatesRotation(t *testing.T) {
 	}
 }
 
+func TestRecoverFallsBackToConfigCookie(t *testing.T) {
+	driver := New("__uid=account-a; __puus=config", Options{})
+	driver.InstallCredentialSession(newFakeCredentialSession("main"))
+	driver.cl.setCookie("__uid=account-a; __puus=stale")
+	driver.cookie = "__uid=account-a; __puus=stale"
+
+	if !driver.recoverCredential() {
+		t.Fatal("recoverCredential should fall back to the configured cookie")
+	}
+	if got := driver.cl.cookieValue(); got != "__uid=account-a; __puus=config" {
+		t.Fatalf("cookie = %q, want the configured cookie", got)
+	}
+	if driver.cookieSource != "config" {
+		t.Fatalf("source = %q, want config", driver.cookieSource)
+	}
+}
+
 func TestSharedCredentialSessionIgnoresAnotherAccount(t *testing.T) {
 	session := newFakeCredentialSession("main")
 	if _, err := session.Update(0, []byte(`{"cookie":"__uid=account-a; __puus=one"}`), "account-a"); err != nil {
