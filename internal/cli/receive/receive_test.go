@@ -24,15 +24,18 @@ import (
 
 type commandReceiveService struct {
 	task.Controller
-	created   shareapi.ReceiveRequest
-	inspected shareapi.InspectRequest
-	listed    shareapi.ReceiveListRequest
-	waitedID  string
-	waitBlock chan struct{}
-	cancelled string
-	retried   string
-	state     task.State
-	failure   error
+	created        shareapi.ReceiveRequest
+	inspected      shareapi.InspectRequest
+	listed         shareapi.ReceiveListRequest
+	resolveValue   shareapi.ResolveResult
+	inspectErr     error
+	inspectErrOnce error
+	waitedID       string
+	waitBlock      chan struct{}
+	cancelled      string
+	retried        string
+	state          task.State
+	failure        error
 }
 
 func (s *commandReceiveService) CreateShareTask(_ context.Context, req task.OperationRequest) (task.Task, error) {
@@ -112,8 +115,23 @@ func (s *commandReceiveService) RemoveShareLink(context.Context, string, string)
 	return s.failure
 }
 
+func (s *commandReceiveService) ResolveShareLink(_ context.Context, req shareapi.ResolveRequest) (shareapi.ResolveResult, error) {
+	if s.resolveValue.Candidates == nil && s.failure == nil {
+		return shareapi.ResolveResult{Link: drive.ShareLink{URL: req.Link}, Candidates: []string{"quark"}}, nil
+	}
+	return s.resolveValue, s.failure
+}
+
 func (s *commandReceiveService) InspectShareLink(_ context.Context, req shareapi.InspectRequest) (shareapi.InspectResult, error) {
 	s.inspected = req
+	if s.inspectErrOnce != nil {
+		err := s.inspectErrOnce
+		s.inspectErrOnce = nil
+		return shareapi.InspectResult{}, err
+	}
+	if s.inspectErr != nil {
+		return shareapi.InspectResult{}, s.inspectErr
+	}
 	return shareapi.InspectResult{
 		Link:    drive.ShareLink{URL: req.Link},
 		Share:   drive.Share{Title: "fixture", Passcode: "ab12", EntryCount: 1},
@@ -399,5 +417,132 @@ func TestReceiveWaitInterruptStopsOnlyObservation(t *testing.T) {
 	}
 	if service.cancelled != "" {
 		t.Fatalf("wait canceled the task: %q", service.cancelled)
+	}
+}
+
+func TestReceiveInspectPromptsForMount(t *testing.T) {
+	rt := receiveCommandRuntime(t)
+	service := &commandReceiveService{resolveValue: shareapi.ResolveResult{Candidates: []string{"alpha", "beta"}}}
+	startReceiveCommandServer(t, rt, service)
+
+	old := stdinIsTerminal
+	stdinIsTerminal = func(*cobra.Command) bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = old })
+
+	_, stderr, err := executeReceiveCommand(t, rt, "2\n", "inspect", "https://x/s/abc")
+	if err != nil {
+		t.Fatalf("inspect: %v\n%s", err, stderr)
+	}
+	if service.inspected.Mount != "beta" {
+		t.Fatalf("selected mount = %q, want beta", service.inspected.Mount)
+	}
+	if !strings.Contains(stderr, "alpha") || !strings.Contains(stderr, "beta") {
+		t.Fatalf("prompt did not list candidates: %q", stderr)
+	}
+}
+
+func TestReceiveInspectSingleCandidateIsAutomatic(t *testing.T) {
+	rt := receiveCommandRuntime(t)
+	service := &commandReceiveService{resolveValue: shareapi.ResolveResult{Candidates: []string{"alpha"}}}
+	startReceiveCommandServer(t, rt, service)
+
+	_, _, err := executeReceiveCommand(t, rt, "", "inspect", "https://x/s/abc")
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if service.inspected.Mount != "alpha" {
+		t.Fatalf("mount = %q, want alpha", service.inspected.Mount)
+	}
+}
+
+func TestReceiveAmbiguousMountWithoutTerminalIsUsageError(t *testing.T) {
+	rt := receiveCommandRuntime(t)
+	service := &commandReceiveService{resolveValue: shareapi.ResolveResult{Candidates: []string{"alpha", "beta"}}}
+	startReceiveCommandServer(t, rt, service)
+
+	old := stdinIsTerminal
+	stdinIsTerminal = func(*cobra.Command) bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = old })
+
+	_, _, err := executeReceiveCommand(t, rt, "", "inspect", "https://x/s/abc")
+	if err == nil {
+		t.Fatal("expected a usage error")
+	}
+	var exit *commandExit
+	if !errors.As(err, &exit) || exit.code != 2 {
+		t.Fatalf("error = %v, want exit 2", err)
+	}
+	if !strings.Contains(err.Error(), "alpha, beta") || !strings.Contains(err.Error(), "--mount") {
+		t.Fatalf("error does not name the missing flag: %v", err)
+	}
+}
+
+func TestReceiveSaveRootStillRequiresExplicitMount(t *testing.T) {
+	rt := receiveCommandRuntime(t)
+	service := &commandReceiveService{resolveValue: shareapi.ResolveResult{Candidates: []string{"alpha"}}}
+	startReceiveCommandServer(t, rt, service)
+
+	old := stdinIsTerminal
+	stdinIsTerminal = func(*cobra.Command) bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = old })
+
+	_, _, err := executeReceiveCommand(t, rt, "", "save", "https://x/s/abc")
+	if err == nil {
+		t.Fatal("expected a usage error")
+	}
+	var exit *commandExit
+	if !errors.As(err, &exit) || exit.code != 2 {
+		t.Fatalf("error = %v, want exit 2", err)
+	}
+	if !strings.Contains(err.Error(), "--to") || !strings.Contains(err.Error(), "--mount") {
+		t.Fatalf("save hint = %v", err)
+	}
+}
+
+func TestReceivePasscodeRequiredHint(t *testing.T) {
+	rt := receiveCommandRuntime(t)
+	service := &commandReceiveService{
+		inspectErr: &control.TransportError{Path: "/v1/control/share/inspect", Status: 400, Body: "share_passcode_required: passcode required"},
+	}
+	startReceiveCommandServer(t, rt, service)
+
+	_, stderr, err := executeReceiveCommand(t, rt, "", "inspect", "https://x/s/abc", "--mount", "quark")
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	if !strings.Contains(stderr, "--passcode") {
+		t.Fatalf("passcode hint missing: %q", stderr)
+	}
+}
+
+func TestReceivePromptsForPasscodeAfterMount(t *testing.T) {
+	rt := receiveCommandRuntime(t)
+	service := &commandReceiveService{
+		inspectErrOnce: &control.TransportError{Path: "/v1/control/share/inspect", Status: 400, Body: "share_passcode_required: passcode required"},
+	}
+	startReceiveCommandServer(t, rt, service)
+
+	old := stdinIsTerminal
+	stdinIsTerminal = func(*cobra.Command) bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = old })
+
+	_, stderr, err := executeReceiveCommand(t, rt, "abcd\n", "inspect", "https://x/s/abc", "--mount", "quark")
+	if err != nil {
+		t.Fatalf("inspect: %v\n%s", err, stderr)
+	}
+	if service.inspected.Passcode != "abcd" {
+		t.Fatalf("passcode = %q, want the prompted value", service.inspected.Passcode)
+	}
+}
+
+func TestMissingResolveRouteDetection(t *testing.T) {
+	if !isMissingResolveRoute(&control.TransportError{Path: "/v1/control/share/resolve", Status: 404, Body: "404 page not found"}) {
+		t.Fatal("a 404 resolve response must be treated as an older Core")
+	}
+	if isMissingResolveRoute(&control.TransportError{Status: 400, Body: "bad request"}) {
+		t.Fatal("a 400 must not be treated as an older Core")
+	}
+	if isMissingResolveRoute(errors.New("connection refused")) {
+		t.Fatal("a non-transport error must not be treated as an older Core")
 	}
 }

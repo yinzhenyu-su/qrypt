@@ -91,23 +91,36 @@ stdin line when --passcode is given without a value.`,
 		Args: linkArgs(rt, "inspect"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jsonOut, _ := cmd.Flags().GetBool("json")
-			passcode, err := resolvePasscode(rt, cmd)
-			if err != nil {
-				return err
-			}
 			client, err := controlctx.Client(cmd)
 			if err != nil {
 				return controlctx.FinishError(rt, err)
 			}
-			preview, err := client.InspectShareLink(cmd.Context(), shareapi.InspectRequest{
-				Link:     args[0],
-				Passcode: passcode,
-				Mount:    cliruntime.FlagStringValue(cmd, "mount"),
-				Dir:      cliruntime.FlagStringValue(cmd, "dir"),
-				Cursor:   cliruntime.FlagStringValue(cmd, "cursor"),
-			})
+			mount, err := resolveReceiveMount(rt, cmd, client, args[0], false)
 			if err != nil {
-				return controlctx.FinishError(rt, controlctx.ConnectionError(err, "receive"))
+				return err
+			}
+			passcode, err := resolvePasscode(rt, cmd)
+			if err != nil {
+				return err
+			}
+			inspect := func(passcode string) (shareapi.InspectResult, error) {
+				return client.InspectShareLink(cmd.Context(), shareapi.InspectRequest{
+					Link:     args[0],
+					Passcode: passcode,
+					Mount:    mount,
+					Dir:      cliruntime.FlagStringValue(cmd, "dir"),
+					Cursor:   cliruntime.FlagStringValue(cmd, "cursor"),
+				})
+			}
+			preview, err := inspect(passcode)
+			if err != nil && passcode == "" && passcodeRequired(err) && !jsonOut && stdinIsTerminal(cmd) {
+				entered, promptErr := promptPasscode(rt, cmd)
+				if promptErr == nil {
+					preview, err = inspect(entered)
+				}
+			}
+			if err != nil {
+				return finishReceiveCall(rt, cmd, err)
 			}
 			if jsonOut {
 				preview.Share = shareapi.RedactLink(preview.Share, false)
@@ -142,11 +155,6 @@ returns once the task is admitted.`,
   qrypt receive save https://pan.quark.cn/s/abc123 --to /quark/inbox --passcode --no-wait`,
 		Args: linkArgs(rt, "save"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			to := cliruntime.FlagStringValue(cmd, "to")
-			mount := cliruntime.FlagStringValue(cmd, "mount")
-			if strings.TrimSpace(to) == "" && strings.TrimSpace(mount) == "" {
-				return rt.UsageError(cmd, "--to or --mount is required to choose the cloud destination.\n\nUse --to /MOUNT/DIR to pick a directory, or --mount NAME to save into the mount root.")
-			}
 			return createReceive(rt, cmd, args[0], false)
 		},
 	}
@@ -209,18 +217,29 @@ func createReceive(rt cliruntime.Runtime, cmd *cobra.Command, link string, fetch
 	jsonOut, _ := cmd.Flags().GetBool("json")
 	reveal, _ := cmd.Flags().GetBool("show-secrets")
 	noWait, _ := cmd.Flags().GetBool("no-wait")
-	passcode, err := resolvePasscode(rt, cmd)
-	if err != nil {
-		return err
-	}
 	selection, err := resolveSelection(cmd)
 	if err != nil {
 		return rt.UsageError(cmd, "%s", err.Error())
 	}
+	client, err := controlctx.Client(cmd)
+	if err != nil {
+		return controlctx.FinishError(rt, err)
+	}
+	// A save without --to treats the chosen mount as the destination root, so
+	// the account choice must be explicit; inspect and direct fetch can use the
+	// only candidate automatically.
+	mount, err := resolveReceiveMount(rt, cmd, client, link, !fetch)
+	if err != nil {
+		return err
+	}
+	passcode, err := resolvePasscode(rt, cmd)
+	if err != nil {
+		return err
+	}
 	req := shareapi.ReceiveRequest{
 		Link:           link,
 		Passcode:       passcode,
-		Mount:          cliruntime.FlagStringValue(cmd, "mount"),
+		Mount:          mount,
 		To:             cliruntime.FlagStringValue(cmd, "to"),
 		Selection:      selection,
 		IdempotencyKey: cliruntime.FlagStringValue(cmd, "idempotency-key"),
@@ -241,13 +260,16 @@ func createReceive(rt cliruntime.Runtime, cmd *cobra.Command, link string, fetch
 		req.Workers = workers
 		req.ChunkSize = chunkSize
 	}
-	client, err := controlctx.Client(cmd)
-	if err != nil {
-		return controlctx.FinishError(rt, err)
-	}
 	created, err := client.CreateShareTask(cmd.Context(), req)
+	if err != nil && req.Passcode == "" && passcodeRequired(err) && !jsonOut && stdinIsTerminal(cmd) {
+		entered, promptErr := promptPasscode(rt, cmd)
+		if promptErr == nil {
+			req.Passcode = entered
+			created, err = client.CreateShareTask(cmd.Context(), req)
+		}
+	}
 	if err != nil {
-		return controlctx.FinishError(rt, controlctx.ConnectionError(err, "receive"))
+		return finishReceiveCall(rt, cmd, err)
 	}
 	if noWait {
 		current, err := client.GetShareTask(cmd.Context(), created.ID)

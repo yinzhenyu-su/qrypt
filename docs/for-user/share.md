@@ -72,7 +72,7 @@ qrypt share show https://pan.quark.cn/s/19a64ef19d03 --show-secrets
 
 - 链接的 provider 由驱动识别，不需要手工指定。
 - 真正执行的账号按以下顺序确定：显式 `--mount` → `--to` 的目标挂载 → 该 provider 唯一配置的挂载。
-- 同一 provider 配置了多个挂载且无法唯一确定时，命令会列出候选并要求显式 `--mount`，不会替你猜账号。
+- 同一 provider 配置了多个挂载且无法唯一确定时，交互式终端会列出候选并提示选择；非交互场景（脚本、管道、`--json`）会列出候选并要求显式 `--mount`，不会替你猜账号。
 
 ### 浏览（只读）
 
@@ -132,7 +132,7 @@ qrypt receive save https://pan.quark.cn/s/73ac68e19b29 --passcode=abcd --to /qua
 printf 'abcd\n' | qrypt receive inspect https://pan.quark.cn/s/73ac68e19b29 --passcode
 ```
 
-需要提取码而未提供时报 `share_passcode_required`，提取码错误报 `share_passcode_wrong`。`inspect`、`save`、`fetch` 都会在创建任务之前打开链接完成校验，因此提取码错误不会留下失败任务。
+需要提取码而未提供时报 `share_passcode_required`，提取码错误报 `share_passcode_wrong`。`inspect`、`save`、`fetch` 都会在创建任务之前打开链接完成校验，因此提取码错误不会留下失败任务；CLI 会提示下一步用 `--passcode`（从 stdin 读一行）或 `--passcode=CODE`。
 
 ### 选择文件
 

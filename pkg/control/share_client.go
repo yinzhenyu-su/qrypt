@@ -122,6 +122,19 @@ func (c *Client) RemoveShareLink(ctx context.Context, mount, id string) error {
 	return err
 }
 
+// ResolveShareLink reports which mounts can act on a link.
+func (c *Client) ResolveShareLink(ctx context.Context, req shareapi.ResolveRequest) (shareapi.ResolveResult, error) {
+	body, err := c.PostJSON(ctx, shareBasePath+"/resolve", req)
+	if err != nil {
+		return shareapi.ResolveResult{}, err
+	}
+	var result shareapi.ResolveResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return shareapi.ResolveResult{}, err
+	}
+	return result, nil
+}
+
 // InspectShareLink browses one share directory without creating a task.
 func (c *Client) InspectShareLink(ctx context.Context, req shareapi.InspectRequest) (shareapi.InspectResult, error) {
 	body, err := c.PostJSON(ctx, shareBasePath+"/inspect", req)

@@ -60,6 +60,10 @@ func (s *commandShareService) RemoveShareLink(_ context.Context, mount, id strin
 	return s.failure
 }
 
+func (s *commandShareService) ResolveShareLink(context.Context, shareapi.ResolveRequest) (shareapi.ResolveResult, error) {
+	return shareapi.ResolveResult{}, s.failure
+}
+
 func (s *commandShareService) InspectShareLink(context.Context, shareapi.InspectRequest) (shareapi.InspectResult, error) {
 	return shareapi.InspectResult{}, s.failure
 }

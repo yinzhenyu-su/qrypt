@@ -651,6 +651,9 @@ func TestShareSaveRejectsAmbiguousMount(t *testing.T) {
 	if !errors.Is(err, ErrShareMountRequired) {
 		t.Fatalf("error = %v, want ErrShareMountRequired", err)
 	}
+	if !strings.Contains(err.Error(), "--mount") {
+		t.Fatalf("ambiguous error must tell the caller how to choose: %v", err)
+	}
 }
 
 func TestShareSaveRejectsEncryptedDestination(t *testing.T) {

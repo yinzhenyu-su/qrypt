@@ -23,6 +23,8 @@ type shareServiceStub struct {
 	gotID        string
 	removedID    string
 	inspected    shareapi.InspectRequest
+	resolved     shareapi.ResolveRequest
+	resolveValue shareapi.ResolveResult
 	createdTask  task.OperationRequest
 	listedTasks  task.Filter
 	waitedID     string
@@ -70,6 +72,14 @@ func (s *shareServiceStub) UpdateShareLink(_ context.Context, req shareapi.LinkU
 func (s *shareServiceStub) RemoveShareLink(_ context.Context, mount, id string) error {
 	s.gotMount, s.removedID = mount, id
 	return s.linkErr
+}
+
+func (s *shareServiceStub) ResolveShareLink(_ context.Context, req shareapi.ResolveRequest) (shareapi.ResolveResult, error) {
+	s.resolved = req
+	if s.linkErr != nil {
+		return shareapi.ResolveResult{}, s.linkErr
+	}
+	return s.resolveValue, nil
 }
 
 func (s *shareServiceStub) InspectShareLink(_ context.Context, req shareapi.InspectRequest) (shareapi.InspectResult, error) {
@@ -244,6 +254,29 @@ func TestShareReceiveRoutes(t *testing.T) {
 	}
 	if service.waitedID != "share-1" || service.waitedFor != 1500*time.Millisecond {
 		t.Fatalf("wait = %q %s", service.waitedID, service.waitedFor)
+	}
+}
+
+func TestShareResolveRoute(t *testing.T) {
+	t.Parallel()
+
+	service := &shareServiceStub{resolveValue: shareapi.ResolveResult{
+		Link:       drive.ShareLink{URL: "u", LinkID: "abc"},
+		Candidates: []string{"alpha", "beta"},
+	}}
+	server := newShareServer(service)
+	body := `{"link":"https://x/s/abc"}`
+	resp := httptest.NewRecorder()
+	server.handleShareResolve(resp, httptest.NewRequest(http.MethodPost, "/v1/control/share/resolve", strings.NewReader(body)))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.Code, resp.Body.String())
+	}
+	if service.resolved.Link != "https://x/s/abc" {
+		t.Fatalf("resolve request = %+v", service.resolved)
+	}
+	var result shareapi.ResolveResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil || len(result.Candidates) != 2 {
+		t.Fatalf("result = %+v err=%v", result, err)
 	}
 }
 

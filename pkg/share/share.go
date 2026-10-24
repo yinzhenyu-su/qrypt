@@ -134,6 +134,20 @@ type InspectRequest struct {
 	Cursor string `json:"cursor,omitempty"`
 }
 
+// ResolveRequest asks which configured mounts can act on a link. Resolution is
+// read-only: it parses the link and reads mount configuration, never contacts a
+// provider.
+type ResolveRequest struct {
+	Link string `json:"link"`
+}
+
+// ResolveResult reports the link identity and the mounts that recognize it.
+// Candidates are sorted; more than one means the caller must choose an account.
+type ResolveResult struct {
+	Link       drive.ShareLink `json:"link"`
+	Candidates []string        `json:"candidates"`
+}
+
 // InspectResult is one page of a share directory plus the link metadata.
 type InspectResult struct {
 	Link    drive.ShareLink    `json:"link"`
@@ -225,6 +239,7 @@ type Service interface {
 	GetShareLink(ctx context.Context, mount, id string) (drive.Share, error)
 	UpdateShareLink(ctx context.Context, req LinkUpdateRequest) (drive.Share, error)
 	RemoveShareLink(ctx context.Context, mount, id string) error
+	ResolveShareLink(ctx context.Context, req ResolveRequest) (ResolveResult, error)
 	InspectShareLink(ctx context.Context, req InspectRequest) (InspectResult, error)
 
 	CreateShareTask(ctx context.Context, req task.OperationRequest) (task.Task, error)

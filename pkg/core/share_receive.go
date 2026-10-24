@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -568,19 +569,22 @@ func (c *Core) preflightShareSession(ctx context.Context, mount string, driver d
 // resolveShareLinkTarget finds the driver that recognizes the link and the
 // mount that acts on it. --mount wins over --to; an ambiguous provider with
 // several mounts is rejected instead of guessing the account.
-func (c *Core) resolveShareLinkTarget(link, mountName, to string) (drive.ShareLink, string, drive.Driver, drive.SharePolicy, error) {
+// shareLinkCandidate is one configured mount that recognizes a share link.
+type shareLinkCandidate struct {
+	mount  string
+	driver drive.Driver
+	link   drive.ShareLink
+	policy drive.SharePolicy
+}
+
+// shareLinkCandidates returns every configured mount whose driver recognizes
+// the link, sorted by mount name. It is read-only and never contacts a provider.
+func (c *Core) shareLinkCandidates(link string) ([]shareLinkCandidate, error) {
 	raw := strings.TrimSpace(link)
 	if raw == "" {
-		return drive.ShareLink{}, "", nil, drive.SharePolicy{}, fmt.Errorf("%w: share link is required", task.ErrInvalidOperation)
+		return nil, fmt.Errorf("%w: share link is required", task.ErrInvalidOperation)
 	}
-
-	type candidate struct {
-		mount  string
-		driver drive.Driver
-		link   drive.ShareLink
-		policy drive.SharePolicy
-	}
-	var candidates []candidate
+	var candidates []shareLinkCandidate
 	for _, info := range c.offlineMounts() {
 		if info.State == "failed" {
 			continue
@@ -597,7 +601,7 @@ func (c *Core) resolveShareLinkTarget(link, mountName, to string) (drive.ShareLi
 		if !ok {
 			continue
 		}
-		candidates = append(candidates, candidate{
+		candidates = append(candidates, shareLinkCandidate{
 			mount:  info.Name,
 			driver: driver,
 			link:   parsed,
@@ -605,7 +609,34 @@ func (c *Core) resolveShareLinkTarget(link, mountName, to string) (drive.ShareLi
 		})
 	}
 	if len(candidates) == 0 {
-		return drive.ShareLink{}, "", nil, drive.SharePolicy{}, fmt.Errorf("%w: %s", ErrShareLinkInvalid, raw)
+		return nil, fmt.Errorf("%w: %s", ErrShareLinkInvalid, raw)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mount < candidates[j].mount })
+	return candidates, nil
+}
+
+// ResolveShareLink reports which configured mounts can act on a link. It is
+// read-only and lets the CLI offer a progressive account choice instead of
+// guessing when several mounts share the link's provider.
+func (c *Core) ResolveShareLink(ctx context.Context, req shareapi.ResolveRequest) (shareapi.ResolveResult, error) {
+	candidates, err := c.shareLinkCandidates(req.Link)
+	if err != nil {
+		return shareapi.ResolveResult{}, err
+	}
+	result := shareapi.ResolveResult{Link: candidates[0].link}
+	for _, candidate := range candidates {
+		result.Candidates = append(result.Candidates, candidate.mount)
+	}
+	return result, nil
+}
+
+// resolveShareLinkTarget finds the driver that recognizes the link and the
+// mount that acts on it. --mount wins over --to; an ambiguous provider with
+// several mounts is rejected instead of guessing the account.
+func (c *Core) resolveShareLinkTarget(link, mountName, to string) (drive.ShareLink, string, drive.Driver, drive.SharePolicy, error) {
+	candidates, err := c.shareLinkCandidates(link)
+	if err != nil {
+		return drive.ShareLink{}, "", nil, drive.SharePolicy{}, err
 	}
 
 	toMount := ""
@@ -645,7 +676,7 @@ func (c *Core) resolveShareLinkTarget(link, mountName, to string) (drive.ShareLi
 	for _, candidate := range candidates {
 		names = append(names, candidate.mount)
 	}
-	return drive.ShareLink{}, "", nil, drive.SharePolicy{}, fmt.Errorf("%w: candidates: %s", ErrShareMountRequired, strings.Join(names, ", "))
+	return drive.ShareLink{}, "", nil, drive.SharePolicy{}, fmt.Errorf("%w: candidates: %s; pass --mount <name>", ErrShareMountRequired, strings.Join(names, ", "))
 }
 
 // resolveShareDestination resolves the cloud destination directory, creating it

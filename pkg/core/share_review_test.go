@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	shareapi "github.com/yinzhenyu/qrypt/pkg/share"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 )
 
@@ -680,5 +681,27 @@ func TestShareSaveResumesHandleWithoutOpeningLink(t *testing.T) {
 	}
 	if provider.openCalls != openCalls || provider.listCalls != listCalls {
 		t.Fatalf("resume reopened the share: open %d->%d list %d->%d", openCalls, provider.openCalls, listCalls, provider.listCalls)
+	}
+}
+
+func TestResolveShareLinkCandidates(t *testing.T) {
+	t.Parallel()
+
+	alpha, beta := newFakeReceiveProvider(), newFakeReceiveProvider()
+	c := newReceiveCore(t, map[string]*fakeReceiveProvider{"beta": beta, "alpha": alpha}, nil)
+
+	result, err := c.ResolveShareLink(context.Background(), shareapi.ResolveRequest{Link: "https://fake.test/s/abc"})
+	if err != nil {
+		t.Fatalf("ResolveShareLink: %v", err)
+	}
+	if len(result.Candidates) != 2 || result.Candidates[0] != "alpha" || result.Candidates[1] != "beta" {
+		t.Fatalf("candidates = %+v, want sorted alpha, beta", result.Candidates)
+	}
+	if result.Link.LinkID != "abc" {
+		t.Fatalf("link = %+v", result.Link)
+	}
+
+	if _, err := c.ResolveShareLink(context.Background(), shareapi.ResolveRequest{Link: "https://elsewhere.test/s/abc"}); !errors.Is(err, ErrShareLinkInvalid) {
+		t.Fatalf("unknown link error = %v, want ErrShareLinkInvalid", err)
 	}
 }
