@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.6.0 (2026-10-24)
+
+### Features
+- feat(credential): add quark QR login and mount wizard
+- feat(cli): manage credentials and mounts
+- feat(credentials): share one session lifecycle across mounts
+- feat(config): add shared credentials and parameter scopes
+- feat(offline): add 115 cloud drive offline download
+- feat(receive): prompt for mount and passcode when ambiguous
+- feat(share): add share links and receive (转存) support
+- feat(ci): implement caching and installation script for WinFsp MSI
+
+### Bug fixes
+- fix(credentials): fall back to static credentials on auth failure
+- fix(credentials): force aliyun refresh and lock quarantine
+- fix(credentials): reuse fresh tokens and harden session recovery
+- fix(credentials): complete auth recovery and lifecycle visibility
+- fix(credentials): address review findings
+- fix(ci): use active Go toolchain formatter
+- fix(vfs): enforce upload domain ownership
+- fix(vfs): serialize namespace invalidation subscriptions
+- fix(vfs): close upload, rename and delete integrity gaps
+
+### Others
+- refactor(credentials): migrate drivers to shared CredentialBinding
+- refactor(credentials): add generic binding and migrate quark
+- docs(openspec): propose shared credential lifecycle
+- docs(agents): require gofmt after Go changes
+- ci: enforce architecture from Go metadata
+- ci: require shellcheck for installer checks
+- docs(vfs): define upload generation ownership
+- refactor(vfs): deepen upload domain
+- perf(vfs): stop copying frozen staging for appends, count the rest
+- test(vfs): allow slow uploads on Windows CI
+- docs(openspec): add make-vfs-mutations-recoverable and align boundaries
+
+---
+
 ## v0.5.6 (2026-10-22)
 
 ### Features
