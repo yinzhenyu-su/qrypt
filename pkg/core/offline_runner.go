@@ -299,6 +299,12 @@ func (r *offlineRun) recordObservation(update task.UpdateFunc, observation drive
 		r.available = true
 		r.detail.Available = true
 	}
+	// Some providers learn the produced entry id only after creation (115
+	// reports it on the task list). Persist the first non-empty identity so
+	// cleanup can remove the resource folder that identity owns.
+	if observation.RemoteID != "" && r.detail.ProviderRootID == "" {
+		r.detail.ProviderRootID = observation.RemoteID
+	}
 	r.detail.setObservation(observationFromDownload(observation))
 	if len(observation.Files) > 0 {
 		r.detail.ResultFiles = mergeOfflineResultFiles(r.detail.ResultFiles, offlineResultFilesFromDrive(observation.Files))

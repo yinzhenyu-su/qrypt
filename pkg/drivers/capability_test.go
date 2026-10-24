@@ -147,6 +147,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "115",
 			drv:  p115.New(p115.Options{Cookie: "k=v"}),
 			want: []drive.Capability{
+				drive.CapabilityOfflineDownload,
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,
@@ -159,6 +160,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "115_open",
 			drv:  p115open.New(p115open.Options{RefreshToken: "token"}),
 			want: []drive.Capability{
+				drive.CapabilityOfflineDownload,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,

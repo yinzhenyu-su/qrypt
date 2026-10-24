@@ -22,6 +22,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drive/session"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/p115offline"
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
@@ -54,6 +55,9 @@ type Driver struct {
 	sessions       *session.Index
 	sessionStoreMu sync.Mutex
 	sessionCancel  context.CancelFunc
+
+	offlineOnce    sync.Once
+	offlineAdapter *p115offline.Adapter
 }
 
 type cookieState struct {
