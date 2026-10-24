@@ -23,5 +23,5 @@ func (d *Driver) ExportCredentialSession(store drive.StateStore, params drive.Pa
 	if err != nil {
 		return nil, "", false, err
 	}
-	return payload, "", true, nil
+	return payload, state.Account, true, nil
 }

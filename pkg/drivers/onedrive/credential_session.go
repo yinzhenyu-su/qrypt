@@ -1,7 +1,9 @@
 package onedrive
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
@@ -48,6 +50,38 @@ func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 	d.tokenSource = "credential"
 	d.credentialMu.Unlock()
 	d.setTokens(payload.AccessToken, payload.RefreshToken)
+}
+
+// loadAccount records the provider account for diagnostics. App mode already
+// knows the email; delegated (personal) mode asks Graph once, best-effort.
+func (d *Driver) loadAccount(ctx context.Context) {
+	if d.email != "" {
+		d.account = d.email
+		return
+	}
+	if d.appMode {
+		return
+	}
+	var me struct {
+		ID                string `json:"id"`
+		UserPrincipalName string `json:"userPrincipalName"`
+	}
+	if err := d.requestJSON(ctx, http.MethodGet, d.apiBaseURL+"/v1.0/me?$select=id,userPrincipalName", nil, &me); err != nil {
+		logging.L.Warnf("[onedrive] fetch account: %v", err)
+		return
+	}
+	if me.UserPrincipalName != "" {
+		d.account = me.UserPrincipalName
+	} else {
+		d.account = me.ID
+	}
+}
+
+func (d *Driver) accountID() string {
+	if d.account != "" {
+		return d.account
+	}
+	return d.email
 }
 
 type credentialPayload struct {

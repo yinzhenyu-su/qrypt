@@ -94,6 +94,7 @@ func New(authorization, rootPath, rootID string) *Driver {
 	}
 	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
 	d.cl.onAuthRecovery = d.recoverCredential
+	d.cl.onAuthFallback = d.recoverStaticAuthorization
 	return d
 }
 
@@ -238,6 +239,17 @@ func (d *Driver) recoverCredential() bool {
 		d.authSource = "credential"
 	}
 	d.credentialMu.Unlock()
+	return true
+}
+
+// recoverStaticAuthorization falls back to the configured authorization after
+// both the shared session and the refresh flow fail.
+func (d *Driver) recoverStaticAuthorization() bool {
+	if d.configAuthorization == "" || d.configAuthorization == d.cl.getAuthorization() {
+		return false
+	}
+	d.cl.setAuthorization(d.configAuthorization)
+	d.authSource = "config"
 	return true
 }
 

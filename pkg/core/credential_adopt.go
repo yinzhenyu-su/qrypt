@@ -1,7 +1,6 @@
 package core
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,10 +33,6 @@ func AdoptMountCredential(cfg *config.Config, layout RuntimeLayout, mountName, c
 	}
 	migration, err := MigrateCredentialSession(cfg, layout, mountName, credentialName, deleteLegacyState)
 	if err != nil {
-		if errors.Is(err, ErrCredentialMigrationUnsupported) {
-			result.Reason = "driver does not support legacy session migration"
-			return result, nil
-		}
 		return result, err
 	}
 	result.Account = migration.Account

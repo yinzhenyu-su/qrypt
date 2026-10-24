@@ -29,3 +29,10 @@ func TestSharedCredentialSessionIsAdopted(t *testing.T) {
 		t.Fatalf("refresh token = %q, want the shared session value", got)
 	}
 }
+
+func TestAccountIDUsesConfiguredEmail(t *testing.T) {
+	driver := &Driver{email: "user@example.com"}
+	if got := driver.accountID(); got != "user@example.com" {
+		t.Fatalf("accountID = %q, want the configured email", got)
+	}
+}
