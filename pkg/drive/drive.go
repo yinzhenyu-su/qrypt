@@ -413,10 +413,33 @@ type ParamDef struct {
 	Type            string            `json:"type,omitempty"` // "string" (default), "int", "bool", "duration"
 	Required        bool              `json:"required,omitempty"`
 	Secret          bool              `json:"secret,omitempty"` // masked in debug output and help
+	Scope           string            `json:"scope,omitempty"`  // credential | mount | both
 	Description     string            `json:"description,omitempty"`
 	DescriptionI18n map[string]string `json:"-"`
 	Default         string            `json:"default,omitempty"`
 	Example         string            `json:"example,omitempty"`
+}
+
+// Parameter scopes decide where a parameter may be configured. A credential
+// supplies account-scoped parameters, a mount supplies path- and
+// instance-scoped parameters, and "both" may appear in either place with a
+// mount value taking precedence.
+const (
+	ParamScopeCredential = "credential"
+	ParamScopeMount      = "mount"
+	ParamScopeBoth       = "both"
+)
+
+// AllowsCredential reports whether the parameter may be supplied by a
+// credential. Dynamically registered drivers that declare no scope keep the
+// pre-scope behaviour and may supply it anywhere.
+func (p ParamDef) AllowsCredential() bool {
+	return p.Scope == "" || p.Scope == ParamScopeCredential || p.Scope == ParamScopeBoth
+}
+
+// AllowsMount reports whether the parameter may be supplied by a mount.
+func (p ParamDef) AllowsMount() bool {
+	return p.Scope == "" || p.Scope == ParamScopeMount || p.Scope == ParamScopeBoth
 }
 
 var (
