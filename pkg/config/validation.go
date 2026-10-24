@@ -89,6 +89,16 @@ func ValidateGlobal(cfg *Config) error {
 		}
 		seenMounts[mountCfg.Name] = true
 	}
+	seenCredentials := make(map[string]bool)
+	for index, cred := range cfg.Credentials {
+		if cred.Name != "" && seenCredentials[cred.Name] {
+			return fmt.Errorf("config: duplicate credential name %q", cred.Name)
+		}
+		if err := validateCredentialDefinition(index, cred); err != nil {
+			return err
+		}
+		seenCredentials[cred.Name] = true
+	}
 	if strings.TrimSpace(cfg.Upload.DefaultMount) == "" {
 		if strings.TrimSpace(cfg.Upload.DefaultPath) != "" {
 			return fmt.Errorf("config: upload.default_path requires upload.default_mount")
@@ -109,50 +119,39 @@ func ValidateGlobal(cfg *Config) error {
 // driver, expiring credentials, invalid params) is skipped and reported
 // instead of blocking the whole namespace.
 func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
-	knownDrivers := make(map[string]bool)
-	for _, name := range drive.Names() {
-		knownDrivers[name] = true
+	if cfg == nil {
+		cfg = &Config{}
 	}
-	if !knownDrivers[mountCfg.Type] {
+	if !drive.Registered(mountCfg.Type) {
 		return fmt.Errorf("config: mount %q has unknown driver %q", mountCfg.Name, mountCfg.Type)
 	}
 	spec := drive.ParamSpecFor(mountCfg.Type)
-	allowedParams := make(map[string]bool)
-	for _, param := range spec.Params {
-		allowedParams[param.Name] = true
-	}
-	for _, name := range spec.Required {
-		if strings.TrimSpace(mountCfg.Params[name]) == "" {
-			return fmt.Errorf("config: mount %q missing required parameter %q", mountCfg.Name, name)
+	label := fmt.Sprintf("mount %q", mountCfg.Name)
+	if mountCfg.Credential != "" {
+		cred, ok := cfg.CredentialFor(mountCfg.Credential)
+		if !ok {
+			return fmt.Errorf("config: mount %q references unknown credential %q", mountCfg.Name, mountCfg.Credential)
+		}
+		if cred.Type != mountCfg.Type {
+			return fmt.Errorf("config: mount %q type %q does not match credential %q type %q",
+				mountCfg.Name, mountCfg.Type, cred.Name, cred.Type)
 		}
 	}
-	if len(spec.AnyOf) > 0 {
-		satisfied := false
-		for _, group := range spec.AnyOf {
-			complete := true
-			for _, name := range group {
-				if strings.TrimSpace(mountCfg.Params[name]) == "" {
-					complete = false
-					break
-				}
-			}
-			if complete {
-				satisfied = true
-				break
-			}
-		}
-		if !satisfied {
-			return fmt.Errorf("config: mount %q must satisfy one of the alternative parameter groups", mountCfg.Name)
-		}
+	params, err := cfg.ResolveMountParams(mountCfg)
+	if err != nil {
+		return err
 	}
-	for name := range mountCfg.Params {
-		if !allowedParams[name] {
-			return fmt.Errorf("config: mount %q has unknown parameter %q for driver %q", mountCfg.Name, name, mountCfg.Type)
-		}
+	if err := validateRequirements(label, spec, params); err != nil {
+		return err
 	}
-	params := drive.Params{}
-	for key, value := range mountCfg.Params {
-		params[key] = value
+	if mountCfg.Credential != "" {
+		if err := validateParamNames(label, spec, mountCfg.Params, drive.ParamDef.AllowsMount); err != nil {
+			return err
+		}
+	} else if err := validateParamNames(label, spec, mountCfg.Params, func(drive.ParamDef) bool { return true }); err != nil {
+		// Legacy mounts carry their credential inline as an implicit
+		// credential, so the scope split does not apply to them yet.
+		return err
 	}
 	if _, err := drive.New(mountCfg.Type, params); err != nil {
 		return fmt.Errorf("config: mount %q: %w", mountCfg.Name, err)
@@ -183,4 +182,125 @@ func ValidateMount(cfg *Config, index int, mountCfg MountConfig) error {
 		return fmt.Errorf("config: mount %q upload.default_mount and upload.default_path are only supported in top-level [upload]", mountCfg.Name)
 	}
 	return nil
+}
+
+// validateParamNames rejects unknown driver parameters and parameters used in a
+// place their declared scope forbids.
+func validateParamNames(label string, spec drive.ParamSpec, params ParamMap, allow func(drive.ParamDef) bool) error {
+	known := make(map[string]drive.ParamDef, len(spec.Params))
+	for _, param := range spec.Params {
+		known[param.Name] = param
+	}
+	for name := range params {
+		param, ok := known[name]
+		if !ok {
+			return fmt.Errorf("config: %s has unknown parameter %q", label, name)
+		}
+		if !allow(param) {
+			return fmt.Errorf("config: %s parameter %q has scope %q and cannot be configured there", label, name, param.Scope)
+		}
+	}
+	return nil
+}
+
+func validateRequirements(label string, spec drive.ParamSpec, params drive.Params) error {
+	for _, name := range spec.Required {
+		if strings.TrimSpace(params[name]) == "" {
+			return fmt.Errorf("config: %s missing required parameter %q", label, name)
+		}
+	}
+	if len(spec.AnyOf) > 0 {
+		satisfied := false
+		for _, group := range spec.AnyOf {
+			complete := true
+			for _, name := range group {
+				if strings.TrimSpace(params[name]) == "" {
+					complete = false
+					break
+				}
+			}
+			if complete {
+				satisfied = true
+				break
+			}
+		}
+		if !satisfied {
+			return fmt.Errorf("config: %s must satisfy one of the alternative parameter groups", label)
+		}
+	}
+	return nil
+}
+
+// validateCredentialDefinition checks one [[credentials]] entry in isolation so
+// validation does not depend on which mounts happen to reference it.
+func validateCredentialDefinition(index int, cred CredentialConfig) error {
+	label := fmt.Sprintf("credential %q", cred.Name)
+	if cred.Name == "" {
+		return fmt.Errorf("config: credentials[%d].name is required", index)
+	}
+	if cred.Name == "." || cred.Name == ".." || strings.ContainsAny(cred.Name, `/\`) {
+		return fmt.Errorf("config: credentials[%d].name %q must be a single path component", index, cred.Name)
+	}
+	if cred.Type == "" {
+		return fmt.Errorf("config: credential %q type is required", cred.Name)
+	}
+	if !drive.Registered(cred.Type) {
+		return fmt.Errorf("config: credential %q has unknown driver %q", cred.Name, cred.Type)
+	}
+	spec := drive.ParamSpecFor(cred.Type)
+	if err := validateParamNames(label, spec, cred.Params, drive.ParamDef.AllowsCredential); err != nil {
+		return err
+	}
+	return validateCredentialRequirements(label, spec, cred.Params)
+}
+
+// validateCredentialRequirements checks only the credential-scope parts of the
+// driver's requirements. Params with "both" scope may be supplied by a mount,
+// so the merged params are validated on the mount instead.
+func validateCredentialRequirements(label string, spec drive.ParamSpec, params ParamMap) error {
+	scopes := make(map[string]string, len(spec.Params))
+	for _, param := range spec.Params {
+		scopes[param.Name] = param.Scope
+	}
+	for _, name := range spec.Required {
+		if scopes[name] != drive.ParamScopeCredential {
+			continue
+		}
+		if strings.TrimSpace(params[name]) == "" {
+			return fmt.Errorf("config: %s missing required parameter %q", label, name)
+		}
+	}
+	credentialGroup := false
+	for _, group := range spec.AnyOf {
+		for _, name := range group {
+			if scopes[name] == drive.ParamScopeCredential {
+				credentialGroup = true
+				break
+			}
+		}
+		if credentialGroup {
+			break
+		}
+	}
+	if !credentialGroup {
+		return nil
+	}
+	for _, group := range spec.AnyOf {
+		complete := true
+		member := false
+		for _, name := range group {
+			if scopes[name] != drive.ParamScopeCredential {
+				continue
+			}
+			member = true
+			if strings.TrimSpace(params[name]) == "" {
+				complete = false
+				break
+			}
+		}
+		if member && complete {
+			return nil
+		}
+	}
+	return fmt.Errorf("config: %s must satisfy one of the alternative parameter groups", label)
 }

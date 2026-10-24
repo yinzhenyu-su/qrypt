@@ -12,33 +12,35 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/yinzhenyu/qrypt/pkg/crypt"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 type Config struct {
-	Version            string          `toml:"version"`
-	Mount              MountOptions    `toml:"mount"`
-	MountPoint         string          `toml:"mount_point"`
-	VolumeName         string          `toml:"volume_name"`
-	ReadOnly           bool            `toml:"read_only"`
-	AllowOther         bool            `toml:"allow_other"`
-	DefaultPermissions bool            `toml:"default_permissions"`
-	AttrTimeout        string          `toml:"attr_timeout"`
-	EntryTimeout       string          `toml:"entry_timeout"`
-	NegativeTimeout    string          `toml:"negative_timeout"`
-	TotalSpace         string          `toml:"total_space"`
-	FreeSpace          string          `toml:"free_space"`
-	Logging            LoggingConfig   `toml:"logging"`
-	Debug              DebugConfig     `toml:"debug"`
-	Time               TimeConfig      `toml:"time"`
-	Bandwidth          BandwidthConfig `toml:"bandwidth"`
-	Storage            StorageConfig   `toml:"storage"`
-	ReadCache          ReadCacheConfig `toml:"read_cache"`
-	ThumbnailCache     ReadCacheConfig `toml:"thumbnail_cache"`
-	Upload             UploadConfig    `toml:"upload"`
-	Encryption         crypt.Config    `toml:"encryption"`
-	Defaults           Defaults        `toml:"defaults"`
-	Mounts             []MountConfig   `toml:"mounts"`
+	Version            string             `toml:"version"`
+	Mount              MountOptions       `toml:"mount"`
+	MountPoint         string             `toml:"mount_point"`
+	VolumeName         string             `toml:"volume_name"`
+	ReadOnly           bool               `toml:"read_only"`
+	AllowOther         bool               `toml:"allow_other"`
+	DefaultPermissions bool               `toml:"default_permissions"`
+	AttrTimeout        string             `toml:"attr_timeout"`
+	EntryTimeout       string             `toml:"entry_timeout"`
+	NegativeTimeout    string             `toml:"negative_timeout"`
+	TotalSpace         string             `toml:"total_space"`
+	FreeSpace          string             `toml:"free_space"`
+	Logging            LoggingConfig      `toml:"logging"`
+	Debug              DebugConfig        `toml:"debug"`
+	Time               TimeConfig         `toml:"time"`
+	Bandwidth          BandwidthConfig    `toml:"bandwidth"`
+	Storage            StorageConfig      `toml:"storage"`
+	ReadCache          ReadCacheConfig    `toml:"read_cache"`
+	ThumbnailCache     ReadCacheConfig    `toml:"thumbnail_cache"`
+	Upload             UploadConfig       `toml:"upload"`
+	Encryption         crypt.Config       `toml:"encryption"`
+	Defaults           Defaults           `toml:"defaults"`
+	Credentials        []CredentialConfig `toml:"credentials"`
+	Mounts             []MountConfig      `toml:"mounts"`
 }
 
 type MountOptions struct {
@@ -62,11 +64,21 @@ type Defaults struct {
 type MountConfig struct {
 	Name        string           `toml:"name"`
 	Type        string           `toml:"type"`
+	Credential  string           `toml:"credential"`
 	TestEnabled bool             `toml:"test_enabled"`
 	Params      ParamMap         `toml:"params"`
 	Encryption  *crypt.Config    `toml:"encryption"`
 	ReadCache   *ReadCacheConfig `toml:"read_cache"`
 	Upload      *UploadConfig    `toml:"upload"`
+}
+
+// CredentialConfig is a named credential shared by any number of mounts of the
+// same account. Params carry credential-scope driver parameters; path- and
+// instance-scope parameters stay on each mount.
+type CredentialConfig struct {
+	Name   string   `toml:"name"`
+	Type   string   `toml:"type"`
+	Params ParamMap `toml:"params"`
 }
 
 type ParamMap map[string]string
@@ -293,6 +305,42 @@ func (c *Config) UploadFor(mountName string) UploadConfig {
 		}
 	}
 	return upload
+}
+
+// CredentialFor returns the named credential definition.
+func (c *Config) CredentialFor(name string) (CredentialConfig, bool) {
+	if c == nil || name == "" {
+		return CredentialConfig{}, false
+	}
+	for _, cred := range c.Credentials {
+		if cred.Name == name {
+			return cred, true
+		}
+	}
+	return CredentialConfig{}, false
+}
+
+// ResolveMountParams merges the referenced credential's params with the mount's
+// own params. Mount values win for "both"-scope parameters, and a mount without
+// a credential reference keeps its inline params unchanged (legacy).
+func (c *Config) ResolveMountParams(mount MountConfig) (drive.Params, error) {
+	params := drive.Params{}
+	if mount.Credential != "" {
+		cred, ok := c.CredentialFor(mount.Credential)
+		if !ok {
+			return nil, fmt.Errorf("config: mount %q references unknown credential %q", mount.Name, mount.Credential)
+		}
+		if cred.Type != mount.Type {
+			return nil, fmt.Errorf("config: mount %q type %q does not match credential %q type %q", mount.Name, mount.Type, cred.Name, cred.Type)
+		}
+		for key, value := range cred.Params {
+			params[key] = value
+		}
+	}
+	for key, value := range mount.Params {
+		params[key] = value
+	}
+	return params, nil
 }
 
 func (c *Config) EffectiveMountPoint() string {

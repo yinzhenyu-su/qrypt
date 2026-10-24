@@ -165,6 +165,25 @@ Construction-time hooks such as state-store installation and native bandwidth
 limiter installation are not runtime capabilities. They are used only during
 assembly.
 
+### Shared credentials
+
+One credential can serve several mounts of the same account. The config layer
+merges `[[credentials]]` params into each mount before `drive.New`, while the
+runtime layer keeps exactly one session per credential:
+
+- `pkg/drive.CredentialSession` is the provider-neutral contract. The payload is
+  opaque; the driver owns its schema (a cookie, an access/refresh token pair).
+- `pkg/core/internal/credentials` implements the process-wide manager: one
+  object per credential, versioned commits, subscriber fan-out, coalesced
+  refresh, and an atomic session file under `state/credentials/<name>/`.
+- `drive.CredentialSessionInstaller` is installed before `Init` for mounts that
+  reference a credential. Drivers without it keep per-mount state.
+- Credential param changes are detected through a params fingerprint, so every
+  mount re-authenticates instead of reusing a session minted for the old
+  credential.
+- `state/driver/<mount>/` still owns mount-local state (upload sessions, offline
+  layout); only the credential session is shared.
+
 ## VFS Responsibilities
 
 `pkg/vfs` owns provider-independent filesystem semantics. Files are grouped

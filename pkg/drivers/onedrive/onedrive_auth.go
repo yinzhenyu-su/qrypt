@@ -12,9 +12,40 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
 func (d *Driver) refresh(ctx context.Context) error {
+	if d.credential == nil {
+		return d.refreshDirect(ctx)
+	}
+	snapshot, err := d.credential.Refresh(ctx, func(current drive.CredentialSnapshot) ([]byte, string, error) {
+		payload, decodeErr := decodeCredentialPayload(current.Payload)
+		if decodeErr != nil && len(current.Payload) > 0 {
+			return nil, "", decodeErr
+		}
+		if payload.RefreshToken != "" {
+			d.mu.Lock()
+			d.refreshToken = payload.RefreshToken
+			d.mu.Unlock()
+		}
+		if err := d.refreshDirect(ctx); err != nil {
+			return nil, "", err
+		}
+		return encodeCredentialPayload(credentialPayload{
+			AccessToken:  d.currentAccessToken(),
+			RefreshToken: d.currentRefreshToken(),
+		})
+	})
+	if err != nil {
+		return err
+	}
+	d.applyCredentialSnapshot(snapshot)
+	return nil
+}
+
+func (d *Driver) refreshDirect(ctx context.Context) error {
 	if d.appMode {
 		return d.refreshApp(ctx)
 	}

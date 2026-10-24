@@ -62,6 +62,8 @@ def build_spec(definition):
             fields.append("Required: true")
         if prop.get("x-secret"):
             fields.append("Secret: true")
+        if prop.get("x-param-scope"):
+            fields.append(f"Scope: {go_string(prop['x-param-scope'])}")
         if prop.get("description"):
             fields.append(f"Description: {go_string(prop['description'].rstrip('.'))}")
         translations = {

@@ -1,0 +1,31 @@
+package p115open
+
+import (
+	"testing"
+
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/credentialtest"
+)
+
+func TestSharedCredentialSessionIsAdopted(t *testing.T) {
+	session := credentialtest.New("main")
+	payload, _, err := encodeCredentialPayload(credentialPayload{
+		AccessToken:  "access-a",
+		RefreshToken: "refresh-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Update(0, payload, ""); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "config"})
+	driver.InstallCredentialSession(session)
+	driver.loadCredentialSession()
+
+	if driver.accessToken != "access-a" || driver.refreshToken != "refresh-a" {
+		t.Fatalf("tokens = %q/%q, want the shared session pair", driver.accessToken, driver.refreshToken)
+	}
+	if driver.tokenSource != "state" {
+		t.Fatalf("source = %q, want state", driver.tokenSource)
+	}
+}
