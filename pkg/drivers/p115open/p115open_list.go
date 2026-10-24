@@ -157,14 +157,46 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	if err := d.waitLimit(ctx); err != nil {
 		return err
 	}
-	err := d.recordSDK(ctx, "remove", map[string]any{"id": entry.ID, "is_dir": entry.IsDir}, func() error {
-		_, err := d.cl.DelFile(ctx, &sdk.DelFileReq{FileIDs: entry.ID, ParentID: entry.ParentID})
+	parentID := entry.ParentID
+	if parentID == "" {
+		var err error
+		parentID, err = d.resolveRemovalParent(ctx, entry.ID)
+		if err != nil {
+			d.setLastError(fmt.Sprintf("115_open: resolve parent of %q: %v", entry.ID, err))
+			return err
+		}
+	}
+	err := d.recordSDK(ctx, "remove", map[string]any{"id": entry.ID, "parent_id": parentID, "is_dir": entry.IsDir}, func() error {
+		_, err := d.cl.DelFile(ctx, &sdk.DelFileReq{FileIDs: entry.ID, ParentID: parentID})
 		return err
 	})
 	if err != nil {
 		d.setLastError(fmt.Sprintf("115_open: remove %q: %v", entry.ID, err))
 	}
 	return err
+}
+
+// resolveRemovalParent looks up the direct parent of an entry whose caller did
+// not retain one. Core cleanup removes staged files by provider id, so the
+// parent must be recovered before the open API delete call.
+func (d *Driver) resolveRemovalParent(ctx context.Context, fileID string) (string, error) {
+	var info *sdk.GetFolderInfoResp
+	err := d.recordSDK(ctx, "get_folder_info", map[string]any{"id": fileID}, func() error {
+		var err error
+		info, err = d.cl.GetFolderInfo(ctx, fileID)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if info == nil || len(info.Paths) == 0 {
+		return "", fmt.Errorf("115_open: file %q has no parent path", fileID)
+	}
+	parentID := strings.TrimSpace(info.Paths[len(info.Paths)-1].FileID)
+	if parentID == "" {
+		return "", fmt.Errorf("115_open: file %q has no parent id", fileID)
+	}
+	return parentID, nil
 }
 
 func (d *Driver) resolveID(fileID string) string {

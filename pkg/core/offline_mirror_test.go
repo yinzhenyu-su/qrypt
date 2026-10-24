@@ -388,7 +388,7 @@ func TestOfflineFetchRemovesStagedRootFolder(t *testing.T) {
 	ctx := context.Background()
 
 	provider := newFakeOfflineProvider()
-	provider.createFID = "0/downloads/release"
+	provider.observeFID = "0/downloads/release"
 	provider.files = []drive.OfflineFile{
 		{Index: 0, Name: "ep1.mkv", Size: 3, RemoteID: "0/downloads/release/ep1.mkv", Path: "release/ep1.mkv"},
 		{Index: 1, Name: "ep2.mkv", Size: 4, RemoteID: "0/downloads/release/sub/ep2.mkv", Path: "release/sub/ep2.mkv"},
@@ -420,6 +420,10 @@ func TestOfflineFetchRemovesStagedRootFolder(t *testing.T) {
 	done := waitCoreTask(t, c, created.ID)
 	if done.State != task.StateSucceeded {
 		t.Fatalf("state = %s (%v)", done.State, done.Error)
+	}
+	detail, ok := decodeOfflineDetail(done.Detail)
+	if !ok || detail.ProviderRootID != "0/downloads/release" {
+		t.Fatalf("provider root id = %q, want the late observation identity", detail.ProviderRootID)
 	}
 	if !hasExactCall(provider.FakeCalls(), "Remove:0/downloads/release") {
 		t.Fatalf("staged root folder was not removed: %v", provider.FakeCalls())

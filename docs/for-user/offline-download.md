@@ -2,7 +2,12 @@
 
 `offline` 命令组把远程资源交给网盘侧的离线下载服务，并在同一个任务模型里观察、控制和拉取结果。所有命令只通过本机控制 socket 与运行中的 `qrypt mount` 通信；没有运行中的 Core 时会报运行时错误，且不会创建任务。
 
-当前已支持离线下载的驱动为 `quark`。其他驱动会在提交任务时返回不支持。
+当前支持离线下载的驱动为 `quark`、`115` 和 `115_open`。不同 provider 支持的范围不同：
+
+| 驱动 | add / fetch | inspect | 文件选择 | 加速下载 |
+|---|---|---|---|---|
+| `quark` | ✅ | ✅ | ✅ | ✅ |
+| `115` / `115_open` | ✅ | — | — | — |
 
 ## 命令
 
@@ -36,11 +41,18 @@ qrypt offline wait TASK_ID [--timeout DURATION] [--json]
 
 ## 选择文件
 
-`--select all`（默认）导入所有解析文件，`--select largest[:N]` 导入最大的 N 个，`--include`/`--exclude` 用文件名 glob 选择；`--select` 不能与 `--include`/`--exclude` 同时使用。provider 不支持选择时，除 `all` 外的选择会被拒绝。
+`--select all`（默认）导入所有解析文件，`--select largest[:N]` 导入最大的 N 个，`--include`/`--exclude` 用文件名 glob 选择；`--select` 不能与 `--include`/`--exclude` 同时使用。provider 不支持选择时，除 `all` 外的选择会被拒绝。`115` / `115_open` 目前只能导入全部文件，`--select largest` 等选择会在创建任务前报错。
 
 ## 任务
 
 提交会返回一个持久化的 qrypt 任务（无 `--download-to` 时为 `offline_download`，有时为 `offline_fetch`）。相同来源、暂存目录与选择的活动任务默认被复用（`--new` 强制新建，`--idempotency-key` 提供显式幂等键）；`--download-to` 不参与去重，因此同一来源拉到不同本地目录会共享同一个暂存任务。`add` 会等到 provider 任务出现第一个可观察状态；若该状态已是失败或取消，命令以非零码退出。
+
+## 115 注意事项
+
+- `115` / `115_open` 没有“只解析、不创建任务”的接口，因此 `offline inspect` 会返回 `offline_inspect_unsupported`；需要先 `offline add` 才能看到结果。
+- 115 的云下载任务按来源去重。失败任务会留在 115 的“传输 -> 云下载”列表里，`offline retry` 重新提交同一来源可能返回 `offline_duplicate`。请先在 115 侧删除失败任务，或先执行 `offline cancel`（删除 provider 任务、保留已下载的云端文件）再重试。
+- 115 不提供加速下载会话，fetch 会等网盘侧任务完成后才开始传输。显式给出 `--parse-to` 时通过 VFS 读取暂存文件；只给 `--mount` 时使用 115 的下载 URL。
+- 多文件资源会在网盘侧创建一个资源文件夹；`offline fetch` 成功后会按 provider 报告的相对路径删除本任务创建的文件，并在文件夹只包含这些文件时删除该文件夹。`--keep-cloud` 会全部保留。
 
 ## 两阶段 fetch
 

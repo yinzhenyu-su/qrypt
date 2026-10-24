@@ -141,6 +141,37 @@ PNG）作为来源；把 HTML 页面 URL 当作文件来源时 Quark 会返回 p
 （哈希一致）、`--mkdir` 新建暂存目录、`list` 默认视图、`show`、`wait --timeout`、
 `cancel`（运行中任务）、`retry`（失败任务原地重排）。
 
+### 115 / 115_open
+
+115 的离线冒烟同样不在 CI 内，需要有效凭据：`115` 用 `mounts.params.cookie`，`115_open`
+用 `mounts.params.refresh_token`；账号需要有云下载配额。分别对两个驱动执行：
+
+```bash
+qrypt mount &                                   # 离线命令需要运行中的 Core
+
+# 单文件 + 只给 mount：走 provider 下载 URL
+qrypt offline fetch 'https://example.com/small.bin' \
+  --mount 115 --download-to ./small.bin --wait
+qrypt offline show <task-id> --json
+
+# 多文件磁力 + 显式暂存目录：走 VFS 读取并镜像资源文件夹
+qrypt offline add 'magnet:?xt=urn:btih:...' --parse-to /115/downloads
+qrypt offline fetch 'magnet:?xt=urn:btih:...' \
+  --parse-to /115/downloads --download-to ./out --wait
+find ./out -type f                              # 确认 <resource>/... 结构
+qrypt offline show <task-id> --json             # 确认 staging -> transfer -> complete
+
+# 保留云副本
+qrypt offline fetch 'https://example.com/small.bin' \
+  --mount 115 --download-to ./keep.bin --keep-cloud --wait
+```
+
+检查点：115 侧资源文件夹在本任务文件全部删除后消失；带无关条目的文件夹保留；
+`offline inspect` 返回 `offline_inspect_unsupported`；`--select largest:1` 在创建任务前
+被拒绝；失败任务重试时若 115 仍保留同一来源，返回 `offline_duplicate`，按文档先删除
+115 任务再重试。`115_open` 用同一个流程，只把 mount 名换成 `115_open`、凭据换成
+`refresh_token`。
+
 ## 本地等价命令
 
 ```bash
