@@ -244,7 +244,7 @@ func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 
 func (d *Driver) recordSDK(ctx context.Context, operation string, request map[string]any, fn func() error) error {
 	start := time.Now()
-	err := fn()
+	err := d.withAuthRetry(fn)
 	event := drive.MetricEvent{
 		Layer:     "driver.sdk",
 		Operation: operation,
@@ -447,6 +447,45 @@ func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 			cl.ImportCredential(cred)
 		}
 	}
+}
+
+// withAuthRetry retries once after adopting a newer shared cookie when an SDK
+// call fails with an auth error.
+func (d *Driver) withAuthRetry(fn func() error) error {
+	if d.credential == nil {
+		return fn()
+	}
+	d.credentialMu.Lock()
+	version := d.credentialVersion
+	d.credentialMu.Unlock()
+	next, err := drive.RetryOnAuth(d.credential, version, d.applyCredentialPayload, fn)
+	if next > version {
+		d.credentialMu.Lock()
+		if next > d.credentialVersion {
+			d.credentialVersion = next
+			d.cookieSource = "credential"
+		}
+		d.credentialMu.Unlock()
+	}
+	return err
+}
+
+// applyCredentialPayload merges a session cookie into the driver and SDK state.
+func (d *Driver) applyCredentialPayload(payload []byte) error {
+	cookie := decodeCredentialCookie(payload)
+	if cookie == "" {
+		return nil
+	}
+	merged := mergeCookieHeaders(d.cookies, cookie)
+	d.cookies = merged
+	d.cookieSource = "credential"
+	if d.cl != nil {
+		cred := &driver115.Credential{}
+		if err := cred.FromCookie(merged); err == nil {
+			d.cl.ImportCredential(cred)
+		}
+	}
+	return nil
 }
 
 func (d *Driver) commitCredentialCookie(cookie string) {

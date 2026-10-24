@@ -12,7 +12,7 @@ func (d *Driver) ExportCredentialSession(store drive.StateStore, params drive.Pa
 	if state.Authorization == "" {
 		return nil, "", false, nil
 	}
-	if state.ConfigAuthorization != "" && params["authorization"] != "" && state.ConfigAuthorization != params["authorization"] {
+	if state.ConfigAuthorization == "" || params["authorization"] == "" || state.ConfigAuthorization != params["authorization"] {
 		return nil, "", false, nil
 	}
 	payload, err := encodeCredentialAuthorization(state.Authorization)

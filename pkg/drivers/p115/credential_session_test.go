@@ -1,9 +1,11 @@
 package p115
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/credentialtest"
 )
 
@@ -43,5 +45,35 @@ func TestSharedCredentialSessionIsAdoptedAtInit(t *testing.T) {
 	}
 	if driver.cookieSource != "state" {
 		t.Fatalf("source = %q, want state", driver.cookieSource)
+	}
+}
+
+func TestAuthRetryAdoptsSiblingRotation(t *testing.T) {
+	session := credentialtest.New("main")
+	if _, err := session.Update(0, encodeCredentialCookie("UID=account; SEID=state"), "account"); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{Cookie: "UID=account; SEID=old"})
+	driver.InstallCredentialSession(session)
+
+	calls := 0
+	err := driver.withAuthRetry(func() error {
+		calls++
+		if calls == 1 {
+			if strings.Contains(driver.cookies, "SEID=state") {
+				t.Fatal("cookie was adopted before the auth failure")
+			}
+			return fmt.Errorf("%w", drive.ErrAuth)
+		}
+		if !strings.Contains(driver.cookies, "SEID=state") {
+			t.Fatalf("cookie = %q, want the adopted session", driver.cookies)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withAuthRetry: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want one retry after adopting the session", calls)
 	}
 }

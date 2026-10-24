@@ -41,3 +41,24 @@ func TestSharedCredentialSessionIsAdopted(t *testing.T) {
 		t.Fatalf("source = %q, want state", driver.authSource)
 	}
 }
+
+func TestAuthRecoveryAdoptsSiblingAuthorization(t *testing.T) {
+	session := credentialtest.New("main")
+	payload, err := encodeCredentialAuthorization("auth-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Update(0, payload, ""); err != nil {
+		t.Fatal(err)
+	}
+	driver := New("auth-old", "", "")
+	driver.InstallCredentialSession(session)
+	driver.cl.onAuthRecovery = driver.recoverCredential
+
+	if !driver.cl.onAuthRecovery() {
+		t.Fatal("recovery reported no newer session")
+	}
+	if got := driver.cl.getAuthorization(); got != "auth-state" {
+		t.Fatalf("authorization = %q, want the adopted session", got)
+	}
+}

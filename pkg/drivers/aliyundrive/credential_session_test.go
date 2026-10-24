@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/credentialtest"
 )
 
@@ -54,5 +55,22 @@ func TestSharedCredentialSessionCommitsRefresh(t *testing.T) {
 	}
 	if driver.tokenSource != "credential" {
 		t.Fatalf("source = %q, want credential after the commit", driver.tokenSource)
+	}
+}
+
+func TestExportRequiresConfigMarker(t *testing.T) {
+	store := drive.NewFileStateStore(t.TempDir())
+	if err := store.SaveJSON("aliyundrive_token.json", map[string]any{
+		"access_token": "access", "refresh_token": "refresh",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "config"})
+	_, _, ok, err := driver.ExportCredentialSession(store, drive.Params{"refresh_token": "config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("state without config_refresh_token must not be adopted")
 	}
 }

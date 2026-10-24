@@ -3,19 +3,17 @@ package credential
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yinzhenyu/qrypt/internal/cli/cliutil"
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 // NewCommand manages shared credentials: named account definitions that any
@@ -69,11 +67,11 @@ credential-scope parameters such as cookie or refresh_token.`,
 				return fmt.Errorf("credential %q already exists", name)
 			}
 			driverType, _ := cmd.Flags().GetString("type")
-			params, err := parseParams(cmd, "param")
+			params, err := cliutil.ParseParams(cmd, "param")
 			if err != nil {
 				return err
 			}
-			if err := saveCredentialConfig(state, func(candidate *config.Config) error {
+			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
 				return candidate.UpsertCredential(config.CredentialConfig{
 					Name:   name,
 					Type:   driverType,
@@ -187,7 +185,7 @@ up the change without editing their own entry.`,
 			if cmd.Flags().Changed("type") {
 				cred.Type, _ = cmd.Flags().GetString("type")
 			}
-			params, err := parseParams(cmd, "param")
+			params, err := cliutil.ParseParams(cmd, "param")
 			if err != nil {
 				return err
 			}
@@ -201,7 +199,7 @@ up the change without editing their own entry.`,
 			for _, key := range removed {
 				delete(cred.Params, strings.TrimSpace(key))
 			}
-			if err := saveCredentialConfig(state, func(candidate *config.Config) error {
+			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
 				return candidate.UpsertCredential(cred)
 			}); err != nil {
 				return err
@@ -232,7 +230,7 @@ func newRemoveCmd(rt cliruntime.Runtime) *cobra.Command {
 			if state.Cfg == nil {
 				return rt.ConfigNotFoundError()
 			}
-			if err := saveCredentialConfig(state, func(candidate *config.Config) error {
+			if err := cliutil.SaveConfig(state, func(candidate *config.Config) error {
 				return candidate.RemoveCredential(args[0])
 			}); err != nil {
 				return err
@@ -312,7 +310,7 @@ be supplied with --param. The check may refresh and rotate the shared session.`,
 			if state.Cfg == nil {
 				return rt.ConfigNotFoundError()
 			}
-			params, err := parseParams(cmd, "param")
+			params, err := cliutil.ParseParams(cmd, "param")
 			if err != nil {
 				return err
 			}
@@ -373,77 +371,6 @@ account; otherwise nothing is migrated. The legacy file is kept unless
 	cmd.Flags().Bool("delete-legacy", false, "delete the legacy state file after adoption")
 	_ = cmd.MarkFlagRequired("credential")
 	return cmd
-}
-
-// saveCredentialConfig applies a credential mutation to a shallow copy of the
-// loaded config, validates it, and only then writes the file. A rejected
-// update therefore leaves both the file and the caller's config untouched.
-func saveCredentialConfig(state cliruntime.ConfigState, mutate func(*config.Config) error) error {
-	candidate := *state.Cfg
-	candidate.Credentials = append([]config.CredentialConfig(nil), state.Cfg.Credentials...)
-	candidate.Mounts = append([]config.MountConfig(nil), state.Cfg.Mounts...)
-	if err := mutate(&candidate); err != nil {
-		return err
-	}
-	if err := config.Validate(&candidate); err != nil {
-		return err
-	}
-	if err := config.Save(state.Path, &candidate); err != nil {
-		return err
-	}
-	*state.Cfg = candidate
-	return nil
-}
-
-func parseParams(cmd *cobra.Command, flag string) (config.ParamMap, error) {
-	values, err := cmd.Flags().GetStringArray(flag)
-	if err != nil {
-		return nil, err
-	}
-	params := config.ParamMap{}
-	stdinUsed := false
-	for _, item := range values {
-		key, raw, ok := strings.Cut(item, "=")
-		key = strings.TrimSpace(key)
-		if !ok || key == "" {
-			return nil, fmt.Errorf("invalid parameter %q: expected key=value", item)
-		}
-		value, err := paramValue(cmd, raw, &stdinUsed)
-		if err != nil {
-			return nil, err
-		}
-		params[key] = value
-	}
-	return params, nil
-}
-
-// paramValue supports key=value, key=@path (read a file), and key=- (read
-// standard input) so secrets do not have to appear in shell history.
-func paramValue(cmd *cobra.Command, raw string, stdinUsed *bool) (string, error) {
-	switch {
-	case raw == "-":
-		if *stdinUsed {
-			return "", fmt.Errorf("standard input can only supply one parameter")
-		}
-		*stdinUsed = true
-		data, err := io.ReadAll(cmd.InOrStdin())
-		if err != nil {
-			return "", fmt.Errorf("read parameter from standard input: %w", err)
-		}
-		return trimParamLine(string(data)), nil
-	case strings.HasPrefix(raw, "@"):
-		data, err := os.ReadFile(util.ExpandHome(strings.TrimPrefix(raw, "@")))
-		if err != nil {
-			return "", fmt.Errorf("read parameter file: %w", err)
-		}
-		return trimParamLine(string(data)), nil
-	default:
-		return raw, nil
-	}
-}
-
-func trimParamLine(value string) string {
-	return strings.TrimSuffix(strings.TrimSuffix(value, "\n"), "\r")
 }
 
 type credentialParam struct {

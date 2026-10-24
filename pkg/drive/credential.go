@@ -60,6 +60,25 @@ type CredentialExporter interface {
 	LegacyCredentialFile() string
 }
 
+// RetryOnAuth runs op and, when it fails with an auth-classified error, adopts
+// a session payload a sibling mount committed and retries once. It returns the
+// version the caller should remember. Without a newer payload the original
+// error is returned so a genuine authentication failure still surfaces.
+func RetryOnAuth(session CredentialSession, version uint64, apply func(payload []byte) error, op func() error) (uint64, error) {
+	err := op()
+	if err == nil || session == nil || ErrorCategory(err) != ErrorCategoryAuth {
+		return version, err
+	}
+	next, adopted, adoptErr := AdoptLatestCredential(session, version, apply)
+	if adoptErr != nil || !adopted {
+		return version, err
+	}
+	if retryErr := op(); retryErr != nil {
+		return next, retryErr
+	}
+	return next, nil
+}
+
 // AdoptLatestCredential applies the session payload when it advanced past
 // lastVersion and reports whether the caller should retry the failed request.
 // Drivers use it on ErrAuth so a rotation committed by a sibling mount recovers
