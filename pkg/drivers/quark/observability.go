@@ -19,6 +19,10 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityOfflineInspect,
 		drive.CapabilityOfflineSelection,
 		drive.CapabilityAcceleratedFetch,
+		drive.CapabilityShare,
+		drive.CapabilityShareReceive,
+		drive.CapabilityShareSave,
+		drive.CapabilityShareFetch,
 	}
 }
 

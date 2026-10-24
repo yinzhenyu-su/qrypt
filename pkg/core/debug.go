@@ -79,6 +79,7 @@ func (c *Core) StartControlServer(ctx context.Context, listen string) error {
 		return err
 	}
 	server.SetOfflineService(c)
+	server.SetShareService(c.ShareControlService())
 	if err := server.Start(ctx); err != nil {
 		return err
 	}

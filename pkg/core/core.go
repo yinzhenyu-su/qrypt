@@ -100,6 +100,17 @@ type Core struct {
 	// offlineMissingWindow overrides how long a disappeared provider task is
 	// given to re-resolve its destination. Zero means the default.
 	offlineMissingWindow time.Duration
+	// shareLinkOpTimeout overrides how long a synchronous share-link operation
+	// may take before it reports share_timeout. Zero means the default.
+	shareLinkOpTimeout time.Duration
+	// shareCreateMu serializes share task creation so active de-duplication and
+	// keyed idempotency cannot both miss each other.
+	shareCreateMu sync.Mutex
+	// sharePollInterval and shareVerifyInterval override the share runner's
+	// provider-save poll and destination-verification intervals. Zero means
+	// the defaults; tests inject short intervals.
+	sharePollInterval   time.Duration
+	shareVerifyInterval time.Duration
 	// offlineMu guards offlineActive, the task ids whose offline runner is
 	// executing. Recovery and retry consult it to avoid two runners.
 	offlineMu     sync.Mutex
