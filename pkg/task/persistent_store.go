@@ -107,23 +107,25 @@ func taskDurableKey(t Task) durableKey {
 		persistent:           t.Capabilities.Persistent,
 		errorCode:            code,
 		errorMessage:         message,
-		offlineDetail:        offlineDetailDigest(t.Detail),
+		offlineDetail:        detailDigest(t.Detail, OfflineDetailKey),
+		shareDetail:          detailDigest(t.Detail, ShareDetailKey),
 	}
 }
 
-// offlineDetailDigest reduces the durable offline metadata carried in
-// Task.Detail to a string so a provider identifier or phase change is journaled
-// even when the task state does not move. Other detail keys are ignored: they
-// are progress bookkeeping, and including them would journal on every tick.
-func offlineDetailDigest(detail map[string]any) string {
+// detailDigest reduces the durable provider metadata carried under one
+// Task.Detail key to a string so a provider identifier or phase change is
+// journaled even when the task state does not move. Other detail keys are
+// ignored: they are progress bookkeeping, and including them would journal on
+// every tick.
+func detailDigest(detail map[string]any, key string) string {
 	if detail == nil {
 		return ""
 	}
-	offline, ok := detail[OfflineDetailKey]
-	if !ok || offline == nil {
+	value, ok := detail[key]
+	if !ok || value == nil {
 		return ""
 	}
-	data, err := json.Marshal(offline)
+	data, err := json.Marshal(value)
 	if err != nil {
 		return ""
 	}
@@ -144,6 +146,7 @@ type durableKey struct {
 	errorCode            string
 	errorMessage         string
 	offlineDetail        string
+	shareDetail          string
 }
 
 func (s *PersistentStore) DismissManaged(id string) bool {

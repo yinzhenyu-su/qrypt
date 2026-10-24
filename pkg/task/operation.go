@@ -19,6 +19,9 @@ const (
 	OperationDelete   OperationKind = "delete"
 	OperationCopy     OperationKind = "copy"
 	OperationMove     OperationKind = "move"
+	// OperationShare covers provider-side work on share links, including
+	// copying share content into the acting account's drive.
+	OperationShare OperationKind = "share"
 )
 
 type UploadPolicy string
@@ -44,6 +47,7 @@ type OperationRequest struct {
 	UploadPolicy   UploadPolicy             `json:"upload_policy,omitempty"`
 	UploadSource   UploadSource             `json:"upload_source,omitempty"`
 	Offline        *OfflineOperationRequest `json:"offline,omitempty"`
+	Share          *ShareOperationRequest   `json:"share,omitempty"`
 	IdempotencyKey string                   `json:"idempotency_key,omitempty"`
 }
 
@@ -66,6 +70,42 @@ type OfflineSelection struct {
 	Largest int                  `json:"largest,omitempty"`
 	Include []string             `json:"include,omitempty"`
 	Exclude []string             `json:"exclude,omitempty"`
+}
+
+// ShareOperationRequest carries the provider-neutral inputs of a share
+// receive. A non-empty DownloadTo selects the fetch type; without it the task
+// only copies share content into the acting account's drive.
+type ShareOperationRequest struct {
+	// Link is the provider share link (or its bare id). The Core resolves its
+	// provider from the link itself.
+	Link string `json:"link"`
+	// Passcode protects the link when the provider requires one.
+	Passcode string `json:"passcode,omitempty"`
+	// Mount names the acting account when the link's provider has several
+	// mounts. It must agree with To when both are given.
+	Mount string `json:"mount,omitempty"`
+	// To is the mount-qualified cloud destination (--to /MOUNT/DIR). Empty
+	// means the acting mount's root.
+	To         string           `json:"to,omitempty"`
+	DownloadTo string           `json:"download_to,omitempty"`
+	Selection  OfflineSelection `json:"selection,omitempty"`
+	Mkdir      bool             `json:"mkdir,omitempty"`
+	New        bool             `json:"new,omitempty"`
+	KeepCloud  bool             `json:"keep_cloud,omitempty"`
+	// Workers and ChunkSize tune the fetch transfer; they need DownloadTo.
+	Workers   int   `json:"workers,omitempty"`
+	ChunkSize int64 `json:"chunk_size,omitempty"`
+}
+
+// Validate rejects malformed share inputs before any provider call.
+func (s ShareOperationRequest) Validate() error {
+	if strings.TrimSpace(s.Link) == "" {
+		return fmt.Errorf("%w: share link is required", ErrInvalidOperation)
+	}
+	if err := validateOfflineSelection(s.Selection); err != nil {
+		return err
+	}
+	return validateTransferTuning(s.Workers, s.ChunkSize, s.DownloadTo)
 }
 
 // OfflineOperationRequest carries the provider-neutral inputs of an offline
@@ -117,22 +157,29 @@ const (
 // validateOfflineTransferTuning rejects transfer tuning that cannot apply or
 // is outside the supported range, before a task or provider call exists.
 func validateOfflineTransferTuning(o OfflineOperationRequest) error {
-	if o.Workers < 0 {
+	return validateTransferTuning(o.Workers, o.ChunkSize, o.DownloadTo)
+}
+
+// validateTransferTuning rejects transfer tuning that cannot apply or is
+// outside the supported range. It is shared by offline fetches and share
+// fetches, which transfer through the same bounded-range core.
+func validateTransferTuning(workers int, chunkSize int64, downloadTo string) error {
+	if workers < 0 {
 		return fmt.Errorf("%w: workers must not be negative", ErrInvalidOperation)
 	}
-	if o.Workers > MaxOfflineTransferWorkers {
+	if workers > MaxOfflineTransferWorkers {
 		return fmt.Errorf("%w: workers must be at most %d", ErrInvalidOperation, MaxOfflineTransferWorkers)
 	}
-	if o.ChunkSize < 0 {
+	if chunkSize < 0 {
 		return fmt.Errorf("%w: chunk size must not be negative", ErrInvalidOperation)
 	}
-	if o.ChunkSize > MaxOfflineTransferChunk {
+	if chunkSize > MaxOfflineTransferChunk {
 		return fmt.Errorf("%w: chunk size must be at most %s", ErrInvalidOperation, OfflineByteSize(MaxOfflineTransferChunk))
 	}
-	if o.ChunkSize > 0 && o.ChunkSize < MinOfflineTransferChunk {
+	if chunkSize > 0 && chunkSize < MinOfflineTransferChunk {
 		return fmt.Errorf("%w: chunk size must be at least %s", ErrInvalidOperation, OfflineByteSize(MinOfflineTransferChunk))
 	}
-	if (o.Workers > 0 || o.ChunkSize > 0) && strings.TrimSpace(o.DownloadTo) == "" {
+	if (workers > 0 || chunkSize > 0) && strings.TrimSpace(downloadTo) == "" {
 		return fmt.Errorf("%w: transfer tuning requires a download destination", ErrInvalidOperation)
 	}
 	return nil
@@ -157,32 +204,41 @@ func (o OfflineOperationRequest) Validate() error {
 		strings.TrimRight(o.ParseTo, "/") == strings.TrimRight(o.DownloadTo, "/") {
 		return fmt.Errorf("%w: parse destination and download destination must differ", ErrInvalidOperation)
 	}
-	if o.Selection.Largest < 0 {
+	if err := validateOfflineSelection(o.Selection); err != nil {
+		return err
+	}
+	return validateOfflineTransferTuning(o)
+}
+
+// validateOfflineSelection checks the provider-neutral selection shape shared by
+// offline sources and share entries.
+func validateOfflineSelection(selection OfflineSelection) error {
+	if selection.Largest < 0 {
 		return fmt.Errorf("%w: largest count must not be negative", ErrInvalidOperation)
 	}
-	switch o.Selection.Mode {
+	switch selection.Mode {
 	case "", OfflineSelectionAll:
-		if o.Selection.Largest != 0 || len(o.Selection.Include) != 0 {
-			return fmt.Errorf("%w: selection mode %q takes no largest count or include patterns", ErrInvalidOperation, o.Selection.Mode)
+		if selection.Largest != 0 || len(selection.Include) != 0 {
+			return fmt.Errorf("%w: selection mode %q takes no largest count or include patterns", ErrInvalidOperation, selection.Mode)
 		}
 	case OfflineSelectionLargest:
-		if o.Selection.Largest < 1 {
+		if selection.Largest < 1 {
 			return fmt.Errorf("%w: largest selection requires a positive count", ErrInvalidOperation)
 		}
-		if len(o.Selection.Include) != 0 {
+		if len(selection.Include) != 0 {
 			return fmt.Errorf("%w: largest selection cannot also include patterns", ErrInvalidOperation)
 		}
 	case OfflineSelectionInclude:
-		if len(o.Selection.Include) == 0 {
+		if len(selection.Include) == 0 {
 			return fmt.Errorf("%w: include selection requires at least one pattern", ErrInvalidOperation)
 		}
-		if o.Selection.Largest != 0 {
+		if selection.Largest != 0 {
 			return fmt.Errorf("%w: include selection cannot also take a largest count", ErrInvalidOperation)
 		}
 	default:
-		return fmt.Errorf("%w: unsupported offline selection mode %q", ErrInvalidOperation, o.Selection.Mode)
+		return fmt.Errorf("%w: unsupported offline selection mode %q", ErrInvalidOperation, selection.Mode)
 	}
-	return validateOfflineTransferTuning(o)
+	return nil
 }
 
 func (r OperationRequest) Validate() error {
@@ -197,6 +253,20 @@ func (r OperationRequest) Validate() error {
 			return fmt.Errorf("%w: offline requests must not carry items", ErrInvalidOperation)
 		}
 		if err := r.Offline.Validate(); err != nil {
+			return err
+		}
+	} else if r.Share != nil {
+		want := OperationShare
+		if strings.TrimSpace(r.Share.DownloadTo) != "" {
+			want = OperationDownload
+		}
+		if r.Operation != want {
+			return fmt.Errorf("%w: share inputs use the %q operation", ErrInvalidOperation, want)
+		}
+		if len(r.Items) != 0 {
+			return fmt.Errorf("%w: share requests must not carry items", ErrInvalidOperation)
+		}
+		if err := r.Share.Validate(); err != nil {
 			return err
 		}
 	} else if len(r.Items) == 0 {
@@ -226,7 +296,7 @@ func (r OperationRequest) Validate() error {
 
 func validOperationKind(kind OperationKind) bool {
 	switch kind {
-	case OperationUpload, OperationDownload, OperationDelete, OperationCopy, OperationMove:
+	case OperationUpload, OperationDownload, OperationDelete, OperationCopy, OperationMove, OperationShare:
 		return true
 	default:
 		return false

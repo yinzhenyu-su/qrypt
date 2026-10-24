@@ -90,6 +90,8 @@ func init() {
 	taskRecoveryPaths[task.TypeUploadStreamDirect] = (*Core).recoverUploadStreamDirectTasks
 	taskRecoveryPaths[task.TypeOfflineDownload] = (*Core).recoverOfflineDownloadTasks
 	taskRecoveryPaths[task.TypeOfflineFetch] = (*Core).recoverOfflineFetchTasks
+	taskRecoveryPaths[task.TypeShareSave] = (*Core).recoverShareSaveTasks
+	taskRecoveryPaths[task.TypeShareFetch] = (*Core).recoverShareFetchTasks
 }
 
 func (c *Core) taskStore() task.Store {
@@ -358,6 +360,8 @@ var taskCreators = map[task.CreationPath]func(*Core, context.Context, task.Reque
 	task.CreationMove:               createMoveTaskFromRequest,
 	task.CreationOfflineDownload:    (*Core).createOfflineDownloadTask,
 	task.CreationOfflineFetch:       (*Core).createOfflineFetchTask,
+	task.CreationShareSave:          (*Core).createShareSaveTask,
+	task.CreationShareFetch:         (*Core).createShareFetchTask,
 }
 
 // createMoveTaskFromRequest adapts a move request to the move creation path,
@@ -417,6 +421,8 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 			} else {
 				taskType = task.TypeOfflineDownload
 			}
+		} else if req.Share != nil {
+			taskType = task.TypeShareFetch
 		} else {
 			taskType = task.Promote(task.TypeDownloadStreamBatch, len(req.Items))
 		}
@@ -426,6 +432,8 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 		taskType = task.Promote(task.TypeCopy, len(req.Items))
 	case task.OperationMove:
 		taskType = task.Promote(task.TypeMoveRemote, len(req.Items))
+	case task.OperationShare:
+		taskType = task.TypeShareSave
 	default:
 		return task.Request{}, fmt.Errorf("%w: unsupported operation %q", task.ErrInvalidOperation, req.Operation)
 	}
@@ -436,6 +444,7 @@ func taskRequestForOperation(req task.OperationRequest) (task.Request, error) {
 		Options: req.Options,
 		Detail:  req.Detail,
 		Offline: req.Offline,
+		Share:   req.Share,
 	}, nil
 }
 

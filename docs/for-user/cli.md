@@ -192,6 +192,37 @@ qrypt fs get /quark/downloads/<file> ./<file>
 
 来源格式、目的地规则、两阶段 fetch、并发参数和错误码见[离线下载](offline-download.md)。
 
+## 分享与接收
+
+`share` 命令组管理自己创建的分享链接（同步调用，不产生任务）；`receive` 命令组浏览、转存和下载别人的分享（转存与下载是持久化任务）。两者都通过本机控制 socket 与运行中的 Core 通信；provider 由挂载或链接识别，不需要 provider 名。当前支持该能力的驱动为 `quark`。
+
+```sh
+qrypt share create PATH... [--mount NAME] [--name TITLE]
+                          [--expires 1d|7d|30d|forever] [--passcode[=CODE]]
+                          [--limit-visits N] [--json]
+qrypt share list | show | update | remove ...
+qrypt receive inspect LINK [--passcode[=CODE]] [--mount NAME] [--dir ID] [--json]
+qrypt receive save  LINK (--to /MOUNT/DIR | --mount NAME)
+                          [--select ...] [--include GLOB] [--exclude GLOB]
+                          [--mkdir] [--new] [--idempotency-key KEY] [--no-wait]
+qrypt receive fetch LINK [--to /MOUNT/DIR] --download-to PATH
+                          [--keep-cloud] [--workers N] [--chunk-size SIZE]
+                          [--select ...] [--new] [--no-wait]
+qrypt receive list | show | cancel | retry | wait ...
+```
+
+`share` 的链接操作是同步的；`receive save/fetch` 默认阻塞到终态，`--no-wait` 在任务受理后返回。`--passcode=CODE` 指定提取码，只写 `--passcode` 时 `share` 生成新提取码、`receive` 从 stdin 读一行。提取码默认掩码，`--show-secrets` 才显示明文。部分条目失败时退出码为 `3`。
+
+常用流程：
+
+```sh
+qrypt share create /quark-download/report.pdf --expires 7d --passcode
+qrypt receive save https://pan.quark.cn/s/xxxx --to /quark-download/inbox --mkdir
+qrypt receive fetch https://pan.quark.cn/s/xxxx --to /quark-download/inbox --download-to ~/Downloads
+```
+
+链接与落点规则、提取码、同 provider 限制和错误码见[分享与接收](share.md)。
+
 ## 驱动信息
 
 ```sh

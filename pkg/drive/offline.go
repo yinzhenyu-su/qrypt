@@ -3,7 +3,6 @@ package drive
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 // ErrOfflineInspectPending reports that a provider's asynchronous parse has not
@@ -61,14 +60,8 @@ type OfflineFetchRequest struct {
 }
 
 // OfflineDownloadTarget is a provider-signed download URL for staged content.
-// ExpiresAt may be zero when the provider does not disclose an expiry; the
-// caller then re-requests on transfer failure rather than pre-emptively.
-type OfflineDownloadTarget struct {
-	URL       string            `json:"url"`
-	ExpiresAt time.Time         `json:"expires_at,omitempty"`
-	Size      int64             `json:"size,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-}
+// It is the same shape share fetches use, so both features share one type.
+type OfflineDownloadTarget = DownloadTarget
 
 // OfflineFetcher is an optional provider capability: hand out a download URL
 // for content a provider-side task staged. It is declared with
