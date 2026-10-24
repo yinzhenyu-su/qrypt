@@ -344,7 +344,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 				c.updateCookie(cookie.Name, cookie.Value)
 			}
 		}
-		if resp.StatusCode == http.StatusUnauthorized && cookieSnapshot == "" && attempt == 0 && c.onAuthRetry != nil && c.onAuthRetry() {
+		if resp.StatusCode == http.StatusUnauthorized && cookieSnapshot == "" && attempt < 2 && c.onAuthRetry != nil && c.onAuthRetry() {
 			c.recordMetric(ctx, event)
 			continue
 		}

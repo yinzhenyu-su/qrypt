@@ -50,3 +50,23 @@ func TestExportRequiresConfigMarker(t *testing.T) {
 		t.Fatal("state without config_refresh_token must not be adopted")
 	}
 }
+
+func TestExportReturnsRecordedAccount(t *testing.T) {
+	store := drive.NewFileStateStore(t.TempDir())
+	if err := store.SaveJSON("baidu_netdisk_token.json", map[string]any{
+		"access_token":         "access",
+		"refresh_token":        "refresh",
+		"account":              "baidu-user",
+		"config_refresh_token": "config",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "config"})
+	_, account, ok, err := driver.ExportCredentialSession(store, drive.Params{"refresh_token": "config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || account != "baidu-user" {
+		t.Fatalf("export = ok:%v account:%q, want baidu-user", ok, account)
+	}
+}

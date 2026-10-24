@@ -470,28 +470,35 @@ func (d *Driver) applyCredentialSnapshot(snapshot drive.CredentialSnapshot) {
 // recoverCredential adopts a session a sibling mount rotated after this mount's
 // last request failed with 401.
 func (d *Driver) recoverCredential() bool {
-	if d.credential == nil {
-		return false
-	}
-	d.credentialMu.Lock()
-	version := d.credentialVersion
-	d.credentialMu.Unlock()
-	next, adopted, err := drive.AdoptLatestCredential(d.credential, version, func(payload []byte) error {
-		if cookie := decodeCredentialCookie(payload); cookie != "" {
-			d.cl.setCookie(cookie)
+	if d.credential != nil {
+		d.credentialMu.Lock()
+		version := d.credentialVersion
+		d.credentialMu.Unlock()
+		next, adopted, err := drive.AdoptLatestCredential(d.credential, version, func(payload []byte) error {
+			if cookie := decodeCredentialCookie(payload); cookie != "" {
+				d.cl.setCookie(cookie)
+			}
+			return nil
+		})
+		if err == nil && adopted {
+			d.credentialMu.Lock()
+			if next > d.credentialVersion {
+				d.credentialVersion = next
+				d.cookieSource = "credential"
+			}
+			d.credentialMu.Unlock()
+			return true
 		}
-		return nil
-	})
-	if err != nil || !adopted {
-		return false
 	}
-	d.credentialMu.Lock()
-	if next > d.credentialVersion {
-		d.credentialVersion = next
-		d.cookieSource = "credential"
+	// Final fallback: the configured cookie is authoritative when no sibling
+	// session can recover the request.
+	if d.configCookie != "" && d.configCookie != d.cl.cookieValue() {
+		d.cl.setCookie(d.configCookie)
+		d.cookie = d.configCookie
+		d.cookieSource = "config"
+		return true
 	}
-	d.credentialMu.Unlock()
-	return true
+	return false
 }
 
 func (d *Driver) commitCredentialCookie(cookie string) {

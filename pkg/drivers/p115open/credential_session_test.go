@@ -47,3 +47,22 @@ func TestExportRequiresConfigMarker(t *testing.T) {
 		t.Fatal("state without config_refresh_token must not be adopted")
 	}
 }
+
+func TestRememberAccountAnnotatesSession(t *testing.T) {
+	session := credentialtest.New("main")
+	payload, _, err := encodeCredentialPayload(credentialPayload{AccessToken: "a1", RefreshToken: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Update(0, payload, ""); err != nil {
+		t.Fatal(err)
+	}
+	driver := New(Options{RefreshToken: "config"})
+	driver.InstallCredentialSession(session)
+	driver.userID = 123
+	driver.rememberAccount()
+
+	if got := session.Snapshot().Account; got != "123" {
+		t.Fatalf("session account = %q, want 123", got)
+	}
+}
