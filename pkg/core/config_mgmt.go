@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -32,10 +33,14 @@ type ConfigMountSummary struct {
 // ConfigCredentialSummary describes a shared credential. Secret params are
 // masked exactly like mount params.
 type ConfigCredentialSummary struct {
-	Name   string            `json:"name"`
-	Type   string            `json:"type"`
-	Params map[string]string `json:"params,omitempty"`
-	UsedBy []string          `json:"used_by,omitempty"`
+	Name      string            `json:"name"`
+	Type      string            `json:"type"`
+	Params    map[string]string `json:"params,omitempty"`
+	UsedBy    []string          `json:"used_by,omitempty"`
+	Source    string            `json:"source,omitempty"`
+	Account   string            `json:"account,omitempty"`
+	Version   uint64            `json:"version,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at,omitempty"`
 }
 
 type ReadCacheSummary struct {
@@ -97,10 +102,10 @@ func (c *Core) configSummary() (ConfigSummary, error) {
 	if err != nil {
 		return ConfigSummary{}, err
 	}
-	return summarizeConfig(c.configPath, cfg), nil
+	return summarizeConfig(c.configPath, cfg, c.runtimeLayout), nil
 }
 
-func summarizeConfig(path string, cfg *config.Config) ConfigSummary {
+func summarizeConfig(path string, cfg *config.Config, layout RuntimeLayout) ConfigSummary {
 	summary := ConfigSummary{
 		ConfigPath:     path,
 		Version:        cfg.Version,
@@ -131,12 +136,19 @@ func summarizeConfig(path string, cfg *config.Config) ConfigSummary {
 				usedBy = append(usedBy, mount.Name)
 			}
 		}
-		summary.Credentials = append(summary.Credentials, ConfigCredentialSummary{
+		entry := ConfigCredentialSummary{
 			Name:   cred.Name,
 			Type:   cred.Type,
 			Params: maskParams(cred.Type, cred.Params),
 			UsedBy: usedBy,
-		})
+		}
+		if info, ok := CredentialSessionState(cfg, layout, cred.Name); ok {
+			entry.Source = info.Source
+			entry.Account = info.Account
+			entry.Version = info.Version
+			entry.UpdatedAt = info.UpdatedAt
+		}
+		summary.Credentials = append(summary.Credentials, entry)
 	}
 	return summary
 }
@@ -192,7 +204,7 @@ func (c *Core) ApplyConfigUpdate(req ConfigUpdateRequest) (ConfigSummary, error)
 	if err := config.Save(c.configPath, cfg); err != nil {
 		return ConfigSummary{}, err
 	}
-	return summarizeConfig(c.configPath, cfg), nil
+	return summarizeConfig(c.configPath, cfg, c.runtimeLayout), nil
 }
 
 func applyConfigUpdate(cfg *config.Config, req ConfigUpdateRequest) error {

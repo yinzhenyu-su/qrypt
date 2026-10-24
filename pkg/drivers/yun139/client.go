@@ -99,6 +99,7 @@ type client struct {
 	personalCloudHost     string
 	authRefreshURL        string
 	onAuthorizationUpdate func(authorization string)
+	onAuthRecovery        func() bool
 	mu                    sync.RWMutex
 	tokenExpiry           time.Time
 	metrics               *driverutil.Buffer
@@ -337,6 +338,14 @@ func (c *client) personalPost(ctx context.Context, path string, bodyData interfa
 		}
 		if err := c.personalPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
+				if c.onAuthRecovery != nil && c.onAuthRecovery() {
+					if retryErr := c.personalPostOnce(ctx, path, bodyData, result); retryErr == nil {
+						return nil
+					} else {
+						lastErr = retryErr
+						continue
+					}
+				}
 				if refreshErr := c.refreshToken(ctx); refreshErr != nil {
 					lastErr = fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
 					continue
@@ -367,6 +376,14 @@ func (c *client) userPost(ctx context.Context, path string, bodyData interface{}
 		}
 		if err := c.userPostOnce(ctx, path, bodyData, result); err != nil {
 			if isAuthExpiredError(err) {
+				if c.onAuthRecovery != nil && c.onAuthRecovery() {
+					if retryErr := c.userPostOnce(ctx, path, bodyData, result); retryErr == nil {
+						return nil
+					} else {
+						lastErr = retryErr
+						continue
+					}
+				}
 				if refreshErr := c.refreshToken(ctx); refreshErr != nil {
 					lastErr = fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
 					continue

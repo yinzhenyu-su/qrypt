@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -55,6 +56,7 @@ type client struct {
 	passwordReloginError    string
 	onPasswordReloginState  func(failedAt time.Time, lastError string)
 	onCookieUpdate          func(cookie string)
+	onAuthRecovery          func() bool
 	uploadRequestHook       func(ctx context.Context, uri string, form map[string]string) ([]byte, error)
 	traceMu                 sync.Mutex
 	metrics                 []drive.MetricEvent
@@ -918,7 +920,15 @@ func (c *client) doReq(req *http.Request, result any) error {
 
 func (c *client) retryOnAuthError(ctx context.Context, fn func(context.Context) error) error {
 	err := fn(ctx)
-	if err != nil && c.username != "" && isAuthError(err) {
+	if err == nil || !isAuthError(err) {
+		return err
+	}
+	// Another mount may have rotated the shared cookie; adopt it before
+	// falling back to a password login.
+	if c.onAuthRecovery != nil && c.onAuthRecovery() {
+		return fn(ctx)
+	}
+	if c.username != "" {
 		if cooldownErr := c.passwordReloginCooldownError(err); cooldownErr != nil {
 			return cooldownErr
 		}
@@ -993,6 +1003,9 @@ func (c *client) setPasswordReloginFailure(failedAt time.Time, lastError string)
 }
 
 func isAuthError(err error) bool {
+	if errors.Is(err, drive.ErrAuth) {
+		return true
+	}
 	s := err.Error()
 	return strings.Contains(s, "400") || strings.Contains(s, "InvalidSessionKey") || strings.Contains(s, "401") || strings.Contains(s, "403")
 }

@@ -12,7 +12,9 @@ func (d *Driver) ExportCredentialSession(store drive.StateStore, params drive.Pa
 	if state.AccessToken == "" && state.RefreshToken == "" {
 		return nil, "", false, nil
 	}
-	if state.ConfigRefreshToken != "" && params["refresh_token"] != "" && state.ConfigRefreshToken != params["refresh_token"] {
+	if state.ConfigRefreshToken == "" || params["refresh_token"] == "" || state.ConfigRefreshToken != params["refresh_token"] {
+		// A state without the source marker cannot be attributed to this
+		// credential; refusing is safer than adopting another account's tokens.
 		return nil, "", false, nil
 	}
 	payload, err := encodeCredentialPayload(credentialPayload{

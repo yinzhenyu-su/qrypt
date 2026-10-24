@@ -93,6 +93,7 @@ func New(authorization, rootPath, rootID string) *Driver {
 		authSource:          "config",
 	}
 	d.cl.onAuthorizationUpdate = d.saveUpdatedAuthorization
+	d.cl.onAuthRecovery = d.recoverCredential
 	return d
 }
 
@@ -210,6 +211,34 @@ func (d *Driver) saveUpdatedAuthorization(authorization string) {
 		ConfigAuthorization: d.configAuthorization,
 		UpdatedAt:           d.authUpdated,
 	})
+}
+
+// recoverCredential adopts a newer shared authorization after an auth failure.
+func (d *Driver) recoverCredential() bool {
+	if d.credential == nil {
+		return false
+	}
+	d.credentialMu.Lock()
+	version := d.credentialVersion
+	d.credentialMu.Unlock()
+	next, adopted, err := drive.AdoptLatestCredential(d.credential, version, func(payload []byte) error {
+		authorization := decodeCredentialAuthorization(payload)
+		if authorization == "" {
+			return nil
+		}
+		d.cl.setAuthorization(authorization)
+		return nil
+	})
+	if err != nil || !adopted {
+		return false
+	}
+	d.credentialMu.Lock()
+	if next > d.credentialVersion {
+		d.credentialVersion = next
+		d.authSource = "credential"
+	}
+	d.credentialMu.Unlock()
+	return true
 }
 
 func (d *Driver) loadCredentialSession() {
