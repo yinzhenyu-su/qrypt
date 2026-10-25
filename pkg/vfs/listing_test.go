@@ -212,7 +212,12 @@ func TestVFSForegroundListRetriesCanceledDirectoryPrefetch(t *testing.T) {
 
 	waitForCondition(t, func() bool { return drv.listCount("dir-a") == 1 })
 	cancel()
-	waitForCondition(t, func() bool { return drv.listCount("dir-a") == 2 })
+	// A second prefetch goroutine may already have entered the driver before
+	// the cancel, so the count can jump past 2. The invariant is that the
+	// foreground read does not inherit the canceled prefetch error and issues
+	// at least one more list itself; the result assertions below prove the
+	// latter.
+	waitForCondition(t, func() bool { return drv.listCount("dir-a") >= 2 })
 	close(release)
 	select {
 	case err := <-errDone:
@@ -224,7 +229,7 @@ func TestVFSForegroundListRetriesCanceledDirectoryPrefetch(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("foreground list did not retry after canceled prefetch")
 	}
-	if got := drv.listCount("dir-a"); got != 2 {
+	if got := drv.listCount("dir-a"); got < 2 {
 		t.Fatalf("foreground list should retry canceled prefetch, list count = %d", got)
 	}
 }
