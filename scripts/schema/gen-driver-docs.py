@@ -25,6 +25,7 @@ CAPABILITY_COLUMNS = [
     ("mtime", "保留修改时间"),
     ("space", "空间查询"),
     ("offline_download", "离线下载"),
+    ("login", "扫码登录"),
 ]
 
 # Where a parameter may be configured: a shared credential, a mount, or both
@@ -88,6 +89,8 @@ def prop_description(prop):
 def has_capability(info, key):
     if key == "remote_hash":
         return info["remote_hash"]
+    if key == "login":
+        return info["login"]
     return key in info["capabilities"]
 
 
@@ -306,7 +309,7 @@ def generate():
     lines.append("")
     lines.append("✅ 支持，— 不支持；不支持的能力会由上层降级或返回 unsupported。")
     lines.append("")
-    lines.append("**写入**：创建、删除、移动、重命名；**服务端复制**：由存储端直接复制，不经过本地下载再上传；**服务端哈希**：可直接读取存储端内容哈希用于校验；**保留修改时间**：上传或复制后保留源文件 mtime。")
+    lines.append("**写入**：创建、删除、移动、重命名；**服务端复制**：由存储端直接复制，不经过本地下载再上传；**服务端哈希**：可直接读取存储端内容哈希用于校验；**保留修改时间**：上传或复制后保留源文件 mtime；**扫码登录**：可用 `qrypt credential login --type <驱动>` 扫码获取凭据，不支持时需手动填写 cookie 或 token。")
     lines.append("")
     lines.append("`quark` 的离线下载同时支持解析、选择性转存和加速取回；`115` / `115_open` 支持提交、观察和取回，但不支持解析预览、文件选择和加速。")
     lines.append("")
