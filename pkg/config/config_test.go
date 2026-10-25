@@ -555,7 +555,7 @@ func TestMountOptionsDefaults(t *testing.T) {
 		t.Fatalf("unexpected default volume name: %q", cfg.EffectiveVolumeName())
 	}
 	options := cfg.EffectiveMountOptions()
-	if got := strings.Join(options["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=4194304" {
+	if got := strings.Join(options["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=4194304,daemon_timeout=0" {
 		t.Fatalf("unexpected default darwin mount options: %q", got)
 	}
 	if cfg.ReadOnly {

@@ -105,7 +105,7 @@ type cliMountConfig struct {
 func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
 		VolumeName:      "Qrypt",
-		MountOptions:    map[string][]string{"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304"}},
+		MountOptions:    map[string][]string{"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304", "daemon_timeout=0"}},
 		AttrTimeout:     time.Second,
 		EntryTimeout:    time.Second,
 		NegativeTimeout: 0,
@@ -123,7 +123,7 @@ func mountConfigFromConfig(configPath string) (cliMountConfig, error) {
 func mountConfigFromLoadedConfig(cfg *config.Config) (cliMountConfig, error) {
 	mountConfig := cliMountConfig{
 		VolumeName:      "Qrypt",
-		MountOptions:    map[string][]string{"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304"}},
+		MountOptions:    map[string][]string{"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304", "daemon_timeout=0"}},
 		AttrTimeout:     time.Second,
 		EntryTimeout:    time.Second,
 		NegativeTimeout: 0,

@@ -241,7 +241,7 @@ func TestMountOptionsUseStableMetadataCaching(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	for _, want := range []string{"defer_permissions", "auto_xattr", "fsname=qrypt", "subtype=qrypt", "iosize=8388608"} {
+	for _, want := range []string{"defer_permissions", "auto_xattr", "fsname=qrypt", "subtype=qrypt", "iosize=8388608", "daemon_timeout=0"} {
 		if !hasMountOption(opts, want) {
 			t.Fatalf("darwin mount options %v missing %q", opts, want)
 		}
@@ -937,4 +937,26 @@ func hasMountOption(opts []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestDarwinMountOptionsDisableDaemonTimeoutByDefault(t *testing.T) {
+	opts := mountOptionsForGOOS(Options{}, "darwin")
+	if !hasMountOption(opts, "daemon_timeout=0") {
+		t.Fatalf("darwin mount options = %v, want daemon_timeout=0", opts)
+	}
+	if hasMountOption(mountOptionsForGOOS(Options{}, "linux"), "daemon_timeout=0") {
+		t.Fatal("linux mount options must not contain a macFUSE-only option")
+	}
+}
+
+func TestDarwinMountOptionsHonorExplicitDaemonTimeout(t *testing.T) {
+	opts := mountOptionsForGOOS(Options{PlatformOptions: map[string][]string{
+		"darwin": {"daemon_timeout=120"},
+	}}, "darwin")
+	if hasMountOption(opts, "daemon_timeout=0") {
+		t.Fatalf("darwin mount options = %v, want the explicit daemon_timeout only", opts)
+	}
+	if !hasMountOption(opts, "daemon_timeout=120") {
+		t.Fatalf("darwin mount options = %v, want daemon_timeout=120", opts)
+	}
 }

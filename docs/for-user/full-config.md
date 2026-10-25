@@ -26,7 +26,7 @@
 
 | 平台 | 示例值 |
 |---|---|
-| `darwin` | `["defer_permissions", "auto_xattr", "iosize=4194304"]` |
+| `darwin` | `["defer_permissions", "auto_xattr", "iosize=4194304", "daemon_timeout=0"]` |
 | `windows` | `["FileInfoTimeout=1000"]` |
 
 ## 云盘挂载

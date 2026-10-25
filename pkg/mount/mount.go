@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/winfsp/cgofuse/fuse"
@@ -36,6 +37,17 @@ type Session struct {
 	host                     *fuse.FileSystemHost
 	adapter                  *adapter
 	unsubscribeInvalidations func()
+	done                     chan struct{}
+}
+
+// Done is closed when the underlying FUSE session ends. It covers an external
+// unmount, a kernel-initiated teardown such as the macFUSE daemon timeout, and
+// a mount failure that happens after Mount has already returned.
+func (s *Session) Done() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.done
 }
 
 type Mounter interface {
@@ -87,6 +99,7 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 		MountPoint: opts.MountPoint,
 		host:       host,
 		adapter:    ad,
+		done:       make(chan struct{}),
 	}
 	session.unsubscribeInvalidations = subscribeInvalidations(fs, host.Notify)
 
@@ -94,6 +107,10 @@ func (FuseMounter) Mount(ctx context.Context, fs vfs.FileSystem, opts Options) (
 	result := make(chan bool, 1)
 	go func() {
 		result <- host.Mount(opts.MountPoint, mountOpts)
+		// The FUSE loop returns when the volume is unmounted or torn down by
+		// the kernel. Publish that to the owner so it does not keep running
+		// against a dead mount.
+		close(session.done)
 	}()
 	readyTimer := time.NewTimer(opts.ReadyTimeout)
 	defer readyTimer.Stop()
@@ -166,6 +183,10 @@ func mountOptionsForGOOS(opts Options, goos string) []string {
 	if entryTimeout == 0 && !opts.EntryTimeoutSet {
 		entryTimeout = time.Second
 	}
+	platformOptions := opts.PlatformOptions[goos]
+	if opts.PlatformOptions == nil && goos == "darwin" {
+		platformOptions = []string{"defer_permissions", "auto_xattr", "iosize=4194304"}
+	}
 	flags := []string{
 		"-o", mode,
 		"-o", "attr_timeout=" + fuseTimeout(attrTimeout),
@@ -182,10 +203,13 @@ func mountOptionsForGOOS(opts Options, goos string) []string {
 			"-o", "fsname=qrypt",
 			"-o", "subtype=qrypt",
 		)
-	}
-	platformOptions := opts.PlatformOptions[goos]
-	if opts.PlatformOptions == nil && goos == "darwin" {
-		platformOptions = []string{"defer_permissions", "auto_xattr", "iosize=4194304"}
+		// macFUSE defaults daemon_timeout to 60s and ejects the volume when a
+		// single request takes longer, which a throttled network read can
+		// easily exceed. qrypt owns the cancellation policy; disable the
+		// kernel's auto-eject unless the user explicitly configured a limit.
+		if !hasPlatformOption(platformOptions, "daemon_timeout") {
+			flags = append(flags, "-o", "daemon_timeout=0")
+		}
 	}
 	for _, option := range platformOptions {
 		flags = append(flags, "-o", option)
@@ -214,6 +238,16 @@ func mountOptionsForGOOS(opts Options, goos string) []string {
 		flags = append(flags, "-o", "volname="+opts.VolumeName)
 	}
 	return flags
+}
+
+func hasPlatformOption(options []string, name string) bool {
+	prefix := name + "="
+	for _, option := range options {
+		if option == name || strings.HasPrefix(option, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func fuseTimeout(d time.Duration) string {
