@@ -8,7 +8,7 @@ macFUSE 默认对单个内核请求设置 60 秒的 `daemon_timeout`：请求超
 
 qrypt 默认向 macFUSE 传入 `daemon_timeout=0`，关闭内核的自动弹出，把超时和取消交给 qrypt 自己处理。如果配置文件中手动设置了 `[mount.options].darwin`，请不要额外配置较小的 `daemon_timeout`，否则仍可能触发自动卸载。
 
-自动卸载后，旧的 `qrypt mount` 进程可能仍在等待退出信号。新版 qrypt 会检测到 FUSE 会话结束并直接退出；旧版本可以先结束该进程，再按上一节的方法清理残留挂载点。
+自动卸载后，旧的 `qrypt mount` 进程可能仍在等待退出信号。新版 qrypt 会检测到 FUSE 会话结束并直接退出；旧版本可以先结束该进程，再按下文[挂载点残留](#挂载点残留)的方法清理残留挂载点。
 
 ## 挂载点残留
 
