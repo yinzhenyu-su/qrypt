@@ -5,7 +5,7 @@
 # Floors are each package's measured coverage minus one point, so the gate
 # catches a real regression instead of sitting several points below the
 # suite. Re-measure with `-print` before lowering anything:
-#   vfs 82.3  core 76.5  drive 70.6  sync 83.5  config 78.8  crypt 80.3  (2026-10-22)
+#   vfs 82.3  core 76.5  drive 70.6  sync 83.5  config 84.5  crypt 80.3  (2026-10-25)
 #
 # sync is measured via -coverpkg against the CLI integration tests plus its
 # own unit tests (single-package coverage alone is ~15%, misleadingly low).
@@ -21,7 +21,7 @@ declare -A FLOOR=(
   [pkg/core]=75
   [pkg/drive]=69
   [pkg/syncer]=82
-  [pkg/config]=77
+  [pkg/config]=83
   [pkg/crypt]=79
 )
 
