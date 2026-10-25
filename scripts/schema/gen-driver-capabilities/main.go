@@ -17,6 +17,7 @@ import (
 type driverCapabilities struct {
 	Capabilities []string `json:"capabilities"`
 	RemoteHash   bool     `json:"remote_hash"`
+	Login        bool     `json:"login"`
 }
 
 type driverSpec struct {
@@ -80,7 +81,12 @@ func main() {
 			names[i] = string(capability)
 		}
 		_, remoteHash := drv.(drive.RemoteHasher)
-		out[spec.Name] = driverCapabilities{Capabilities: names, RemoteHash: remoteHash}
+		_, login := drive.LoginProviderFor(spec.Name)
+		out[spec.Name] = driverCapabilities{
+			Capabilities: names,
+			RemoteHash:   remoteHash,
+			Login:        login,
+		}
 	}
 
 	encoder := json.NewEncoder(os.Stdout)
