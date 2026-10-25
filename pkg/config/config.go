@@ -449,7 +449,7 @@ func (c *Config) EffectiveVolumeName() string {
 func (c *Config) EffectiveMountOptions() map[string][]string {
 	if c == nil || c.Mount.Options == nil {
 		return map[string][]string{
-			"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304"},
+			"darwin": {"defer_permissions", "auto_xattr", "iosize=4194304", "daemon_timeout=0"},
 		}
 	}
 	options := make(map[string][]string, len(c.Mount.Options))

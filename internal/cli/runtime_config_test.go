@@ -122,7 +122,7 @@ func TestMountConfigFromConfigDefaults(t *testing.T) {
 	if mountConfig.VolumeName != "Qrypt" {
 		t.Fatalf("unexpected default volume name: %q", mountConfig.VolumeName)
 	}
-	if got := strings.Join(mountConfig.MountOptions["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=4194304" {
+	if got := strings.Join(mountConfig.MountOptions["darwin"], ","); got != "defer_permissions,auto_xattr,iosize=4194304,daemon_timeout=0" {
 		t.Fatalf("unexpected default darwin mount options: %q", got)
 	}
 	if mountConfig.ReadOnly {

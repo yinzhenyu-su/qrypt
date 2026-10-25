@@ -120,7 +120,7 @@ entry_timeout = "1s"
 negative_timeout = "0s"
 
 [mount.options]
-darwin = ["defer_permissions", "auto_xattr", "iosize=4194304"]
+darwin = ["defer_permissions", "auto_xattr", "iosize=4194304", "daemon_timeout=0"]
 
 # ── Logging ───────────────────────────────────────────────────────
 [logging]

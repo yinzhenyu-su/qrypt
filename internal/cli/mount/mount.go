@@ -2,6 +2,7 @@ package mount
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -22,6 +23,11 @@ import (
 
 // reservedMountNames are subcommand names, so a mount cannot use them for the
 // `qrypt mount NAME` shorthand.
+// errMountSessionEnded reports that the FUSE session disappeared while the
+// command was still running, for example after an external unmount or a
+// kernel-initiated teardown of the mount.
+var errMountSessionEnded = errors.New("FUSE session ended unexpectedly (the volume may have been unmounted externally)")
+
 var reservedMountNames = map[string]bool{
 	"add":    true,
 	"set":    true,
@@ -33,6 +39,23 @@ var reservedMountNames = map[string]bool{
 // cannot be used as a mount name in the `qrypt mount NAME` shorthand.
 func ReservedMountName(name string) bool {
 	return reservedMountNames[name]
+}
+
+// waitForMountStop blocks until the mount command should exit. A canceled
+// context is a requested shutdown and returns nil; a closed session channel is
+// an unexpected loss of the FUSE session and returns errMountSessionEnded. The
+// context check wins when both happen together so Ctrl+C is not reported as a
+// failure.
+func waitForMountStop(ctx context.Context, sessionDone <-chan struct{}) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-sessionDone:
+		if ctx.Err() != nil {
+			return nil
+		}
+		return errMountSessionEnded
+	}
 }
 
 func NewCommand(rt cliruntime.Runtime) *cobra.Command {
@@ -132,7 +155,11 @@ func NewCommand(rt cliruntime.Runtime) *cobra.Command {
 			if prefetcher, ok := fs.(interface{ StartDirectoryPrefetch(context.Context) }); ok {
 				prefetcher.StartDirectoryPrefetch(ctx)
 			}
-			<-ctx.Done()
+			if err := waitForMountStop(ctx, session.Done()); err != nil {
+				logging.L.Warnf("Mount stopped unexpectedly: %v", err)
+				unmount()
+				return fmt.Errorf("%s: %w", mountPointExpanded, err)
+			}
 			unmount()
 			return nil
 		},

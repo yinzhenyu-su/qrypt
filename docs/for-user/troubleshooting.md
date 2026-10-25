@@ -2,6 +2,14 @@
 
 本文档收录使用 qrypt 时可能遇到的常见问题。
 
+## macOS 挂载点在慢速读取后消失
+
+macFUSE 默认对单个内核请求设置 60 秒的 `daemon_timeout`：请求超时后会自动弹出卷，日志中通常能看到 `[FUSE] Destroy`，随后访问挂载点会报 `Device not configured`。非会员网盘限速时，一次较大的读取或预取很容易超过这个时限。
+
+qrypt 默认向 macFUSE 传入 `daemon_timeout=0`，关闭内核的自动弹出，把超时和取消交给 qrypt 自己处理。如果配置文件中手动设置了 `[mount.options].darwin`，请不要额外配置较小的 `daemon_timeout`，否则仍可能触发自动卸载。
+
+自动卸载后，旧的 `qrypt mount` 进程可能仍在等待退出信号。新版 qrypt 会检测到 FUSE 会话结束并直接退出；旧版本可以先结束该进程，再按上一节的方法清理残留挂载点。
+
 ## 挂载点残留
 
 `Ctrl+C`、`SIGTERM` 以及关闭终端或断开 SSH（`SIGHUP`）都会触发优雅卸载。
