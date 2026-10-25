@@ -744,6 +744,17 @@ func TestValidateMountAlternativeRequirements(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsMissingInputs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qrypt.toml")
+	if err := Save(path, nil); err == nil || !strings.Contains(err.Error(), "configuration is empty") {
+		t.Fatalf("Save(nil) error = %v, want an empty-configuration error", err)
+	}
+	var ctx context.Context
+	if err := SaveContext(ctx, path, &Config{}); err == nil || !strings.Contains(err.Error(), "context required") {
+		t.Fatalf("SaveContext(nil) error = %v, want a context error", err)
+	}
+}
+
 func TestSaveContextCancelledDoesNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qrypt.toml")
 	cfg := &Config{
