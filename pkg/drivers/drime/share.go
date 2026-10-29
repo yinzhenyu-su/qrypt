@@ -16,12 +16,19 @@ import (
 
 func (d *Driver) SharePolicy() drive.SharePolicy {
 	return drive.SharePolicy{
-		Passcode:  drive.PolicyOptional,
-		Expiries:  drive.NeutralShareExpiries(),
-		Update:    true,
-		List:      false,
-		Selection: true,
+		Passcode:   drive.PolicyOptional,
+		Expiries:   drive.NeutralShareExpiries(),
+		Download:   true,
+		Update:     true,
+		List:       false,
+		MaxEntries: 1,
+		Selection:  true,
 	}
+}
+
+// ProviderSpaceID reports the workspace a share save writes into.
+func (d *Driver) ProviderSpaceID(context.Context) (string, error) {
+	return d.workspaceID, nil
 }
 
 func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) (drive.Share, error) {
@@ -34,10 +41,24 @@ func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) 
 	if req.VisitLimit > 0 {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime links do not support visit limits")
 	}
+	if req.Public != nil {
+		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime links have no public/private toggle")
+	}
+	if req.Edit != nil {
+		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime links do not support edit permission")
+	}
 	entry := req.Entries[0]
+	allowDownload := true
+	if req.Download != nil {
+		allowDownload = *req.Download
+	}
+	allowEdit := false
+	if req.Edit != nil {
+		allowEdit = *req.Edit
+	}
 	payload := map[string]any{
-		"allow_download": true,
-		"allow_edit":     false,
+		"allow_download": allowDownload,
+		"allow_edit":     allowEdit,
 	}
 	if req.Passcode != "" {
 		payload["password"] = req.Passcode
@@ -90,16 +111,15 @@ func (d *Driver) GetShare(ctx context.Context, id string) (drive.Share, error) {
 	return shareFromLink(body.Link, entry, ""), nil
 }
 
-func (d *Driver) ListShares(context.Context, drive.ShareListRequest) (drive.SharePage, error) {
-	return drive.SharePage{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime does not expose an account-wide link list")
-}
-
 func (d *Driver) UpdateShare(ctx context.Context, req drive.ShareUpdateRequest) (drive.Share, error) {
 	if req.Title != nil {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime links do not support titles")
 	}
 	if req.Public != nil {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime links have no public/private toggle")
+	}
+	if req.Edit != nil {
+		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime links do not support edit permission")
 	}
 	current, err := d.GetShare(ctx, req.ID)
 	if err != nil {
@@ -118,6 +138,12 @@ func (d *Driver) UpdateShare(ctx context.Context, req drive.ShareUpdateRequest) 
 		} else {
 			payload["expiresAt"] = nil
 		}
+	}
+	if req.Download != nil {
+		payload["allow_download"] = *req.Download
+	}
+	if req.Edit != nil {
+		payload["allow_edit"] = *req.Edit
 	}
 	resp, err := d.cl.doJSON(ctx, http.MethodPut, "/file-entries/"+url.PathEscape(current.NativeID)+"/shareable-link?workspaceId="+url.QueryEscape(d.workspaceID), payload, true)
 	if err != nil {
@@ -361,7 +387,10 @@ func (d *Driver) SaveShareEntries(ctx context.Context, req drive.ShareSaveReques
 		return drive.ShareSaveOutcome{}, drive.NewShareError(drive.ShareErrUnsupported, "", "no entries selected")
 	}
 	destID := strings.TrimSpace(req.Dest.Entry.ID)
-	workspace := workspaceOf(req.Dest.Entry, d.workspaceID)
+	workspace := strings.TrimSpace(req.Dest.SpaceID)
+	if workspace == "" {
+		workspace = workspaceOf(req.Dest.Entry, d.workspaceID)
+	}
 	var destination any
 	if destID != "" {
 		destination = json.Number(destID)
@@ -411,6 +440,9 @@ func (d *Driver) SaveShareEntries(ctx context.Context, req drive.ShareSaveReques
 			out.State = drive.SaveStatePartial
 		} else {
 			item.Saved = saved
+			item.SavedID = saved.ID
+			item.SavedName = saved.Name
+			item.Verified = true
 			succeeded++
 		}
 		out.Items = append(out.Items, item)
@@ -421,10 +453,6 @@ func (d *Driver) SaveShareEntries(ctx context.Context, req drive.ShareSaveReques
 		out.State = drive.SaveStatePartial
 	}
 	return out, nil
-}
-
-func (d *Driver) GetShareSave(context.Context, string, []drive.ShareEntry) (drive.ShareSaveOutcome, error) {
-	return drive.ShareSaveOutcome{}, drive.NewShareError(drive.ShareErrUnsupported, "", "drime imports are synchronous")
 }
 
 func (d *Driver) findSavedEntry(ctx context.Context, destID, name string) (*drive.Entry, error) {

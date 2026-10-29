@@ -175,6 +175,15 @@ func TestQuarkSharePasscodeAndPolicy(t *testing.T) {
 	if policy.Passcode != drive.PolicyOptional || !policy.List || !policy.VisitLimit || !policy.Selection {
 		t.Fatalf("policy = %+v", policy)
 	}
+	if !policy.Title || !policy.Public {
+		t.Fatalf("quark lost title/public support: %+v", policy)
+	}
+	if _, ok := any(d).(drive.ShareLister); !ok {
+		t.Fatal("quark must keep account-wide link listing")
+	}
+	if _, ok := any(d).(drive.ShareSavePoller); !ok {
+		t.Fatal("quark must keep asynchronous save polling")
+	}
 	if policy.SupportsRename(drive.RenameAuto) {
 		t.Fatal("quark must not claim auto-rename support")
 	}

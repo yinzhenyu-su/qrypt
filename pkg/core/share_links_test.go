@@ -44,6 +44,10 @@ func newFakeShareProvider() *fakeShareProvider {
 		policy: drive.SharePolicy{
 			Passcode: drive.PolicyOptional,
 			Expiries: drive.NeutralShareExpiries(),
+			Title:    true,
+			Public:   true,
+			Download: true,
+			Edit:     true,
 			Update:   true,
 			List:     true,
 			Rename:   drive.ShareRenameSupport{Auto: true},
@@ -304,6 +308,16 @@ func TestCreateShareLinkValidatesOptions(t *testing.T) {
 	provider.policy = drive.SharePolicy{Passcode: drive.PolicyOptional, Expiries: []time.Duration{drive.ShareExpiryDay}}
 	if _, err := c.CreateShareLink(ctx, ShareLinkCreateRequest{Paths: paths, Expiry: drive.ShareExpiryWeek}); err == nil {
 		t.Fatal("unsupported expiry accepted")
+	}
+
+	provider.policy = drive.SharePolicy{Passcode: drive.PolicyOptional, Expiries: drive.NeutralShareExpiries(), Title: false}
+	if _, err := c.CreateShareLink(ctx, ShareLinkCreateRequest{Paths: paths, Title: "release"}); !errors.Is(err, ErrShareUnsupported) {
+		t.Fatalf("unsupported title error = %v, want ErrShareUnsupported", err)
+	}
+
+	provider.policy = drive.SharePolicy{Passcode: drive.PolicyOptional, Expiries: drive.NeutralShareExpiries(), MaxEntries: 1}
+	if _, err := c.CreateShareLink(ctx, ShareLinkCreateRequest{Paths: []string{"/quark/docs", "/quark/docs/a.bin"}}); !errors.Is(err, ErrShareUnsupported) {
+		t.Fatalf("over-limit request error = %v, want ErrShareUnsupported", err)
 	}
 
 	if len(provider.createCalls) != 0 {

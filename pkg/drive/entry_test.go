@@ -14,6 +14,23 @@ func TestEntryExtraWrapperRemoteName(t *testing.T) {
 	}
 }
 
+func TestWrapRemoteNamePreservesPlainNameAndRawExtra(t *testing.T) {
+	raw := map[string]any{"id": "raw"}
+	entry := WrapRemoteName(Entry{Name: "plain.txt", Extra: raw}, "qrypt~plain.txt")
+	if entry.Name != "plain.txt" {
+		t.Fatalf("plain name changed to %q", entry.Name)
+	}
+	if got, ok := EntryRemoteName(entry); !ok || got != "qrypt~plain.txt" {
+		t.Fatalf("remote name = %q, %v", got, ok)
+	}
+	if got, ok := EntryRawExtra(entry).(map[string]any); !ok || got["id"] != "raw" {
+		t.Fatalf("raw extra = %#v", EntryRawExtra(entry))
+	}
+	if got := WrapRemoteName(Entry{Name: "plain.txt"}, "plain.txt"); got.Extra != nil {
+		t.Fatalf("unchanged name wrapped extra: %#v", got.Extra)
+	}
+}
+
 func TestEntryRawExtraRecursivelyUnwraps(t *testing.T) {
 	raw := map[string]any{"id": "raw"}
 	entry := Entry{

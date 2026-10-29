@@ -188,6 +188,12 @@ type HashProvider interface {
 	RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error)
 }
 
+// ProvenanceHashProvider reports a backend hash with its provenance. A caller
+// that receives only HashProvider data must treat the hash as declared.
+type ProvenanceHashProvider interface {
+	RemoteHashInfo(ctx context.Context, path string) (drive.RemoteHashInfo, error)
+}
+
 // EncryptedHashProvider computes the hash the plaintext would have when
 // encrypted with the mount's cipher (nonce from the remote header).
 type EncryptedHashProvider interface {

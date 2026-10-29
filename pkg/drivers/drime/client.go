@@ -8,11 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/time/rate"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
@@ -24,23 +21,20 @@ const userAgent = "qrypt-drime/0.1"
 var retryWait = util.WaitExponential
 
 type apiResponse struct {
-	req  *http.Request
-	resp *http.Response
-	body []byte
+	req      *http.Request
+	resp     *http.Response
+	body     []byte
+	duration time.Duration
 }
 
-func (r *apiResponse) error(prefix string) error {
+func (r *apiResponse) error(prefix string, opts ...drive.HTTPErrorOption) error {
 	if r == nil {
 		return fmt.Errorf("%s: empty response", prefix)
 	}
 	if r.resp == nil {
 		return fmt.Errorf("%s: no response", prefix)
 	}
-	err := drive.HTTPError(prefix, r.req, r.resp, r.body)
-	if r.status() == http.StatusUnprocessableEntity {
-		return fmt.Errorf("%w: %v", drive.ErrInvalidInput, err)
-	}
-	return err
+	return drive.HTTPError(prefix, r.req, r.resp, r.body, opts...)
 }
 
 func (r *apiResponse) status() int {
@@ -69,7 +63,7 @@ type client struct {
 	token        string
 	http         *http.Client
 	metrics      *driverutil.Buffer
-	limiter      *rate.Limiter
+	limiter      *driverutil.RateLimiter
 }
 
 func newClient(opts Options) (*client, error) {
@@ -107,7 +101,7 @@ func newClient(opts Options) (*client, error) {
 		token:        opts.AccessToken,
 		http:         httpClient,
 		metrics:      driverutil.NewBuffer(1000),
-		limiter:      newRateLimiter(opts.LimitRate),
+		limiter:      driverutil.NewRateLimiter(opts.LimitRate),
 	}, nil
 }
 
@@ -135,27 +129,20 @@ func (c *client) doJSON(ctx context.Context, method, path string, payload any, a
 }
 
 func (c *client) do(ctx context.Context, method, path string, body []byte, contentType string, auth, retry bool) (*apiResponse, error) {
-	var lastErr error
-	attempts := 1
+	policy := driverutil.RetryPolicy{MaxAttempts: 1}
 	if retry {
-		attempts = 3
+		policy.MaxAttempts = 3
 	}
-	var retryAfter time.Duration
-	for attempt := 0; attempt < attempts; attempt++ {
-		if attempt > 0 {
-			if retryAfter > 0 {
-				if err := waitContext(ctx, retryAfter); err != nil {
-					return nil, err
-				}
-				retryAfter = 0
-			} else if err := retryWait(ctx, attempt-1); err != nil {
-				return nil, err
-			}
+	policy.Wait = func(ctx context.Context, attempt int, delay time.Duration) error {
+		if delay > 0 {
+			return waitContext(ctx, delay)
 		}
-		if c.limiter != nil {
-			if err := c.limiter.Wait(ctx); err != nil {
-				return nil, err
-			}
+		return retryWait(ctx, attempt)
+	}
+	var last *apiResponse
+	resp, err := policy.Do(ctx, func(ctx context.Context, _ int) (*http.Response, error) {
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, err
 		}
 		var reader io.Reader
 		if body != nil {
@@ -176,40 +163,33 @@ func (c *client) do(ctx context.Context, method, path string, body []byte, conte
 		start := time.Now()
 		resp, err := c.http.Do(req)
 		duration := time.Since(start)
-		apiResp := &apiResponse{req: req, resp: resp}
-		if err != nil {
-			c.record(ctx, method, path, 0, duration, err)
-			lastErr = err
-			if !retry || ctx.Err() != nil {
-				return nil, err
-			}
-			continue
+		last = &apiResponse{req: req, resp: resp, duration: duration}
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
 		}
-		data, readErr := io.ReadAll(resp.Body)
-		closeErr := resp.Body.Close()
-		apiResp.body = data
-		if readErr != nil {
-			c.record(ctx, method, path, resp.StatusCode, duration, readErr)
-			return nil, readErr
-		}
-		if closeErr != nil {
-			c.record(ctx, method, path, resp.StatusCode, duration, closeErr)
-			return nil, closeErr
-		}
-		c.record(ctx, method, path, resp.StatusCode, duration, nil)
-		if retry && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500) && attempt+1 < attempts {
-			if resp.StatusCode == http.StatusTooManyRequests {
-				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-			}
-			lastErr = apiResp.error("drime: request")
-			continue
-		}
-		return apiResp, nil
+		c.record(ctx, method, path, status, duration, err)
+		return resp, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("drime: request failed")
+	if last == nil {
+		return nil, fmt.Errorf("drime: request failed")
 	}
-	return nil, lastErr
+	data, readErr := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	last.resp = resp
+	last.body = data
+	if readErr != nil {
+		c.record(ctx, method, path, resp.StatusCode, last.duration, readErr)
+		return nil, readErr
+	}
+	if closeErr != nil {
+		c.record(ctx, method, path, resp.StatusCode, last.duration, closeErr)
+		return nil, closeErr
+	}
+	return last, nil
 }
 
 func (c *client) doRaw(ctx context.Context, method, rawURL string, body io.Reader, contentLength int64, contentType string, auth bool) (*apiResponse, error) {
@@ -312,41 +292,6 @@ func sanitizePath(path string) string {
 		return u.Scheme + "://" + u.Host + u.Path
 	}
 	return path
-}
-
-func newRateLimiter(perSecond int) *rate.Limiter {
-	if perSecond <= 0 {
-		return nil
-	}
-	return rate.NewLimiter(rate.Limit(perSecond), 1)
-}
-
-func parseRetryAfter(raw string) time.Duration {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(raw); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		d := time.Duration(seconds) * time.Second
-		if d > time.Minute {
-			d = time.Minute
-		}
-		return d
-	}
-	if when, err := http.ParseTime(raw); err == nil {
-		d := time.Until(when)
-		if d <= 0 {
-			return 0
-		}
-		if d > time.Minute {
-			d = time.Minute
-		}
-		return d
-	}
-	return 0
 }
 
 func waitContext(ctx context.Context, d time.Duration) error {

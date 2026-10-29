@@ -25,6 +25,25 @@ func (r hashReader) RemoteHash(ctx context.Context, path string) (drive.HashAlgo
 	return r.remoteHash(ctx, path)
 }
 
+func (r hashReader) RemoteHashInfo(ctx context.Context, path string) (drive.RemoteHashInfo, error) {
+	algorithm, hash, err := r.remoteHash(ctx, path)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	return drive.RemoteHashInfo{Algorithm: algorithm, Hash: hash, Verified: true, Source: drive.RemoteHashSourceProvider}, nil
+}
+
+// declaredHashReader implements only the legacy hash contract, so callers must
+// treat its hashes as advisory.
+type declaredHashReader struct {
+	vfs.Reader
+	remoteHash func(context.Context, string) (drive.HashAlgorithm, string, error)
+}
+
+func (r declaredHashReader) RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error) {
+	return r.remoteHash(ctx, path)
+}
+
 type encryptedHashReader struct {
 	hashReader
 	encryptedHash func(context.Context, string, io.Reader, int64, drive.HashAlgorithm) (string, error)
@@ -94,6 +113,41 @@ func TestCompareHashPairVirtual(t *testing.T) {
 				t.Fatalf("hash detail = %q, want abc", detail)
 			}
 		})
+	}
+}
+
+func TestCompareHashPairOnlyVerifiedHashesProveEquality(t *testing.T) {
+	a := Target{Kind: TargetVFS, VFSPath: "/a"}
+	b := Target{Kind: TargetVFS, VFSPath: "/b"}
+	hash := func(context.Context, string) (drive.HashAlgorithm, string, error) {
+		return drive.HashSHA1, "same", nil
+	}
+
+	var verified vfs.Reader = hashReader{remoteHash: hash}
+	equal, _, err := CompareHashPair(t.Context(), verified, a, b, "file", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Fatal("verified hashes that match must prove equality")
+	}
+
+	var declared vfs.Reader = declaredHashReader{remoteHash: hash}
+	equal, _, err = CompareHashPair(t.Context(), declared, a, b, "file", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Fatal("a declared hash must not prove equality")
+	}
+
+	local := Target{Kind: TargetLocal, LocalPath: t.TempDir()}
+	equal, _, err = CompareHashPair(t.Context(), declared, local, b, "file", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Fatal("a declared remote hash must not prove a local file unchanged")
 	}
 }
 

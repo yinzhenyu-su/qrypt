@@ -135,6 +135,15 @@ func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlg
 	return drive.RemoteHashFromExtra(entry, "md5", drive.HashMD5)
 }
 
+// RemoteHashInfo reports the provider-computed MD5 from the listing.
+func (d *Driver) RemoteHashInfo(ctx context.Context, entry drive.Entry) (drive.RemoteHashInfo, error) {
+	algorithm, hash, err := d.RemoteHash(ctx, entry)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	return drive.RemoteHashInfo{Algorithm: algorithm, Hash: hash, Verified: true, Source: drive.RemoteHashSourceProvider}, nil
+}
+
 func (d *Driver) resolvePath(id string) string {
 	if id == "" || id == "/" || id == "0" {
 		return d.rootPath

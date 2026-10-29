@@ -231,6 +231,15 @@ func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlg
 	return drive.HashSHA1, f.ContentHash, nil
 }
 
+// RemoteHashInfo reports the provider-computed SHA1 from the listing.
+func (d *Driver) RemoteHashInfo(ctx context.Context, entry drive.Entry) (drive.RemoteHashInfo, error) {
+	algorithm, hash, err := d.RemoteHash(ctx, entry)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	return drive.RemoteHashInfo{Algorithm: algorithm, Hash: hash, Verified: true, Source: drive.RemoteHashSourceProvider}, nil
+}
+
 func (d *Driver) ResolvePath(ctx context.Context, path string) (string, error) {
 	path = strings.Trim(path, "/")
 	if path == "" {

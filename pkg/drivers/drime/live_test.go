@@ -178,8 +178,11 @@ func TestLiveDrime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
-	if _, err := d.ListShares(ctx, drive.ShareListRequest{}); !isShareCode(err, drive.ShareErrUnsupported) {
-		t.Fatalf("ListShares = %v, want unsupported", err)
+	if _, ok := any(d).(drive.ShareLister); ok {
+		t.Fatal("drime must not advertise account-wide link listing")
+	}
+	if _, ok := any(d).(drive.ShareSavePoller); ok {
+		t.Fatal("drime saves are synchronous and must not advertise polling")
 	}
 	defer func() {
 		if err := d.DeleteShare(ctx, share.LinkID); err != nil {

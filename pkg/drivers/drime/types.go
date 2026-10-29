@@ -214,11 +214,7 @@ func (e apiEntry) entry(parentID string) drive.Entry {
 		rawExtra["file_hash"] = *e.FileHash
 	}
 	plain := decodeRemoteName(e.Name)
-	var extra any = rawExtra
-	if plain != e.Name {
-		extra = drive.EntryExtraWrapper{RemoteName: e.Name, Raw: rawExtra}
-	}
-	return drive.Entry{
+	return drive.WrapRemoteName(drive.Entry{
 		ID:        strconv.FormatInt(e.ID, 10),
 		ParentID:  parent,
 		Name:      plain,
@@ -227,8 +223,8 @@ func (e apiEntry) entry(parentID string) drive.Entry {
 		ModTime:   mod,
 		CreatedAt: parseAPITime(e.CreatedAt),
 		UpdatedAt: parseAPITime(e.UpdatedAt),
-		Extra:     extra,
-	}
+		Extra:     rawExtra,
+	}, e.Name)
 }
 
 func (e apiEntry) isDir() bool { return e.Type == itemTypeFolder }

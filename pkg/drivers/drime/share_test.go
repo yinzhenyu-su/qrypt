@@ -22,6 +22,15 @@ func TestSharePolicyAndLinkManagement(t *testing.T) {
 	if policy.List || !policy.Update || policy.Passcode != drive.PolicyOptional || !policy.Selection {
 		t.Fatalf("policy = %+v", policy)
 	}
+	if !policy.Download || policy.Edit || policy.Title || policy.Public || policy.MaxEntries != 1 {
+		t.Fatalf("policy option declaration = %+v", policy)
+	}
+	if _, ok := any(d).(drive.ShareLister); ok {
+		t.Fatal("drime must not advertise account-wide link listing")
+	}
+	if _, ok := any(d).(drive.ShareSavePoller); ok {
+		t.Fatal("drime saves are synchronous and must not advertise polling")
+	}
 	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
 		Entries:  []drive.Entry{file.entry("")},
 		Expiry:   7 * 24 * time.Hour,
@@ -49,10 +58,13 @@ func TestSharePolicyAndLinkManagement(t *testing.T) {
 	if _, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{file.entry("")}, VisitLimit: 3}); !isShareCode(err, drive.ShareErrUnsupported) {
 		t.Fatalf("visit-limit error = %v", err)
 	}
-	if _, err := d.ListShares(context.Background(), drive.ShareListRequest{}); !isShareCode(err, drive.ShareErrUnsupported) {
-		t.Fatalf("ListShares error = %v", err)
+	public := true
+	if _, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{file.entry("")}, Public: &public}); !isShareCode(err, drive.ShareErrUnsupported) {
+		t.Fatalf("public error = %v", err)
 	}
-
+	if _, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{file.entry("")}, Edit: &public}); !isShareCode(err, drive.ShareErrUnsupported) {
+		t.Fatalf("edit error = %v", err)
+	}
 	got, err := d.GetShare(context.Background(), share.LinkID)
 	if err != nil {
 		t.Fatalf("GetShare: %v", err)

@@ -176,10 +176,18 @@ func (r *shareRun) saveSelected(ctx context.Context, update task.UpdateFunc, ses
 	// the provider handle without reopening a link that may have expired.
 	r.detail.SelectedEntries = shareSelectedEntries(entries)
 	r.persist(update)
+	destEntry, err := r.destinationEntry(ctx)
+	if err != nil {
+		return drive.ShareSaveOutcome{}, err
+	}
 	request := drive.ShareSaveRequest{
 		Session: session,
 		Entries: entries,
-		Dest:    drive.ShareDestination{Entry: r.detail.ToEntry.toDrive(), Rename: drive.RenameFail},
+		Dest: drive.ShareDestination{
+			Entry:   destEntry,
+			SpaceID: drive.ProviderSpaceID(ctx, r.driver),
+			Rename:  drive.RenameFail,
+		},
 	}
 	request.Normalize()
 	outcome, err := r.saver.SaveShareEntries(ctx, request)
@@ -200,6 +208,26 @@ func (r *shareRun) saveSelected(ctx context.Context, update task.UpdateFunc, ses
 	r.detail.Phase = sharePhaseVerify
 	r.persist(update)
 	return outcome, nil
+}
+
+// destinationEntry rebuilds the save destination. When the persisted entry
+// lost its private metadata, a driver that can resolve entries by id restores
+// it instead of requiring a parent listing.
+func (r *shareRun) destinationEntry(ctx context.Context) (drive.Entry, error) {
+	entry := r.detail.ToEntry.toDrive()
+	if entry.Extra != nil || entry.ID == "" {
+		return entry, nil
+	}
+	resolver, ok := r.driver.(drive.EntryResolver)
+	if !ok {
+		return entry, nil
+	}
+	resolved, err := resolver.Stat(ctx, entry.ID)
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("core: resolve share destination %q: %w", entry.ID, err)
+	}
+	resolved.IsDir = true
+	return resolved, nil
 }
 
 func (r *shareRun) downloadPhase(ctx context.Context, update task.UpdateFunc, fromSave bool) error {

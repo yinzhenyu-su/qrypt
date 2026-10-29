@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -112,20 +113,18 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 		d.setLastError(err)
 		return fmt.Errorf("drime: remove %q: %w", entry.Name, err)
 	}
-	if resp.status() == http.StatusUnprocessableEntity {
-		var body apiErrorBody
-		_ = json.Unmarshal(resp.body, &body)
-		if len(body.Errors["entryIds"]) > 0 {
-			return fmt.Errorf("drime: remove %q: %w", entry.Name, drive.ErrNotFound)
-		}
-		return resp.error("drime: remove")
-	}
 	if !resp.ok() {
-		err := resp.error("drime: remove")
-		if errors.Is(err, drive.ErrNotFound) {
-			return fmt.Errorf("drime: remove %q: %w", entry.Name, drive.ErrNotFound)
+		var opts []drive.HTTPErrorOption
+		if resp.status() == http.StatusUnprocessableEntity {
+			// This endpoint reports an unknown entry id as 422 with an
+			// entryIds field; every other 422 stays invalid-input.
+			var body apiErrorBody
+			_ = json.Unmarshal(resp.body, &body)
+			if len(body.Errors["entryIds"]) > 0 {
+				opts = append(opts, drive.HTTPErrorStatusAsNotFound(http.StatusUnprocessableEntity))
+			}
 		}
-		return err
+		return resp.error("drime: remove", opts...)
 	}
 	var body apiDeleteResponse
 	_ = json.Unmarshal(resp.body, &body)
@@ -188,6 +187,20 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 		return drive.Entry{}, fmt.Errorf("drime: copy %q to %q: %w", src.Name, dstName, err)
 	}
 	return renamed, nil
+}
+
+// Stat resolves one entry by its provider id. It lets Core recover private
+// metadata without listing the parent directory.
+func (d *Driver) Stat(ctx context.Context, id string) (drive.Entry, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return drive.Entry{}, fmt.Errorf("drime: entry id is required: %w", drive.ErrNotFound)
+	}
+	entry, err := d.getEntry(ctx, id, "")
+	if err != nil {
+		return drive.Entry{}, err
+	}
+	return entry, nil
 }
 
 func (d *Driver) getEntry(ctx context.Context, id, parentID string) (drive.Entry, error) {

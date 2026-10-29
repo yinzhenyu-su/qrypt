@@ -107,6 +107,18 @@ func fromHex(ch byte) (byte, bool) {
 	}
 }
 
+// Encode implements drive.RemoteNameCodec with Drime's reversible escape.
+func (d *Driver) Encode(plain string) (string, error) {
+	return encodeRemoteName(plain)
+}
+
+// Decode maps a provider name back to the plain name. ok is false when the
+// remote name was not escaped.
+func (d *Driver) Decode(remote string) (string, bool) {
+	plain := decodeRemoteName(remote)
+	return plain, plain != remote
+}
+
 func (d *Driver) ResolveRemoteName(_ context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	remote, err := encodeRemoteName(plainName)
 	if err != nil {

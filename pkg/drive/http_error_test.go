@@ -89,9 +89,12 @@ func TestHTTPErrorWrapsStableSentinelsByStatus(t *testing.T) {
 		class error
 	}{
 		{http.StatusUnauthorized, drive.ErrAuth},
+		{http.StatusForbidden, drive.ErrPermission},
 		{http.StatusNotFound, drive.ErrNotFound},
+		{http.StatusConflict, drive.ErrConflict},
 		{http.StatusTooManyRequests, drive.ErrRateLimit},
 		{http.StatusBadRequest, drive.ErrInvalidInput},
+		{http.StatusUnprocessableEntity, drive.ErrInvalidInput},
 	}
 	for _, tc := range cases {
 		resp := &http.Response{StatusCode: tc.code, Status: http.StatusText(tc.code)}
@@ -102,10 +105,33 @@ func TestHTTPErrorWrapsStableSentinelsByStatus(t *testing.T) {
 	}
 	resp := &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error"}
 	err := drive.HTTPError("quark: list", nil, resp, nil)
-	for _, sentinel := range []error{drive.ErrAuth, drive.ErrNotFound, drive.ErrRateLimit, drive.ErrInvalidInput} {
+	for _, sentinel := range []error{drive.ErrAuth, drive.ErrPermission, drive.ErrNotFound, drive.ErrConflict, drive.ErrRateLimit, drive.ErrInvalidInput} {
 		if errors.Is(err, sentinel) {
 			t.Errorf("500 error unexpectedly wraps %v: %v", sentinel, err)
 		}
+	}
+}
+
+func TestHTTPErrorMapsStatusWithPerCallOption(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusUnprocessableEntity, Status: "422 Unprocessable Entity"}
+	err := drive.HTTPError("drime: remove", nil, resp, []byte(`{"errors":{"entryIds":["missing"]}}`),
+		drive.HTTPErrorStatusAsNotFound(http.StatusUnprocessableEntity))
+	if !errors.Is(err, drive.ErrNotFound) {
+		t.Fatalf("option did not map 422 to not found: %v", err)
+	}
+	if errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("option left invalid-input classification in place: %v", err)
+	}
+
+	// The option is scoped to one call and one status.
+	defaultErr := drive.HTTPError("drime: create", nil, resp, nil)
+	if !errors.Is(defaultErr, drive.ErrInvalidInput) {
+		t.Fatalf("default 422 = %v, want invalid input", defaultErr)
+	}
+	other := &http.Response{StatusCode: http.StatusConflict, Status: "409 Conflict"}
+	if !errors.Is(drive.HTTPError("drime: remove", nil, other, nil,
+		drive.HTTPErrorStatusAsNotFound(http.StatusUnprocessableEntity)), drive.ErrConflict) {
+		t.Fatal("option changed an unrelated status")
 	}
 }
 

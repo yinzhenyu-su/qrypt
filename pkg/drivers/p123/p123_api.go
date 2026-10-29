@@ -8,8 +8,8 @@ import (
 	"strconv"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httpclient"
-	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
 const listPageLimit = 100
@@ -248,39 +248,34 @@ func (c *client) uploadComplete(ctx context.Context, uploadFileID int64) error {
 // putPart uploads one presigned part. The URL is pre-signed, so no auth header
 // is attached and the caller must supply the exact byte range.
 func (c *client) putPart(ctx context.Context, rawURL string, reader io.ReadSeeker, offset, length int64) error {
-	for attempt := 0; attempt <= httpMaxRetries; attempt++ {
-		if _, err := reader.Seek(offset, io.SeekStart); err != nil {
-			return fmt.Errorf("123: seek part source: %w", err)
+	if _, err := reader.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("123: seek part source: %w", err)
+	}
+	policy := driverutil.RetryPolicy{MaxAttempts: httpMaxRetries + 1}
+	var lastReq *http.Request
+	resp, err := policy.Do(ctx, func(ctx context.Context, attempt int) (*http.Response, error) {
+		if attempt > 0 {
+			if _, err := reader.Seek(offset, io.SeekStart); err != nil {
+				return nil, drive.NonRetryable(fmt.Errorf("123: seek part source: %w", err))
+			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPut, rawURL, io.LimitReader(reader, length))
 		if err != nil {
-			return fmt.Errorf("123: build part request: %w", err)
+			return nil, drive.NonRetryable(fmt.Errorf("123: build part request: %w", err))
 		}
 		req.ContentLength = length
-		resp, err := c.uploadClient.Do(req)
-		if err != nil {
-			if attempt < httpMaxRetries && retryableError(err) {
-				if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
-					return waitErr
-				}
-				continue
-			}
-			return fmt.Errorf("123: upload part: %w", err)
-		}
-		data, readErr := httpclient.ReadBody(resp)
-		if readErr != nil {
-			return fmt.Errorf("123: upload part: read response: %w", readErr)
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
-		}
-		if retryableStatus(resp.StatusCode) && attempt < httpMaxRetries {
-			if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
-				return waitErr
-			}
-			continue
-		}
-		return drive.HTTPError("123: upload part", req, resp, data)
+		lastReq = req
+		return c.uploadClient.Do(req)
+	})
+	if err != nil {
+		return fmt.Errorf("123: upload part: %w", err)
 	}
-	return fmt.Errorf("123: upload part: retries exhausted")
+	data, readErr := httpclient.ReadBody(resp)
+	if readErr != nil {
+		return fmt.Errorf("123: upload part: read response: %w", readErr)
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return drive.HTTPError("123: upload part", lastReq, resp, data)
 }

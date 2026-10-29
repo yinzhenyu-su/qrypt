@@ -29,10 +29,19 @@ const (
 )
 
 // SharePolicy declares what Quark can do with links.
+var (
+	_ drive.ShareManager    = (*Driver)(nil)
+	_ drive.ShareLister     = (*Driver)(nil)
+	_ drive.ShareSaver      = (*Driver)(nil)
+	_ drive.ShareSavePoller = (*Driver)(nil)
+)
+
 func (d *Driver) SharePolicy() drive.SharePolicy {
 	return drive.SharePolicy{
 		Passcode:   drive.PolicyOptional,
 		Expiries:   drive.NeutralShareExpiries(),
+		Title:      true,
+		Public:     true,
 		VisitLimit: true,
 		Update:     true,
 		List:       true,
