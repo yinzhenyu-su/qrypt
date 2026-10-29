@@ -4,6 +4,7 @@ package all
 import (
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/aliyundrive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/baidunetdisk"
+	_ "github.com/yinzhenyu/qrypt/pkg/drivers/drime"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
 	_ "github.com/yinzhenyu/qrypt/pkg/drivers/p115"

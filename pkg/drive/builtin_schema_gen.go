@@ -172,4 +172,20 @@ var builtinParamSpecs = map[string]ParamSpec{
 		},
 		Required: []string{"bucket", "endpoint", "access_key_id", "secret_access_key"},
 	},
+	"drime": {
+		Params: []ParamDef{
+			{Name: "access_token", Type: "string", Required: true, Secret: true, Scope: "credential", Description: "Drime personal access token", DescriptionI18n: map[string]string{"zh-CN": "Drime 个人访问令牌"}, Example: "your-access-token"},
+			{Name: "workspace_id", Type: "int", Scope: "mount", Description: "Workspace ID; 0 is the personal space", DescriptionI18n: map[string]string{"zh-CN": "工作空间 ID；0 表示个人空间"}, Default: "0", Example: "1234"},
+			{Name: "root_path", Type: "string", Scope: "mount", Description: "Directory path used as this mount root", DescriptionI18n: map[string]string{"zh-CN": "作为挂载根的目录路径"}, Default: "/", Example: "/qrypt"},
+			{Name: "root_id", Type: "string", Scope: "mount", Description: "Pre-resolved folder ID; skips root_path resolution", DescriptionI18n: map[string]string{"zh-CN": "预解析的文件夹 ID；设置后跳过 root_path"}, Example: "1032808373"},
+			{Name: "api_base_url", Type: "string", Scope: "both", Description: "Custom Drime API base URL", DescriptionI18n: map[string]string{"zh-CN": "自定义 Drime API 基础 URL"}, Default: "https://app.drime.cloud/api/v1", Example: "https://app.drime.cloud/api/v1"},
+			{Name: "chunk_size", Type: "int", Scope: "mount", Description: "Multipart upload chunk size in MiB (minimum 5)", DescriptionI18n: map[string]string{"zh-CN": "分片上传的块大小（MiB，最小 5）"}, Default: "64", Example: "64"},
+			{Name: "upload_concurrency", Type: "int", Scope: "mount", Description: "Concurrent multipart part uploads", DescriptionI18n: map[string]string{"zh-CN": "分片上传并发数"}, Default: "4", Example: "4"},
+			{Name: "instant_upload", Type: "bool", Scope: "mount", Description: "Verify the provider's stored content and reuse it instead of re-uploading", DescriptionI18n: map[string]string{"zh-CN": "校验通过后复用网盘已有内容，避免重复上传"}, Default: "true"},
+			{Name: "presign_small", Type: "bool", Scope: "mount", Description: "Use presigned single-part uploads below 5 MiB", DescriptionI18n: map[string]string{"zh-CN": "小于 5 MiB 的文件使用预签名直传"}, Default: "false"},
+			{Name: "limit_rate", Type: "int", Scope: "mount", Description: "Limit API requests per second (0 = unlimited)", DescriptionI18n: map[string]string{"zh-CN": "限制 API 请求速率（每秒 N 次，0 表示不限制）"}, Default: "0", Example: "10"},
+			{Name: "hard_delete", Type: "bool", Scope: "mount", Description: "Delete permanently instead of moving to trash", DescriptionI18n: map[string]string{"zh-CN": "永久删除而不是移到回收站"}, Default: "false"},
+		},
+		Required: []string{"access_token"},
+	},
 }

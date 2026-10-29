@@ -189,6 +189,37 @@ qrypt offline fetch 'https://example.com/small.bin' \
 115 任务再重试。`115_open` 用同一个流程，只把 mount 名换成 `115_open`、凭据换成
 `refresh_token`。
 
+### drime
+
+Drime 的冒烟需要个人访问令牌（Settings → Developers → API access tokens，Files 读写权限）
+和一个 `test_enabled = true` 的 mount。测试账号如果没有团队工作空间，先用
+`workspace_id = 0` 跑个人空间，再用一个有 `files.view/create/update/delete` 权限的
+TestWorkSpace 跑 `workspace_id = <id>`。
+
+```bash
+qrypt mount &
+
+# 列目录、范围读、写入
+qrypt fs list /drime
+qrypt fs get /drime/large.bin ./large.bin
+qrypt fs mkdir /drime/qrypt-smoke
+qrypt fs put ./small.bin /drime/qrypt-smoke/small.bin
+
+# 小文件（<5 MiB）与 multipart（>=5 MiB，含中断续传）分别跑一次 probe 的
+# contract/crud/fs/resume/multipart 套件；测试后用 fs rm 清理 qrypt-smoke
+qrypt probe test --mount drime --suite contract
+qrypt probe test --mount drime --suite crud
+qrypt probe test --mount drime --suite fs
+qrypt probe test --mount drime --suite resume
+qrypt probe test --mount drime --suite multipart
+```
+
+检查点：`root_path` 不存在时 mount 必须失败而不是回落到账号根；目录改名后子项仍可列出；
+`share list` 必须返回明确的 unsupported 错误，`share create/show/update/remove` 正常；
+`share receive` 能匿名打开 `https://dri.me/<hash>`、校验密码、浏览子目录并下载一个文件；
+上传的 `file_hash` 和 `client_last_modified` 与本地一致；测试结束后 drime 根目录只剩
+测试前已有的对象。
+
 ## 本地等价命令
 
 ```bash
