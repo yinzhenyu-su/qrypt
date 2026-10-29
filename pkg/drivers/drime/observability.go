@@ -53,8 +53,12 @@ func (d *Driver) Metrics(_ context.Context, since time.Time) ([]drive.MetricEven
 }
 
 var (
-	_ drive.ShareManager  = (*Driver)(nil)
-	_ drive.ShareReceiver = (*Driver)(nil)
-	_ drive.ShareFetcher  = (*Driver)(nil)
-	_ drive.ShareSaver    = (*Driver)(nil)
+	_ drive.ShareManager          = (*Driver)(nil)
+	_ drive.ShareReceiver         = (*Driver)(nil)
+	_ drive.ShareFetcher          = (*Driver)(nil)
+	_ drive.ShareSaver            = (*Driver)(nil)
+	_ drive.ProvenanceHasher      = (*Driver)(nil)
+	_ drive.ProviderSpaceReporter = (*Driver)(nil)
+	_ drive.EntryResolver         = (*Driver)(nil)
+	_ drive.RemoteNameCodec       = (*Driver)(nil)
 )

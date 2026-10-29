@@ -105,22 +105,23 @@ func CompareHashPair(ctx context.Context, fs vfs.Reader, a, b Target, rel string
 		if a.Encrypted || b.Encrypted {
 			return degrade(fmt.Errorf("hash comparison between encrypted mounts is not supported"))
 		}
-		hasher, ok := fs.(vfs.HashProvider)
-		if !ok {
-			return degrade(drive.ErrUnsupported)
-		}
-		algA, hashA, err := hasher.RemoteHash(ctx, JoinVFS(a.VFSPath, rel))
+		infoA, err := remoteHashInfo(ctx, fs, JoinVFS(a.VFSPath, rel))
 		if err != nil {
 			return degrade(err)
 		}
-		algB, hashB, err := hasher.RemoteHash(ctx, JoinVFS(b.VFSPath, rel))
+		infoB, err := remoteHashInfo(ctx, fs, JoinVFS(b.VFSPath, rel))
 		if err != nil {
 			return degrade(err)
 		}
-		if algA != algB {
-			return degrade(fmt.Errorf("hash algorithms differ between sides: %s vs %s", algA, algB))
+		if infoA.Algorithm != infoB.Algorithm {
+			return degrade(fmt.Errorf("hash algorithms differ between sides: %s vs %s", infoA.Algorithm, infoB.Algorithm))
 		}
-		return hashA == hashB, hashA, nil
+		if !infoA.Verified || !infoB.Verified {
+			// A declared hash is advisory only. Treat it as unverified content
+			// rather than letting it prove equality.
+			return false, infoA.Hash, nil
+		}
+		return infoA.Hash == infoB.Hash, infoA.Hash, nil
 	}
 	// Case 2: one side is local. Local files hash as-is; the virtual side
 	// re-encrypts the local plaintext when the mount is encrypted so the
@@ -141,13 +142,15 @@ func CompareHashPair(ctx context.Context, fs vfs.Reader, a, b Target, rel string
 		}
 		return f, info.Size(), nil
 	}
-	hasher, ok := fs.(vfs.HashProvider)
-	if !ok {
-		return degrade(drive.ErrUnsupported)
-	}
-	algorithm, remote, err := hasher.RemoteHash(ctx, JoinVFS(virtual.VFSPath, rel))
+	info, err := remoteHashInfo(ctx, fs, JoinVFS(virtual.VFSPath, rel))
 	if err != nil {
 		return degrade(err)
+	}
+	algorithm, remote := info.Algorithm, info.Hash
+	if !info.Verified {
+		// See CompareTrees: only a verified hash may prove the local and
+		// remote bytes are the same.
+		return false, remote, nil
 	}
 	if virtual.Encrypted {
 		// The remote hash covers encrypted bytes; re-encrypt the local
@@ -174,6 +177,28 @@ func CompareHashPair(ctx context.Context, fs vfs.Reader, a, b Target, rel string
 		return degrade(err)
 	}
 	return localHash == remote, remote, nil
+}
+
+// remoteHashInfo reads a remote hash with provenance. A filesystem that only
+// implements vfs.HashProvider yields a declared hash.
+func remoteHashInfo(ctx context.Context, fs vfs.Reader, path string) (drive.RemoteHashInfo, error) {
+	if provider, ok := fs.(vfs.ProvenanceHashProvider); ok {
+		return provider.RemoteHashInfo(ctx, path)
+	}
+	hasher, ok := fs.(vfs.HashProvider)
+	if !ok {
+		return drive.RemoteHashInfo{}, drive.ErrUnsupported
+	}
+	algorithm, hash, err := hasher.RemoteHash(ctx, path)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	return drive.RemoteHashInfo{
+		Algorithm: algorithm,
+		Hash:      hash,
+		Verified:  false,
+		Source:    drive.RemoteHashSourceDeclared,
+	}, nil
 }
 
 // localFileHash computes a local file's content hash with the given algorithm.

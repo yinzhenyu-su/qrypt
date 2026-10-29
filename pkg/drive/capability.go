@@ -39,8 +39,10 @@ const (
 	// download session for a staged source, letting the caller stream it before
 	// the cloud-side import finishes.
 	CapabilityAcceleratedFetch Capability = "accelerated_fetch"
-	// CapabilityShare means the driver implements ShareManager: create, list,
-	// show, update, and remove links it owns.
+	// CapabilityShare means the driver implements ShareManager: create, show,
+	// update, and remove links it owns. Account-wide listing additionally
+	// requires ShareLister; asynchronous saves additionally require
+	// ShareSavePoller.
 	CapabilityShare Capability = "share"
 	// CapabilityShareReceive means the driver implements ShareReceiver: open a
 	// link and browse its entries.

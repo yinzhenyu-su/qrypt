@@ -583,6 +583,12 @@ func (d *Driver) RemoteHash(ctx context.Context, entry drive.Entry) (drive.HashA
 	return hasher.RemoteHash(ctx, entry)
 }
 
+// RemoteHashInfo preserves the raw backend's provenance: the hash covers the
+// encrypted bytes stored on the drive, so the wrapper adds no new trust.
+func (d *Driver) RemoteHashInfo(ctx context.Context, entry drive.Entry) (drive.RemoteHashInfo, error) {
+	return drive.RemoteHashInfoFor(ctx, d.raw, entry)
+}
+
 // EncryptedHash computes the backend content hash that plaintext would have
 // after encryption with this driver's cipher, using the nonce stored in the
 // remote file header. This lets a client verify "local plaintext matches the

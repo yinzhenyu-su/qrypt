@@ -30,8 +30,82 @@ type EntryRemoteNamer interface {
 // RemoteHasher is an optional backend capability: the drive reports a content
 // hash for a stored file without downloading it. The returned algorithm is
 // one of HashMD5/HashSHA1/HashSHA256; the hash is hex-encoded.
+//
+// A driver that implements only RemoteHasher has its hashes treated as
+// client-declared: upper layers may display them, but must not use them to
+// conclude that content is unchanged. Drivers whose provider computes the hash
+// (or that confirm it against stored bytes) should also implement
+// ProvenanceHasher and report Verified=true.
 type RemoteHasher interface {
 	RemoteHash(ctx context.Context, entry Entry) (HashAlgorithm, string, error)
+}
+
+// RemoteHashSource labels where a remote hash came from.
+type RemoteHashSource string
+
+const (
+	// RemoteHashSourceProvider means the provider computed or confirmed the
+	// hash over the stored bytes.
+	RemoteHashSourceProvider RemoteHashSource = "provider"
+	// RemoteHashSourceVerified means qrypt confirmed the client-declared hash
+	// against the provider's stored bytes, for example with an integrity check.
+	RemoteHashSourceVerified RemoteHashSource = "verified"
+	// RemoteHashSourceDeclared means the hash was supplied by a client and has
+	// not been confirmed by the provider.
+	RemoteHashSourceDeclared RemoteHashSource = "declared"
+)
+
+// RemoteHashInfo is a remote hash plus its provenance. Verified is the single
+// authority bit: only a verified hash may justify skipping a transfer.
+type RemoteHashInfo struct {
+	Algorithm HashAlgorithm    `json:"algorithm"`
+	Hash      string           `json:"hash"`
+	Verified  bool             `json:"verified"`
+	Source    RemoteHashSource `json:"source,omitempty"`
+}
+
+// ProvenanceHasher is the optional extension of RemoteHasher that labels a
+// hash as provider-verified or client-declared. A driver that implements both
+// is queried through ProvenanceHasher; a driver that implements only
+// RemoteHasher is treated as returning declared hashes.
+type ProvenanceHasher interface {
+	RemoteHashInfo(ctx context.Context, entry Entry) (RemoteHashInfo, error)
+}
+
+// RemoteHashInfoFor asks a driver for a hash and normalizes its provenance.
+// A legacy RemoteHasher result is marked declared, never verified, so callers
+// cannot mistake it for an authoritative content check.
+func RemoteHashInfoFor(ctx context.Context, d any, entry Entry) (RemoteHashInfo, error) {
+	if hasher, ok := d.(ProvenanceHasher); ok {
+		info, err := hasher.RemoteHashInfo(ctx, entry)
+		if err != nil {
+			return RemoteHashInfo{}, err
+		}
+		if info.Algorithm == "" || info.Hash == "" {
+			return RemoteHashInfo{}, ErrUnsupported
+		}
+		if info.Source == "" {
+			if info.Verified {
+				info.Source = RemoteHashSourceProvider
+			} else {
+				info.Source = RemoteHashSourceDeclared
+			}
+		}
+		return info, nil
+	}
+	if hasher, ok := d.(RemoteHasher); ok {
+		algorithm, hash, err := hasher.RemoteHash(ctx, entry)
+		if err != nil {
+			return RemoteHashInfo{}, err
+		}
+		return RemoteHashInfo{
+			Algorithm: algorithm,
+			Hash:      hash,
+			Verified:  false,
+			Source:    RemoteHashSourceDeclared,
+		}, nil
+	}
+	return RemoteHashInfo{}, ErrUnsupported
 }
 
 // ServerSideCopier is an optional backend capability: the driver can
@@ -203,6 +277,34 @@ type EntryRawExtraer interface {
 	EntryRawExtra() any
 }
 
+// EntryResolver is an optional provider capability: fetch one entry by its
+// provider id. Core uses it when an entry's private metadata is missing, and
+// falls back to listing when a driver does not implement it.
+type EntryResolver interface {
+	Stat(ctx context.Context, id string) (Entry, error)
+}
+
+// RemoteNameCodec is an optional provider capability for names the backend
+// cannot store unchanged. The plain name is what callers see; the remote form
+// is what the provider stores and what reads, writes, renames, and copies use.
+// A provider whose storage preserves every valid qrypt name must not implement
+// it.
+type RemoteNameCodec interface {
+	Encode(plain string) (remote string, err error)
+	Decode(remote string) (plain string, ok bool)
+}
+
+// WrapRemoteName attaches a provider-side name to an entry while preserving
+// its existing private metadata. Drivers that escape names use this so a
+// listing never leaks the escaped form to callers.
+func WrapRemoteName(entry Entry, remote string) Entry {
+	if remote == "" || remote == entry.Name {
+		return entry
+	}
+	entry.Extra = EntryExtraWrapper{RemoteName: remote, Raw: RawEntryExtra(entry.Extra)}
+	return entry
+}
+
 // EntryExtraWrapper preserves backend metadata when a higher-level driver
 // transforms the public entry name, size, or other visible fields.
 type EntryExtraWrapper struct {
@@ -327,9 +429,18 @@ var ErrAuth = errors.New("drive: authentication required")
 var ErrRateLimit = errors.New("drive: rate limit exceeded")
 
 // ErrInvalidInput is the stable sentinel for request or payload validation
-// failures (HTTP 400, malformed upload results). Retrying never helps;
+// failures (HTTP 400/422, malformed upload results). Retrying never helps;
 // callers can surface it to the user as a data problem.
 var ErrInvalidInput = errors.New("drive: invalid input")
+
+// ErrPermission is the stable sentinel for an authenticated principal that is
+// not allowed to perform the operation (HTTP 403). Retrying never helps.
+var ErrPermission = errors.New("drive: permission denied")
+
+// ErrConflict is the stable sentinel for a state conflict such as an existing
+// destination name or a concurrent mutation (HTTP 409). Retrying usually does
+// not help without changing the request.
+var ErrConflict = errors.New("drive: conflict")
 
 // UnsupportedOperations provides default implementations for Driver methods
 // that a read-only or partial driver intentionally does not advertise in

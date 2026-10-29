@@ -28,6 +28,7 @@ type shareRun struct {
 	driver   drive.Driver
 	receiver drive.ShareReceiver
 	saver    drive.ShareSaver
+	poller   drive.ShareSavePoller
 
 	pollInterval   time.Duration
 	verifyInterval time.Duration
@@ -54,11 +55,13 @@ func (c *Core) newShareRun(ctx context.Context, taskID string) (*shareRun, error
 	// A direct fetch never saves provider-side, so it must not require
 	// ShareSave. Only a task that asked for a cloud destination carries a saver.
 	var saver drive.ShareSaver
+	var poller drive.ShareSavePoller
 	if detail.ToRequested {
 		saver, ok = driver.(drive.ShareSaver)
 		if !ok {
 			return nil, fmt.Errorf("%w: mount %q", ErrShareUnsupported, detail.Mount)
 		}
+		poller, _ = driver.(drive.ShareSavePoller)
 	}
 	run := &shareRun{
 		core:           c,
@@ -67,6 +70,7 @@ func (c *Core) newShareRun(ctx context.Context, taskID string) (*shareRun, error
 		driver:         driver,
 		receiver:       receiver,
 		saver:          saver,
+		poller:         poller,
 		pollInterval:   defaultSharePollInterval,
 		verifyInterval: defaultShareVerifyInterval,
 		verifyAttempts: defaultShareVerifyAttempts,
@@ -176,7 +180,10 @@ func (r *shareRun) runSave(ctx context.Context, update task.UpdateFunc) error {
 // the provider no longer knows the handle, the caller starts a fresh save; the
 // provider's own de-duplication keeps that from creating a second copy.
 func (r *shareRun) resumeSave(ctx context.Context, update task.UpdateFunc, entries []drive.ShareEntry) (drive.ShareSaveOutcome, bool, error) {
-	outcome, err := r.saver.GetShareSave(ctx, r.detail.SaveHandle, entries)
+	if r.poller == nil {
+		return drive.ShareSaveOutcome{}, false, fmt.Errorf("%w: this provider cannot resume an asynchronous save", ErrShareUnsupported)
+	}
+	outcome, err := r.poller.GetShareSave(ctx, r.detail.SaveHandle, entries)
 	if err != nil {
 		if drive.IsShareErrorCode(err, drive.ShareErrNotFound) {
 			// Only an explicitly missing handle may fall back to a new submit.
@@ -219,13 +226,16 @@ func (r *shareRun) resumeSelection(ctx context.Context, update task.UpdateFunc) 
 }
 
 func (r *shareRun) pollSave(ctx context.Context, update task.UpdateFunc, handle string, entries []drive.ShareEntry) (drive.ShareSaveOutcome, error) {
+	if r.poller == nil {
+		return drive.ShareSaveOutcome{}, fmt.Errorf("%w: this provider cannot poll an asynchronous save", ErrShareUnsupported)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return drive.ShareSaveOutcome{}, ctx.Err()
 		case <-time.After(r.pollInterval):
 		}
-		outcome, err := r.saver.GetShareSave(ctx, handle, entries)
+		outcome, err := r.poller.GetShareSave(ctx, handle, entries)
 		if err != nil {
 			return drive.ShareSaveOutcome{}, err
 		}
@@ -353,11 +363,15 @@ func (r *shareRun) verifyDestination(ctx context.Context, outcome drive.ShareSav
 	targets := newShareVerifyTargets()
 	saved := 0
 	for _, item := range outcome.Items {
-		if item.Error != nil || item.Saved == nil {
+		if item.Error != nil {
 			continue
 		}
+		name, id, ok := shareSaveItemIdentity(item)
+		if !ok {
+			return false
+		}
 		saved++
-		if !targets.add(item.Saved.Name, item.Saved.ID) {
+		if !targets.add(name, id) {
 			return false
 		}
 	}
@@ -559,18 +573,34 @@ func shareOutcomeError(outcome drive.ShareSaveOutcome) error {
 	return drive.NewShareError(drive.ShareErrProvider, "", "provider reported a failed save without a reason")
 }
 
+// shareSaveItemIdentity returns the provider identity a saved item carries,
+// either as a full entry or as a lightweight verified identity.
+func shareSaveItemIdentity(item drive.ShareSaveItem) (name, id string, ok bool) {
+	if item.Saved != nil {
+		name, id = item.Saved.Name, item.Saved.ID
+	}
+	if name == "" {
+		name = item.SavedName
+	}
+	if id == "" {
+		id = item.SavedID
+	}
+	return name, id, name != "" || id != ""
+}
+
 func shareSavedEntries(outcome drive.ShareSaveOutcome) []shareSavedEntry {
 	out := make([]shareSavedEntry, 0, len(outcome.Items))
 	for _, item := range outcome.Items {
 		saved := shareSavedEntry{SourceID: item.SourceID, Name: item.SourceName, Size: item.SourceSize}
-		if item.Saved != nil {
-			saved.RemoteID = item.Saved.ID
-			if item.Saved.Name != "" {
-				saved.Name = item.Saved.Name
+		name, id, ok := shareSaveItemIdentity(item)
+		if ok {
+			saved.RemoteID = id
+			if name != "" {
+				saved.Name = name
 			}
-			if item.Saved.Size > 0 {
-				saved.Size = item.Saved.Size
-			}
+		}
+		if item.Saved != nil && item.Saved.Size > 0 {
+			saved.Size = item.Saved.Size
 		}
 		if item.Error != nil {
 			saved.ErrorCode = string(item.Error.Code)

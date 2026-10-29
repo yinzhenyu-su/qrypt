@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
 
 type progressRecorder struct {
@@ -380,6 +381,42 @@ func TestUploadSmallAndProgress(t *testing.T) {
 	if _, _, err := d.RemoteHash(context.Background(), md5Entry); !errors.Is(err, drive.ErrUnsupported) {
 		t.Fatalf("MD5 RemoteHash error = %v", err)
 	}
+
+	info, err := d.RemoteHashInfo(context.Background(), entry)
+	if err != nil {
+		t.Fatalf("RemoteHashInfo: %v", err)
+	}
+	if !info.Verified || info.Source != drive.RemoteHashSourceVerified {
+		t.Fatalf("confirmed hash provenance = %+v, want verified", info)
+	}
+	f.verifyFalse = true
+	info, err = d.RemoteHashInfo(context.Background(), entry)
+	if err != nil {
+		t.Fatalf("RemoteHashInfo unconfirmed: %v", err)
+	}
+	if info.Verified || info.Source != drive.RemoteHashSourceDeclared {
+		t.Fatalf("unconfirmed hash provenance = %+v, want declared", info)
+	}
+
+	resolved, err := d.Stat(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if resolved.ID != entry.ID || resolved.Name != entry.Name {
+		t.Fatalf("Stat = %+v, want %+v", resolved, entry)
+	}
+	if _, err := d.Stat(context.Background(), "999999999"); !errors.Is(err, drive.ErrNotFound) {
+		t.Fatalf("missing Stat error = %v, want ErrNotFound", err)
+	}
+
+	remote, err := d.Encode(` leading\slash.bin `)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	plain, ok := d.Decode(remote)
+	if !ok || plain != ` leading\slash.bin ` {
+		t.Fatalf("Decode(%q) = %q, %v", remote, plain, ok)
+	}
 }
 
 func TestUploadLargeResumeAndStaleHandle(t *testing.T) {
@@ -670,17 +707,17 @@ func TestUploadLargeConcurrent(t *testing.T) {
 }
 
 func TestParseRetryAfter(t *testing.T) {
-	if got := parseRetryAfter("2"); got != 2*time.Second {
+	if got := driverutil.ParseRetryAfter("2"); got != 2*time.Second {
 		t.Fatalf("seconds = %v", got)
 	}
-	if got := parseRetryAfter("0"); got != 0 {
+	if got := driverutil.ParseRetryAfter("0"); got != 0 {
 		t.Fatalf("zero = %v", got)
 	}
-	if got := parseRetryAfter("garbage"); got != 0 {
+	if got := driverutil.ParseRetryAfter("garbage"); got != 0 {
 		t.Fatalf("garbage = %v", got)
 	}
 	future := time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat)
-	if got := parseRetryAfter(future); got <= 0 || got > 3*time.Second {
+	if got := driverutil.ParseRetryAfter(future); got <= 0 || got > 3*time.Second {
 		t.Fatalf("http date = %v", got)
 	}
 }
@@ -790,10 +827,10 @@ func TestInstantUploadFallsBackWhenVerificationFails(t *testing.T) {
 }
 
 func TestRateLimiterConstruction(t *testing.T) {
-	if newRateLimiter(0) != nil {
+	if driverutil.NewRateLimiter(0) != nil {
 		t.Fatal("zero rate should disable the limiter")
 	}
-	if newRateLimiter(2) == nil {
+	if driverutil.NewRateLimiter(2) == nil {
 		t.Fatal("positive rate should create a limiter")
 	}
 }

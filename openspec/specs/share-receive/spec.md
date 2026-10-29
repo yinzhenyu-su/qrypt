@@ -141,8 +141,11 @@ support MUST reject a selector other than `all` before creating a task.
 
 `receive save` MUST create a durable `share_save` task that opens the link, lists the selected
 entries, starts the provider-side save, and persists any opaque provider wait handle before polling.
-Because provider listings are eventually consistent, the task MUST verify the destination within a
-bounded window and MUST NOT report success for entries that never appear.
+The destination MUST carry the destination mount's provider identity and, when the provider scopes
+writes by workspace/drive/space, that provider-space context. Because provider listings are
+eventually consistent, the task MUST verify the destination within a bounded window and MUST NOT
+report success for entries that never appear. A provider MAY return a verified provider identity
+instead of a full entry during the save.
 
 #### Scenario: Save completes and is verified
 
@@ -159,6 +162,11 @@ bounded window and MUST NOT report success for entries that never appear.
 - **WHEN** the saved entries never appear in the target listing inside the bounded window
 - **THEN** the task fails as unverified instead of reporting success
 
+#### Scenario: Save into a provider workspace
+
+- **WHEN** the destination mount writes inside a provider workspace or drive
+- **THEN** qrypt passes that provider-space identity with the destination instead of relying on driver-private entry metadata
+
 #### Scenario: Saving one's own link
 
 - **WHEN** the acting account owns the link and the provider forbids self-save
@@ -167,9 +175,11 @@ bounded window and MUST NOT report success for entries that never appear.
 ### Requirement: Save outcomes are per entry
 
 A save MUST fold provider results per entry: every selected entry MUST appear as a task item with
-either its created entry or its own neutral error. Completion MUST distinguish all entries saved
-(succeeded), some saved (partially failed), and none saved (failed), because providers report
-partial success and some finish synchronously without any wait handle.
+either its created entry or its own neutral error. An item's success MAY carry a verified provider
+identity and name instead of a full entry object; qrypt MUST still verify the destination before
+reporting success. Completion MUST distinguish all entries saved (succeeded), some saved (partially
+failed), and none saved (failed), because providers report partial success and some finish
+synchronously without any wait handle.
 
 #### Scenario: Partial success is not a whole-batch failure
 
@@ -180,6 +190,11 @@ partial success and some finish synchronously without any wait handle.
 
 - **WHEN** the provider finishes the save inside the request and returns no wait handle
 - **THEN** qrypt records the outcome directly and still verifies the destination
+
+#### Scenario: Lightweight verified result
+
+- **WHEN** the provider returns a verified entry identity and name without a full entry object
+- **THEN** qrypt records the item as saved and verifies the destination identity without requiring the provider to re-fetch the full entry
 
 ### Requirement: Fetch downloads with or without saving and cleans up after itself
 

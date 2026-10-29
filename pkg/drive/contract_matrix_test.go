@@ -239,6 +239,83 @@ func TestDebugSnapshotsCarryNoCredentialMaterial(t *testing.T) {
 	}
 }
 
+type managerOnly struct{ *drive.FakeDriver }
+
+func (managerOnly) CreateShare(context.Context, drive.ShareCreateRequest) (drive.Share, error) {
+	return drive.Share{}, nil
+}
+func (managerOnly) GetShare(context.Context, string) (drive.Share, error) { return drive.Share{}, nil }
+func (managerOnly) UpdateShare(context.Context, drive.ShareUpdateRequest) (drive.Share, error) {
+	return drive.Share{}, nil
+}
+func (managerOnly) DeleteShare(context.Context, string) error { return nil }
+
+type listerOnly struct{ *drive.FakeDriver }
+
+func (listerOnly) ListShares(context.Context, drive.ShareListRequest) (drive.SharePage, error) {
+	return drive.SharePage{}, nil
+}
+
+type saveOnly struct{ *drive.FakeDriver }
+
+func (saveOnly) SaveShareEntries(context.Context, drive.ShareSaveRequest) (drive.ShareSaveOutcome, error) {
+	return drive.ShareSaveOutcome{}, nil
+}
+
+type pollOnly struct{ *drive.FakeDriver }
+
+func (pollOnly) GetShareSave(context.Context, string, []drive.ShareEntry) (drive.ShareSaveOutcome, error) {
+	return drive.ShareSaveOutcome{}, nil
+}
+
+type spaceReporter struct {
+	*drive.FakeDriver
+	id string
+}
+
+func (s spaceReporter) ProviderSpaceID(context.Context) (string, error) { return s.id, nil }
+
+func TestOptionalContractSurfacesAreIndependent(t *testing.T) {
+	var _ drive.ShareManager = managerOnly{}
+	var _ drive.ShareLister = listerOnly{}
+	var _ drive.ShareSaver = saveOnly{}
+	var _ drive.ShareSavePoller = pollOnly{}
+
+	if _, ok := any(managerOnly{}).(drive.ShareLister); ok {
+		t.Fatal("a manager without a list endpoint must not satisfy ShareLister")
+	}
+	if _, ok := any(saveOnly{}).(drive.ShareSavePoller); ok {
+		t.Fatal("a synchronous saver must not satisfy ShareSavePoller")
+	}
+	if _, ok := any(pollOnly{}).(drive.ShareSaver); ok {
+		t.Fatal("a poller must not satisfy ShareSaver without a submit method")
+	}
+
+	policy := drive.SharePolicy{Expiries: []time.Duration{drive.ShareExpiryPermanent}}
+	if err := policy.ValidateCreateRequest(drive.ShareCreateRequest{Title: "release"}); err == nil {
+		t.Fatal("pre-call validation accepted an unsupported title")
+	}
+	if err := (drive.SharePolicy{Expiries: []time.Duration{drive.ShareExpiryPermanent}, MaxEntries: 1}).
+		ValidateCreateRequest(drive.ShareCreateRequest{Entries: []drive.Entry{{ID: "a"}, {ID: "b"}}}); err == nil {
+		t.Fatal("pre-call validation accepted too many entries")
+	}
+
+	if got := drive.ProviderSpaceID(context.Background(), spaceReporter{FakeDriver: drive.NewFakeDriver(), id: "ws-7"}); got != "ws-7" {
+		t.Fatalf("provider space = %q, want ws-7", got)
+	}
+	if got := drive.ProviderSpaceID(context.Background(), drive.NewFakeDriver()); got != "" {
+		t.Fatalf("driver without a space reported %q", got)
+	}
+
+	entry := drive.WrapRemoteName(drive.Entry{Name: "plain", Extra: map[string]any{"id": "raw"}}, "qrypt~plain")
+	if got, ok := drive.EntryRemoteName(entry); !ok || got != "qrypt~plain" {
+		t.Fatalf("remote name = %q, %v", got, ok)
+	}
+	if raw, ok := drive.EntryRawExtra(entry).(map[string]any); !ok || raw["id"] != "raw" {
+		t.Fatalf("raw extra = %#v", drive.EntryRawExtra(entry))
+	}
+}
+
 // Guard against accidental expansion of the public capability set: adding a
 // new capability is a cross-cutting change that must be deliberate (new
 // interface + declarations in every driver + matrix coverage).

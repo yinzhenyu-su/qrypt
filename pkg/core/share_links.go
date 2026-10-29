@@ -52,6 +52,7 @@ const defaultShareLinkTimeout = 30 * time.Second
 type shareSurface struct {
 	mount   vfs.MountInfo
 	manager drive.ShareManager
+	lister  drive.ShareLister
 	policy  drive.SharePolicy
 }
 
@@ -118,9 +119,12 @@ func (c *Core) ListShareLinks(ctx context.Context, req ShareLinkListRequest) (dr
 	if err := surface.policy.ValidateListRequest(drive.ShareListRequest{}); err != nil {
 		return drive.SharePage{}, shareOptionError(err)
 	}
+	if surface.lister == nil {
+		return drive.SharePage{}, shareOptionError(drive.NewShareError(drive.ShareErrUnsupported, "", "this provider does not list links"))
+	}
 	callCtx, cancel := context.WithTimeout(ctx, c.shareLinkTimeout())
 	defer cancel()
-	page, err := surface.manager.ListShares(callCtx, drive.ShareListRequest{
+	page, err := surface.lister.ListShares(callCtx, drive.ShareListRequest{
 		Cursor:         req.Cursor,
 		Limit:          req.Limit,
 		IncludeExpired: req.IncludeExpired,
@@ -292,7 +296,8 @@ func (c *Core) resolveShareSurface(mount string) (shareSurface, error) {
 	if !ok {
 		return shareSurface{}, fmt.Errorf("%w: mount %q", ErrShareUnsupported, name)
 	}
-	return shareSurface{mount: info, manager: manager, policy: drive.SharePolicyFor(driver)}, nil
+	lister, _ := driver.(drive.ShareLister)
+	return shareSurface{mount: info, manager: manager, lister: lister, policy: drive.SharePolicyFor(driver)}, nil
 }
 
 // resolveManagedShare resolves a user-facing id (native id, link id, or URL) to
@@ -306,8 +311,8 @@ func (c *Core) resolveManagedShare(ctx context.Context, surface shareSurface, id
 	if getErr == nil && share.NativeID != "" {
 		return share, nil
 	}
-	if surface.policy.List {
-		if found, err := findShareByID(ctx, surface.manager, id); err == nil && found != nil {
+	if surface.policy.List && surface.lister != nil {
+		if found, err := findShareByID(ctx, surface.lister, id); err == nil && found != nil {
 			return *found, nil
 		}
 	}
@@ -320,14 +325,14 @@ func (c *Core) resolveManagedShare(ctx context.Context, surface shareSurface, id
 // findShareByID pages through the account's links looking for one identity.
 // The page bound keeps a misbehaving provider from turning a lookup into an
 // unbounded scan.
-func findShareByID(ctx context.Context, manager drive.ShareManager, id string) (*drive.Share, error) {
+func findShareByID(ctx context.Context, lister drive.ShareLister, id string) (*drive.Share, error) {
 	const (
 		maxPages = 20
 		pageSize = 100
 	)
 	cursor := ""
 	for page := 0; page < maxPages; page++ {
-		result, err := manager.ListShares(ctx, drive.ShareListRequest{Cursor: cursor, Limit: pageSize, IncludeExpired: true})
+		result, err := lister.ListShares(ctx, drive.ShareListRequest{Cursor: cursor, Limit: pageSize, IncludeExpired: true})
 		if err != nil {
 			return nil, err
 		}

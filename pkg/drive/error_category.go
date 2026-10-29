@@ -58,8 +58,12 @@ func ErrorCategory(err error) string {
 		return ErrorCategoryUnsupported
 	case errors.Is(err, ErrAuth):
 		return ErrorCategoryAuth
+	case errors.Is(err, ErrPermission):
+		return ErrorCategoryPermission
 	case errors.Is(err, ErrRateLimit):
 		return ErrorCategoryRateLimit
+	case errors.Is(err, ErrConflict):
+		return ErrorCategoryConflict
 	case errors.Is(err, ErrInvalidInput):
 		return ErrorCategoryInvalidRequest
 	case isNetTimeout(err):

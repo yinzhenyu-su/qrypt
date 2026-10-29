@@ -26,6 +26,29 @@ func (v *VFS) RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm,
 	return algorithm, hash, nil
 }
 
+// RemoteHashInfo is the provenance-aware version of RemoteHash. A backend
+// that implements only drive.RemoteHasher yields a declared hash.
+func (v *VFS) RemoteHashInfo(ctx context.Context, path string) (drive.RemoteHashInfo, error) {
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	return drive.RemoteHashInfoFor(ctx, v.driver, entry)
+}
+
+// RemoteHashInfo is the namespace-level version: it resolves the path to its
+// mount and delegates to that mount's backend.
+func (n *Namespace) RemoteHashInfo(ctx context.Context, path string) (drive.RemoteHashInfo, error) {
+	mount, rest, _, err := n.resolve(path)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	if mount == nil {
+		return drive.RemoteHashInfo{}, drive.ErrUnsupported
+	}
+	return mount.RemoteHashInfo(ctx, rest)
+}
+
 // RemoteHash is the namespace-level version: it resolves the path to its
 // mount and delegates to that mount's backend.
 func (n *Namespace) RemoteHash(ctx context.Context, path string) (drive.HashAlgorithm, string, error) {

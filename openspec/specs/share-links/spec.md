@@ -66,8 +66,10 @@ timeout instead of blocking indefinitely.
 ### Requirement: Links expose provider-neutral policy options
 
 Link creation MUST accept an expiry over the neutral set (`1d`, `7d`, `30d`, `forever`), an optional
-passcode (explicit or locally generated), an optional visit limit, and an optional name. Options a
-provider cannot honor MUST be rejected before the provider call rather than silently ignored.
+passcode (explicit or locally generated), an optional visit limit, an optional name, optional
+download and edit permissions, and an optional public/private mode. It MUST also honor a provider's
+maximum number of entries per link. Options a provider cannot honor MUST be rejected before the
+provider call rather than silently ignored.
 
 #### Scenario: Passcode link
 
@@ -79,17 +81,29 @@ provider cannot honor MUST be rejected before the provider call rather than sile
 - **WHEN** a user creates a link with `--expires forever` and no passcode
 - **THEN** the link opens without a passcode and has no expiry
 
+#### Scenario: Download and edit permissions
+
+- **WHEN** a user creates a link with download or edit permissions enabled or disabled
+- **THEN** the provider receives those permission choices and `show` reports the resulting policy
+
 #### Scenario: Unsupported option is rejected
 
 - **WHEN** a user requests a visit limit from a provider that does not support it
 - **THEN** qrypt returns a structured error and creates no link
 
+#### Scenario: Multiple entries exceed the provider limit
+
+- **WHEN** a user requests a single link for more entries than the provider supports
+- **THEN** qrypt rejects the request before the provider call and reports the supported maximum
+
 ### Requirement: The driver declares which link policies it supports
 
 Each driver MUST declare a share policy: whether a passcode is required, optional, or unsupported;
-which expiries it accepts; whether visit limits and updates exist; and whether it can list the
-user's links. The system MUST validate a request against that declaration before any provider call,
-and MUST report an unsupported option instead of silently dropping it.
+which expiries it accepts; whether title, visit limits, public/private mode, download permission, and
+edit permission exist; the maximum number of entries per link; whether updates exist; whether it can
+list the user's links; and whether saves are synchronous or pollable. The system MUST validate a
+request against that declaration before any provider call, and MUST report an unsupported option
+instead of silently dropping it.
 
 #### Scenario: A provider that requires a passcode
 
@@ -105,6 +119,11 @@ and MUST report an unsupported option instead of silently dropping it.
 
 - **WHEN** a user requests `--limit-visits` on a provider that cannot enforce it
 - **THEN** qrypt rejects the request rather than ignoring the limit
+
+#### Scenario: A provider without download or edit controls
+
+- **WHEN** a user requests a download or edit permission change that the provider cannot express
+- **THEN** qrypt rejects the request before creating or updating the link
 
 #### Scenario: A provider that cannot list links
 

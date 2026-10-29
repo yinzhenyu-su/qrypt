@@ -39,18 +39,20 @@ func TestShareTypesJSONRoundTrip(t *testing.T) {
 			Share: Share{NativeID: "n", LinkID: "abc", URL: "u", Title: "t"},
 		},
 		"entry": ShareEntry{Entry: entry, Ticket: "ticket", RootID: "root"},
-		"dest":  ShareDestination{Entry: saved, Rename: RenameAuto},
+		"dest":  ShareDestination{Entry: saved, SpaceID: "ws1", Rename: RenameAuto},
 		"outcome": ShareSaveOutcome{
 			Handle: "handle", State: SaveStatePartial, Progress: 0.5,
 			Items: []ShareSaveItem{
 				{SourceID: "f1", Saved: &saved},
-				{SourceID: "f2", Error: NewShareError(ShareErrQuota, "32003", "no space")},
+				{SourceID: "f2", SavedID: "n2", SavedName: "b.bin", Verified: true},
+				{SourceID: "f3", Error: NewShareError(ShareErrQuota, "32003", "no space")},
 			},
 		},
 		"policy": SharePolicy{
 			Passcode: PolicyRequired,
 			Expiries: []time.Duration{ShareExpiryDay, ShareExpiryPermanent},
-			Update:   true, List: true,
+			Title:    true, Public: true, Download: true, Edit: true, MaxEntries: 3,
+			Update: true, List: true,
 			Rename: ShareRenameSupport{Auto: true},
 		},
 		"target": DownloadTarget{URL: "https://dl", ExpiresAt: now, Size: 7, Headers: map[string]string{"x-share-token": "t"}},
@@ -78,7 +80,8 @@ func TestShareTypesJSONRoundTrip(t *testing.T) {
 }
 
 func isZeroSharePolicy(p SharePolicy) bool {
-	return p.Passcode == "" && len(p.Expiries) == 0 && !p.VisitLimit && !p.Update && !p.List &&
+	return p.Passcode == "" && len(p.Expiries) == 0 && !p.Title && !p.Public && !p.Download &&
+		!p.Edit && !p.VisitLimit && !p.Update && !p.List && p.MaxEntries == 0 &&
 		p.Rename == (ShareRenameSupport{})
 }
 
@@ -200,6 +203,28 @@ func TestSharePolicyValidatesCreateOptions(t *testing.T) {
 	if err := (SharePolicy{List: true}).ValidateListRequest(ShareListRequest{}); err != nil {
 		t.Fatalf("declared listing rejected: %v", err)
 	}
+
+	expiries := []time.Duration{ShareExpiryPermanent}
+	if err := (SharePolicy{Expiries: expiries}).ValidateCreateRequest(ShareCreateRequest{Title: "release"}); err == nil {
+		t.Fatal("title was accepted by a provider without titles")
+	}
+	yes := true
+	for name, req := range map[string]ShareCreateRequest{
+		"public":   {Public: &yes},
+		"download": {Download: &yes},
+		"edit":     {Edit: &yes},
+	} {
+		if err := (SharePolicy{Expiries: expiries}).ValidateCreateRequest(req); err == nil {
+			t.Fatalf("%s option was accepted by a provider without it", name)
+		}
+	}
+	limited := SharePolicy{Expiries: expiries, MaxEntries: 1, Title: true, Public: true, Download: true, Edit: true}
+	if err := limited.ValidateCreateRequest(ShareCreateRequest{Entries: []Entry{{ID: "a"}, {ID: "b"}}}); err == nil {
+		t.Fatal("multi-entry request exceeded the declared maximum")
+	}
+	if err := limited.ValidateCreateRequest(ShareCreateRequest{Entries: []Entry{{ID: "a"}}, Title: "t", Public: &yes, Download: &yes, Edit: &yes}); err != nil {
+		t.Fatalf("declared options rejected: %v", err)
+	}
 }
 
 func TestSharePolicyValidatesUpdatesAndSaves(t *testing.T) {
@@ -219,6 +244,20 @@ func TestSharePolicyValidatesUpdatesAndSaves(t *testing.T) {
 	public := true
 	if err := mandatory.ValidateUpdateRequest(ShareUpdateRequest{ID: "x", Public: &public}); err == nil {
 		t.Fatal("public update accepted by a mandatory-passcode policy")
+	}
+	title := "release"
+	if err := mandatory.ValidateUpdateRequest(ShareUpdateRequest{ID: "x", Title: &title}); err == nil {
+		t.Fatal("title update accepted by a provider without titles")
+	}
+	yes := true
+	for name, req := range map[string]ShareUpdateRequest{
+		"public":   {ID: "x", Public: &yes},
+		"download": {ID: "x", Download: &yes},
+		"edit":     {ID: "x", Edit: &yes},
+	} {
+		if err := mandatory.ValidateUpdateRequest(req); err == nil {
+			t.Fatalf("%s update accepted by a provider without it", name)
+		}
 	}
 
 	noOverwrite := SharePolicy{Expiries: []time.Duration{ShareExpiryPermanent}, Rename: ShareRenameSupport{Auto: true}}

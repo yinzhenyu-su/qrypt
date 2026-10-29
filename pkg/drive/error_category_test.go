@@ -34,6 +34,8 @@ func TestErrorCategory(t *testing.T) {
 		{name: "invalid input sentinel", err: fmt.Errorf("%w: bad payload", ErrInvalidInput), want: ErrorCategoryInvalidRequest},
 		{name: "exists", err: fmt.Errorf("wrapped: %w", fs.ErrExist), want: ErrorCategoryConflict},
 		{name: "permission sentinel", err: os.ErrPermission, want: ErrorCategoryPermission},
+		{name: "drive permission sentinel", err: fmt.Errorf("quark: %w", ErrPermission), want: ErrorCategoryPermission},
+		{name: "drive conflict sentinel", err: fmt.Errorf("quark: %w", ErrConflict), want: ErrorCategoryConflict},
 		{name: "path permission", err: &fs.PathError{Op: "open", Path: "/tmp/secret", Err: os.ErrPermission}, want: ErrorCategoryPermission},
 		{name: "auth text", err: fmt.Errorf("quark list: HTTP 401 unauthorized"), want: ErrorCategoryAuth},
 		{name: "rate limit text", err: fmt.Errorf("upload: too many requests 429"), want: ErrorCategoryRateLimit},

@@ -2,6 +2,7 @@ package drive
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -56,9 +57,16 @@ const (
 type SharePolicy struct {
 	Passcode   PolicySupport   `json:"passcode"`
 	Expiries   []time.Duration `json:"expiries,omitempty"`
+	Title      bool            `json:"title,omitempty"`
+	Public     bool            `json:"public,omitempty"`
+	Download   bool            `json:"download,omitempty"`
+	Edit       bool            `json:"edit,omitempty"`
 	VisitLimit bool            `json:"visit_limit,omitempty"`
 	Update     bool            `json:"update,omitempty"`
 	List       bool            `json:"list,omitempty"`
+	// MaxEntries is the provider's maximum entries per link. Zero means no
+	// declared limit.
+	MaxEntries int `json:"max_entries,omitempty"`
 	// Selection means the provider exposes enough metadata (names and sizes)
 	// for the neutral all/largest/glob selection to be applied. A provider that
 	// cannot enumerate that metadata rejects any selector other than all.
@@ -111,6 +119,21 @@ func (p SharePolicy) ValidateCreateRequest(req ShareCreateRequest) error {
 	if req.VisitLimit > 0 && !p.VisitLimit {
 		return NewShareError(ShareErrUnsupported, "", "this provider does not support visit limits")
 	}
+	if strings.TrimSpace(req.Title) != "" && !p.Title {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not support link titles")
+	}
+	if req.Public != nil && !p.Public {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not support public/private links")
+	}
+	if req.Download != nil && !p.Download {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not control download permission")
+	}
+	if req.Edit != nil && !p.Edit {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not control edit permission")
+	}
+	if p.MaxEntries > 0 && len(req.Entries) > p.MaxEntries {
+		return NewShareError(ShareErrUnsupported, "", fmt.Sprintf("this provider allows at most %d entries per link", p.MaxEntries))
+	}
 	return nil
 }
 
@@ -129,8 +152,22 @@ func (p SharePolicy) ValidateUpdateRequest(req ShareUpdateRequest) error {
 			}
 		}
 	}
-	if req.Public != nil && *req.Public && p.Passcode == PolicyRequired {
-		return NewShareError(ShareErrUnsupported, "", "this provider always requires a passcode")
+	if req.Public != nil {
+		if !p.Public {
+			return NewShareError(ShareErrUnsupported, "", "this provider does not support public/private links")
+		}
+		if *req.Public && p.Passcode == PolicyRequired {
+			return NewShareError(ShareErrUnsupported, "", "this provider always requires a passcode")
+		}
+	}
+	if req.Title != nil && strings.TrimSpace(*req.Title) != "" && !p.Title {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not support link titles")
+	}
+	if req.Download != nil && !p.Download {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not control download permission")
+	}
+	if req.Edit != nil && !p.Edit {
+		return NewShareError(ShareErrUnsupported, "", "this provider does not control edit permission")
 	}
 	if req.Expiry != nil && !p.SupportsExpiry(*req.Expiry) {
 		return NewShareError(ShareErrUnsupported, "", "this provider does not accept that expiry")
@@ -159,6 +196,28 @@ func (p SharePolicy) ValidateSaveRequest(req ShareSaveRequest) error {
 // declare its link surface.
 type SharePolicyReporter interface {
 	SharePolicy() SharePolicy
+}
+
+// ProviderSpaceReporter is an optional interface a provider implements when
+// writes are scoped to a provider-side workspace, drive, or space. Core passes
+// the identity with a share-save destination instead of asking the provider to
+// read driver-private entry metadata.
+type ProviderSpaceReporter interface {
+	ProviderSpaceID(ctx context.Context) (string, error)
+}
+
+// ProviderSpaceID reports a driver's provider-space identity, or the empty
+// string when the driver does not scope writes that way.
+func ProviderSpaceID(ctx context.Context, d Driver) string {
+	reporter, ok := d.(ProviderSpaceReporter)
+	if !ok {
+		return ""
+	}
+	id, err := reporter.ProviderSpaceID(ctx)
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // SharePolicyFor reports a driver's declared share policy. A driver that does
@@ -264,6 +323,11 @@ type ShareCreateRequest struct {
 	Expiry     time.Duration `json:"expiry,omitempty"`
 	Passcode   string        `json:"passcode,omitempty"`
 	VisitLimit int           `json:"visit_limit,omitempty"`
+	// Public, Download, and Edit are nil when the caller did not request a
+	// value, so a provider can keep its own default instead of guessing.
+	Public   *bool `json:"public,omitempty"`
+	Download *bool `json:"download,omitempty"`
+	Edit     *bool `json:"edit,omitempty"`
 }
 
 // ShareListRequest pages through the acting account's links. Cursor is opaque.
@@ -286,13 +350,17 @@ type ShareUpdateRequest struct {
 	Expiry   *time.Duration `json:"expiry,omitempty"`
 	Passcode *string        `json:"passcode,omitempty"`
 	Public   *bool          `json:"public,omitempty"`
+	Download *bool          `json:"download,omitempty"`
+	Edit     *bool          `json:"edit,omitempty"`
 }
 
-// ShareDestination is where a save writes: the resolved destination directory
-// (Entry.Extra may carry a drive or space identity) plus the collision policy.
+// ShareDestination is where a save writes: the resolved destination directory,
+// the provider-space identity when the provider scopes writes by workspace,
+// drive, or space, and the collision policy.
 type ShareDestination struct {
-	Entry  Entry        `json:"entry"`
-	Rename RenamePolicy `json:"rename,omitempty"`
+	Entry   Entry        `json:"entry"`
+	SpaceID string       `json:"space_id,omitempty"`
+	Rename  RenamePolicy `json:"rename,omitempty"`
 }
 
 // ShareSaveRequest asks a provider to copy share entries into the user's drive.
@@ -320,12 +388,17 @@ const (
 	SaveStateFailed    SaveState = "failed"
 )
 
-// ShareSaveItem is one entry's outcome. Saved is nil when the entry failed.
+// ShareSaveItem is one entry's outcome. Saved may be nil when the provider
+// reports only a verified identity (SavedID/SavedName); Error is set when the
+// entry failed.
 type ShareSaveItem struct {
 	SourceID   string      `json:"source_id"`
 	SourceName string      `json:"source_name,omitempty"`
 	SourceSize int64       `json:"source_size,omitempty"`
 	Saved      *Entry      `json:"saved,omitempty"`
+	SavedID    string      `json:"saved_id,omitempty"`
+	SavedName  string      `json:"saved_name,omitempty"`
+	Verified   bool        `json:"verified,omitempty"`
 	Error      *ShareError `json:"error,omitempty"`
 }
 
@@ -371,13 +444,20 @@ type ShareLinkParser interface {
 // ShareManager is an optional provider capability for links the acting account
 // owns. It is declared with CapabilityShare; individual methods may still
 // return a ShareError with ShareErrUnsupported for options or operations the
-// policy does not declare.
+// policy does not declare. Account-wide listing is a separate optional
+// interface so a provider without a list endpoint does not implement a stub.
 type ShareManager interface {
 	CreateShare(ctx context.Context, req ShareCreateRequest) (Share, error)
-	ListShares(ctx context.Context, req ShareListRequest) (SharePage, error)
 	GetShare(ctx context.Context, id string) (Share, error)
 	UpdateShare(ctx context.Context, req ShareUpdateRequest) (Share, error)
 	DeleteShare(ctx context.Context, id string) error
+}
+
+// ShareLister is the optional account-wide link listing capability. Core
+// requires SharePolicy.List as well; the interface alone is not enough to
+// promise the provider exposes a list endpoint.
+type ShareLister interface {
+	ListShares(ctx context.Context, req ShareListRequest) (SharePage, error)
 }
 
 // ShareReceiver is an optional provider capability: open a link and browse it.
@@ -389,9 +469,15 @@ type ShareReceiver interface {
 
 // ShareSaver is an optional provider capability: copy share content into the
 // user's drive. It is declared with CapabilityShareSave. Implementations may
-// complete synchronously (Handle empty) or asynchronously (poll GetShareSave).
+// complete synchronously (Handle empty) or asynchronously (also implement
+// ShareSavePoller).
 type ShareSaver interface {
 	SaveShareEntries(ctx context.Context, req ShareSaveRequest) (ShareSaveOutcome, error)
+}
+
+// ShareSavePoller is the optional extension for asynchronous saves. A
+// synchronous provider omits it and never has to implement a stub.
+type ShareSavePoller interface {
 	// GetShareSave polls a provider save. Entries are the source entries the
 	// save was asked to copy; passing them lets a provider that reports only
 	// destination FIDs still return one result per selected entry, including

@@ -556,3 +556,35 @@ func (d *Driver) RemoteHash(_ context.Context, entry drive.Entry) (drive.HashAlg
 	}
 	return drive.HashSHA256, hash, nil
 }
+
+// RemoteHashInfo confirms the listing's client-declared file hash with the
+// provider before marking it verified. A declaration that the provider cannot
+// confirm stays advisory so sync never treats it as authoritative.
+func (d *Driver) RemoteHashInfo(ctx context.Context, entry drive.Entry) (drive.RemoteHashInfo, error) {
+	algorithm, hash, err := d.RemoteHash(ctx, entry)
+	if err != nil {
+		return drive.RemoteHashInfo{}, err
+	}
+	info := drive.RemoteHashInfo{
+		Algorithm: algorithm,
+		Hash:      hash,
+		Source:    drive.RemoteHashSourceDeclared,
+	}
+	if entry.ID == "" {
+		return info, nil
+	}
+	resp, err := d.cl.post(ctx, "/file-entries/"+url.PathEscape(entry.ID)+"/verify-integrity", map[string]any{"sha256": hash}, nil)
+	if err != nil {
+		return info, nil
+	}
+	var verify apiVerifyResponse
+	if err := json.Unmarshal(resp.body, &verify); err != nil || !verify.Verified {
+		return info, nil
+	}
+	info.Verified = true
+	info.Source = drive.RemoteHashSourceVerified
+	if verify.ServerHash != "" {
+		info.Hash = strings.ToLower(verify.ServerHash)
+	}
+	return info, nil
+}

@@ -34,6 +34,7 @@ type fakeReceiveProvider struct {
 	listCalls int
 	saveCalls []drive.ShareSaveRequest
 	getCalls  int
+	statCalls int
 	// getRunning keeps GetShareSave in the running state for N calls, emulating
 	// a save that is still in flight when a process restarts.
 	getRunning int
@@ -90,6 +91,17 @@ func newFakeReceiveProvider() *fakeReceiveProvider {
 
 func (p *fakeReceiveProvider) Capabilities() []drive.Capability { return p.caps }
 func (p *fakeReceiveProvider) SharePolicy() drive.SharePolicy   { return p.policy }
+
+func (p *fakeReceiveProvider) ProviderSpaceID(context.Context) (string, error) {
+	return "ws-test", nil
+}
+
+func (p *fakeReceiveProvider) Stat(ctx context.Context, id string) (drive.Entry, error) {
+	p.mu.Lock()
+	p.statCalls++
+	p.mu.Unlock()
+	return drive.Entry{ID: id, IsDir: true}, nil
+}
 
 // ParseShareLink recognizes https://fake.test/s/<id>.
 func (p *fakeReceiveProvider) ParseShareLink(raw string) (drive.ShareLink, bool) {
@@ -369,6 +381,12 @@ func TestShareSaveLifecycle(t *testing.T) {
 	if provider.saveCalls[0].Dest.Entry.ID == "" {
 		t.Fatal("destination entry was not resolved")
 	}
+	if provider.saveCalls[0].Dest.SpaceID != "ws-test" {
+		t.Fatalf("destination space = %q, want ws-test", provider.saveCalls[0].Dest.SpaceID)
+	}
+	if provider.statCalls == 0 {
+		t.Fatal("core did not resolve the destination by id when private metadata was missing")
+	}
 	detail, ok := decodeShareDetail(done.Detail)
 	if !ok {
 		t.Fatal("task has no share detail")
@@ -386,6 +404,67 @@ func TestShareSaveLifecycle(t *testing.T) {
 		if item.State != task.ItemStateSucceeded {
 			t.Fatalf("item %s state = %s", item.ItemID, item.State)
 		}
+	}
+}
+
+func TestShareSaveAcceptsLightweightVerifiedIdentity(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeReceiveProvider()
+	if err := provider.Seed(map[string]string{"pics/": "", "pics/a.jpg": "x", "dest/": ""}); err != nil {
+		t.Fatal(err)
+	}
+	seedReceiveFixture(provider)
+	provider.outcome = func(req drive.ShareSaveRequest) (drive.ShareSaveOutcome, error) {
+		items := make([]drive.ShareSaveItem, 0, len(req.Entries))
+		for _, entry := range req.Entries {
+			provider.seed(req.Dest.Entry, entry.Name)
+			items = append(items, drive.ShareSaveItem{
+				SourceID:   entry.ID,
+				SourceName: entry.Name,
+				SourceSize: entry.Size,
+				SavedID:    req.Dest.Entry.ID + "/" + entry.Name,
+				SavedName:  entry.Name,
+				Verified:   true,
+			})
+		}
+		return drive.ShareSaveOutcome{State: drive.SaveStateSucceeded, Items: items}, nil
+	}
+	c := newReceiveCore(t, map[string]*fakeReceiveProvider{"fake": provider}, nil)
+
+	created := createShareSave(t, c, "https://fake.test/s/abc", "/fake/dest", task.OfflineSelection{})
+	done := waitCoreTask(t, c, created.ID)
+	if done.State != task.StateSucceeded {
+		t.Fatalf("state = %s (%v)", done.State, done.Error)
+	}
+	detail, ok := decodeShareDetail(done.Detail)
+	if !ok {
+		t.Fatal("task has no share detail")
+	}
+	if len(detail.Saved) != 2 {
+		t.Fatalf("saved entries = %+v", detail.Saved)
+	}
+	for _, saved := range detail.Saved {
+		if saved.RemoteID == "" || saved.Name == "" || saved.ErrorCode != "" {
+			t.Fatalf("lightweight identity was lost: %+v", saved)
+		}
+	}
+	if detail.Observation == nil || !detail.Observation.DestinationVerified {
+		t.Fatalf("observation = %+v, want verified", detail.Observation)
+	}
+}
+
+func TestShareDestinationFallsBackWithoutEntryResolver(t *testing.T) {
+	run := &shareRun{
+		driver: drive.NewFakeDriver(),
+		detail: shareDetail{ToEntry: shareDestEntry{ID: "dest", Name: "dest"}},
+	}
+	entry, err := run.destinationEntry(context.Background())
+	if err != nil {
+		t.Fatalf("destinationEntry: %v", err)
+	}
+	if entry.ID != "dest" || entry.Name != "dest" {
+		t.Fatalf("destination = %+v, want persisted entry", entry)
 	}
 }
 

@@ -280,6 +280,69 @@ stable list of runtime capabilities. It is the canonical capability inventory
 for VFS-facing behavior. Construction-time hooks such as state-store injection
 and bandwidth limiter installation are intentionally not reported there.
 
+### Hash provenance
+
+`drive.RemoteHasher` is still the compatibility surface, but its hashes are
+treated as **declared**: qrypt may display them, but must not use them to
+conclude that content is unchanged. A provider that computes the hash from
+stored bytes, or that confirms a declared hash with an integrity check,
+implements `drive.ProvenanceHasher`:
+
+```go
+type ProvenanceHasher interface {
+	RemoteHashInfo(ctx context.Context, entry drive.Entry) (drive.RemoteHashInfo, error)
+}
+```
+
+`RemoteHashInfo.Verified` is the authority bit. Sync fails a content match when
+either side's hash is declared, because an unverified hash cannot prove
+equality. Mark `Source` as `provider` when the backend computed the hash and as
+`verified` when qrypt confirmed it (for example with an integrity endpoint).
+`drive.RemoteHashInfoFor` normalizes a legacy driver to `declared`, so a driver
+that has not migrated cannot accidentally claim authority.
+
+### Optional share interfaces
+
+The share surface is intentionally split so a provider implements only what it
+has:
+
+- `drive.ShareManager` — create, show, update, and remove links.
+- `drive.ShareLister` — account-wide link listing. Do not implement a stub that
+  returns unsupported; omit the interface and leave `SharePolicy.List` false.
+- `drive.ShareSaver` — submit a provider-side save.
+- `drive.ShareSavePoller` — poll an asynchronous save. A synchronous provider
+  omits it and returns an empty `Handle`.
+
+Declare every supported option in `SharePolicy` (`Title`, `Public`, `Download`,
+`Edit`, `VisitLimit`, `MaxEntries`, and so on). Core rejects an option the
+policy does not declare before calling the provider, so the driver does not
+silently drop it. A provider that scopes writes by workspace, drive, or space
+implements `drive.ProviderSpaceReporter`; Core passes that identity in
+`ShareDestination.SpaceID`. A save may return a lightweight verified identity
+in `ShareSaveItem.SavedID`/`SavedName`/`Verified` instead of a full `Entry`,
+but Core still verifies the destination listing.
+
+### Entry resolution and remote names
+
+A provider that can fetch one entry by id implements:
+
+```go
+type EntryResolver interface {
+	Stat(ctx context.Context, id string) (drive.Entry, error)
+}
+```
+
+Core uses it when persisted private metadata is missing and otherwise falls
+back to the driver's listing behavior. A missing id must wrap
+`drive.ErrNotFound`.
+
+A provider that cannot store a plain name unchanged implements
+`drive.RemoteNameCodec` (`Encode`/`Decode`) and returns the plain name from
+listings. Use `drive.WrapRemoteName` to preserve existing `Entry.Extra` while
+exposing the provider name through `drive.EntryRemoteName`; reads, writes,
+renames, and copies must use the encoded form, and an encoded name that exceeds
+the provider limit must be rejected before any write.
+
 ### Offline download
 
 A provider that can import a remote source into cloud storage implements
@@ -374,9 +437,12 @@ instead.
 
 Errors crossing layer boundaries must be classifiable with `errors.Is` /
 `errors.As` — never by parsing text. `drive.HTTPError` already wraps the
-right sentinel from the HTTP status (401 → `drive.ErrAuth`, 404 →
-`drive.ErrNotFound`, 429 → `drive.ErrRateLimit`, 400 →
-`drive.ErrInvalidInput`), so most driver errors get it for free. For
+right sentinel from the HTTP status (401 → `drive.ErrAuth`, 403 →
+`drive.ErrPermission`, 404 → `drive.ErrNotFound`, 409 → `drive.ErrConflict`,
+422/400 → `drive.ErrInvalidInput`, 429 → `drive.ErrRateLimit`), so most driver
+errors get it for free. An endpoint where a structured 422 means "missing"
+passes `drive.HTTPErrorStatusAsNotFound(http.StatusUnprocessableEntity)` for
+that call only; every other endpoint keeps invalid-input classification. For
 non-HTTP failures, wrap the sentinel yourself:
 
 ```go
@@ -384,21 +450,26 @@ return fmt.Errorf("quark: %s auth failed: %w: %s", op, drive.ErrAuth, drive.Snip
 ```
 
 Sentinels: `drive.ErrAuth` (credential expired/rejected → refresh and
-retry), `drive.ErrNotFound` (missing object), `drive.ErrRateLimit`
-(back off longer), `drive.ErrInvalidInput` (data/validation problem,
-never retryable), plus `context.Canceled` / `context.DeadlineExceeded`.
-"Retryable" is a derived property (`drive.RetryableCategory`); only
-wrap `drive.NonRetryable` for deterministic failures.
+retry), `drive.ErrPermission` (authenticated but not allowed → never retry),
+`drive.ErrNotFound` (missing object), `drive.ErrConflict` (state conflict,
+usually no retry), `drive.ErrRateLimit` (back off longer),
+`drive.ErrInvalidInput` (data/validation problem, never retryable), plus
+`context.Canceled` / `context.DeadlineExceeded`. "Retryable" is a derived
+property (`drive.RetryableCategory`); only wrap `drive.NonRetryable` for
+deterministic failures.
 
 ### Shared driver infrastructure
 
 Cross-cutting HTTP plumbing lives under `pkg/drivers/internal/driverutil` so drivers do not
 hand-roll the same code: trace buffers and metric field helpers, `httpclient`
 (JSON request construction, response body reading, JSON decoding),
-`uploadsession` (upload session persistence), `pkg/util` (exponential
-backoff) and `internal/httputil` (transport).
-Use these building blocks; keep provider-specific orchestration (auth header
-injection, retry classification, metric reporting) inside the driver.
+`uploadsession` (upload session persistence), and `internal/httputil`
+(transport). `driverutil.RetryPolicy` owns bounded retries: it retries
+transport failures and `5xx`/`429`, honors `Retry-After`, and never retries
+`401`/`403`/`404`/`422`. `driverutil.RateLimiter` owns a per-client API request
+budget; one instance must be created per provider client so concurrent calls
+share it. Use these building blocks; keep provider-specific orchestration
+(auth header injection, metric reporting) inside the driver.
 
 When a missing object is part of normal path resolution, prefer returning a
 typed error that the VFS/mount layer can distinguish from backend failures.
