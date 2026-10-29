@@ -3,14 +3,24 @@ name: Contract Tests
 # Runs the real-netdisk contract suite against a live `qrypt mount` debug
 # server. Never runs on PRs (real provider credentials are required).
 #
-#   manual:  pick the mounts to exercise
-#   nightly: exercises every mount configured in the variable
+#   manual:  pick the mounts to exercise (no input = every configured mount)
+#   nightly: exercises CONTRACT_NIGHTLY_MOUNTS_JSON only
 #
 # Required configuration (repo/org level):
-#   Secret   CONTRACT_CONFIG_TOML_B64 - base64 of a qrypt.toml with real
-#                                       accounts (never printed; GitHub
-#                                       masks it in logs)
-#   Variable CONTRACT_MOUNTS_JSON     - e.g. ["p115","quark"]
+#   Secret   CONTRACT_CONFIG_TOML_B64      - base64 of a qrypt.toml with real
+#                                            accounts (never printed; GitHub
+#                                            masks it in logs). Contains every
+#                                            mount listed in CONTRACT_MOUNTS_JSON.
+#   Variable CONTRACT_MOUNTS_JSON          - e.g. ["p115","quark"], the full set
+#                                            kept in the secret.
+#   Variable CONTRACT_NIGHTLY_MOUNTS_JSON  - subset safe to run unattended,
+#                                            e.g. ["p115"].
+#
+# Nightly excludes mounts whose credentials only live in rotating per-run
+# session state (quark): a fresh CI runner starts from the static cookie in the
+# config, that cookie ages out within days, and every schedule then fails with
+# the mount missing from the server. Run those with a manual dispatch instead,
+# after refreshing CONTRACT_CONFIG_TOML_B64.
 #
 # The mounts list must be a repository VARIABLE, not a secret: GitHub
 # masks secret-derived job outputs as ***, which breaks fromJson matrix
@@ -40,12 +50,43 @@ jobs:
     steps:
       - id: m
         env:
+          EVENT: ${{ github.event_name }}
           INPUT: ${{ inputs.mounts }}
           MOUNTS_VAR: ${{ vars.CONTRACT_MOUNTS_JSON }}
+          NIGHTLY_VAR: ${{ vars.CONTRACT_NIGHTLY_MOUNTS_JSON }}
         run: |
           if [ -n "${INPUT:-}" ]; then
-            json="[\"$(echo "$INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | paste -sd',' -)\"]"
+            # Manual dispatch: exactly the mounts given on the input.
+            json=$(printf '%s' "$INPUT" |
+              jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+            if [ "$json" = "[]" ]; then
+              echo "mounts input lists no mount names"
+              exit 1
+            fi
             echo "mounts=$json" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = "schedule" ]; then
+            # Scheduled runs are unattended, so only mounts whose credentials
+            # survive between runs belong here; see the header comment.
+            if [ -z "${NIGHTLY_VAR:-}" ]; then
+              echo "schedule needs the CONTRACT_NIGHTLY_MOUNTS_JSON repository variable"
+              exit 1
+            fi
+            MOUNTS_VAR="${MOUNTS_VAR:-[]}" NIGHTLY_VAR="$NIGHTLY_VAR" python3 - <<'PY'
+          import json, os
+          every = json.loads(os.environ["MOUNTS_VAR"] or "[]")
+          nightly = json.loads(os.environ["NIGHTLY_VAR"])
+          if not nightly:
+              raise SystemExit("CONTRACT_NIGHTLY_MOUNTS_JSON must list at least one mount")
+          missing = [m for m in nightly if m not in every]
+          if missing:
+              raise SystemExit(
+                  "CONTRACT_NIGHTLY_MOUNTS_JSON lists mounts missing from "
+                  f"CONTRACT_MOUNTS_JSON: {missing}"
+              )
+          excluded = [m for m in every if m not in nightly]
+          print(f"nightly mounts: {nightly}; excluded, dispatch only: {excluded}")
+          PY
+            echo "mounts=$NIGHTLY_VAR" >> "$GITHUB_OUTPUT"
           elif [ -n "${MOUNTS_VAR:-}" ]; then
             echo "mounts=$MOUNTS_VAR" >> "$GITHUB_OUTPUT"
           else
