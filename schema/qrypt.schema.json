@@ -803,7 +803,8 @@
             "webdav",
             "sftp",
             "s3",
-            "123"
+            "123",
+            "drime"
           ],
           "x-i18n": {
             "zh-CN": {
@@ -1183,6 +1184,28 @@
             "properties": {
               "params": {
                 "$ref": "#/definitions/p123Params"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "drime"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/drimeParams"
               }
             }
           }
@@ -2717,7 +2740,8 @@
             "onedrive",
             "onedrive_app",
             "s3",
-            "123"
+            "123",
+            "drime"
           ],
           "x-i18n": {
             "zh-CN": {
@@ -3049,6 +3073,28 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "drime"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/drimeParams"
+              }
+            }
+          }
         }
       ],
       "title": "Credential",
@@ -3056,6 +3102,158 @@
         "zh-CN": {
           "title": "共享凭据",
           "description": "可在多个挂载之间共享的一份账号凭据"
+        }
+      }
+    },
+    "drimeParams": {
+      "type": "object",
+      "required": [
+        "access_token"
+      ],
+      "properties": {
+        "access_token": {
+          "description": "Drime personal access token.",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-access-token",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Drime 个人访问令牌"
+            }
+          },
+          "x-param-scope": "credential"
+        },
+        "workspace_id": {
+          "description": "Workspace ID; 0 is the personal space.",
+          "type": "integer",
+          "default": 0,
+          "x-example": 1234,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "工作空间 ID；0 表示个人空间"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "root_path": {
+          "description": "Directory path used as this mount root.",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "作为挂载根的目录路径"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "root_id": {
+          "description": "Pre-resolved folder ID; skips root_path resolution.",
+          "type": "string",
+          "x-example": "1032808373",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "预解析的文件夹 ID；设置后跳过 root_path"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "api_base_url": {
+          "description": "Custom Drime API base URL.",
+          "type": "string",
+          "default": "https://app.drime.cloud/api/v1",
+          "x-example": "https://app.drime.cloud/api/v1",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 Drime API 基础 URL"
+            }
+          },
+          "x-param-scope": "both"
+        },
+        "chunk_size": {
+          "description": "Multipart upload chunk size in MiB (minimum 5).",
+          "type": "integer",
+          "default": 64,
+          "minimum": 5,
+          "x-example": 64,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "分片上传的块大小（MiB，最小 5）"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "upload_concurrency": {
+          "description": "Concurrent multipart part uploads.",
+          "type": "integer",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 32,
+          "x-example": 4,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "分片上传并发数"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "instant_upload": {
+          "description": "Verify the provider's stored content and reuse it instead of re-uploading.",
+          "type": "boolean",
+          "default": true,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "校验通过后复用网盘已有内容，避免重复上传"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "presign_small": {
+          "description": "Use presigned single-part uploads below 5 MiB.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "小于 5 MiB 的文件使用预签名直传"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "limit_rate": {
+          "description": "Limit API requests per second (0 = unlimited).",
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "x-example": 10,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "限制 API 请求速率（每秒 N 次，0 表示不限制）"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "hard_delete": {
+          "description": "Delete permanently instead of moving to trash.",
+          "type": "boolean",
+          "default": false,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "永久删除而不是移到回收站"
+            }
+          },
+          "x-param-scope": "mount"
+        }
+      },
+      "additionalProperties": false,
+      "title": "Drime Cloud",
+      "x-driver": {
+        "type": "drime",
+        "order": 15
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "Drime 云盘"
         }
       }
     }

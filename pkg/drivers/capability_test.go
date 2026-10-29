@@ -7,6 +7,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/aliyundrive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/baidunetdisk"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/drime"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/p115"
@@ -84,6 +85,24 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "drime",
+			drv:  drime.New(drime.Options{AccessToken: "token"}),
+			want: []drive.Capability{
+				drive.CapabilityMtime,
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityResumableUploader,
+				drive.CapabilityServerSideCopy,
+				drive.CapabilityShare,
+				drive.CapabilityShareFetch,
+				drive.CapabilityShareReceive,
+				drive.CapabilityShareSave,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
