@@ -106,51 +106,70 @@ jobs:
         env:
           MOUNT: ${{ matrix.mount }}
         run: |
-          # A mount can be skipped at server startup when its init hits a
-          # transient network blip, in which case the suite fails immediately
-          # with `mount "X" not found`. Restart the mount server once so the
-          # mount gets a fresh init attempt before declaring the run failed.
+          # The namespace is built before the debug/control sockets open, so
+          # /v1/health only proves the server is up: it stays OK even when a
+          # mount failed to initialize. Such a mount is dropped from the
+          # namespace (core.buildNamespace logs a warning and continues), and
+          # every later request for it answers `mount "X" not found`.
           #
-          # The probe's status is captured in the `else` branch on purpose: `$?`
-          # read after the whole `if` is always 0 (an `if` whose condition is
-          # false and has no `else` returns 0), which silently turned every
-          # suite failure - including real contract violations - into a green
-          # job.
-          out=$(mktemp)
-          attempts=2
-          rc=1
-          for i in $(seq 1 "$attempts"); do
-            if /tmp/qrypt probe test contract --config ./qrypt.toml --mount "$MOUNT" >"$out" 2>&1; then
-              cat "$out"
-              exit 0
-            else
-              rc=$?
-            fi
-            cat "$out"
-            if [ "$i" -ge "$attempts" ] || ! grep -q "not found" "$out"; then
-              exit "$rc"
-            fi
-            echo "== mount \"$MOUNT\" missing from the server; restarting mount server for a fresh init attempt =="
+          # Check the mount-scoped endpoint instead of probing blind. It is the
+          # only signal that separates "this mount is absent" from "this mount
+          # exists but its provider is unhealthy". A missing mount gets one
+          # server restart so a transient init failure can succeed; a second
+          # miss is an initialization failure (expired credential, rejected
+          # session, ...) that retrying the suite can never fix.
+          mount_present() {
+            local out
+            out=$(/tmp/qrypt debug raw "/v1/mounts/health?mount=${MOUNT}" --config ./qrypt.toml 2>&1) && return 0
+            echo "$out" >&2
+            # Absent mounts answer 502 with `vfs: mount "X" not found`; any
+            # other error means the mount exists and its provider is degraded,
+            # which the suite reports with a proper failure category.
+            ! grep -q "mount \"${MOUNT}\" not found" <<<"$out"
+          }
+          restart_mount_server() {
             pkill -f '^/tmp/qrypt mount' || true
             sleep 2
-            nohup /tmp/qrypt mount --config ./qrypt.toml >/tmp/qrypt-mount.log 2>&1 &
+            # Append: the first attempt's stderr is what explains a failed init.
+            echo "== restarting mount server ==" >>/tmp/qrypt-mount.log
+            nohup /tmp/qrypt mount --config ./qrypt.toml >>/tmp/qrypt-mount.log 2>&1 &
             for _ in $(seq 1 120); do
-              /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1 && break
+              /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1 && return 0
               sleep 1
             done
-            if ! /tmp/qrypt debug raw /v1/health --config ./qrypt.toml >/dev/null 2>&1; then
-              echo "mount server did not restart:"
-              cat /tmp/qrypt-mount.log
+            echo "mount server did not restart:"
+            cat /tmp/qrypt-mount.log 2>/dev/null || true
+            return 1
+          }
+          if ! mount_present; then
+            echo "== mount \"$MOUNT\" is missing from the server; restarting once so a transient init failure gets a fresh attempt =="
+            restart_mount_server
+            if ! mount_present; then
+              echo "::error::mount \"$MOUNT\" failed to initialize at startup; see the mount failure dump in the failure step below"
               exit 1
             fi
-          done
-          # Unreachable in practice; the last attempt always exits above.
-          exit "$rc"
+          fi
+          # Run the suite exactly once: its exit code is the job result, and a
+          # real contract violation must never be masked by a retry.
+          /tmp/qrypt probe test contract --config ./qrypt.toml --mount "$MOUNT"
 
       - name: Dump mount server log on failure
         if: failure()
         run: |
-          cat /tmp/qrypt-mount.log
+          echo "== mount server stderr =="
+          cat /tmp/qrypt-mount.log 2>/dev/null || true
+          # Mount init failures (expired session, rejected credential, ...) only
+          # reach the runtime file logger, never the stderr above, so the reason
+          # a mount is absent is otherwise invisible. Print just the per-mount
+          # failure lines: they carry the provider error, not the credentials.
+          while IFS= read -r log; do
+            echo "== mount init failures in $log =="
+            if grep -q -E 'config: mount .* failed' "$log"; then
+              grep -E 'config: mount .* failed' "$log" | tail -n 20
+            else
+              echo "(no mount init failures logged)"
+            fi
+          done < <(find "$HOME" "$RUNNER_TEMP" -maxdepth 5 -name 'qrypt-error.log' 2>/dev/null)
           # Names, types and the test flag only: [[mounts]] params hold real
           # credentials and must never be printed.
           echo "== mounts in the contract config =="
