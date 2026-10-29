@@ -9,7 +9,7 @@ qrypt 用三个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
 | `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**；tag/dispatch 时构建并发布 | README |
-| `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测 | README |
+| `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
 | `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
 
 ## 手动触发
@@ -18,12 +18,19 @@ qrypt 用三个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 # Contract Tests：指定 mount（逗号分隔），覆盖 repository variable
 gh workflow run "Contract Tests" -f mounts=yun139,115
 
-# Contract Tests：使用 repository variable CONTRACT_MOUNTS_JSON
+# Contract Tests：不带输入 = 跑 CONTRACT_MOUNTS_JSON 里的全部 mount
 gh workflow run "Contract Tests"
 
 # Nightly Quality Gates（fuzz + coverage gate + race + all）
 gh workflow run "Nightly Quality Gates"
 ```
+
+nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务是无人值守的，
+只能放凭证在两次运行之间仍然有效的 mount：quark 这类 provider 的凭证只存在于
+运行期轮换的会话状态里，而每次 CI 都是全新 runner、只能使用配置里的静态 cookie，
+该 cookie 几天内就会过期，之后每次定时任务都会以 `mount "X" not found` 失败
+（`/v1/health` 仍返回 OK，因为失败的 mount 在启动时就被跳过了）。这类 mount
+请手动 dispatch，并在跑之前先按下面的步骤重建 secret。
 
 ## Coverage 门禁
 
@@ -42,9 +49,11 @@ gh workflow run "Nightly Quality Gates"
    `drive.FakeDriver` 统一检查 capability 声明与行为一致、unsupported
    分类、列表稳定性、`RunBehaviorChecks`、debug snapshot 无凭证；
    能力集合本身被 pin，新增能力必须显式。
-2. **真实 provider（nightly / 手动）**：Contract Tests workflow 按 mount
-   并行跑，每个 job 启动一个共享 mount 服务器（socket 由配置自动解析），
-   `test_enabled = true` 的 mount 通过 `qrypt probe test` 入口执行。
+2. **真实 provider（nightly 子集 / 手动全量）**：Contract Tests workflow 按
+   mount 并行跑，每个 job 启动一个共享 mount 服务器（socket 由配置自动解析），
+   `test_enabled = true` 的 mount 通过 `qrypt probe test` 入口执行。启用前会先查
+   `/v1/mounts/health`，确认该 mount 真的在服务端注册成功；缺失时重启一次，
+   仍缺失则按初始化失败报错，并从运行时错误日志里带出原因。
 
 ## 配置项
 
@@ -55,6 +64,14 @@ gh workflow run "Nightly Quality Gates"
   会把含 secret 的 job output 脱敏为 `***`，导致
   `fromJson("***")` 展开失败、matrix job 不创建。
   同步本机配置：`gh variable set CONTRACT_MOUNTS_JSON --body '["yun139","115"]'`。
+  这个列表同时决定 secret 里保留哪些 mount，所以手动 dispatch 用到的 mount
+  必须一直在里面。
+- `CONTRACT_NIGHTLY_MOUNTS_JSON`（repository **variable**）：nightly cron
+  实际执行的子集，必须是 `CONTRACT_MOUNTS_JSON` 的子集（否则 setup job 直接
+  报错）。只放无人值守安全的 mount，目前是
+  `gh variable set CONTRACT_NIGHTLY_MOUNTS_JSON --body '["jianguoyun"]'`。
+  没列进去的 mount 会被跳过，setup 日志会打印被排除的清单，避免新增 mount
+  悄悄漏跑。
 
 从本地配置更新 contract secret（需要 Go 和已登录且有仓库 secrets 写权限的 `gh`）：
 
