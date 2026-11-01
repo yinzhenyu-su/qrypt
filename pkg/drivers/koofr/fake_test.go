@@ -108,7 +108,7 @@ func (f *fakeProvider) newDriver(t *testing.T, opts Options) *Driver {
 		opts.MountID = "primary-mount"
 	}
 	d := New(opts)
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -308,8 +308,6 @@ func (f *fakeProvider) route(w http.ResponseWriter, r *http.Request) {
 			f.handlePut(w, r, query)
 		case strings.HasPrefix(op, "get"):
 			f.handleGet(w, r, query)
-		case strings.HasPrefix(op, "listrecursive"):
-			f.handleListRecursive(w, r, query)
 		default:
 			f.writeError(w, r, http.StatusNotFound, "NotFound", "Page not found")
 		}
@@ -708,41 +706,6 @@ func (f *fakeProvider) handleGet(w http.ResponseWriter, r *http.Request, query u
 	_, _ = w.Write(data[start : end+1])
 }
 
-func (f *fakeProvider) handleListRecursive(w http.ResponseWriter, r *http.Request, query url.Values) {
-	root := query.Get("path")
-	f.mu.Lock()
-	node, _ := f.findLocked(root)
-	f.mu.Unlock()
-	if node == nil || !node.isDir {
-		f.writeError(w, r, http.StatusNotFound, "NotFound", "not found")
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.WriteHeader(http.StatusOK)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var walk func(dir, rel string)
-	walk = func(dir, rel string) {
-		for _, child := range f.childrenLocked(dir) {
-			node := f.nodes[child]
-			childRel := node.name
-			if rel != "" {
-				childRel = rel + "/" + node.name
-			}
-			line := struct {
-				Type string  `json:"type"`
-				Path string  `json:"path"`
-				File apiFile `json:"file"`
-			}{Type: node.apiFile().Type, Path: childRel, File: node.apiFile()}
-			_ = json.NewEncoder(w).Encode(line)
-			if node.isDir {
-				walk(child, childRel)
-			}
-		}
-	}
-	walk(root, "")
-}
-
 func parseRange(header string, size int64) (int64, int64, bool) {
 	if !strings.HasPrefix(header, "bytes=") {
 		return 0, 0, false
@@ -889,7 +852,14 @@ func (f *fakeProvider) handleAnonymousGet(w http.ResponseWriter, r *http.Request
 	if ok {
 		full := link.Path
 		if rel := query.Get("path"); rel != "" && rel != "/" {
-			full = strings.TrimSuffix(link.Path, "/") + "/" + strings.Trim(rel, "/")
+			// The real provider expects a canonical /a/b path; a "//a"
+			// double slash from sloppy client joining misses the file.
+			if !strings.HasPrefix(rel, "/") || strings.Contains(rel, "//") {
+				f.mu.Unlock()
+				f.writeError(w, r, http.StatusBadRequest, "InvalidPath", "path must be a canonical absolute path")
+				return
+			}
+			full = strings.TrimSuffix(link.Path, "/") + rel
 		}
 		target, _ = f.findLocked(full)
 	}

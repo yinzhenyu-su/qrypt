@@ -90,7 +90,9 @@ type client struct {
 	password string
 	http     *http.Client
 	metrics  *driverutil.Buffer
-	wait     func(ctx context.Context, attempt int) error
+	// wait sleeps between attempts. A positive delay (parsed from the
+	// provider's Retry-After header) overrides the exponential backoff.
+	wait func(ctx context.Context, attempt int, delay time.Duration) error
 
 	lastRequestID atomic.Value // string
 }
@@ -116,7 +118,19 @@ func newClient(opts Options) *client {
 			Timeout: 15 * time.Minute,
 		},
 		metrics: driverutil.NewBuffer(1000),
-		wait:    util.WaitExponential,
+		wait: func(ctx context.Context, attempt int, delay time.Duration) error {
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-timer.C:
+					return nil
+				}
+			}
+			return util.WaitExponential(ctx, attempt)
+		},
 	}
 }
 
@@ -158,7 +172,7 @@ func (c *client) do(ctx context.Context, method, rawURL string, body []byte, con
 			if ctx.Err() != nil || attempt == attempts-1 || !driverutil.RetryableTransportError(err) {
 				return nil, err
 			}
-			if err := c.wait(ctx, attempt); err != nil {
+			if err := c.wait(ctx, attempt, 0); err != nil {
 				return nil, err
 			}
 			continue
@@ -179,7 +193,10 @@ func (c *client) do(ctx context.Context, method, rawURL string, body []byte, con
 			c.lastRequestID.Store(env.RequestID)
 		}
 		if attempt < attempts-1 && driverutil.RetryableStatus(resp.StatusCode) && env.Error.Code != "FilesNotSynced" {
-			if err := c.wait(ctx, attempt); err != nil {
+			// A provider Retry-After header overrides the exponential
+			// backoff for the next attempt.
+			delay := driverutil.ParseRetryAfter(resp.Header.Get("Retry-After"))
+			if err := c.wait(ctx, attempt, delay); err != nil {
 				return nil, err
 			}
 			continue
@@ -244,6 +261,14 @@ func (c *client) post(ctx context.Context, path string, query url.Values, payloa
 
 func (c *client) put(ctx context.Context, path string, query url.Values, payload, out any) (*apiResponse, error) {
 	return c.send(ctx, http.MethodPut, path, query, payload, out, true)
+}
+
+// putOnce is put without automatic retries. It backs non-idempotent write
+// operations (rename/move/copy): a 429 or 5xx after the server already
+// applied the change would surface as a bogus conflict on the retry, so the
+// caller sees the rate-limit or server error directly instead.
+func (c *client) putOnce(ctx context.Context, path string, query url.Values, payload, out any) (*apiResponse, error) {
+	return c.send(ctx, http.MethodPut, path, query, payload, out, false)
 }
 
 func (c *client) delete(ctx context.Context, path string, query url.Values, out any) (*apiResponse, error) {

@@ -1,6 +1,7 @@
 package koofr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,7 +38,7 @@ func TestInitRejectsBadCredentialsWithError(t *testing.T) {
 	f.rejectAuth = true
 	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL}
 	d := New(opts)
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	err := d.Init(context.Background())
 	if err == nil || !errors.Is(err, drive.ErrAuth) {
 		t.Fatalf("Init error = %v, want auth", err)
@@ -47,7 +48,7 @@ func TestInitRejectsBadCredentialsWithError(t *testing.T) {
 func TestInitSelectsPrimaryMountByDefault(t *testing.T) {
 	f := newFakeProvider(t)
 	d := New(Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL})
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestInitUnknownMountIDRejected(t *testing.T) {
 	f := newFakeProvider(t)
 	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL, MountID: "ghost"}
 	d := New(opts)
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	err := d.Init(context.Background())
 	if err == nil || !errors.Is(err, drive.ErrInvalidInput) {
 		t.Fatalf("Init error = %v, want invalid input", err)
@@ -85,7 +86,7 @@ func TestInitOfflineMountRejected(t *testing.T) {
 	f.mu.Unlock()
 	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL}
 	d := New(opts)
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	err := d.Init(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "offline") {
 		t.Fatalf("Init error = %v, want offline rejection", err)
@@ -99,7 +100,7 @@ func TestInitReadOnlyMountRejected(t *testing.T) {
 	f.mu.Unlock()
 	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL}
 	d := New(opts)
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	err := d.Init(context.Background())
 	if err == nil || !errors.Is(err, drive.ErrPermission) {
 		t.Fatalf("Init error = %v, want permission", err)
@@ -110,7 +111,7 @@ func TestInitMissingRootPathDoesNotFallback(t *testing.T) {
 	f := newFakeProvider(t)
 	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL, RootPath: "/missing"}
 	d := New(opts)
-	d.cl.wait = func(ctx context.Context, _ int) error { return ctx.Err() }
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	err := d.Init(context.Background())
 	if err == nil || !errors.Is(err, drive.ErrNotFound) {
 		t.Fatalf("Init error = %v, want not found", err)
@@ -878,40 +879,174 @@ func TestForeignEntriesUnsupported(t *testing.T) {
 	}
 }
 
-// --- Full scan ---------------------------------------------------------------
+// --- Review fixes -----------------------------------------------------------
 
-func TestListRecursiveStreamsNestedEntries(t *testing.T) {
+// ResolvePath must resolve caller paths against root_path, not the mount
+// root, and must never hand back a path outside the configured root.
+func TestResolvePathUnderRootPath(t *testing.T) {
 	f := newFakeProvider(t)
-	f.putFile("/scan/sub/deep.bin", []byte("deep"), 1)
-	f.putFile("/scan/top.bin", []byte("top"), 1)
-	d := f.newDriver(t, Options{})
-	var seen []string
-	err := d.listRecursive(context.Background(), "/scan", func(rel string, entry drive.Entry) error {
-		seen = append(seen, rel+"|"+entry.ID)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("listRecursive: %v", err)
+	f.mkdirAll("/backup/data")
+	f.mkdirAll("/outside")
+	d := f.newDriver(t, Options{RootPath: "/backup"})
+	id, err := d.ResolvePath(context.Background(), "/data")
+	if err != nil || id != "/backup/data" {
+		t.Fatalf("ResolvePath /data = %q, %v, want /backup/data", id, err)
 	}
-	joined := strings.Join(seen, ",")
-	if !strings.Contains(joined, "top.bin|/scan/top.bin") || !strings.Contains(joined, "sub/deep.bin|/scan/sub/deep.bin") {
-		t.Fatalf("seen = %v", seen)
+	id, err = d.ResolvePath(context.Background(), "/")
+	if err != nil || id != "/backup" {
+		t.Fatalf("ResolvePath / = %q, %v, want /backup", id, err)
+	}
+	if _, err := d.ResolvePath(context.Background(), "/missing"); !errors.Is(err, drive.ErrNotFound) {
+		t.Fatalf("ResolvePath missing error = %v, want not found", err)
+	}
+	if _, err := d.ResolvePath(context.Background(), "/../etc"); !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("ResolvePath escape error = %v, want invalid input", err)
 	}
 }
 
-func TestListRecursiveMalformedLineErrors(t *testing.T) {
+// A 206 response that carries more bytes than requested must be capped at
+// the requested size so nothing beyond the range leaks to the caller.
+func TestRead206CapsOversizedBody(t *testing.T) {
 	f := newFakeProvider(t)
-	f.mkdirAll("/scan")
+	entry := seededFile(t, f, "/data.bin", 100)
 	f.addFault(func(r *http.Request) bool {
-		return strings.Contains(r.URL.Path, "listrecursive")
+		return r.Method == http.MethodGet && strings.Contains(r.URL.Path, "files/get")
 	}, 1, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("this is not ndjson at all {{{\n"))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 100))
 	})
 	d := f.newDriver(t, Options{})
-	err := d.listRecursive(context.Background(), "/scan", func(string, drive.Entry) error { return nil })
-	if err == nil {
-		t.Fatalf("listRecursive error = nil, want decode failure")
+	reader, err := d.Read(context.Background(), entry, 50, 10)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	data, err := io.ReadAll(reader)
+	reader.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(data) != 10 {
+		t.Fatalf("oversized 206 leaked %d bytes, want 10", len(data))
+	}
+}
+
+// rename is not retried: a 429 must surface as a rate-limit error after a
+// single request, not turn into a bogus conflict on a second attempt.
+func TestRenameRateLimitNotRetried(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/conflict.bin", 10)
+	f.faultStatus("PUT", "files/rename", 1, http.StatusTooManyRequests, `{"error":{"code":"Other","message":"slow down"}}`)
+	d := f.newDriver(t, Options{})
+	_, err := d.Rename(context.Background(), entry, "renamed.bin")
+	if err == nil || !errors.Is(err, drive.ErrRateLimit) {
+		t.Fatalf("Rename error = %v, want rate limit", err)
+	}
+	if got := f.requestsMatching("PUT", "files/rename"); got != 1 {
+		t.Fatalf("rename requests = %d, want 1 (no retry)", got)
+	}
+	if _, err := d.info(context.Background(), "/conflict.bin"); err != nil {
+		t.Fatalf("source moved by a retried rename: %v", err)
+	}
+}
+
+func TestMoveRateLimitNotRetried(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/mv.bin", 10)
+	f.mkdirAll("/dst")
+	f.faultStatus("PUT", "files/move", 1, http.StatusTooManyRequests, `{"error":{"code":"Other","message":"slow down"}}`)
+	d := f.newDriver(t, Options{})
+	_, err := d.Move(context.Background(), entry, "/dst")
+	if err == nil || !errors.Is(err, drive.ErrRateLimit) {
+		t.Fatalf("Move error = %v, want rate limit", err)
+	}
+	if got := f.requestsMatching("PUT", "files/move"); got != 1 {
+		t.Fatalf("move requests = %d, want 1 (no retry)", got)
+	}
+}
+
+func TestCopyRateLimitNotRetried(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/cp.bin", 10)
+	f.mkdirAll("/dst")
+	f.faultStatus("PUT", "files/copy", 1, http.StatusTooManyRequests, `{"error":{"code":"Other","message":"slow down"}}`)
+	d := f.newDriver(t, Options{})
+	_, err := d.Copy(context.Background(), entry, "/dst", "cp.bin")
+	if err == nil || !errors.Is(err, drive.ErrRateLimit) {
+		t.Fatalf("Copy error = %v, want rate limit", err)
+	}
+	if got := f.requestsMatching("PUT", "files/copy"); got != 1 {
+		t.Fatalf("copy requests = %d, want 1 (no retry)", got)
+	}
+}
+
+// mkdir keeps its retry: when the first attempt created the folder but the
+// server answered 429, the retried request hits 409 AlreadyExists and the
+// idempotent path must still return the existing directory.
+func TestMkdirRetryAfterAppliedStillSucceeds(t *testing.T) {
+	f := newFakeProvider(t)
+	f.addFault(func(r *http.Request) bool {
+		return r.Method == http.MethodPost && strings.Contains(r.URL.Path, "files/folder")
+	}, 1, func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		target := joinPath(r.URL.Query().Get("path"), "retry-dir")
+		f.nodes[target] = &fakeNode{name: "retry-dir", isDir: true, modMs: time.Now().UnixMilli()}
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"Other","message":"slow down"}}`))
+	})
+	d := f.newDriver(t, Options{})
+	entry, err := d.Mkdir(context.Background(), "", "retry-dir")
+	if err != nil {
+		t.Fatalf("Mkdir after applied-then-429: %v", err)
+	}
+	if !entry.IsDir || entry.Name != "retry-dir" {
+		t.Fatalf("entry = %+v", entry)
+	}
+}
+
+func TestMoveSameLocationIsNoOp(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/stay.bin", 10)
+	d := f.newDriver(t, Options{})
+	moved, err := d.Move(context.Background(), entry, "/")
+	if err != nil {
+		t.Fatalf("Move to current location: %v", err)
+	}
+	if moved.ID != entry.ID {
+		t.Fatalf("no-op move id = %q, want %q", moved.ID, entry.ID)
+	}
+	if got := f.requestsMatching("PUT", "files/move"); got != 0 {
+		t.Fatalf("move requests = %d, want 0", got)
+	}
+}
+
+// A provider Retry-After header overrides the exponential backoff.
+func TestRetryAfterHeaderOverridesBackoff(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/ra.bin", []byte("x"), 1)
+	f.addFault(func(r *http.Request) bool {
+		return r.Method == http.MethodGet && strings.Contains(r.URL.Path, "files/list")
+	}, 1, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"Other","message":"slow down"}}`))
+	})
+	d := f.newDriver(t, Options{})
+	var delays []time.Duration
+	d.cl.wait = func(ctx context.Context, _ int, delay time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		delays = append(delays, delay)
+		return nil
+	}
+	if _, err := d.List(context.Background(), "/"); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(delays) != 1 || delays[0] != time.Second {
+		t.Fatalf("delays = %v, want [1s]", delays)
 	}
 }

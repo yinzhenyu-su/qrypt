@@ -1,14 +1,8 @@
 package koofr
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -85,47 +79,6 @@ func (d *Driver) lookupChild(ctx context.Context, parent, name string) (drive.En
 		}
 	}
 	return drive.Entry{}, false, nil
-}
-
-// listRecursive streams the provider's NDJSON full-scan endpoint. Every line
-// is {"type":"file"|"dir","path":"<path relative to the request dir>","file":{...}}.
-// It is used for whole-tree scans, not per-directory listings.
-func (d *Driver) listRecursive(ctx context.Context, root string, fn func(relPath string, entry drive.Entry) error) error {
-	query := url.Values{}
-	query.Set("path", root)
-	target := d.cl.content("/mounts/" + url.PathEscape(d.mountID) + "/files/listrecursive?" + query.Encode())
-	resp, err := d.cl.do(ctx, http.MethodGet, target, nil, "", true)
-	if err != nil {
-		return err
-	}
-	if !resp.ok() {
-		return resp.error("koofr: listrecursive")
-	}
-	reader := bufio.NewReader(bytes.NewReader(resp.body))
-	decoder := json.NewDecoder(reader)
-	for {
-		var line struct {
-			Type string  `json:"type"`
-			Path string  `json:"path"`
-			File apiFile `json:"file"`
-		}
-		if err := decoder.Decode(&line); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return fmt.Errorf("koofr: decode listrecursive line: %w", err)
-		}
-		entry := line.File.entry(joinPath(root, line.Path))
-		if line.Path != "" && line.Path != line.File.Name {
-			// Nested path: rebuild the id from the relative path.
-			entry.ID = joinPath(root, line.Path)
-			entry.Name = baseName(line.Path)
-			entry.ParentID = parentPath(entry.ID)
-		}
-		if err := fn(line.Path, entry); err != nil {
-			return err
-		}
-	}
 }
 
 func lowerASCII(s string) string {

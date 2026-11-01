@@ -60,9 +60,10 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	return created, nil
 }
 
-// Rename renames an entry in place. The provider is case-insensitive: a
-// target differing only by case from an existing name answers 409
-// AlreadyExists, which maps to ErrConflict.
+// Rename renames an entry in place. Live verification showed a case-only
+// rename of the entry itself (a.bin -> A.bin) succeeds; a target matching a
+// different existing entry case-insensitively answers 409 AlreadyExists,
+// which maps to ErrConflict.
 func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	if err := validateName(newName); err != nil {
 		return drive.Entry{}, err
@@ -72,7 +73,7 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 		return drive.Entry{}, fmt.Errorf("koofr: rename: invalid path %q: %w", entry.ID, drive.ErrInvalidInput)
 	}
 	parent := parentPath(path)
-	resp, err := d.cl.put(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/rename", d.filesQuery(path), map[string]any{"name": newName}, nil)
+	resp, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/rename", d.filesQuery(path), map[string]any{"name": newName}, nil)
 	if err != nil {
 		err = fmt.Errorf("koofr: rename %q to %q: %w", entry.Name, newName, err)
 		d.setLastError(err)
@@ -102,7 +103,12 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		return drive.Entry{}, fmt.Errorf("koofr: move %q into itself: %w", entry.Name, drive.ErrInvalidInput)
 	}
 	target := joinPath(dst, entry.Name)
-	_, err := d.cl.put(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/move", d.filesQuery(path), map[string]any{
+	if target == path {
+		// Moving onto the current location is a no-op; sending it would
+		// answer 409 AlreadyExists against the entry itself.
+		return entry, nil
+	}
+	_, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/move", d.filesQuery(path), map[string]any{
 		"toMountId": d.mountID,
 		"toPath":    target,
 	}, nil)
@@ -143,7 +149,7 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	if !src.ModTime.IsZero() {
 		payload["modified"] = src.ModTime.UnixMilli()
 	}
-	_, err := d.cl.put(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/copy", d.filesQuery(path), payload, nil)
+	_, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/copy", d.filesQuery(path), payload, nil)
 	if err != nil {
 		err = fmt.Errorf("koofr: copy %q to %q: %w", src.Name, dstName, err)
 		d.setLastError(err)

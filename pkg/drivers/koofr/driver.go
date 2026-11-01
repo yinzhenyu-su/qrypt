@@ -181,15 +181,20 @@ func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 }
 
 // ResolvePath walks a mount-relative path segment by segment and returns the
-// absolute provider path id.
+// absolute provider path id. The path is resolved against root_path, so a
+// mount rooted at /backup resolves /data to /backup/data and never outside
+// the configured root.
 func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 	clean, err := cleanMountPath(p)
 	if err != nil {
 		return "", err
 	}
-	full := d.resolveID(clean)
-	if full == "/" {
-		return "/", nil
+	full := d.rootPath
+	if clean != "/" {
+		full = joinPath(d.rootPath, strings.TrimPrefix(clean, "/"))
+	}
+	if !isWithin(full, d.rootPath) {
+		return "", fmt.Errorf("koofr: path %q escapes root_path %q: %w", p, d.rootPath, drive.ErrInvalidInput)
 	}
 	// The provider treats an empty path as the mount root, so every lookup
 	// uses the absolute path and verifies the final entry exists.

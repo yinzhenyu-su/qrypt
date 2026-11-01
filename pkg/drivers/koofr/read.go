@@ -75,7 +75,14 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusPartialContent {
-		return d.limitRead(ctx, resp.Body), nil
+		// A misbehaving server can return more bytes than the request asked
+		// for; cap the stream at the requested size so nothing beyond it
+		// leaks to the caller.
+		reader := io.Reader(resp.Body)
+		if size > 0 {
+			reader = io.LimitReader(reader, size)
+		}
+		return d.limitRead(ctx, &skipReadCloser{body: resp.Body, reader: reader}), nil
 	}
 	// The provider ignored Range and returned the whole object. Discard the
 	// prefix lazily and cap the returned length.
@@ -90,8 +97,10 @@ func (d *Driver) limitRead(_ context.Context, body io.ReadCloser) io.ReadCloser 
 	return body
 }
 
-// skipReadCloser discards the first skip bytes on the first Read. It is used
-// only when the provider ignores Range and returns the whole object.
+// skipReadCloser discards the first skip bytes (when non-zero) on the first
+// Read. It wraps every successful content response: skip=0 is used for 206
+// range replies, skip=offset when the provider ignored Range and returned
+// the whole object.
 type skipReadCloser struct {
 	body   io.ReadCloser
 	reader io.Reader

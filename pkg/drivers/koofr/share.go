@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -50,6 +51,11 @@ func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) 
 	}
 	if req.Passcode != "" && !validPasscode(req.Passcode) {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr link passcodes must be exactly 6 letters or digits")
+	}
+	// Unlike UpdateShare (where a negative expiry clears the validity
+	// window), creating a link with a negative expiry is a caller bug.
+	if req.Expiry < 0 {
+		return drive.Share{}, fmt.Errorf("koofr: negative share expiry %d: %w", req.Expiry, drive.ErrInvalidInput)
 	}
 	resp, err := d.cl.post(ctx, d.linksPath(""), nil, map[string]any{"path": path}, nil)
 	if err != nil {
@@ -247,29 +253,27 @@ func (d *Driver) setLinkDownloadable(ctx context.Context, id string, downloadabl
 	return link, nil
 }
 
-// ParseShareLink recognizes https://app.koofr.net/links/{id} page URLs and
-// https://k00.fr/{hash} short URLs (the short form redirects to the page
-// form, so the hash is the link identity callers use).
+// ParseShareLink recognizes https://app.koofr.net/links/{id} page URLs. The
+// https://k00.fr/{hash} short form is deliberately not parsed: its path
+// segment is a redirect hash, not the link id, and resolving it would need a
+// network round trip this synchronous parser cannot make. Producing a wrong
+// identity would send every later link operation to a 404, so short URLs are
+// rejected instead.
 func (d *Driver) ParseShareLink(raw string) (drive.ShareLink, bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
 		return drive.ShareLink{}, false
 	}
 	host := strings.ToLower(u.Hostname())
-	var id string
-	switch host {
-	case "app.koofr.net":
-		rest := strings.Trim(u.Path, "/")
-		parts := strings.Split(rest, "/")
-		if len(parts) != 2 || parts[0] != "links" {
-			return drive.ShareLink{}, false
-		}
-		id = parts[1]
-	case "k00.fr":
-		id = strings.Trim(u.Path, "/")
-	default:
+	if host != "app.koofr.net" {
 		return drive.ShareLink{}, false
 	}
+	rest := strings.Trim(u.Path, "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] != "links" {
+		return drive.ShareLink{}, false
+	}
+	id := parts[1]
 	if id == "" || strings.Contains(id, "/") {
 		return drive.ShareLink{}, false
 	}
@@ -372,8 +376,11 @@ func (d *Driver) ShareDownloadTargets(ctx context.Context, req drive.ShareFetchR
 		rel := entry.ID
 		if data.Path != "" && data.Path != "/" && isWithin(rel, data.Path) {
 			rel = strings.TrimPrefix(rel, strings.TrimSuffix(data.Path, "/"))
-			rel = strings.TrimPrefix(rel, "/")
 		}
+		// rel is either provider-absolute (link rooted at the mount root) or
+		// already relative; normalize to a single leading slash so the
+		// anonymous URL never carries a "//" path segment.
+		rel = strings.TrimPrefix(rel, "/")
 		query.Set("path", "/"+rel)
 		if req.Session.Link.Passcode != "" {
 			query.Set("password", req.Session.Link.Passcode)

@@ -3,10 +3,13 @@ package koofr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -117,6 +120,22 @@ func TestCreateShareRejectsInvalidPasscode(t *testing.T) {
 	_, err := d.UpdateShare(context.Background(), drive.ShareUpdateRequest{ID: "any", Passcode: &bad})
 	if !drive.IsShareErrorCode(err, drive.ShareErrUnsupported) {
 		t.Fatalf("UpdateShare error = %v, want unsupported", err)
+	}
+}
+
+func TestCreateShareRejectsNegativeExpiry(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/secret.bin")
+	d := f.newDriver(t, Options{})
+	_, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
+		Entries: []drive.Entry{entry},
+		Expiry:  -time.Second,
+	})
+	if err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("CreateShare negative expiry error = %v, want invalid input", err)
+	}
+	if got := f.requestsMatching("POST", "/links"); got != 0 {
+		t.Fatalf("link creates = %d, want 0 (negative expiry rejected client-side)", got)
 	}
 }
 
@@ -301,7 +320,9 @@ func TestParseShareLink(t *testing.T) {
 		valid bool
 	}{
 		{"https://app.koofr.net/links/abc123", "abc123", true},
-		{"https://k00.fr/x1y2z3", "x1y2z3", true},
+		// The k00.fr path segment is a redirect hash, not a link id; the
+		// parser must refuse it rather than produce a wrong identity.
+		{"https://k00.fr/x1y2z3", "", false},
 		{"https://example.com/links/abc123", "", false},
 		{"https://app.koofr.net/other/abc123", "", false},
 	}
@@ -310,6 +331,60 @@ func TestParseShareLink(t *testing.T) {
 		if ok != tc.valid || link.LinkID != tc.want {
 			t.Fatalf("ParseShareLink(%q) = %+v, %v", tc.raw, link, ok)
 		}
+	}
+}
+
+// A link rooted at the mount root must produce a canonical /dir/file path
+// query, never a //dir/file double slash.
+func TestShareFetchRootLinkSingleSlashPath(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/root-file.bin", []byte("root bytes"), 1)
+	d := f.newDriver(t, Options{})
+	// The driver refuses to create a link on the mount root itself, so a
+	// pre-existing root link is installed directly, as another client would.
+	f.mu.Lock()
+	f.links["link-root"] = &fakeLink{apiLink: apiLink{
+		ID:           "link-root",
+		Name:         "",
+		MountID:      "primary-mount",
+		Path:         "/",
+		URL:          f.server.URL + "/links/link-root",
+		Downloadable: true,
+	}}
+	f.mu.Unlock()
+	session, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: "link-root"})
+	if err != nil {
+		t.Fatalf("OpenShare: %v", err)
+	}
+	targets, err := d.ShareDownloadTargets(context.Background(), drive.ShareFetchRequest{
+		Session: session,
+		Entries: []drive.ShareEntry{{Entry: drive.Entry{ID: "/root-file.bin", Name: "root-file.bin", Size: 10}}},
+	})
+	if err != nil {
+		t.Fatalf("ShareDownloadTargets: %v", err)
+	}
+	parsed, err := url.Parse(targets[0].URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("path"); got != "/root-file.bin" {
+		t.Fatalf("path query = %q, want /root-file.bin", got)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, targets[0].URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range targets[0].Headers {
+		req.Header.Set(name, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("anonymous fetch: %v", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(data) != "root bytes" {
+		t.Fatalf("anonymous fetch = %d %q", resp.StatusCode, data)
 	}
 }
 

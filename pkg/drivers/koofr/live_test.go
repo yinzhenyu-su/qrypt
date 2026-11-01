@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -300,5 +301,209 @@ func TestLiveKoofr(t *testing.T) {
 			count = len(enveloped.Links)
 		}
 		t.Logf("account-level /api/v2.1/links returns a JSON %s (%d links)", shape, count)
+	}
+}
+
+// TestLiveKoofrReviewChecks verifies the review fixes against the real
+// provider: root_path isolation, case-only rename behavior, the anonymous
+// path=/dir form for a link rooted at the mount root, and what a k00.fr
+// short URL actually redirects to. Same credential gating and cleanup rules
+// as TestLiveKoofr.
+func TestLiveKoofrReviewChecks(t *testing.T) {
+	email := os.Getenv("KOOFR_LIVE_EMAIL")
+	password := os.Getenv("KOOFR_LIVE_PASSWORD")
+	if email == "" || password == "" {
+		t.Skip("KOOFR_LIVE_EMAIL/KOOFR_LIVE_PASSWORD are not set")
+	}
+	d := New(Options{
+		Email:      email,
+		Password:   password,
+		MountID:    os.Getenv("KOOFR_LIVE_MOUNT_ID"),
+		APIBaseURL: os.Getenv("KOOFR_LIVE_BASE_URL"),
+	})
+	ctx := context.Background()
+	if err := d.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = d.Drop(ctx) }()
+	emptyTrash := func() {
+		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
+			t.Logf("empty trash: %v", err)
+		}
+	}
+	run := strconv.FormatInt(time.Now().UnixNano(), 10)
+	fixName := "qrypt-fix-" + run
+	fixDir, err := d.Mkdir(ctx, "", fixName)
+	if err != nil {
+		t.Fatalf("Mkdir fix root: %v", err)
+	}
+	defer func() {
+		if err := d.Remove(ctx, fixDir); err != nil {
+			t.Logf("cleanup fix root: %v", err)
+		}
+		emptyTrash()
+	}()
+
+	// 1. root_path isolation: a second driver rooted at the temp directory
+	// must resolve caller paths inside it and must not list outside it.
+	rooted := New(Options{
+		Email:      email,
+		Password:   password,
+		MountID:    d.mountID,
+		APIBaseURL: os.Getenv("KOOFR_LIVE_BASE_URL"),
+		RootPath:   fixDir.ID,
+	})
+	if err := rooted.Init(ctx); err != nil {
+		t.Fatalf("rooted Init: %v", err)
+	}
+	defer func() { _ = rooted.Drop(ctx) }()
+	sub, err := rooted.Mkdir(ctx, "", "sub")
+	if err != nil {
+		t.Fatalf("rooted Mkdir: %v", err)
+	}
+	resolved, err := rooted.ResolvePath(ctx, "/sub")
+	if err != nil || resolved != joinPath(fixDir.ID, "sub") {
+		t.Fatalf("rooted ResolvePath /sub = %q, %v, want %q", resolved, err, joinPath(fixDir.ID, "sub"))
+	}
+	if resolvedRoot, err := rooted.ResolvePath(ctx, "/"); err != nil || resolvedRoot != fixDir.ID {
+		t.Fatalf("rooted ResolvePath / = %q, %v, want %q", resolvedRoot, err, fixDir.ID)
+	}
+	if _, err := rooted.ResolvePath(ctx, "/../escape"); err == nil {
+		t.Fatal("rooted ResolvePath escaped the root")
+	}
+	listed, err := rooted.List(ctx, "")
+	if err != nil {
+		t.Fatalf("rooted List: %v", err)
+	}
+	for _, entry := range listed {
+		if !isWithin(entry.ID, fixDir.ID) {
+			t.Fatalf("rooted List leaked entry outside root_path: %q", entry.ID)
+		}
+	}
+	if len(listed) != 1 || listed[0].ID != sub.ID {
+		t.Fatalf("rooted List = %+v, want only %q", listed, sub.ID)
+	}
+	t.Logf("root_path isolation: ResolvePath and List stay inside %q", fixDir.ID)
+
+	// 2. Case-only rename behavior on the live mount.
+	caseEntry, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: fixDir.ID,
+		Name:     "a.bin",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("case")),
+		ModTime:  time.UnixMilli(1700000000123).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("upload a.bin: %v", err)
+	}
+	if _, err := d.Rename(ctx, caseEntry, "A.bin"); err != nil {
+		t.Logf("case-only rename a.bin -> A.bin: error %v (provider rejects case-only renames)", err)
+		if !errors.Is(err, drive.ErrConflict) {
+			t.Logf("case-only rename error is not a conflict sentinel; record and reconsider mapping")
+		}
+	} else {
+		t.Logf("case-only rename a.bin -> A.bin: succeeded (provider allows case-only renames)")
+	}
+
+	// 3. Root-path link: create a link on "/" directly and fetch a nested
+	// file anonymously with the path=/dir/file form.
+	rootLinkBody := map[string]any{"path": "/"}
+	resp, err := d.cl.post(ctx, d.linksPath(""), nil, rootLinkBody, nil)
+	if err != nil {
+		t.Logf("root link create: %v (provider may refuse links on the mount root)", err)
+	} else {
+		var rootLink apiLink
+		if err := json.Unmarshal(resp.body, &rootLink); err != nil || rootLink.ID == "" {
+			t.Fatalf("root link create response undecodable: %v", err)
+		}
+		defer func() {
+			if err := d.DeleteShare(ctx, rootLink.ID); err != nil {
+				t.Logf("cleanup root link: %v", err)
+			}
+		}()
+		nested, err := d.info(ctx, joinPath(fixDir.ID, "a.bin"))
+		if err != nil {
+			t.Fatalf("info a.bin: %v", err)
+		}
+		session, err := d.OpenShare(ctx, drive.ShareLink{LinkID: rootLink.ID})
+		if err != nil {
+			t.Fatalf("OpenShare root link: %v", err)
+		}
+		targets, err := d.ShareDownloadTargets(ctx, drive.ShareFetchRequest{
+			Session: session,
+			Entries: []drive.ShareEntry{{Entry: nested}},
+		})
+		if err != nil || len(targets) != 1 {
+			t.Fatalf("ShareDownloadTargets = %+v, %v", targets, err)
+		}
+		targetURL, err := url.Parse(targets[0].URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := targetURL.Query().Get("path"); got != joinPath(fixDir.ID, "a.bin") {
+			t.Fatalf("root-link path query = %q, want %q", got, joinPath(fixDir.ID, "a.bin"))
+		}
+		anonReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targets[0].URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range targets[0].Headers {
+			anonReq.Header.Set(name, value)
+		}
+		anonResp, err := (&http.Client{Timeout: 60 * time.Second}).Do(anonReq)
+		if err != nil {
+			t.Fatalf("root-link anonymous fetch: %v", err)
+		}
+		body, _ := io.ReadAll(anonResp.Body)
+		anonResp.Body.Close()
+		if anonResp.StatusCode != http.StatusOK || string(body) != "case" {
+			t.Fatalf("root-link anonymous fetch = %d %q", anonResp.StatusCode, drive.Snippet(body))
+		}
+		t.Logf("root-path link anonymous download with path=%s form: OK", fixName+"/a.bin")
+	}
+
+	// 4. What does a k00.fr short URL redirect to?
+	probeLink, err := d.CreateShare(ctx, drive.ShareCreateRequest{Entries: []drive.Entry{fixDir}})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	defer func() {
+		if err := d.DeleteShare(ctx, probeLink.LinkID); err != nil {
+			t.Logf("cleanup probe link: %v", err)
+		}
+	}()
+	var apiProbeLink apiLink
+	if _, err := d.cl.get(ctx, d.linksPath("/"+url.PathEscape(probeLink.LinkID)), nil, &apiProbeLink); err != nil {
+		t.Fatalf("fetch link object: %v", err)
+	}
+	if apiProbeLink.ShortURL == "" {
+		t.Skipf("link object has no shortUrl; cannot verify k00.fr redirect")
+	}
+	finalURL := ""
+	redirectClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return http.ErrUseLastResponse
+			}
+			finalURL = req.URL.String()
+			return nil
+		},
+	}
+	shortReq, err := http.NewRequestWithContext(ctx, http.MethodGet, apiProbeLink.ShortURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortResp, err := redirectClient.Do(shortReq)
+	if err != nil {
+		t.Logf("k00.fr short URL fetch: %v", err)
+	} else {
+		_, _ = io.Copy(io.Discard, shortResp.Body)
+		shortResp.Body.Close()
+		t.Logf("k00.fr %s (hash %q) redirects to %q (link id %q)", apiProbeLink.ShortURL, apiProbeLink.Hash, finalURL, probeLink.LinkID)
+	}
+	if link, ok := d.ParseShareLink(apiProbeLink.ShortURL); ok {
+		t.Fatalf("ParseShareLink accepted a k00.fr short URL as %q; the hash is not a link id", link.LinkID)
+	}
+	if link, ok := d.ParseShareLink(apiProbeLink.URL); !ok || link.LinkID != probeLink.LinkID {
+		t.Fatalf("ParseShareLink(%q) = %+v, %v", apiProbeLink.URL, link, ok)
 	}
 }
