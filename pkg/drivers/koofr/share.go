@@ -48,6 +48,9 @@ func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) 
 	if path == "" || path == "/" || path[0] != '/' {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "entry path is required")
 	}
+	if req.Passcode != "" && !validPasscode(req.Passcode) {
+		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr link passcodes must be exactly 6 letters or digits")
+	}
 	resp, err := d.cl.post(ctx, d.linksPath(""), nil, map[string]any{"path": path}, nil)
 	if err != nil {
 		return drive.Share{}, shareErrorFromHTTP(err)
@@ -109,6 +112,9 @@ func (d *Driver) UpdateShare(ctx context.Context, req drive.ShareUpdateRequest) 
 	if req.Passcode != nil && strings.TrimSpace(*req.Passcode) == "" {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr links cannot remove a passcode (reset replaces it with a random one)")
 	}
+	if req.Passcode != nil && !validPasscode(strings.TrimSpace(*req.Passcode)) {
+		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr link passcodes must be exactly 6 letters or digits")
+	}
 	if req.Passcode == nil && req.Expiry == nil && req.Download == nil {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "nothing to update")
 	}
@@ -160,18 +166,40 @@ func (d *Driver) DeleteShare(ctx context.Context, id string) error {
 
 // ListShares lists every link on the mounted provider mount.
 func (d *Driver) ListShares(ctx context.Context, req drive.ShareListRequest) (drive.SharePage, error) {
-	var links []apiLink
-	if _, err := d.cl.get(ctx, d.linksPath(""), nil, &links); err != nil {
+	// Live probing showed both the mount-scoped and the account-level link
+	// listings return an enveloped {"links":[...]} object, not a bare array
+	// (the account-level /api/v2.1/links adds a "mounts" map).
+	var enveloped struct {
+		Links []apiLink `json:"links"`
+	}
+	if _, err := d.cl.get(ctx, d.linksPath(""), nil, &enveloped); err != nil {
 		return drive.SharePage{}, shareErrorFromHTTP(err)
 	}
 	page := drive.SharePage{}
-	for _, link := range links {
+	for _, link := range enveloped.Links {
 		if link.ID == "" {
 			continue
 		}
 		page.Shares = append(page.Shares, shareFromLink(link))
 	}
 	return page, nil
+}
+
+// validPasscode reports whether the passcode satisfies the provider's link
+// password charset: exactly 6 ASCII letters or digits. Invalid passcodes are
+// rejected client-side because the provider answers them with an opaque 400.
+func validPasscode(passcode string) bool {
+	if len(passcode) != 6 {
+		return false
+	}
+	for i := 0; i < len(passcode); i++ {
+		c := passcode[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // setLinkPassword calls password/set. The response echoes the plaintext
@@ -351,7 +379,14 @@ func (d *Driver) ShareDownloadTargets(ctx context.Context, req drive.ShareFetchR
 			query.Set("password", req.Session.Link.Passcode)
 		}
 		target := d.cl.base + "/content/links/" + url.PathEscape(data.LinkID) + "/files/get?" + query.Encode()
-		targets = append(targets, drive.DownloadTarget{URL: target, Size: entry.Size})
+		// The anonymous content route answers non-browser user agents with
+		// 400 "Hotlinking not allowed" unless the request carries the link
+		// page as its Referer (live-verified with a Go user agent).
+		targets = append(targets, drive.DownloadTarget{
+			URL:     target,
+			Size:    entry.Size,
+			Headers: map[string]string{"Referer": d.cl.base + "/links/" + url.PathEscape(data.LinkID)},
+		})
 	}
 	return targets, nil
 }

@@ -220,6 +220,32 @@ qrypt probe test --mount drime --suite multipart
 上传的 `file_hash` 和 `client_last_modified` 与本地一致；测试结束后 drime 根目录只剩
 测试前已有的对象。
 
+### koofr
+
+Koofr 的冒烟需要应用密码（网页端 Settings → App passwords 创建）和一个
+`test_enabled = true` 的 mount。Go 侧 live 冒烟经环境变量注入凭据，不落盘：
+
+```bash
+# Go live 冒烟：未设置环境变量时自动 skip；只使用 qrypt-live-* 临时目录
+KOOFR_LIVE_EMAIL=... KOOFR_LIVE_PASSWORD=... \
+KOOFR_LIVE_MOUNT_ID=<可选> KOOFR_LIVE_BASE_URL=<可选> \
+go test ./pkg/drivers/koofr -run TestLiveKoofr -v -count=1
+
+# probe 契约套件（koofr 无分片上传，不跑 resume/multipart）
+qrypt mount &
+qrypt probe test auth   --mount koofr
+qrypt probe test contract --mount koofr
+qrypt probe test crud   --mount koofr
+qrypt probe test fs     --mount koofr
+```
+
+检查点：live 与 probe 结束后 Koofr 根目录只剩测试前已有的对象，回收站已清空
+（`DELETE /api/v2.1/trash`）；链接密码只接受 6 位字母数字（`[a-zA-Z0-9]{6}`），
+不符合的 passcode 在客户端即被拒绝；匿名抓取分享文件时必须带链接页作 Referer，
+否则被 400 "Hotlinking not allowed" 拦截；`root_path` 不存在时 mount 必须失败；
+外挂 mount（如 Google Drive）可能整体 500 `FilesNotSynced`，v1 只对主存储做完整验证。
+凭据只放本地配置或加密环境变量，绝不提交仓库。
+
 ## 本地等价命令
 
 ```bash

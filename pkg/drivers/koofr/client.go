@@ -61,12 +61,12 @@ func (r *apiResponse) error(prefix string) error {
 	_ = json.Unmarshal(r.body, &env)
 	code := env.Error.Code
 	base := drive.HTTPError(prefix, r.req, r.resp, redacted)
-	switch {
-	case code == "FilesNotSynced":
+	switch code {
+	case "FilesNotSynced":
 		return fmt.Errorf("%w: %v", errMountNotSynced, base)
-	case code == "InvalidPath":
+	case "InvalidPath":
 		return fmt.Errorf("%w: %v", drive.ErrInvalidInput, base)
-	case code == "AlreadyExists", code == "Conflict":
+	case "AlreadyExists", "Conflict":
 		return fmt.Errorf("%w: %v", drive.ErrConflict, base)
 	}
 	if env.RequestID != "" {

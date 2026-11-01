@@ -758,11 +758,13 @@ func parseRange(header string, size int64) (int64, int64, bool) {
 func (f *fakeProvider) handleAllLinks(w http.ResponseWriter) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Live probing showed link listings return {"links":[...]} (the
+	// account-level endpoint also carries a "mounts" map).
 	out := []apiLink{}
 	for _, link := range f.links {
 		out = append(out, link.apiLink)
 	}
-	f.writeJSONLocked(w, http.StatusOK, out)
+	f.writeJSONLocked(w, http.StatusOK, map[string]any{"links": out})
 }
 
 func (f *fakeProvider) handleLinks(w http.ResponseWriter, r *http.Request, sub string, query url.Values) {

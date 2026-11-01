@@ -83,17 +83,40 @@ func TestCreateShareWithPasscodeAndExpiry(t *testing.T) {
 	d := f.newDriver(t, Options{})
 	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
 		Entries:  []drive.Entry{entry},
-		Passcode: "s3cret!",
+		Passcode: "s3cr3t",
 		Expiry:   drive.ShareExpiryWeek,
 	})
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
-	if share.Public || share.Passcode != "s3cret!" {
+	if share.Public || share.Passcode != "s3cr3t" {
 		t.Fatalf("share = %+v", share)
 	}
 	if share.ExpiresAt.IsZero() {
 		t.Fatalf("share expiry missing: %+v", share)
+	}
+}
+
+func TestCreateShareRejectsInvalidPasscode(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/secret.bin")
+	d := f.newDriver(t, Options{})
+	for _, passcode := range []string{"short", "toolongpasscode", "sp@c3!", "汉汉汉"} {
+		_, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
+			Entries:  []drive.Entry{entry},
+			Passcode: passcode,
+		})
+		if !drive.IsShareErrorCode(err, drive.ShareErrUnsupported) {
+			t.Fatalf("CreateShare(%q) error = %v, want unsupported", passcode, err)
+		}
+	}
+	if got := f.requestsMatching("POST", "/links"); got != 0 {
+		t.Fatalf("link creates = %d, want 0 (invalid passcodes are rejected client-side)", got)
+	}
+	bad := "inv@lid"
+	_, err := d.UpdateShare(context.Background(), drive.ShareUpdateRequest{ID: "any", Passcode: &bad})
+	if !drive.IsShareErrorCode(err, drive.ShareErrUnsupported) {
+		t.Fatalf("UpdateShare error = %v, want unsupported", err)
 	}
 }
 
@@ -116,7 +139,7 @@ func TestPasswordSetResponseNeverLeaked(t *testing.T) {
 	d := f.newDriver(t, Options{})
 	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
 		Entries:  []drive.Entry{entry},
-		Passcode: "leak-me-not",
+		Passcode: "l3akm3",
 	})
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
@@ -126,20 +149,20 @@ func TestPasswordSetResponseNeverLeaked(t *testing.T) {
 		t.Fatalf("DebugSnapshot: %v", err)
 	}
 	encoded, _ := json.Marshal(snapshot)
-	if strings.Contains(string(encoded), "leak-me-not") {
+	if strings.Contains(string(encoded), "l3akm3") {
 		t.Fatalf("snapshot leaks share passcode: %s", encoded)
 	}
 
 	// A failing password/set must not echo the plaintext either.
-	f.faultStatus("PUT", "password/set", 3, http.StatusBadRequest, `{"error":{"code":"Other","message":"bad password \"leak-me-not\""}}`)
+	f.faultStatus("PUT", "password/set", 3, http.StatusBadRequest, `{"error":{"code":"Other","message":"bad password \"l3akm3\""}}`)
 	_, err = d.CreateShare(context.Background(), drive.ShareCreateRequest{
 		Entries:  []drive.Entry{entry},
-		Passcode: "leak-me-not",
+		Passcode: "l3akm3",
 	})
 	if err == nil {
 		t.Fatalf("CreateShare error = nil, want failure")
 	}
-	if strings.Contains(err.Error(), "leak-me-not") {
+	if strings.Contains(err.Error(), "l3akm3") {
 		t.Fatalf("error leaks passcode: %v", err)
 	}
 	_ = share
@@ -153,7 +176,7 @@ func TestUpdateSharePasscodeRemovalUnsupported(t *testing.T) {
 	d := f.newDriver(t, Options{})
 	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
 		Entries:  []drive.Entry{entry},
-		Passcode: "keep-me",
+		Passcode: "k33pme",
 	})
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
@@ -173,11 +196,11 @@ func TestUpdateShareDownloadableAndPasscode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
-	updated, err := d.UpdateShare(context.Background(), drive.ShareUpdateRequest{ID: share.LinkID, Passcode: &[]string{"new-pass"}[0]})
+	updated, err := d.UpdateShare(context.Background(), drive.ShareUpdateRequest{ID: share.LinkID, Passcode: &[]string{"n3wpas"}[0]})
 	if err != nil {
 		t.Fatalf("UpdateShare: %v", err)
 	}
-	if updated.Public || updated.Passcode != "new-pass" {
+	if updated.Public || updated.Passcode != "n3wpas" {
 		t.Fatalf("updated = %+v", updated)
 	}
 	off := false
@@ -385,10 +408,17 @@ func TestShareFetchAnonymousNestedFile(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("targets = %+v", targets)
 	}
-	// The anonymous route must not carry credentials.
+	// The anonymous route must not carry credentials; the Referer header
+	// from the target satisfies the provider's hotlink check.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, targets[0].URL, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for name, value := range targets[0].Headers {
+		req.Header.Set(name, value)
+	}
+	if req.Header.Get("Referer") == "" {
+		t.Fatal("download target missing Referer header (provider rejects hotlinks)")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -403,7 +433,7 @@ func TestShareFetchAnonymousNestedFile(t *testing.T) {
 
 func TestShareFetchPasscodeRequiredWithoutPasscode(t *testing.T) {
 	f := newFakeProvider(t)
-	session, entry := fetchSetup(t, f, "link-pass")
+	session, entry := fetchSetup(t, f, "l1nkp3")
 	session.Link.Passcode = "" // caller did not supply the passcode
 	d := f.newDriver(t, Options{})
 	_, err := d.ShareDownloadTargets(context.Background(), drive.ShareFetchRequest{Session: session, Entries: []drive.ShareEntry{entry}})
@@ -414,13 +444,20 @@ func TestShareFetchPasscodeRequiredWithoutPasscode(t *testing.T) {
 
 func TestShareFetchWithPasscodeSucceeds(t *testing.T) {
 	f := newFakeProvider(t)
-	session, entry := fetchSetup(t, f, "link-pass")
+	session, entry := fetchSetup(t, f, "l1nkp3")
 	d := f.newDriver(t, Options{})
 	targets, err := d.ShareDownloadTargets(context.Background(), drive.ShareFetchRequest{Session: session, Entries: []drive.ShareEntry{entry}})
 	if err != nil {
 		t.Fatalf("ShareDownloadTargets: %v", err)
 	}
-	resp, err := http.Get(targets[0].URL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, targets[0].URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range targets[0].Headers {
+		req.Header.Set(name, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}

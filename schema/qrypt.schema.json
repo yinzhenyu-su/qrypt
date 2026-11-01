@@ -804,7 +804,8 @@
             "sftp",
             "s3",
             "123",
-            "drime"
+            "drime",
+            "koofr"
           ],
           "x-i18n": {
             "zh-CN": {
@@ -1206,6 +1207,28 @@
             "properties": {
               "params": {
                 "$ref": "#/definitions/drimeParams"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "koofr"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/koofrParams"
               }
             }
           }
@@ -2741,7 +2764,8 @@
             "onedrive_app",
             "s3",
             "123",
-            "drime"
+            "drime",
+            "koofr"
           ],
           "x-i18n": {
             "zh-CN": {
@@ -3095,6 +3119,28 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "koofr"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "$ref": "#/definitions/koofrParams"
+              }
+            }
+          }
         }
       ],
       "title": "Credential",
@@ -3254,6 +3300,86 @@
       "x-i18n": {
         "zh-CN": {
           "title": "Drime 云盘"
+        }
+      }
+    },
+    "koofrParams": {
+      "type": "object",
+      "required": [
+        "email",
+        "app_password"
+      ],
+      "properties": {
+        "email": {
+          "description": "Koofr account email",
+          "type": "string",
+          "minLength": 1,
+          "x-example": "user@example.com",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Koofr 账号邮箱"
+            }
+          },
+          "x-param-scope": "credential"
+        },
+        "app_password": {
+          "description": "Koofr app password (Settings -> App passwords)",
+          "type": "string",
+          "minLength": 1,
+          "x-secret": true,
+          "x-example": "your-app-password",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "Koofr 应用密码（设置 -> 应用密码）"
+            }
+          },
+          "x-param-scope": "credential"
+        },
+        "mount_id": {
+          "description": "Provider mount id; defaults to the primary mount",
+          "type": "string",
+          "x-example": "749b91a4-c96b-4cfb-a457-526827ad9622",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "网盘挂载 ID；默认使用主存储"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "root_path": {
+          "description": "Directory path used as this mount root",
+          "type": "string",
+          "default": "/",
+          "x-example": "/qrypt",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "作为挂载根的目录路径"
+            }
+          },
+          "x-param-scope": "mount"
+        },
+        "api_base_url": {
+          "description": "Custom Koofr API base URL",
+          "type": "string",
+          "default": "https://app.koofr.net",
+          "x-example": "https://app.koofr.net",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "自定义 Koofr API 基础 URL"
+            }
+          },
+          "x-param-scope": "both"
+        }
+      },
+      "additionalProperties": false,
+      "title": "Koofr",
+      "x-driver": {
+        "type": "koofr",
+        "order": 16
+      },
+      "x-i18n": {
+        "zh-CN": {
+          "title": "Koofr 云盘"
         }
       }
     }

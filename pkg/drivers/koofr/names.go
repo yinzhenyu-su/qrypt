@@ -16,10 +16,10 @@ const maxNameBytes = 255
 // when a query filename carries invalid UTF-8 — so the driver rejects every
 // hazardous name before any request.
 func validateName(name string) error {
-	switch {
-	case name == "":
+	switch name {
+	case "":
 		return fmt.Errorf("koofr: name is empty: %w", drive.ErrInvalidInput)
-	case name == "." || name == "..":
+	case ".", "..":
 		return fmt.Errorf("koofr: name %q is reserved: %w", name, drive.ErrInvalidInput)
 	}
 	for _, bad := range name {
