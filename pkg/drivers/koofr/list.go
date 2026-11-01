@@ -12,9 +12,9 @@ import (
 // Koofr's files/list has no pagination; an empty path would silently list the
 // mount root, so the resolved path is always absolute and non-empty.
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	parent := d.resolveID(parentID)
-	if parent == "" || parent[0] != '/' {
-		return nil, fmt.Errorf("koofr: list: invalid path %q: %w", parentID, drive.ErrInvalidInput)
+	parent, err := d.resolveWithin(parentID, "list")
+	if err != nil {
+		return nil, fmt.Errorf("koofr: list: %w", err)
 	}
 	entries, err := d.listDir(ctx, parent)
 	if err != nil {

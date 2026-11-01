@@ -45,8 +45,8 @@ func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) 
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr links cover exactly one entry")
 	}
 	entry := req.Entries[0]
-	path := d.resolveID(entry.ID)
-	if path == "" || path == "/" || path[0] != '/' {
+	path, err := d.resolveWithin(entry.ID, "share")
+	if err != nil || path == "/" {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "entry path is required")
 	}
 	if req.Passcode != "" && !validPasscode(req.Passcode) {
@@ -253,19 +253,33 @@ func (d *Driver) setLinkDownloadable(ctx context.Context, id string, downloadabl
 	return link, nil
 }
 
-// ParseShareLink recognizes https://app.koofr.net/links/{id} page URLs. The
-// https://k00.fr/{hash} short form is deliberately not parsed: its path
-// segment is a redirect hash, not the link id, and resolving it would need a
-// network round trip this synchronous parser cannot make. Producing a wrong
-// identity would send every later link operation to a 404, so short URLs are
-// rejected instead.
+// shareLinkDefaultHost is the provider's canonical page host.
+const shareLinkDefaultHost = "app.koofr.net"
+
+// shareLinkHost returns the page host derived from the configured
+// api_base_url, so a driver pointed at a custom gateway accepts links on
+// that gateway too.
+func (d *Driver) shareLinkHost() string {
+	if u, err := url.Parse(d.cl.base); err == nil && u.Hostname() != "" {
+		return strings.ToLower(u.Hostname())
+	}
+	return shareLinkDefaultHost
+}
+
+// ParseShareLink recognizes https://app.koofr.net/links/{id} page URLs (or
+// the equivalent page on a driver configured with a custom api_base_url
+// host, e.g. an on-premise gateway). The https://k00.fr/{hash} short form is
+// deliberately not parsed: its path segment is a redirect hash, not the link
+// id, and resolving it would need a network round trip this synchronous
+// parser cannot make. Producing a wrong identity would send every later link
+// operation to a 404, so short URLs are rejected instead.
 func (d *Driver) ParseShareLink(raw string) (drive.ShareLink, bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
 		return drive.ShareLink{}, false
 	}
 	host := strings.ToLower(u.Hostname())
-	if host != "app.koofr.net" {
+	if host != d.shareLinkHost() && host != strings.ToLower(shareLinkDefaultHost) {
 		return drive.ShareLink{}, false
 	}
 	rest := strings.Trim(u.Path, "/")

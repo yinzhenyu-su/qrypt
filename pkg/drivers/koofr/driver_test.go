@@ -281,12 +281,22 @@ func TestResolvePathSegments(t *testing.T) {
 	}
 }
 
-func TestResolveRemoteNameIdentityAndValidation(t *testing.T) {
+func TestResolveRemoteNameFoldMatchAndValidation(t *testing.T) {
 	f := newFakeProvider(t)
+	f.putFile("/a.bin", []byte("x"), 1)
 	d := f.newDriver(t, Options{})
-	info, err := d.ResolveRemoteName(context.Background(), "a.bin")
-	if err != nil || info.PlainName != "a.bin" || info.RemoteName != "a.bin" {
-		t.Fatalf("ResolveRemoteName = %+v, %v", info, err)
+	// Case-variant resolves to the existing entry's canonical casing.
+	info, err := d.ResolveRemoteName(context.Background(), "A.BIN")
+	if err != nil || info.PlainName != "A.BIN" || info.RemoteName != "a.bin" {
+		t.Fatalf("ResolveRemoteName(A.BIN) = %+v, %v", info, err)
+	}
+	// Exact name resolves to itself.
+	if info, err := d.ResolveRemoteName(context.Background(), "a.bin"); err != nil || info.RemoteName != "a.bin" {
+		t.Fatalf("ResolveRemoteName(a.bin) = %+v, %v", info, err)
+	}
+	// An unknown name reports not-found instead of a second identity.
+	if _, err := d.ResolveRemoteName(context.Background(), "missing.bin"); err == nil || !errors.Is(err, drive.ErrNotFound) {
+		t.Fatalf("missing name error = %v, want not found", err)
 	}
 	if _, err := d.ResolveRemoteName(context.Background(), `back\slash`); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
 		t.Fatalf("backslash name error = %v", err)
@@ -640,7 +650,7 @@ func TestUploadOverwriteKeepsCanonicalNameAndMtime(t *testing.T) {
 	modTime := time.UnixMilli(1700000000999).UTC()
 	entry, err := d.PutSource(context.Background(), drive.UploadRequest{
 		ParentID: "/",
-		Name:     "PROBE2.BIN",
+		Name:     "probe2.bin",
 		Source:   drive.NewBytesReadOnlyFileSource([]byte("new content")),
 		ModTime:  modTime,
 	})
@@ -657,6 +667,41 @@ func TestUploadOverwriteKeepsCanonicalNameAndMtime(t *testing.T) {
 	entries, _ := d.List(context.Background(), "/")
 	if len(entries) != 1 {
 		t.Fatalf("entries after overwrite = %+v", entries)
+	}
+}
+
+func TestUploadCaseVariantSiblingIsConflict(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/b.bin", []byte("original"), 1)
+	d := f.newDriver(t, Options{})
+	_, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "B.bin",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("replacement")),
+		ModTime:  time.UnixMilli(1700000000123).UTC(),
+	})
+	if err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("PutSource(B.bin) error = %v, want conflict", err)
+	}
+	if got := f.requestsMatching("POST", "files/put"); got != 0 {
+		t.Fatalf("put requests = %d, want 0 (conflict detected before upload)", got)
+	}
+	// The sibling keeps its content and no second entry appears.
+	entries, err := d.List(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "b.bin" || entries[0].Size != 8 {
+		t.Fatalf("entries = %+v, want untouched b.bin", entries)
+	}
+	body, err := d.Read(context.Background(), entries[0], 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(body)
+	body.Close()
+	if string(data) != "original" {
+		t.Fatalf("b.bin content = %q, want %q", data, "original")
 	}
 }
 
@@ -1048,5 +1093,56 @@ func TestRetryAfterHeaderOverridesBackoff(t *testing.T) {
 	}
 	if len(delays) != 1 || delays[0] != time.Second {
 		t.Fatalf("delays = %v, want [1s]", delays)
+	}
+}
+
+// Every id-taking operation must refuse ids outside root_path, and the root
+// itself must never be removable, so a raw or stale provider path cannot aim
+// an operation outside the mounted subtree.
+func TestRootPathBoundaryRejectsOutOfRootIDs(t *testing.T) {
+	f := newFakeProvider(t)
+	f.mkdirAll("/sub/inner")
+	f.putFile("/sub/inside.bin", []byte("in"), 1)
+	f.putFile("/outside.bin", []byte("out"), 1)
+	d := f.newDriver(t, Options{RootPath: "/sub"})
+
+	if _, err := d.List(context.Background(), "/other"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("List outside root = %v, want invalid input", err)
+	}
+	if err := d.Remove(context.Background(), drive.Entry{ID: "/outside.bin", Name: "outside.bin"}); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Remove outside root = %v, want invalid input", err)
+	}
+	// The mount root itself (empty id or "/") must be refused explicitly.
+	for _, id := range []string{"", "/", "/sub"} {
+		if err := d.Remove(context.Background(), drive.Entry{ID: id, Name: "sub", IsDir: true}); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+			t.Fatalf("Remove(%q) = %v, want invalid input", id, err)
+		}
+	}
+	if _, err := d.Move(context.Background(), drive.Entry{ID: "/sub/inside.bin", Name: "inside.bin"}, "/other"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Move to outside destination = %v, want invalid input", err)
+	}
+	if _, err := d.Move(context.Background(), drive.Entry{ID: "/outside.bin", Name: "outside.bin"}, "/sub"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Move from outside source = %v, want invalid input", err)
+	}
+	if _, err := d.Copy(context.Background(), drive.Entry{ID: "/outside.bin", Name: "outside.bin"}, "/sub", "x.bin"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Copy from outside source = %v, want invalid input", err)
+	}
+	if _, err := d.PutSource(context.Background(), drive.UploadRequest{ParentID: "/other", Name: "u.bin", Source: drive.NewBytesReadOnlyFileSource([]byte("x"))}); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("PutSource outside root = %v, want invalid input", err)
+	}
+	if _, err := d.Rename(context.Background(), drive.Entry{ID: "/outside.bin", Name: "outside.bin"}, "renamed.bin"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Rename outside root = %v, want invalid input", err)
+	}
+
+	// In-bounds operations keep working.
+	entries, err := d.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("rooted List: %v", err)
+	}
+	if len(entries) != 2 { // inner dir + inside.bin
+		t.Fatalf("rooted List = %+v", entries)
+	}
+	if err := d.Remove(context.Background(), drive.Entry{ID: "/sub/inside.bin", Name: "inside.bin"}); err != nil {
+		t.Fatalf("Remove inside root: %v", err)
 	}
 }

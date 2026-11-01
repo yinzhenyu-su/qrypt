@@ -187,15 +187,22 @@ collision MUST map to a conflict; a missing source MUST report not-found.
 
 ### Requirement: Uploads are single-request and deterministic
 
-Uploading SHALL use one multipart request that always pins overwrite and disables auto-rename, so a
-name collision replaces the entry deterministically instead of silently creating a renamed copy.
-The driver MUST NOT declare resumable uploads.
+Uploading SHALL use one multipart request that always pins overwrite and disables auto-rename, so an
+exact-name collision replaces the entry deterministically instead of silently creating a renamed copy.
+A requested name that collides case-insensitively with a different existing name SHALL report a
+conflict before the request, because the provider would silently overwrite the sibling while keeping
+its canonical casing. The driver MUST NOT declare resumable uploads.
 
 #### Scenario: Auto-rename is never used
 
 - **WHEN** any upload is sent
 - **THEN** the request pins overwrite and disables auto-rename, and a collision replaces rather
   than forks the file
+
+#### Scenario: Case-variant collision is a conflict
+
+- **WHEN** `B.bin` is uploaded into a directory that contains `b.bin`
+- **THEN** the driver reports a conflict without sending the upload and `b.bin` keeps its content
 
 #### Scenario: Resumable upload is not advertised
 

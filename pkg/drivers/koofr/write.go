@@ -23,9 +23,9 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	if err := validateName(name); err != nil {
 		return drive.Entry{}, err
 	}
-	parent := d.resolveID(parentID)
-	if parent == "" || parent[0] != '/' {
-		return drive.Entry{}, fmt.Errorf("koofr: mkdir: invalid parent %q: %w", parentID, drive.ErrInvalidInput)
+	parent, err := d.resolveWithin(parentID, "mkdir")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: mkdir: %w", err)
 	}
 	target := joinPath(parent, name)
 	resp, err := d.cl.post(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/folder", d.filesQuery(parent), map[string]any{"name": name}, nil)
@@ -68,9 +68,9 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := validateName(newName); err != nil {
 		return drive.Entry{}, err
 	}
-	path := d.resolveID(entry.ID)
-	if path == "" || path == "/" {
-		return drive.Entry{}, fmt.Errorf("koofr: rename: invalid path %q: %w", entry.ID, drive.ErrInvalidInput)
+	path, err := d.resolveWithin(entry.ID, "rename")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: rename: %w", err)
 	}
 	parent := parentPath(path)
 	resp, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/rename", d.filesQuery(path), map[string]any{"name": newName}, nil)
@@ -91,13 +91,13 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 // destinations are impossible by construction (entry ids are paths on this
 // mount), and the request pins toMountId to the mounted mount.
 func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string) (drive.Entry, error) {
-	dst := d.resolveID(dstParentID)
-	if dst == "" || dst[0] != '/' {
-		return drive.Entry{}, fmt.Errorf("koofr: move: invalid destination %q: %w", dstParentID, drive.ErrInvalidInput)
+	dst, err := d.resolveWithin(dstParentID, "move")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: move: %w", err)
 	}
-	path := d.resolveID(entry.ID)
-	if path == "" || path == "/" {
-		return drive.Entry{}, fmt.Errorf("koofr: move: invalid path %q: %w", entry.ID, drive.ErrInvalidInput)
+	path, err := d.resolveWithin(entry.ID, "move")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: move: %w", err)
 	}
 	if isWithin(dst, path) {
 		return drive.Entry{}, fmt.Errorf("koofr: move %q into itself: %w", entry.Name, drive.ErrInvalidInput)
@@ -108,12 +108,12 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		// answer 409 AlreadyExists against the entry itself.
 		return entry, nil
 	}
-	_, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/move", d.filesQuery(path), map[string]any{
+	_, moveErr := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/move", d.filesQuery(path), map[string]any{
 		"toMountId": d.mountID,
 		"toPath":    target,
 	}, nil)
-	if err != nil {
-		err = fmt.Errorf("koofr: move %q: %w", entry.Name, err)
+	if moveErr != nil {
+		err := fmt.Errorf("koofr: move %q: %w", entry.Name, moveErr)
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
@@ -133,13 +133,13 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	if err := validateName(dstName); err != nil {
 		return drive.Entry{}, err
 	}
-	dst := d.resolveID(dstParentID)
-	if dst == "" || dst[0] != '/' {
-		return drive.Entry{}, fmt.Errorf("koofr: copy: invalid destination %q: %w", dstParentID, drive.ErrInvalidInput)
+	dst, err := d.resolveWithin(dstParentID, "copy")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: copy: %w", err)
 	}
-	path := d.resolveID(src.ID)
-	if path == "" || path[0] != '/' {
-		return drive.Entry{}, fmt.Errorf("koofr: copy: invalid path %q: %w", src.ID, drive.ErrInvalidInput)
+	path, err := d.resolveWithin(src.ID, "copy")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: copy: %w", err)
 	}
 	target := joinPath(dst, dstName)
 	payload := map[string]any{
@@ -149,9 +149,9 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 	if !src.ModTime.IsZero() {
 		payload["modified"] = src.ModTime.UnixMilli()
 	}
-	_, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/copy", d.filesQuery(path), payload, nil)
-	if err != nil {
-		err = fmt.Errorf("koofr: copy %q to %q: %w", src.Name, dstName, err)
+	_, copyErr := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/copy", d.filesQuery(path), payload, nil)
+	if copyErr != nil {
+		err := fmt.Errorf("koofr: copy %q to %q: %w", src.Name, dstName, copyErr)
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
@@ -167,9 +167,12 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 // conflict instead of deleting the wrong generation. Non-empty directories
 // cascade into the provider trash.
 func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
-	path := d.resolveID(entry.ID)
-	if path == "" || path == "/" {
-		return fmt.Errorf("koofr: remove: invalid path %q: %w", entry.ID, drive.ErrInvalidInput)
+	path, err := d.resolveWithin(entry.ID, "remove")
+	if err != nil {
+		return fmt.Errorf("koofr: remove: %w", err)
+	}
+	if path == d.rootPath {
+		return fmt.Errorf("koofr: remove %q: refusing to remove the mount root: %w", entry.ID, drive.ErrInvalidInput)
 	}
 	query := d.filesQuery(path)
 	if !entry.IsDir && entry.Size > 0 {
@@ -181,9 +184,9 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	if hash := entryFileHash(entry); hash != "" {
 		query.Set("removeIfHash", hash)
 	}
-	_, err := d.cl.delete(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/remove", query, nil)
-	if err != nil {
-		err = fmt.Errorf("koofr: remove %q: %w", entry.Name, err)
+	_, rmErr := d.cl.delete(ctx, "/mounts/"+url.PathEscape(d.mountID)+"/files/remove", query, nil)
+	if rmErr != nil {
+		err := fmt.Errorf("koofr: remove %q: %w", entry.Name, rmErr)
 		d.setLastError(err)
 		return err
 	}

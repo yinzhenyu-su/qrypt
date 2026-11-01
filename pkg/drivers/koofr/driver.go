@@ -216,6 +216,19 @@ func (d *Driver) resolveID(id string) string {
 	return id
 }
 
+// resolveWithin maps a caller-facing id to the absolute provider path and
+// refuses ids that fall outside root_path. Entry ids normally come from
+// listings and are in-bounds by construction; the guard exists so a caller
+// passing a raw provider path (or a stale id from another root) cannot aim
+// an operation outside the mounted subtree.
+func (d *Driver) resolveWithin(id, op string) (string, error) {
+	path := d.resolveID(id)
+	if len(path) == 0 || path[0] != '/' || !isWithin(path, d.rootPath) {
+		return "", fmt.Errorf("koofr: %s: id %q escapes root_path %q: %w", op, id, d.rootPath, drive.ErrInvalidInput)
+	}
+	return path, nil
+}
+
 // cleanMountPath normalizes a mount-relative path. It rejects ".." escapes
 // and returns "/" for the root.
 func cleanMountPath(p string) (string, error) {

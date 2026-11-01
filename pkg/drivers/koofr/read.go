@@ -22,9 +22,9 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if offset < 0 || size < 0 {
 		return nil, fmt.Errorf("koofr: invalid read range offset=%d size=%d: %w", offset, size, drive.ErrInvalidInput)
 	}
-	path := d.resolveID(entry.ID)
-	if path == "" || path[0] != '/' {
-		return nil, fmt.Errorf("koofr: read %q: invalid path: %w", entry.Name, drive.ErrInvalidInput)
+	path, err := d.resolveWithin(entry.ID, "read")
+	if err != nil {
+		return nil, fmt.Errorf("koofr: read %q: %w", entry.Name, err)
 	}
 	if entry.Size == 0 || (entry.Size > 0 && offset >= entry.Size) {
 		return io.NopCloser(bytes.NewReader(nil)), nil

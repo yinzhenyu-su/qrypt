@@ -334,6 +334,32 @@ func TestParseShareLink(t *testing.T) {
 	}
 }
 
+// A driver configured with a custom api_base_url must accept share page URLs
+// on that host, while the provider's canonical app.koofr.net host stays
+// accepted and unrelated hosts stay refused.
+func TestParseShareLinkCustomBaseHost(t *testing.T) {
+	f := newFakeProvider(t)
+	d := f.newDriver(t, Options{}) // api_base_url = fake server host
+	base, err := url.Parse(f.server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := base.Scheme + "://" + base.Host + "/links/custom123"
+	link, ok := d.ParseShareLink(custom)
+	if !ok || link.LinkID != "custom123" {
+		t.Fatalf("ParseShareLink(%q) = %+v, %v, want custom123", custom, link, ok)
+	}
+	if link, ok := d.ParseShareLink("https://app.koofr.net/links/abc123"); !ok || link.LinkID != "abc123" {
+		t.Fatalf("ParseShareLink default host = %+v, %v", link, ok)
+	}
+	if _, ok := d.ParseShareLink("https://k00.fr/x1y2z3"); ok {
+		t.Fatal("ParseShareLink accepted a k00.fr short URL")
+	}
+	if _, ok := d.ParseShareLink("https://example.net/links/abc123"); ok {
+		t.Fatal("ParseShareLink accepted an unrelated host")
+	}
+}
+
 // A link rooted at the mount root must produce a canonical /dir/file path
 // query, never a //dir/file double slash.
 func TestShareFetchRootLinkSingleSlashPath(t *testing.T) {

@@ -36,13 +36,21 @@ func validateName(name string) error {
 	return nil
 }
 
-// ResolveRemoteName reports the stored form of a plain name. Koofr preserves
-// names verbatim, so the mapping is the identity; the provider's
-// case-insensitive collision behaviour surfaces through write conflicts and
-// the canonical casing listings return.
-func (d *Driver) ResolveRemoteName(_ context.Context, plainName string) (drive.RemoteNameInfo, error) {
+// ResolveRemoteName reports the stored form of a plain name. Koofr treats
+// names case-insensitively, so the requested name is fold-matched against
+// the root listing: a hit returns the provider's canonical casing (one
+// identity, not a second entry), a miss reports not-found so callers never
+// invent a duplicate casing, and an invalid name is still rejected locally.
+func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	if err := validateName(plainName); err != nil {
 		return drive.RemoteNameInfo{}, err
 	}
-	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: plainName}, nil
+	entry, found, err := d.lookupChild(ctx, d.rootPath, plainName)
+	if err != nil {
+		return drive.RemoteNameInfo{}, fmt.Errorf("koofr: resolve remote name %q: %w", plainName, err)
+	}
+	if !found {
+		return drive.RemoteNameInfo{}, fmt.Errorf("koofr: resolve remote name %q: %w", plainName, drive.ErrNotFound)
+	}
+	return drive.RemoteNameInfo{PlainName: plainName, RemoteName: entry.Name}, nil
 }

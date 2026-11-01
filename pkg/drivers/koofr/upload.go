@@ -26,13 +26,31 @@ func (d *Driver) RequiredUploadHashes() []drive.HashAlgorithm {
 // overwrite=true and autorename=false — the provider default silently forks
 // colliding files under "name (1)" names — and always sends modified so an
 // overwrite does not reset the mtime to server time.
+//
+// Koofr stores names case-insensitively: uploading B.bin over an existing
+// b.bin overwrites b.bin while keeping its canonical name, which a
+// case-sensitive caller reads as a new file silently clobbering a sibling.
+// The driver therefore fold-checks the parent listing first and reports a
+// conflict whenever a sibling differs from the requested name in casing
+// only; an exact-name overwrite still replaces the entry deterministically.
 func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.Entry, error) {
 	if err := validateName(req.Name); err != nil {
 		return drive.Entry{}, err
 	}
-	parent := d.resolveID(req.ParentID)
-	if parent == "" || parent[0] != '/' {
-		return drive.Entry{}, fmt.Errorf("koofr: upload: invalid parent %q: %w", req.ParentID, drive.ErrInvalidInput)
+	parent, err := d.resolveWithin(req.ParentID, "upload")
+	if err != nil {
+		return drive.Entry{}, fmt.Errorf("koofr: upload: %w", err)
+	}
+	sibling, found, err := d.lookupChild(ctx, parent, req.Name)
+	if err != nil {
+		err = fmt.Errorf("koofr: upload %q: check sibling names: %w", req.Name, err)
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
+	if found && sibling.Name != req.Name {
+		err := fmt.Errorf("koofr: upload %q: remote directory holds %q, a sibling differing only by case; refusing to overwrite it: %w", req.Name, sibling.Name, drive.ErrConflict)
+		d.setLastError(err)
+		return drive.Entry{}, err
 	}
 	file, err := req.Source.Open(ctx)
 	if err != nil {
