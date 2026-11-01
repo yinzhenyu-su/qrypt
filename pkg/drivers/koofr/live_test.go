@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -301,6 +302,135 @@ func TestLiveKoofr(t *testing.T) {
 			count = len(enveloped.Links)
 		}
 		t.Logf("account-level /api/v2.1/links returns a JSON %s (%d links)", shape, count)
+	}
+}
+
+// TestLiveKoofrVirtualRoot verifies the default aggregated root against the
+// real account: the root lists the online external mounts (e.g. wgdrive)
+// alongside the primary storage, writes inside an external mount route by
+// "ext:" id, and copy works across mounts. Only a qrypt-vroot-<unix>
+// temporary directory (primary + external side) is touched; both sides are
+// removed and the trash emptied at the end.
+func TestLiveKoofrVirtualRoot(t *testing.T) {
+	email := os.Getenv("KOOFR_LIVE_EMAIL")
+	password := os.Getenv("KOOFR_LIVE_PASSWORD")
+	if email == "" || password == "" {
+		t.Skip("KOOFR_LIVE_EMAIL/KOOFR_LIVE_PASSWORD are not set")
+	}
+	d := New(Options{
+		Email:      email,
+		Password:   password,
+		APIBaseURL: os.Getenv("KOOFR_LIVE_BASE_URL"),
+	})
+	ctx := context.Background()
+	if err := d.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = d.Drop(ctx) }()
+	emptyTrash := func() {
+		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
+			t.Logf("empty trash: %v", err)
+		}
+	}
+
+	// The virtual root must list every online external mount.
+	root, err := d.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List virtual root: %v", err)
+	}
+	var extEntry drive.Entry
+	for _, entry := range root {
+		if strings.HasPrefix(entry.ID, "ext:") && entry.IsDir {
+			extEntry = entry
+			break
+		}
+	}
+	if extEntry.ID == "" {
+		t.Fatal("virtual root lists no external mount directory")
+	}
+	t.Logf("virtual root lists external mount %q (id %s) among %d entries", extEntry.Name, extEntry.ID, len(root))
+
+	run := strconv.FormatInt(time.Now().Unix(), 10)
+	name := "qrypt-vroot-" + run
+	staging, err := d.Mkdir(ctx, "", name)
+	if err != nil {
+		t.Fatalf("Mkdir primary staging: %v", err)
+	}
+	cleanup := func() {
+		if err := d.Remove(ctx, staging); err != nil {
+			t.Logf("cleanup primary staging: %v", err)
+		}
+		emptyTrash()
+	}
+	defer cleanup()
+
+	// Create the same temporary directory inside the external mount.
+	extDir, err := d.Mkdir(ctx, extEntry.ID, name)
+	if err != nil {
+		cleanup()
+		t.Fatalf("Mkdir in external mount: %v", err)
+	}
+	if !strings.HasPrefix(extDir.ID, "ext:") {
+		cleanup()
+		t.Fatalf("ext mkdir id = %q, want ext: prefix", extDir.ID)
+	}
+	defer func() {
+		if err := d.Remove(ctx, extDir); err != nil {
+			t.Logf("cleanup ext dir: %v", err)
+		}
+	}()
+
+	// Upload, read back, and rename inside the external mount.
+	mod := time.UnixMilli(1700000000123).UTC()
+	payload := []byte("qrypt-vroot-payload")
+	file, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: extDir.ID,
+		Name:     "data.bin",
+		Source:   drive.NewBytesReadOnlyFileSource(payload),
+		ModTime:  mod,
+	})
+	if err != nil {
+		t.Fatalf("upload into external mount: %v", err)
+	}
+	if file.ID != joinPath(extDir.ID, "data.bin") {
+		t.Logf("uploaded id = %q", file.ID)
+	}
+	reader, err := d.Read(ctx, file, 0, 0)
+	if err != nil {
+		t.Fatalf("Read ext file: %v", err)
+	}
+	got, _ := io.ReadAll(reader)
+	reader.Close()
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("ext read = %d bytes, want %d", len(got), len(payload))
+	}
+	renamed, err := d.Rename(ctx, file, "data-renamed.bin")
+	if err != nil {
+		t.Logf("rename in external mount: %v", err)
+	} else if renamed.ModTime.UnixMilli() == mod.UnixMilli() {
+		t.Logf("rename kept mtime %v (external mounts are known to reset it)", renamed.ModTime)
+	} else {
+		t.Logf("rename reset mtime to %v (known external-mount behavior)", renamed.ModTime)
+	}
+
+	// Cross-mount copy: external mount -> primary staging.
+	src := file
+	if renamed.ID != "" {
+		src = renamed
+	}
+	copied, err := d.Copy(ctx, src, staging.ID, "cross-copy.bin")
+	if err != nil {
+		t.Logf("cross-mount copy: %v (provider may answer FilesNotSynced while the external mount is out of sync)", err)
+	} else {
+		if copied.ID != joinPath(staging.ID, "cross-copy.bin") || copied.Size != int64(len(payload)) {
+			t.Fatalf("cross copy = %+v", copied)
+		}
+		t.Logf("cross-mount copy landed at %q (mtime %v)", copied.ID, copied.ModTime)
+	}
+
+	// Space reflects the primary mount.
+	if space, err := d.Space(ctx); err != nil || space.Total == 0 {
+		t.Fatalf("Space = %+v, %v", space, err)
 	}
 }
 

@@ -244,6 +244,20 @@ qrypt probe test fs     --mount koofr
 不符合的 passcode 在客户端即被拒绝；匿名抓取分享文件时必须带链接页作 Referer，
 否则被 400 "Hotlinking not allowed" 拦截；`root_path` 不存在时 mount 必须失败；
 外挂 mount（如 Google Drive）可能整体 500 `FilesNotSynced`，v1 只对主存储做完整验证。
+
+虚拟根（`mount_id` 省略）的 live 验证步骤：
+
+```bash
+# 虚拟根：根目录应含外挂目录（如 wgdrive），进入外挂读写临时对象并跨 mount copy
+KOOFR_LIVE_EMAIL=... KOOFR_LIVE_PASSWORD=... \
+go test ./pkg/drivers/koofr -run TestLiveKoofrVirtualRoot -v -count=1
+```
+
+检查点：根列表 = 主存储内容 + 各在线外挂目录（离线外挂不出现）；外挂内
+mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂的 copy 走
+`toMountId` 一次成功；外挂 rename 后 mtime 被服务端重置（已知行为）；只读外挂
+写操作返回权限错误。临时对象一律放在 `qrypt-vroot-<时间戳>` 目录下，结束删除
+该目录并清空回收站。
 凭据只放本地配置或加密环境变量，绝不提交仓库。
 
 ## 本地等价命令

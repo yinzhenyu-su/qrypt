@@ -454,6 +454,6 @@ app_password = "your-app-password"
 |---|---|---|---|---|
 | `email` | string | 凭据 | 是 | Koofr 账号邮箱 |
 | `app_password` | string (secret) | 凭据 | 是 | Koofr 应用密码（设置 -> 应用密码） |
-| `mount_id` | string | 挂载 | 否 | 网盘挂载 ID；默认使用主存储 |
-| `root_path` | string | 挂载 | 否 | 作为挂载根的目录路径，默认 `/` |
+| `mount_id` | string | 挂载 | 否 | 锁定单一网盘挂载 ID；默认挂载根聚合主存储与在线外部挂载 |
+| `root_path` | string | 挂载 | 否 | 作为挂载根的目录路径；需配合 mount_id 使用（默认虚拟根仅支持 /），默认 `/` |
 | `api_base_url` | string | 两者 | 否 | 自定义 Koofr API 基础 URL，默认 `https://app.koofr.net` |

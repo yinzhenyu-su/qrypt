@@ -45,6 +45,15 @@ func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) 
 		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr links cover exactly one entry")
 	}
 	entry := req.Entries[0]
+	if d.virtualRoot() {
+		// Koofr link endpoints are mount-scoped; a link created on an
+		// external mount could not be read, updated, or deleted through this
+		// driver's primary-mount endpoints. Require an explicit mount_id
+		// mount to share external-mount entries.
+		if _, _, ext := splitExtID(strings.TrimSpace(entry.ID)); ext {
+			return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "sharing external-mount entries requires a mount configured with an explicit mount_id")
+		}
+	}
 	path, err := d.resolveWithin(entry.ID, "share")
 	if err != nil || path == "/" {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "entry path is required")
@@ -355,7 +364,7 @@ func (d *Driver) ListShareEntries(ctx context.Context, session drive.ShareSessio
 	if !isWithin(root, data.Path) {
 		return drive.ShareEntryPage{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "directory escapes the link")
 	}
-	entries, err := d.listDir(ctx, root)
+	entries, err := d.listDirOn(ctx, d.mountID, root, root)
 	if err != nil {
 		return drive.ShareEntryPage{}, shareErrorFromHTTP(err)
 	}

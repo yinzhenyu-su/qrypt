@@ -2,11 +2,12 @@
 
 ## Purpose
 Provide first-class Koofr support as a built-in qrypt mount: app-password authentication, one
-provider mount per qrypt mount, complete path-based listings, range reads, deterministic write and
-conflict semantics, single-request uploads that preserve modification times, case-insensitive
-remote-name resolution, and per-entry share links with anonymous receive and fetch — while
-containing the provider's observed quirks (auto-rename defaults, cascading deletes, mount-scoped
-link endpoints, out-of-sync external mounts) so VFS and sync observe normal backend behavior.
+provider mount per qrypt mount or an aggregated virtual root over the account's primary storage and
+online external mounts, complete path-based listings, range reads, deterministic write and conflict
+semantics, single-request uploads that preserve modification times, case-insensitive remote-name
+resolution, and per-entry share links with anonymous receive and fetch — while containing the
+provider's observed quirks (auto-rename defaults, cascading deletes, mount-scoped link endpoints,
+out-of-sync external mounts) so VFS and sync observe normal backend behavior.
 
 ## Requirements
 
@@ -29,15 +30,17 @@ or snapshots.
 
 ### Requirement: One provider mount is selected and health-checked
 
-`mount_id` SHALL select one provider mount, MUST default to the primary mount discovered from the
-provider, and MUST be verified online and writable before initialization succeeds. `root_path`
-SHALL be resolved during initialization; an unresolved root MUST fail initialization without
-falling back to the mount root. Retried initialization MUST be idempotent.
+An explicitly configured `mount_id` SHALL lock the qrypt mount to exactly one provider mount, MUST
+be verified online and writable before initialization succeeds, and `root_path` SHALL then be
+resolved during initialization against that mount; an unresolved root MUST fail initialization
+without falling back to the mount root. Retried initialization MUST be idempotent. When `mount_id`
+is omitted the mount serves the virtual root defined by its own requirement below.
 
-#### Scenario: Primary mount is mounted by default
+#### Scenario: Explicit mount is mounted by default scope
 
-- **WHEN** a mount declares valid credentials and omits `mount_id`
-- **THEN** initialization selects the provider's primary mount and the mount serves it
+- **WHEN** a mount declares valid credentials and sets `mount_id`
+- **THEN** initialization selects exactly that provider mount, serves only it, and rejects ids that
+  address other mounts
 
 #### Scenario: Out-of-sync external mount is rejected
 
@@ -48,8 +51,89 @@ falling back to the mount root. Retried initialization MUST be idempotent.
 
 #### Scenario: Missing root path does not fall back
 
-- **WHEN** `root_path` names a path that does not exist
+- **WHEN** `root_path` names a path that does not exist on the selected mount
 - **THEN** initialization fails instead of mounting the mount root, including on a retry
+
+### Requirement: The default mount root aggregates external mounts
+
+When `mount_id` is omitted, the qrypt mount root SHALL present the primary storage root plus one
+root-level directory per online external mount, named by the provider mount name, without an
+intermediate container folder. `root_path` MUST be rejected unless it is `/`, with an error that
+directs the user to configure `mount_id` for subdirectory roots. Write operations SHALL route to
+the mount that owns the target id, and cross-mount move and copy SHALL use the provider's
+cross-mount operation.
+
+#### Scenario: Entry ids encode the owning mount
+
+- **WHEN** entries on an external mount are listed or created
+- **THEN** their ids carry an `ext:<mountId>` prefix (`ext:<mountId>/sub/file` below the mount
+  root) while primary-storage entries keep absolute path ids, which never start with `ext:`, so
+  the two id spaces cannot collide
+
+#### Scenario: Virtual root layout
+
+- **WHEN** the root of a default-configured mount is listed
+- **THEN** the listing contains the primary storage entries plus one directory per online external
+  mount, each named by its provider mount name, and offline external mounts are absent
+
+#### Scenario: Writes route by entry id
+
+- **WHEN** a directory is created, a file uploaded, an entry renamed, moved, copied, or removed
+  inside an external mount's directory
+- **THEN** the operation is issued against the owning external mount and the resulting entry id
+  keeps the `ext:` prefix of that mount
+
+#### Scenario: Cross-mount copy and move
+
+- **WHEN** a file is copied or moved between the primary storage and an external mount
+- **THEN** the provider's cross-mount operation carries it in one request and the destination entry
+  id reflects the destination mount
+
+#### Scenario: External rename resets mtime
+
+- **WHEN** an entry is renamed on an external mount
+- **THEN** the reported modification time is the provider's answer (observed to reset to server
+  time on external mounts), never a locally patched value
+
+#### Scenario: Name collision fails initialization
+
+- **WHEN** an online external mount's name matches an existing primary root entry (or another
+  external mount) case-insensitively
+- **THEN** initialization fails with a clear error naming both sides, because the virtual root
+  cannot present two entries under one name; the user renames one side or configures `mount_id`
+
+#### Scenario: root_path other than the root is rejected
+
+- **WHEN** `mount_id` is omitted and `root_path` is not `/`
+- **THEN** initialization fails with an error directing the user to configure `mount_id`
+
+#### Scenario: Offline external mount is unreachable by id
+
+- **WHEN** an operation addresses an external mount that was offline at initialization
+- **THEN** the driver rejects the id locally as invalid input without issuing a request
+
+#### Scenario: Read-only external mount rejects writes
+
+- **WHEN** a listing or read targets a read-only online external mount
+- **THEN** it succeeds, and every write operation (mkdir, upload, rename, move, copy, remove)
+  returns a permission error before any request is issued
+
+#### Scenario: Space reflects the primary mount
+
+- **WHEN** space is queried on a default-configured mount
+- **THEN** the figures are the primary mount's, not an aggregate across external mounts;
+  external-mount quotas are visible by mounting them with an explicit `mount_id`
+
+#### Scenario: External-mount entries are not shareable from the virtual root
+
+- **WHEN** a share link is requested for an entry on an external mount through a default-configured
+  mount
+- **THEN** the driver rejects it with guidance to configure an explicit `mount_id`, because the
+  provider's link endpoints are mount-scoped
+
+**Limitation**: the provider mount list is fetched once during initialization; external mounts
+added, removed, renamed, or taken offline afterwards are not detected until the mount is
+re-initialized.
 
 ### Requirement: Listings are complete and path-addressed
 
@@ -142,9 +226,10 @@ to not-found and a failed conditional guard to a conflict.
 - **WHEN** an entry is renamed to a name that differs only in case from an existing entry
 - **THEN** the driver reports a conflict and does not create a second entry
 
-#### Scenario: Cross-mount destination is rejected
+#### Scenario: Unknown destination mount is rejected
 
-- **WHEN** a move or copy targets another provider mount
+- **WHEN** a move or copy targets an id that resolves to no mount this driver serves (for example
+  an `ext:` id of an unknown or offline external mount)
 - **THEN** the driver rejects it locally instead of issuing the request
 
 ### Requirement: Deletes are conditional and cascade non-empty directories

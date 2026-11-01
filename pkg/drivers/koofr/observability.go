@@ -40,18 +40,23 @@ func (d *Driver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
 	if requestID := d.cl.lastReqID(); requestID != "" {
 		extra["last_request_id"] = requestID
 	}
+	stats := map[string]any{
+		drive.DebugStatRootID:   d.rootPath,
+		drive.DebugStatRootPath: d.rootPath,
+		"mount_id":              d.mountID,
+		"mount_name":            d.mountName,
+		"api_base_url":          d.cl.base,
+	}
+	if d.virtualRoot() {
+		stats["virtual_root"] = true
+		stats["external_mounts"] = len(d.extMounts)
+	}
 	return drive.DebugSnapshot{
 		Driver:      "koofr",
 		Health:      health,
 		GeneratedAt: time.Now(),
-		Stats: map[string]any{
-			drive.DebugStatRootID:   d.rootPath,
-			drive.DebugStatRootPath: d.rootPath,
-			"mount_id":              d.mountID,
-			"mount_name":            d.mountName,
-			"api_base_url":          d.cl.base,
-		},
-		Extra: extra,
+		Stats:       stats,
+		Extra:       extra,
 	}, nil
 }
 

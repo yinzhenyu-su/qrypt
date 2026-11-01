@@ -37,11 +37,14 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err := validateName(req.Name); err != nil {
 		return drive.Entry{}, err
 	}
-	parent, err := d.resolveWithin(req.ParentID, "upload")
+	parent, err := d.resolveTarget(req.ParentID, "upload")
 	if err != nil {
 		return drive.Entry{}, fmt.Errorf("koofr: upload: %w", err)
 	}
-	sibling, found, err := d.lookupChild(ctx, parent, req.Name)
+	if err := parent.checkWritable("upload", true); err != nil {
+		return drive.Entry{}, err
+	}
+	sibling, found, err := d.lookupChildOn(ctx, parent, req.Name)
 	if err != nil {
 		err = fmt.Errorf("koofr: upload %q: check sibling names: %w", req.Name, err)
 		d.setLastError(err)
@@ -63,13 +66,13 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		modTime = time.Now()
 	}
 	query := url.Values{}
-	query.Set("path", parent)
+	query.Set("path", parent.path)
 	query.Set("filename", req.Name)
 	query.Set("info", "true")
 	query.Set("overwrite", "true")
 	query.Set("autorename", "false")
 	query.Set("modified", strconv.FormatInt(modTime.UnixMilli(), 10))
-	target := d.cl.content("/mounts/" + url.PathEscape(d.mountID) + "/files/put?" + query.Encode())
+	target := d.cl.content("/mounts/" + url.PathEscape(parent.mount.ID) + "/files/put?" + query.Encode())
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -126,7 +129,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 	d.uploads.Add(1)
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCompleted)
-	return created.entry(parent), nil
+	return created.entry(d.idPath(parent, parent.path)), nil
 }
 
 // RemoteHash exposes the provider-computed MD5 for entries that carry one.

@@ -3336,24 +3336,24 @@
           "x-param-scope": "credential"
         },
         "mount_id": {
-          "description": "Provider mount id; defaults to the primary mount",
+          "description": "Lock the mount to one provider mount id; by default the root aggregates the primary storage and online external mounts",
           "type": "string",
           "x-example": "749b91a4-c96b-4cfb-a457-526827ad9622",
           "x-i18n": {
             "zh-CN": {
-              "description": "网盘挂载 ID；默认使用主存储"
+              "description": "锁定单一网盘挂载 ID；默认挂载根聚合主存储与在线外部挂载"
             }
           },
           "x-param-scope": "mount"
         },
         "root_path": {
-          "description": "Directory path used as this mount root",
+          "description": "Directory path used as this mount root; requires mount_id (the default virtual root only serves /)",
           "type": "string",
           "default": "/",
           "x-example": "/qrypt",
           "x-i18n": {
             "zh-CN": {
-              "description": "作为挂载根的目录路径"
+              "description": "作为挂载根的目录路径；需配合 mount_id 使用（默认虚拟根仅支持 /）"
             }
           },
           "x-param-scope": "mount"

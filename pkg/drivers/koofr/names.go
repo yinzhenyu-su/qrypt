@@ -41,13 +41,20 @@ func validateName(name string) error {
 // the root listing: a hit returns the provider's canonical casing (one
 // identity, not a second entry), a miss reports not-found so callers never
 // invent a duplicate casing, and an invalid name is still rejected locally.
+// In virtual-root mode the root also carries the external-mount directories,
+// so a miss on the primary storage fold-matches the cached mount names.
 func (d *Driver) ResolveRemoteName(ctx context.Context, plainName string) (drive.RemoteNameInfo, error) {
 	if err := validateName(plainName); err != nil {
 		return drive.RemoteNameInfo{}, err
 	}
-	entry, found, err := d.lookupChild(ctx, d.rootPath, plainName)
+	entry, found, err := d.lookupChildOn(ctx, opTarget{mount: apiMount{ID: d.mountID}, path: d.rootPath}, plainName)
 	if err != nil {
 		return drive.RemoteNameInfo{}, fmt.Errorf("koofr: resolve remote name %q: %w", plainName, err)
+	}
+	if !found && d.virtualRoot() {
+		if mount, ok := d.extMountByName(plainName); ok {
+			return drive.RemoteNameInfo{PlainName: plainName, RemoteName: mount.Name}, nil
+		}
 	}
 	if !found {
 		return drive.RemoteNameInfo{}, fmt.Errorf("koofr: resolve remote name %q: %w", plainName, drive.ErrNotFound)

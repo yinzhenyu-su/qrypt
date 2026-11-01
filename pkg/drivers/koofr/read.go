@@ -22,7 +22,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	if offset < 0 || size < 0 {
 		return nil, fmt.Errorf("koofr: invalid read range offset=%d size=%d: %w", offset, size, drive.ErrInvalidInput)
 	}
-	path, err := d.resolveWithin(entry.ID, "read")
+	path, err := d.resolveTarget(entry.ID, "read")
 	if err != nil {
 		return nil, fmt.Errorf("koofr: read %q: %w", entry.Name, err)
 	}
@@ -30,8 +30,8 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		return io.NopCloser(bytes.NewReader(nil)), nil
 	}
 	query := url.Values{}
-	query.Set("path", path)
-	target := d.cl.content("/mounts/" + url.PathEscape(d.mountID) + "/files/get?" + query.Encode())
+	query.Set("path", path.path)
+	target := d.cl.content("/mounts/" + url.PathEscape(path.mount.ID) + "/files/get?" + query.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err

@@ -109,7 +109,7 @@ func TestInitReadOnlyMountRejected(t *testing.T) {
 
 func TestInitMissingRootPathDoesNotFallback(t *testing.T) {
 	f := newFakeProvider(t)
-	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL, RootPath: "/missing"}
+	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL, MountID: "primary-mount", RootPath: "/missing"}
 	d := New(opts)
 	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	err := d.Init(context.Background())

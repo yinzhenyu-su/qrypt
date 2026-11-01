@@ -27,10 +27,14 @@ type fakeProvider struct {
 	t      *testing.T
 	server *httptest.Server
 
-	mu     sync.Mutex
-	nodes  map[string]*fakeNode
-	links  map[string]*fakeLink
-	mounts []apiMount
+	mu       sync.Mutex
+	nodes    map[string]*fakeNode
+	extNodes map[string]map[string]*fakeNode // per external mount id
+	links    map[string]*fakeLink
+	mounts   []apiMount
+	// notSynced marks external mounts whose every file operation fails with
+	// 500 FilesNotSynced (probe-observed out-of-sync backend).
+	notSynced map[string]bool
 
 	authEmail    string
 	authPassword string
@@ -75,9 +79,11 @@ type injectedFault struct {
 func newFakeProvider(t *testing.T) *fakeProvider {
 	t.Helper()
 	f := &fakeProvider{
-		t:     t,
-		nodes: map[string]*fakeNode{"/": {name: "", isDir: true}},
-		links: map[string]*fakeLink{},
+		t:         t,
+		nodes:     map[string]*fakeNode{"/": {name: "", isDir: true}},
+		extNodes:  map[string]map[string]*fakeNode{},
+		notSynced: map[string]bool{},
+		links:     map[string]*fakeLink{},
 		mounts: []apiMount{{
 			ID:         "primary-mount",
 			Name:       "Koofr",
@@ -98,7 +104,8 @@ func newFakeProvider(t *testing.T) *fakeProvider {
 	return f
 }
 
-// newDriver wires a Driver to the fake and initializes it.
+// newDriver wires a Driver to the fake and initializes it in locked mode
+// (mount_id pinned to the primary mount).
 func (f *fakeProvider) newDriver(t *testing.T, opts Options) *Driver {
 	t.Helper()
 	opts.Email = orDefault(opts.Email, f.authEmail)
@@ -107,12 +114,52 @@ func (f *fakeProvider) newDriver(t *testing.T, opts Options) *Driver {
 	if opts.MountID == "" {
 		opts.MountID = "primary-mount"
 	}
+	return f.init(t, opts)
+}
+
+// newVirtualDriver wires a Driver with mount_id omitted, so Init serves the
+// aggregated virtual root (primary storage plus online external mounts).
+func (f *fakeProvider) newVirtualDriver(t *testing.T, opts Options) *Driver {
+	t.Helper()
+	opts.Email = orDefault(opts.Email, f.authEmail)
+	opts.Password = orDefault(opts.Password, f.authPassword)
+	opts.APIBaseURL = f.server.URL
+	opts.MountID = ""
+	return f.init(t, opts)
+}
+
+func (f *fakeProvider) init(t *testing.T, opts Options) *Driver {
+	t.Helper()
 	d := New(opts)
 	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	return d
+}
+
+// addExternalMount registers a non-primary mount with its own empty tree.
+func (f *fakeProvider) addExternalMount(mount apiMount) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if mount.IsPrimary {
+		f.t.Fatal("addExternalMount expects a non-primary mount")
+	}
+	f.mounts = append(f.mounts, mount)
+	f.extNodes[mount.ID] = map[string]*fakeNode{"/": {name: "", isDir: true}}
+}
+
+// addStandardExternalMounts installs the virtual-root fixture: a writable
+// external mount ("wgdrive"), an offline mount, and a read-only mount, each
+// with a small tree.
+func (f *fakeProvider) addStandardExternalMounts() {
+	f.addExternalMount(apiMount{ID: "ext-drive", Name: "wgdrive", Online: true, CanWrite: true, CanUpload: true})
+	f.putFileOn("ext-drive", "/existing.bin", []byte("ext-data"), 1700000000123)
+	f.mkdirAllOn("ext-drive", "/nested")
+	f.putFileOn("ext-drive", "/nested/leaf.bin", []byte("leaf"), 1700000000456)
+	f.addExternalMount(apiMount{ID: "ext-offline", Name: "offline-mnt", Online: false, CanWrite: true, CanUpload: true})
+	f.addExternalMount(apiMount{ID: "ext-ro", Name: "romount", Online: true, CanWrite: false, CanUpload: false})
+	f.putFileOn("ext-ro", "/doc.bin", []byte("read-only"), 1700000000789)
 }
 
 func orDefault(value, fallback string) string {
@@ -124,36 +171,51 @@ func orDefault(value, fallback string) string {
 
 // --- fixture helpers -----------------------------------------------------
 
-func (f *fakeProvider) mkdirAll(path string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.mkdirAllLocked("/" + strings.Trim(path, "/"))
+// treeLocked returns the node tree of one provider mount (nil when the
+// mount carries no tree). f.mu must be held.
+func (f *fakeProvider) treeLocked(mountID string) map[string]*fakeNode {
+	if mountID == "primary-mount" {
+		return f.nodes
+	}
+	return f.extNodes[mountID]
 }
 
-func (f *fakeProvider) mkdirAllLocked(path string) {
+func (f *fakeProvider) mkdirAll(path string) {
+	f.mkdirAllOn("primary-mount", path)
+}
+
+func (f *fakeProvider) mkdirAllOn(mountID, path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mkdirInLocked(f.treeLocked(mountID), "/"+strings.Trim(path, "/"))
+}
+
+func (f *fakeProvider) mkdirInLocked(tree map[string]*fakeNode, path string) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	current := ""
 	for _, part := range parts {
-		parent := current
 		current = current + "/" + part
-		if node, ok := f.nodes[current]; ok {
+		if node, ok := tree[current]; ok {
 			if !node.isDir {
 				return
 			}
 			continue
 		}
-		f.nodes[current] = &fakeNode{name: part, isDir: true, modMs: time.Now().UnixMilli()}
-		_ = parent
+		tree[current] = &fakeNode{name: part, isDir: true, modMs: time.Now().UnixMilli()}
 	}
 }
 
 func (f *fakeProvider) putFile(path string, data []byte, modMs int64) {
+	f.putFileOn("primary-mount", path, data, modMs)
+}
+
+func (f *fakeProvider) putFileOn(mountID, path string, data []byte, modMs int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path = "/" + strings.Trim(path, "/")
-	parent := parentPath(path)
-	f.mkdirAllLocked(parent)
-	f.nodes[path] = &fakeNode{name: baseName(path), data: data, modMs: modMs}
+	tree := f.treeLocked(mountID)
+	f.mkdirInLocked(tree, parentPath(path))
+	tree[path] = &fakeNode{name: baseName(path), data: data, modMs: modMs}
 }
 
 // putGoogleDoc installs a placeholder entry mimicking Google Docs/shortcut
@@ -162,8 +224,7 @@ func (f *fakeProvider) putGoogleDoc(path string, modMs int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path = "/" + strings.Trim(path, "/")
-	parent := parentPath(path)
-	f.mkdirAllLocked(parent)
+	f.mkdirInLocked(f.nodes, parentPath(path))
 	f.nodes[path] = &fakeNode{name: baseName(path), data: []byte("ignored"), modMs: modMs, googleDoc: true}
 }
 
@@ -272,25 +333,31 @@ func (f *fakeProvider) route(w http.ResponseWriter, r *http.Request) {
 			f.writeError(w, r, http.StatusNotFound, "NotFound", "mount not found")
 			return
 		}
+		if sub != "" && f.mountNotSynced(mountID) {
+			// Probe-observed: an out-of-sync external mount fails every
+			// file operation with 500 FilesNotSynced.
+			f.writeError(w, r, http.StatusInternalServerError, "FilesNotSynced", "Files not synced")
+			return
+		}
 		switch {
 		case sub == "":
 			f.handleMount(w, mountID)
 		case strings.HasPrefix(sub, "/files/list"):
-			f.handleList(w, r, query)
+			f.handleList(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/files/info"):
-			f.handleInfo(w, r, query)
+			f.handleInfo(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/files/folder"):
-			f.handleFolder(w, r, query)
+			f.handleFolder(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/files/rename"):
-			f.handleRename(w, r, query)
+			f.handleRename(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/files/move"):
-			f.handleMove(w, r, query)
+			f.handleMove(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/files/copy"):
-			f.handleCopy(w, r, query)
+			f.handleCopy(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/files/remove"):
-			f.handleRemove(w, r, query)
+			f.handleRemove(w, r, mountID, query)
 		case strings.HasPrefix(sub, "/links"):
-			f.handleLinks(w, r, strings.TrimPrefix(sub, "/links"), query)
+			f.handleLinks(w, r, mountID, strings.TrimPrefix(sub, "/links"), query)
 		default:
 			f.writeError(w, r, http.StatusNotFound, "NotFound", "Page not found")
 		}
@@ -298,16 +365,26 @@ func (f *fakeProvider) route(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(path, "/content/api/")
 		rest = strings.TrimPrefix(rest, "v2.1/")
 		rest = strings.TrimPrefix(rest, "v2/")
-		if !strings.HasPrefix(rest, "mounts/primary-mount/files/") {
+		filesAt := strings.Index(rest, "/files/")
+		if !strings.HasPrefix(rest, "mounts/") || filesAt < 0 {
 			f.writeError(w, r, http.StatusNotFound, "NotFound", "Page not found")
 			return
 		}
-		op := strings.TrimPrefix(rest, "mounts/primary-mount/files/")
+		mountID := rest[len("mounts/"):filesAt]
+		op := rest[filesAt+len("/files/"):]
+		if mountID != "primary-mount" && !f.knownMount(mountID) {
+			f.writeError(w, r, http.StatusNotFound, "NotFound", "mount not found")
+			return
+		}
+		if f.mountNotSynced(mountID) {
+			f.writeError(w, r, http.StatusInternalServerError, "FilesNotSynced", "Files not synced")
+			return
+		}
 		switch {
 		case strings.HasPrefix(op, "put"):
-			f.handlePut(w, r, query)
+			f.handlePut(w, r, mountID, query)
 		case strings.HasPrefix(op, "get"):
-			f.handleGet(w, r, query)
+			f.handleGet(w, r, mountID, query)
 		default:
 			f.writeError(w, r, http.StatusNotFound, "NotFound", "Page not found")
 		}
@@ -335,6 +412,12 @@ func (f *fakeProvider) knownMount(id string) bool {
 		}
 	}
 	return false
+}
+
+func (f *fakeProvider) mountNotSynced(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.notSynced[id]
 }
 
 func (f *fakeProvider) writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
@@ -395,7 +478,7 @@ func (f *fakeProvider) writeErrorLocked(w http.ResponseWriter, status int, code,
 	fmt.Fprintf(w, `{"error":{"code":%q,"message":%q},"requestId":"req-%d"}`, code, message, f.reqSeq)
 }
 
-func (f *fakeProvider) handleList(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handleList(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	path := query.Get("path")
 	if path == "" || path[0] != '/' {
 		f.writeError(w, r, http.StatusBadRequest, "InvalidPath", "path must be absolute")
@@ -403,7 +486,12 @@ func (f *fakeProvider) handleList(w http.ResponseWriter, r *http.Request, query 
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	node, _ := f.findLocked(path)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	node, _ := f.findInLocked(tree, path)
 	if node == nil {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "not found")
 		return
@@ -413,17 +501,22 @@ func (f *fakeProvider) handleList(w http.ResponseWriter, r *http.Request, query 
 		return
 	}
 	files := []apiFile{}
-	for _, child := range f.childrenLocked(path) {
-		files = append(files, f.nodes[child].apiFile())
+	for _, child := range f.childrenInLocked(tree, path) {
+		files = append(files, tree[child].apiFile())
 	}
 	f.writeJSONLocked(w, http.StatusOK, apiFileList{Files: files})
 }
 
-func (f *fakeProvider) handleInfo(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handleInfo(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	path := query.Get("path")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	node, _ := f.findLocked(path)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	node, _ := f.findInLocked(tree, path)
 	if node == nil {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "not found")
 		return
@@ -431,7 +524,7 @@ func (f *fakeProvider) handleInfo(w http.ResponseWriter, r *http.Request, query 
 	f.writeJSONLocked(w, http.StatusOK, node.apiFile())
 }
 
-func (f *fakeProvider) handleFolder(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handleFolder(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	parent := query.Get("path")
 	var body struct {
 		Name string `json:"name"`
@@ -446,21 +539,26 @@ func (f *fakeProvider) handleFolder(w http.ResponseWriter, r *http.Request, quer
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	parentNode, _ := f.findLocked(parent)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	parentNode, _ := f.findInLocked(tree, parent)
 	if parentNode == nil || !parentNode.isDir {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "parent not found")
 		return
 	}
 	target := joinPath(parent, body.Name)
-	if existing, _ := f.findLocked(target); existing != nil {
+	if existing, _ := f.findInLocked(tree, target); existing != nil {
 		f.writeErrorLocked(w, http.StatusConflict, "AlreadyExists", "File already exists")
 		return
 	}
-	f.nodes[target] = &fakeNode{name: body.Name, isDir: true, modMs: time.Now().UnixMilli()}
+	tree[target] = &fakeNode{name: body.Name, isDir: true, modMs: time.Now().UnixMilli()}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (f *fakeProvider) handleRename(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handleRename(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	path := query.Get("path")
 	var body struct {
 		Name string `json:"name"`
@@ -468,33 +566,41 @@ func (f *fakeProvider) handleRename(w http.ResponseWriter, r *http.Request, quer
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	node, canonical := f.findLocked(path)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	node, canonical := f.findInLocked(tree, path)
 	if node == nil {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "not found")
 		return
 	}
 	parent := parentPath(canonical)
 	target := joinPath(parent, body.Name)
-	if sibling, _ := f.findLocked(target); sibling != nil && !strings.EqualFold(target, canonical) {
+	if sibling, _ := f.findInLocked(tree, target); sibling != nil && !strings.EqualFold(target, canonical) {
 		f.writeErrorLocked(w, http.StatusConflict, "AlreadyExists", "File already exists")
 		return
 	}
-	delete(f.nodes, canonical)
+	delete(tree, canonical)
 	node.name = body.Name
-	node.modMs = time.Now().UnixMilli()
-	f.nodes[target] = node
+	if mountID != "primary-mount" {
+		// Probe-observed: renames on external mounts reset the mtime.
+		node.modMs = time.Now().UnixMilli()
+	}
+	tree[target] = node
 	w.WriteHeader(http.StatusOK)
 }
 
-func (f *fakeProvider) handleMove(w http.ResponseWriter, r *http.Request, query url.Values) {
-	f.handleMoveCopy(w, r, query, false)
+func (f *fakeProvider) handleMove(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
+	f.handleMoveCopy(w, r, mountID, query, false)
 }
 
-func (f *fakeProvider) handleCopy(w http.ResponseWriter, r *http.Request, query url.Values) {
-	f.handleMoveCopy(w, r, query, true)
+func (f *fakeProvider) handleCopy(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
+	f.handleMoveCopy(w, r, mountID, query, true)
 }
 
-func (f *fakeProvider) handleMoveCopy(w http.ResponseWriter, r *http.Request, query url.Values, isCopy bool) {
+func (f *fakeProvider) handleMoveCopy(w http.ResponseWriter, r *http.Request, mountID string, query url.Values, isCopy bool) {
 	path := query.Get("path")
 	var body struct {
 		ToMountID string `json:"toMountId"`
@@ -502,24 +608,28 @@ func (f *fakeProvider) handleMoveCopy(w http.ResponseWriter, r *http.Request, qu
 		Modified  int64  `json:"modified"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.ToMountID == "" {
+		body.ToMountID = mountID
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if body.ToMountID != "" && body.ToMountID != "primary-mount" {
-		// Cross-mount operations on an out-of-sync external mount fail.
-		f.writeErrorLocked(w, http.StatusInternalServerError, "FilesNotSynced", "Files not synced")
+	srcTree := f.treeLocked(mountID)
+	dstTree := f.treeLocked(body.ToMountID)
+	if srcTree == nil || dstTree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
 		return
 	}
-	node, canonical := f.findLocked(path)
+	node, canonical := f.findInLocked(srcTree, path)
 	if node == nil {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "not found")
 		return
 	}
-	dstParent, _ := f.findLocked(parentPath(body.ToPath))
+	dstParent, _ := f.findInLocked(dstTree, parentPath(body.ToPath))
 	if dstParent == nil || !dstParent.isDir {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "destination not found")
 		return
 	}
-	if target, _ := f.findLocked(body.ToPath); target != nil {
+	if target, _ := f.findInLocked(dstTree, body.ToPath); target != nil {
 		f.writeErrorLocked(w, http.StatusConflict, "AlreadyExists", "File already exists")
 		return
 	}
@@ -531,21 +641,26 @@ func (f *fakeProvider) handleMoveCopy(w http.ResponseWriter, r *http.Request, qu
 		cloned := *node
 		cloned.name = baseName(body.ToPath)
 		cloned.modMs = mod
-		f.nodes[body.ToPath] = &cloned
+		dstTree[body.ToPath] = &cloned
 	} else {
-		delete(f.nodes, canonical)
+		delete(srcTree, canonical)
 		node.name = baseName(body.ToPath)
 		node.modMs = mod
-		f.nodes[body.ToPath] = node
+		dstTree[body.ToPath] = node
 	}
 	f.writeJSONLocked(w, http.StatusOK, map[string]any{"name": baseName(body.ToPath)})
 }
 
-func (f *fakeProvider) handleRemove(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handleRemove(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	path := query.Get("path")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	node, canonical := f.findLocked(path)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	node, canonical := f.findInLocked(tree, path)
 	if node == nil {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "not found")
 		return
@@ -571,10 +686,10 @@ func (f *fakeProvider) handleRemove(w http.ResponseWriter, r *http.Request, quer
 	}
 	// Cascade: removing a directory removes every descendant (they land in
 	// the provider trash, which the fake does not model).
-	delete(f.nodes, canonical)
-	for candidate := range f.nodes {
+	delete(tree, canonical)
+	for candidate := range tree {
 		if isWithin(candidate, canonical) {
-			delete(f.nodes, candidate)
+			delete(tree, candidate)
 		}
 	}
 	f.writeJSONLocked(w, http.StatusOK, map[string]any{"version": "v1"})
@@ -582,7 +697,7 @@ func (f *fakeProvider) handleRemove(w http.ResponseWriter, r *http.Request, quer
 
 // --- content endpoints ------------------------------------------------------
 
-func (f *fakeProvider) handlePut(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handlePut(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	f.mu.Lock()
 	f.lastPutQuery = cloneQuery(query)
 	f.mu.Unlock()
@@ -618,42 +733,47 @@ func (f *fakeProvider) handlePut(w http.ResponseWriter, r *http.Request, query u
 	autorename := query.Get("autorename") == "true"
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	parentNode, _ := f.findLocked(parent)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	parentNode, _ := f.findInLocked(tree, parent)
 	if parentNode == nil || !parentNode.isDir {
 		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "parent not found")
 		return
 	}
 	target := joinPath(parent, name)
-	if existing, canonical := f.findLocked(target); existing != nil {
+	if existing, canonical := f.findInLocked(tree, target); existing != nil {
 		if existing.isDir {
 			f.writeErrorLocked(w, http.StatusConflict, "AlreadyExists", "File already exists")
 			return
 		}
 		if !overwrite && !autorename {
 			// Provider default: silent auto-rename (probe-observed).
-			target = f.autorenameLocked(parent, name)
-			f.nodes[target] = &fakeNode{name: baseName(target), data: data, modMs: modMs}
-			f.writeJSONLocked(w, http.StatusOK, f.nodes[target].apiFile())
+			target = f.autorenameLocked(tree, parent, name)
+			tree[target] = &fakeNode{name: baseName(target), data: data, modMs: modMs}
+			f.writeJSONLocked(w, http.StatusOK, tree[target].apiFile())
 			return
 		}
 		if !overwrite && autorename {
-			target = f.autorenameLocked(parent, name)
-			f.nodes[target] = &fakeNode{name: baseName(target), data: data, modMs: modMs}
-			f.writeJSONLocked(w, http.StatusOK, f.nodes[target].apiFile())
+			target = f.autorenameLocked(tree, parent, name)
+			tree[target] = &fakeNode{name: baseName(target), data: data, modMs: modMs}
+			f.writeJSONLocked(w, http.StatusOK, tree[target].apiFile())
 			return
 		}
 		// Overwrite keeps the existing canonical name (probe: uploading
 		// PROBE2.BIN over probe2.bin left the lowercase name in listings).
-		delete(f.nodes, canonical)
-		f.nodes[canonical] = &fakeNode{name: baseName(canonical), data: data, modMs: modMs}
-		f.writeJSONLocked(w, http.StatusOK, f.nodes[canonical].apiFile())
+		delete(tree, canonical)
+		tree[canonical] = &fakeNode{name: baseName(canonical), data: data, modMs: modMs}
+		f.writeJSONLocked(w, http.StatusOK, tree[canonical].apiFile())
 		return
 	}
-	f.nodes[target] = &fakeNode{name: name, data: data, modMs: modMs}
-	f.writeJSONLocked(w, http.StatusOK, f.nodes[target].apiFile())
+	tree[target] = &fakeNode{name: name, data: data, modMs: modMs}
+	f.writeJSONLocked(w, http.StatusOK, tree[target].apiFile())
 }
 
-func (f *fakeProvider) autorenameLocked(parent, name string) string {
+func (f *fakeProvider) autorenameLocked(tree map[string]*fakeNode, parent, name string) string {
 	ext := ""
 	base := name
 	if i := strings.LastIndexByte(name, '.'); i > 0 {
@@ -662,17 +782,18 @@ func (f *fakeProvider) autorenameLocked(parent, name string) string {
 	}
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
-		if _, canonical := f.findLocked(joinPath(parent, candidate)); canonical == "" {
+		if _, canonical := f.findInLocked(tree, joinPath(parent, candidate)); canonical == "" {
 			return joinPath(parent, candidate)
 		}
 	}
 }
 
-func (f *fakeProvider) handleGet(w http.ResponseWriter, r *http.Request, query url.Values) {
+func (f *fakeProvider) handleGet(w http.ResponseWriter, r *http.Request, mountID string, query url.Values) {
 	path := query.Get("path")
 	f.mu.Lock()
 	ignore := f.ignoreRange
-	node, _ := f.findLocked(path)
+	tree := f.treeLocked(mountID)
+	node, _ := f.findInLocked(tree, path)
 	var data []byte
 	var isDir bool
 	if node != nil {
@@ -747,14 +868,14 @@ func (f *fakeProvider) handleAllLinks(w http.ResponseWriter) {
 	f.writeJSONLocked(w, http.StatusOK, map[string]any{"links": out})
 }
 
-func (f *fakeProvider) handleLinks(w http.ResponseWriter, r *http.Request, sub string, query url.Values) {
+func (f *fakeProvider) handleLinks(w http.ResponseWriter, r *http.Request, mountID, sub string, query url.Values) {
 	// sub is "" | "/{id}" | "/{id}/password/set" | "/{id}/validity" | "/{id}/downloadable"
 	if sub == "" {
 		switch r.Method {
 		case http.MethodGet:
 			f.handleAllLinks(w)
 		case http.MethodPost:
-			f.createLink(w, r)
+			f.createLink(w, r, mountID)
 		default:
 			f.writeError(w, r, http.StatusMethodNotAllowed, "", "method not allowed")
 		}
@@ -811,14 +932,19 @@ func (f *fakeProvider) handleLinks(w http.ResponseWriter, r *http.Request, sub s
 	}
 }
 
-func (f *fakeProvider) createLink(w http.ResponseWriter, r *http.Request) {
+func (f *fakeProvider) createLink(w http.ResponseWriter, r *http.Request, mountID string) {
 	var body struct {
 		Path string `json:"path"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	node, canonical := f.findLocked(body.Path)
+	tree := f.treeLocked(mountID)
+	if tree == nil {
+		f.writeErrorLocked(w, http.StatusNotFound, "NotFound", "mount not found")
+		return
+	}
+	node, canonical := f.findInLocked(tree, body.Path)
 	if node == nil {
 		f.writeErrorLocked(w, http.StatusBadRequest, "InvalidPath", "path not found")
 		return
@@ -828,7 +954,7 @@ func (f *fakeProvider) createLink(w http.ResponseWriter, r *http.Request) {
 	link := &fakeLink{apiLink: apiLink{
 		ID:           id,
 		Name:         node.name,
-		MountID:      "primary-mount",
+		MountID:      mountID,
 		Path:         canonical,
 		URL:          f.server.URL + "/links/" + id,
 		ShortURL:     "https://k00.fr/" + id,
@@ -861,7 +987,7 @@ func (f *fakeProvider) handleAnonymousGet(w http.ResponseWriter, r *http.Request
 			}
 			full = strings.TrimSuffix(link.Path, "/") + rel
 		}
-		target, _ = f.findLocked(full)
+		target, _ = f.findInLocked(f.treeLocked(link.MountID), full)
 	}
 	password := query.Get("password")
 	f.mu.Unlock()
@@ -894,16 +1020,21 @@ func (f *fakeProvider) handleAnonymousGet(w http.ResponseWriter, r *http.Request
 
 // --- small locked helpers --------------------------------------------------
 
-func (f *fakeProvider) findLocked(path string) (*fakeNode, string) {
+// findInLocked resolves a case-insensitive path inside one mount tree.
+// f.mu must be held.
+func (f *fakeProvider) findInLocked(tree map[string]*fakeNode, path string) (*fakeNode, string) {
+	if tree == nil {
+		return nil, ""
+	}
 	path = "/" + strings.Trim(path, "/")
 	if path == "/" {
-		return f.nodes["/"], "/"
+		return tree["/"], "/"
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	current := "/"
 	for _, part := range parts {
 		var match string
-		for childPath, node := range f.nodes {
+		for childPath, node := range tree {
 			if childPath == "/" {
 				continue
 			}
@@ -917,12 +1048,12 @@ func (f *fakeProvider) findLocked(path string) (*fakeNode, string) {
 		}
 		current = match
 	}
-	return f.nodes[current], current
+	return tree[current], current
 }
 
-func (f *fakeProvider) childrenLocked(dir string) []string {
+func (f *fakeProvider) childrenInLocked(tree map[string]*fakeNode, dir string) []string {
 	var out []string
-	for path := range f.nodes {
+	for path := range tree {
 		if path != "/" && parentPath(path) == dir {
 			out = append(out, path)
 		}
