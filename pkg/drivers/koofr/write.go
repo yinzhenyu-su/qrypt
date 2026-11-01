@@ -30,6 +30,10 @@ func (d *Driver) Mkdir(ctx context.Context, parentID, name string) (drive.Entry,
 	if err := parent.checkWritable("mkdir", false); err != nil {
 		return drive.Entry{}, err
 	}
+	if err := d.checkExtMountNameCollision(parent, "mkdir", name); err != nil {
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
 	target := joinPath(parent.path, name)
 	resp, err := d.cl.post(ctx, "/mounts/"+url.PathEscape(parent.mount.ID)+"/files/folder", d.filesQuery(parent.path), map[string]any{"name": name}, nil)
 	if err != nil {
@@ -79,7 +83,16 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := t.checkWritable("rename", false); err != nil {
 		return drive.Entry{}, err
 	}
+	if t.external && t.path == "/" {
+		err := fmt.Errorf("koofr: rename %q: refusing to rename the external mount root: %w", entry.ID, drive.ErrInvalidInput)
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
 	parent := parentPath(t.path)
+	if err := d.checkExtMountNameCollision(opTarget{mount: t.mount, path: parent, external: t.external}, "rename", newName); err != nil {
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
 	resp, err := d.cl.putOnce(ctx, "/mounts/"+url.PathEscape(t.mount.ID)+"/files/rename", d.filesQuery(t.path), map[string]any{"name": newName}, nil)
 	if err != nil {
 		err = fmt.Errorf("koofr: rename %q to %q: %w", entry.Name, newName, err)
@@ -111,6 +124,11 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		return drive.Entry{}, fmt.Errorf("koofr: move: %w", err)
 	}
 	if err := src.checkWritable("move", false); err != nil {
+		return drive.Entry{}, err
+	}
+	if src.external && src.path == "/" {
+		err := fmt.Errorf("koofr: move %q: refusing to move the external mount root: %w", entry.ID, drive.ErrInvalidInput)
+		d.setLastError(err)
 		return drive.Entry{}, err
 	}
 	target := joinPath(dst.path, entry.Name)
@@ -155,6 +173,10 @@ func (d *Driver) Copy(ctx context.Context, src drive.Entry, dstParentID, dstName
 		return drive.Entry{}, fmt.Errorf("koofr: copy: %w", err)
 	}
 	if err := dst.checkWritable("copy", false); err != nil {
+		return drive.Entry{}, err
+	}
+	if err := d.checkExtMountNameCollision(dst, "copy", dstName); err != nil {
+		d.setLastError(err)
 		return drive.Entry{}, err
 	}
 	source, err := d.resolveTarget(src.ID, "copy")

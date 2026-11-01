@@ -48,6 +48,11 @@ type fakeProvider struct {
 	ignoreRange bool
 	delay       time.Duration
 
+	// renameExtPut models the live-observed Google-Drive external-mount
+	// behavior: a put is stored under a server-chosen "name (hex).bin"
+	// even though the request pins autorename=false.
+	renameExtPut bool
+
 	lastPutQuery url.Values
 }
 
@@ -721,6 +726,16 @@ func (f *fakeProvider) handlePut(w http.ResponseWriter, r *http.Request, mountID
 		// The provider ignores an invalid-UTF-8 query filename and falls
 		// back to the multipart part filename.
 		name = "part-fallback.bin"
+	}
+	f.mu.Lock()
+	renameExtPut := f.renameExtPut && mountID != "primary-mount"
+	f.mu.Unlock()
+	if renameExtPut {
+		base, ext := name, ""
+		if i := strings.LastIndexByte(name, '.'); i > 0 {
+			base, ext = name[:i], name[i:]
+		}
+		name = fmt.Sprintf("%s (%x)%s", base, 0xdeadbeef, ext)
 	}
 	parent := query.Get("path")
 	modMs := time.Now().UnixMilli()

@@ -44,6 +44,10 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	if err := parent.checkWritable("upload", true); err != nil {
 		return drive.Entry{}, err
 	}
+	if err := d.checkExtMountNameCollision(parent, "upload", req.Name); err != nil {
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
 	sibling, found, err := d.lookupChildOn(ctx, parent, req.Name)
 	if err != nil {
 		err = fmt.Errorf("koofr: upload %q: check sibling names: %w", req.Name, err)
@@ -126,6 +130,22 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	var created apiFile
 	if err := json.Unmarshal(data, &created); err != nil || created.Name == "" {
 		return drive.Entry{}, fmt.Errorf("koofr: upload %q: decode response: %w", req.Name, drive.ErrInvalidInput)
+	}
+	// Live-observed on Google Drive external mounts: under a concurrent
+	// upload of a case-variant name the server ignores autorename=false and
+	// stores the object under a server-chosen name ("name (hex).bin"),
+	// leaving an orphan the caller can never address and a permanent VFS
+	// failure. The primary storage honors the pinned flags, so the guard
+	// runs only for external mounts. A mismatched name deletes the misnamed
+	// remote object and surfaces the race as a conflict.
+	if parent.external && created.Name != req.Name {
+		err := fmt.Errorf("koofr: upload %q: external mount %q stored the upload as %q despite autorename=false (concurrent upload conflict)", req.Name, parent.mount.Name, created.Name)
+		if _, rmErr := d.cl.delete(ctx, "/mounts/"+url.PathEscape(parent.mount.ID)+"/files/remove", d.filesQuery(joinPath(parent.path, created.Name)), nil); rmErr != nil {
+			err = fmt.Errorf("%s; deleting the misnamed remote object failed: %v", err, rmErr)
+		}
+		err = fmt.Errorf("%s: %w", err, drive.ErrConflict)
+		d.setLastError(err)
+		return drive.Entry{}, err
 	}
 	d.uploads.Add(1)
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseCompleted)

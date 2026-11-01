@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -430,5 +431,179 @@ func TestVirtualRootNotSyncedExternalSurfacesProviderState(t *testing.T) {
 	_, err := d.List(context.Background(), "ext:ext-broken")
 	if err == nil || !errors.Is(err, errMountNotSynced) {
 		t.Fatalf("List error = %v, want mount-not-synced", err)
+	}
+}
+
+// Init checks mount-name collisions once; entries created afterwards must
+// not be able to take (case-variants of) an external mount's name in the
+// primary root, because the mount directory shadows them and hijacks
+// first-segment routing.
+func TestVirtualRootRuntimeMountNameHijackRejected(t *testing.T) {
+	_, d := virtualFixture(t)
+	ctx := context.Background()
+	if _, err := d.Mkdir(ctx, "", "wgdrive"); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("Mkdir wgdrive error = %v, want conflict", err)
+	}
+	if _, err := d.Mkdir(ctx, "/", "WGDRIVE"); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("Mkdir WGDRIVE error = %v, want conflict", err)
+	}
+	_, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     "wgdrive",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("x")),
+	})
+	if err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("upload wgdrive error = %v, want conflict", err)
+	}
+	list, _ := d.List(ctx, "/")
+	var primary drive.Entry
+	for _, entry := range list {
+		if entry.Name == "primary.bin" {
+			primary = entry
+		}
+	}
+	if primary.ID == "" {
+		t.Fatal("primary.bin not listed")
+	}
+	if _, err := d.Rename(ctx, primary, "wgdrive"); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("rename to wgdrive error = %v, want conflict", err)
+	}
+	if _, err := d.Copy(ctx, primary, "/", "wgdrive"); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("copy to wgdrive error = %v, want conflict", err)
+	}
+	// None of the rejected writes created anything.
+	entries, err := d.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List root: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %+v, want the original 3", entries)
+	}
+}
+
+// The hijack guard exists only for the virtual root: with an explicit
+// mount_id the primary mount is a plain mount and "wgdrive" is a normal name.
+func TestMountNameHijackGuardInactiveInLockedMode(t *testing.T) {
+	f := newFakeProvider(t)
+	f.addStandardExternalMounts()
+	d := f.newDriver(t, Options{})
+	dir, err := d.Mkdir(context.Background(), "", "wgdrive")
+	if err != nil {
+		t.Fatalf("Mkdir wgdrive in locked mode: %v", err)
+	}
+	if dir.ID != "/wgdrive" {
+		t.Fatalf("mkdir id = %q", dir.ID)
+	}
+}
+
+// The external mount root is a virtual directory; renaming or moving it
+// must be refused locally, exactly like Remove.
+func TestVirtualRootRenameMoveRefuseExternalMountRoot(t *testing.T) {
+	_, d := virtualFixture(t)
+	ctx := context.Background()
+	root := drive.Entry{ID: "ext:ext-drive", ParentID: "/", Name: "wgdrive", IsDir: true}
+	if _, err := d.Rename(ctx, root, "renamed"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Rename ext root error = %v, want invalid input", err)
+	}
+	if _, err := d.Move(ctx, root, "/"); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Move ext root error = %v, want invalid input", err)
+	}
+}
+
+// An external mount whose name cannot serve as a directory name (for
+// example containing "/") must fail Init with mount_id guidance instead of
+// serving a broken virtual root.
+func TestVirtualRootInvalidMountNameFailsInit(t *testing.T) {
+	f := newFakeProvider(t)
+	f.addExternalMount(apiMount{ID: "ext-slash", Name: "My/Mount", Online: true, CanWrite: true, CanUpload: true})
+	opts := Options{Email: f.authEmail, Password: f.authPassword, APIBaseURL: f.server.URL}
+	d := New(opts)
+	d.cl.wait = func(ctx context.Context, _ int, _ time.Duration) error { return ctx.Err() }
+	err := d.Init(context.Background())
+	if err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Init error = %v, want invalid input", err)
+	}
+	if !strings.Contains(err.Error(), "My/Mount") || !strings.Contains(err.Error(), "mount_id") {
+		t.Fatalf("error lacks guidance: %v", err)
+	}
+}
+
+// Live-observed Google-Drive quirk: a put on an external mount may come
+// back stored under a server-chosen "name (hex).bin" despite
+// autorename=false. The driver must delete the misnamed object and surface
+// the concurrent conflict; the primary storage is unaffected.
+func TestVirtualRootExtUploadServerRenameRejectedAndCleaned(t *testing.T) {
+	f, d := virtualFixture(t)
+	f.mu.Lock()
+	f.renameExtPut = true
+	f.mu.Unlock()
+	ctx := context.Background()
+	_, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "ext:ext-drive",
+		Name:     "up.bin",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("data")),
+		ModTime:  time.UnixMilli(1700000000123).UTC(),
+	})
+	if err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("upload error = %v, want conflict", err)
+	}
+	if !strings.Contains(err.Error(), "autorename") {
+		t.Fatalf("error lacks cause: %v", err)
+	}
+	// The misnamed remote object was deleted: no orphan in the listing and
+	// a remove request was issued against the ext mount.
+	entries, listErr := d.List(ctx, "ext:ext-drive")
+	if listErr != nil {
+		t.Fatalf("List ext root: %v", listErr)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name, "up.bin") || strings.Contains(entry.Name, "deadbeef") {
+			t.Fatalf("orphan survived: %+v", entry)
+		}
+	}
+	if got := f.requestsMatching(http.MethodDelete, "ext-drive"); got == 0 {
+		t.Fatal("driver never deleted the misnamed object")
+	}
+	// The primary storage keeps the normal path: same flag set, upload
+	// still stores and reports the requested name.
+	primary, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     "primary-up.bin",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("data")),
+		ModTime:  time.UnixMilli(1700000000123).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("primary upload: %v", err)
+	}
+	if primary.Name != "primary-up.bin" || primary.ID != "/primary-up.bin" {
+		t.Fatalf("primary upload entry = %+v", primary)
+	}
+}
+
+// Ext ids with ".." segments must be rejected locally, mirroring the
+// mount-relative path rules, so no request can aim outside the mount.
+func TestVirtualRootExtIDDotDotRejectedLocally(t *testing.T) {
+	f, d := virtualFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"ext:ext-drive/..", "ext:ext-drive/../nested", "ext:ext-drive/nested/../leaf.bin"} {
+		if _, err := d.List(ctx, id); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+			t.Fatalf("List(%q) error = %v, want invalid input", id, err)
+		}
+	}
+	if got := f.requestsMatching(http.MethodGet, "ext-drive"); got != 0 {
+		t.Fatalf("%d requests reached the ext mount, want 0", got)
+	}
+}
+
+// The virtual-root fast path accepts whitespace-only root ids like the rest
+// of the id space.
+func TestVirtualRootListTrimsRootParentID(t *testing.T) {
+	_, d := virtualFixture(t)
+	entries, err := d.List(context.Background(), "   ")
+	if err != nil {
+		t.Fatalf("List padded root: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %+v, want 3", entries)
 	}
 }

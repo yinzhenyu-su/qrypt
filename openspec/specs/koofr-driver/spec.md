@@ -102,6 +102,33 @@ cross-mount operation.
 - **THEN** initialization fails with a clear error naming both sides, because the virtual root
   cannot present two entries under one name; the user renames one side or configures `mount_id`
 
+#### Scenario: Unusable external mount name fails initialization
+
+- **WHEN** an online external mount's name cannot serve as a root directory name (for example it
+  contains `/`)
+- **THEN** initialization fails with an error directing the user to configure `mount_id` for that
+  mount instead of serving a broken virtual root
+
+#### Scenario: Runtime mount-name hijack is refused
+
+- **WHEN** in virtual-root mode a root-level write on the primary storage would create or rename
+  an entry to a name that fold-matches an external mount's name (mkdir, upload, copy destination,
+  or rename's new name)
+- **THEN** the driver refuses it with a conflict before any request, because the mount directory
+  would shadow the entry (or vice versa) and hijack first-segment routing; with an explicit
+  `mount_id` the same names are ordinary names
+
+#### Scenario: External mount root is not renameable or movable
+
+- **WHEN** a rename or move is issued whose source is an external mount root (`ext:` id with
+  path `/`)
+- **THEN** the driver refuses it locally with an invalid-input error, consistent with remove
+
+#### Scenario: ext ids with dot-dot segments are rejected locally
+
+- **WHEN** an operation addresses an `ext:` id whose path contains a `..` segment
+- **THEN** the driver rejects it locally with an invalid-input error and never sends the request
+
 #### Scenario: root_path other than the root is rejected
 
 - **WHEN** `mount_id` is omitted and `root_path` is not `/`
@@ -288,6 +315,15 @@ its canonical casing. The driver MUST NOT declare resumable uploads.
 
 - **WHEN** `B.bin` is uploaded into a directory that contains `b.bin`
 - **THEN** the driver reports a conflict without sending the upload and `b.bin` keeps its content
+
+#### Scenario: Server-side rename on an external mount is contained
+
+- **WHEN** an upload to an external mount succeeds but the provider stored the object under a
+  server-chosen name instead of the requested one (observed on Google Drive mounts under
+  concurrent case-variant uploads, despite `autorename=false`)
+- **THEN** the driver deletes the misnamed remote object and reports a conflict explaining the
+  concurrent-upload race, so no unreachable orphan remains; the primary storage keeps the normal
+  deterministic path
 
 #### Scenario: Resumable upload is not advertised
 

@@ -637,3 +637,133 @@ func TestLiveKoofrReviewChecks(t *testing.T) {
 		t.Fatalf("ParseShareLink(%q) = %+v, %v", apiProbeLink.URL, link, ok)
 	}
 }
+
+// TestLiveKoofrVirtualRootFix3 verifies the third review round against the
+// real account: runtime mount-name hijack rejection under the virtual root,
+// upload and overwrite regression inside an external mount, and cross-mount
+// copy and move. Only qrypt-fix3-* temporary objects are created; both
+// sides are removed and the trash emptied at the end.
+func TestLiveKoofrVirtualRootFix3(t *testing.T) {
+	email := os.Getenv("KOOFR_LIVE_EMAIL")
+	password := os.Getenv("KOOFR_LIVE_PASSWORD")
+	if email == "" || password == "" {
+		t.Skip("KOOFR_LIVE_EMAIL/KOOFR_LIVE_PASSWORD are not set")
+	}
+	d := New(Options{
+		Email:      email,
+		Password:   password,
+		APIBaseURL: os.Getenv("KOOFR_LIVE_BASE_URL"),
+	})
+	ctx := context.Background()
+	if err := d.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = d.Drop(ctx) }()
+	emptyTrash := func() {
+		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
+			t.Logf("empty trash: %v", err)
+		}
+	}
+
+	root, err := d.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List virtual root: %v", err)
+	}
+	var extEntry drive.Entry
+	for _, entry := range root {
+		if strings.HasPrefix(entry.ID, "ext:") && entry.IsDir {
+			extEntry = entry
+			break
+		}
+	}
+	if extEntry.ID == "" {
+		t.Fatal("virtual root lists no external mount directory")
+	}
+
+	// 1. Creating a root-level entry under the external mount's name must
+	// be refused with a conflict (both casings).
+	if _, err := d.Mkdir(ctx, "", extEntry.Name); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("Mkdir(%q) error = %v, want conflict", extEntry.Name, err)
+	}
+	if _, err := d.PutSource(ctx, drive.UploadRequest{
+		ParentID: "/",
+		Name:     extEntry.Name,
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("x")),
+	}); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("upload named %q error = %v, want conflict", extEntry.Name, err)
+	}
+	t.Logf("runtime mount-name hijack under %q rejected with a conflict", extEntry.Name)
+
+	// 2. Upload + overwrite regression inside the external mount.
+	run := strconv.FormatInt(time.Now().UnixNano(), 10)
+	extDir, err := d.Mkdir(ctx, extEntry.ID, "qrypt-fix3-"+run)
+	if err != nil {
+		t.Fatalf("Mkdir in external mount: %v", err)
+	}
+	defer func() {
+		if err := d.Remove(ctx, extDir); err != nil {
+			t.Logf("cleanup ext dir: %v", err)
+		}
+		emptyTrash()
+	}()
+	mod := time.UnixMilli(1700000000123).UTC()
+	upload := func(name string, payload []byte, mtime time.Time) drive.Entry {
+		t.Helper()
+		file, err := d.PutSource(ctx, drive.UploadRequest{
+			ParentID: extDir.ID,
+			Name:     name,
+			Source:   drive.NewBytesReadOnlyFileSource(payload),
+			ModTime:  mtime,
+		})
+		if err != nil {
+			t.Fatalf("upload %q into external mount: %v", name, err)
+		}
+		if file.Name != name {
+			t.Fatalf("upload stored as %q, want %q", file.Name, name)
+		}
+		return file
+	}
+	upload("data.bin", []byte("first"), mod)
+	overwritten := upload("data.bin", []byte("second"), mod)
+	if overwritten.Size != int64(len("second")) {
+		t.Fatalf("overwrite size = %d", overwritten.Size)
+	}
+	entries, err := d.List(ctx, extDir.ID)
+	if err != nil {
+		t.Fatalf("List ext dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "data.bin" {
+		t.Fatalf("ext dir after overwrite = %+v, want exactly data.bin", entries)
+	}
+	t.Logf("external mount upload + overwrite regression: OK")
+
+	// 3. Cross-mount copy and move regression (external -> primary ->
+	// external round trip on temporary names).
+	staging, err := d.Mkdir(ctx, "", "qrypt-fix3-"+run)
+	if err != nil {
+		t.Fatalf("Mkdir primary staging: %v", err)
+	}
+	defer func() {
+		if err := d.Remove(ctx, staging); err != nil {
+			t.Logf("cleanup primary staging: %v", err)
+		}
+	}()
+	copied, err := d.Copy(ctx, overwritten, staging.ID, "cross-copy.bin")
+	if err != nil {
+		t.Fatalf("cross-mount copy: %v", err)
+	}
+	if copied.ID != joinPath(staging.ID, "cross-copy.bin") || copied.Size != overwritten.Size {
+		t.Fatalf("cross copy = %+v", copied)
+	}
+	moved, err := d.Move(ctx, copied, extDir.ID)
+	if err != nil {
+		t.Fatalf("cross-mount move: %v", err)
+	}
+	if moved.ID != joinPath(extDir.ID, "cross-copy.bin") {
+		t.Fatalf("cross move id = %q", moved.ID)
+	}
+	if err := d.Remove(ctx, moved); err != nil {
+		t.Logf("cleanup moved file: %v", err)
+	}
+	t.Logf("cross-mount copy + move regression: OK")
+}

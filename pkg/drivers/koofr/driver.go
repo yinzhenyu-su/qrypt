@@ -189,6 +189,11 @@ func (d *Driver) initVirtualRoot(ctx context.Context, mounts []apiMount, rootPat
 		if mounts[i].IsPrimary || !mounts[i].Online {
 			continue
 		}
+		if err := validateName(mounts[i].Name); err != nil {
+			err = fmt.Errorf("koofr: external mount %q (id %s) has a name that cannot serve as a root directory; configure mount_id to use it directly: %w", mounts[i].Name, mounts[i].ID, drive.ErrInvalidInput)
+			d.setLastError(err)
+			return err
+		}
 		externals = append(externals, mounts[i])
 	}
 	rootEntries, err := d.listDirOn(ctx, primary.ID, "/", "/")
@@ -395,7 +400,14 @@ func (d *Driver) resolveTarget(id, op string) (opTarget, error) {
 		if !known {
 			return opTarget{}, fmt.Errorf("koofr: %s: id %q names an external mount that is unknown or offline on this mount: %w", op, id, drive.ErrInvalidInput)
 		}
-		return opTarget{mount: mount, path: path, external: true}, nil
+		// Normalize and guard the ext path the same way mount-relative
+		// paths are guarded, so an id like "ext:<id>/.." never reaches
+		// the provider.
+		clean, err := cleanMountPath(path)
+		if err != nil {
+			return opTarget{}, fmt.Errorf("koofr: %s: id %q: %w", op, id, err)
+		}
+		return opTarget{mount: mount, path: clean, external: true}, nil
 	}
 	if trimmed == "" || trimmed == "/" {
 		return opTarget{mount: apiMount{ID: d.mountID}, path: d.rootPath}, nil
@@ -414,6 +426,22 @@ func (d *Driver) extMountByID(mountID string) (apiMount, bool) {
 		}
 	}
 	return apiMount{}, false
+}
+
+// checkExtMountNameCollision rejects (in virtual-root mode) a write that
+// would land a root-level entry on the primary storage under a name folding
+// to a cached external mount's name. Init checks the collision once, but
+// entries can be created afterwards; such an entry would be shadowed by the
+// mount directory (or shadow it) and hijack first-segment routing, so the
+// write is refused with a conflict before any request.
+func (d *Driver) checkExtMountNameCollision(parent opTarget, op, name string) error {
+	if !d.virtualRoot() || parent.external || parent.path != "/" {
+		return nil
+	}
+	if mount, ok := d.extMountByName(name); ok {
+		return fmt.Errorf("koofr: %s %q: the virtual root already serves the external mount %q under that name (case-insensitive); pick another name or configure mount_id: %w", op, name, mount.Name, drive.ErrConflict)
+	}
+	return nil
 }
 
 // extMountByName fold-matches a root-level directory name against the cached

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -14,22 +15,25 @@ import (
 // virtual-root mode the root listing additionally carries one directory per
 // cached online external mount.
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
-	if d.virtualRoot() && (parentID == "" || parentID == "/") {
-		entries, err := d.listDirOn(ctx, d.mountID, "/", "/")
-		if err != nil {
-			err = fmt.Errorf("koofr: list %q: %w", parentID, err)
-			d.setLastError(err)
-			return nil, err
+	if d.virtualRoot() {
+		trimmed := strings.TrimSpace(parentID)
+		if trimmed == "" || trimmed == "/" {
+			entries, err := d.listDirOn(ctx, d.mountID, "/", "/")
+			if err != nil {
+				err = fmt.Errorf("koofr: list %q: %w", parentID, err)
+				d.setLastError(err)
+				return nil, err
+			}
+			for _, mount := range d.extMounts {
+				entries = append(entries, drive.Entry{
+					ID:       extRootID(mount.ID),
+					ParentID: "/",
+					Name:     mount.Name,
+					IsDir:    true,
+				})
+			}
+			return entries, nil
 		}
-		for _, mount := range d.extMounts {
-			entries = append(entries, drive.Entry{
-				ID:       extRootID(mount.ID),
-				ParentID: "/",
-				Name:     mount.Name,
-				IsDir:    true,
-			})
-		}
-		return entries, nil
 	}
 	t, err := d.resolveTarget(parentID, "list")
 	if err != nil {
