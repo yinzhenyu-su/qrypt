@@ -187,6 +187,57 @@ func TestListMixedDirectoryMapping(t *testing.T) {
 	}
 }
 
+// External mounts report Google Docs/shortcut entries with size=-1 and no
+// hash; the mapping must clamp the size to 0 and skip the hash entirely so
+// RemoteHash answers unsupported and reads short-circuit to empty.
+func TestListGoogleDocEntryMapping(t *testing.T) {
+	f := newFakeProvider(t)
+	modMs := int64(1700000000123)
+	f.putFile("/dir/data.bin", []byte("hello"), modMs)
+	f.putGoogleDoc("/dir/Notes.gdoc", modMs)
+
+	d := f.newDriver(t, Options{RootPath: "/dir"})
+	entries, err := d.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var doc drive.Entry
+	for _, entry := range entries {
+		if entry.Name == "Notes.gdoc" {
+			doc = entry
+		}
+	}
+	if doc.ID != "/dir/Notes.gdoc" || doc.IsDir {
+		t.Fatalf("doc entry = %+v", doc)
+	}
+	if doc.Size != 0 {
+		t.Fatalf("doc size = %d, want 0 (clamped from -1)", doc.Size)
+	}
+	if !doc.ModTime.Equal(time.UnixMilli(modMs).UTC()) {
+		t.Fatalf("doc mtime = %v", doc.ModTime)
+	}
+	if raw, ok := drive.RawEntryExtra(doc.Extra).(map[string]any); ok {
+		if _, has := raw["hash"]; has {
+			t.Fatalf("doc extra carries a hash: %v", raw)
+		}
+		if ct, _ := raw["content_type"].(string); ct != "application/vnd.google-apps.document" {
+			t.Fatalf("doc content_type = %q", ct)
+		}
+	}
+	if algo, hash, err := d.RemoteHash(context.Background(), doc); err != drive.ErrUnsupported || algo != "" || hash != "" {
+		t.Fatalf("RemoteHash = %v %q %v, want unsupported", algo, hash, err)
+	}
+	reader, err := d.Read(context.Background(), doc, 0, 0)
+	if err != nil {
+		t.Fatalf("Read doc: %v", err)
+	}
+	got, _ := io.ReadAll(reader)
+	reader.Close()
+	if len(got) != 0 {
+		t.Fatalf("Read doc returned %d bytes, want 0", len(got))
+	}
+}
+
 func TestListMissingPathNotFound(t *testing.T) {
 	f := newFakeProvider(t)
 	d := f.newDriver(t, Options{})

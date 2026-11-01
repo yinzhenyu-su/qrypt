@@ -45,6 +45,19 @@ func TestLiveKoofr(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	defer func() { _ = d.Drop(ctx) }()
+	// External mounts (e.g. Google Drive via KOOFR_LIVE_MOUNT_ID) reset the
+	// mtime to server time on rename/move, so mtime-lineage assertions that
+	// hold on the primary Koofr mount must be relaxed there.
+	externalMount := false
+	var mounts apiMountList
+	if _, err := d.cl.get(ctx, "/mounts", nil, &mounts); err != nil {
+		t.Fatalf("list mounts: %v", err)
+	}
+	for _, m := range mounts.Mounts {
+		if m.ID == d.mountID {
+			externalMount = !m.IsPrimary
+		}
+	}
 	emptyTrash := func() {
 		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
 			t.Logf("empty trash: %v", err)
@@ -153,7 +166,15 @@ func TestLiveKoofr(t *testing.T) {
 		t.Fatalf("Copy: %v", err)
 	}
 	if copied.ModTime.UnixMilli() != mod.UnixMilli() {
-		t.Fatalf("copy mtime = %v, want %v (copy must preserve mtime)", copied.ModTime, mod)
+		// The primary mount must preserve the source mtime across copy.
+		// External mounts (e.g. Google Drive) already reset the mtime when
+		// the file was renamed above, so the copy inherits the server time;
+		// copy itself honors the modified parameter (verified by probe).
+		if externalMount {
+			t.Logf("copy mtime = %v, want %v (external mount reset mtime on rename; tolerated)", copied.ModTime, mod)
+		} else {
+			t.Fatalf("copy mtime = %v, want %v (copy must preserve mtime)", copied.ModTime, mod)
+		}
 	}
 	if err := d.Remove(ctx, copied); err != nil {
 		t.Fatalf("Remove copy: %v", err)

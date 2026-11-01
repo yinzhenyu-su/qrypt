@@ -48,10 +48,11 @@ type fakeProvider struct {
 }
 
 type fakeNode struct {
-	name  string
-	isDir bool
-	data  []byte
-	modMs int64
+	name      string
+	isDir     bool
+	googleDoc bool
+	data      []byte
+	modMs     int64
 }
 
 type fakeLink struct {
@@ -155,8 +156,24 @@ func (f *fakeProvider) putFile(path string, data []byte, modMs int64) {
 	f.nodes[path] = &fakeNode{name: baseName(path), data: data, modMs: modMs}
 }
 
+// putGoogleDoc installs a placeholder entry mimicking Google Docs/shortcut
+// files on external mounts: size=-1, a google-apps content type, and no hash.
+func (f *fakeProvider) putGoogleDoc(path string, modMs int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	path = "/" + strings.Trim(path, "/")
+	parent := parentPath(path)
+	f.mkdirAllLocked(parent)
+	f.nodes[path] = &fakeNode{name: baseName(path), data: []byte("ignored"), modMs: modMs, googleDoc: true}
+}
+
 func (n *fakeNode) apiFile() apiFile {
 	file := apiFile{Name: n.name, Type: "file", Size: int64(len(n.data)), Modified: n.modMs, ContentType: "application/octet-stream"}
+	if n.googleDoc {
+		file.Size = -1
+		file.ContentType = "application/vnd.google-apps.document"
+		return file
+	}
 	if n.isDir {
 		file.Type = "dir"
 		file.Size = 0

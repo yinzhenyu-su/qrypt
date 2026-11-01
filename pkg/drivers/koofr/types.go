@@ -78,8 +78,12 @@ type apiFileList struct {
 // absolute path so reads, writes, and share paths can use it directly.
 func (f apiFile) entry(parent string) drive.Entry {
 	isDir := f.Type == "dir"
+	// External mounts (e.g. Google Drive) report Google Docs/shortcut entries
+	// with size=-1; the entry contract expects a byte size, so an unknown or
+	// non-binary size maps to 0 (reads then short-circuit to empty instead of
+	// requesting bytes the provider cannot serve).
 	size := f.Size
-	if isDir {
+	if isDir || size < 0 {
 		size = 0
 	}
 	extra := map[string]any{}
