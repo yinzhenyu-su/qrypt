@@ -7,7 +7,7 @@
 
 | 目录 | 职责 | 典型入口 |
 | --- | --- | --- |
-| `ci/` | 本地与 CI 门禁、测试分层、覆盖率、fuzz、工具安装，以及运行时 smoke | `ci/check-all.sh`、`ci/test-layers.sh` |
+| `ci/` | 本地与 CI 门禁、测试分层、覆盖率、fuzz、工具安装、PR 标题校验，以及运行时 smoke | `ci/check-all.sh`、`ci/test-layers.sh`、`ci/check-pr-title.sh` |
 | `schema/` | 从 `schema/qrypt.schema.json` 和 `schema/i18n/` 生成代码与文档，并校验生成结果 | `schema/gen-drive-schema.py`、`schema/gen-config-docs.py` |
 | `install/` | 首次安装脚本及其检查、端到端 smoke | `install/install.sh`、`install/install.ps1` |
 | `release/` | 发版与 changelog | `release/release.sh` |
@@ -44,14 +44,18 @@
   这两个路径作为发布资源，用户也按资源名下载。
 - 脚本应自行定位仓库根目录（`$(dirname "$0")/../..`），因此可以从任意工作
   目录调用。
+- 发版前可把感谢、迁移提示等写在 `CHANGELOG.md` 顶部的 `## Unreleased` 下；
+  `release/gen-changelog.sh` 会在发版时并入新版本段，并从旧内容中移除。
 
 ## 常用入口
 
 ```bash
 scripts/ci/check-all.sh                # 本地完整 CI 门禁
+scripts/ci/check-pr-title.sh "feat(cli): add a command"  # 校验 PR 标题
 scripts/ci/test-layers.sh fast         # 快速测试层
 scripts/ci/check-coverage.sh -print    # 查看覆盖率（不 gate）
 scripts/schema/gen-driver-docs.py      # 重新生成驱动文档
 scripts/schema/gen-config-docs.py      # 重新生成配置文档
 scripts/release/release.sh vX.Y.Z      # 生成 changelog、提交并打 tag
+scripts/release/add-release-thanks.sh vX.Y.Z  # 把 Thanks 段同步到 GitHub Release
 ```
