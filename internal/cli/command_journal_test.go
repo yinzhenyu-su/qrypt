@@ -170,3 +170,48 @@ func TestJournalPruneDropsMissingStaging(t *testing.T) {
 		t.Fatalf("prune dropped live entries:\n%s", data)
 	}
 }
+
+func TestJournalPruneFailedDropsTerminalUpload(t *testing.T) {
+	cache := setupJournalCache(t)
+	var out bytes.Buffer
+	root := NewRootCommand()
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"fs", "journal", "--cache-dir", cache, "prune", "--failed", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("journal prune --failed failed: %v", err)
+	}
+	var results []clijournal.MaintenanceResult
+	if err := json.Unmarshal(out.Bytes(), &results); err != nil {
+		t.Fatalf("prune JSON invalid: %v\n%s", err, out.String())
+	}
+	if len(results) != 1 || results[0].Pruned != 2 {
+		t.Fatalf("results = %+v, want 2 pruned (missing + permanent_fail)", results)
+	}
+	data, err := os.ReadFile(filepath.Join(cache, "pending.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "/fail.txt") || strings.Contains(string(data), "/gone.txt") {
+		t.Fatalf("prune --failed kept terminal entries:\n%s", data)
+	}
+	if !strings.Contains(string(data), "/keep.txt") {
+		t.Fatalf("prune --failed dropped a live entry:\n%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(cache, "staging", "fail")); !os.IsNotExist(err) {
+		t.Fatalf("permanent failure staging still exists: %v", err)
+	}
+}
+
+func TestJournalReportCountsPermanentFails(t *testing.T) {
+	cache := setupJournalCache(t)
+	report := clijournal.InspectCache(clijournal.DebugCacheTarget{Name: "test", Dir: cache})
+	if report.PermanentFails != 1 {
+		t.Fatalf("PermanentFails = %d, want 1 (pending: %+v)", report.PermanentFails, report.Pending)
+	}
+	var out strings.Builder
+	clijournal.PrintReport(&out, report)
+	if !strings.Contains(out.String(), "permanent_fail=1") {
+		t.Fatalf("report does not surface permanent failures:\n%s", out.String())
+	}
+}
