@@ -7,6 +7,8 @@
 #
 # 从上一 tag 到 HEAD 收集约定式提交,按类型分组(与 .goreleaser.yaml 一致):
 #   feat → Features, fix → Bug fixes, 其余 → Others, 排除 docs:/chore:/merge。
+# 发版前可把感谢、迁移提示等写在 CHANGELOG 顶部的 ## Unreleased 下,
+# 生成新版本时自动并入,并从旧内容中移除。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -50,6 +52,28 @@ while IFS= read -r c; do
 "; fi
 done < <(git log --pretty="%s" "$prev_tag"..HEAD)
 
+# ── 手工维护的 Unreleased 段落 ─────────────────────────────────────────
+# 发版前可把感谢、迁移提示等写在 CHANGELOG 顶部的 ## Unreleased 下。
+# 生成新版本时把它并入本次版本段，并从旧内容中移除，避免重复带入。
+pending=""
+changelog_source="$CHANGELOG"
+if [ -f "$CHANGELOG" ]; then
+  pending="$(awk '
+    /^## Unreleased[[:space:]]*$/ { in_pending = 1; next }
+    in_pending && /^## / { exit }
+    in_pending { print }
+  ' "$CHANGELOG")"
+fi
+if [ -f "$CHANGELOG" ] && grep -q '^## Unreleased[[:space:]]*$' "$CHANGELOG"; then
+  stripped="$(mktemp)"
+  awk '
+    /^## Unreleased[[:space:]]*$/ { skip = 1; next }
+    skip && /^## / { skip = 0 }
+    !skip { print }
+  ' "$CHANGELOG" > "$stripped"
+  changelog_source="$stripped"
+fi
+
 # ── 拼装新版本段 ───────────────────────────────────────────────────────
 section="## v${version} ($(date +%Y-%m-%d))"
 if [ -n "$features" ]; then
@@ -70,10 +94,20 @@ if [ -n "$others" ]; then
 ### Others
 $(printf '%s' "${others%$'\n'}")"
 fi
+if [ -n "$(printf '%s' "$pending" | tr -d '[:space:]')" ]; then
+  pending_body="$(printf '%s\n' "$pending" | awk '
+    NF { started = 1; last = n + 1 }
+    started { lines[++n] = $0 }
+    END { for (i = 1; i <= last; i++) print lines[i] }
+  ')"
+  section="$section
+
+$pending_body"
+fi
 
 # ── prepend 到 CHANGELOG.md ─────────────────────────────────────────────
 tmp="$(mktemp)"
-if [ -f "$CHANGELOG" ] && grep -q "^# Changelog" "$CHANGELOG"; then
+if [ -f "$changelog_source" ] && grep -q "^# Changelog" "$changelog_source"; then
   {
     echo "# Changelog"
     echo
@@ -81,10 +115,11 @@ if [ -f "$CHANGELOG" ] && grep -q "^# Changelog" "$CHANGELOG"; then
     echo
     echo "---"
     echo
-    tail -n +2 "$CHANGELOG" | awk "NR==1 && /^$/ {next} {print}"
+    tail -n +2 "$changelog_source" | awk "NR==1 && /^$/ {next} {print}"
   } > "$tmp"
 else
   printf '# Changelog\n\n%s\n' "$section" > "$tmp"
 fi
 mv "$tmp" "$CHANGELOG"
+[ -z "${stripped:-}" ] || rm -f "$stripped"
 echo "已生成 v${version} 记录到 CHANGELOG.md"

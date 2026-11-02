@@ -152,6 +152,11 @@ cd qrypt
 go build ./cmd/qrypt
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch, commit, PR, testing, and
+security rules. Report vulnerabilities privately via [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT

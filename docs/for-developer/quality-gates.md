@@ -8,9 +8,12 @@ qrypt 用三个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
-| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**；tag/dispatch 时构建并发布 | README |
+| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；tag/dispatch 时构建并发布 | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
 | `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
+
+tag/dispatch 时，`update-changelog` 先检查 tag 的 `CHANGELOG.md`；缺少该版本记录时，
+它会在 `changelog/<version>` 分支上生成提交并创建 PR，不再直接 push `main`。
 
 ## 手动触发
 
