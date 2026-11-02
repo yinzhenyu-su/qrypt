@@ -38,14 +38,17 @@ diskutil unmount force <挂载点>
 ```sh
 qrypt fs journal [--config PATH | --cache-dir PATH] [--json]
 qrypt fs journal replay [--config PATH | --cache-dir PATH] [--json]
-qrypt fs journal prune [--config PATH | --cache-dir PATH] [--json]
+qrypt fs journal prune [--config PATH | --cache-dir PATH] [--json] [--failed]
 ```
 
-- `fs journal`：检查 dirty/clean 条目、失败条目和 staging 孤儿文件。
+- `fs journal`：检查 dirty/clean 条目、失败条目和 staging 孤儿文件；`permanent_fail` 条目会单独计数并显示失败原因。
 - `fs journal replay`：重置失败条目的失败状态（清掉 permanent failure、重试计数和错误），下次挂载时自动重试。不要求挂载在线。
 - `fs journal prune`：删除 staging 数据已丢失或大小不匹配的条目，并压缩 journal 文件。
+- `fs journal prune --failed`：在上一项基础上，同时删除永久失败（`permanent_fail`）的上传条目及其 staging 数据。该操作会丢弃本地暂存内容，执行前请先卸载挂载点。
 
-常见处理顺序：先 `prune` 清掉数据已丢失的条目，再 `replay` 重置剩余失败条目，最后重新挂载重试。
+常见处理顺序：先 `prune` 清掉数据已丢失的条目，再 `replay` 重置剩余失败条目，最后重新挂载重试。如果确认永久失败的上传已经不需要，先卸载挂载点，再执行 `prune --failed`。
+
+`probe test fs` 在超时、取消或上传失败时会尽力删除远端 `__qrypt_fs_test_*` 测试目录。如果挂载进程被 `kill -9` 或直接崩溃，进程内清理来不及执行，需要手动删除该前缀的残留目录。
 
 ## 更多诊断
 

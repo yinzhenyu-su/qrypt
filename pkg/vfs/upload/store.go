@@ -1060,12 +1060,27 @@ func ReplayUploadJournal(dir string) ([]PendingUpload, error) {
 	return replayed, nil
 }
 
+// PruneOptions controls which journal entries PruneUploadJournal drops.
+type PruneOptions struct {
+	// IncludePermanentFailures also drops permanently failed uploads. Their
+	// staging data is deleted when the pruned journal has been written, so
+	// an explicit opt-in is required: a permanent failure may still be
+	// recoverable with ReplayUploadJournal after credentials are fixed.
+	IncludePermanentFailures bool
+}
+
 // PruneUploadJournal rewrites the journal to only the current pending set:
 // entries are replayed by path (dirty overrides, clean removes) and then
 // dirty entries whose staging file is gone or size-mismatched are dropped,
 // since their offline data no longer exists. Terminal clean markers and
 // corrupt lines are dropped. It returns the number of dropped entries.
 func PruneUploadJournal(dir string) (int, error) {
+	return PruneUploadJournalWithOptions(dir, PruneOptions{})
+}
+
+// PruneUploadJournalWithOptions is PruneUploadJournal with explicit
+// selection of terminal states to discard.
+func PruneUploadJournalWithOptions(dir string, opts PruneOptions) (int, error) {
 	journalPath := filepath.Join(dir, "pending.jsonl")
 	file, err := os.Open(journalPath)
 	if os.IsNotExist(err) {
@@ -1111,8 +1126,16 @@ func PruneUploadJournal(dir string) (int, error) {
 	}
 
 	// Drop entries whose staging data is gone; what remains is the kept set.
+	// Permanently failed entries are only dropped on explicit request and
+	// their staging files are removed after the journal rewrite succeeds.
 	var kept []JournalEntry
+	var droppedStaging []string
 	for _, entry := range pending {
+		if opts.IncludePermanentFailures && entry.PermanentFail {
+			pruned++
+			droppedStaging = append(droppedStaging, entry.LocalPath)
+			continue
+		}
 		info, statErr := os.Stat(entry.LocalPath)
 		if statErr != nil || info.Size() != entry.Size {
 			pruned++
@@ -1156,6 +1179,18 @@ func PruneUploadJournal(dir string) (int, error) {
 		return pruned, err
 	}
 	_ = syncParentDir(journalPath)
+	// The journal no longer references these staging files. Removing them
+	// after the rename keeps a failed prune from destroying data that a
+	// still-live journal entry points at; a leftover file on error is only
+	// an orphan the next cleanup can sweep.
+	for _, localPath := range droppedStaging {
+		if localPath == "" {
+			continue
+		}
+		if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+			logging.L.Warnf("[CACHE] prune failed upload staging failed local=%q err=%v", localPath, err)
+		}
+	}
 	return pruned, nil
 }
 

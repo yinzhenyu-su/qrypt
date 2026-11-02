@@ -118,6 +118,91 @@ func TestPruneUploadJournalDropsMissingStaging(t *testing.T) {
 	}
 }
 
+// TestPruneUploadJournalKeepsPermanentFailuresByDefault pins the conservative
+// default: a permanently failed upload can still be recovered with replay
+// after credentials are fixed, so plain prune must not discard its data.
+func TestPruneUploadJournalKeepsPermanentFailuresByDefault(t *testing.T) {
+	dir := t.TempDir()
+	journal := filepath.Join(dir, "pending.jsonl")
+	staging := filepath.Join(dir, "staging", "chunk-failed")
+	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staging, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeJournalEntry(t, journal, "dirty", PendingUpload{
+		Path: "/failed.txt", FID: "f-failed", LocalPath: staging, Size: 4,
+		PermanentFail: true, LastError: "auth expired",
+	})
+
+	pruned, err := PruneUploadJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 0 {
+		t.Fatalf("pruned = %d, want 0", pruned)
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("default prune removed failed staging: %v", err)
+	}
+	store, err := NewPendingStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.UploadByPath("/failed.txt"); !ok {
+		t.Fatal("default prune dropped a recoverable permanent failure")
+	}
+}
+
+// TestPruneUploadJournalFailedDropsStaging covers the explicit cleanup path:
+// --failed removes the terminal record and the staging file it owned.
+func TestPruneUploadJournalFailedDropsStaging(t *testing.T) {
+	dir := t.TempDir()
+	journal := filepath.Join(dir, "pending.jsonl")
+	failedStaging := filepath.Join(dir, "staging", "chunk-failed")
+	keepStaging := filepath.Join(dir, "staging", "chunk-keep")
+	if err := os.MkdirAll(filepath.Dir(failedStaging), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{failedStaging, keepStaging} {
+		if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJournalEntry(t, journal, "dirty", PendingUpload{
+		Path: "/failed.txt", FID: "f-failed", LocalPath: failedStaging, Size: 4,
+		PermanentFail: true, LastError: "auth expired",
+	})
+	writeJournalEntry(t, journal, "dirty", PendingUpload{
+		Path: "/keep.txt", FID: "f-keep", LocalPath: keepStaging, Size: 4,
+	})
+
+	pruned, err := PruneUploadJournalWithOptions(dir, PruneOptions{IncludePermanentFailures: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if _, err := os.Stat(failedStaging); !os.IsNotExist(err) {
+		t.Fatalf("failed staging still exists: %v", err)
+	}
+	if _, err := os.Stat(keepStaging); err != nil {
+		t.Fatalf("healthy staging was removed: %v", err)
+	}
+	store, err := NewPendingStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.UploadByPath("/failed.txt"); ok {
+		t.Fatal("failed upload survived --failed prune")
+	}
+	if _, ok := store.UploadByPath("/keep.txt"); !ok {
+		t.Fatal("healthy upload was pruned")
+	}
+}
+
 // TestPruneUploadJournalRespectsCleanMarkers guards against resurrecting a
 // finished upload: the replay must apply dirty/clean by path before pruning,
 // so an old dirty line superseded by a later clean never comes back.

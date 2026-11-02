@@ -206,6 +206,14 @@ go run ./cmd/qrypt probe test fs --mount quark-test --size 30m
 waits for upload, reads back, and removes the test data. It writes to the
 selected mount, so use it only when temporary remote writes are acceptable.
 
+Cleanup runs even when the probe is canceled or an upload fails: it uses a
+context detached from the request, discards pending uploads under the test
+directory, and waits for the delayed remote deletes. A permanently failed
+upload is reported as a terminal failure instead of blocking the idle wait
+until its timeout; inspect it with `qrypt fs journal` and clear it with
+`qrypt fs journal prune --failed` after unmounting. Only a hard process kill
+can still leave `__qrypt_fs_test_*` directories behind for manual removal.
+
 For small-file and move workloads, run:
 
 ```sh
