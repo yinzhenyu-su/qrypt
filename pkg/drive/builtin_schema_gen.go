@@ -188,4 +188,14 @@ var builtinParamSpecs = map[string]ParamSpec{
 		},
 		Required: []string{"access_token"},
 	},
+	"koofr": {
+		Params: []ParamDef{
+			{Name: "email", Type: "string", Required: true, Scope: "credential", Description: "Koofr account email", DescriptionI18n: map[string]string{"zh-CN": "Koofr 账号邮箱"}, Example: "user@example.com"},
+			{Name: "app_password", Type: "string", Required: true, Secret: true, Scope: "credential", Description: "Koofr app password (Settings -> App passwords)", DescriptionI18n: map[string]string{"zh-CN": "Koofr 应用密码（设置 -> 应用密码）"}, Example: "your-app-password"},
+			{Name: "mount_id", Type: "string", Scope: "mount", Description: "Lock the mount to one provider mount id; by default the root aggregates the primary storage and online external mounts", DescriptionI18n: map[string]string{"zh-CN": "锁定单一网盘挂载 ID；默认挂载根聚合主存储与在线外部挂载"}, Example: "749b91a4-c96b-4cfb-a457-526827ad9622"},
+			{Name: "root_path", Type: "string", Scope: "mount", Description: "Directory path used as this mount root; requires mount_id (the default virtual root only serves /)", DescriptionI18n: map[string]string{"zh-CN": "作为挂载根的目录路径；需配合 mount_id 使用（默认虚拟根仅支持 /）"}, Default: "/", Example: "/qrypt"},
+			{Name: "api_base_url", Type: "string", Scope: "both", Description: "Custom Koofr API base URL", DescriptionI18n: map[string]string{"zh-CN": "自定义 Koofr API 基础 URL"}, Default: "https://app.koofr.net", Example: "https://app.koofr.net"},
+		},
+		Required: []string{"email", "app_password"},
+	},
 }
