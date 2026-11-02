@@ -226,12 +226,17 @@ Rules:
   config validation read them, so a param missing from the `ParamDef` list makes
   the mount invalid.
 - Secrets are `Secret: true` and must never appear in errors, logs, metrics, or
-  debug snapshots.
+  debug snapshots. `Scope` (`credential` / `mount` / `both`) decides where a
+  param may be configured.
 - Validation is dynamic: `pkg/config/validation.go` accepts exactly the params
   in `ParamSchema(mount.Type)` and requires those marked `Required`.
 - `schema/qrypt.schema.json` is the committed schema source: the `type` `enum`,
-  an `allOf` `if/then` per driver, and `definitions.<name>Params`. Docs are
-  generated from it by `scripts/schema/gen-driver-docs.py` and CI checks they are in sync.
+  an `allOf` `if/then` per driver in both `mountConfig` and `credentialConfig`,
+  `definitions.<name>Params` with `x-driver` metadata and localized
+  descriptions, and per-property `x-param-scope` / `x-param-type`.
+- `scripts/schema/gen-driver-capabilities/main.go` is the second registration
+  list: `gen-driver-docs.py` runs it to build the capability matrix, and a
+  schema driver missing there fails the generator test.
 - `root_id` vs `root_path`: an explicit id wins and skips path resolution.
   Resolve `root_path` from the account root, and commit the resolved root only
   after success so a retried `Init` does not fall back to the account root.

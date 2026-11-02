@@ -92,7 +92,8 @@ QRYPT_CONTRACT_CONFIG=./qrypt.toml scripts/ci/test-layers.sh integration quark-t
 删除排空；清理失败会作为 `cleanup` step 记录。`probe test fs` 遇到
 `permanent_fail` 会直接报告失败路径，不再等满 `wait_upload` 超时。
 
-只有进程被 `kill -9` 或崩溃时才会留下 fixture。测试目录前缀：
+进程被 `kill -9`、崩溃，或清理本身因权限/网络失败时，仍可能留下 fixture；
+cleanup 失败会出现在报告里，不要只看 `pass`。测试目录前缀：
 
 - `__qrypt_fs_test_*`
 - `__qrypt_resume_test_*`
