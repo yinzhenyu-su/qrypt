@@ -49,6 +49,7 @@ root_path = "/Docs"
 | `sftp` | SFTP | `address` + `username` + (`password` 或 `private_key`) |
 | `s3` | Amazon S3 / 兼容 S3 | `bucket` + `endpoint` + `access_key_id` + `secret_access_key` |
 | `drime` | Drime 云盘 | `access_token` |
+| `koofr` | Koofr 云盘 | `email` + `app_password` |
 
 ## 能力对照
 
@@ -71,6 +72,7 @@ root_path = "/Docs"
 | `sftp` | ✅ | ✅ | — | — | ✅ | ✅ | — | — |
 | `s3` | ✅ | ✅ | ✅ | — | — | — | — | — |
 | `drime` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| `koofr` | ✅ | — | ✅ | ✅ | ✅ | ✅ | — | — |
 
 ✅ 支持，— 不支持；不支持的能力会由上层降级或返回 unsupported。
 
@@ -435,3 +437,24 @@ access_token = "your-access-token"
 | `presign_small` | boolean | 挂载 | 否 | 小于 5 MiB 的文件使用预签名直传，默认 `false` |
 | `limit_rate` | integer | 挂载 | 否 | 限制 API 请求速率（每秒 N 次，0 表示不限制），默认 `0` |
 | `hard_delete` | boolean | 挂载 | 否 | 永久删除而不是移到回收站，默认 `false` |
+
+---
+
+## koofr
+
+Koofr 云盘。
+
+```toml
+[mounts.params]
+email = "user@example.com"
+app_password = "your-app-password"
+# root_path = "/qrypt"
+```
+
+| 参数 | 类型 | 作用域 | 必填 | 说明 |
+|---|---|---|---|---|
+| `email` | string | 凭据 | 是 | Koofr 账号邮箱 |
+| `app_password` | string (secret) | 凭据 | 是 | Koofr 应用密码（设置 -> 应用密码） |
+| `mount_id` | string | 挂载 | 否 | 锁定单一网盘挂载 ID；默认挂载根聚合主存储与在线外部挂载 |
+| `root_path` | string | 挂载 | 否 | 作为挂载根的目录路径；需配合 mount_id 使用（默认虚拟根仅支持 /），默认 `/` |
+| `api_base_url` | string | 两者 | 否 | 自定义 Koofr API 基础 URL，默认 `https://app.koofr.net` |

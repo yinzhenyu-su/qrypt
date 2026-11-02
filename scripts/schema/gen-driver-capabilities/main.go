@@ -65,6 +65,10 @@ var drivers = []driverSpec{
 		"secret_access_key": "secret",
 	}},
 	{Name: "drime", Params: drive.Params{"access_token": "token"}},
+	{Name: "koofr", Params: drive.Params{
+		"email":        "user@example.com",
+		"app_password": "app-password",
+	}},
 }
 
 func main() {

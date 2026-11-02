@@ -8,6 +8,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/aliyundrive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/baidunetdisk"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/drime"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/koofr"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/localfs"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/onedrive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/p115"
@@ -103,6 +104,22 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				drive.CapabilityShareFetch,
 				drive.CapabilityShareReceive,
 				drive.CapabilityShareSave,
+				drive.CapabilitySourceUploader,
+				drive.CapabilitySpace,
+				drive.CapabilityWriter,
+			},
+		},
+		{
+			name: "koofr",
+			drv:  koofr.New(koofr.Options{Email: "user@example.com", Password: "app-password"}),
+			want: []drive.Capability{
+				drive.CapabilityMtime,
+				drive.CapabilityPathResolver,
+				drive.CapabilityRemoteNameResolver,
+				drive.CapabilityServerSideCopy,
+				drive.CapabilityShare,
+				drive.CapabilityShareFetch,
+				drive.CapabilityShareReceive,
 				drive.CapabilitySourceUploader,
 				drive.CapabilitySpace,
 				drive.CapabilityWriter,
