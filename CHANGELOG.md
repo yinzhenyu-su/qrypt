@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Thanks
+- @dwdcth for contributing the Koofr driver (#14)
+
 ## v0.6.0 (2026-10-24)
 
 ### Features

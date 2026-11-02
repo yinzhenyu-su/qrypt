@@ -143,6 +143,10 @@ cd qrypt
 go build ./cmd/qrypt
 ```
 
+## 参与贡献
+
+分支、提交、PR、测试和安全约定见 [CONTRIBUTING.md](CONTRIBUTING.md)；漏洞请按 [SECURITY.md](SECURITY.md) 私下报告。
+
 ## 许可证
 
 MIT
