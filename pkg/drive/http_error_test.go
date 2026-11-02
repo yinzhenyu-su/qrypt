@@ -11,7 +11,7 @@ import (
 )
 
 func TestHTTPErrorRedactsAllSensitiveFields(t *testing.T) {
-	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/files?access_token=tok-abc123&token=t1", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/files?access_token=tok-abc123&token=t1&password=pw-abc", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestHTTPErrorRedactsAllSensitiveFields(t *testing.T) {
 	err = drive.HTTPError("quark: list", req, resp, body)
 
 	msg := err.Error()
-	for _, secret := range []string{"tok-abc123", "t1", "rt-xyz789", "https://cdn/private", "u2"} {
+	for _, secret := range []string{"tok-abc123", "t1", "pw-abc", "rt-xyz789", "https://cdn/private", "u2"} {
 		if strings.Contains(msg, secret) {
 			t.Errorf("message leaks %q: %s", secret, msg)
 		}
@@ -153,6 +153,7 @@ func TestSnippetMasksSensitiveValues(t *testing.T) {
 		{"authorization bearer header", `Authorization: Bearer bearer-token-12345`, "bearer-token-12345"},
 		{"authorization plain header", `Authorization: apikey-xyz`, "apikey-xyz"},
 		{"query token", `url?token=query-token-val`, "query-token-val"},
+		{"query password", `url?password=pass-val`, "pass-val"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

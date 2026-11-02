@@ -58,41 +58,56 @@ func (d *Driver) CreateShare(ctx context.Context, req drive.ShareCreateRequest) 
 	if err != nil || path == "/" {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "entry path is required")
 	}
-	if req.Passcode != "" && !validPasscode(req.Passcode) {
-		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr link passcodes must be exactly 6 letters or digits")
-	}
 	// Unlike UpdateShare (where a negative expiry clears the validity
 	// window), creating a link with a negative expiry is a caller bug.
 	if req.Expiry < 0 {
 		return drive.Share{}, fmt.Errorf("koofr: negative share expiry %d: %w", req.Expiry, drive.ErrInvalidInput)
 	}
-	resp, err := d.cl.post(ctx, d.linksPath(""), nil, map[string]any{"path": path}, nil)
+	if err := d.SharePolicy().ValidateCreateRequest(req); err != nil {
+		return drive.Share{}, err
+	}
+	passcode := strings.TrimSpace(req.Passcode)
+	if passcode != "" && !validPasscode(passcode) {
+		return drive.Share{}, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr link passcodes must be exactly 6 letters or digits")
+	}
+	resp, err := d.cl.postOnce(ctx, d.linksPath(""), nil, map[string]any{"path": path}, nil)
 	if err != nil {
 		return drive.Share{}, shareErrorFromHTTP(err)
 	}
-	var link apiLink
-	if err := json.Unmarshal(resp.body, &link); err != nil || link.ID == "" {
+	var created apiLink
+	if err := json.Unmarshal(resp.body, &created); err != nil || created.ID == "" {
 		return drive.Share{}, drive.NewShareError(drive.ShareErrProvider, "", "koofr returned no link")
 	}
-	if req.Passcode != "" {
-		if link, err = d.setLinkPassword(ctx, link.ID, req.Passcode); err != nil {
-			_ = d.DeleteShare(ctx, link.ID)
+	linkID := created.ID
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = d.DeleteShare(context.WithoutCancel(ctx), linkID)
+		}
+	}()
+
+	if passcode != "" {
+		if _, err = d.setLinkPassword(ctx, linkID, passcode); err != nil {
+			return drive.Share{}, err
+		}
+	}
+	if req.Download != nil {
+		if _, err = d.setLinkDownloadable(ctx, linkID, *req.Download); err != nil {
 			return drive.Share{}, err
 		}
 	}
 	if req.Expiry > 0 {
-		if link, err = d.setLinkValidity(ctx, link.ID, time.Now().Add(req.Expiry)); err != nil {
+		if _, err = d.setLinkValidity(ctx, linkID, time.Now().Add(req.Expiry)); err != nil {
 			return drive.Share{}, err
 		}
 	}
-	if req.Download != nil && !*req.Download {
-		if link, err = d.setLinkDownloadable(ctx, link.ID, false); err != nil {
-			return drive.Share{}, err
-		}
+	final, err := d.GetShare(ctx, linkID)
+	if err != nil {
+		return drive.Share{}, err
 	}
-	share := shareFromLink(link)
-	share.Passcode = req.Passcode
-	return share, nil
+	final.Passcode = passcode
+	cleanup = false
+	return final, nil
 }
 
 // GetShare fetches one link on the mounted provider mount.
@@ -169,7 +184,10 @@ func (d *Driver) UpdateShare(ctx context.Context, req drive.ShareUpdateRequest) 
 // DeleteShare removes a link; the provider answers 204.
 func (d *Driver) DeleteShare(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
-	resp, err := d.cl.delete(ctx, d.linksPath("/"+url.PathEscape(id)), nil, nil)
+	if id == "" {
+		return drive.NewShareError(drive.ShareErrNotFound, "", "link id is required")
+	}
+	resp, err := d.cl.deleteOnce(ctx, d.linksPath("/"+url.PathEscape(id)), nil, nil)
 	if err != nil {
 		if resp != nil && resp.status() == httpStatusNotFound {
 			return drive.NewShareError(drive.ShareErrNotFound, "", "link not found")
@@ -191,8 +209,12 @@ func (d *Driver) ListShares(ctx context.Context, req drive.ShareListRequest) (dr
 		return drive.SharePage{}, shareErrorFromHTTP(err)
 	}
 	page := drive.SharePage{}
+	now := time.Now().UnixMilli()
 	for _, link := range enveloped.Links {
 		if link.ID == "" {
+			continue
+		}
+		if !req.IncludeExpired && link.ValidTo > 0 && link.ValidTo < now {
 			continue
 		}
 		page.Shares = append(page.Shares, shareFromLink(link))
@@ -323,6 +345,15 @@ func (d *Driver) OpenShare(ctx context.Context, link drive.ShareLink) (drive.Sha
 	if api.ID == "" {
 		return drive.ShareSession{}, drive.NewShareError(drive.ShareErrNotFound, "", "link not found")
 	}
+	if api.Path == "" {
+		return drive.ShareSession{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "link has no path")
+	}
+	if api.ValidTo > 0 && api.ValidTo < time.Now().UnixMilli() {
+		return drive.ShareSession{}, drive.NewShareError(drive.ShareErrExpired, "", "link has expired")
+	}
+	if api.HasPassword && strings.TrimSpace(link.Passcode) == "" {
+		return drive.ShareSession{}, drive.NewShareError(drive.ShareErrPasscodeRequired, "", "link requires a passcode")
+	}
 	data := shareSessionData{
 		LinkID:       api.ID,
 		Path:         api.Path,
@@ -357,12 +388,38 @@ func (d *Driver) ListShareEntries(ctx context.Context, session drive.ShareSessio
 	if cursor != "" {
 		return drive.ShareEntryPage{}, nil
 	}
-	root := data.Path
-	if dir.ID != "" && dir.ID != "/" {
-		root = dir.ID
+	if data.Path == "" {
+		return drive.ShareEntryPage{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "link has no path")
 	}
-	if !isWithin(root, data.Path) {
+	linkRoot, err := cleanMountPath(data.Path)
+	if err != nil {
+		return drive.ShareEntryPage{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "invalid link path")
+	}
+	root := linkRoot
+	switch strings.TrimSpace(dir.ID) {
+	case "", "0", "/":
+	default:
+		root, err = cleanMountPath(dir.ID)
+		if err != nil {
+			return drive.ShareEntryPage{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "invalid share directory")
+		}
+	}
+	if !isWithin(root, linkRoot) {
 		return drive.ShareEntryPage{}, drive.NewShareError(drive.ShareErrLinkInvalid, "", "directory escapes the link")
+	}
+	// A link can point at a single file. The provider has no anonymous
+	// listing for that case, so synthesize the one-entry root page instead of
+	// asking files/list for a child directory that does not exist.
+	if root == linkRoot && linkRoot != "/" {
+		info, err := d.infoOn(ctx, opTarget{mount: apiMount{ID: d.mountID}}, linkRoot)
+		if err != nil {
+			return drive.ShareEntryPage{}, shareErrorFromHTTP(err)
+		}
+		if !info.IsDir {
+			return drive.ShareEntryPage{
+				Entries: []drive.ShareEntry{{Entry: info, RootID: linkRoot}},
+			}, nil
+		}
 	}
 	entries, err := d.listDirOn(ctx, d.mountID, root, root)
 	if err != nil {
@@ -390,20 +447,31 @@ func (d *Driver) ShareDownloadTargets(ctx context.Context, req drive.ShareFetchR
 	if data.HasPassword && req.Session.Link.Passcode == "" {
 		return nil, drive.NewShareError(drive.ShareErrPasscodeRequired, "", "link requires a passcode")
 	}
+	linkRoot, err := cleanMountPath(data.Path)
+	if err != nil || data.Path == "" {
+		return nil, drive.NewShareError(drive.ShareErrLinkInvalid, "", "invalid link path")
+	}
 	targets := make([]drive.DownloadTarget, 0, len(req.Entries))
 	for _, entry := range req.Entries {
 		if entry.IsDir {
 			return nil, drive.NewShareError(drive.ShareErrUnsupported, "", "koofr share fetch supports files only (directories return a zip)")
 		}
-		query := url.Values{}
-		rel := entry.ID
-		if data.Path != "" && data.Path != "/" && isWithin(rel, data.Path) {
-			rel = strings.TrimPrefix(rel, strings.TrimSuffix(data.Path, "/"))
+		entryPath, err := cleanMountPath(entry.ID)
+		if err != nil {
+			return nil, drive.NewShareError(drive.ShareErrLinkInvalid, "", "invalid share entry")
+		}
+		if linkRoot != "/" && !isWithin(entryPath, linkRoot) {
+			return nil, drive.NewShareError(drive.ShareErrLinkInvalid, "", "entry escapes the link")
+		}
+		rel := entryPath
+		if linkRoot != "/" {
+			rel = strings.TrimPrefix(rel, linkRoot)
 		}
 		// rel is either provider-absolute (link rooted at the mount root) or
 		// already relative; normalize to a single leading slash so the
 		// anonymous URL never carries a "//" path segment.
 		rel = strings.TrimPrefix(rel, "/")
+		query := url.Values{}
 		query.Set("path", "/"+rel)
 		if req.Session.Link.Passcode != "" {
 			query.Set("password", req.Session.Link.Passcode)

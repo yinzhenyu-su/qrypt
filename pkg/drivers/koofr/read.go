@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -75,6 +76,12 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusPartialContent {
+		if cr := resp.Header.Get("Content-Range"); cr != "" && !contentRangeStartsAt(cr, offset) {
+			resp.Body.Close()
+			err := fmt.Errorf("koofr: read %q: unexpected Content-Range %q for offset %d: %w", entry.Name, cr, offset, drive.ErrInvalidInput)
+			d.setLastError(err)
+			return nil, err
+		}
 		// A misbehaving server can return more bytes than the request asked
 		// for; cap the stream at the requested size so nothing beyond it
 		// leaks to the caller.
@@ -91,6 +98,20 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		reader = io.LimitReader(reader, size)
 	}
 	return d.limitRead(ctx, &skipReadCloser{body: resp.Body, reader: reader, skip: offset}), nil
+}
+
+func contentRangeStartsAt(header string, offset int64) bool {
+	const prefix = "bytes "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(header, prefix)
+	dash := strings.IndexByte(rest, '-')
+	if dash <= 0 {
+		return false
+	}
+	start, err := strconv.ParseInt(rest[:dash], 10, 64)
+	return err == nil && start == offset
 }
 
 func (d *Driver) limitRead(_ context.Context, body io.ReadCloser) io.ReadCloser {

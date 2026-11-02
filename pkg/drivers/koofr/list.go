@@ -16,8 +16,7 @@ import (
 // cached online external mount.
 func (d *Driver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
 	if d.virtualRoot() {
-		trimmed := strings.TrimSpace(parentID)
-		if trimmed == "" || trimmed == "/" {
+		if parentID == "" || parentID == "/" {
 			entries, err := d.listDirOn(ctx, d.mountID, "/", "/")
 			if err != nil {
 				err = fmt.Errorf("koofr: list %q: %w", parentID, err)
@@ -67,7 +66,7 @@ func (d *Driver) listDirOn(ctx context.Context, mountID, path, idParent string) 
 		if item.Name == "" {
 			continue
 		}
-		key := lowerASCII(item.Name)
+		key := strings.ToLower(item.Name)
 		if seen[key] {
 			continue
 		}
@@ -105,28 +104,12 @@ func (d *Driver) lookupChildOn(ctx context.Context, t opTarget, name string) (dr
 	if err != nil {
 		return drive.Entry{}, false, err
 	}
-	lower := lowerASCII(name)
 	for _, entry := range entries {
-		if lowerASCII(entry.Name) == lower {
+		if strings.EqualFold(entry.Name, name) {
 			return entry, true, nil
 		}
 	}
 	return drive.Entry{}, false, nil
-}
-
-func lowerASCII(s string) string {
-	b := []byte(s)
-	changed := false
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + ('a' - 'A')
-			changed = true
-		}
-	}
-	if !changed {
-		return s
-	}
-	return string(b)
 }
 
 func baseName(p string) string {

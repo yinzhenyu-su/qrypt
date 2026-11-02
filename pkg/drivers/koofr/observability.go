@@ -45,7 +45,7 @@ func (d *Driver) DebugSnapshot(context.Context) (drive.DebugSnapshot, error) {
 		drive.DebugStatRootPath: d.rootPath,
 		"mount_id":              d.mountID,
 		"mount_name":            d.mountName,
-		"api_base_url":          d.cl.base,
+		"api_base_url":          sanitizeURL(d.cl.base),
 	}
 	if d.virtualRoot() {
 		stats["virtual_root"] = true

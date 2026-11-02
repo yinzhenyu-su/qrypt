@@ -63,7 +63,11 @@ func (r *apiResponse) error(prefix string) error {
 	base := drive.HTTPError(prefix, r.req, r.resp, redacted)
 	switch code {
 	case "FilesNotSynced":
-		return fmt.Errorf("%w: %v", errMountNotSynced, base)
+		err := fmt.Errorf("%w: %w", errMountNotSynced, base)
+		if env.RequestID != "" {
+			err = fmt.Errorf("%w (requestId %s)", err, env.RequestID)
+		}
+		return drive.NonRetryable(err)
 	case "InvalidPath":
 		return fmt.Errorf("%w: %v", drive.ErrInvalidInput, base)
 	case "AlreadyExists", "Conflict":
@@ -259,6 +263,13 @@ func (c *client) post(ctx context.Context, path string, query url.Values, payloa
 	return c.send(ctx, http.MethodPost, path, query, payload, out, true)
 }
 
+// postOnce is post without automatic retries. It backs non-idempotent creates
+// such as link creation: a 5xx after the provider already created the object
+// would otherwise duplicate it on retry.
+func (c *client) postOnce(ctx context.Context, path string, query url.Values, payload, out any) (*apiResponse, error) {
+	return c.send(ctx, http.MethodPost, path, query, payload, out, false)
+}
+
 func (c *client) put(ctx context.Context, path string, query url.Values, payload, out any) (*apiResponse, error) {
 	return c.send(ctx, http.MethodPut, path, query, payload, out, true)
 }
@@ -275,6 +286,13 @@ func (c *client) delete(ctx context.Context, path string, query url.Values, out 
 	return c.send(ctx, http.MethodDelete, path, query, nil, out, true)
 }
 
+// deleteOnce is delete without automatic retries. Conditional removes carry
+// guards (size/mtime/hash); retrying after the server applied the first
+// attempt turns success into a 404/conflict.
+func (c *client) deleteOnce(ctx context.Context, path string, query url.Values, out any) (*apiResponse, error) {
+	return c.send(ctx, http.MethodDelete, path, query, nil, out, false)
+}
+
 func (c *client) record(ctx context.Context, method, rawURL string, status int, duration time.Duration, err error) {
 	if c.metrics == nil {
 		return
@@ -288,12 +306,18 @@ func (c *client) record(ctx context.Context, method, rawURL string, status int, 
 		SensitiveMasked: true,
 	}
 	if err != nil {
-		event.Error = err.Error()
+		event.Error = drive.Snippet([]byte(err.Error()))
 	}
 	c.metrics.Record(ctx, event)
 }
 
 func sanitizeURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		u.User = nil
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+	}
 	if i := strings.IndexByte(raw, '?'); i >= 0 {
 		raw = raw[:i]
 	}

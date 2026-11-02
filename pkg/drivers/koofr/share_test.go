@@ -227,8 +227,18 @@ func TestUpdateShareDownloadableAndPasscode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateShare download: %v", err)
 	}
-	if updated.ExpiresAt.IsZero() && updated.LinkID == "" {
-		t.Fatalf("updated = %+v", updated)
+	if updated.LinkID != share.LinkID {
+		t.Fatalf("updated link id = %q, want %q", updated.LinkID, share.LinkID)
+	}
+	session, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: share.LinkID, Passcode: "n3wpas"})
+	if err != nil {
+		t.Fatalf("OpenShare: %v", err)
+	}
+	if _, err := d.ShareDownloadTargets(context.Background(), drive.ShareFetchRequest{
+		Session: session,
+		Entries: []drive.ShareEntry{{Entry: entry}},
+	}); !drive.IsShareErrorCode(err, drive.ShareErrUnsupported) {
+		t.Fatalf("ShareDownloadTargets after Download=false error = %v, want unsupported", err)
 	}
 }
 
@@ -436,7 +446,7 @@ func TestOpenShareAndListEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenShare: %v", err)
 	}
-	page, err := d.ListShareEntries(context.Background(), session, drive.SharePath{}, "")
+	page, err := d.ListShareEntries(context.Background(), session, drive.SharePath{ID: "0"}, "")
 	if err != nil {
 		t.Fatalf("ListShareEntries: %v", err)
 	}
@@ -613,12 +623,252 @@ func TestShareSaveNotImplemented(t *testing.T) {
 	}
 }
 
-func TestStandaloneMtimeUnsupported(t *testing.T) {
+func TestResumableUploadUnsupported(t *testing.T) {
 	f := newFakeProvider(t)
 	d := f.newDriver(t, Options{})
-	// The provider only accepts mtime at upload/copy time; there is no
-	// set-mtime operation to (not) call, but the driver must not pretend.
+	// Koofr uploads in one request; the driver must not advertise a
+	// resumable-upload capability it cannot implement.
 	if drive.HasCapability(d, drive.CapabilityResumableUploader) {
 		t.Fatalf("koofr must not declare resumable_uploader")
+	}
+}
+
+func TestDeleteShareEmptyIDRejected(t *testing.T) {
+	f := newFakeProvider(t)
+	d := f.newDriver(t, Options{})
+	if err := d.DeleteShare(context.Background(), ""); !drive.IsShareErrorCode(err, drive.ShareErrNotFound) {
+		t.Fatalf("DeleteShare empty id error = %v, want not found", err)
+	}
+	if got := f.requestsMatching(http.MethodDelete, "links"); got != 0 {
+		t.Fatalf("delete requests = %d, want 0", got)
+	}
+}
+
+func TestListSharesFiltersExpired(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/listed.bin")
+	d := f.newDriver(t, Options{})
+	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{entry}})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	f.mu.Lock()
+	f.links[share.LinkID].ValidTo = time.Now().Add(-time.Hour).UnixMilli()
+	f.mu.Unlock()
+
+	page, err := d.ListShares(context.Background(), drive.ShareListRequest{})
+	if err != nil {
+		t.Fatalf("ListShares: %v", err)
+	}
+	if len(page.Shares) != 0 {
+		t.Fatalf("ListShares returned expired link: %+v", page.Shares)
+	}
+	page, err = d.ListShares(context.Background(), drive.ShareListRequest{IncludeExpired: true})
+	if err != nil {
+		t.Fatalf("ListShares include expired: %v", err)
+	}
+	if len(page.Shares) != 1 || page.Shares[0].LinkID != share.LinkID {
+		t.Fatalf("ListShares include expired = %+v", page.Shares)
+	}
+}
+
+func TestListShareEntriesFileLink(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/one.bin")
+	d := f.newDriver(t, Options{})
+	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{entry}})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	session, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: share.LinkID, URL: share.URL})
+	if err != nil {
+		t.Fatalf("OpenShare: %v", err)
+	}
+	page, err := d.ListShareEntries(context.Background(), session, drive.SharePath{ID: "0"}, "")
+	if err != nil {
+		t.Fatalf("ListShareEntries: %v", err)
+	}
+	if len(page.Entries) != 1 || page.Entries[0].ID != "/one.bin" {
+		t.Fatalf("file link page = %+v", page.Entries)
+	}
+	targets, err := d.ShareDownloadTargets(context.Background(), drive.ShareFetchRequest{
+		Session: session,
+		Entries: page.Entries,
+	})
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("ShareDownloadTargets = %+v, %v", targets, err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, targets[0].URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range targets[0].Headers {
+		req.Header.Set(name, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("anonymous fetch: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "shared bytes" {
+		t.Fatalf("anonymous fetch = %d %q", resp.StatusCode, body)
+	}
+}
+
+func TestShareDownloadTargetsRejectsOutsideEntry(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/bundle/a.bin", []byte("a"), 1)
+	f.putFile("/other/b.bin", []byte("b"), 1)
+	d := f.newDriver(t, Options{})
+	entries, _ := d.List(context.Background(), "/")
+	var bundle drive.Entry
+	for _, entry := range entries {
+		if entry.Name == "bundle" {
+			bundle = entry
+		}
+	}
+	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{bundle}})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	session, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: share.LinkID, URL: share.URL})
+	if err != nil {
+		t.Fatalf("OpenShare: %v", err)
+	}
+	for _, id := range []string{"/other/b.bin", "/bundle/../other/b.bin"} {
+		_, err := d.ShareDownloadTargets(context.Background(), drive.ShareFetchRequest{
+			Session: session,
+			Entries: []drive.ShareEntry{{Entry: drive.Entry{ID: id, Name: "b.bin"}}},
+		})
+		if !drive.IsShareErrorCode(err, drive.ShareErrLinkInvalid) {
+			t.Fatalf("ShareDownloadTargets(%q) error = %v, want link invalid", id, err)
+		}
+	}
+}
+
+func TestCreateShareCleansUpOnValidityFailure(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/cleanup.bin")
+	f.faultStatus("PUT", "validity", 3, http.StatusInternalServerError, `{"error":{"code":"Other","message":"boom"}}`)
+	d := f.newDriver(t, Options{})
+	_, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
+		Entries: []drive.Entry{entry},
+		Expiry:  drive.ShareExpiryDay,
+	})
+	if err == nil {
+		t.Fatal("CreateShare error = nil, want failure")
+	}
+	f.mu.Lock()
+	remaining := len(f.links)
+	f.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("CreateShare left %d orphan link(s)", remaining)
+	}
+}
+
+func TestCreateShareRejectsUnsupportedOptions(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/unsupported.bin")
+	d := f.newDriver(t, Options{})
+	yes := true
+	cases := []drive.ShareCreateRequest{
+		{Entries: []drive.Entry{entry}, Title: "title"},
+		{Entries: []drive.Entry{entry}, VisitLimit: 1},
+		{Entries: []drive.Entry{entry}, Public: &yes},
+		{Entries: []drive.Entry{entry}, Edit: &yes},
+		{Entries: []drive.Entry{entry}, Expiry: 2 * time.Hour},
+	}
+	for _, req := range cases {
+		if _, err := d.CreateShare(context.Background(), req); !drive.IsShareErrorCode(err, drive.ShareErrUnsupported) {
+			t.Fatalf("CreateShare(%+v) error = %v, want unsupported", req, err)
+		}
+	}
+	if got := f.requestsMatching(http.MethodPost, "/links"); got != 0 {
+		t.Fatalf("link create requests = %d, want 0", got)
+	}
+}
+
+func TestOpenSharePasscodeAndExpiry(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/protected.bin")
+	d := f.newDriver(t, Options{})
+	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
+		Entries:  []drive.Entry{entry},
+		Passcode: "l1nkp3",
+	})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	if _, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: share.LinkID}); !drive.IsShareErrorCode(err, drive.ShareErrPasscodeRequired) {
+		t.Fatalf("OpenShare without passcode error = %v, want passcode required", err)
+	}
+	f.mu.Lock()
+	f.links[share.LinkID].ValidTo = time.Now().Add(-time.Hour).UnixMilli()
+	f.mu.Unlock()
+	if _, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: share.LinkID, Passcode: "l1nkp3"}); !drive.IsShareErrorCode(err, drive.ShareErrExpired) {
+		t.Fatalf("OpenShare expired error = %v, want expired", err)
+	}
+}
+
+func TestListShareEntriesRejectsDotDotDir(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/bundle/a.bin", []byte("a"), 1)
+	d := f.newDriver(t, Options{})
+	entries, _ := d.List(context.Background(), "/")
+	var bundle drive.Entry
+	for _, entry := range entries {
+		if entry.Name == "bundle" {
+			bundle = entry
+		}
+	}
+	share, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{bundle}})
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	session, err := d.OpenShare(context.Background(), drive.ShareLink{LinkID: share.LinkID, URL: share.URL})
+	if err != nil {
+		t.Fatalf("OpenShare: %v", err)
+	}
+	before := f.requestsMatching(http.MethodGet, "files/list")
+	_, err = d.ListShareEntries(context.Background(), session, drive.SharePath{ID: "/bundle/../secret"}, "")
+	if !drive.IsShareErrorCode(err, drive.ShareErrLinkInvalid) {
+		t.Fatalf("ListShareEntries escape error = %v, want link invalid", err)
+	}
+	if got := f.requestsMatching(http.MethodGet, "files/list"); got != before {
+		t.Fatalf("list requests = %d, want %d", got, before)
+	}
+}
+
+func TestCreateShareCleansUpOnPasswordFailure(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/password-cleanup.bin")
+	f.faultStatus("PUT", "password/set", 3, http.StatusInternalServerError, `{"error":{"code":"Other","message":"boom"}}`)
+	d := f.newDriver(t, Options{})
+	_, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{
+		Entries:  []drive.Entry{entry},
+		Passcode: "l1nkp3",
+	})
+	if err == nil {
+		t.Fatal("CreateShare error = nil, want failure")
+	}
+	f.mu.Lock()
+	remaining := len(f.links)
+	f.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("CreateShare left %d orphan link(s)", remaining)
+	}
+}
+
+func TestCreateShareDoesNotRetryLinkCreate(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := shareTarget(t, f, "/retry.bin")
+	f.faultStatus("POST", "/links", 1, http.StatusInternalServerError, `{"error":{"code":"Other","message":"boom"}}`)
+	d := f.newDriver(t, Options{})
+	if _, err := d.CreateShare(context.Background(), drive.ShareCreateRequest{Entries: []drive.Entry{entry}}); err == nil {
+		t.Fatal("CreateShare error = nil, want failure")
+	}
+	if got := f.requestsMatching(http.MethodPost, "/links"); got != 1 {
+		t.Fatalf("link create requests = %d, want 1", got)
 	}
 }

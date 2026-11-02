@@ -595,15 +595,41 @@ func TestVirtualRootExtIDDotDotRejectedLocally(t *testing.T) {
 	}
 }
 
-// The virtual-root fast path accepts whitespace-only root ids like the rest
-// of the id space.
-func TestVirtualRootListTrimsRootParentID(t *testing.T) {
-	_, d := virtualFixture(t)
-	entries, err := d.List(context.Background(), "   ")
-	if err != nil {
-		t.Fatalf("List padded root: %v", err)
+// Only the empty id and "/" name the root. A whitespace-only string is a
+// relative id, not a padded root, and must be rejected before any request.
+func TestVirtualRootListRejectsWhitespaceOnlyParentID(t *testing.T) {
+	f, d := virtualFixture(t)
+	before := f.requestsMatching(http.MethodGet, "files/list")
+	_, err := d.List(context.Background(), "   ")
+	if err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("List whitespace-only id error = %v, want invalid input", err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("entries = %+v, want 3", entries)
+	if got := f.requestsMatching(http.MethodGet, "files/list"); got != before {
+		t.Fatalf("%d new list requests reached the provider, want 0", got-before)
+	}
+}
+
+func TestVirtualRootMoveRejectsMountNameHijack(t *testing.T) {
+	f, d := virtualFixture(t)
+	f.mkdirAll("/staging")
+	f.putFile("/staging/wgdrive", []byte("payload"), 1)
+	entries, err := d.List(context.Background(), "/staging")
+	if err != nil {
+		t.Fatalf("List staging: %v", err)
+	}
+	var entry drive.Entry
+	for _, candidate := range entries {
+		if candidate.Name == "wgdrive" {
+			entry = candidate
+		}
+	}
+	if entry.ID == "" {
+		t.Fatal("staging/wgdrive not listed")
+	}
+	if _, err := d.Move(context.Background(), entry, "/"); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("Move to virtual root error = %v, want conflict", err)
+	}
+	if got := f.requestsMatching(http.MethodPut, "files/move"); got != 0 {
+		t.Fatalf("move requests = %d, want 0", got)
 	}
 }

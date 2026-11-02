@@ -28,8 +28,8 @@ import (
 //	KOOFR_LIVE_MOUNT_ID=... KOOFR_LIVE_BASE_URL=... \
 //	go test ./pkg/drivers/koofr -run TestLiveKoofr -v -count=1
 //
-// The test only touches a qrypt-live-<unix> temporary directory, removes it
-// at the end, and empties the account trash afterwards.
+// The test only touches a qrypt-live-<unix> temporary directory and removes it
+// at the end. It deliberately leaves the account trash untouched.
 func TestLiveKoofr(t *testing.T) {
 	email := os.Getenv("KOOFR_LIVE_EMAIL")
 	password := os.Getenv("KOOFR_LIVE_PASSWORD")
@@ -60,11 +60,6 @@ func TestLiveKoofr(t *testing.T) {
 			externalMount = !m.IsPrimary
 		}
 	}
-	emptyTrash := func() {
-		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
-			t.Logf("empty trash: %v", err)
-		}
-	}
 
 	run := strconv.FormatInt(time.Now().Unix(), 10)
 	rootName := "qrypt-live-" + run
@@ -76,7 +71,6 @@ func TestLiveKoofr(t *testing.T) {
 		if err := d.Remove(ctx, root); err != nil {
 			t.Logf("cleanup root: %v", err)
 		}
-		emptyTrash()
 	}()
 
 	listed, err := d.List(ctx, "")
@@ -108,17 +102,17 @@ func TestLiveKoofr(t *testing.T) {
 
 	// Upload pins mtime and overwrite semantics; verify both round-trip.
 	mod := time.UnixMilli(1700000000123).UTC()
-	data := bytes.Repeat([]byte("koofr-live-"), 100)
+	data := bytes.Repeat([]byte("qrypt koofr live test\n"), 100)
 	file, err := d.PutSource(ctx, drive.UploadRequest{
 		ParentID: root.ID,
-		Name:     "data.bin",
+		Name:     "data.txt",
 		Source:   drive.NewBytesReadOnlyFileSource(data),
 		ModTime:  mod,
 	})
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
-	if file.Size != int64(len(data)) || file.Name != "data.bin" {
+	if file.Size != int64(len(data)) || file.Name != "data.txt" {
 		t.Fatalf("upload entry = %+v", file)
 	}
 	if file.ModTime.UnixMilli() != mod.UnixMilli() {
@@ -148,7 +142,7 @@ func TestLiveKoofr(t *testing.T) {
 		t.Fatalf("range read mismatch: %d bytes", len(got))
 	}
 
-	renamed, err := d.Rename(ctx, file, "data-renamed.bin")
+	renamed, err := d.Rename(ctx, file, "data-renamed.txt")
 	if err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
@@ -160,10 +154,10 @@ func TestLiveKoofr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	if moved.ID != joinPath(sub.ID, "data-renamed.bin") {
+	if moved.ID != joinPath(sub.ID, "data-renamed.txt") {
 		t.Fatalf("move id = %q", moved.ID)
 	}
-	copied, err := d.Copy(ctx, moved, root.ID, "copy.bin")
+	copied, err := d.Copy(ctx, moved, root.ID, "copy.txt")
 	if err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
@@ -186,25 +180,36 @@ func TestLiveKoofr(t *testing.T) {
 		t.Fatalf("List after remove: %v", err)
 	}
 	for _, entry := range entries {
-		if entry.Name == "copy.bin" {
+		if entry.Name == "copy.txt" {
 			t.Fatal("removed copy still listed")
 		}
 	}
 
-	// Share create/list/delete against the real account.
+	// Share create/list/delete against the real account. Some accounts do not
+	// allow editing link passwords; fall back to a public link so the rest of
+	// the receive/fetch path is still exercised.
+	passcode := "l1v3p1"
 	share, err := d.CreateShare(ctx, drive.ShareCreateRequest{
 		Entries:  []drive.Entry{moved},
-		Passcode: "l1v3p1",
+		Passcode: passcode,
 	})
 	if err != nil {
-		t.Fatalf("CreateShare: %v", err)
+		if strings.Contains(err.Error(), "LinksPasswordEditNotAllowed") {
+			t.Logf("account does not allow link password editing; creating a public link instead")
+			passcode = ""
+			share, err = d.CreateShare(ctx, drive.ShareCreateRequest{Entries: []drive.Entry{moved}})
+		}
+		if err != nil {
+			t.Fatalf("CreateShare: %v", err)
+		}
 	}
+	passcodeEnabled := passcode != ""
 	defer func() {
 		if err := d.DeleteShare(ctx, share.LinkID); err != nil {
 			t.Logf("cleanup share: %v", err)
 		}
 	}()
-	if share.Passcode != "l1v3p1" || share.URL == "" {
+	if share.URL == "" || (passcodeEnabled && share.Passcode != passcode) {
 		t.Fatalf("share = %+v", share)
 	}
 	page, err := d.ListShares(ctx, drive.ShareListRequest{})
@@ -223,7 +228,7 @@ func TestLiveKoofr(t *testing.T) {
 
 	// M2 open question 1: anonymous content-link fetch with the passcode as a
 	// `password` query parameter (no authentication) must return the raw bytes.
-	session, err := d.OpenShare(ctx, drive.ShareLink{LinkID: share.LinkID, Passcode: "l1v3p1"})
+	session, err := d.OpenShare(ctx, drive.ShareLink{LinkID: share.LinkID, Passcode: passcode})
 	if err != nil {
 		t.Fatalf("OpenShare: %v", err)
 	}
@@ -254,32 +259,36 @@ func TestLiveKoofr(t *testing.T) {
 	if !bytes.Equal(body, data) {
 		t.Fatalf("anonymous fetch mismatch: %d/%d bytes", len(body), len(data))
 	}
-	t.Logf("anonymous fetch with password query param: %d bytes, status %d", len(body), resp.StatusCode)
-	// Without the passcode the same anonymous fetch must be refused.
-	bare, err := url.Parse(targets[0].URL)
-	if err != nil {
-		t.Fatalf("parse target: %v", err)
+	if passcodeEnabled {
+		t.Logf("anonymous fetch with password query param: %d bytes, status %d", len(body), resp.StatusCode)
+		// Without the passcode the same anonymous fetch must be refused.
+		bare, err := url.Parse(targets[0].URL)
+		if err != nil {
+			t.Fatalf("parse target: %v", err)
+		}
+		q := bare.Query()
+		q.Del("password")
+		bare.RawQuery = q.Encode()
+		bareReq, err := http.NewRequestWithContext(ctx, http.MethodGet, bare.String(), nil)
+		if err != nil {
+			t.Fatalf("build bare request: %v", err)
+		}
+		for name, value := range targets[0].Headers {
+			bareReq.Header.Set(name, value)
+		}
+		resp, err = anon.Do(bareReq)
+		if err != nil {
+			t.Fatalf("anonymous fetch without password: %v", err)
+		}
+		noPass, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && len(noPass) == len(data) {
+			t.Fatal("anonymous fetch succeeded without the passcode")
+		}
+		t.Logf("anonymous fetch without password: status %d", resp.StatusCode)
+	} else {
+		t.Logf("anonymous fetch for public link: %d bytes, status %d", len(body), resp.StatusCode)
 	}
-	q := bare.Query()
-	q.Del("password")
-	bare.RawQuery = q.Encode()
-	bareReq, err := http.NewRequestWithContext(ctx, http.MethodGet, bare.String(), nil)
-	if err != nil {
-		t.Fatalf("build bare request: %v", err)
-	}
-	for name, value := range targets[0].Headers {
-		bareReq.Header.Set(name, value)
-	}
-	resp, err = anon.Do(bareReq)
-	if err != nil {
-		t.Fatalf("anonymous fetch without password: %v", err)
-	}
-	noPass, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusOK && len(noPass) == len(data) {
-		t.Fatal("anonymous fetch succeeded without the passcode")
-	}
-	t.Logf("anonymous fetch without password: status %d", resp.StatusCode)
 
 	// M2 open question 2: the shape of the account-level GET /api/v2.1/links.
 	raw, err := d.cl.get(ctx, "/links", nil, nil)
@@ -310,7 +319,7 @@ func TestLiveKoofr(t *testing.T) {
 // alongside the primary storage, writes inside an external mount route by
 // "ext:" id, and copy works across mounts. Only a qrypt-vroot-<unix>
 // temporary directory (primary + external side) is touched; both sides are
-// removed and the trash emptied at the end.
+// removed at the end, and the account trash is left untouched.
 func TestLiveKoofrVirtualRoot(t *testing.T) {
 	email := os.Getenv("KOOFR_LIVE_EMAIL")
 	password := os.Getenv("KOOFR_LIVE_PASSWORD")
@@ -327,11 +336,6 @@ func TestLiveKoofrVirtualRoot(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	defer func() { _ = d.Drop(ctx) }()
-	emptyTrash := func() {
-		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
-			t.Logf("empty trash: %v", err)
-		}
-	}
 
 	// The virtual root must list every online external mount.
 	root, err := d.List(ctx, "")
@@ -346,7 +350,7 @@ func TestLiveKoofrVirtualRoot(t *testing.T) {
 		}
 	}
 	if extEntry.ID == "" {
-		t.Fatal("virtual root lists no external mount directory")
+		t.Skip("account has no online external mount; skipping virtual-root integration test")
 	}
 	t.Logf("virtual root lists external mount %q (id %s) among %d entries", extEntry.Name, extEntry.ID, len(root))
 
@@ -360,7 +364,6 @@ func TestLiveKoofrVirtualRoot(t *testing.T) {
 		if err := d.Remove(ctx, staging); err != nil {
 			t.Logf("cleanup primary staging: %v", err)
 		}
-		emptyTrash()
 	}
 	defer cleanup()
 
@@ -456,11 +459,6 @@ func TestLiveKoofrReviewChecks(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	defer func() { _ = d.Drop(ctx) }()
-	emptyTrash := func() {
-		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
-			t.Logf("empty trash: %v", err)
-		}
-	}
 	run := strconv.FormatInt(time.Now().UnixNano(), 10)
 	fixName := "qrypt-fix-" + run
 	fixDir, err := d.Mkdir(ctx, "", fixName)
@@ -471,7 +469,6 @@ func TestLiveKoofrReviewChecks(t *testing.T) {
 		if err := d.Remove(ctx, fixDir); err != nil {
 			t.Logf("cleanup fix root: %v", err)
 		}
-		emptyTrash()
 	}()
 
 	// 1. root_path isolation: a second driver rooted at the temp directory
@@ -642,7 +639,7 @@ func TestLiveKoofrReviewChecks(t *testing.T) {
 // real account: runtime mount-name hijack rejection under the virtual root,
 // upload and overwrite regression inside an external mount, and cross-mount
 // copy and move. Only qrypt-fix3-* temporary objects are created; both
-// sides are removed and the trash emptied at the end.
+// sides are removed at the end, and the account trash is left untouched.
 func TestLiveKoofrVirtualRootFix3(t *testing.T) {
 	email := os.Getenv("KOOFR_LIVE_EMAIL")
 	password := os.Getenv("KOOFR_LIVE_PASSWORD")
@@ -659,11 +656,6 @@ func TestLiveKoofrVirtualRootFix3(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	defer func() { _ = d.Drop(ctx) }()
-	emptyTrash := func() {
-		if _, err := d.cl.delete(ctx, "/trash", nil, nil); err != nil {
-			t.Logf("empty trash: %v", err)
-		}
-	}
 
 	root, err := d.List(ctx, "")
 	if err != nil {
@@ -677,7 +669,7 @@ func TestLiveKoofrVirtualRootFix3(t *testing.T) {
 		}
 	}
 	if extEntry.ID == "" {
-		t.Fatal("virtual root lists no external mount directory")
+		t.Skip("account has no online external mount; skipping virtual-root integration test")
 	}
 
 	// 1. Creating a root-level entry under the external mount's name must
@@ -704,7 +696,6 @@ func TestLiveKoofrVirtualRootFix3(t *testing.T) {
 		if err := d.Remove(ctx, extDir); err != nil {
 			t.Logf("cleanup ext dir: %v", err)
 		}
-		emptyTrash()
 	}()
 	mod := time.UnixMilli(1700000000123).UTC()
 	upload := func(name string, payload []byte, mtime time.Time) drive.Entry {

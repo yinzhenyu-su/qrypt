@@ -204,10 +204,10 @@ func (d *Driver) initVirtualRoot(ctx context.Context, mounts []apiMount, rootPat
 	}
 	taken := map[string]string{}
 	for _, entry := range rootEntries {
-		taken[lowerASCII(entry.Name)] = "primary storage entry " + entry.Name
+		taken[strings.ToLower(entry.Name)] = "primary storage entry " + entry.Name
 	}
 	for _, ext := range externals {
-		key := lowerASCII(ext.Name)
+		key := strings.ToLower(ext.Name)
 		if holder, ok := taken[key]; ok {
 			err := fmt.Errorf("koofr: external mount %q (id %s) conflicts with a %s in the virtual root; rename one of them or configure mount_id explicitly: %w", ext.Name, ext.ID, holder, drive.ErrInvalidInput)
 			d.setLastError(err)
@@ -325,24 +325,23 @@ func (d *Driver) ResolvePath(ctx context.Context, p string) (string, error) {
 	return full, nil
 }
 
-// resolveID maps a caller-facing id to the absolute provider path. The empty
-// id and "/" are the mount root.
-func (d *Driver) resolveID(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" || id == "/" {
-		return d.rootPath
-	}
-	return id
-}
-
 // resolveWithin maps a caller-facing id to the absolute provider path and
 // refuses ids that fall outside root_path. Entry ids normally come from
 // listings and are in-bounds by construction; the guard exists so a caller
 // passing a raw provider path (or a stale id from another root) cannot aim
 // an operation outside the mounted subtree.
 func (d *Driver) resolveWithin(id, op string) (string, error) {
-	path := d.resolveID(id)
-	if len(path) == 0 || path[0] != '/' || !isWithin(path, d.rootPath) {
+	if id == "" || id == "/" {
+		return d.rootPath, nil
+	}
+	if id[0] != '/' {
+		return "", fmt.Errorf("koofr: %s: id %q is not an absolute path: %w", op, id, drive.ErrInvalidInput)
+	}
+	path, err := cleanMountPath(id)
+	if err != nil {
+		return "", fmt.Errorf("koofr: %s: id %q: %w", op, id, err)
+	}
+	if !isWithin(path, d.rootPath) {
 		return "", fmt.Errorf("koofr: %s: id %q escapes root_path %q: %w", op, id, d.rootPath, drive.ErrInvalidInput)
 	}
 	return path, nil
@@ -394,8 +393,7 @@ func (d *Driver) resolveTarget(id, op string) (opTarget, error) {
 		}
 		return opTarget{mount: apiMount{ID: d.mountID}, path: path}, nil
 	}
-	trimmed := strings.TrimSpace(id)
-	if mountID, path, ok := splitExtID(trimmed); ok {
+	if mountID, path, ok := splitExtID(id); ok {
 		mount, known := d.extMountByID(mountID)
 		if !known {
 			return opTarget{}, fmt.Errorf("koofr: %s: id %q names an external mount that is unknown or offline on this mount: %w", op, id, drive.ErrInvalidInput)
@@ -409,13 +407,20 @@ func (d *Driver) resolveTarget(id, op string) (opTarget, error) {
 		}
 		return opTarget{mount: mount, path: clean, external: true}, nil
 	}
-	if trimmed == "" || trimmed == "/" {
+	if id == "" || id == "/" {
 		return opTarget{mount: apiMount{ID: d.mountID}, path: d.rootPath}, nil
 	}
-	if trimmed[0] != '/' {
+	if id[0] != '/' {
 		return opTarget{}, fmt.Errorf("koofr: %s: id %q is not an absolute path: %w", op, id, drive.ErrInvalidInput)
 	}
-	return opTarget{mount: apiMount{ID: d.mountID}, path: trimmed}, nil
+	clean, err := cleanMountPath(id)
+	if err != nil {
+		return opTarget{}, fmt.Errorf("koofr: %s: id %q: %w", op, id, err)
+	}
+	if d.locked && !isWithin(clean, d.rootPath) {
+		return opTarget{}, fmt.Errorf("koofr: %s: id %q escapes root_path %q: %w", op, id, d.rootPath, drive.ErrInvalidInput)
+	}
+	return opTarget{mount: apiMount{ID: d.mountID}, path: clean}, nil
 }
 
 // extMountByID looks a cached external mount up by provider id.
@@ -447,9 +452,8 @@ func (d *Driver) checkExtMountNameCollision(parent opTarget, op, name string) er
 // extMountByName fold-matches a root-level directory name against the cached
 // external mounts (provider names are case-insensitive).
 func (d *Driver) extMountByName(name string) (apiMount, bool) {
-	lower := lowerASCII(name)
 	for _, mount := range d.extMounts {
-		if lowerASCII(mount.Name) == lower {
+		if strings.EqualFold(mount.Name, name) {
 			return mount, true
 		}
 	}
@@ -484,7 +488,6 @@ func (t opTarget) checkWritable(op string, upload bool) error {
 // cleanMountPath normalizes a mount-relative path. It rejects ".." escapes
 // and returns "/" for the root.
 func cleanMountPath(p string) (string, error) {
-	p = strings.TrimSpace(p)
 	if p == "" || p == "/" || p == "." {
 		return "/", nil
 	}

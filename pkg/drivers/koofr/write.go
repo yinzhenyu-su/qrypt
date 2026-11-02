@@ -83,8 +83,8 @@ func (d *Driver) Rename(ctx context.Context, entry drive.Entry, newName string) 
 	if err := t.checkWritable("rename", false); err != nil {
 		return drive.Entry{}, err
 	}
-	if t.external && t.path == "/" {
-		err := fmt.Errorf("koofr: rename %q: refusing to rename the external mount root: %w", entry.ID, drive.ErrInvalidInput)
+	if t.path == d.rootPath || (t.external && t.path == "/") {
+		err := fmt.Errorf("koofr: rename %q: refusing to rename the mount root: %w", entry.ID, drive.ErrInvalidInput)
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
@@ -126,15 +126,23 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 	if err := src.checkWritable("move", false); err != nil {
 		return drive.Entry{}, err
 	}
-	if src.external && src.path == "/" {
-		err := fmt.Errorf("koofr: move %q: refusing to move the external mount root: %w", entry.ID, drive.ErrInvalidInput)
+	if src.path == d.rootPath || (src.external && src.path == "/") {
+		err := fmt.Errorf("koofr: move %q: refusing to move the mount root: %w", entry.ID, drive.ErrInvalidInput)
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
-	target := joinPath(dst.path, entry.Name)
+	name := baseName(src.path)
+	if err := validateName(name); err != nil {
+		return drive.Entry{}, err
+	}
+	target := joinPath(dst.path, name)
+	if err := d.checkExtMountNameCollision(dst, "move", name); err != nil {
+		d.setLastError(err)
+		return drive.Entry{}, err
+	}
 	if src.mount.ID == dst.mount.ID {
 		if isWithin(dst.path, src.path) {
-			return drive.Entry{}, fmt.Errorf("koofr: move %q into itself: %w", entry.Name, drive.ErrInvalidInput)
+			return drive.Entry{}, fmt.Errorf("koofr: move %q into itself: %w", name, drive.ErrInvalidInput)
 		}
 		if target == src.path {
 			// Moving onto the current location is a no-op; sending it would
@@ -147,13 +155,13 @@ func (d *Driver) Move(ctx context.Context, entry drive.Entry, dstParentID string
 		"toPath":    target,
 	}, nil)
 	if moveErr != nil {
-		err := fmt.Errorf("koofr: move %q: %w", entry.Name, moveErr)
+		err := fmt.Errorf("koofr: move %q: %w", name, moveErr)
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
 	updated, err := d.infoOn(ctx, dst, target)
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("koofr: move %q: %w", entry.Name, err)
+		return drive.Entry{}, fmt.Errorf("koofr: move %q: %w", name, err)
 	}
 	return updated, nil
 }
@@ -234,7 +242,7 @@ func (d *Driver) Remove(ctx context.Context, entry drive.Entry) error {
 	if hash := entryFileHash(entry); hash != "" {
 		query.Set("removeIfHash", hash)
 	}
-	_, rmErr := d.cl.delete(ctx, "/mounts/"+url.PathEscape(t.mount.ID)+"/files/remove", query, nil)
+	_, rmErr := d.cl.deleteOnce(ctx, "/mounts/"+url.PathEscape(t.mount.ID)+"/files/remove", query, nil)
 	if rmErr != nil {
 		err := fmt.Errorf("koofr: remove %q: %w", entry.Name, rmErr)
 		d.setLastError(err)

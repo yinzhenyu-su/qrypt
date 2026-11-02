@@ -55,7 +55,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		return drive.Entry{}, err
 	}
 	if found && sibling.Name != req.Name {
-		err := fmt.Errorf("koofr: upload %q: remote directory holds %q, a sibling differing only by case; refusing to overwrite it: %w", req.Name, sibling.Name, drive.ErrConflict)
+		err := drive.NonRetryable(fmt.Errorf("koofr: upload %q: remote directory holds %q, a sibling differing only by case; refusing to overwrite it: %w", req.Name, sibling.Name, drive.ErrConflict))
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}
@@ -65,42 +65,47 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	}
 	defer file.Close()
 
-	modTime := req.ModTime
-	if modTime.IsZero() {
-		modTime = time.Now()
-	}
 	query := url.Values{}
 	query.Set("path", parent.path)
 	query.Set("filename", req.Name)
 	query.Set("info", "true")
 	query.Set("overwrite", "true")
 	query.Set("autorename", "false")
-	query.Set("modified", strconv.FormatInt(modTime.UnixMilli(), 10))
+	if !req.ModTime.IsZero() {
+		query.Set("modified", strconv.FormatInt(req.ModTime.UnixMilli(), 10))
+	}
 	target := d.cl.content("/mounts/" + url.PathEscape(parent.mount.ID) + "/files/put?" + query.Encode())
 
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", req.Name)
-	if err != nil {
+	// Build the multipart preamble once, then stream the source between the
+	// preamble and the closing boundary. Buffering the whole source would
+	// turn every upload into a heap-sized copy and report progress before a
+	// single byte reaches the network.
+	boundary := multipart.NewWriter(io.Discard).Boundary()
+	var head bytes.Buffer
+	writer := multipart.NewWriter(&head)
+	if err := writer.SetBoundary(boundary); err != nil {
 		return drive.Entry{}, err
 	}
-	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
-	reader := io.Reader(file)
-	progressReader := drive.NewUploadProgressReader(req.Progress, reader)
-	if _, err := io.Copy(part, progressReader); err != nil {
-		return drive.Entry{}, fmt.Errorf("koofr: read upload source: %w", err)
-	}
-	if err := writer.Close(); err != nil {
+	if _, err := writer.CreateFormFile("file", req.Name); err != nil {
 		return drive.Entry{}, err
 	}
+	tail := []byte("\r\n--" + boundary + "--\r\n")
+	sourceSize := req.Source.Size()
+	if sourceSize < 0 {
+		return drive.Entry{}, fmt.Errorf("koofr: upload %q: invalid source size %d: %w", req.Name, sourceSize, drive.ErrInvalidInput)
+	}
+	contentLength := int64(head.Len()) + sourceSize + int64(len(tail))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body.Bytes()))
+	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
+	progressReader := drive.NewUploadProgressReader(req.Progress, file)
+	body := io.MultiReader(bytes.NewReader(head.Bytes()), progressReader, bytes.NewReader(tail))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 	if err != nil {
 		return drive.Entry{}, err
 	}
 	httpReq.Header.Set("User-Agent", userAgent)
 	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
-	httpReq.ContentLength = int64(body.Len())
+	httpReq.ContentLength = contentLength
 	httpReq.SetBasicAuth(d.cl.email, d.cl.password)
 	start := time.Now()
 	resp, err := d.cl.http.Do(httpReq)
@@ -120,7 +125,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	apiResp := &apiResponse{req: httpReq, resp: resp, body: data}
 	if !apiResp.ok() {
 		err := apiResp.error("koofr: upload")
-		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity {
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusUnprocessableEntity {
 			err = drive.NonRetryable(err)
 		}
 		err = fmt.Errorf("koofr: upload %q: %w", req.Name, err)
@@ -143,7 +148,7 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 		if _, rmErr := d.cl.delete(ctx, "/mounts/"+url.PathEscape(parent.mount.ID)+"/files/remove", d.filesQuery(joinPath(parent.path, created.Name)), nil); rmErr != nil {
 			err = fmt.Errorf("%s; deleting the misnamed remote object failed: %v", err, rmErr)
 		}
-		err = fmt.Errorf("%s: %w", err, drive.ErrConflict)
+		err = drive.NonRetryable(fmt.Errorf("%s: %w", err, drive.ErrConflict))
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}

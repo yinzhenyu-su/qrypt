@@ -23,7 +23,7 @@ func validateName(name string) error {
 		return fmt.Errorf("koofr: name %q is reserved: %w", name, drive.ErrInvalidInput)
 	}
 	for _, bad := range name {
-		if bad == '/' || bad == '\\' || bad == 0 {
+		if bad == '/' || bad == '\\' || bad == 0 || bad < 0x20 || bad == 0x7f {
 			return fmt.Errorf("koofr: name %q contains %q: %w", name, string(bad), drive.ErrInvalidInput)
 		}
 	}

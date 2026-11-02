@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -713,6 +715,9 @@ func TestUploadInvalidNamesRejectedWithoutRequest(t *testing.T) {
 		"bad\xff utf8",
 		strings.Repeat("x", 300),
 		"sla/sh",
+		"line\r\nbreak.bin",
+		"tab\tname.bin",
+		"del\x7f.bin",
 	}
 	for _, name := range cases {
 		_, err := d.PutSource(context.Background(), drive.UploadRequest{
@@ -822,6 +827,9 @@ func TestFilesNotSyncedIsNotRetried(t *testing.T) {
 	_, err := d.List(context.Background(), "/")
 	if err == nil || !errors.Is(err, errMountNotSynced) {
 		t.Fatalf("List error = %v, want mount-not-synced", err)
+	}
+	if !drive.IsNonRetryable(err) {
+		t.Fatalf("List error = %v, want non-retryable", err)
 	}
 	if got := f.requestsMatching("GET", "files/list"); got != 1 {
 		t.Fatalf("list requests = %d, want 1 (no retry)", got)
@@ -1144,5 +1152,265 @@ func TestRootPathBoundaryRejectsOutOfRootIDs(t *testing.T) {
 	}
 	if err := d.Remove(context.Background(), drive.Entry{ID: "/sub/inside.bin", Name: "inside.bin"}); err != nil {
 		t.Fatalf("Remove inside root: %v", err)
+	}
+}
+
+func TestResolveRejectsDotDotIDs(t *testing.T) {
+	f := newFakeProvider(t)
+	f.mkdirAll("/sub")
+	f.putFile("/sub/inside.bin", []byte("inside"), 1)
+	d := f.newDriver(t, Options{RootPath: "/sub"})
+	ctx := context.Background()
+	for _, id := range []string{"/sub/../outside.bin", "/sub/..", "/sub/../sub/inside.bin"} {
+		if _, err := d.List(ctx, id); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+			t.Fatalf("List(%q) error = %v, want invalid input", id, err)
+		}
+		if err := d.Remove(ctx, drive.Entry{ID: id, Name: "x"}); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+			t.Fatalf("Remove(%q) error = %v, want invalid input", id, err)
+		}
+	}
+	if got := f.requestsMatching(http.MethodGet, "files/list"); got != 0 {
+		t.Fatalf("list requests = %d, want 0", got)
+	}
+	if got := f.requestsMatching(http.MethodDelete, "files/remove"); got != 0 {
+		t.Fatalf("remove requests = %d, want 0", got)
+	}
+}
+
+func TestRenameRefusesConfiguredRoot(t *testing.T) {
+	f := newFakeProvider(t)
+	f.mkdirAll("/sub")
+	d := f.newDriver(t, Options{RootPath: "/sub"})
+	_, err := d.Rename(context.Background(), drive.Entry{ID: "/sub", Name: "sub"}, "other")
+	if err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Rename root error = %v, want invalid input", err)
+	}
+	if got := f.requestsMatching(http.MethodPut, "files/rename"); got != 0 {
+		t.Fatalf("rename requests = %d, want 0", got)
+	}
+}
+
+func TestMoveUsesSourcePathName(t *testing.T) {
+	f := newFakeProvider(t)
+	f.mkdirAll("/src")
+	f.mkdirAll("/dst")
+	f.putFile("/src/real.bin", []byte("payload"), 1)
+	d := f.newDriver(t, Options{})
+	moved, err := d.Move(context.Background(), drive.Entry{ID: "/src/real.bin", Name: "../evil.bin"}, "/dst")
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if moved.ID != "/dst/real.bin" || moved.Name != "real.bin" {
+		t.Fatalf("moved = %+v, want /dst/real.bin", moved)
+	}
+}
+
+func TestDebugSnapshotRedactsBaseURL(t *testing.T) {
+	d := New(Options{
+		Email:      "user@example.com",
+		Password:   "app-password",
+		APIBaseURL: "https://user:secret@example.test/base?token=abc",
+	})
+	snapshot, err := d.DebugSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("DebugSnapshot: %v", err)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "token=abc") {
+		t.Fatalf("debug snapshot leaks base URL credentials: %s", encoded)
+	}
+}
+
+func TestUploadOmitsModifiedWhenZero(t *testing.T) {
+	f := newFakeProvider(t)
+	d := f.newDriver(t, Options{})
+	if _, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "zero-mtime.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("x")),
+	}); err != nil {
+		t.Fatalf("PutSource: %v", err)
+	}
+	if params := f.lastPutParams(); params.Has("modified") {
+		t.Fatalf("modified sent for zero mtime: %v", params)
+	}
+}
+
+func TestUploadConflictNonRetryable(t *testing.T) {
+	f := newFakeProvider(t)
+	f.faultStatus("POST", "files/put", 1, http.StatusConflict, `{"error":{"code":"AlreadyExists","message":"exists"}}`)
+	d := f.newDriver(t, Options{})
+	_, err := d.PutSource(context.Background(), drive.UploadRequest{
+		ParentID: "/",
+		Name:     "conflict.txt",
+		Source:   drive.NewBytesReadOnlyFileSource([]byte("x")),
+	})
+	if err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("PutSource error = %v, want conflict", err)
+	}
+	if !drive.IsNonRetryable(err) {
+		t.Fatalf("PutSource error = %v, want non-retryable", err)
+	}
+}
+
+// blockingUploadSource proves PutSource streams the multipart body: the
+// source blocks its second Read until the server has actually received the
+// first source chunk. The old buffering implementation deadlocks here.
+type blockingUploadSource struct {
+	data []byte
+	seen <-chan struct{}
+}
+
+func (s blockingUploadSource) Size() int64 { return int64(len(s.data)) }
+func (s blockingUploadSource) Open(context.Context) (drive.ReadOnlyFile, error) {
+	return &blockingUploadFile{Reader: bytes.NewReader(s.data), seen: s.seen}, nil
+}
+
+type blockingUploadFile struct {
+	*bytes.Reader
+	seen  <-chan struct{}
+	first bool
+}
+
+func (f *blockingUploadFile) Read(p []byte) (int, error) {
+	if !f.first {
+		select {
+		case <-f.seen:
+		case <-time.After(2 * time.Second):
+			return 0, fmt.Errorf("server never received the first upload chunk")
+		}
+		return f.Reader.Read(p)
+	}
+	f.first = true
+	if len(p) > 32*1024 {
+		p = p[:32*1024]
+	}
+	return f.Reader.Read(p)
+}
+
+func (f *blockingUploadFile) Close() error { return nil }
+
+func TestUploadStreamsSource(t *testing.T) {
+	f := newFakeProvider(t)
+	data := bytes.Repeat([]byte("x"), 128*1024)
+	seen := make(chan struct{})
+	var once sync.Once
+	f.addFault(func(r *http.Request) bool {
+		return r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/files/put")
+	}, 1, func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := r.Body.Read(buf)
+			if n > 0 {
+				once.Do(func() { close(seen) })
+			}
+			if err != nil {
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"name":"stream.txt","type":"file","size":%d}`, len(data))
+	})
+	d := f.newDriver(t, Options{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.PutSource(context.Background(), drive.UploadRequest{
+			ParentID: "/",
+			Name:     "stream.txt",
+			Source:   blockingUploadSource{data: data, seen: seen},
+		})
+		done <- err
+	}()
+	select {
+	case <-seen:
+		// The server received source bytes before the source was drained.
+	case err := <-done:
+		t.Fatalf("upload finished before the server saw source bytes: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not receive the upload body")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("PutSource: %v", err)
+	}
+}
+
+func TestRemoveConditionalMtimeAndHash(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/guarded.bin", []byte("payload"), 1700000000123)
+	d := f.newDriver(t, Options{})
+	entries, err := d.List(context.Background(), "/")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("List = %+v, %v", entries, err)
+	}
+	entry := entries[0]
+
+	staleMtime := entry
+	staleMtime.ModTime = entry.ModTime.Add(time.Second)
+	if err := d.Remove(context.Background(), staleMtime); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("Remove stale mtime error = %v, want conflict", err)
+	}
+
+	staleHash := entry
+	staleHash.Extra = map[string]any{"hash": strings.Repeat("0", 32)}
+	if err := d.Remove(context.Background(), staleHash); err == nil || !errors.Is(err, drive.ErrConflict) {
+		t.Fatalf("Remove stale hash error = %v, want conflict", err)
+	}
+
+	if err := d.Remove(context.Background(), entry); err != nil {
+		t.Fatalf("Remove fresh entry: %v", err)
+	}
+}
+
+func TestReadRejectsUnexpectedContentRange(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/range.bin", []byte("0123456789"), 1)
+	f.addFault(func(r *http.Request) bool {
+		return r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/files/get")
+	}, 1, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Range", "bytes 5-9/10")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("56789"))
+	})
+	d := f.newDriver(t, Options{})
+	entries, _ := d.List(context.Background(), "/")
+	_, err := d.Read(context.Background(), entries[0], 0, 5)
+	if err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Read error = %v, want invalid input", err)
+	}
+}
+
+func TestReadRejectsNegativeRange(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/range.bin", []byte("0123456789"), 1)
+	d := f.newDriver(t, Options{})
+	entries, _ := d.List(context.Background(), "/")
+	for _, tc := range []struct{ offset, size int64 }{{-1, 1}, {0, -1}} {
+		if _, err := d.Read(context.Background(), entries[0], tc.offset, tc.size); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+			t.Fatalf("Read(%d,%d) error = %v, want invalid input", tc.offset, tc.size, err)
+		}
+	}
+}
+
+func TestReadOpenEndedFromOffset(t *testing.T) {
+	f := newFakeProvider(t)
+	f.putFile("/range.bin", []byte("0123456789"), 1)
+	d := f.newDriver(t, Options{})
+	entries, _ := d.List(context.Background(), "/")
+	rc, err := d.Read(context.Background(), entries[0], 5, 0)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "56789" {
+		t.Fatalf("Read from offset = %q, want %q", got, "56789")
+	}
+}
+
+func TestReadDirectoryRejected(t *testing.T) {
+	f := newFakeProvider(t)
+	d := f.newDriver(t, Options{})
+	if _, err := d.Read(context.Background(), drive.Entry{ID: "/", Name: "root", IsDir: true}, 0, 1); err == nil || !errors.Is(err, drive.ErrInvalidInput) {
+		t.Fatalf("Read directory error = %v, want invalid input", err)
 	}
 }
