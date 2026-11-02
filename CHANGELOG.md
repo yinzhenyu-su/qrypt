@@ -1,9 +1,30 @@
 # Changelog
 
-## Unreleased
+## v0.6.1 (2026-11-02)
+
+### Features
+- feat(drivers): add Koofr backend (#14)
+- feat(drivers): refine optional driver and share contracts
+- feat(drivers): add drime backend
+
+### Bug fixes
+- fix(vfs): clear permanent upload failures and probe leftovers (#17)
+- fix(mount): stop macFUSE from ejecting slow network reads
+
+### Others
+- docs(openspec): propose driver contract refinements
+- docs(agents): 新增 Agents 标题与敏感信息提交约定
+- docs(skills): add a qrypt-tests skill for manual test runs
+- ci(contract): run only unattended-safe mounts on the nightly schedule
+- ci(contract): check the mount before the suite and surface init failures
+- test(vfs): tolerate duplicate prefetch in the canceled-list retry test
+- docs(drivers): show interactive login in the capability matrix
+- test(config): cover credential and mount store helpers
 
 ### Thanks
 - @dwdcth for contributing the Koofr driver (#14)
+
+---
 
 ## v0.6.0 (2026-10-24)
 
