@@ -150,6 +150,9 @@ func (r vfsRemoveCleanup) RemovePendingFile(ctx context.Context, path string) (b
 	// pending-only delete: keep the record and surface the error.
 	remote, hasRemote, err := r.remote.remoteEntry(ctx, path)
 	if err != nil {
+		if pending, ok := r.uploads.PendingByPath(path); ok && pending.PermanentFail {
+			return true, nil, fmt.Errorf("vfs: cannot remove %q because its permanently failed upload cannot be reconciled: %w; unmount and run `qrypt fs journal prune --failed` to discard the local upload", path, err)
+		}
 		return true, nil, err
 	}
 	// Durable store commit FIRST; timer/hash/modtime cleanup runs only

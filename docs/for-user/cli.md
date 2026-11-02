@@ -174,7 +174,7 @@ qrypt fs rm REMOTE [--wait-timeout DURATION] [--json]
 qrypt fs pending [--verbose | --json]
 qrypt fs journal [--config PATH | --cache-dir PATH] [--json]
 qrypt fs journal replay [--config PATH | --cache-dir PATH] [--json]
-qrypt fs journal prune [--config PATH | --cache-dir PATH] [--json]
+qrypt fs journal prune [--config PATH | --cache-dir PATH] [--json] [--failed]
 ```
 
 `fs` 命令组支持 `--config PATH`，既可写在子命令前，也可写在子命令后：

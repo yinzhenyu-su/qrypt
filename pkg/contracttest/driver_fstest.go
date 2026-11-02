@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -40,24 +42,28 @@ type FSTestStep struct {
 }
 
 type FSPendingSample struct {
-	Attempt        int        `json:"attempt"`
-	Elapsed        string     `json:"elapsed"`
-	ElapsedMS      int64      `json:"elapsed_ms"`
-	PendingCount   int        `json:"pending_count"`
-	UploadCount    int        `json:"upload_count"`
-	DeleteTimers   int        `json:"delete_timer_count"`
-	Pending        []string   `json:"pending,omitempty"`
-	Uploads        []FSUpload `json:"uploads,omitempty"`
-	DeleteTimerFor []string   `json:"delete_timers,omitempty"`
-	Error          string     `json:"error,omitempty"`
+	Attempt            int        `json:"attempt"`
+	Elapsed            string     `json:"elapsed"`
+	ElapsedMS          int64      `json:"elapsed_ms"`
+	PendingCount       int        `json:"pending_count"`
+	PermanentFailCount int        `json:"permanent_fail_count,omitempty"`
+	UploadCount        int        `json:"upload_count"`
+	DeleteTimers       int        `json:"delete_timer_count"`
+	Pending            []string   `json:"pending,omitempty"`
+	PermanentFail      []string   `json:"permanent_fail,omitempty"`
+	Uploads            []FSUpload `json:"uploads,omitempty"`
+	DeleteTimerFor     []string   `json:"delete_timers,omitempty"`
+	Error              string     `json:"error,omitempty"`
 }
 
 type FSMountState struct {
 	Mount                 string     `json:"mount"`
 	PendingCount          int        `json:"pending_count"`
+	PermanentFailCount    int        `json:"permanent_fail_count,omitempty"`
 	UploadCount           int        `json:"upload_count"`
 	DeleteTimers          int        `json:"delete_timer_count"`
 	Pending               []string   `json:"pending,omitempty"`
+	PermanentFail         []string   `json:"permanent_fail,omitempty"`
 	Uploads               []FSUpload `json:"uploads,omitempty"`
 	CacheHits             int64      `json:"cache_hits,omitempty"`
 	CacheMisses           int64      `json:"cache_misses,omitempty"`
@@ -121,6 +127,19 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	if err != nil {
 		return result
 	}
+	// Every failure path below must still clean up the remote test directory.
+	// Use a context detached from the probe request so a timeout or cancel of
+	// the probe does not abort cleanup midway.
+	defer func() {
+		cleanupStart := time.Now()
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if cleanupErr := cleanupVFSProbeFixture(cleanupCtx, fs, mount, dir, file); cleanupErr != nil {
+			cleanupStep := fsStep("cleanup")
+			cleanupStep.finish(cleanupStart, cleanupErr)
+			result.Steps = append(result.Steps, cleanupStep)
+		}
+	}()
 
 	step = fsStep("write")
 	step.Input = map[string]any{"path": file, "bytes": len(data)}
@@ -134,7 +153,6 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		_ = cleanupVFSPath(ctx, fs, dir, true)
 		return result
 	}
 
@@ -146,7 +164,6 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		_ = cleanupVFSPath(ctx, fs, dir, true)
 		return result
 	}
 
@@ -154,11 +171,14 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	step.Expected = map[string]any{"pending_count": 0, "upload_count": 0}
 	start = time.Now()
 	err = waitVFSSmokeIdle(ctx, fs, mount, 2*time.Minute, &result.PendingTimeline)
-	step.Actual = map[string]any{"state": fsMountState(fs, mount)}
+	state := fsMountState(fs, mount)
+	if err == nil {
+		err = permanentFailureError(state)
+	}
+	step.Actual = map[string]any{"state": state}
 	step.finish(start, err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
-		_ = cleanupVFSPath(ctx, fs, dir, true)
 		return result
 	}
 
@@ -227,7 +247,12 @@ func waitVFSSmokeIdle(ctx context.Context, fs any, mount string, timeout time.Du
 		if timeline != nil {
 			*timeline = append(*timeline, sample)
 		}
-		if sample.PendingCount == 0 && sample.UploadCount == 0 && sample.DeleteTimers == 0 {
+		// Permanently failed uploads are terminal: they will never become
+		// active work again, so counting them as pending would make every
+		// idle wait spin until its timeout. Callers that need a health
+		// verdict inspect PermanentFailCount separately.
+		activePending := sample.PendingCount - sample.PermanentFailCount
+		if activePending == 0 && sample.UploadCount == 0 && sample.DeleteTimers == 0 {
 			return nil
 		}
 		select {
@@ -243,14 +268,16 @@ func waitVFSSmokeIdle(ctx context.Context, fs any, mount string, timeout time.Du
 func fsPendingSample(fs any, mount string, attempt int, elapsed time.Duration) FSPendingSample {
 	state := fsMountState(fs, mount)
 	sample := FSPendingSample{
-		Attempt:      attempt,
-		Elapsed:      elapsed.String(),
-		ElapsedMS:    DurationMillis(elapsed),
-		PendingCount: state.PendingCount,
-		UploadCount:  state.UploadCount,
-		DeleteTimers: state.DeleteTimers,
-		Pending:      state.Pending,
-		Uploads:      state.Uploads,
+		Attempt:            attempt,
+		Elapsed:            elapsed.String(),
+		ElapsedMS:          DurationMillis(elapsed),
+		PendingCount:       state.PendingCount,
+		PermanentFailCount: state.PermanentFailCount,
+		UploadCount:        state.UploadCount,
+		DeleteTimers:       state.DeleteTimers,
+		Pending:            state.Pending,
+		PermanentFail:      state.PermanentFail,
+		Uploads:            state.Uploads,
 	}
 	if snapshotter, ok := fs.(vfsDebugSnapshotter); ok {
 		snapshot := snapshotter.DebugSnapshot()
@@ -295,6 +322,10 @@ func fsMountState(fs any, mount string) *FSMountState {
 			state.Prefetches = mountState.Runtime.Prefetches
 			for _, pending := range mountState.PendingUploads() {
 				state.Pending = append(state.Pending, pending.Path)
+				if pending.PermanentFail {
+					state.PermanentFailCount++
+					state.PermanentFail = append(state.PermanentFail, pending.Path)
+				}
 			}
 			for _, upload := range mountState.ActiveUploads() {
 				state.Uploads = append(state.Uploads, FSUpload{
@@ -313,6 +344,10 @@ func fsMountState(fs any, mount string) *FSMountState {
 	state.PendingCount = pendingCount(fs)
 	for _, pending := range pendingFiles(fs) {
 		state.Pending = append(state.Pending, pending.Path)
+		if pending.PermanentFail {
+			state.PermanentFailCount++
+			state.PermanentFail = append(state.PermanentFail, pending.Path)
+		}
 	}
 	return state
 }
@@ -365,6 +400,57 @@ func cleanupVFSPath(ctx context.Context, fs vfs.FileSystem, path string, dir boo
 		return fs.RemoveDir(ctx, path)
 	}
 	return fs.Remove(ctx, path)
+}
+
+// cleanupVFSProbeFixture removes the probe's temporary file and directory.
+// It is best-effort and idempotent: every step tolerates already-removed
+// paths so the successful path can leave cleanup to its explicit steps while
+// early failures still get a clean remote. Pending generations under dir are
+// discarded before the directory removal because a live pending upload makes
+// RemoveDir fail with ErrDirNotEmpty.
+func cleanupVFSProbeFixture(ctx context.Context, fs vfs.FileSystem, mount, dir, file string) error {
+	var errs []error
+	if err := fs.Remove(ctx, file); err != nil && !errors.Is(err, vfs.ErrNotFound) {
+		errs = append(errs, fmt.Errorf("remove test file: %w", err))
+	}
+	discardPendingUnder(fs, dir, &errs)
+	if err := waitVFSSmokeIdle(ctx, fs, mount, 10*time.Second, nil); err != nil {
+		errs = append(errs, fmt.Errorf("wait for test uploads: %w", err))
+	}
+	if err := fs.RemoveDir(ctx, dir); err != nil && !errors.Is(err, vfs.ErrNotFound) {
+		errs = append(errs, fmt.Errorf("remove test directory: %w", err))
+	}
+	if err := waitVFSSmokeIdle(ctx, fs, mount, 10*time.Second, nil); err != nil {
+		errs = append(errs, fmt.Errorf("wait for test directory removal: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func discardPendingUnder(fs any, dir string, errs *[]error) {
+	inspector, ok := fs.(vfs.UploadInspector)
+	if !ok {
+		return
+	}
+	discarder, ok := fs.(vfs.UploadDiscarder)
+	if !ok {
+		return
+	}
+	for _, pending := range inspector.PendingUploads() {
+		if pending.Path != dir && !strings.HasPrefix(pending.Path, dir+"/") {
+			continue
+		}
+		if err := discarder.DiscardUpload(pending.Path); err != nil {
+			*errs = append(*errs, fmt.Errorf("discard upload %s: %w", pending.Path, err))
+		}
+	}
+}
+
+func permanentFailureError(state *FSMountState) error {
+	if state == nil || state.PermanentFailCount == 0 {
+		return nil
+	}
+	return fmt.Errorf("VFS has %d permanently failed upload(s): %s; run `qrypt fs journal` to inspect or `qrypt fs journal prune --failed` to discard them",
+		state.PermanentFailCount, strings.Join(state.PermanentFail, ", "))
 }
 
 func randomSuffix(n int) string {

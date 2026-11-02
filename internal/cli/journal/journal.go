@@ -42,6 +42,7 @@ type DebugReport struct {
 	CleanEntries   int              `json:"clean_entries"`
 	InvalidEntries []InvalidEntry   `json:"invalid_entries"`
 	Pending        []PendingDebug   `json:"pending"`
+	PermanentFails int              `json:"permanent_fails"`
 	OrphanStaging  []string         `json:"orphan_staging"`
 }
 
@@ -181,9 +182,12 @@ func NewPruneCmd(rt Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Drop offline uploads whose staging data is gone",
-		Long:  `Drop journal entries for offline uploads whose local staging data no longer exists.`,
+		Long: `Drop journal entries for offline uploads whose local staging data no
+longer exists. With --failed, also drop permanently failed uploads and their
+staging data; unmount first so the running mount cannot rewrite the journal.`,
 		Example: `  qrypt fs journal prune
-  qrypt fs journal prune --mount cloud`,
+  qrypt fs journal prune --mount cloud
+  qrypt fs journal prune --mount cloud --failed`,
 		Args: cliruntime.NoArgs(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targets, err := TargetsFromCmd(rt, cmd)
@@ -191,9 +195,12 @@ func NewPruneCmd(rt Runtime) *cobra.Command {
 				return err
 			}
 			asJSON, _ := cmd.Flags().GetBool("json")
+			failed, _ := cmd.Flags().GetBool("failed")
 			var results []MaintenanceResult
 			for _, target := range targets {
-				pruned, err := upload.PruneUploadJournal(target.Dir)
+				pruned, err := upload.PruneUploadJournalWithOptions(target.Dir, upload.PruneOptions{
+					IncludePermanentFailures: failed,
+				})
 				if err != nil {
 					return err
 				}
@@ -209,6 +216,7 @@ func NewPruneCmd(rt Runtime) *cobra.Command {
 		},
 	}
 	addJournalJSONFlag(cmd)
+	cmd.Flags().Bool("failed", false, "also drop permanently failed uploads and their staging data")
 	return cmd
 }
 
@@ -295,6 +303,9 @@ func InspectCache(target DebugCacheTarget) DebugReport {
 		}
 		for _, item := range pending {
 			debug := PendingDebug{PendingUpload: item}
+			if item.PermanentFail {
+				report.PermanentFails++
+			}
 			status, size := cliruntime.StagingStatus(item)
 			debug.StagingExists = status == "ok" || status == "size-mismatch"
 			debug.StagingSize = size
@@ -337,17 +348,17 @@ func OrphanStagingFiles(cacheDir string, pending []PendingDebug) []string {
 
 func PrintReport(w io.Writer, report DebugReport) {
 	fmt.Fprintf(w, "cache %s %s\n", report.Target.Name, report.Target.Dir)
-	fmt.Fprintf(w, "journal entries=%d dirty=%d clean=%d invalid=%d pending=%d orphan_staging=%d\n",
+	fmt.Fprintf(w, "journal entries=%d dirty=%d clean=%d invalid=%d pending=%d permanent_fail=%d orphan_staging=%d\n",
 		report.Entries, report.DirtyEntries, report.CleanEntries,
-		len(report.InvalidEntries), len(report.Pending), len(report.OrphanStaging))
+		len(report.InvalidEntries), len(report.Pending), report.PermanentFails, len(report.OrphanStaging))
 	for _, inv := range report.InvalidEntries {
 		fmt.Fprintf(w, "  invalid line %d: %s\n", inv.Line, inv.Err)
 	}
 	if len(report.Pending) > 0 {
 		fmt.Fprintln(w, "pending:")
 		for _, item := range report.Pending {
-			fmt.Fprintf(w, "  %s size=%d staging_exists=%v staging_size=%d staging_error=%q\n",
-				item.Path, item.Size, item.StagingExists, item.StagingSize, item.StagingError)
+			fmt.Fprintf(w, "  %s size=%d staging_exists=%v staging_size=%d staging_error=%q permanent_fail=%v last_error=%q\n",
+				item.Path, item.Size, item.StagingExists, item.StagingSize, item.StagingError, item.PermanentFail, item.LastError)
 		}
 	}
 	if len(report.OrphanStaging) > 0 {
