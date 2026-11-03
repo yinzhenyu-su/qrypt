@@ -14,7 +14,6 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilitySourceUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityServerSideCopy,
-		drive.CapabilityParallelRange,
 	}
 }
 

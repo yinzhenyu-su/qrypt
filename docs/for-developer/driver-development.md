@@ -308,6 +308,13 @@ same profile is used by the VFS and by `drive.ReadParallel`, which the direct
 copy and share-fetch fallback paths use. Drivers without the capability stay
 single-stream; do not declare it unless range semantics are guaranteed.
 
+Parallel sub-range reads carry a strict-range context
+(`drive.StrictRangeFromContext`). If the provider answers 200 with the whole
+object instead of 206, a parallel-capable driver must close the body and return
+`drive.ErrUnsupported`; the caller then falls back to a single stream. Do not
+silently skip the offset in strict mode: that turns one parallel window into N
+full-object downloads.
+
 ### Hash provenance
 
 `drive.RemoteHasher` is still the compatibility surface, but its hashes are

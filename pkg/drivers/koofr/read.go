@@ -75,6 +75,12 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		d.setLastError(err)
 		return nil, err
 	}
+	if resp.StatusCode == http.StatusOK && drive.StrictRangeFromContext(ctx) {
+		resp.Body.Close()
+		err := fmt.Errorf("koofr: provider ignored range: %w", drive.ErrUnsupported)
+		d.setLastError(err)
+		return nil, err
+	}
 	if resp.StatusCode == http.StatusPartialContent {
 		if cr := resp.Header.Get("Content-Range"); cr != "" && !contentRangeStartsAt(cr, offset) {
 			resp.Body.Close()

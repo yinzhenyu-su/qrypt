@@ -70,7 +70,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "onedrive",
 			drv:  onedrive.New(onedrive.Options{RefreshToken: "token"}),
 			want: []drive.Capability{
-				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
@@ -84,7 +83,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "onedrive_app",
 			drv:  onedrive.New(onedrive.Options{AppMode: true, TenantID: "tenant", Email: "user@example.com", ClientID: "client", ClientSecret: "secret"}),
 			want: []drive.Capability{
-				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
@@ -179,7 +177,6 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "webdav",
 			drv:  webdav.New(webdav.Options{URL: "http://example.invalid/"}),
 			want: []drive.Capability{
-				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityServerSideCopy,
 				drive.CapabilitySourceUploader,

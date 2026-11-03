@@ -198,7 +198,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	}
 	readCtx = WithCacheAccess(readCtx, access)
 	firstWindowPrefetch := (!hinted && offset%ChunkSize != 0) || (hinted && offset == 0)
-	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
+	if readPrefetchEnabled(ctx) && plan.prefetchDepth != 0 && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
 		// Warm the first lookahead window for a new file stream. Non-zero
 		// offsets are treated as seeks until contiguous access is observed, so
 		// random probes do not trigger speculative network reads.
@@ -224,7 +224,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		// lookahead scheduled below belongs to the run that was recorded.
 		readCtx = WithCacheAccess(readCtx, actual)
 	}
-	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
+	if readPrefetchEnabled(ctx) && plan.prefetchDepth != 0 && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
@@ -734,7 +734,8 @@ func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex
 				}
 				defer release()
 			}
-			results[i].data, results[i].extra, results[i].err = readWindowRange(groupCtx, entry, span.start, span.end, backend)
+			strictCtx := drive.WithStrictRange(groupCtx)
+			results[i].data, results[i].extra, results[i].err = readWindowRange(strictCtx, entry, span.start, span.end, backend)
 			return results[i].err
 		})
 	}

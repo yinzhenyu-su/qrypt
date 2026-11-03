@@ -269,3 +269,74 @@ func TestReadStreamPrefetchesNextWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProbeReadDoesNotPrefetch(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), ChunkSize*8)
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
+		data:     data,
+		cacheKey: "cache",
+	}
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadProfile()})
+
+	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentProbe), "/file", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	time.Sleep(50 * time.Millisecond)
+	if got := host.readCount(); got != 1 {
+		t.Fatalf("driver reads = %d, want 1 (probe must not prefetch)", got)
+	}
+}
+
+func TestReadStreamProbeDoesNotPrefetch(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), ChunkSize*8)
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
+		data:     data,
+		cacheKey: "cache",
+	}
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadProfile()})
+
+	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentProbe), "/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Read(make([]byte, ChunkSize)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := host.readCount(); got != 1 {
+		t.Fatalf("driver reads = %d, want 1 (probe stream must not prefetch)", got)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadStreamWithoutReadPrefetchDoesNotPrefetch(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), ChunkSize*8)
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
+		data:     data,
+		cacheKey: "cache",
+	}
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadProfile()})
+
+	ctx := WithoutReadPrefetch(WithReadIntent(context.Background(), ReadIntentBulk))
+	rc, err := reader.ReadStream(ctx, "/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Read(make([]byte, ChunkSize)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := host.readCount(); got != 1 {
+		t.Fatalf("driver reads = %d, want 1 (prefetch disabled)", got)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

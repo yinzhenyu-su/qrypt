@@ -2,6 +2,7 @@ package drive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -32,6 +33,16 @@ func ReadParallel(ctx context.Context, d Driver, entry Entry, offset, size int64
 	}
 	if total < profile.ParallelThreshold {
 		return d.Read(ctx, entry, offset, total)
+	}
+	probe, err := d.Read(WithStrictRange(ctx), entry, offset, 1)
+	if err != nil {
+		if errors.Is(err, ErrUnsupported) {
+			return d.Read(ctx, entry, offset, total)
+		}
+		return nil, err
+	}
+	if err := probe.Close(); err != nil {
+		return nil, err
 	}
 	return newParallelRangeReader(ctx, d, entry, offset, total, profile.BulkStreams), nil
 }
@@ -133,7 +144,7 @@ func readDirectPart(ctx context.Context, d Driver, entry Entry, offset, size int
 	}
 	defer func() { <-directReadSlotPool }()
 
-	rc, err := d.Read(ctx, entry, offset, size)
+	rc, err := d.Read(WithStrictRange(ctx), entry, offset, size)
 	if err != nil {
 		return nil, err
 	}

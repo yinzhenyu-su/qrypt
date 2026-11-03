@@ -64,6 +64,12 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		d.setLastError(err)
 		return nil, err
 	}
+	if resp.StatusCode == http.StatusOK && drive.StrictRangeFromContext(ctx) {
+		resp.Body.Close()
+		err := fmt.Errorf("drime: provider ignored range: %w", drive.ErrUnsupported)
+		d.setLastError(err)
+		return nil, err
+	}
 	if resp.StatusCode == http.StatusPartialContent {
 		return d.limitRead(ctx, resp.Body), nil
 	}

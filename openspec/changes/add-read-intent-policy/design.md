@@ -55,6 +55,7 @@
 新增可选 `CapabilityParallelRange` 和可选接口 `ParallelReadLimiter { MaxParallelReads() int }`。声明能力的驱动才允许 `bulk` 并行；未声明时按单流处理。驱动 MUST 保证子 Range 返回 206；无法满足时 MUST 返回明确的不支持错误（例如 `ErrUnsupported` 或 typed error），而不是把 200 全量 body 当作子 Range 结果。系统收到该错误后对该文件回退单流。
 
 - 理由：`Driver.Read` 只返回 `io.ReadCloser`，VFS 没有状态码或 `Content-Range`，无法通过 body 长度可靠检测 200 全量；回退责任必须放在能看到响应的驱动层。
+- 并行子 Range 会携带 strict-range 上下文；驱动收到 200 全量时必须在 strict 模式下返回 `ErrUnsupported`，由 VFS 回退单流。不能在 strict 模式下继续跳过 offset，否则一个并行窗口会退化为 N 次全量下载。
 - 已内部并行的驱动（Quark）声明 `CapabilityInternalParallelRead`，VFS 不再叠加并行。
 - 备选：VFS 读取额外字节猜测 200（拒绝，破坏流语义且可能多读整文件）；对所有驱动先并行再回退（拒绝，最坏情况浪费 N 倍带宽）。
 

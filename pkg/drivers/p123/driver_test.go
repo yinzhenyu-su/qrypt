@@ -1190,6 +1190,24 @@ func installDownloadIgnoringRange(f *fakeAPI, payload []byte) {
 	})
 }
 
+func TestReadStrictRangeRejectsIgnoredRange(t *testing.T) {
+	f := newFakeAPI(t)
+	installLogin(f, "tok")
+	payload := []byte("0123456789abcdefghij")
+	installDownloadIgnoringRange(f, payload)
+	f.json("/b/api/restful/goapi/v1/file/details", `{"code":0,"data":{}}`)
+
+	d := f.driver(Options{Username: "u", Password: "p"})
+	entry := drive.Entry{
+		ID: "12", ParentID: "5", Name: "a.txt", Size: int64(len(payload)),
+		Extra: fileMeta{FileID: 12, Name: "a.txt", Type: fileTypeFile, Size: int64(len(payload)), Etag: "E", S3KeyFlag: "9-0", ParentID: 5},
+	}
+	_, err := d.Read(drive.WithStrictRange(context.Background()), entry, 4, 3)
+	if !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want ErrUnsupported", err)
+	}
+}
+
 func TestReadHandlesCDNIgnoringRange(t *testing.T) {
 	f := newFakeAPI(t)
 	installLogin(f, "tok")

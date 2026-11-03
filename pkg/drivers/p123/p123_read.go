@@ -279,6 +279,10 @@ func (d *Driver) fetchRange(ctx context.Context, target string, offset, size int
 		// Some CDN nodes ignore a Range request and return the whole object.
 		// Treating that as the requested window would hand the caller bytes
 		// from the wrong offset, so skip the prefix and cap the length.
+		if drive.StrictRangeFromContext(ctx) {
+			resp.Body.Close()
+			return nil, fmt.Errorf("123: provider ignored range: %w", drive.ErrUnsupported)
+		}
 		if offset > 0 || size > 0 {
 			logging.L.DebugfEvery("p123.read.range_ignored", time.Second,
 				"[123] CDN ignored Range for %s: offset=%d size=%d", driverutil.URL(req.URL), offset, size)

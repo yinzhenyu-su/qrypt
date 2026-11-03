@@ -197,6 +197,12 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 // consumes the current one. Depth is fixed at one window so memory stays
 // bounded by the window size.
 func (r *chunkedStreamReader) startPrefetch(windowChunks int) {
+	if !readPrefetchEnabled(r.ctx) {
+		return
+	}
+	if plan, ok := readPlanFromContext(r.ctx); ok && plan.prefetchDepth == 0 {
+		return
+	}
 	nextPos := r.pos + int64(len(r.buf))
 	if r.entry.Size > 0 && nextPos >= r.entry.Size {
 		return

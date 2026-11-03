@@ -228,6 +228,22 @@ func TestReadRangeRedirectAndIgnoredRange(t *testing.T) {
 	}
 }
 
+func TestReadStrictRangeRejectsIgnoredRange(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := f.addEntry(0, "file.bin", false, 100, "", "")
+	f.content[idString(entry.ID)] = []byte("0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz")
+	d := f.newDriver(t, Options{})
+	if err := d.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	f.ignoreRange = true
+
+	_, err := d.Read(drive.WithStrictRange(context.Background()), entry.entry(""), 10, 10)
+	if !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want ErrUnsupported", err)
+	}
+}
+
 func TestMkdirRenameMoveRemoveCopy(t *testing.T) {
 	f := newFakeProvider(t)
 	d := f.newDriver(t, Options{})

@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -187,5 +188,50 @@ func TestFindWindowFiltersByShape(t *testing.T) {
 	}
 	if got := state.findWindow("fid", 1, 0); got == nil {
 		t.Fatal("any-shape lookup returned nil")
+	}
+}
+
+type siblingCancelBackend struct {
+	firstEntered  chan struct{}
+	firstCanceled chan struct{}
+}
+
+func (b *siblingCancelBackend) Read(ctx context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	if offset == 0 {
+		close(b.firstEntered)
+		<-ctx.Done()
+		close(b.firstCanceled)
+		return nil, ctx.Err()
+	}
+	<-b.firstEntered
+	return nil, errors.New("sibling failed")
+}
+
+func (*siblingCancelBackend) CacheKey(drive.Entry) string { return "cache" }
+
+func (*siblingCancelBackend) StoreChunk(context.Context, string, drive.Entry, int64, []byte) {}
+
+func TestFetchChunkWindowParallelCancelsSibling(t *testing.T) {
+	backend := &siblingCancelBackend{
+		firstEntered:  make(chan struct{}),
+		firstCanceled: make(chan struct{}),
+	}
+	state := NewState(nil)
+	entry := drive.Entry{ID: "id", Size: ChunkSize * 4}
+
+	_, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, nil, state, "key")
+	if err == nil {
+		t.Fatal("expected the sibling failure")
+	}
+	select {
+	case <-backend.firstCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("sibling sub-range was not canceled")
+	}
+	state.parallel.mu.Lock()
+	files := len(state.parallel.files)
+	state.parallel.mu.Unlock()
+	if files != 0 {
+		t.Fatalf("per-file limiter entries = %d, want 0", files)
 	}
 }
