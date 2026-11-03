@@ -380,6 +380,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilitySpace,
 		drive.CapabilityWriter,
 		drive.CapabilityResumableUploader,
+		drive.CapabilityParallelRange,
 	}
 }
 

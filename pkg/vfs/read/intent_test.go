@@ -1,9 +1,10 @@
 package read
 
 import (
+	"bytes"
 	"context"
 	"io"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,10 +65,15 @@ func TestPlanForInteractiveAndProbe(t *testing.T) {
 }
 
 type planCaptureHost struct {
-	entry drive.Entry
-	plan  readPlan
-	ok    bool
-	reads int
+	entry       drive.Entry
+	data        []byte
+	cacheKey    string
+	plan        readPlan
+	ok          bool
+	reads       int
+	priority    Priority
+	prioritySet bool
+	mu          sync.Mutex
 }
 
 func (h *planCaptureHost) Resolve(context.Context, string) (drive.Entry, error) {
@@ -78,16 +84,26 @@ func (*planCaptureHost) PendingUpload(string) (vfstypes.PendingUpload, bool, err
 	return vfstypes.PendingUpload{}, false, nil
 }
 
-func (*planCaptureHost) ReadCacheKey(drive.Entry) string { return "" }
+func (h *planCaptureHost) ReadCacheKey(drive.Entry) string { return h.cacheKey }
 
-func (h *planCaptureHost) DriverRead(ctx context.Context, _ drive.Entry, _, _ int64) (io.ReadCloser, error) {
+func (h *planCaptureHost) DriverRead(ctx context.Context, _ drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	h.mu.Lock()
 	h.plan, h.ok = readPlanFromContext(ctx)
+	h.priority, h.prioritySet = priority(ctx), prioritySet(ctx)
 	h.reads++
-	return io.NopCloser(strings.NewReader("x")), nil
+	h.mu.Unlock()
+	end := offset + size
+	if end > int64(len(h.data)) {
+		end = int64(len(h.data))
+	}
+	if offset > end {
+		offset = end
+	}
+	return io.NopCloser(bytes.NewReader(h.data[offset:end])), nil
 }
 
 func TestReadCarriesReadPlan(t *testing.T) {
-	host := &planCaptureHost{entry: drive.Entry{ID: "id", Size: 1, ModTime: time.Now()}}
+	host := &planCaptureHost{entry: drive.Entry{ID: "id", Size: 1, ModTime: time.Now()}, data: []byte("x")}
 	profile := drive.DefaultReadProfile()
 	profile.BulkStreams = 4
 	profile.ParallelThreshold = 1
@@ -106,10 +122,59 @@ func TestReadCarriesReadPlan(t *testing.T) {
 	if host.plan.intent != ReadIntentBulk || host.plan.streams != 4 || host.plan.cacheWrites {
 		t.Fatalf("read plan = %+v, want bulk/4/no-cache", host.plan)
 	}
+	if !host.prioritySet || host.priority != PriorityLow {
+		t.Fatalf("priority = %v (set=%v), want low", host.priority, host.prioritySet)
+	}
+}
+
+func TestApplyIntentPriority(t *testing.T) {
+	bulk := applyIntentPriority(context.Background(), readPlan{intent: ReadIntentBulk})
+	if !prioritySet(bulk) || priority(bulk) != PriorityLow {
+		t.Fatalf("bulk priority = %v, want low", priority(bulk))
+	}
+	interactive := applyIntentPriority(context.Background(), readPlan{intent: ReadIntentInteractive})
+	if !prioritySet(interactive) || priority(interactive) != PriorityHigh {
+		t.Fatalf("interactive priority = %v, want high", priority(interactive))
+	}
+	explicit := applyIntentPriority(WithPriority(context.Background(), PriorityNormal), readPlan{intent: ReadIntentBulk})
+	if !prioritySet(explicit) || priority(explicit) != PriorityNormal {
+		t.Fatalf("explicit priority = %v, want normal", priority(explicit))
+	}
+	unspecified := applyIntentPriority(context.Background(), readPlan{})
+	if prioritySet(unspecified) {
+		t.Fatal("unspecified intent should not set a priority")
+	}
+}
+
+func TestReadBulkUsesParallelStreams(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), ChunkSize*4)
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
+		data:     data,
+		cacheKey: "cache",
+	}
+	profile := drive.DefaultReadProfile()
+	profile.BulkStreams = 2
+	profile.ParallelThreshold = 1
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: profile})
+
+	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentBulk), "/file", 0, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if host.reads != 2 {
+		t.Fatalf("driver reads = %d, want 2 parallel sub-ranges", host.reads)
+	}
+	if !host.ok || host.plan.streams != 2 {
+		t.Fatalf("read plan = %+v, want 2 streams", host.plan)
+	}
 }
 
 func TestReadStreamCarriesReadPlan(t *testing.T) {
-	host := &planCaptureHost{entry: drive.Entry{ID: "id", Size: 1, ModTime: time.Now()}}
+	host := &planCaptureHost{entry: drive.Entry{ID: "id", Size: 1, ModTime: time.Now()}, data: []byte("x")}
 	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: drive.DefaultReadProfile()})
 
 	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentInteractive), "/file")

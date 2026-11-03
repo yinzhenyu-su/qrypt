@@ -7,7 +7,7 @@
 ## 2. 驱动默认策略与能力
 
 - [x] 2.1 在 `pkg/drive` 定义驱动默认读策略（并行流数、窗口块数、预取深度），并为支持并行的驱动提供默认值，验证：表驱动测试覆盖默认值与能力缺失。
-- [ ] 2.2 在 `pkg/drive` 增加 `CapabilityParallelRange`、可选的 `ParallelReadLimiter` 与 `CapabilityInternalParallelRead`，为支持任意 Range 的驱动声明前者，为 Quark 声明后者，验证：能力矩阵与契约测试。
+- [x] 2.2 在 `pkg/drive` 增加 `CapabilityParallelRange`、可选的 `ParallelReadLimiter` 与 `CapabilityInternalParallelRead`，为支持任意 Range 的驱动声明前者，为 Quark 声明后者，验证：能力矩阵与契约测试。
 - [x] 2.3 增加 `readPlan`（意图、并行流数、窗口块数、预取深度、是否写缓存），从意图与驱动默认策略派生，验证：表驱动测试覆盖默认值、驱动能力缺失与内部并行驱动。
 - [x] 2.4 将驱动默认策略注入 `read.ReaderDeps`，验证：不同驱动到读层的接线测试。
 - [x] 2.5 确认不新增用户可调配置，`ReadCacheConfig` 仍只有 `max_size`，验证：配置解析/schema 测试与文档检查。
@@ -23,19 +23,19 @@
 
 ## 4. 并行 Range
 
-- [ ] 4.1 在 `fetchChunkWindow` 内实现窗口拆分与并发子 Range 拉取，按 offset 拼接，验证：单元测试覆盖 2/4 路拆分、乱序完成与部分失败。
-- [ ] 4.2 为单文件增加“总并发子 Range”信号量（跨窗口共享），并与全局读槽位共同限流，验证：并发计数测试证明不超过单文件总计与全局上限。
-- [ ] 4.3 增加并行阈值（暂定 8 MiB），低于阈值保持单 Range，验证：小文件测试只观察到一次 `DriverRead`。
-- [ ] 4.4 确认后台预取窗口不并行，验证：预取测试中 `DriverRead` 并发数始终为 1。
-- [ ] 4.5 定义部分子 Range 失败的整窗语义：取消其余子 Range、释放槽位并让窗口失败，验证：一个子 Range 失败时不会返回部分窗口数据，重试可成功。
-- [ ] 4.6 明确 `windowLoad` 合并规则：只合并取数形态兼容的读，不兼容的等待者自行加载；等待者按自己的策略写缓存，验证：bulk loader + interactive waiter 的缓存写入与加载次数测试。
+- [x] 4.1 在 `fetchChunkWindow` 内实现窗口拆分与并发子 Range 拉取，按 offset 拼接，验证：单元测试覆盖 2/4 路拆分、乱序完成与部分失败。
+- [x] 4.2 为单文件增加“总并发子 Range”信号量（跨窗口共享），并与全局读槽位共同限流，验证：并发计数测试证明不超过单文件总计与全局上限。
+- [x] 4.3 增加并行阈值（暂定 8 MiB），低于阈值保持单 Range，验证：小文件测试只观察到一次 `DriverRead`。
+- [x] 4.4 确认后台预取窗口不并行，验证：预取测试中 `DriverRead` 并发数始终为 1。
+- [x] 4.5 定义部分子 Range 失败的整窗语义：取消其余子 Range、释放槽位并让窗口失败，验证：一个子 Range 失败时不会返回部分窗口数据，重试可成功。
+- [x] 4.6 明确 `windowLoad` 合并规则：只合并取数形态兼容的读，不兼容的等待者自行加载；等待者按自己的策略写缓存，验证：bulk loader + interactive waiter 的缓存写入与加载次数测试。
 
 ## 5. 驱动回退与内部并行
 
-- [ ] 5.1 实现驱动返回明确不支持错误时的单流回退，验证：fake 驱动返回 `ErrUnsupported`/typed error 时该文件后续窗口保持单流。
-- [ ] 5.2 回退后同一文件不再并行，验证：后续读窗口的 `DriverRead` 次数与单流一致。
-- [ ] 5.3 确认 VFS 不通过读取 body 长度或额外字节猜测 200 全量，验证：代码审查与 fake 驱动测试。
-- [ ] 5.4 确认 Quark 等内部并行驱动在 VFS 层保持单流，验证：该驱动上 `bulk` 读的 VFS 子 Range 数为 1，内部并发由驱动测试覆盖。
+- [x] 5.1 实现驱动返回明确不支持错误时的单流回退，验证：fake 驱动返回 `ErrUnsupported`/typed error 时该文件后续窗口保持单流。
+- [x] 5.2 回退后同一文件不再并行，验证：后续读窗口的 `DriverRead` 次数与单流一致。
+- [x] 5.3 确认 VFS 不通过读取 body 长度或额外字节猜测 200 全量，验证：代码审查与 fake 驱动测试。
+- [x] 5.4 确认 Quark 等内部并行驱动在 VFS 层保持单流，验证：该驱动上 `bulk` 读的 VFS 子 Range 数为 1，内部并发由驱动测试覆盖。
 
 ## 6. 生命周期取消
 
@@ -50,17 +50,17 @@
 
 ## 7. 公平性与优先级
 
-- [ ] 7.1 `bulk` 默认低优先级、`interactive` 默认高优先级，显式 `WithReadPriority` 覆盖意图默认值，验证：槽位竞争测试中交互读优先获得槽位，显式优先级测试中调用方设置生效。
-- [ ] 7.2 单文件总并发子 Range（跨窗口）不超过配置上限，多个 bulk 文件公平共享全局槽位，验证：双文件并发测试。
-- [ ] 7.3 bulk 不占用高优先级预留槽位，验证：高优先级槽位计数在 bulk 读取期间保持不变。
-- [ ] 7.4 并行子 Range 走驱动现有的请求限流/重试路径，验证：429 场景下 mount 的 rate budget 被共享，不因并行而绕过。
+- [x] 7.1 `bulk` 默认低优先级、`interactive` 默认高优先级，显式 `WithReadPriority` 覆盖意图默认值，验证：槽位竞争测试中交互读优先获得槽位，显式优先级测试中调用方设置生效。
+- [x] 7.2 单文件总并发子 Range（跨窗口）不超过配置上限，多个 bulk 文件公平共享全局槽位，验证：双文件并发测试。
+- [x] 7.3 bulk 不占用高优先级预留槽位，验证：高优先级槽位计数在 bulk 读取期间保持不变。
+- [x] 7.4 并行子 Range 走驱动现有的请求限流/重试路径，验证：429 场景下 mount 的 rate budget 被共享，不因并行而绕过。
 
 ## 8. 前端接线
 
 - [ ] 8.1 FUSE 按 `AccessHint` 与顺序判定选择策略：持续顺序大文件升级 bulk，seek/随机/多句柄保持 interactive，验证：挂载适配器与读域联动测试。
-- [ ] 8.2 CLI 为 `fs get`、`fs sync`、`fs cat`、`offline fetch` 声明 bulk；只对真正经过 VFS 读的元数据路径声明 probe（`fs check` 通常只取声明 hash，不作为 probe 调用点），验证：CLI 测试断言意图进入读路径。
+- [x] 8.2 CLI 为 `fs get`、`fs sync`、`fs cat`、`offline fetch` 声明 bulk；只对真正经过 VFS 读的元数据路径声明 probe（`fs check` 通常只取声明 hash，不作为 probe 调用点），验证：CLI 测试断言意图进入读路径。
 - [ ] 8.3 移动端为 `ReadAtInto`、媒体虚拟读声明 interactive，为 `ReadDownloadItemInto` 声明 bulk，并在 `openFileOptions` 增加可选 `intent`；`CloseFileJSON` / `CancelFileReadJSON` 调用显式预取取消，验证：移动端读路径与关闭句柄测试。
-- [ ] 8.4 后台任务为 `download`、`download_stream`、`offline fetch` 声明 bulk，验证：任务执行测试断言并行与缓存策略。
+- [x] 8.4 后台任务为 `download`、`download_stream`、`offline fetch` 声明 bulk，验证：任务执行测试断言并行与缓存策略。
 
 ## 9. 可观测性
 

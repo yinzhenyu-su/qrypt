@@ -181,7 +181,7 @@ func (h *DownloadStreamItemHandle) ReadInto(ctx context.Context, dst []byte) (in
 	if maxLen := size - readOffset; int64(len(dst)) > maxLen {
 		dst = dst[:maxLen]
 	}
-	n, err := h.core.ReadAtInto(vfs.WithoutReadPrefetch(ctx), sourcePath, readOffset, dst, 0)
+	n, err := h.core.ReadAtInto(vfs.WithReadIntent(vfs.WithoutReadPrefetch(ctx), vfs.ReadIntentBulk), sourcePath, readOffset, dst, 0)
 	h.batch.mu.Lock()
 	if current := h.batch.byID[h.itemID]; current != nil && !h.closed && n > 0 {
 		current.ReadOffset += int64(n)

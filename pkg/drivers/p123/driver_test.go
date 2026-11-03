@@ -206,6 +206,7 @@ func TestCapabilities(t *testing.T) {
 	d := New(Options{Username: "u", Password: "p"})
 	got := drive.Capabilities(d)
 	want := []drive.Capability{
+		drive.CapabilityParallelRange,
 		drive.CapabilityPathResolver,
 		drive.CapabilityResumableUploader,
 		drive.CapabilityServerSideCopy,

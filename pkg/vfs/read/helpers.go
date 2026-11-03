@@ -183,13 +183,39 @@ const (
 
 type priorityKey struct{}
 
+type priorityValue struct {
+	value Priority
+	set   bool
+}
+
 func WithPriority(ctx context.Context, p Priority) context.Context {
-	return context.WithValue(ctx, priorityKey{}, p)
+	return context.WithValue(ctx, priorityKey{}, priorityValue{value: p, set: true})
 }
 
 func priority(ctx context.Context) Priority {
-	p, _ := ctx.Value(priorityKey{}).(Priority)
-	return p
+	value, _ := ctx.Value(priorityKey{}).(priorityValue)
+	return value.value
+}
+
+func prioritySet(ctx context.Context) bool {
+	value, ok := ctx.Value(priorityKey{}).(priorityValue)
+	return ok && value.set
+}
+
+// applyIntentPriority supplies the intent's default priority only when the
+// caller did not set one explicitly.
+func applyIntentPriority(ctx context.Context, plan readPlan) context.Context {
+	if prioritySet(ctx) {
+		return ctx
+	}
+	switch plan.intent {
+	case ReadIntentBulk:
+		return WithPriority(ctx, PriorityLow)
+	case ReadIntentInteractive, ReadIntentProbe:
+		return WithPriority(ctx, PriorityHigh)
+	default:
+		return ctx
+	}
 }
 
 // --- keys ---
@@ -200,6 +226,16 @@ func ChunkKey(fid string, index int64) string {
 
 func WindowKey(fid string, start, end int64) string {
 	return fid + "\x00" + strconv.FormatInt(start, 10) + "\x00" + strconv.FormatInt(end, 10)
+}
+
+// WindowShapeKey keeps single-stream and parallel loads of the same range in
+// separate coalescing slots, so an interactive waiter never inherits a bulk
+// parallel fetch (and vice versa).
+func WindowShapeKey(key string, streams int) string {
+	if streams <= 1 {
+		return key
+	}
+	return key + "\x00streams=" + strconv.Itoa(streams)
 }
 
 // LoadKey returns the window-coalescing key for an entry: the read cache

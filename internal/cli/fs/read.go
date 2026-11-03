@@ -207,6 +207,7 @@ func runCat(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return err
 		}
 		defer cleanup()
+		ctx = vfs.WithReadIntent(ctx, vfs.ReadIntentBulk)
 
 		raw, _ := cmd.Flags().GetBool("raw")
 		var rc io.ReadCloser
@@ -256,6 +257,7 @@ func runGet(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return err
 		}
 		defer cleanup()
+		ctx = vfs.WithReadIntent(ctx, vfs.ReadIntentBulk)
 
 		localPath := util.ExpandHome(args[1])
 		force, _ := cmd.Flags().GetBool("force")

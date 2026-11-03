@@ -49,13 +49,14 @@ const (
 // windowLoad coalesces concurrent reads of the same cache window.
 // mu guards loads; entries are removed when their window load finishes.
 type windowLoad struct {
-	fid   string
-	start int64
-	end   int64
-	done  chan struct{}
-	data  map[int64][]byte
-	extra map[string]any
-	err   error
+	fid     string
+	start   int64
+	end     int64
+	streams int
+	done    chan struct{}
+	data    map[int64][]byte
+	extra   map[string]any
+	err     error
 }
 
 // slotState bounds concurrent driver reads. The normal/high channels are
@@ -123,6 +124,83 @@ type prefetchState struct {
 	cancels         map[string]map[string]context.CancelFunc
 	sem             chan struct{}
 	foregroundReads atomic.Int32
+}
+
+// parallelState bounds concurrent sub-ranges per file and remembers files
+// whose driver rejected parallel range reads.
+type parallelState struct {
+	mu          sync.Mutex
+	files       map[string]*parallelFile
+	nonParallel map[string]struct{}
+}
+
+type parallelFile struct {
+	ch    chan struct{}
+	limit int
+	refs  int
+}
+
+func newParallelState() *parallelState {
+	return &parallelState{
+		files:       map[string]*parallelFile{},
+		nonParallel: map[string]struct{}{},
+	}
+}
+
+func (s *State) acquireParallel(ctx context.Context, key string, limit int) (func(), error) {
+	if limit < 1 {
+		limit = 1
+	}
+	s.parallel.mu.Lock()
+	file := s.parallel.files[key]
+	if file == nil || file.limit != limit {
+		file = &parallelFile{ch: make(chan struct{}, limit), limit: limit}
+		s.parallel.files[key] = file
+	}
+	file.refs++
+	s.parallel.mu.Unlock()
+
+	release := func() {
+		<-file.ch
+		s.parallel.mu.Lock()
+		file.refs--
+		if file.refs == 0 && s.parallel.files[key] == file {
+			delete(s.parallel.files, key)
+		}
+		s.parallel.mu.Unlock()
+	}
+
+	select {
+	case file.ch <- struct{}{}:
+		return release, nil
+	case <-ctx.Done():
+		s.parallel.mu.Lock()
+		file.refs--
+		if file.refs == 0 && s.parallel.files[key] == file {
+			delete(s.parallel.files, key)
+		}
+		s.parallel.mu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+func (s *State) markNonParallel(key string) {
+	if key == "" {
+		return
+	}
+	s.parallel.mu.Lock()
+	s.parallel.nonParallel[key] = struct{}{}
+	s.parallel.mu.Unlock()
+}
+
+func (s *State) isNonParallel(key string) bool {
+	if key == "" {
+		return false
+	}
+	s.parallel.mu.Lock()
+	defer s.parallel.mu.Unlock()
+	_, ok := s.parallel.nonParallel[key]
+	return ok
 }
 
 type sequentialRead struct {
@@ -312,6 +390,7 @@ type State struct {
 	slots    *slotState
 	fastPath *fastPathState
 	windows  *windowState
+	parallel *parallelState
 }
 
 // NewState builds the read domain state together so ownership and
@@ -326,6 +405,7 @@ func NewState(cache Cache) *State {
 		slots:    newSlotState(),
 		fastPath: newFastPathState(),
 		windows:  newWindowState(),
+		parallel: newParallelState(),
 	}
 }
 
@@ -561,19 +641,22 @@ func (s *State) endWindowLoad(key string) {
 	s.windows.mu.Unlock()
 }
 
-func (s *State) findWindow(cacheKey string, index int64) *windowLoad {
+func (s *State) findWindow(cacheKey string, index int64, streams int) *windowLoad {
 	s.windows.mu.Lock()
 	defer s.windows.mu.Unlock()
 	for _, candidate := range s.windows.loads {
-		if candidate.fid == cacheKey && index >= candidate.start && index <= candidate.end {
+		if candidate.fid != cacheKey || index < candidate.start || index > candidate.end {
+			continue
+		}
+		candidateStreams := candidate.streams
+		if candidateStreams < 1 {
+			candidateStreams = 1
+		}
+		if streams <= 0 || candidateStreams == streams {
 			return candidate
 		}
 	}
 	return nil
-}
-
-func (s *State) windowContains(cacheKey string, index int64) bool {
-	return s.findWindow(cacheKey, index) != nil
 }
 
 func (s *State) reservePrefetch(key string) bool {
@@ -761,5 +844,5 @@ func (s *State) DebugSnapshot() readcache.DebugReadCache {
 
 // StatesReady reports whether the runtime sub-states are initialized.
 func (s *State) StatesReady() bool {
-	return s != nil && s.prefetch != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil
+	return s != nil && s.prefetch != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil && s.parallel != nil
 }
