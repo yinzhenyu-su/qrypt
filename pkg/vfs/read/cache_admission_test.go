@@ -108,6 +108,30 @@ func TestReadStreamBulkSkipsDurableCache(t *testing.T) {
 	}
 }
 
+func TestReadStreamInteractiveWritesDurableCache(t *testing.T) {
+	cache := &recordingCache{}
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: 1, ModTime: time.Now()},
+		data:     []byte("x"),
+		cacheKey: "cache",
+	}
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(cache)})
+
+	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentInteractive), "/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cache.puts) == 0 {
+		t.Fatal("interactive stream did not write the durable cache")
+	}
+}
+
 func TestStoreChunkHonorsCacheWritePlan(t *testing.T) {
 	cache := &recordingCache{}
 	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(cache)})

@@ -8,12 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/yinzhenyu/qrypt/internal/cli/i18n"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/syncer"
+	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
@@ -345,11 +346,21 @@ func get(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force
 }
 
 func countDirFiles(ctx context.Context, fs vfs.Reader, path string) (int, error) {
-	snap, err := sync.SnapshotVFS(ctx, fs, path)
+	snap, err := syncer.SnapshotVFS(ctx, fs, path)
 	if err != nil {
 		return 0, err
 	}
 	return snap.FileCount(), nil
+}
+
+const downloadWorkers = 4
+
+type downloadItem struct {
+	name   string
+	remote string
+	local  string
+	force  bool
+	skip   bool
 }
 
 func getDir(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force bool, bar *progressBar) error {
@@ -363,38 +374,110 @@ func getDir(ctx context.Context, fs vfs.Reader, remotePath, localPath string, fo
 		return err
 	}
 
+	items := make([]downloadItem, 0)
+	if err := collectDownloadItems(ctx, fs, remotePath, localPath, force, &items); err != nil {
+		return err
+	}
+	return runDownloadWorkers(ctx, items, downloadWorkers, func(ctx context.Context, item downloadItem) error {
+		if item.skip {
+			bar.fileSkipped(item.name)
+			return nil
+		}
+		bar.fileStarted(item.name)
+		if err := get(ctx, fs, item.remote, item.local, item.force, true, bar.loc, bar.out); err != nil {
+			return err
+		}
+		bar.fileDownloaded(item.name)
+		return nil
+	})
+}
+
+func collectDownloadItems(ctx context.Context, fs vfs.Reader, remotePath, localPath string, force bool, items *[]downloadItem) error {
 	entries, err := fs.List(ctx, remotePath)
 	if err != nil {
 		return err
 	}
-
 	for _, entry := range entries {
 		childRemote := remotePath + "/" + entry.Name
 		childLocal := filepath.Join(localPath, entry.Name)
 		if entry.IsDir {
-			if err := getDir(ctx, fs, childRemote, childLocal, force, bar); err != nil {
+			if err := os.MkdirAll(childLocal, 0o755); err != nil {
 				return err
 			}
-		} else if force {
-			bar.fileStarted(entry.Name)
-			if err := get(ctx, fs, childRemote, childLocal, true, true, bar.loc, bar.out); err != nil {
+			if err := collectDownloadItems(ctx, fs, childRemote, childLocal, force, items); err != nil {
 				return err
 			}
-			bar.fileDownloaded(entry.Name)
-		} else if _, err := os.Stat(childLocal); os.IsNotExist(err) {
-			bar.fileStarted(entry.Name)
-			if err := get(ctx, fs, childRemote, childLocal, false, true, bar.loc, bar.out); err != nil {
-				return err
-			}
-			bar.fileDownloaded(entry.Name)
-		} else {
-			bar.fileSkipped(entry.Name)
+			continue
 		}
+		item := downloadItem{name: entry.Name, remote: childRemote, local: childLocal, force: force}
+		if !force {
+			if _, err := os.Stat(childLocal); err == nil {
+				item.skip = true
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		*items = append(*items, item)
 	}
 	return nil
 }
 
+func runDownloadWorkers(ctx context.Context, items []downloadItem, workers int, fn func(context.Context, downloadItem) error) error {
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(items) {
+		workers = len(items)
+	}
+	if workers == 0 {
+		return nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan downloadItem)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				if runCtx.Err() != nil {
+					return
+				}
+				if err := fn(runCtx, item); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+						cancel()
+					}
+					errMu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+	for _, item := range items {
+		select {
+		case jobs <- item:
+		case <-runCtx.Done():
+		}
+		if runCtx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr == nil && runCtx.Err() != nil {
+		return runCtx.Err()
+	}
+	return firstErr
+}
+
 type progressBar struct {
+	mu        sync.Mutex
 	total     int
 	completed int
 	skipped   int
@@ -408,17 +491,23 @@ func newProgressBar(total int, loc *i18n.Localizer, out io.Writer) *progressBar 
 }
 
 func (p *progressBar) fileStarted(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.current = name
 	p.render()
 }
 
 func (p *progressBar) fileDownloaded(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.completed++
 	p.current = ""
 	p.render()
 }
 
 func (p *progressBar) fileSkipped(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.skipped++
 	p.current = ""
 	p.render()
@@ -452,6 +541,8 @@ func (p *progressBar) render() {
 }
 
 func (p *progressBar) done(dirName string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	downloaded := p.completed
 	skipped := p.skipped
 	var summary string

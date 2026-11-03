@@ -126,6 +126,11 @@ type chunkedStreamReader struct {
 	bytesRead int64
 	closed    bool
 
+	prefetchMu     sync.Mutex
+	prefetching    bool
+	prefetchDone   chan struct{}
+	prefetchCancel context.CancelFunc
+
 	// Debug bookkeeping finalized on Close.
 	opID         string
 	activeID     uint64
@@ -160,6 +165,7 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 // refill loads the chunk containing r.pos. A short or empty chunk ends the
 // stream (the file has no more data), matching readRange's stop condition.
 func (r *chunkedStreamReader) refill(ctx context.Context) error {
+	r.waitPrefetch()
 	r.buf = nil
 	r.bufPos = 0
 	if r.entry.Size > 0 && r.pos >= r.entry.Size {
@@ -183,7 +189,66 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 		return nil
 	}
 	r.buf = data
+	r.startPrefetch(windowChunks)
 	return nil
+}
+
+// startPrefetch fills the next window into the hot cache while the caller
+// consumes the current one. Depth is fixed at one window so memory stays
+// bounded by the window size.
+func (r *chunkedStreamReader) startPrefetch(windowChunks int) {
+	nextPos := r.pos + int64(len(r.buf))
+	if r.entry.Size > 0 && nextPos >= r.entry.Size {
+		return
+	}
+	r.prefetchMu.Lock()
+	if r.prefetching || r.closed {
+		r.prefetchMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	prefetchCtx, cancel := context.WithCancel(r.ctx)
+	r.prefetching = true
+	r.prefetchDone = done
+	r.prefetchCancel = cancel
+	r.prefetchMu.Unlock()
+
+	go func() {
+		defer func() {
+			cancel()
+			r.prefetchMu.Lock()
+			r.prefetching = false
+			r.prefetchDone = nil
+			r.prefetchCancel = nil
+			r.prefetchMu.Unlock()
+			close(done)
+		}()
+		chunkIndex := nextPos / ChunkSize
+		start := nextPos - chunkIndex*ChunkSize
+		want := ChunkSize - start
+		if r.entry.Size > 0 && r.entry.Size-nextPos < want {
+			want = r.entry.Size - nextPos
+		}
+		_, _ = r.reader.readChunkRange(prefetchCtx, r.entry, chunkIndex, start, want, windowChunks)
+	}()
+}
+
+func (r *chunkedStreamReader) waitPrefetch() {
+	r.prefetchMu.Lock()
+	done := r.prefetchDone
+	r.prefetchMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func (r *chunkedStreamReader) cancelPrefetch() {
+	r.prefetchMu.Lock()
+	cancel := r.prefetchCancel
+	r.prefetchMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (r *chunkedStreamReader) Close() error {
@@ -191,6 +256,8 @@ func (r *chunkedStreamReader) Close() error {
 		return nil
 	}
 	r.closed = true
+	r.cancelPrefetch()
+	r.waitPrefetch()
 	r.finish(r.bytesRead, nil)
 	return nil
 }

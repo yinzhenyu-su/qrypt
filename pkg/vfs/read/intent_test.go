@@ -102,6 +102,12 @@ func (h *planCaptureHost) DriverRead(ctx context.Context, _ drive.Entry, offset,
 	return io.NopCloser(bytes.NewReader(h.data[offset:end])), nil
 }
 
+func (h *planCaptureHost) readCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reads
+}
+
 func TestReadCarriesReadPlan(t *testing.T) {
 	host := &planCaptureHost{entry: drive.Entry{ID: "id", Size: 1, ModTime: time.Now()}, data: []byte("x")}
 	profile := drive.DefaultReadProfile()
@@ -229,5 +235,37 @@ func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
 	}
 	if !host.prioritySet || host.priority != PriorityLow {
 		t.Fatalf("adaptive priority = %v (set=%v), want low", host.priority, host.prioritySet)
+	}
+}
+
+func TestReadStreamPrefetchesNextWindow(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), ChunkSize*8)
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
+		data:     data,
+		cacheKey: "cache",
+	}
+	profile := drive.DefaultReadProfile()
+	profile.BulkStreams = 1
+	profile.BulkWindowChunks = 1
+	profile.ParallelThreshold = 1
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: profile})
+
+	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentBulk), "/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Read(make([]byte, ChunkSize)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for host.readCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := host.readCount(); got < 2 {
+		t.Fatalf("driver reads = %d, want the next-window prefetch", got)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
