@@ -7,7 +7,7 @@
 ## 2. 驱动默认策略与能力
 
 - [x] 2.1 在 `pkg/drive` 定义驱动默认读策略（并行流数、窗口块数、预取深度），并为支持并行的驱动提供默认值，验证：表驱动测试覆盖默认值与能力缺失。
-- [x] 2.2 在 `pkg/drive` 增加 `CapabilityParallelRange`、可选的 `ParallelReadLimiter` 与 `CapabilityInternalParallelRead`，为支持任意 Range 的驱动声明前者，为 Quark 声明后者，验证：能力矩阵与契约测试。
+- [x] 2.2 在 `pkg/drive` 增加 `CapabilityParallelRange`、可选的 `ParallelReadLimiter` 与 `CapabilityInternalParallelRead`，为能保证子 Range 返回 206 的驱动声明前者，为 Quark 声明后者，验证：能力矩阵与契约测试。
 - [x] 2.3 增加 `readPlan`（意图、并行流数、窗口块数、预取深度、是否写缓存），从意图与驱动默认策略派生，验证：表驱动测试覆盖默认值、驱动能力缺失与内部并行驱动。
 - [x] 2.4 将驱动默认策略注入 `read.ReaderDeps`，验证：不同驱动到读层的接线测试。
 - [x] 2.5 确认不新增用户可调配置，`ReadCacheConfig` 仍只有 `max_size`，验证：配置解析/schema 测试与文档检查。

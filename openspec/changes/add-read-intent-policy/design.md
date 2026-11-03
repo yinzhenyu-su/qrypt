@@ -109,7 +109,7 @@
 
 ### 10. 跨文件 worker 与 ReadStream 跨窗口预取
 
-- `fs get` 目录与 `fs sync` 在 CLI/syncer 层增加有界 worker 池，固定默认 4，不新增用户配置；每个 worker 使用 `bulk` 意图；跨文件并发与单文件并行共享全局读槽位；进度与取消沿用现有 progress/context。
+- `fs get` 目录与 `fs sync` 在 CLI/syncer 层增加有界 worker 池，固定默认 4，不新增用户配置；`download` 任务既有的 `Concurrency` 选项保持不变。每个 worker 使用 `bulk` 意图；跨文件并发与单文件并行共享全局读槽位；进度与取消沿用现有 progress/context。
 - `ReadStream` 在 `chunkedStreamReader` 中增加下一窗口预取，深度来自驱动默认策略（默认 1）；当前窗口消费完前预取完成；内存上界为深度 × 窗口大小；取消走同一 scope。
 - 跨文件并发放在 CLI/syncer 而不是 VFS：VFS 不知道文件列表；`ReadStream` 预取放在 VFS 读域内。
 - 备选：把跨文件并发放进 VFS（拒绝，职责错位）；无限 read-ahead（拒绝，内存不可控）。

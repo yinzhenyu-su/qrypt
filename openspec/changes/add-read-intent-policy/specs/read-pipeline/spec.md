@@ -260,7 +260,7 @@
 
 ### Requirement: 批量落地使用有界跨文件并发
 
-`fs get` 目录与 `fs sync` 等批量落地操作 SHALL 使用有界跨文件 worker 池，固定默认 worker 数为 4，MUST NOT 要求用户配置。每个 worker MUST 以 `bulk` 意图读取；跨文件并发与单文件并行 MUST 共享全局读槽位，单个大文件 MUST NOT 因并行子 Range 挤占全部 worker 或槽位。取消 MUST 停止未开始的 worker 并释放已占用槽位；进度 MUST 保持单调。
+`fs get` 目录与 `fs sync` 等批量落地操作 SHALL 使用有界跨文件 worker 池，固定默认 worker 数为 4，MUST NOT 要求用户配置。每个 worker MUST 以 `bulk` 意图读取；跨文件并发与单文件并行 MUST 共享全局读槽位，单个大文件 MUST NOT 因并行子 Range 挤占全部 worker 或槽位。取消 MUST 停止未开始的 worker 并释放已占用槽位；进度 MUST 保持单调。本要求只覆盖 `fs get` 目录与 `fs sync`；`download` 任务既有的 `Concurrency` 选项保持不变，不属于本要求。
 
 #### Scenario: 多个小文件并发落地
 
