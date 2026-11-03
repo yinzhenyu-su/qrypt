@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- feat(vfs): add read intents, driver read profiles, and bounded parallel range reads
+- feat(vfs): cancel speculative prefetch on invalidation, session release, and caller cancel
+- feat(vfs): skip durable read-cache writes for bulk and probe reads
+- feat(cli): download directory files and sync files with four workers
+- feat(vfs): prefetch the next read-stream window
+
+### Bug fixes
+- fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
+
+---
+
 ## v0.6.1 (2026-11-02)
 
 ### Features

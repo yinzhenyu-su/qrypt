@@ -71,32 +71,32 @@
 
 ## 10. 跨文件并发
 
-- [ ] 10.1 在 `fs get` 目录路径增加有界 worker 池（固定默认 4，不新增用户配置），验证：多文件目录测试证明并发数不超过 4 且进度单调。
-- [ ] 10.2 在 `fs sync` 执行器增加有界 worker 池，验证：同步多文件测试证明并发与顺序语义正确。
-- [ ] 10.3 跨文件 worker 与单文件并行共享全局槽位、单文件总并发上限独立生效，验证：大文件 + 多小文件并发测试。
-- [ ] 10.4 取消时停止未开始的 worker 并释放在途槽位，验证：取消测试中不再启动新文件且槽位归零。
-- [ ] 10.5 固定默认 worker 数为 4，不新增用户配置，验证：默认值测试与配置/schema 检查。
+- [x] 10.1 在 `fs get` 目录路径增加有界 worker 池（固定默认 4，不新增用户配置），验证：多文件目录测试证明并发数不超过 4 且进度单调。
+- [x] 10.2 在 `fs sync` 执行器增加有界 worker 池，验证：同步多文件测试证明并发与顺序语义正确。
+- [x] 10.3 跨文件 worker 与单文件并行共享全局槽位、单文件总并发上限独立生效，验证：大文件 + 多小文件并发测试。
+- [x] 10.4 取消时停止未开始的 worker 并释放在途槽位，验证：取消测试中不再启动新文件且槽位归零。
+- [x] 10.5 固定默认 worker 数为 4，不新增用户配置，验证：默认值测试与配置/schema 检查。
 
 ## 11. ReadStream 跨窗口预取
 
-- [ ] 11.1 在 `chunkedStreamReader` 中预取下一个窗口，验证：窗口边界无停顿的吞吐测试。
-- [ ] 11.2 预取深度有界（默认 1），内存不随文件大小增长，验证：大文件流式读取的内存上界测试。
-- [ ] 11.3 取消或关闭读会话时停止在途预取并释放槽位，验证：取消流测试。
-- [ ] 11.4 流缓存写入遵循读意图：显式 bulk 不写、interactive 写，验证：缓存目录断言。
+- [x] 11.1 在 `chunkedStreamReader` 中预取下一个窗口，验证：窗口边界无停顿的吞吐测试。
+- [x] 11.2 预取深度有界（默认 1），内存不随文件大小增长，验证：大文件流式读取的内存上界测试。
+- [x] 11.3 取消或关闭读会话时停止在途预取并释放槽位，验证：取消流测试。
+- [x] 11.4 流缓存写入遵循读意图：显式 bulk 不写、interactive 写，验证：缓存目录断言。
 
 ## 12. 直读路径并行
 
-- [ ] 12.1 在 `pkg/drive` 提供共享的并行 Range helper（驱动能力、默认流数、单文件总上限、取消），验证：helper 单元测试。
-- [ ] 12.2 让 drivecopy（`fs copy` / `copy` 任务）使用该 helper，验证：大文件并行、按 offset 拼接、不写 VFS 缓存。
-- [ ] 12.3 让 `share fetch` 的 `driver.Read` 回退使用该 helper，验证：回退路径并行与取消。
-- [ ] 12.4 直读路径使用独立有界信号量，默认与 VFS 单文件上限一致，验证：并发计数测试不超过上限。
-- [ ] 12.5 Quark 等内部并行驱动的直读保持单流，验证：VFS 子 Range 数为 1，不出现叠加。
+- [x] 12.1 在 `pkg/drive` 提供共享的并行 Range helper（驱动能力、默认流数、单文件总上限、取消），验证：helper 单元测试。
+- [x] 12.2 让 drivecopy（`fs copy` / `copy` 任务）使用该 helper，验证：大文件并行、按 offset 拼接、不写 VFS 缓存。
+- [x] 12.3 让 `share fetch` 的 `driver.Read` 回退使用该 helper，验证：回退路径并行与取消。
+- [x] 12.4 直读路径使用独立有界信号量，默认与 VFS 单文件上限一致，验证：并发计数测试不超过上限。
+- [x] 12.5 Quark 等内部并行驱动的直读保持单流，验证：VFS 子 Range 数为 1，不出现叠加。
 
 ## 13. 文档与整体验证
 
-- [ ] 13.1 更新 `docs/for-user/full-config.md`、`docs/for-developer/architecture.md`、`docs/for-developer/driver-development.md` 的能力与读策略说明，并在 changelog/release notes 说明默认并行与缓存行为变化，验证：相对链接有效、`git diff --check` 通过。
-- [ ] 13.2 增加一个端到端测试：bulk 下载触发并行 Range、跳过持久缓存、取消后预取停止，验证：集成测试在冷缓存下通过。
-- [ ] 13.3 增加 Quark 内部并行与 VFS 并行的互斥回归测试，验证：Quark 上 VFS 子 Range 数为 1，不出现 4×3 叠加。
-- [ ] 13.4 使用 CI 相同的 Go 版本运行 `scripts/ci/check-all.sh`，验证：退出码为 0 且输出 `== local CI check passed ==`。
-- [ ] 13.5 对所有改动的 Go 文件运行 `GOFMT="$(go env GOROOT)/bin/gofmt"` 的 `-w` 与 `-l`，验证：`gofmt -l` 无输出。
-- [ ] 13.6 重新运行 `openspec validate "add-read-intent-policy" --type change --strict`，验证：输出 `Change 'add-read-intent-policy' is valid`。
+- [x] 13.1 更新 `docs/for-user/full-config.md`、`docs/for-developer/architecture.md`、`docs/for-developer/driver-development.md` 的能力与读策略说明，并在 changelog/release notes 说明默认并行与缓存行为变化，验证：相对链接有效、`git diff --check` 通过。
+- [x] 13.2 增加一个端到端测试：bulk 下载触发并行 Range、跳过持久缓存、取消后预取停止，验证：集成测试在冷缓存下通过。
+- [x] 13.3 增加 Quark 内部并行与 VFS 并行的互斥回归测试，验证：Quark 上 VFS 子 Range 数为 1，不出现 4×3 叠加。
+- [x] 13.4 使用 CI 相同的 Go 版本运行 `scripts/ci/check-all.sh`，验证：退出码为 0 且输出 `== local CI check passed ==`。
+- [x] 13.5 对所有改动的 Go 文件运行 `GOFMT="$(go env GOROOT)/bin/gofmt"` 的 `-w` 与 `-l`，验证：`gofmt -l` 无输出。
+- [x] 13.6 重新运行 `openspec validate "add-read-intent-policy" --type change --strict`，验证：输出 `Change 'add-read-intent-policy' is valid`。

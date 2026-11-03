@@ -202,15 +202,16 @@ another domain's internal state.
   directory prefetch, list backend around driver `List`, and list scheduler
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
-- `read_range.go`: range reads, chunk slicing, and bounded driver reads
-- `pkg/vfs/read/reader.go`: read window load/coalescing, in-flight wait handling,
-  read-path staging flush, chunk availability, read-slot admission,
-  prefetch reservations, cache/window/hot-chunk/range-hit state, and the
-  read-window driver read / chunk-cache write backend
-- `read_prefetch.go`: adjacent read prefetch scheduling and execution
-- `read_fast_path.go`: hot chunk cache and cached-range promotion helpers
-- `read_keys.go` and `read_debug_helpers.go`: read cache keys and diagnostic
-  helpers
+- `pkg/vfs/read/reader.go`: read window load/coalescing, bounded parallel
+  sub-range fetch, read-slot admission, prefetch reservations, read-window
+  driver read and cache-write backend
+- `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
+- `pkg/vfs/read/helpers.go`: read intent/plan context, priority, cache/window
+  keys, and read debug helpers
+- `pkg/vfs/read/state.go`: read slots, in-flight windows, prefetch tracking,
+  per-file parallel caps, lifecycle scopes, and cache admission state
+- `pkg/vfs/diagnostics/read.go`: bounded read-event summaries/details and the
+  read intent/stream/cancel-reason projection
 - `staging.go`: local write staging, create/write/flush/truncate/mtime
   operations, and write-side pending/staging/hash transitions
 - `pkg/vfs/upload/domain.go`: the single upload owner assembled from service/store,
