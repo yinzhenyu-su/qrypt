@@ -164,6 +164,66 @@ func (s *readHintFS) ReleaseReadSession(sessionID uint64) {
 	s.mu.Unlock()
 }
 
+// prefetchReadFS models the read domain's session-scoped speculative
+// prefetch: the first handle read starts a background read tied to its
+// session, and ReleaseReadSession is the only thing that stops it. The
+// adapter's contract is to call that method when the FUSE handle closes.
+type prefetchReadFS struct {
+	stubFS
+	mu         sync.Mutex
+	hints      []vfsread.AccessHint
+	released   []uint64
+	sessions   map[uint64]context.CancelFunc
+	started    chan struct{}
+	canceled   chan struct{}
+	startOnce  sync.Once
+	cancelOnce sync.Once
+}
+
+func (s *prefetchReadFS) Read(ctx context.Context, _ string, _, _ int64) (io.ReadCloser, error) {
+	hint, ok := vfsread.AccessHintFromContext(ctx)
+	if !ok {
+		return nil, errors.New("missing read access hint")
+	}
+	s.mu.Lock()
+	s.hints = append(s.hints, hint)
+	if s.sessions == nil {
+		s.sessions = map[uint64]context.CancelFunc{}
+	}
+	if _, exists := s.sessions[hint.SessionID]; !exists {
+		prefetchCtx, cancel := context.WithCancel(context.Background())
+		s.sessions[hint.SessionID] = cancel
+		go func() {
+			s.startOnce.Do(func() { close(s.started) })
+			<-prefetchCtx.Done()
+			s.cancelOnce.Do(func() { close(s.canceled) })
+		}()
+	}
+	s.mu.Unlock()
+	return io.NopCloser(strings.NewReader("x")), nil
+}
+
+func (s *prefetchReadFS) ReleaseReadSession(sessionID uint64) {
+	s.mu.Lock()
+	cancel := s.sessions[sessionID]
+	delete(s.sessions, sessionID)
+	s.released = append(s.released, sessionID)
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (s *prefetchReadFS) cancelAll() {
+	s.mu.Lock()
+	sessions := s.sessions
+	s.sessions = nil
+	s.mu.Unlock()
+	for _, cancel := range sessions {
+		cancel()
+	}
+}
+
 func (stubFS) Read(context.Context, string, int64, int64) (io.ReadCloser, error) {
 	return nil, errNotFound
 }
@@ -551,6 +611,78 @@ func TestAdapterPassesStableReadSessionAndReleasesIt(t *testing.T) {
 	}
 	if len(fs.released) != 1 || fs.released[0] != fs.hints[0].SessionID {
 		t.Fatalf("released = %v, want session %d", fs.released, fs.hints[0].SessionID)
+	}
+}
+
+func TestAdapterReleaseStopsSessionScopedPrefetch(t *testing.T) {
+	fs := &prefetchReadFS{
+		stubFS: stubFS{entries: map[string]drive.Entry{
+			"/file.txt": {ID: "file-id", Name: "file.txt", Size: 2},
+		}},
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+	ad := newAdapter(fs, StatfsOptions{})
+	defer ad.shutdown()
+	t.Cleanup(fs.cancelAll)
+
+	errno, fh := ad.Open("/file.txt", 0)
+	if errno != 0 || fh == 0 {
+		t.Fatalf("Open errno=%d fh=%d, want success", errno, fh)
+	}
+	if got := ad.Read("/file.txt", make([]byte, 1), 0, fh); got != 1 {
+		t.Fatalf("Read = %d, want 1", got)
+	}
+	select {
+	case <-fs.started:
+	case <-time.After(time.Second):
+		t.Fatal("session-scoped prefetch did not start")
+	}
+
+	if errno := ad.Release("/file.txt", fh); errno != 0 {
+		t.Fatalf("Release errno = %d", errno)
+	}
+	select {
+	case <-fs.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Release did not stop the session-scoped prefetch")
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.released) != 1 {
+		t.Fatalf("released sessions = %v, want one", fs.released)
+	}
+	if len(fs.hints) == 0 || fs.released[0] != fs.hints[0].SessionID {
+		t.Fatalf("released session = %v, want hint session %v", fs.released, fs.hints)
+	}
+}
+
+func TestAdapterReleaseIsIdempotent(t *testing.T) {
+	fs := &readHintFS{stubFS: stubFS{entries: map[string]drive.Entry{
+		"/file.txt": {ID: "file-id", Name: "file.txt", Size: 1},
+	}}}
+	ad := newAdapter(fs, StatfsOptions{})
+	defer ad.shutdown()
+
+	errno, fh := ad.Open("/file.txt", 0)
+	if errno != 0 || fh == 0 {
+		t.Fatalf("Open errno=%d fh=%d, want success", errno, fh)
+	}
+	if got := ad.Read("/file.txt", make([]byte, 1), 0, fh); got != 1 {
+		t.Fatalf("Read = %d, want 1", got)
+	}
+	if errno := ad.Release("/file.txt", fh); errno != 0 {
+		t.Fatalf("first Release errno = %d", errno)
+	}
+	if errno := ad.Release("/file.txt", fh); errno != 0 {
+		t.Fatalf("second Release errno = %d", errno)
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.released) != 1 {
+		t.Fatalf("released sessions = %v, want exactly one", fs.released)
 	}
 }
 
