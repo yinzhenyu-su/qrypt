@@ -23,6 +23,8 @@
 
 行为不变：本变更以 characterization 测试先行，所有现有读语义、公开 API、配置面、缓存格式和驱动契约保持不变。
 
+2026-11-04 设计验证后缩小下一阶段范围：只实施不可变 `ReadPlan`、`ScopeRegistry` 和 `CachePolicy`；`Scheduler`、`WindowRegistry`、共享取数层和文件拆分推迟。验证结果、推迟理由和重新评估触发条件见 `design.md` 的 Validation Results。
+
 ## Capabilities
 
 ### New Capabilities

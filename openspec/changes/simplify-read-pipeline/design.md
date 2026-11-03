@@ -197,6 +197,23 @@ func IsUnsupported(err error) bool
 - 只把填充逻辑收敛到 `Observer` 包装器，避免每个阶段各自判断 plan 是否存在。
 - 备选：新增调度器等待时间等字段（拒绝，超出本次范围）。
 
+## Validation Results (2026-11-04)
+
+设计验证以测试/基准形式落地在 `pkg/vfs/read`，不改生产代码：
+
+| 实验 | 位置 | 结果 |
+|---|---|---|
+| 取消登记一致性 | `registry_consistency_test.go` | invalidate / session-release / legacy seek / close 四条路径都会让两套登记同时清空；测试矩阵内没有观察到分歧 |
+| 调度不变量 | `scheduler_invariant_test.go` | 全局槽位、每文件许可、预取名額均未超限；32×100 并发 acquire/release 后全部归零，无泄漏 |
+| `findWindow` 成本 | `bench_window_test.go` | 1/10/100 个在途窗口分别约 31/80/450 ns/op，0 allocs；相对 512 KiB 读窗口可忽略 |
+| 双并行策略 | `parallel_policy_test.go` | parallel / no-capability / internal-parallel / strict-unsupported 四种情况下，VFS 与 `drive.ReadParallel` 的 parallel/single/fallback 判定一致 |
+
+结论：测试矩阵内没有证据表明重复机制正在造成取消分歧、并发超限、泄漏或两条并行路径漂移。`findWindow` 的线性扫描也不是性能瓶颈。因此下一步采用**最小可行收敛**，而不是一次性完成全部阶段：
+
+- 保留并优先实施：不可变 `ReadPlan`、`ScopeRegistry`、`CachePolicy`。
+- 推迟：`Scheduler`、`WindowRegistry`、共享取数层、文件拆分/测试接缝删除。它们仍有维护价值，但当前证据不支持把它们作为稳定性修复。
+- 重新评估触发条件：出现取消登记分歧、槽位超限/泄漏、`findWindow` 在真实负载下超过 10 µs/op、VFS 与直读策略漂移，或有新功能必须同时修改这些机制。
+
 ## Risks / Trade-offs
 
 - [并发预算合并导致公平性变化] → 保留现有容量常量与获取顺序；用计数 fake 断言同一场景下前后并发数一致；阶段 4 单独提交。
@@ -207,20 +224,24 @@ func IsUnsupported(err error) bool
 - [文件拆分引入循环依赖] → 全部留在 `package read`，编译期即可发现；不新增子包。
 - [重构期间行为漂移难以定位] → 阶段 0 先建立 characterization 基线；每阶段结束跑同一套测试；每阶段独立提交，可单独回滚。
 - [直读路径行为变化] → 保留独立预算实例和现有 part size；只替换实现，不改变容量与顺序。
+- [推迟 Scheduler/WindowRegistry 后重复机制继续存在] → 已用不变量测试和基准锁定当前行为；重新评估触发条件明确，出现证据再启动。
 
 ## Migration Plan
 
-每个阶段都必须编译、通过现有测试和 characterization 测试，并作为独立提交。任一步失败可回滚该提交而不影响前后阶段。
+每个阶段都必须编译、通过现有测试和验证测试，并作为独立提交。任一步失败可回滚该提交。
 
-0. **Characterization 基线**：为窗口边界、合并、并行、strict 回退、取消、缓存准入、流预取和诊断字段建立行为测试；记录 `-race -count=10` 基线。
+0. **设计验证（已完成）**：四项实验落地为测试/基准；结论见上。
 1. **不可变计划**：引入 `ReadPlan` 与 `PlanResolver`，替换 `readPlan` 和哨兵值；入口只解析一次。
-2. **窗口注册表**：用 `WindowRegistry` 替换 `windows` + `findWindow`；预取去重改用注册表。
-3. **作用域注册表**：用 `ScopeRegistry` 替换 `prefetch.cancels/reasons` 与 `scopes`；删除 `prefetchState` 中已迁移字段。
-4. **调度器**：用 `Scheduler` 替换 `slotState`、`parallelState`、`prefetch.sem`、`directReadSlotPool`；保持容量与优先级语义。
-5. **缓存准入**：引入 `CachePolicy`，收敛热块/持久缓存判断和重复查找分支。
-6. **共享取数**：抽取 `SplitRanges` / `ReadSpan` / `IsUnsupported`，让 VFS 与 `drive.ReadParallel` 共用。
-7. **删除测试接缝与拆分文件**：删除 `readRuntime` / `readWindowBackend` / `stateRuntime`，迁移测试；按决策 9 拆分文件；抽取 `openRead`。
-8. **文档与最终门禁**：更新 `docs/for-developer/architecture.md` 与 `CHANGELOG.md`；跑完整本地 CI、race、goleak、基准对比。
+2. **作用域注册表**：用 `ScopeRegistry` 替换 `prefetch.cancels/reasons` 与 `scopes`；删除 `prefetchState` 中已迁移字段。
+3. **缓存准入**：引入 `CachePolicy`，收敛热块/持久缓存判断和重复查找分支。
+4. **文档与最终门禁**：更新 `docs/for-developer/architecture.md` 与 `CHANGELOG.md`；跑完整本地 CI、race、goleak、基准对比。
+
+推迟项（不阻塞上述阶段）：
+
+- `WindowRegistry`：`findWindow` 基准显示当前成本可忽略；只有在真实负载超过阈值时再做。
+- `Scheduler`：不变量测试未发现超限/泄漏；只有出现跨池超限或公平性问题时再做。
+- 共享取数层：两条路径当前策略一致；只有出现漂移或需要同时修改时再抽取。
+- 文件拆分与测试接缝删除：属于阅读性/维护性收益，等逻辑稳定后单独做。
 
 回滚策略：按阶段 revert；无持久化格式变化，无数据迁移，无需版本兼容处理。
 
