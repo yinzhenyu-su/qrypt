@@ -174,6 +174,17 @@ func (v *VFS) debugHotChunks() (int, int64) {
 var WithoutReadPrefetch = read.WithoutReadPrefetch
 var WithoutDirPrefetch = listing.WithoutDirPrefetch
 
+type ReadIntent = read.ReadIntent
+
+const (
+	ReadIntentUnspecified = read.ReadIntentUnspecified
+	ReadIntentInteractive = read.ReadIntentInteractive
+	ReadIntentBulk        = read.ReadIntentBulk
+	ReadIntentProbe       = read.ReadIntentProbe
+)
+
+var WithReadIntent = read.WithReadIntent
+
 type ReadPriority = read.Priority
 
 const (

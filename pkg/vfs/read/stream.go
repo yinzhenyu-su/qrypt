@@ -95,8 +95,10 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 		return nil, err
 	}
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
+	streamCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
+	streamCtx = WithReadPlan(streamCtx, r.readPlanFor(ctx, entry))
 	return &chunkedStreamReader{
-		ctx:          drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path}),
+		ctx:          streamCtx,
 		reader:       r,
 		path:         path,
 		entry:        entry,

@@ -1,17 +1,17 @@
 ## 1. 意图基础
 
-- [ ] 1.1 在 `pkg/vfs/read/helpers.go` 增加 `ReadIntent` 与 `WithReadIntent` / `ReadIntentFromContext`，验证：单元测试覆盖未声明、`bulk`、`interactive`、`probe` 四种取值。
-- [ ] 1.2 将意图沿 `Read`、`ReadStream`、`readChunkRange`、`loadWindow`、`fetchChunkWindow` 传递，验证：意图在每一层可读取的传递测试。
-- [ ] 1.3 确认未声明意图时现有读行为不变，验证：现有读路径测试全部保持通过。
+- [x] 1.1 在 `pkg/vfs/read/helpers.go` 增加 `ReadIntent` 与 `WithReadIntent` / `ReadIntentFromContext`，验证：单元测试覆盖未声明、`bulk`、`interactive`、`probe` 四种取值。
+- [x] 1.2 将意图沿 `Read`、`ReadStream`、`readChunkRange`、`loadWindow`、`fetchChunkWindow` 传递，验证：意图在每一层可读取的传递测试。
+- [x] 1.3 确认未声明意图时现有读行为不变，验证：现有读路径测试全部保持通过。
 
 ## 2. 驱动默认策略与能力
 
-- [ ] 2.1 在 `pkg/drive` 定义驱动默认读策略（并行流数、窗口块数、预取深度），并为支持并行的驱动提供默认值，验证：表驱动测试覆盖默认值与能力缺失。
+- [x] 2.1 在 `pkg/drive` 定义驱动默认读策略（并行流数、窗口块数、预取深度），并为支持并行的驱动提供默认值，验证：表驱动测试覆盖默认值与能力缺失。
 - [ ] 2.2 在 `pkg/drive` 增加 `CapabilityParallelRange`、可选的 `ParallelReadLimiter` 与 `CapabilityInternalParallelRead`，为支持任意 Range 的驱动声明前者，为 Quark 声明后者，验证：能力矩阵与契约测试。
-- [ ] 2.3 增加 `readPlan`（意图、并行流数、窗口块数、预取深度、是否写缓存），从意图与驱动默认策略派生，验证：表驱动测试覆盖默认值、驱动能力缺失与内部并行驱动。
-- [ ] 2.4 将驱动默认策略注入 `read.ReaderDeps`，验证：不同驱动到读层的接线测试。
-- [ ] 2.5 确认不新增用户可调配置，`ReadCacheConfig` 仍只有 `max_size`，验证：配置解析/schema 测试与文档检查。
-- [ ] 2.6 为测试/调试保留非用户配置的注入点，验证：测试可覆盖策略，生产配置无法设置。
+- [x] 2.3 增加 `readPlan`（意图、并行流数、窗口块数、预取深度、是否写缓存），从意图与驱动默认策略派生，验证：表驱动测试覆盖默认值、驱动能力缺失与内部并行驱动。
+- [x] 2.4 将驱动默认策略注入 `read.ReaderDeps`，验证：不同驱动到读层的接线测试。
+- [x] 2.5 确认不新增用户可调配置，`ReadCacheConfig` 仍只有 `max_size`，验证：配置解析/schema 测试与文档检查。
+- [x] 2.6 为测试/调试保留非用户配置的注入点，验证：测试可覆盖策略，生产配置无法设置。
 
 ## 3. 缓存准入
 
@@ -64,7 +64,7 @@
 
 ## 9. 可观测性
 
-- [ ] 9.1 在 `drive.MetricEvent` 与 `vfstypes.DebugActiveOp` 追加意图、并行流数、预取取消原因字段，验证：JSON 序列化测试。
+- [x] 9.1 在 `drive.MetricEvent` 与 `vfstypes.DebugActiveOp` 追加意图、并行流数、预取取消原因字段，验证：JSON 序列化测试。
 - [ ] 9.2 在读事件与阶段明细中填充新增字段：汇总事件记录最大流数，窗口明细记录该窗口实际流数；未声明意图记录空值，验证：bulk/interactive/probe 与取消事件各自携带预期值。
 - [ ] 9.3 区分后台预取取消与前台读失败：预取取消记录取消结果与原因，前台取消保持现有错误/取消语义，验证：事件状态与 health/counter 测试。
 - [ ] 9.4 确认 `/v1/reads` 与调试快照暴露新增字段且旧字段不变，验证：control 与 debug 快照测试。

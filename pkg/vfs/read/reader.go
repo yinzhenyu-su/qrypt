@@ -23,6 +23,7 @@ type Reader struct {
 	observer ReadObserver
 	health   HealthRecorder
 	counters CounterRecorder
+	profile  drive.ReadProfile
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
@@ -36,6 +37,9 @@ type ReaderDeps struct {
 	Observer ReadObserver
 	Health   HealthRecorder
 	Counters CounterRecorder
+	// Profile carries the driver's read scheduling defaults. The zero value
+	// falls back to drive.DefaultReadProfile; it is not user configuration.
+	Profile drive.ReadProfile
 }
 
 // NewReader builds a read-domain reader from explicit dependencies. The
@@ -52,12 +56,16 @@ func NewReader(deps ReaderDeps) *Reader {
 	if deps.Counters == nil {
 		deps.Counters = noopCounters{}
 	}
+	if deps.Profile == (drive.ReadProfile{}) {
+		deps.Profile = drive.DefaultReadProfile()
+	}
 	return &Reader{
 		host:     deps.Host,
 		state:    deps.State,
 		observer: deps.Observer,
 		health:   deps.Health,
 		counters: deps.Counters,
+		profile:  deps.Profile,
 	}
 }
 
@@ -72,6 +80,12 @@ func (r *Reader) ReleaseReadSession(sessionID uint64) {
 
 func (r *Reader) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	return r.host.Resolve(ctx, path)
+}
+
+// readPlanFor resolves the caller's intent and the driver profile into the
+// plan carried by this read's context.
+func (r *Reader) readPlanFor(ctx context.Context, entry drive.Entry) readPlan {
+	return planFor(ReadIntentFromContext(ctx), r.profile, entry.Size)
 }
 
 func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error) {
@@ -137,6 +151,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	})
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
+	readCtx = WithReadPlan(readCtx, r.readPlanFor(ctx, entry))
 	windowChunks := readWindowChunks(offset, size)
 	cacheKey := r.host.ReadCacheKey(entry)
 	r.state.beginForegroundRead(cacheKey)

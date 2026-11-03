@@ -44,6 +44,116 @@ func AccessHintFromContext(ctx context.Context) (AccessHint, bool) {
 	return hint, ok && hint.SessionID != 0 && hint.RequestID != 0
 }
 
+// ReadIntent classifies why a caller is reading. The zero value is
+// unspecified: existing callers keep the pre-intent single-stream behavior.
+type ReadIntent int
+
+const (
+	ReadIntentUnspecified ReadIntent = iota
+	ReadIntentInteractive
+	ReadIntentBulk
+	ReadIntentProbe
+)
+
+func (i ReadIntent) String() string {
+	switch i {
+	case ReadIntentInteractive:
+		return "interactive"
+	case ReadIntentBulk:
+		return "bulk"
+	case ReadIntentProbe:
+		return "probe"
+	default:
+		return ""
+	}
+}
+
+type readIntentContextKey struct{}
+
+// WithReadIntent attaches a read intent to ctx. The read domain resolves it
+// into a readPlan; the intent itself is not user configuration.
+func WithReadIntent(ctx context.Context, intent ReadIntent) context.Context {
+	return context.WithValue(ctx, readIntentContextKey{}, intent)
+}
+
+// ReadIntentFromContext returns the attached intent, or
+// ReadIntentUnspecified when none was set.
+func ReadIntentFromContext(ctx context.Context) ReadIntent {
+	intent, _ := ctx.Value(readIntentContextKey{}).(ReadIntent)
+	return intent
+}
+
+// readPlan is the resolved scheduling plan for one read. windowChunks == 0
+// means "keep the existing window policy"; prefetchDepth < 0 means "keep the
+// existing prefetch policy".
+type readPlan struct {
+	intent        ReadIntent
+	streams       int
+	windowChunks  int
+	prefetchDepth int
+	cacheWrites   bool
+}
+
+type readPlanContextKey struct{}
+
+// WithReadPlan attaches a resolved read plan to ctx. Later read-domain stages
+// consume it; phase one only carries it so the behavior stays unchanged.
+func WithReadPlan(ctx context.Context, plan readPlan) context.Context {
+	return context.WithValue(ctx, readPlanContextKey{}, plan)
+}
+
+func readPlanFromContext(ctx context.Context) (readPlan, bool) {
+	plan, ok := ctx.Value(readPlanContextKey{}).(readPlan)
+	return plan, ok
+}
+
+// planFor resolves an intent and a driver profile into a read plan. An
+// unspecified intent deliberately returns the sentinel values that mean
+// "keep existing behavior".
+func planFor(intent ReadIntent, profile drive.ReadProfile, fileSize int64) readPlan {
+	switch intent {
+	case ReadIntentBulk:
+		streams := profile.BulkStreams
+		if fileSize > 0 && fileSize < profile.ParallelThreshold {
+			streams = 1
+		}
+		if streams < 1 {
+			streams = 1
+		}
+		return readPlan{
+			intent:        intent,
+			streams:       streams,
+			windowChunks:  profile.BulkWindowChunks,
+			prefetchDepth: profile.PrefetchDepth,
+			cacheWrites:   false,
+		}
+	case ReadIntentProbe:
+		return readPlan{
+			intent:        intent,
+			streams:       1,
+			windowChunks:  profile.ProbeWindowChunks,
+			prefetchDepth: 0,
+			cacheWrites:   false,
+		}
+	case ReadIntentInteractive:
+		return readPlan{
+			intent:        intent,
+			streams:       1,
+			windowChunks:  profile.InteractiveWindowChunks,
+			prefetchDepth: profile.PrefetchDepth,
+			cacheWrites:   true,
+		}
+	default:
+		return readPlan{
+			intent:        ReadIntentUnspecified,
+			streams:       1,
+			windowChunks:  0,
+			prefetchDepth: -1,
+			cacheWrites:   true,
+		}
+	}
+}
+
 type cacheAccessContextKey struct{}
 
 // WithCacheAccess attaches the read run this context's reads belong to. The read

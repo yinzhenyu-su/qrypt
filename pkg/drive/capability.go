@@ -20,6 +20,15 @@ const (
 	// time. Sync uses it to decide whether mtime differences require an
 	// update; backends without it fall back to size/hash comparison only.
 	CapabilityMtime Capability = "mtime"
+	// CapabilityParallelRange means the driver accepts arbitrary offset/size
+	// reads and honors them as range requests (206), so the read domain may
+	// split one window into concurrent sub-ranges. A driver that cannot
+	// guarantee that must not declare it.
+	CapabilityParallelRange Capability = "parallel_range"
+	// CapabilityInternalParallelRead means the driver already parallelizes a
+	// single Read internally. The VFS keeps such a read single-stream so the
+	// two layers do not multiply each other's concurrency.
+	CapabilityInternalParallelRead Capability = "internal_parallel_read"
 	// CapabilityServerSideCopy means the driver can duplicate a stored
 	// object provider-side (ServerSideCopier) without downloading and
 	// re-uploading it. When declared together with CapabilityMtime, Copy
