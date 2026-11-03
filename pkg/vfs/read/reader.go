@@ -415,11 +415,22 @@ func (b *readerBackend) StoreChunk(ctx context.Context, cacheKey string, entry d
 		return
 	}
 	b.reader.putHotChunk(cacheKey, index, chunk)
+	if !durableCacheWrites(ctx) {
+		return
+	}
 	if b.reader.state.cache != nil {
 		// The run travels with the read so the cache can tell this chunk's
 		// admitting pass from a later one that comes back for it.
 		b.reader.state.cache.PutChunkAsync(cacheKey, entry.Size, index, chunk, cacheAccess(ctx))
 	}
+}
+
+// durableCacheWrites reports whether this read may write the persistent
+// read cache. Hot chunks are still kept: they are bounded, in-memory, and
+// prevent one read window from being fetched again chunk by chunk.
+func durableCacheWrites(ctx context.Context) bool {
+	plan, ok := readPlanFromContext(ctx)
+	return !ok || plan.cacheWrites
 }
 
 func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int) ([]byte, error) {
