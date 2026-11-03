@@ -122,6 +122,7 @@ type prefetchState struct {
 	mu              sync.Mutex
 	inFlight        map[string]struct{}
 	cancels         map[string]map[string]context.CancelFunc
+	reasons         map[string]string
 	sem             chan struct{}
 	foregroundReads atomic.Int32
 }
@@ -203,6 +204,165 @@ func (s *State) isNonParallel(key string) bool {
 	return ok
 }
 
+type readScopeKey struct {
+	cacheKey  string
+	sessionID uint64
+}
+
+// readScope owns the lifetime of speculative prefetch for one file/session.
+// Foreground reads never use it; they keep their caller context.
+type readScope struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	refs   int
+	mu     sync.Mutex
+	reason string
+}
+
+func (s *readScope) setReason(reason string) {
+	s.mu.Lock()
+	s.reason = reason
+	s.mu.Unlock()
+}
+
+func (s *readScope) cancelReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason
+}
+
+type scopeState struct {
+	mu        sync.Mutex
+	scopes    map[readScopeKey]*readScope
+	byCache   map[string]map[readScopeKey]struct{}
+	bySession map[uint64]map[readScopeKey]struct{}
+}
+
+func newScopeState() *scopeState {
+	return &scopeState{
+		scopes:    map[readScopeKey]*readScope{},
+		byCache:   map[string]map[readScopeKey]struct{}{},
+		bySession: map[uint64]map[readScopeKey]struct{}{},
+	}
+}
+
+func (s *State) scopeFor(ctx context.Context, cacheKey string) (*readScope, func()) {
+	hint, _ := AccessHintFromContext(ctx)
+	key := readScopeKey{cacheKey: cacheKey, sessionID: hint.SessionID}
+	s.scopes.mu.Lock()
+	scope := s.scopes.scopes[key]
+	if scope == nil {
+		scopeCtx, cancel := context.WithCancel(context.Background())
+		scope = &readScope{ctx: scopeCtx, cancel: cancel}
+		s.scopes.scopes[key] = scope
+		if cacheKey != "" {
+			addScopeIndex(s.scopes.byCache, cacheKey, key)
+		}
+		if hint.SessionID != 0 {
+			addScopeIndex(s.scopes.bySession, hint.SessionID, key)
+		}
+	}
+	scope.refs++
+	s.scopes.mu.Unlock()
+
+	release := func() {
+		s.scopes.mu.Lock()
+		defer s.scopes.mu.Unlock()
+		scope.refs--
+		if scope.refs > 0 || s.scopes.scopes[key] != scope {
+			return
+		}
+		delete(s.scopes.scopes, key)
+		removeScopeIndex(s.scopes.byCache, cacheKey, key)
+		if hint.SessionID != 0 {
+			removeScopeIndex(s.scopes.bySession, hint.SessionID, key)
+		}
+		scope.setReason("idle")
+		scope.cancel()
+	}
+	return scope, release
+}
+
+func addScopeIndex[K comparable](index map[K]map[readScopeKey]struct{}, key K, scopeKey readScopeKey) {
+	keys := index[key]
+	if keys == nil {
+		keys = map[readScopeKey]struct{}{}
+		index[key] = keys
+	}
+	keys[scopeKey] = struct{}{}
+}
+
+func removeScopeIndex[K comparable](index map[K]map[readScopeKey]struct{}, key K, scopeKey readScopeKey) {
+	keys := index[key]
+	if keys == nil {
+		return
+	}
+	delete(keys, scopeKey)
+	if len(keys) == 0 {
+		delete(index, key)
+	}
+}
+
+func (s *State) cancelScopesByCacheKey(cacheKey, reason string) {
+	if s == nil || s.scopes == nil || cacheKey == "" {
+		return
+	}
+	s.scopes.mu.Lock()
+	defer s.scopes.mu.Unlock()
+	for key := range s.scopes.byCache[cacheKey] {
+		if scope := s.scopes.scopes[key]; scope != nil {
+			scope.setReason(reason)
+			scope.cancel()
+		}
+	}
+}
+
+func (s *State) cancelScopesBySession(sessionID uint64, reason string) {
+	if s == nil || s.scopes == nil || sessionID == 0 {
+		return
+	}
+	s.scopes.mu.Lock()
+	defer s.scopes.mu.Unlock()
+	for key := range s.scopes.bySession[sessionID] {
+		if scope := s.scopes.scopes[key]; scope != nil {
+			scope.setReason(reason)
+			scope.cancel()
+		}
+	}
+}
+
+func (s *State) cancelAllScopes(reason string) {
+	if s == nil || s.scopes == nil {
+		return
+	}
+	s.scopes.mu.Lock()
+	defer s.scopes.mu.Unlock()
+	for _, scope := range s.scopes.scopes {
+		scope.setReason(reason)
+		scope.cancel()
+	}
+}
+
+func (s *State) cancelReadScope(ctx context.Context, cacheKey, reason string) {
+	if s == nil || s.scopes == nil || cacheKey == "" {
+		return
+	}
+	hint, _ := AccessHintFromContext(ctx)
+	key := readScopeKey{cacheKey: cacheKey, sessionID: hint.SessionID}
+	s.scopes.mu.Lock()
+	defer s.scopes.mu.Unlock()
+	if scope := s.scopes.scopes[key]; scope != nil {
+		scope.setReason(reason)
+		scope.cancel()
+	}
+}
+
+// CancelPrefetchForFile stops speculative prefetch for one file without
+// dropping completed cache fills. Mobile uses it when a handle closes.
+func (s *State) CancelPrefetchForFile(cacheKey string) {
+	s.cancelScopesByCacheKey(cacheKey, "caller")
+}
+
 type sequentialRead struct {
 	end       int64
 	lastChunk int64
@@ -248,6 +408,7 @@ func newPrefetchState() *prefetchState {
 	return &prefetchState{
 		inFlight: map[string]struct{}{},
 		cancels:  map[string]map[string]context.CancelFunc{},
+		reasons:  map[string]string{},
 		sem:      make(chan struct{}, PrefetchLimit),
 	}
 }
@@ -391,6 +552,7 @@ type State struct {
 	fastPath *fastPathState
 	windows  *windowState
 	parallel *parallelState
+	scopes   *scopeState
 }
 
 // NewState builds the read domain state together so ownership and
@@ -406,6 +568,7 @@ func NewState(cache Cache) *State {
 		fastPath: newFastPathState(),
 		windows:  newWindowState(),
 		parallel: newParallelState(),
+		scopes:   newScopeState(),
 	}
 }
 
@@ -510,7 +673,6 @@ func (s *State) ReleaseReadSession(sessionID uint64) {
 		return
 	}
 	s.sequence.mu.Lock()
-	defer s.sequence.mu.Unlock()
 	for key := range s.sequence.reads {
 		if key.session == sessionID {
 			delete(s.sequence.reads, key)
@@ -523,6 +685,8 @@ func (s *State) ReleaseReadSession(sessionID uint64) {
 		}
 	}
 	s.sequence.order = order
+	s.sequence.mu.Unlock()
+	s.cancelScopesBySession(sessionID, "session_release")
 }
 
 // Cache returns the durable chunk store (nil when disabled).
@@ -537,7 +701,11 @@ func (s *State) History() *historyState { return s.history }
 // Safe on a zero State (hand-constructed VFS values in tests may have no
 // cache).
 func (s *State) Close() error {
-	if s == nil || s.cache == nil {
+	if s == nil {
+		return nil
+	}
+	s.cancelAllScopes("close")
+	if s.cache == nil {
 		return nil
 	}
 	return s.cache.Close()
@@ -724,6 +892,7 @@ func (s *State) registerPrefetch(cacheKey, key string, cancel context.CancelFunc
 func (s *State) unregisterPrefetch(cacheKey, key string) {
 	s.prefetch.mu.Lock()
 	defer s.prefetch.mu.Unlock()
+	delete(s.prefetch.reasons, key)
 	if tasks := s.prefetch.cancels[cacheKey]; tasks != nil {
 		delete(tasks, key)
 		if len(tasks) == 0 {
@@ -735,12 +904,25 @@ func (s *State) unregisterPrefetch(cacheKey, key string) {
 // cancelPrefetch cancels only speculative reads for one file. Foreground
 // reads use their caller context and are never canceled by a seek elsewhere.
 func (s *State) cancelPrefetch(cacheKey string) {
+	s.cancelPrefetchWithReason(cacheKey, "seek")
+}
+
+func (s *State) cancelPrefetchWithReason(cacheKey, reason string) {
 	s.prefetch.mu.Lock()
 	tasks := s.prefetch.cancels[cacheKey]
-	for _, cancel := range tasks {
+	for key, cancel := range tasks {
+		if reason != "" {
+			s.prefetch.reasons[key] = reason
+		}
 		cancel()
 	}
 	s.prefetch.mu.Unlock()
+}
+
+func (s *State) prefetchCancelReason(key string) string {
+	s.prefetch.mu.Lock()
+	defer s.prefetch.mu.Unlock()
+	return s.prefetch.reasons[key]
 }
 
 // NextSequence returns the next read-op sequence number.
@@ -813,6 +995,7 @@ func (s *State) ClearReadCache() error {
 
 // InvalidateFile drops cached chunks for one file id (glossary: 读缓存失效).
 func (s *State) InvalidateFile(fid string) {
+	s.cancelScopesByCacheKey(fid, "invalidate")
 	if s.cache != nil {
 		s.cache.InvalidateFile(fid)
 	}
@@ -844,5 +1027,5 @@ func (s *State) DebugSnapshot() readcache.DebugReadCache {
 
 // StatesReady reports whether the runtime sub-states are initialized.
 func (s *State) StatesReady() bool {
-	return s != nil && s.prefetch != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil && s.parallel != nil
+	return s != nil && s.prefetch != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil && s.parallel != nil && s.scopes != nil
 }

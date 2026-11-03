@@ -183,6 +183,19 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 			windowChunks = 2
 		}
 	}
+	if plan.windowChunks > 0 {
+		windowChunks = plan.windowChunks
+	}
+	if plan.intent == ReadIntentUnspecified && hinted && !hint.Concurrent && !decision.stale &&
+		decision.sequential && entry.Size >= r.profile.ParallelThreshold {
+		// A sustained sequential FUSE stream is the bulk case even though the
+		// mount does not declare an intent. Keep cache writes: the session may
+		// read the same range again.
+		plan = planFor(ReadIntentBulk, r.profile, entry.Size)
+		plan.cacheWrites = true
+		readCtx = WithReadPlan(readCtx, plan)
+		readCtx = applyIntentPriority(readCtx, plan)
+	}
 	readCtx = WithCacheAccess(readCtx, access)
 	firstWindowPrefetch := (!hinted && offset%ChunkSize != 0) || (hinted && offset == 0)
 	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
@@ -194,8 +207,11 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	data, startChunk, endChunk, err := r.readRange(readCtx, entry, offset, size, windowChunks)
 	hitsAfter, missesAfter := r.observer.DebugCacheCounters()
 	if err != nil {
+		if ctx.Err() != nil {
+			r.state.cancelReadScope(ctx, cacheKey, "caller")
+		}
 		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, WindowExtra(windowChunks), err)
+		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, ReadPlanExtra(readCtx, windowChunks), err)
 		return nil, err
 	}
 	if !hinted {
@@ -226,7 +242,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		chunks = endChunk - startChunk + 1
 	}
 	r.observer.DebugFinishActive(activeID)
-	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, WindowExtra(windowChunks), nil)
+	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, ReadPlanExtra(readCtx, windowChunks), nil)
 	countedBytes = int64(len(data))
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
@@ -600,6 +616,8 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		ChunkIndex:  startIndex,
 		WindowStart: startIndex,
 		WindowEnd:   endIndex,
+		ReadIntent:  plan.intent.String(),
+		ReadStreams: streams,
 		WaitFor:     key,
 	})
 	releaseSlot := func() {}
@@ -986,7 +1004,9 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	if !r.state.reservePrefetch(key) {
 		return
 	}
+	scope, releaseScope := r.state.scopeFor(ctx, cacheKey)
 	prefetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopScope := context.AfterFunc(scope.ctx, cancel)
 	prefetchCtx = WithPriority(prefetchCtx, PriorityLow)
 	r.state.registerPrefetch(cacheKey, key, cancel)
 
@@ -994,11 +1014,15 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	if _, exists := r.state.beginWindowLoad(key, load); exists {
 		r.state.releasePrefetch(key)
 		r.state.unregisterPrefetch(cacheKey, key)
+		stopScope()
+		releaseScope()
 		cancel()
 		return
 	}
 
 	go func() {
+		defer releaseScope()
+		defer stopScope()
 		started := time.Now()
 		activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 			Kind:        "vfs_prefetch",
@@ -1011,6 +1035,8 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			WindowStart: startIndex,
 			WindowEnd:   endIndex,
 			Background:  true,
+			ReadIntent:  ReadIntentFromContext(ctx).String(),
+			ReadStreams: 1,
 			WaitFor:     key,
 		})
 		releaseSlot, err := r.acquireReadSlot(prefetchCtx)
@@ -1036,6 +1062,18 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		}()
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
 		load.data, load.extra, load.err = fetchChunkWindow(prefetchCtx, entry, startIndex, endIndex, r.newBackend())
+		load.extra = CloneExtra(load.extra)
+		if load.extra == nil {
+			load.extra = map[string]any{}
+		}
+		load.extra["read_streams"] = 1
+		if load.err != nil && errors.Is(load.err, context.Canceled) {
+			reason := r.state.prefetchCancelReason(key)
+			if reason == "" {
+				reason = scope.cancelReason()
+			}
+			load.extra["prefetch_cancel_reason"] = reason
+		}
 		RecordChunkDetail(r.observer, prefetchCtx, entry, "prefetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, load.extra, load.err)
 	}()
 }

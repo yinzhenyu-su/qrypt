@@ -11,6 +11,18 @@ import (
 
 const DefaultReadChunkLimit = limits.DefaultReadRequestBytes
 
+// Read intent is re-exported so mobile clients can choose a strategy without
+// importing pkg/vfs directly (the mobile package is intentionally below it).
+type ReadIntent = vfs.ReadIntent
+
+const (
+	ReadIntentInteractive = vfs.ReadIntentInteractive
+	ReadIntentBulk        = vfs.ReadIntentBulk
+	ReadIntentProbe       = vfs.ReadIntentProbe
+)
+
+var WithReadIntent = vfs.WithReadIntent
+
 func (c *Core) readLimit(limit int) int {
 	if limit > 0 {
 		return limit
@@ -26,6 +38,21 @@ func (c *Core) Read(ctx context.Context, path string, offset, size int64) (io.Re
 		return nil, fmt.Errorf("core: closed")
 	}
 	return c.fs.Read(ctx, path, offset, size)
+}
+
+// CancelReadPrefetch stops speculative prefetch for path without dropping
+// completed cache fills. It is best-effort for filesystems that do not expose
+// the optional surface.
+func (c *Core) CancelReadPrefetch(ctx context.Context, path string) error {
+	if c == nil || c.fs == nil {
+		return fmt.Errorf("core: closed")
+	}
+	if canceller, ok := c.fs.(interface {
+		CancelReadPrefetch(context.Context, string) error
+	}); ok {
+		return canceller.CancelReadPrefetch(ctx, path)
+	}
+	return nil
 }
 
 func (c *Core) ReadAt(ctx context.Context, path string, offset int64, length int, limit int) ([]byte, error) {

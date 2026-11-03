@@ -194,3 +194,40 @@ func TestReadStreamCarriesReadPlan(t *testing.T) {
 		t.Fatalf("stream plan = %+v, want interactive/single/cache", host.plan)
 	}
 }
+
+func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
+	data := bytes.Repeat([]byte("a"), ChunkSize*16)
+	host := &planCaptureHost{
+		entry:    drive.Entry{ID: "id", Size: int64(len(data)), ModTime: time.Now()},
+		data:     data,
+		cacheKey: "cache",
+	}
+	profile := drive.DefaultReadProfile()
+	profile.BulkStreams = 4
+	profile.ParallelThreshold = 1
+	reader := NewReader(ReaderDeps{Host: host, State: NewState(nil), Profile: profile})
+
+	first := WithAccessHint(WithoutReadPrefetch(context.Background()), AccessHint{SessionID: 1, RequestID: 1})
+	rc, err := reader.Read(first, "/file", 0, ChunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	second := WithAccessHint(WithoutReadPrefetch(context.Background()), AccessHint{SessionID: 1, RequestID: 2})
+	rc, err = reader.Read(second, "/file", ChunkSize, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+
+	if !host.ok {
+		t.Fatal("read plan missing from driver read context")
+	}
+	if host.plan.intent != ReadIntentBulk || host.plan.streams != 4 || !host.plan.cacheWrites {
+		t.Fatalf("adaptive plan = %+v, want bulk/4/cache", host.plan)
+	}
+	if !host.prioritySet || host.priority != PriorityLow {
+		t.Fatalf("adaptive priority = %v (set=%v), want low", host.priority, host.prioritySet)
+	}
+}

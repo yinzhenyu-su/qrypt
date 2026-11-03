@@ -265,6 +265,17 @@ func WindowExtra(windowChunks int) map[string]any {
 	}
 }
 
+// ReadPlanExtra returns the summary-event extra for one read, including the
+// resolved intent and stream count when a plan is present.
+func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
+	extra := WindowExtra(windowChunks)
+	if plan, ok := readPlanFromContext(ctx); ok {
+		extra["read_intent"] = plan.intent.String()
+		extra["read_streams"] = plan.streams
+	}
+	return extra
+}
+
 func ExtraWithWindow(extra map[string]any, start, end int64) map[string]any {
 	merged := CloneExtra(extra)
 	if merged == nil {
@@ -316,6 +327,14 @@ func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.E
 	}
 	if extra == nil {
 		extra = map[string]any{}
+	}
+	if plan, ok := readPlanFromContext(ctx); ok {
+		if _, exists := extra["read_intent"]; !exists {
+			extra["read_intent"] = plan.intent.String()
+		}
+		if _, exists := extra["read_streams"]; !exists {
+			extra["read_streams"] = plan.streams
+		}
 	}
 	extra["chunk_index"] = index
 	extra["chunk_offset"] = index * ChunkSize

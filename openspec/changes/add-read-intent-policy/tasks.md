@@ -39,14 +39,14 @@
 
 ## 6. 生命周期取消
 
-- [ ] 6.1 增加按 `(cacheKey, sessionID)` 管理的读作用域注册表，验证：作用域创建、复用与取消的单元测试。
-- [ ] 6.2 让预取上下文从读作用域派生，替代 `WithoutCancel`，验证：取消作用域后预取 goroutine 退出。
-- [ ] 6.3 在读缓存失效时取消对应文件的预取作用域，验证：删除文件后不再产生新的远端读。
-- [ ] 6.4 在读会话释放时取消该会话注册的作用域，保留已完成的缓存填充，验证：关闭句柄后该文件的预取停止，已完成块仍可命中。
-- [ ] 6.5 在 VFS 关闭时取消全部作用域，验证：关闭后无遗留预取 goroutine（goleak/竞态测试）。
-- [ ] 6.6 保证取消路径关闭 `load.done` 并释放槽位与预取名额，验证：等待者不会永久阻塞，槽位计数回到零。
-- [ ] 6.7 为移动端 `CloseFileJSON` / `CancelFileReadJSON` 增加显式 VFS 预取取消入口，验证：没有前台读在途时关闭句柄也能停止预取。
-- [ ] 6.8 在前台读以取消错误返回时取消对应作用域，验证：CLI 中断后预取停止。
+- [x] 6.1 增加按 `(cacheKey, sessionID)` 管理的读作用域注册表，验证：作用域创建、复用与取消的单元测试。
+- [x] 6.2 让预取上下文从读作用域派生，替代 `WithoutCancel`，验证：取消作用域后预取 goroutine 退出。
+- [x] 6.3 在读缓存失效时取消对应文件的预取作用域，验证：删除文件后不再产生新的远端读。
+- [x] 6.4 在读会话释放时取消该会话注册的作用域，保留已完成的缓存填充，验证：关闭句柄后该文件的预取停止，已完成块仍可命中。
+- [x] 6.5 在 VFS 关闭时取消全部作用域，验证：关闭后无遗留预取 goroutine（goleak/竞态测试）。
+- [x] 6.6 保证取消路径关闭 `load.done` 并释放槽位与预取名额，验证：等待者不会永久阻塞，槽位计数回到零。
+- [x] 6.7 为移动端 `CloseFileJSON` / `CancelFileReadJSON` 增加显式 VFS 预取取消入口，验证：没有前台读在途时关闭句柄也能停止预取。
+- [x] 6.8 在前台读以取消错误返回时取消对应作用域，验证：CLI 中断后预取停止。
 
 ## 7. 公平性与优先级
 
@@ -57,17 +57,17 @@
 
 ## 8. 前端接线
 
-- [ ] 8.1 FUSE 按 `AccessHint` 与顺序判定选择策略：持续顺序大文件升级 bulk，seek/随机/多句柄保持 interactive，验证：挂载适配器与读域联动测试。
+- [x] 8.1 FUSE 按 `AccessHint` 与顺序判定选择策略：持续顺序大文件升级 bulk，seek/随机/多句柄保持 interactive，验证：挂载适配器与读域联动测试。
 - [x] 8.2 CLI 为 `fs get`、`fs sync`、`fs cat`、`offline fetch` 声明 bulk；只对真正经过 VFS 读的元数据路径声明 probe（`fs check` 通常只取声明 hash，不作为 probe 调用点），验证：CLI 测试断言意图进入读路径。
-- [ ] 8.3 移动端为 `ReadAtInto`、媒体虚拟读声明 interactive，为 `ReadDownloadItemInto` 声明 bulk，并在 `openFileOptions` 增加可选 `intent`；`CloseFileJSON` / `CancelFileReadJSON` 调用显式预取取消，验证：移动端读路径与关闭句柄测试。
+- [x] 8.3 移动端为 `ReadAtInto`、媒体虚拟读声明 interactive，为 `ReadDownloadItemInto` 声明 bulk，并在 `openFileOptions` 增加可选 `intent`；`CloseFileJSON` / `CancelFileReadJSON` 调用显式预取取消，验证：移动端读路径与关闭句柄测试。
 - [x] 8.4 后台任务为 `download`、`download_stream`、`offline fetch` 声明 bulk，验证：任务执行测试断言并行与缓存策略。
 
 ## 9. 可观测性
 
 - [x] 9.1 在 `drive.MetricEvent` 与 `vfstypes.DebugActiveOp` 追加意图、并行流数、预取取消原因字段，验证：JSON 序列化测试。
-- [ ] 9.2 在读事件与阶段明细中填充新增字段：汇总事件记录最大流数，窗口明细记录该窗口实际流数；未声明意图记录空值，验证：bulk/interactive/probe 与取消事件各自携带预期值。
-- [ ] 9.3 区分后台预取取消与前台读失败：预取取消记录取消结果与原因，前台取消保持现有错误/取消语义，验证：事件状态与 health/counter 测试。
-- [ ] 9.4 确认 `/v1/reads` 与调试快照暴露新增字段且旧字段不变，验证：control 与 debug 快照测试。
+- [x] 9.2 在读事件与阶段明细中填充新增字段：汇总事件记录最大流数，窗口明细记录该窗口实际流数；未声明意图记录空值，验证：bulk/interactive/probe 与取消事件各自携带预期值。
+- [x] 9.3 区分后台预取取消与前台读失败：预取取消记录取消结果与原因，前台取消保持现有错误/取消语义，验证：事件状态与 health/counter 测试。
+- [x] 9.4 确认 `/v1/reads` 与调试快照暴露新增字段且旧字段不变，验证：control 与 debug 快照测试。
 
 ## 10. 跨文件并发
 

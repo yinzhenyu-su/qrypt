@@ -171,7 +171,11 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
 		want = r.entry.Size - r.pos
 	}
-	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, PrefetchChunks)
+	windowChunks := PrefetchChunks
+	if plan, ok := readPlanFromContext(ctx); ok && plan.windowChunks > 0 {
+		windowChunks = plan.windowChunks
+	}
+	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, windowChunks)
 	if err != nil {
 		return err
 	}
@@ -194,5 +198,5 @@ func (r *chunkedStreamReader) Close() error {
 func (r *chunkedStreamReader) finish(bytes int64, readErr error) {
 	r.reader.observer.DebugFinishActive(r.activeID)
 	hitsAfter, missesAfter := r.reader.observer.DebugCacheCounters()
-	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, nil, readErr)
+	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, ReadPlanExtra(r.ctx, 0), readErr)
 }

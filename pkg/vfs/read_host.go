@@ -157,6 +157,24 @@ func (v *VFS) ReadStream(ctx context.Context, path string) (io.ReadCloser, error
 	return v.reader.ReadStream(ctx, path)
 }
 
+// CancelReadPrefetch stops speculative prefetch for path without dropping
+// completed cache fills. Mobile uses it when a handle closes or the user
+// cancels a read.
+func (v *VFS) CancelReadPrefetch(ctx context.Context, path string) error {
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
+	}
+	if entry.ID == "" {
+		return nil
+	}
+	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
+		v.read.CancelPrefetchForFile(cacheKey)
+	}
+	v.read.CancelPrefetchForFile(entry.ID)
+	return nil
+}
+
 // readCacheKey computes the stable cache key for an entry.
 func (v *VFS) readCacheKey(entry drive.Entry) string {
 	return read.CacheKey(v.rootID, entry)

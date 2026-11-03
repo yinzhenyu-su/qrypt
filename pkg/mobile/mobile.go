@@ -114,11 +114,13 @@ type fileHandle struct {
 	path         string
 	size         int64
 	readPriority core.ReadPriority
+	readIntent   core.ReadIntent
 	reads        readCancels
 }
 
 type virtualHandle struct {
 	coreID string
+	path   string
 	file   *core.VirtualFileHandle
 	reads  readCancels
 }
