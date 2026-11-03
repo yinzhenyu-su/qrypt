@@ -386,7 +386,8 @@ func (r *shareRun) transferTarget(ctx context.Context, update task.UpdateFunc, d
 		return offset, fmt.Errorf("core: share download URL did not complete the file")
 	}
 
-	reader, err := r.driver.Read(ctx, drive.Entry{ID: target.remoteID, Name: target.name}, offset, sizeOrUnknown(target.size, offset))
+	entry := drive.Entry{ID: target.remoteID, Name: target.name, Size: target.size}
+	reader, err := drive.ReadParallel(ctx, r.driver, entry, offset, sizeOrUnknown(target.size, offset))
 	if err != nil {
 		_ = writer.Abort()
 		return 0, err

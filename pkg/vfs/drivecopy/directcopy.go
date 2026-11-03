@@ -485,7 +485,7 @@ type tempCopy struct {
 func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry drive.Entry, expectedSize int64, tempDir string) (tempCopy, func(), drive.SourceHashes, error) {
 	start := util.Now()
 	cleanup := func() {}
-	rc, err := srcDriver.Read(ctx, srcEntry, 0, 0)
+	rc, err := drive.ReadParallel(ctx, srcDriver, srcEntry, 0, 0)
 	if err != nil {
 		return tempCopy{started: start}, cleanup, nil, err
 	}
