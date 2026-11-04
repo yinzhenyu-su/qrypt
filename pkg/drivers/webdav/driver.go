@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,18 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 	"github.com/yinzhenyu/qrypt/pkg/util"
+)
+
+const (
+	// webdavUploadIdleTimeout cancels a PUT when the transport has not
+	// consumed a body byte for this long.
+	webdavUploadIdleTimeout = 2 * time.Minute
+	// webdavUploadMinRate derives the total budget for one PUT. It bounds a
+	// connection that trickles forever without limiting a slow but working
+	// upload.
+	webdavUploadMinRate    = int64(256 << 10) // bytes per second
+	webdavUploadMinTimeout = 5 * time.Minute
+	webdavUploadMaxTimeout = 24 * time.Hour
 )
 
 // ─── XML types for PROPFIND responses ────────────────────────────────────
@@ -105,8 +118,12 @@ type Driver struct {
 	username string
 	password string
 	client   *http.Client
-	limiter  *drive.BandwidthLimiter
-	metrics  *driverutil.Buffer
+	// uploadClient has no total timeout: a single PUT carries the whole file,
+	// so the 30-second API timeout would abort any upload that cannot finish
+	// in it. The upload budget and body watchdog in PutSource bound it instead.
+	uploadClient *http.Client
+	limiter      *drive.BandwidthLimiter
+	metrics      *driverutil.Buffer
 }
 
 // Options for creating a new WebDAV driver.
@@ -140,20 +157,23 @@ func (d *Driver) InstallBandwidthLimiter(limiter *drive.BandwidthLimiter) drive.
 // New creates a new WebDAV driver.
 func New(opts Options) *Driver {
 	baseURL := webdavBaseURL(opts.URL, opts.RootPath)
+	transport := &http.Transport{
+		MaxIdleConns:       20,
+		IdleConnTimeout:    30 * time.Second,
+		DisableCompression: false,
+		// Applies after the request body is fully written, so it bounds a
+		// server that accepts an upload but never answers without limiting
+		// how long the body itself may take.
+		ResponseHeaderTimeout: 60 * time.Second,
+	}
 	return &Driver{
-		baseURL:  baseURL,
-		rootPath: opts.RootPath,
-		username: opts.Username,
-		password: opts.Password,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:       20,
-				IdleConnTimeout:    30 * time.Second,
-				DisableCompression: false,
-			},
-		},
-		metrics: driverutil.NewBuffer(500),
+		baseURL:      baseURL,
+		rootPath:     opts.RootPath,
+		username:     opts.Username,
+		password:     opts.Password,
+		client:       &http.Client{Timeout: 30 * time.Second, Transport: transport},
+		uploadClient: &http.Client{Transport: transport},
+		metrics:      driverutil.NewBuffer(500),
 	}
 }
 
@@ -450,8 +470,19 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 	defer body.Close()
 
 	destURL := d.childURL(parentID, name)
-	uploadBody := d.limiter.LimitUpload(ctx, drive.NewUploadProgressReader(uploadReq.Progress, body))
-	req, err := d.newRequest(ctx, http.MethodPut, destURL, uploadBody)
+	// A WebDAV PUT carries the whole file, so the 30-second API timeout would
+	// abort any upload that cannot finish in it. Bound the request by a
+	// size-derived budget instead, and cancel it only when the connection
+	// stops consuming bytes.
+	uploadBudget := driverutil.UploadBudget(source.Size(), webdavUploadMinRate, webdavUploadMinTimeout, webdavUploadMaxTimeout)
+	budgetCtx, cancelBudget := context.WithTimeout(ctx, uploadBudget)
+	defer cancelBudget()
+	uploadCtx, cancelUpload := context.WithCancelCause(budgetCtx)
+	defer cancelUpload(nil)
+	uploadBody := d.limiter.LimitUpload(uploadCtx, drive.NewUploadProgressReader(uploadReq.Progress, body))
+	watchdog := driverutil.NewUploadWatchdog(uploadCtx, uploadBody, webdavUploadIdleTimeout, cancelUpload)
+	defer watchdog.Stop()
+	req, err := d.newRequest(uploadCtx, http.MethodPut, destURL, watchdog)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -459,10 +490,18 @@ func (d *Driver) PutSource(ctx context.Context, uploadReq drive.UploadRequest) (
 		req.ContentLength = source.Size()
 	}
 	start := time.Now()
-	resp, err := d.client.Do(req)
+	resp, err := d.uploadClient.Do(req)
 	d.recordHTTP(ctx, "put", req, resp, start, map[string]any{"bytes": source.Size()}, err)
 	if err != nil {
-		return drive.Entry{}, fmt.Errorf("webdav: put: %w", err)
+		switch {
+		case errors.Is(context.Cause(uploadCtx), driverutil.ErrUploadStalled):
+			err = fmt.Errorf("webdav: put: no progress for %s: %w", webdavUploadIdleTimeout, driverutil.ErrUploadStalled)
+		case budgetCtx.Err() != nil:
+			err = fmt.Errorf("webdav: put exceeded %s: %w", uploadBudget, err)
+		default:
+			err = fmt.Errorf("webdav: put: %w", err)
+		}
+		return drive.Entry{}, err
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {

@@ -19,6 +19,9 @@
 - fix(vfs): treat a missing upload target as permanent instead of retrying forever
 - fix(vfs): bound consecutive upload retries so a stuck upload cannot loop indefinitely
 - fix(sftp): classify staging errors so a missing target reports not found
+- fix(koofr): give large uploads a size-derived budget and an idle-progress watchdog
+- fix(webdav): let a single PUT outlive the 30-second API timeout, bounded by a size-derived budget
+- fix(yun139): give upload parts a size-derived budget instead of the 60-second API timeout
 - fix(vfs): count in-flight remote deletes when reporting idle
 
 ### Others

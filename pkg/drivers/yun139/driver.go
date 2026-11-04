@@ -31,6 +31,13 @@ type partMeta struct {
 const (
 	uploadPartConcurrency = 1
 	quotaSizeUnit         = util.MiB
+	// Upload parts are 100 MiB (512 MiB above 30 GiB), far larger than the
+	// 60-second API timeout allows on a slow uplink. Each part request gets a
+	// size-derived budget and an idle watchdog instead.
+	yun139UploadIdleTimeout = 2 * time.Minute
+	yun139UploadMinRate     = int64(256 << 10) // bytes per second
+	yun139UploadMinTimeout  = 2 * time.Minute
+	yun139UploadMaxTimeout  = time.Hour
 )
 
 type Driver struct {
@@ -849,18 +856,26 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			if _, err := f.Seek(start, io.SeekStart); err != nil {
 				return fmt.Errorf("139: upload part %d seek: %w", up.partNumber, err)
 			}
-			body := drive.NewUploadProgressReader(progress, io.LimitReader(f, end-start))
-			body = d.limiter.LimitUpload(uploadCtx, body)
-			req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, up.uploadURL, body)
+			partLength := end - start
+			partBudget := driverutil.UploadBudget(partLength, yun139UploadMinRate, yun139UploadMinTimeout, yun139UploadMaxTimeout)
+			budgetCtx, cancelBudget := context.WithTimeout(uploadCtx, partBudget)
+			defer cancelBudget()
+			partCtx, cancelPart := context.WithCancelCause(budgetCtx)
+			defer cancelPart(nil)
+			body := drive.NewUploadProgressReader(progress, io.LimitReader(f, partLength))
+			body = d.limiter.LimitUpload(partCtx, body)
+			watchdog := driverutil.NewUploadWatchdog(partCtx, body, yun139UploadIdleTimeout, cancelPart)
+			defer watchdog.Stop()
+			req, err := http.NewRequestWithContext(partCtx, http.MethodPut, up.uploadURL, watchdog)
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
-			req.ContentLength = end - start
+			req.ContentLength = partLength
 			req.Header.Set("Content-Type", "application/octet-stream")
 			req.Header.Set("Origin", defaultBaseURL)
 			req.Header.Set("Referer", defaultBaseURL+"/")
 			httpStart := time.Now()
-			resp, err := d.cl.httpClient.Do(req)
+			resp, err := d.cl.uploadClient.Do(req)
 			d.cl.recordMetric(uploadCtx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
@@ -871,6 +886,12 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 				Error:     errorString(err),
 			})
 			if err != nil {
+				switch {
+				case errors.Is(context.Cause(partCtx), driverutil.ErrUploadStalled):
+					err = fmt.Errorf("no progress for %s: %w", yun139UploadIdleTimeout, driverutil.ErrUploadStalled)
+				case budgetCtx.Err() != nil:
+					err = fmt.Errorf("exceeded %s: %w", partBudget, err)
+				}
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
 			resp.Body.Close()
