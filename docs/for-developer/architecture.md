@@ -203,13 +203,18 @@ another domain's internal state.
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
 - `pkg/vfs/read/reader.go`: read window load/coalescing, bounded parallel
-  sub-range fetch, read-slot admission, prefetch reservations, read-window
-  driver read and cache-write backend
+  sub-range fetch, read-slot admission, and read-window driver read
 - `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
-- `pkg/vfs/read/helpers.go`: read intent/plan context, priority, cache/window
-  keys, and read debug helpers
-- `pkg/vfs/read/state.go`: read slots, in-flight windows, prefetch tracking,
-  per-file parallel caps, lifecycle scopes, and cache admission state
+- `pkg/vfs/read/plan.go`: immutable `ReadPlan` and `PlanResolver`; explicit
+  intent, window, prefetch-depth, and cache-write defaults
+- `pkg/vfs/read/scope.go`: `ScopeRegistry`, the single owner of speculative
+  prefetch lifetimes and cancellation reasons
+- `pkg/vfs/read/cache_policy.go`: `CachePolicy` admission (hot vs durable) and
+  the shared `lookupCachedChunk` path
+- `pkg/vfs/read/helpers.go`: read intent/priority context, cache/window keys,
+  and read debug helpers
+- `pkg/vfs/read/state.go`: read slots, in-flight windows, per-file parallel
+  caps, foreground-read counter, and prefetch permits
 - `pkg/vfs/diagnostics/read.go`: bounded read-event summaries/details and the
   read intent/stream/cancel-reason projection
 - `staging.go`: local write staging, create/write/flush/truncate/mtime

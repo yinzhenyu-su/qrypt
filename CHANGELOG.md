@@ -12,6 +12,9 @@
 ### Bug fixes
 - fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
 
+### Others
+- refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
+
 ---
 
 ## v0.6.1 (2026-11-02)

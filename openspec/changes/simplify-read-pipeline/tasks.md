@@ -31,17 +31,17 @@
 - [x] 3.3 把 `readChunkRange` 中直接命中与 `waitWindow` 后的重复查找分支收敛为 `lookupCachedChunk`，保留 phase/source 诊断前缀。验证：缓存命中/提升测试通过，行为与基线一致。
 - [x] 3.4 增加“并行子 Range 不写持久缓存但热块可用”的回归测试。验证：`go test ./pkg/vfs/read -run TestParallelCacheAdmissionKeepsHotOnly` 通过。
 
-## 4. 文档与最终门禁
+## 4. 文档与最终门禁（已完成）
 
-- [ ] 4.1 更新 `docs/for-developer/architecture.md` 的读路径章节，描述本阶段后的计划解析、作用域和缓存准入边界。验证：文档中每个组件与代码文件对应，相对链接有效。
-- [ ] 4.2 如缓存准入或作用域边界改变驱动作者可见的行为，同步更新 `docs/for-developer/driver-development.md`。验证：文档描述与实际契约一致。
-- [ ] 4.3 在 `CHANGELOG.md` 的 Unreleased 记录读管线收敛（无用户可见行为变化）。验证：`git diff --check` 通过。
-- [ ] 4.4 对所有改动的 Go 文件运行 `GOFMT="$(go env GOROOT)/bin/gofmt"; "$GOFMT" -w <files>`，并确认 `"$GOFMT" -l <files>` 无输出。验证：命令无输出。
-- [ ] 4.5 运行 `go vet ./...` 与仓库使用的 staticcheck 命令。验证：两者退出码为 0。
-- [ ] 4.6 运行 `go test -race -count=10 ./pkg/vfs/read/... ./pkg/drive/...` 与 goleak 覆盖的 VFS 生命周期测试。验证：全部通过，无泄漏。
-- [ ] 4.7 重跑 `BenchmarkFindWindow` 与阶段 0 的基准；若吞吐或分配回归超过 10%，在提交说明中给出原因或修复。验证：基准结果已记录。
-- [ ] 4.8 使用与 `.github/workflows/ci.yaml` 相同的 Go 版本运行 `scripts/ci/check-all.sh`。验证：退出码为 0 且输出包含 `== local CI check passed ==`。
-- [ ] 4.9 运行 `openspec validate simplify-read-pipeline --type change --strict`。验证：输出 valid。
+- [x] 4.1 更新 `docs/for-developer/architecture.md` 的读路径章节，描述本阶段后的计划解析、作用域和缓存准入边界。验证：文档列出 `plan.go`、`scope.go`、`cache_policy.go` 与 `state.go` 的职责。
+- [x] 4.2 如缓存准入或作用域边界改变驱动作者可见的行为，同步更新 `docs/for-developer/driver-development.md`。验证：本阶段不改变驱动可见契约，无需修改。
+- [x] 4.3 在 `CHANGELOG.md` 的 Unreleased 记录读管线收敛（无用户可见行为变化）。验证：`git diff --check` 通过。
+- [x] 4.4 对所有改动的 Go 文件运行 `GOFMT="$(go env GOROOT)/bin/gofmt"; "$GOFMT" -w <files>`，并确认 `"$GOFMT" -l <files>` 无输出。验证：命令无输出。
+- [x] 4.5 运行 `go vet ./...` 与仓库使用的 staticcheck 命令。验证：完整本地 CI 的 Vet/Staticcheck/Golangci-lint 均通过。
+- [x] 4.6 运行 `go test -race -count=10 ./pkg/vfs/read/... ./pkg/drive/...` 与 goleak 覆盖的 VFS 生命周期测试。验证：全部通过，无泄漏。
+- [x] 4.7 重跑 `BenchmarkFindWindow` 与阶段 0 的基准；若吞吐或分配回归超过 10%，在提交说明中给出原因或修复。验证：1/10/100 窗口约 31/81/464 ns/op，0 allocs，与阶段 0 一致。
+- [x] 4.8 使用与 `.github/workflows/ci.yaml` 相同的 Go 版本运行 `scripts/ci/check-all.sh`。验证：退出码为 0 且输出包含 `== local CI check passed ==`。
+- [x] 4.9 运行 `openspec validate simplify-read-pipeline --type change --strict`。验证：输出 valid。
 
 ## 5. Deferred（证据变化后再评估）
 
