@@ -209,3 +209,80 @@ order of benefit:
    the read path, matching the seeding threshold.
 3. On Linux only, implement `CopyFileRange` and route cross-mount copies to
    the direct-copy path, making FUSE `cp` hit 1x instead of 2-3x.
+
+## Upload request budgets and the idle watchdog
+
+A single upload request must not be bounded by the same short timeout as API
+calls. WebDAV used to send one `PUT` under a 30-second client timeout, Koofr
+one multipart `POST` under 15 minutes, and 139 parts under 60 seconds; a
+multi-gigabyte file cannot finish inside those bounds, so every attempt died
+and restarted from byte 0.
+
+The current model in `pkg/drivers/internal/driverutil`:
+
+- `UploadBudget(size, minRate, min, max)` derives a per-upload budget from the
+  source size at a conservative floor (256 KiB/s), clamped by driver limits
+  (WebDAV 5m..24h, Koofr 15m..24h, 139 2m..1h per part).
+- `UploadWatchdog` cancels the request when the transport stops consuming the
+  body for the driver's idle window (2 minutes). A slow but progressing
+  transfer keeps resetting the timer, so only a stalled connection trips it.
+- The request uses a client without a total `Timeout`; the budget is a
+  context deadline so cancellation still propagates normally.
+
+When adding a single-request uploader, use both helpers instead of
+`http.Client.Timeout`. When adding a chunked uploader, budget each part rather
+than the whole file.
+
+## Upload failure classification and retries
+
+`pkg/vfs/upload/engine.go` classifies a failed `PutSource` before deciding to
+retry:
+
+- permanent: `NonRetryable`, auth, permission, invalid request, unsupported,
+  and `not_found`. A missing parent or target cannot be fixed by retrying; it
+  must not accumulate attempts.
+- retryable: network, timeout, rate limit, conflict, local I/O, unknown.
+  Backoff is exponential and capped at 15 minutes.
+
+There is also a real attempt cap (`maxUploadRetries`, 100) after which a
+retryable failure becomes permanent; the earlier code only capped the delay,
+so a deterministic error retried forever every 15 minutes. `fs journal replay`
+resets the failure state on the next mount, so a fixed target can still be
+retried without re-writing the file.
+
+Diagnostics: `qrypt debug raw '/v1/uploads?history=1'` exposes
+`bytes_uploaded`, `retry_count`, `last_error`, and per-attempt events. A
+`bytes_uploaded` value that resets to 0 between attempts means the driver
+restarts from the beginning (single-request upload or no resume).
+
+## Telling provider ceilings apart from pipeline bottlenecks
+
+Two probe benchmarks measure the driver without the VFS and encryption
+layers:
+
+- `probe bench read --size 64m --concurrency 1,2,4,8` uploads a fixture and
+  reads it back with concurrent ranges. Flat aggregate throughput across
+  concurrency levels means the provider/account is the ceiling.
+- `probe bench upload --size 64m --concurrency 1,2,4 --chunk-size 8m,16m`
+  uploads several files at once and sweeps the part size through
+  `drive.UploadProfile`. Only drivers implementing `drive.UploadProfiler`
+  accept a chunk-size override; the report says `supports_chunk_size`.
+
+Both probes create unique payloads (so content dedup cannot short-circuit
+them) and remove every fixture. Use them before changing `ReadProfile`,
+chunk sizes, or upload concurrency: a provider cap makes those changes no-ops
+or regressions, as measured for Quark, Koofr, Drime, and 123 reads.
+
+## Nested mounts and stale listings
+
+A remote path can list successfully and still reject writes. If the SFTP
+target is itself a qrypt FUSE mount on the server (for example
+`/root/Qrypt` is the namespace root of another `qrypt mount`), creating any
+entry returns `file does not exist` while `ls` shows cached children. The
+failure surfaces as a permanent upload failure after the `not_found`
+classification change.
+
+Diagnose on the server with `findmnt -T <path>` (fuse.qrypt) and a direct
+`sftp> mkdir <path>/x`. Fix the mount root to point at a writable
+subdirectory, or remove the pending uploads; waiting for the provider cannot
+help.
