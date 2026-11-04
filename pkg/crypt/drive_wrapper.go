@@ -71,12 +71,23 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityOfflineInspect,
 		drive.CapabilityOfflineSelection,
 		drive.CapabilityAcceleratedFetch,
+		drive.CapabilityParallelRange,
+		drive.CapabilityInternalParallelRead,
 	} {
 		if drive.HasCapability(d.raw, capability) {
 			caps = append(caps, capability)
 		}
 	}
 	return caps
+}
+
+// ReadProfile forwards the raw driver's read scheduling defaults. Encryption
+// changes the byte offsets but not how many sub-ranges a bulk read may use.
+func (d *Driver) ReadProfile() drive.ReadProfile {
+	if profiler, ok := d.raw.(drive.ReadProfiler); ok {
+		return profiler.ReadProfile()
+	}
+	return drive.ReadProfile{}
 }
 
 func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }

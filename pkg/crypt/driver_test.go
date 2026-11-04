@@ -501,6 +501,39 @@ func (d *clampingRawDriver) Read(ctx context.Context, entry drive.Entry, offset,
 	return d.recordingRawDriver.Read(ctx, entry, offset, size)
 }
 
+func TestDriverForwardsReadSchedulingFromRaw(t *testing.T) {
+	t.Parallel()
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := &profiledRawDriver{
+		capabilities: []drive.Capability{drive.CapabilityParallelRange},
+		profile:      drive.ReadProfile{BulkStreams: 3},
+	}
+	drv := NewDriver(raw, cp, DriverOptions{})
+	if !drive.HasCapability(drv, drive.CapabilityParallelRange) {
+		t.Fatal("encrypted driver did not forward parallel_range")
+	}
+	if drive.HasCapability(drv, drive.CapabilityInternalParallelRead) {
+		t.Fatal("encrypted driver forwarded a capability the raw driver does not declare")
+	}
+	if got := drive.ReadProfileOf(drv).BulkStreams; got != 3 {
+		t.Fatalf("encrypted bulk streams = %d, want 3", got)
+	}
+}
+
+// profiledRawDriver reports read scheduling metadata the crypt wrapper must
+// forward without changing it.
+type profiledRawDriver struct {
+	recordingRawDriver
+	capabilities []drive.Capability
+	profile      drive.ReadProfile
+}
+
+func (d *profiledRawDriver) Capabilities() []drive.Capability { return d.capabilities }
+func (d *profiledRawDriver) ReadProfile() drive.ReadProfile   { return d.profile }
+
 func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

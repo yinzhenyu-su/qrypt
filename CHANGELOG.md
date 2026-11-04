@@ -13,6 +13,7 @@
 - fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
 - fix(drivers): upload Quark content hashes in lowercase and answer EOF reads correctly
 - fix(crypt): give the raw driver the encrypted size so the final block decrypts
+- fix(crypt): forward read capabilities and profiles from the raw driver
 - fix(vfs): count in-flight remote deletes when reporting idle
 
 ### Others
