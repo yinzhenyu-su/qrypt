@@ -562,6 +562,7 @@
   "flag.probe.test.read.cache-mode.usage": "缓存模式：cold、warm 或 both",
   "flag.probe.test.read.mount-point.usage": "实际的 FUSE 挂载目录",
   "flag.probe.test.read.mount.usage": "单挂载测试使用的挂载名",
+  "flag.probe.test.read.path.usage": "测量已存在的文件（虚拟路径），不创建测试文件",
   "flag.probe.test.read.pattern.usage": "读取模式：sequential、seek 或 both",
   "flag.probe.test.read.samples.usage": "读取采样次数（最大 10）",
   "flag.probe.test.read.seek-count.usage": "每次采样的 seek 探测次数（最大 32）",

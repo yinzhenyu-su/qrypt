@@ -83,6 +83,7 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 	}
 	if test == "read" {
 		cmd.Flags().String("mount-point", "", "actual FUSE mount directory")
+		cmd.Flags().String("path", "", "measure an existing file (virtual path) instead of creating a test file")
 		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
 		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
 		cmd.Flags().String("pattern", "sequential", "read pattern: sequential, seek, or both")
@@ -130,6 +131,9 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	}
 	if flag := cmd.Flags().Lookup("mount-point"); flag != nil {
 		req.MountPoint, _ = cmd.Flags().GetString("mount-point")
+	}
+	if flag := cmd.Flags().Lookup("path"); flag != nil {
+		req.Path, _ = cmd.Flags().GetString("path")
 	}
 	if flag := cmd.Flags().Lookup("block-size"); flag != nil {
 		req.BlockSize, _ = cmd.Flags().GetString("block-size")
@@ -193,7 +197,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")

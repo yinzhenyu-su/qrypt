@@ -562,6 +562,7 @@
   "flag.probe.test.read.cache-mode.usage": "cache mode: cold, warm, or both",
   "flag.probe.test.read.mount-point.usage": "actual FUSE mount directory",
   "flag.probe.test.read.mount.usage": "mount name for the single-mount test",
+  "flag.probe.test.read.path.usage": "measure an existing file (virtual path) instead of creating a test file",
   "flag.probe.test.read.pattern.usage": "read pattern: sequential, seek, or both",
   "flag.probe.test.read.samples.usage": "number of read samples (max 10)",
   "flag.probe.test.read.seek-count.usage": "number of seek probes per sample (max 32)",
