@@ -101,15 +101,6 @@ func cacheAccess(ctx context.Context) readcache.Access {
 	return access
 }
 
-// Priority controls how read slots are allocated under contention.
-type Priority int
-
-const (
-	PriorityLow    Priority = iota // prefetch, anticipatory reads
-	PriorityNormal                 // default user-initiated reads
-	PriorityHigh                   // UI-critical reads (thumbnails, visible content)
-)
-
 type priorityKey struct{}
 
 type priorityValue struct {

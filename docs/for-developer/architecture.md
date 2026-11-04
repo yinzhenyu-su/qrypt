@@ -88,6 +88,8 @@ lives in `pkg/vfs` sub-packages, one per domain; `pkg/vfs` wires them
 together and holds one owner object per domain rather than the domain's
 individual runtime collaborators:
 
+- `readbudget` — shared read concurrency budgets (global slots, per-file
+  permits, prefetch permits) used by the VFS read domain and direct reads
 - `vfstypes` — shared types and path helpers
 - `upload` — upload engine, persistent pending store (write-ahead journal),
   per-path scheduling, quiet-window checks, and upload admission

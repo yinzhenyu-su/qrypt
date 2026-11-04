@@ -581,8 +581,9 @@ func (s *State) endForegroundRead(cacheKey string) {
 // adaptivePrefetchLimit keeps a small lookahead during active foreground
 // reads and allows a wider pipeline when the reader is otherwise idle.
 func (s *State) adaptivePrefetchLimit(sequential bool) int {
-	limit := cap(s.scheduler.prefetch)
-	if s.scheduler.ForegroundCount() > max(1, cap(s.scheduler.normal)/2) {
+	stats := s.scheduler.Stats()
+	limit := stats.PrefetchCapacity
+	if s.scheduler.ForegroundCount() > max(1, stats.NormalCapacity/2) {
 		return 1
 	}
 	// Keep the configured pipeline for both initial and confirmed sequential
@@ -629,7 +630,7 @@ func (s *State) RuntimeStats() (windowLoads, prefetches, rangeHits int) {
 	s.windows.mu.Lock()
 	windowLoads = len(s.windows.loads)
 	s.windows.mu.Unlock()
-	prefetches = len(s.scheduler.prefetch)
+	prefetches = s.scheduler.Stats().PrefetchInUse
 	s.fastPath.rangeHit.mu.Lock()
 	rangeHits = len(s.fastPath.rangeHit.hits)
 	s.fastPath.rangeHit.mu.Unlock()

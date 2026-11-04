@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/yinzhenyu/qrypt/pkg/readbudget"
 )
 
 const (
@@ -13,7 +15,13 @@ const (
 	directReadSlots    = 16
 )
 
-var directReadSlotPool = make(chan struct{}, directReadSlots)
+// directReadScheduler is the direct-read budget. It uses the shared
+// readbudget implementation but an independent capacity from any VFS mount.
+var directReadScheduler = readbudget.NewScheduler(readbudget.SchedulerConfig{
+	MaxConcurrency: directReadSlots,
+	HighReserve:    0,
+	PrefetchLimit:  1,
+})
 
 // ReadParallel reads [offset, offset+size) through the driver's read profile.
 // size <= 0 means "whole file" when entry.Size is known. Drivers without
@@ -137,12 +145,11 @@ func newParallelRangeReader(ctx context.Context, d Driver, entry Entry, offset, 
 }
 
 func readDirectPart(ctx context.Context, d Driver, entry Entry, offset, size int64) ([]byte, error) {
-	select {
-	case directReadSlotPool <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	release, err := directReadScheduler.AcquireSlot(ctx, readbudget.PriorityNormal)
+	if err != nil {
+		return nil, err
 	}
-	defer func() { <-directReadSlotPool }()
+	defer release()
 
 	rc, err := d.Read(WithStrictRange(ctx), entry, offset, size)
 	if err != nil {

@@ -164,3 +164,9 @@ func TestReadParallelFallsBackOnStrictUnsupported(t *testing.T) {
 		t.Fatal("strict range preflight was not used")
 	}
 }
+
+func TestDirectReadUsesSharedBudget(t *testing.T) {
+	if got := directReadScheduler.Stats().NormalCapacity; got != directReadSlots {
+		t.Fatalf("direct read capacity = %d, want %d", got, directReadSlots)
+	}
+}
