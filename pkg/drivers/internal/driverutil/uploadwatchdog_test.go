@@ -54,7 +54,9 @@ func TestUploadWatchdogCancelsStalledTransfer(t *testing.T) {
 func TestUploadWatchdogKeepsSlowProgressAlive(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	watchdog := NewUploadWatchdog(ctx, bytes.NewReader(make([]byte, 128)), 20*time.Millisecond, cancel)
+	// The idle window is deliberately far larger than the read interval so a
+	// loaded CI scheduler cannot turn healthy progress into a false stall.
+	watchdog := NewUploadWatchdog(ctx, bytes.NewReader(make([]byte, 100)), time.Second, cancel)
 	defer watchdog.Stop()
 
 	buf := make([]byte, 1)

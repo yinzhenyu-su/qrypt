@@ -7,6 +7,10 @@
 - feat(vfs): cancel speculative prefetch on invalidation, session release, and caller cancel
 - feat(vfs): skip durable read-cache writes for bulk and probe reads
 - feat(cli): download directory files and sync files with four workers
+- feat(probe): add an upload probe with stall/truncate/not-found fault injection
+- feat(probe): add a raw driver read concurrency benchmark
+- feat(probe): add an upload concurrency and chunk-size benchmark
+- feat(drivers): expose an upload profile so probes can sweep part size and part concurrency
 - feat(vfs): prefetch the next read-stream window
 
 ### Bug fixes

@@ -60,6 +60,29 @@ Useful matrix:
 | parallel-2m | 4 | 16 chunks (8 MiB) | 2 MiB |
 | parallel-4m | 4 | 32 chunks (16 MiB) | 4 MiB |
 
+## Raw driver headroom check
+
+Before tuning VFS windows, establish what the driver itself can do. This reads
+a generated fixture back at several concurrency levels, bypassing the VFS and
+encryption layers, then removes the fixture (the mount must have
+`test_enabled = true`):
+
+```sh
+qrypt probe bench read --mount <mount> --size 64m --concurrency 1,2,4,8 --samples 1
+```
+
+The report gives `aggregate_bps` and `per_stream_bps` per level. Interpretation:
+
+- aggregate flat from 1→8 streams → provider/account ceiling; no VFS tuning can
+  exceed it, record the ceiling and stop;
+- aggregate rises then falls → per-request overhead or throttling; mirror the
+  knee in `ReadProfile`;
+- single-stream ≈ mounted throughput → VFS/encryption overhead is small and the
+  provider is the limit.
+
+This is the same check as "measure the raw CDN with a throwaway Go test", but
+repeatable and without touching the repository.
+
 ## Workflow
 
 ### 1. Record the baseline

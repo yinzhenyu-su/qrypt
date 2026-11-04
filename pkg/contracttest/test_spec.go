@@ -33,6 +33,10 @@ type DriverTestRequest struct {
 	SeekScenario       string `json:"seek_scenario,omitempty"`
 	SeekWarmup         int    `json:"seek_warmup_chunks,omitempty"`
 	SeekOverlapTimeout string `json:"seek_overlap_timeout,omitempty"`
+	Fault              string `json:"fault,omitempty"`
+	FaultAfter         string `json:"fault_after,omitempty"`
+	Concurrency        string `json:"concurrency,omitempty"`
+	ChunkSize          string `json:"chunk_size,omitempty"`
 }
 
 // NormalizeMountName accepts either a configured mount name or the same name
@@ -92,6 +96,7 @@ type TestRun struct {
 	Duration         string                  `json:"duration"`
 	DurationMS       int64                   `json:"duration_ms"`
 	Read             *MountedReadTestDetails `json:"read,omitempty"`
+	Upload           *UploadTestDetails      `json:"upload,omitempty"`
 }
 
 // MountedReadTestDetails contains the read-specific result fields that are
@@ -141,6 +146,16 @@ var driverTestSpecs = map[string]TestSpec{
 		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
 		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
 			return fromCRUDTestResult("multipart", *RunDriverMultipartTest(env.Ctx, mount, d, ParseXferSize(env.Req.Size)))
+		},
+	},
+	"upload": {
+		Name:     "upload",
+		Requires: []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader},
+		Run: func(env TestEnv, mount string, d drive.Driver) TestRun {
+			if env.Req.Fault != "" {
+				return fromUploadTestResult("upload", *RunDriverUploadFaultTest(env.Ctx, mount, d, ParseXferSize(env.Req.Size), env.Req.Fault, ParseXferSize(env.Req.FaultAfter)))
+			}
+			return fromUploadTestResult("upload", *RunDriverUploadTest(env.Ctx, mount, d, ParseXferSize(env.Req.Size)))
 		},
 	},
 	"instantupload": {
@@ -236,6 +251,12 @@ func fromCRUDTestResult(spec string, r CRUDTestResult) TestRun {
 			Duration: s.Duration, DurationMS: s.DurationMS,
 		}
 	}
+	return tr
+}
+
+func fromUploadTestResult(spec string, r UploadTestResult) TestRun {
+	tr := fromCRUDTestResult(spec, r.CRUDTestResult)
+	tr.Upload = r.Upload
 	return tr
 }
 

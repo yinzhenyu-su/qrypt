@@ -170,7 +170,7 @@ func (s *Server) handleDriverTest(w http.ResponseWriter, r *http.Request) {
 	testType := strings.ToLower(strings.TrimSpace(req.Test))
 
 	switch testType {
-	case "auth", "contract", "crud", "instantupload", "multipart", "fs", "read", "resume", "batchupload", "batchmove":
+	case "auth", "contract", "crud", "instantupload", "multipart", "upload", "fs", "read", "resume", "batchupload", "batchmove":
 		spec, ok := contracttest.Specs()[testType]
 		if !ok {
 			http.Error(w, fmt.Sprintf("unknown driver test: %s", testType), http.StatusBadRequest)
@@ -356,6 +356,26 @@ func (s *Server) handleBench(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeFSBenchmark(w, r, provider, filesys, req, samples, interval)
+	case "read":
+		if req.Mount == "" {
+			http.Error(w, "read benchmark requires mount", http.StatusBadRequest)
+			return
+		}
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			http.Error(w, "read benchmark only supports mount, size, and concurrency", http.StatusBadRequest)
+			return
+		}
+		s.writeReadBenchmark(w, r, provider, req, samples, interval)
+	case "upload":
+		if req.Mount == "" {
+			http.Error(w, "upload benchmark requires mount", http.StatusBadRequest)
+			return
+		}
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			http.Error(w, "upload benchmark only supports mount, size, concurrency, and chunk-size", http.StatusBadRequest)
+			return
+		}
+		s.writeUploadBenchmark(w, r, provider, req, samples, interval)
 	case "xfer":
 		if req.Mount != "" {
 			http.Error(w, "xfer benchmark uses source and dest, not mount", http.StatusBadRequest)
@@ -407,6 +427,79 @@ func (s *Server) writeCRUDBenchmark(w http.ResponseWriter, r *http.Request, prov
 			results = append(results, *result)
 		}
 		reports = append(reports, contracttest.NewCRUDBenchmarkReportSamplesWithEnvironment(results, contracttest.BenchmarkEnvironment{NetworkProbe: &probe}))
+	}
+	if req.Mount != "" && !matched {
+		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+		return
+	}
+	if len(reports) == 0 {
+		http.Error(w, "no mounts enabled for probe tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, reports)
+}
+
+func (s *Server) writeReadBenchmark(w http.ResponseWriter, r *http.Request, provider diagnostics.DriverProvider, req contracttest.DriverTestRequest, samples int, interval time.Duration) {
+	levels, err := contracttest.ParseConcurrencyList(req.Concurrency)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	size := contracttest.ParseXferSize(req.Size)
+	var reports []contracttest.ReadBenchReport
+	matched := false
+	for _, nd := range provider.Drivers() {
+		if req.Mount != "" && nd.Name != req.Mount {
+			continue
+		}
+		matched = true
+		if !nd.TestEnabled {
+			if req.Mount != "" {
+				http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
+				return
+			}
+			continue
+		}
+		reports = append(reports, *contracttest.RunDriverReadBenchmark(r.Context(), nd.Name, nd.Driver, size, levels, samples, interval))
+	}
+	if req.Mount != "" && !matched {
+		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)
+		return
+	}
+	if len(reports) == 0 {
+		http.Error(w, "no mounts enabled for probe tests; set test_enabled = true in [[mounts]]", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, reports)
+}
+
+func (s *Server) writeUploadBenchmark(w http.ResponseWriter, r *http.Request, provider diagnostics.DriverProvider, req contracttest.DriverTestRequest, samples int, interval time.Duration) {
+	levels, err := contracttest.ParseConcurrencyList(req.Concurrency)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	chunkSizes, err := contracttest.ParseChunkSizeList(req.ChunkSize)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	size := contracttest.ParseXferSize(req.Size)
+	var reports []contracttest.UploadBenchReport
+	matched := false
+	for _, nd := range provider.Drivers() {
+		if req.Mount != "" && nd.Name != req.Mount {
+			continue
+		}
+		matched = true
+		if !nd.TestEnabled {
+			if req.Mount != "" {
+				http.Error(w, debugTestDisabledError(nd.Name), http.StatusForbidden)
+				return
+			}
+			continue
+		}
+		reports = append(reports, *contracttest.RunDriverUploadBenchmark(r.Context(), nd.Name, nd.Driver, size, levels, chunkSizes, samples, interval))
 	}
 	if req.Mount != "" && !matched {
 		http.Error(w, fmt.Sprintf("mount %q not found", req.Mount), http.StatusNotFound)

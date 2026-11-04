@@ -13,6 +13,10 @@ import (
 // supported backend (115 uses 16 MiB parts, others are at or below that).
 const defaultMultipartSize = 34 * 1024 * 1024
 
+// MaxMultipartProbeSize bounds the multipart probe, which buffers the whole
+// payload in memory to verify byte-exact readback.
+const MaxMultipartProbeSize = 1 << 30
+
 // RunDriverMultipartTest uploads a single file larger than one backend
 // chunk, then verifies list visibility, byte-exact readback, and clean
 // removal. This exercises the multipart/chunked upload state machine

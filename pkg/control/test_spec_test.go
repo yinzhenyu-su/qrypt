@@ -123,7 +123,7 @@ func (d *instantUploadStubDriver) ResolvePath(context.Context, string) (string, 
 // TestDriverTestSpecsRegistered asserts every spec the endpoint accepts has
 // a coherent registration (identity, capability prerequisites, runner).
 func TestDriverTestSpecsRegistered(t *testing.T) {
-	for _, name := range []string{"auth", "crud", "instantupload", "multipart"} {
+	for _, name := range []string{"auth", "crud", "instantupload", "multipart", "upload"} {
 		spec, ok := contracttest.Specs()[name]
 		if !ok {
 			t.Fatalf("spec %q not registered", name)

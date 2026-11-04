@@ -556,11 +556,18 @@ func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.Met
 	return d.cl.metricEvents(since), nil
 }
 
+// UploadProfile exposes the part size and part concurrency a probe may sweep.
+func (d *Driver) UploadProfile() drive.UploadProfile {
+	return drive.UploadProfile{ChunkSize: calcPartSize(0), Concurrency: uploadPartConcurrency}
+}
+
 func (d *Driver) putSource(ctx context.Context, parentID, name string, source drive.ReadOnlyFileSource, progress drive.UploadProgress) (drive.Entry, error) {
 	size := source.Size()
 	now := time.Now()
 	fileID := d.resolveID(parentID)
 	partSize := calcPartSize(size)
+	partConcurrency := uploadPartConcurrency
+	override, hasOverride := drive.UploadProfileFromContext(ctx)
 
 	drive.ReportUploadPhase(progress, drive.UploadPhaseHashing)
 	sha256Hex, err := sourceSHA256Hex(ctx, source, size)
@@ -586,6 +593,20 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	partCount := size / partSize
 	if size%partSize > 0 {
 		partCount++
+	}
+	// A measurement override may only reshape a fresh upload: a resumed
+	// session's parts were created with the token's part size.
+	if hasOverride && !resumedSession {
+		if override.ChunkSize > 0 {
+			partSize = override.ChunkSize
+		}
+		if override.Concurrency > 0 {
+			partConcurrency = override.Concurrency
+		}
+		partCount = size / partSize
+		if size%partSize > 0 {
+			partCount++
+		}
 	}
 
 	partInfos := make([]partMeta, partCount)
@@ -675,7 +696,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	// 分片上传：已确认分片跳过（本地确认位图），上传 URL 每次现取。
 	if len(partInfos) > 0 {
 		skipParts := session.ConfirmedParts(token.Confirmed)
-		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size, skipParts, func(partNumber int) {
+		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, partConcurrency, size, skipParts, func(partNumber int) {
 			if d.sessions == nil || sessionKey == "" {
 				return
 			}
@@ -787,7 +808,7 @@ func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size 
 	return fmt.Sprintf("%X", hasher.Sum(nil)), nil
 }
 
-func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize, size int64, completed map[int]bool, markComplete func(int)) error {
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize int64, partConcurrency int, size int64, completed map[int]bool, markComplete func(int)) error {
 	type uploadPart struct {
 		partNumber int
 		uploadURL  string
@@ -835,7 +856,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 	}
 
 	g, uploadCtx := errgroup.WithContext(ctx)
-	g.SetLimit(uploadPartConcurrency)
+	g.SetLimit(partConcurrency)
 	for _, up := range uploadParts {
 		up := up
 		g.Go(func() error {
