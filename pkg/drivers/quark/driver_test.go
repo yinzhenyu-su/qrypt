@@ -495,6 +495,114 @@ func TestDriverParallelDownloadAssemblesRangeParts(t *testing.T) {
 	}
 }
 
+func TestDriverParallelDownloadRetriesTruncatedPart(t *testing.T) {
+	const total = int64(24 * 1024 * 1024)
+	data := make([]byte, total)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	driver := New("k=v", Options{})
+	var mu sync.Mutex
+	attempts := map[int64]int{}
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var start, end int64
+		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			return nil, fmt.Errorf("parse range %q: %w", req.Header.Get("Range"), err)
+		}
+		mu.Lock()
+		attempts[start]++
+		truncate := attempts[start] == 1 && start == downloadParallelPartSize
+		mu.Unlock()
+		var body io.ReadCloser = io.NopCloser(bytes.NewReader(data[start : end+1]))
+		if truncate {
+			// The provider closed the connection before the declared range was
+			// complete; the part must be re-requested, not failed.
+			body = &truncatingBody{data: data[start : start+1024]}
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	rc, err := driver.downloadParallel(context.Background(), "fid-1", "https://download.test/file.bin", "k=v", false, 0, total)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("assembled data differs: got=%d want=%d", len(got), len(data))
+	}
+	mu.Lock()
+	partAttempts := attempts[downloadParallelPartSize]
+	mu.Unlock()
+	if partAttempts != 2 {
+		t.Fatalf("truncated part attempts = %d, want 2", partAttempts)
+	}
+}
+
+func TestDriverParallelDownloadGivesUpAfterTruncatedParts(t *testing.T) {
+	const total = int64(16 * 1024 * 1024)
+	driver := New("k=v", Options{})
+	var mu sync.Mutex
+	attempts := 0
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var start, end int64
+		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			return nil, fmt.Errorf("parse range %q: %w", req.Header.Get("Range"), err)
+		}
+		if start != downloadParallelPartSize {
+			return &http.Response{
+				StatusCode: http.StatusPartialContent,
+				Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+				Body:       io.NopCloser(bytes.NewReader(make([]byte, end-start+1))),
+				Request:    req,
+			}, nil
+		}
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+			Body:       &truncatingBody{data: make([]byte, 1024)},
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := driver.downloadParallel(context.Background(), "fid-1", "https://download.test/file.bin", "k=v", false, 0, total); err == nil {
+		t.Fatal("expected truncated parts to fail the window")
+	}
+	mu.Lock()
+	got := attempts
+	mu.Unlock()
+	if got != downloadPartBodyRetries+1 {
+		t.Fatalf("attempts = %d, want %d", got, downloadPartBodyRetries+1)
+	}
+}
+
+// truncatingBody serves the given bytes and then reports an unexpected EOF,
+// emulating a provider that closes a range response before its end.
+type truncatingBody struct {
+	data []byte
+}
+
+func (b *truncatingBody) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func (b *truncatingBody) Close() error { return nil }
+
 func TestDriverDownloadURLCoalescesConcurrentMisses(t *testing.T) {
 	var calls int
 	var callsMu sync.Mutex

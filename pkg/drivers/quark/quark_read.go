@@ -168,21 +168,9 @@ func (d *Driver) downloadParallel(ctx context.Context, fid, downloadURL, cookieS
 						return
 					}
 					part := &parts[index]
-					resp, err := d.downloadRange(parallelCtx, fid, downloadURL, cookieSnapshot, urlCacheHit, part.offset, part.size)
+					data, err := d.fetchParallelPart(parallelCtx, fid, downloadURL, cookieSnapshot, urlCacheHit, part.offset, part.size)
 					if err == nil {
-						if resp.StatusCode == http.StatusForbidden {
-							resp.Body.Close()
-							err = errDownloadURLExpired
-						} else if resp.StatusCode != http.StatusPartialContent {
-							resp.Body.Close()
-							if drive.StrictRangeFromContext(parallelCtx) && resp.StatusCode == http.StatusOK {
-								err = fmt.Errorf("quark: parallel read: range ignored: %w", drive.ErrUnsupported)
-							} else {
-								err = fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
-							}
-						} else {
-							part.data, err = readDownloadPart(resp, part.size)
-						}
+						part.data = data
 					}
 					if err != nil {
 						errMu.Lock()
@@ -222,6 +210,54 @@ sendLoop:
 		assembled.Write(part.data)
 	}
 	return io.NopCloser(bytes.NewReader(assembled.Bytes())), nil
+}
+
+// downloadPartBodyRetries bounds how often a sub-range is re-requested after
+// its response body ends early. downloadRange already retries while opening the
+// request, but a body that closes before its Content-Length is only visible
+// while consuming it; without this retry a single truncated part fails the
+// whole window and surfaces to the caller as EIO.
+const downloadPartBodyRetries = 2
+
+// fetchParallelPart downloads one sub-range and retries a truncated body. A
+// forbidden response or an ignored Range is not retried: both need a
+// URL/window-level decision, not another attempt at the same part.
+func (d *Driver) fetchParallelPart(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt <= downloadPartBodyRetries; attempt++ {
+		if attempt > 0 {
+			if err := util.WaitExponential(ctx, attempt-1); err != nil {
+				return nil, err
+			}
+		}
+		resp, err := d.downloadRange(ctx, fid, downloadURL, cookieSnapshot, urlCacheHit, offset, size)
+		if err != nil {
+			// downloadRange exhausted its own request-level retries.
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			resp.Body.Close()
+			return nil, errDownloadURLExpired
+		}
+		if resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			if drive.StrictRangeFromContext(ctx) && resp.StatusCode == http.StatusOK {
+				return nil, fmt.Errorf("quark: parallel read: range ignored: %w", drive.ErrUnsupported)
+			}
+			return nil, fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
+		}
+		data, err := readDownloadPart(resp, size)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		logging.L.DebugfEvery("quark.read_part.retry", time.Second,
+			"[QUARK] ReadPart fid=%q offset=%d size=%d attempt=%d err=%v", fid, offset, size, attempt+1, err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
 }
 
 func readDownloadPart(resp *http.Response, expected int64) ([]byte, error) {
