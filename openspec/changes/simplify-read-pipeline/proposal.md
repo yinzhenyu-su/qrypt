@@ -25,6 +25,8 @@
 
 2026-11-04 设计验证后缩小下一阶段范围：只实施不可变 `ReadPlan`、`ScopeRegistry` 和 `CachePolicy`；`Scheduler`、`WindowRegistry`、共享取数层和文件拆分推迟。验证结果、推迟理由和重新评估触发条件见 `design.md` 的 Validation Results。
 
+2026-11-04 后续测试发现 per-file limiter 的 overcommit 风险：同一文件的并发窗口如果 `streams` 不同，`parallelState` 会替换 live channel，旧/新 channel 的 permit 可能同时存在。这触发了把 `Scheduler` 提前到下一阶段：先稳定每文件上限，再实现统一 Scheduler，并把 `ReadPlan`（策略）与 Scheduler 的实际 grant（调度）分离。`WindowRegistry`、共享取数层和文件拆分仍推迟。per-file 修复是恢复既有 `read-pipeline` 的单文件并发上限契约，不新增规格，因此 `.openspec.yaml` 继续保持 `skip_specs: true`。
+
 ## Capabilities
 
 ### New Capabilities

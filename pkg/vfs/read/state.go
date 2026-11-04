@@ -156,10 +156,14 @@ func (s *State) acquireParallel(ctx context.Context, key string, limit int) (fun
 	}
 	s.parallel.mu.Lock()
 	file := s.parallel.files[key]
-	if file == nil || file.limit != limit {
+	if file == nil {
 		file = &parallelFile{ch: make(chan struct{}, limit), limit: limit}
 		s.parallel.files[key] = file
 	}
+	// Keep the first per-file budget for the lifetime of the in-flight
+	// permits. Replacing a live channel when a partial window asks for a
+	// different stream count would let old and new permits coexist and bypass
+	// the per-file cap.
 	file.refs++
 	s.parallel.mu.Unlock()
 

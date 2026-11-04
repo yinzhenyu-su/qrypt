@@ -1,10 +1,10 @@
 # Tasks
 
-> 2026-11-04 设计验证后缩小范围：下一阶段只做不可变 `ReadPlan`、`ScopeRegistry` 和 `CachePolicy`。`Scheduler`、`WindowRegistry`、共享取数层、文件拆分/测试接缝删除推迟到证据变化后再评估；理由见 `design.md` 的 Validation Results。
+> 2026-11-04 已完成最小可行收敛（阶段 1–4）。后续测试发现 per-file limiter overcommit 风险，触发下一阶段（阶段 5）：先稳定每文件上限，再实现统一 Scheduler，并把策略与调度分离。`WindowRegistry`、共享取数层、文件拆分/测试接缝删除仍在 Deferred。
 
 ## 0. 设计验证（已完成）
 
-- [x] 0.1 取消登记一致性：覆盖 invalidate / session-release / legacy seek / close，断言两套登记同时清空且 driver 读全部取消。验证：`go test ./pkg/vfs/read -run TestPrefetchRegistriesDrainTogether` 通过。
+- [x] 0.1 取消登记一致性：覆盖 invalidate / session-release / seek / close，断言预取全部取消且 scope registry 清空。验证：`TestPrefetchScopesDrainOnLifecycle` 通过。
 - [x] 0.2 调度不变量：覆盖全局槽位、每文件许可、预取名額和 32×100 并发 acquire/release，断言不超限、不泄漏。验证：`go test ./pkg/vfs/read -run TestSchedulerCapacityInvariants` 通过。
 - [x] 0.3 `findWindow` 基准：1/10/100 个在途窗口约 31/80/450 ns/op、0 allocs。验证：`go test -run '^$' -bench BenchmarkFindWindow -benchmem ./pkg/vfs/read`。
 - [x] 0.4 双并行策略矩阵：parallel / no-capability / internal-parallel / strict-unsupported 四种情况下 VFS 与 `drive.ReadParallel` 判定一致。验证：`go test ./pkg/vfs/read -run TestParallelPolicyMatchesDirectRead` 通过。
@@ -43,10 +43,18 @@
 - [x] 4.8 使用与 `.github/workflows/ci.yaml` 相同的 Go 版本运行 `scripts/ci/check-all.sh`。验证：退出码为 0 且输出包含 `== local CI check passed ==`。
 - [x] 4.9 运行 `openspec validate simplify-read-pipeline --type change --strict`。验证：输出 valid。
 
-## 5. Deferred（证据变化后再评估）
+## 5. 下一阶段：稳定 per-file 上限与 Scheduler
 
-- [ ] 5.1 `WindowRegistry`：`findWindow` 基准显示 100 个在途窗口约 450 ns/op；只有真实负载超过 10 µs/op 或出现重复下载时才实现 O(1) 注册表。
-- [ ] 5.2 `Scheduler`：不变量测试未发现超限/泄漏；只有出现跨池超限、公平性问题或新的并发预算需求时才合并四套预算。
-- [ ] 5.3 共享取数层：VFS 与 `drive.ReadParallel` 当前策略一致；只有出现策略漂移或需要同时修改时才抽取 `SplitRanges` / `ReadSpan` / `IsUnsupported`。
-- [ ] 5.4 测试接缝删除与文件拆分：属于阅读性/维护性收益；等不可变计划、作用域和缓存准入稳定后单独做。
-- [ ] 5.5 `Read` / `ReadStream` 共享前置阶段：与文件拆分一起评估，避免在逻辑未稳定时引入新的入口抽象。
+- [x] 5.1 回归测试：新增 `TestPerFileLimitStableAcrossWindows`，同一文件两个并发窗口（streams 4 和 2）持有 permit，断言总并发不超过稳定上限。验证：修复前该测试失败，修复后通过。
+- [x] 5.2 稳定 per-file limiter：分离 `want` 与 `perFileLimit`；每文件上限由 profile/driver 解析一次；不同 limit 不替换 live channel；`ErrUnsupported` 降级为 1。验证：回归、取消等待、non-parallel 降级和 `-race -count=10` 通过。
+- [ ] 5.3 Scheduler：实现 `Scheduler.Acquire(ctx, Request) (Grant, error)`，统一全局 normal/high、每文件预算、预取名額和优先级。验证：容量不变量、优先级、公平性、取消和混合负载测试通过。
+- [ ] 5.4 迁移 VFS 前台、并行子 Range、预取和 `ReadStream` read-ahead 到 Scheduler；直读路径使用同一实现但保留独立预算。验证：现有读/VFS/FUSE/mobile 测试通过，benchmark 回归 ≤10%。
+- [ ] 5.5 策略/调度分离：`ReadPlan` 改为 `MaxStreams` 提示，实际流数由 `Grant` 决定；observer 记录实际授予的 streams。验证：`MaxStreams=4` + 每文件上限 2 时 grant 为 2，诊断字段一致。
+- [ ] 5.6 门禁：混合负载（bulk + interactive + prefetch + direct 同文件）不超每文件/全局上限；`-race -count=10`；完整 `scripts/ci/check-all.sh`。验证：全部通过。
+
+## 6. Deferred（证据变化后再评估）
+
+- [ ] 6.1 `WindowRegistry`：`findWindow` 基准显示 100 个在途窗口约 450 ns/op；只有真实负载超过 10 µs/op 或出现重复下载时才实现 O(1) 注册表。
+- [ ] 6.2 共享取数层：VFS 与 `drive.ReadParallel` 当前策略一致；只有出现策略漂移或需要同时修改时才抽取 `SplitRanges` / `ReadSpan` / `IsUnsupported`。
+- [ ] 6.3 测试接缝删除与文件拆分：属于阅读性/维护性收益；等 Scheduler 和策略/调度分离稳定后单独做。
+- [ ] 6.4 `Read` / `ReadStream` 共享前置阶段：与文件拆分一起评估，避免在逻辑未稳定时引入新的入口抽象。

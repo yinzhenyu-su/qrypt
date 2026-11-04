@@ -93,6 +93,17 @@ func (r *Reader) resolvePlan(ctx context.Context, entry drive.Entry, defaultWind
 	return PlanResolver{Profile: r.profile}.Resolve(ReadIntentFromContext(ctx), entry.Size, defaultWindowChunks)
 }
 
+// perFileLimit returns the stable concurrency budget for one file. A partial
+// window may use fewer streams, but the per-file budget never changes while
+// permits are in flight.
+func (r *Reader) perFileLimit() int {
+	limit := r.profile.BulkStreams
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
+}
+
 func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error) {
 	return r.host.PendingUpload(path)
 }
@@ -665,14 +676,14 @@ func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startI
 	if streams > 1 {
 		slotAcquire = r.acquireReadSlot
 	}
-	return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, r.newBackend(), streams, slotAcquire, r.state, key)
+	return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, r.newBackend(), streams, r.perFileLimit(), slotAcquire, r.state, key)
 }
 
 func fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend) (map[int64][]byte, map[string]any, error) {
-	return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, nil, nil, "")
+	return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, 1, nil, nil, "")
 }
 
-func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend, streams int, slotAcquire func(context.Context) (func(), error), limiter parallelLimiter, key string) (map[int64][]byte, map[string]any, error) {
+func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend, streams, perFileLimit int, slotAcquire func(context.Context) (func(), error), limiter parallelLimiter, key string) (map[int64][]byte, map[string]any, error) {
 	if streams <= 1 {
 		if slotAcquire != nil {
 			release, err := slotAcquire(ctx)
@@ -689,7 +700,7 @@ func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex
 	}
 	chunkCount := endIndex - startIndex + 1
 	if chunkCount <= 1 {
-		return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, slotAcquire, limiter, key)
+		return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, perFileLimit, slotAcquire, limiter, key)
 	}
 	if streams > int(chunkCount) {
 		streams = int(chunkCount)
@@ -701,7 +712,7 @@ func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex
 		i, span := i, span
 		group.Go(func() error {
 			if limiter != nil && key != "" {
-				release, err := limiter.acquireParallel(groupCtx, key, streams)
+				release, err := limiter.acquireParallel(groupCtx, key, perFileLimit)
 				if err != nil {
 					return err
 				}
@@ -729,7 +740,7 @@ func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex
 		}
 		if unsupported && limiter != nil {
 			limiter.markNonParallel(key)
-			return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, slotAcquire, limiter, key)
+			return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, perFileLimit, slotAcquire, limiter, key)
 		}
 		return nil, nil, err
 	}

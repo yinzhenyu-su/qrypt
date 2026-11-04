@@ -60,7 +60,7 @@ func TestFetchChunkWindowParallelSplitsAndAssembles(t *testing.T) {
 	backend := &rangeBackend{data: data, failOff: -1}
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	chunks, extra, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, nil, nil, "key")
+	chunks, extra, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, nil, "key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestFetchChunkWindowParallelSingleChunkStaysSingle(t *testing.T) {
 	backend := &rangeBackend{data: data, failOff: -1}
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	if _, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 0, backend, 4, nil, nil, "key"); err != nil {
+	if _, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 0, backend, 4, 4, nil, nil, "key"); err != nil {
 		t.Fatal(err)
 	}
 	if got := backend.callCount(); got != 1 {
@@ -99,7 +99,7 @@ func TestFetchChunkWindowParallelUnsupportedFallsBack(t *testing.T) {
 	state := NewState(nil)
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	chunks, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, nil, state, "key")
+	chunks, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, state, "key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestFetchChunkWindowParallelPartialFailureReturnsError(t *testing.T) {
 	backend := &rangeBackend{data: data, failOff: ChunkSize * 2}
 	entry := drive.Entry{ID: "id", Size: int64(len(data))}
 
-	chunks, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, nil, nil, "key")
+	chunks, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, nil, "key")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -219,7 +219,7 @@ func TestFetchChunkWindowParallelCancelsSibling(t *testing.T) {
 	state := NewState(nil)
 	entry := drive.Entry{ID: "id", Size: ChunkSize * 4}
 
-	_, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, nil, state, "key")
+	_, _, err := fetchChunkWindowWithPlan(context.Background(), entry, 0, 3, backend, 2, 2, nil, state, "key")
 	if err == nil {
 		t.Fatal("expected the sibling failure")
 	}

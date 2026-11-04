@@ -213,6 +213,35 @@ func IsUnsupported(err error) bool
 - 推迟：`Scheduler`、`WindowRegistry`、共享取数层、文件拆分/测试接缝删除。它们仍有维护价值，但当前证据不支持把它们作为稳定性修复。
 - 重新评估触发条件：出现取消登记分歧、槽位超限/泄漏、`findWindow` 在真实负载下超过 10 µs/op、VFS 与直读策略漂移，或有新功能必须同时修改这些机制。
 
+## Next Phase: Unified Scheduler (2026-11-04)
+
+### Trigger
+
+`parallelState.acquireParallel` 按文件保存 `parallelFile`，但 `limit` 变化时会替换 live channel。同一文件的并发窗口如果 `streams` 不同（完整 bulk 窗口 4、尾部/自适应窗口 1–2），旧 channel 和新 channel 的 permit 可以同时存在，每文件上限被绕过。这个风险不在已完成的阶段 1–4 范围内，但它是“预算被拆成多套、且每文件上限由窗口决定”的直接症状。
+
+### Decisions
+
+1. **每文件上限由文件/驱动决定，不由窗口决定**：`PerFileLimit = min(profile.BulkStreams, driver.MaxParallelReads())`，按文件解析一次；窗口实际使用的子 Range 数只是 `min(want, chunkCount, granted)`。
+2. **不替换 live limiter**：使用固定容量的 per-file 预算；`ErrUnsupported` 把文件标记为 non-parallel，后续 grant 降为 1，等已有 permit 自然释放。绝不重建正在使用的 channel。
+3. **单一 Scheduler**：`Scheduler.Acquire(ctx, Request) (Grant, error)` 统一管理全局 normal/high 槽位、每文件固定预算、预取名額和优先级；`Grant` 返回实际授予的流数和 release。前台窗口、并行子 Range、预取、`ReadStream` read-ahead 都从同一实现申请。直读路径使用同一实现但保留独立预算实例。
+4. **策略与调度分离**：`ReadPlan` 只保留意图、窗口、预取深度、缓存准入和 `MaxStreams` 提示；实际流数由 Scheduler 的 `Grant` 决定，诊断记录实际授予的最大流数。
+5. **证据门禁**：`WindowRegistry`、共享取数层、文件拆分/测试接缝删除仍不在本阶段；只有出现重复下载、策略漂移或真实性能问题时才启动。
+
+### Migration Plan (Next Phase)
+
+0. **回归测试**：新增 `TestPerFileLimitStableAcrossWindows`，同一文件两个并发窗口（streams 4 和 2）持有 permit，断言总并发不超过稳定上限；当前代码应失败。
+1. **稳定 per-file limiter**：分离 `want` 与 `perFileLimit`；不替换 live channel；`ErrUnsupported` 降级为 1；测试取消等待、non-parallel 降级、`-race -count=10`。
+2. **Scheduler**：实现 `Scheduler.Acquire` 和全局/每文件/预取/优先级预算；迁移 VFS 前台、并行、预取、read-ahead；直读使用独立预算实例。
+3. **策略/调度分离**：`ReadPlan.MaxStreams` + Scheduler grant；`fetchChunkWindowWithPlan` 按 grant 拆分；observer 记录实际 streams。
+4. **门禁**：混合负载（bulk + interactive + prefetch + direct 同文件）不超每文件/全局上限；benchmark 回归 ≤10%；完整 CI。
+
+### Risks
+
+- [Scheduler 成为锁热点] → 用 channel / `semaphore.Weighted`，避免全局 mutex；benchmark 门禁。
+- [优先级反转] → high reserve + 公平性测试。
+- [行为漂移] → characterization 测试先行；每阶段独立提交、可回滚。
+- [直读预算变化] → 保留独立预算实例，不并入 VFS 预算。
+
 ## Risks / Trade-offs
 
 - [并发预算合并导致公平性变化] → 保留现有容量常量与获取顺序；用计数 fake 断言同一场景下前后并发数一致；阶段 4 单独提交。
