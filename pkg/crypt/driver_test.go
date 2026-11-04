@@ -442,6 +442,65 @@ func TestDriverReadUsesEncryptedRange(t *testing.T) {
 	}
 }
 
+func TestDriverReadPassesEncryptedSizeToRawDriver(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cp, err := NewRcloneCipher("password", "salt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := make([]byte, BlockDataSize*3+123)
+	for i := range plain {
+		plain[i] = byte(i % 251)
+	}
+	var nonce [FileNonceSize]byte
+	copy(nonce[:], []byte("encrypted-size-test-01"))
+	encrypted, err := io.ReadAll(NewEncryptingReader(bytes.NewReader(plain), cp, nonce, int64(len(plain))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := &clampingRawDriver{recordingRawDriver: recordingRawDriver{data: encrypted}}
+	drv := NewDriver(raw, cp, DriverOptions{})
+
+	offset := int64(len(plain) - 123)
+	rc, err := drv.Read(ctx, drive.Entry{ID: "file", Size: int64(len(plain))}, offset, 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if !bytes.Equal(got, plain[offset:]) {
+		t.Fatal("partial final block returned wrong plaintext")
+	}
+	if want := cp.EncryptedSize(int64(len(plain))); raw.seenSize != want {
+		t.Fatalf("raw driver entry size = %d, want encrypted size %d", raw.seenSize, want)
+	}
+}
+
+// clampingRawDriver mimics providers such as Quark that clamp a read to the
+// entry size they were given. The crypt wrapper must hand it the encrypted
+// size, not the plaintext size, or the final block is truncated.
+type clampingRawDriver struct {
+	recordingRawDriver
+	seenSize int64
+}
+
+func (d *clampingRawDriver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	d.seenSize = entry.Size
+	if entry.Size > 0 {
+		if offset >= entry.Size {
+			return io.NopCloser(bytes.NewReader(nil)), nil
+		}
+		if size > entry.Size-offset {
+			size = entry.Size - offset
+		}
+	}
+	return d.recordingRawDriver.Read(ctx, entry, offset, size)
+}
+
 func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

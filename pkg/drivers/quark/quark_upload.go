@@ -329,8 +329,11 @@ func quarkSourceHashes(source drive.ReadOnlyFileSource) (map[string]any, bool, e
 		return nil, false, drive.NonRetryable(fmt.Errorf("quark: source SHA-1 metadata has %d bytes, want %d", len(sha1Sum), sha1.Size))
 	}
 	return map[string]any{
-		"md5":  fmt.Sprintf("%X", md5Sum),
-		"sha1": fmt.Sprintf("%X", sha1Sum),
+		// Quark stores hashes in lowercase. An uppercase SHA-1 is rejected
+		// with "sha1 非法" when the provider already knows the content, which
+		// breaks deduplicated uploads.
+		"md5":  fmt.Sprintf("%x", md5Sum),
+		"sha1": fmt.Sprintf("%x", sha1Sum),
 	}, true, nil
 }
 
@@ -350,8 +353,8 @@ func quarkComputeSourceHashes(ctx context.Context, source drive.ReadOnlyFileSour
 		return nil, fmt.Errorf("quark: upload hash size mismatch: hashed %d, expected %d", n, size)
 	}
 	return map[string]any{
-		"md5":  fmt.Sprintf("%X", md5Hash.Sum(nil)),
-		"sha1": fmt.Sprintf("%X", sha1Hash.Sum(nil)),
+		"md5":  fmt.Sprintf("%x", md5Hash.Sum(nil)),
+		"sha1": fmt.Sprintf("%x", sha1Hash.Sum(nil)),
 	}, nil
 }
 

@@ -36,6 +36,16 @@ const (
 const downloadChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	// Quark's CDN answers an out-of-range request with the whole object instead
+	// of an empty 206, so clamp the request to the entry and answer EOF here.
+	if entry.Size > 0 {
+		if offset >= entry.Size {
+			return io.NopCloser(bytes.NewReader(nil)), nil
+		}
+		if size > entry.Size-offset {
+			size = entry.Size - offset
+		}
+	}
 	start := time.Now()
 	var staleURL string
 	for urlAttempt := 0; urlAttempt < 2; urlAttempt++ {

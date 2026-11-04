@@ -215,6 +215,72 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 	}
 }
 
+func TestDriverReadClampsAtEOF(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	var downloadCalls int
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		downloadCalls++
+		if got := req.Header.Get("Range"); got != "bytes=8-9" {
+			t.Fatalf("range = %q, want bytes=8-9", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("89")),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-eof", Name: "file.bin", Size: 10}
+	for _, offset := range []int64{10, 11} {
+		rc, err := driver.Read(context.Background(), entry, offset, 1)
+		if err != nil {
+			t.Fatalf("read at offset %d: %v", offset, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read at offset %d body: %v", offset, err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("read at offset %d returned %d bytes, want empty", offset, len(data))
+		}
+	}
+	if downloadCalls != 0 {
+		t.Fatalf("EOF reads issued %d download calls, want 0", downloadCalls)
+	}
+
+	rc, err := driver.Read(context.Background(), entry, 8, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "89" {
+		t.Fatalf("clamped read = %q, want 89", data)
+	}
+	if downloadCalls != 1 {
+		t.Fatalf("download calls = %d, want 1", downloadCalls)
+	}
+}
+
 func TestDriverDownloadUsesCookieSnapshotAfterRotation(t *testing.T) {
 	var apiCalls int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1048,8 +1114,8 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	content := []byte("abcdefgh")
 	contentMD5 := md5.Sum(content)
 	contentSHA1 := sha1.Sum(content)
-	wantMD5 := fmt.Sprintf("%X", contentMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", contentSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", contentMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", contentSHA1[:])
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/file/upload/pre":
@@ -1357,8 +1423,8 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	plain := []byte("plain payload")
 	plainMD5 := md5.Sum(plain)
 	plainSHA1 := sha1.Sum(plain)
-	plainMD5Hex := fmt.Sprintf("%X", plainMD5[:])
-	plainSHA1Hex := fmt.Sprintf("%X", plainSHA1[:])
+	plainMD5Hex := fmt.Sprintf("%x", plainMD5[:])
+	plainSHA1Hex := fmt.Sprintf("%x", plainSHA1[:])
 	var hashCalled bool
 	var hashBody map[string]any
 	var finishCalled bool
@@ -1441,8 +1507,8 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	}
 	cipherMD5 := md5.Sum(uploadedCipher)
 	cipherSHA1 := sha1.Sum(uploadedCipher)
-	wantMD5 := fmt.Sprintf("%X", cipherMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", cipherSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", cipherMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", cipherSHA1[:])
 	if hashBody["md5"] != wantMD5 || hashBody["sha1"] != wantSHA1 {
 		t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", hashBody, wantMD5, wantSHA1)
 	}
@@ -1473,8 +1539,8 @@ func TestDriverPutSourceUnderContentDedupCryptInstantUploadsByEncryptedHash(t *t
 	encrypted := encryptForTest(t, cp, plain)
 	encryptedMD5 := md5.Sum(encrypted)
 	encryptedSHA1 := sha1.Sum(encrypted)
-	wantMD5 := fmt.Sprintf("%X", encryptedMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", encryptedSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", encryptedMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", encryptedSHA1[:])
 	var hashCalled bool
 	var finishCalled bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2235,7 +2301,7 @@ func TestPutSourceHandlelessBindingIsDiscarded(t *testing.T) {
 		ParentID:    "parent",
 		Name:        "resume.bin",
 		Size:        int64(len(content)),
-		Fingerprint: strings.ToLower(fmt.Sprintf("%X", md5Sum)) + strings.ToLower(fmt.Sprintf("%X", sha1Sum)),
+		Fingerprint: strings.ToLower(fmt.Sprintf("%x", md5Sum)) + strings.ToLower(fmt.Sprintf("%x", sha1Sum)),
 	}.Key()
 	if err := d.sessions.Create(key, json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)

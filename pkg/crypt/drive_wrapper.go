@@ -248,8 +248,13 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		blocks := (plainNeeded + BlockDataSize - 1) / BlockDataSize
 		encSize = blocks * BlockSize
 	}
+	rawEntry := entry
 	if entry.Size > 0 {
 		encTotal := d.cp.EncryptedSize(entry.Size)
+		// The raw driver reads ciphertext, so its size domain is the
+		// encrypted size. Passing the plaintext size makes drivers that
+		// clamp reads to entry.Size (Quark) truncate the final block.
+		rawEntry.Size = encTotal
 		if encOffset >= encTotal {
 			return io.NopCloser(strings.NewReader("")), nil
 		}
@@ -257,7 +262,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 			encSize = encTotal - encOffset
 		}
 	}
-	rc, err := d.raw.Read(ctx, entry, encOffset, encSize)
+	rc, err := d.raw.Read(ctx, rawEntry, encOffset, encSize)
 	if err != nil {
 		return nil, err
 	}
@@ -280,10 +285,19 @@ func (d *Driver) ReadRaw(ctx context.Context, entry drive.Entry, offset, size in
 	if offset < 0 || size < 0 {
 		return nil, errors.New("crypt: raw read offset and size must be non-negative")
 	}
+	if entry.Size > 0 {
+		// Raw reads use ciphertext offsets, so the raw driver's size domain
+		// is the encrypted size.
+		entry.Size = d.cp.EncryptedSize(entry.Size)
+	}
 	return d.raw.Read(ctx, entry, offset, size)
 }
 
 func (d *Driver) readAll(ctx context.Context, entry drive.Entry) (io.ReadCloser, error) {
+	if entry.Size > 0 {
+		// The stream includes the header and per-block tags.
+		entry.Size = d.cp.EncryptedSize(entry.Size)
+	}
 	rc, err := d.raw.Read(ctx, entry, 0, 0)
 	if err != nil {
 		return nil, err
