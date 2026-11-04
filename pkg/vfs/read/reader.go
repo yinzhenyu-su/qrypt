@@ -196,7 +196,9 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	}
 	plan := r.resolvePlan(ctx, entry, windowChunks)
 	windowChunks = plan.WindowChunks
+	loadKey := LoadKey(r.host, entry)
 	readCtx = WithReadPlan(readCtx, plan)
+	readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
 	readCtx = applyIntentPriority(readCtx, plan)
 	if plan.Intent == ReadIntentUnspecified && hinted && !hint.Concurrent && !decision.stale &&
 		decision.sequential && entry.Size >= r.profile.ParallelThreshold {
@@ -208,6 +210,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		upgraded.WindowChunks = windowChunks
 		plan = upgraded
 		readCtx = WithReadPlan(readCtx, plan)
+		readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
 		readCtx = applyIntentPriority(readCtx, plan)
 	}
 	readCtx = WithCacheAccess(readCtx, access)
@@ -565,7 +568,7 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		}
 	}
 	plan, _ := readPlanFromContext(ctx)
-	streams := plan.Streams
+	streams := grantedStreams(ctx, plan.MaxStreams)
 	if streams < 1 {
 		streams = 1
 	}
@@ -667,7 +670,7 @@ type parallelLimiter interface {
 
 func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
 	plan, _ := readPlanFromContext(ctx)
-	streams := plan.Streams
+	streams := grantedStreams(ctx, plan.MaxStreams)
 	key := LoadKey(r.host, entry)
 	if streams > 1 && r.state.isNonParallel(key) {
 		streams = 1
@@ -847,7 +850,7 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 		return nil, false, nil
 	}
 	plan, _ := readPlanFromContext(ctx)
-	streams := plan.Streams
+	streams := grantedStreams(ctx, plan.MaxStreams)
 	if streams < 1 {
 		streams = 1
 	}
@@ -984,6 +987,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	prefetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopScope := context.AfterFunc(scope.ctx, cancel)
 	prefetchCtx = WithPriority(prefetchCtx, PriorityLow)
+	prefetchCtx = WithGrantedStreams(prefetchCtx, 1)
 
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, done: make(chan struct{})}
 	if _, exists := r.state.beginWindowLoad(key, load); exists {

@@ -77,6 +77,21 @@ func TestSchedulerPrefetchCapacity(t *testing.T) {
 	}
 }
 
+func TestSchedulerGrantStreams(t *testing.T) {
+	scheduler := NewScheduler(SchedulerConfig{MaxConcurrency: 8, HighReserve: 0, PrefetchLimit: 1})
+	release, err := scheduler.AcquireFile(context.Background(), "file", 2)
+	if err != nil {
+		t.Fatalf("acquire file budget: %v", err)
+	}
+	if got := scheduler.GrantStreams(4, "file", 4); got != 2 {
+		t.Fatalf("granted streams = %d, want the live budget 2", got)
+	}
+	release()
+	if got := scheduler.GrantStreams(4, "file", 4); got != 4 {
+		t.Fatalf("granted streams after release = %d, want profile limit 4", got)
+	}
+}
+
 func TestSchedulerForegroundAndNonParallel(t *testing.T) {
 	scheduler := NewScheduler(SchedulerConfig{MaxConcurrency: 4, HighReserve: 0, PrefetchLimit: 1})
 	var wg sync.WaitGroup

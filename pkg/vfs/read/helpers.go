@@ -175,7 +175,7 @@ func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
 	extra := WindowExtra(windowChunks)
 	if plan, ok := readPlanFromContext(ctx); ok {
 		extra["read_intent"] = plan.Intent.String()
-		extra["read_streams"] = plan.Streams
+		extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
 	}
 	return extra
 }
@@ -237,7 +237,7 @@ func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.E
 			extra["read_intent"] = plan.Intent.String()
 		}
 		if _, exists := extra["read_streams"]; !exists {
-			extra["read_streams"] = plan.Streams
+			extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
 		}
 	}
 	extra["chunk_index"] = index

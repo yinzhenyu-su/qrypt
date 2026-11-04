@@ -46,7 +46,7 @@
 ```go
 type ReadPlan struct {
     Intent        ReadIntent
-    Streams       int
+    MaxStreams    int // hint; Scheduler.GrantStreams decides the actual split
     WindowChunks  int
     PrefetchDepth int
     CacheWrites   bool

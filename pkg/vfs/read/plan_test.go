@@ -1,6 +1,7 @@
 package read
 
 import (
+	"context"
 	"testing"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -9,7 +10,7 @@ import (
 func TestPlanResolverUnspecifiedUsesConcreteDefaults(t *testing.T) {
 	profile := drive.DefaultReadProfile()
 	plan := PlanResolver{Profile: profile}.Resolve(ReadIntentUnspecified, 64<<20, 2)
-	if plan.Intent != ReadIntentUnspecified || plan.Streams != 1 || plan.WindowChunks != 2 ||
+	if plan.Intent != ReadIntentUnspecified || plan.MaxStreams != 1 || plan.WindowChunks != 2 ||
 		plan.PrefetchDepth != profile.PrefetchDepth || !plan.CacheWrites {
 		t.Fatalf("unspecified plan = %+v, want one stream, caller window, prefetch, cache", plan)
 	}
@@ -25,23 +26,23 @@ func TestPlanResolverExplicitIntents(t *testing.T) {
 	resolver := PlanResolver{Profile: profile}
 
 	large := resolver.Resolve(ReadIntentBulk, 16<<20, 2)
-	if large.Intent != ReadIntentBulk || large.Streams != 4 || large.WindowChunks != profile.BulkWindowChunks ||
+	if large.Intent != ReadIntentBulk || large.MaxStreams != 4 || large.WindowChunks != profile.BulkWindowChunks ||
 		large.PrefetchDepth != profile.PrefetchDepth || large.CacheWrites {
 		t.Fatalf("large bulk plan = %+v", large)
 	}
 	small := resolver.Resolve(ReadIntentBulk, 1<<20, 2)
-	if small.Streams != 1 {
-		t.Fatalf("small bulk streams = %d, want 1", small.Streams)
+	if small.MaxStreams != 1 {
+		t.Fatalf("small bulk streams = %d, want 1", small.MaxStreams)
 	}
 
 	interactive := resolver.Resolve(ReadIntentInteractive, 16<<20, 2)
-	if interactive.Streams != 1 || interactive.WindowChunks != profile.InteractiveWindowChunks ||
+	if interactive.MaxStreams != 1 || interactive.WindowChunks != profile.InteractiveWindowChunks ||
 		interactive.PrefetchDepth != profile.PrefetchDepth || !interactive.CacheWrites {
 		t.Fatalf("interactive plan = %+v", interactive)
 	}
 
 	probe := resolver.Resolve(ReadIntentProbe, 16<<20, 2)
-	if probe.Streams != 1 || probe.WindowChunks != profile.ProbeWindowChunks || probe.PrefetchDepth != 0 || probe.CacheWrites {
+	if probe.MaxStreams != 1 || probe.WindowChunks != profile.ProbeWindowChunks || probe.PrefetchDepth != 0 || probe.CacheWrites {
 		t.Fatalf("probe plan = %+v", probe)
 	}
 }
@@ -61,5 +62,14 @@ func TestPlanResolverFallsBackWhenProfileWindowIsZero(t *testing.T) {
 	}
 	if got := resolver.Resolve(ReadIntentProbe, 16<<20, 3).WindowChunks; got != 3 {
 		t.Fatalf("probe window = %d, want caller default 3", got)
+	}
+}
+
+func TestReadPlanExtraUsesGrantedStreams(t *testing.T) {
+	ctx := WithReadPlan(context.Background(), ReadPlan{Intent: ReadIntentBulk, MaxStreams: 4})
+	ctx = WithGrantedStreams(ctx, 2)
+	extra := ReadPlanExtra(ctx, 1)
+	if got := extra["read_streams"]; got != 2 {
+		t.Fatalf("read_streams = %v, want the granted 2", got)
 	}
 }

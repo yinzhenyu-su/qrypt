@@ -16,6 +16,7 @@
 - refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
 - refactor(vfs): centralize read concurrency budgets in one scheduler
 - refactor(drive): share the read concurrency budget with direct reads
+- refactor(vfs): treat plan streams as a hint and record scheduler-granted streams
 
 ---
 

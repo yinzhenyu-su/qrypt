@@ -10,7 +10,7 @@ import (
 // concrete: no zero value means "keep the previous policy".
 type ReadPlan struct {
 	Intent        ReadIntent
-	Streams       int
+	MaxStreams    int
 	WindowChunks  int
 	PrefetchDepth int
 	CacheWrites   bool
@@ -42,7 +42,7 @@ func (r PlanResolver) Resolve(intent ReadIntent, fileSize int64, defaultWindowCh
 		}
 		return ReadPlan{
 			Intent:        intent,
-			Streams:       streams,
+			MaxStreams:    streams,
 			WindowChunks:  windowOrDefault(profile.BulkWindowChunks, defaultWindowChunks),
 			PrefetchDepth: profile.PrefetchDepth,
 			CacheWrites:   false,
@@ -50,7 +50,7 @@ func (r PlanResolver) Resolve(intent ReadIntent, fileSize int64, defaultWindowCh
 	case ReadIntentProbe:
 		return ReadPlan{
 			Intent:        intent,
-			Streams:       1,
+			MaxStreams:    1,
 			WindowChunks:  windowOrDefault(profile.ProbeWindowChunks, defaultWindowChunks),
 			PrefetchDepth: 0,
 			CacheWrites:   false,
@@ -58,7 +58,7 @@ func (r PlanResolver) Resolve(intent ReadIntent, fileSize int64, defaultWindowCh
 	case ReadIntentInteractive:
 		return ReadPlan{
 			Intent:        intent,
-			Streams:       1,
+			MaxStreams:    1,
 			WindowChunks:  windowOrDefault(profile.InteractiveWindowChunks, defaultWindowChunks),
 			PrefetchDepth: profile.PrefetchDepth,
 			CacheWrites:   true,
@@ -72,7 +72,7 @@ func (r PlanResolver) Resolve(intent ReadIntent, fileSize int64, defaultWindowCh
 		}
 		return ReadPlan{
 			Intent:        ReadIntentUnspecified,
-			Streams:       1,
+			MaxStreams:    1,
 			WindowChunks:  windowOrDefault(0, defaultWindowChunks),
 			PrefetchDepth: prefetchDepth,
 			CacheWrites:   true,
@@ -101,6 +101,21 @@ func WithReadPlan(ctx context.Context, plan ReadPlan) context.Context {
 func readPlanFromContext(ctx context.Context) (ReadPlan, bool) {
 	plan, ok := ctx.Value(readPlanContextKey{}).(ReadPlan)
 	return plan, ok
+}
+
+type grantedStreamsContextKey struct{}
+
+// WithGrantedStreams records the stream count the scheduler actually granted
+// for this read. Diagnostics use it instead of the plan's MaxStreams hint.
+func WithGrantedStreams(ctx context.Context, streams int) context.Context {
+	return context.WithValue(ctx, grantedStreamsContextKey{}, streams)
+}
+
+func grantedStreams(ctx context.Context, fallback int) int {
+	if streams, ok := ctx.Value(grantedStreamsContextKey{}).(int); ok && streams > 0 {
+		return streams
+	}
+	return fallback
 }
 
 // applyIntentPriority supplies the intent's default priority only when the

@@ -30,7 +30,7 @@ func TestReadIntentRoundTrip(t *testing.T) {
 func TestPlanForUnspecifiedKeepsExistingBehavior(t *testing.T) {
 	profile := drive.DefaultReadProfile()
 	plan := PlanResolver{Profile: profile}.Resolve(ReadIntentUnspecified, 64<<20, 2)
-	if plan.Streams != 1 || plan.WindowChunks != 2 || plan.PrefetchDepth != profile.PrefetchDepth || !plan.CacheWrites {
+	if plan.MaxStreams != 1 || plan.WindowChunks != 2 || plan.PrefetchDepth != profile.PrefetchDepth || !plan.CacheWrites {
 		t.Fatalf("unspecified plan = %+v, want one stream, caller window, prefetch, cache", plan)
 	}
 }
@@ -41,13 +41,13 @@ func TestPlanForBulkUsesProfileAndThreshold(t *testing.T) {
 	profile.ParallelThreshold = 8 << 20
 
 	large := PlanResolver{Profile: profile}.Resolve(ReadIntentBulk, 16<<20, 2)
-	if large.Streams != 4 || large.WindowChunks != profile.BulkWindowChunks || large.PrefetchDepth != profile.PrefetchDepth || large.CacheWrites {
+	if large.MaxStreams != 4 || large.WindowChunks != profile.BulkWindowChunks || large.PrefetchDepth != profile.PrefetchDepth || large.CacheWrites {
 		t.Fatalf("large bulk plan = %+v", large)
 	}
 
 	small := PlanResolver{Profile: profile}.Resolve(ReadIntentBulk, 1<<20, 2)
-	if small.Streams != 1 {
-		t.Fatalf("small bulk streams = %d, want 1", small.Streams)
+	if small.MaxStreams != 1 {
+		t.Fatalf("small bulk streams = %d, want 1", small.MaxStreams)
 	}
 }
 
@@ -55,12 +55,12 @@ func TestPlanForInteractiveAndProbe(t *testing.T) {
 	profile := drive.DefaultReadProfile()
 
 	interactive := PlanResolver{Profile: profile}.Resolve(ReadIntentInteractive, 16<<20, 2)
-	if interactive.Streams != 1 || interactive.WindowChunks != profile.InteractiveWindowChunks || !interactive.CacheWrites {
+	if interactive.MaxStreams != 1 || interactive.WindowChunks != profile.InteractiveWindowChunks || !interactive.CacheWrites {
 		t.Fatalf("interactive plan = %+v", interactive)
 	}
 
 	probe := PlanResolver{Profile: profile}.Resolve(ReadIntentProbe, 16<<20, 2)
-	if probe.Streams != 1 || probe.WindowChunks != profile.ProbeWindowChunks || probe.PrefetchDepth != 0 || probe.CacheWrites {
+	if probe.MaxStreams != 1 || probe.WindowChunks != profile.ProbeWindowChunks || probe.PrefetchDepth != 0 || probe.CacheWrites {
 		t.Fatalf("probe plan = %+v", probe)
 	}
 }
@@ -126,7 +126,7 @@ func TestReadCarriesReadPlan(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.Intent != ReadIntentBulk || host.plan.Streams != 4 || host.plan.CacheWrites {
+	if host.plan.Intent != ReadIntentBulk || host.plan.MaxStreams != 4 || host.plan.CacheWrites {
 		t.Fatalf("read plan = %+v, want bulk/4/no-cache", host.plan)
 	}
 	if !host.prioritySet || host.priority != PriorityLow {
@@ -175,7 +175,7 @@ func TestReadBulkUsesParallelStreams(t *testing.T) {
 	if host.reads != 2 {
 		t.Fatalf("driver reads = %d, want 2 parallel sub-ranges", host.reads)
 	}
-	if !host.ok || host.plan.Streams != 2 {
+	if !host.ok || host.plan.MaxStreams != 2 {
 		t.Fatalf("read plan = %+v, want 2 streams", host.plan)
 	}
 }
@@ -197,7 +197,7 @@ func TestReadStreamCarriesReadPlan(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from stream read context")
 	}
-	if host.plan.Intent != ReadIntentInteractive || host.plan.Streams != 1 || !host.plan.CacheWrites {
+	if host.plan.Intent != ReadIntentInteractive || host.plan.MaxStreams != 1 || !host.plan.CacheWrites {
 		t.Fatalf("stream plan = %+v, want interactive/single/cache", host.plan)
 	}
 }
@@ -231,7 +231,7 @@ func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.Intent != ReadIntentBulk || host.plan.Streams != 4 || !host.plan.CacheWrites {
+	if host.plan.Intent != ReadIntentBulk || host.plan.MaxStreams != 4 || !host.plan.CacheWrites {
 		t.Fatalf("adaptive plan = %+v, want bulk/4/cache", host.plan)
 	}
 	if host.plan.WindowChunks != 1 {

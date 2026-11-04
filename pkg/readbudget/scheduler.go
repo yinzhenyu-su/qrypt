@@ -217,6 +217,30 @@ func (s *Scheduler) PerFileInUse(key string) int {
 	return len(file.ch)
 }
 
+// GrantStreams reports how many sub-ranges a window may split into. It is a
+// policy hint: the per-file budget still enforces concurrency as permits are
+// acquired. A live file budget wins over the caller's profile limit.
+func (s *Scheduler) GrantStreams(want int, fileKey string, limit int) int {
+	if want < 1 {
+		want = 1
+	}
+	if fileKey == "" || limit < 1 {
+		return want
+	}
+	s.mu.Lock()
+	if file := s.files[fileKey]; file != nil && file.limit < limit {
+		limit = file.limit
+	}
+	s.mu.Unlock()
+	if limit < 1 {
+		limit = 1
+	}
+	if want > limit {
+		return limit
+	}
+	return want
+}
+
 func (s *Scheduler) Stats() SchedulerStats {
 	s.mu.Lock()
 	files := len(s.files)

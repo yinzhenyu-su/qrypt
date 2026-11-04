@@ -98,6 +98,7 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 	streamCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
 	plan := r.resolvePlan(ctx, entry, PrefetchChunks)
 	streamCtx = WithReadPlan(streamCtx, plan)
+	streamCtx = WithGrantedStreams(streamCtx, 1)
 	streamCtx = applyIntentPriority(streamCtx, plan)
 	return &chunkedStreamReader{
 		ctx:          streamCtx,
