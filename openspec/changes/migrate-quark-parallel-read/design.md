@@ -34,11 +34,15 @@ Quark 的 `Read(offset, size)` 已支持任意 Range：`downloadRange` 发 `Rang
 
 `ReadProfile()` 返回 `BulkStreams: 3`，与现有内部并行的 worker 数一致。默认值 4 没有在 Quark CDN 上验证过，先从已验证的并发度开始；后续可调。
 
-### 4. 整文件读保留内部并行
+### 4. 保留大 Range 的内部并行
 
-`size <= 0` 的整文件读（加密层 `readAll`、staging read-modify-write）继续走内部 8 MiB / 3 worker 并行。它不经过 VFS 窗口拆分，迁移后不应退化。
+驱动内部的 8 MiB / 3 worker 并行只在单次 `Read` 的 `size > 8 MiB` 时触发。迁移后：
 
-有界读取（`size > 0`）交给 VFS：VFS 子 Range 是 1 MiB 级别，低于内部并行阈值，因此不会叠加；直读路径的 8 MiB 分片也正好不触发内部并行（`partCount == 1`）。
+- VFS 子 Range 约 1 MiB，低于内部并行阈值，不会叠加。
+- 直读路径的 8 MiB 分片 `partCount == 1`，也不会触发。
+- 直接向驱动请求超过 8 MiB 单段读的调用方仍走内部并行。
+
+因此不需要删掉内部并行实现，两条路径在现有窗口/分片尺寸下不会相乘。
 
 ### 5. 不新增用户配置
 
@@ -57,3 +61,24 @@ Quark 的 `Read(offset, size)` 已支持任意 Range：`downloadRange` 发 `Rang
 - 读层：子 Range 返回 `ErrUnsupported` 后文件转单流，后续窗口不再并行。
 - 能力矩阵：Quark 期望 `parallel_range`，不再有 `internal_parallel_read`。
 - 真实基准：同一命令、同一文件复测，记录冷读中位、冷 seek、事件 `read_streams`、回退次数，与 `benchmark-baseline.md` 对比。
+
+## Outcome
+
+迁移已实现并按上述方式验证，然后回退。
+
+控制实验（同一文件、同一时段，3 个采样，`cold` + `sequential`）：
+
+| 配置 | 冷读中位 |
+| --- | --- |
+| 单流对照 | 11.30 / 12.13 MB/s |
+| 2 流 | 9.19 MB/s |
+| 3 流 | 8.30 / 10.58 MB/s（另有完整 both/seek 轮 8.74） |
+
+3 流比单流低约 25–30%；冷 seek 差异在 provider 波动范围内。事件确认迁移后确实使用了 `streams=3`，且没有 `ErrUnsupported` 回退，所以不是严格 Range 误判导致的退化。
+
+回退内容：Quark 恢复 `CapabilityInternalParallelRead`，删除 `ReadProfile()`。
+
+保留内容：
+
+- 严格 Range：`checkQuarkReadStatus` 在严格模式遇到 200 返回 `ErrUnsupported`。Quark 当前不声明 `parallel_range`，该路径不会被 VFS 触发，但契约实现是正确且可测试的。
+- 加密包装层转发 `parallel_range` / `internal_parallel_read` 与 `ReadProfile`：修复了加密挂载看不到底层读能力的问题，p123、drime 等驱动位于加密挂载后时可以正常并行了。

@@ -65,3 +65,29 @@ Quark 当前声明 `internal_parallel_read`，`ReadProfileOf` 把 `BulkStreams` 
 - 是否出现 `ErrUnsupported` 回退（出现则说明 CDN 没有稳定返回 206）
 
 注意：Quark 的带宽波动较大，单次样本不足以判断收益；建议迁移前后各跑 3 次采样，并至少重复一轮。
+
+## 迁移后复测（2026-11-04，未采用）
+
+迁移实现了 capability 对调、严格 Range 和 `BulkStreams: 3`，并修复了加密包装层不转发读能力的问题（事件确认 `read_streams` 从 1 变为 3，无 `ErrUnsupported` 回退）。但同一文件上的顺序冷读明显变慢。
+
+控制实验（同一文件、同一时段、每次 3 个采样，`--cache-mode cold --pattern sequential`）：
+
+| 配置 | 冷读中位 | 单次样本 |
+| --- | --- | --- |
+| 1 流（对照） | **11.30 MB/s** | 11.06 / 11.41 / 11.30 |
+| 2 流 | 9.19 MB/s | — |
+| 3 流 | 8.30 / 10.58 MB/s | 首次 10.20 / 10.88 / 10.58 |
+| 1 流（再次对照） | 12.13 MB/s | — |
+
+迁移前基准那轮是 18.96 MB/s，但同一时段内单流对照只有 11–12 MB/s，说明 provider 带宽本身在漂移；用同时段对照比较，3 流比单流低约 **25–30%**。
+
+冷 seek 在 3 流下为 1.04 s，单流对照为 1.50–3.05 s，差异在 provider 波动范围内，不能证明并行带来收益。
+
+结论：Quark CDN 对同一签名 URL 的并发小 Range 不随并发数线性扩展；把 4 MiB 窗口拆成 3 个约 1.3 MiB 子 Range 增加请求开销和尾部延迟，顺序冷读反而变慢。迁移已回退，Quark 保持 `internal_parallel_read`（VFS 单流）。
+
+保留的改动：
+
+- 严格 Range 实现（200 → `ErrUnsupported`）保留，作为驱动契约的正确实现。
+- 加密包装层转发 `parallel_range` / `internal_parallel_read` 和 `ReadProfile` 保留；这对其他位于加密挂载后的并行驱动（如 p123、drime）是实际修复。
+
+回退后复测：`quark-test` 与 `quark-download` 的 `probe test read --size 64m` 均通过，冷读中位 17.7 / 17.4 MB/s，回到迁移前基准区间；两者的 contract 也都通过。
