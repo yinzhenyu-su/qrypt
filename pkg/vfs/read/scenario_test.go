@@ -192,8 +192,9 @@ func TestScenarioCancelReleasesReadSlot(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("read did not return after cancel")
 	}
-	if len(state.slots.normal) != 0 || len(state.slots.high) != 0 {
-		t.Fatalf("slots after cancel: normal=%d high=%d, want 0", len(state.slots.normal), len(state.slots.high))
+	stats := state.scheduler.Stats()
+	if stats.NormalInUse != 0 || stats.HighInUse != 0 {
+		t.Fatalf("slots after cancel: normal=%d high=%d, want 0", stats.NormalInUse, stats.HighInUse)
 	}
 }
 

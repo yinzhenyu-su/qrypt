@@ -908,34 +908,7 @@ func (r *Reader) putHotChunk(cacheKey string, index int64, data []byte) {
 }
 
 func (r *Reader) acquireReadSlot(ctx context.Context) (func(), error) {
-	prio := priority(ctx)
-	if prio == PriorityHigh {
-		select {
-		case r.state.slots.normal <- struct{}{}:
-			return func() { <-r.state.slots.normal }, nil
-		default:
-		}
-		select {
-		case r.state.slots.high <- struct{}{}:
-			return func() { <-r.state.slots.high }, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	if prio == PriorityLow {
-		select {
-		case r.state.slots.normal <- struct{}{}:
-			return func() { <-r.state.slots.normal }, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	select {
-	case r.state.slots.normal <- struct{}{}:
-		return func() { <-r.state.slots.normal }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return r.state.scheduler.AcquireSlot(ctx, priority(ctx))
 }
 
 // --- prefetch ---

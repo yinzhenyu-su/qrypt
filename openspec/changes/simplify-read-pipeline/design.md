@@ -231,9 +231,10 @@ func IsUnsupported(err error) bool
 
 0. **回归测试**：新增 `TestPerFileLimitStableAcrossWindows`，同一文件两个并发窗口（streams 4 和 2）持有 permit，断言总并发不超过稳定上限；当前代码应失败。
 1. **稳定 per-file limiter**：分离 `want` 与 `perFileLimit`；不替换 live channel；`ErrUnsupported` 降级为 1；测试取消等待、non-parallel 降级、`-race -count=10`。
-2. **Scheduler**：实现 `Scheduler.Acquire` 和全局/每文件/预取/优先级预算；迁移 VFS 前台、并行、预取、read-ahead；直读使用独立预算实例。
-3. **策略/调度分离**：`ReadPlan.MaxStreams` + Scheduler grant；`fetchChunkWindowWithPlan` 按 grant 拆分；observer 记录实际 streams。
-4. **门禁**：混合负载（bulk + interactive + prefetch + direct 同文件）不超每文件/全局上限；benchmark 回归 ≤10%；完整 CI。
+2. **Scheduler**：实现 `Scheduler.Acquire` 和全局/每文件/预取/优先级预算；迁移 VFS 前台、并行、预取、read-ahead。
+3. **直读共享**：把 Scheduler 抽到中立包（或等价共享层），`drive.ReadParallel` 使用独立预算实例。
+4. **策略/调度分离**：`ReadPlan.MaxStreams` + Scheduler grant；`fetchChunkWindowWithPlan` 按 grant 拆分；observer 记录实际 streams。
+5. **门禁**：混合负载（bulk + interactive + prefetch + direct 同文件）不超每文件/全局上限；benchmark 回归 ≤10%；完整 CI。
 
 ### Risks
 

@@ -9,13 +9,12 @@ import (
 
 func assertGlobalCapacity(t *testing.T, state *State) {
 	t.Helper()
-	normal := len(state.slots.normal)
-	high := len(state.slots.high)
-	if normal > cap(state.slots.normal) || high > cap(state.slots.high) {
-		t.Fatalf("slot overflow: normal=%d/%d high=%d/%d", normal, cap(state.slots.normal), high, cap(state.slots.high))
+	stats := state.scheduler.Stats()
+	if stats.NormalInUse > stats.NormalCapacity || stats.HighInUse > stats.HighCapacity {
+		t.Fatalf("slot overflow: normal=%d/%d high=%d/%d", stats.NormalInUse, stats.NormalCapacity, stats.HighInUse, stats.HighCapacity)
 	}
-	if normal+high > MaxConcurrency {
-		t.Fatalf("global slots in use = %d, want at most %d", normal+high, MaxConcurrency)
+	if stats.NormalInUse+stats.HighInUse > MaxConcurrency {
+		t.Fatalf("global slots in use = %d, want at most %d", stats.NormalInUse+stats.HighInUse, MaxConcurrency)
 	}
 }
 
@@ -23,9 +22,10 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 	state := NewState(nil)
 	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
 	ctx := context.Background()
+	initial := state.scheduler.Stats()
 
 	var releases []func()
-	for i := 0; i < cap(state.slots.normal); i++ {
+	for i := 0; i < initial.NormalCapacity; i++ {
 		release, err := reader.acquireReadSlot(ctx)
 		if err != nil {
 			t.Fatalf("normal acquire %d: %v", i, err)
@@ -33,7 +33,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 		releases = append(releases, release)
 		assertGlobalCapacity(t, state)
 	}
-	for i := 0; i < cap(state.slots.high); i++ {
+	for i := 0; i < initial.HighCapacity; i++ {
 		release, err := reader.acquireReadSlot(WithPriority(ctx, PriorityHigh))
 		if err != nil {
 			t.Fatalf("high acquire %d: %v", i, err)
@@ -41,13 +41,13 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 		releases = append(releases, release)
 		assertGlobalCapacity(t, state)
 	}
-	if got := len(state.slots.normal) + len(state.slots.high); got != MaxConcurrency {
+	if got := state.scheduler.Stats().NormalInUse + state.scheduler.Stats().HighInUse; got != MaxConcurrency {
 		t.Fatalf("global slots in use = %d, want %d", got, MaxConcurrency)
 	}
 	for _, release := range releases {
 		release()
 	}
-	if got := len(state.slots.normal) + len(state.slots.high); got != 0 {
+	if got := state.scheduler.Stats().NormalInUse + state.scheduler.Stats().HighInUse; got != 0 {
 		t.Fatalf("global slots after release = %d, want 0", got)
 	}
 
@@ -58,10 +58,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 			t.Fatalf("parallel acquire %d: %v", i, err)
 		}
 		parallelReleases = append(parallelReleases, release)
-		state.parallel.mu.Lock()
-		got := len(state.parallel.files["file"].ch)
-		state.parallel.mu.Unlock()
-		if got > 4 {
+		if got := state.scheduler.PerFileInUse("file"); got > 4 {
 			t.Fatalf("per-file permits in use = %d, want at most 4", got)
 		}
 	}
@@ -78,28 +75,25 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 	for _, release := range parallelReleases {
 		release()
 	}
-	state.parallel.mu.Lock()
-	files := len(state.parallel.files)
-	state.parallel.mu.Unlock()
-	if files != 0 {
+	if files := state.scheduler.Stats().Files; files != 0 {
 		t.Fatalf("per-file limiter entries after release = %d, want 0", files)
 	}
 
-	for i := 0; i < PrefetchLimit; i++ {
+	for i := 0; i < initial.PrefetchCapacity; i++ {
 		if !state.reservePrefetch() {
 			t.Fatalf("prefetch reserve %d failed below capacity", i)
 		}
-		if got := len(state.prefetch.sem); got > PrefetchLimit {
-			t.Fatalf("prefetch permits in use = %d, want at most %d", got, PrefetchLimit)
+		if got := state.scheduler.Stats().PrefetchInUse; got > initial.PrefetchCapacity {
+			t.Fatalf("prefetch permits in use = %d, want at most %d", got, initial.PrefetchCapacity)
 		}
 	}
 	if state.reservePrefetch() {
 		t.Fatal("prefetch reserved past capacity")
 	}
-	for i := 0; i < PrefetchLimit; i++ {
+	for i := 0; i < initial.PrefetchCapacity; i++ {
 		state.releasePrefetch()
 	}
-	if permits := len(state.prefetch.sem); permits != 0 {
+	if permits := state.scheduler.Stats().PrefetchInUse; permits != 0 {
 		t.Fatalf("prefetch permits after release = %d, want 0", permits)
 	}
 
@@ -120,7 +114,7 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 	}
 	wg.Wait()
 	assertGlobalCapacity(t, state)
-	if got := len(state.slots.normal) + len(state.slots.high); got != 0 {
+	if got := state.scheduler.Stats().NormalInUse + state.scheduler.Stats().HighInUse; got != 0 {
 		t.Fatalf("global slots after concurrent acquire/release = %d, want 0", got)
 	}
 }

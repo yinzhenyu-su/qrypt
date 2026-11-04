@@ -14,6 +14,7 @@
 
 ### Others
 - refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
+- refactor(vfs): centralize read concurrency budgets in one scheduler
 
 ---
 

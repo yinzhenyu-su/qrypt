@@ -47,10 +47,11 @@
 
 - [x] 5.1 回归测试：新增 `TestPerFileLimitStableAcrossWindows`，同一文件两个并发窗口（streams 4 和 2）持有 permit，断言总并发不超过稳定上限。验证：修复前该测试失败，修复后通过。
 - [x] 5.2 稳定 per-file limiter：分离 `want` 与 `perFileLimit`；每文件上限由 profile/driver 解析一次；不同 limit 不替换 live channel；`ErrUnsupported` 降级为 1。验证：回归、取消等待、non-parallel 降级和 `-race -count=10` 通过。
-- [ ] 5.3 Scheduler：实现 `Scheduler.Acquire(ctx, Request) (Grant, error)`，统一全局 normal/high、每文件预算、预取名額和优先级。验证：容量不变量、优先级、公平性、取消和混合负载测试通过。
-- [ ] 5.4 迁移 VFS 前台、并行子 Range、预取和 `ReadStream` read-ahead 到 Scheduler；直读路径使用同一实现但保留独立预算。验证：现有读/VFS/FUSE/mobile 测试通过，benchmark 回归 ≤10%。
-- [ ] 5.5 策略/调度分离：`ReadPlan` 改为 `MaxStreams` 提示，实际流数由 `Grant` 决定；observer 记录实际授予的 streams。验证：`MaxStreams=4` + 每文件上限 2 时 grant 为 2，诊断字段一致。
-- [ ] 5.6 门禁：混合负载（bulk + interactive + prefetch + direct 同文件）不超每文件/全局上限；`-race -count=10`；完整 `scripts/ci/check-all.sh`。验证：全部通过。
+- [x] 5.3 Scheduler：实现 `Scheduler.Acquire(ctx, Request) (Grant, error)`，统一全局 normal/high、每文件预算、预取名額和优先级。验证：`scheduler_invariant_test.go`、`slot_test.go`、`pkg/core/read_priority_test.go` 通过。
+- [x] 5.4 迁移 VFS 前台、并行子 Range、预取和 `ReadStream` read-ahead 到 Scheduler。验证：现有读/VFS/FUSE/mobile 测试通过。
+- [ ] 5.5 直读路径共享 Scheduler 实现：抽到中立包（或等价共享层），`drive.ReadParallel` 使用独立预算实例。验证：直读并发上限与 VFS 策略矩阵一致。
+- [ ] 5.6 策略/调度分离：`ReadPlan` 改为 `MaxStreams` 提示，实际流数由 `Grant` 决定；observer 记录实际授予的 streams。验证：`MaxStreams=4` + 每文件上限 2 时 grant 为 2，诊断字段一致。
+- [ ] 5.7 门禁：混合负载（bulk + interactive + prefetch + direct 同文件）不超每文件/全局上限；`-race -count=10`；完整 `scripts/ci/check-all.sh`。验证：全部通过。
 
 ## 6. Deferred（证据变化后再评估）
 

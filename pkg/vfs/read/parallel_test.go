@@ -228,9 +228,7 @@ func TestFetchChunkWindowParallelCancelsSibling(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("sibling sub-range was not canceled")
 	}
-	state.parallel.mu.Lock()
-	files := len(state.parallel.files)
-	state.parallel.mu.Unlock()
+	files := state.scheduler.Stats().Files
 	if files != 0 {
 		t.Fatalf("per-file limiter entries = %d, want 0", files)
 	}

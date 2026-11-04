@@ -59,21 +59,6 @@ type windowLoad struct {
 	err     error
 }
 
-// slotState bounds concurrent driver reads. The normal/high channels are
-// the lock itself - no additional mutex. Lifecycle: created in NewState,
-// never closed (workers select on the VFS context instead).
-type slotState struct {
-	normal chan struct{}
-	high   chan struct{}
-}
-
-func newSlotState() *slotState {
-	return &slotState{
-		normal: make(chan struct{}, MaxConcurrency-HighReserve),
-		high:   make(chan struct{}, HighReserve),
-	}
-}
-
 // windowState coalesces concurrent reads of the same cache window.
 // Owned by the read domain; mu guards loads.
 type windowState struct {
@@ -117,98 +102,14 @@ func newFastPathState() *fastPathState {
 	}
 }
 
-// prefetchState bounds speculative prefetch concurrency. Lifetime and
-// cancellation state lives in ScopeRegistry.
-type prefetchState struct {
-	sem chan struct{}
-}
-
-// foregroundState tracks active foreground reads so prefetch can yield when
-// the foreground is busy.
-type foregroundState struct {
-	reads atomic.Int32
-}
-
-// parallelState bounds concurrent sub-ranges per file and remembers files
-// whose driver rejected parallel range reads.
-type parallelState struct {
-	mu          sync.Mutex
-	files       map[string]*parallelFile
-	nonParallel map[string]struct{}
-}
-
-type parallelFile struct {
-	ch    chan struct{}
-	limit int
-	refs  int
-}
-
-func newParallelState() *parallelState {
-	return &parallelState{
-		files:       map[string]*parallelFile{},
-		nonParallel: map[string]struct{}{},
-	}
-}
-
+// acquireParallel takes one permit from the file's stable budget.
 func (s *State) acquireParallel(ctx context.Context, key string, limit int) (func(), error) {
-	if limit < 1 {
-		limit = 1
-	}
-	s.parallel.mu.Lock()
-	file := s.parallel.files[key]
-	if file == nil {
-		file = &parallelFile{ch: make(chan struct{}, limit), limit: limit}
-		s.parallel.files[key] = file
-	}
-	// Keep the first per-file budget for the lifetime of the in-flight
-	// permits. Replacing a live channel when a partial window asks for a
-	// different stream count would let old and new permits coexist and bypass
-	// the per-file cap.
-	file.refs++
-	s.parallel.mu.Unlock()
-
-	release := func() {
-		<-file.ch
-		s.parallel.mu.Lock()
-		file.refs--
-		if file.refs == 0 && s.parallel.files[key] == file {
-			delete(s.parallel.files, key)
-		}
-		s.parallel.mu.Unlock()
-	}
-
-	select {
-	case file.ch <- struct{}{}:
-		return release, nil
-	case <-ctx.Done():
-		s.parallel.mu.Lock()
-		file.refs--
-		if file.refs == 0 && s.parallel.files[key] == file {
-			delete(s.parallel.files, key)
-		}
-		s.parallel.mu.Unlock()
-		return nil, ctx.Err()
-	}
+	return s.scheduler.AcquireFile(ctx, key, limit)
 }
 
-func (s *State) markNonParallel(key string) {
-	if key == "" {
-		return
-	}
-	s.parallel.mu.Lock()
-	s.parallel.nonParallel[key] = struct{}{}
-	s.parallel.mu.Unlock()
-}
+func (s *State) markNonParallel(key string) { s.scheduler.MarkNonParallel(key) }
 
-func (s *State) isNonParallel(key string) bool {
-	if key == "" {
-		return false
-	}
-	s.parallel.mu.Lock()
-	defer s.parallel.mu.Unlock()
-	_, ok := s.parallel.nonParallel[key]
-	return ok
-}
+func (s *State) isNonParallel(key string) bool { return s.scheduler.IsNonParallel(key) }
 
 type sequentialRead struct {
 	end       int64
@@ -249,12 +150,6 @@ type sequentialState struct {
 
 func newSequentialState() *sequentialState {
 	return &sequentialState{reads: map[sequentialKey]sequentialRead{}}
-}
-
-func newPrefetchState() *prefetchState {
-	return &prefetchState{
-		sem: make(chan struct{}, PrefetchLimit),
-	}
 }
 
 // historyEntry pairs a debug event with its append order so the two rings
@@ -388,16 +283,13 @@ func (h *historyState) reset() {
 // are initialized together, touched only by read paths, and shut down by
 // the VFS lifecycle.
 type State struct {
-	cache      Cache
-	history    *historyState
-	prefetch   *prefetchState
-	foreground *foregroundState
-	sequence   *sequentialState
-	slots      *slotState
-	fastPath   *fastPathState
-	windows    *windowState
-	parallel   *parallelState
-	scopes     *ScopeRegistry
+	cache     Cache
+	history   *historyState
+	scheduler *Scheduler
+	sequence  *sequentialState
+	fastPath  *fastPathState
+	windows   *windowState
+	scopes    *ScopeRegistry
 }
 
 // NewState builds the read domain state together so ownership and
@@ -405,16 +297,13 @@ type State struct {
 // paths fall back to no caching).
 func NewState(cache Cache) *State {
 	return &State{
-		cache:      cache,
-		history:    newHistoryState(),
-		prefetch:   newPrefetchState(),
-		foreground: &foregroundState{},
-		sequence:   newSequentialState(),
-		slots:      newSlotState(),
-		fastPath:   newFastPathState(),
-		windows:    newWindowState(),
-		parallel:   newParallelState(),
-		scopes:     newScopeRegistry(),
+		cache:     cache,
+		history:   newHistoryState(),
+		scheduler: NewScheduler(DefaultSchedulerConfig()),
+		sequence:  newSequentialState(),
+		fastPath:  newFastPathState(),
+		windows:   newWindowState(),
+		scopes:    newScopeRegistry(),
 	}
 }
 
@@ -673,36 +562,27 @@ func (s *State) findWindow(cacheKey string, index int64, streams int) *windowLoa
 	return nil
 }
 
-func (s *State) reservePrefetch() bool {
-	select {
-	case s.prefetch.sem <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
+func (s *State) reservePrefetch() bool { return s.scheduler.TryAcquirePrefetch() }
 
-func (s *State) releasePrefetch() {
-	<-s.prefetch.sem
-}
+func (s *State) releasePrefetch() { s.scheduler.ReleasePrefetch() }
 
 func (s *State) beginForegroundRead(cacheKey string) {
 	if cacheKey != "" {
-		s.foreground.reads.Add(1)
+		s.scheduler.BeginForeground()
 	}
 }
 
 func (s *State) endForegroundRead(cacheKey string) {
 	if cacheKey != "" {
-		s.foreground.reads.Add(-1)
+		s.scheduler.EndForeground()
 	}
 }
 
 // adaptivePrefetchLimit keeps a small lookahead during active foreground
 // reads and allows a wider pipeline when the reader is otherwise idle.
 func (s *State) adaptivePrefetchLimit(sequential bool) int {
-	limit := PrefetchLimit
-	if s.foreground.reads.Load() > int32(max(1, (MaxConcurrency-HighReserve)/2)) {
+	limit := cap(s.scheduler.prefetch)
+	if s.scheduler.ForegroundCount() > max(1, cap(s.scheduler.normal)/2) {
 		return 1
 	}
 	// Keep the configured pipeline for both initial and confirmed sequential
@@ -749,7 +629,7 @@ func (s *State) RuntimeStats() (windowLoads, prefetches, rangeHits int) {
 	s.windows.mu.Lock()
 	windowLoads = len(s.windows.loads)
 	s.windows.mu.Unlock()
-	prefetches = len(s.prefetch.sem)
+	prefetches = len(s.scheduler.prefetch)
 	s.fastPath.rangeHit.mu.Lock()
 	rangeHits = len(s.fastPath.rangeHit.hits)
 	s.fastPath.rangeHit.mu.Unlock()
@@ -818,5 +698,5 @@ func (s *State) DebugSnapshot() readcache.DebugReadCache {
 
 // StatesReady reports whether the runtime sub-states are initialized.
 func (s *State) StatesReady() bool {
-	return s != nil && s.prefetch != nil && s.foreground != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil && s.parallel != nil && s.scopes != nil
+	return s != nil && s.scheduler != nil && s.sequence != nil && s.fastPath != nil && s.windows != nil && s.scopes != nil
 }
