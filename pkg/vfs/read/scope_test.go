@@ -89,7 +89,7 @@ func TestCancelPrefetchForFileCancelsScope(t *testing.T) {
 	}
 }
 
-func waitScopeCanceled(t *testing.T, scope *readScope) {
+func waitScopeCanceled(t *testing.T, scope *ReadScope) {
 	t.Helper()
 	select {
 	case <-scope.ctx.Done():

@@ -98,10 +98,10 @@ type scope struct {
 }
 ```
 
-- 预取上下文从 scope 派生，而不是从 `context.WithoutCancel(ctx)` + `AfterFunc` 临时桥接；调用方取消由 `Read` 在错误路径显式调用 `Cancel(key, "caller")`，保持“正常完成不取消预取”的语义。
-- 取消入口只有三个：`CancelFile(cacheKey, reason)`、`CancelSession(sessionID, reason)`、`CancelAll(reason)`。`InvalidateFile`、`ReleaseReadSession`、移动端关闭句柄、VFS `Close` 都调用它们。
+- 预取上下文保留调用方的 values（`context.WithoutCancel(ctx)`），并用 `AfterFunc(scope.ctx, cancel)` 把 scope 的取消桥接到预取；scope 是唯一的取消所有者。调用方取消由 `Read` 在错误路径显式调用 `Cancel(ctx, cacheKey, "caller")`，保持“正常完成不取消预取”的语义。
+- 取消入口为 `CancelFile(cacheKey, reason)`、`CancelSession(sessionID, reason)`、`CancelAll(reason)` 和按 `(cacheKey, sessionID)` 精确取消的 `Cancel(ctx, cacheKey, reason)`。`InvalidateFile`、`ReleaseReadSession`、seek、移动端关闭句柄、VFS `Close` 都调用它们。
 - 取消原因只存在 scope 上，`prefetchState.cancels/reasons` 删除；诊断读取原因时从 registry 取，避免两份状态不同步。
-- 作用域在 refs 归零时注销并取消；已完成的缓存填充不受影响。
+- 取消时 scope 立即从 registry 注销并取消，refs 归零时释放对象；之后的新预取会创建新的 scope，不会继承已取消的 context。已完成的缓存填充不受影响。
 - 备选：保留两套登记并加一致性测试（拒绝，测试只能覆盖已知路径）；按 goroutine 取消（拒绝，无法按文件/会话聚合）。
 
 ### 4. 单一窗口注册表，结构化键与 O(1) 查找

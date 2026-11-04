@@ -71,14 +71,14 @@ func waitUntil(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-func TestPrefetchRegistriesDrainTogether(t *testing.T) {
+func TestPrefetchScopesDrainOnLifecycle(t *testing.T) {
 	cases := []struct {
 		name   string
 		cancel func(*State)
 	}{
 		{"invalidate", func(s *State) { s.InvalidateFile("cache") }},
 		{"session-release", func(s *State) { s.ReleaseReadSession(7) }},
-		{"legacy-seek", func(s *State) { s.cancelPrefetch("cache") }},
+		{"seek", func(s *State) { s.cancelPrefetch("cache") }},
 		{"close", func(s *State) { _ = s.Close() }},
 	}
 	for _, tc := range cases {
@@ -98,15 +98,9 @@ func TestPrefetchRegistriesDrainTogether(t *testing.T) {
 				}
 			}
 
-			state.prefetch.mu.Lock()
-			legacy := len(state.prefetch.cancels["cache"])
-			state.prefetch.mu.Unlock()
 			state.scopes.mu.Lock()
 			scopes := len(state.scopes.byCache["cache"])
 			state.scopes.mu.Unlock()
-			if legacy != 2 {
-				t.Fatalf("legacy prefetch registry entries = %d, want 2", legacy)
-			}
 			if scopes != 1 {
 				t.Fatalf("scope registry entries = %d, want 1 shared scope", scopes)
 			}
@@ -119,14 +113,11 @@ func TestPrefetchRegistriesDrainTogether(t *testing.T) {
 					t.Fatal("prefetch driver read was not canceled")
 				}
 			}
-			waitUntil(t, "both registries to drain", func() bool {
-				state.prefetch.mu.Lock()
-				legacy := len(state.prefetch.cancels["cache"])
-				state.prefetch.mu.Unlock()
+			waitUntil(t, "scope registry to drain", func() bool {
 				state.scopes.mu.Lock()
 				scopes := len(state.scopes.byCache["cache"])
 				state.scopes.mu.Unlock()
-				return legacy == 0 && scopes == 0
+				return scopes == 0
 			})
 			if started, stopped := host.counts(); started != 2 || stopped != 2 {
 				t.Fatalf("driver reads started=%d stopped=%d, want 2/2", started, stopped)

@@ -3,7 +3,6 @@ package read
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 )
@@ -87,27 +86,20 @@ func TestSchedulerCapacityInvariants(t *testing.T) {
 	}
 
 	for i := 0; i < PrefetchLimit; i++ {
-		key := fmt.Sprintf("prefetch-%d", i)
-		if !state.reservePrefetch(key) {
+		if !state.reservePrefetch() {
 			t.Fatalf("prefetch reserve %d failed below capacity", i)
 		}
-		state.prefetch.mu.Lock()
-		got := len(state.prefetch.sem)
-		state.prefetch.mu.Unlock()
-		if got > PrefetchLimit {
+		if got := len(state.prefetch.sem); got > PrefetchLimit {
 			t.Fatalf("prefetch permits in use = %d, want at most %d", got, PrefetchLimit)
 		}
 	}
-	if state.reservePrefetch("prefetch-overflow") {
+	if state.reservePrefetch() {
 		t.Fatal("prefetch reserved past capacity")
 	}
 	for i := 0; i < PrefetchLimit; i++ {
-		state.releasePrefetch(fmt.Sprintf("prefetch-%d", i))
+		state.releasePrefetch()
 	}
-	state.prefetch.mu.Lock()
-	permits := len(state.prefetch.sem)
-	state.prefetch.mu.Unlock()
-	if permits != 0 {
+	if permits := len(state.prefetch.sem); permits != 0 {
 		t.Fatalf("prefetch permits after release = %d, want 0", permits)
 	}
 

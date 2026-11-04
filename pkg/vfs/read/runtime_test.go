@@ -150,22 +150,6 @@ func TestStateReportsChunkAvailableFromHotChunkAndWindow(t *testing.T) {
 	}
 }
 
-func TestStateOwnsPrefetchReservationState(t *testing.T) {
-	state := NewState(nil)
-
-	if !state.reservePrefetch("cache:1:2") {
-		t.Fatal("first prefetch reservation should win")
-	}
-	if state.reservePrefetch("cache:1:2") {
-		t.Fatal("duplicate prefetch reservation should be rejected")
-	}
-	state.releasePrefetch("cache:1:2")
-	if !state.reservePrefetch("cache:1:2") {
-		t.Fatal("released prefetch reservation should be reusable")
-	}
-	state.releasePrefetch("cache:1:2")
-}
-
 func TestStateAdaptivePrefetchLimitProtectsForegroundReads(t *testing.T) {
 	state := NewState(nil)
 	if got := state.adaptivePrefetchLimit(false); got != PrefetchLimit {
@@ -182,23 +166,27 @@ func TestStateAdaptivePrefetchLimitProtectsForegroundReads(t *testing.T) {
 	}
 }
 
-func TestStateCancelPrefetchCancelsOnlyRegisteredTask(t *testing.T) {
+func TestStateCancelPrefetchCancelsOnlyMatchingScope(t *testing.T) {
 	state := NewState(nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	state.registerPrefetch("cache", "cache:1:1", cancel)
+	ctx := WithAccessHint(context.Background(), AccessHint{SessionID: 7, RequestID: 1})
+	scope, release := state.scopeFor(ctx, "cache")
+	defer release()
+
 	state.cancelPrefetch("other")
 	select {
-	case <-ctx.Done():
+	case <-scope.ctx.Done():
 		t.Fatal("prefetch for another file was canceled")
 	default:
 	}
 	state.cancelPrefetch("cache")
 	select {
-	case <-ctx.Done():
+	case <-scope.ctx.Done():
 	case <-time.After(time.Second):
-		t.Fatal("registered prefetch was not canceled")
+		t.Fatal("matching prefetch scope was not canceled")
 	}
-	state.unregisterPrefetch("cache", "cache:1:1")
+	if got := scope.cancelReason(); got != "seek" {
+		t.Fatalf("cancel reason = %q, want seek", got)
+	}
 }
 
 func TestStateConfirmsSequentialReadOnlyAfterCrossingChunkBoundary(t *testing.T) {

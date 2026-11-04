@@ -1013,19 +1013,17 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		return
 	}
 	key := WindowKey(cacheKey, startIndex, endIndex)
-	if !r.state.reservePrefetch(key) {
+	if !r.state.reservePrefetch() {
 		return
 	}
 	scope, releaseScope := r.state.scopeFor(ctx, cacheKey)
 	prefetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopScope := context.AfterFunc(scope.ctx, cancel)
 	prefetchCtx = WithPriority(prefetchCtx, PriorityLow)
-	r.state.registerPrefetch(cacheKey, key, cancel)
 
 	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, done: make(chan struct{})}
 	if _, exists := r.state.beginWindowLoad(key, load); exists {
-		r.state.releasePrefetch(key)
-		r.state.unregisterPrefetch(cacheKey, key)
+		r.state.releasePrefetch()
 		stopScope()
 		releaseScope()
 		cancel()
@@ -1058,8 +1056,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			r.observer.DebugFinishActive(activeID)
 			close(load.done)
 			r.state.endWindowLoad(key)
-			r.state.releasePrefetch(key)
-			r.state.unregisterPrefetch(cacheKey, key)
+			r.state.releasePrefetch()
 			cancel()
 			return
 		}
@@ -1068,8 +1065,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			r.observer.DebugFinishActive(activeID)
 			close(load.done)
 			r.state.endWindowLoad(key)
-			r.state.releasePrefetch(key)
-			r.state.unregisterPrefetch(cacheKey, key)
+			r.state.releasePrefetch()
 			cancel()
 		}()
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
@@ -1080,11 +1076,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		}
 		load.extra["read_streams"] = 1
 		if load.err != nil && errors.Is(load.err, context.Canceled) {
-			reason := r.state.prefetchCancelReason(key)
-			if reason == "" {
-				reason = scope.cancelReason()
-			}
-			load.extra["prefetch_cancel_reason"] = reason
+			load.extra["prefetch_cancel_reason"] = scope.cancelReason()
 		}
 		RecordChunkDetail(r.observer, prefetchCtx, entry, "prefetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, load.extra, load.err)
 	}()

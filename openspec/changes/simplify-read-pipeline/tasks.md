@@ -17,12 +17,12 @@
 - [x] 1.3 把 FUSE 自适应升级改为返回新 `ReadPlan` 并一次性写回 context，禁止原地修改；增加“升级后所有阶段读到同一计划”的测试。验证：`TestHintedSequentialLargeReadUpgradesToBulk` 断言 bulk/4/cache 且保留 FUSE 窗口。
 - [x] 1.4 删除计划字段的隐式默认分支（如 `windowChunks == 0` 表示沿用旧值），并在 `Read` / `ReadStream` 入口断言计划已解析。验证：`TestPlanResolverUnspecifiedUsesConcreteDefaults` 与 `TestPlanResolverFallsBackWhenProfileWindowIsZero` 覆盖；grep 不再出现哨兵判断。
 
-## 2. ScopeRegistry
+## 2. ScopeRegistry（已完成）
 
-- [ ] 2.1 新增 `scope.go`：定义 `(cacheKey, sessionID)` 键、引用计数、取消原因和 `CancelFile` / `CancelSession` / `CancelAll`；单测覆盖 refs 归零、重复取消和原因读取。验证：`go test ./pkg/vfs/read -run TestScopeRegistry` 通过。
-- [ ] 2.2 用 `ScopeRegistry` 替换 `scopeState` 与 `prefetchState.cancels/reasons`；诊断从 registry 读取取消原因。验证：`TestPrefetchRegistriesDrainTogether` 与现有取消矩阵通过。
-- [ ] 2.3 接线 `InvalidateFile`、`ReleaseReadSession`、`CancelReadPrefetch`、移动端关闭/取消和 VFS `Close`，确保按文件、按会话、全量取消各自精确。验证：VFS、FUSE adapter、移动端生命周期测试全部通过。
-- [ ] 2.4 删除 `prefetchState` 的取消登记与 `inFlight`；前台读计数暂时保留为独立小状态，等待后续调度器评估。验证：编译通过，grep 不再出现 `prefetch.cancels` / `prefetch.reasons`。
+- [x] 2.1 新增 `scope.go`：定义 `(cacheKey, sessionID)` 键、引用计数、取消原因和 `CancelFile` / `CancelSession` / `CancelAll` / `Cancel`；单测覆盖 refs 归零、重复取消和原因读取。验证：`scope_registry_test.go` 与 `go test ./pkg/vfs/read -run TestScopeRegistry` 通过。
+- [x] 2.2 用 `ScopeRegistry` 替换 `scopeState` 与 `prefetchState.cancels/reasons`；诊断从 registry 读取取消原因。验证：`TestPrefetchScopesDrainOnLifecycle` 与现有取消矩阵通过。
+- [x] 2.3 接线 `InvalidateFile`、`ReleaseReadSession`、`CancelReadPrefetch`、移动端关闭/取消和 VFS `Close`，确保按文件、按会话、全量取消各自精确。验证：VFS、FUSE adapter、移动端生命周期测试全部通过。
+- [x] 2.4 删除 `prefetchState` 的取消登记与 `inFlight`；前台读计数迁移到 `foregroundState`。验证：编译通过，grep 不再出现 `prefetch.cancels` / `prefetch.reasons` / `prefetch.inFlight`。
 
 ## 3. CachePolicy
 
