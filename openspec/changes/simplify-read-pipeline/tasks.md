@@ -24,12 +24,12 @@
 - [x] 2.3 接线 `InvalidateFile`、`ReleaseReadSession`、`CancelReadPrefetch`、移动端关闭/取消和 VFS `Close`，确保按文件、按会话、全量取消各自精确。验证：VFS、FUSE adapter、移动端生命周期测试全部通过。
 - [x] 2.4 删除 `prefetchState` 的取消登记与 `inFlight`；前台读计数迁移到 `foregroundState`。验证：编译通过，grep 不再出现 `prefetch.cancels` / `prefetch.reasons` / `prefetch.inFlight`。
 
-## 3. CachePolicy
+## 3. CachePolicy（已完成）
 
-- [ ] 3.1 新增 `cache_policy.go`：定义 `Admit` 与 `Lookup`，热块始终写入，持久缓存由 `ReadPlan.CacheWrites` 决定；单测覆盖准入矩阵。验证：`go test ./pkg/vfs/read -run TestCachePolicy` 通过。
-- [ ] 3.2 用 `CachePolicy.Admit` 替换 `readerBackend.StoreChunk` 与 `durableCacheWrites`；前台窗口、并行子 Range、预取、`ReadStream` read-ahead 全部走同一入口。验证：`cache_admission_test.go` 全部通过。
-- [ ] 3.3 把 `readChunkRange` 中直接命中与 `waitWindow` 后的重复查找分支收敛为一次 `Lookup` 调用。验证：缓存命中/提升测试通过，行为与基线一致。
-- [ ] 3.4 增加“并行子 Range 不写持久缓存但热块可用”的回归测试。验证：`go test ./pkg/vfs/read -run TestParallelCacheAdmission` 通过。
+- [x] 3.1 新增 `cache_policy.go`：定义 `Admit` 与 `lookupCachedChunk`，热块始终写入，持久缓存由 `ReadPlan.CacheWrites` 决定；单测覆盖准入矩阵。验证：`cache_policy_test.go` 与 `go test ./pkg/vfs/read -run TestCachePolicy` 通过。
+- [x] 3.2 用 `CachePolicy.Admit` 替换 `readerBackend.StoreChunk` 与 `durableCacheWrites`；前台窗口、并行子 Range、预取、`ReadStream` read-ahead 全部走同一入口。验证：`cache_admission_test.go` 全部通过。
+- [x] 3.3 把 `readChunkRange` 中直接命中与 `waitWindow` 后的重复查找分支收敛为 `lookupCachedChunk`，保留 phase/source 诊断前缀。验证：缓存命中/提升测试通过，行为与基线一致。
+- [x] 3.4 增加“并行子 Range 不写持久缓存但热块可用”的回归测试。验证：`go test ./pkg/vfs/read -run TestParallelCacheAdmissionKeepsHotOnly` 通过。
 
 ## 4. 文档与最终门禁
 

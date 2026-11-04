@@ -26,6 +26,7 @@ type Reader struct {
 	health   HealthRecorder
 	counters CounterRecorder
 	profile  drive.ReadProfile
+	policy   *CachePolicy
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
@@ -61,7 +62,7 @@ func NewReader(deps ReaderDeps) *Reader {
 	if deps.Profile == (drive.ReadProfile{}) {
 		deps.Profile = drive.DefaultReadProfile()
 	}
-	return &Reader{
+	r := &Reader{
 		host:     deps.Host,
 		state:    deps.State,
 		observer: deps.Observer,
@@ -69,6 +70,8 @@ func NewReader(deps ReaderDeps) *Reader {
 		counters: deps.Counters,
 		profile:  deps.Profile,
 	}
+	r.policy = newCachePolicy(deps.State)
+	return r
 }
 
 // State returns the read domain state.
@@ -411,26 +414,7 @@ func (b *readerBackend) CacheKey(entry drive.Entry) string {
 }
 
 func (b *readerBackend) StoreChunk(ctx context.Context, cacheKey string, entry drive.Entry, index int64, chunk []byte) {
-	if cacheKey == "" {
-		return
-	}
-	b.reader.putHotChunk(cacheKey, index, chunk)
-	if !durableCacheWrites(ctx) {
-		return
-	}
-	if b.reader.state.cache != nil {
-		// The run travels with the read so the cache can tell this chunk's
-		// admitting pass from a later one that comes back for it.
-		b.reader.state.cache.PutChunkAsync(cacheKey, entry.Size, index, chunk, cacheAccess(ctx))
-	}
-}
-
-// durableCacheWrites reports whether this read may write the persistent
-// read cache. Hot chunks are still kept: they are bounded, in-memory, and
-// prevent one read window from being fetched again chunk by chunk.
-func durableCacheWrites(ctx context.Context) bool {
-	plan, ok := readPlanFromContext(ctx)
-	return !ok || plan.CacheWrites
+	b.reader.policy.Admit(ctx, entry, cacheKey, index, chunk)
 }
 
 func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int) ([]byte, error) {
@@ -440,36 +424,10 @@ func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, s
 func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int, runtime readRuntime) ([]byte, error) {
 	cacheKey := runtime.CacheKey(entry)
 	access := cacheAccess(ctx)
-	if cacheKey != "" {
-		hotStarted := util.Now()
-		if hot, ok := runtime.HotChunk(cacheKey, index); ok {
-			runtime.AddCacheHit()
-			data := sliceChunkRange(hot, start, size)
-			RecordChunkDetail(r.observer, ctx, entry, "cache_hot_hit", index, start, size, int64(len(data)), hotStarted, CacheLookupExtra("hot", hotStarted, nil), nil)
-			return data, nil
-		}
-		if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
-			started := util.Now()
-			if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
-				RecordChunkDetail(r.observer, ctx, entry, "cache_range_promote", index, start, size, 0, started, CacheLookupExtra("range_promote", started, nil), err)
-				return nil, err
-			} else if ok {
-				if len(chunk) > 0 {
-					runtime.PutHotChunk(cacheKey, index, chunk)
-				}
-				RecordChunkDetail(r.observer, ctx, entry, "cache_range_promote", index, start, size, int64(len(cached)), started, CacheLookupExtra("range_promote", started, map[string]any{"promoted": len(chunk) > 0}), nil)
-				return cached, nil
-			}
-		}
-		started := util.Now()
-		if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
-			RecordChunkDetail(r.observer, ctx, entry, "cache_range_hit", index, start, size, 0, started, CacheLookupExtra("range", started, nil), err)
-			return nil, err
-		} else if ok {
-			runtime.RecordCachedRangeHit(cacheKey, index, size)
-			RecordChunkDetail(r.observer, ctx, entry, "cache_range_hit", index, start, size, int64(len(cached)), started, CacheLookupExtra("range", started, nil), nil)
-			return cached, nil
-		}
+	if data, ok, err := r.lookupCachedChunk(ctx, entry, cacheKey, index, start, size, access, runtime, "", "", true); err != nil {
+		return nil, err
+	} else if ok {
+		return data, nil
 	}
 	waitStarted := util.Now()
 	if data, ok, err := runtime.WaitWindow(ctx, cacheKey, index); err != nil {
@@ -481,29 +439,10 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 			RecordChunkDetail(r.observer, ctx, entry, "wait_window", index, start, size, int64(len(chunk)), waitStarted, nil, nil)
 			return chunk, nil
 		}
-		if cacheKey != "" {
-			if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
-				started := util.Now()
-				if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
-					RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_promote", index, start, size, 0, started, CacheLookupExtra("wait_window_range_promote", started, nil), err)
-					return nil, err
-				} else if ok {
-					if len(chunk) > 0 {
-						runtime.PutHotChunk(cacheKey, index, chunk)
-					}
-					RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_promote", index, start, size, int64(len(cached)), started, CacheLookupExtra("wait_window_range_promote", started, map[string]any{"promoted": len(chunk) > 0}), nil)
-					return cached, nil
-				}
-			}
-			started := util.Now()
-			if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
-				RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_hit", index, start, size, 0, started, CacheLookupExtra("wait_window_range", started, nil), err)
-				return nil, err
-			} else if ok {
-				runtime.RecordCachedRangeHit(cacheKey, index, size)
-				RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_hit", index, start, size, int64(len(cached)), started, CacheLookupExtra("wait_window_range", started, nil), nil)
-				return cached, nil
-			}
+		if data, ok, err := r.lookupCachedChunk(ctx, entry, cacheKey, index, start, size, access, runtime, "wait_window_", "wait_window_", false); err != nil {
+			return nil, err
+		} else if ok {
+			return data, nil
 		}
 	}
 	var data []byte
@@ -517,6 +456,47 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 	chunk := sliceChunkRange(data, start, size)
 	RecordChunkDetail(r.observer, ctx, entry, "cache_miss_load", index, start, size, int64(len(chunk)), loadStarted, WindowExtra(windowChunks), nil)
 	return chunk, nil
+}
+
+// lookupCachedChunk is the single cache lookup path for a chunk range. The
+// phase and source prefixes keep the existing diagnostics for a direct miss
+// and for a lookup after WaitWindow.
+func (r *Reader) lookupCachedChunk(ctx context.Context, entry drive.Entry, cacheKey string, index, start, size int64, access readcache.Access, runtime readRuntime, phasePrefix, sourcePrefix string, checkHot bool) ([]byte, bool, error) {
+	if cacheKey == "" {
+		return nil, false, nil
+	}
+	if checkHot {
+		hotStarted := util.Now()
+		if hot, ok := runtime.HotChunk(cacheKey, index); ok {
+			runtime.AddCacheHit()
+			data := sliceChunkRange(hot, start, size)
+			RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_hot_hit", index, start, size, int64(len(data)), hotStarted, CacheLookupExtra("hot", hotStarted, nil), nil)
+			return data, true, nil
+		}
+	}
+	if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
+		started := util.Now()
+		if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
+			RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_promote", index, start, size, 0, started, CacheLookupExtra(sourcePrefix+"range_promote", started, nil), err)
+			return nil, false, err
+		} else if ok {
+			if len(chunk) > 0 {
+				runtime.PutHotChunk(cacheKey, index, chunk)
+			}
+			RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_promote", index, start, size, int64(len(cached)), started, CacheLookupExtra(sourcePrefix+"range_promote", started, map[string]any{"promoted": len(chunk) > 0}), nil)
+			return cached, true, nil
+		}
+	}
+	started := util.Now()
+	if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
+		RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_hit", index, start, size, 0, started, CacheLookupExtra(sourcePrefix+"range", started, nil), err)
+		return nil, false, err
+	} else if ok {
+		runtime.RecordCachedRangeHit(cacheKey, index, size)
+		RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_hit", index, start, size, int64(len(cached)), started, CacheLookupExtra(sourcePrefix+"range", started, nil), nil)
+		return cached, true, nil
+	}
+	return nil, false, nil
 }
 
 func sliceChunkRange(data []byte, start, size int64) []byte {

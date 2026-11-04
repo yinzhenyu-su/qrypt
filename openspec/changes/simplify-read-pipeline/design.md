@@ -129,16 +129,16 @@ type windowKey struct {
 
 ```go
 type CachePolicy struct {
-    hot     *HotCache
+    hot     *State
     durable Cache
 }
 
-func (p *CachePolicy) Admit(ctx context.Context, plan ReadPlan, entry drive.Entry, index int64, chunk []byte)
+func (p *CachePolicy) Admit(ctx context.Context, entry drive.Entry, cacheKey string, index int64, chunk []byte)
 ```
 
-- 热块始终写入（有界内存，供本次读取的后续 chunk 复用）；持久缓存只在 `plan.CacheWrites` 为真时写入。
-- 前台窗口、并行子 Range、预取窗口和 `ReadStream` read-ahead 都调用同一个 `Admit`；删除 `durableCacheWrites(ctx)` 和 `readerBackend.StoreChunk` 里的分散判断。
-- 查找侧保留现有三条路径（热块、范围提升、持久范围命中），但收敛为一个 `Lookup` 函数，消除 `readChunkRange` 中直接命中与 `waitWindow` 后命中的重复分支。
+- 热块始终写入（有界内存，供本次读取的后续 chunk 复用）；持久缓存只在 `ReadPlan.CacheWrites` 为真时写入。计划从 context 读取；没有计划的直接调用方保持旧的“允许持久写入”行为。
+- 前台窗口、并行子 Range、预取窗口和 `ReadStream` read-ahead 都通过 `readerBackend.StoreChunk` 调用同一个 `Admit`；`durableCacheWrites(ctx)` 和分散判断已删除。
+- 查找侧保留现有三条路径（热块、范围提升、持久范围命中），但收敛为 `lookupCachedChunk`；直接命中与 `waitWindow` 后的命中共享同一实现，只通过 phase/source 前缀保留原有诊断名称。
 - 备选：把准入下沉到 `readcache.Store`（拒绝，缓存层不应理解读意图）；只保留热块并关闭持久缓存（拒绝，行为变化）。
 
 ### 6. 共享取数决策与 span 读取，装配留在各自调用方
