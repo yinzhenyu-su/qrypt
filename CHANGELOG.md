@@ -16,6 +16,9 @@
 - fix(crypt): forward read capabilities and profiles from the raw driver
 - fix(drivers): keep Drime, Koofr, and 123 bulk reads single-stream after measurement
 - fix(drivers): retry truncated Quark range bodies instead of failing the whole read
+- fix(vfs): treat a missing upload target as permanent instead of retrying forever
+- fix(vfs): bound consecutive upload retries so a stuck upload cannot loop indefinitely
+- fix(sftp): classify staging errors so a missing target reports not found
 - fix(vfs): count in-flight remote deletes when reporting idle
 
 ### Others

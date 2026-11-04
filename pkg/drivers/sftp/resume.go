@@ -175,11 +175,11 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 	}
 	file, err := client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE)
 	if err != nil {
-		return fmt.Errorf("open remote staging file: %w", err)
+		return fmt.Errorf("open remote staging file: %w", classifyError(err))
 	}
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("seek remote staging file to %d: %w", offset, err)
+		return fmt.Errorf("seek remote staging file to %d: %w", offset, classifyError(err))
 	}
 	body := d.limiter.LimitUpload(partCtx, io.LimitReader(source, size))
 	written, err := io.CopyN(file, contextReader{ctx: partCtx, reader: body}, size)
@@ -188,10 +188,10 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 	}
 	closeErr := file.Close()
 	if err != nil {
-		return fmt.Errorf("write remote part at %d: %w", offset, err)
+		return fmt.Errorf("write remote part at %d: %w", offset, classifyError(err))
 	}
 	if closeErr != nil {
-		return fmt.Errorf("close remote part at %d: %w", offset, closeErr)
+		return fmt.Errorf("close remote part at %d: %w", offset, classifyError(closeErr))
 	}
 	if written != size {
 		return fmt.Errorf("wrote %d bytes at %d, want %d", written, offset, size)
@@ -202,10 +202,10 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 func createRemoteFile(client *sftp.Client, remotePath string) error {
 	file, err := client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE)
 	if err != nil {
-		return fmt.Errorf("create remote staging file %q: %w", remotePath, err)
+		return fmt.Errorf("create remote staging file %q: %w", remotePath, classifyError(err))
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close remote staging file %q: %w", remotePath, err)
+		return fmt.Errorf("close remote staging file %q: %w", remotePath, classifyError(err))
 	}
 	return nil
 }
