@@ -281,6 +281,62 @@ func TestDriverReadClampsAtEOF(t *testing.T) {
 	}
 }
 
+func TestDriverReadStrictRangeRejectsWholeObject(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("whole object")),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-strict", Name: "file.bin", Size: 100}
+	if _, err := driver.Read(drive.WithStrictRange(context.Background()), entry, 0, 10); !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want drive.ErrUnsupported", err)
+	}
+	rc, err := driver.Read(context.Background(), entry, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "whole object" {
+		t.Fatalf("non-strict body = %q, want whole object", data)
+	}
+}
+
+func TestDriverReadProfileStaysSingleStream(t *testing.T) {
+	driver := New("cookie", Options{})
+	if !drive.HasCapability(driver, drive.CapabilityInternalParallelRead) {
+		t.Fatal("quark must declare internal_parallel_read")
+	}
+	if drive.HasCapability(driver, drive.CapabilityParallelRange) {
+		t.Fatal("quark must not declare parallel_range while it parallelizes internally")
+	}
+	if got := drive.ReadProfileOf(driver).BulkStreams; got != 1 {
+		t.Fatalf("bulk streams = %d, want 1", got)
+	}
+}
+
 func TestDriverDownloadUsesCookieSnapshotAfterRotation(t *testing.T) {
 	var apiCalls int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

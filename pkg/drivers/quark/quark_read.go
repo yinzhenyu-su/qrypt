@@ -97,15 +97,28 @@ func (d *Driver) downloadBody(ctx context.Context, fid, downloadURL, cookieSnaps
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusForbidden {
+	if err := checkQuarkReadStatus(ctx, resp); err != nil {
 		resp.Body.Close()
-		return nil, errDownloadURLExpired
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		resp.Body.Close()
-		return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+		return nil, err
 	}
 	return resp.Body, nil
+}
+
+// checkQuarkReadStatus classifies a download response. In strict range mode a
+// 200 means the CDN ignored the Range header: report ErrUnsupported so the
+// read layer falls back to a single stream instead of treating the whole
+// object as one sub-range.
+func checkQuarkReadStatus(ctx context.Context, resp *http.Response) error {
+	if resp.StatusCode == http.StatusForbidden {
+		return errDownloadURLExpired
+	}
+	if drive.StrictRangeFromContext(ctx) && resp.StatusCode == http.StatusOK {
+		return fmt.Errorf("quark: read: range ignored (status 200): %w", drive.ErrUnsupported)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 type downloadRangePart struct {
@@ -121,13 +134,9 @@ func (d *Driver) downloadParallel(ctx context.Context, fid, downloadURL, cookieS
 		if err != nil {
 			return nil, err
 		}
-		if resp.StatusCode == http.StatusForbidden {
+		if err := checkQuarkReadStatus(ctx, resp); err != nil {
 			resp.Body.Close()
-			return nil, errDownloadURLExpired
-		}
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
-			return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+			return nil, err
 		}
 		return resp.Body, nil
 	}
@@ -166,7 +175,11 @@ func (d *Driver) downloadParallel(ctx context.Context, fid, downloadURL, cookieS
 							err = errDownloadURLExpired
 						} else if resp.StatusCode != http.StatusPartialContent {
 							resp.Body.Close()
-							err = fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
+							if drive.StrictRangeFromContext(parallelCtx) && resp.StatusCode == http.StatusOK {
+								err = fmt.Errorf("quark: parallel read: range ignored: %w", drive.ErrUnsupported)
+							} else {
+								err = fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
+							}
 						} else {
 							part.data, err = readDownloadPart(resp, part.size)
 						}
