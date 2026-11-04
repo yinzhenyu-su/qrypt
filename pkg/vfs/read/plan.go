@@ -16,6 +16,14 @@ type ReadPlan struct {
 	CacheWrites   bool
 }
 
+// PlanOverride temporarily replaces the resolved stream count and window size.
+// It exists for measurement tools (probe test read) that need to A/B read
+// configurations without rebuilding the binary. Production paths never set it.
+type PlanOverride struct {
+	MaxStreams   int
+	WindowChunks int
+}
+
 // PlanResolver resolves a caller intent and a driver profile into a concrete
 // ReadPlan.
 type PlanResolver struct {

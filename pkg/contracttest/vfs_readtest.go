@@ -51,6 +51,14 @@ type MountedReadTestResult struct {
 	RetryCommand     string                   `json:"retry_command,omitempty"`
 }
 
+// readPlanOverrider lets a read benchmark pin the stream count and window
+// size for the duration of one measurement. The VFS implements it behind
+// probe test read; production paths never set an override.
+type readPlanOverrider interface {
+	SetReadPlanOverride(maxStreams, windowChunks int)
+	ClearReadPlanOverride()
+}
+
 type MountedReadMeasurement struct {
 	Mode           string             `json:"mode"`
 	Sample         int                `json:"sample"`
@@ -190,6 +198,12 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if blockSize <= 0 {
 		blockSize = DefaultMountedReadTestBlockSize
 	}
+	if req.Streams < 0 || req.Streams > 32 {
+		optionErr = fmt.Errorf("read test streams override must be between 1 and 32")
+	}
+	if req.WindowChunks < 0 || req.WindowChunks > 64 {
+		optionErr = fmt.Errorf("read test window chunks override must be between 1 and 64")
+	}
 	seekSize := ParseXferSize(req.SeekSize)
 	if req.SeekSize != "" && (seekSize < 1 || seekSize > 16<<20) {
 		optionErr = fmt.Errorf("read test seek size must be between 1 and %d bytes", 16<<20)
@@ -265,6 +279,9 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	if existingPath != "" {
 		retryCommand = fmt.Sprintf("qrypt probe test read --mount %s --mount-point PATH --path %s --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s", mount, existingPath, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout)
 	}
+	if req.Streams > 0 || req.WindowChunks > 0 {
+		retryCommand += fmt.Sprintf(" --streams %d --window-chunks %d", req.Streams, req.WindowChunks)
+	}
 	result := &MountedReadTestResult{
 		OpID: newDebugOperationID("read"), Mount: mount,
 		Started: time.Now(), Steps: make([]FSTestStep, 0, 4+samples*(2+seekCount*2)),
@@ -300,11 +317,21 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		err = optionErr
 	}
 	step := fsStep("validate")
-	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String()}
+	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "streams": req.Streams, "window_chunks": req.WindowChunks, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String()}
 	step.finish(time.Now(), err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
 		return result
+	}
+
+	if req.Streams > 0 || req.WindowChunks > 0 {
+		overrider, ok := fs.(readPlanOverrider)
+		if !ok {
+			result.Steps = append(result.Steps, failedFSStep("read_override", fmt.Errorf("this filesystem does not support read plan overrides")))
+			return result
+		}
+		overrider.SetReadPlanOverride(req.Streams, req.WindowChunks)
+		defer overrider.ClearReadPlanOverride()
 	}
 
 	expectedHash := ""

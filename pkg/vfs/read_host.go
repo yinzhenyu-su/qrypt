@@ -122,6 +122,19 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 	return v.reader.Read(ctx, path, offset, size)
 }
 
+// SetReadPlanOverride applies a measurement-only stream/window override to
+// every read until ClearReadPlanOverride. Probe read benchmarks use it to
+// compare configurations without rebuilding or remounting. It is not exposed
+// through the CLI or config.
+func (v *VFS) SetReadPlanOverride(maxStreams, windowChunks int) {
+	v.reader.SetPlanOverride(read.PlanOverride{MaxStreams: maxStreams, WindowChunks: windowChunks})
+}
+
+// ClearReadPlanOverride removes the measurement override.
+func (v *VFS) ClearReadPlanOverride() {
+	v.reader.ClearPlanOverride()
+}
+
 // ReleaseReadSession forgets adaptive read hints for a closed open-file
 // handle. It leaves completed and in-flight cache fills intact.
 func (v *VFS) ReleaseReadSession(sessionID uint64) {

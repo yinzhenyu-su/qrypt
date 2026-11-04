@@ -84,6 +84,8 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 	if test == "read" {
 		cmd.Flags().String("mount-point", "", "actual FUSE mount directory")
 		cmd.Flags().String("path", "", "measure an existing file (virtual path) instead of creating a test file")
+		cmd.Flags().Int("streams", 0, "override concurrent read streams for this measurement (0 = driver default)")
+		cmd.Flags().Int("window-chunks", 0, "override read window in 512 KiB chunks for this measurement (0 = default)")
 		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
 		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
 		cmd.Flags().String("pattern", "sequential", "read pattern: sequential, seek, or both")
@@ -134,6 +136,12 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	}
 	if flag := cmd.Flags().Lookup("path"); flag != nil {
 		req.Path, _ = cmd.Flags().GetString("path")
+	}
+	if flag := cmd.Flags().Lookup("streams"); flag != nil {
+		req.Streams, _ = cmd.Flags().GetInt("streams")
+	}
+	if flag := cmd.Flags().Lookup("window-chunks"); flag != nil {
+		req.WindowChunks, _ = cmd.Flags().GetInt("window-chunks")
 	}
 	if flag := cmd.Flags().Lookup("block-size"); flag != nil {
 		req.BlockSize, _ = cmd.Flags().GetString("block-size")
@@ -197,7 +205,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --streams, --window-chunks, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")
@@ -216,6 +224,12 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 			if blockSize < 1 || blockSize > 16<<20 {
 				return fmt.Errorf("read test --block-size must be between 1 and %d bytes", 16<<20)
 			}
+		}
+		if req.Streams < 0 || req.Streams > 32 {
+			return fmt.Errorf("read test --streams must be between 1 and 32")
+		}
+		if req.WindowChunks < 0 || req.WindowChunks > 64 {
+			return fmt.Errorf("read test --window-chunks must be between 1 and 64")
 		}
 		if req.Samples < 1 || req.Samples > contracttest.MaxMountedReadTestSamples {
 			return fmt.Errorf("read test --samples must be between 1 and %d", contracttest.MaxMountedReadTestSamples)

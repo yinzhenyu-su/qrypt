@@ -93,11 +93,43 @@ func (r *Reader) resolvePlan(ctx context.Context, entry drive.Entry, defaultWind
 	return PlanResolver{Profile: r.profile}.Resolve(ReadIntentFromContext(ctx), entry.Size, defaultWindowChunks)
 }
 
+// SetPlanOverride applies a measurement-only stream/window override to every
+// read until ClearPlanOverride. It is wired to probe test read so benchmarks
+// can compare configurations without rebuilding or remounting.
+func (r *Reader) SetPlanOverride(override PlanOverride) {
+	r.state.setPlanOverride(override)
+}
+
+// ClearPlanOverride removes the measurement override.
+func (r *Reader) ClearPlanOverride() {
+	r.state.clearPlanOverride()
+}
+
+// applyPlanOverride rewrites a resolved plan. It reports whether anything
+// changed so callers only refresh the context when needed.
+func (r *Reader) applyPlanOverride(plan *ReadPlan, windowChunks *int) bool {
+	override, ok := r.state.planOverride()
+	if !ok {
+		return false
+	}
+	if override.MaxStreams > 0 {
+		plan.MaxStreams = override.MaxStreams
+	}
+	if override.WindowChunks > 0 {
+		*windowChunks = override.WindowChunks
+		plan.WindowChunks = override.WindowChunks
+	}
+	return override.MaxStreams > 0 || override.WindowChunks > 0
+}
+
 // perFileLimit returns the stable concurrency budget for one file. A partial
 // window may use fewer streams, but the per-file budget never changes while
-// permits are in flight.
+// permits are in flight. A measurement override may raise it.
 func (r *Reader) perFileLimit() int {
 	limit := r.profile.BulkStreams
+	if override, ok := r.state.planOverride(); ok && override.MaxStreams > limit {
+		limit = override.MaxStreams
+	}
 	if limit < 1 {
 		limit = 1
 	}
@@ -209,6 +241,11 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		upgraded.CacheWrites = true
 		upgraded.WindowChunks = windowChunks
 		plan = upgraded
+		readCtx = WithReadPlan(readCtx, plan)
+		readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
+		readCtx = applyIntentPriority(readCtx, plan)
+	}
+	if r.applyPlanOverride(&plan, &windowChunks) {
 		readCtx = WithReadPlan(readCtx, plan)
 		readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
 		readCtx = applyIntentPriority(readCtx, plan)

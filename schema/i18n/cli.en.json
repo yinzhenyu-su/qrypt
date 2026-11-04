@@ -571,6 +571,8 @@
   "flag.probe.test.read.seek-size.usage": "bytes loaded after each seek, or k/m/g suffix (default 1m)",
   "flag.probe.test.read.seek-warmup-chunks.usage": "1 MiB sequential chunks used to create read load (max 16)",
   "flag.probe.test.read.size.usage": "generated test file size in bytes, or k/m/g suffix (default 256m)",
+  "flag.probe.test.read.streams.usage": "override concurrent read streams for this measurement (0 = driver default)",
+  "flag.probe.test.read.window-chunks.usage": "override read window in 512 KiB chunks for this measurement (0 = default)",
   "flag.probe.test.resume.mount.usage": "mount name for the single-mount test",
   "flag.probe.test.resume.size.usage": "test size in bytes, or k/m/g suffix",
   "flag.probe.test.xfer.dest.usage": "destination mount for xfer test",

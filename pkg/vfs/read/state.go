@@ -290,6 +290,9 @@ type State struct {
 	fastPath  *fastPathState
 	windows   *windowState
 	scopes    *ScopeRegistry
+	// override is a measurement-only plan override (probe test read). It is
+	// nil in normal operation.
+	override atomic.Pointer[PlanOverride]
 }
 
 // NewState builds the read domain state together so ownership and
@@ -309,6 +312,21 @@ func NewState(cache Cache) *State {
 
 func (s *State) observeSequentialRead(cacheKey string, offset, size int64) bool {
 	return s.observeReadAccess(cacheKey, AccessHint{}, offset, size).sequential
+}
+
+func (s *State) setPlanOverride(override PlanOverride) {
+	s.override.Store(&override)
+}
+
+func (s *State) clearPlanOverride() {
+	s.override.Store(nil)
+}
+
+func (s *State) planOverride() (PlanOverride, bool) {
+	if value := s.override.Load(); value != nil {
+		return *value, true
+	}
+	return PlanOverride{}, false
 }
 
 // nextRunFor reports the run id the access at offset belongs to: the previous

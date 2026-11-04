@@ -23,6 +23,8 @@ type DriverTestRequest struct {
 	SampleInterval     string `json:"sample_interval,omitempty"`
 	MountPoint         string `json:"mount_point,omitempty"`
 	Path               string `json:"path,omitempty"`
+	Streams            int    `json:"streams,omitempty"`
+	WindowChunks       int    `json:"window_chunks,omitempty"`
 	BlockSize          string `json:"block_size,omitempty"`
 	CacheMode          string `json:"cache_mode,omitempty"`
 	ReadPattern        string `json:"read_pattern,omitempty"`

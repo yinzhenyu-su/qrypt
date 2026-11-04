@@ -571,6 +571,8 @@
   "flag.probe.test.read.seek-size.usage": "每次 seek 后读取的字节数，或使用 k/m/g 后缀（默认 1m）",
   "flag.probe.test.read.seek-warmup-chunks.usage": "用于制造读取负载的 1 MiB 顺序块数量（最大 16）",
   "flag.probe.test.read.size.usage": "生成的测试文件大小（字节），或使用 k/m/g 后缀（默认 256m）",
+  "flag.probe.test.read.streams.usage": "本次测量覆盖并发读流数（0 表示驱动默认值）",
+  "flag.probe.test.read.window-chunks.usage": "本次测量覆盖读窗口（以 512 KiB 块计，0 表示默认值）",
   "flag.probe.test.resume.mount.usage": "单挂载测试使用的挂载名",
   "flag.probe.test.resume.size.usage": "测试大小（字节），或使用 k/m/g 后缀",
   "flag.probe.test.xfer.dest.usage": "xfer 测试的目标挂载",
