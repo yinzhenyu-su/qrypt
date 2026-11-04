@@ -35,6 +35,16 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 
 // --- Init -----------------------------------------------------------------
 
+func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+	d := New(Options{})
+	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
+		t.Fatal("parallel_range should stay declared for future tuning")
+	}
+}
+
 func TestInitRejectsBadCredentialsWithError(t *testing.T) {
 	f := newFakeProvider(t)
 	f.rejectAuth = true

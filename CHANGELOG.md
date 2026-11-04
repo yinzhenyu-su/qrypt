@@ -14,6 +14,7 @@
 - fix(drivers): upload Quark content hashes in lowercase and answer EOF reads correctly
 - fix(crypt): give the raw driver the encrypted size so the final block decrypts
 - fix(crypt): forward read capabilities and profiles from the raw driver
+- fix(drivers): keep Drime, Koofr, and 123 bulk reads single-stream after measurement
 - fix(vfs): count in-flight remote deletes when reporting idle
 
 ### Others

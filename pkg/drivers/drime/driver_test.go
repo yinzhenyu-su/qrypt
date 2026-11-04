@@ -34,6 +34,16 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 	return false
 }
 
+func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+	d := New(Options{})
+	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
+		t.Fatal("parallel_range should stay declared for future tuning")
+	}
+}
+
 func TestInitSpaceAndRootResolution(t *testing.T) {
 	f := newFakeProvider(t)
 	docs := f.addEntry(0, "docs", true, 0, "", "")

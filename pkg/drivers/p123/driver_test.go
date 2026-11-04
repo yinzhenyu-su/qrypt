@@ -222,6 +222,16 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+	d := New(Options{Username: "u", Password: "p"})
+	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
+		t.Fatal("parallel_range should stay declared for future tuning")
+	}
+}
+
 func TestInitResolvesRootPath(t *testing.T) {
 	f := newFakeAPI(t)
 	installLogin(f, "tok")
