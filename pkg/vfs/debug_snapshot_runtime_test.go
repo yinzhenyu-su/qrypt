@@ -22,6 +22,7 @@ func TestVFSDebugSnapshotRuntimeCollectsSortedOverlayState(t *testing.T) {
 	newVFSDeleteScheduler(fs).Schedule("/a.txt", drive.Entry{ID: "a"}, time.Hour, func() {})
 	vis.MarkDeleted("/z.txt", drive.Entry{ID: "z", Name: "z.txt"})
 	vis.MarkDeleted("/a.txt", drive.Entry{ID: "a", Name: "a.txt"})
+	vis.MarkDeleteActive("/a.txt", drive.Entry{ID: "a", Name: "a.txt"})
 	vis.AddRenameOverlay("/old", "/new", "id", false)
 	fs.view.Overlay().SetRestoredDir("/restored", future)
 	fs.view.Overlay().SetRestoredDir("/expired", past)
@@ -31,6 +32,9 @@ func TestVFSDebugSnapshotRuntimeCollectsSortedOverlayState(t *testing.T) {
 	overlay := runtime.Overlay()
 	if len(overlay.DeleteTimers) != 2 || overlay.DeleteTimers[0].Path != "/a.txt" || overlay.DeleteTimers[1].Path != "/z.txt" {
 		t.Fatalf("delete timers = %+v", overlay.DeleteTimers)
+	}
+	if len(overlay.ActiveDeletes) != 1 || overlay.ActiveDeletes[0].Path != "/a.txt" {
+		t.Fatalf("active deletes = %+v", overlay.ActiveDeletes)
 	}
 	if len(overlay.Deleted) != 2 || overlay.Deleted[0].Path != "/a.txt" || overlay.Deleted[1].Path != "/z.txt" {
 		t.Fatalf("deleted = %+v", overlay.Deleted)

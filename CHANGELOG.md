@@ -11,12 +11,16 @@
 
 ### Bug fixes
 - fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
+- fix(drivers): upload Quark content hashes in lowercase and answer EOF reads correctly
+- fix(crypt): give the raw driver the encrypted size so the final block decrypts
+- fix(vfs): count in-flight remote deletes when reporting idle
 
 ### Others
 - refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
 - refactor(vfs): centralize read concurrency budgets in one scheduler
 - refactor(drive): share the read concurrency budget with direct reads
 - refactor(vfs): treat plan streams as a hint and record scheduler-granted streams
+- fix(probe): tolerate provider-specific roots, blocked extensions, and evicted read events
 
 ---
 

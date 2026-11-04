@@ -252,7 +252,9 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 
 	basePath := fsTestBasePath(fs, mount)
 	dir := basePath + "/__qrypt_read_test_" + randomSuffix(6)
-	file := dir + "/data.bin"
+	// Use a plain-text extension: some providers (Koofr) block downloads for
+	// extensions their content scanner considers dangerous.
+	file := dir + "/data.txt"
 	mountedFile, err := mountedTestPath(req.MountPoint, file)
 	if optionErr != nil {
 		err = optionErr
@@ -294,7 +296,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "cold", sample)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
-				measurement.TraversedVFS = measurement.VFSReadCalls > 0
+				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -308,9 +310,9 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			}
 			if cacheMode == "warm" || cacheMode == "both" {
 				if cacheMode == "warm" {
-					_, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "prime", sample)
+					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "prime", sample)
 					primeEvents, _ := mountedReadEvents(fs, mount, file, primeStarted)
-					if primeErr == nil && mountedVFSReadCalls(primeEvents) == 0 {
+					if primeErr == nil && !mountedReadTraversed(mountedVFSReadCalls(primeEvents), prime.CacheHits, prime.CacheMisses) {
 						primeErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
 					}
 					if primeErr != nil {
@@ -321,7 +323,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "warm", sample)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
-				measurement.TraversedVFS = measurement.VFSReadCalls > 0
+				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -596,7 +598,10 @@ func runMountedSeekProbe(ctx context.Context, fs vfs.FileSystem, mount, mountedP
 	events, truncated := mountedReadEvents(fs, mount, virtualPath, started)
 	measurement.VFSReadCalls = mountedVFSReadCalls(events)
 	measurement.VFSOffsetMatch = mountedVFSReadAtOffset(events, offset)
-	measurement.TraversedVFS = measurement.VFSOffsetMatch
+	// The exact-offset event can be missing when the window read starts before
+	// the requested offset or when the bounded event ring evicts it. Cache
+	// lookups are monotonic counters and prove the read went through the VFS.
+	measurement.TraversedVFS = measurement.VFSOffsetMatch || measurement.CacheHits+measurement.CacheMisses > 0
 	if err == nil && !measurement.TraversedVFS {
 		err = fmt.Errorf("mounted seek read did not traverse qrypt; verify --mount-point")
 	}
@@ -1152,6 +1157,13 @@ func mountedVFSReadCalls(events []drive.MetricEvent) int {
 		}
 	}
 	return calls
+}
+
+// mountedReadTraversed reports whether a measurement went through the VFS.
+// The event ring is bounded, so a long read can evict its own summary events;
+// the cache counters are monotonic snapshots and stay reliable.
+func mountedReadTraversed(readCalls int, cacheHits, cacheMisses int64) bool {
+	return readCalls > 0 || cacheHits+cacheMisses > 0
 }
 
 func mountedVFSReadAtOffset(events []drive.MetricEvent, offset int64) bool {

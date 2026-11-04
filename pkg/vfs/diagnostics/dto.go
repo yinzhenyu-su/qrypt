@@ -68,6 +68,9 @@ type MountSnapshotQueues struct {
 	DeleteDelay   string       `json:"delete_delay"`
 	UploadTimers  []DebugTimer `json:"upload_timers,omitempty"`
 	DeleteTimers  []DebugTimer `json:"delete_timers,omitempty"`
+	// ActiveDeletes are remote deletes already past their timer but not yet
+	// finished. They are not idle work.
+	ActiveDeletes []DebugTimer `json:"active_deletes,omitempty"`
 }
 
 type MountSnapshotOverlay struct {
@@ -209,6 +212,10 @@ func (s MountSnapshot) PendingUploads() []vfstypes.PendingUpload {
 
 func (s MountSnapshot) ActiveDeleteTimers() []DebugTimer {
 	return s.Queues.DeleteTimers
+}
+
+func (s MountSnapshot) ActiveDeletes() []DebugTimer {
+	return s.Queues.ActiveDeletes
 }
 
 func (s MountSnapshot) HistoricalUploads() []upload.UploadSnapshot {

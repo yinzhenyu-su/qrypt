@@ -513,13 +513,15 @@ type CopyHiddenDir struct {
 }
 
 // OverlaySnapshot is the raw composite state under one lock: delete timers,
-// deleted entries, rename overlays, restored dirs and copy-hidden children.
+// in-flight deletes, deleted entries, rename overlays, restored dirs and
+// copy-hidden children.
 type OverlaySnapshot struct {
-	DeleteTimers []string
-	Deleted      []DeletedEntry
-	RenameOps    []RenameOp
-	RestoredDirs []Timer
-	CopyHidden   []CopyHiddenDir
+	DeleteTimers  []string
+	ActiveDeletes []string
+	Deleted       []DeletedEntry
+	RenameOps     []RenameOp
+	RestoredDirs  []Timer
+	CopyHidden    []CopyHiddenDir
 }
 
 // Snapshot reads the composite state in one critical section. The slices
@@ -532,6 +534,11 @@ func (o *Overlay) Snapshot(t *DelayedDeleteState) OverlaySnapshot {
 	out := OverlaySnapshot{}
 	for path := range t.scheduler.Keys() {
 		out.DeleteTimers = append(out.DeleteTimers, path)
+	}
+	// A fired timer is removed from the scheduler before its callback runs, so
+	// in-flight remote deletes would otherwise look idle.
+	for path := range t.active {
+		out.ActiveDeletes = append(out.ActiveDeletes, path)
 	}
 	for path, entry := range o.deleted {
 		out.Deleted = append(out.Deleted, DeletedEntry{
@@ -562,6 +569,7 @@ func (o *Overlay) Snapshot(t *DelayedDeleteState) OverlaySnapshot {
 		}
 	}
 	sort.Strings(out.DeleteTimers)
+	sort.Strings(out.ActiveDeletes)
 	sort.Slice(out.Deleted, func(i, j int) bool { return out.Deleted[i].Path < out.Deleted[j].Path })
 	sort.Slice(out.RenameOps, func(i, j int) bool { return out.RenameOps[i].OldPath < out.RenameOps[j].OldPath })
 	sort.Slice(out.RestoredDirs, func(i, j int) bool { return out.RestoredDirs[i].Path < out.RestoredDirs[j].Path })

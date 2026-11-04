@@ -49,6 +49,7 @@ type FSPendingSample struct {
 	PermanentFailCount int        `json:"permanent_fail_count,omitempty"`
 	UploadCount        int        `json:"upload_count"`
 	DeleteTimers       int        `json:"delete_timer_count"`
+	ActiveDeletes      int        `json:"active_delete_count,omitempty"`
 	Pending            []string   `json:"pending,omitempty"`
 	PermanentFail      []string   `json:"permanent_fail,omitempty"`
 	Uploads            []FSUpload `json:"uploads,omitempty"`
@@ -62,6 +63,7 @@ type FSMountState struct {
 	PermanentFailCount    int        `json:"permanent_fail_count,omitempty"`
 	UploadCount           int        `json:"upload_count"`
 	DeleteTimers          int        `json:"delete_timer_count"`
+	ActiveDeletes         int        `json:"active_delete_count,omitempty"`
 	Pending               []string   `json:"pending,omitempty"`
 	PermanentFail         []string   `json:"permanent_fail,omitempty"`
 	Uploads               []FSUpload `json:"uploads,omitempty"`
@@ -252,7 +254,7 @@ func waitVFSSmokeIdle(ctx context.Context, fs any, mount string, timeout time.Du
 		// idle wait spin until its timeout. Callers that need a health
 		// verdict inspect PermanentFailCount separately.
 		activePending := sample.PendingCount - sample.PermanentFailCount
-		if activePending == 0 && sample.UploadCount == 0 && sample.DeleteTimers == 0 {
+		if activePending == 0 && sample.UploadCount == 0 && sample.DeleteTimers == 0 && sample.ActiveDeletes == 0 {
 			return nil
 		}
 		select {
@@ -275,6 +277,7 @@ func fsPendingSample(fs any, mount string, attempt int, elapsed time.Duration) F
 		PermanentFailCount: state.PermanentFailCount,
 		UploadCount:        state.UploadCount,
 		DeleteTimers:       state.DeleteTimers,
+		ActiveDeletes:      state.ActiveDeletes,
 		Pending:            state.Pending,
 		PermanentFail:      state.PermanentFail,
 		Uploads:            state.Uploads,
@@ -304,6 +307,7 @@ func fsMountState(fs any, mount string) *FSMountState {
 			state.PendingCount = len(mountState.PendingUploads())
 			state.UploadCount = len(mountState.ActiveUploads())
 			state.DeleteTimers = len(mountState.ActiveDeleteTimers())
+			state.ActiveDeletes = len(mountState.ActiveDeletes())
 			cache := mountState.ReadCacheState()
 			state.CacheHits = cache.Hits
 			state.CacheMisses = cache.Misses
