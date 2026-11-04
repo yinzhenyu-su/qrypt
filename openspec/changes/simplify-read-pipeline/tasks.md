@@ -10,12 +10,12 @@
 - [x] 0.4 双并行策略矩阵：parallel / no-capability / internal-parallel / strict-unsupported 四种情况下 VFS 与 `drive.ReadParallel` 判定一致。验证：`go test ./pkg/vfs/read -run TestParallelPolicyMatchesDirectRead` 通过。
 - [x] 0.5 范围决策：采用最小可行收敛，推迟项和重新评估触发条件记录在 `design.md`。验证：`openspec validate simplify-read-pipeline --type change --strict` 通过。
 
-## 1. 不可变 ReadPlan
+## 1. 不可变 ReadPlan（已完成）
 
-- [ ] 1.1 新增 `plan.go`：定义 `ReadPlan`、`LoadKind`、`PlanResolver.Resolve`，用显式默认值替代 `0` / `-1` 哨兵；为四种意图与未知意图写表驱动单测。验证：`go test ./pkg/vfs/read -run TestPlanResolver` 通过。
-- [ ] 1.2 用 `PlanResolver` 替换 `planFor`、`readPlan` 及所有 `readPlanFromContext` 调用点；未声明意图的行为与基线一致。验证：`go test ./pkg/vfs/read ./pkg/vfs ./pkg/mobile -count=1` 通过。
-- [ ] 1.3 把 FUSE 自适应升级改为返回新 `ReadPlan` 并一次性写回 context，禁止原地修改；增加“升级后所有阶段读到同一计划”的测试。验证：测试断言窗口、取数、缓存、诊断使用相同 `Streams` / `CacheWrites`。
-- [ ] 1.4 删除计划字段的隐式默认分支（如 `windowChunks == 0` 表示沿用旧值），并在 `Read` / `ReadStream` 入口断言计划已解析。验证：`go test ./pkg/vfs/read -count=1` 通过，grep 不再出现哨兵判断。
+- [x] 1.1 新增 `plan.go`：定义 `ReadPlan`、`LoadKind`、`PlanResolver.Resolve`，用显式默认值替代 `0` / `-1` 哨兵；为四种意图与未知意图写表驱动单测。验证：`plan_test.go` 与 `go test ./pkg/vfs/read -run TestPlanResolver` 通过。
+- [x] 1.2 用 `PlanResolver` 替换 `planFor`、`readPlan` 及所有 `readPlanFromContext` 调用点；未声明意图的行为与基线一致。验证：`go test ./pkg/vfs/read ./pkg/vfs ./pkg/mobile ./pkg/core ./pkg/mount ./pkg/syncer -count=1` 通过。
+- [x] 1.3 把 FUSE 自适应升级改为返回新 `ReadPlan` 并一次性写回 context，禁止原地修改；增加“升级后所有阶段读到同一计划”的测试。验证：`TestHintedSequentialLargeReadUpgradesToBulk` 断言 bulk/4/cache 且保留 FUSE 窗口。
+- [x] 1.4 删除计划字段的隐式默认分支（如 `windowChunks == 0` 表示沿用旧值），并在 `Read` / `ReadStream` 入口断言计划已解析。验证：`TestPlanResolverUnspecifiedUsesConcreteDefaults` 与 `TestPlanResolverFallsBackWhenProfileWindowIsZero` 覆盖；grep 不再出现哨兵判断。
 
 ## 2. ScopeRegistry
 

@@ -50,14 +50,13 @@ type ReadPlan struct {
     WindowChunks  int
     PrefetchDepth int
     CacheWrites   bool
-    Priority      Priority
-    CacheAccess   readcache.Access
 }
 ```
 
-- `PlanResolver.Resolve(intent, profile, entrySize)` 返回完整计划，不再用 `0` / `-1` 表示“沿用旧策略”；未声明意图的默认值在 resolver 里显式写出，测试可直接断言。
+- `PlanResolver.Resolve(intent, fileSize, defaultWindowChunks)` 返回完整计划，不再用 `0` / `-1` 表示“沿用旧策略”；未声明意图的默认值在 resolver 里显式写出，测试可直接断言。
+- 本阶段优先级仍由 `applyIntentPriority` 单独应用，缓存 run 仍走 `WithCacheAccess`；等 `Scheduler` 阶段再并入计划，避免在本阶段改变优先级语义。
 - `Read` / `ReadStream` 在入口解析一次，之后把计划作为显式参数传给窗口、取数、缓存和观测函数；只有跨 goroutine 的预取需要从 context 取回同一个计划。
-- FUSE 自适应升级通过 `plan = plan.UpgradeToBulk(profile)` 生成新值，再用 `WithReadPlan` 替换 context 中的计划；不再修改局部 `plan` 变量后遗漏某些阶段。
+- FUSE 自适应升级通过 `PlanResolver.Resolve(ReadIntentBulk, ...)` 生成新值，设置 `CacheWrites=true` 并保留当前 FUSE 窗口，再用 `WithReadPlan` 替换 context 中的计划；不再修改局部 `plan` 变量后遗漏某些阶段。
 - 备选：保留可变结构体并加注释约束（拒绝，正是当前“某阶段读到旧计划”的缺陷来源）；把计划拆成多个 context key（拒绝，增加隐式依赖）。
 
 ### 2. 单一调度器实现，预算实例化而不是复制逻辑

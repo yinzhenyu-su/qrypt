@@ -96,7 +96,7 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 	}
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	streamCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
-	plan := r.readPlanFor(ctx, entry)
+	plan := r.resolvePlan(ctx, entry, PrefetchChunks)
 	streamCtx = WithReadPlan(streamCtx, plan)
 	streamCtx = applyIntentPriority(streamCtx, plan)
 	return &chunkedStreamReader{
@@ -178,8 +178,8 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 		want = r.entry.Size - r.pos
 	}
 	windowChunks := PrefetchChunks
-	if plan, ok := readPlanFromContext(ctx); ok && plan.windowChunks > 0 {
-		windowChunks = plan.windowChunks
+	if plan, ok := readPlanFromContext(ctx); ok && plan.WindowChunks > 0 {
+		windowChunks = plan.WindowChunks
 	}
 	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, windowChunks)
 	if err != nil {
@@ -200,7 +200,7 @@ func (r *chunkedStreamReader) startPrefetch(windowChunks int) {
 	if !readPrefetchEnabled(r.ctx) {
 		return
 	}
-	if plan, ok := readPlanFromContext(r.ctx); ok && plan.prefetchDepth == 0 {
+	if plan, ok := readPlanFromContext(r.ctx); ok && plan.PrefetchDepth == 0 {
 		return
 	}
 	nextPos := r.pos + int64(len(r.buf))

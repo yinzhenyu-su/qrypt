@@ -28,9 +28,10 @@ func TestReadIntentRoundTrip(t *testing.T) {
 }
 
 func TestPlanForUnspecifiedKeepsExistingBehavior(t *testing.T) {
-	plan := planFor(ReadIntentUnspecified, drive.DefaultReadProfile(), 64<<20)
-	if plan.streams != 1 || plan.windowChunks != 0 || plan.prefetchDepth != -1 || !plan.cacheWrites {
-		t.Fatalf("unspecified plan = %+v, want existing-behavior sentinels", plan)
+	profile := drive.DefaultReadProfile()
+	plan := PlanResolver{Profile: profile}.Resolve(ReadIntentUnspecified, 64<<20, 2)
+	if plan.Streams != 1 || plan.WindowChunks != 2 || plan.PrefetchDepth != profile.PrefetchDepth || !plan.CacheWrites {
+		t.Fatalf("unspecified plan = %+v, want one stream, caller window, prefetch, cache", plan)
 	}
 }
 
@@ -39,27 +40,27 @@ func TestPlanForBulkUsesProfileAndThreshold(t *testing.T) {
 	profile.BulkStreams = 4
 	profile.ParallelThreshold = 8 << 20
 
-	large := planFor(ReadIntentBulk, profile, 16<<20)
-	if large.streams != 4 || large.windowChunks != profile.BulkWindowChunks || large.prefetchDepth != profile.PrefetchDepth || large.cacheWrites {
+	large := PlanResolver{Profile: profile}.Resolve(ReadIntentBulk, 16<<20, 2)
+	if large.Streams != 4 || large.WindowChunks != profile.BulkWindowChunks || large.PrefetchDepth != profile.PrefetchDepth || large.CacheWrites {
 		t.Fatalf("large bulk plan = %+v", large)
 	}
 
-	small := planFor(ReadIntentBulk, profile, 1<<20)
-	if small.streams != 1 {
-		t.Fatalf("small bulk streams = %d, want 1", small.streams)
+	small := PlanResolver{Profile: profile}.Resolve(ReadIntentBulk, 1<<20, 2)
+	if small.Streams != 1 {
+		t.Fatalf("small bulk streams = %d, want 1", small.Streams)
 	}
 }
 
 func TestPlanForInteractiveAndProbe(t *testing.T) {
 	profile := drive.DefaultReadProfile()
 
-	interactive := planFor(ReadIntentInteractive, profile, 16<<20)
-	if interactive.streams != 1 || interactive.windowChunks != profile.InteractiveWindowChunks || !interactive.cacheWrites {
+	interactive := PlanResolver{Profile: profile}.Resolve(ReadIntentInteractive, 16<<20, 2)
+	if interactive.Streams != 1 || interactive.WindowChunks != profile.InteractiveWindowChunks || !interactive.CacheWrites {
 		t.Fatalf("interactive plan = %+v", interactive)
 	}
 
-	probe := planFor(ReadIntentProbe, profile, 16<<20)
-	if probe.streams != 1 || probe.windowChunks != profile.ProbeWindowChunks || probe.prefetchDepth != 0 || probe.cacheWrites {
+	probe := PlanResolver{Profile: profile}.Resolve(ReadIntentProbe, 16<<20, 2)
+	if probe.Streams != 1 || probe.WindowChunks != profile.ProbeWindowChunks || probe.PrefetchDepth != 0 || probe.CacheWrites {
 		t.Fatalf("probe plan = %+v", probe)
 	}
 }
@@ -68,7 +69,7 @@ type planCaptureHost struct {
 	entry       drive.Entry
 	data        []byte
 	cacheKey    string
-	plan        readPlan
+	plan        ReadPlan
 	ok          bool
 	reads       int
 	priority    Priority
@@ -125,7 +126,7 @@ func TestReadCarriesReadPlan(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.intent != ReadIntentBulk || host.plan.streams != 4 || host.plan.cacheWrites {
+	if host.plan.Intent != ReadIntentBulk || host.plan.Streams != 4 || host.plan.CacheWrites {
 		t.Fatalf("read plan = %+v, want bulk/4/no-cache", host.plan)
 	}
 	if !host.prioritySet || host.priority != PriorityLow {
@@ -134,19 +135,19 @@ func TestReadCarriesReadPlan(t *testing.T) {
 }
 
 func TestApplyIntentPriority(t *testing.T) {
-	bulk := applyIntentPriority(context.Background(), readPlan{intent: ReadIntentBulk})
+	bulk := applyIntentPriority(context.Background(), ReadPlan{Intent: ReadIntentBulk})
 	if !prioritySet(bulk) || priority(bulk) != PriorityLow {
 		t.Fatalf("bulk priority = %v, want low", priority(bulk))
 	}
-	interactive := applyIntentPriority(context.Background(), readPlan{intent: ReadIntentInteractive})
+	interactive := applyIntentPriority(context.Background(), ReadPlan{Intent: ReadIntentInteractive})
 	if !prioritySet(interactive) || priority(interactive) != PriorityHigh {
 		t.Fatalf("interactive priority = %v, want high", priority(interactive))
 	}
-	explicit := applyIntentPriority(WithPriority(context.Background(), PriorityNormal), readPlan{intent: ReadIntentBulk})
+	explicit := applyIntentPriority(WithPriority(context.Background(), PriorityNormal), ReadPlan{Intent: ReadIntentBulk})
 	if !prioritySet(explicit) || priority(explicit) != PriorityNormal {
 		t.Fatalf("explicit priority = %v, want normal", priority(explicit))
 	}
-	unspecified := applyIntentPriority(context.Background(), readPlan{})
+	unspecified := applyIntentPriority(context.Background(), ReadPlan{})
 	if prioritySet(unspecified) {
 		t.Fatal("unspecified intent should not set a priority")
 	}
@@ -174,7 +175,7 @@ func TestReadBulkUsesParallelStreams(t *testing.T) {
 	if host.reads != 2 {
 		t.Fatalf("driver reads = %d, want 2 parallel sub-ranges", host.reads)
 	}
-	if !host.ok || host.plan.streams != 2 {
+	if !host.ok || host.plan.Streams != 2 {
 		t.Fatalf("read plan = %+v, want 2 streams", host.plan)
 	}
 }
@@ -196,7 +197,7 @@ func TestReadStreamCarriesReadPlan(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from stream read context")
 	}
-	if host.plan.intent != ReadIntentInteractive || host.plan.streams != 1 || !host.plan.cacheWrites {
+	if host.plan.Intent != ReadIntentInteractive || host.plan.Streams != 1 || !host.plan.CacheWrites {
 		t.Fatalf("stream plan = %+v, want interactive/single/cache", host.plan)
 	}
 }
@@ -230,8 +231,11 @@ func TestHintedSequentialLargeReadUpgradesToBulk(t *testing.T) {
 	if !host.ok {
 		t.Fatal("read plan missing from driver read context")
 	}
-	if host.plan.intent != ReadIntentBulk || host.plan.streams != 4 || !host.plan.cacheWrites {
+	if host.plan.Intent != ReadIntentBulk || host.plan.Streams != 4 || !host.plan.CacheWrites {
 		t.Fatalf("adaptive plan = %+v, want bulk/4/cache", host.plan)
+	}
+	if host.plan.WindowChunks != 1 {
+		t.Fatalf("adaptive window = %d, want the FUSE window 1", host.plan.WindowChunks)
 	}
 	if !host.prioritySet || host.priority != PriorityLow {
 		t.Fatalf("adaptive priority = %v (set=%v), want low", host.priority, host.prioritySet)

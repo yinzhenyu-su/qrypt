@@ -84,10 +84,10 @@ func (r *Reader) resolve(ctx context.Context, path string) (drive.Entry, error) 
 	return r.host.Resolve(ctx, path)
 }
 
-// readPlanFor resolves the caller's intent and the driver profile into the
-// plan carried by this read's context.
-func (r *Reader) readPlanFor(ctx context.Context, entry drive.Entry) readPlan {
-	return planFor(ReadIntentFromContext(ctx), r.profile, entry.Size)
+// resolvePlan resolves the caller's intent and the driver profile into the
+// concrete plan carried by this read's context.
+func (r *Reader) resolvePlan(ctx context.Context, entry drive.Entry, defaultWindowChunks int) ReadPlan {
+	return PlanResolver{Profile: r.profile}.Resolve(ReadIntentFromContext(ctx), entry.Size, defaultWindowChunks)
 }
 
 func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error) {
@@ -153,9 +153,6 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	})
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
-	plan := r.readPlanFor(ctx, entry)
-	readCtx = WithReadPlan(readCtx, plan)
-	readCtx = applyIntentPriority(readCtx, plan)
 	windowChunks := readWindowChunks(offset, size)
 	cacheKey := r.host.ReadCacheKey(entry)
 	r.state.beginForegroundRead(cacheKey)
@@ -183,22 +180,25 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 			windowChunks = 2
 		}
 	}
-	if plan.windowChunks > 0 {
-		windowChunks = plan.windowChunks
-	}
-	if plan.intent == ReadIntentUnspecified && hinted && !hint.Concurrent && !decision.stale &&
+	plan := r.resolvePlan(ctx, entry, windowChunks)
+	windowChunks = plan.WindowChunks
+	readCtx = WithReadPlan(readCtx, plan)
+	readCtx = applyIntentPriority(readCtx, plan)
+	if plan.Intent == ReadIntentUnspecified && hinted && !hint.Concurrent && !decision.stale &&
 		decision.sequential && entry.Size >= r.profile.ParallelThreshold {
 		// A sustained sequential FUSE stream is the bulk case even though the
-		// mount does not declare an intent. Keep cache writes: the session may
-		// read the same range again.
-		plan = planFor(ReadIntentBulk, r.profile, entry.Size)
-		plan.cacheWrites = true
+		// mount does not declare an intent. Keep cache writes and the FUSE
+		// window policy: only the stream count changes.
+		upgraded := PlanResolver{Profile: r.profile}.Resolve(ReadIntentBulk, entry.Size, windowChunks)
+		upgraded.CacheWrites = true
+		upgraded.WindowChunks = windowChunks
+		plan = upgraded
 		readCtx = WithReadPlan(readCtx, plan)
 		readCtx = applyIntentPriority(readCtx, plan)
 	}
 	readCtx = WithCacheAccess(readCtx, access)
 	firstWindowPrefetch := (!hinted && offset%ChunkSize != 0) || (hinted && offset == 0)
-	if readPrefetchEnabled(ctx) && plan.prefetchDepth != 0 && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
+	if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
 		// Warm the first lookahead window for a new file stream. Non-zero
 		// offsets are treated as seeks until contiguous access is observed, so
 		// random probes do not trigger speculative network reads.
@@ -224,7 +224,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		// lookahead scheduled below belongs to the run that was recorded.
 		readCtx = WithCacheAccess(readCtx, actual)
 	}
-	if readPrefetchEnabled(ctx) && plan.prefetchDepth != 0 && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
+	if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
@@ -430,7 +430,7 @@ func (b *readerBackend) StoreChunk(ctx context.Context, cacheKey string, entry d
 // prevent one read window from being fetched again chunk by chunk.
 func durableCacheWrites(ctx context.Context) bool {
 	plan, ok := readPlanFromContext(ctx)
-	return !ok || plan.cacheWrites
+	return !ok || plan.CacheWrites
 }
 
 func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int) ([]byte, error) {
@@ -574,7 +574,7 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		}
 	}
 	plan, _ := readPlanFromContext(ctx)
-	streams := plan.streams
+	streams := plan.Streams
 	if streams < 1 {
 		streams = 1
 	}
@@ -627,7 +627,7 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		ChunkIndex:  startIndex,
 		WindowStart: startIndex,
 		WindowEnd:   endIndex,
-		ReadIntent:  plan.intent.String(),
+		ReadIntent:  plan.Intent.String(),
 		ReadStreams: streams,
 		WaitFor:     key,
 	})
@@ -676,7 +676,7 @@ type parallelLimiter interface {
 
 func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
 	plan, _ := readPlanFromContext(ctx)
-	streams := plan.streams
+	streams := plan.Streams
 	key := LoadKey(r.host, entry)
 	if streams > 1 && r.state.isNonParallel(key) {
 		streams = 1
@@ -856,7 +856,7 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 		return nil, false, nil
 	}
 	plan, _ := readPlanFromContext(ctx)
-	streams := plan.streams
+	streams := plan.Streams
 	if streams < 1 {
 		streams = 1
 	}

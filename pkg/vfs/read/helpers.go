@@ -71,7 +71,7 @@ func (i ReadIntent) String() string {
 type readIntentContextKey struct{}
 
 // WithReadIntent attaches a read intent to ctx. The read domain resolves it
-// into a readPlan; the intent itself is not user configuration.
+// into a ReadPlan; the intent itself is not user configuration.
 func WithReadIntent(ctx context.Context, intent ReadIntent) context.Context {
 	return context.WithValue(ctx, readIntentContextKey{}, intent)
 }
@@ -81,77 +81,6 @@ func WithReadIntent(ctx context.Context, intent ReadIntent) context.Context {
 func ReadIntentFromContext(ctx context.Context) ReadIntent {
 	intent, _ := ctx.Value(readIntentContextKey{}).(ReadIntent)
 	return intent
-}
-
-// readPlan is the resolved scheduling plan for one read. windowChunks == 0
-// means "keep the existing window policy"; prefetchDepth < 0 means "keep the
-// existing prefetch policy".
-type readPlan struct {
-	intent        ReadIntent
-	streams       int
-	windowChunks  int
-	prefetchDepth int
-	cacheWrites   bool
-}
-
-type readPlanContextKey struct{}
-
-// WithReadPlan attaches a resolved read plan to ctx. Later read-domain stages
-// consume it; phase one only carries it so the behavior stays unchanged.
-func WithReadPlan(ctx context.Context, plan readPlan) context.Context {
-	return context.WithValue(ctx, readPlanContextKey{}, plan)
-}
-
-func readPlanFromContext(ctx context.Context) (readPlan, bool) {
-	plan, ok := ctx.Value(readPlanContextKey{}).(readPlan)
-	return plan, ok
-}
-
-// planFor resolves an intent and a driver profile into a read plan. An
-// unspecified intent deliberately returns the sentinel values that mean
-// "keep existing behavior".
-func planFor(intent ReadIntent, profile drive.ReadProfile, fileSize int64) readPlan {
-	switch intent {
-	case ReadIntentBulk:
-		streams := profile.BulkStreams
-		if fileSize > 0 && fileSize < profile.ParallelThreshold {
-			streams = 1
-		}
-		if streams < 1 {
-			streams = 1
-		}
-		return readPlan{
-			intent:        intent,
-			streams:       streams,
-			windowChunks:  profile.BulkWindowChunks,
-			prefetchDepth: profile.PrefetchDepth,
-			cacheWrites:   false,
-		}
-	case ReadIntentProbe:
-		return readPlan{
-			intent:        intent,
-			streams:       1,
-			windowChunks:  profile.ProbeWindowChunks,
-			prefetchDepth: 0,
-			cacheWrites:   false,
-		}
-	case ReadIntentInteractive:
-		return readPlan{
-			intent:        intent,
-			streams:       1,
-			windowChunks:  profile.InteractiveWindowChunks,
-			prefetchDepth: profile.PrefetchDepth,
-			cacheWrites:   true,
-		}
-	default:
-		return readPlan{
-			intent:        ReadIntentUnspecified,
-			streams:       1,
-			windowChunks:  0,
-			prefetchDepth: -1,
-			cacheWrites:   true,
-		}
-	}
 }
 
 type cacheAccessContextKey struct{}
@@ -200,22 +129,6 @@ func priority(ctx context.Context) Priority {
 func prioritySet(ctx context.Context) bool {
 	value, ok := ctx.Value(priorityKey{}).(priorityValue)
 	return ok && value.set
-}
-
-// applyIntentPriority supplies the intent's default priority only when the
-// caller did not set one explicitly.
-func applyIntentPriority(ctx context.Context, plan readPlan) context.Context {
-	if prioritySet(ctx) {
-		return ctx
-	}
-	switch plan.intent {
-	case ReadIntentBulk:
-		return WithPriority(ctx, PriorityLow)
-	case ReadIntentInteractive, ReadIntentProbe:
-		return WithPriority(ctx, PriorityHigh)
-	default:
-		return ctx
-	}
 }
 
 // --- keys ---
@@ -270,8 +183,8 @@ func WindowExtra(windowChunks int) map[string]any {
 func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
 	extra := WindowExtra(windowChunks)
 	if plan, ok := readPlanFromContext(ctx); ok {
-		extra["read_intent"] = plan.intent.String()
-		extra["read_streams"] = plan.streams
+		extra["read_intent"] = plan.Intent.String()
+		extra["read_streams"] = plan.Streams
 	}
 	return extra
 }
@@ -330,10 +243,10 @@ func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.E
 	}
 	if plan, ok := readPlanFromContext(ctx); ok {
 		if _, exists := extra["read_intent"]; !exists {
-			extra["read_intent"] = plan.intent.String()
+			extra["read_intent"] = plan.Intent.String()
 		}
 		if _, exists := extra["read_streams"]; !exists {
-			extra["read_streams"] = plan.streams
+			extra["read_streams"] = plan.Streams
 		}
 	}
 	extra["chunk_index"] = index

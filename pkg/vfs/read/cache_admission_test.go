@@ -137,7 +137,7 @@ func TestStoreChunkHonorsCacheWritePlan(t *testing.T) {
 	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(cache)})
 	backend := reader.newBackend()
 
-	ctx := WithReadPlan(context.Background(), readPlan{cacheWrites: false})
+	ctx := WithReadPlan(context.Background(), ReadPlan{CacheWrites: false})
 	backend.StoreChunk(ctx, "cache-key", drive.Entry{ID: "id"}, 0, []byte("chunk"))
 	if len(cache.puts) != 0 {
 		t.Fatalf("durable cache puts = %d, want 0", len(cache.puts))
