@@ -55,7 +55,7 @@
 
 凭据级参数（见[支持的驱动](support-drivers.md)中的“作用域”列）写在 `[credentials.params]`，路径级参数写在 `[mounts.params]`；同一凭据可以被任意多个挂载引用。
 
-每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。
+每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]`、`[mounts.read_profile]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。
 
 ## 加密配置
 
@@ -99,6 +99,19 @@ sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `max_size` | string | 2G | 读取缓存上限；设为 `0` 可关闭，未设置时默认 2G |
+
+## 读取策略（`[mounts.read_profile]`）
+
+可选地覆盖单个 mount 的 bulk 读并行流数和窗口大小；默认值仍由驱动决定。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `streams` | integer | 0 | bulk 读的并发子 Range 数；0 或未设置时继承驱动默认值，1-32 为显式值 |
+| `window_chunks` | integer | 0 | bulk 读窗口大小（512 KiB 块）；0 或未设置时继承驱动默认值，1-64 为显式值 |
+
+该表只存在于每个 `[[mounts]]` 下，没有全局等价项。默认值来自驱动的
+`ReadProfile`；只影响 `bulk` 读，`interactive` / `probe` 仍保持单流。
+多流收益取决于网络，建议先用 `qrypt probe test read` 实测。
 
 ## 缩略图缓存
 

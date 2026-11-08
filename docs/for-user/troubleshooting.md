@@ -101,6 +101,27 @@ killall Finder
 
 非永久失败连续重试达到上限（约一天、100 次）后也会转为永久失败；重新保存或修改文件即可重新排队。
 
+## 读取速度慢
+
+qrypt 默认使用驱动作者按网盘特性选择的读策略，通常是单流。单流限速的线路可以先
+测量多流是否更快，再只为该 mount 开启覆盖：
+
+```toml
+[[mounts]]
+name = "koofr"
+type = "koofr"
+
+[mounts.read_profile]
+streams = 4
+window_chunks = 16
+```
+
+`window_chunks` 的单位是 512 KiB，`16` 表示 8 MiB 窗口；配合 `streams = 4`
+时每个子 Range 约 2 MiB。该覆盖只影响 `bulk` 读，`interactive` / `probe` 仍
+保持单流。不同网络下收益可能相反；不确定时先用
+`qrypt probe test read` 对比单流与多流，不要直接照搬。没有 `read_profile`
+的 mount 继续使用驱动默认值。
+
 ## Finder 复制报错 -36 / 输入输出错误
 
 `-36` 是 macOS 把 FUSE 返回的 EIO 显示成 ioErr。多数情况下是某次远端读取失败：连接被断开、分片被截断，或 provider 停住不动。先看 `~/.qrypt/qrypt.log` 中同一路径的 `[FUSE] Read` 与驱动错误；qrypt 会对截断的远端分片做有界重试，但 provider 持续失败时仍会返回 EIO。

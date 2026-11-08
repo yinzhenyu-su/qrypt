@@ -21,6 +21,15 @@ var _ diagnostics.DriverCopySource = (*vfs.Namespace)(nil)
 type directCopyTestSource struct {
 	drivers  []diagnostics.NamedDriver
 	resolves map[string]diagnostics.DebugResolveInfo
+	profile  *drive.ReadProfile
+}
+
+func (s directCopyTestSource) ReadProfileForPath(string) *drive.ReadProfile {
+	if s.profile == nil {
+		return nil
+	}
+	profile := *s.profile
+	return &profile
 }
 
 func (s directCopyTestSource) Drivers() []diagnostics.NamedDriver {
@@ -56,6 +65,14 @@ func (s directCopyTestSource) DebugSnapshot() diagnostics.DebugSnapshot {
 			{Identity: diagnostics.MountSnapshotIdentity{Name: "dst", DriverName: "dst-test"}},
 		},
 	}
+}
+
+type parallelProfileCopyDriver struct {
+	*directCopyTestDriver
+}
+
+func (d parallelProfileCopyDriver) Capabilities() []drive.Capability {
+	return append(d.directCopyTestDriver.Capabilities(), drive.CapabilityParallelRange)
 }
 
 type directCopyTestDriver struct {
@@ -450,4 +467,27 @@ func hasCopyStep(result *DriverCopyResult, phase string) bool {
 		}
 	}
 	return false
+}
+
+func TestEffectiveReadProfileUsesSourceOverride(t *testing.T) {
+	driver := parallelProfileCopyDriver{directCopyTestDriver: &directCopyTestDriver{
+		driverName: "src-test",
+		files:      map[string][]byte{},
+	}}
+	source := directCopyTestSource{profile: &drive.ReadProfile{BulkStreams: 4, BulkWindowChunks: 16}}
+	got := effectiveReadProfile(source, "/src/file", driver)
+	if got.BulkStreams != 4 || got.BulkWindowChunks != 16 {
+		t.Fatalf("profile = %+v, want 4/16", got)
+	}
+}
+
+func TestEffectiveReadProfileWithoutProviderUsesDriver(t *testing.T) {
+	driver := parallelProfileCopyDriver{directCopyTestDriver: &directCopyTestDriver{
+		driverName: "src-test",
+		files:      map[string][]byte{},
+	}}
+	got := effectiveReadProfile(directCopyTestSource{}, "/src/file", driver)
+	if got.BulkStreams != drive.DefaultBulkStreams {
+		t.Fatalf("streams = %d, want driver default %d", got.BulkStreams, drive.DefaultBulkStreams)
+	}
 }

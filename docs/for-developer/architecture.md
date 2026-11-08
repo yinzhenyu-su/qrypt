@@ -208,7 +208,10 @@ another domain's internal state.
   sub-range fetch, and read-window driver read
 - `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
 - `pkg/vfs/read/plan.go`: immutable `ReadPlan` and `PlanResolver`; explicit
-  intent, max-stream hint, window, prefetch-depth, and cache-write defaults
+  intent, max-stream hint, window, prefetch-depth, and cache-write defaults.
+  `pkg/core.buildMount` resolves the driver profile plus an optional
+  `[mounts.read_profile]` override and passes it to the VFS and direct read
+  paths; the mount debug snapshot exposes the effective profile and source.
 - `pkg/vfs/read/scheduler.go`: the single read budget owner for global
   normal/high slots, per-file parallel permits, prefetch permits, and the
   foreground-read count

@@ -170,3 +170,23 @@ func TestDirectReadUsesSharedBudget(t *testing.T) {
 		t.Fatalf("direct read capacity = %d, want %d", got, directReadSlots)
 	}
 }
+
+func TestReadParallelWithProfileUsesExplicitProfile(t *testing.T) {
+	data := bytes.Repeat([]byte("e"), directReadPartSize*2)
+	driver := seededDriver(t, data, CapabilityParallelRange)
+	entry := Entry{ID: "0/file.bin", Size: int64(len(data))}
+
+	rc, err := ReadParallelWithProfile(context.Background(), driver, entry, 0, 0, ReadProfile{BulkStreams: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, rc); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := driver.reads.Load(); got < 3 {
+		t.Fatalf("driver reads = %d, want a strict probe plus two parts", got)
+	}
+}

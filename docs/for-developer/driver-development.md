@@ -289,7 +289,8 @@ parallelize one `Read` internally declare
 `drive.CapabilityInternalParallelRead` instead; the VFS then keeps that read
 single-stream so the two layers do not multiply concurrency.
 
-A driver may also provide recommendations without user configuration:
+A driver provides recommendations; a mount may optionally override the bulk
+stream count and window:
 
 ```go
 type ReadProfiler interface {
@@ -307,6 +308,26 @@ profile with the capability gates and clamps it to the optional limiter. The
 same profile is used by the VFS and by `drive.ReadParallel`, which the direct
 copy and share-fetch fallback paths use. Drivers without the capability stay
 single-stream; do not declare it unless range semantics are guaranteed.
+
+A driver's profile is the default. A mount may opt into a different bulk
+profile without a rebuild:
+
+```toml
+[[mounts]]
+name = "koofr"
+type = "koofr"
+
+[mounts.read_profile]
+streams = 4
+window_chunks = 16
+```
+
+`streams` maps to `BulkStreams`; `window_chunks` maps to `BulkWindowChunks`
+(512 KiB units). Omitted/zero fields inherit the driver profile. The override
+applies only to `bulk` reads; `interactive` and `probe` stay single-stream, and
+`streams > 1` is rejected for drivers without `parallel_range` or with
+`internal_parallel_read`. See `read-profile-config` in OpenSpec for the full
+rules.
 
 Parallel sub-range reads carry a strict-range context
 (`drive.StrictRangeFromContext`). If the provider answers 200 with the whole

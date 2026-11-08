@@ -46,6 +46,10 @@ The read plan maps to concrete request sizes:
 - `BulkStreams` — concurrent sub-ranges per window.
 - `BulkWindowChunks` — window size in 512 KiB chunks.
 - **Per-stream chunk = BulkWindowChunks × 512 KiB / BulkStreams.**
+- Driver defaults are authoritative. A user may opt one mount into
+  `[mounts.read_profile]` with `streams` / `window_chunks`; do not change the
+  driver default to match one user's network unless the result holds across
+  environments. The override applies to `bulk` only.
 
 For FUSE adaptive sequential reads the window normally follows the caller's
 read size (`readWindowChunks`). `--window-chunks` overrides it for the
@@ -189,6 +193,10 @@ Reference outcomes from qrypt's own measurements (2026-11):
   part of the gap but still lost. A later single-pass run ranked 4 streams
   ahead — provider drift. This is why the decision needs interleaved cycles, not
   one comparison.
+- 2026-11-08, 64 MiB, fast home network, two interleaved cycles per mount:
+  Koofr single 4.34–5.29 MB/s vs 4×2 MiB 2.30–2.37 MB/s; Drime 8.07–10.68 vs
+  5.62–6.35 MB/s. 16 MiB was too noisy. Keep Koofr/Drime single-stream by
+  default; offer `[mounts.read_profile]` for constrained links.
 
 ### 6. Clean up
 

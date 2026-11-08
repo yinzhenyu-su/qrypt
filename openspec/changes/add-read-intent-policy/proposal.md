@@ -12,7 +12,7 @@
 - 引入读意图 `bulk` / `interactive` / `probe`，由 FUSE、CLI、移动端和后台任务在发起读时声明，并沿 context 传播到读调度层。
 - `bulk` 意图在单个读窗口内做有界并行 Range；`interactive` / `probe` 保持单流、小窗口、有界预取。
 - 为 `fs get` 目录和 `fs sync` 增加有界跨文件 worker 池；为 `ReadStream` 增加跨窗口 read-ahead，使单文件持续吞吐不被窗口边界打断。跨文件 worker 固定默认 4，不新增用户配置。
-- 读策略由驱动层默认值决定（并行流数、窗口块数、预取深度），不新增用户可调配置；驱动声明并行 Range 能力与推荐值，已实现内部并行的驱动（如 Quark）由 VFS 保持单流，避免叠加。
+- 读策略默认由驱动层决定（并行流数、窗口块数、预取深度），不要求用户配置；驱动声明并行 Range 能力与推荐值，已实现内部并行的驱动（如 Quark）由 VFS 保持单流，避免叠加。后续 `add-read-profile-override` 在不改变默认值的前提下提供可选的 per-mount override。
 - 为 `fs copy` / `copy` 任务 / `share fetch` 的 `driver.Read` 直读路径增加有界并行 Range，复用同一驱动能力与默认值，并保持绕过 VFS 缓存。
 - 并行 Range 的语义由驱动保证：声明能力的驱动必须让子 Range 返回 206，无法满足时返回明确的不支持错误；VFS 不通过读取 body 猜测 200 全量。
 - 预取取消接入生命周期：读缓存失效、读会话释放、调用方取消都会停止该文件的后台预取；seek 取消保留。已完成的缓存填充不因会话释放而丢弃。
@@ -39,7 +39,7 @@
 - `pkg/vfs`: `read_host.go`、`vfs.go` 读缓存失效、`namespace_read.go` 会话释放。
 - `pkg/drive` / `pkg/drivers`: 并行 Range 能力声明、驱动默认读策略、可选的驱动上限接口，以及 Quark 等已内部并行驱动的互斥处理。
 - `pkg/vfs/drivecopy` / `pkg/core/share_fetch.go`: 直读路径的有界并行 Range 与取消。
-- 配置：不新增用户可调读策略配置；`ReadCacheConfig` 继续只承载 `max_size`。
+- 配置：默认不新增用户可调读策略配置；`ReadCacheConfig` 继续只承载 `max_size`。后续 `add-read-profile-override` 增加可选的 per-mount override，默认值仍由驱动拥有。
 - `pkg/mount`: FUSE 读意图与顺序/随机判定接线。
 - `internal/cli/fs` / `pkg/syncer`: `fs get` 目录与 `fs sync` 的有界跨文件 worker 池、进度与取消。
 - `pkg/core` / `pkg/mobile`: `ReadAtInto`、媒体虚拟读、下载任务、下载流任务的意图声明，以及移动端句柄关闭/取消对预取的显式停止。

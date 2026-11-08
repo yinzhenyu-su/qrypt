@@ -1,9 +1,11 @@
 package drive
 
 // ReadProfile is a driver's recommended read scheduling defaults. The read
-// domain consumes it to pick stream counts, window sizes and prefetch depth;
-// it is not user configuration. Drivers that do not implement ReadProfiler
-// get DefaultReadProfile, gated by the parallel-range capabilities below.
+// domain consumes it to pick stream counts, window sizes and prefetch depth.
+// Drivers that do not implement ReadProfiler get DefaultReadProfile, gated by
+// the parallel-range capabilities below. A mount may optionally override the
+// bulk stream count and window in its config; unset fields still inherit this
+// driver profile.
 type ReadProfile struct {
 	// BulkStreams is the number of concurrent sub-ranges for a bulk read.
 	BulkStreams int
@@ -55,28 +57,74 @@ type ParallelReadLimiter interface {
 	MaxParallelReads() int
 }
 
+// ReadProfileInfo is the effective profile plus where its bulk stream count
+// came from. Source is one of ReadProfileSourceDriver,
+// ReadProfileSourceMountOverride, or ReadProfileSourceDriverLimiter.
+type ReadProfileInfo struct {
+	Profile ReadProfile
+	Source  string
+	Clamped bool
+}
+
+const (
+	ReadProfileSourceDriver        = "driver"
+	ReadProfileSourceMountOverride = "mount_override"
+	ReadProfileSourceDriverLimiter = "driver_limiter"
+)
+
 // ReadProfileOf resolves the effective read profile for d. A driver must
 // declare CapabilityParallelRange to use more than one bulk stream;
 // CapabilityInternalParallelRead keeps the VFS single-stream because the
 // driver already parallelizes internally.
 func ReadProfileOf(d Driver) ReadProfile {
+	return ResolveReadProfile(d, nil).Profile
+}
+
+// ReadProfileOfWithOverride resolves a driver profile with an optional
+// per-mount override. Nil or zero override fields keep the driver's value.
+func ReadProfileOfWithOverride(d Driver, override *ReadProfile) ReadProfile {
+	return ResolveReadProfile(d, override).Profile
+}
+
+// ResolveReadProfile resolves precedence, capability gates, and the optional
+// driver limiter. Override fields win over the driver profile; zero override
+// fields inherit. The source reports the origin of the bulk stream count.
+func ResolveReadProfile(d Driver, override *ReadProfile) ReadProfileInfo {
 	profile := DefaultReadProfile()
+	source := ReadProfileSourceDriver
+	hasOverride := override != nil && hasReadProfileFields(*override)
 	if d == nil {
 		profile.BulkStreams = 1
-		return profile
+		return ReadProfileInfo{Profile: profile, Source: source}
 	}
 	if profiler, ok := d.(ReadProfiler); ok {
 		profile = mergeReadProfile(profile, profiler.ReadProfile())
 	}
+	if hasOverride {
+		profile = mergeReadProfile(profile, *override)
+		source = ReadProfileSourceMountOverride
+	}
 	if !HasCapability(d, CapabilityParallelRange) || HasCapability(d, CapabilityInternalParallelRead) {
 		profile.BulkStreams = 1
 	}
+	clamped := false
 	if limiter, ok := d.(ParallelReadLimiter); ok {
-		if limit := limiter.MaxParallelReads(); limit > 0 {
-			profile.BulkStreams = min(profile.BulkStreams, limit)
+		if limit := limiter.MaxParallelReads(); limit > 0 && profile.BulkStreams > limit {
+			profile.BulkStreams = limit
+			clamped = true
+			source = ReadProfileSourceDriverLimiter
 		}
 	}
-	return normalizeReadProfile(profile)
+	return ReadProfileInfo{Profile: normalizeReadProfile(profile), Source: source, Clamped: clamped}
+}
+
+func hasReadProfileFields(profile ReadProfile) bool {
+	return profile.BulkStreams > 0 ||
+		profile.BulkWindowChunks > 0 ||
+		profile.InteractiveWindowChunks > 0 ||
+		profile.ProbeWindowChunks > 0 ||
+		profile.PrefetchDepth > 0 ||
+		profile.ParallelThreshold > 0
 }
 
 func mergeReadProfile(base, override ReadProfile) ReadProfile {

@@ -40,8 +40,9 @@ type ReaderDeps struct {
 	Observer ReadObserver
 	Health   HealthRecorder
 	Counters CounterRecorder
-	// Profile carries the driver's read scheduling defaults. The zero value
-	// falls back to drive.DefaultReadProfile; it is not user configuration.
+	// Profile carries the effective read scheduling profile for this mount.
+	// The zero value falls back to drive.DefaultReadProfile. A mount may
+	// override the driver default through its read_profile config.
 	Profile drive.ReadProfile
 }
 

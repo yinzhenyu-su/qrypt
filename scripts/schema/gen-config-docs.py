@@ -132,8 +132,8 @@ def generate():
     )
     sections.append("")
     sections.append(
-        "每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]` "
-        "和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。"
+        "每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]`、"
+        "`[mounts.read_profile]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。"
     )
     sections.append("")
 
@@ -166,6 +166,20 @@ def generate():
     sections.append(read_cache_desc)
     sections.append("")
     sections.append(build_field_rows(read_cache_props))
+    sections.append("")
+
+    read_profile_props, read_profile_desc = section(defs, "readProfileConfig")
+    sections.append("## 读取策略（`[mounts.read_profile]`）")
+    sections.append("")
+    sections.append(read_profile_desc)
+    sections.append("")
+    sections.append(build_field_rows(read_profile_props))
+    sections.append("")
+    sections.append(
+        "该表只存在于每个 `[[mounts]]` 下，没有全局等价项。默认值来自驱动的\n"
+        "`ReadProfile`；只影响 `bulk` 读，`interactive` / `probe` 仍保持单流。\n"
+        "多流收益取决于网络，建议先用 `qrypt probe test read` 实测。"
+    )
     sections.append("")
 
     thumbnail_props, thumbnail_desc = section(defs, "thumbnailCacheConfig")

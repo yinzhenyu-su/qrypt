@@ -118,6 +118,7 @@ type copyResolvedPath struct {
 	Info      diagnostics.DebugResolveInfo
 	Drive     drive.Driver
 	Entry     drive.Entry
+	Profile   drive.ReadProfile
 	IsMissing bool
 }
 
@@ -276,7 +277,7 @@ func runDirectDriverCopy(ctx context.Context, source diagnostics.DriverCopySourc
 		}
 	}
 
-	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size, tempDir)
+	tmp, cleanup, hashes, err := copySourceToTemp(ctx, src.Drive, src.Entry, src.Info.Size, tempDir, src.Profile)
 	appendCopyStep(result, "read_source_to_temp", tmp.bytes, tmp.started, err)
 	appendCopyEvent(result, "read_source_to_temp", src.Mount, src.Driver, result.SourcePath, tmp.bytes, tmp.started, nil)
 	defer cleanup()
@@ -482,10 +483,10 @@ type tempCopy struct {
 	started time.Time
 }
 
-func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry drive.Entry, expectedSize int64, tempDir string) (tempCopy, func(), drive.SourceHashes, error) {
+func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry drive.Entry, expectedSize int64, tempDir string, profile drive.ReadProfile) (tempCopy, func(), drive.SourceHashes, error) {
 	start := util.Now()
 	cleanup := func() {}
-	rc, err := drive.ReadParallel(ctx, srcDriver, srcEntry, 0, 0)
+	rc, err := drive.ReadParallelWithProfile(ctx, srcDriver, srcEntry, 0, 0, profile)
 	if err != nil {
 		return tempCopy{started: start}, cleanup, nil, err
 	}
@@ -521,6 +522,19 @@ func copySourceToTemp(ctx context.Context, srcDriver drive.Driver, srcEntry driv
 	}, nil
 }
 
+func effectiveReadProfile(source diagnostics.DriverCopySource, path string, driver drive.Driver) drive.ReadProfile {
+	profile := drive.ReadProfileOf(driver)
+	provider, ok := source.(diagnostics.ReadProfileProvider)
+	if !ok {
+		return profile
+	}
+	override := provider.ReadProfileForPath(path)
+	if override == nil {
+		return profile
+	}
+	return drive.ReadProfileOfWithOverride(driver, override)
+}
+
 func resolveCopyPath(ctx context.Context, source diagnostics.DriverCopySource, drivers []diagnostics.NamedDriver, virtualPath string) (copyResolvedPath, error) {
 	virtualPath = vfstypes.CleanVirtualPath(virtualPath)
 	info, err := source.DebugResolve(ctx, virtualPath, false)
@@ -539,9 +553,10 @@ func resolveCopyPath(ctx context.Context, source diagnostics.DriverCopySource, d
 	if driver == nil {
 		return copyResolvedPath{}, fmt.Errorf("mount %q not found", mountName)
 	}
+	profile := effectiveReadProfile(source, virtualPath, driver)
 	missing := info.RemoteID == ""
 	if missing {
-		return copyResolvedPath{Path: virtualPath, Mount: mountName, Driver: info.Driver, Info: info, Drive: driver, IsMissing: true}, nil
+		return copyResolvedPath{Path: virtualPath, Mount: mountName, Driver: info.Driver, Info: info, Drive: driver, Profile: profile, IsMissing: true}, nil
 	}
 	if info.Driver == "" {
 		if snap, err := driver.DebugSnapshot(ctx); err == nil {
@@ -549,11 +564,12 @@ func resolveCopyPath(ctx context.Context, source diagnostics.DriverCopySource, d
 		}
 	}
 	return copyResolvedPath{
-		Path:   virtualPath,
-		Mount:  mountName,
-		Driver: info.Driver,
-		Info:   info,
-		Drive:  driver,
+		Path:    virtualPath,
+		Mount:   mountName,
+		Driver:  info.Driver,
+		Info:    info,
+		Drive:   driver,
+		Profile: profile,
 		Entry: drive.Entry{
 			ID:       info.RemoteID,
 			ParentID: info.ParentID,

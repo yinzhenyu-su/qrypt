@@ -73,3 +73,23 @@ func TestReadPlanExtraUsesGrantedStreams(t *testing.T) {
 		t.Fatalf("read_streams = %v, want the granted 2", got)
 	}
 }
+
+func TestPlanResolverProfileWindowOnlyChangesBulk(t *testing.T) {
+	profile := drive.DefaultReadProfile()
+	profile.BulkStreams = 4
+	profile.BulkWindowChunks = 16
+	resolver := PlanResolver{Profile: profile}
+
+	bulk := resolver.Resolve(ReadIntentBulk, 32<<20, 2)
+	if bulk.WindowChunks != 16 || bulk.MaxStreams != 4 {
+		t.Fatalf("bulk plan = %+v, want 16 chunks / 4 streams", bulk)
+	}
+	interactive := resolver.Resolve(ReadIntentInteractive, 32<<20, 2)
+	if interactive.WindowChunks != profile.InteractiveWindowChunks || interactive.MaxStreams != 1 {
+		t.Fatalf("interactive plan = %+v, want its own window and one stream", interactive)
+	}
+	probe := resolver.Resolve(ReadIntentProbe, 32<<20, 2)
+	if probe.WindowChunks != profile.ProbeWindowChunks || probe.MaxStreams != 1 {
+		t.Fatalf("probe plan = %+v, want its own window and one stream", probe)
+	}
+}

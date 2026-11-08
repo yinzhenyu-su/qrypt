@@ -28,7 +28,12 @@ var directReadScheduler = readbudget.NewScheduler(readbudget.SchedulerConfig{
 // CapabilityParallelRange, drivers that already parallelize internally, and
 // files below the profile threshold fall back to one Read.
 func ReadParallel(ctx context.Context, d Driver, entry Entry, offset, size int64) (io.ReadCloser, error) {
-	profile := ReadProfileOf(d)
+	return ReadParallelWithProfile(ctx, d, entry, offset, size, ReadProfileOf(d))
+}
+
+// ReadParallelWithProfile is ReadParallel with an already-resolved effective
+// profile. Callers use it when a mount overrides the driver defaults.
+func ReadParallelWithProfile(ctx context.Context, d Driver, entry Entry, offset, size int64, profile ReadProfile) (io.ReadCloser, error) {
 	total := size
 	if total <= 0 && entry.Size > 0 {
 		total = entry.Size - offset

@@ -42,9 +42,9 @@
 - 合并窗口只在取数形态兼容时复用；不兼容的等待者自行发起读取。缓存写入按每个等待者自己的策略在收到数据后执行。
 - 备选：在驱动内统一并行（拒绝，重复实现、无法统一回退和缓存策略）；把窗口拆成多个独立 `windowLoad`（拒绝，破坏合并与去重）。
 
-### 3. 读策略由驱动默认值决定，不新增用户配置
+### 3. 读策略默认由驱动决定，不要求用户配置
 
-不扩展 `ReadCacheConfig`，也不新增 `[read]` 段。驱动通过可选接口或内置 profile 提供 `ParallelStreams`、`WindowChunks`、`PrefetchDepth` 的推荐值；VFS 根据 intent、文件大小、`CapabilityParallelRange` / `CapabilityInternalParallelRead` 选择实际值。默认 `bulk` 4 流、`interactive` / `probe` 1 流；未声明能力的驱动 1 流。跨文件 worker 固定 4。用户配置面保持只有 `read_cache.max_size`。
+不扩展 `ReadCacheConfig`，也不新增 `[read]` 段。驱动通过可选接口或内置 profile 提供 `ParallelStreams`、`WindowChunks`、`PrefetchDepth` 的推荐值；VFS 根据 intent、文件大小、`CapabilityParallelRange` / `CapabilityInternalParallelRead` 选择实际值。默认 `bulk` 4 流、`interactive` / `probe` 1 流；未声明能力的驱动 1 流。跨文件 worker 固定 4。用户配置面保持只有 `read_cache.max_size`。后续 `add-read-profile-override` 会在不改变这些默认值的前提下增加可选的 per-mount override。
 
 - 理由：这些参数影响稳定性，应该由驱动作者按 provider 特性调好；暴露给用户会让错误配置变成支持负担。
 - 备选：`[read_cache]` 扩展（拒绝，语义混杂且增加用户误配面）；新增 `[read]` 段（拒绝，同样把稳定性参数交给用户）。
@@ -134,7 +134,7 @@
 - [移动端关闭句柄后预取继续] → `CloseFileJSON` / `CancelFileReadJSON` 调用显式 VFS 取消入口，不依赖前台 context。
 - [合并窗口让不同意图串味] → 只合并取数形态兼容的读；缓存写入按每个等待者自己的策略执行。
 - [读策略不可由用户调整] → 驱动默认值需要充分基准测试与契约测试；问题通过驱动版本/代码修复，而不是让用户误配稳定性参数。
-- [默认 4 流与 bulk 跳过缓存改变用户可见行为] → 在 changelog/release notes 说明；回退通过驱动默认值或代码，不提供用户配置开关。
+- [默认 4 流与 bulk 跳过缓存改变用户可见行为] → 在 changelog/release notes 说明；回退通过驱动默认值或代码。默认不提供用户配置开关；后续 `add-read-profile-override` 仅提供可选的 per-mount override。
 - [跨文件 worker 与单文件并行争抢槽位] → 两者共享全局槽位，单文件总并发上限独立约束，worker 数固定为 4。
 - [ReadStream read-ahead 增加内存] → 深度默认 1，内存上界为深度 × 窗口大小，且受全局槽位约束。
 - [跨文件 worker 导致进度乱序或本地磁盘抖动] → 每个文件内部保持顺序，进度只按完成字节单调累加，worker 数固定为 4。
