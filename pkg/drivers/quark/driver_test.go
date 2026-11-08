@@ -513,7 +513,7 @@ func TestDriverParallelDownloadRetriesTruncatedPart(t *testing.T) {
 		attempts[start]++
 		truncate := attempts[start] == 1 && start == downloadParallelPartSize
 		mu.Unlock()
-		var body io.ReadCloser = io.NopCloser(bytes.NewReader(data[start : end+1]))
+		body := io.NopCloser(bytes.NewReader(data[start : end+1]))
 		if truncate {
 			// The provider closed the connection before the declared range was
 			// complete; the part must be re-requested, not failed.

@@ -46,16 +46,16 @@ func (w *UploadWatchdog) Stop() { w.timer.Stop() }
 // UploadBudget returns the total time budget for one upload: the time size
 // needs at minRate (bytes per second), clamped to [min, max]. A non-positive
 // max means no upper bound.
-func UploadBudget(size, minRate int64, min, max time.Duration) time.Duration {
+func UploadBudget(size, minRate int64, minBudget, maxBudget time.Duration) time.Duration {
 	if size <= 0 || minRate <= 0 {
-		return min
+		return minBudget
 	}
 	budget := time.Duration(size/minRate) * time.Second
-	if budget < min {
-		return min
+	if budget < minBudget {
+		return minBudget
 	}
-	if max > 0 && budget > max {
-		return max
+	if maxBudget > 0 && budget > maxBudget {
+		return maxBudget
 	}
 	return budget
 }

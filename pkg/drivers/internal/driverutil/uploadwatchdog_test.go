@@ -11,22 +11,22 @@ import (
 
 func TestUploadBudget(t *testing.T) {
 	const (
-		minRate = int64(256 << 10)
-		min     = 15 * time.Minute
-		max     = 24 * time.Hour
+		minRate   = int64(256 << 10)
+		minBudget = 15 * time.Minute
+		maxBudget = 24 * time.Hour
 	)
 	for _, tc := range []struct {
 		name string
 		size int64
 		want time.Duration
 	}{
-		{name: "empty", size: 0, want: min},
-		{name: "small", size: 100 << 20, want: min},
+		{name: "empty", size: 0, want: minBudget},
+		{name: "small", size: 100 << 20, want: minBudget},
 		{name: "scales with size", size: 5142406828, want: time.Duration(5142406828/minRate) * time.Second},
-		{name: "capped", size: 1 << 50, want: max},
+		{name: "capped", size: 1 << 50, want: maxBudget},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := UploadBudget(tc.size, minRate, min, max); got != tc.want {
+			if got := UploadBudget(tc.size, minRate, minBudget, maxBudget); got != tc.want {
 				t.Fatalf("UploadBudget(%d) = %s, want %s", tc.size, got, tc.want)
 			}
 		})
