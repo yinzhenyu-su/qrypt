@@ -271,7 +271,10 @@ layers:
 Both probes create unique payloads (so content dedup cannot short-circuit
 them) and remove every fixture. Use them before changing `ReadProfile`,
 chunk sizes, or upload concurrency: a provider cap makes those changes no-ops
-or regressions, as measured for Quark, Koofr, Drime, and 123 reads.
+or regressions, as measured for Quark, Koofr, Drime, and 123 reads. A user can
+opt one mount into a measured bulk profile with `[mounts.read_profile]`
+(`streams` / `window_chunks`); this does not change the driver default and only
+affects `bulk` reads. See [full-config](../for-user/full-config.md) for the field details.
 
 ## Nested mounts and stale listings
 
