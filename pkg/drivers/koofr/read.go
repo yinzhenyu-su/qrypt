@@ -13,6 +13,14 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
+// ReadProfile keeps bulk reads single-stream. Live measurements on this
+// provider showed 4 concurrent sub-ranges slower than one 4 MiB range: the
+// fixed per-request latency dominates. The capability stays declared so the
+// profile can be retuned after a future re-measurement.
+func (d *Driver) ReadProfile() drive.ReadProfile {
+	return drive.ReadProfile{BulkStreams: 1}
+}
+
 // Read streams a byte range of a file from the provider's content endpoint.
 // The entry id is the absolute provider path, so no per-read metadata request
 // is issued.
@@ -72,6 +80,12 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		resp.Body.Close()
 		apiResp := &apiResponse{req: req, resp: resp, body: body}
 		err := apiResp.error("koofr: read")
+		d.setLastError(err)
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK && drive.StrictRangeFromContext(ctx) {
+		resp.Body.Close()
+		err := fmt.Errorf("koofr: provider ignored range: %w", drive.ErrUnsupported)
 		d.setLastError(err)
 		return nil, err
 	}

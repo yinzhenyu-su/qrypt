@@ -13,6 +13,15 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
+// ReadProfile keeps bulk reads single-stream. A live measurement on the
+// provider showed 4 concurrent sub-ranges 20-30% slower than one 4 MiB range:
+// the CDN's per-request latency dominates and does not scale with concurrency.
+// The capability stays declared so the profile can be retuned after a future
+// re-measurement.
+func (d *Driver) ReadProfile() drive.ReadProfile {
+	return drive.ReadProfile{BulkStreams: 1}
+}
+
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	if entry.IsDir {
 		return nil, fmt.Errorf("drime: cannot read directory %q: %w", entry.Name, drive.ErrInvalidInput)
@@ -61,6 +70,12 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		err := drive.HTTPError("drime: read", req, resp, body)
+		d.setLastError(err)
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK && drive.StrictRangeFromContext(ctx) {
+		resp.Body.Close()
+		err := fmt.Errorf("drime: provider ignored range: %w", drive.ErrUnsupported)
 		d.setLastError(err)
 		return nil, err
 	}

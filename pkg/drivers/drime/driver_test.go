@@ -34,6 +34,16 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 	return false
 }
 
+func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+	d := New(Options{})
+	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
+		t.Fatal("parallel_range should stay declared for future tuning")
+	}
+}
+
 func TestInitSpaceAndRootResolution(t *testing.T) {
 	f := newFakeProvider(t)
 	docs := f.addEntry(0, "docs", true, 0, "", "")
@@ -225,6 +235,22 @@ func TestReadRangeRedirectAndIgnoredRange(t *testing.T) {
 	f.ignoreRange = true
 	if got := read(10, 10); got != "abcdefghij" {
 		t.Fatalf("ignored range = %q", got)
+	}
+}
+
+func TestReadStrictRangeRejectsIgnoredRange(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := f.addEntry(0, "file.bin", false, 100, "", "")
+	f.content[idString(entry.ID)] = []byte("0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz")
+	d := f.newDriver(t, Options{})
+	if err := d.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	f.ignoreRange = true
+
+	_, err := d.Read(drive.WithStrictRange(context.Background()), entry.entry(""), 10, 10)
+	if !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want ErrUnsupported", err)
 	}
 }
 

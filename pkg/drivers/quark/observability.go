@@ -23,6 +23,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityShareReceive,
 		drive.CapabilityShareSave,
 		drive.CapabilityShareFetch,
+		drive.CapabilityInternalParallelRead,
 	}
 }
 

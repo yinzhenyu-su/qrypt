@@ -189,6 +189,7 @@ func TestCapabilitiesDebugAndMetrics(t *testing.T) {
 		drive.CapabilitySourceUploader,
 		drive.CapabilitySpace,
 		drive.CapabilityWriter,
+		drive.CapabilityParallelRange,
 	}
 	got := d.Capabilities()
 	if len(got) != len(want) {

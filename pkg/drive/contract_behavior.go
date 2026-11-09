@@ -181,11 +181,15 @@ func CheckReadOffsetsAndEOF(ctx context.Context, d Driver) []ContractViolation {
 	for i := range payload {
 		payload[i] = byte(i)
 	}
+	// Use a plain-text extension: some providers (Koofr) refuse to serve
+	// downloads for extensions their content scanner considers dangerous,
+	// independent of the actual bytes. The read contract is about offsets and
+	// EOF, not about extension policy.
 	entry, err := d.PutSource(ctx, UploadRequest{
-		ParentID: sb.ID, Name: "data.bin", Source: NewBytesReadOnlyFileSource(payload),
+		ParentID: sb.ID, Name: "data.txt", Source: NewBytesReadOnlyFileSource(payload),
 	})
 	if err != nil {
-		return []ContractViolation{{Name: "read_offsets_and_eof", Err: fmt.Errorf("put data.bin: %w", err)}}
+		return []ContractViolation{{Name: "read_offsets_and_eof", Err: fmt.Errorf("put data.txt: %w", err)}}
 	}
 
 	verify := func(offset, length int64) error {

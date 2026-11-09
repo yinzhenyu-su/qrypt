@@ -88,6 +88,12 @@ fi
 
 TEMP_BASE="${TMPDIR:-/tmp}"
 TEMP_BASE="${TEMP_BASE%/}"
+# Unix socket paths are limited to about 104 bytes on macOS. The default
+# macOS TMPDIR is long enough to push the control socket over that limit,
+# which makes the mount fail with "bind: invalid argument".
+if [ "${#TEMP_BASE}" -gt 40 ]; then
+  TEMP_BASE=/tmp
+fi
 WORKDIR="$(mktemp -d "$TEMP_BASE/qrypt-mount-test.XXXXXX")"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 MOUNT_POINT="$WORKDIR/mount"

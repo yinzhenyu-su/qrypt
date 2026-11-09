@@ -12,6 +12,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -356,6 +357,19 @@ func (r *shareRun) fetchTargets(ctx context.Context, update task.UpdateFunc, fro
 	return targets, nil
 }
 
+func (r *shareRun) effectiveReadProfile() drive.ReadProfile {
+	profile := drive.ReadProfileOf(r.driver)
+	provider, ok := r.core.fs.(diagnostics.MountReadProfileProvider)
+	if !ok {
+		return profile
+	}
+	override := provider.ReadProfileForMount(r.detail.Mount)
+	if override == nil {
+		return profile
+	}
+	return drive.ReadProfileOfWithOverride(r.driver, override)
+}
+
 func (r *shareRun) transferTarget(ctx context.Context, update task.UpdateFunc, destination *shareFetchDestination, plan offlineChunkPlan, target shareFetchTarget, base int64) (int64, error) {
 	writer, err := destination.writer(ctx, target.name)
 	if err != nil {
@@ -386,7 +400,9 @@ func (r *shareRun) transferTarget(ctx context.Context, update task.UpdateFunc, d
 		return offset, fmt.Errorf("core: share download URL did not complete the file")
 	}
 
-	reader, err := r.driver.Read(ctx, drive.Entry{ID: target.remoteID, Name: target.name}, offset, sizeOrUnknown(target.size, offset))
+	entry := drive.Entry{ID: target.remoteID, Name: target.name, Size: target.size}
+	profile := r.effectiveReadProfile()
+	reader, err := drive.ReadParallelWithProfile(ctx, r.driver, entry, offset, sizeOrUnknown(target.size, offset), profile)
 	if err != nil {
 		_ = writer.Abort()
 		return 0, err

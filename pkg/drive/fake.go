@@ -75,9 +75,151 @@ type FakeDriver struct {
 	// call, or cancel ctx to simulate a hung provider mid-operation.
 	Gate chan struct{}
 
+	// ReadBehavior simulates provider read behavior that an in-memory tree
+	// cannot express: ignored Range requests, slow bodies, and bodies that
+	// block until a test releases them.
+	ReadBehavior ReadBehavior
+
 	// snapshots is the mutation history backing ListStaleness;
 	// snapshots[len-1] is the current tree.
 	snapshots []map[string][]Entry
+
+	readMu        sync.Mutex
+	readCalls     []ReadCall
+	readActive    int
+	readMaxActive int
+}
+
+// ReadBehavior makes FakeDriver simulate provider read behavior. The zero
+// value keeps the original in-memory semantics.
+type ReadBehavior struct {
+	// IgnoreRange simulates a provider that answers a Range request with the
+	// whole object. In strict-range mode Read returns ErrUnsupported so the
+	// caller can fall back; otherwise it serves the full object and records
+	// FullBody on the call.
+	IgnoreRange bool
+	// BodyGate blocks the first body read until a token arrives or ctx is
+	// done. Tests use it to hold a read in flight while they delete or close.
+	BodyGate <-chan struct{}
+}
+
+// ReadCall records one Driver.Read invocation. Started and Finished bracket
+// the whole call including body consumption, so overlapping calls show the
+// concurrency the read scheduler actually allowed.
+type ReadCall struct {
+	EntryID  string
+	Offset   int64
+	Size     int64
+	Strict   bool
+	FullBody bool
+	// Served is how many bytes the provider sent. For an ignored Range this
+	// is the whole object even though Size is the requested span, which is
+	// how tests detect bandwidth amplification.
+	Served   int64
+	Started  time.Time
+	Finished time.Time
+	Err      error
+
+	active bool
+}
+
+// ReadStats summarizes FakeDriver read activity since the last reset.
+type ReadStats struct {
+	Calls         int
+	Active        int
+	MaxConcurrent int
+	FullBody      int
+}
+
+// ReadCalls returns a copy of the recorded read calls.
+func (d *FakeDriver) ReadCalls() []ReadCall {
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	return append([]ReadCall(nil), d.readCalls...)
+}
+
+// ReadStats returns read counters. Active and MaxConcurrent count calls from
+// entry until the returned body is closed or reaches EOF.
+func (d *FakeDriver) ReadStats() ReadStats {
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	stats := ReadStats{
+		Calls:         len(d.readCalls),
+		Active:        d.readActive,
+		MaxConcurrent: d.readMaxActive,
+	}
+	for _, call := range d.readCalls {
+		if call.FullBody {
+			stats.FullBody++
+		}
+	}
+	return stats
+}
+
+// ResetReadCalls clears recorded read calls. Call it only when no read is in
+// flight; Active is reset too.
+func (d *FakeDriver) ResetReadCalls() {
+	d.readMu.Lock()
+	d.readCalls = nil
+	d.readActive = 0
+	d.readMaxActive = 0
+	d.readMu.Unlock()
+}
+
+func (d *FakeDriver) beginReadCall(ctx context.Context, entry Entry, offset, size int64) int {
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	d.readCalls = append(d.readCalls, ReadCall{
+		EntryID: entry.ID,
+		Offset:  offset,
+		Size:    size,
+		Strict:  StrictRangeFromContext(ctx),
+		Started: time.Now(),
+	})
+	return len(d.readCalls) - 1
+}
+
+func (d *FakeDriver) activateReadCall(index int) {
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	if index >= 0 && index < len(d.readCalls) {
+		d.readCalls[index].active = true
+	}
+	d.readActive++
+	if d.readActive > d.readMaxActive {
+		d.readMaxActive = d.readActive
+	}
+}
+
+func (d *FakeDriver) finishReadCall(index int, err error) {
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	if index >= 0 && index < len(d.readCalls) {
+		call := &d.readCalls[index]
+		if call.active {
+			call.active = false
+			d.readActive--
+		}
+		call.Finished = time.Now()
+		call.Err = err
+	}
+}
+
+func (d *FakeDriver) markReadServed(index int, served int64) {
+	d.readMu.Lock()
+	if index >= 0 && index < len(d.readCalls) {
+		d.readCalls[index].Served = served
+	}
+	d.readMu.Unlock()
+}
+
+func (d *FakeDriver) markReadFullBody(index int, served int64) {
+	d.readMu.Lock()
+	if index >= 0 && index < len(d.readCalls) {
+		d.readCalls[index].FullBody = true
+		d.readCalls[index].Served = served
+	}
+	d.readMu.Unlock()
 }
 
 type failAt struct {
@@ -319,37 +461,134 @@ func (d *FakeDriver) List(ctx context.Context, parentID string) ([]Entry, error)
 	return nil, nil
 }
 
-// Read implements Driver with offset/size semantics and EOF.
+// Read implements Driver with offset/size semantics and EOF. ReadBehavior
+// can make it simulate a provider that ignores Range or blocks until the
+// test releases it.
 func (d *FakeDriver) Read(ctx context.Context, entry Entry, offset, size int64) (io.ReadCloser, error) {
+	index := d.beginReadCall(ctx, entry, offset, size)
+	finish := func(err error) { d.finishReadCall(index, err) }
+
 	d.mu.Lock()
 	d.record("Read", entry.ID)
+	behavior := d.ReadBehavior
 	d.mu.Unlock()
 	if err := d.failOn("Read"); err != nil {
+		finish(err)
 		return nil, err
 	}
+	// Activate before the delay so MaxConcurrent reflects concurrent
+	// in-flight provider requests, not only concurrent CPU work.
+	d.activateReadCall(index)
 	if err := d.wait(ctx, d.Delay+d.ReadDelay); err != nil {
+		finish(err)
 		return nil, err
 	}
 	if err := d.consume(&d.ErrRead); err != nil {
+		finish(err)
 		return nil, err
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	n, ok := d.nodes[entry.ID]
 	if !ok {
-		return nil, fmt.Errorf("%w: fake read %q", ErrNotFound, entry.ID)
+		d.mu.Unlock()
+		err := fmt.Errorf("%w: fake read %q", ErrNotFound, entry.ID)
+		finish(err)
+		return nil, err
 	}
 	data := n.data
-	if offset > int64(len(data)) {
-		return io.NopCloser(bytes.NewReader(nil)), nil
+	d.mu.Unlock()
+
+	if behavior.IgnoreRange && StrictRangeFromContext(ctx) {
+		finish(ErrUnsupported)
+		return nil, ErrUnsupported
 	}
-	start := offset
-	end := int64(len(data))
-	if size >= 0 && offset+size < end {
-		end = offset + size
+	start, end := offset, int64(len(data))
+	if start > int64(len(data)) {
+		start = int64(len(data))
 	}
-	return io.NopCloser(bytes.NewReader(data[start:end])), nil
+	if size >= 0 && start+size < end {
+		end = start + size
+	}
+	if start > end {
+		start = end
+	}
+	if behavior.IgnoreRange {
+		// The provider sent the whole object. The driver still returns the
+		// requested span so callers see correct bytes, but Served records the
+		// amplification that strict-range fallback is meant to stop.
+		d.markReadFullBody(index, int64(len(data)))
+	} else {
+		d.markReadServed(index, end-start)
+	}
+
+	reader := io.NopCloser(bytes.NewReader(data[start:end]))
+	if behavior.BodyGate != nil {
+		reader = &fakeBodyReadCloser{
+			ctx:    ctx,
+			reader: bytes.NewReader(data[start:end]),
+			gate:   behavior.BodyGate,
+		}
+	}
+	return &fakeTrackedReadCloser{ReadCloser: reader, onDone: finish}, nil
 }
+
+// fakeTrackedReadCloser reports the end of a read call when the body is
+// closed or exhausted, so ReadStats can measure real overlap.
+type fakeTrackedReadCloser struct {
+	io.ReadCloser
+	onDone func(error)
+	once   sync.Once
+}
+
+func (r *fakeTrackedReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if err != nil {
+		doneErr := err
+		if doneErr == io.EOF {
+			doneErr = nil
+		}
+		r.finish(doneErr)
+	}
+	return n, err
+}
+
+func (r *fakeTrackedReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.finish(nil)
+	return err
+}
+
+func (r *fakeTrackedReadCloser) finish(err error) {
+	r.once.Do(func() { r.onDone(err) })
+}
+
+// fakeBodyReadCloser holds a provider body until the test releases it or the
+// read context is canceled.
+type fakeBodyReadCloser struct {
+	ctx    context.Context
+	reader *bytes.Reader
+	gate   <-chan struct{}
+
+	gateOnce sync.Once
+}
+
+func (r *fakeBodyReadCloser) Read(p []byte) (int, error) {
+	if r.gate != nil {
+		r.gateOnce.Do(func() {
+			select {
+			case <-r.gate:
+			case <-r.ctx.Done():
+			}
+		})
+		if err := r.ctx.Err(); err != nil {
+			return 0, err
+		}
+		r.gate = nil
+	}
+	return r.reader.Read(p)
+}
+
+func (r *fakeBodyReadCloser) Close() error { return nil }
 
 // Mkdir implements Driver.
 func (d *FakeDriver) Mkdir(ctx context.Context, parentID, name string) (Entry, error) {

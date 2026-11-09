@@ -88,6 +88,8 @@ lives in `pkg/vfs` sub-packages, one per domain; `pkg/vfs` wires them
 together and holds one owner object per domain rather than the domain's
 individual runtime collaborators:
 
+- `readbudget` — shared read concurrency budgets (global slots, per-file
+  permits, prefetch permits) used by the VFS read domain and direct reads
 - `vfstypes` — shared types and path helpers
 - `upload` — upload engine, persistent pending store (write-ahead journal),
   per-path scheduling, quiet-window checks, and upload admission
@@ -202,15 +204,26 @@ another domain's internal state.
   directory prefetch, list backend around driver `List`, and list scheduler
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
-- `read_range.go`: range reads, chunk slicing, and bounded driver reads
-- `pkg/vfs/read/reader.go`: read window load/coalescing, in-flight wait handling,
-  read-path staging flush, chunk availability, read-slot admission,
-  prefetch reservations, cache/window/hot-chunk/range-hit state, and the
-  read-window driver read / chunk-cache write backend
-- `read_prefetch.go`: adjacent read prefetch scheduling and execution
-- `read_fast_path.go`: hot chunk cache and cached-range promotion helpers
-- `read_keys.go` and `read_debug_helpers.go`: read cache keys and diagnostic
-  helpers
+- `pkg/vfs/read/reader.go`: read window load/coalescing, bounded parallel
+  sub-range fetch, and read-window driver read
+- `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
+- `pkg/vfs/read/plan.go`: immutable `ReadPlan` and `PlanResolver`; explicit
+  intent, max-stream hint, window, prefetch-depth, and cache-write defaults.
+  `pkg/core.buildMount` resolves the driver profile plus an optional
+  `[mounts.read_profile]` override and passes it to the VFS and direct read
+  paths; the mount debug snapshot exposes the effective profile and source.
+- `pkg/vfs/read/scheduler.go`: the single read budget owner for global
+  normal/high slots, per-file parallel permits, prefetch permits, and the
+  foreground-read count
+- `pkg/vfs/read/scope.go`: `ScopeRegistry`, the single owner of speculative
+  prefetch lifetimes and cancellation reasons
+- `pkg/vfs/read/cache_policy.go`: `CachePolicy` admission (hot vs durable) and
+  the shared `lookupCachedChunk` path
+- `pkg/vfs/read/helpers.go`: read intent/priority context, cache/window keys,
+  and read debug helpers
+- `pkg/vfs/read/state.go`: in-flight windows and read-domain state assembly
+- `pkg/vfs/diagnostics/read.go`: bounded read-event summaries/details and the
+  read intent/stream/cancel-reason projection
 - `staging.go`: local write staging, create/write/flush/truncate/mtime
   operations, and write-side pending/staging/hash transitions
 - `pkg/vfs/upload/domain.go`: the single upload owner assembled from service/store,

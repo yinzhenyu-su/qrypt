@@ -289,9 +289,10 @@ func (c *Core) downloadOne(ctx context.Context, item task.Item, spec downloadTas
 		// for a sequential download (window coalescing still drives one fetch
 		// per window).
 		buf := make([]byte, min(downloadReadBufferSize, c.readLimit(0)))
+		readCtx := vfs.WithReadIntent(ctx, vfs.ReadIntentBulk)
 		var off int64
 		for off < entry.Size {
-			n, err := c.ReadAtInto(ctx, item.SourcePath, off, buf, 0)
+			n, err := c.ReadAtInto(readCtx, item.SourcePath, off, buf, 0)
 			if err != nil {
 				return out, err
 			}

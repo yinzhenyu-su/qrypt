@@ -16,8 +16,10 @@ OUTPUT_PATH = os.path.join(ROOT, "docs", "for-user", "support-drivers.md")
 CAPABILITIES_CMD = ["go", "run", "./scripts/schema/gen-driver-capabilities"]
 
 # User-facing capability matrix. Keys are drive.Capability values, except
-# "remote_hash", which comes from the drive.RemoteHasher interface.
+# "remote_hash" (drive.RemoteHasher) and "read_parallel" (derived from
+# parallel_range / internal_parallel_read).
 CAPABILITY_COLUMNS = [
+    ("read_parallel", "并行读"),
     ("writer", "写入"),
     ("resumable_uploader", "断点续传"),
     ("server_side_copy", "服务端复制"),
@@ -86,6 +88,17 @@ def prop_description(prop):
     )
 
 
+def capability_cell(info, key):
+    if key == "read_parallel":
+        capabilities = set(info["capabilities"])
+        if "internal_parallel_read" in capabilities:
+            return "内部"
+        if "parallel_range" in capabilities:
+            return "并行"
+        return "—"
+    return "✅" if has_capability(info, key) else "—"
+
+
 def has_capability(info, key):
     if key == "remote_hash":
         return info["remote_hash"]
@@ -103,10 +116,7 @@ def build_capability_table(capabilities, drivers):
         info = capabilities.get(driver)
         if info is None:
             continue
-        cells = [
-            "✅" if has_capability(info, capability) else "—"
-            for capability, _ in CAPABILITY_COLUMNS
-        ]
+        cells = [capability_cell(info, capability) for capability, _ in CAPABILITY_COLUMNS]
         rows.append(f"| `{driver}` | " + " | ".join(cells) + " |")
     return "\n".join(rows)
 
@@ -307,7 +317,7 @@ def generate():
     lines.append("")
     lines.append(build_capability_table(capabilities, drivers))
     lines.append("")
-    lines.append("✅ 支持，— 不支持；不支持的能力会由上层降级或返回 unsupported。")
+    lines.append("✅ 支持，— 不支持；**并行读**：`并行` 表示支持 `[mounts.read_profile]` 的 `streams > 1`，`内部` 表示驱动已内部并行、VFS 保持单流，`—` 表示只能单流。不支持的能力会由上层降级或返回 unsupported。")
     lines.append("")
     lines.append("**写入**：创建、删除、移动、重命名；**服务端复制**：由存储端直接复制，不经过本地下载再上传；**服务端哈希**：可直接读取存储端内容哈希用于校验；**保留修改时间**：上传或复制后保留源文件 mtime；**扫码登录**：可用 `qrypt credential login --type <驱动>` 扫码获取凭据，不支持时需手动填写 cookie 或 token。")
     lines.append("")

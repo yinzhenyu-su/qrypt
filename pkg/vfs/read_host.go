@@ -122,6 +122,19 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 	return v.reader.Read(ctx, path, offset, size)
 }
 
+// SetReadPlanOverride applies a measurement-only stream/window override to
+// every read until ClearReadPlanOverride. Probe read benchmarks use it to
+// compare configurations without rebuilding or remounting. It is not exposed
+// through the CLI or config.
+func (v *VFS) SetReadPlanOverride(maxStreams, windowChunks int) {
+	v.reader.SetPlanOverride(read.PlanOverride{MaxStreams: maxStreams, WindowChunks: windowChunks})
+}
+
+// ClearReadPlanOverride removes the measurement override.
+func (v *VFS) ClearReadPlanOverride() {
+	v.reader.ClearPlanOverride()
+}
+
 // ReleaseReadSession forgets adaptive read hints for a closed open-file
 // handle. It leaves completed and in-flight cache fills intact.
 func (v *VFS) ReleaseReadSession(sessionID uint64) {
@@ -157,6 +170,24 @@ func (v *VFS) ReadStream(ctx context.Context, path string) (io.ReadCloser, error
 	return v.reader.ReadStream(ctx, path)
 }
 
+// CancelReadPrefetch stops speculative prefetch for path without dropping
+// completed cache fills. Mobile uses it when a handle closes or the user
+// cancels a read.
+func (v *VFS) CancelReadPrefetch(ctx context.Context, path string) error {
+	entry, err := v.resolve(ctx, path)
+	if err != nil {
+		return err
+	}
+	if entry.ID == "" {
+		return nil
+	}
+	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
+		v.read.CancelPrefetchForFile(cacheKey)
+	}
+	v.read.CancelPrefetchForFile(entry.ID)
+	return nil
+}
+
 // readCacheKey computes the stable cache key for an entry.
 func (v *VFS) readCacheKey(entry drive.Entry) string {
 	return read.CacheKey(v.rootID, entry)
@@ -173,6 +204,17 @@ func (v *VFS) debugHotChunks() (int, int64) {
 // internal/read).
 var WithoutReadPrefetch = read.WithoutReadPrefetch
 var WithoutDirPrefetch = listing.WithoutDirPrefetch
+
+type ReadIntent = read.ReadIntent
+
+const (
+	ReadIntentUnspecified = read.ReadIntentUnspecified
+	ReadIntentInteractive = read.ReadIntentInteractive
+	ReadIntentBulk        = read.ReadIntentBulk
+	ReadIntentProbe       = read.ReadIntentProbe
+)
+
+var WithReadIntent = read.WithReadIntent
 
 type ReadPriority = read.Priority
 

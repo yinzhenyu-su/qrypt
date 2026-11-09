@@ -49,28 +49,14 @@ const (
 // windowLoad coalesces concurrent reads of the same cache window.
 // mu guards loads; entries are removed when their window load finishes.
 type windowLoad struct {
-	fid   string
-	start int64
-	end   int64
-	done  chan struct{}
-	data  map[int64][]byte
-	extra map[string]any
-	err   error
-}
-
-// slotState bounds concurrent driver reads. The normal/high channels are
-// the lock itself - no additional mutex. Lifecycle: created in NewState,
-// never closed (workers select on the VFS context instead).
-type slotState struct {
-	normal chan struct{}
-	high   chan struct{}
-}
-
-func newSlotState() *slotState {
-	return &slotState{
-		normal: make(chan struct{}, MaxConcurrency-HighReserve),
-		high:   make(chan struct{}, HighReserve),
-	}
+	fid     string
+	start   int64
+	end     int64
+	streams int
+	done    chan struct{}
+	data    map[int64][]byte
+	extra   map[string]any
+	err     error
 }
 
 // windowState coalesces concurrent reads of the same cache window.
@@ -116,14 +102,14 @@ func newFastPathState() *fastPathState {
 	}
 }
 
-// prefetchState tracks in-flight window prefetches.
-type prefetchState struct {
-	mu              sync.Mutex
-	inFlight        map[string]struct{}
-	cancels         map[string]map[string]context.CancelFunc
-	sem             chan struct{}
-	foregroundReads atomic.Int32
+// acquireParallel takes one permit from the file's stable budget.
+func (s *State) acquireParallel(ctx context.Context, key string, limit int) (func(), error) {
+	return s.scheduler.AcquireFile(ctx, key, limit)
 }
+
+func (s *State) markNonParallel(key string) { s.scheduler.MarkNonParallel(key) }
+
+func (s *State) isNonParallel(key string) bool { return s.scheduler.IsNonParallel(key) }
 
 type sequentialRead struct {
 	end       int64
@@ -164,14 +150,6 @@ type sequentialState struct {
 
 func newSequentialState() *sequentialState {
 	return &sequentialState{reads: map[sequentialKey]sequentialRead{}}
-}
-
-func newPrefetchState() *prefetchState {
-	return &prefetchState{
-		inFlight: map[string]struct{}{},
-		cancels:  map[string]map[string]context.CancelFunc{},
-		sem:      make(chan struct{}, PrefetchLimit),
-	}
 }
 
 // historyEntry pairs a debug event with its append order so the two rings
@@ -305,13 +283,16 @@ func (h *historyState) reset() {
 // are initialized together, touched only by read paths, and shut down by
 // the VFS lifecycle.
 type State struct {
-	cache    Cache
-	history  *historyState
-	prefetch *prefetchState
-	sequence *sequentialState
-	slots    *slotState
-	fastPath *fastPathState
-	windows  *windowState
+	cache     Cache
+	history   *historyState
+	scheduler *Scheduler
+	sequence  *sequentialState
+	fastPath  *fastPathState
+	windows   *windowState
+	scopes    *ScopeRegistry
+	// override is a measurement-only plan override (probe test read). It is
+	// nil in normal operation.
+	override atomic.Pointer[PlanOverride]
 }
 
 // NewState builds the read domain state together so ownership and
@@ -319,18 +300,33 @@ type State struct {
 // paths fall back to no caching).
 func NewState(cache Cache) *State {
 	return &State{
-		cache:    cache,
-		history:  newHistoryState(),
-		prefetch: newPrefetchState(),
-		sequence: newSequentialState(),
-		slots:    newSlotState(),
-		fastPath: newFastPathState(),
-		windows:  newWindowState(),
+		cache:     cache,
+		history:   newHistoryState(),
+		scheduler: NewScheduler(DefaultSchedulerConfig()),
+		sequence:  newSequentialState(),
+		fastPath:  newFastPathState(),
+		windows:   newWindowState(),
+		scopes:    newScopeRegistry(),
 	}
 }
 
 func (s *State) observeSequentialRead(cacheKey string, offset, size int64) bool {
 	return s.observeReadAccess(cacheKey, AccessHint{}, offset, size).sequential
+}
+
+func (s *State) setPlanOverride(override PlanOverride) {
+	s.override.Store(&override)
+}
+
+func (s *State) clearPlanOverride() {
+	s.override.Store(nil)
+}
+
+func (s *State) planOverride() (PlanOverride, bool) {
+	if value := s.override.Load(); value != nil {
+		return *value, true
+	}
+	return PlanOverride{}, false
 }
 
 // nextRunFor reports the run id the access at offset belongs to: the previous
@@ -430,7 +426,6 @@ func (s *State) ReleaseReadSession(sessionID uint64) {
 		return
 	}
 	s.sequence.mu.Lock()
-	defer s.sequence.mu.Unlock()
 	for key := range s.sequence.reads {
 		if key.session == sessionID {
 			delete(s.sequence.reads, key)
@@ -443,6 +438,8 @@ func (s *State) ReleaseReadSession(sessionID uint64) {
 		}
 	}
 	s.sequence.order = order
+	s.sequence.mu.Unlock()
+	s.cancelScopesBySession(sessionID, "session_release")
 }
 
 // Cache returns the durable chunk store (nil when disabled).
@@ -457,7 +454,11 @@ func (s *State) History() *historyState { return s.history }
 // Safe on a zero State (hand-constructed VFS values in tests may have no
 // cache).
 func (s *State) Close() error {
-	if s == nil || s.cache == nil {
+	if s == nil {
+		return nil
+	}
+	s.cancelAllScopes("close")
+	if s.cache == nil {
 		return nil
 	}
 	return s.cache.Close()
@@ -561,65 +562,46 @@ func (s *State) endWindowLoad(key string) {
 	s.windows.mu.Unlock()
 }
 
-func (s *State) findWindow(cacheKey string, index int64) *windowLoad {
+func (s *State) findWindow(cacheKey string, index int64, streams int) *windowLoad {
 	s.windows.mu.Lock()
 	defer s.windows.mu.Unlock()
 	for _, candidate := range s.windows.loads {
-		if candidate.fid == cacheKey && index >= candidate.start && index <= candidate.end {
+		if candidate.fid != cacheKey || index < candidate.start || index > candidate.end {
+			continue
+		}
+		candidateStreams := candidate.streams
+		if candidateStreams < 1 {
+			candidateStreams = 1
+		}
+		if streams <= 0 || candidateStreams == streams {
 			return candidate
 		}
 	}
 	return nil
 }
 
-func (s *State) windowContains(cacheKey string, index int64) bool {
-	return s.findWindow(cacheKey, index) != nil
-}
+func (s *State) reservePrefetch() bool { return s.scheduler.TryAcquirePrefetch() }
 
-func (s *State) reservePrefetch(key string) bool {
-	s.prefetch.mu.Lock()
-	if _, ok := s.prefetch.inFlight[key]; ok {
-		s.prefetch.mu.Unlock()
-		return false
-	}
-	s.prefetch.inFlight[key] = struct{}{}
-	s.prefetch.mu.Unlock()
-
-	select {
-	case s.prefetch.sem <- struct{}{}:
-		return true
-	default:
-		s.prefetch.mu.Lock()
-		delete(s.prefetch.inFlight, key)
-		s.prefetch.mu.Unlock()
-		return false
-	}
-}
-
-func (s *State) releasePrefetch(key string) {
-	<-s.prefetch.sem
-	s.prefetch.mu.Lock()
-	delete(s.prefetch.inFlight, key)
-	s.prefetch.mu.Unlock()
-}
+func (s *State) releasePrefetch() { s.scheduler.ReleasePrefetch() }
 
 func (s *State) beginForegroundRead(cacheKey string) {
 	if cacheKey != "" {
-		s.prefetch.foregroundReads.Add(1)
+		s.scheduler.BeginForeground()
 	}
 }
 
 func (s *State) endForegroundRead(cacheKey string) {
 	if cacheKey != "" {
-		s.prefetch.foregroundReads.Add(-1)
+		s.scheduler.EndForeground()
 	}
 }
 
 // adaptivePrefetchLimit keeps a small lookahead during active foreground
 // reads and allows a wider pipeline when the reader is otherwise idle.
 func (s *State) adaptivePrefetchLimit(sequential bool) int {
-	limit := PrefetchLimit
-	if s.prefetch.foregroundReads.Load() > int32(max(1, (MaxConcurrency-HighReserve)/2)) {
+	stats := s.scheduler.Stats()
+	limit := stats.PrefetchCapacity
+	if s.scheduler.ForegroundCount() > max(1, stats.NormalCapacity/2) {
 		return 1
 	}
 	// Keep the configured pipeline for both initial and confirmed sequential
@@ -629,35 +611,10 @@ func (s *State) adaptivePrefetchLimit(sequential bool) int {
 	return limit
 }
 
-func (s *State) registerPrefetch(cacheKey, key string, cancel context.CancelFunc) {
-	s.prefetch.mu.Lock()
-	defer s.prefetch.mu.Unlock()
-	if s.prefetch.cancels[cacheKey] == nil {
-		s.prefetch.cancels[cacheKey] = map[string]context.CancelFunc{}
-	}
-	s.prefetch.cancels[cacheKey][key] = cancel
-}
-
-func (s *State) unregisterPrefetch(cacheKey, key string) {
-	s.prefetch.mu.Lock()
-	defer s.prefetch.mu.Unlock()
-	if tasks := s.prefetch.cancels[cacheKey]; tasks != nil {
-		delete(tasks, key)
-		if len(tasks) == 0 {
-			delete(s.prefetch.cancels, cacheKey)
-		}
-	}
-}
-
 // cancelPrefetch cancels only speculative reads for one file. Foreground
 // reads use their caller context and are never canceled by a seek elsewhere.
 func (s *State) cancelPrefetch(cacheKey string) {
-	s.prefetch.mu.Lock()
-	tasks := s.prefetch.cancels[cacheKey]
-	for _, cancel := range tasks {
-		cancel()
-	}
-	s.prefetch.mu.Unlock()
+	s.cancelScopesByCacheKey(cacheKey, "seek")
 }
 
 // NextSequence returns the next read-op sequence number.
@@ -691,9 +648,7 @@ func (s *State) RuntimeStats() (windowLoads, prefetches, rangeHits int) {
 	s.windows.mu.Lock()
 	windowLoads = len(s.windows.loads)
 	s.windows.mu.Unlock()
-	s.prefetch.mu.Lock()
-	prefetches = len(s.prefetch.inFlight)
-	s.prefetch.mu.Unlock()
+	prefetches = s.scheduler.Stats().PrefetchInUse
 	s.fastPath.rangeHit.mu.Lock()
 	rangeHits = len(s.fastPath.rangeHit.hits)
 	s.fastPath.rangeHit.mu.Unlock()
@@ -730,6 +685,7 @@ func (s *State) ClearReadCache() error {
 
 // InvalidateFile drops cached chunks for one file id (glossary: 读缓存失效).
 func (s *State) InvalidateFile(fid string) {
+	s.cancelScopesByCacheKey(fid, "invalidate")
 	if s.cache != nil {
 		s.cache.InvalidateFile(fid)
 	}
@@ -761,5 +717,5 @@ func (s *State) DebugSnapshot() readcache.DebugReadCache {
 
 // StatesReady reports whether the runtime sub-states are initialized.
 func (s *State) StatesReady() bool {
-	return s != nil && s.prefetch != nil && s.sequence != nil && s.slots != nil && s.fastPath != nil && s.windows != nil
+	return s != nil && s.scheduler != nil && s.sequence != nil && s.fastPath != nil && s.windows != nil && s.scopes != nil
 }

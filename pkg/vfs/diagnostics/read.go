@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -38,6 +39,7 @@ func RecordRead(runtime ReadRuntime, opID, path, remoteID string, offset, reques
 		StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: DurationMillis(finished.Sub(started)),
 		Extra: extra,
 	}
+	applyReadPolicyFields(&event, extra)
 	if bytes > 0 && finished.After(started) {
 		event.Throughput = int64(float64(bytes) / finished.Sub(started).Seconds())
 	}
@@ -64,16 +66,38 @@ func RecordReadDetail(runtime ReadRuntime, ctx context.Context, path, remoteID, 
 		Bytes: bytes, StartedAt: started, FinishedAt: finished, Duration: finished.Sub(started).String(), DurationMS: DurationMillis(finished.Sub(started)),
 		Extra: extra,
 	}
+	applyReadPolicyFields(&event, extra)
 	if bytes > 0 && finished.After(started) {
 		event.Throughput = int64(float64(bytes) / finished.Sub(started).Seconds())
 	}
 	if err != nil {
-		event.State = "failed"
-		event.OK = false
-		event.Error = err.Error()
-		event.ErrorCategory = drive.ErrorCategory(err)
+		if errors.Is(err, context.Canceled) && event.PrefetchCancelReason != "" {
+			// A canceled background prefetch is a normal outcome, not a read
+			// failure. Foreground cancellation keeps the failed state.
+			event.State = "canceled"
+			event.OK = true
+			event.Error = err.Error()
+			event.ErrorCategory = drive.ErrorCategory(err)
+		} else {
+			event.State = "failed"
+			event.OK = false
+			event.Error = err.Error()
+			event.ErrorCategory = drive.ErrorCategory(err)
+		}
 	}
 	runtime.AppendDetailEvent(event)
+}
+
+func applyReadPolicyFields(event *drive.MetricEvent, extra map[string]any) {
+	if value, ok := extra["read_intent"].(string); ok {
+		event.ReadIntent = value
+	}
+	if value, ok := extra["read_streams"].(int); ok {
+		event.ReadStreams = value
+	}
+	if value, ok := extra["prefetch_cancel_reason"].(string); ok {
+		event.PrefetchCancelReason = value
+	}
 }
 
 // DurationMillis converts a duration to whole milliseconds.

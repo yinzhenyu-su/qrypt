@@ -93,7 +93,12 @@ type client struct {
 	email    string
 	password string
 	http     *http.Client
-	metrics  *driverutil.Buffer
+	// uploadHTTP has no total timeout: a large upload is bounded by the
+	// size-derived budget and the body watchdog in upload.go instead. The
+	// shared 15-minute timeout on http would abort any file that cannot be
+	// sent within it, which is most multi-gigabyte uploads.
+	uploadHTTP *http.Client
+	metrics    *driverutil.Buffer
 	// wait sleeps between attempts. A positive delay (parsed from the
 	// provider's Retry-After header) overrides the exponential backoff.
 	wait func(ctx context.Context, attempt int, delay time.Duration) error
@@ -106,22 +111,24 @@ func newClient(opts Options) *client {
 	if base == "" {
 		base = defaultAPIBase
 	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+	}
 	return &client{
 		base:     base,
 		email:    opts.Email,
 		password: opts.Password,
 		http: &http.Client{
-			Transport: &http.Transport{
-				Proxy:                 http.ProxyFromEnvironment,
-				MaxIdleConns:          32,
-				MaxIdleConnsPerHost:   8,
-				IdleConnTimeout:       60 * time.Second,
-				TLSHandshakeTimeout:   15 * time.Second,
-				ResponseHeaderTimeout: 5 * time.Minute,
-			},
-			Timeout: 15 * time.Minute,
+			Transport: transport,
+			Timeout:   15 * time.Minute,
 		},
-		metrics: driverutil.NewBuffer(1000),
+		uploadHTTP: &http.Client{Transport: transport},
+		metrics:    driverutil.NewBuffer(1000),
 		wait: func(ctx context.Context, attempt int, delay time.Duration) error {
 			if delay > 0 {
 				timer := time.NewTimer(delay)

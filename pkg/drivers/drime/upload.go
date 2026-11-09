@@ -241,8 +241,21 @@ func (d *Driver) putSmall(ctx context.Context, parent string, req drive.UploadRe
 	return entry, nil
 }
 
+func (d *Driver) UploadProfile() drive.UploadProfile {
+	return drive.UploadProfile{ChunkSize: d.chunkSize, Concurrency: d.uploadConcurrency}
+}
+
 func (d *Driver) putLarge(ctx context.Context, parent string, req drive.UploadRequest, remote string, size int64, hash string) (drive.Entry, error) {
 	chunk := d.chunkSizeFor(size)
+	concurrency := d.uploadConcurrency
+	if override, ok := drive.UploadProfileFromContext(ctx); ok {
+		if override.ChunkSize > 0 {
+			chunk = max(override.ChunkSize, minChunkSize)
+		}
+		if override.Concurrency > 0 {
+			concurrency = override.Concurrency
+		}
+	}
 	key := session.Identity{ParentID: parent, Name: req.Name, Size: size, Fingerprint: hash}.Key()
 	token, uploaded, err := d.beginUpload(ctx, key, parent, remote, size, chunk)
 	if err != nil {
@@ -269,7 +282,7 @@ func (d *Driver) putLarge(ctx context.Context, parent string, req drive.UploadRe
 	if len(pending) > 0 {
 		workerCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		sem := make(chan struct{}, d.uploadConcurrency)
+		sem := make(chan struct{}, concurrency)
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		var progressMu sync.Mutex

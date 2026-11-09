@@ -33,6 +33,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  localfs.New(t.TempDir()),
 			want: []drive.Capability{
 				drive.CapabilityMtime,
+				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityServerSideCopy,
@@ -96,6 +97,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  drime.New(drime.Options{AccessToken: "token"}),
 			want: []drive.Capability{
 				drive.CapabilityMtime,
+				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
@@ -114,6 +116,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  koofr.New(koofr.Options{Email: "user@example.com", Password: "app-password"}),
 			want: []drive.Capability{
 				drive.CapabilityMtime,
+				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityServerSideCopy,
@@ -130,6 +133,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  quark.New("cookie", quark.Options{}),
 			want: []drive.Capability{
 				drive.CapabilityAcceleratedFetch,
+				drive.CapabilityInternalParallelRead,
 				drive.CapabilityOfflineDownload,
 				drive.CapabilityOfflineInspect,
 				drive.CapabilityOfflineSelection,
@@ -149,6 +153,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "123",
 			drv:  p123.New(p123.Options{Username: "user", Password: "password"}),
 			want: []drive.Capability{
+				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityResumableUploader,
 				drive.CapabilityServerSideCopy,
@@ -210,6 +215,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			name: "s3",
 			drv:  s3.New(s3.Options{Bucket: "b", Endpoint: "https://example.com"}),
 			want: []drive.Capability{
+				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
@@ -223,6 +229,7 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 			drv:  sftp.New(sftp.Options{Address: "host:22", Username: "user", Password: "password"}),
 			want: []drive.Capability{
 				drive.CapabilityMtime,
+				drive.CapabilityParallelRange,
 				drive.CapabilityPathResolver,
 				drive.CapabilityRemoteNameResolver,
 				drive.CapabilityResumableUploader,
@@ -253,6 +260,13 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 				t.Fatalf("negative capability contract violations = %+v", violations)
 			}
 		})
+	}
+}
+
+func TestQuarkReadProfileStaysSingleStream(t *testing.T) {
+	driver := quark.New("cookie", quark.Options{})
+	if got := drive.ReadProfileOf(driver).BulkStreams; got != 1 {
+		t.Fatalf("quark BulkStreams = %d, want 1 (internal parallel)", got)
 	}
 }
 

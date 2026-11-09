@@ -207,6 +207,7 @@ type vfsDebugSnapshotRuntime struct {
 	uploadSnapshots       func([]PendingUpload) []uploadSnapshot
 	uploadSnapshotHistory func() []uploadSnapshot
 	debugHotChunks        func() (int, int64)
+	readProfileInfo       drive.ReadProfileInfo
 }
 
 func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
@@ -223,6 +224,7 @@ func newVFSDebugSnapshotRuntime(v *VFS) vfsDebugSnapshotRuntime {
 		uploadSnapshots:       v.uploadSnapshots,
 		uploadSnapshotHistory: v.uploadSnapshotHistory,
 		debugHotChunks:        v.debugHotChunks,
+		readProfileInfo:       v.readProfileInfo,
 	}
 }
 
@@ -280,6 +282,9 @@ func (r vfsDebugSnapshotRuntime) Overlay() diagnostics.OverlaySnapshot {
 	for _, path := range snap.DeleteTimers {
 		out.DeleteTimers = append(out.DeleteTimers, diagnostics.DebugTimer{Path: path})
 	}
+	for _, path := range snap.ActiveDeletes {
+		out.ActiveDeletes = append(out.ActiveDeletes, diagnostics.DebugTimer{Path: path})
+	}
 	for _, d := range snap.Deleted {
 		out.Deleted = append(out.Deleted, diagnostics.DebugDeletedEntry{
 			Path: d.Path, ID: d.ID, Name: d.Name, IsDir: d.IsDir, Size: d.Size,
@@ -319,6 +324,20 @@ func (r vfsDebugSnapshotRuntime) UploadSnapshots(pending []PendingUpload) []uplo
 
 func (r vfsDebugSnapshotRuntime) UploadHistory() []uploadSnapshot {
 	return r.uploadSnapshotHistory()
+}
+
+func (r vfsDebugSnapshotRuntime) ReadProfile() diagnostics.DebugReadProfile {
+	profile := r.readProfileInfo.Profile
+	return diagnostics.DebugReadProfile{
+		Streams:                 profile.BulkStreams,
+		BulkWindowChunks:        profile.BulkWindowChunks,
+		InteractiveWindowChunks: profile.InteractiveWindowChunks,
+		ProbeWindowChunks:       profile.ProbeWindowChunks,
+		PrefetchDepth:           profile.PrefetchDepth,
+		ParallelThreshold:       profile.ParallelThreshold,
+		Source:                  r.readProfileInfo.Source,
+		Clamped:                 r.readProfileInfo.Clamped,
+	}
 }
 
 func (r vfsDebugSnapshotRuntime) StartedAt() time.Time {

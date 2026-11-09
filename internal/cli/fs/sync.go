@@ -10,6 +10,7 @@ import (
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
 	"github.com/yinzhenyu/qrypt/pkg/core"
 	syncer "github.com/yinzhenyu/qrypt/pkg/syncer"
+	"github.com/yinzhenyu/qrypt/pkg/vfs"
 )
 
 func NewSyncCmd(rt cliruntime.Runtime) *cobra.Command {
@@ -79,6 +80,7 @@ func runSync(rt cliruntime.Runtime) func(*cobra.Command, []string) error {
 			return err
 		}
 		defer cleanup()
+		ctx = vfs.WithReadIntent(ctx, vfs.ReadIntentBulk)
 
 		result, err := syncer.Run(ctx, fs, func(context.Context, any) error {
 			// The sync engine passes us the filesystem untyped; we already

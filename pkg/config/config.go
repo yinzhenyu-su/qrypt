@@ -63,14 +63,15 @@ type Defaults struct {
 }
 
 type MountConfig struct {
-	Name        string           `toml:"name"`
-	Type        string           `toml:"type"`
-	Credential  string           `toml:"credential"`
-	TestEnabled bool             `toml:"test_enabled"`
-	Params      ParamMap         `toml:"params"`
-	Encryption  *crypt.Config    `toml:"encryption"`
-	ReadCache   *ReadCacheConfig `toml:"read_cache"`
-	Upload      *UploadConfig    `toml:"upload"`
+	Name        string             `toml:"name"`
+	Type        string             `toml:"type"`
+	Credential  string             `toml:"credential"`
+	TestEnabled bool               `toml:"test_enabled"`
+	Params      ParamMap           `toml:"params"`
+	Encryption  *crypt.Config      `toml:"encryption"`
+	ReadCache   *ReadCacheConfig   `toml:"read_cache"`
+	ReadProfile *ReadProfileConfig `toml:"read_profile"`
+	Upload      *UploadConfig      `toml:"upload"`
 }
 
 // CredentialConfig is a named credential shared by any number of mounts of the
@@ -122,6 +123,13 @@ type StorageConfig struct {
 
 type ReadCacheConfig struct {
 	MaxSize string `toml:"max_size"`
+}
+
+// ReadProfileConfig optionally overrides a driver's read scheduling defaults
+// for one mount. Zero fields inherit the driver's ReadProfile.
+type ReadProfileConfig struct {
+	Streams      int `toml:"streams"`
+	WindowChunks int `toml:"window_chunks"`
 }
 
 type UploadConfig struct {
@@ -324,6 +332,20 @@ func (c *Config) ReadCacheFor(mountName string) ReadCacheConfig {
 		}
 	}
 	return cache
+}
+
+// ReadProfileFor returns the optional per-mount read scheduling override.
+func (c *Config) ReadProfileFor(mountName string) *ReadProfileConfig {
+	if c == nil {
+		return nil
+	}
+	for _, mount := range c.Mounts {
+		if mount.Name == mountName && mount.ReadProfile != nil {
+			profile := *mount.ReadProfile
+			return &profile
+		}
+	}
+	return nil
 }
 
 func (c *Config) UploadFor(mountName string) UploadConfig {

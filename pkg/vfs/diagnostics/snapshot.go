@@ -12,11 +12,12 @@ import (
 // OverlaySnapshot is the raw overlay state a mount snapshot is assembled
 // from (consumer side; pkg/vfs reads it off its overlay).
 type OverlaySnapshot struct {
-	DeleteTimers []DebugTimer
-	Deleted      []DebugDeletedEntry
-	OverlayOps   []DebugOverlayOp
-	RestoredDirs []DebugTimer
-	CopyHidden   []DebugCopyHidden
+	DeleteTimers  []DebugTimer
+	ActiveDeletes []DebugTimer
+	Deleted       []DebugDeletedEntry
+	OverlayOps    []DebugOverlayOp
+	RestoredDirs  []DebugTimer
+	CopyHidden    []DebugCopyHidden
 }
 
 // RuntimeSnapshot is the raw read-runtime counters a mount snapshot is
@@ -49,6 +50,7 @@ type SnapshotRuntime interface {
 	UploadSnapshots(pending []vfstypes.PendingUpload) []upload.UploadSnapshot
 	UploadHistory() []upload.UploadSnapshot
 	StartedAt() time.Time
+	ReadProfile() DebugReadProfile
 }
 
 // AssembleMountSnapshot assembles one mount's full snapshot: identity,
@@ -61,7 +63,8 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 		Overlay: MountSnapshotOverlay{
 			Pending: runtime.PendingUploads(),
 		},
-		Cache: runtime.Cache(),
+		Cache:       runtime.Cache(),
+		ReadProfile: runtime.ReadProfile(),
 		Events: MountSnapshotEvents{
 			Reads: runtime.ReadHistory(),
 		},
@@ -100,6 +103,7 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Queues.UploadTimers = runtime.UploadTimers()
 	overlay := runtime.Overlay()
 	snapshot.Queues.DeleteTimers = overlay.DeleteTimers
+	snapshot.Queues.ActiveDeletes = overlay.ActiveDeletes
 	snapshot.Overlay.Deleted = overlay.Deleted
 	snapshot.Overlay.OverlayOps = overlay.OverlayOps
 	snapshot.Overlay.RestoredDirs = overlay.RestoredDirs

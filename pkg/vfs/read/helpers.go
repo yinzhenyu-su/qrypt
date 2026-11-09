@@ -44,6 +44,45 @@ func AccessHintFromContext(ctx context.Context) (AccessHint, bool) {
 	return hint, ok && hint.SessionID != 0 && hint.RequestID != 0
 }
 
+// ReadIntent classifies why a caller is reading. The zero value is
+// unspecified: existing callers keep the pre-intent single-stream behavior.
+type ReadIntent int
+
+const (
+	ReadIntentUnspecified ReadIntent = iota
+	ReadIntentInteractive
+	ReadIntentBulk
+	ReadIntentProbe
+)
+
+func (i ReadIntent) String() string {
+	switch i {
+	case ReadIntentInteractive:
+		return "interactive"
+	case ReadIntentBulk:
+		return "bulk"
+	case ReadIntentProbe:
+		return "probe"
+	default:
+		return ""
+	}
+}
+
+type readIntentContextKey struct{}
+
+// WithReadIntent attaches a read intent to ctx. The read domain resolves it
+// into a ReadPlan; the intent itself is not user configuration.
+func WithReadIntent(ctx context.Context, intent ReadIntent) context.Context {
+	return context.WithValue(ctx, readIntentContextKey{}, intent)
+}
+
+// ReadIntentFromContext returns the attached intent, or
+// ReadIntentUnspecified when none was set.
+func ReadIntentFromContext(ctx context.Context) ReadIntent {
+	intent, _ := ctx.Value(readIntentContextKey{}).(ReadIntent)
+	return intent
+}
+
 type cacheAccessContextKey struct{}
 
 // WithCacheAccess attaches the read run this context's reads belong to. The read
@@ -62,24 +101,25 @@ func cacheAccess(ctx context.Context) readcache.Access {
 	return access
 }
 
-// Priority controls how read slots are allocated under contention.
-type Priority int
-
-const (
-	PriorityLow    Priority = iota // prefetch, anticipatory reads
-	PriorityNormal                 // default user-initiated reads
-	PriorityHigh                   // UI-critical reads (thumbnails, visible content)
-)
-
 type priorityKey struct{}
 
+type priorityValue struct {
+	value Priority
+	set   bool
+}
+
 func WithPriority(ctx context.Context, p Priority) context.Context {
-	return context.WithValue(ctx, priorityKey{}, p)
+	return context.WithValue(ctx, priorityKey{}, priorityValue{value: p, set: true})
 }
 
 func priority(ctx context.Context) Priority {
-	p, _ := ctx.Value(priorityKey{}).(Priority)
-	return p
+	value, _ := ctx.Value(priorityKey{}).(priorityValue)
+	return value.value
+}
+
+func prioritySet(ctx context.Context) bool {
+	value, ok := ctx.Value(priorityKey{}).(priorityValue)
+	return ok && value.set
 }
 
 // --- keys ---
@@ -90,6 +130,16 @@ func ChunkKey(fid string, index int64) string {
 
 func WindowKey(fid string, start, end int64) string {
 	return fid + "\x00" + strconv.FormatInt(start, 10) + "\x00" + strconv.FormatInt(end, 10)
+}
+
+// WindowShapeKey keeps single-stream and parallel loads of the same range in
+// separate coalescing slots, so an interactive waiter never inherits a bulk
+// parallel fetch (and vice versa).
+func WindowShapeKey(key string, streams int) string {
+	if streams <= 1 {
+		return key
+	}
+	return key + "\x00streams=" + strconv.Itoa(streams)
 }
 
 // LoadKey returns the window-coalescing key for an entry: the read cache
@@ -117,6 +167,17 @@ func WindowExtra(windowChunks int) map[string]any {
 	return map[string]any{
 		"window_chunks": windowChunks,
 	}
+}
+
+// ReadPlanExtra returns the summary-event extra for one read, including the
+// resolved intent and stream count when a plan is present.
+func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
+	extra := WindowExtra(windowChunks)
+	if plan, ok := readPlanFromContext(ctx); ok {
+		extra["read_intent"] = plan.Intent.String()
+		extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
+	}
+	return extra
 }
 
 func ExtraWithWindow(extra map[string]any, start, end int64) map[string]any {
@@ -170,6 +231,14 @@ func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.E
 	}
 	if extra == nil {
 		extra = map[string]any{}
+	}
+	if plan, ok := readPlanFromContext(ctx); ok {
+		if _, exists := extra["read_intent"]; !exists {
+			extra["read_intent"] = plan.Intent.String()
+		}
+		if _, exists := extra["read_streams"]; !exists {
+			extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
+		}
 	}
 	extra["chunk_index"] = index
 	extra["chunk_offset"] = index * ChunkSize

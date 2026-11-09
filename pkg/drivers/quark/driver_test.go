@@ -215,6 +215,128 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 	}
 }
 
+func TestDriverReadClampsAtEOF(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	var downloadCalls int
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		downloadCalls++
+		if got := req.Header.Get("Range"); got != "bytes=8-9" {
+			t.Fatalf("range = %q, want bytes=8-9", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("89")),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-eof", Name: "file.bin", Size: 10}
+	for _, offset := range []int64{10, 11} {
+		rc, err := driver.Read(context.Background(), entry, offset, 1)
+		if err != nil {
+			t.Fatalf("read at offset %d: %v", offset, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read at offset %d body: %v", offset, err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("read at offset %d returned %d bytes, want empty", offset, len(data))
+		}
+	}
+	if downloadCalls != 0 {
+		t.Fatalf("EOF reads issued %d download calls, want 0", downloadCalls)
+	}
+
+	rc, err := driver.Read(context.Background(), entry, 8, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "89" {
+		t.Fatalf("clamped read = %q, want 89", data)
+	}
+	if downloadCalls != 1 {
+		t.Fatalf("download calls = %d, want 1", downloadCalls)
+	}
+}
+
+func TestDriverReadStrictRangeRejectsWholeObject(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("whole object")),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-strict", Name: "file.bin", Size: 100}
+	if _, err := driver.Read(drive.WithStrictRange(context.Background()), entry, 0, 10); !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want drive.ErrUnsupported", err)
+	}
+	rc, err := driver.Read(context.Background(), entry, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "whole object" {
+		t.Fatalf("non-strict body = %q, want whole object", data)
+	}
+}
+
+func TestDriverReadProfileStaysSingleStream(t *testing.T) {
+	driver := New("cookie", Options{})
+	if !drive.HasCapability(driver, drive.CapabilityInternalParallelRead) {
+		t.Fatal("quark must declare internal_parallel_read")
+	}
+	if drive.HasCapability(driver, drive.CapabilityParallelRange) {
+		t.Fatal("quark must not declare parallel_range while it parallelizes internally")
+	}
+	if got := drive.ReadProfileOf(driver).BulkStreams; got != 1 {
+		t.Fatalf("bulk streams = %d, want 1", got)
+	}
+}
+
 func TestDriverDownloadUsesCookieSnapshotAfterRotation(t *testing.T) {
 	var apiCalls int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -372,6 +494,114 @@ func TestDriverParallelDownloadAssemblesRangeParts(t *testing.T) {
 		t.Fatalf("max concurrent range requests = %d, want at least 2", maxActive)
 	}
 }
+
+func TestDriverParallelDownloadRetriesTruncatedPart(t *testing.T) {
+	const total = int64(24 * 1024 * 1024)
+	data := make([]byte, total)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	driver := New("k=v", Options{})
+	var mu sync.Mutex
+	attempts := map[int64]int{}
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var start, end int64
+		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			return nil, fmt.Errorf("parse range %q: %w", req.Header.Get("Range"), err)
+		}
+		mu.Lock()
+		attempts[start]++
+		truncate := attempts[start] == 1 && start == downloadParallelPartSize
+		mu.Unlock()
+		body := io.NopCloser(bytes.NewReader(data[start : end+1]))
+		if truncate {
+			// The provider closed the connection before the declared range was
+			// complete; the part must be re-requested, not failed.
+			body = &truncatingBody{data: data[start : start+1024]}
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	rc, err := driver.downloadParallel(context.Background(), "fid-1", "https://download.test/file.bin", "k=v", false, 0, total)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("assembled data differs: got=%d want=%d", len(got), len(data))
+	}
+	mu.Lock()
+	partAttempts := attempts[downloadParallelPartSize]
+	mu.Unlock()
+	if partAttempts != 2 {
+		t.Fatalf("truncated part attempts = %d, want 2", partAttempts)
+	}
+}
+
+func TestDriverParallelDownloadGivesUpAfterTruncatedParts(t *testing.T) {
+	const total = int64(16 * 1024 * 1024)
+	driver := New("k=v", Options{})
+	var mu sync.Mutex
+	attempts := 0
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var start, end int64
+		if _, err := fmt.Sscanf(req.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			return nil, fmt.Errorf("parse range %q: %w", req.Header.Get("Range"), err)
+		}
+		if start != downloadParallelPartSize {
+			return &http.Response{
+				StatusCode: http.StatusPartialContent,
+				Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+				Body:       io.NopCloser(bytes.NewReader(make([]byte, end-start+1))),
+				Request:    req,
+			}, nil
+		}
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
+			Body:       &truncatingBody{data: make([]byte, 1024)},
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := driver.downloadParallel(context.Background(), "fid-1", "https://download.test/file.bin", "k=v", false, 0, total); err == nil {
+		t.Fatal("expected truncated parts to fail the window")
+	}
+	mu.Lock()
+	got := attempts
+	mu.Unlock()
+	if got != downloadPartBodyRetries+1 {
+		t.Fatalf("attempts = %d, want %d", got, downloadPartBodyRetries+1)
+	}
+}
+
+// truncatingBody serves the given bytes and then reports an unexpected EOF,
+// emulating a provider that closes a range response before its end.
+type truncatingBody struct {
+	data []byte
+}
+
+func (b *truncatingBody) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func (b *truncatingBody) Close() error { return nil }
 
 func TestDriverDownloadURLCoalescesConcurrentMisses(t *testing.T) {
 	var calls int
@@ -1048,8 +1278,8 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	content := []byte("abcdefgh")
 	contentMD5 := md5.Sum(content)
 	contentSHA1 := sha1.Sum(content)
-	wantMD5 := fmt.Sprintf("%X", contentMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", contentSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", contentMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", contentSHA1[:])
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/file/upload/pre":
@@ -1357,8 +1587,8 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	plain := []byte("plain payload")
 	plainMD5 := md5.Sum(plain)
 	plainSHA1 := sha1.Sum(plain)
-	plainMD5Hex := fmt.Sprintf("%X", plainMD5[:])
-	plainSHA1Hex := fmt.Sprintf("%X", plainSHA1[:])
+	plainMD5Hex := fmt.Sprintf("%x", plainMD5[:])
+	plainSHA1Hex := fmt.Sprintf("%x", plainSHA1[:])
 	var hashCalled bool
 	var hashBody map[string]any
 	var finishCalled bool
@@ -1441,8 +1671,8 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	}
 	cipherMD5 := md5.Sum(uploadedCipher)
 	cipherSHA1 := sha1.Sum(uploadedCipher)
-	wantMD5 := fmt.Sprintf("%X", cipherMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", cipherSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", cipherMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", cipherSHA1[:])
 	if hashBody["md5"] != wantMD5 || hashBody["sha1"] != wantSHA1 {
 		t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", hashBody, wantMD5, wantSHA1)
 	}
@@ -1473,8 +1703,8 @@ func TestDriverPutSourceUnderContentDedupCryptInstantUploadsByEncryptedHash(t *t
 	encrypted := encryptForTest(t, cp, plain)
 	encryptedMD5 := md5.Sum(encrypted)
 	encryptedSHA1 := sha1.Sum(encrypted)
-	wantMD5 := fmt.Sprintf("%X", encryptedMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", encryptedSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", encryptedMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", encryptedSHA1[:])
 	var hashCalled bool
 	var finishCalled bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2235,7 +2465,7 @@ func TestPutSourceHandlelessBindingIsDiscarded(t *testing.T) {
 		ParentID:    "parent",
 		Name:        "resume.bin",
 		Size:        int64(len(content)),
-		Fingerprint: strings.ToLower(fmt.Sprintf("%X", md5Sum)) + strings.ToLower(fmt.Sprintf("%X", sha1Sum)),
+		Fingerprint: strings.ToLower(fmt.Sprintf("%x", md5Sum)) + strings.ToLower(fmt.Sprintf("%x", sha1Sum)),
 	}.Key()
 	if err := d.sessions.Create(key, json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)

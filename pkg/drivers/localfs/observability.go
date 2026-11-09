@@ -16,6 +16,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilityRemoteNameResolver,
 		drive.CapabilityMtime,
 		drive.CapabilityServerSideCopy,
+		drive.CapabilityParallelRange,
 	}
 }
 

@@ -40,6 +40,7 @@ type MountSnapshot struct {
 	Cache       DebugCacheSnapshot    `json:"cache"`
 	Events      MountSnapshotEvents   `json:"events"`
 	Runtime     MountSnapshotRuntime  `json:"runtime"`
+	ReadProfile DebugReadProfile      `json:"read_profile"`
 }
 
 // DebugCacheSnapshot aggregates the readcache snapshot with the upload
@@ -68,6 +69,9 @@ type MountSnapshotQueues struct {
 	DeleteDelay   string       `json:"delete_delay"`
 	UploadTimers  []DebugTimer `json:"upload_timers,omitempty"`
 	DeleteTimers  []DebugTimer `json:"delete_timers,omitempty"`
+	// ActiveDeletes are remote deletes already past their timer but not yet
+	// finished. They are not idle work.
+	ActiveDeletes []DebugTimer `json:"active_deletes,omitempty"`
 }
 
 type MountSnapshotOverlay struct {
@@ -126,6 +130,19 @@ type DebugOverlayOp struct {
 type DebugCopyHidden struct {
 	Dir   string       `json:"dir"`
 	Names []DebugTimer `json:"names"`
+}
+
+// DebugReadProfile is the effective read scheduling profile for a mount.
+// Source is "driver", "mount_override", or "driver_limiter".
+type DebugReadProfile struct {
+	Streams                 int    `json:"streams"`
+	BulkWindowChunks        int    `json:"bulk_window_chunks"`
+	InteractiveWindowChunks int    `json:"interactive_window_chunks"`
+	ProbeWindowChunks       int    `json:"probe_window_chunks"`
+	PrefetchDepth           int    `json:"prefetch_depth"`
+	ParallelThreshold       int64  `json:"parallel_threshold"`
+	Source                  string `json:"source"`
+	Clamped                 bool   `json:"clamped,omitempty"`
 }
 
 type DebugStagingReport struct {
@@ -209,6 +226,10 @@ func (s MountSnapshot) PendingUploads() []vfstypes.PendingUpload {
 
 func (s MountSnapshot) ActiveDeleteTimers() []DebugTimer {
 	return s.Queues.DeleteTimers
+}
+
+func (s MountSnapshot) ActiveDeletes() []DebugTimer {
+	return s.Queues.ActiveDeletes
 }
 
 func (s MountSnapshot) HistoricalUploads() []upload.UploadSnapshot {

@@ -205,6 +205,12 @@ func (d *Driver) RequiredUploadHashes() []drive.HashAlgorithm {
 	return []drive.HashAlgorithm{drive.HashSHA1}
 }
 
+// UploadProfile exposes the part size a probe may sweep. Parts are uploaded
+// sequentially, so it does not accept a concurrency override.
+func (d *Driver) UploadProfile() drive.UploadProfile {
+	return drive.UploadProfile{ChunkSize: d.partSize}
+}
+
 func (d *Driver) Space(ctx context.Context) (drive.Space, error) {
 	var resp capacityResp
 	if err := d.cl.request(ctx, http.MethodPost, "https://api.aliyundrive.com/adrive/v1/user/driveCapacityDetails", map[string]any{}, &resp); err != nil {

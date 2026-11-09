@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- feat(vfs): add read intents, driver read profiles, and bounded parallel range reads
+- feat(vfs): cancel speculative prefetch on invalidation, session release, and caller cancel
+- feat(vfs): skip durable read-cache writes for bulk and probe reads
+- feat(cli): download directory files and sync files with four workers
+- feat(probe): add an upload probe with stall/truncate/not-found fault injection
+- feat(probe): add a raw driver read concurrency benchmark
+- feat(probe): add an upload concurrency and chunk-size benchmark
+- feat(drivers): expose an upload profile so probes can sweep part size and part concurrency
+- feat(vfs): prefetch the next read-stream window
+
+### Bug fixes
+- fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
+- fix(drivers): upload Quark content hashes in lowercase and answer EOF reads correctly
+- fix(crypt): give the raw driver the encrypted size so the final block decrypts
+- fix(crypt): forward read capabilities and profiles from the raw driver
+- fix(drivers): keep Drime, Koofr, and 123 bulk reads single-stream after measurement
+- fix(drivers): retry truncated Quark range bodies instead of failing the whole read
+- fix(vfs): treat a missing upload target as permanent instead of retrying forever
+- fix(vfs): bound consecutive upload retries so a stuck upload cannot loop indefinitely
+- fix(sftp): classify staging errors so a missing target reports not found
+- fix(koofr): give large uploads a size-derived budget and an idle-progress watchdog
+- fix(webdav): let a single PUT outlive the 30-second API timeout, bounded by a size-derived budget
+- fix(yun139): give upload parts a size-derived budget instead of the 60-second API timeout
+- fix(vfs): count in-flight remote deletes when reporting idle
+
+### Others
+- refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
+- refactor(vfs): centralize read concurrency budgets in one scheduler
+- refactor(drive): share the read concurrency budget with direct reads
+- refactor(vfs): treat plan streams as a hint and record scheduler-granted streams
+- fix(probe): tolerate provider-specific roots, blocked extensions, and evicted read events
+
+---
+
 ## v0.6.1 (2026-11-02)
 
 ### Features

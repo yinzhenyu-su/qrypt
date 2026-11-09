@@ -4,12 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/drivecopy"
 )
+
+// syncFileWorkers bounds concurrent file copies. Directories and deletes stay
+// sequential so parents exist and the journal order remains predictable.
+const syncFileWorkers = 4
 
 // ExecutePlan runs the plan in dependency order: directories before the files
 // inside them, and deletes before adds/updates when --conflict=source
@@ -27,7 +33,14 @@ type executorFS interface {
 // for a util. waitIdle drains async VFS work between passes. Returns the
 // number of failed items.
 func ExecutePlan(ctx context.Context, fs executorFS, plan []PlanEntry, source, destination Target, session *Session, waitIdle func(context.Context, any) error) int {
-	failed := 0
+	var failed atomic.Int64
+	var recordMu sync.Mutex
+	record := func(path string, action Action, err error) {
+		recordMu.Lock()
+		defer recordMu.Unlock()
+		failed.Add(int64(recordOutcome(session, path, action, err)))
+	}
+
 	// Pass 1: deletions (children before parents; plan is path-sorted, so
 	// reverse order removes deeper paths first).
 	for i := len(plan) - 1; i >= 0; i-- {
@@ -39,14 +52,17 @@ func ExecutePlan(ctx context.Context, fs executorFS, plan []PlanEntry, source, d
 			continue
 		}
 		err := DeletePath(ctx, fs, entry.Path, destination, entry.IsDir)
-		failed += recordOutcome(session, entry.Path, entry.Action, err)
+		record(entry.Path, entry.Action, err)
 	}
 	// VFS deletes are queued and applied asynchronously; wait for them to
 	// land before creating anything under the same name (--conflict=source
 	// removes a path then re-adds it, which would race the removal).
 	if err := waitIdle(ctx, fs); err != nil {
+		recordMu.Lock()
 		ReportFailure("wait", "<deletes>", err)
-		return failed + 1
+		recordMu.Unlock()
+		failed.Add(1)
+		return int(failed.Load())
 	}
 	// Pass 2: directories first, then files, so parents exist before children.
 	for _, entry := range plan {
@@ -60,8 +76,10 @@ func ExecutePlan(ctx context.Context, fs executorFS, plan []PlanEntry, source, d
 			continue
 		}
 		err := Mkdir(ctx, fs, entry.Path, destination)
-		failed += recordOutcome(session, entry.Path, entry.Action, err)
+		record(entry.Path, entry.Action, err)
 	}
+
+	files := make([]PlanEntry, 0, len(plan))
 	for _, entry := range plan {
 		if entry.Action != ActionAdd && entry.Action != ActionUpdate {
 			continue
@@ -72,10 +90,40 @@ func ExecutePlan(ctx context.Context, fs executorFS, plan []PlanEntry, source, d
 		if session != nil && session.isDone(entry.Path, entry.Action) {
 			continue
 		}
-		err := CopyFile(ctx, fs, entry.Path, source, destination, entry.SourceModTime)
-		failed += recordOutcome(session, entry.Path, entry.Action, err)
+		files = append(files, entry)
 	}
-	return failed
+	if len(files) == 0 {
+		return int(failed.Load())
+	}
+
+	workers := min(syncFileWorkers, len(files))
+	jobs := make(chan PlanEntry)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for entry := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				err := CopyFile(ctx, fs, entry.Path, source, destination, entry.SourceModTime)
+				record(entry.Path, entry.Action, err)
+			}
+		}()
+	}
+	for _, entry := range files {
+		select {
+		case jobs <- entry:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return int(failed.Load())
 }
 
 // recordOutcome persists one op result (when a session is active) and
