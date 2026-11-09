@@ -111,6 +111,7 @@ sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 
 该表只存在于每个 `[[mounts]]` 下，没有全局等价项。默认值来自驱动的
 `ReadProfile`；只影响 `bulk` 读，`interactive` / `probe` 仍保持单流。
+驱动是否支持 `streams > 1` 见[支持的驱动](support-drivers.md)的“并行读”列。
 多流收益取决于网络，建议先用 `qrypt probe test read` 实测。
 
 ## 缩略图缓存
