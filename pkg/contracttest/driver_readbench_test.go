@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
@@ -29,6 +30,10 @@ func TestParseConcurrencyList(t *testing.T) {
 // ranges are distinct; crudMemoryDriver always returns the whole file.
 type rangeReadDriver struct {
 	*crudMemoryDriver
+	// delay keeps the read long enough to be observed by the platform clock.
+	// Windows exposes a monotonic clock with millisecond granularity, so a
+	// purely in-memory read would otherwise measure as zero duration.
+	delay time.Duration
 }
 
 func (d *rangeReadDriver) Read(_ context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
@@ -43,11 +48,14 @@ func (d *rangeReadDriver) Read(_ context.Context, entry drive.Entry, offset, siz
 	if end > int64(len(data)) {
 		end = int64(len(data))
 	}
+	if d.delay > 0 {
+		time.Sleep(d.delay)
+	}
 	return io.NopCloser(bytes.NewReader(data[offset:end])), nil
 }
 
 func TestRunDriverReadBenchmark(t *testing.T) {
-	driver := &rangeReadDriver{newCRUDMemoryDriver()}
+	driver := &rangeReadDriver{crudMemoryDriver: newCRUDMemoryDriver(), delay: 20 * time.Millisecond}
 	report := RunDriverReadBenchmark(context.Background(), "mem", driver, 2<<20, []int{1, 2}, 1, 0)
 	if report.Error != "" {
 		t.Fatalf("benchmark error: %s", report.Error)
