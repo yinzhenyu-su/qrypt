@@ -280,6 +280,62 @@ stable list of runtime capabilities. It is the canonical capability inventory
 for VFS-facing behavior. Construction-time hooks such as state-store injection
 and bandwidth limiter installation are intentionally not reported there.
 
+### Read scheduling
+
+The VFS read path is intent-aware. A driver opts into parallel range reads with
+`drive.CapabilityParallelRange`; declaring it means `Read` accepts arbitrary
+`offset`/`size` and honors the request as a range (206). Drivers that already
+parallelize one `Read` internally declare
+`drive.CapabilityInternalParallelRead` instead; the VFS then keeps that read
+single-stream so the two layers do not multiply concurrency.
+
+A driver provides recommendations; a mount may optionally override the bulk
+stream count and window:
+
+```go
+type ReadProfiler interface {
+	ReadProfile() drive.ReadProfile
+}
+
+type ParallelReadLimiter interface {
+	MaxParallelReads() int
+}
+```
+
+`drive.ReadProfile` carries bulk stream count, window sizes, prefetch depth,
+and the parallel threshold. `drive.ReadProfileOf(driver)` merges the driver's
+profile with the capability gates and clamps it to the optional limiter. The
+same profile is used by the VFS and by `drive.ReadParallel`, which the direct
+copy and share-fetch fallback paths use. Drivers without the capability stay
+single-stream; do not declare it unless range semantics are guaranteed.
+
+A driver's profile is the default. A mount may opt into a different bulk
+profile without a rebuild:
+
+```toml
+[[mounts]]
+name = "koofr"
+type = "koofr"
+
+[mounts.read_profile]
+streams = 4
+window_chunks = 16
+```
+
+`streams` maps to `BulkStreams`; `window_chunks` maps to `BulkWindowChunks`
+(512 KiB units). Omitted/zero fields inherit the driver profile. The override
+applies only to `bulk` reads; `interactive` and `probe` stay single-stream, and
+`streams > 1` is rejected for drivers without `parallel_range` or with
+`internal_parallel_read`. See `read-profile-config` in OpenSpec for the full
+rules.
+
+Parallel sub-range reads carry a strict-range context
+(`drive.StrictRangeFromContext`). If the provider answers 200 with the whole
+object instead of 206, a parallel-capable driver must close the body and return
+`drive.ErrUnsupported`; the caller then falls back to a single stream. Do not
+silently skip the offset in strict mode: that turns one parallel window into N
+full-object downloads.
+
 ### Hash provenance
 
 `drive.RemoteHasher` is still the compatibility surface, but its hashes are

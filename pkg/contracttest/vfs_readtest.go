@@ -51,6 +51,14 @@ type MountedReadTestResult struct {
 	RetryCommand     string                   `json:"retry_command,omitempty"`
 }
 
+// readPlanOverrider lets a read benchmark pin the stream count and window
+// size for the duration of one measurement. The VFS implements it behind
+// probe test read; production paths never set an override.
+type readPlanOverrider interface {
+	SetReadPlanOverride(maxStreams, windowChunks int)
+	ClearReadPlanOverride()
+}
+
 type MountedReadMeasurement struct {
 	Mode           string             `json:"mode"`
 	Sample         int                `json:"sample"`
@@ -69,6 +77,10 @@ type MountedReadMeasurement struct {
 	VFSReadCalls   int                `json:"vfs_read_calls"`
 	TraversedVFS   bool               `json:"traversed_vfs"`
 	OSCacheControl string             `json:"os_cache_control"`
+	// ContentHash is the SHA-256 of the measured bytes. It is recorded so a
+	// measurement over an existing file can verify that later samples read
+	// the same content even though the fixture hash is unknown up front.
+	ContentHash string `json:"content_hash,omitempty"`
 }
 
 type MountedReadLatency struct {
@@ -145,7 +157,35 @@ type MountedSeekSummary struct {
 func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string, req DriverTestRequest) *MountedReadTestResult {
 	size := ParseXferSize(req.Size)
 	var optionErr error
-	if req.Size != "" && (size < 1 || size > MaxMountedReadTestSize) {
+	existingPath := strings.TrimSpace(req.Path)
+	if existingPath != "" {
+		switch {
+		case !strings.HasPrefix(existingPath, "/"):
+			optionErr = fmt.Errorf("read test path must be an absolute virtual path")
+		case req.MountPoint == "":
+			optionErr = fmt.Errorf("read test path requires --mount-point")
+		default:
+			mounted, err := mountedTestPath(req.MountPoint, existingPath)
+			if err != nil {
+				optionErr = fmt.Errorf("read test path: %w", err)
+				break
+			}
+			info, err := os.Stat(mounted)
+			if err != nil {
+				optionErr = fmt.Errorf("read test path: %w", err)
+				break
+			}
+			if info.IsDir() {
+				optionErr = fmt.Errorf("read test path %q is a directory", existingPath)
+				break
+			}
+			size = info.Size()
+			if req.Size != "" && ParseXferSize(req.Size) != size {
+				optionErr = fmt.Errorf("read test size %q does not match %s (%d bytes)", req.Size, existingPath, size)
+			}
+		}
+	}
+	if req.Size != "" && existingPath == "" && (size < 1 || size > MaxMountedReadTestSize) {
 		optionErr = fmt.Errorf("read test size must be between 1 and %d bytes", MaxMountedReadTestSize)
 	}
 	if size <= 0 {
@@ -157,6 +197,12 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 	}
 	if blockSize <= 0 {
 		blockSize = DefaultMountedReadTestBlockSize
+	}
+	if req.Streams < 0 || req.Streams > 32 {
+		optionErr = fmt.Errorf("read test streams override must be between 1 and 32")
+	}
+	if req.WindowChunks < 0 || req.WindowChunks > 64 {
+		optionErr = fmt.Errorf("read test window chunks override must be between 1 and 64")
 	}
 	seekSize := ParseXferSize(req.SeekSize)
 	if req.SeekSize != "" && (seekSize < 1 || seekSize > 16<<20) {
@@ -229,10 +275,17 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 			optionErr = fmt.Errorf("read test file size must be at least %d bytes for %s seek scenario", minimumSize, seekScenario)
 		}
 	}
+	retryCommand := fmt.Sprintf("qrypt probe test read --mount %s --mount-point PATH --size %d --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s", mount, size, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout)
+	if existingPath != "" {
+		retryCommand = fmt.Sprintf("qrypt probe test read --mount %s --mount-point PATH --path %s --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s", mount, existingPath, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout)
+	}
+	if req.Streams > 0 || req.WindowChunks > 0 {
+		retryCommand += fmt.Sprintf(" --streams %d --window-chunks %d", req.Streams, req.WindowChunks)
+	}
 	result := &MountedReadTestResult{
 		OpID: newDebugOperationID("read"), Mount: mount,
 		Started: time.Now(), Steps: make([]FSTestStep, 0, 4+samples*(2+seekCount*2)),
-		RetryCommand: fmt.Sprintf("qrypt probe test read --mount %s --mount-point PATH --size %d --block-size %d --cache-mode %s --pattern %s --samples %d --seek-count %d --seek-size %d --seek-scenario %s --seek-warmup-chunks %d --seek-overlap-timeout %s", mount, size, blockSize, cacheMode, readPattern, samples, seekCount, seekSize, seekScenario, seekWarmup, seekOverlapTimeout),
+		RetryCommand: retryCommand,
 	}
 	defer func() {
 		result.Finished = time.Now()
@@ -250,38 +303,57 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 		}
 	}()
 
-	basePath := fsTestBasePath(fs, mount)
-	dir := basePath + "/__qrypt_read_test_" + randomSuffix(6)
-	file := dir + "/data.bin"
+	dir := ""
+	file := existingPath
+	if existingPath == "" {
+		basePath := fsTestBasePath(fs, mount)
+		dir = basePath + "/__qrypt_read_test_" + randomSuffix(6)
+		// Use a plain-text extension: some providers (Koofr) block downloads for
+		// extensions their content scanner considers dangerous.
+		file = dir + "/data.txt"
+	}
 	mountedFile, err := mountedTestPath(req.MountPoint, file)
 	if optionErr != nil {
 		err = optionErr
 	}
 	step := fsStep("validate")
-	step.Input = map[string]any{"mount_point": req.MountPoint, "size": size, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String()}
+	step.Input = map[string]any{"mount_point": req.MountPoint, "path": file, "size": size, "streams": req.Streams, "window_chunks": req.WindowChunks, "block_size": blockSize, "cache_mode": cacheMode, "pattern": readPattern, "samples": samples, "seek_count": seekCount, "seek_size": seekSize, "seek_scenario": seekScenario, "seek_warmup_chunks": seekWarmup, "seek_overlap_timeout": seekOverlapTimeout.String()}
 	step.finish(time.Now(), err)
 	result.Steps = append(result.Steps, step)
 	if err != nil {
 		return result
 	}
 
-	defer func() {
-		cleanupStarted := time.Now()
-		cleanupErr := cleanupMountedReadFixture(context.WithoutCancel(ctx), fs, file, dir, mount)
-		step := fsStep("cleanup")
-		step.finish(cleanupStarted, cleanupErr)
-		result.Steps = append(result.Steps, step)
-		result.CleanupFailed = cleanupErr != nil
-	}()
+	if req.Streams > 0 || req.WindowChunks > 0 {
+		overrider, ok := fs.(readPlanOverrider)
+		if !ok {
+			result.Steps = append(result.Steps, failedFSStep("read_override", fmt.Errorf("this filesystem does not support read plan overrides")))
+			return result
+		}
+		overrider.SetReadPlanOverride(req.Streams, req.WindowChunks)
+		defer overrider.ClearReadPlanOverride()
+	}
 
-	prepareStarted := time.Now()
-	expectedHash, err := createMountedReadFixture(ctx, fs, file, dir, mount, size)
-	step = fsStep("prepare")
-	step.Input = map[string]any{"path": file, "bytes": size}
-	step.finish(prepareStarted, err)
-	result.Steps = append(result.Steps, step)
-	if err != nil {
-		return result
+	expectedHash := ""
+	if existingPath == "" {
+		defer func() {
+			cleanupStarted := time.Now()
+			cleanupErr := cleanupMountedReadFixture(context.WithoutCancel(ctx), fs, file, dir, mount)
+			step := fsStep("cleanup")
+			step.finish(cleanupStarted, cleanupErr)
+			result.Steps = append(result.Steps, step)
+			result.CleanupFailed = cleanupErr != nil
+		}()
+
+		prepareStarted := time.Now()
+		expectedHash, err = createMountedReadFixture(ctx, fs, file, dir, mount, size)
+		step = fsStep("prepare")
+		step.Input = map[string]any{"path": file, "bytes": size}
+		step.finish(prepareStarted, err)
+		result.Steps = append(result.Steps, step)
+		if err != nil {
+			return result
+		}
 	}
 
 	if readPattern == "sequential" || readPattern == "both" {
@@ -294,7 +366,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "cold", sample)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
-				measurement.TraversedVFS = measurement.VFSReadCalls > 0
+				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -305,23 +377,29 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				if readErr != nil {
 					return result
 				}
+				if expectedHash == "" {
+					expectedHash = measurement.ContentHash
+				}
 			}
 			if cacheMode == "warm" || cacheMode == "both" {
 				if cacheMode == "warm" {
-					_, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "prime", sample)
+					prime, primeStarted, primeErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "prime", sample)
 					primeEvents, _ := mountedReadEvents(fs, mount, file, primeStarted)
-					if primeErr == nil && mountedVFSReadCalls(primeEvents) == 0 {
+					if primeErr == nil && !mountedReadTraversed(mountedVFSReadCalls(primeEvents), prime.CacheHits, prime.CacheMisses) {
 						primeErr = fmt.Errorf("mounted read did not traverse qrypt; verify --mount-point")
 					}
 					if primeErr != nil {
 						result.Steps = append(result.Steps, failedFSStep("prime_read", primeErr))
 						return result
 					}
+					if expectedHash == "" {
+						expectedHash = prime.ContentHash
+					}
 				}
 				measurement, measurementStarted, readErr := measureMountedFile(ctx, fs, mount, mountedFile, expectedHash, blockSize, "warm", sample)
 				events, truncated := mountedReadEvents(fs, mount, file, measurementStarted)
 				measurement.VFSReadCalls = mountedVFSReadCalls(events)
-				measurement.TraversedVFS = measurement.VFSReadCalls > 0
+				measurement.TraversedVFS = mountedReadTraversed(measurement.VFSReadCalls, measurement.CacheHits, measurement.CacheMisses)
 				result.Metrics = append(result.Metrics, events...)
 				result.MetricsTruncated = result.MetricsTruncated || truncated
 				if readErr == nil && !measurement.TraversedVFS {
@@ -331,6 +409,9 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				result.Steps = append(result.Steps, mountedReadStep(measurement, readErr))
 				if readErr != nil {
 					return result
+				}
+				if expectedHash == "" {
+					expectedHash = measurement.ContentHash
 				}
 			}
 		}
@@ -350,7 +431,7 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 						result.Steps = append(result.Steps, failedFSStep("clear_read_cache", err))
 						return result
 					}
-					measurement, events, truncated, seekErr := runMountedSeekProbe(ctx, fs, mount, mountedFile, file, offset, seekSize, coldWarmup, seekScenario, seekWarmup, seekOverlapTimeout, "cold", sample, index+1)
+					measurement, events, truncated, seekErr := runMountedSeekProbe(ctx, fs, mount, mountedFile, file, offset, seekSize, coldWarmup, seekScenario, seekWarmup, seekOverlapTimeout, existingPath == "", "cold", sample, index+1)
 					result.SeekMeasurements = append(result.SeekMeasurements, measurement)
 					result.Metrics = append(result.Metrics, events...)
 					result.MetricsTruncated = result.MetricsTruncated || truncated
@@ -361,13 +442,13 @@ func RunVFSMountedReadTest(ctx context.Context, fs vfs.FileSystem, mount string,
 				}
 				if cacheMode == "warm" || cacheMode == "both" {
 					if cacheMode == "warm" {
-						prime, _, _, primeErr := runMountedSeekProbe(ctx, fs, mount, mountedFile, file, offset, seekSize, 0, "isolated", seekWarmup, seekOverlapTimeout, "prime", sample, index+1)
+						prime, _, _, primeErr := runMountedSeekProbe(ctx, fs, mount, mountedFile, file, offset, seekSize, 0, "isolated", seekWarmup, seekOverlapTimeout, existingPath == "", "prime", sample, index+1)
 						if primeErr != nil {
 							result.Steps = append(result.Steps, mountedSeekStep(prime, primeErr))
 							return result
 						}
 					}
-					measurement, events, truncated, seekErr := runMountedSeekProbe(ctx, fs, mount, mountedFile, file, offset, seekSize, warmWarmup, seekScenario, seekWarmup, seekOverlapTimeout, "warm", sample, index+1)
+					measurement, events, truncated, seekErr := runMountedSeekProbe(ctx, fs, mount, mountedFile, file, offset, seekSize, warmWarmup, seekScenario, seekWarmup, seekOverlapTimeout, existingPath == "", "warm", sample, index+1)
 					result.SeekMeasurements = append(result.SeekMeasurements, measurement)
 					result.Metrics = append(result.Metrics, events...)
 					result.MetricsTruncated = result.MetricsTruncated || truncated
@@ -527,7 +608,10 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		measurement.CacheHitRate = float64(measurement.CacheHits) / float64(totalCacheLookups)
 	}
 	gotHash := hex.EncodeToString(hash.Sum(nil))
-	if gotHash != expectedHash {
+	measurement.ContentHash = gotHash
+	// An existing-file measurement does not know the expected hash up front;
+	// the caller records this sample's hash and verifies later samples.
+	if expectedHash != "" && gotHash != expectedHash {
 		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
 	}
 	return measurement, started, nil
@@ -589,14 +673,17 @@ func rangesOverlap(startA, endA, startB, endB int64) bool {
 	return startA < endB && startB < endA
 }
 
-func runMountedSeekProbe(ctx context.Context, fs vfs.FileSystem, mount, mountedPath, virtualPath string, offset, size, warmupOffset int64, scenario string, warmupChunks int, overlapTimeout time.Duration, mode string, sample, index int) (MountedSeekMeasurement, []drive.MetricEvent, bool, error) {
-	measurement, started, err := measureMountedSeekScenario(ctx, fs, mount, mountedPath, virtualPath, offset, size, warmupOffset, scenario, warmupChunks, overlapTimeout, mode, sample, index)
+func runMountedSeekProbe(ctx context.Context, fs vfs.FileSystem, mount, mountedPath, virtualPath string, offset, size, warmupOffset int64, scenario string, warmupChunks int, overlapTimeout time.Duration, verifyContent bool, mode string, sample, index int) (MountedSeekMeasurement, []drive.MetricEvent, bool, error) {
+	measurement, started, err := measureMountedSeekScenario(ctx, fs, mount, mountedPath, virtualPath, offset, size, warmupOffset, scenario, warmupChunks, overlapTimeout, verifyContent, mode, sample, index)
 	idleErr := waitMountedReadIdle(ctx, fs, mount, virtualPath, overlapTimeout, scenario != "isolated")
 	err = errors.Join(err, idleErr)
 	events, truncated := mountedReadEvents(fs, mount, virtualPath, started)
 	measurement.VFSReadCalls = mountedVFSReadCalls(events)
 	measurement.VFSOffsetMatch = mountedVFSReadAtOffset(events, offset)
-	measurement.TraversedVFS = measurement.VFSOffsetMatch
+	// The exact-offset event can be missing when the window read starts before
+	// the requested offset or when the bounded event ring evicts it. Cache
+	// lookups are monotonic counters and prove the read went through the VFS.
+	measurement.TraversedVFS = measurement.VFSOffsetMatch || measurement.CacheHits+measurement.CacheMisses > 0
 	if err == nil && !measurement.TraversedVFS {
 		err = fmt.Errorf("mounted seek read did not traverse qrypt; verify --mount-point")
 	}
@@ -604,10 +691,10 @@ func runMountedSeekProbe(ctx context.Context, fs vfs.FileSystem, mount, mountedP
 }
 
 func measureMountedSeek(ctx context.Context, fs vfs.FileSystem, mount, path string, offset, size int64, mode string, sample, index int) (MountedSeekMeasurement, time.Time, error) {
-	return measureMountedSeekScenario(ctx, fs, mount, path, "", offset, size, 0, "isolated", 0, 0, mode, sample, index)
+	return measureMountedSeekScenario(ctx, fs, mount, path, "", offset, size, 0, "isolated", 0, 0, true, mode, sample, index)
 }
 
-func measureMountedSeekScenario(ctx context.Context, fs vfs.FileSystem, mount, mountedPath, virtualPath string, offset, size, warmupOffset int64, scenario string, warmupChunks int, overlapTimeout time.Duration, mode string, sample, index int) (MountedSeekMeasurement, time.Time, error) {
+func measureMountedSeekScenario(ctx context.Context, fs vfs.FileSystem, mount, mountedPath, virtualPath string, offset, size, warmupOffset int64, scenario string, warmupChunks int, overlapTimeout time.Duration, verifyContent bool, mode string, sample, index int) (MountedSeekMeasurement, time.Time, error) {
 	measurement := MountedSeekMeasurement{
 		Mode: mode, Scenario: scenario, Sample: sample, Index: index, Offset: offset,
 		ChunksTouched: mountedSeekChunksTouched(offset, size),
@@ -624,7 +711,7 @@ func measureMountedSeekScenario(ctx context.Context, fs vfs.FileSystem, mount, m
 	switch scenario {
 	case "isolated":
 		before := fsMountState(fs, mount)
-		err = measureMountedSeekOnFile(ctx, fs, mount, file, offset, size, before, &measurement)
+		err = measureMountedSeekOnFile(ctx, fs, mount, file, offset, size, before, &measurement, verifyContent)
 		return measurement, started, err
 	case "prefetch":
 		measurement.WarmupOffset = warmupOffset
@@ -638,7 +725,7 @@ func measureMountedSeekScenario(ctx context.Context, fs vfs.FileSystem, mount, m
 			return measurement, started, err
 		}
 		before := fsMountState(fs, mount)
-		err = measureMountedSeekOnFile(ctx, fs, mount, file, offset, size, before, &measurement)
+		err = measureMountedSeekOnFile(ctx, fs, mount, file, offset, size, before, &measurement, verifyContent)
 		return measurement, started, err
 	case "concurrent":
 		measurement.WarmupOffset = warmupOffset
@@ -657,7 +744,7 @@ func measureMountedSeekScenario(ctx context.Context, fs vfs.FileSystem, mount, m
 		applyMountedSeekOverlap(&measurement, overlap)
 		if overlapErr == nil {
 			before := fsMountState(fs, mount)
-			err = measureMountedSeekOnFile(ctx, fs, mount, file, offset, size, before, &measurement)
+			err = measureMountedSeekOnFile(ctx, fs, mount, file, offset, size, before, &measurement, verifyContent)
 		}
 		close(stop)
 		_ = background.Close()
@@ -677,7 +764,7 @@ func measureMountedSeekScenario(ctx context.Context, fs vfs.FileSystem, mount, m
 	}
 }
 
-func measureMountedSeekOnFile(ctx context.Context, fs vfs.FileSystem, mount string, file *os.File, offset, size int64, before *FSMountState, measurement *MountedSeekMeasurement) error {
+func measureMountedSeekOnFile(ctx context.Context, fs vfs.FileSystem, mount string, file *os.File, offset, size int64, before *FSMountState, measurement *MountedSeekMeasurement, verifyContent bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -710,10 +797,14 @@ func measureMountedSeekOnFile(ctx context.Context, fs vfs.FileSystem, mount stri
 	if readErr != nil {
 		return readErr
 	}
-	for i, value := range buf {
-		want := byte((offset+int64(i))*31 + 17)
-		if value != want {
-			return fmt.Errorf("mounted seek content mismatch at offset %d", offset+int64(i))
+	// Existing-file measurements cannot know the fixture pattern; size and the
+	// shared VFS traversal checks still guard the read.
+	if verifyContent {
+		for i, value := range buf {
+			want := byte((offset+int64(i))*31 + 17)
+			if value != want {
+				return fmt.Errorf("mounted seek content mismatch at offset %d", offset+int64(i))
+			}
 		}
 	}
 	return nil
@@ -1152,6 +1243,13 @@ func mountedVFSReadCalls(events []drive.MetricEvent) int {
 		}
 	}
 	return calls
+}
+
+// mountedReadTraversed reports whether a measurement went through the VFS.
+// The event ring is bounded, so a long read can evict its own summary events;
+// the cache counters are monotonic snapshots and stay reliable.
+func mountedReadTraversed(readCalls int, cacheHits, cacheMisses int64) bool {
+	return readCalls > 0 || cacheHits+cacheMisses > 0
 }
 
 func mountedVFSReadAtOffset(events []drive.MetricEvent, offset int64) bool {

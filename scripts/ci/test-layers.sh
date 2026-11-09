@@ -33,6 +33,20 @@ cd "$(dirname "$0")/../.."
 # the header for why `fast` sits just under it.
 BUDGET=25
 
+# The race layer runs many independent package test binaries. The default
+# package parallelism is GOMAXPROCS, but these suites are mostly timer/IO
+# bound, so a few extra in-flight packages hide their waits. This changes
+# scheduling only: every test and every package still runs under -race.
+# Override with RACE_P when a runner needs a different memory/CPU balance.
+race_parallel() {
+  local cpus p
+  cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+  p=$((cpus * 4))
+  [ "$p" -gt 32 ] && p=32
+  [ "$p" -lt 8 ] && p=8
+  printf '%s' "${RACE_P:-$p}"
+}
+
 # Reclaim temp left behind by a test binary that was killed or hit -timeout:
 # such a process never reaches its own exit path, so the isolated CLI home, the
 # shared session-log roots, and the debug-server sockets under the process temp
@@ -324,7 +338,7 @@ case "${1:-fast}" in
     ;;
   race)
     measure "race: pkg/vfs drive drivers contracttest drivecopy control logging mount syncer cli core mobile crypt task cmd" \
-      go test -race -count=1 ./pkg/vfs ./pkg/drive ./pkg/drivers/... \
+      go test -race -count=1 -p "$(race_parallel)" ./pkg/vfs ./pkg/drive ./pkg/drivers/... \
       ./pkg/contracttest ./pkg/vfs/drivecopy ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli \
       ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
     ;;

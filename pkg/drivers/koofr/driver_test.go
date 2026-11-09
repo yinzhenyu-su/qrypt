@@ -35,6 +35,16 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 
 // --- Init -----------------------------------------------------------------
 
+func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+	d := New(Options{})
+	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
+		t.Fatal("parallel_range should stay declared for future tuning")
+	}
+}
+
 func TestInitRejectsBadCredentialsWithError(t *testing.T) {
 	f := newFakeProvider(t)
 	f.rejectAuth = true
@@ -396,6 +406,20 @@ func TestReadIgnoresRangeFallback(t *testing.T) {
 	reader.Close()
 	if len(data) != 5 || data[0] != byte('0'+90%10) {
 		t.Fatalf("data = %q", data)
+	}
+}
+
+func TestReadStrictRangeRejectsIgnoredRange(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/data.bin", 100)
+	f.mu.Lock()
+	f.ignoreRange = true
+	f.mu.Unlock()
+	d := f.newDriver(t, Options{})
+
+	_, err := d.Read(drive.WithStrictRange(context.Background()), entry, 90, 5)
+	if !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want ErrUnsupported", err)
 	}
 }
 

@@ -226,14 +226,20 @@ func (e *Engine) recordFailureUnlessCanceled(ctx context.Context, pending Pendin
 // on the staging file is dropped. Returns false when the failure could
 // not be recorded (save error or record moved on).
 func (e *Engine) recordFailure(pending PendingUpload, err error) bool {
-	if uploadFailurePermanent(err) {
+	permanent := uploadFailurePermanent(err)
+	retryLimit := !permanent && pending.RetryCount >= maxUploadRetries
+	if permanent || retryLimit {
 		_, ok, saveErr := e.pending.RecordPermanentFailureIfUnchanged(pending, err)
 		if saveErr != nil {
 			logging.L.Warnf("[VFS] upload failed permanently and failure state save failed op_id=%q path=%q err=%v save_err=%v", pending.FID, pending.Path, err, saveErr)
 			return false
 		}
 		if ok {
-			logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", pending.FID, pending.Path, pending.Name, pending.Size, pending.RetryCount, err)
+			if permanent {
+				logging.L.WarnfEvery("vfs.upload_failed_permanent", time.Second, "[VFS] upload failed permanently; not retrying op_id=%q path=%q name=%q size=%d retry=%d err=%v", pending.FID, pending.Path, pending.Name, pending.Size, pending.RetryCount, err)
+			} else {
+				logging.L.WarnfEvery("vfs.upload_failed_retry_limit", time.Second, "[VFS] upload failed permanently after retry limit; save the file again to retry op_id=%q path=%q name=%q size=%d retry=%d err=%v", pending.FID, pending.Path, pending.Name, pending.Size, pending.RetryCount, err)
+			}
 		} else {
 			e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
 		}
@@ -255,10 +261,12 @@ func (e *Engine) recordFailure(pending PendingUpload, err error) bool {
 
 // uploadFailurePermanent reports whether a failed upload attempt must not be
 // retried. Drivers mark some failures with drive.NonRetryable, but the shared
-// error categories already classify authentication, permission, invalid-input
-// and unsupported failures as deterministic. Unknown categories stay
-// retryable: a transient condition should not strand accepted content, and the
-// retry cap bounds the noise.
+// error categories already classify authentication, permission, invalid-input,
+// unsupported and not-found failures as deterministic. A missing upload target
+// (for example a deleted parent directory) cannot be fixed by retrying, so it
+// must not accumulate retries forever. Unknown categories stay retryable: a
+// transient condition should not strand accepted content, and maxUploadRetries
+// bounds the noise.
 func uploadFailurePermanent(err error) bool {
 	if drive.IsNonRetryable(err) {
 		return true
@@ -267,7 +275,8 @@ func uploadFailurePermanent(err error) bool {
 	case drive.ErrorCategoryAuth,
 		drive.ErrorCategoryPermission,
 		drive.ErrorCategoryInvalidRequest,
-		drive.ErrorCategoryUnsupported:
+		drive.ErrorCategoryUnsupported,
+		drive.ErrorCategoryNotFound:
 		return true
 	default:
 		return false

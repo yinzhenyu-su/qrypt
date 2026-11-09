@@ -11,9 +11,10 @@ import (
 type openFileOptions struct {
 	DeadlineMS int    `json:"deadline_ms"`
 	Priority   string `json:"priority"`
+	Intent     string `json:"intent"`
 }
 
-func openFileWithPriority(coreID, path string, priority core.ReadPriority, deadlineMS int) (string, error) {
+func openFileWithPriority(coreID, path string, priority core.ReadPriority, intent core.ReadIntent, deadlineMS int) (string, error) {
 	s, err := getSession(coreID)
 	if err != nil {
 		return "", wrapError(err)
@@ -32,7 +33,7 @@ func openFileWithPriority(coreID, path string, priority core.ReadPriority, deadl
 		return "", wrapError(err)
 	}
 	registry.mu.Lock()
-	registry.files[id] = &fileHandle{coreID: coreID, path: path, size: item.Size, readPriority: priority}
+	registry.files[id] = &fileHandle{coreID: coreID, path: path, size: item.Size, readPriority: priority, readIntent: intent}
 	registry.mu.Unlock()
 	return id, nil
 }
@@ -46,7 +47,11 @@ func OpenFileJSON(coreID, path, optionsRaw string) string {
 	if err != nil {
 		return resultJSON(nil, wrapError(err))
 	}
-	id, err := openFileWithPriority(coreID, path, priority, options.DeadlineMS)
+	intent, err := options.intent()
+	if err != nil {
+		return resultJSON(nil, wrapError(err))
+	}
+	id, err := openFileWithPriority(coreID, path, priority, intent, options.DeadlineMS)
 	return resultJSON(id, err)
 }
 
@@ -72,6 +77,19 @@ func (o openFileOptions) priority() (core.ReadPriority, error) {
 	}
 }
 
+func (o openFileOptions) intent() (core.ReadIntent, error) {
+	switch o.Intent {
+	case "", "interactive":
+		return core.ReadIntentInteractive, nil
+	case "bulk":
+		return core.ReadIntentBulk, nil
+	case "probe":
+		return core.ReadIntentProbe, nil
+	default:
+		return core.ReadIntentInteractive, fmt.Errorf("mobile: unknown read intent %q", o.Intent)
+	}
+}
+
 func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int, error) {
 	if offset < 0 {
 		return 0, wrapError(fmt.Errorf("mobile: offset must be non-negative"))
@@ -89,6 +107,7 @@ func ReadAtInto(handleID string, offset int64, dst []byte, deadlineMS int) (int,
 	}
 	ctx, done := handle.reads.begin(deadlineMS)
 	defer done()
+	ctx = core.WithReadIntent(ctx, handle.readIntent)
 	n, err := withCore(s, func(c *core.Core) (int, error) {
 		return c.ReadAtIntoWithPriority(ctx, handle.path, offset, dst, 0, handle.readPriority)
 	})
@@ -106,7 +125,26 @@ func CancelFileReadJSON(handleID string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	handle.reads.cancelAll()
+	cancelFilePrefetch(handle)
 	return resultJSON(nil, nil)
+}
+
+// cancelFilePrefetch stops speculative prefetch for a closed or canceled
+// handle. It is best-effort: a deleted file or a filesystem without the
+// optional surface must not make the handle operation fail.
+func cancelFilePrefetch(handle *fileHandle) {
+	if handle == nil {
+		return
+	}
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return
+	}
+	ctx, cancel := s.timeoutContext(0)
+	defer cancel()
+	_ = withCoreErr(s, func(c *core.Core) error {
+		return c.CancelReadPrefetch(ctx, handle.path)
+	})
 }
 
 func closeFile(handleID string) error {
@@ -119,6 +157,7 @@ func closeFile(handleID string) error {
 	delete(registry.files, handleID)
 	registry.mu.Unlock()
 	handle.reads.cancelAll()
+	cancelFilePrefetch(handle)
 	return nil
 }
 

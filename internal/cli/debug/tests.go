@@ -29,6 +29,7 @@ may write remote test data, so they run against the mutable control socket.`,
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "fs", "Run a VFS filesystem smoke test")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "instantupload", "Run an instant-upload driver test")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "multipart", "Run a multipart/chunked upload driver test")))
+	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "upload", "Measure one complete upload through a driver")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "read", "Measure a complete read through a mounted filesystem")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "resume", "Run a VFS resumable-upload test")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugTestCaseCmd(rt, "xfer", "Run a transfer driver test")))
@@ -45,6 +46,7 @@ func newDebugTestCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Comma
 		"fs":            "Run a VFS filesystem smoke test on one mount at the requested size.",
 		"instantupload": "Run an instant-upload driver test, verifying a known file is saved without re-uploading its bytes.",
 		"multipart":     "Run a multipart or chunked upload driver test at the requested size.",
+		"upload":        "Upload one generated file of the requested size, verify its remote size and content, and remove it. Measure the whole upload so a slow transfer that would previously hit a driver request timeout is visible.",
 		"read":          "Measure a complete read through a mounted filesystem, exercising cold and warm caches and seek behavior.",
 		"resume":        "Run a VFS resumable-upload test that interrupts and then resumes an upload.",
 		"xfer":          "Run a transfer driver test from --source to --dest.",
@@ -72,7 +74,7 @@ func newDebugTestCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Comma
 }
 
 func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
-	if test == "" || test == "auth" || test == "batchmove" || test == "batchupload" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "read" || test == "resume" || test == "multipart" {
+	if test == "" || test == "auth" || test == "batchmove" || test == "batchupload" || test == "crud" || test == "contract" || test == "fs" || test == "instantupload" || test == "read" || test == "resume" || test == "multipart" || test == "upload" {
 		cmd.Flags().String("mount", "", "mount name for the single-mount test")
 	}
 	if test == "fs" || test == "resume" || test == "batchmove" || test == "batchupload" {
@@ -83,6 +85,9 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 	}
 	if test == "read" {
 		cmd.Flags().String("mount-point", "", "actual FUSE mount directory")
+		cmd.Flags().String("path", "", "measure an existing file (virtual path) instead of creating a test file")
+		cmd.Flags().Int("streams", 0, "override concurrent read streams for this measurement (0 = driver default)")
+		cmd.Flags().Int("window-chunks", 0, "override read window in 512 KiB chunks for this measurement (0 = default)")
 		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
 		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
 		cmd.Flags().String("pattern", "sequential", "read pattern: sequential, seek, or both")
@@ -100,8 +105,12 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 		cmd.Flags().String("size", "", "test size in bytes, or k/m/g suffix")
 		cmd.Flags().Bool("vfs", false, "run xfer test through the VFS layer")
 	}
-	if test == "multipart" {
+	if test == "multipart" || test == "upload" {
 		cmd.Flags().String("size", "", "test size in bytes, or k/m/g suffix")
+	}
+	if test == "upload" {
+		cmd.Flags().String("fault", "", "inject an upload fault: stall, truncate, or notfound")
+		cmd.Flags().String("fault-after", "", "bytes delivered before the fault fires (default 1m)")
 	}
 }
 
@@ -131,6 +140,15 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("mount-point"); flag != nil {
 		req.MountPoint, _ = cmd.Flags().GetString("mount-point")
 	}
+	if flag := cmd.Flags().Lookup("path"); flag != nil {
+		req.Path, _ = cmd.Flags().GetString("path")
+	}
+	if flag := cmd.Flags().Lookup("streams"); flag != nil {
+		req.Streams, _ = cmd.Flags().GetInt("streams")
+	}
+	if flag := cmd.Flags().Lookup("window-chunks"); flag != nil {
+		req.WindowChunks, _ = cmd.Flags().GetInt("window-chunks")
+	}
 	if flag := cmd.Flags().Lookup("block-size"); flag != nil {
 		req.BlockSize, _ = cmd.Flags().GetString("block-size")
 	}
@@ -158,6 +176,13 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	}
 	if flag := cmd.Flags().Lookup("seek-warmup-chunks"); flag != nil {
 		req.SeekWarmup, _ = cmd.Flags().GetInt("seek-warmup-chunks")
+	}
+	if flag := cmd.Flags().Lookup("fault"); flag != nil {
+		req.Fault, _ = cmd.Flags().GetString("fault")
+		req.Fault = strings.ToLower(strings.TrimSpace(req.Fault))
+	}
+	if flag := cmd.Flags().Lookup("fault-after"); flag != nil {
+		req.FaultAfter, _ = cmd.Flags().GetString("fault-after")
 	}
 	if err := ValidateDriverTestRequest(req); err != nil {
 		return err
@@ -193,7 +218,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --streams, --window-chunks, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")
@@ -212,6 +237,12 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 			if blockSize < 1 || blockSize > 16<<20 {
 				return fmt.Errorf("read test --block-size must be between 1 and %d bytes", 16<<20)
 			}
+		}
+		if req.Streams < 0 || req.Streams > 32 {
+			return fmt.Errorf("read test --streams must be between 1 and 32")
+		}
+		if req.WindowChunks < 0 || req.WindowChunks > 64 {
+			return fmt.Errorf("read test --window-chunks must be between 1 and 64")
 		}
 		if req.Samples < 1 || req.Samples > contracttest.MaxMountedReadTestSamples {
 			return fmt.Errorf("read test --samples must be between 1 and %d", contracttest.MaxMountedReadTestSamples)
@@ -251,6 +282,40 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		case "", "isolated", "prefetch", "concurrent":
 		default:
 			return fmt.Errorf("read test --seek-scenario must be isolated, prefetch, or concurrent")
+		}
+	case "multipart", "upload":
+		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
+			return fmt.Errorf("%s test only supports --mount and --size", req.Test)
+		}
+		if req.Mount == "" {
+			return fmt.Errorf("%s test requires --mount\n\nExample:\n  qrypt probe test %s --mount cloud --size 64m", req.Test, req.Test)
+		}
+		if req.Size != "" {
+			size := contracttest.ParseXferSize(req.Size)
+			limit := int64(contracttest.MaxUploadProbeSize)
+			if req.Test == "multipart" {
+				limit = contracttest.MaxMultipartProbeSize
+			}
+			if size < 1 || size > limit {
+				return fmt.Errorf("%s test --size must be between 1 and %d bytes", req.Test, limit)
+			}
+		}
+		if req.Fault != "" && req.Test != "upload" {
+			return fmt.Errorf("%s test does not support --fault", req.Test)
+		}
+		switch req.Fault {
+		case "", contracttest.UploadFaultStall, contracttest.UploadFaultTruncate, contracttest.UploadFaultNotFound:
+		default:
+			return fmt.Errorf("upload test --fault must be stall, truncate, or notfound")
+		}
+		if req.FaultAfter != "" {
+			if req.Fault == "" {
+				return fmt.Errorf("upload test --fault-after requires --fault")
+			}
+			after := contracttest.ParseXferSize(req.FaultAfter)
+			if after < 1 || after > contracttest.MaxUploadProbeSize {
+				return fmt.Errorf("upload test --fault-after must be between 1 and %d bytes", int64(contracttest.MaxUploadProbeSize))
+			}
 		}
 	case "batchmove", "batchupload":
 		if req.Source != "" || req.Dest != "" || req.VFS {

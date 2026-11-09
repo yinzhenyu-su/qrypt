@@ -25,7 +25,11 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	now := time.Now()
 	size := source.Size()
 	parentID = d.resolveID(parentID)
-	partCount := int(math.Ceil(float64(size) / float64(d.partSize)))
+	partSize := d.partSize
+	if override, ok := drive.UploadProfileFromContext(ctx); ok && override.ChunkSize > 0 {
+		partSize = override.ChunkSize
+	}
+	partCount := int(math.Ceil(float64(size) / float64(partSize)))
 	if partCount == 0 {
 		partCount = 1
 	}
@@ -47,7 +51,6 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	resumed := false
 	var tok aliyunToken
 	var skipParts map[int]bool
-	partSize := d.partSize
 	// When source provides SHA1 (e.g. from crypt ContentDedupCrypt),
 	// skip two-phase pre_hash negotiation: saves one API round trip
 	// and avoids re-encrypting the full source on every Open().

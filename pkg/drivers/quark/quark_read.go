@@ -36,6 +36,16 @@ const (
 const downloadChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	// Quark's CDN answers an out-of-range request with the whole object instead
+	// of an empty 206, so clamp the request to the entry and answer EOF here.
+	if entry.Size > 0 {
+		if offset >= entry.Size {
+			return io.NopCloser(bytes.NewReader(nil)), nil
+		}
+		if size > entry.Size-offset {
+			size = entry.Size - offset
+		}
+	}
 	start := time.Now()
 	var staleURL string
 	for urlAttempt := 0; urlAttempt < 2; urlAttempt++ {
@@ -87,15 +97,28 @@ func (d *Driver) downloadBody(ctx context.Context, fid, downloadURL, cookieSnaps
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusForbidden {
+	if err := checkQuarkReadStatus(ctx, resp); err != nil {
 		resp.Body.Close()
-		return nil, errDownloadURLExpired
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		resp.Body.Close()
-		return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+		return nil, err
 	}
 	return resp.Body, nil
+}
+
+// checkQuarkReadStatus classifies a download response. In strict range mode a
+// 200 means the CDN ignored the Range header: report ErrUnsupported so the
+// read layer falls back to a single stream instead of treating the whole
+// object as one sub-range.
+func checkQuarkReadStatus(ctx context.Context, resp *http.Response) error {
+	if resp.StatusCode == http.StatusForbidden {
+		return errDownloadURLExpired
+	}
+	if drive.StrictRangeFromContext(ctx) && resp.StatusCode == http.StatusOK {
+		return fmt.Errorf("quark: read: range ignored (status 200): %w", drive.ErrUnsupported)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 type downloadRangePart struct {
@@ -111,13 +134,9 @@ func (d *Driver) downloadParallel(ctx context.Context, fid, downloadURL, cookieS
 		if err != nil {
 			return nil, err
 		}
-		if resp.StatusCode == http.StatusForbidden {
+		if err := checkQuarkReadStatus(ctx, resp); err != nil {
 			resp.Body.Close()
-			return nil, errDownloadURLExpired
-		}
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
-			return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+			return nil, err
 		}
 		return resp.Body, nil
 	}
@@ -149,17 +168,9 @@ func (d *Driver) downloadParallel(ctx context.Context, fid, downloadURL, cookieS
 						return
 					}
 					part := &parts[index]
-					resp, err := d.downloadRange(parallelCtx, fid, downloadURL, cookieSnapshot, urlCacheHit, part.offset, part.size)
+					data, err := d.fetchParallelPart(parallelCtx, fid, downloadURL, cookieSnapshot, urlCacheHit, part.offset, part.size)
 					if err == nil {
-						if resp.StatusCode == http.StatusForbidden {
-							resp.Body.Close()
-							err = errDownloadURLExpired
-						} else if resp.StatusCode != http.StatusPartialContent {
-							resp.Body.Close()
-							err = fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
-						} else {
-							part.data, err = readDownloadPart(resp, part.size)
-						}
+						part.data = data
 					}
 					if err != nil {
 						errMu.Lock()
@@ -199,6 +210,54 @@ sendLoop:
 		assembled.Write(part.data)
 	}
 	return io.NopCloser(bytes.NewReader(assembled.Bytes())), nil
+}
+
+// downloadPartBodyRetries bounds how often a sub-range is re-requested after
+// its response body ends early. downloadRange already retries while opening the
+// request, but a body that closes before its Content-Length is only visible
+// while consuming it; without this retry a single truncated part fails the
+// whole window and surfaces to the caller as EIO.
+const downloadPartBodyRetries = 2
+
+// fetchParallelPart downloads one sub-range and retries a truncated body. A
+// forbidden response or an ignored Range is not retried: both need a
+// URL/window-level decision, not another attempt at the same part.
+func (d *Driver) fetchParallelPart(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt <= downloadPartBodyRetries; attempt++ {
+		if attempt > 0 {
+			if err := util.WaitExponential(ctx, attempt-1); err != nil {
+				return nil, err
+			}
+		}
+		resp, err := d.downloadRange(ctx, fid, downloadURL, cookieSnapshot, urlCacheHit, offset, size)
+		if err != nil {
+			// downloadRange exhausted its own request-level retries.
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			resp.Body.Close()
+			return nil, errDownloadURLExpired
+		}
+		if resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			if drive.StrictRangeFromContext(ctx) && resp.StatusCode == http.StatusOK {
+				return nil, fmt.Errorf("quark: parallel read: range ignored: %w", drive.ErrUnsupported)
+			}
+			return nil, fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
+		}
+		data, err := readDownloadPart(resp, size)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		logging.L.DebugfEvery("quark.read_part.retry", time.Second,
+			"[QUARK] ReadPart fid=%q offset=%d size=%d attempt=%d err=%v", fid, offset, size, attempt+1, err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
 }
 
 func readDownloadPart(resp *http.Response, expected int64) ([]byte, error) {

@@ -172,7 +172,9 @@ func RunDriverXferTest(ctx context.Context, srcMount string, srcDriver drive.Dri
 		return result
 	}
 	testName := fmt.Sprintf("__qrypt_xfer_test_%x", testSuffix)
-	fileName := "data.bin"
+	// Plain-text extension: some providers (Koofr) block downloads for
+	// extensions their content scanner considers dangerous.
+	fileName := "data.txt"
 
 	// ---------- generate test data ----------
 	data := make([]byte, size)

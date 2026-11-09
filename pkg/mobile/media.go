@@ -42,7 +42,7 @@ func openVirtualFile(coreID, path, mode string, deadlineMS int) (virtualOpenResu
 		return virtualOpenResult{}, wrapError(err)
 	}
 	registry.mu.Lock()
-	registry.virtuals[id] = &virtualHandle{coreID: coreID, file: file}
+	registry.virtuals[id] = &virtualHandle{coreID: coreID, path: path, file: file}
 	registry.mu.Unlock()
 	return virtualOpenResult{Handle: id, Info: file.Info()}, nil
 }
@@ -62,6 +62,7 @@ func ReadVirtualFileAtInto(handleID string, offset int64, dst []byte, deadlineMS
 	}
 	ctx, done := handle.reads.begin(deadlineMS)
 	defer done()
+	ctx = core.WithReadIntent(ctx, core.ReadIntentInteractive)
 	info := handle.file.Info()
 	started := time.Now()
 	n, err := handle.file.ReadAtInto(ctx, offset, dst)
@@ -80,7 +81,23 @@ func CancelVirtualReadJSON(handleID string) string {
 		return resultJSON(nil, wrapError(err))
 	}
 	handle.reads.cancelAll()
+	cancelVirtualPrefetch(handle)
 	return resultJSON(nil, nil)
+}
+
+func cancelVirtualPrefetch(handle *virtualHandle) {
+	if handle == nil {
+		return
+	}
+	s, err := getSession(handle.coreID)
+	if err != nil {
+		return
+	}
+	ctx, cancel := s.timeoutContext(0)
+	defer cancel()
+	_ = withCoreErr(s, func(c *core.Core) error {
+		return c.CancelReadPrefetch(ctx, handle.path)
+	})
 }
 
 func logVirtualRead(handleID string, file *core.VirtualFileHandle, info core.VirtualFileInfo, offset int64, requested, bytes int, dur time.Duration, err error) {
@@ -123,6 +140,7 @@ func closeVirtualFile(handleID string) error {
 		return wrapError(fmt.Errorf("mobile: unknown virtual file handle %q", handleID))
 	}
 	handle.reads.cancelAll()
+	cancelVirtualPrefetch(handle)
 	return wrapError(handle.file.Close())
 }
 

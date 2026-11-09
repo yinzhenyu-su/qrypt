@@ -98,16 +98,16 @@ func RunDriverAuthTest(ctx context.Context, mount string, d drive.Driver) *AuthT
 	if drive.HasCapability(d, drive.CapabilityPathResolver) {
 		step = authRequiredStep("resolve_root")
 		step.Input = map[string]any{"path": "/"}
-		step.Expected = map[string]any{"root_id": "non-empty"}
+		step.Expected = map[string]any{"root_id": "resolves"}
 		start := time.Now()
 		resolved, err := d.ResolvePath(ctx, "/")
-		if resolved != "" {
+		if err == nil {
+			// An empty id is a valid root for drivers whose mount root is the
+			// workspace root (for example Drime). The list_root step below
+			// verifies that the driver can actually enumerate it.
 			rootID = resolved
 		}
 		step.Actual = map[string]any{"root_id": resolved}
-		if err == nil && resolved == "" {
-			err = fmt.Errorf("root resolver returned empty id")
-		}
 		step.finish(start, err)
 		result.Steps = append(result.Steps, step)
 		if err != nil {

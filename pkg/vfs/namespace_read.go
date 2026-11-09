@@ -157,6 +157,20 @@ func (n *Namespace) ReleaseReadSession(sessionID uint64) {
 	}
 }
 
+func (n *Namespace) CancelReadPrefetch(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root {
+		return nil
+	}
+	return mount.CancelReadPrefetch(ctx, rest)
+}
+
 func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {
 	if isVirtualRootAppleMetadataPath(path) {
 		return io.NopCloser(bytes.NewReader(nil)), nil

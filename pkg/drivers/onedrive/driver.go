@@ -371,6 +371,12 @@ func (d *Driver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEv
 	return drive.NormalizeMetricEvents(d.driverName(), d.metrics.Events(since)), nil
 }
 
+// UploadProfile exposes the chunk size a probe may sweep. Parts are uploaded
+// sequentially, so it does not accept a concurrency override.
+func (d *Driver) UploadProfile() drive.UploadProfile {
+	return drive.UploadProfile{ChunkSize: d.chunkSize}
+}
+
 func (d *Driver) Capabilities() []drive.Capability {
 	return []drive.Capability{
 		drive.CapabilityPathResolver,

@@ -621,6 +621,9 @@ Mount state is reported as `vfs.MountSnapshot`:
 - `events`: recent `drive.MetricEvent` streams such as VFS reads and driver
   metrics
 - `runtime`: chunk, window, and prefetch activity counters
+- `read_profile`: effective bulk streams, window chunks, prefetch depth,
+  parallel threshold, source (`driver` / `mount_override` / `driver_limiter`),
+  and whether a driver limiter clamped the value
 
 Events use `drive.MetricEvent`. `op_id`, `step`, and `name` are correlation
 labels. `kind` identifies the event family such as `driver`, `vfs_read`,

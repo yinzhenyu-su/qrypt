@@ -95,8 +95,13 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 		return nil, err
 	}
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
+	streamCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
+	plan := r.resolvePlan(ctx, entry, PrefetchChunks)
+	streamCtx = WithReadPlan(streamCtx, plan)
+	streamCtx = WithGrantedStreams(streamCtx, 1)
+	streamCtx = applyIntentPriority(streamCtx, plan)
 	return &chunkedStreamReader{
-		ctx:          drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path}),
+		ctx:          streamCtx,
 		reader:       r,
 		path:         path,
 		entry:        entry,
@@ -121,6 +126,11 @@ type chunkedStreamReader struct {
 	bufPos    int
 	bytesRead int64
 	closed    bool
+
+	prefetchMu     sync.Mutex
+	prefetching    bool
+	prefetchDone   chan struct{}
+	prefetchCancel context.CancelFunc
 
 	// Debug bookkeeping finalized on Close.
 	opID         string
@@ -156,6 +166,7 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 // refill loads the chunk containing r.pos. A short or empty chunk ends the
 // stream (the file has no more data), matching readRange's stop condition.
 func (r *chunkedStreamReader) refill(ctx context.Context) error {
+	r.waitPrefetch()
 	r.buf = nil
 	r.bufPos = 0
 	if r.entry.Size > 0 && r.pos >= r.entry.Size {
@@ -167,7 +178,11 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 	if r.entry.Size > 0 && r.entry.Size-r.pos < want {
 		want = r.entry.Size - r.pos
 	}
-	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, PrefetchChunks)
+	windowChunks := PrefetchChunks
+	if plan, ok := readPlanFromContext(ctx); ok && plan.WindowChunks > 0 {
+		windowChunks = plan.WindowChunks
+	}
+	data, err := r.reader.readChunkRange(ctx, r.entry, chunkIndex, start, want, windowChunks)
 	if err != nil {
 		return err
 	}
@@ -175,7 +190,72 @@ func (r *chunkedStreamReader) refill(ctx context.Context) error {
 		return nil
 	}
 	r.buf = data
+	r.startPrefetch(windowChunks)
 	return nil
+}
+
+// startPrefetch fills the next window into the hot cache while the caller
+// consumes the current one. Depth is fixed at one window so memory stays
+// bounded by the window size.
+func (r *chunkedStreamReader) startPrefetch(windowChunks int) {
+	if !readPrefetchEnabled(r.ctx) {
+		return
+	}
+	if plan, ok := readPlanFromContext(r.ctx); ok && plan.PrefetchDepth == 0 {
+		return
+	}
+	nextPos := r.pos + int64(len(r.buf))
+	if r.entry.Size > 0 && nextPos >= r.entry.Size {
+		return
+	}
+	r.prefetchMu.Lock()
+	if r.prefetching || r.closed {
+		r.prefetchMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	prefetchCtx, cancel := context.WithCancel(r.ctx)
+	r.prefetching = true
+	r.prefetchDone = done
+	r.prefetchCancel = cancel
+	r.prefetchMu.Unlock()
+
+	go func() {
+		defer func() {
+			cancel()
+			r.prefetchMu.Lock()
+			r.prefetching = false
+			r.prefetchDone = nil
+			r.prefetchCancel = nil
+			r.prefetchMu.Unlock()
+			close(done)
+		}()
+		chunkIndex := nextPos / ChunkSize
+		start := nextPos - chunkIndex*ChunkSize
+		want := ChunkSize - start
+		if r.entry.Size > 0 && r.entry.Size-nextPos < want {
+			want = r.entry.Size - nextPos
+		}
+		_, _ = r.reader.readChunkRange(prefetchCtx, r.entry, chunkIndex, start, want, windowChunks)
+	}()
+}
+
+func (r *chunkedStreamReader) waitPrefetch() {
+	r.prefetchMu.Lock()
+	done := r.prefetchDone
+	r.prefetchMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func (r *chunkedStreamReader) cancelPrefetch() {
+	r.prefetchMu.Lock()
+	cancel := r.prefetchCancel
+	r.prefetchMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (r *chunkedStreamReader) Close() error {
@@ -183,6 +263,8 @@ func (r *chunkedStreamReader) Close() error {
 		return nil
 	}
 	r.closed = true
+	r.cancelPrefetch()
+	r.waitPrefetch()
 	r.finish(r.bytesRead, nil)
 	return nil
 }
@@ -190,5 +272,5 @@ func (r *chunkedStreamReader) Close() error {
 func (r *chunkedStreamReader) finish(bytes int64, readErr error) {
 	r.reader.observer.DebugFinishActive(r.activeID)
 	hitsAfter, missesAfter := r.reader.observer.DebugCacheCounters()
-	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, nil, readErr)
+	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, ReadPlanExtra(r.ctx, 0), readErr)
 }

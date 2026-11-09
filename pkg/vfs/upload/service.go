@@ -20,7 +20,14 @@ const (
 	LargeUploadQuietDelay     = 60 * time.Second
 	TemporaryUploadQuietDelay = 5 * time.Minute
 	maxUploadRetryDelay       = 15 * time.Minute
-	snapshotHistoryLimit      = 100
+	// maxUploadRetries bounds consecutive failures for one pending upload.
+	// Backoff reaches maxUploadRetryDelay after about a dozen attempts, so this
+	// is roughly a day of retrying: a transient outage still recovers, while a
+	// deterministic failure that is not classified as permanent eventually
+	// stops consuming retries and log space. Saving the file again clears the
+	// failure and allows a fresh attempt.
+	maxUploadRetries     = 100
+	snapshotHistoryLimit = 100
 )
 
 // --- state holders ---

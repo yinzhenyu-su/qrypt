@@ -25,6 +25,14 @@ type cachedDownload struct {
 	at  int64
 }
 
+// ReadProfile keeps bulk reads single-stream. Live measurements on this
+// provider showed concurrent sub-ranges slower and less stable than one
+// 4 MiB range. The capability stays declared so the profile can be retuned
+// after a future re-measurement.
+func (d *Driver) ReadProfile() drive.ReadProfile {
+	return drive.ReadProfile{BulkStreams: 1}
+}
+
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	if offset < 0 || size < 0 {
 		return nil, fmt.Errorf("123: read: offset and size must be non-negative: %w", drive.ErrInvalidInput)
@@ -279,6 +287,10 @@ func (d *Driver) fetchRange(ctx context.Context, target string, offset, size int
 		// Some CDN nodes ignore a Range request and return the whole object.
 		// Treating that as the requested window would hand the caller bytes
 		// from the wrong offset, so skip the prefix and cap the length.
+		if drive.StrictRangeFromContext(ctx) {
+			resp.Body.Close()
+			return nil, fmt.Errorf("123: provider ignored range: %w", drive.ErrUnsupported)
+		}
 		if offset > 0 || size > 0 {
 			logging.L.DebugfEvery("p123.read.range_ignored", time.Second,
 				"[123] CDN ignored Range for %s: offset=%d size=%d", driverutil.URL(req.URL), offset, size)

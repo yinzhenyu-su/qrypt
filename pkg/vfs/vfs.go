@@ -40,6 +40,9 @@ type Options struct {
 	UploadDelay   time.Duration
 	UploadWorkers int
 	DeleteDelay   time.Duration
+	// ReadProfile optionally overrides the driver's read scheduling defaults
+	// for this mount. Nil keeps the driver profile unchanged.
+	ReadProfile *drive.ReadProfile
 }
 
 type VFS struct {
@@ -53,11 +56,13 @@ type VFS struct {
 	// or an unclaimed generation that lost identity). They exist so the copy
 	// cost can be read off the "frozen generation copied" log line instead of
 	// being inferred from a profiler or from timing.
-	stagingCopies    atomic.Uint64
-	stagingCopyBytes atomic.Uint64
-	rootID           string
-	encrypted        bool
-	testEnabled      bool
+	stagingCopies       atomic.Uint64
+	stagingCopyBytes    atomic.Uint64
+	rootID              string
+	encrypted           bool
+	testEnabled         bool
+	readProfileInfo     drive.ReadProfileInfo
+	readProfileOverride *drive.ReadProfile
 
 	// Domain state is grouped by ownership: each runtime is initialized in
 	// New, mutated only by its domain's code paths, and shut down by the VFS
@@ -150,27 +155,30 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	profileInfo := drive.ResolveReadProfile(driver, opts.ReadProfile)
 	now := util.Now()
 	overlay, deleteState := view.NewOverlayDelayedDeleteState()
 	vs := view.NewView(opts.RootID, now, overlay)
 	done := make(chan struct{})
 	v := &VFS{
-		driver:        driver,
-		name:          opts.Name,
-		healthTracker: drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
-		counters:      &drive.Counters{},
-		rootID:        opts.RootID,
-		encrypted:     opts.Encrypted,
-		testEnabled:   opts.TestEnabled,
-		done:          done,
-		view:          vs,
-		read:          read.NewState(stores.readCacheStore),
-		deletes:       newDeleteService(deleteState, opts.DeleteDelay),
-		listing:       listing.NewState(),
-		activeDebug:   observe.NewActiveStore(opts.Name),
-		faults:        faultinject.NewRegistry(0),
-		pathLocks:     pathlock.New(),
-		closeDone:     make(chan struct{}),
+		driver:              driver,
+		name:                opts.Name,
+		healthTracker:       drive.NewHealthTracker(drive.DefaultHealthWindow, drive.DefaultMaxEvents),
+		counters:            &drive.Counters{},
+		rootID:              opts.RootID,
+		encrypted:           opts.Encrypted,
+		testEnabled:         opts.TestEnabled,
+		readProfileInfo:     profileInfo,
+		readProfileOverride: cloneReadProfile(opts.ReadProfile),
+		done:                done,
+		view:                vs,
+		read:                read.NewState(stores.readCacheStore),
+		deletes:             newDeleteService(deleteState, opts.DeleteDelay),
+		listing:             listing.NewState(),
+		activeDebug:         observe.NewActiveStore(opts.Name),
+		faults:              faultinject.NewRegistry(0),
+		pathLocks:           pathlock.New(),
+		closeDone:           make(chan struct{}),
 	}
 	v.uploads = newUploadDomain(v, stores.uploadStore, opts, done)
 	v.reader = read.NewReader(read.ReaderDeps{
@@ -179,6 +187,7 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		Observer: newVFSReadObserver(v.read, v.activeDebug),
 		Health:   vfsReadHealth{tracker: v.healthTracker},
 		Counters: v.counters,
+		Profile:  profileInfo.Profile,
 	})
 	v.lister = listing.NewLister(listing.ListerDeps{
 		Remote: newVFSListingRemote(v),
@@ -187,6 +196,28 @@ func New(driver drive.Driver, opts Options) (*VFS, error) {
 		Health: vfsListingHealth{tracker: v.healthTracker},
 	})
 	return v, nil
+}
+
+// ReadProfileForPath returns the optional per-mount override for a path.
+func (v *VFS) ReadProfileForPath(string) *drive.ReadProfile {
+	return cloneReadProfile(v.readProfileOverride)
+}
+
+// ReadProfileForMount returns the optional override when name matches this
+// mount; an empty name means "the only mount".
+func (v *VFS) ReadProfileForMount(name string) *drive.ReadProfile {
+	if name != "" && name != v.name {
+		return nil
+	}
+	return cloneReadProfile(v.readProfileOverride)
+}
+
+func cloneReadProfile(profile *drive.ReadProfile) *drive.ReadProfile {
+	if profile == nil {
+		return nil
+	}
+	clone := *profile
+	return &clone
 }
 
 // Start launches the upload workers and resumes pending uploads.

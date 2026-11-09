@@ -425,6 +425,27 @@ func (n *Namespace) resolve(path string) (*VFS, string, bool, error) {
 	return mount, rest, false, nil
 }
 
+// ReadProfileForPath returns the optional override of the mount owning path.
+func (n *Namespace) ReadProfileForPath(path string) *drive.ReadProfile {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil || root {
+		return nil
+	}
+	return mount.ReadProfileForPath(rest)
+}
+
+// ReadProfileForMount returns the optional override for a named mount.
+func (n *Namespace) ReadProfileForMount(name string) *drive.ReadProfile {
+	name = vfstypes.CleanMountName(name)
+	n.mu.RLock()
+	mount := n.mounts[name]
+	n.mu.RUnlock()
+	if mount == nil {
+		return nil
+	}
+	return mount.ReadProfileForMount(name)
+}
+
 func (n *Namespace) rootEntries() []drive.Entry {
 	n.mu.RLock()
 	defer n.mu.RUnlock()

@@ -26,6 +26,8 @@ saved benchmark reports. Benchmarks may write remote or VFS test data.`,
 	}
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugBenchCaseCmd(rt, "crud", "Run a CRUD driver benchmark")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugBenchCaseCmd(rt, "fs", "Run a VFS filesystem benchmark")))
+	cmd.AddCommand(withProbeSocketFlag(rt, newDebugBenchCaseCmd(rt, "read", "Run a raw driver read concurrency benchmark")))
+	cmd.AddCommand(withProbeSocketFlag(rt, newDebugBenchCaseCmd(rt, "upload", "Run an upload concurrency and chunk-size benchmark")))
 	cmd.AddCommand(withProbeSocketFlag(rt, newDebugBenchCaseCmd(rt, "xfer", "Run a transfer benchmark")))
 	cmd.AddCommand(newDebugBenchCompareCmd(rt))
 	return cmd
@@ -33,9 +35,11 @@ saved benchmark reports. Benchmarks may write remote or VFS test data.`,
 
 func newDebugBenchCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Command {
 	long := map[string]string{
-		"crud": "Run a CRUD benchmark against one mount, measuring create, read, update, and delete latency and throughput.",
-		"fs":   "Run a filesystem benchmark through the VFS layer on one mount, measuring write and read throughput at the requested size.",
-		"xfer": "Run a transfer benchmark from --source to --dest, measuring end-to-end throughput between two mounts.",
+		"crud":   "Run a CRUD benchmark against one mount, measuring create, read, update, and delete latency and throughput.",
+		"fs":     "Run a filesystem benchmark through the VFS layer on one mount, measuring write and read throughput at the requested size.",
+		"read":   "Upload a generated fixture and read it back with 1..N concurrent driver ranges, bypassing the VFS and encryption layers. Use it to tell a provider throughput ceiling apart from a qrypt read-pipeline bottleneck.",
+		"upload": "Upload 1..N files at once and sweep the driver's upload chunk size. It measures aggregate upload throughput and shows whether more threads or a different part size helps a slow mount.",
+		"xfer":   "Run a transfer benchmark from --source to --dest, measuring end-to-end throughput between two mounts.",
 	}[test]
 	example := "  qrypt probe bench " + test + " --mount cloud"
 	if test == "xfer" {
@@ -55,6 +59,15 @@ func newDebugBenchCaseCmd(rt cliruntime.Runtime, test, short string) *cobra.Comm
 	cmd.Flags().String("mount", "", "mount name for benchmark")
 	if test == "fs" {
 		cmd.Flags().String("size", "", "fs benchmark size in bytes, or k/m/g suffix")
+	}
+	if test == "read" {
+		cmd.Flags().String("size", "", "benchmark fixture size in bytes, or k/m/g suffix")
+		cmd.Flags().String("concurrency", "", "comma-separated stream counts (default 1,2,4,8)")
+	}
+	if test == "upload" {
+		cmd.Flags().String("size", "", "size of each uploaded file, or k/m/g suffix")
+		cmd.Flags().String("concurrency", "", "comma-separated simultaneous upload counts (default 1,2,4)")
+		cmd.Flags().String("chunk-size", "", "comma-separated part sizes to sweep, e.g. 4m,8m,16m")
 	}
 	if test == "xfer" {
 		cmd.Flags().String("source", "", "source mount for xfer benchmark")
@@ -112,6 +125,12 @@ func runDebugDriverBench(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("size"); flag != nil {
 		req.Size, _ = cmd.Flags().GetString("size")
 	}
+	if flag := cmd.Flags().Lookup("concurrency"); flag != nil {
+		req.Concurrency, _ = cmd.Flags().GetString("concurrency")
+	}
+	if flag := cmd.Flags().Lookup("chunk-size"); flag != nil {
+		req.ChunkSize, _ = cmd.Flags().GetString("chunk-size")
+	}
 	if flag := cmd.Flags().Lookup("source"); flag != nil {
 		req.Source, _ = cmd.Flags().GetString("source")
 		req.Source = contracttest.NormalizeMountName(req.Source)
@@ -159,6 +178,41 @@ func ValidateDriverBenchRequest(req contracttest.DriverTestRequest) error {
 		if req.Mount == "" {
 			return fmt.Errorf("fs benchmark requires --mount\n\nExample:\n  qrypt probe bench fs --mount cloud")
 		}
+	case "read":
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			return fmt.Errorf("read benchmark only supports --mount, --size, and --concurrency")
+		}
+		if req.Mount == "" {
+			return fmt.Errorf("read benchmark requires --mount\n\nExample:\n  qrypt probe bench read --mount cloud --size 64m")
+		}
+		if req.Size != "" {
+			size := contracttest.ParseXferSize(req.Size)
+			if size < 1 || size > contracttest.MaxUploadProbeSize {
+				return fmt.Errorf("read benchmark --size must be between 1 and %d bytes", int64(contracttest.MaxUploadProbeSize))
+			}
+		}
+		if _, err := contracttest.ParseConcurrencyList(req.Concurrency); err != nil {
+			return fmt.Errorf("read benchmark --concurrency: %w", err)
+		}
+	case "upload":
+		if req.Source != "" || req.Dest != "" || req.VFS {
+			return fmt.Errorf("upload benchmark only supports --mount, --size, --concurrency, and --chunk-size")
+		}
+		if req.Mount == "" {
+			return fmt.Errorf("upload benchmark requires --mount\n\nExample:\n  qrypt probe bench upload --mount cloud --size 64m")
+		}
+		if req.Size != "" {
+			size := contracttest.ParseXferSize(req.Size)
+			if size < 1 || size > contracttest.MaxUploadProbeSize {
+				return fmt.Errorf("upload benchmark --size must be between 1 and %d bytes", int64(contracttest.MaxUploadProbeSize))
+			}
+		}
+		if _, err := contracttest.ParseConcurrencyList(req.Concurrency); err != nil {
+			return fmt.Errorf("upload benchmark --concurrency: %w", err)
+		}
+		if _, err := contracttest.ParseChunkSizeList(req.ChunkSize); err != nil {
+			return fmt.Errorf("upload benchmark --chunk-size: %w", err)
+		}
 	case "xfer":
 		if req.Mount != "" {
 			return fmt.Errorf("xfer benchmark uses --source and --dest, not --mount\n\nExample:\n  qrypt probe bench xfer --source local --dest cloud")
@@ -173,7 +227,7 @@ func ValidateDriverBenchRequest(req contracttest.DriverTestRequest) error {
 		return fmt.Errorf("unknown benchmark %q", req.Test)
 	}
 	switch req.Test {
-	case "crud", "fs", "xfer":
+	case "crud", "fs", "read", "upload", "xfer":
 		if req.Samples < 1 {
 			return fmt.Errorf("--samples must be at least 1")
 		}

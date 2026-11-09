@@ -75,6 +75,15 @@ func (d *Driver) putSmall(ctx context.Context, parentID, name string, size int64
 func (d *Driver) putLarge(ctx context.Context, parentID, name string, size int64, body drive.ReadOnlyFile, sha256Hex string, progress drive.UploadProgress) (drive.Entry, error) {
 	identity := session.Identity{ParentID: parentID, Name: name, Size: size, Fingerprint: sha256Hex}
 	sessionKey := identity.Key()
+	chunkSize := d.chunkSize
+	if override, ok := drive.UploadProfileFromContext(ctx); ok && override.ChunkSize > 0 {
+		// OneDrive requires fragments to be multiples of 320 KiB.
+		const granularity = int64(320 << 10)
+		chunkSize = override.ChunkSize / granularity * granularity
+		if chunkSize < granularity {
+			chunkSize = granularity
+		}
+	}
 
 	uploadURL, resumeFrom, err := d.resumeUploadSession(ctx, identity, sessionKey)
 	if err != nil {
@@ -114,13 +123,13 @@ func (d *Driver) putLarge(ctx context.Context, parentID, name string, size int64
 		}
 	}
 	// 服务端范围可能只到分片中部（中断尾巴），回退到分片边界重传整个分片。
-	resumeFrom = (resumeFrom / d.chunkSize) * d.chunkSize
+	resumeFrom = (resumeFrom / chunkSize) * chunkSize
 	drive.ReportUploadProgress(progress, resumeFrom)
-	for offset := resumeFrom; offset < size; offset += d.chunkSize {
+	for offset := resumeFrom; offset < size; offset += chunkSize {
 		if err := ctx.Err(); err != nil {
 			return drive.Entry{}, err
 		}
-		partSize := d.chunkSize
+		partSize := chunkSize
 		if remaining := size - offset; remaining < partSize {
 			partSize = remaining
 		}

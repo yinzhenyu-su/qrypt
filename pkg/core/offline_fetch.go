@@ -557,7 +557,7 @@ func (r *offlineRun) transferFromStaging(ctx context.Context, update task.Update
 	// The provider's directory listing can lag the completed task; refresh
 	// before resolving the staged entry.
 	r.core.fs.RefreshPath(pathpkg.Dir(path))
-	reader, err := streamer.ReadStream(ctx, path)
+	reader, err := streamer.ReadStream(vfs.WithReadIntent(ctx, vfs.ReadIntentBulk), path)
 	if err != nil {
 		return 0, false, nil
 	}
