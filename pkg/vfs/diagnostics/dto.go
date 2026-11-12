@@ -100,9 +100,24 @@ type MountSnapshotRuntime struct {
 	HotChunkLimit int   `json:"hot_chunk_limit"`
 	RangeHitCount int   `json:"range_hit_count"`
 	RangeHitLimit int   `json:"range_hit_limit"`
+	// ReadTimeouts and PrefetchTimeouts count fetch timeouts since process
+	// start; LastTimeout names the most recent window that timed out.
+	ReadTimeouts     int               `json:"read_timeouts"`
+	PrefetchTimeouts int               `json:"prefetch_timeouts"`
+	LastTimeout      *MountReadTimeout `json:"last_timeout,omitempty"`
 	// Counters are cumulative since process start, unlike the bounded event
 	// histories above: they answer "how fast and how reliable overall".
 	Counters drive.CounterSnapshot `json:"counters"`
+}
+
+// MountReadTimeout identifies the most recent read fetch timeout.
+type MountReadTimeout struct {
+	CacheKey    string    `json:"cache_key,omitempty"`
+	WindowStart int64     `json:"window_start"`
+	WindowEnd   int64     `json:"window_end"`
+	Background  bool      `json:"background"`
+	Kind        string    `json:"kind"`
+	At          time.Time `json:"at"`
 }
 
 type DebugTimer struct {
@@ -143,6 +158,8 @@ type DebugReadProfile struct {
 	ParallelThreshold       int64  `json:"parallel_threshold"`
 	Source                  string `json:"source"`
 	Clamped                 bool   `json:"clamped,omitempty"`
+	FetchIdleTimeoutMS      int64  `json:"fetch_idle_timeout_ms"`
+	FetchTotalTimeoutMS     int64  `json:"fetch_total_timeout_ms"`
 }
 
 type DebugStagingReport struct {

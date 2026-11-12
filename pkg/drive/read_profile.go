@@ -1,5 +1,7 @@
 package drive
 
+import "time"
+
 // ReadProfile is a driver's recommended read scheduling defaults. The read
 // domain consumes it to pick stream counts, window sizes and prefetch depth.
 // Drivers that do not implement ReadProfiler get DefaultReadProfile, gated by
@@ -19,6 +21,14 @@ type ReadProfile struct {
 	// ParallelThreshold is the minimum file size that justifies splitting a
 	// window into parallel sub-ranges.
 	ParallelThreshold int64
+	// FetchIdleTimeout bounds how long one read fetch may go without
+	// producing a byte. It is the primary stall detector: a provider that
+	// keeps sending slowly is not interrupted. Zero uses the default.
+	FetchIdleTimeout time.Duration
+	// FetchTotalTimeout bounds one complete read fetch, including the
+	// request round trip and body drain. It is the backstop that stops a
+	// provider trickling bytes forever. Zero uses the default.
+	FetchTotalTimeout time.Duration
 }
 
 const (
@@ -30,6 +40,13 @@ const (
 	// DefaultParallelThreshold is 8 MiB: below it the request overhead and
 	// assembly cost outweigh the extra connections.
 	DefaultParallelThreshold = int64(8 << 20)
+	// DefaultFetchIdleTimeout is how long a read fetch may produce no bytes
+	// before it is aborted. It is deliberately conservative: it detects a
+	// stalled connection without penalizing a slow but moving provider.
+	DefaultFetchIdleTimeout = 30 * time.Second
+	// DefaultFetchTotalTimeout bounds one read fetch end to end so a body
+	// that drips bytes forever cannot hold a read slot.
+	DefaultFetchTotalTimeout = 5 * time.Minute
 )
 
 // DefaultReadProfile returns the conservative defaults used when a driver does
@@ -42,6 +59,8 @@ func DefaultReadProfile() ReadProfile {
 		ProbeWindowChunks:       DefaultProbeWindowChunks,
 		PrefetchDepth:           DefaultReadPrefetchDepth,
 		ParallelThreshold:       DefaultParallelThreshold,
+		FetchIdleTimeout:        DefaultFetchIdleTimeout,
+		FetchTotalTimeout:       DefaultFetchTotalTimeout,
 	}
 }
 
@@ -124,7 +143,9 @@ func hasReadProfileFields(profile ReadProfile) bool {
 		profile.InteractiveWindowChunks > 0 ||
 		profile.ProbeWindowChunks > 0 ||
 		profile.PrefetchDepth > 0 ||
-		profile.ParallelThreshold > 0
+		profile.ParallelThreshold > 0 ||
+		profile.FetchIdleTimeout > 0 ||
+		profile.FetchTotalTimeout > 0
 }
 
 func mergeReadProfile(base, override ReadProfile) ReadProfile {
@@ -145,6 +166,12 @@ func mergeReadProfile(base, override ReadProfile) ReadProfile {
 	}
 	if override.ParallelThreshold > 0 {
 		base.ParallelThreshold = override.ParallelThreshold
+	}
+	if override.FetchIdleTimeout > 0 {
+		base.FetchIdleTimeout = override.FetchIdleTimeout
+	}
+	if override.FetchTotalTimeout > 0 {
+		base.FetchTotalTimeout = override.FetchTotalTimeout
 	}
 	return base
 }
@@ -167,6 +194,17 @@ func normalizeReadProfile(profile ReadProfile) ReadProfile {
 	}
 	if profile.ParallelThreshold <= 0 {
 		profile.ParallelThreshold = DefaultParallelThreshold
+	}
+	if profile.FetchIdleTimeout <= 0 {
+		profile.FetchIdleTimeout = DefaultFetchIdleTimeout
+	}
+	if profile.FetchTotalTimeout <= 0 {
+		profile.FetchTotalTimeout = DefaultFetchTotalTimeout
+	}
+	// An idle bound longer than the total bound can never fire; clamping keeps
+	// the reported profile honest.
+	if profile.FetchIdleTimeout > profile.FetchTotalTimeout {
+		profile.FetchIdleTimeout = profile.FetchTotalTimeout
 	}
 	return profile
 }

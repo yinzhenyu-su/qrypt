@@ -163,6 +163,13 @@ is source metadata, not a driver capability.
 Drivers that benefit from hashes before upload can declare the needed algorithms
 with `drive.UploadHashRequirements`.
 
+Drivers may declare read scheduling defaults through `drive.ReadProfiler`
+(`drive.ReadProfile`): bulk streams, per-intent window sizes, prefetch depth,
+parallel threshold, and the read fetch bounds. `FetchIdleTimeout` bounds how
+long one fetch may produce no bytes; `FetchTotalTimeout` bounds one fetch end
+to end. Zero fields inherit the conservative defaults (30 s / 5 min), and a
+mount's `[mounts.read_profile]` override can only change streams and window.
+
 Construction-time hooks such as state-store installation and native bandwidth
 limiter installation are not runtime capabilities. They are used only during
 assembly.
@@ -205,7 +212,11 @@ another domain's internal state.
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
 - `pkg/vfs/read/reader.go`: read window load/coalescing, bounded parallel
-  sub-range fetch, and read-window driver read
+  sub-range fetch, read-window driver read, and the foreground fetch timeout
+  boundary (one idempotent retry after an idle timeout)
+- `pkg/vfs/read/fetch_timeout.go`: resolved fetch bounds attached to the read
+  context, plus foreground/prefetch timeout counters and the last timeout
+  window exposed by the debug snapshot
 - `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
 - `pkg/vfs/read/plan.go`: immutable `ReadPlan` and `PlanResolver`; explicit
   intent, max-stream hint, window, prefetch-depth, and cache-write defaults.
@@ -332,6 +343,34 @@ background tasks without a legacy adapter layer.
 
 VFS should not know provider API details. It should operate on `drive.Entry`
 and optional `drive` capabilities only.
+
+### Read fetch timeouts
+
+Reads have two lifetimes: cancellation ("the caller no longer needs the data")
+and a failure boundary ("the provider will not deliver"). The read layer owns
+the failure boundary; it must not depend on the FUSE caller passing a context
+with a deadline.
+
+- Each window fetch derives a context with the profile's `FetchTotalTimeout`,
+  and `pkg/drive.ReadBodyLimited` aborts the body when it produces no bytes for
+  `FetchIdleTimeout`. The idle bound is the primary stall detector; a slow but
+  moving provider keeps resetting it.
+- `pkg/drive/fetch_timeout.go` classifies both bounds as
+  `drive.FetchTimeoutError`, which unwraps to `context.DeadlineExceeded` so
+  `drive.ErrorCategory` reports `timeout` and FUSE maps the read to `EIO`.
+- A timed-out foreground window retries the Range GET once before failing the
+  whole window; partial data is never mixed into the result. One deadline
+  covers both attempts.
+- A timed-out prefetch is a silent cancellation: it records
+  `prefetch_cancel_reason=timeout`, releases its prefetch permit and window
+  entry, and never fails a caller read. A foreground read that was waiting on
+  that window takes the load over.
+- `ReadStream`, `drivecopy`, and direct-part reads use the same bounds
+  (`drive.ReadParallelWithProfile`), and drivers bound the response-header
+  phase through their HTTP transport.
+- Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; the
+  mount debug snapshot exposes `read_timeouts`, `prefetch_timeouts`, and
+  `last_timeout`.
 
 ## Upload State Flow
 

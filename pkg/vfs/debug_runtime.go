@@ -337,6 +337,8 @@ func (r vfsDebugSnapshotRuntime) ReadProfile() diagnostics.DebugReadProfile {
 		ParallelThreshold:       profile.ParallelThreshold,
 		Source:                  r.readProfileInfo.Source,
 		Clamped:                 r.readProfileInfo.Clamped,
+		FetchIdleTimeoutMS:      profile.FetchIdleTimeout.Milliseconds(),
+		FetchTotalTimeoutMS:     profile.FetchTotalTimeout.Milliseconds(),
 	}
 }
 
@@ -350,6 +352,19 @@ func (r vfsDebugSnapshotRuntime) Runtime() diagnostics.RuntimeSnapshot {
 		RangeHitLimit: read.RangeHitLimit,
 	}
 	out.WindowLoads, out.Prefetches, out.RangeHitCount = r.read.RuntimeStats()
+	foregroundTimeouts, prefetchTimeouts, lastTimeout := r.read.TimeoutStats()
+	out.ReadTimeouts = foregroundTimeouts
+	out.PrefetchTimeouts = prefetchTimeouts
+	if lastTimeout != nil {
+		out.LastTimeout = &diagnostics.DebugReadTimeout{
+			CacheKey:    lastTimeout.CacheKey,
+			WindowStart: lastTimeout.Start,
+			WindowEnd:   lastTimeout.End,
+			Background:  lastTimeout.Background,
+			Kind:        string(lastTimeout.Kind),
+			At:          lastTimeout.At,
+		}
+	}
 	out.HotChunkCount, out.HotChunkBytes = r.debugHotChunks()
 	out.Counters = r.counters.Snapshot()
 	return out

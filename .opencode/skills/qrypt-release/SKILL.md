@@ -8,7 +8,7 @@ description: Cut and verify a qrypt release. Use when asked to release a version
 ## Preconditions
 
 - Work on `main`, clean tree, synced with `origin/main`.
-- Go version matches `.github/workflows/ci.yaml` (`1.27.3` at the time of writing).
+- Go version matches `.github/workflows/ci.yaml` (`1.27.4` at the time of writing).
 - `gh auth status` succeeds; `gh repo view --json nameWithOwner` points at the
   qrypt repository.
 - Local CI passed before the release commit:

@@ -180,6 +180,27 @@ func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
 	return extra
 }
 
+// isReadFetchTimeout reports whether err represents a fetch timeout, whether
+// the read layer produced it or the driver/transport did (for example a
+// response-header timeout).
+func isReadFetchTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	return drive.IsFetchTimeout(err) || drive.ErrorCategory(err) == drive.ErrorCategoryTimeout
+}
+
+// ReadEventExtra returns the summary-event extra for one read, including the
+// wait/fetch timings and the cancel reason when a fetch timeout ended it.
+func ReadEventExtra(ctx context.Context, windowChunks int, err error) map[string]any {
+	extra := ReadPlanExtra(ctx, windowChunks)
+	fetchTimingFromContext(ctx).attach(extra)
+	if isReadFetchTimeout(err) {
+		extra["cancel_reason"] = "timeout"
+	}
+	return extra
+}
+
 func ExtraWithWindow(extra map[string]any, start, end int64) map[string]any {
 	merged := CloneExtra(extra)
 	if merged == nil {

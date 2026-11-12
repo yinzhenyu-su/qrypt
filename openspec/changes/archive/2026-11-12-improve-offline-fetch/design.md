@@ -37,11 +37,13 @@ See `proposal.md` — Why. Current state that shapes the approach:
 
 Resolve paths by walking the provider's real directory structure from the task's output root, using each
 result file's parent-directory identity. For Quark this is `pdir_fid` plus `/file/sort` listing, starting
-at the `fid` the submit response returns as the resource root.
+at the `dir_fid` the submit response returns as the resource root; the submit response has no top-level
+`fid` (captured 2026-11-12, see `capture-quark-offline.md`).
 
 - Alternative: rebuild the tree from parse `path`/`file_dirs` and join to result files by `(name,size)`.
   Rejected — it is least reliable exactly where mirroring matters (duplicate names), and needs a second
-  persisted list.
+  persisted list. The capture also shows `path` is torrent-relative and `file_dirs` omits the
+  `torrent_name` folder prefix, so this fallback would need an extra join anyway.
 - Alternative: have the provider echo a path in every observation. Not available in Quark's task
   endpoint; the driver must compute it anyway.
 - Listing the output root also surfaces files the result list omitted, scoped to the task's own root, so
@@ -65,7 +67,8 @@ accelerated session URL is still used for the transfer itself.
 - Alternative: always wait for the terminal state. Rejected — it drops the pre-terminal capability and
   needlessly delays instant-available sources.
 - Alternative: keep the short-circuit. Rejected — it can transfer a partial set and is the likely cause
-  of a single-file transfer for a multi-file source.
+  of a single-file transfer for a multi-file source. The capture confirmed this: a completed task
+  reported 1 of 11 staged files in `offdl_result.list`.
 
 ### D4. Validate and confine every derived path in Core
 

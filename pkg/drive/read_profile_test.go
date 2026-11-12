@@ -1,6 +1,9 @@
 package drive
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 type profilingDriver struct {
 	*FakeDriver
@@ -166,5 +169,43 @@ func TestResolveReadProfileInternalParallelForcesSingleStream(t *testing.T) {
 	}
 	if got.Profile.BulkWindowChunks != 16 {
 		t.Fatalf("BulkWindowChunks = %d, want override 16", got.Profile.BulkWindowChunks)
+	}
+}
+
+func TestDefaultReadProfileIncludesFetchTimeouts(t *testing.T) {
+	profile := DefaultReadProfile()
+	if profile.FetchIdleTimeout != DefaultFetchIdleTimeout {
+		t.Fatalf("FetchIdleTimeout = %s, want %s", profile.FetchIdleTimeout, DefaultFetchIdleTimeout)
+	}
+	if profile.FetchTotalTimeout != DefaultFetchTotalTimeout {
+		t.Fatalf("FetchTotalTimeout = %s, want %s", profile.FetchTotalTimeout, DefaultFetchTotalTimeout)
+	}
+}
+
+func TestReadProfileOfMergesFetchTimeouts(t *testing.T) {
+	driver := profilingDriver{
+		FakeDriver: NewFakeDriver(),
+		profile:    ReadProfile{FetchIdleTimeout: 2 * time.Minute},
+	}
+	got := ReadProfileOf(driver)
+	if got.FetchIdleTimeout != 2*time.Minute {
+		t.Fatalf("FetchIdleTimeout = %s, want the driver override", got.FetchIdleTimeout)
+	}
+	if got.FetchTotalTimeout != DefaultFetchTotalTimeout {
+		t.Fatalf("FetchTotalTimeout = %s, want the default", got.FetchTotalTimeout)
+	}
+}
+
+func TestFetchTimeoutsZeroFallsBackToDefaults(t *testing.T) {
+	got := ReadProfile{}.FetchTimeouts()
+	if got.Idle != DefaultFetchIdleTimeout || got.Total != DefaultFetchTotalTimeout {
+		t.Fatalf("FetchTimeouts() = %+v, want defaults", got)
+	}
+}
+
+func TestFetchTimeoutsClampIdleToTotal(t *testing.T) {
+	got := ReadProfile{FetchIdleTimeout: 10 * time.Minute, FetchTotalTimeout: time.Minute}.FetchTimeouts()
+	if got.Idle != time.Minute {
+		t.Fatalf("Idle = %s, want it clamped to the total bound", got.Idle)
 	}
 }

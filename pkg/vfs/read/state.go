@@ -53,10 +53,13 @@ type windowLoad struct {
 	start   int64
 	end     int64
 	streams int
-	done    chan struct{}
-	data    map[int64][]byte
-	extra   map[string]any
-	err     error
+	// prefetch marks a speculative load. A timed-out prefetch is a silent
+	// cancellation for foreground readers, not a read failure.
+	prefetch bool
+	done     chan struct{}
+	data     map[int64][]byte
+	extra    map[string]any
+	err      error
 }
 
 // windowState coalesces concurrent reads of the same cache window.
@@ -290,6 +293,7 @@ type State struct {
 	fastPath  *fastPathState
 	windows   *windowState
 	scopes    *ScopeRegistry
+	timeouts  timeoutStats
 	// override is a measurement-only plan override (probe test read). It is
 	// nil in normal operation.
 	override atomic.Pointer[PlanOverride]

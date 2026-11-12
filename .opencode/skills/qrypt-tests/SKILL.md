@@ -22,7 +22,7 @@ description: Run qrypt tests manually — local unit/race/coverage/fuzz gates, r
 
 ## 0. 前置检查
 
-- Go 版本必须与 `.github/workflows/ci.yaml` 的 `go-version` 一致（当前 `1.27.3`）：`go version`。
+- Go 版本必须与 `.github/workflows/ci.yaml` 的 `go-version` 一致（当前 `1.27.4`）：`go version`。
 - CI 操作需要 `gh auth status` 通过且有仓库权限；仓库用 `gh repo view --json nameWithOwner` 确认。
 - 真实网盘测试要求：`qrypt.toml` 中存在该 `[[mounts]]`、`test_enabled = true`、凭证有效（内联 params 或引用的 `[[credentials]]`）。
 
