@@ -23,14 +23,27 @@ type OverlaySnapshot struct {
 // RuntimeSnapshot is the raw read-runtime counters a mount snapshot is
 // assembled from.
 type RuntimeSnapshot struct {
-	WindowLoads   int
-	Prefetches    int
-	HotChunkCount int
-	HotChunkBytes int64
-	RangeHitCount int
-	HotChunkLimit int
-	RangeHitLimit int
-	Counters      drive.CounterSnapshot
+	WindowLoads      int
+	Prefetches       int
+	HotChunkCount    int
+	HotChunkBytes    int64
+	RangeHitCount    int
+	HotChunkLimit    int
+	RangeHitLimit    int
+	ReadTimeouts     int
+	PrefetchTimeouts int
+	LastTimeout      *DebugReadTimeout
+	Counters         drive.CounterSnapshot
+}
+
+// DebugReadTimeout describes the most recent read fetch timeout.
+type DebugReadTimeout struct {
+	CacheKey    string
+	WindowStart int64
+	WindowEnd   int64
+	Background  bool
+	Kind        string
+	At          time.Time
 }
 
 // SnapshotRuntime is the full-mount snapshot surface (consumer side).
@@ -116,6 +129,18 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Runtime.HotChunkLimit = runtimeState.HotChunkLimit
 	snapshot.Runtime.RangeHitCount = runtimeState.RangeHitCount
 	snapshot.Runtime.RangeHitLimit = runtimeState.RangeHitLimit
+	snapshot.Runtime.ReadTimeouts = runtimeState.ReadTimeouts
+	snapshot.Runtime.PrefetchTimeouts = runtimeState.PrefetchTimeouts
+	if last := runtimeState.LastTimeout; last != nil {
+		snapshot.Runtime.LastTimeout = &MountReadTimeout{
+			CacheKey:    last.CacheKey,
+			WindowStart: last.WindowStart,
+			WindowEnd:   last.WindowEnd,
+			Background:  last.Background,
+			Kind:        last.Kind,
+			At:          last.At,
+		}
+	}
 	snapshot.Runtime.Counters = runtimeState.Counters
 
 	return snapshot

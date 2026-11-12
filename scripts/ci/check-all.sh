@@ -42,14 +42,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# CI pins Go 1.27.3; any newer 1.27.x patch also satisfies the toolchain line.
-case "$(go env GOVERSION)" in
+# CI pins Go 1.27.4; any newer 1.27.x patch also satisfies the toolchain line.
+goversion="$(go env GOVERSION)"
+case "$goversion" in
   go1.27.*) ;;
   *)
-    echo "CI requires go1.27.x; found $(go env GOVERSION)" >&2
+    echo "CI requires go1.27.4 or newer 1.27.x; found $goversion" >&2
     exit 1
     ;;
 esac
+if [ "${goversion##*.}" -lt 4 ]; then
+  echo "CI requires go1.27.4 or newer 1.27.x; found $goversion" >&2
+  exit 1
+fi
 
 platform="$(uname -s)"
 if [ "$platform" = "Linux" ] && ! pkg-config --exists fuse3 2>/dev/null; then

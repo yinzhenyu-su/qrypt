@@ -46,7 +46,7 @@
 - [x] 4.6 Add `offline cancel`, `offline retry`, and `offline wait`; verify exit codes for success, failure, cancellation, usage, and interrupt, that waiting never cancels a task, and that wait reconnects after a Core restart.
 - [x] 4.7 Route offline commands through the Core-owned control surface and report a clear runtime error when no Core is running; verify no command requires a provider name, driver name, socket path, or provider task id.
 - [x] 4.8 Keep local retrieval in `fs get` and document the two-stage flow; verify a completed offline task's remote destination can still be passed to `fs get` to produce a local file.
-- [ ] 4.9 Add `offline fetch --workers` (1–16, default 4) and `--chunk-size` (1–64 MiB, default 8 MiB), persist the chosen values in the task detail so a recovered fetch keeps them, and reject out-of-range values or tuning without a download destination as usage errors; document the flags, defaults, and the measured concurrency/chunk bounds.
+- [x] 4.9 Add `offline fetch --workers` (1–16, default 4) and `--chunk-size` (1–64 MiB, default 8 MiB), persist the chosen values in the task detail so a recovered fetch keeps them, and reject out-of-range values or tuning without a download destination as usage errors; document the flags, defaults, and the measured concurrency/chunk bounds.
 
 ## 5. Task API, events, and documentation
 

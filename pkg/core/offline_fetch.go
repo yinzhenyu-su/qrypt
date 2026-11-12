@@ -127,13 +127,9 @@ func (r *offlineRun) fetchTargets(ctx context.Context) ([]offlineFetchTarget, bo
 		if len(files) != 1 {
 			return nil, false, offlinePathInvalidError("destination %q names a single file but %d results were selected", r.detail.DownloadTo, len(files))
 		}
-		components, err := r.placementComponents(files[0])
-		if err != nil {
-			return nil, false, err
-		}
-		if len(components) > 1 {
-			return nil, false, offlinePathInvalidError("destination %q names a single file but the staged path %q has directories", r.detail.DownloadTo, stagedPathOf(files[0]))
-		}
+		// An explicit file destination wins over the staged layout: the caller
+		// named the exact path, so a resource folder in the staged path is not
+		// recreated here. Directory destinations still mirror the staged path.
 		target := offlineFetchTarget{file: files[0], target: base, size: files[0].Size}
 		if r.detail.DownloadMount == "" {
 			target.localRoot = filepath.Dir(base)
@@ -777,9 +773,9 @@ func (r *offlineRun) cleanupStagedRootFolder(ctx context.Context, removed map[st
 	if rootID == "" || folder == "" {
 		return
 	}
-	for attempt := 0; attempt < offlineVerifyAttempts; attempt++ {
+	for attempt := 0; attempt < offlineFolderVerifyAttempts; attempt++ {
 		if attempt > 0 {
-			if err := sleepContext(ctx, offlineVerifyInterval); err != nil {
+			if err := sleepContext(ctx, offlineFolderVerifyInterval); err != nil {
 				return
 			}
 			r.core.fs.RefreshPath(folder)

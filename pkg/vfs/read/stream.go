@@ -96,6 +96,8 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 	}
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	streamCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read_stream", Name: path})
+	streamCtx = r.withFetchTimeouts(streamCtx)
+	streamCtx, timing := withFetchTiming(streamCtx)
 	plan := r.resolvePlan(ctx, entry, PrefetchChunks)
 	streamCtx = WithReadPlan(streamCtx, plan)
 	streamCtx = WithGrantedStreams(streamCtx, 1)
@@ -110,6 +112,7 @@ func (r *Reader) ReadStream(ctx context.Context, path string) (io.ReadCloser, er
 		started:      started,
 		hitsBefore:   hitsBefore,
 		missesBefore: missesBefore,
+		timing:       timing,
 	}, nil
 }
 
@@ -126,6 +129,9 @@ type chunkedStreamReader struct {
 	bufPos    int
 	bytesRead int64
 	closed    bool
+	// readErr is the first error the stream surfaced, recorded with the
+	// summary event on Close so a timed-out refill is visible as a failure.
+	readErr error
 
 	prefetchMu     sync.Mutex
 	prefetching    bool
@@ -138,6 +144,7 @@ type chunkedStreamReader struct {
 	started      time.Time
 	hitsBefore   int64
 	missesBefore int64
+	timing       *fetchTiming
 }
 
 func (r *chunkedStreamReader) Read(p []byte) (int, error) {
@@ -150,6 +157,9 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 	}
 	if r.bufPos >= len(r.buf) {
 		if err := r.refill(ctx); err != nil {
+			if r.readErr == nil {
+				r.readErr = err
+			}
 			return 0, err
 		}
 		if r.bufPos >= len(r.buf) {
@@ -166,6 +176,7 @@ func (r *chunkedStreamReader) ReadContext(ctx context.Context, p []byte) (int, e
 // refill loads the chunk containing r.pos. A short or empty chunk ends the
 // stream (the file has no more data), matching readRange's stop condition.
 func (r *chunkedStreamReader) refill(ctx context.Context) error {
+	ctx = ensureFetchTiming(ctx, r.timing)
 	r.waitPrefetch()
 	r.buf = nil
 	r.bufPos = 0
@@ -270,7 +281,10 @@ func (r *chunkedStreamReader) Close() error {
 }
 
 func (r *chunkedStreamReader) finish(bytes int64, readErr error) {
+	if readErr == nil {
+		readErr = r.readErr
+	}
 	r.reader.observer.DebugFinishActive(r.activeID)
 	hitsAfter, missesAfter := r.reader.observer.DebugCacheCounters()
-	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, ReadPlanExtra(r.ctx, 0), readErr)
+	r.reader.observer.DebugRecordRead(r.opID, r.path, r.entry.ID, 0, 0, bytes, "remote", hitsAfter-r.hitsBefore, missesAfter-r.missesBefore, 0, r.started, ReadEventExtra(r.ctx, 0, readErr), readErr)
 }

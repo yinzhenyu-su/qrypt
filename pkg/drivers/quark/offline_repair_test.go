@@ -268,8 +268,8 @@ func TestQuarkOfflineLayoutTerminalFailureWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOfflineDownload: %v", err)
 	}
-	if !created.Available {
-		t.Fatal("instant resource should carry cached availability")
+	if created.Available {
+		t.Fatal("availability must not be claimed before the staged layout is resolved")
 	}
 	observation, err := driver.GetOfflineDownload(context.Background(), "task-terminal-failure")
 	if err != nil {

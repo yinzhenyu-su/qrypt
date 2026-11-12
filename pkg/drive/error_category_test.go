@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 )
 
 type timeoutError struct{}
@@ -27,6 +28,8 @@ func TestErrorCategory(t *testing.T) {
 		{name: "cancelled", err: context.Canceled, want: ErrorCategoryCancelled},
 		{name: "deadline", err: context.DeadlineExceeded, want: ErrorCategoryTimeout},
 		{name: "net timeout", err: timeoutError{}, want: ErrorCategoryTimeout},
+		{name: "fetch timeout", err: &FetchTimeoutError{Kind: FetchTimeoutIdle, Limit: time.Second}, want: ErrorCategoryTimeout},
+		{name: "wrapped fetch timeout", err: fmt.Errorf("vfs: read: %w", &FetchTimeoutError{Kind: FetchTimeoutTotal, Limit: time.Minute}), want: ErrorCategoryTimeout},
 		{name: "space unsupported", err: ErrSpaceUnsupported, want: ErrorCategoryUnsupported},
 		{name: "not found", err: fmt.Errorf("wrapped: %w", fs.ErrNotExist), want: ErrorCategoryNotFound},
 		{name: "auth sentinel", err: fmt.Errorf("quark list: %w", ErrAuth), want: ErrorCategoryAuth},
@@ -48,6 +51,12 @@ func TestErrorCategory(t *testing.T) {
 				t.Fatalf("ErrorCategory(%v) = %q, want %q", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRetryableCategoryTreatsFetchTimeoutAsTransient(t *testing.T) {
+	if !RetryableCategory(ErrorCategory(&FetchTimeoutError{Kind: FetchTimeoutIdle})) {
+		t.Fatal("fetch timeout must be retryable")
 	}
 }
 

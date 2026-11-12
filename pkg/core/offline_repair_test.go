@@ -725,3 +725,89 @@ func TestOfflineRestoreLayoutFromPersistedDetail(t *testing.T) {
 		t.Fatalf("restored layout = %+v, want %+v", restored[0], want)
 	}
 }
+
+// TestOfflineRestoreRepairsMissingProviderRoot verifies an older task that
+// persisted an empty root with available=true is repaired on recovery: the
+// stale availability claim is dropped and the parse destination is recovered
+// so the staged layout can be rebuilt instead of transferring a thin list.
+func TestOfflineRestoreRepairsMissingProviderRoot(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeOfflineProvider()
+	provider.files = []drive.OfflineFile{
+		{Name: "ep1.mkv", Size: 3, RemoteID: "0/downloads/release/ep1.mkv", Path: "release/ep1.mkv"},
+		{Name: "readme.txt", Size: 2, RemoteID: "0/downloads/release/readme.txt", Path: "release/readme.txt"},
+	}
+	if err := provider.Seed(map[string]string{
+		"downloads/":                   "",
+		"downloads/release/":           "",
+		"downloads/release/ep1.mkv":    "abc",
+		"downloads/release/readme.txt": "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	provider.observations["ptask-old-root"] = []drive.OfflineDownload{
+		{ID: "ptask-old-root", State: drive.OfflineStateSucceeded, Available: true, Files: provider.files},
+	}
+	provider.mu.Unlock()
+
+	stateDir := t.TempDir()
+	detail := offlineDetail{
+		Source:         "magnet:?xt=urn:btih:old-root",
+		SourceKind:     "magnet",
+		SourceIdentity: "magnet:btih:old-root",
+		ParseMount:     "fake",
+		ParseDir:       "/downloads",
+		ParseRemoteID:  "stale-root",
+		Selection:      offlineDetailSelection{Mode: "all"},
+		ProviderID:     "ptask-old-root",
+		Available:      true,
+		DownloadTo:     filepath.Join(t.TempDir(), "out/"),
+		Phase:          offlinePhaseStaging,
+	}
+	taskBefore := task.Task{
+		ID:           "offline-old-root",
+		Type:         task.TypeOfflineFetch,
+		Operation:    task.OperationDownload,
+		State:        task.StateRunning,
+		Capabilities: task.Capabilities{Persistent: true, Cancelable: true},
+		Detail:       map[string]any{task.OfflineDetailKey: detail},
+	}
+	writeJournalEntry(t, stateDir, taskBefore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	fs, err := vfs.New(provider, vfs.Options{Name: "fake", StorageDir: filepath.Join(t.TempDir(), "cache")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "fake", FS: fs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopTestVFS(t, ns) })
+	ns.Start(ctx)
+	c := &Core{fs: ns, runtimeLayout: RuntimeLayout{StateDir: stateDir}, offlinePollInterval: 5 * time.Millisecond}
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
+	if _, err := c.taskManager(); err != nil {
+		t.Fatal(err)
+	}
+
+	done := waitCoreTask(t, c, "offline-old-root")
+	if done.State != task.StateSucceeded {
+		t.Fatalf("recovered fetch state = %s (%+v), want success", done.State, done.Error)
+	}
+	provider.mu.Lock()
+	restored := append([]drive.OfflineLayout(nil), provider.restored...)
+	provider.mu.Unlock()
+	if len(restored) != 1 {
+		t.Fatalf("restored layouts = %+v, want one", restored)
+	}
+	if restored[0].RootID != "" || restored[0].Available {
+		t.Fatalf("restored layout = %+v, want an unresolved root without availability", restored[0])
+	}
+	if restored[0].ParentID == "stale-root" || restored[0].ParentID == "" {
+		t.Fatalf("restored parent = %q, want the re-resolved parse destination", restored[0].ParentID)
+	}
+}

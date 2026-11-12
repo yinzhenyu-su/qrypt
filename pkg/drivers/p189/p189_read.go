@@ -8,9 +8,16 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 )
+
+// downloadTransport bounds the first-packet phase of a content request. The
+// read layer owns the body idle bound; this transport only keeps a connection
+// that never answers from hanging before the body exists.
+var downloadTransport = httputil.DefaultTransport(30 * time.Second)
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	if offset < 0 || size < 0 {
@@ -39,7 +46,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 	} else if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	resp, err := (&http.Client{}).Do(req)
+	resp, err := (&http.Client{Transport: downloadTransport}).Do(req)
 	if err != nil {
 		d.cl.recordMetric(ctx, drive.MetricEvent{
 			Operation: "download",
@@ -80,7 +87,8 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 
 func (d *Driver) resolveDownloadURL(ctx context.Context, rawURL string) (string, error) {
 	client := &http.Client{
-		Jar: d.cl.hc.Jar,
+		Jar:       d.cl.hc.Jar,
+		Transport: downloadTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

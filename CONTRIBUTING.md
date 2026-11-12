@@ -10,7 +10,7 @@
 
 ## 开发环境
 
-- Go 1.27.x（CI 使用 1.27.3）。
+- Go 1.27.x（CI 使用 1.27.4）。
 - 只有 `qrypt mount` 需要 FUSE：macOS 用 macFUSE，Linux 用 libfuse3/fuse3，Windows 用 WinFsp；`qrypt fs` 不需要。
 - 安装本地 hooks：
 

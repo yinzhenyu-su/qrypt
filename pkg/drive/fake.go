@@ -101,6 +101,10 @@ type ReadBehavior struct {
 	// BodyGate blocks the first body read until a token arrives or ctx is
 	// done. Tests use it to hold a read in flight while they delete or close.
 	BodyGate <-chan struct{}
+	// BodyFunc replaces the in-memory body with a scripted one. It receives
+	// the requested span and must observe ctx cancellation like a provider
+	// body. Tests use it for stalled, paced, and trickling providers.
+	BodyFunc func(ctx context.Context, data []byte) io.ReadCloser
 }
 
 // ReadCall records one Driver.Read invocation. Started and Finished bracket
@@ -522,7 +526,10 @@ func (d *FakeDriver) Read(ctx context.Context, entry Entry, offset, size int64) 
 	}
 
 	reader := io.NopCloser(bytes.NewReader(data[start:end]))
-	if behavior.BodyGate != nil {
+	switch {
+	case behavior.BodyFunc != nil:
+		reader = behavior.BodyFunc(ctx, data[start:end])
+	case behavior.BodyGate != nil:
 		reader = &fakeBodyReadCloser{
 			ctx:    ctx,
 			reader: bytes.NewReader(data[start:end]),

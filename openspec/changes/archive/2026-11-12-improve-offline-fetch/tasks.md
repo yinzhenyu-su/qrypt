@@ -1,10 +1,10 @@
 ## 1. Provider capture and verification
 
-- [ ] 1.1 Capture a real Quark parse response and record the meaning of `path`, `file_dirs`, and `torrent_name`; verify the recorded sample states whether `path` is torrent-relative or cloud-absolute
-- [ ] 1.2 Capture a real Quark submit response and record what `fid` and `dir_fid` name; verify the sample states whether `fid` is the resource root and whether a single-file source gets a folder
-- [ ] 1.3 Capture a completed Quark `/task` observation for a multi-file torrent and record whether `offdl_result.list` omits any staged file; verify the sample shows the reported entries against the parsed list
-- [ ] 1.4 Capture `/file/sort` for a staging directory and record whether entries expose `pdir_fid` and whether subdirectories can be listed; verify the sample confirms the walk-down from the output root is feasible
-- [ ] 1.5 Reconcile the captures with design D1/D3 and record any deviation; verify `design.md` is updated if the approach must change, otherwise record "no change"
+- [x] 1.1 Capture a real Quark parse response and record the meaning of `path`, `file_dirs`, and `torrent_name`; verify the recorded sample states whether `path` is torrent-relative or cloud-absolute
+- [x] 1.2 Capture a real Quark submit response and record what `fid` and `dir_fid` name; verify the sample states whether `fid` is the resource root and whether a single-file source gets a folder
+- [x] 1.3 Capture a completed Quark `/task` observation for a multi-file torrent and record whether `offdl_result.list` omits any staged file; verify the sample shows the reported entries against the parsed list
+- [x] 1.4 Capture `/file/sort` for a staging directory and record whether entries expose `pdir_fid` and whether subdirectories can be listed; verify the sample confirms the walk-down from the output root is feasible
+- [x] 1.5 Reconcile the captures with design D1/D3 and record any deviation; verify `design.md` is updated if the approach must change, otherwise record "no change"
 
 ## 2. Provider-neutral contract
 
@@ -53,3 +53,12 @@
 
 - [x] 8.1 Extend fetch cleanup to also remove the resource folder the task created once every file under it is one this cleanup removed; verify tests for a multi-file folder (removed), nested folders (removed), an unrelated entry (folder kept), files staged directly in the parse destination (parse destination untouched), and `--keep-cloud` (folder kept)
 - [x] 8.2 Run the project CI check and the layered test scripts; verify they pass
+
+## 7. Post-capture corrections
+
+- [x] 7.1 Resolve the Quark layout root from `dir_fid` when submit omits `fid`; verify with a real instant-cached Sintel add (11 result files) and a fake single-file shape.
+- [x] 7.2 Gate availability on a resolved staged layout and repair older tasks with an empty `provider_root_id`/stale `available` on recovery.
+- [x] 7.3 Make an explicit single-file `--download-to` path win over the staged layout while directory destinations keep mirroring; verify the explicit path and the absence of a leaked resource folder.
+- [x] 7.4 Make `offline inspect` report pending/empty parses instead of `parse_usable=true` with no files.
+- [x] 7.5 Verify a real Sintel fetch mirrors `Sintel/` with all 11 files and reports 11/11 items/bytes.
+- [x] 7.6 Verify the resource-folder cleanup when the provider listing lags the file deletes; the real run now removes the empty `Sintel/` folder within the extended cleanup window, leaving only the parse destination.

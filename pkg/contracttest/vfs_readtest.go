@@ -30,6 +30,12 @@ const (
 	DefaultMountedSeekWarmupChunks         = 2
 	MaxMountedSeekWarmupChunks             = 16
 	DefaultMountedSeekOverlapTimeout       = 2 * time.Second
+	// DefaultMountedReadCallTimeout bounds one read call on the mounted file
+	// so a broken mount fails the probe instead of hanging it. It is longer
+	// than the read layer's fetch bounds (including one 90 s idle retry) so a
+	// throttled provider reports its own timeout, while a FUSE callback that
+	// never returns still fails within ten minutes.
+	DefaultMountedReadCallTimeout = 10 * time.Minute
 )
 
 type MountedReadTestResult struct {
@@ -77,6 +83,11 @@ type MountedReadMeasurement struct {
 	VFSReadCalls   int                `json:"vfs_read_calls"`
 	TraversedVFS   bool               `json:"traversed_vfs"`
 	OSCacheControl string             `json:"os_cache_control"`
+	// TimedOut reports that the probe's own read-call timeout fired. The VFS
+	// fetch timeout normally produces an I/O error first.
+	TimedOut      bool  `json:"timed_out,omitempty"`
+	TimeoutOffset int64 `json:"timeout_offset,omitempty"`
+	TimeoutMS     int64 `json:"timeout_ms,omitempty"`
 	// ContentHash is the SHA-256 of the measured bytes. It is recorded so a
 	// measurement over an existing file can verify that later samples read
 	// the same content even though the fixture hash is unknown up front.
@@ -133,6 +144,8 @@ type MountedSeekMeasurement struct {
 	ActiveRequested   int64   `json:"active_requested,omitempty"`
 	WarmupOffset      int64   `json:"warmup_offset,omitempty"`
 	WarmupChunks      int     `json:"warmup_chunks,omitempty"`
+	TimedOut          bool    `json:"timed_out,omitempty"`
+	TimeoutMS         int64   `json:"timeout_ms,omitempty"`
 }
 
 type MountedSeekModeSummary struct {
@@ -558,7 +571,16 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		default:
 		}
 		callStarted := time.Now()
-		n, readErr := file.Read(buf)
+		n, timedOut, readErr := readMountedCall(file, buf, DefaultMountedReadCallTimeout)
+		if timedOut {
+			waited := time.Since(callStarted)
+			measurement.TimedOut = true
+			measurement.TimeoutOffset = measurement.Bytes
+			measurement.TimeoutMS = waited.Milliseconds()
+			return measurement, started, fmt.Errorf(
+				"mounted read timed out after %s: mount=%s path=%s offset=%d",
+				waited.Round(time.Millisecond), mount, path, measurement.Bytes)
+		}
 		if n > 0 {
 			callLatencies = append(callLatencies, elapsedMicros(callStarted))
 			if firstByteAt.IsZero() {
@@ -615,6 +637,47 @@ func measureMountedFile(ctx context.Context, fs vfs.FileSystem, mount, path, exp
 		return measurement, started, fmt.Errorf("mounted read content hash mismatch")
 	}
 	return measurement, started, nil
+}
+
+type mountedReadResult struct {
+	n   int
+	err error
+}
+
+// readMountedCall reads one block from the mounted file, abandoning the wait
+// after timeout. The goroutine is left to finish when the mount eventually
+// returns; the probe reports the structured failure instead of hanging.
+func readMountedCall(file *os.File, buf []byte, timeout time.Duration) (int, bool, error) {
+	ch := make(chan mountedReadResult, 1)
+	go func() {
+		n, err := file.Read(buf)
+		ch <- mountedReadResult{n: n, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-ch:
+		return result.n, false, result.err
+	case <-timer.C:
+		return 0, true, nil
+	}
+}
+
+// readMountedFull is readMountedCall for io.ReadFull.
+func readMountedFull(file *os.File, buf []byte, timeout time.Duration) (int, bool, error) {
+	ch := make(chan mountedReadResult, 1)
+	go func() {
+		n, err := io.ReadFull(file, buf)
+		ch <- mountedReadResult{n: n, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-ch:
+		return result.n, false, result.err
+	case <-timer.C:
+		return 0, true, nil
+	}
 }
 
 func mountedSeekOffsets(fileSize, probeSize int64, count int) []int64 {
@@ -781,8 +844,15 @@ func measureMountedSeekOnFile(ctx context.Context, fs vfs.FileSystem, mount stri
 
 	buf := make([]byte, int(size))
 	loadStarted := time.Now()
-	n, readErr := io.ReadFull(file, buf)
+	n, timedOut, readErr := readMountedFull(file, buf, DefaultMountedReadCallTimeout)
 	loadFinished := time.Now()
+	if timedOut {
+		waited := loadFinished.Sub(loadStarted)
+		measurement.TimedOut = true
+		measurement.TimeoutMS = waited.Milliseconds()
+		return fmt.Errorf("mounted seek read timed out after %s: mount=%s offset=%d",
+			waited.Round(time.Millisecond), mount, offset)
+	}
 	loadDuration := loadFinished.Sub(loadStarted)
 	measurement.Bytes = int64(n)
 	measurement.LoadMicros = measuredMicros(loadDuration)
@@ -1109,7 +1179,7 @@ func bytesPerSecond(bytes int64, duration time.Duration) int64 {
 func mountedReadStep(measurement MountedReadMeasurement, err error) FSTestStep {
 	step := fsStep(measurement.Mode + "_read")
 	step.Input = map[string]any{"sample": measurement.Sample}
-	step.Actual = map[string]any{"bytes": measurement.Bytes, "open_us": measurement.OpenMicros, "ttfb_us": measurement.TTFBMicros, "end_to_end_bps": measurement.EndToEndBPS, "steady_bps": measurement.SteadyBPS, "peak_1s_bps": measurement.PeakWindowBPS, "read_calls": measurement.ReadCalls, "vfs_read_calls": measurement.VFSReadCalls, "traversed_vfs": measurement.TraversedVFS, "cache_hit_rate": measurement.CacheHitRate}
+	step.Actual = map[string]any{"bytes": measurement.Bytes, "open_us": measurement.OpenMicros, "ttfb_us": measurement.TTFBMicros, "end_to_end_bps": measurement.EndToEndBPS, "steady_bps": measurement.SteadyBPS, "peak_1s_bps": measurement.PeakWindowBPS, "read_calls": measurement.ReadCalls, "vfs_read_calls": measurement.VFSReadCalls, "traversed_vfs": measurement.TraversedVFS, "cache_hit_rate": measurement.CacheHitRate, "timed_out": measurement.TimedOut, "timeout_offset": measurement.TimeoutOffset, "timeout_ms": measurement.TimeoutMS}
 	step.finish(time.Now().Add(-time.Duration(measurement.DurationMicros)*time.Microsecond), err)
 	return step
 }
@@ -1128,6 +1198,7 @@ func mountedSeekStep(measurement MountedSeekMeasurement, err error) FSTestStep {
 		"overlap": measurement.Overlap, "overlap_wait_us": measurement.OverlapWaitMicros,
 		"active_requests": measurement.ActiveRequests, "active_kind": measurement.ActiveKind,
 		"active_offset": measurement.ActiveOffset, "active_requested": measurement.ActiveRequested,
+		"timed_out": measurement.TimedOut, "timeout_ms": measurement.TimeoutMS,
 	}
 	step.finish(time.Now().Add(-time.Duration(measurement.TotalMicros)*time.Microsecond), err)
 	return step

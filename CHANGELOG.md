@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- feat(vfs): bound read fetches with an idle and total timeout, retry a timed-out Range GET once, and cancel timed-out prefetches silently
 - feat(vfs): add read intents, driver read profiles, and bounded parallel range reads
 - feat(vfs): cancel speculative prefetch on invalidation, session release, and caller cancel
 - feat(vfs): skip durable read-cache writes for bulk and probe reads
@@ -14,6 +15,7 @@
 - feat(vfs): prefetch the next read-stream window
 
 ### Bug fixes
+- fix(vfs): fail a stalled provider read with a timeout instead of blocking the mount, and bound the read probe's own waits
 - fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
 - fix(drivers): upload Quark content hashes in lowercase and answer EOF reads correctly
 - fix(crypt): give the raw driver the encrypted size so the final block decrypts
