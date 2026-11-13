@@ -131,6 +131,11 @@ type PendingStore struct {
 	// write-ahead fault injection).
 	journalFail func() error
 	compactFail func() error
+	// afterJournalSync, when non-nil, runs after every journal write became
+	// durable. Verification-only instrumentation (verify/uploadarch): it models
+	// a slow disk so a retry deadline computed before the append can be shown to
+	// go stale. Nothing in production sets it.
+	afterJournalSync func()
 
 	// compactMaxBytes / compactMaxEntries tune when the journal is rewritten
 	// from the in-memory pending set. NewPendingStore seeds them from the
@@ -151,10 +156,15 @@ type PendingStore struct {
 // no-durability mode tests use. Every journal write goes through here so the
 // durability story has exactly one place to read.
 func (c *PendingStore) syncJournalFile(f *os.File) error {
-	if c.skipJournalSync {
-		return nil
+	if !c.skipJournalSync {
+		if err := f.Sync(); err != nil {
+			return err
+		}
 	}
-	return f.Sync()
+	if c.afterJournalSync != nil {
+		c.afterJournalSync()
+	}
+	return nil
 }
 
 type JournalEntry struct {
