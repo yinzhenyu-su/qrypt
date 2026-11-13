@@ -14,18 +14,23 @@ import (
 
 // PendingUpload is a file staged for upload but not yet committed.
 type PendingUpload struct {
-	Path          string               `json:"path"`
-	FID           string               `json:"fid"`
-	ParentID      string               `json:"parent_id"`
-	Name          string               `json:"name"`
-	LocalPath     string               `json:"local_path"`
-	Size          int64                `json:"size"`
-	ModTime       int64                `json:"mod_time,omitempty"`
-	UpdatedAt     int64                `json:"updated_at"`
-	RetryCount    int                  `json:"retry_count,omitempty"`
-	LastError     string               `json:"last_error,omitempty"`
-	PermanentFail bool                 `json:"permanent_fail,omitempty"`
-	LastAttemptAt int64                `json:"last_attempt_at,omitempty"`
+	Path          string `json:"path"`
+	FID           string `json:"fid"`
+	ParentID      string `json:"parent_id"`
+	Name          string `json:"name"`
+	LocalPath     string `json:"local_path"`
+	Size          int64  `json:"size"`
+	ModTime       int64  `json:"mod_time,omitempty"`
+	UpdatedAt     int64  `json:"updated_at"`
+	RetryCount    int    `json:"retry_count,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	PermanentFail bool   `json:"permanent_fail,omitempty"`
+	LastAttemptAt int64  `json:"last_attempt_at,omitempty"`
+	// NextAttemptAt is the retry deadline recorded with the failure: attempt
+	// time plus backoff. It is a materialized diagnostic view for the pending
+	// and task surfaces; scheduling derives the remaining wait from RetryCount
+	// and LastAttemptAt instead, so a slow journal append cannot turn this
+	// value into a second source of truth.
 	NextAttemptAt int64                `json:"next_attempt_at,omitempty"`
 	ReplaceUpload *UploadReplacement   `json:"replace_upload,omitempty"`
 	SourceHashes  drive.SourceHashes   `json:"source_hashes,omitempty"`
@@ -38,6 +43,19 @@ type PendingUpload struct {
 	// also deliberately absent from SameUploadRecord - a requeued or retried
 	// attempt of the same generation must still compare equal.
 	UploadStarted bool `json:"-"`
+	// AppliedAt is the monotonic in-process instant at which this record's
+	// current state was applied. Scheduling measures the quiet window and the
+	// retry backoff from it, so the journal append that made the change durable
+	// is not subtracted from the wait, and a wall-clock (NTP) offset cannot
+	// stretch or collapse it. It stays in memory, is absent from
+	// SameUploadRecord, and is zero for records recovered from the journal -
+	// those fall back to the wall-clock stamps below.
+	AppliedAt time.Time `json:"-"`
+	// RunNow carries an explicit user retry ("run this generation now"). It
+	// skips the debounce and backoff floors and is cleared by the record's next
+	// state change, so a failure or a new write goes back to normal scheduling.
+	// It stays in memory: a restart is itself a long enough wait.
+	RunNow bool `json:"-"`
 }
 
 // UploadReplacement holds the remote entry being replaced by a new upload.

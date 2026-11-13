@@ -562,24 +562,25 @@ func (s *Service) Wait() {}
 func (s *Service) SetDone(done chan struct{}) { s.done = done }
 
 // Retry resets a failed pending upload so it re-enters the queue immediately.
+// "Immediately" is a grant on the record (RunNow), not a backdated timestamp:
+// the wall-clock bookkeeping stays honest, and the grant is dropped by the next
+// state change so a failure after this attempt goes back to the normal floors.
 func (s *Service) Retry(pending PendingUpload) error {
-	now := util.Now()
-	if qw := s.QuietWindow(pending); qw > 0 {
-		pending.UpdatedAt = now.Add(-qw - time.Nanosecond).UnixNano()
-	} else {
-		pending.UpdatedAt = now.UnixNano()
-	}
+	pending.UpdatedAt = util.Now().UnixNano()
 	pending.PermanentFail = false
 	pending.LastError = ""
 	pending.NextAttemptAt = 0
+	pending.RetryCount = 0
+	pending.LastAttemptAt = 0
 	if err := s.store.SaveUploadExact(pending); err != nil {
 		return err
 	}
-	if latest, ok := s.store.UploadByPath(pending.Path); ok {
-		pending = latest
+	latest, ok := s.store.RunNow(pending)
+	if !ok {
+		latest = pending
 	}
-	s.CancelUpload(pending.Path)
-	s.EnqueueAfter(pending, 0)
+	s.CancelUpload(latest.Path)
+	s.Enqueue(latest)
 	return nil
 }
 
@@ -587,16 +588,41 @@ func (s *Service) RemoveHistoryByID(id string) bool { return s.debug.RemoveHisto
 
 // --- quiet window ---
 
+// QuietDelay returns the remaining debounce window of a record. The window is
+// measured from AppliedAt - the monotonic instant at which the record's current
+// state became current - so the journal append that made the write durable is
+// not subtracted from it, and a wall-clock (NTP) offset cannot stretch or
+// collapse it. A record recovered from the journal carries no anchor and falls
+// back to the persisted UpdatedAt, compared against the same wall clock that
+// wrote it (util.Now), so the offset cancels out either way.
 func (s *Service) QuietDelay(p PendingUpload) time.Duration {
+	if p.RunNow {
+		return 0
+	}
 	qw := s.QuietWindow(p)
-	if qw <= 0 || p.UpdatedAt <= 0 {
+	if qw <= 0 {
 		return 0
 	}
-	qf := time.Since(time.Unix(0, p.UpdatedAt))
-	if qf >= qw {
+	if !p.AppliedAt.IsZero() {
+		return remainingWindow(qw, time.Since(p.AppliedAt))
+	}
+	if p.UpdatedAt <= 0 {
 		return 0
 	}
-	return qw - qf
+	return remainingWindow(qw, util.Now().Sub(time.Unix(0, p.UpdatedAt)))
+}
+
+// remainingWindow reports how much of window is left after elapsed, clamped to
+// [0, window] so a wall-clock jump can neither extend the wait indefinitely nor
+// make it negative.
+func remainingWindow(window, elapsed time.Duration) time.Duration {
+	if elapsed >= window {
+		return 0
+	}
+	if elapsed < 0 {
+		return window
+	}
+	return window - elapsed
 }
 
 // QuietWindow returns the configured debounce window for an upload (the
@@ -616,6 +642,21 @@ func (s *Service) QuietWindow(p PendingUpload) time.Duration {
 func (s *Service) DefaultDelay() time.Duration { return s.delay }
 
 // --- scheduling ---
+//
+// Two time bases meet here, and they must never be mixed:
+//
+//   - In-process anchors are monotonic (PendingUpload.AppliedAt, taken when a
+//     state change is applied). Elapsed time is measured with time.Since, so a
+//     journal append that made the change durable is not subtracted from the
+//     wait, and a wall-clock jump cannot stretch or collapse it.
+//   - Persisted stamps are wall clock written with util.Now (system time plus
+//     the NTP offset). Records recovered from the journal have no anchor, so
+//     their remaining wait is derived from those stamps - compared against
+//     util.Now, never against time.Now, so the offset cancels out.
+//
+// Scheduling reads facts (attempt count, attempt time, applied anchor) and
+// derives the wait; it never reads the persisted NextAttemptAt, which is a
+// diagnostic view only.
 
 // Enqueue sends a pending upload to the worker pool, honoring the debounce
 // delay derived from the record.
@@ -624,13 +665,13 @@ func (s *Service) Enqueue(p PendingUpload) {
 		logging.L.WarnfEvery("vfs.enqueue_permanent_failure", time.Second, "[VFS] skip permanently failed upload op_id=%q path=%q size=%d retry=%d last_error=%q", p.FID, p.Path, p.Size, p.RetryCount, p.LastError)
 		return
 	}
-	s.EnqueueAfter(p, max(s.QuietDelay(p), uploadDelayForRecord(p, 0)))
+	s.EnqueueAfter(p, max(s.QuietDelay(p), s.retryRemaining(p)))
 }
 
 // EnqueueAfter updates one path's deadline and wakes idle workers.
 func (s *Service) EnqueueAfter(p PendingUpload, delay time.Duration) {
 	if s.schedule == nil {
-		delay = max(delay, s.QuietDelay(p), time.Until(time.Unix(0, p.NextAttemptAt)))
+		delay = max(delay, s.QuietDelay(p), s.retryRemaining(p))
 		s.scheduleUpload(p, delay)
 		return
 	}
@@ -758,7 +799,7 @@ func (s *Service) Receive(ctx context.Context) (PendingUpload, bool) {
 			s.removeScheduledLocked(selected)
 			pending, ok := s.store.UploadByPath(selected)
 			if ok && pending.Frozen && !pending.PermanentFail {
-				delay := max(s.QuietDelay(pending), time.Until(time.Unix(0, pending.NextAttemptAt)))
+				delay := max(s.QuietDelay(pending), s.retryRemaining(pending))
 				if delay > 0 {
 					task := &scheduledUpload{pending: pending, deadline: now.Add(delay), index: -1}
 					s.scheduled[selected] = task
@@ -809,15 +850,17 @@ func (s *Service) CompleteReceive(path string) {
 	s.scheduledMu.Unlock()
 }
 
-func uploadDelayForRecord(p PendingUpload, fallback time.Duration) time.Duration {
-	if p.NextAttemptAt <= 0 {
-		return fallback
+// retryRemaining is the part of the retry backoff that has not elapsed yet. It
+// is derived from the persisted facts (attempt count and attempt time) rather
+// than from the persisted deadline, so the deadline is not a second source of
+// truth for scheduling: a journal append slower than the backoff can leave the
+// stored deadline in the past, but it cannot shorten this wait. LastAttemptAt
+// and util.Now() are both wall clock, so an NTP offset cancels out.
+func (s *Service) retryRemaining(p PendingUpload) time.Duration {
+	if p.RunNow || p.RetryCount <= 0 || p.LastAttemptAt <= 0 {
+		return 0
 	}
-	next := time.Unix(0, p.NextAttemptAt)
-	if delay := time.Until(next); delay > 0 {
-		return delay
-	}
-	return 0
+	return remainingWindow(RetryDelay(p.RetryCount, s.delay), util.Now().Sub(time.Unix(0, p.LastAttemptAt)))
 }
 
 type UploadTaskRecord struct {
