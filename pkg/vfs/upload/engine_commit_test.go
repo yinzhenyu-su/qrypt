@@ -78,11 +78,11 @@ func (r *recordingInvalidations) PublishStalePath(path string) {
 // commit, which now lives on UploadView).
 type fakeCommitRuntime struct{}
 
-func (r *fakeCommitRuntime) ClearUploadHashes(string)      {}
-func (r *fakeCommitRuntime) ModTimeFor(string) time.Time   { return time.Time{} }
-func (r *fakeCommitRuntime) RetryDelay(int) time.Duration  { return 0 }
-func (r *fakeCommitRuntime) Requeue(PendingUpload)         {}
-func (r *fakeCommitRuntime) RequeueIfFrozen(PendingUpload) {}
+func (r *fakeCommitRuntime) ClearUploadHashes(string)                  {}
+func (r *fakeCommitRuntime) ModTimeFor(string) time.Time               { return time.Time{} }
+func (r *fakeCommitRuntime) RetryDelay(int) time.Duration              { return 0 }
+func (r *fakeCommitRuntime) RequeueAfter(PendingUpload, time.Duration) {}
+func (r *fakeCommitRuntime) RequeueIfFrozen(PendingUpload)             {}
 
 // TestFinalizeUploadCommitsViaView: finalizeUpload folds the uploaded
 // entry into the view through the injected UploadView with the staging

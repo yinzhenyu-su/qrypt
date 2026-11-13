@@ -251,8 +251,14 @@ func (e *Engine) recordFailure(pending PendingUpload, err error) bool {
 		return false
 	}
 	if ok {
-		logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, latest.NextAttemptAt, err)
-		e.runtime.Requeue(latest)
+		// Schedule from now instead of from latest.NextAttemptAt: that bound is
+		// anchored at the failure attempt, and the journal append that made the
+		// failure durable can outlast the whole backoff, leaving it in the past.
+		// Scheduling from it would then retry immediately.
+		retryDelay := e.runtime.RetryDelay(latest.RetryCount)
+		nextAttempt := util.Now().Add(retryDelay)
+		logging.L.WarnfEvery("vfs.upload_failed_requeue", time.Second, "[VFS] upload failed; requeue op_id=%q path=%q name=%q size=%d retry=%d next_attempt=%d err=%v", latest.FID, latest.Path, latest.Name, latest.Size, latest.RetryCount, nextAttempt.UnixNano(), err)
+		e.runtime.RequeueAfter(latest, retryDelay)
 	} else {
 		e.pending.RemoveStagingIfUnreferenced(pending.LocalPath)
 	}
