@@ -103,7 +103,12 @@ func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T)
 		"old": {ID: "old", ParentID: "0", Name: "draft.txt", Size: 3},
 	}
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
-	firstDriver := &countingUploadDriver{entries: entries, failRenames: 1}
+	// Keep every rename failing on the first mount: its retry must not be able
+	// to finish the replacement before the test stops it, otherwise the second
+	// mount has nothing to resume and the assertion below passes vacuously. The
+	// retry is due as soon as the failed attempt's journal write completes, so
+	// a single failure is not enough to guarantee the record survives.
+	firstDriver := &countingUploadDriver{entries: entries, failAllRenames: true}
 	first, err := vfs.New(firstDriver, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +127,7 @@ func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T)
 	}
 	waitForCondition(t, func() bool {
 		pending := first.PendingUploads()
-		return len(pending) == 1 && pending[0].ReplaceUpload != nil && pending[0].RetryCount == 1
+		return len(pending) == 1 && pending[0].ReplaceUpload != nil && pending[0].RetryCount >= 1
 	})
 	if got := firstDriver.uploadCount(); got != 1 {
 		t.Fatalf("first upload count = %d, want 1", got)
@@ -130,7 +135,14 @@ func TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload(t *testing.T)
 	if removed := firstDriver.removedIDs(); len(removed) != 1 || removed[0] != "old" {
 		t.Fatalf("first removed ids = %v, want [old]", removed)
 	}
+	// Stop the first mount completely before the second one opens the same
+	// staging directory and the same fake remote: Close waits for in-flight
+	// attempts, so no worker of the old mount can race the resumed upload.
 	cancelFirst()
+	stopVFS(t, first)
+	if pending := first.PendingUploads(); len(pending) != 1 || pending[0].ReplaceUpload == nil {
+		t.Fatalf("replacement candidate did not survive the first mount: %+v", pending)
+	}
 
 	secondDriver := &countingUploadDriver{entries: entries}
 	second, err := vfs.New(secondDriver, vfs.Options{StorageDir: cacheDir, CacheMaxBytes: 10 << 20, UploadDelay: testUploadDelay})

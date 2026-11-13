@@ -25,7 +25,11 @@ type countingUploadDriver struct {
 	// retry state stays observable instead of being cleared by a retry that
 	// succeeds (see TestVFSReplaceUploadKeepsExistingFileUntilUploadSucceeds).
 	failAllUploads bool
-	failRenames    int
+	// failAllRenames keeps the rename of an uploaded replacement failing, so a
+	// persisted replacement candidate cannot be consumed by a retry before the
+	// test resumes it (see
+	// TestVFSResumeReplaceUploadRenamesTemporaryFileWithoutReupload).
+	failAllRenames bool
 	blockReturn    chan struct{}
 	entered        chan struct{}
 }
@@ -229,8 +233,7 @@ func (d *countingUploadDriver) Move(_ context.Context, entry drive.Entry, _ stri
 func (d *countingUploadDriver) Rename(_ context.Context, entry drive.Entry, newName string) (drive.Entry, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.failRenames > 0 {
-		d.failRenames--
+	if d.failAllRenames {
 		return drive.Entry{}, errors.New("temporary rename failure")
 	}
 	existing := d.entries[entry.ID]
