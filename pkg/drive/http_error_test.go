@@ -207,3 +207,52 @@ func TestSnippetHandlesBinaryAndEmptyInput(t *testing.T) {
 		t.Errorf("whitespace-only input = %q, want empty", out)
 	}
 }
+
+// TestHTTPErrorExposesStatusWithoutSentinel: statuses that have no dedicated
+// sentinel (5xx, 408) keep their message but carry the numeric status, which is
+// what the read path uses to decide whether a replay is worthwhile.
+func TestHTTPErrorExposesStatusWithoutSentinel(t *testing.T) {
+	cases := []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusRequestTimeout}
+	for _, code := range cases {
+		resp := &http.Response{StatusCode: code, Status: http.StatusText(code)}
+		err := drive.HTTPError("koofr: read", nil, resp, nil)
+		var status *drive.HTTPStatusError
+		if !errors.As(err, &status) {
+			t.Fatalf("status %d: error %v does not expose drive.HTTPStatusError", code, err)
+		}
+		if status.Status != code {
+			t.Fatalf("status %d: HTTPStatusError.Status = %d", code, status.Status)
+		}
+		if !strings.Contains(err.Error(), http.StatusText(code)) {
+			t.Fatalf("status %d: message %q lost the status text", code, err)
+		}
+		for _, sentinel := range []error{drive.ErrAuth, drive.ErrPermission, drive.ErrNotFound, drive.ErrConflict, drive.ErrRateLimit, drive.ErrInvalidInput} {
+			if errors.Is(err, sentinel) {
+				t.Fatalf("status %d: error unexpectedly wraps %v", code, sentinel)
+			}
+		}
+	}
+}
+
+// TestHTTPErrorKeepsClassifiedStatusesUntyped: a status with a sentinel keeps
+// its existing shape, so classification rules do not change for callers that
+// already check errors.Is.
+func TestHTTPErrorKeepsClassifiedStatusesUntyped(t *testing.T) {
+	for _, tc := range []struct {
+		code int
+		want error
+	}{
+		{http.StatusUnauthorized, drive.ErrAuth},
+		{http.StatusNotFound, drive.ErrNotFound},
+		{http.StatusTooManyRequests, drive.ErrRateLimit},
+	} {
+		resp := &http.Response{StatusCode: tc.code, Status: http.StatusText(tc.code)}
+		err := drive.HTTPError("koofr: read", nil, resp, nil)
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("status %d: errors.Is(%v) = false", tc.code, tc.want)
+		}
+		if errors.Is(err, drive.ErrUnsupported) {
+			t.Fatalf("status %d: unexpected unsupported classification", tc.code)
+		}
+	}
+}

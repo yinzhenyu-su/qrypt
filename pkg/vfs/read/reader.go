@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -837,11 +838,24 @@ func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex
 	return chunks, aggregateWindowExtra(results, streams), nil
 }
 
-// fetchTimeoutAttempts is the total number of tries for one window range: the
-// original Range GET plus one idempotent retry. A Range GET is safe to replay,
-// and the window is only assembled after a full range succeeds, so a retry
-// never mixes partial data.
-const fetchTimeoutAttempts = 2
+const (
+	// fetchTimeoutAttempts is the total number of tries for one window range
+	// after an idle stall: the original Range GET plus one idempotent retry. A
+	// Range GET is safe to replay, and the window is only assembled after a
+	// full range succeeds, so a retry never mixes partial data.
+	fetchTimeoutAttempts = 2
+	// fetchStatusAttempts is the total number of tries for one window range
+	// when the provider answers with a retryable status (5xx, 408, 429). A
+	// transient provider hiccup then costs one or two extra requests instead of
+	// a failed FUSE read, while a persistent failure still fails fast: three
+	// attempts bound the extra latency at two backoffs plus two requests.
+	fetchStatusAttempts = 3
+	// fetchStatusBackoffBase is the wait before the first status replay; it
+	// doubles per replay and is capped by fetchStatusBackoffMax. The wait is
+	// charged to the range's total budget, which also bounds the sum.
+	fetchStatusBackoffBase = 200 * time.Millisecond
+	fetchStatusBackoffMax  = 2 * time.Second
+)
 
 func readWindowRange(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend) ([]byte, map[string]any, error) {
 	offset := startIndex * ChunkSize
@@ -853,52 +867,138 @@ func readWindowRange(ctx context.Context, entry drive.Entry, startIndex, endInde
 		return nil, nil, nil
 	}
 	timeouts := fetchTimeoutsFromContext(ctx)
-	// One deadline covers every attempt: a retry only happens after an idle
-	// timeout, which leaves budget for a fresh request.
+	// One deadline covers every attempt: an idle-stall replay or a status
+	// backoff may only spend what is left of the range's total budget.
 	deadline := time.Now().Add(timeouts.Total)
 	var extra map[string]any
+	var lastErr error
+	attempts := 0
 	timeoutCount := 0
 	timeoutKind := drive.FetchTimeoutIdle
-	recordTimeouts := func() {
-		if extra != nil && timeoutCount > 0 {
+	statusRetries := 0
+	statusReason := ""
+	var backoffTotal time.Duration
+	recordRetries := func() {
+		if extra == nil {
+			return
+		}
+		if attempts > 1 {
+			extra["fetch_attempts"] = attempts
+			extra["fetch_retried"] = true
+		}
+		if timeoutCount > 0 {
 			extra["fetch_timeouts"] = timeoutCount
 			extra["fetch_timeout_kind"] = string(timeoutKind)
 		}
+		if statusRetries > 0 {
+			extra["fetch_status_retries"] = statusRetries
+			extra["fetch_status_reason"] = statusReason
+			extra["fetch_backoff_ms"] = DurationMillis(backoffTotal)
+		}
 	}
-	for attempt := 0; attempt < fetchTimeoutAttempts; attempt++ {
+	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
+		attempts++
 		data, attemptExtra, err := readWindowRangeAttempt(ctx, entry, offset, size, timeouts.Idle, remaining, backend)
 		extra = attemptExtra
 		if err == nil {
-			if attempt > 0 {
-				extra["fetch_attempts"] = attempt + 1
-				extra["fetch_retried"] = true
-			}
-			recordTimeouts()
+			recordRetries()
 			return data, extra, nil
 		}
+		lastErr = err
 		var timeout *drive.FetchTimeoutError
-		isTimeout := errors.As(err, &timeout)
-		if isTimeout {
+		if errors.As(err, &timeout) {
 			timeoutCount++
 			timeoutKind = timeout.Kind
-		}
-		// Only an idle stall is worth replaying: a total deadline has no
-		// budget left, and other failures are not the timeout case.
-		retryable := isTimeout && timeout.Kind == drive.FetchTimeoutIdle
-		if !retryable || attempt+1 >= fetchTimeoutAttempts || ctx.Err() != nil {
-			recordTimeouts()
+			// Only an idle stall is worth replaying: a total deadline has no
+			// budget left, and other failures are not the timeout case.
+			if timeout.Kind == drive.FetchTimeoutIdle && timeoutCount < fetchTimeoutAttempts && ctx.Err() == nil {
+				continue
+			}
+			recordRetries()
 			return nil, extra, err
 		}
+		reason := readRetryReason(err)
+		if reason == "" || statusRetries+1 >= fetchStatusAttempts || ctx.Err() != nil {
+			recordRetries()
+			return nil, extra, err
+		}
+		statusRetries++
+		statusReason = reason
+		backoff := fetchStatusBackoff(statusRetries)
+		if backoff >= time.Until(deadline) {
+			// The wait would outlive the range's budget: reporting the provider
+			// failure is more useful than the timeout we would cause.
+			recordRetries()
+			return nil, extra, err
+		}
+		if sleepErr := sleepContext(ctx, backoff); sleepErr != nil {
+			recordRetries()
+			return nil, extra, sleepErr
+		}
+		backoffTotal += backoff
 	}
-	recordTimeouts()
+	recordRetries()
 	if extra == nil {
 		extra = map[string]any{}
 	}
+	if lastErr != nil {
+		return nil, extra, lastErr
+	}
 	return nil, extra, &drive.FetchTimeoutError{Kind: drive.FetchTimeoutTotal, Limit: timeouts.Total}
+}
+
+// readRetryReason reports why a failed Range GET is worth replaying, or "" when
+// it is not. Range GETs are idempotent, so a provider hiccup costs one extra
+// request instead of a failed read; permanent failures (auth, permission, not
+// found, invalid input, unsupported range) keep their fast path.
+func readRetryReason(err error) string {
+	if err == nil || drive.IsNonRetryable(err) {
+		return ""
+	}
+	var status *drive.HTTPStatusError
+	if errors.As(err, &status) {
+		switch {
+		case status.Status == http.StatusTooManyRequests:
+			return "rate_limited"
+		case status.Status == http.StatusRequestTimeout:
+			return "request_timeout"
+		case status.Status >= 500:
+			return "status_5xx"
+		}
+	}
+	if errors.Is(err, drive.ErrRateLimit) {
+		return "rate_limited"
+	}
+	return ""
+}
+
+// fetchStatusBackoff returns the wait before the n-th status replay (1-based):
+// base, base*2, base*4, capped at fetchStatusBackoffMax.
+func fetchStatusBackoff(retries int) time.Duration {
+	delay := fetchStatusBackoffBase
+	for i := 1; i < retries && delay < fetchStatusBackoffMax; i++ {
+		delay *= 2
+	}
+	return min(delay, fetchStatusBackoffMax)
+}
+
+// sleepContext waits for d, or returns early when ctx ends.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // readWindowRangeAttempt performs one Range GET bounded by the idle and total

@@ -212,8 +212,9 @@ another domain's internal state.
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
 - `pkg/vfs/read/reader.go`: read window load/coalescing, bounded parallel
-  sub-range fetch, read-window driver read, and the foreground fetch timeout
-  boundary (one idempotent retry after an idle timeout)
+  sub-range fetch, read-window driver read, and the foreground fetch failure
+  boundary (one idempotent retry after an idle timeout, up to three tries on a
+  retryable provider status)
 - `pkg/vfs/read/fetch_timeout.go`: resolved fetch bounds attached to the read
   context, plus foreground/prefetch timeout counters and the last timeout
   window exposed by the debug snapshot
@@ -361,6 +362,15 @@ with a deadline.
 - A timed-out foreground window retries the Range GET once before failing the
   whole window; partial data is never mixed into the result. One deadline
   covers both attempts.
+- A Range GET that fails with a retryable status is replayed instead of failing
+  the read: `5xx`, `408`, and `429` (the last reaches the read layer as
+  `drive.ErrRateLimit`) get up to three total tries with a 200/400 ms backoff.
+  The backoff is charged to the same fetch deadline, so a slow request plus the
+  wait can never outlive the range budget. Statuses with a stable sentinel
+  (`drive.ErrAuth`, `ErrPermission`, `ErrNotFound`, `ErrConflict`,
+  `ErrInvalidInput`) and `drive.ErrUnsupported` still fail on the first
+  attempt; a persistent 5xx exhausts the three tries and surfaces the provider
+  error, not a timeout.
 - A timed-out prefetch is a silent cancellation: it records
   `prefetch_cancel_reason=timeout`, releases its prefetch permit and window
   entry, and never fails a caller read. A foreground read that was waiting on
@@ -368,9 +378,11 @@ with a deadline.
 - `ReadStream`, `drivecopy`, and direct-part reads use the same bounds
   (`drive.ReadParallelWithProfile`), and drivers bound the response-header
   phase through their HTTP transport.
-- Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; the
-  mount debug snapshot exposes `read_timeouts`, `prefetch_timeouts`, and
-  `last_timeout`.
+- Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; a
+  replayed range reports `fetch_status_retries`, `fetch_status_reason`
+  (`status_5xx`, `rate_limited`, `request_timeout`), and `fetch_backoff_ms`
+  next to the existing `fetch_attempts`/`fetch_retried`. The mount debug
+  snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`.
 
 ## Upload State Flow
 

@@ -496,7 +496,10 @@ Errors crossing layer boundaries must be classifiable with `errors.Is` /
 right sentinel from the HTTP status (401 → `drive.ErrAuth`, 403 →
 `drive.ErrPermission`, 404 → `drive.ErrNotFound`, 409 → `drive.ErrConflict`,
 422/400 → `drive.ErrInvalidInput`, 429 → `drive.ErrRateLimit`), so most driver
-errors get it for free. An endpoint where a structured 422 means "missing"
+errors get it for free. Statuses without a sentinel keep their message but are
+wrapped in `drive.HTTPStatusError` (`Status` field); the read path uses that to
+replay a Range GET on 5xx/408. Only reach for `errors.As` on it when a caller
+needs the numeric class; otherwise `errors.Is` on the sentinels stays the rule. An endpoint where a structured 422 means "missing"
 passes `drive.HTTPErrorStatusAsNotFound(http.StatusUnprocessableEntity)` for
 that call only; every other endpoint keeps invalid-input classification. For
 non-HTTP failures, wrap the sentinel yourself:
