@@ -359,6 +359,29 @@ func TestReadRangeExact(t *testing.T) {
 	}
 }
 
+// TestReadStatusErrorCarriesHTTPStatus pins the contract the VFS read path
+// relies on: a 5xx from the content endpoint surfaces the numeric status as
+// drive.HTTPStatusError, so the read layer can replay the Range GET instead of
+// failing the FUSE read on a transient provider hiccup.
+func TestReadStatusErrorCarriesHTTPStatus(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/data.bin", 100)
+	d := f.newDriver(t, Options{})
+	f.faultStatus("GET", "files/get", 1, http.StatusInternalServerError,
+		`{"error":{"code":"Other","message":"Internal server error"},"requestId":"rid-1"}`)
+	if _, err := d.Read(context.Background(), entry, 0, 10); err == nil {
+		t.Fatal("Read succeeded despite a 500")
+	} else {
+		var status *drive.HTTPStatusError
+		if !errors.As(err, &status) || status.Status != http.StatusInternalServerError {
+			t.Fatalf("Read error = %v, want drive.HTTPStatusError with status 500", err)
+		}
+		if drive.IsNonRetryable(err) {
+			t.Fatalf("a 5xx must stay retryable: %v", err)
+		}
+	}
+}
+
 func TestReadAtOrPastEOFReturnsEmpty(t *testing.T) {
 	f := newFakeProvider(t)
 	entry := seededFile(t, f, "/data.bin", 100)
