@@ -66,7 +66,12 @@ type Runtime interface {
 	ClearUploadHashes(fid string)
 	ModTimeFor(path string) time.Time
 	RetryDelay(retryCount int) time.Duration
-	Requeue(p PendingUpload)
+	// RequeueAfter schedules a retry no earlier than delay from now. The
+	// persisted NextAttemptAt is only a lower bound anchored at the failure
+	// attempt, so a slow journal append can leave it in the past; scheduling
+	// from the bound alone would then retry immediately instead of after the
+	// backoff, which is why the delay is part of the call.
+	RequeueAfter(p PendingUpload, delay time.Duration)
 	RequeueIfFrozen(p PendingUpload)
 }
 

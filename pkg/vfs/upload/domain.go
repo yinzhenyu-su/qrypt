@@ -289,7 +289,9 @@ func (r domainRuntime) ModTimeFor(path string) time.Time {
 func (r domainRuntime) RetryDelay(retryCount int) time.Duration {
 	return RetryDelay(retryCount, r.domain.service.DefaultDelay())
 }
-func (r domainRuntime) Requeue(p PendingUpload) { r.domain.Enqueue(p) }
+func (r domainRuntime) RequeueAfter(p PendingUpload, delay time.Duration) {
+	r.domain.EnqueueAfter(p, delay)
+}
 func (r domainRuntime) RequeueIfFrozen(p PendingUpload) {
 	if p.Frozen {
 		r.domain.Enqueue(p)

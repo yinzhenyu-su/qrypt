@@ -145,6 +145,41 @@ func TestServiceSchedulesAndCancelsUploads(t *testing.T) {
 	svc.Close()
 }
 
+// TestServiceEnqueueAfterHonorsDelayOverStaleDeadline pins the production
+// scheduler path: an explicit requeue delay is measured from now even when the
+// record's persisted NextAttemptAt already passed. A failure whose journal
+// append outlived its backoff leaves exactly that state, and scheduling from
+// the stale bound would retry immediately.
+func TestServiceEnqueueAfterHonorsDelayOverStaleDeadline(t *testing.T) {
+	store := newPendingStoreFixture(t)
+	store.addPending(t, "/a.txt", "a", "a.staging")
+	pending, ok := store.UploadByPath("/a.txt")
+	if !ok {
+		t.Fatal("pending record missing")
+	}
+	pending.UpdatedAt = time.Now().Add(-2 * time.Hour).UnixNano()
+	pending.LastError = "transient network failure"
+	pending.NextAttemptAt = time.Now().Add(-time.Minute).UnixNano()
+
+	// No Scheduler: the service owns the upload debounce heap, as in production.
+	svc := NewService(ServiceOptions{
+		UploadDelay: time.Hour,
+		Store:       store,
+		Done:        make(chan struct{}),
+	})
+	defer svc.Close()
+
+	const backoff = 30 * time.Second
+	svc.EnqueueAfter(pending, backoff)
+	deadline, scheduled := svc.ScheduledDeadlines()[pending.Path]
+	if !scheduled {
+		t.Fatal("upload was not scheduled")
+	}
+	if wait := time.Until(deadline); wait < backoff-5*time.Second {
+		t.Fatalf("scheduled in %s, want the explicit %s backoff", wait, backoff)
+	}
+}
+
 func TestServiceScheduleFiresUpload(t *testing.T) {
 	store := newPendingStoreFixture(t)
 	fake := newFakeKeyedScheduler()
