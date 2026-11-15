@@ -47,6 +47,17 @@ type existingMkdirDriver struct {
 	lists  int
 }
 
+// staleChildListDriver reports a child on the first listing of a directory and
+// the truth afterwards. It reproduces a backend listing taken while a child's
+// delayed delete was still running: the child is gone from the backend (and
+// its overlay delete marker has been dropped) by the time the listing arrives.
+type staleChildListDriver struct {
+	*countingRemoveDriver
+	ghost      drive.Entry
+	ghostLists int
+	listCalls  int
+}
+
 func (d *countingRemoveDriver) Capabilities() []drive.Capability {
 	return []drive.Capability{drive.CapabilityWriter}
 }
@@ -112,6 +123,20 @@ func newBlockingRemoveDriver() *blockingRemoveDriver {
 	}
 }
 
+// newStaleChildListDriver returns a driver whose only directory "/dir" lists
+// as empty, except that the first ghostLists listings report a child that a
+// finished delayed delete already removed.
+func newStaleChildListDriver(ghostLists int) *staleChildListDriver {
+	d := &staleChildListDriver{
+		countingRemoveDriver: &countingRemoveDriver{entries: map[string]drive.Entry{
+			"dir": {ID: "dir", ParentID: "0", Name: "dir", IsDir: true},
+		}},
+		ghost:      drive.Entry{ID: "ghost", ParentID: "dir", Name: "a.txt"},
+		ghostLists: ghostLists,
+	}
+	return d
+}
+
 func (d *blockingRemoveDriver) release() {
 	d.releaseOnce.Do(func() { close(d.releaseChild) })
 }
@@ -170,6 +195,27 @@ func (d *blockingRemoveDriver) Remove(ctx context.Context, entry drive.Entry) er
 		<-d.releaseChild
 	}
 	return d.countingRemoveDriver.Remove(ctx, entry)
+}
+func (d *staleChildListDriver) List(ctx context.Context, parentID string) ([]drive.Entry, error) {
+	d.mu.Lock()
+	ghost := parentID == "dir" && d.listCalls < d.ghostLists
+	if parentID == "dir" {
+		d.listCalls++
+	}
+	d.mu.Unlock()
+	entries, err := d.countingRemoveDriver.List(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	if ghost {
+		entries = append(entries, d.ghost)
+	}
+	return entries, nil
+}
+func (d *staleChildListDriver) dirListCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.listCalls
 }
 func (d *countingRemoveDriver) removedIDs() []string {
 	d.mu.Lock()
