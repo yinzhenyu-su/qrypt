@@ -97,10 +97,10 @@ func (r Runtime) IsRecentLocalDir(path string) bool {
 	return true
 }
 
-// HasRecentLocalChild reports whether a still-valid locally created directory
-// is a direct child of dir. Directory removal uses it to see children a
-// not-yet-caught-up backend listing may omit.
-func (r Runtime) HasRecentLocalChild(dir string) bool {
+// RecentLocalChild reports the path of a still-valid locally created
+// directory that is a direct child of dir. Directory removal uses it to see
+// children a not-yet-caught-up backend listing may omit.
+func (r Runtime) RecentLocalChild(dir string) (string, bool) {
 	dir = vfstypes.CleanVirtualPath(dir)
 	now := time.Now()
 	r.view.mu.Lock()
@@ -111,10 +111,10 @@ func (r Runtime) HasRecentLocalChild(dir string) bool {
 			continue
 		}
 		if knownPath != dir && pathpkg.Dir(knownPath) == dir {
-			return true
+			return knownPath, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // RefreshPath drops the cached listing for path so the next listing refetches

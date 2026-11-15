@@ -354,6 +354,27 @@ func TestVFSRemoveDirRejectsPendingChildren(t *testing.T) {
 	}
 }
 
+// A child whose delayed delete finishes between the backend listing and the
+// overlay lookup is gone from the backend but no longer marked deleted, so the
+// stale listing still names it. rmdir must confirm with a fresh listing
+// instead of reporting a directory that is already empty as non-empty.
+func TestVFSRemoveDirToleratesChildDeleteRace(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	drv := newStaleChildListDriver(1)
+	fs, err := vfs.New(drv, vfs.Options{StorageDir: t.TempDir(), CacheMaxBytes: 10 << 20, DeleteDelay: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.RemoveDir(ctx, "/dir"); err != nil {
+		t.Fatalf("RemoveDir err = %v, want nil", err)
+	}
+	if got := drv.dirListCount(); got < 2 {
+		t.Fatalf("list count = %d, want the stale listing re-checked", got)
+	}
+}
+
 func TestVFSMkdirStaysVisibleWhenBackendListIsStale(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())

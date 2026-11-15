@@ -58,26 +58,37 @@ func (v *VFS) removeDirWithRuntime(ctx context.Context, path string, committer v
 // pending uploads + recently created local directories. Children already
 // marked deleted are ignored: their remote delete is coalesced into this
 // directory removal. Apple metadata noise is ignored as well.
+//
+// The backend listing and the overlay lookup cannot be read atomically: a
+// child whose delayed delete finishes in between is gone from the backend but
+// no longer marked deleted, so the stale listing would make an already empty
+// directory look busy (the rmdir after rm race). Confirm a suspect child with
+// a fresh listing instead of trusting the stale one. That converges because a
+// completed delete drops its overlay marker only after the driver removed the
+// object, so the child cannot reappear in a later listing.
 func (v *VFS) ensureDirectoryEmpty(ctx context.Context, path string, entry drive.Entry) error {
 	path = vfstypes.CleanVirtualPath(path)
 	vis := newVFSVisibilityRuntime(v)
-	children, err := v.driver.List(ctx, entry.ID)
+	children, err := v.listBackendChildren(ctx, entry.ID)
 	if err != nil {
-		if errors.Is(err, drive.ErrNotFound) {
-			children = nil
-		} else {
+		return err
+	}
+	for round := 0; ; round++ {
+		suspect, ok := firstVisibleChild(path, children, vis)
+		if !ok {
+			break
+		}
+		// Bound the confirmation rounds by the observed child count so a
+		// concurrently re-created child cannot spin this loop.
+		if round >= len(children) {
+			return fmt.Errorf("%w: %s (backend child %q)", ErrDirNotEmpty, path, suspect.Name)
+		}
+		if children, err = v.listBackendChildren(ctx, entry.ID); err != nil {
 			return err
 		}
-	}
-	for _, child := range children {
-		if view.IsAppleMetadataName(child.Name) {
-			continue
+		if hasBackendChild(children, suspect.Name) {
+			return fmt.Errorf("%w: %s (backend child %q)", ErrDirNotEmpty, path, suspect.Name)
 		}
-		childPath := vfstypes.JoinVirtualPath(path, child.Name)
-		if vis.IsDeleted(childPath) {
-			continue
-		}
-		return fmt.Errorf("%w: %s", ErrDirNotEmpty, path)
 	}
 	for _, pending := range v.uploads.PendingUploads() {
 		if pending.Path == path || !vfstypes.IsPathUnder(pending.Path, path) {
@@ -86,12 +97,50 @@ func (v *VFS) ensureDirectoryEmpty(ctx context.Context, path string, entry drive
 		if vis.IsDeleted(pending.Path) {
 			continue
 		}
-		return fmt.Errorf("%w: %s", ErrDirNotEmpty, path)
+		return fmt.Errorf("%w: %s (pending upload %q)", ErrDirNotEmpty, path, pending.Path)
 	}
-	if view.NewRuntime(v.view).HasRecentLocalChild(path) {
-		return fmt.Errorf("%w: %s", ErrDirNotEmpty, path)
+	if child, ok := view.NewRuntime(v.view).RecentLocalChild(path); ok {
+		return fmt.Errorf("%w: %s (local dir %q)", ErrDirNotEmpty, path, child)
 	}
 	return nil
+}
+
+// listBackendChildren lists the backend children of a directory, mapping a
+// vanished parent (deleted concurrently) to an empty listing.
+func (v *VFS) listBackendChildren(ctx context.Context, id string) ([]drive.Entry, error) {
+	children, err := v.driver.List(ctx, id)
+	if err != nil {
+		if errors.Is(err, drive.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return children, nil
+}
+
+// firstVisibleChild returns the first backend child that the delete overlay
+// does not hide, ignoring Apple metadata noise.
+func firstVisibleChild(path string, children []drive.Entry, vis view.Visibility) (drive.Entry, bool) {
+	for _, child := range children {
+		if view.IsAppleMetadataName(child.Name) {
+			continue
+		}
+		if vis.IsDeleted(vfstypes.JoinVirtualPath(path, child.Name)) {
+			continue
+		}
+		return child, true
+	}
+	return drive.Entry{}, false
+}
+
+// hasBackendChild reports whether name is present in a backend listing.
+func hasBackendChild(children []drive.Entry, name string) bool {
+	for _, child := range children {
+		if child.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // vfsRemoveScheduler adapts the VFS delayed delete to mutation.DeleteScheduler.
@@ -184,7 +233,7 @@ func (r vfsRemoveCleanup) PrepareDirectory(path string) error {
 		if r.vis.IsDeleted(pending.Path) {
 			continue
 		}
-		return fmt.Errorf("%w: %s", ErrDirNotEmpty, path)
+		return fmt.Errorf("%w: %s (pending upload %q)", ErrDirNotEmpty, path, pending.Path)
 	}
 	r.uploads.CancelUnder(path)
 	r.deletes.TakeoverDirectory(path)
