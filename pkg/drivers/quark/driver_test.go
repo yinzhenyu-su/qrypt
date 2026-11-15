@@ -2141,9 +2141,10 @@ func TestDriverPutSourceStreamsMultipartWithoutPartSizedReads(t *testing.T) {
 
 func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	// The handlers run on httptest's own goroutines and must never call
-	// t.Fatal/t.Fatalf: when the client's deadline fires mid-request it aborts
-	// the connection, the handler's response write fails, and a test-fatal
-	// call from that goroutine fails the whole test (observed on GH runners).
+	// t.Fatal/t.Fatalf: when the client's cancellation fires mid-request it
+	// aborts the connection, the handler's response write fails, and a
+	// test-fatal call from that goroutine fails the whole test (observed on GH
+	// runners).
 	oss := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		w.Header().Set("Etag", "etag-1")
@@ -2151,7 +2152,14 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	}))
 	defer oss.Close()
 
+	authServed := make(chan struct{}, 1)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/file/upload/auth" {
+			select {
+			case authServed <- struct{}{}:
+			default:
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":200,"code":0,"data":{"auth_key":"auth-key"}}`))
 	}))
@@ -2160,21 +2168,10 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
 	routeOSSToTestServer(driver.cl.ossClient, oss)
 	driver.InstallBandwidthLimiter(drive.NewBandwidthLimiter(drive.BandwidthLimits{UploadBytesPerSecond: 1}))
-	// The body must be large enough that throttling it at 1 byte/s needs hours:
-	// then the deadline always fires inside the throttled body read, no matter
-	// how slow the local auth/TLS round trip gets on a loaded CI runner. With a
-	// tiny body the outcome can race the wall clock (observed once on a GH
-	// ubuntu runner), so the deadline is a determinism aid, not the assert. It
-	// is set well above the auth round trip so only the throttled read can hit
-	// it; a success would mean the native limiter was bypassed.
-	//
-	// 64KiB at 1B/s is 18 hours, so the deadline only has to clear the auth
-	// round trip - 500ms leaves it a wider margin than the read can ever cross,
-	// and halves what the test spends waiting for the throttle to prove itself.
-	body := strings.Repeat("s", 64*1024)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
 
+	// 64KiB at 1 B/s needs 18 hours: a part upload that finishes while the
+	// limiter is armed can only mean the native limiter was bypassed.
+	body := strings.Repeat("s", 64*1024)
 	pre := &upPreResp{}
 	pre.Data.TaskID = "task-1"
 	pre.Data.UploadID = "upload-1"
@@ -2183,11 +2180,45 @@ func TestDriverUploadPartUsesNativeBandwidthLimiter(t *testing.T) {
 	pre.Data.Bucket = "bucket"
 	pre.Data.AuthInfo = "auth-info"
 
-	_, err := driver.uploadPart(ctx, pre, 1, int64(len(body)), func() (io.Reader, error) {
-		return strings.NewReader(body), nil
-	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("uploadPart error = %v, want context deadline exceeded", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := driver.uploadPart(ctx, pre, 1, int64(len(body)), func() (io.Reader, error) {
+			return strings.NewReader(body), nil
+		})
+		done <- err
+	}()
+
+	// Measure the throttle rather than the error a deadline produces: whether
+	// a canceled PUT surfaces as a deadline error or as the test server's 200
+	// is a client/transport race (observed once on a GH ubuntu runner), and
+	// reading that 200 as "the part uploaded" is exactly what would make this
+	// test flaky. Wait for the auth round trip so the PUT is certainly in
+	// flight, then require that the throttled body keeps the call busy.
+	select {
+	case <-authServed:
+	case err := <-done:
+		t.Fatalf("uploadPart returned %v before the part PUT started", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("uploadPart never reached the part PUT")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("uploadPart returned %v; a 1 B/s limiter cannot move 64KiB", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// Cancelling must abort the throttled read promptly instead of leaving the
+	// part hanging on the limiter.
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("uploadPart error = %v, want context canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("uploadPart did not stop after cancel")
 	}
 }
 
