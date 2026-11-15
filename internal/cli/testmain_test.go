@@ -38,6 +38,11 @@ func TestMain(m *testing.M) {
 	util.StopNTP()
 	if err := goleak.Find(
 		goleak.IgnoreAnyFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),
+		// go-winio creates one process-global IO completion port and the
+		// goroutine that services it on the first named-pipe use. It lives
+		// until the process exits, so a probe server opened by a test leaves
+		// a library lifetime behind, not a test leak.
+		goleak.IgnoreAnyFunction("github.com/Microsoft/go-winio.ioCompletionProcessor"),
 	); err != nil {
 		panic("cli: goroutine leak after tests: " + err.Error())
 	}
