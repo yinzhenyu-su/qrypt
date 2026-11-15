@@ -12,6 +12,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/control"
 	"github.com/yinzhenyu/qrypt/pkg/core"
+	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 )
@@ -63,7 +64,7 @@ func (s *cacheClearTestSource) DebugReadFaults(context.Context) []faultinject.De
 func TestProbeCacheClearUsesProbeSocket(t *testing.T) {
 	workDir := shortTempDir(t)
 	configPath := filepath.Join(t.TempDir(), "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[storage]\nwork_dir = \""+workDir+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("[storage]\nwork_dir = "+util.TOMLPath(workDir)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(configPath)
@@ -152,7 +153,7 @@ func TestProbeCacheClearUsesProbeSocket(t *testing.T) {
 func TestProbeCacheClearRequiresMount(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[storage]\nwork_dir = \""+filepath.Join(dir, "work")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("[storage]\nwork_dir = "+util.TOMLPath(filepath.Join(dir, "work"))+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root := NewRootCommand()
