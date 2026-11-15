@@ -158,6 +158,51 @@ func TestReadBodyLimitedCapsTrickleWithTotalTimeout(t *testing.T) {
 	}
 }
 
+// bodyDeadlineCtx reports an expired deadline without a Done channel, so the
+// read can only learn about the abort from the body's own error. Real
+// providers do report the request context's deadline from a pending read, and
+// whether the read notices the context or the body first is a race.
+type bodyDeadlineCtx struct{ context.Context }
+
+func (bodyDeadlineCtx) Done() <-chan struct{} { return nil }
+func (bodyDeadlineCtx) Err() error            { return context.DeadlineExceeded }
+
+// failingTestBody fails every read with a fixed error.
+type failingTestBody struct {
+	err    error
+	closed atomic.Int32
+}
+
+func (b *failingTestBody) Read([]byte) (int, error) { return 0, b.err }
+func (b *failingTestBody) Close() error {
+	b.closed.Add(1)
+	return nil
+}
+
+// A total timeout the body reports itself must keep the timeout kind, so
+// diagnostics and metrics still record a timeout rather than a bare context
+// error.
+func TestReadBodyLimitedClassifiesBodyReportedDeadline(t *testing.T) {
+	ctx := bodyDeadlineCtx{Context: context.Background()}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := &failingTestBody{err: context.DeadlineExceeded}
+	_, err := ReadBodyLimited(ctx, cancel, body, 1<<20, time.Second)
+	if !IsFetchTimeout(err) {
+		t.Fatalf("error = %v, want a total fetch timeout", err)
+	}
+	var timeout *FetchTimeoutError
+	if !errors.As(err, &timeout) || timeout.Kind != FetchTimeoutTotal {
+		t.Fatalf("timeout = %+v, want kind %q", timeout, FetchTimeoutTotal)
+	}
+	if ErrorCategory(err) != ErrorCategoryTimeout {
+		t.Fatalf("category = %q, want %q", ErrorCategory(err), ErrorCategoryTimeout)
+	}
+	if body.closed.Load() != 1 {
+		t.Fatalf("body closed %d times, want 1", body.closed.Load())
+	}
+}
+
 func TestReadBodyLimitedRejectsOverlongBody(t *testing.T) {
 	ctx, cancel := fetchTimeoutCtx(t, 5*time.Second)
 	defer cancel()
