@@ -31,6 +31,13 @@ type partMeta struct {
 const (
 	uploadPartConcurrency = 1
 	quotaSizeUnit         = util.MiB
+	// Upload parts are 100 MiB (512 MiB above 30 GiB), far larger than the
+	// 60-second API timeout allows on a slow uplink. Each part request gets a
+	// size-derived budget and an idle watchdog instead.
+	yun139UploadIdleTimeout = 2 * time.Minute
+	yun139UploadMinRate     = int64(256 << 10) // bytes per second
+	yun139UploadMinTimeout  = 2 * time.Minute
+	yun139UploadMaxTimeout  = time.Hour
 )
 
 type Driver struct {
@@ -549,11 +556,18 @@ func (d *Driver) metricEvents(ctx context.Context, since time.Time) ([]drive.Met
 	return d.cl.metricEvents(since), nil
 }
 
+// UploadProfile exposes the part size and part concurrency a probe may sweep.
+func (d *Driver) UploadProfile() drive.UploadProfile {
+	return drive.UploadProfile{ChunkSize: calcPartSize(0), Concurrency: uploadPartConcurrency}
+}
+
 func (d *Driver) putSource(ctx context.Context, parentID, name string, source drive.ReadOnlyFileSource, progress drive.UploadProgress) (drive.Entry, error) {
 	size := source.Size()
 	now := time.Now()
 	fileID := d.resolveID(parentID)
 	partSize := calcPartSize(size)
+	partConcurrency := uploadPartConcurrency
+	override, hasOverride := drive.UploadProfileFromContext(ctx)
 
 	drive.ReportUploadPhase(progress, drive.UploadPhaseHashing)
 	sha256Hex, err := sourceSHA256Hex(ctx, source, size)
@@ -579,6 +593,20 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	partCount := size / partSize
 	if size%partSize > 0 {
 		partCount++
+	}
+	// A measurement override may only reshape a fresh upload: a resumed
+	// session's parts were created with the token's part size.
+	if hasOverride && !resumedSession {
+		if override.ChunkSize > 0 {
+			partSize = override.ChunkSize
+		}
+		if override.Concurrency > 0 {
+			partConcurrency = override.Concurrency
+		}
+		partCount = size / partSize
+		if size%partSize > 0 {
+			partCount++
+		}
 	}
 
 	partInfos := make([]partMeta, partCount)
@@ -668,7 +696,7 @@ func (d *Driver) putSource(ctx context.Context, parentID, name string, source dr
 	// 分片上传：已确认分片跳过（本地确认位图），上传 URL 每次现取。
 	if len(partInfos) > 0 {
 		skipParts := session.ConfirmedParts(token.Confirmed)
-		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, size, skipParts, func(partNumber int) {
+		if err := d.uploadParts(ctx, source, progress, createResp, partInfos, partSize, partConcurrency, size, skipParts, func(partNumber int) {
 			if d.sessions == nil || sessionKey == "" {
 				return
 			}
@@ -780,7 +808,7 @@ func sourceSHA256Hex(ctx context.Context, source drive.ReadOnlyFileSource, size 
 	return fmt.Sprintf("%X", hasher.Sum(nil)), nil
 }
 
-func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize, size int64, completed map[int]bool, markComplete func(int)) error {
+func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSource, progress drive.UploadProgress, createResp personalUploadResp, partInfos []partMeta, partSize int64, partConcurrency int, size int64, completed map[int]bool, markComplete func(int)) error {
 	type uploadPart struct {
 		partNumber int
 		uploadURL  string
@@ -828,7 +856,7 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 	}
 
 	g, uploadCtx := errgroup.WithContext(ctx)
-	g.SetLimit(uploadPartConcurrency)
+	g.SetLimit(partConcurrency)
 	for _, up := range uploadParts {
 		up := up
 		g.Go(func() error {
@@ -849,18 +877,26 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 			if _, err := f.Seek(start, io.SeekStart); err != nil {
 				return fmt.Errorf("139: upload part %d seek: %w", up.partNumber, err)
 			}
-			body := drive.NewUploadProgressReader(progress, io.LimitReader(f, end-start))
-			body = d.limiter.LimitUpload(uploadCtx, body)
-			req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, up.uploadURL, body)
+			partLength := end - start
+			partBudget := driverutil.UploadBudget(partLength, yun139UploadMinRate, yun139UploadMinTimeout, yun139UploadMaxTimeout)
+			budgetCtx, cancelBudget := context.WithTimeout(uploadCtx, partBudget)
+			defer cancelBudget()
+			partCtx, cancelPart := context.WithCancelCause(budgetCtx)
+			defer cancelPart(nil)
+			body := drive.NewUploadProgressReader(progress, io.LimitReader(f, partLength))
+			body = d.limiter.LimitUpload(partCtx, body)
+			watchdog := driverutil.NewUploadWatchdog(partCtx, body, yun139UploadIdleTimeout, cancelPart)
+			defer watchdog.Stop()
+			req, err := http.NewRequestWithContext(partCtx, http.MethodPut, up.uploadURL, watchdog)
 			if err != nil {
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
-			req.ContentLength = end - start
+			req.ContentLength = partLength
 			req.Header.Set("Content-Type", "application/octet-stream")
 			req.Header.Set("Origin", defaultBaseURL)
 			req.Header.Set("Referer", defaultBaseURL+"/")
 			httpStart := time.Now()
-			resp, err := d.cl.httpClient.Do(req)
+			resp, err := d.cl.uploadClient.Do(req)
 			d.cl.recordMetric(uploadCtx, drive.MetricEvent{
 				Operation: "upload_part",
 				Method:    req.Method,
@@ -871,6 +907,12 @@ func (d *Driver) uploadParts(ctx context.Context, source drive.ReadOnlyFileSourc
 				Error:     errorString(err),
 			})
 			if err != nil {
+				switch {
+				case errors.Is(context.Cause(partCtx), driverutil.ErrUploadStalled):
+					err = fmt.Errorf("no progress for %s: %w", yun139UploadIdleTimeout, driverutil.ErrUploadStalled)
+				case budgetCtx.Err() != nil:
+					err = fmt.Errorf("exceeded %s: %w", partBudget, err)
+				}
 				return fmt.Errorf("139: upload part %d: %w", up.partNumber, err)
 			}
 			resp.Body.Close()

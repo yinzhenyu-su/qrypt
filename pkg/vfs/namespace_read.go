@@ -5,10 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/yinzhenyu/qrypt/pkg/drive"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 	"io"
 	"strings"
+
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
 func (n *Namespace) FlushReadCache() error {
@@ -155,6 +156,20 @@ func (n *Namespace) ReleaseReadSession(sessionID uint64) {
 	for _, mount := range n.mounts {
 		mount.ReleaseReadSession(sessionID)
 	}
+}
+
+func (n *Namespace) CancelReadPrefetch(ctx context.Context, path string) error {
+	if isVirtualRootAppleMetadataPath(path) {
+		return nil
+	}
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return err
+	}
+	if root {
+		return nil
+	}
+	return mount.CancelReadPrefetch(ctx, rest)
 }
 
 func (n *Namespace) ReadRaw(ctx context.Context, path string, offset, size int64) (io.ReadCloser, error) {

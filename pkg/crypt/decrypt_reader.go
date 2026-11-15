@@ -12,13 +12,17 @@ type DecryptingReader struct {
 	blockIndex uint64
 	pending    []byte
 	encEOF     bool
+	// remaining is how many ciphertext bytes the caller expects; -1 means the
+	// length is unknown, so a short final block is accepted as written.
+	remaining int64
 }
 
 func NewDecryptingReader(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte) *DecryptingReader {
 	return &DecryptingReader{
-		enc:    enc,
-		cipher: cipher,
-		nonce:  nonce,
+		enc:       enc,
+		cipher:    cipher,
+		nonce:     nonce,
+		remaining: -1,
 	}
 }
 
@@ -28,7 +32,26 @@ func NewDecryptingReaderAt(enc io.Reader, cipher Cipher, nonce [FileNonceSize]by
 		cipher:     cipher,
 		nonce:      nonce,
 		blockIndex: blockIndex,
+		remaining:  -1,
 	}
+}
+
+// NewDecryptingReaderAtLimit is NewDecryptingReaderAt for a caller that knows
+// exactly how many ciphertext bytes the body should carry. A body that ends
+// before that count is a truncated read, not a short final block, so it is
+// reported as io.ErrUnexpectedEOF and can be replayed by the read layer.
+func NewDecryptingReaderAtLimit(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte, blockIndex uint64, encSize int64) *DecryptingReader {
+	reader := NewDecryptingReaderAt(enc, cipher, nonce, blockIndex)
+	reader.remaining = max(encSize, 0)
+	return reader
+}
+
+// NewDecryptingReaderLimit is NewDecryptingReader for a caller that knows the
+// remaining ciphertext length.
+func NewDecryptingReaderLimit(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte, encSize int64) *DecryptingReader {
+	reader := NewDecryptingReader(enc, cipher, nonce)
+	reader.remaining = max(encSize, 0)
+	return reader
 }
 
 func (r *DecryptingReader) Read(p []byte) (int, error) {
@@ -55,16 +78,35 @@ func (r *DecryptingReader) fillPendingUploads() error {
 		return io.EOF
 	}
 
-	encBlock := make([]byte, BlockSize)
+	blockSize := int64(BlockSize)
+	if r.remaining >= 0 {
+		if r.remaining == 0 {
+			r.encEOF = true
+			return io.EOF
+		}
+		if r.remaining < blockSize {
+			blockSize = r.remaining
+		}
+	}
+
+	encBlock := make([]byte, blockSize)
 	n, err := io.ReadFull(r.enc, encBlock)
 
 	if err != nil {
-		if err == io.EOF {
-			if n == 0 {
-				r.encEOF = true
-				return io.EOF
+		if err == io.EOF && n == 0 {
+			r.encEOF = true
+			return io.EOF
+		}
+		if err == io.ErrUnexpectedEOF {
+			if r.remaining >= 0 {
+				// The caller knows how much ciphertext should be here, so a
+				// short block means the body ended prematurely. Decrypting it
+				// would fail authentication and hide the truncation.
+				return io.ErrUnexpectedEOF
 			}
-		} else if err != io.ErrUnexpectedEOF {
+			// Unknown total length: the last block of the file is short by
+			// design (rclone does not pad it).
+		} else {
 			return fmt.Errorf("read encrypted block: %w", err)
 		}
 	}
@@ -72,6 +114,10 @@ func (r *DecryptingReader) fillPendingUploads() error {
 	if n == 0 {
 		r.encEOF = true
 		return io.EOF
+	}
+
+	if r.remaining >= 0 {
+		r.remaining -= int64(n)
 	}
 
 	encBlock = encBlock[:n]

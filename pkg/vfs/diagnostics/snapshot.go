@@ -12,24 +12,38 @@ import (
 // OverlaySnapshot is the raw overlay state a mount snapshot is assembled
 // from (consumer side; pkg/vfs reads it off its overlay).
 type OverlaySnapshot struct {
-	DeleteTimers []DebugTimer
-	Deleted      []DebugDeletedEntry
-	OverlayOps   []DebugOverlayOp
-	RestoredDirs []DebugTimer
-	CopyHidden   []DebugCopyHidden
+	DeleteTimers  []DebugTimer
+	ActiveDeletes []DebugTimer
+	Deleted       []DebugDeletedEntry
+	OverlayOps    []DebugOverlayOp
+	RestoredDirs  []DebugTimer
+	CopyHidden    []DebugCopyHidden
 }
 
 // RuntimeSnapshot is the raw read-runtime counters a mount snapshot is
 // assembled from.
 type RuntimeSnapshot struct {
-	WindowLoads   int
-	Prefetches    int
-	HotChunkCount int
-	HotChunkBytes int64
-	RangeHitCount int
-	HotChunkLimit int
-	RangeHitLimit int
-	Counters      drive.CounterSnapshot
+	WindowLoads      int
+	Prefetches       int
+	HotChunkCount    int
+	HotChunkBytes    int64
+	RangeHitCount    int
+	HotChunkLimit    int
+	RangeHitLimit    int
+	ReadTimeouts     int
+	PrefetchTimeouts int
+	LastTimeout      *DebugReadTimeout
+	Counters         drive.CounterSnapshot
+}
+
+// DebugReadTimeout describes the most recent read fetch timeout.
+type DebugReadTimeout struct {
+	CacheKey    string
+	WindowStart int64
+	WindowEnd   int64
+	Background  bool
+	Kind        string
+	At          time.Time
 }
 
 // SnapshotRuntime is the full-mount snapshot surface (consumer side).
@@ -49,6 +63,7 @@ type SnapshotRuntime interface {
 	UploadSnapshots(pending []vfstypes.PendingUpload) []upload.UploadSnapshot
 	UploadHistory() []upload.UploadSnapshot
 	StartedAt() time.Time
+	ReadProfile() DebugReadProfile
 }
 
 // AssembleMountSnapshot assembles one mount's full snapshot: identity,
@@ -61,7 +76,8 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 		Overlay: MountSnapshotOverlay{
 			Pending: runtime.PendingUploads(),
 		},
-		Cache: runtime.Cache(),
+		Cache:       runtime.Cache(),
+		ReadProfile: runtime.ReadProfile(),
 		Events: MountSnapshotEvents{
 			Reads: runtime.ReadHistory(),
 		},
@@ -100,6 +116,7 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Queues.UploadTimers = runtime.UploadTimers()
 	overlay := runtime.Overlay()
 	snapshot.Queues.DeleteTimers = overlay.DeleteTimers
+	snapshot.Queues.ActiveDeletes = overlay.ActiveDeletes
 	snapshot.Overlay.Deleted = overlay.Deleted
 	snapshot.Overlay.OverlayOps = overlay.OverlayOps
 	snapshot.Overlay.RestoredDirs = overlay.RestoredDirs
@@ -112,6 +129,18 @@ func AssembleMountSnapshot(name string, runtime SnapshotRuntime) MountSnapshot {
 	snapshot.Runtime.HotChunkLimit = runtimeState.HotChunkLimit
 	snapshot.Runtime.RangeHitCount = runtimeState.RangeHitCount
 	snapshot.Runtime.RangeHitLimit = runtimeState.RangeHitLimit
+	snapshot.Runtime.ReadTimeouts = runtimeState.ReadTimeouts
+	snapshot.Runtime.PrefetchTimeouts = runtimeState.PrefetchTimeouts
+	if last := runtimeState.LastTimeout; last != nil {
+		snapshot.Runtime.LastTimeout = &MountReadTimeout{
+			CacheKey:    last.CacheKey,
+			WindowStart: last.WindowStart,
+			WindowEnd:   last.WindowEnd,
+			Background:  last.Background,
+			Kind:        last.Kind,
+			At:          last.At,
+		}
+	}
 	snapshot.Runtime.Counters = runtimeState.Counters
 
 	return snapshot

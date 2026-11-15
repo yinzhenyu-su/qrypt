@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- feat(vfs): bound read fetches with an idle and total timeout, retry a timed-out Range GET once, and cancel timed-out prefetches silently
+- feat(vfs): add read intents, driver read profiles, and bounded parallel range reads
+- feat(vfs): cancel speculative prefetch on invalidation, session release, and caller cancel
+- feat(vfs): skip durable read-cache writes for bulk and probe reads
+- feat(cli): download directory files and sync files with four workers
+- feat(probe): add an upload probe with stall/truncate/not-found fault injection
+- feat(probe): add a raw driver read concurrency benchmark
+- feat(probe): clear one mount's read cache so scripts can measure cold-cache load time
+- feat(probe): measure a sequential read sub-range and invalidate one file's read cache
+- feat(probe): inject read stalls, truncation, retryable statuses, and open delays
+- feat(probe): override read fetch timeouts for one measurement
+- feat(drivers): expose Quark penalized edges and download rotations in the driver snapshot
+- feat(probe): add an upload concurrency and chunk-size benchmark
+- feat(drivers): expose an upload profile so probes can sweep part size and part concurrency
+- feat(vfs): prefetch the next read-stream window
+
+### Bug fixes
+- fix(vfs): fail a stalled provider read with a timeout instead of blocking the mount, and bound the read probe's own waits
+- fix(vfs): stop prefetch after deleting a file or closing a handle (#20)
+- fix(drivers): upload Quark content hashes in lowercase and answer EOF reads correctly
+- fix(crypt): give the raw driver the encrypted size so the final block decrypts
+- fix(crypt): forward read capabilities and profiles from the raw driver
+- fix(drivers): keep Drime, Koofr, and 123 bulk reads single-stream after measurement
+- fix(drivers): hand Quark range reads to the shared read layer so a stalled CDN body hits the idle timeout instead of the five-minute fetch budget
+- fix(vfs): replay a truncated Range body once in the shared read layer instead of requiring each driver to retry it
+- fix(drivers): refetch a Quark download URL when a cancelled prefetch aborts the shared request
+- fix(drivers): cap a Quark Range fetch at 90 seconds and rotate the download connection after a failed body read
+- fix(drivers): abort a Quark body that sustains a fraction of the recent best rate and replay it on a fresh connection
+- fix(crypt): report a ciphertext block that ends early as a truncated read instead of a decryption failure
+- fix(drivers): bound Quark download response headers to 10 seconds and reconnect after the wait times out
+- fix(drivers): skip Quark CDN edges that recently timed out or stalled
+- fix(drivers): keep Quark bulk reads single-stream by default after measurement
+- fix(vfs): keep caller-cancelled operations out of mount health
+- fix(vfs): treat a missing upload target as permanent instead of retrying forever
+- fix(vfs): bound consecutive upload retries so a stuck upload cannot loop indefinitely
+- fix(sftp): classify staging errors so a missing target reports not found
+- fix(koofr): give large uploads a size-derived budget and an idle-progress watchdog
+- fix(webdav): let a single PUT outlive the 30-second API timeout, bounded by a size-derived budget
+- fix(yun139): give upload parts a size-derived budget instead of the 60-second API timeout
+- fix(vfs): count in-flight remote deletes when reporting idle
+
+### Others
+- refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
+- refactor(vfs): centralize read concurrency budgets in one scheduler
+- refactor(drive): share the read concurrency budget with direct reads
+- refactor(vfs): treat plan streams as a hint and record scheduler-granted streams
+- fix(probe): tolerate provider-specific roots, blocked extensions, and evicted read events
+
+---
+
 ## v0.6.1 (2026-11-02)
 
 ### Features

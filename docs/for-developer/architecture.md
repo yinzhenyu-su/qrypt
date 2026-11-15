@@ -88,6 +88,8 @@ lives in `pkg/vfs` sub-packages, one per domain; `pkg/vfs` wires them
 together and holds one owner object per domain rather than the domain's
 individual runtime collaborators:
 
+- `readbudget` — shared read concurrency budgets (global slots, per-file
+  permits, prefetch permits) used by the VFS read domain and direct reads
 - `vfstypes` — shared types and path helpers
 - `upload` — upload engine, persistent pending store (write-ahead journal),
   per-path scheduling, quiet-window checks, and upload admission
@@ -161,6 +163,13 @@ is source metadata, not a driver capability.
 Drivers that benefit from hashes before upload can declare the needed algorithms
 with `drive.UploadHashRequirements`.
 
+Drivers may declare read scheduling defaults through `drive.ReadProfiler`
+(`drive.ReadProfile`): bulk streams, per-intent window sizes, prefetch depth,
+parallel threshold, and the read fetch bounds. `FetchIdleTimeout` bounds how
+long one fetch may produce no bytes; `FetchTotalTimeout` bounds one fetch end
+to end. Zero fields inherit the conservative defaults (30 s / 5 min), and a
+mount's `[mounts.read_profile]` override can only change streams and window.
+
 Construction-time hooks such as state-store installation and native bandwidth
 limiter installation are not runtime capabilities. They are used only during
 assembly.
@@ -202,15 +211,31 @@ another domain's internal state.
   directory prefetch, list backend around driver `List`, and list scheduler
   state
 - `read.go`: public read operation and read-slot acquisition entrypoint
-- `read_range.go`: range reads, chunk slicing, and bounded driver reads
-- `pkg/vfs/read/reader.go`: read window load/coalescing, in-flight wait handling,
-  read-path staging flush, chunk availability, read-slot admission,
-  prefetch reservations, cache/window/hot-chunk/range-hit state, and the
-  read-window driver read / chunk-cache write backend
-- `read_prefetch.go`: adjacent read prefetch scheduling and execution
-- `read_fast_path.go`: hot chunk cache and cached-range promotion helpers
-- `read_keys.go` and `read_debug_helpers.go`: read cache keys and diagnostic
-  helpers
+- `pkg/vfs/read/reader.go`: read window load/coalescing, bounded parallel
+  sub-range fetch, read-window driver read, and the foreground fetch failure
+  boundary (one idempotent retry after an idle timeout, up to three tries on a
+  retryable provider status)
+- `pkg/vfs/read/fetch_timeout.go`: resolved fetch bounds attached to the read
+  context, plus foreground/prefetch timeout counters and the last timeout
+  window exposed by the debug snapshot
+- `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
+- `pkg/vfs/read/plan.go`: immutable `ReadPlan` and `PlanResolver`; explicit
+  intent, max-stream hint, window, prefetch-depth, and cache-write defaults.
+  `pkg/core.buildMount` resolves the driver profile plus an optional
+  `[mounts.read_profile]` override and passes it to the VFS and direct read
+  paths; the mount debug snapshot exposes the effective profile and source.
+- `pkg/vfs/read/scheduler.go`: the single read budget owner for global
+  normal/high slots, per-file parallel permits, prefetch permits, and the
+  foreground-read count
+- `pkg/vfs/read/scope.go`: `ScopeRegistry`, the single owner of speculative
+  prefetch lifetimes and cancellation reasons
+- `pkg/vfs/read/cache_policy.go`: `CachePolicy` admission (hot vs durable) and
+  the shared `lookupCachedChunk` path
+- `pkg/vfs/read/helpers.go`: read intent/priority context, cache/window keys,
+  and read debug helpers
+- `pkg/vfs/read/state.go`: in-flight windows and read-domain state assembly
+- `pkg/vfs/diagnostics/read.go`: bounded read-event summaries/details and the
+  read intent/stream/cancel-reason projection
 - `staging.go`: local write staging, create/write/flush/truncate/mtime
   operations, and write-side pending/staging/hash transitions
 - `pkg/vfs/upload/domain.go`: the single upload owner assembled from service/store,
@@ -319,6 +344,45 @@ background tasks without a legacy adapter layer.
 
 VFS should not know provider API details. It should operate on `drive.Entry`
 and optional `drive` capabilities only.
+
+### Read fetch timeouts
+
+Reads have two lifetimes: cancellation ("the caller no longer needs the data")
+and a failure boundary ("the provider will not deliver"). The read layer owns
+the failure boundary; it must not depend on the FUSE caller passing a context
+with a deadline.
+
+- Each window fetch derives a context with the profile's `FetchTotalTimeout`,
+  and `pkg/drive.ReadBodyLimited` aborts the body when it produces no bytes for
+  `FetchIdleTimeout`. The idle bound is the primary stall detector; a slow but
+  moving provider keeps resetting it.
+- `pkg/drive/fetch_timeout.go` classifies both bounds as
+  `drive.FetchTimeoutError`, which unwraps to `context.DeadlineExceeded` so
+  `drive.ErrorCategory` reports `timeout` and FUSE maps the read to `EIO`.
+- A timed-out foreground window retries the Range GET once before failing the
+  whole window; partial data is never mixed into the result. One deadline
+  covers both attempts.
+- A Range GET that fails with a retryable status is replayed instead of failing
+  the read: `5xx`, `408`, and `429` (the last reaches the read layer as
+  `drive.ErrRateLimit`) get up to three total tries with a 200/400 ms backoff.
+  The backoff is charged to the same fetch deadline, so a slow request plus the
+  wait can never outlive the range budget. Statuses with a stable sentinel
+  (`drive.ErrAuth`, `ErrPermission`, `ErrNotFound`, `ErrConflict`,
+  `ErrInvalidInput`) and `drive.ErrUnsupported` still fail on the first
+  attempt; a persistent 5xx exhausts the three tries and surfaces the provider
+  error, not a timeout.
+- A timed-out prefetch is a silent cancellation: it records
+  `prefetch_cancel_reason=timeout`, releases its prefetch permit and window
+  entry, and never fails a caller read. A foreground read that was waiting on
+  that window takes the load over.
+- `ReadStream`, `drivecopy`, and direct-part reads use the same bounds
+  (`drive.ReadParallelWithProfile`), and drivers bound the response-header
+  phase through their HTTP transport.
+- Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; a
+  replayed range reports `fetch_status_retries`, `fetch_status_reason`
+  (`status_5xx`, `rate_limited`, `request_timeout`), and `fetch_backoff_ms`
+  next to the existing `fetch_attempts`/`fetch_retried`. The mount debug
+  snapshot exposes `read_timeouts`, `prefetch_timeouts`, and `last_timeout`.
 
 ## Upload State Flow
 

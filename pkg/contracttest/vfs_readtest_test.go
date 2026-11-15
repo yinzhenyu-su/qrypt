@@ -152,6 +152,34 @@ func TestMountedTestPathRequiresDirectory(t *testing.T) {
 	}
 }
 
+func TestMeasureMountedFileReadsSubRange(t *testing.T) {
+	data := make([]byte, 64<<10)
+	fillMountedReadPattern(data, 0)
+	file := t.TempDir() + "/data.bin"
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const offset = int64(8 << 10)
+	const length = int64(16 << 10)
+	wantHash := sha256.Sum256(data[offset : offset+length])
+
+	measurement, _, err := measureMountedFile(
+		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, offset, length, "cold", 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.Bytes != length {
+		t.Fatalf("bytes = %d, want %d", measurement.Bytes, length)
+	}
+	if measurement.StartOffset != offset {
+		t.Fatalf("start offset = %d, want %d", measurement.StartOffset, offset)
+	}
+	if measurement.ContentHash != fmt.Sprintf("%x", wantHash) {
+		t.Fatalf("content hash = %s, want %x", measurement.ContentHash, wantHash)
+	}
+}
+
 func TestMeasureMountedFileIncludesFinalPartialPeakWindow(t *testing.T) {
 	data := make([]byte, 64<<10)
 	fillMountedReadPattern(data, 0)
@@ -162,7 +190,7 @@ func TestMeasureMountedFileIncludesFinalPartialPeakWindow(t *testing.T) {
 	wantHash := sha256.Sum256(data)
 
 	measurement, _, err := measureMountedFile(
-		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, "cold", 1,
+		context.Background(), newXferFakeFS(), "local", file, fmt.Sprintf("%x", wantHash), 4<<10, 0, int64(len(data)), "cold", 1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +332,7 @@ func TestMeasureMountedSeekScenariosRecordOverlap(t *testing.T) {
 				context.Background(), fs, "local", file, virtualPath,
 				// This verifies overlap, not timeout behavior. Allow the normal
 				// shutdown budget for race-instrumented readers on busy runners.
-				16<<20, 1<<20, 0, scenario, 2, DefaultMountedSeekOverlapTimeout, "cold", 1, 1,
+				16<<20, 1<<20, 0, scenario, 2, DefaultMountedSeekOverlapTimeout, true, "cold", 1, 1,
 			)
 			if err != nil {
 				t.Fatal(err)

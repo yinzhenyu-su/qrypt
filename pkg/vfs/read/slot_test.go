@@ -8,10 +8,7 @@ import (
 
 func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 	state := NewState(nil)
-	state.slots = &slotState{
-		normal: make(chan struct{}, 1),
-		high:   make(chan struct{}, 1),
-	}
+	state.scheduler = NewScheduler(SchedulerConfig{MaxConcurrency: 2, HighReserve: 1, PrefetchLimit: 1})
 	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
 
 	releaseHighNormalSlot, err := reader.acquireReadSlot(WithPriority(context.Background(), PriorityHigh))
@@ -39,10 +36,14 @@ func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 }
 
 func TestLowPriorityReadWaitsForSlotAndHonorsCancellation(t *testing.T) {
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(nil)})
-	for i := 0; i < cap(reader.state.slots.normal); i++ {
-		reader.state.slots.normal <- struct{}{}
+	state := NewState(nil)
+	state.scheduler = NewScheduler(SchedulerConfig{MaxConcurrency: 1, HighReserve: 0, PrefetchLimit: 1})
+	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
+	release, err := reader.acquireReadSlot(context.Background())
+	if err != nil {
+		t.Fatalf("fill normal slot: %v", err)
 	}
+	defer release()
 
 	ctx, cancel := context.WithCancel(WithPriority(context.Background(), PriorityLow))
 	result := make(chan error, 1)

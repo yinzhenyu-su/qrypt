@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
@@ -24,18 +25,30 @@ var errDownloadURLExpired = errors.New("quark: download url expired")
 const downloadWarmupMinSize = 512 * 1024
 
 const (
-	// Quark's CDN can keep a single Range stream at a comparatively low
-	// throughput. Split the bounded VFS windows into a few independent Range
-	// requests, as OpenList does for a full download. Keep the part size aligned
-	// with qrypt's larger sequential read windows to reduce request overhead.
-	downloadParallelMinSize  = 4 * 1024 * 1024
-	downloadParallelPartSize = 8 * 1024 * 1024
-	downloadParallelWorkers  = 3
+	// downloadRateGrace lets a request connect and start before the slow-read
+	// watchdog judges its throughput.
+	downloadRateGrace = 5 * time.Second
+	// downloadRateCheckInterval is how often the watchdog samples a body.
+	downloadRateCheckInterval = 3 * time.Second
 )
+
+// errDownloadTooSlow marks a read that was aborted because its body sustained
+// less than the driver's throughput floor.
+var errDownloadTooSlow = errors.New("quark: download too slow")
 
 const downloadChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
+	// Quark's CDN answers an out-of-range request with the whole object instead
+	// of an empty 206, so clamp the request to the entry and answer EOF here.
+	if entry.Size > 0 {
+		if offset >= entry.Size {
+			return io.NopCloser(bytes.NewReader(nil)), nil
+		}
+		if size > entry.Size-offset {
+			size = entry.Size - offset
+		}
+	}
 	start := time.Now()
 	var staleURL string
 	for urlAttempt := 0; urlAttempt < 2; urlAttempt++ {
@@ -55,7 +68,7 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 			}
 		}
 
-		body, err := d.downloadBody(ctx, entry.ID, download.url, download.cookie, download.cacheHit, offset, size)
+		body, edge, err := d.downloadBody(ctx, entry.ID, download.url, download.cookie, download.cacheHit, offset, size)
 		if errors.Is(err, errDownloadURLExpired) {
 			if urlAttempt == 0 {
 				logging.L.DebugfEvery("quark.read_http.forbidden", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d refresh_url=true", entry.ID, offset, size)
@@ -68,149 +81,113 @@ func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64
 			return nil, err
 		}
 		body = d.limiter.LimitDownload(ctx, body)
-		return &traceReadCloser{
+		trace := &traceReadCloser{
 			ReadCloser: body,
 			fid:        entry.ID,
 			offset:     offset,
 			size:       size,
 			start:      time.Now(),
-		}, nil
+			onError: func(err error, read int64, elapsed time.Duration) {
+				d.noteDownloadBodyError(edge, err, read, elapsed)
+			},
+			onComplete: d.cl.observeDownloadRate,
+			grace:      downloadRateGrace,
+			checkEvery: downloadRateCheckInterval,
+		}
+		if d.cl.allowSlowAbort() {
+			trace.minRate = d.cl.downloadRateFloor()
+		}
+		return trace, nil
 	}
 	return nil, fmt.Errorf("quark: read: download url refresh failed")
 }
 
-func (d *Driver) downloadBody(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) (io.ReadCloser, error) {
-	if size >= downloadParallelMinSize {
-		return d.downloadParallel(ctx, fid, downloadURL, cookieSnapshot, urlCacheHit, offset, size)
+const (
+	// downloadCanceledHealthyRate is the body rate above which a canceled read
+	// is treated as lifecycle-driven (seek, close, released prefetch) instead
+	// of a bad connection. Rotating those would pay a TLS handshake and pick a
+	// cold CDN edge on every seek.
+	downloadCanceledHealthyRate = 512 << 10
+	// downloadCanceledMinElapsed keeps a cancellation that happens right after
+	// the request starts from looking like a stall.
+	downloadCanceledMinElapsed = 2 * time.Second
+)
+
+// noteDownloadBodyError swaps the download connection after a failed body
+// read. The read layer aborts stalled reads by canceling the request context,
+// which reaches the body as a cancellation, so cancellation alone does not
+// identify a bad connection: it is only treated as one when the canceled read
+// had also been running long and slow.
+func (d *Driver) noteDownloadBodyError(edge string, err error, read int64, elapsed time.Duration) {
+	if err == nil || errors.Is(err, io.EOF) {
+		return
 	}
-	resp, err := d.downloadRange(ctx, fid, downloadURL, cookieSnapshot, urlCacheHit, offset, size)
+	if isDownloadLifecycleError(err) {
+		if elapsed < downloadCanceledMinElapsed {
+			return
+		}
+		if rate := float64(read) / elapsed.Seconds(); rate >= downloadCanceledHealthyRate {
+			return
+		}
+	}
+	if errors.Is(err, errDownloadTooSlow) {
+		d.cl.noteSlowAbort()
+	}
+	if edge != "" {
+		d.cl.edges.penalizeAddr(edge, "body read failed")
+	}
+	d.cl.markDownloadFailed("download body failed: " + err.Error())
+}
+
+// isEdgeTimeout reports whether err is a request/response timeout that points
+// at the selected edge rather than at the provider as a whole.
+func isEdgeTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// isDownloadLifecycleError reports whether err can come from the read layer or
+// the request lifetime ending instead of a provider connection failure.
+func isDownloadLifecycleError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	message := err.Error()
+	return strings.Contains(message, "response body closed") || strings.Contains(message, "read on closed")
+}
+
+// downloadBody opens one bounded Range request. Parallel sub-ranges are the
+// read domain's job (drive.ReadParallel / the VFS window split): keeping this
+// driver single-stream lets the shared layer apply its fetch idle/total bounds
+// and its truncated-body retry to every sub-range instead of hiding them
+// behind an in-memory assembly inside the driver.
+func (d *Driver) downloadBody(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) (io.ReadCloser, string, error) {
+	resp, edge, err := d.downloadRange(ctx, fid, downloadURL, cookieSnapshot, urlCacheHit, offset, size)
 	if err != nil {
-		return nil, err
+		return nil, edge, err
 	}
-	if resp.StatusCode == http.StatusForbidden {
+	if err := checkQuarkReadStatus(ctx, resp); err != nil {
 		resp.Body.Close()
-		return nil, errDownloadURLExpired
+		return nil, edge, err
+	}
+	return resp.Body, edge, nil
+}
+
+// checkQuarkReadStatus classifies a download response. In strict range mode a
+// 200 means the CDN ignored the Range header: report ErrUnsupported so the
+// read layer falls back to a single stream instead of treating the whole
+// object as one sub-range.
+func checkQuarkReadStatus(ctx context.Context, resp *http.Response) error {
+	if resp.StatusCode == http.StatusForbidden {
+		return errDownloadURLExpired
+	}
+	if drive.StrictRangeFromContext(ctx) && resp.StatusCode == http.StatusOK {
+		return fmt.Errorf("quark: read: range ignored (status 200): %w", drive.ErrUnsupported)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		resp.Body.Close()
-		return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
+		return fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
 	}
-	return resp.Body, nil
-}
-
-type downloadRangePart struct {
-	offset int64
-	size   int64
-	data   []byte
-}
-
-func (d *Driver) downloadParallel(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) (io.ReadCloser, error) {
-	partCount := int((size + downloadParallelPartSize - 1) / downloadParallelPartSize)
-	if partCount < 2 {
-		resp, err := d.downloadRange(ctx, fid, downloadURL, cookieSnapshot, urlCacheHit, offset, size)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode == http.StatusForbidden {
-			resp.Body.Close()
-			return nil, errDownloadURLExpired
-		}
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-			resp.Body.Close()
-			return nil, fmt.Errorf("quark: read: unexpected status %d", resp.StatusCode)
-		}
-		return resp.Body, nil
-	}
-
-	parts := make([]downloadRangePart, 0, partCount)
-	for partOffset := offset; partOffset < offset+size; {
-		partSize := min(int64(downloadParallelPartSize), offset+size-partOffset)
-		parts = append(parts, downloadRangePart{offset: partOffset, size: partSize})
-		partOffset += partSize
-	}
-
-	parallelCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	jobs := make(chan int)
-	var workers sync.WaitGroup
-	var errMu sync.Mutex
-	var firstErr error
-	workerCount := min(downloadParallelWorkers, len(parts))
-	for range workerCount {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for {
-				select {
-				case <-parallelCtx.Done():
-					return
-				case index, ok := <-jobs:
-					if !ok {
-						return
-					}
-					part := &parts[index]
-					resp, err := d.downloadRange(parallelCtx, fid, downloadURL, cookieSnapshot, urlCacheHit, part.offset, part.size)
-					if err == nil {
-						if resp.StatusCode == http.StatusForbidden {
-							resp.Body.Close()
-							err = errDownloadURLExpired
-						} else if resp.StatusCode != http.StatusPartialContent {
-							resp.Body.Close()
-							err = fmt.Errorf("quark: parallel read: unexpected status %d", resp.StatusCode)
-						} else {
-							part.data, err = readDownloadPart(resp, part.size)
-						}
-					}
-					if err != nil {
-						errMu.Lock()
-						if firstErr == nil {
-							firstErr = err
-							cancel()
-						}
-						errMu.Unlock()
-					}
-				}
-			}
-		}()
-	}
-sendLoop:
-	for index := range parts {
-		select {
-		case jobs <- index:
-		case <-parallelCtx.Done():
-			break sendLoop
-		}
-		if parallelCtx.Err() != nil {
-			break sendLoop
-		}
-	}
-	close(jobs)
-	workers.Wait()
-	if firstErr != nil {
-		if errors.Is(firstErr, context.Canceled) && ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, firstErr
-	}
-
-	var assembled bytes.Buffer
-	assembled.Grow(int(size))
-	for _, part := range parts {
-		assembled.Write(part.data)
-	}
-	return io.NopCloser(bytes.NewReader(assembled.Bytes())), nil
-}
-
-func readDownloadPart(resp *http.Response, expected int64) ([]byte, error) {
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, expected+1))
-	if err != nil {
-		return nil, fmt.Errorf("quark: parallel read body: %w", err)
-	}
-	if int64(len(data)) != expected {
-		return nil, fmt.Errorf("quark: parallel read body size mismatch: got=%d want=%d", len(data), expected)
-	}
-	return data, nil
+	return nil
 }
 
 // warmDownloadConnection establishes the CDN connection before the first
@@ -273,12 +250,12 @@ func (d *Driver) warmDownloadConnection(ctx context.Context, fid, downloadURL, c
 	return err
 }
 
-func (d *Driver) downloadRange(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) (*http.Response, error) {
+func (d *Driver) downloadRange(ctx context.Context, fid, downloadURL, cookieSnapshot string, urlCacheHit bool, offset, size int64) (*http.Response, string, error) {
 	var lastErr error
 	for attempt := 0; attempt <= quarkDownloadMaxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 		if err != nil {
-			return nil, fmt.Errorf("quark: read: create request: %w", err)
+			return nil, "", fmt.Errorf("quark: read: create request: %w", err)
 		}
 		if size > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
@@ -330,27 +307,30 @@ func (d *Driver) downloadRange(ctx context.Context, fid, downloadURL, cookieSnap
 		}
 		d.cl.recordMetric(ctx, event)
 		if err != nil {
+			if remoteAddr != "" && ctx.Err() == nil && isEdgeTimeout(err) {
+				d.cl.edges.penalizeAddr(remoteAddr, "request timeout")
+			}
 			lastErr = fmt.Errorf("quark: read: download: %w", err)
 			logging.L.DebugfEvery("quark.read_http.error", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d attempt=%d err=%v dur=%s", fid, offset, size, attempt+1, err, time.Since(httpStart))
 			if attempt < quarkDownloadMaxRetries && retryableHTTPError(err) {
 				if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
-					return nil, waitErr
+					return nil, remoteAddr, waitErr
 				}
 				continue
 			}
-			return nil, lastErr
+			return nil, remoteAddr, lastErr
 		}
 		logging.L.DebugfEvery("quark.read_http", time.Second, "[QUARK] ReadHTTP fid=%q offset=%d size=%d attempt=%d status=%d dur=%s", fid, offset, size, attempt+1, resp.StatusCode, time.Since(httpStart))
 		if retryableHTTPStatus(resp.StatusCode) && attempt < quarkDownloadMaxRetries {
 			resp.Body.Close()
 			if waitErr := util.WaitExponential(ctx, attempt); waitErr != nil {
-				return nil, waitErr
+				return nil, remoteAddr, waitErr
 			}
 			continue
 		}
-		return resp, nil
+		return resp, remoteAddr, nil
 	}
-	return nil, lastErr
+	return nil, "", lastErr
 }
 
 func (d *Driver) getCachedURL(fid string) (cachedURL, bool) {
@@ -391,7 +371,7 @@ func (d *Driver) downloadURL(ctx context.Context, fid string) (downloadURLResult
 		return downloadURLResult{url: cached.url, cookie: cached.cookie, cacheHit: true}, nil
 	}
 	started := time.Now()
-	value, err, _ := d.urlFetch.Do(fid, func() (any, error) {
+	fetch := func() (any, error) {
 		if cached, ok := d.getCachedURL(fid); ok {
 			return downloadURLResult{url: cached.url, cookie: cached.cookie, cacheHit: true}, nil
 		}
@@ -411,7 +391,15 @@ func (d *Driver) downloadURL(ctx context.Context, fid string) (downloadURLResult
 		url := resp.Data[0].DownloadURL
 		d.setURLWithCookie(fid, url, cookieSnapshot)
 		return downloadURLResult{url: url, cookie: cookieSnapshot}, nil
-	})
+	}
+	value, err, _ := d.urlFetch.Do(fid, fetch)
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.Canceled) {
+		// The shared fetch was aborted through another caller's canceled
+		// context (a prefetch window dropped by a seek, a closed handle). This
+		// caller is still alive, so start a fresh fetch instead of surfacing a
+		// cancellation it never asked for as an EIO.
+		value, err, _ = d.urlFetch.Do(fid, fetch)
+	}
 	if err != nil {
 		d.recordDownloadURLMetric(ctx, fid, "", false, started, err)
 		return downloadURLResult{}, err

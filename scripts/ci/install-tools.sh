@@ -66,7 +66,7 @@ install_tool() {
   # CI pins the project toolchain to Go 1.27. Do not let a tool module's
   # go.mod silently select an older toolchain, which can no longer parse the
   # project's Go 1.27 syntax.
-  GOTOOLCHAIN="${QRYPT_GO_TOOLCHAIN:-go1.27.3}" GOBIN="$TOOLS_DIR" go install "$1"
+  GOTOOLCHAIN="${QRYPT_GO_TOOLCHAIN:-go1.27.4}" GOBIN="$TOOLS_DIR" go install "$1"
 }
 
 pids=()

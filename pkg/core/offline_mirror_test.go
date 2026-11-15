@@ -276,13 +276,20 @@ func TestOfflineFetchRejectsSymlinkedAncestor(t *testing.T) {
 	}
 }
 
-// TestOfflineFetchSingleFileDestinationRejectsLayout verifies a single-file
-// destination cannot hold a directory layout.
-func TestOfflineFetchSingleFileDestinationRejectsLayout(t *testing.T) {
+// TestOfflineFetchSingleFileDestinationIgnoresLayout verifies an explicit
+// file destination is written exactly there even when the staged path has
+// directories; only directory destinations mirror the staged layout.
+func TestOfflineFetchSingleFileDestinationIgnoresLayout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
+	download := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("abc"))
+	}))
+	defer download.Close()
+
 	provider := newFakeOfflineProvider()
+	provider.downloadURL = download.URL
 	provider.files = []drive.OfflineFile{{Name: "f", Size: 3, RemoteID: "0/downloads/f", Path: "folder/f"}}
 	provider.states = []drive.OfflineState{drive.OfflineStateQueued, drive.OfflineStateSucceeded}
 	if err := provider.Seed(map[string]string{"downloads/": ""}); err != nil {
@@ -304,11 +311,18 @@ func TestOfflineFetchSingleFileDestinationRejectsLayout(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	done := waitCoreTask(t, c, created.ID)
-	if done.State != task.StateFailed {
-		t.Fatalf("state = %s, want failed (%v)", done.State, done.Error)
+	if done.State != task.StateSucceeded {
+		t.Fatalf("state = %s, want succeeded (%v)", done.State, done.Error)
 	}
-	if done.Error == nil || done.Error.Code != string(drive.OfflineErrPathInvalid) {
-		t.Fatalf("error = %+v, want offline_path_invalid", done.Error)
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatalf("read explicit destination: %v", err)
+	}
+	if string(data) != "abc" {
+		t.Fatalf("destination content = %q, want abc", data)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(destination), "folder", "f")); !os.IsNotExist(err) {
+		t.Fatalf("staged layout leaked into an explicit file destination: %v", err)
 	}
 }
 

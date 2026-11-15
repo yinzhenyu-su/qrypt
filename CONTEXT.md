@@ -170,6 +170,14 @@ _Avoid_: queue
 写入安静多久后才调度上传的防抖窗口。
 _Avoid_: debounce delay
 
+**Scheduling Anchor（调度锚点）**:
+记录当前状态生效时刻的进程内单调时钟读数（`AppliedAt`）。静默窗口与重试退避都从它起算：持久化写入的耗时不算进等待，墙钟（含 NTP 校正）的偏移也不会放大或抹掉等待。重启后的记录没有锚点，回退到持久化的墙钟时间戳，比较的两侧使用同一时钟。
+_Avoid_: timestamp、deadline
+
+**Retry Deadline（重试期限）**:
+失败记录上展示的“不早于”时间（尝试时刻 + 退避），仅用于诊断展示；调度时按重试次数与上次尝试时刻重新推导剩余退避，不读取该字段。
+_Avoid_: next attempt
+
 **Admission（上传准入）**:
 并发上传的准入策略：同时只跑一个大文件，或多个小文件。
 _Avoid_: throttle、limit

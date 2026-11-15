@@ -14,6 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 )
 
 const APIVersion = "v1"
@@ -30,6 +31,26 @@ type Snapshotter interface {
 
 type debugResetter interface {
 	DebugReset(context.Context) error
+}
+
+// readCacheClearer clears the durable and in-memory read cache for one mount.
+// Probe runs use it to measure cache-miss load time without restarting the
+// mount.
+type readCacheClearer interface {
+	ClearReadCacheForMount(string) error
+}
+
+// readCacheInvalidator drops one file's cached read state without touching
+// the rest of the mount. It returns the mount that owns the path.
+type readCacheInvalidator interface {
+	DebugInvalidateReadCache(context.Context, string) (string, error)
+}
+
+// readFaultController arms probe-only read faults.
+type readFaultController interface {
+	DebugInjectReadFault(context.Context, faultinject.DebugReadFaultRequest) (faultinject.DebugReadFault, error)
+	DebugClearReadFault(context.Context, string) error
+	DebugReadFaults(context.Context) []faultinject.DebugReadFault
 }
 
 type taskPersistenceHealth interface {
@@ -127,6 +148,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/health", s.handleHealth)
 	if s.mutable {
 		mux.HandleFunc("/v1/debug/reset", s.handleDebugReset)
+		mux.HandleFunc("/v1/debug/cache/clear", s.handleCacheClear)
+		mux.HandleFunc("/v1/debug/cache/invalidate", s.handleCacheInvalidate)
+		mux.HandleFunc("/v1/debug/faults/read", s.handleReadFaults)
 		mux.HandleFunc("/v1/bench", s.handleBench)
 		mux.HandleFunc("/v1/driver/test", s.handleDriverTest)
 		mux.HandleFunc("/v1/debug/faults/upload-cancel", s.handleDebugUploadCancelFaults)

@@ -22,7 +22,7 @@ description: Run qrypt tests manually — local unit/race/coverage/fuzz gates, r
 
 ## 0. 前置检查
 
-- Go 版本必须与 `.github/workflows/ci.yaml` 的 `go-version` 一致（当前 `1.27.3`）：`go version`。
+- Go 版本必须与 `.github/workflows/ci.yaml` 的 `go-version` 一致（当前 `1.27.4`）：`go version`。
 - CI 操作需要 `gh auth status` 通过且有仓库权限；仓库用 `gh repo view --json nameWithOwner` 确认。
 - 真实网盘测试要求：`qrypt.toml` 中存在该 `[[mounts]]`、`test_enabled = true`、凭证有效（内联 params 或引用的 `[[credentials]]`）。
 
@@ -87,7 +87,23 @@ QRYPT_CONTRACT_CONFIG=./qrypt.toml scripts/ci/test-layers.sh integration quark-t
 | `read` | 经 FUSE 的读性能（需 `--mount-point`，可选 `--cache-mode`/`--pattern`/`--samples`） |
 | `xfer` | 跨 mount 传输（`--source`/`--dest`） |
 
-这些测试会写远端数据并自行清理；失败时可能留下 fixture，必要时手动清理。
+这些测试会写远端数据并自行清理。`probe test fs` 的清理使用独立于请求的 context：
+失败或取消时会先丢弃测试目录下的 pending 上传，再删除文件和目录，并等待延迟
+删除排空；清理失败会作为 `cleanup` step 记录。`probe test fs` 遇到
+`permanent_fail` 会直接报告失败路径，不再等满 `wait_upload` 超时。
+
+进程被 `kill -9`、崩溃，或清理本身因权限/网络失败时，仍可能留下 fixture；
+cleanup 失败会出现在报告里，不要只看 `pass`。测试目录前缀：
+
+- `__qrypt_fs_test_*`
+- `__qrypt_resume_test_*`
+- `__qrypt_batchupload_test_*`
+- `__qrypt_batchmove_test_*`
+- `__qrypt_read_test_*`
+- `__qrypt_xfer_test_*`
+
+确认不是用户数据后，只删除这些前缀。上传队列卡住、`permanent_fail`、
+staging 缺失/大小不匹配的排查与恢复，见 `vfs-upload-recovery` skill。
 
 ## 3. 在 CI 上手动跑
 
@@ -146,6 +162,11 @@ QRYPT_HOME=/tmp/qrypt-fresh qrypt fs df <mount> --config ./qrypt.toml
 
 ## 5. 失败排查
 
+- **上传一直不排空 / `wait_upload` 超时 / `dirty=1 pending=1`**：先看
+  `qrypt fs pending --verbose` 和 `qrypt fs journal`。`permanent_fail` 是终态，
+  不会自动重试；probe 现在会立即报出失败路径。按情况在**卸载后**执行
+  `qrypt fs journal prune`、`prune --failed` 或 `replay`，不要手删 journal。
+  完整决策树见 `vfs-upload-recovery` skill。
 - **`probe test failed: mount "X" not found`**：该 mount 在启动时 `Init()` 失败，
   被 `core.buildNamespace` 跳过（只记一条 warning），服务照常启动，
   `/v1/health` 仍是 OK。真正原因在这里：

@@ -498,6 +498,7 @@ func (d *Driver) Capabilities() []drive.Capability {
 		drive.CapabilitySourceUploader,
 		drive.CapabilityRemoteNameResolver,
 		drive.CapabilityServerSideCopy,
+		drive.CapabilityParallelRange,
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 func (d *Driver) Capabilities() []drive.Capability {
-	return []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader, drive.CapabilityResumableUploader, drive.CapabilitySpace, drive.CapabilityPathResolver, drive.CapabilityRemoteNameResolver, drive.CapabilityMtime}
+	return []drive.Capability{drive.CapabilityWriter, drive.CapabilitySourceUploader, drive.CapabilityResumableUploader, drive.CapabilitySpace, drive.CapabilityPathResolver, drive.CapabilityRemoteNameResolver, drive.CapabilityMtime, drive.CapabilityParallelRange}
 }
 
 func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error) {

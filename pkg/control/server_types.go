@@ -174,6 +174,31 @@ type CacheResponse struct {
 	Mounts        []DebugCacheMountStatus       `json:"mounts"`
 }
 
+// DebugCacheClearResponse reports a completed read-cache clear for one mount.
+type DebugCacheClearResponse struct {
+	SchemaVersion int       `json:"schema_version"`
+	GeneratedAt   time.Time `json:"generated_at"`
+	Mount         string    `json:"mount"`
+	Cleared       bool      `json:"cleared"`
+}
+
+// DebugCacheInvalidateResponse reports a completed per-file read-cache
+// invalidation.
+type DebugCacheInvalidateResponse struct {
+	SchemaVersion int       `json:"schema_version"`
+	GeneratedAt   time.Time `json:"generated_at"`
+	Path          string    `json:"path"`
+	Mount         string    `json:"mount"`
+	Invalidated   bool      `json:"invalidated"`
+}
+
+// DebugReadFaultsResponse lists the read faults armed on the probe socket.
+type DebugReadFaultsResponse struct {
+	SchemaVersion int                          `json:"schema_version"`
+	GeneratedAt   time.Time                    `json:"generated_at"`
+	Faults        []faultinject.DebugReadFault `json:"faults"`
+}
+
 type StagingResponse struct {
 	SchemaVersion int                             `json:"schema_version"`
 	GeneratedAt   time.Time                       `json:"generated_at"`

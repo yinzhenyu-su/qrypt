@@ -160,7 +160,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		return fmt.Errorf("115: login check: %w", err)
 	}
 	d.saveCookieStateIfEmpty(d.currentCookieHeader(), d.cookieSource)
-	d.httpClient = d.cl.Client.GetClient()
+	d.httpClient = downloadHTTPClient(d.cl.Client.GetClient(), 60*time.Second)
 	if d.rootID == "" {
 		d.rootID = "0"
 	}
