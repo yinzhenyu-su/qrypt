@@ -20,6 +20,7 @@
 - feat(vfs): prefetch the next read-stream window
 
 ### Bug fixes
+- fix(drive): keep the total-timeout kind when the provider body reports the deadline itself instead of degrading to a bare context error
 - fix(vfs): confirm a suspect child with a fresh listing before reporting ENOTEMPTY, so `rmdir` right after `rm` no longer fails when the child's delayed delete finished mid-check
 - fix(vfs): fail a stalled provider read with a timeout instead of blocking the mount, and bound the read probe's own waits
 - fix(vfs): stop prefetch after deleting a file or closing a handle (#20)

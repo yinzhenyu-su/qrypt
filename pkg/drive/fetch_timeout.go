@@ -234,6 +234,14 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 			}
 			r.pending = chunk.data
 			r.pendingErr = chunk.err
+			if r.pendingErr != nil && r.ctx.Err() != nil {
+				// The body reported the abort itself (most providers surface
+				// the request context's deadline from a pending read). Classify
+				// it the same way as the <-r.ctx.Done() branch so a total
+				// timeout keeps its diagnostic kind instead of degrading to a
+				// bare context error.
+				r.pendingErr = r.contextError()
+			}
 			if len(chunk.data) > 0 {
 				r.resetIdle()
 			}
