@@ -50,6 +50,8 @@ data. Unlike debug, these commands use the mutable control socket.`,
 	rt.WithPersistentConfigFlag(cmd)
 	cmd.AddCommand(NewBenchCmd(rt))
 	cmd.AddCommand(NewTestCmd(rt))
+	cmd.AddCommand(NewCacheCmd(rt))
+	cmd.AddCommand(NewFaultCmd(rt))
 	return cmd
 }
 
@@ -120,6 +122,18 @@ func debugSocketPostJSON(ctx context.Context, endpoint string, value any) ([]byt
 		return nil, err
 	}
 	return client.PostJSON(ctx, endpoint, value)
+}
+
+func debugSocketDelete(ctx context.Context, endpoint string) ([]byte, error) {
+	socket := debugSocketFromContext(ctx)
+	if socket == "" {
+		return nil, fmt.Errorf("missing debug socket in command context")
+	}
+	client, err := control.NewClient(socket)
+	if err != nil {
+		return nil, err
+	}
+	return client.Delete(ctx, endpoint)
 }
 
 // debugSocket404Detail classifies a 404 from the socket's control server: a

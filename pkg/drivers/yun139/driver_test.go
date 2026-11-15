@@ -928,7 +928,7 @@ func TestUploadPartsUsesNativeBandwidthLimiter(t *testing.T) {
 	var uploadResp personalUploadResp
 	uploadResp.Data.PartInfos = []personalPartInfo{{PartNumber: 1, UploadURL: uploadServer.URL}}
 	source := drive.NewLocalReadOnlyFileSource(localPath, 4)
-	err := drv.uploadParts(ctx, source, nil, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 4, nil, nil)
+	err := drv.uploadParts(ctx, source, nil, uploadResp, []partMeta{{PartNumber: 1, PartSize: 4}}, 4, 1, 4, nil, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("uploadParts error = %v, want context deadline exceeded", err)
 	}

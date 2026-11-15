@@ -20,7 +20,13 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil/httputil"
 )
+
+// downloadClient bounds the first-packet phase of a content request. The read
+// layer owns the body idle bound; this only keeps a connection that never
+// answers from hanging before a body exists.
+var downloadClient = &http.Client{Transport: httputil.DefaultTransport(60 * time.Second)}
 
 func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	if offset < 0 || size < 0 {
@@ -62,7 +68,7 @@ func (d *Driver) Read(ctx context.Context, e drive.Entry, offset, size int64) (i
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		d.metrics.Record(ctx, drive.MetricEvent{
 			Operation: "download",

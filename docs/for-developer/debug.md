@@ -173,6 +173,9 @@ for the default same-user local workflow.
 | Verify driver CRUD behavior | `probe test crud --mount NAME` |
 | Verify VFS upload behavior | `probe test fs --mount NAME` |
 | Measure full mounted-file read latency and throughput | `probe test read --mount NAME --mount-point PATH` |
+| Clear one mount's read cache for a cold run | `probe cache clear --mount NAME` |
+| Drop one file's read cache | `probe cache invalidate --path REMOTE` |
+| Reproduce a stalled or truncated provider read | `probe fault read --path REMOTE --kind stall` |
 | Verify same-directory batch upload caching | `probe test batchupload --mount NAME` |
 | Measure same-mount batch moves | `probe test batchmove --mount NAME` |
 | Verify resumable upload recovery | `probe test resume --mount NAME` |
@@ -258,7 +261,18 @@ whose phase-level history exceeded the bounded runtime history. The test does
 not use a fixed network-speed threshold.
 
 `--pattern sequential` preserves the full-file test above and remains the
-default. `--pattern seek` opens the mounted file, seeks to widely spaced
+default. Add `--offset` and/or `--length` to measure one range instead of the
+whole file; both flags only apply to sequential reads. `--offset` accepts a
+byte offset (including `0`), and `--length` accepts a positive byte count.
+When `--length` is omitted, the measurement runs from the offset to EOF.
+
+```sh
+qrypt probe test read --mount quark-encrypt --mount-point ~/Qrypt \
+  --path /quark-encrypt/videos/movie.mp4 \
+  --offset 12g --length 16m --cache-mode cold
+```
+
+`--pattern seek` opens the mounted file, seeks to widely spaced
 offsets, and loads `--seek-size` bytes at each offset;
 `--pattern both` runs both patterns. Seek output separates the local seek call
 (`seek_us`) from the following data load (`seek_load_us`) and their combined
@@ -300,6 +314,138 @@ repopulating a newly cleared cache, or being attributed to the following
 measurement. `chunks_touched` distinguishes aligned single-chunk loads from
 cross-chunk loads. Compare `isolated`, `prefetch`, and `concurrent` runs with the
 same size, cache mode, probe count, and seek size.
+
+### Simulate Playback On A Real File
+
+`scripts/dev/playback-sim.py` replays the access pattern of a video player on
+an existing mounted file: it reads ahead through the FUSE mount at a target
+bitrate, fills a bounded buffer, seeks on an interval, and prints live
+throughput, block latency, buffer depth, and underrun count. It needs no test
+enablement and writes nothing, so it works on a production mount.
+
+```sh
+scripts/dev/playback-sim.py \
+  --path ~/Qrypt/quark-encrypt/movie.mp4 \
+  --duration 60s --bitrate 25m --block 4m \
+  --seek-every 10s --seek-mode random \
+  --mount quark-encrypt
+```
+
+Pass `--max-speed` to measure raw download throughput instead of playback
+behaviour: the reader runs flat out, seeks are disabled, and the summary adds
+`avg_mib_s`, `steady_mib_s` (excluding `--warmup` seconds), `peak_1s_mib_s`,
+and the p50/p95 of one-second windows. `--start OFFSET` picks a cold region so
+qrypt's read cache does not inflate the number.
+
+```sh
+scripts/dev/playback-sim.py --path ~/Qrypt/quark-encrypt/movie.mp4   --max-speed --start 25g --duration 12s --block 512k --mount quark-encrypt
+```
+
+The summary reports median/p95 read latency, seek latency, stalls, and (with
+`--mount`) the matching `/v1/reads` window events split into
+`driver_open_ms` and `driver_body_ms`. That split distinguishes provider
+time-to-first-byte from body throughput, and the event count shows whether a
+stall came from the remote read or from the cache. `--warm` keeps the OS page
+cache instead of bypassing it with `F_NOCACHE`; `--json FILE` stores the
+per-second series for comparison between runs.
+
+### Measure Cache-Miss Load Time
+
+`playback-sim.py` bypasses the OS page cache by default but still reads through
+qrypt's own durable and in-memory cache. Clear that cache without restarting
+the mount:
+
+```sh
+qrypt probe cache clear --mount quark-encrypt
+```
+
+The command talks to the running mount's probe socket, drops the durable
+chunks, hot chunks, range-hit state, and sequential-read state, and returns
+JSON. In-flight reads finish normally; the next read starts cold. Add `--cold`
+to `playback-sim.py` to run the clear immediately before the measurement:
+
+```sh
+scripts/dev/playback-sim.py \
+  --path ~/Qrypt/quark-encrypt/movie.mp4 \
+  --max-speed --start 25g --duration 12s --block 512k \
+  --cold --mount quark-encrypt
+```
+
+To make one file cold without clearing the whole mount, invalidate just that
+path:
+
+```sh
+qrypt probe cache invalidate --path /quark-encrypt/videos/movie.mp4
+```
+
+For seek tests where every jump should start cold, pass `--cold-every-seek`
+instead of clearing the whole mount on each seek:
+
+```sh
+scripts/dev/playback-sim.py \
+  --path ~/Qrypt/quark-encrypt/movie.mp4 \
+  --bitrate 25m --seek-every 10s --cold-every-seek --mount quark-encrypt
+```
+
+The script derives the virtual path from `--path` and `--mount`; pass
+`--remote-path /quark-encrypt/...` if the mount directory name differs from the
+configured mount name. `--cold` requires `--mount` and clears through the probe
+socket next to `--socket` (normally `~/.qrypt/run/probe.sock`); pass
+`--probe-socket` when the probe socket lives elsewhere. Repeat seeks within one
+run can still hit what that run already fetched; run the script again, or seek
+far away, when every sample must be a cache miss. `probe test read --cache-mode
+cold` remains the benchmark-native option: it clears the cache before every
+cold sample and also reports mounted read latency, throughput, and seek
+behavior.
+
+### Inject Read Faults
+
+A real provider only misbehaves when it wants to. Arm a fault on the running
+mount to exercise the same recovery paths on demand:
+
+```sh
+# Stop delivering bytes after 1 MiB: the idle timeout should abort and replay.
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind stall --after 1m
+
+# End the body early: the shared layer should replay it once.
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind truncate --after 2m
+
+# Answer the next Range GET with 500: the retryable-status backoff should run.
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind status --status 500
+
+# Delay the body's first byte so open latency is visible.
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind delay --delay 2s
+
+qrypt probe fault list
+qrypt probe fault clear            # all rules
+qrypt probe fault clear --id ID    # one rule
+```
+
+Rules fire once by default, so the first attempt fails and the replay succeeds.
+`--times N` keeps the fault active for more attempts; `--offset` and `--length`
+scope it to a byte range. Rules skip background prefetch windows by default so
+a canceled speculative read cannot swallow the rule; add `--include-prefetch`
+when the prefetch path itself is under test. Faults live in the running mount
+and disappear on restart.
+
+Quark's driver snapshot (`/v1/driver?mount=NAME`) now includes
+`download_rotations`, `last_download_rotate_reason`, and `penalized_edges`
+(with the reason and remaining TTL), so an edge penalty or connection rotation
+can be asserted from JSON instead of grepping the log.
+
+Combine a fault with the measurement-only timeout override to keep the test
+short:
+
+```sh
+qrypt probe fault read --path /quark-encrypt/videos/movie.mp4 --kind stall --after 1m
+qrypt probe test read --mount quark-encrypt --mount-point ~/Qrypt \
+  --path /quark-encrypt/videos/movie.mp4 --offset 0 --length 8m \
+  --cache-mode cold --idle-timeout 2s --total-timeout 5s
+```
+
+The probe result reports `timed_out` when its own read-call bound fires; the
+fault's `fetch_attempts` / `fetch_timeouts` fields appear in `metrics` when the
+window-level timeout path runs.
 
 If the issue is about interrupted uploads or resumable upload sessions, run:
 
@@ -621,6 +767,9 @@ Mount state is reported as `vfs.MountSnapshot`:
 - `events`: recent `drive.MetricEvent` streams such as VFS reads and driver
   metrics
 - `runtime`: chunk, window, and prefetch activity counters
+- `read_profile`: effective bulk streams, window chunks, prefetch depth,
+  parallel threshold, source (`driver` / `mount_override` / `driver_limiter`),
+  and whether a driver limiter clamped the value
 
 Events use `drive.MetricEvent`. `op_id`, `step`, and `name` are correlation
 labels. `kind` identifies the event family such as `driver`, `vfs_read`,
@@ -646,7 +795,9 @@ signed upload URLs, encrypted request blobs, or full response bodies.
 - `probe test batchupload` and `probe test batchmove` accept `--count` (default
   50, maximum 100) and `--size` (default 4 KiB per file, maximum 1 MiB).
 - `probe test read` requires `--mount-point`. It accepts `--size` (default
-  256 MiB, maximum 2 GiB), `--block-size` (default 1 MiB), `--samples` (default
+  256 MiB, maximum 2 GiB), `--block-size` (default 1 MiB), `--offset` and
+  `--length` for a sequential sub-range, `--idle-timeout` / `--total-timeout`
+  for a measurement-only fetch-bound override, `--samples` (default
   1, maximum 10), `--cache-mode cold|warm|both` (default `both`),
   `--pattern sequential|seek|both` (default `sequential`), `--seek-count`
   (default 10, maximum 32), `--seek-size` (default 1 MiB, maximum 16 MiB),

@@ -33,8 +33,26 @@ const (
 )
 
 type client struct {
-	httpClient     *http.Client
-	downloadClient *http.Client
+	httpClient *http.Client
+	// downloadClient is swapped when a download connection goes bad; reads go
+	// through downloadHTTP so a degraded edge does not stick to every later
+	// Range request.
+	downloadClient  *http.Client
+	downloadMu      sync.RWMutex
+	downloadDirty   bool
+	downloadReason  string
+	downloadRotated time.Time
+	// downloadRotations and downloadLastReason are diagnostic counters for
+	// tests and /v1/driver: they show whether a failure actually swapped the
+	// connection pool instead of only being throttled.
+	downloadRotations  int
+	downloadLastReason string
+	// rateBest is the fastest recent download body rate; a read that sustains
+	// a small fraction of it is treated as a bad edge and reconnected.
+	rateMu         sync.Mutex
+	rateBest       float64
+	rateBestAt     time.Time
+	slowAbortAt    time.Time
 	ossClient      *http.Client
 	cookie         string
 	baseURL        string
@@ -52,6 +70,9 @@ type client struct {
 	// wgKeys overrides the built-in wg data-key table for offline request
 	// encryption (secureNo → 16-byte hex key).
 	wgKeys map[int]string
+	// edges tracks recently failed CDN edge addresses so download dials can
+	// avoid them.
+	edges *edgeHealth
 }
 
 func newClient(cookie string, opts clientOptions) *client {
@@ -63,20 +84,22 @@ func newClient(cookie string, opts clientOptions) *client {
 	if v2URL == "" {
 		v2URL = defaultV2URL
 	}
-	return &client{
-		httpClient:     newHTTPClient(30 * time.Second),
-		downloadClient: newHTTPClient(0),
-		ossClient:      newOSSClient(),
-		cookie:         cookie,
-		baseURL:        baseURL,
-		v2URL:          v2URL,
-		sem:            make(chan struct{}, 200),
-		mgmtSem:        make(chan struct{}, 500),
-		metaSem:        make(chan struct{}, 500),
-		ossSem:         make(chan struct{}, ossMaxConcurrent),
-		metrics:        driverutil.NewBuffer(500),
-		wgKeys:         opts.WGKeys,
+	c := &client{
+		httpClient: newHTTPClient(30 * time.Second),
+		ossClient:  newOSSClient(),
+		cookie:     cookie,
+		baseURL:    baseURL,
+		v2URL:      v2URL,
+		sem:        make(chan struct{}, 200),
+		mgmtSem:    make(chan struct{}, 500),
+		metaSem:    make(chan struct{}, 500),
+		ossSem:     make(chan struct{}, ossMaxConcurrent),
+		metrics:    driverutil.NewBuffer(500),
+		wgKeys:     opts.WGKeys,
 	}
+	c.edges = newEdgeHealth(edgePenaltyTTL)
+	c.downloadClient = c.newDownloadHTTPClient()
+	return c
 }
 
 type clientOptions struct {
@@ -87,6 +110,23 @@ type clientOptions struct {
 
 func newHTTPClient(timeout time.Duration) *http.Client {
 	return httputil.NewClient(timeout, 30*time.Second)
+}
+
+// downloadResponseHeaderTimeout bounds how long the CDN may take to send
+// response headers. A dead edge otherwise burns the whole retry budget on
+// 30-second waits before the read reaches its own budget (~2 minutes of
+// "driver_open" latency measured on a real mount).
+const downloadResponseHeaderTimeout = 10 * time.Second
+
+// newDownloadHTTPClient keeps no whole-request timeout: reads are bounded by
+// the read domain's idle/total fetch budgets so a large Range can stream.
+// The dialer skips CDN edges that recently failed.
+func (c *client) newDownloadHTTPClient() *http.Client {
+	transport := httputil.DefaultTransport(downloadResponseHeaderTimeout)
+	if c.edges != nil {
+		transport.DialContext = c.edges.dial(transport.DialContext)
+	}
+	return &http.Client{Transport: transport}
 }
 
 func newOSSClient() *http.Client {
@@ -372,6 +412,137 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 	return fmt.Errorf("max retries exceeded")
 }
 
+// downloadRateWindow is how long an observed best rate stays authoritative.
+// After it expires the floor falls back to downloadRateMinFloor so a
+// provider-wide slow period does not keep rotating connections.
+const downloadRateWindow = 3 * time.Minute
+
+// downloadRateMinFloor is the lowest throughput that still counts as
+// progress. Below it, a read that is merely slow is treated as a bad edge.
+const downloadRateMinFloor = 256 << 10
+
+// downloadRateBestDivisor turns the recent best rate into a floor: a healthy
+// edge is expected to deliver at least one sixteenth of the best observed
+// rate. The divisor is deliberately loose: concurrent direct reads split the
+// same connection, so a per-stream share can legitimately sit far below the
+// single-stream best.
+const downloadRateBestDivisor = 16
+
+// observeDownloadRate records a completed body's throughput.
+func (c *client) observeDownloadRate(bytes int64, elapsed time.Duration) {
+	if bytes <= 0 || elapsed <= 0 {
+		return
+	}
+	rate := float64(bytes) / elapsed.Seconds()
+	now := time.Now()
+	c.rateMu.Lock()
+	if now.Sub(c.rateBestAt) > downloadRateWindow || rate > c.rateBest {
+		c.rateBest = rate
+		c.rateBestAt = now
+	}
+	c.rateMu.Unlock()
+}
+
+// downloadRateFloor returns the minimum acceptable body rate right now.
+func (c *client) downloadRateFloor() int64 {
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+	if c.rateBest <= 0 || time.Since(c.rateBestAt) > downloadRateWindow {
+		return downloadRateMinFloor
+	}
+	floor := int64(c.rateBest / downloadRateBestDivisor)
+	if floor < downloadRateMinFloor {
+		floor = downloadRateMinFloor
+	}
+	return floor
+}
+
+// downloadSlowAbortCooldown bounds how often a slow read may be aborted to
+// reconnect. The retry after one abort either lands on a healthier edge or
+// keeps streaming slowly; repeating the abort would turn a provider-wide slow
+// period into a chain of failed reads.
+const downloadSlowAbortCooldown = time.Minute
+
+// allowSlowAbort reports whether a read may still be aborted for being slow.
+func (c *client) allowSlowAbort() bool {
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+	return c.slowAbortAt.IsZero() || time.Since(c.slowAbortAt) >= downloadSlowAbortCooldown
+}
+
+// noteSlowAbort records that a slow read was aborted to reconnect.
+func (c *client) noteSlowAbort() {
+	c.rateMu.Lock()
+	c.slowAbortAt = time.Now()
+	c.rateMu.Unlock()
+}
+
+// downloadHTTP returns the current download client generation. A failure from
+// a previous body read is applied here, before the next request, so the retry
+// that follows the failure cannot race the connection swap.
+func (c *client) downloadHTTP() *http.Client {
+	c.downloadMu.RLock()
+	dirty := c.downloadDirty
+	current := c.downloadClient
+	c.downloadMu.RUnlock()
+	if !dirty {
+		return current
+	}
+	return c.rotateDownload()
+}
+
+// markDownloadFailed records that the current download connection produced a
+// failed body read. The next request swaps to a fresh connection pool.
+func (c *client) markDownloadFailed(reason string) {
+	c.downloadMu.Lock()
+	c.downloadDirty = true
+	c.downloadReason = reason
+	c.downloadMu.Unlock()
+}
+
+// downloadDebugSnapshot reports how many times the pool was replaced and the
+// most recent reason. It is read by the driver debug snapshot.
+func (c *client) downloadDebugSnapshot() (rotations int, lastReason string) {
+	c.downloadMu.RLock()
+	defer c.downloadMu.RUnlock()
+	return c.downloadRotations, c.downloadLastReason
+}
+
+// downloadRotateMinInterval bounds how often a failure may replace the
+// download transport: a seek cancels prefetch windows frequently and must not
+// discard a healthy connection pool each time, while a real stall retries on
+// the next read with a fresh connection.
+const downloadRotateMinInterval = 5 * time.Second
+
+// rotateDownload replaces the download client with a fresh connection pool and
+// closes the previous generation's idle connections. Requests already in
+// flight finish on the old pool; everything new avoids the degraded one.
+func (c *client) rotateDownload() *http.Client {
+	c.downloadMu.Lock()
+	if !c.downloadDirty || (!c.downloadRotated.IsZero() && time.Since(c.downloadRotated) < downloadRotateMinInterval) {
+		current := c.downloadClient
+		c.downloadMu.Unlock()
+		return current
+	}
+	old := c.downloadClient
+	reason := c.downloadReason
+	fresh := c.newDownloadHTTPClient()
+	c.downloadClient = fresh
+	c.downloadDirty = false
+	c.downloadReason = ""
+	c.downloadRotated = time.Now()
+	c.downloadRotations++
+	c.downloadLastReason = reason
+	c.downloadMu.Unlock()
+	if old != nil {
+		if transport, ok := old.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+	logging.L.Debugf("[QUARK] rotate download transport reason=%q", reason)
+	return fresh
+}
+
 func (c *client) doDownload(req *http.Request, cookieSnapshot string) (*http.Response, error) {
 	if cookieSnapshot == "" {
 		cookieSnapshot = c.cookieValue()
@@ -395,7 +566,17 @@ func (c *client) doDownload(req *http.Request, cookieSnapshot string) (*http.Res
 	req.Header.Set("Sec-Fetch-Dest", "iframe")
 	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	return c.downloadClient.Do(req)
+	resp, err := c.downloadHTTP().Do(req)
+	if err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			// A header timeout means the edge is dead or overloaded; retrying
+			// the same connection only repeats the wait.
+			c.markDownloadFailed("download request timed out: " + err.Error())
+			c.rotateDownload()
+		}
+	}
+	return resp, err
 }
 
 func (c *client) recordMetric(ctx context.Context, event drive.MetricEvent) {

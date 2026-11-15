@@ -42,6 +42,20 @@ func Snippet(raw []byte) string {
 	return snippet
 }
 
+// HTTPStatusError is a non-2xx response whose status has no dedicated sentinel.
+// It keeps the numeric status available to callers that classify by class - the
+// read path uses it to decide whether replaying a Range GET is worthwhile
+// (5xx, 408) - without parsing the message. Error and Unwrap preserve the
+// message and any wrapped sentinel, so existing errors.Is checks keep working.
+type HTTPStatusError struct {
+	Status int
+	Err    error
+}
+
+func (e *HTTPStatusError) Error() string { return e.Err.Error() }
+
+func (e *HTTPStatusError) Unwrap() error { return e.Err }
+
 // HTTPError builds a driver-prefixed error for an HTTP failure with every
 // sensitive field redacted in one place, so drivers do not hand-roll
 // status/URL/body splicing:
@@ -64,6 +78,7 @@ func Snippet(raw []byte) string {
 // An endpoint whose structured 422 body means "missing" can pass
 // HTTPErrorStatusAsNotFound(http.StatusUnprocessableEntity) without weakening
 // invalid-input classification for every other endpoint.
+// HTTPError builds a redacted, classified error for a non-2xx response.
 func HTTPError(prefix string, req *http.Request, resp *http.Response, body []byte, opts ...HTTPErrorOption) error {
 	var b strings.Builder
 	b.WriteString(prefix)
@@ -109,7 +124,7 @@ func HTTPError(prefix string, req *http.Request, resp *http.Response, body []byt
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	default:
-		return err
+		return &HTTPStatusError{Status: resp.StatusCode, Err: err}
 	}
 }
 

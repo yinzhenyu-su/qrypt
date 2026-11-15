@@ -92,7 +92,12 @@ func calSign(bodyJSON, ts, randStr string) string {
 }
 
 type client struct {
-	httpClient            *http.Client
+	httpClient *http.Client
+	// uploadClient has no total timeout: upload parts are 100 MiB (512 MiB for
+	// very large files) and cannot finish within the 60-second API timeout on
+	// a slow uplink. Each part gets a size-derived budget and an idle watchdog
+	// instead.
+	uploadClient          *http.Client
 	authorization         string
 	account               string
 	userDomainID          string
@@ -109,6 +114,7 @@ type client struct {
 func newClient(authorization string) *client {
 	return &client{
 		httpClient:     httputil.NewClient(60*time.Second, 30*time.Second),
+		uploadClient:   httputil.NewClient(0, 60*time.Second),
 		authorization:  authorization,
 		authRefreshURL: "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do",
 		metrics:        driverutil.NewBuffer(500),

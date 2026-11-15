@@ -15,17 +15,25 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
+type recordedDetail struct {
+	phase string
+	extra map[string]any
+	err   error
+}
+
 // recordingObserver records observer calls so tests can assert the
 // read domain drives the debug sink on every path.
 type recordingObserver struct {
-	mu       sync.Mutex
-	begins   []vfstypes.DebugActiveOp
-	updates  []uint64
-	phases   []string
-	finishes []uint64
-	reads    int
-	sources  []string
-	readErrs []error
+	mu         sync.Mutex
+	begins     []vfstypes.DebugActiveOp
+	updates    []uint64
+	phases     []string
+	finishes   []uint64
+	reads      int
+	sources    []string
+	readErrs   []error
+	readExtras []map[string]any
+	details    []recordedDetail
 }
 
 func (o *recordingObserver) DebugNextOpID() string {
@@ -60,8 +68,24 @@ func (o *recordingObserver) DebugRecordRead(opID, path, remoteID string, offset,
 	o.reads++
 	o.sources = append(o.sources, source)
 	o.readErrs = append(o.readErrs, err)
+	o.readExtras = append(o.readExtras, CloneExtra(extra))
 }
 func (o *recordingObserver) DebugRecordReadDetail(ctx context.Context, path, remoteID, phase string, offset, requested, bytes int64, started time.Time, extra map[string]any, err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.details = append(o.details, recordedDetail{phase: phase, extra: CloneExtra(extra), err: err})
+}
+
+func (o *recordingObserver) recordedReadExtras() []map[string]any {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]map[string]any(nil), o.readExtras...)
+}
+
+func (o *recordingObserver) recordedDetails() []recordedDetail {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]recordedDetail(nil), o.details...)
 }
 func (o *recordingObserver) DebugCacheCounters() (hits, misses int64) { return 0, 0 }
 

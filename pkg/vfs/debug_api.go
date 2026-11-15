@@ -365,6 +365,109 @@ func (n *Namespace) DebugReset(ctx context.Context) error {
 	return nil
 }
 
+// DebugInjectReadFault arms a probe-only read fault for one path.
+func (v *VFS) DebugInjectReadFault(ctx context.Context, req faultinject.DebugReadFaultRequest) (faultinject.DebugReadFault, error) {
+	select {
+	case <-ctx.Done():
+		return faultinject.DebugReadFault{}, ctx.Err()
+	default:
+	}
+	if req.Path != "" {
+		path := vfstypes.CleanVirtualPath(req.Path)
+		entry, err := v.resolve(ctx, path)
+		if err != nil {
+			return faultinject.DebugReadFault{}, err
+		}
+		if entry.IsDir {
+			return faultinject.DebugReadFault{}, fmt.Errorf("vfs: %q is a directory", path)
+		}
+		req.EntryID = entry.ID
+		req.Path = path
+	}
+	return v.readFaults.Inject(req)
+}
+
+// DebugClearReadFault removes one read fault, or every fault when id is empty.
+func (v *VFS) DebugClearReadFault(ctx context.Context, id string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	v.readFaults.Clear(id)
+	return nil
+}
+
+// DebugReadFaults lists the mount's read faults.
+func (v *VFS) DebugReadFaults(ctx context.Context) []faultinject.DebugReadFault {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+	return v.readFaults.Faults()
+}
+
+// DebugInjectReadFault arms a read fault on the mount that owns path.
+func (n *Namespace) DebugInjectReadFault(ctx context.Context, req faultinject.DebugReadFaultRequest) (faultinject.DebugReadFault, error) {
+	if strings.TrimSpace(req.Path) == "" {
+		return faultinject.DebugReadFault{}, fmt.Errorf("vfs: read fault requires a path")
+	}
+	fullPath := vfstypes.CleanVirtualPath(req.Path)
+	mount, rest, root, err := n.resolve(fullPath)
+	if err != nil {
+		return faultinject.DebugReadFault{}, err
+	}
+	if root {
+		return faultinject.DebugReadFault{}, fmt.Errorf("vfs: cannot arm a read fault on the namespace root")
+	}
+	req.Path = rest
+	fault, err := mount.DebugInjectReadFault(ctx, req)
+	if err != nil {
+		return faultinject.DebugReadFault{}, err
+	}
+	fault.Path = fullPath
+	return fault, nil
+}
+
+// DebugClearReadFault removes one read fault from every mount, or all faults
+// when id is empty.
+func (n *Namespace) DebugClearReadFault(ctx context.Context, id string) error {
+	for _, mount := range n.debugSortedMounts() {
+		if err := mount.fs.DebugClearReadFault(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DebugReadFaults lists the read faults armed on every mount.
+func (n *Namespace) DebugReadFaults(ctx context.Context) []faultinject.DebugReadFault {
+	var out []faultinject.DebugReadFault
+	for _, mount := range n.debugSortedMounts() {
+		for _, fault := range mount.fs.DebugReadFaults(ctx) {
+			if fault.Path != "" {
+				fault.Path = vfstypes.JoinVirtualPath("/"+mount.name, strings.TrimPrefix(fault.Path, "/"))
+			}
+			out = append(out, fault)
+		}
+	}
+	return out
+}
+
+// DebugInvalidateReadCache drops one file's cached read state on the mount
+// that owns path. The path is a namespace path such as /cloud/movie.mp4.
+func (n *Namespace) DebugInvalidateReadCache(ctx context.Context, path string) (string, error) {
+	mount, rest, root, err := n.resolve(path)
+	if err != nil {
+		return "", err
+	}
+	if root {
+		return "", fmt.Errorf("vfs: cannot invalidate the namespace root")
+	}
+	return mount.DebugInvalidateReadCache(ctx, rest)
+}
+
 func (n *Namespace) DebugStaging(ctx context.Context, path string) (diagnostics.DebugStagingReport, error) {
 	path = vfstypes.CleanVirtualPath(path)
 	report := diagnostics.DebugStagingReport{}
@@ -407,6 +510,32 @@ func (v *VFS) DebugReset(ctx context.Context) error {
 	}
 	newVFSDebugReadRuntime(v.read).ResetHistory()
 	return nil
+}
+
+// DebugInvalidateReadCache drops one file's cached read chunks and in-memory
+// read state. It lets a probe make a single file cold without clearing the
+// whole mount's cache.
+func (v *VFS) DebugInvalidateReadCache(ctx context.Context, path string) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+	entry, err := v.resolve(ctx, vfstypes.CleanVirtualPath(path))
+	if err != nil {
+		return "", err
+	}
+	if entry.IsDir {
+		return "", fmt.Errorf("vfs: %q is a directory", path)
+	}
+	if entry.ID == "" {
+		return "", fmt.Errorf("vfs: %q has no remote id", path)
+	}
+	if cacheKey := v.readCacheKey(entry); cacheKey != "" {
+		v.read.DropFileCache(cacheKey)
+	}
+	v.read.DropFileCache(entry.ID)
+	return v.name, nil
 }
 
 func (v *VFS) DebugResolve(ctx context.Context, path string, includeRemoteName bool) (diagnostics.DebugResolveInfo, error) {

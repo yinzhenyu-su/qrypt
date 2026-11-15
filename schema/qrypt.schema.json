@@ -874,6 +874,15 @@
             }
           },
           "description": "Per-mount upload overrides."
+        },
+        "read_profile": {
+          "$ref": "#/definitions/readProfileConfig",
+          "description": "Optional per-mount read scheduling overrides.",
+          "x-i18n": {
+            "zh-CN": {
+              "description": "该 mount 的读取策略覆盖（可选）"
+            }
+          }
         }
       },
       "required": [
@@ -3380,6 +3389,44 @@
       "x-i18n": {
         "zh-CN": {
           "title": "Koofr 云盘"
+        }
+      }
+    },
+    "readProfileConfig": {
+      "type": "object",
+      "description": "Optional per-mount read scheduling override. Unset fields inherit the driver's ReadProfile.",
+      "properties": {
+        "streams": {
+          "description": "Concurrent sub-ranges for bulk reads. 0 or unset inherits the driver profile; 1-32 enables an explicit value.",
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 32,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "bulk 读的并发子 Range 数；0 或未设置时继承驱动默认值，1-32 为显式值"
+            }
+          }
+        },
+        "window_chunks": {
+          "description": "Bulk read window in 512 KiB chunks. 0 or unset inherits the driver profile; 1-64 is explicit.",
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 64,
+          "x-i18n": {
+            "zh-CN": {
+              "description": "bulk 读窗口大小（512 KiB 块）；0 或未设置时继承驱动默认值，1-64 为显式值"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "title": "Read profile",
+      "x-i18n": {
+        "zh-CN": {
+          "title": "读取策略",
+          "description": "可选地覆盖单个 mount 的 bulk 读并行流数和窗口大小；默认值仍由驱动决定。"
         }
       }
     }

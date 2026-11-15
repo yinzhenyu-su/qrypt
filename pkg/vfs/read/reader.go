@@ -6,7 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/util"
@@ -23,6 +27,9 @@ type Reader struct {
 	observer ReadObserver
 	health   HealthRecorder
 	counters CounterRecorder
+	profile  drive.ReadProfile
+	policy   *CachePolicy
+	faults   ReadFaultInjector
 }
 
 // ReaderDeps is the explicit dependency set for a read-domain reader.
@@ -36,6 +43,12 @@ type ReaderDeps struct {
 	Observer ReadObserver
 	Health   HealthRecorder
 	Counters CounterRecorder
+	// Profile carries the effective read scheduling profile for this mount.
+	// The zero value falls back to drive.DefaultReadProfile. A mount may
+	// override the driver default through its read_profile config.
+	Profile drive.ReadProfile
+	// ReadFaults is the probe-only fault registry. Nil disables injection.
+	ReadFaults ReadFaultInjector
 }
 
 // NewReader builds a read-domain reader from explicit dependencies. The
@@ -52,13 +65,20 @@ func NewReader(deps ReaderDeps) *Reader {
 	if deps.Counters == nil {
 		deps.Counters = noopCounters{}
 	}
-	return &Reader{
+	if deps.Profile == (drive.ReadProfile{}) {
+		deps.Profile = drive.DefaultReadProfile()
+	}
+	r := &Reader{
 		host:     deps.Host,
 		state:    deps.State,
 		observer: deps.Observer,
 		health:   deps.Health,
 		counters: deps.Counters,
+		profile:  deps.Profile,
+		faults:   deps.ReadFaults,
 	}
+	r.policy = newCachePolicy(deps.State)
+	return r
 }
 
 // State returns the read domain state.
@@ -72,6 +92,55 @@ func (r *Reader) ReleaseReadSession(sessionID uint64) {
 
 func (r *Reader) resolve(ctx context.Context, path string) (drive.Entry, error) {
 	return r.host.Resolve(ctx, path)
+}
+
+// resolvePlan resolves the caller's intent and the driver profile into the
+// concrete plan carried by this read's context.
+func (r *Reader) resolvePlan(ctx context.Context, entry drive.Entry, defaultWindowChunks int) ReadPlan {
+	return PlanResolver{Profile: r.profile}.Resolve(ReadIntentFromContext(ctx), entry.Size, defaultWindowChunks)
+}
+
+// SetPlanOverride applies a measurement-only stream/window override to every
+// read until ClearPlanOverride. It is wired to probe test read so benchmarks
+// can compare configurations without rebuilding or remounting.
+func (r *Reader) SetPlanOverride(override PlanOverride) {
+	r.state.setPlanOverride(override)
+}
+
+// ClearPlanOverride removes the measurement override.
+func (r *Reader) ClearPlanOverride() {
+	r.state.clearPlanOverride()
+}
+
+// applyPlanOverride rewrites a resolved plan. It reports whether anything
+// changed so callers only refresh the context when needed.
+func (r *Reader) applyPlanOverride(plan *ReadPlan, windowChunks *int) bool {
+	override, ok := r.state.planOverride()
+	if !ok {
+		return false
+	}
+	if override.MaxStreams > 0 {
+		plan.MaxStreams = override.MaxStreams
+	}
+	if override.WindowChunks > 0 {
+		*windowChunks = override.WindowChunks
+		plan.WindowChunks = override.WindowChunks
+	}
+	return override.MaxStreams > 0 || override.WindowChunks > 0
+}
+
+// perFileLimit returns the stable concurrency budget for one file. A partial
+// window may use fewer streams, but the per-file budget never changes while
+// permits are in flight. A measurement override may raise it.
+func (r *Reader) perFileLimit() int {
+	limit := r.profile.BulkStreams
+	if override, ok := r.state.planOverride(); ok && override.MaxStreams > limit {
+		limit = override.MaxStreams
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
 }
 
 func (r *Reader) pendingUpload(path string) (vfstypes.PendingUpload, bool, error) {
@@ -137,6 +206,8 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	})
 	hitsBefore, missesBefore := r.observer.DebugCacheCounters()
 	readCtx := drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: opID, Step: "vfs_read", Name: path})
+	readCtx = r.withFetchTimeouts(readCtx)
+	readCtx, _ = withFetchTiming(readCtx)
 	windowChunks := readWindowChunks(offset, size)
 	cacheKey := r.host.ReadCacheKey(entry)
 	r.state.beginForegroundRead(cacheKey)
@@ -164,9 +235,33 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 			windowChunks = 2
 		}
 	}
+	plan := r.resolvePlan(ctx, entry, windowChunks)
+	windowChunks = plan.WindowChunks
+	loadKey := LoadKey(r.host, entry)
+	readCtx = WithReadPlan(readCtx, plan)
+	readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
+	readCtx = applyIntentPriority(readCtx, plan)
+	if plan.Intent == ReadIntentUnspecified && hinted && !hint.Concurrent && !decision.stale &&
+		decision.sequential && entry.Size >= r.profile.ParallelThreshold {
+		// A sustained sequential FUSE stream is the bulk case even though the
+		// mount does not declare an intent. Keep cache writes and the FUSE
+		// window policy: only the stream count changes.
+		upgraded := PlanResolver{Profile: r.profile}.Resolve(ReadIntentBulk, entry.Size, windowChunks)
+		upgraded.CacheWrites = true
+		upgraded.WindowChunks = windowChunks
+		plan = upgraded
+		readCtx = WithReadPlan(readCtx, plan)
+		readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
+		readCtx = applyIntentPriority(readCtx, plan)
+	}
+	if r.applyPlanOverride(&plan, &windowChunks) {
+		readCtx = WithReadPlan(readCtx, plan)
+		readCtx = WithGrantedStreams(readCtx, r.state.scheduler.GrantStreams(plan.MaxStreams, loadKey, r.perFileLimit()))
+		readCtx = applyIntentPriority(readCtx, plan)
+	}
 	readCtx = WithCacheAccess(readCtx, access)
 	firstWindowPrefetch := (!hinted && offset%ChunkSize != 0) || (hinted && offset == 0)
-	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
+	if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && !decision.sequential && firstWindowPrefetch && windowChunks == 1 {
 		// Warm the first lookahead window for a new file stream. Non-zero
 		// offsets are treated as seeks until contiguous access is observed, so
 		// random probes do not trigger speculative network reads.
@@ -175,8 +270,11 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 	data, startChunk, endChunk, err := r.readRange(readCtx, entry, offset, size, windowChunks)
 	hitsAfter, missesAfter := r.observer.DebugCacheCounters()
 	if err != nil {
+		if ctx.Err() != nil {
+			r.state.cancelReadScope(ctx, cacheKey, "caller")
+		}
 		r.observer.DebugFinishActive(activeID)
-		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, WindowExtra(windowChunks), err)
+		r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, 0, "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, 0, started, ReadEventExtra(readCtx, windowChunks, err), err)
 		return nil, err
 	}
 	if !hinted {
@@ -189,7 +287,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		// lookahead scheduled below belongs to the run that was recorded.
 		readCtx = WithCacheAccess(readCtx, actual)
 	}
-	if readPrefetchEnabled(ctx) && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
+	if readPrefetchEnabled(ctx) && plan.PrefetchDepth > 0 && !decision.stale && !hint.Concurrent && (!hinted || decision.sequential || offset == 0) {
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) {
 			op.Phase = "prefetch_schedule"
 			op.Extra = map[string]any{
@@ -207,7 +305,7 @@ func (r *Reader) Read(ctx context.Context, path string, offset, size int64) (rc 
 		chunks = endChunk - startChunk + 1
 	}
 	r.observer.DebugFinishActive(activeID)
-	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, WindowExtra(windowChunks), nil)
+	r.observer.DebugRecordRead(opID, path, entry.ID, offset, size, int64(len(data)), "remote", hitsAfter-hitsBefore, missesAfter-missesBefore, chunks, started, ReadEventExtra(readCtx, windowChunks, nil), nil)
 	countedBytes = int64(len(data))
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
@@ -368,7 +466,11 @@ type readerBackend struct {
 }
 
 func (b *readerBackend) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	return b.reader.host.DriverRead(ctx, entry, offset, size)
+	body, err := b.reader.host.DriverRead(ctx, entry, offset, size)
+	if err != nil {
+		return nil, err
+	}
+	return applyReadFault(ctx, b.reader.faults, entry, offset, size, body)
 }
 
 func (b *readerBackend) CacheKey(entry drive.Entry) string {
@@ -376,15 +478,7 @@ func (b *readerBackend) CacheKey(entry drive.Entry) string {
 }
 
 func (b *readerBackend) StoreChunk(ctx context.Context, cacheKey string, entry drive.Entry, index int64, chunk []byte) {
-	if cacheKey == "" {
-		return
-	}
-	b.reader.putHotChunk(cacheKey, index, chunk)
-	if b.reader.state.cache != nil {
-		// The run travels with the read so the cache can tell this chunk's
-		// admitting pass from a later one that comes back for it.
-		b.reader.state.cache.PutChunkAsync(cacheKey, entry.Size, index, chunk, cacheAccess(ctx))
-	}
+	b.reader.policy.Admit(ctx, entry, cacheKey, index, chunk)
 }
 
 func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int) ([]byte, error) {
@@ -394,36 +488,10 @@ func (r *Reader) readChunkRange(ctx context.Context, entry drive.Entry, index, s
 func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entry, index, start, size int64, windowChunks int, runtime readRuntime) ([]byte, error) {
 	cacheKey := runtime.CacheKey(entry)
 	access := cacheAccess(ctx)
-	if cacheKey != "" {
-		hotStarted := util.Now()
-		if hot, ok := runtime.HotChunk(cacheKey, index); ok {
-			runtime.AddCacheHit()
-			data := sliceChunkRange(hot, start, size)
-			RecordChunkDetail(r.observer, ctx, entry, "cache_hot_hit", index, start, size, int64(len(data)), hotStarted, CacheLookupExtra("hot", hotStarted, nil), nil)
-			return data, nil
-		}
-		if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
-			started := util.Now()
-			if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
-				RecordChunkDetail(r.observer, ctx, entry, "cache_range_promote", index, start, size, 0, started, CacheLookupExtra("range_promote", started, nil), err)
-				return nil, err
-			} else if ok {
-				if len(chunk) > 0 {
-					runtime.PutHotChunk(cacheKey, index, chunk)
-				}
-				RecordChunkDetail(r.observer, ctx, entry, "cache_range_promote", index, start, size, int64(len(cached)), started, CacheLookupExtra("range_promote", started, map[string]any{"promoted": len(chunk) > 0}), nil)
-				return cached, nil
-			}
-		}
-		started := util.Now()
-		if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
-			RecordChunkDetail(r.observer, ctx, entry, "cache_range_hit", index, start, size, 0, started, CacheLookupExtra("range", started, nil), err)
-			return nil, err
-		} else if ok {
-			runtime.RecordCachedRangeHit(cacheKey, index, size)
-			RecordChunkDetail(r.observer, ctx, entry, "cache_range_hit", index, start, size, int64(len(cached)), started, CacheLookupExtra("range", started, nil), nil)
-			return cached, nil
-		}
+	if data, ok, err := r.lookupCachedChunk(ctx, entry, cacheKey, index, start, size, access, runtime, "", "", true); err != nil {
+		return nil, err
+	} else if ok {
+		return data, nil
 	}
 	waitStarted := util.Now()
 	if data, ok, err := runtime.WaitWindow(ctx, cacheKey, index); err != nil {
@@ -435,29 +503,10 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 			RecordChunkDetail(r.observer, ctx, entry, "wait_window", index, start, size, int64(len(chunk)), waitStarted, nil, nil)
 			return chunk, nil
 		}
-		if cacheKey != "" {
-			if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
-				started := util.Now()
-				if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
-					RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_promote", index, start, size, 0, started, CacheLookupExtra("wait_window_range_promote", started, nil), err)
-					return nil, err
-				} else if ok {
-					if len(chunk) > 0 {
-						runtime.PutHotChunk(cacheKey, index, chunk)
-					}
-					RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_promote", index, start, size, int64(len(cached)), started, CacheLookupExtra("wait_window_range_promote", started, map[string]any{"promoted": len(chunk) > 0}), nil)
-					return cached, nil
-				}
-			}
-			started := util.Now()
-			if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
-				RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_hit", index, start, size, 0, started, CacheLookupExtra("wait_window_range", started, nil), err)
-				return nil, err
-			} else if ok {
-				runtime.RecordCachedRangeHit(cacheKey, index, size)
-				RecordChunkDetail(r.observer, ctx, entry, "wait_window_cache_hit", index, start, size, int64(len(cached)), started, CacheLookupExtra("wait_window_range", started, nil), nil)
-				return cached, nil
-			}
+		if data, ok, err := r.lookupCachedChunk(ctx, entry, cacheKey, index, start, size, access, runtime, "wait_window_", "wait_window_", false); err != nil {
+			return nil, err
+		} else if ok {
+			return data, nil
 		}
 	}
 	var data []byte
@@ -471,6 +520,47 @@ func (r *Reader) readChunkRangeWithRuntime(ctx context.Context, entry drive.Entr
 	chunk := sliceChunkRange(data, start, size)
 	RecordChunkDetail(r.observer, ctx, entry, "cache_miss_load", index, start, size, int64(len(chunk)), loadStarted, WindowExtra(windowChunks), nil)
 	return chunk, nil
+}
+
+// lookupCachedChunk is the single cache lookup path for a chunk range. The
+// phase and source prefixes keep the existing diagnostics for a direct miss
+// and for a lookup after WaitWindow.
+func (r *Reader) lookupCachedChunk(ctx context.Context, entry drive.Entry, cacheKey string, index, start, size int64, access readcache.Access, runtime readRuntime, phasePrefix, sourcePrefix string, checkHot bool) ([]byte, bool, error) {
+	if cacheKey == "" {
+		return nil, false, nil
+	}
+	if checkHot {
+		hotStarted := util.Now()
+		if hot, ok := runtime.HotChunk(cacheKey, index); ok {
+			runtime.AddCacheHit()
+			data := sliceChunkRange(hot, start, size)
+			RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_hot_hit", index, start, size, int64(len(data)), hotStarted, CacheLookupExtra("hot", hotStarted, nil), nil)
+			return data, true, nil
+		}
+	}
+	if shouldPromoteCachedRange(size) && runtime.ShouldPromoteCachedRange(cacheKey, index) {
+		started := util.Now()
+		if cached, chunk, ok, err := runtime.GetChunkWithRange(cacheKey, index, start, size, access); err != nil {
+			RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_promote", index, start, size, 0, started, CacheLookupExtra(sourcePrefix+"range_promote", started, nil), err)
+			return nil, false, err
+		} else if ok {
+			if len(chunk) > 0 {
+				runtime.PutHotChunk(cacheKey, index, chunk)
+			}
+			RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_promote", index, start, size, int64(len(cached)), started, CacheLookupExtra(sourcePrefix+"range_promote", started, map[string]any{"promoted": len(chunk) > 0}), nil)
+			return cached, true, nil
+		}
+	}
+	started := util.Now()
+	if cached, ok, err := runtime.GetChunkRange(cacheKey, index, start, size, access); err != nil {
+		RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_hit", index, start, size, 0, started, CacheLookupExtra(sourcePrefix+"range", started, nil), err)
+		return nil, false, err
+	} else if ok {
+		runtime.RecordCachedRangeHit(cacheKey, index, size)
+		RecordChunkDetail(r.observer, ctx, entry, phasePrefix+"cache_range_hit", index, start, size, int64(len(cached)), started, CacheLookupExtra(sourcePrefix+"range", started, nil), nil)
+		return cached, true, nil
+	}
+	return nil, false, nil
 }
 
 func sliceChunkRange(data []byte, start, size int64) []byte {
@@ -527,14 +617,28 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 			endIndex = lastIndex
 		}
 	}
+	plan, _ := readPlanFromContext(ctx)
+	streams := grantedStreams(ctx, plan.MaxStreams)
+	if streams < 1 {
+		streams = 1
+	}
+	if streams > 1 && r.state.isNonParallel(LoadKey(r.host, entry)) {
+		streams = 1
+	}
 	if cacheKey != "" {
-		for endIndex > startIndex && r.readChunkAvailable(cacheKey, endIndex) {
+		for endIndex > startIndex && r.readChunkAvailableFor(cacheKey, endIndex, streams) {
 			endIndex--
 		}
 	}
-	key := WindowKey(LoadKey(r.host, entry), startIndex, endIndex)
-	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, done: make(chan struct{})}
-	if load, ok := r.state.beginWindowLoad(key, load); ok {
+	key := WindowShapeKey(WindowKey(LoadKey(r.host, entry), startIndex, endIndex), streams)
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: streams, done: make(chan struct{})}
+	registered := false
+	for attempt := 0; attempt <= fetchTimeoutAttempts; attempt++ {
+		existing, joined := r.state.beginWindowLoad(key, load)
+		if !joined {
+			registered = true
+			break
+		}
 		started := util.Now()
 		activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 			Kind:        "vfs_wait",
@@ -546,18 +650,40 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 			WindowEnd:   endIndex,
 			WaitFor:     key,
 		})
-		defer r.observer.DebugFinishActive(activeID)
 		select {
-		case <-load.done:
-			extra := ExtraWithWindow(load.extra, load.start, load.end)
-			if load.err != nil {
-				RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, 0, started, extra, load.err)
-				return nil, load.err
+		case <-existing.done:
+			waitFinished := util.Now()
+			extra := ExtraWithWindow(existing.extra, existing.start, existing.end)
+			extra["wait_us"] = waitFinished.Sub(started).Microseconds()
+			if existing.err != nil {
+				// A timed-out prefetch is a silent cancellation for the
+				// prefetch itself, but a foreground read still needs its data.
+				// Take over and fetch the window instead of failing the read.
+				if existing.prefetch && isReadFetchTimeout(existing.err) &&
+					attempt < fetchTimeoutAttempts && ctx.Err() == nil {
+					extra["cancel_reason"] = "timeout"
+					RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, 0, started, extra, existing.err)
+					r.observer.DebugFinishActive(activeID)
+					continue
+				}
+				if isReadFetchTimeout(existing.err) {
+					extra["cancel_reason"] = "timeout"
+				}
+				RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, 0, started, extra, existing.err)
+				r.observer.DebugFinishActive(activeID)
+				return nil, existing.err
 			}
-			RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, int64(len(load.data[startIndex])), started, extra, nil)
-			return load.data[startIndex], nil
+			fetchTimingFromContext(ctx).recordWait(waitFinished.Sub(started))
+			RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, int64(len(existing.data[startIndex])), started, extra, nil)
+			r.observer.DebugFinishActive(activeID)
+			return existing.data[startIndex], nil
 		case <-ctx.Done():
-			RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, 0, started, map[string]any{"window_start": startIndex, "window_end": endIndex}, ctx.Err())
+			RecordChunkDetail(r.observer, ctx, entry, "wait_window_load", startIndex, 0, ChunkSize, 0, started, map[string]any{
+				"window_start": startIndex,
+				"window_end":   endIndex,
+				"wait_us":      util.Now().Sub(started).Microseconds(),
+			}, ctx.Err())
+			r.observer.DebugFinishActive(activeID)
 			return nil, ctx.Err()
 		}
 	}
@@ -573,35 +699,174 @@ func (r *Reader) loadWindow(ctx context.Context, entry drive.Entry, startIndex i
 		ChunkIndex:  startIndex,
 		WindowStart: startIndex,
 		WindowEnd:   endIndex,
+		ReadIntent:  plan.Intent.String(),
+		ReadStreams: streams,
 		WaitFor:     key,
 	})
-	releaseSlot, slotErr := r.acquireReadSlot(ctx)
-	if slotErr != nil {
-		load.err = slotErr
-		r.observer.DebugFinishActive(activeID)
-		close(load.done)
-		r.state.endWindowLoad(key)
-		return nil, slotErr
+	releaseSlot := func() {}
+	if streams <= 1 {
+		var slotErr error
+		releaseSlot, slotErr = r.acquireReadSlot(ctx)
+		if slotErr != nil {
+			load.err = slotErr
+			r.observer.DebugFinishActive(activeID)
+			close(load.done)
+			if registered {
+				r.state.endWindowLoad(key)
+			}
+			return nil, slotErr
+		}
 	}
 	r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
 	load.data, load.extra, load.err = r.fetchChunkWindow(ctx, entry, startIndex, endIndex)
 	releaseSlot()
+	fetchFinished := util.Now()
+	fetchTimingFromContext(ctx).recordFetch(fetchFinished.Sub(started))
 	r.observer.DebugFinishActive(activeID)
-	RecordChunkDetail(r.observer, ctx, entry, "fetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, ExtraWithWindow(load.extra, startIndex, endIndex), load.err)
+	recordWindowFetchTimeouts(r.state, false, cacheKey, startIndex, endIndex, load.extra)
+	fetchExtra := ExtraWithWindow(load.extra, startIndex, endIndex)
+	fetchExtra["fetch_us"] = fetchFinished.Sub(started).Microseconds()
+	if isReadFetchTimeout(load.err) {
+		fetchExtra["cancel_reason"] = "timeout"
+	}
+	RecordChunkDetail(r.observer, ctx, entry, "fetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, fetchExtra, load.err)
 	close(load.done)
 
-	r.state.endWindowLoad(key)
+	if registered {
+		r.state.endWindowLoad(key)
+	}
 	if load.err != nil {
 		return nil, load.err
 	}
 	return load.data[startIndex], nil
 }
 
+type windowRange struct {
+	start int64
+	end   int64
+}
+
+type windowRangeResult struct {
+	data  []byte
+	extra map[string]any
+	err   error
+}
+
+type parallelLimiter interface {
+	acquireParallel(ctx context.Context, key string, limit int) (func(), error)
+	markNonParallel(key string)
+	isNonParallel(key string) bool
+}
+
 func (r *Reader) fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64) (map[int64][]byte, map[string]any, error) {
-	return fetchChunkWindow(ctx, entry, startIndex, endIndex, r.newBackend())
+	ctx = r.withFetchTimeouts(ctx)
+	plan, _ := readPlanFromContext(ctx)
+	streams := grantedStreams(ctx, plan.MaxStreams)
+	key := LoadKey(r.host, entry)
+	if streams > 1 && r.state.isNonParallel(key) {
+		streams = 1
+	}
+	var slotAcquire func(context.Context) (func(), error)
+	if streams > 1 {
+		slotAcquire = r.acquireReadSlot
+	}
+	return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, r.newBackend(), streams, r.perFileLimit(), slotAcquire, r.state, key)
 }
 
 func fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend) (map[int64][]byte, map[string]any, error) {
+	return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, 1, nil, nil, "")
+}
+
+func fetchChunkWindowWithPlan(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend, streams, perFileLimit int, slotAcquire func(context.Context) (func(), error), limiter parallelLimiter, key string) (map[int64][]byte, map[string]any, error) {
+	if streams <= 1 {
+		if slotAcquire != nil {
+			release, err := slotAcquire(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			defer release()
+		}
+		data, extra, err := readWindowRange(ctx, entry, startIndex, endIndex, backend)
+		if err != nil {
+			return nil, extra, err
+		}
+		return storeWindowChunks(ctx, backend, entry, startIndex, endIndex, data), extra, nil
+	}
+	chunkCount := endIndex - startIndex + 1
+	if chunkCount <= 1 {
+		return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, perFileLimit, slotAcquire, limiter, key)
+	}
+	if streams > int(chunkCount) {
+		streams = int(chunkCount)
+	}
+	ranges := splitWindow(startIndex, endIndex, streams)
+	results := make([]windowRangeResult, len(ranges))
+	group, groupCtx := errgroup.WithContext(ctx)
+	for i, span := range ranges {
+		i, span := i, span
+		group.Go(func() error {
+			if limiter != nil && key != "" {
+				release, err := limiter.acquireParallel(groupCtx, key, perFileLimit)
+				if err != nil {
+					return err
+				}
+				defer release()
+			}
+			if slotAcquire != nil {
+				release, err := slotAcquire(groupCtx)
+				if err != nil {
+					return err
+				}
+				defer release()
+			}
+			strictCtx := drive.WithStrictRange(groupCtx)
+			results[i].data, results[i].extra, results[i].err = readWindowRange(strictCtx, entry, span.start, span.end, backend)
+			return results[i].err
+		})
+	}
+	if err := group.Wait(); err != nil {
+		unsupported := false
+		for _, result := range results {
+			if errors.Is(result.err, drive.ErrUnsupported) {
+				unsupported = true
+				break
+			}
+		}
+		if unsupported && limiter != nil {
+			limiter.markNonParallel(key)
+			return fetchChunkWindowWithPlan(ctx, entry, startIndex, endIndex, backend, 1, perFileLimit, slotAcquire, limiter, key)
+		}
+		return nil, nil, err
+	}
+	chunks := make(map[int64][]byte, chunkCount)
+	for i, span := range ranges {
+		for index, chunk := range storeWindowChunks(ctx, backend, entry, span.start, span.end, results[i].data) {
+			chunks[index] = chunk
+		}
+	}
+	return chunks, aggregateWindowExtra(results, streams), nil
+}
+
+const (
+	// fetchTimeoutAttempts is the total number of tries for one window range
+	// after an idle stall: the original Range GET plus one idempotent retry. A
+	// Range GET is safe to replay, and the window is only assembled after a
+	// full range succeeds, so a retry never mixes partial data.
+	fetchTimeoutAttempts = 2
+	// fetchStatusAttempts is the total number of tries for one window range
+	// when the provider answers with a retryable status (5xx, 408, 429). A
+	// transient provider hiccup then costs one or two extra requests instead of
+	// a failed FUSE read, while a persistent failure still fails fast: three
+	// attempts bound the extra latency at two backoffs plus two requests.
+	fetchStatusAttempts = 3
+	// fetchStatusBackoffBase is the wait before the first status replay; it
+	// doubles per replay and is capped by fetchStatusBackoffMax. The wait is
+	// charged to the range's total budget, which also bounds the sum.
+	fetchStatusBackoffBase = 200 * time.Millisecond
+	fetchStatusBackoffMax  = 2 * time.Second
+)
+
+func readWindowRange(ctx context.Context, entry drive.Entry, startIndex, endIndex int64, backend readWindowBackend) ([]byte, map[string]any, error) {
 	offset := startIndex * ChunkSize
 	size := (endIndex - startIndex + 1) * ChunkSize
 	if entry.Size > 0 && offset+size > entry.Size {
@@ -610,15 +875,185 @@ func fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endInd
 	if size <= 0 {
 		return nil, nil, nil
 	}
+	timeouts := fetchTimeoutsFromContext(ctx)
+	// One deadline covers every attempt: an idle-stall replay or a status
+	// backoff may only spend what is left of the range's total budget.
+	deadline := time.Now().Add(timeouts.Total)
+	var extra map[string]any
+	var lastErr error
+	attempts := 0
+	timeoutCount := 0
+	timeoutKind := drive.FetchTimeoutIdle
+	statusRetries := 0
+	statusReason := ""
+	bodyRetries := 0
+	var backoffTotal time.Duration
+	recordRetries := func() {
+		if extra == nil {
+			return
+		}
+		if attempts > 1 {
+			extra["fetch_attempts"] = attempts
+			extra["fetch_retried"] = true
+		}
+		if timeoutCount > 0 {
+			extra["fetch_timeouts"] = timeoutCount
+			extra["fetch_timeout_kind"] = string(timeoutKind)
+		}
+		if statusRetries > 0 {
+			extra["fetch_status_retries"] = statusRetries
+			extra["fetch_status_reason"] = statusReason
+			extra["fetch_backoff_ms"] = DurationMillis(backoffTotal)
+		}
+		if bodyRetries > 0 {
+			extra["fetch_body_retries"] = bodyRetries
+		}
+	}
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		attempts++
+		data, attemptExtra, err := readWindowRangeAttempt(ctx, entry, offset, size, timeouts.Idle, remaining, backend)
+		extra = attemptExtra
+		if err == nil {
+			recordRetries()
+			return data, extra, nil
+		}
+		lastErr = err
+		var timeout *drive.FetchTimeoutError
+		if errors.As(err, &timeout) {
+			timeoutCount++
+			timeoutKind = timeout.Kind
+			// Only an idle stall is worth replaying: a total deadline has no
+			// budget left, and other failures are not the timeout case.
+			if timeout.Kind == drive.FetchTimeoutIdle && timeoutCount < fetchTimeoutAttempts && ctx.Err() == nil {
+				continue
+			}
+			recordRetries()
+			return nil, extra, err
+		}
+		if isShortBodyError(err) {
+			// A body that ends before its declared range is a provider hiccup,
+			// not a permanent failure: replay the Range GET once. This keeps
+			// truncated-body resilience in the shared read layer instead of
+			// asking every driver to re-request partial responses itself.
+			if ctx.Err() != nil || bodyRetries+1 >= fetchTimeoutAttempts {
+				recordRetries()
+				return nil, extra, err
+			}
+			bodyRetries++
+			continue
+		}
+		reason := readRetryReason(err)
+		if reason == "" || statusRetries+1 >= fetchStatusAttempts || ctx.Err() != nil {
+			recordRetries()
+			return nil, extra, err
+		}
+		statusRetries++
+		statusReason = reason
+		backoff := fetchStatusBackoff(statusRetries)
+		if backoff >= time.Until(deadline) {
+			// The wait would outlive the range's budget: reporting the provider
+			// failure is more useful than the timeout we would cause.
+			recordRetries()
+			return nil, extra, err
+		}
+		if sleepErr := sleepContext(ctx, backoff); sleepErr != nil {
+			recordRetries()
+			return nil, extra, sleepErr
+		}
+		backoffTotal += backoff
+	}
+	recordRetries()
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	if lastErr != nil {
+		return nil, extra, lastErr
+	}
+	return nil, extra, &drive.FetchTimeoutError{Kind: drive.FetchTimeoutTotal, Limit: timeouts.Total}
+}
+
+// isShortBodyError reports whether err means the body ended before the
+// declared range: a clean short read, or a body closed underneath the reader.
+// The second form is how an aborted HTTP/2 stream or a decryption wrapper
+// reports a truncated fetch, and it is just as replayable.
+func isShortBodyError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	message := err.Error()
+	return strings.Contains(message, "response body closed") || strings.Contains(message, "closed response body")
+}
+
+// readRetryReason reports why a failed Range GET is worth replaying, or "" when
+// it is not. Range GETs are idempotent, so a provider hiccup costs one extra
+// request instead of a failed read; permanent failures (auth, permission, not
+// found, invalid input, unsupported range) keep their fast path.
+func readRetryReason(err error) string {
+	if err == nil || drive.IsNonRetryable(err) {
+		return ""
+	}
+	var status *drive.HTTPStatusError
+	if errors.As(err, &status) {
+		switch {
+		case status.Status == http.StatusTooManyRequests:
+			return "rate_limited"
+		case status.Status == http.StatusRequestTimeout:
+			return "request_timeout"
+		case status.Status >= 500:
+			return "status_5xx"
+		}
+	}
+	if errors.Is(err, drive.ErrRateLimit) {
+		return "rate_limited"
+	}
+	return ""
+}
+
+// fetchStatusBackoff returns the wait before the n-th status replay (1-based):
+// base, base*2, base*4, capped at fetchStatusBackoffMax.
+func fetchStatusBackoff(retries int) time.Duration {
+	delay := fetchStatusBackoffBase
+	for i := 1; i < retries && delay < fetchStatusBackoffMax; i++ {
+		delay *= 2
+	}
+	return min(delay, fetchStatusBackoffMax)
+}
+
+// sleepContext waits for d, or returns early when ctx ends.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// readWindowRangeAttempt performs one Range GET bounded by the idle and total
+// limits. total is the remaining share of the fetch deadline, so opening the
+// request and draining the body share one budget.
+func readWindowRangeAttempt(ctx context.Context, entry drive.Entry, offset, size int64, idle, total time.Duration, backend readWindowBackend) ([]byte, map[string]any, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, total)
+	defer cancel()
 	openStarted := util.Now()
-	rc, err := backend.Read(ctx, entry, offset, size)
+	rc, err := backend.Read(attemptCtx, entry, offset, size)
 	openFinished := util.Now()
 	extra := map[string]any{"driver_open_ms": DurationMillis(openFinished.Sub(openStarted))}
 	if err != nil {
-		return nil, extra, err
+		return nil, extra, classifyFetchError(ctx, err, total)
 	}
+	defer rc.Close()
 	bodyStarted := util.Now()
-	data, err := ReadAllLimited(rc, size)
+	data, err := drive.ReadBodyLimited(attemptCtx, cancel, rc, size, idle)
 	bodyFinished := util.Now()
 	extra["driver_body_ms"] = DurationMillis(bodyFinished.Sub(bodyStarted))
 	closeStarted := util.Now()
@@ -626,12 +1061,38 @@ func fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endInd
 	closeFinished := util.Now()
 	extra["driver_close_ms"] = DurationMillis(closeFinished.Sub(closeStarted))
 	if err != nil {
-		return nil, extra, err
+		return nil, extra, classifyFetchError(ctx, err, total)
+	}
+	if entry.Size > 0 && offset+size <= entry.Size && int64(len(data)) != size {
+		// A body that ends cleanly before its declared range looks like a
+		// short read, not an error. Report it as a truncated body so the
+		// window layer replays the Range GET instead of assembling a window
+		// from partial data.
+		return nil, extra, fmt.Errorf("vfs: read returned %d of %d bytes: %w", len(data), size, io.ErrUnexpectedEOF)
 	}
 	if closeErr != nil {
 		return nil, extra, closeErr
 	}
-	chunks := make(map[int64][]byte, size/ChunkSize+1)
+	return data, extra, nil
+}
+
+// classifyFetchError maps a context deadline reached while fetching to the
+// timeout error semantic, while preserving the caller's own cancellation.
+func classifyFetchError(parent context.Context, err error, limit time.Duration) error {
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if drive.IsFetchTimeout(err) {
+		return err
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &drive.FetchTimeoutError{Kind: drive.FetchTimeoutTotal, Limit: limit, Elapsed: limit}
+	}
+	return err
+}
+
+func storeWindowChunks(ctx context.Context, backend readWindowBackend, entry drive.Entry, startIndex, endIndex int64, data []byte) map[int64][]byte {
+	chunks := make(map[int64][]byte, len(data)/ChunkSize+1)
 	remaining := data
 	for index := startIndex; len(remaining) > 0 && index <= endIndex; index++ {
 		chunkSize := ChunkSize
@@ -646,14 +1107,56 @@ func fetchChunkWindow(ctx context.Context, entry drive.Entry, startIndex, endInd
 		backend.StoreChunk(ctx, backend.CacheKey(entry), entry, index, chunk)
 		remaining = remaining[chunkSize:]
 	}
-	return chunks, extra, nil
+	return chunks
+}
+
+func splitWindow(startIndex, endIndex int64, streams int) []windowRange {
+	count := endIndex - startIndex + 1
+	if streams > int(count) {
+		streams = int(count)
+	}
+	if streams < 1 {
+		streams = 1
+	}
+	base := count / int64(streams)
+	remainder := count % int64(streams)
+	ranges := make([]windowRange, 0, streams)
+	cursor := startIndex
+	for i := 0; i < streams; i++ {
+		size := base
+		if int64(i) < remainder {
+			size++
+		}
+		ranges = append(ranges, windowRange{start: cursor, end: cursor + size - 1})
+		cursor += size
+	}
+	return ranges
+}
+
+func aggregateWindowExtra(results []windowRangeResult, streams int) map[string]any {
+	extra := map[string]any{"parallel_streams": streams}
+	for _, field := range []string{"driver_open_ms", "driver_body_ms", "driver_close_ms"} {
+		var maxValue int64
+		for _, result := range results {
+			if value, ok := result.extra[field].(int64); ok && value > maxValue {
+				maxValue = value
+			}
+		}
+		extra[field] = maxValue
+	}
+	return extra
 }
 
 func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byte, bool, error) {
 	if fid == "" {
 		return nil, false, nil
 	}
-	load := r.state.findWindow(fid, index)
+	plan, _ := readPlanFromContext(ctx)
+	streams := grantedStreams(ctx, plan.MaxStreams)
+	if streams < 1 {
+		streams = 1
+	}
+	load := r.state.findWindow(fid, index, streams)
 	if load == nil {
 		return nil, false, nil
 	}
@@ -665,12 +1168,25 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 		ChunkIndex:  index,
 		WindowStart: load.start,
 		WindowEnd:   load.end,
-		WaitFor:     WindowKey(load.fid, load.start, load.end),
+		WaitFor:     WindowShapeKey(WindowKey(load.fid, load.start, load.end), load.streams),
 	})
+	started := util.Now()
+	timing := fetchTimingFromContext(ctx)
+	defer func() { timing.recordWait(util.Now().Sub(started)) }()
 	defer r.observer.DebugFinishActive(activeID)
 	select {
 	case <-load.done:
 		if load.err != nil {
+			// A timed-out prefetch is a miss for a foreground reader: let the
+			// caller load the window itself instead of surfacing a background
+			// failure as its own.
+			if load.prefetch && isReadFetchTimeout(load.err) {
+				RecordChunkDetail(r.observer, ctx, drive.Entry{ID: fid}, "wait_window", index, 0, ChunkSize, 0, started, map[string]any{
+					"wait_us":       util.Now().Sub(started).Microseconds(),
+					"cancel_reason": "timeout",
+				}, load.err)
+				return nil, false, nil
+			}
 			if errors.Is(load.err, context.Canceled) {
 				return nil, false, nil
 			}
@@ -683,6 +1199,13 @@ func (r *Reader) waitWindow(ctx context.Context, fid string, index int64) ([]byt
 }
 
 func (r *Reader) readChunkAvailable(cacheKey string, index int64) bool {
+	return r.readChunkAvailableFor(cacheKey, index, 0)
+}
+
+// readChunkAvailableFor reports whether index is already covered by a hot
+// chunk, the durable cache, or an in-flight window of the same fetch shape.
+// streams <= 0 accepts any shape.
+func (r *Reader) readChunkAvailableFor(cacheKey string, index int64, streams int) bool {
 	if _, ok := r.hotChunk(cacheKey, index); ok {
 		return true
 	}
@@ -691,7 +1214,7 @@ func (r *Reader) readChunkAvailable(cacheKey string, index int64) bool {
 			return true
 		}
 	}
-	return r.state.windowContains(cacheKey, index)
+	return r.state.findWindow(cacheKey, index, streams) != nil
 }
 
 func (r *Reader) hotChunk(cacheKey string, index int64) ([]byte, bool) {
@@ -703,34 +1226,7 @@ func (r *Reader) putHotChunk(cacheKey string, index int64, data []byte) {
 }
 
 func (r *Reader) acquireReadSlot(ctx context.Context) (func(), error) {
-	prio := priority(ctx)
-	if prio == PriorityHigh {
-		select {
-		case r.state.slots.normal <- struct{}{}:
-			return func() { <-r.state.slots.normal }, nil
-		default:
-		}
-		select {
-		case r.state.slots.high <- struct{}{}:
-			return func() { <-r.state.slots.high }, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	if prio == PriorityLow {
-		select {
-		case r.state.slots.normal <- struct{}{}:
-			return func() { <-r.state.slots.normal }, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	select {
-	case r.state.slots.normal <- struct{}{}:
-		return func() { <-r.state.slots.normal }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return r.state.scheduler.AcquireSlot(ctx, priority(ctx))
 }
 
 // --- prefetch ---
@@ -766,12 +1262,13 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 	if cacheKey == "" {
 		return
 	}
+	ctx = r.withFetchTimeouts(ctx)
 	plannedEndIndex := startIndex + int64(count) - 1
 	for startIndex <= plannedEndIndex {
 		if entry.Size > 0 && startIndex*ChunkSize >= entry.Size {
 			return
 		}
-		if r.readChunkAvailable(cacheKey, startIndex) {
+		if r.readChunkAvailableFor(cacheKey, startIndex, 1) {
 			startIndex++
 			continue
 		}
@@ -789,7 +1286,7 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		if entry.Size > 0 && endIndex*ChunkSize >= entry.Size {
 			break
 		}
-		if endIndex > startIndex && r.readChunkAvailable(cacheKey, endIndex) {
+		if endIndex > startIndex && r.readChunkAvailableFor(cacheKey, endIndex, 1) {
 			break
 		}
 		endIndex++
@@ -799,22 +1296,28 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 		return
 	}
 	key := WindowKey(cacheKey, startIndex, endIndex)
-	if !r.state.reservePrefetch(key) {
+	if !r.state.reservePrefetch() {
 		return
 	}
+	scope, releaseScope := r.state.scopeFor(ctx, cacheKey)
 	prefetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopScope := context.AfterFunc(scope.ctx, cancel)
 	prefetchCtx = WithPriority(prefetchCtx, PriorityLow)
-	r.state.registerPrefetch(cacheKey, key, cancel)
+	prefetchCtx = WithGrantedStreams(prefetchCtx, 1)
+	prefetchCtx = WithPrefetchRead(prefetchCtx)
 
-	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, done: make(chan struct{})}
+	load := &windowLoad{fid: cacheKey, start: startIndex, end: endIndex, streams: 1, prefetch: true, done: make(chan struct{})}
 	if _, exists := r.state.beginWindowLoad(key, load); exists {
-		r.state.releasePrefetch(key)
-		r.state.unregisterPrefetch(cacheKey, key)
+		r.state.releasePrefetch()
+		stopScope()
+		releaseScope()
 		cancel()
 		return
 	}
 
 	go func() {
+		defer releaseScope()
+		defer stopScope()
 		started := time.Now()
 		activeID := r.observer.DebugBeginActive(vfstypes.DebugActiveOp{
 			Kind:        "vfs_prefetch",
@@ -827,6 +1330,8 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			WindowStart: startIndex,
 			WindowEnd:   endIndex,
 			Background:  true,
+			ReadIntent:  ReadIntentFromContext(ctx).String(),
+			ReadStreams: 1,
 			WaitFor:     key,
 		})
 		releaseSlot, err := r.acquireReadSlot(prefetchCtx)
@@ -834,24 +1339,47 @@ func (r *Reader) prefetchWindow(ctx context.Context, entry drive.Entry, startInd
 			load.err = err
 			RecordChunkDetail(r.observer, prefetchCtx, entry, "prefetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, 0, started, nil, err)
 			r.observer.DebugFinishActive(activeID)
-			close(load.done)
 			r.state.endWindowLoad(key)
-			r.state.releasePrefetch(key)
-			r.state.unregisterPrefetch(cacheKey, key)
+			close(load.done)
+			r.state.releasePrefetch()
 			cancel()
 			return
 		}
 		defer func() {
 			releaseSlot()
 			r.observer.DebugFinishActive(activeID)
-			close(load.done)
 			r.state.endWindowLoad(key)
-			r.state.releasePrefetch(key)
-			r.state.unregisterPrefetch(cacheKey, key)
+			close(load.done)
+			r.state.releasePrefetch()
 			cancel()
 		}()
 		r.observer.DebugUpdateActive(activeID, func(op *vfstypes.DebugActiveOp) { op.Phase = "fetch_window" })
-		load.data, load.extra, load.err = r.fetchChunkWindow(prefetchCtx, entry, startIndex, endIndex)
+		load.data, load.extra, load.err = fetchChunkWindow(prefetchCtx, entry, startIndex, endIndex, r.newBackend())
+		load.extra = CloneExtra(load.extra)
+		if load.extra == nil {
+			load.extra = map[string]any{}
+		}
+		load.extra["read_streams"] = 1
+		load.extra["fetch_us"] = time.Since(started).Microseconds()
+		recordWindowFetchTimeouts(r.state, true, cacheKey, startIndex, endIndex, load.extra)
+		if load.err != nil {
+			// A cancellation reason set by delete/close/seek/session release
+			// wins over the timeout that raced it: the operation was already
+			// going away for another reason.
+			reason := ""
+			if prefetchCtx.Err() != nil {
+				reason = scope.cancelReason()
+			}
+			if reason == "" && isReadFetchTimeout(load.err) {
+				reason = "timeout"
+			}
+			if reason != "" {
+				load.extra["prefetch_cancel_reason"] = reason
+			}
+			if reason == "timeout" {
+				load.extra["cancel_reason"] = "timeout"
+			}
+		}
 		RecordChunkDetail(r.observer, prefetchCtx, entry, "prefetch_window", startIndex, 0, (endIndex-startIndex+1)*ChunkSize, WindowBytes(load.data), started, load.extra, load.err)
 	}()
 }

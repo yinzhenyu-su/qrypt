@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 )
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +250,42 @@ func listEntries(parentPath string, entries []drive.Entry) []ListEntry {
 		})
 	}
 	return out
+}
+
+func (s *Server) handleReadFaults(w http.ResponseWriter, r *http.Request) {
+	controller, ok := s.source.(readFaultController)
+	if !ok {
+		http.Error(w, "read fault injection not available", http.StatusNotImplemented)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, DebugReadFaultsResponse{
+			SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+			GeneratedAt:   time.Now(),
+			Faults:        controller.DebugReadFaults(r.Context()),
+		})
+	case http.MethodPost:
+		var req faultinject.DebugReadFaultRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		fault, err := controller.DebugInjectReadFault(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, fault)
+	case http.MethodDelete:
+		if err := controller.DebugClearReadFault(r.Context(), r.URL.Query().Get("id")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {

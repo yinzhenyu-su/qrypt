@@ -18,6 +18,12 @@ import (
 
 const sftpUploadPartSize = 8 << 20
 
+// UploadProfile exposes the part size so a probe can sweep it. The driver
+// uploads parts sequentially, so it does not accept a concurrency override.
+func (d *Driver) UploadProfile() drive.UploadProfile {
+	return drive.UploadProfile{ChunkSize: sftpUploadPartSize}
+}
+
 func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest) (entry drive.Entry, err error) {
 	started := time.Now()
 	defer func() { d.recordOperation(ctx, "upload", path.Join(req.ParentID, req.Name), started, entry.Size, err) }()
@@ -33,6 +39,10 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 		return drive.Entry{}, err
 	}
 	size := req.Source.Size()
+	partSize := int64(sftpUploadPartSize)
+	if override, ok := drive.UploadProfileFromContext(ctx); ok && override.ChunkSize > 0 {
+		partSize = override.ChunkSize
+	}
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseHashing)
 	sha256Hex, err := session.ContentSHA256Hex(ctx, req.Source, size)
 	if err != nil {
@@ -40,7 +50,7 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 	}
 	sessionKey := session.Identity{ParentID: parent, Name: req.Name, Size: size, Fingerprint: sha256Hex}.Key()
 	staging := stagingPath(parent, sessionKey)
-	if err := d.ensureSessionBinding(sessionKey, parent, req.Name, staging); err != nil {
+	if err := d.ensureSessionBinding(sessionKey, parent, req.Name, staging, partSize); err != nil {
 		return drive.Entry{}, err
 	}
 
@@ -50,7 +60,7 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 		return drive.Entry{}, err
 	}
 	// 中断可能留下半个分片：回退到分片边界重传整个分片。
-	resumeFrom = (resumeFrom / sftpUploadPartSize) * sftpUploadPartSize
+	resumeFrom = (resumeFrom / partSize) * partSize
 	if size == 0 {
 		if err := createRemoteFile(client, staging); err != nil {
 			return drive.Entry{}, err
@@ -64,10 +74,10 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 	defer source.Close()
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
 	drive.ReportUploadProgress(req.Progress, resumeFrom)
-	partCount := uploadPartCount(size, sftpUploadPartSize)
-	for part := int(resumeFrom / sftpUploadPartSize); part < partCount; part++ {
-		start := int64(part) * sftpUploadPartSize
-		length := int64(sftpUploadPartSize)
+	partCount := uploadPartCount(size, partSize)
+	for part := int(resumeFrom / partSize); part < partCount; part++ {
+		start := int64(part) * partSize
+		length := int64(partSize)
 		if remaining := size - start; remaining < length {
 			length = remaining
 		}
@@ -115,14 +125,14 @@ func (d *Driver) putSourceResumable(ctx context.Context, req drive.UploadRequest
 // ensureSessionBinding 预留绑定：上传开始前必须落盘，崩溃后回收器才知道
 // 该 staging 文件属于哪个会话。写入失败则拒绝开始上传，避免产生无绑定
 // 可循的孤儿 staging。
-func (d *Driver) ensureSessionBinding(sessionKey, parent, name, staging string) error {
+func (d *Driver) ensureSessionBinding(sessionKey, parent, name, staging string, partSize int64) error {
 	if d.sessions == nil {
 		return nil
 	}
 	if _, ok := d.sessions.Get(sessionKey); ok {
 		return nil
 	}
-	token, err := json.Marshal(sftpToken{ParentID: parent, Name: name, StagingPath: staging, PartSize: sftpUploadPartSize})
+	token, err := json.Marshal(sftpToken{ParentID: parent, Name: name, StagingPath: staging, PartSize: partSize})
 	if err != nil {
 		return fmt.Errorf("sftp: encode upload session: %w", err)
 	}
@@ -175,11 +185,11 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 	}
 	file, err := client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE)
 	if err != nil {
-		return fmt.Errorf("open remote staging file: %w", err)
+		return fmt.Errorf("open remote staging file: %w", classifyError(err))
 	}
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("seek remote staging file to %d: %w", offset, err)
+		return fmt.Errorf("seek remote staging file to %d: %w", offset, classifyError(err))
 	}
 	body := d.limiter.LimitUpload(partCtx, io.LimitReader(source, size))
 	written, err := io.CopyN(file, contextReader{ctx: partCtx, reader: body}, size)
@@ -188,10 +198,10 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 	}
 	closeErr := file.Close()
 	if err != nil {
-		return fmt.Errorf("write remote part at %d: %w", offset, err)
+		return fmt.Errorf("write remote part at %d: %w", offset, classifyError(err))
 	}
 	if closeErr != nil {
-		return fmt.Errorf("close remote part at %d: %w", offset, closeErr)
+		return fmt.Errorf("close remote part at %d: %w", offset, classifyError(closeErr))
 	}
 	if written != size {
 		return fmt.Errorf("wrote %d bytes at %d, want %d", written, offset, size)
@@ -202,10 +212,10 @@ func (d *Driver) uploadSFTPPart(ctx context.Context, client *sftp.Client, remote
 func createRemoteFile(client *sftp.Client, remotePath string) error {
 	file, err := client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE)
 	if err != nil {
-		return fmt.Errorf("create remote staging file %q: %w", remotePath, err)
+		return fmt.Errorf("create remote staging file %q: %w", remotePath, classifyError(err))
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close remote staging file %q: %w", remotePath, err)
+		return fmt.Errorf("close remote staging file %q: %w", remotePath, classifyError(err))
 	}
 	return nil
 }

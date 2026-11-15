@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -14,7 +15,27 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
 )
+
+const (
+	// koofrUploadIdleTimeout cancels an upload when the transport has not
+	// consumed a body byte for this long. A healthy but slow link keeps
+	// reading, so only a stalled connection trips it.
+	koofrUploadIdleTimeout = 2 * time.Minute
+	// koofrUploadMinRate is the conservative floor used to derive a total
+	// upload budget. It keeps the budget generous for slow links while still
+	// bounding a connection that trickles forever.
+	koofrUploadMinRate    = int64(256 << 10) // bytes per second
+	koofrUploadMinTimeout = 15 * time.Minute
+	koofrUploadMaxTimeout = 24 * time.Hour
+)
+
+// uploadTimeout returns the total budget for one upload: the time the file
+// needs at koofrUploadMinRate, clamped to the configured bounds.
+func uploadTimeout(size int64) time.Duration {
+	return driverutil.UploadBudget(size, koofrUploadMinRate, koofrUploadMinTimeout, koofrUploadMaxTimeout)
+}
 
 // RequiredUploadHashes returns none: the provider computes MD5 itself, so
 // qrypt never needs to pre-hash an upload source for Koofr.
@@ -99,7 +120,20 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	drive.ReportUploadPhase(req.Progress, drive.UploadPhaseUploading)
 	progressReader := drive.NewUploadProgressReader(req.Progress, file)
 	body := io.MultiReader(bytes.NewReader(head.Bytes()), progressReader, bytes.NewReader(tail))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
+
+	// The shared API client's 15-minute timeout cannot cover a large upload:
+	// at a few MB/s a multi-gigabyte file needs far longer and would restart
+	// from zero on every attempt. Give the upload a size-derived budget and
+	// cancel it only when the connection stops consuming bytes.
+	uploadBudget := uploadTimeout(sourceSize)
+	budgetCtx, cancelBudget := context.WithTimeout(ctx, uploadBudget)
+	defer cancelBudget()
+	uploadCtx, cancelUpload := context.WithCancelCause(budgetCtx)
+	defer cancelUpload(nil)
+	watchdog := driverutil.NewUploadWatchdog(uploadCtx, body, koofrUploadIdleTimeout, cancelUpload)
+	defer watchdog.Stop()
+
+	httpReq, err := http.NewRequestWithContext(uploadCtx, http.MethodPost, target, watchdog)
 	if err != nil {
 		return drive.Entry{}, err
 	}
@@ -108,11 +142,18 @@ func (d *Driver) PutSource(ctx context.Context, req drive.UploadRequest) (drive.
 	httpReq.ContentLength = contentLength
 	httpReq.SetBasicAuth(d.cl.email, d.cl.password)
 	start := time.Now()
-	resp, err := d.cl.http.Do(httpReq)
+	resp, err := d.cl.uploadHTTP.Do(httpReq)
 	duration := time.Since(start)
 	if err != nil {
 		d.cl.record(ctx, http.MethodPost, target, 0, duration, err)
-		err = fmt.Errorf("koofr: upload %q: %w", req.Name, err)
+		switch {
+		case errors.Is(context.Cause(uploadCtx), driverutil.ErrUploadStalled):
+			err = fmt.Errorf("koofr: upload %q: no progress for %s: %w", req.Name, koofrUploadIdleTimeout, driverutil.ErrUploadStalled)
+		case budgetCtx.Err() != nil:
+			err = fmt.Errorf("koofr: upload %q exceeded %s: %w", req.Name, uploadBudget, err)
+		default:
+			err = fmt.Errorf("koofr: upload %q: %w", req.Name, err)
+		}
 		d.setLastError(err)
 		return drive.Entry{}, err
 	}

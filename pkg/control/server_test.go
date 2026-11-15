@@ -22,6 +22,7 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
+	"github.com/yinzhenyu/qrypt/pkg/vfs/faultinject"
 	vfsread "github.com/yinzhenyu/qrypt/pkg/vfs/read"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/readcache"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/upload"
@@ -81,6 +82,47 @@ type fakeResetSnapshotter struct {
 func (f *fakeResetSnapshotter) DebugReset(ctx context.Context) error {
 	f.resetCalled = true
 	return nil
+}
+
+type fakeReadCacheClearer struct {
+	fakeSnapshotter
+	cleared     []string
+	invalidated []string
+	faults      []faultinject.DebugReadFault
+}
+
+func (f *fakeReadCacheClearer) ClearReadCacheForMount(name string) error {
+	f.cleared = append(f.cleared, name)
+	return nil
+}
+
+func (f *fakeReadCacheClearer) DebugInvalidateReadCache(_ context.Context, path string) (string, error) {
+	f.invalidated = append(f.invalidated, path)
+	return "cloud", nil
+}
+
+func (f *fakeReadCacheClearer) DebugInjectReadFault(_ context.Context, req faultinject.DebugReadFaultRequest) (faultinject.DebugReadFault, error) {
+	fault := faultinject.DebugReadFault{ID: "read-fault-1", Path: req.Path, Kind: req.Kind, Remaining: 1}
+	f.faults = append(f.faults, fault)
+	return fault, nil
+}
+
+func (f *fakeReadCacheClearer) DebugClearReadFault(_ context.Context, id string) error {
+	if id == "" {
+		f.faults = nil
+		return nil
+	}
+	for index, fault := range f.faults {
+		if fault.ID == id {
+			f.faults = append(f.faults[:index], f.faults[index+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func (f *fakeReadCacheClearer) DebugReadFaults(context.Context) []faultinject.DebugReadFault {
+	return f.faults
 }
 
 func (f fakeSnapshotter) Drivers() []diagnostics.NamedDriver {
@@ -775,6 +817,137 @@ func TestServerExposesStateAndPending(t *testing.T) {
 	if !resetSource.resetCalled || !strings.Contains(string(resetBody), `"vfs_reads"`) ||
 		!strings.Contains(string(resetBody), `"debug_started_at"`) {
 		t.Fatalf("unexpected reset response: called=%v body=%s", resetSource.resetCalled, resetBody)
+	}
+}
+
+func TestServerClearsReadCacheOnlyOnProbeSocket(t *testing.T) {
+	source := &fakeReadCacheClearer{fakeSnapshotter: fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	probe, err := NewProbeServer(testEndpoint(t), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close(context.Background())
+	probeClient, err := NewClient(probe.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := probeClient.PostJSON(ctx, "/v1/debug/cache/clear?mount=cloud", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.cleared) != 1 || source.cleared[0] != "cloud" {
+		t.Fatalf("cleared mounts = %#v, want [cloud]", source.cleared)
+	}
+	if !strings.Contains(string(body), `"cleared": true`) || !strings.Contains(string(body), `"mount": "cloud"`) {
+		t.Fatalf("unexpected cache clear response: %s", body)
+	}
+
+	if _, err := probeClient.PostJSON(ctx, "/v1/debug/cache/clear", map[string]string{}); err == nil ||
+		!strings.Contains(err.Error(), "status 400") {
+		t.Fatalf("cache clear without mount error = %v, want status 400", err)
+	}
+	if _, err := probeClient.Get(ctx, "/v1/debug/cache/clear?mount=cloud"); err == nil ||
+		!strings.Contains(err.Error(), "status 405") {
+		t.Fatalf("GET cache clear error = %v, want status 405", err)
+	}
+
+	invalidateBody, err := probeClient.PostJSON(ctx, "/v1/debug/cache/invalidate?path=%2Fcloud%2Fmovie.mp4", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.invalidated) != 1 || source.invalidated[0] != "/cloud/movie.mp4" {
+		t.Fatalf("invalidated paths = %#v, want [/cloud/movie.mp4]", source.invalidated)
+	}
+	if !strings.Contains(string(invalidateBody), `"invalidated": true`) ||
+		!strings.Contains(string(invalidateBody), `"mount": "cloud"`) {
+		t.Fatalf("unexpected cache invalidate response: %s", invalidateBody)
+	}
+	if _, err := probeClient.PostJSON(ctx, "/v1/debug/cache/invalidate", map[string]string{}); err == nil ||
+		!strings.Contains(err.Error(), "status 400") {
+		t.Fatalf("cache invalidate without path error = %v, want status 400", err)
+	}
+
+	debug, err := NewServer(testEndpoint(t), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := debug.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer debug.Close(context.Background())
+	debugClient, err := NewClient(debug.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := debugClient.PostJSON(ctx, "/v1/debug/cache/clear?mount=cloud", map[string]string{}); err == nil ||
+		!strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("debug socket cache clear error = %v, want status 404", err)
+	}
+}
+
+func TestServerArmsReadFaultsOnlyOnProbeSocket(t *testing.T) {
+	source := &fakeReadCacheClearer{fakeSnapshotter: fakeSnapshotter{snapshot: diagnostics.DebugSnapshot{}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	probe, err := NewProbeServer(testEndpoint(t), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close(context.Background())
+	probeClient, err := NewClient(probe.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := probeClient.PostJSON(ctx, "/v1/debug/faults/read", map[string]any{
+		"path": "/cloud/movie.mp4", "kind": "stall", "after_bytes": 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"id": "read-fault-1"`) || !strings.Contains(string(body), `"kind": "stall"`) {
+		t.Fatalf("unexpected fault response: %s", body)
+	}
+	list, err := probeClient.Get(ctx, "/v1/debug/faults/read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(list), `"read-fault-1"`) {
+		t.Fatalf("fault missing from list: %s", list)
+	}
+	if _, err := probeClient.Delete(ctx, "/v1/debug/faults/read?id=read-fault-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(source.faults) != 0 {
+		t.Fatalf("faults after clear = %#v, want none", source.faults)
+	}
+
+	debug, err := NewServer(testEndpoint(t), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := debug.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer debug.Close(context.Background())
+	debugClient, err := NewClient(debug.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := debugClient.PostJSON(ctx, "/v1/debug/faults/read", map[string]any{"path": "/cloud/movie.mp4", "kind": "stall"}); err == nil ||
+		!strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("debug socket fault error = %v, want status 404", err)
 	}
 }
 

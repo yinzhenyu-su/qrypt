@@ -27,6 +27,11 @@ const (
 	// the path that finishes the task.
 	offlineVerifyAttempts = 3
 	offlineVerifyInterval = 300 * time.Millisecond
+	// Folder cleanup waits longer than a file-result check because the
+	// provider's directory listing can lag the file deletes. The check stays
+	// conservative: a folder that still shows an unowned entry is left in place.
+	offlineFolderVerifyAttempts = 10
+	offlineFolderVerifyInterval = time.Second
 )
 
 // offlineRun is one execution generation of a durable offline task. It owns the
@@ -67,6 +72,19 @@ func (c *Core) newOfflineRun(ctx context.Context, taskID string, fetch bool) (*o
 	missingWindow := defaultOfflineMissingWindow
 	if c.offlineMissingWindow > 0 {
 		missingWindow = c.offlineMissingWindow
+	}
+	// Older tasks could persist an empty root with available=true when the
+	// provider returned the resource folder as dir_fid. Drop the stale
+	// availability claim and recover the parse destination so the next
+	// observation can rebuild the staged layout instead of transferring the
+	// provider's thin result list.
+	if detail.ProviderRootID == "" {
+		detail.Available = false
+		if detail.ParseMount != "" && detail.ParseDir != "" {
+			if fid, err := c.ensureParseDestination(ctx, detail.ParseMount, detail.ParseDir, false); err == nil && fid != "" {
+				detail.ParseRemoteID = fid
+			}
+		}
 	}
 	// A fresh driver instance has no in-process memory of this task's output
 	// tree. Hand it the identity Core persisted so it can resolve the same

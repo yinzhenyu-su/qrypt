@@ -40,6 +40,7 @@ type MountSnapshot struct {
 	Cache       DebugCacheSnapshot    `json:"cache"`
 	Events      MountSnapshotEvents   `json:"events"`
 	Runtime     MountSnapshotRuntime  `json:"runtime"`
+	ReadProfile DebugReadProfile      `json:"read_profile"`
 }
 
 // DebugCacheSnapshot aggregates the readcache snapshot with the upload
@@ -68,6 +69,9 @@ type MountSnapshotQueues struct {
 	DeleteDelay   string       `json:"delete_delay"`
 	UploadTimers  []DebugTimer `json:"upload_timers,omitempty"`
 	DeleteTimers  []DebugTimer `json:"delete_timers,omitempty"`
+	// ActiveDeletes are remote deletes already past their timer but not yet
+	// finished. They are not idle work.
+	ActiveDeletes []DebugTimer `json:"active_deletes,omitempty"`
 }
 
 type MountSnapshotOverlay struct {
@@ -96,9 +100,24 @@ type MountSnapshotRuntime struct {
 	HotChunkLimit int   `json:"hot_chunk_limit"`
 	RangeHitCount int   `json:"range_hit_count"`
 	RangeHitLimit int   `json:"range_hit_limit"`
+	// ReadTimeouts and PrefetchTimeouts count fetch timeouts since process
+	// start; LastTimeout names the most recent window that timed out.
+	ReadTimeouts     int               `json:"read_timeouts"`
+	PrefetchTimeouts int               `json:"prefetch_timeouts"`
+	LastTimeout      *MountReadTimeout `json:"last_timeout,omitempty"`
 	// Counters are cumulative since process start, unlike the bounded event
 	// histories above: they answer "how fast and how reliable overall".
 	Counters drive.CounterSnapshot `json:"counters"`
+}
+
+// MountReadTimeout identifies the most recent read fetch timeout.
+type MountReadTimeout struct {
+	CacheKey    string    `json:"cache_key,omitempty"`
+	WindowStart int64     `json:"window_start"`
+	WindowEnd   int64     `json:"window_end"`
+	Background  bool      `json:"background"`
+	Kind        string    `json:"kind"`
+	At          time.Time `json:"at"`
 }
 
 type DebugTimer struct {
@@ -126,6 +145,21 @@ type DebugOverlayOp struct {
 type DebugCopyHidden struct {
 	Dir   string       `json:"dir"`
 	Names []DebugTimer `json:"names"`
+}
+
+// DebugReadProfile is the effective read scheduling profile for a mount.
+// Source is "driver", "mount_override", or "driver_limiter".
+type DebugReadProfile struct {
+	Streams                 int    `json:"streams"`
+	BulkWindowChunks        int    `json:"bulk_window_chunks"`
+	InteractiveWindowChunks int    `json:"interactive_window_chunks"`
+	ProbeWindowChunks       int    `json:"probe_window_chunks"`
+	PrefetchDepth           int    `json:"prefetch_depth"`
+	ParallelThreshold       int64  `json:"parallel_threshold"`
+	Source                  string `json:"source"`
+	Clamped                 bool   `json:"clamped,omitempty"`
+	FetchIdleTimeoutMS      int64  `json:"fetch_idle_timeout_ms"`
+	FetchTotalTimeoutMS     int64  `json:"fetch_total_timeout_ms"`
 }
 
 type DebugStagingReport struct {
@@ -209,6 +243,10 @@ func (s MountSnapshot) PendingUploads() []vfstypes.PendingUpload {
 
 func (s MountSnapshot) ActiveDeleteTimers() []DebugTimer {
 	return s.Queues.DeleteTimers
+}
+
+func (s MountSnapshot) ActiveDeletes() []DebugTimer {
+	return s.Queues.ActiveDeletes
 }
 
 func (s MountSnapshot) HistoricalUploads() []upload.UploadSnapshot {

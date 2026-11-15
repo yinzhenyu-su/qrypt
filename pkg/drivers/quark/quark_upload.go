@@ -329,8 +329,11 @@ func quarkSourceHashes(source drive.ReadOnlyFileSource) (map[string]any, bool, e
 		return nil, false, drive.NonRetryable(fmt.Errorf("quark: source SHA-1 metadata has %d bytes, want %d", len(sha1Sum), sha1.Size))
 	}
 	return map[string]any{
-		"md5":  fmt.Sprintf("%X", md5Sum),
-		"sha1": fmt.Sprintf("%X", sha1Sum),
+		// Quark stores hashes in lowercase. An uppercase SHA-1 is rejected
+		// with "sha1 非法" when the provider already knows the content, which
+		// breaks deduplicated uploads.
+		"md5":  fmt.Sprintf("%x", md5Sum),
+		"sha1": fmt.Sprintf("%x", sha1Sum),
 	}, true, nil
 }
 
@@ -350,8 +353,8 @@ func quarkComputeSourceHashes(ctx context.Context, source drive.ReadOnlyFileSour
 		return nil, fmt.Errorf("quark: upload hash size mismatch: hashed %d, expected %d", n, size)
 	}
 	return map[string]any{
-		"md5":  fmt.Sprintf("%X", md5Hash.Sum(nil)),
-		"sha1": fmt.Sprintf("%X", sha1Hash.Sum(nil)),
+		"md5":  fmt.Sprintf("%x", md5Hash.Sum(nil)),
+		"sha1": fmt.Sprintf("%x", sha1Hash.Sum(nil)),
 	}, nil
 }
 
@@ -715,22 +718,56 @@ func apiError(resp respEnvelope) error {
 
 type traceReadCloser struct {
 	io.ReadCloser
-	fid    string
-	offset int64
-	size   int64
-	start  time.Time
-	read   int64
+	fid     string
+	offset  int64
+	size    int64
+	start   time.Time
+	read    int64
+	onError func(error, int64, time.Duration)
+	// onComplete records the throughput of a fully read body.
+	onComplete func(int64, time.Duration)
+	// The watchdog aborts a read that sustains less than minRate so the next
+	// attempt can use a fresh connection.
+	minRate    int64
+	grace      time.Duration
+	checkEvery time.Duration
+	nextCheck  time.Duration
+	aborted    bool
 }
 
 func (r *traceReadCloser) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
 	r.read += int64(n)
+	elapsed := time.Since(r.start)
+	if err != nil && err != io.EOF && r.onError != nil {
+		r.onError(err, r.read, elapsed)
+	}
+	if err == nil && r.minRate > 0 {
+		if r.nextCheck == 0 {
+			r.nextCheck = r.grace
+		}
+		if elapsed >= r.nextCheck {
+			r.nextCheck = elapsed + r.checkEvery
+			if rate := float64(r.read) / elapsed.Seconds(); rate < float64(r.minRate) {
+				r.aborted = true
+				_ = r.ReadCloser.Close()
+				if r.onError != nil {
+					r.onError(errDownloadTooSlow, r.read, elapsed)
+				}
+				return n, io.ErrUnexpectedEOF
+			}
+		}
+	}
 	return n, err
 }
 
 func (r *traceReadCloser) Close() error {
 	err := r.ReadCloser.Close()
-	logging.L.DebugfEvery("quark.read_body", time.Second, "[QUARK] ReadBody fid=%q offset=%d size=%d read=%d err=%v dur=%s", r.fid, r.offset, r.size, r.read, err, time.Since(r.start))
+	elapsed := time.Since(r.start)
+	if err == nil && !r.aborted && r.read > 0 && r.read == r.size && r.onComplete != nil {
+		r.onComplete(r.read, elapsed)
+	}
+	logging.L.DebugfEvery("quark.read_body", time.Second, "[QUARK] ReadBody fid=%q offset=%d size=%d read=%d err=%v dur=%s", r.fid, r.offset, r.size, r.read, err, elapsed)
 	return err
 }
 

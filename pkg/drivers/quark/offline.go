@@ -203,26 +203,59 @@ func (d *Driver) CreateOfflineDownload(ctx context.Context, req drive.OfflineDow
 	if result.SpeedupDLInfo.SpeedupSession != "" {
 		d.rememberOfflineSession(result.TaskID, result.SpeedupDLInfo.SpeedupSession)
 	}
-	// download_task_finish=1 means the resource is already cached, so the
-	// staged results are complete from the start and a fetch may transfer
-	// without waiting for the task to terminalize.
-	available := parsed.ResourceInfo.DownloadTaskFinish == 1
-	// The submit response's dir_fid is the directory that actually contains
-	// the produced root; persist and return that same identity so a fresh
-	// driver resolves the same parent after recovery.
-	parentID := result.DirFid
-	if parentID == "" {
-		parentID = dirFid
+	// Submit may omit fid (instant-cached Quark sources do) and return the
+	// produced resource folder as dir_fid. Resolve the real root/parent pair
+	// from the parse destination listing instead of assuming dir_fid is the
+	// parent.
+	rootID, parentID := d.offlineSubmitRoot(dirFid, result)
+	// download_task_finish=1 means the resource is already cached. That only
+	// makes the staged set available once the output root is actually known;
+	// otherwise a fetch would transfer the thin result list.
+	available := parsed.ResourceInfo.DownloadTaskFinish == 1 && rootID != ""
+	var staged []drive.OfflineFile
+	if available {
+		layout := drive.OfflineLayout{TaskID: result.TaskID, RootID: rootID, ParentID: parentID, Available: true}
+		resolved, ok, err := d.resolveOfflineLayout(ctx, layout, nil)
+		if err == nil && ok {
+			staged = resolved
+		} else {
+			available = false
+		}
 	}
-	d.rememberOfflineLayout(result.TaskID, result.Fid, parentID, available)
+	d.rememberOfflineLayout(result.TaskID, rootID, parentID, available)
 	observation := drive.OfflineDownload{
 		ID:          result.TaskID,
 		State:       drive.OfflineStateQueued,
 		Destination: parentID,
-		RemoteID:    result.Fid,
+		RemoteID:    rootID,
 		Available:   available,
+		Files:       staged,
 	}
 	return observation, nil
+}
+
+// offlineSubmitRoot resolves the resource root and its parent from the submit
+// response. Quark returns fid plus dir_fid for the common shape, but an
+// instant-cached multi-file source can omit fid and return the produced
+// resource folder as dir_fid. In that case the parse destination is the parent
+// and dir_fid is the root; the layout walk verifies it before publishing.
+func (d *Driver) offlineSubmitRoot(parseFid string, result offlineSubmitDTO) (rootID, parentID string) {
+	parseFid = strings.TrimSpace(parseFid)
+	rootID = strings.TrimSpace(result.Fid)
+	dirFid := strings.TrimSpace(result.DirFid)
+	if rootID != "" {
+		parentID = dirFid
+		if parentID == "" {
+			parentID = parseFid
+		}
+		return rootID, parentID
+	}
+	rootID = dirFid
+	parentID = parseFid
+	if parentID == "" {
+		parentID = dirFid
+	}
+	return rootID, parentID
 }
 
 // GetOfflineDownload observes one provider task by task_id.
@@ -274,7 +307,7 @@ func (d *Driver) GetOfflineDownload(ctx context.Context, id string) (drive.Offli
 	}
 	layout := d.offlineLayout(id)
 	if observation.State == drive.OfflineStateSucceeded || layout.Available {
-		files, err := d.resolveOfflineLayout(ctx, layout, observation.Files)
+		files, resolved, err := d.resolveOfflineLayout(ctx, layout, observation.Files)
 		if err != nil {
 			if ctx.Err() != nil {
 				return drive.OfflineDownload{}, ctx.Err()
@@ -293,8 +326,12 @@ func (d *Driver) GetOfflineDownload(ctx context.Context, id string) (drive.Offli
 				drive.OfflineErrProviderUnavailable, "",
 				fmt.Sprintf("quark: resolve staged layout: %v", err))
 		}
-		observation.Available = true
-		observation.Files = files
+		if resolved {
+			observation.Available = true
+			observation.Files = files
+		} else {
+			observation.Available = false
+		}
 	}
 	return observation, nil
 }
@@ -336,6 +373,12 @@ func (d *Driver) InspectOfflineDownload(ctx context.Context, req drive.OfflineDo
 	parsed, err := d.parseOffline(ctx, req, false)
 	if err != nil {
 		return drive.OfflinePreview{}, err
+	}
+	if !parsed.Finished {
+		return drive.OfflinePreview{}, drive.ErrOfflineInspectPending
+	}
+	if len(parsed.Files) == 0 {
+		return drive.OfflinePreview{}, drive.NewOfflineError(drive.OfflineErrProviderUnavailable, "", "quark: parse returned no files")
 	}
 	preview := drive.OfflinePreview{
 		Source:      req.Source,
@@ -588,53 +631,87 @@ const offlineMaxLayoutDepth = 32
 // resolveOfflineLayout fills each result file's staged relative path from the
 // task's output root and appends files the result list omitted. Paths are
 // relative to the staging destination, so a resource folder keeps its own name.
-// It is only meaningful once the provider reports the results are complete.
-func (d *Driver) resolveOfflineLayout(ctx context.Context, layout drive.OfflineLayout, files []drive.OfflineFile) ([]drive.OfflineFile, error) {
-	if layout.RootID == "" {
-		return files, nil
+// It reports resolved=false when the provider has not exposed the output root
+// yet; callers must not mark the result set available in that case.
+func (d *Driver) resolveOfflineLayout(ctx context.Context, layout drive.OfflineLayout, files []drive.OfflineFile) ([]drive.OfflineFile, bool, error) {
+	rootID := strings.TrimSpace(layout.RootID)
+	parentID := strings.TrimSpace(layout.ParentID)
+	if rootID != "" && rootID == parentID {
+		// A submit response with no fid can report the parse destination as
+		// dir_fid for a single-file source; the produced entry is a child of
+		// that directory, so discover it from the known result files.
+		rootID = ""
 	}
-	tree := map[string]offlineTreeEntry{}
-	visited := map[string]bool{}
-	if layout.ParentID != "" {
-		entries, err := d.List(ctx, layout.ParentID)
+
+	var root drive.Entry
+	if parentID != "" {
+		entries, err := d.List(ctx, parentID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		var root *drive.Entry
-		for index := range entries {
-			if entries[index].ID == layout.RootID {
-				root = &entries[index]
+		if rootID == "" {
+			rootID, parentID, err = d.discoverOfflineRoot(ctx, parentID, entries, files)
+			if err != nil {
+				return nil, false, err
+			}
+			if rootID == "" {
+				return files, false, nil
+			}
+			// discovery listed this same parent, so the root is in entries.
+		}
+		for _, entry := range entries {
+			if entry.ID == rootID {
+				root = entry
 				break
 			}
 		}
-		switch {
-		case root == nil:
-			// A known root must be a child of the known staging parent. A
-			// listing that does not show it is lagging or incomplete; walking
-			// the root without its parent-derived prefix would silently drop
-			// the resource folder, so treat the view as unusable and retry.
-			return nil, fmt.Errorf("staged root %s is not listed under parent %s", layout.RootID, layout.ParentID)
-		case root.IsDir:
-			if err := d.collectOfflineTree(ctx, root.ID, root.Name, tree, visited, 0); err != nil {
-				return nil, err
-			}
-		default:
-			// A single-file source's root is the file itself, not a directory.
-			tree[root.ID] = offlineTreeEntry{
-				fid: root.ID, name: root.Name, path: root.Name, size: root.Size,
-			}
+		if root.ID == "" {
+			return nil, false, fmt.Errorf("staged root %s is not listed under parent %s", rootID, parentID)
 		}
-	} else if err := d.collectOfflineTree(ctx, layout.RootID, "", tree, visited, 0); err != nil {
-		return nil, err
+	} else if rootID != "" {
+		root = drive.Entry{ID: rootID}
+	}
+	if rootID == "" {
+		return files, false, nil
+	}
+
+	tree := map[string]offlineTreeEntry{}
+	visited := map[string]bool{}
+	switch {
+	case parentID != "" && root.IsDir:
+		if err := d.collectOfflineTree(ctx, root.ID, root.Name, tree, visited, 0); err != nil {
+			return nil, false, err
+		}
+	case parentID != "":
+		// A single-file source's root is the file itself, not a directory.
+		name := root.Name
+		if name == "" {
+			name = baseOfflineName(files)
+		}
+		tree[root.ID] = offlineTreeEntry{fid: root.ID, name: name, path: name, size: root.Size}
+	default:
+		if err := d.collectOfflineTree(ctx, rootID, "", tree, visited, 0); err != nil {
+			return nil, false, err
+		}
 	}
 	if len(tree) == 0 {
-		return files, nil
+		return files, false, nil
 	}
 	seen := make(map[string]bool, len(files))
 	out := make([]drive.OfflineFile, 0, len(files)+len(tree))
 	for _, file := range files {
-		if entry, ok := tree[file.RemoteID]; ok {
+		entry, ok := tree[file.RemoteID]
+		if !ok && file.RemoteID == "" {
+			for _, candidate := range tree {
+				if candidate.name == file.Name && (file.Size == 0 || candidate.size == file.Size) {
+					entry, ok = candidate, true
+					break
+				}
+			}
+		}
+		if ok {
 			file.Path = entry.path
+			file.RemoteID = entry.fid
 			if file.Name == "" {
 				file.Name = entry.name
 			}
@@ -667,7 +744,59 @@ func (d *Driver) resolveOfflineLayout(ctx context.Context, layout drive.OfflineL
 			Path:     entry.path,
 		})
 	}
-	return out, nil
+	return out, true, nil
+}
+
+// discoverOfflineRoot finds the resource root below parentID using the known
+// result files. It accepts a directory whose children include a known file and
+// a direct file entry, which covers both multi-file resource folders and
+// single-file sources whose submit response omits fid.
+func (d *Driver) discoverOfflineRoot(ctx context.Context, parentID string, entries []drive.Entry, files []drive.OfflineFile) (string, string, error) {
+	if parentID == "" || len(files) == 0 {
+		return "", parentID, nil
+	}
+	for _, entry := range entries {
+		if !entry.IsDir {
+			continue
+		}
+		children, err := d.List(ctx, entry.ID)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			for _, file := range files {
+				if file.RemoteID != "" && child.ID == file.RemoteID {
+					return entry.ID, parentID, nil
+				}
+				if child.Name == file.Name && (file.Size == 0 || child.Size == file.Size) {
+					return entry.ID, parentID, nil
+				}
+			}
+		}
+	}
+	for _, entry := range entries {
+		if entry.IsDir {
+			continue
+		}
+		for _, file := range files {
+			if file.RemoteID != "" && entry.ID == file.RemoteID {
+				return entry.ID, parentID, nil
+			}
+			if entry.Name == file.Name && (file.Size == 0 || entry.Size == file.Size) {
+				return entry.ID, parentID, nil
+			}
+		}
+	}
+	return "", parentID, nil
+}
+
+func baseOfflineName(files []drive.OfflineFile) string {
+	for _, file := range files {
+		if file.Name != "" {
+			return file.Name
+		}
+	}
+	return ""
 }
 
 // collectOfflineTree walks the staged tree below fid, recording every entry's

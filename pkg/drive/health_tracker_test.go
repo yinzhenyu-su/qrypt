@@ -1,7 +1,9 @@
 package drive
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -63,6 +65,37 @@ func TestHealthTrackerSuccessDoesNotHideErrors(t *testing.T) {
 	status := tracker.Status()
 	if status.Level != HealthLevelDegraded {
 		t.Fatalf("level = %s, want degraded despite list successes: %+v", status.Level, status)
+	}
+}
+
+// TestHealthTrackerIgnoresCanceledOperations: a caller-canceled operation (a
+// seek, a closed handle, a shutdown) must not degrade provider health.
+func TestHealthTrackerIgnoresCanceledOperations(t *testing.T) {
+	tracker := NewHealthTracker(time.Minute, 100)
+	tracker.RecordResult(HealthOpRead, context.Canceled)
+	tracker.RecordResult(HealthOpRead, fmt.Errorf("read: %w", context.Canceled))
+	tracker.RecordResult(HealthOpRead, nil)
+
+	status := tracker.Status()
+	if status.Level != HealthLevelOK || status.Errors != 0 || status.Success != 1 {
+		t.Fatalf("status = %+v, want one success and no errors", status)
+	}
+}
+
+// TestHealthStatusFromMetricsIgnoresCancelled covers driver metrics recorded
+// with a canceled request, which is how a dropped prefetch window surfaces.
+func TestHealthStatusFromMetricsIgnoresCancelled(t *testing.T) {
+	status := HealthStatusFromMetrics([]MetricEvent{
+		{At: time.Now(), Operation: "download", OK: false, Error: "context canceled", ErrorCategory: ErrorCategoryCancelled},
+		{At: time.Now(), Operation: "download", OK: false, Error: "Get \"https://dl.example/file\": context canceled"},
+		{At: time.Now(), Operation: "download", OK: true},
+	}, time.Minute, 100)
+
+	if status.Level != HealthLevelOK || status.Errors != 0 {
+		t.Fatalf("status = %+v, want ok despite canceled downloads", status)
+	}
+	if got := status.Ops["download"]; got.Success != 1 || got.Errors != 0 {
+		t.Fatalf("download status = %+v, want one success", got)
 	}
 }
 

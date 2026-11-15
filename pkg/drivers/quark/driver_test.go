@@ -17,10 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -215,6 +215,495 @@ func TestDriverReadRetriesDownloadWithoutRefreshingURL(t *testing.T) {
 	}
 }
 
+func TestDriverReadClampsAtEOF(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	var downloadCalls int
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		downloadCalls++
+		if got := req.Header.Get("Range"); got != "bytes=8-9" {
+			t.Fatalf("range = %q, want bytes=8-9", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("89")),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-eof", Name: "file.bin", Size: 10}
+	for _, offset := range []int64{10, 11} {
+		rc, err := driver.Read(context.Background(), entry, offset, 1)
+		if err != nil {
+			t.Fatalf("read at offset %d: %v", offset, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read at offset %d body: %v", offset, err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("read at offset %d returned %d bytes, want empty", offset, len(data))
+		}
+	}
+	if downloadCalls != 0 {
+		t.Fatalf("EOF reads issued %d download calls, want 0", downloadCalls)
+	}
+
+	rc, err := driver.Read(context.Background(), entry, 8, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "89" {
+		t.Fatalf("clamped read = %q, want 89", data)
+	}
+	if downloadCalls != 1 {
+		t.Fatalf("download calls = %d, want 1", downloadCalls)
+	}
+}
+
+func TestDriverReadStrictRangeRejectsWholeObject(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/file/download" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]any{
+				{"download_url": "https://download.test/file.bin"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	driver := New("k=v", Options{BaseURL: api.URL, V2URL: api.URL})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("whole object")),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-strict", Name: "file.bin", Size: 100}
+	if _, err := driver.Read(drive.WithStrictRange(context.Background()), entry, 0, 10); !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want drive.ErrUnsupported", err)
+	}
+	rc, err := driver.Read(context.Background(), entry, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "whole object" {
+		t.Fatalf("non-strict body = %q, want whole object", data)
+	}
+}
+
+func TestDriverReadProfileUsesSharedParallelRead(t *testing.T) {
+	driver := New("cookie", Options{})
+	if drive.HasCapability(driver, drive.CapabilityInternalParallelRead) {
+		t.Fatal("quark must not hide range reads behind internal_parallel_read")
+	}
+	if !drive.HasCapability(driver, drive.CapabilityParallelRange) {
+		t.Fatal("quark must declare parallel_range so a mount can opt into streams")
+	}
+	// Real-mount measurements: four ranges did not beat one stream and tripped
+	// the slow-read watchdog per stream, so the default stays single-stream.
+	if got := drive.ReadProfileOf(driver).BulkStreams; got != 1 {
+		t.Fatalf("bulk streams = %d, want 1", got)
+	}
+}
+
+func TestDriverReadProfileBoundsSlowDownload(t *testing.T) {
+	driver := New("cookie", Options{})
+	profile := drive.ReadProfileOf(driver)
+	if profile.FetchTotalTimeout != downloadTotalTimeout {
+		t.Fatalf("fetch total timeout = %s, want %s", profile.FetchTotalTimeout, downloadTotalTimeout)
+	}
+	if profile.FetchTotalTimeout > 2*time.Minute {
+		t.Fatalf("fetch total timeout = %s, want a bound that abandons a trickling connection", profile.FetchTotalTimeout)
+	}
+	if profile.FetchIdleTimeout <= 0 || profile.FetchIdleTimeout > profile.FetchTotalTimeout {
+		t.Fatalf("idle timeout = %s, want (0, %s]", profile.FetchIdleTimeout, profile.FetchTotalTimeout)
+	}
+}
+
+// failingReadBody fails on the first read, like a CDN connection reset.
+type failingReadBody struct{}
+
+func (failingReadBody) Read([]byte) (int, error) { return 0, errors.New("connection reset by peer") }
+func (failingReadBody) Close() error             { return nil }
+
+// TestDriverRotatesDownloadTransportAfterBodyFailure: a failed body read must
+// replace the download connection generation so a later read (or the read
+// layer's retry) does not reuse the degraded edge.
+func TestDriverRotatesDownloadTransportAfterBodyFailure(t *testing.T) {
+	const downloadURL = "https://download.test/file.bin"
+	driver := New("k=v", Options{})
+	driver.setURL("fid-1", downloadURL)
+	driver.downloadWarmupDone.Store(downloadURL, struct{}{})
+	entry := drive.Entry{ID: "fid-1", Name: "file.bin", Size: 4096}
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     make(http.Header),
+			Body:       failingReadBody{},
+			Request:    req,
+		}, nil
+	})
+
+	before := driver.cl.downloadHTTP()
+	rc, err := driver.Read(context.Background(), entry, 0, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, rc); err == nil {
+		t.Fatal("expected the injected body failure")
+	}
+	rc.Close()
+	driver.cl.downloadMu.RLock()
+	dirty := driver.cl.downloadDirty
+	driver.cl.downloadMu.RUnlock()
+	if !dirty {
+		t.Fatal("body failure did not mark the download connection stale")
+	}
+
+	// The next request swaps generations instead of reusing the failed one.
+	after := driver.cl.downloadHTTP()
+	if after == before {
+		t.Fatal("download transport was not rotated after a body failure")
+	}
+
+	// A seek cancels prefetch windows frequently; rotation is throttled so a
+	// healthy pool is not discarded on every cancel.
+	driver.cl.markDownloadFailed("another failed body")
+	if got := driver.cl.downloadHTTP(); got != after {
+		t.Fatal("download transport rotated again within the throttle window")
+	}
+
+	driver.cl.downloadMu.Lock()
+	driver.cl.downloadRotated = time.Now().Add(-downloadRotateMinInterval - time.Second)
+	driver.cl.downloadMu.Unlock()
+	driver.cl.downloadMu.RLock()
+	dirty = driver.cl.downloadDirty
+	driver.cl.downloadMu.RUnlock()
+	if !dirty {
+		t.Fatal("throttled failure lost the stale mark")
+	}
+	if got := driver.cl.downloadHTTP(); got == after {
+		t.Fatal("download transport did not rotate after the throttle window")
+	}
+}
+
+// TestNewDownloadHTTPClientBoundsHeaderWait: a dead CDN edge must not consume
+// the retry budget in 30-second header waits.
+func TestNewDownloadHTTPClientBoundsHeaderWait(t *testing.T) {
+	driver := New("k=v", Options{})
+	transport, ok := driver.cl.newDownloadHTTPClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("download transport is not *http.Transport")
+	}
+	if transport.ResponseHeaderTimeout != downloadResponseHeaderTimeout {
+		t.Fatalf("response header timeout = %s, want %s", transport.ResponseHeaderTimeout, downloadResponseHeaderTimeout)
+	}
+	if transport.ResponseHeaderTimeout > 15*time.Second {
+		t.Fatalf("response header timeout = %s, want a fast failure", transport.ResponseHeaderTimeout)
+	}
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+// TestDriverRotatesDownloadTransportOnHeaderTimeout: a header timeout retries
+// on a fresh connection instead of waiting on the same dead edge again.
+func TestDriverRotatesDownloadTransportOnHeaderTimeout(t *testing.T) {
+	driver := New("k=v", Options{})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, timeoutError{}
+	})
+	req, err := http.NewRequest(http.MethodGet, "https://download.test/file.bin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := driver.cl.downloadHTTP()
+	if _, err := driver.cl.doDownload(req, "k=v"); err == nil {
+		t.Fatal("expected the injected header timeout")
+	}
+	if driver.cl.downloadHTTP() == before {
+		t.Fatal("download transport was not rotated after a header timeout")
+	}
+}
+
+func TestClientDownloadRateFloor(t *testing.T) {
+	c := newClient("k=v", clientOptions{})
+	if got := c.downloadRateFloor(); got != downloadRateMinFloor {
+		t.Fatalf("floor without history = %d, want %d", got, downloadRateMinFloor)
+	}
+	c.observeDownloadRate(8<<20, time.Second) // 8 MiB/s
+	want := int64((8 << 20) / downloadRateBestDivisor)
+	if got := c.downloadRateFloor(); got != want {
+		t.Fatalf("floor after a fast read = %d, want %d", got, want)
+	}
+	c.rateMu.Lock()
+	c.rateBestAt = time.Now().Add(-downloadRateWindow - time.Second)
+	c.rateMu.Unlock()
+	if got := c.downloadRateFloor(); got != downloadRateMinFloor {
+		t.Fatalf("floor after expiry = %d, want %d", got, downloadRateMinFloor)
+	}
+}
+
+func TestClientSlowAbortCooldown(t *testing.T) {
+	c := newClient("k=v", clientOptions{})
+	if !c.allowSlowAbort() {
+		t.Fatal("a fresh client does not allow a slow abort")
+	}
+	c.noteSlowAbort()
+	if c.allowSlowAbort() {
+		t.Fatal("a second slow abort is allowed inside the cooldown")
+	}
+	c.rateMu.Lock()
+	c.slowAbortAt = time.Now().Add(-downloadSlowAbortCooldown - time.Second)
+	c.rateMu.Unlock()
+	if !c.allowSlowAbort() {
+		t.Fatal("slow abort still blocked after the cooldown")
+	}
+}
+
+type pacedBody struct {
+	remaining int
+	delay     time.Duration
+	err       error
+}
+
+func (b *pacedBody) Read(p []byte) (int, error) {
+	time.Sleep(b.delay)
+	if b.remaining <= 0 {
+		if b.err != nil {
+			return 0, b.err
+		}
+		return 0, io.EOF
+	}
+	n := min(len(p), 1024, b.remaining)
+	b.remaining -= n
+	return n, nil
+}
+
+func (b *pacedBody) Close() error { return nil }
+
+// TestTraceReadCloserAbortsSlowBody: a body that stays far below the floor is
+// aborted with a truncated body so the read layer can replay it on a fresh
+// connection.
+func TestTraceReadCloserAbortsSlowBody(t *testing.T) {
+	var failed error
+	completed := false
+	trace := &traceReadCloser{
+		ReadCloser: &pacedBody{remaining: 1 << 20, delay: time.Millisecond},
+		size:       1 << 20,
+		start:      time.Now().Add(-time.Second),
+		minRate:    10 << 20,
+		onError:    func(err error, _ int64, _ time.Duration) { failed = err },
+		onComplete: func(int64, time.Duration) { completed = true },
+	}
+	if _, err := trace.Read(make([]byte, 1024)); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("read error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if !errors.Is(failed, errDownloadTooSlow) {
+		t.Fatalf("watchdog error = %v, want errDownloadTooSlow", failed)
+	}
+	if err := trace.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if completed {
+		t.Fatal("an aborted read reported a throughput sample")
+	}
+}
+
+// TestTraceReadCloserReportsCompleteRate: only a fully read body feeds the
+// recent-best rate used by the floor.
+func TestTraceReadCloserReportsCompleteRate(t *testing.T) {
+	var gotBytes int64
+	trace := &traceReadCloser{
+		ReadCloser: io.NopCloser(strings.NewReader("hello world")),
+		size:       11,
+		start:      time.Now().Add(-time.Second),
+		onComplete: func(bytes int64, _ time.Duration) { gotBytes = bytes },
+	}
+	if _, err := io.Copy(io.Discard, trace); err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if gotBytes != 11 {
+		t.Fatalf("reported bytes = %d, want 11", gotBytes)
+	}
+}
+
+// TestDriverSkipsRotationForHealthyCancelledRead: seek and close cancel
+// prefetch bodies all the time; a cancel while the body was still moving fast
+// must not replace the connection pool (that would add a TLS handshake and a
+// cold CDN edge to every seek).
+func TestDriverSkipsRotationForHealthyCancelledRead(t *testing.T) {
+	driver := New("k=v", Options{})
+	stale := func(d *Driver) bool {
+		d.cl.downloadMu.RLock()
+		defer d.cl.downloadMu.RUnlock()
+		return d.cl.downloadDirty
+	}
+
+	driver.noteDownloadBodyError("", context.Canceled, 4<<20, 2*time.Second) // ~2 MiB/s
+	if stale(driver) {
+		t.Fatal("a fast canceled read marked the connection stale")
+	}
+	driver.noteDownloadBodyError("", context.Canceled, 0, 100*time.Millisecond)
+	if stale(driver) {
+		t.Fatal("a cancel right after the request started marked the connection stale")
+	}
+
+	driver.noteDownloadBodyError("", context.Canceled, 1<<10, 30*time.Second) // stalled
+	if !stale(driver) {
+		t.Fatal("a stalled canceled read did not mark the connection stale")
+	}
+
+	network := New("k=v", Options{})
+	network.noteDownloadBodyError("", errors.New("connection reset by peer"), 0, 0)
+	if !stale(network) {
+		t.Fatal("a network failure did not mark the connection stale")
+	}
+}
+
+func TestDriverReadKeepsLargeRangeSingleStream(t *testing.T) {
+	const total = int64(16 << 20)
+	const downloadURL = "https://download.test/file.bin"
+	driver := New("k=v", Options{})
+	driver.setURL("fid-1", downloadURL)
+	driver.downloadWarmupDone.Store(downloadURL, struct{}{})
+	var mu sync.Mutex
+	var ranges []string
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		ranges = append(ranges, req.Header.Get("Range"))
+		mu.Unlock()
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes 0-%d/%d", total-1, total)}},
+			Body:       io.NopCloser(bytes.NewReader(make([]byte, total))),
+			Request:    req,
+		}, nil
+	})
+
+	entry := drive.Entry{ID: "fid-1", Name: "file.bin", Size: total}
+	rc, err := driver.Read(context.Background(), entry, 0, total)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, rc); err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	mu.Lock()
+	got := append([]string(nil), ranges...)
+	mu.Unlock()
+	want := fmt.Sprintf("bytes=0-%d", total-1)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("range requests = %v, want one %q", got, want)
+	}
+}
+
+// TestDriverDownloadURLRetriesCancelledSharedFetch: a foreground read that
+// joined a prefetch's in-flight URL fetch must not inherit the prefetch's
+// cancellation when a seek drops that prefetch.
+func TestDriverDownloadURLRetriesCancelledSharedFetch(t *testing.T) {
+	const wantURL = "https://download.test/file.bin"
+	driver := New("k=v", Options{})
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	driver.cl.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+			return nil, req.Context().Err()
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"status":200,"code":0,"data":[{"download_url":"` + wantURL + `"}]}`)),
+			Request: req,
+		}, nil
+	})
+
+	prefetchCtx, cancelPrefetch := context.WithCancel(context.Background())
+	defer cancelPrefetch()
+	prefetchErr := make(chan error, 1)
+	go func() {
+		_, err := driver.downloadURL(prefetchCtx, "fid-1")
+		prefetchErr <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("download URL request did not start")
+	}
+
+	type result struct {
+		value downloadURLResult
+		err   error
+	}
+	live := make(chan result, 1)
+	go func() {
+		value, err := driver.downloadURL(context.Background(), "fid-1")
+		live <- result{value: value, err: err}
+	}()
+	// Let the foreground caller join the in-flight fetch before it is aborted.
+	time.Sleep(20 * time.Millisecond)
+
+	cancelPrefetch()
+	close(release)
+	if err := <-prefetchErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("prefetch error = %v, want context.Canceled", err)
+	}
+	got := <-live
+	if got.err != nil {
+		t.Fatalf("foreground download URL error = %v, want a fresh fetch", got.err)
+	}
+	if got.value.url != wantURL {
+		t.Fatalf("foreground download URL = %q, want %q", got.value.url, wantURL)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("download URL calls = %d, want the canceled fetch plus one retry", n)
+	}
+}
+
 func TestDriverDownloadUsesCookieSnapshotAfterRotation(t *testing.T) {
 	var apiCalls int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -283,93 +772,6 @@ func TestDriverDownloadUsesCookieSnapshotAfterRotation(t *testing.T) {
 	}
 	if state.Cookie != "__puus=new" {
 		t.Fatalf("state cookie = %q, want rotated cookie", state.Cookie)
-	}
-}
-
-func TestDriverParallelDownloadAssemblesRangeParts(t *testing.T) {
-	const total = int64(24 * 1024 * 1024)
-	data := make([]byte, total)
-	for i := range data {
-		data[i] = byte(i)
-	}
-	driver := New("k=v", Options{})
-	var mu sync.Mutex
-	var ranges []string
-	active := 0
-	maxActive := 0
-	entered := make(chan struct{}, 3)
-	release := make(chan struct{})
-	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		value := req.Header.Get("Range")
-		var start, end int64
-		if _, err := fmt.Sscanf(value, "bytes=%d-%d", &start, &end); err != nil {
-			return nil, fmt.Errorf("parse range %q: %w", value, err)
-		}
-		mu.Lock()
-		ranges = append(ranges, value)
-		active++
-		if active > maxActive {
-			maxActive = active
-		}
-		mu.Unlock()
-		entered <- struct{}{}
-		<-release
-		body := append([]byte(nil), data[start:end+1]...)
-		mu.Lock()
-		active--
-		mu.Unlock()
-		return &http.Response{
-			StatusCode: http.StatusPartialContent,
-			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, total)}},
-			Body:       io.NopCloser(bytes.NewReader(body)),
-			Request:    req,
-		}, nil
-	})
-
-	type downloadResult struct {
-		rc  io.ReadCloser
-		err error
-	}
-	result := make(chan downloadResult, 1)
-	go func() {
-		rc, err := driver.downloadParallel(context.Background(), "fid-1", "https://download.test/file.bin", "k=v", false, 0, total)
-		result <- downloadResult{rc: rc, err: err}
-	}()
-	for range 3 {
-		select {
-		case <-entered:
-		case <-time.After(time.Second):
-			t.Fatal("parallel range workers did not start")
-		}
-	}
-	close(release)
-	item := <-result
-	rc, err := item.rc, item.err
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("assembled data differs: got=%d want=%d", len(got), len(data))
-	}
-	if len(ranges) != 3 {
-		t.Fatalf("range request count = %d, want 3: %v", len(ranges), ranges)
-	}
-	wantRanges := []string{
-		"bytes=0-8388607",
-		"bytes=8388608-16777215",
-		"bytes=16777216-25165823",
-	}
-	slices.Sort(ranges)
-	slices.Sort(wantRanges)
-	if !slices.Equal(ranges, wantRanges) {
-		t.Fatalf("range requests = %v, want %v", ranges, wantRanges)
-	}
-	if maxActive < 2 {
-		t.Fatalf("max concurrent range requests = %d, want at least 2", maxActive)
 	}
 }
 
@@ -545,6 +947,12 @@ func TestDriverDebugSnapshot(t *testing.T) {
 	}
 	if snapshot.Extra[drive.DebugExtraCredentialSource] == nil {
 		t.Fatalf("expected credential_source extra, got %+v", snapshot.Extra)
+	}
+	if _, ok := snapshot.Stats["download_rotations"]; !ok {
+		t.Fatalf("missing download rotation stats: %+v", snapshot.Stats)
+	}
+	if _, ok := snapshot.Stats["penalized_edges"]; !ok {
+		t.Fatalf("missing penalized edge stats: %+v", snapshot.Stats)
 	}
 }
 
@@ -1048,8 +1456,8 @@ func TestDriverPutMultipartUpload(t *testing.T) {
 	content := []byte("abcdefgh")
 	contentMD5 := md5.Sum(content)
 	contentSHA1 := sha1.Sum(content)
-	wantMD5 := fmt.Sprintf("%X", contentMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", contentSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", contentMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", contentSHA1[:])
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/file/upload/pre":
@@ -1357,8 +1765,8 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	plain := []byte("plain payload")
 	plainMD5 := md5.Sum(plain)
 	plainSHA1 := sha1.Sum(plain)
-	plainMD5Hex := fmt.Sprintf("%X", plainMD5[:])
-	plainSHA1Hex := fmt.Sprintf("%X", plainSHA1[:])
+	plainMD5Hex := fmt.Sprintf("%x", plainMD5[:])
+	plainSHA1Hex := fmt.Sprintf("%x", plainSHA1[:])
 	var hashCalled bool
 	var hashBody map[string]any
 	var finishCalled bool
@@ -1441,8 +1849,8 @@ func TestDriverPutSourceUnderCryptHashesEncryptedSource(t *testing.T) {
 	}
 	cipherMD5 := md5.Sum(uploadedCipher)
 	cipherSHA1 := sha1.Sum(uploadedCipher)
-	wantMD5 := fmt.Sprintf("%X", cipherMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", cipherSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", cipherMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", cipherSHA1[:])
 	if hashBody["md5"] != wantMD5 || hashBody["sha1"] != wantSHA1 {
 		t.Fatalf("unexpected encrypted hash body: %+v, want md5=%s sha1=%s", hashBody, wantMD5, wantSHA1)
 	}
@@ -1473,8 +1881,8 @@ func TestDriverPutSourceUnderContentDedupCryptInstantUploadsByEncryptedHash(t *t
 	encrypted := encryptForTest(t, cp, plain)
 	encryptedMD5 := md5.Sum(encrypted)
 	encryptedSHA1 := sha1.Sum(encrypted)
-	wantMD5 := fmt.Sprintf("%X", encryptedMD5[:])
-	wantSHA1 := fmt.Sprintf("%X", encryptedSHA1[:])
+	wantMD5 := fmt.Sprintf("%x", encryptedMD5[:])
+	wantSHA1 := fmt.Sprintf("%x", encryptedSHA1[:])
 	var hashCalled bool
 	var finishCalled bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2235,7 +2643,7 @@ func TestPutSourceHandlelessBindingIsDiscarded(t *testing.T) {
 		ParentID:    "parent",
 		Name:        "resume.bin",
 		Size:        int64(len(content)),
-		Fingerprint: strings.ToLower(fmt.Sprintf("%X", md5Sum)) + strings.ToLower(fmt.Sprintf("%X", sha1Sum)),
+		Fingerprint: strings.ToLower(fmt.Sprintf("%x", md5Sum)) + strings.ToLower(fmt.Sprintf("%x", sha1Sum)),
 	}.Key()
 	if err := d.sessions.Create(key, json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)

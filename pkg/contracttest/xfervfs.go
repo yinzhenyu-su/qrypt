@@ -44,11 +44,12 @@ func RunVFSXferTest(ctx context.Context, fs vfs.FileSystem, srcMount, dstMount s
 	testName := fmt.Sprintf("__qrypt_xfer_test_%x", testSuffix)
 	_ = testName
 
-	// Build VFS paths.
+	// Build VFS paths. Plain-text extension: some providers (Koofr) block
+	// downloads for extensions their content scanner considers dangerous.
 	srcDir := "/" + srcMount + "/" + testName
-	srcPath := srcDir + "/data.bin"
+	srcPath := srcDir + "/data.txt"
 	dstDir := "/" + dstMount + "/" + testName
-	dstPath := dstDir + "/data.bin"
+	dstPath := dstDir + "/data.txt"
 
 	// generate test data
 	data := make([]byte, size)

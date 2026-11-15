@@ -57,6 +57,16 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 	return c.do(req, path)
 }
 
+// Delete sends a DELETE request to a mutable control endpoint.
+func (c *Client) Delete(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url(path), nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(req, path)
+}
+
+// PostJSON sends a JSON body to a mutable control endpoint.
 func (c *Client) PostJSON(ctx context.Context, path string, value any) ([]byte, error) {
 	body, err := json.Marshal(value)
 	if err != nil {

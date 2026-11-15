@@ -35,6 +35,16 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 
 // --- Init -----------------------------------------------------------------
 
+func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
+	d := New(Options{})
+	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+		t.Fatalf("BulkStreams = %d, want 1", got)
+	}
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) {
+		t.Fatal("parallel_range should stay declared for future tuning")
+	}
+}
+
 func TestInitRejectsBadCredentialsWithError(t *testing.T) {
 	f := newFakeProvider(t)
 	f.rejectAuth = true
@@ -349,6 +359,29 @@ func TestReadRangeExact(t *testing.T) {
 	}
 }
 
+// TestReadStatusErrorCarriesHTTPStatus pins the contract the VFS read path
+// relies on: a 5xx from the content endpoint surfaces the numeric status as
+// drive.HTTPStatusError, so the read layer can replay the Range GET instead of
+// failing the FUSE read on a transient provider hiccup.
+func TestReadStatusErrorCarriesHTTPStatus(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/data.bin", 100)
+	d := f.newDriver(t, Options{})
+	f.faultStatus("GET", "files/get", 1, http.StatusInternalServerError,
+		`{"error":{"code":"Other","message":"Internal server error"},"requestId":"rid-1"}`)
+	if _, err := d.Read(context.Background(), entry, 0, 10); err == nil {
+		t.Fatal("Read succeeded despite a 500")
+	} else {
+		var status *drive.HTTPStatusError
+		if !errors.As(err, &status) || status.Status != http.StatusInternalServerError {
+			t.Fatalf("Read error = %v, want drive.HTTPStatusError with status 500", err)
+		}
+		if drive.IsNonRetryable(err) {
+			t.Fatalf("a 5xx must stay retryable: %v", err)
+		}
+	}
+}
+
 func TestReadAtOrPastEOFReturnsEmpty(t *testing.T) {
 	f := newFakeProvider(t)
 	entry := seededFile(t, f, "/data.bin", 100)
@@ -396,6 +429,20 @@ func TestReadIgnoresRangeFallback(t *testing.T) {
 	reader.Close()
 	if len(data) != 5 || data[0] != byte('0'+90%10) {
 		t.Fatalf("data = %q", data)
+	}
+}
+
+func TestReadStrictRangeRejectsIgnoredRange(t *testing.T) {
+	f := newFakeProvider(t)
+	entry := seededFile(t, f, "/data.bin", 100)
+	f.mu.Lock()
+	f.ignoreRange = true
+	f.mu.Unlock()
+	d := f.newDriver(t, Options{})
+
+	_, err := d.Read(drive.WithStrictRange(context.Background()), entry, 90, 5)
+	if !errors.Is(err, drive.ErrUnsupported) {
+		t.Fatalf("strict read error = %v, want ErrUnsupported", err)
 	}
 }
 

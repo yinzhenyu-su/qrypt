@@ -239,6 +239,62 @@ func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleCacheClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mount := strings.TrimSpace(r.URL.Query().Get("mount"))
+	if mount == "" {
+		http.Error(w, "mount required", http.StatusBadRequest)
+		return
+	}
+	clearer, ok := s.source.(readCacheClearer)
+	if !ok {
+		http.Error(w, "read cache clear unavailable", http.StatusNotImplemented)
+		return
+	}
+	if err := clearer.ClearReadCacheForMount(mount); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, DebugCacheClearResponse{
+		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+		GeneratedAt:   time.Now(),
+		Mount:         mount,
+		Cleared:       true,
+	})
+}
+
+func (s *Server) handleCacheInvalidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if path == "" {
+		http.Error(w, "path required", http.StatusBadRequest)
+		return
+	}
+	invalidator, ok := s.source.(readCacheInvalidator)
+	if !ok {
+		http.Error(w, "read cache invalidate unavailable", http.StatusNotImplemented)
+		return
+	}
+	mount, err := invalidator.DebugInvalidateReadCache(r.Context(), path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, DebugCacheInvalidateResponse{
+		SchemaVersion: diagnostics.DebugSnapshotSchemaVersion,
+		GeneratedAt:   time.Now(),
+		Path:          path,
+		Mount:         mount,
+		Invalidated:   true,
+	})
+}
+
 func (s *Server) handleConsistency(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

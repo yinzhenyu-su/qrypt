@@ -1,6 +1,8 @@
 package drive
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -66,9 +68,14 @@ func (t *HealthTracker) RecordError(op string, err error) {
 }
 
 func (t *HealthTracker) RecordResult(op string, err error) {
-	if err == nil {
+	switch {
+	case err == nil:
 		t.RecordSuccess(op)
-	} else {
+	case errors.Is(err, context.Canceled):
+		// A cancellation is caller-driven (a seek, a closed handle, a
+		// shutdown), not evidence that the provider is unhealthy.
+		return
+	default:
 		t.RecordError(op, err)
 	}
 }
@@ -78,9 +85,21 @@ func HealthStatusFromMetrics(metrics []MetricEvent, window time.Duration, maxEve
 	for _, metric := range metrics {
 		op := healthMetricOp(metric)
 		ok := metric.OK && metric.Error == ""
+		if !ok && metricErrorCategory(metric) == ErrorCategoryCancelled {
+			continue
+		}
 		tracker.recordAt(metric.At, op, ok, metric.Error)
 	}
 	return tracker.Status()
+}
+
+// metricErrorCategory prefers the category carried by the event and falls back
+// to classifying the message for events that never passed normalization.
+func metricErrorCategory(metric MetricEvent) string {
+	if metric.ErrorCategory != "" {
+		return metric.ErrorCategory
+	}
+	return ErrorCategoryMessage(metric.Error)
 }
 
 func MergeHealthStatus(a, b HealthTrackerStatus) HealthTrackerStatus {

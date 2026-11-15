@@ -265,15 +265,19 @@ func (d *Driver) DebugSnapshot(ctx context.Context) (drive.DebugSnapshot, error)
 	if d.getLastError() != "" {
 		health = "degraded"
 	}
+	rotations, lastReason := d.cl.downloadDebugSnapshot()
 	return drive.DebugSnapshot{
 		Driver:      "quark",
 		Health:      health,
 		GeneratedAt: time.Now(),
 		Stats: map[string]any{
-			"active_uploads":        len(activeUploads),
-			"url_cache_count":       urlCacheCount,
-			drive.DebugStatRootID:   d.rootID,
-			drive.DebugStatRootPath: d.rootPath,
+			"active_uploads":              len(activeUploads),
+			"url_cache_count":             urlCacheCount,
+			"download_rotations":          rotations,
+			"last_download_rotate_reason": lastReason,
+			"penalized_edges":             d.cl.edges.debugSnapshot(time.Now()),
+			drive.DebugStatRootID:         d.rootID,
+			drive.DebugStatRootPath:       d.rootPath,
 		},
 		Extra: d.credentialDebugExtra(),
 	}, nil
