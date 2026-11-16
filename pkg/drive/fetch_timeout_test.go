@@ -149,6 +149,41 @@ func TestIdleTimeoutExcludesCompletedLocalWait(t *testing.T) {
 	})
 }
 
+// TestIdleTimeoutDeliversQueuedChunkToLateConsumer covers a body that already
+// produced a chunk while the consumer was not scheduled, which is what a loaded
+// host does to a locally rate-limited read. Expiring the idle timer must then
+// deliver that queued chunk instead of aborting: the provider produced the
+// bytes, so the connection must not be reported as stalled and penalized.
+func TestIdleTimeoutDeliversQueuedChunkToLateConsumer(t *testing.T) {
+	const chunk = 64 << 10
+	data := bytes.Repeat([]byte("b"), chunk)
+	// The Read select races the buffered chunk against the expired timer, so a
+	// single repetition could pass by luck; without the queued-chunk drain the
+	// failure is the overwhelmingly likely outcome.
+	for range 64 {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(WithLocalWaitTracking(context.Background()))
+			defer cancel()
+			limiter := NewBandwidthLimiter(BandwidthLimits{DownloadBytesPerSecond: 512 << 10})
+			body := limiter.LimitDownload(ctx, io.NopCloser(bytes.NewReader(data)))
+			reader := newTimeoutBody(ctx, cancel, nil, body, 40*time.Millisecond)
+			defer reader.Close()
+
+			// Stay out of Read past both the token wait (about 125 ms) and the
+			// 40 ms idle timer, so the produced chunk is queued when the timer
+			// has already fired.
+			time.Sleep(200 * time.Millisecond)
+			got, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatalf("idle bound aborted bytes the provider already sent: %v", err)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatalf("bytes = %d, want %d", len(got), len(data))
+			}
+		})
+	}
+}
+
 func TestReadBodyLimitedAllowsSlowProgress(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := fetchTimeoutCtx(t, 5*time.Second)
