@@ -124,3 +124,14 @@ func (f *faultReadCloser) Read(p []byte) (int, error) {
 func (f *faultReadCloser) Close() error {
 	return f.inner.Close()
 }
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}

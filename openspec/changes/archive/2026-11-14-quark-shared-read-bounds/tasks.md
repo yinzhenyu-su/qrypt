@@ -28,7 +28,7 @@
 - [x] 4a.2 下载 body 读失败后轮换下载客户端（旧连接池只关闭空闲连接），并按 5 s 节流，验证：body 失败轮换、节流窗口内不重复轮换、窗口过期后再轮换的单元测试。
 - [x] 4a.3 真实挂载观察轮换：失败后首个请求 `reused_connection=false` 且 `remote_addr` 换成另一个 CDN 边缘 IP，验证：`/v1/driver` 指标与 `[QUARK] rotate download transport` 日志。
 - [x] 4a.4 评估"吞吐下限看门狗"并否决：对照测量显示慢速时段是 provider 全局慢，下限只会打断合法慢读；结论记录在 `design.md`。
-- [x] 4a.6 自适应慢读看门狗：按最近最佳速率的 1/8（下限 256 KiB/s）判定，5 s 宽限、每分钟最多中止一次；中止后由读层重放并换连接。验证：真实挂载日志出现 `download body failed: quark: download too slow` 并在轮换后恢复吞吐。
+- [x] 4a.6（已由 optimize-seek-read-profiles 撤销）自适应慢读看门狗：按最近最佳速率的 1/8（下限 256 KiB/s）判定，5 s 宽限、每分钟最多中止一次；中止后由读层重放并换连接。验证：真实挂载日志出现 `download body failed: quark: download too slow` 并在轮换后恢复吞吐。
 - [x] 4a.7 修复加密层截断处理：已知密文长度时，块内提前结束返回 `io.ErrUnexpectedEOF` 而不是解密认证失败；长度未知时继续接受 rclone 短尾块。验证：截断块/短尾块/完整块三个用例。
 - [x] 4a.10 边缘惩罚列表：超时/慢读时记录远端 IP 5 分钟，下载拨号跳过惩罚 IP，全部惩罚时回退正常解析。验证：惩罚过期、跳过、回退、超时惩罚四个单元用例。
 - [x] 4a.11 真机验证惩罚生效：慢读后日志出现 `penalize edge=... reason="body read failed"`，随后请求换到另一个 IP 且 `reused_connection=false`。

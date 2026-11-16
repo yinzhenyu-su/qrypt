@@ -222,7 +222,7 @@ func (p *fakeReceiveProvider) GetShareSave(ctx context.Context, handle string, e
 func (p *fakeReceiveProvider) successOutcome(dest drive.Entry, entries []drive.ShareEntry) drive.ShareSaveOutcome {
 	items := make([]drive.ShareSaveItem, 0, len(entries))
 	for _, entry := range entries {
-		p.seed(dest, entry.Name)
+		p.seed(dest, entry.Name, entry.Size)
 		p.recordSaved(entry.Name)
 		items = append(items, drive.ShareSaveItem{
 			SourceID:   entry.ID,
@@ -265,7 +265,7 @@ func (p *fakeReceiveProvider) recordSaved(name string) {
 	p.savedNames[name] = struct{}{}
 }
 
-func (p *fakeReceiveProvider) seed(dest drive.Entry, name string) {
+func (p *fakeReceiveProvider) seed(dest drive.Entry, name string, size int64) {
 	path := strings.TrimPrefix(dest.ID, "0/")
 	if path == "0" {
 		path = ""
@@ -273,7 +273,7 @@ func (p *fakeReceiveProvider) seed(dest drive.Entry, name string) {
 	if path != "" {
 		path += "/"
 	}
-	_ = p.Seed(map[string]string{path + name: "saved"})
+	_ = p.Seed(map[string]string{path + name: strings.Repeat("s", int(size))})
 }
 
 // partialOutcome saves the first entry and rejects the rest.
@@ -281,7 +281,7 @@ func (p *fakeReceiveProvider) partialOutcome(req drive.ShareSaveRequest) (drive.
 	items := make([]drive.ShareSaveItem, 0, len(req.Entries))
 	for i, entry := range req.Entries {
 		if i == 0 {
-			p.seed(req.Dest.Entry, entry.Name)
+			p.seed(req.Dest.Entry, entry.Name, entry.Size)
 			p.recordSaved(entry.Name)
 			items = append(items, drive.ShareSaveItem{
 				SourceID: entry.ID, SourceName: entry.Name, SourceSize: entry.Size,
@@ -418,7 +418,7 @@ func TestShareSaveAcceptsLightweightVerifiedIdentity(t *testing.T) {
 	provider.outcome = func(req drive.ShareSaveRequest) (drive.ShareSaveOutcome, error) {
 		items := make([]drive.ShareSaveItem, 0, len(req.Entries))
 		for _, entry := range req.Entries {
-			provider.seed(req.Dest.Entry, entry.Name)
+			provider.seed(req.Dest.Entry, entry.Name, entry.Size)
 			items = append(items, drive.ShareSaveItem{
 				SourceID:   entry.ID,
 				SourceName: entry.Name,
@@ -1204,7 +1204,7 @@ func TestShareFetchSaveThenDownloadAndCleanup(t *testing.T) {
 	}
 	for _, name := range []string{"small.bin", "large.bin"} {
 		data, err := os.ReadFile(filepath.Join(downloadDir, name))
-		if err != nil || string(data) != "saved" {
+		if err != nil || len(data) != map[string]int{"small.bin": 10, "large.bin": 50}[name] || strings.Trim(string(data), "s") != "" {
 			t.Fatalf("%s = %q err=%v", name, data, err)
 		}
 	}

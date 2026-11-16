@@ -36,16 +36,17 @@ func (d *Driver) Capabilities() []drive.Capability {
 // minute stall on the mounted file.
 const downloadTotalTimeout = 90 * time.Second
 
-// ReadProfile keeps Quark bulk reads single-stream by default: parallel ranges
-// did not beat one stream in real-mount measurements, and four concurrent
-// bodies trip the slow-read watchdog's per-stream floor. A mount may still opt
-// into parallel reads with [mounts.read_profile] streams = N. The idle bound
-// stays at the shared default; only the total budget is tightened.
-func (d *Driver) ReadProfile() drive.ReadProfile {
-	return drive.ReadProfile{
-		BulkStreams:       1,
-		FetchTotalTimeout: downloadTotalTimeout,
-	}
+// ReadPolicy follows the released reader's 4 MiB windows and adaptive
+// lookahead. The shared budget allows four lookaheads plus three foreground
+// workers; lookahead must not consume the foreground's entire allowance.
+func (d *Driver) ReadPolicy() drive.ReadPolicy {
+	p := drive.DefaultReadPolicy()
+	p.Bulk.WindowBytes = 4 << 20
+	p.Bulk.Streams = 3
+	p.Bulk.Split = drive.SplitPolicy{PartBytes: 8 << 20, MinParallelBytes: 4 << 20}
+	p.MaxInFlight = 7
+	p.Fetch.Total = downloadTotalTimeout
+	return p
 }
 
 func (d *Driver) Metrics(ctx context.Context, since time.Time) ([]drive.MetricEvent, error) {

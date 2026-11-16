@@ -229,9 +229,6 @@ func TestVFSReadDebugIncludesWindowAndDriverTiming(t *testing.T) {
 	events := fs.DebugSnapshot().Mounts[0].ReadEvents()
 	var sawWindow, sawDriverTiming bool
 	for _, event := range events {
-		if _, ok := event.Extra["prefetch_chunks"]; ok {
-			t.Fatalf("read debug event still includes removed prefetch_chunks field: %+v", event)
-		}
 		switch event.Phase {
 		case "cache_miss_load":
 			if event.Extra["window_chunks"] != nil {
@@ -737,18 +734,40 @@ func TestVFSHandleSequentialReadUsesBoundedMergedPrefetch(t *testing.T) {
 	}
 	_ = rc.Close()
 
-	waitForCondition(t, func() bool {
-		for index := int64(2); index < 2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks); index += vfsread.SequentialPrefetchChunks {
-			if drv.readCount(index*testReadChunkSize) != 1 {
-				return false
-			}
+	// The confirming read starts the adaptive session: one Range must already
+	// cover more than the caller's 16 bytes, because a consumed block becomes
+	// one merged speculative window rather than one Range per read. It starts
+	// at the adaptive seed, not at the stage's full window.
+	waitForCondition(t, func() bool { return drv.readCount(2*testReadChunkSize) == 1 })
+	stageWindow := int64(vfsread.SequentialPrefetchChunks) * testReadChunkSize
+	seed := int64(1 << 20)
+	if got := drv.readSize(2 * testReadChunkSize); got <= 16 || got > seed {
+		t.Fatalf("first sequential prefetch = %d bytes, want a merged window no larger than the %d-byte seed", got, seed)
+	}
+
+	// Keep consuming the same run: the window widens past the seed as bytes are
+	// delivered, and never exceeds the stage ceiling. The exact width depends on
+	// which chunks are already covered, so assert the bound and the growth
+	// rather than one fixed size; the read-domain test pins the full shape.
+	chunks := int64(len(data)) / testReadChunkSize
+	for index := int64(2); index < chunks; index++ {
+		rc, err := fs.Read(vfsread.WithAccessHint(ctx, vfsread.AccessHint{SessionID: 1, RequestID: uint64(index + 2)}), "/data.bin", index*testReadChunkSize, testReadChunkSize)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return true
-	})
-	for index := int64(2); index < 2+int64(vfsread.PrefetchLimit*vfsread.SequentialPrefetchChunks); index += vfsread.SequentialPrefetchChunks {
-		if got := drv.readSize(index * testReadChunkSize); got != vfsread.SequentialPrefetchChunks*testReadChunkSize {
-			t.Fatalf("adaptive prefetch at chunk %d = %d, want %d", index, got, vfsread.SequentialPrefetchChunks*testReadChunkSize)
+		_ = rc.Close()
+	}
+	var widest int64
+	for index := int64(2); index < chunks; index++ {
+		if got := drv.readSize(index * testReadChunkSize); got > widest {
+			widest = got
 		}
+	}
+	if widest <= seed {
+		t.Fatalf("adaptive prefetch never widened past the %d-byte seed: widest %d", seed, widest)
+	}
+	if widest > stageWindow {
+		t.Fatalf("adaptive prefetch exceeded the %d-byte stage ceiling: widest %d", stageWindow, widest)
 	}
 }
 

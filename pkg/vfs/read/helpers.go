@@ -173,9 +173,28 @@ func WindowExtra(windowChunks int) map[string]any {
 // resolved intent and stream count when a plan is present.
 func ReadPlanExtra(ctx context.Context, windowChunks int) map[string]any {
 	extra := WindowExtra(windowChunks)
+	if hint, ok := AccessHintFromContext(ctx); ok {
+		extra["session_id"], extra["request_id"] = hint.SessionID, hint.RequestID
+	}
 	if plan, ok := readPlanFromContext(ctx); ok {
 		extra["read_intent"] = plan.Intent.String()
+		// The access stage explains why this window was chosen. It is the only
+		// field that distinguishes a seek's small window from a sequential
+		// run's lookahead when the numbers alone look similar.
+		extra["read_stage"] = plan.Stage.String()
 		extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
+		if plan.PrefetchChunks > 0 {
+			extra["prefetch_chunks"] = plan.PrefetchChunks
+		}
+		extra["prefetch_mode"] = string(plan.PrefetchMode)
+		extra["prefetch_depth"] = plan.PrefetchDepth
+		extra["planned_streams"] = plan.MaxStreams
+		extra["part_bytes"] = plan.Split.PartBytes
+		extra["min_parallel_bytes"] = plan.Split.MinParallelBytes
+		extra["cache_writes"] = plan.CacheWrites
+		bounds := fetchTimeoutsFromContext(ctx)
+		extra["fetch_idle_timeout_ms"] = bounds.Idle.Milliseconds()
+		extra["fetch_total_timeout_ms"] = bounds.Total.Milliseconds()
 	}
 	return extra
 }
@@ -199,6 +218,20 @@ func ReadEventExtra(ctx context.Context, windowChunks int, err error) map[string
 		extra["cancel_reason"] = "timeout"
 	}
 	return extra
+}
+
+func (r *Reader) newReadTrace(ctx context.Context, entry drive.Entry) *drive.ReadTrace {
+	return &drive.ReadTrace{ObserveRange: func(event drive.ReadRangeEvent) {
+		phase := "source_range_begin"
+		if event.Finished {
+			phase = "source_range_end"
+		}
+		plan, _ := readPlanFromContext(ctx)
+		extra := ReadPlanExtra(ctx, max(1, plan.WindowChunks))
+		extra["source_id"], extra["range_id"] = event.SourceID, event.ID
+		extra["source_in_flight"], extra["speculative"] = event.InFlight, event.Speculative
+		RecordChunkDetail(r.observer, ctx, entry, phase, event.Offset/ChunkSize, event.Offset%ChunkSize, event.Size, 0, event.StartedAt, extra, nil)
+	}}
 }
 
 func ExtraWithWindow(extra map[string]any, start, end int64) map[string]any {
@@ -253,12 +286,38 @@ func RecordChunkDetail(observer ReadObserver, ctx context.Context, entry drive.E
 	if extra == nil {
 		extra = map[string]any{}
 	}
+	if hint, ok := AccessHintFromContext(ctx); ok {
+		extra["session_id"], extra["request_id"] = hint.SessionID, hint.RequestID
+	}
 	if plan, ok := readPlanFromContext(ctx); ok {
 		if _, exists := extra["read_intent"]; !exists {
 			extra["read_intent"] = plan.Intent.String()
 		}
+		// Every chunk event names the stage that chose its window, so a slow
+		// seek and a slow sequential refill are distinguishable in the trace.
+		if _, exists := extra["read_stage"]; !exists {
+			extra["read_stage"] = plan.Stage.String()
+		}
 		if _, exists := extra["read_streams"]; !exists {
 			extra["read_streams"] = grantedStreams(ctx, plan.MaxStreams)
+		}
+		if _, exists := extra["prefetch_depth"]; !exists {
+			extra["prefetch_depth"] = plan.PrefetchDepth
+			extra["planned_streams"] = plan.MaxStreams
+			extra["part_bytes"] = plan.Split.PartBytes
+			extra["min_parallel_bytes"] = plan.Split.MinParallelBytes
+			extra["cache_writes"] = plan.CacheWrites
+			bounds := fetchTimeoutsFromContext(ctx)
+			extra["fetch_idle_timeout_ms"] = bounds.Idle.Milliseconds()
+			extra["fetch_total_timeout_ms"] = bounds.Total.Milliseconds()
+		}
+		if plan.PrefetchChunks > 0 {
+			if _, exists := extra["prefetch_chunks"]; !exists {
+				extra["prefetch_chunks"] = plan.PrefetchChunks
+			}
+		}
+		if _, exists := extra["prefetch_mode"]; !exists {
+			extra["prefetch_mode"] = string(plan.PrefetchMode)
 		}
 	}
 	extra["chunk_index"] = index

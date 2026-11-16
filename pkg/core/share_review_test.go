@@ -310,7 +310,7 @@ func TestShareSaveReconcilesIncompleteProviderOutcome(t *testing.T) {
 	provider.outcome = func(req drive.ShareSaveRequest) (drive.ShareSaveOutcome, error) {
 		// Report only the first entry, as Quark's asynchronous task does.
 		first := req.Entries[0]
-		provider.seed(req.Dest.Entry, first.Name)
+		provider.seed(req.Dest.Entry, first.Name, first.Size)
 		provider.recordSaved(first.Name)
 		return drive.ShareSaveOutcome{
 			State: drive.SaveStateSucceeded,

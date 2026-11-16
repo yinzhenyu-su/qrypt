@@ -1,120 +1,76 @@
 package vfs_test
 
 import (
-	"testing"
-
+	"context"
+	"encoding/json"
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
+	"strings"
+	"testing"
 )
 
-func TestReadProfileOverrideReachesVFSAndSnapshot(t *testing.T) {
-	driver := drive.NewFakeDriver(drive.FakeWithCapabilities(drive.CapabilityParallelRange))
-	override := drive.ReadProfile{BulkStreams: 4, BulkWindowChunks: 16}
-	fs, err := vfs.New(driver, vfs.Options{
-		StorageDir:  t.TempDir(),
-		ReadProfile: &override,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := fs.DebugSnapshot()
-	if len(snapshot.Mounts) != 1 {
-		t.Fatalf("mounts = %d, want 1", len(snapshot.Mounts))
-	}
-	profile := snapshot.Mounts[0].ReadProfile
-	if profile.Streams != 4 || profile.BulkWindowChunks != 16 {
-		t.Fatalf("read_profile = %+v, want 4/16", profile)
-	}
-	if profile.Source != drive.ReadProfileSourceMountOverride {
-		t.Fatalf("source = %q, want %q", profile.Source, drive.ReadProfileSourceMountOverride)
-	}
-	if got := fs.ReadProfileForPath("/file"); got == nil || got.BulkStreams != 4 {
-		t.Fatalf("ReadProfileForPath = %+v, want 4 streams", got)
-	}
-}
-
-func TestReadProfileWithoutOverrideKeepsDriverSource(t *testing.T) {
-	driver := drive.NewFakeDriver()
-	fs, err := vfs.New(driver, vfs.Options{StorageDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile := fs.DebugSnapshot().Mounts[0].ReadProfile
-	if profile.Streams != 1 {
-		t.Fatalf("streams = %d, want 1 without parallel capability", profile.Streams)
-	}
-	if profile.Source != drive.ReadProfileSourceDriver {
-		t.Fatalf("source = %q, want %q", profile.Source, drive.ReadProfileSourceDriver)
-	}
-	if got := fs.ReadProfileForPath("/file"); got != nil {
-		t.Fatalf("ReadProfileForPath = %+v, want nil", got)
-	}
-}
-
-func TestNamespaceReadProfileForPathAndMount(t *testing.T) {
-	driver := drive.NewFakeDriver(drive.FakeWithCapabilities(drive.CapabilityParallelRange))
-	override := drive.ReadProfile{BulkStreams: 4, BulkWindowChunks: 16}
-	overridden, err := vfs.New(driver, vfs.Options{
-		Name:        "overridden",
-		StorageDir:  t.TempDir(),
-		ReadProfile: &override,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plain, err := vfs.New(drive.NewFakeDriver(), vfs.Options{
-		Name:       "plain",
-		StorageDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ns, err := vfs.NewNamespace([]vfs.Mount{
-		{Name: "overridden", FS: overridden},
-		{Name: "plain", FS: plain},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := ns.ReadProfileForPath("/overridden/file"); got == nil || got.BulkStreams != 4 {
-		t.Fatalf("ReadProfileForPath(overridden) = %+v", got)
-	}
-	if got := ns.ReadProfileForPath("/plain/file"); got != nil {
-		t.Fatalf("ReadProfileForPath(plain) = %+v, want nil", got)
-	}
-	if got := ns.ReadProfileForMount("overridden"); got == nil || got.BulkStreams != 4 {
-		t.Fatalf("ReadProfileForMount(overridden) = %+v", got)
-	}
-	if got := ns.ReadProfileForMount("plain"); got != nil {
-		t.Fatalf("ReadProfileForMount(plain) = %+v, want nil", got)
-	}
-}
-
-type limitedProfileFake struct {
+type limitedPolicyDriver struct {
 	*drive.FakeDriver
-	max int
+	policy drive.ReadPolicy
+	limit  int
 }
 
-func (d limitedProfileFake) MaxParallelReads() int { return d.max }
-
-func TestReadProfileSnapshotReportsLimiterClamp(t *testing.T) {
-	driver := limitedProfileFake{
-		FakeDriver: drive.NewFakeDriver(drive.FakeWithCapabilities(drive.CapabilityParallelRange)),
-		max:        4,
-	}
-	override := drive.ReadProfile{BulkStreams: 8}
-	fs, err := vfs.New(driver, vfs.Options{
-		StorageDir:  t.TempDir(),
-		ReadProfile: &override,
-	})
+func (d limitedPolicyDriver) ReadPolicy() drive.ReadPolicy { return d.policy }
+func (d limitedPolicyDriver) ReadLimits() drive.ReadLimits {
+	return drive.ReadLimits{MaxInFlight: d.limit, Parallel: true}
+}
+func TestReadPolicySnapshotAndSourceIdentity(t *testing.T) {
+	p := drive.DefaultReadPolicy()
+	p.Bulk.Streams = 6
+	d := limitedPolicyDriver{drive.NewFakeDriver(drive.FakeWithCapabilities(drive.CapabilityParallelRange)), p, 2}
+	budget, streams := 8, 5
+	window := int64(8 << 20)
+	a, err := vfs.New(d, vfs.Options{Name: "a", StorageDir: t.TempDir(), Read: &drive.ReadOverride{MaxInFlight: &budget, BulkStreams: &streams, BulkWindowBytes: &window}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := fs.DebugSnapshot().Mounts[0].ReadProfile
-	if profile.Streams != 4 {
-		t.Fatalf("streams = %d, want limiter 4", profile.Streams)
+	defer a.Close(context.Background())
+	b, err := vfs.New(d, vfs.Options{Name: "b", StorageDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if profile.Source != drive.ReadProfileSourceDriverLimiter || !profile.Clamped {
-		t.Fatalf("source=%q clamped=%v, want %q/true", profile.Source, profile.Clamped, drive.ReadProfileSourceDriverLimiter)
+	defer b.Close(context.Background())
+	ns, err := vfs.NewNamespace([]vfs.Mount{{Name: "a", FS: a}, {Name: "b", FS: b}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := a.ReadSourceForPath("/one")
+	if source == nil || source != a.ReadSourceForPath("/renamed") || source != ns.ReadSourceForPath("/a/one") || source != ns.ReadSourceForMount("a") {
+		t.Fatal("source identity was lost")
+	}
+	if source.Policy().SourceID == b.ReadSourceForMount("b").Policy().SourceID {
+		t.Fatal("different sources share a diagnostic identity")
+	}
+	if source == ns.ReadSourceForMount("b") || ns.ReadSourceForMount("missing") != nil || ns.ReadSourceForPath("/") != nil {
+		t.Fatal("source scope leaked across mounts")
+	}
+	snapshot := a.DebugSnapshot().Mounts[0].ReadPolicy
+	if snapshot.Effective.MaxInFlight != 2 || snapshot.Effective.Bulk.Streams != 2 || snapshot.Effective.Bulk.WindowBytes != window || snapshot.Limits.MaxInFlight != 2 || snapshot.Origins["bulk.window"] != "mount" {
+		t.Fatalf("policy=%+v", snapshot)
+	}
+	snapshot.Origins["bulk.window"] = "mutated"
+	if source.Policy().Origins["bulk.window"] != "mount" {
+		t.Fatal("diagnostic snapshot mutated live policy")
+	}
+	data, err := json.Marshal(a.DebugSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"read_profile"`) || !strings.Contains(string(data), `"read_policy"`) {
+		t.Fatalf("legacy JSON contract remains: %s", data)
+	}
+}
+func TestInvalidCompleteReadPolicyFailsMountConstruction(t *testing.T) {
+	p := drive.DefaultReadPolicy()
+	p.Interactive.Seek.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 1 << 20, Depth: 0}
+	d := limitedPolicyDriver{drive.NewFakeDriver(), p, 2}
+	if fs, err := vfs.New(d, vfs.Options{StorageDir: t.TempDir()}); err == nil {
+		_ = fs.Close(context.Background())
+		t.Fatal("invalid complete policy accepted")
 	}
 }

@@ -37,7 +37,7 @@ func (b *fakeReadWindowBackend) StoreChunk(_ context.Context, _ string, _ drive.
 func TestFetchChunkWindowUsesBackendAndStoresChunks(t *testing.T) {
 	backend := &fakeReadWindowBackend{body: "abcdefghijkl", cacheKey: "cache"}
 	entry := drive.Entry{ID: "id", Size: 12, ModTime: time.Now()}
-	chunks, extra, err := fetchChunkWindow(context.Background(), entry, 0, 1, backend)
+	chunks, extra, err := fetchTestWindow(context.Background(), entry, 0, 1, backend, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

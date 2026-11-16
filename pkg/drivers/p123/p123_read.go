@@ -25,12 +25,14 @@ type cachedDownload struct {
 	at  int64
 }
 
-// ReadProfile keeps bulk reads single-stream. Live measurements on this
+// ReadPolicy keeps bulk reads single-stream. Live measurements on this
 // provider showed concurrent sub-ranges slower and less stable than one
 // 4 MiB range. The capability stays declared so the profile can be retuned
 // after a future re-measurement.
-func (d *Driver) ReadProfile() drive.ReadProfile {
-	return drive.ReadProfile{BulkStreams: 1}
+func (d *Driver) ReadPolicy() drive.ReadPolicy {
+	p := drive.DefaultReadPolicy()
+	p.Bulk.Streams = 1
+	return p
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {

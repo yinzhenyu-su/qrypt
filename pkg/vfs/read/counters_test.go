@@ -46,7 +46,7 @@ func (c *recordingCounters) recorded() []counterSample {
 func TestCountersRecordOneSamplePerRead(t *testing.T) {
 	data := strings.Repeat("a", 2*ChunkSize)
 	counters := &recordingCounters{}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:     stubHostWithData{stubHost: stubHost{}, data: data},
 		State:    NewState(nil),
 		Counters: counters,
@@ -78,7 +78,7 @@ func TestCountersRecordOneSamplePerRead(t *testing.T) {
 // carrying the error and no bytes.
 func TestCountersRecordResolveFailure(t *testing.T) {
 	counters := &recordingCounters{}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:     stubHost{resolveErr: errors.New("not found")},
 		State:    NewState(nil),
 		Counters: counters,
@@ -107,7 +107,7 @@ func TestCountersRecordStagingReadWithZeroBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	counters := &recordingCounters{}
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:     stagingFileHost{localPath: local},
 		State:    NewState(nil),
 		Counters: counters,
@@ -135,7 +135,7 @@ func TestCountersRecordStagingReadWithZeroBytes(t *testing.T) {
 // TestNilCounterRecorderWorks: a nil CounterRecorder must not change read
 // behavior - the reader falls back to a no-op sink.
 func TestNilCounterRecorderWorks(t *testing.T) {
-	r := NewReader(ReaderDeps{
+	r := newTestReader(testReaderDeps{
 		Host:  stubHostWithData{stubHost: stubHost{}, data: "hello world"},
 		State: NewState(nil),
 	})

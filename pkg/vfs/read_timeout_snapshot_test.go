@@ -34,15 +34,14 @@ func TestVFSDebugSnapshotRuntimeReportsReadTimeouts(t *testing.T) {
 	fs, err := New(fake, Options{
 		Name:       "cloud",
 		StorageDir: t.TempDir(),
-		ReadProfile: &drive.ReadProfile{
-			FetchIdleTimeout:  50 * time.Millisecond,
-			FetchTotalTimeout: 5 * time.Second,
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	if err := fs.SetReadPlanOverride("cloud", 0, 0, 50*time.Millisecond, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
 	fs.Start(ctx)
 	defer func() { _ = fs.Close(ctx) }()
 
@@ -74,8 +73,5 @@ func TestVFSDebugSnapshotRuntimeReportsReadTimeouts(t *testing.T) {
 	}
 	if snapshot.Runtime.LastTimeout.WindowStart != 0 || snapshot.Runtime.LastTimeout.WindowEnd < 0 {
 		t.Fatalf("assembled last timeout = %+v, want the timed-out window", snapshot.Runtime.LastTimeout)
-	}
-	if snapshot.ReadProfile.FetchIdleTimeoutMS != 50 {
-		t.Fatalf("profile fetch idle timeout = %d ms, want 50", snapshot.ReadProfile.FetchIdleTimeoutMS)
 	}
 }

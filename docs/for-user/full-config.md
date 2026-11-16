@@ -55,7 +55,7 @@
 
 凭据级参数（见[支持的驱动](support-drivers.md)中的“作用域”列）写在 `[credentials.params]`，路径级参数写在 `[mounts.params]`；同一凭据可以被任意多个挂载引用。
 
-每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]`、`[mounts.read_profile]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。
+每个 mount 可以在 `[mounts.encryption]`、`[mounts.read_cache]`、`[mounts.read]` 和 `[mounts.upload]` 中覆盖全局配置，具体参数见对应章节。
 
 ## 加密配置
 
@@ -100,19 +100,27 @@ sync 会话固定保存在有效工作目录的 `sync/` 子目录。
 |---|---|---|---|
 | `max_size` | string | 2G | 读取缓存上限；设为 `0` 可关闭，未设置时默认 2G |
 
-## 读取策略（`[mounts.read_profile]`）
+## 读取策略（`[mounts.read]`）
 
-可选地覆盖单个 mount 的 bulk 读并行流数和窗口大小；默认值仍由驱动决定。
+按挂载覆盖读取策略；省略字段继承驱动建议，在途预算同时约束前台、预取、复制和分享下载。请求数显式填 0 无效。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `streams` | integer | 0 | bulk 读的并发子 Range 数；0 或未设置时继承驱动默认值，1-32 为显式值 |
-| `window_chunks` | integer | 0 | bulk 读窗口大小（512 KiB 块）；0 或未设置时继承驱动默认值，1-64 为显式值 |
+| `max_in_flight` | integer | 继承驱动 | 同一文件的最大在途 Range 数（1–32），受驱动硬限制约束。 |
+| `bulk` | object | - | 批量读取窗口与分片设置（见下表） |
 
-该表只存在于每个 `[[mounts]]` 下，没有全局等价项。默认值来自驱动的
-`ReadProfile`；只影响 `bulk` 读，`interactive` / `probe` 仍保持单流。
-驱动是否支持 `streams > 1` 见[支持的驱动](support-drivers.md)的“并行读”列。
-多流收益取决于网络，建议先用 `qrypt probe test read` 实测。
+### 批量读取（`[mounts.read.bulk]`）
+
+配置批量下载和复制的窗口与并发。尺寸使用字节或 KiB/MiB，最大 32 MiB。交互读取和探测保持单流。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `streams` | integer | 继承驱动 | 批量读取的并发 worker 数（1–32），受文件在途预算约束。 |
+| `window` | string | 继承驱动 | 每次取数的窗口大小，例如 8MiB；必须大于 0，最大 32 MiB。 |
+| `part_size` | string | 继承驱动 | 每个分片的大小上限，例如 4MiB；auto 表示按流数均分窗口。分片数可大于并发数，0 无效。 |
+| `min_parallel_size` | string | 继承驱动 | 允许并行拆分的最小窗口；0 表示不设门槛。按本次窗口判断，与文件总大小无关。 |
+
+建议先用 `qrypt probe test read` 对比单流和多流，确认收益后再覆盖驱动建议。驱动能力见[支持的驱动](support-drivers.md)。旧配置迁移见[读取配置迁移](read-policy-migration.md)。
 
 ## 缩略图缓存
 

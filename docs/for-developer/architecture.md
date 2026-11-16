@@ -163,16 +163,44 @@ is source metadata, not a driver capability.
 Drivers that benefit from hashes before upload can declare the needed algorithms
 with `drive.UploadHashRequirements`.
 
-Drivers may declare read scheduling defaults through `drive.ReadProfiler`
-(`drive.ReadProfile`): bulk streams, per-intent window sizes, prefetch depth,
-parallel threshold, and the read fetch bounds. `FetchIdleTimeout` bounds how
-long one fetch may produce no bytes; `FetchTotalTimeout` bounds one fetch end
-to end. Zero fields inherit the conservative defaults (30 s / 5 min), and a
-mount's `[mounts.read_profile]` override can only change streams and window.
+Drivers expose complete `drive.ReadPolicy` recommendations and optional
+`ReadLimits`. Mount assembly creates one `ReadSource`, resolving the sparse
+`[mounts.read]` override once and enforcing capability and hard-limit gates.
+The same source serves VFS, streams, copies, share-fetch fallback, and edit
+staging. Different mounts have independent runtimes; stable provider object IDs
+key file admission inside each runtime. Renaming a path does not reset a budget.
 
-Construction-time hooks such as state-store installation and native bandwidth
-limiter installation are not runtime capabilities. They are used only during
-assembly.
+`PlanResolver` evaluates initial, seek, and sequential policy before fetching.
+The plan contains concrete foreground and lookahead windows, prefetch depth,
+split shape, intent, cache admission, and worker count. Adaptive values and
+configuration provenance never reach execution. A continuous FUSE read may use
+bulk workers while keeping its original intent and cache writes. Every stream
+refill resolves its current stage.
+
+`ReadSource.Fetch` validates one bounded logical window. A fixed part size is a
+ceiling, independent of the worker count; workers claim tasks lazily and write
+disjoint spans of the output buffer. A copy advances through windows instead of
+allocating a task/channel for every part in the file. Truncated windows do not
+reach either the output stream or the cache. Range retries and strict-range
+fallback live in `pkg/drive/fetch_range.go`, shared by all source consumers.
+
+The source scheduler admits global and file capacity atomically. A waiting
+foreground holds neither resource. Speculation reserves both without waiting;
+it releases an unused reservation or runs exactly one charged request. A file
+budget of one therefore permits idle lookahead without nested acquisition.
+Window registration and removal compare load identity so late cleanup cannot
+remove a replacement. Seek-sized reads avoid waiting for oversized lookahead;
+a speculative wait has a bounded takeover interval.
+
+### Abandoning a connection
+
+Read fetches use explicit causes: caller cancellation, superseded lookahead,
+network idle stall, total deadline, truncated body, or network failure. A local
+bandwidth wait suspends the idle watchdog while remaining part of the total
+budget. A total timeout alone is not evidence of a bad CDN edge. Quark penalizes
+actual stalls and truncation, preserving healthy connections on caller cancel.
+The debug trace separates admission queue, driver open, body, local wait, and
+validation timing; driver open is not CDN TTFB or player first-frame latency.
 
 ### Shared credentials
 
@@ -220,11 +248,12 @@ another domain's internal state.
   window exposed by the debug snapshot
 - `pkg/vfs/read/stream.go`: bounded sequential stream and next-window prefetch
 - `pkg/vfs/read/plan.go`: immutable `ReadPlan` and `PlanResolver`; explicit
-  intent, max-stream hint, window, prefetch-depth, and cache-write defaults.
-  `pkg/core.buildMount` resolves the driver profile plus an optional
-  `[mounts.read_profile]` override and passes it to the VFS and direct read
+  intent, access stage, max-stream hint, foreground and lookahead windows,
+  prefetch-depth, and cache-write defaults.
+  `pkg/core.buildMount` assembles a source using the driver policy and optional
+  `[mounts.read]` override and passes it to the VFS and direct read
   paths; the mount debug snapshot exposes the effective profile and source.
-- `pkg/vfs/read/scheduler.go`: the single read budget owner for global
+- `pkg/readbudget/scheduler.go`: atomic admission implementation for global
   normal/high slots, per-file parallel permits, prefetch permits, and the
   foreground-read count
 - `pkg/vfs/read/scope.go`: `ScopeRegistry`, the single owner of speculative
@@ -371,12 +400,20 @@ with a deadline.
   `ErrInvalidInput`) and `drive.ErrUnsupported` still fail on the first
   attempt; a persistent 5xx exhausts the three tries and surfaces the provider
   error, not a timeout.
+- A local bandwidth limit is not provider silence. The bandwidth limiter's
+  token wait happens *inside* the body read while the provider has already
+  answered, so the idle bound would otherwise abort a healthy fetch: at the
+  default 30 s idle a 64 KiB body read throttled below about 2 KiB/s would pass
+  the bound, and contended shared limits can reach it too. The read paths mark
+  the fetch context with `drive.WithLocalWaitTracking`, the limiter reports its
+  waits, and the watchdog keeps waiting while one is active. The total bound
+  still applies, so a limit too low to finish a window in time still fails.
 - A timed-out prefetch is a silent cancellation: it records
   `prefetch_cancel_reason=timeout`, releases its prefetch permit and window
   entry, and never fails a caller read. A foreground read that was waiting on
   that window takes the load over.
 - `ReadStream`, `drivecopy`, and direct-part reads use the same bounds
-  (`drive.ReadParallelWithProfile`), and drivers bound the response-header
+  (`drive.ReadSource`), and drivers bound the response-header
   phase through their HTTP transport.
 - Read events carry `cancel_reason=timeout`, `wait_us`, and `fetch_us`; a
   replayed range reports `fetch_status_retries`, `fetch_status_reason`

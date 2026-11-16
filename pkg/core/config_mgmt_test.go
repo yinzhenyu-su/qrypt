@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,8 @@ import (
 
 	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/core/internal/credentials"
+	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/readbudget"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 )
 
@@ -267,7 +271,12 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(tmp, "qrypt.toml")
-	if err := os.WriteFile(configPath, []byte("[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = "+util.TOMLPath(remote)+"\n"), 0o644); err != nil {
+	configText := "[[mounts]]\nname = \"loc\"\ntype = \"localfs\"\n[mounts.params]\nroot_path = " + util.TOMLPath(remote) + "\n[mounts.read]\nmax_in_flight = 1\n"
+	if err := os.WriteFile(configPath, []byte(configText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const content = "reload source data"
+	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -279,6 +288,23 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 	if old.cleanup == nil {
 		t.Fatal("old core should be open")
 	}
+	defer old.Close(ctx)
+	oldSource := old.fs.(drive.MountReadSourceProvider).ReadSourceForMount("loc")
+	entry, err := old.Stat(ctx, "/loc/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := oldSource.OpenRange(ctx, entry, 0, int64(len(content)), readbudget.PriorityNormal, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	if oldSource.Scheduler().PerFileInUse(entry.ID) != 1 {
+		t.Fatal("old source must hold the in-flight body admission")
+	}
+	if err := os.WriteFile(configPath, []byte(strings.Replace(configText, "max_in_flight = 1", "max_in_flight = 2", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	reloaded, err := old.Reload(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -289,6 +315,28 @@ func TestCoreReloadClosesOldCore(t *testing.T) {
 	}
 	if old.fs != nil {
 		t.Fatal("Reload must detach the old core's filesystem")
+	}
+	if oldSource.Scheduler().PerFileInUse(entry.ID) != 0 {
+		t.Fatal("Reload must release old source body admission")
+	}
+	if _, err := oldSource.OpenRange(ctx, entry, 0, 1, readbudget.PriorityNormal, false); !errors.Is(err, drive.ErrReadSourceClosed) {
+		t.Fatalf("old source accepted a read after reload: %v", err)
+	}
+	newSource := reloaded.fs.(drive.MountReadSourceProvider).ReadSourceForMount("loc")
+	if newSource == oldSource || newSource.Policy().SourceID == oldSource.Policy().SourceID {
+		t.Fatal("Reload must create a new source identity")
+	}
+	if oldSource.Policy().Effective.MaxInFlight != 1 || newSource.Policy().Effective.MaxInFlight != 2 {
+		t.Fatal("Reload must apply new policy without mutating old source policy")
+	}
+	newBody, err := newSource.Read(ctx, entry, 0, int64(len(content)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newBody.Close()
+	data, err := io.ReadAll(newBody)
+	if err != nil || string(data) != content {
+		t.Fatalf("new source read = %q, %v", data, err)
 	}
 }
 

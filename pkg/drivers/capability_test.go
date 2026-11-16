@@ -263,10 +263,13 @@ func TestBuiltinDriverCapabilities(t *testing.T) {
 	}
 }
 
-func TestQuarkReadProfileDefaultsToSingleStream(t *testing.T) {
+func TestQuarkReadProfileReproducesLegacyShape(t *testing.T) {
 	driver := quark.New("cookie", quark.Options{})
-	if got := drive.ReadProfileOf(driver).BulkStreams; got != 1 {
-		t.Fatalf("quark BulkStreams = %d, want 1 (measured default)", got)
+	profile := driver.ReadPolicy()
+	// The released v0.6.1 shape: three 8 MiB workers above a 4 MiB request.
+	if profile.Bulk.Streams != 3 || profile.Bulk.Split.PartBytes/drive.ReadChunkSize != 16 || profile.Bulk.Split.MinParallelBytes/drive.ReadChunkSize != 8 {
+		t.Fatalf("quark profile = streams %d part %d min %d, want the v0.6.1 3/16/8 shape",
+			profile.Bulk.Streams, profile.Bulk.Split.PartBytes/drive.ReadChunkSize, profile.Bulk.Split.MinParallelBytes/drive.ReadChunkSize)
 	}
 }
 

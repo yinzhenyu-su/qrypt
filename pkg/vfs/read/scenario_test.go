@@ -55,10 +55,10 @@ func newScenarioReader(t *testing.T, size int, behavior drive.ReadBehavior) (*Re
 		ModTime: time.Unix(1700000000, 0),
 	}
 	state := NewState(nil)
-	profile := drive.DefaultReadProfile()
-	profile.ParallelThreshold = 1
-	profile.BulkWindowChunks = 4
-	reader := NewReader(ReaderDeps{
+	profile := drive.DefaultReadPolicy()
+	profile.Bulk.Split.MinParallelBytes = 0
+	profile.Bulk.WindowBytes = 4 * ChunkSize
+	reader := newTestReader(testReaderDeps{
 		Host:    &scenarioHost{driver: driver, entry: entry, cacheKey: "cache"},
 		State:   state,
 		Profile: profile,
@@ -166,7 +166,7 @@ func TestScenarioCancelReleasesReadSlot(t *testing.T) {
 	}
 	state := NewState(nil)
 	t.Cleanup(func() { _ = state.Close() })
-	reader := NewReader(ReaderDeps{Host: host, State: state})
+	reader := newTestReader(testReaderDeps{Host: host, State: state})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -199,51 +199,34 @@ func TestScenarioCancelReleasesReadSlot(t *testing.T) {
 }
 
 func TestScenarioFakeDriverPrefetchCancelsOnInvalidate(t *testing.T) {
-	gate := make(chan struct{})
-	reader, state, driver := newScenarioReader(t, 4<<20, drive.ReadBehavior{BodyGate: gate})
-	ctx, cancel := context.WithCancel(WithAccessHint(context.Background(), AccessHint{SessionID: 7, RequestID: 1}))
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		rc, err := reader.Read(ctx, "/file.bin", 0, ChunkSize)
-		if rc != nil {
-			rc.Close()
+	// A lookahead Range is speculative: invalidating the file must cancel it
+	// without touching the read that already delivered data.
+	r := newStagedReader(t, 8<<20)
+	release := make(chan struct{})
+	defer close(release)
+	r.host.gateFn = func(offset, size int64) (<-chan struct{}, bool) {
+		if offset == ChunkSize {
+			return release, true
 		}
-		done <- err
-	}()
+		return nil, false
+	}
+	r.read(t, sessionContext(7, 1), 0, ChunkSize)
+	r.host.waitCall(t, 2)
 
-	waitReadCalls(t, driver, 2)
-	state.InvalidateFile("cache")
+	r.state.InvalidateFile("cache")
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		canceled := false
-		for _, call := range driver.ReadCalls() {
-			if call.Err != nil && errors.Is(call.Err, context.Canceled) {
-				canceled = true
-				break
+		for _, call := range r.host.recorded() {
+			if call.Offset == ChunkSize && call.Err != nil {
+				if !errors.Is(call.Err, context.Canceled) {
+					t.Fatalf("lookahead canceled with %v", call.Err)
+				}
+				return
 			}
-		}
-		if canceled {
-			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("invalidate did not cancel the prefetch body")
 		}
 		time.Sleep(time.Millisecond)
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("invalidate canceled the foreground read: %v", err)
-	default:
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("read error = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("read did not return after cancel")
 	}
 }

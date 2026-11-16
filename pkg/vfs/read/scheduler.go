@@ -13,14 +13,6 @@ const (
 	PriorityHigh   = readbudget.PriorityHigh
 )
 
-type LoadKind = readbudget.LoadKind
-
-const (
-	LoadSlot = readbudget.LoadSlot
-	LoadFile = readbudget.LoadFile
-)
-
-type Request = readbudget.Request
 type Scheduler = readbudget.Scheduler
 type SchedulerConfig = readbudget.SchedulerConfig
 type SchedulerStats = readbudget.SchedulerStats

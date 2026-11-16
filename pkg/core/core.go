@@ -743,7 +743,11 @@ func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, l
 		return result
 	}
 	readCache := cfg.ReadCacheFor(mountCfg.Name)
-	readProfile := readProfileOverride(cfg.ReadProfileFor(mountCfg.Name))
+	readOverride, err := mountCfg.Read.Override()
+	if err != nil {
+		result.err = err
+		return result
+	}
 	upload := cfg.UploadFor(mountCfg.Name)
 	mountReadCacheDir := filepath.Join(layout.ReadCacheDir, mountCfg.Name)
 	mountUploadDir := filepath.Join(layout.UploadDir, mountCfg.Name)
@@ -823,7 +827,7 @@ func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, l
 		UploadDelay:   uploadDelay,
 		UploadWorkers: upload.UploadWorkers,
 		DeleteDelay:   deleteDelay,
-		ReadProfile:   readProfile,
+		Read:          readOverride,
 	})
 	if err != nil {
 		result.err = err
@@ -831,16 +835,6 @@ func buildMount(ctx context.Context, cfg *config.Config, layout RuntimeLayout, l
 	}
 	result.mount = vfs.Mount{Name: mountCfg.Name, FS: fs}
 	return result
-}
-
-func readProfileOverride(profile *config.ReadProfileConfig) *drive.ReadProfile {
-	if profile == nil {
-		return nil
-	}
-	return &drive.ReadProfile{
-		BulkStreams:      profile.Streams,
-		BulkWindowChunks: profile.WindowChunks,
-	}
 }
 
 func resolveMountRootID(ctx context.Context, driver drive.Driver) (string, error) {

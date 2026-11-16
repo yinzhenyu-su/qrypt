@@ -9,26 +9,25 @@ import (
 func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 	state := NewState(nil)
 	state.scheduler = NewScheduler(SchedulerConfig{MaxConcurrency: 2, HighReserve: 1, PrefetchLimit: 1})
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
 
-	releaseHighNormalSlot, err := reader.acquireReadSlot(WithPriority(context.Background(), PriorityHigh))
+	releaseHighNormalSlot, err := acquireTestSlot(state.scheduler, WithPriority(context.Background(), PriorityHigh), priority(WithPriority(context.Background(), PriorityHigh)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	releaseHighReserveSlot, err := reader.acquireReadSlot(WithPriority(context.Background(), PriorityHigh))
+	releaseHighReserveSlot, err := acquireTestSlot(state.scheduler, WithPriority(context.Background(), PriorityHigh), priority(WithPriority(context.Background(), PriorityHigh)))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	releaseHighNormalSlot()
-	releaseNormalSlot, err := reader.acquireReadSlot(context.Background())
+	releaseNormalSlot, err := acquireTestSlot(state.scheduler, context.Background(), priority(context.Background()))
 	if err != nil {
 		t.Fatalf("normal read could not reuse released normal slot: %v", err)
 	}
 	defer releaseNormalSlot()
 
 	releaseHighReserveSlot()
-	releaseHighSlot, err := reader.acquireReadSlot(WithPriority(context.Background(), PriorityHigh))
+	releaseHighSlot, err := acquireTestSlot(state.scheduler, WithPriority(context.Background(), PriorityHigh), priority(WithPriority(context.Background(), PriorityHigh)))
 	if err != nil {
 		t.Fatalf("high-priority read could not reuse released high slot: %v", err)
 	}
@@ -38,8 +37,8 @@ func TestReadSlotReleaseMatchesAcquiredSlot(t *testing.T) {
 func TestLowPriorityReadWaitsForSlotAndHonorsCancellation(t *testing.T) {
 	state := NewState(nil)
 	state.scheduler = NewScheduler(SchedulerConfig{MaxConcurrency: 1, HighReserve: 0, PrefetchLimit: 1})
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
-	release, err := reader.acquireReadSlot(context.Background())
+
+	release, err := acquireTestSlot(state.scheduler, context.Background(), priority(context.Background()))
 	if err != nil {
 		t.Fatalf("fill normal slot: %v", err)
 	}
@@ -48,7 +47,7 @@ func TestLowPriorityReadWaitsForSlotAndHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(WithPriority(context.Background(), PriorityLow))
 	result := make(chan error, 1)
 	go func() {
-		_, err := reader.acquireReadSlot(ctx)
+		_, err := acquireTestSlot(state.scheduler, ctx, priority(ctx))
 		result <- err
 	}()
 
@@ -65,7 +64,7 @@ func TestLowPriorityReadWaitsForSlotAndHonorsCancellation(t *testing.T) {
 
 func TestWaitWindowTreatsCanceledLoadAsRetryableMiss(t *testing.T) {
 	state := NewState(nil)
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: state})
+	reader := newTestReader(testReaderDeps{Host: stubHost{}, State: state})
 	load := &windowLoad{
 		fid:  "file",
 		done: make(chan struct{}),

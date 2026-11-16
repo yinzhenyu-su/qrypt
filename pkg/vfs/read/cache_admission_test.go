@@ -16,7 +16,7 @@ func TestBulkReadSkipsDurableCache(t *testing.T) {
 		data:     []byte("x"),
 		cacheKey: "cache",
 	}
-	reader := NewReader(ReaderDeps{Host: host, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache)})
 
 	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentBulk), "/file", 0, 1)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestInteractiveReadWritesDurableCache(t *testing.T) {
 		data:     []byte("x"),
 		cacheKey: "cache",
 	}
-	reader := NewReader(ReaderDeps{Host: host, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache)})
 
 	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentInteractive), "/file", 0, 1)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestProbeReadSkipsDurableCache(t *testing.T) {
 		data:     []byte("x"),
 		cacheKey: "cache",
 	}
-	reader := NewReader(ReaderDeps{Host: host, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache)})
 
 	rc, err := reader.Read(WithReadIntent(context.Background(), ReadIntentProbe), "/file", 0, 1)
 	if err != nil {
@@ -91,7 +91,7 @@ func TestReadStreamBulkSkipsDurableCache(t *testing.T) {
 		data:     []byte("x"),
 		cacheKey: "cache",
 	}
-	reader := NewReader(ReaderDeps{Host: host, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache)})
 
 	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentBulk), "/file")
 	if err != nil {
@@ -115,7 +115,7 @@ func TestReadStreamInteractiveWritesDurableCache(t *testing.T) {
 		data:     []byte("x"),
 		cacheKey: "cache",
 	}
-	reader := NewReader(ReaderDeps{Host: host, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: host, State: NewState(cache)})
 
 	rc, err := reader.ReadStream(WithReadIntent(context.Background(), ReadIntentInteractive), "/file")
 	if err != nil {
@@ -134,7 +134,7 @@ func TestReadStreamInteractiveWritesDurableCache(t *testing.T) {
 
 func TestStoreChunkHonorsCacheWritePlan(t *testing.T) {
 	cache := &recordingCache{}
-	reader := NewReader(ReaderDeps{Host: stubHost{}, State: NewState(cache)})
+	reader := newTestReader(testReaderDeps{Host: stubHost{}, State: NewState(cache)})
 	backend := reader.newBackend()
 
 	ctx := WithReadPlan(context.Background(), ReadPlan{CacheWrites: false})

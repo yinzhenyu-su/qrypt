@@ -12,7 +12,6 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/task"
 	"github.com/yinzhenyu/qrypt/pkg/vfs"
-	"github.com/yinzhenyu/qrypt/pkg/vfs/diagnostics"
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
@@ -357,17 +356,13 @@ func (r *shareRun) fetchTargets(ctx context.Context, update task.UpdateFunc, fro
 	return targets, nil
 }
 
-func (r *shareRun) effectiveReadProfile() drive.ReadProfile {
-	profile := drive.ReadProfileOf(r.driver)
-	provider, ok := r.core.fs.(diagnostics.MountReadProfileProvider)
-	if !ok {
-		return profile
+func (r *shareRun) readSource() (*drive.ReadSource, error) {
+	if p, ok := r.core.fs.(drive.MountReadSourceProvider); ok {
+		if source := p.ReadSourceForMount(r.detail.Mount); source != nil {
+			return source, nil
+		}
 	}
-	override := provider.ReadProfileForMount(r.detail.Mount)
-	if override == nil {
-		return profile
-	}
-	return drive.ReadProfileOfWithOverride(r.driver, override)
+	return nil, fmt.Errorf("core: mounted read source unavailable")
 }
 
 func (r *shareRun) transferTarget(ctx context.Context, update task.UpdateFunc, destination *shareFetchDestination, plan offlineChunkPlan, target shareFetchTarget, base int64) (int64, error) {
@@ -401,8 +396,12 @@ func (r *shareRun) transferTarget(ctx context.Context, update task.UpdateFunc, d
 	}
 
 	entry := drive.Entry{ID: target.remoteID, Name: target.name, Size: target.size}
-	profile := r.effectiveReadProfile()
-	reader, err := drive.ReadParallelWithProfile(ctx, r.driver, entry, offset, sizeOrUnknown(target.size, offset), profile)
+	source, err := r.readSource()
+	if err != nil {
+		_ = writer.Abort()
+		return 0, err
+	}
+	reader, err := source.Read(ctx, entry, offset, sizeOrUnknown(target.size, offset))
 	if err != nil {
 		_ = writer.Abort()
 		return 0, err

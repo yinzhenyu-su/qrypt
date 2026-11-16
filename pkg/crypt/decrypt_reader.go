@@ -40,18 +40,31 @@ func NewDecryptingReaderAt(enc io.Reader, cipher Cipher, nonce [FileNonceSize]by
 // exactly how many ciphertext bytes the body should carry. A body that ends
 // before that count is a truncated read, not a short final block, so it is
 // reported as io.ErrUnexpectedEOF and can be replayed by the read layer.
+// A negative encSize keeps the unknown-length semantics.
 func NewDecryptingReaderAtLimit(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte, blockIndex uint64, encSize int64) *DecryptingReader {
 	reader := NewDecryptingReaderAt(enc, cipher, nonce, blockIndex)
-	reader.remaining = max(encSize, 0)
+	reader.remaining = encryptedSizeLimit(encSize)
 	return reader
 }
 
 // NewDecryptingReaderLimit is NewDecryptingReader for a caller that knows the
-// remaining ciphertext length.
+// remaining ciphertext length. A negative length means "unknown": the stream is
+// then read until EOF and a short final block is accepted, because a backend
+// that cannot report a size must still yield its content.
 func NewDecryptingReaderLimit(enc io.Reader, cipher Cipher, nonce [FileNonceSize]byte, encSize int64) *DecryptingReader {
 	reader := NewDecryptingReader(enc, cipher, nonce)
-	reader.remaining = max(encSize, 0)
+	reader.remaining = encryptedSizeLimit(encSize)
 	return reader
+}
+
+// encryptedSizeLimit keeps a negative length as the unknown sentinel. Clamping
+// it to zero would make the reader stop right after the header and report the
+// whole file as empty, which a downloader records as a successful empty file.
+func encryptedSizeLimit(encSize int64) int64 {
+	if encSize < 0 {
+		return -1
+	}
+	return encSize
 }
 
 func (r *DecryptingReader) Read(p []byte) (int, error) {
@@ -94,6 +107,14 @@ func (r *DecryptingReader) fillPendingUploads() error {
 
 	if err != nil {
 		if err == io.EOF && n == 0 {
+			if r.remaining > 0 {
+				// The caller stated how much ciphertext this stream carries and
+				// bytes are still owed. An empty body here is a truncated
+				// response (or one that stops exactly on a block boundary), not
+				// the end of the file: report it so the read layer can replay
+				// it, instead of handing back a silently short file.
+				return io.ErrUnexpectedEOF
+			}
 			r.encEOF = true
 			return io.EOF
 		}

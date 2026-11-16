@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	cliruntime "github.com/yinzhenyu/qrypt/internal/cli/runtime"
+	"github.com/yinzhenyu/qrypt/pkg/config"
 	"github.com/yinzhenyu/qrypt/pkg/contracttest"
 )
 
@@ -91,7 +92,7 @@ func addDebugDriverTestFlags(cmd *cobra.Command, test string) {
 		cmd.Flags().String("idle-timeout", "", "override the read fetch idle timeout for this measurement")
 		cmd.Flags().String("total-timeout", "", "override the read fetch total timeout for this measurement")
 		cmd.Flags().Int("streams", 0, "override concurrent read streams for this measurement (0 = driver default)")
-		cmd.Flags().Int("window-chunks", 0, "override read window in 512 KiB chunks for this measurement (0 = default)")
+		cmd.Flags().String("window", "", "override read window in bytes or KiB/MiB for this measurement")
 		cmd.Flags().String("block-size", "", "read block size in bytes, or k/m/g suffix (default 1m)")
 		cmd.Flags().String("cache-mode", "both", "cache mode: cold, warm, or both")
 		cmd.Flags().String("pattern", "sequential", "read pattern: sequential, seek, or both")
@@ -162,8 +163,13 @@ func runDebugDriverTest(cmd *cobra.Command, test string) error {
 	if flag := cmd.Flags().Lookup("streams"); flag != nil {
 		req.Streams, _ = cmd.Flags().GetInt("streams")
 	}
-	if flag := cmd.Flags().Lookup("window-chunks"); flag != nil {
-		req.WindowChunks, _ = cmd.Flags().GetInt("window-chunks")
+	if flag := cmd.Flags().Lookup("window"); flag != nil && flag.Changed {
+		value, _ := cmd.Flags().GetString("window")
+		n, err := config.ParseSize(value)
+		if err != nil || n <= 0 || n > 32<<20 {
+			return fmt.Errorf("read test --window must be between 1 byte and 32 MiB")
+		}
+		req.WindowBytes = n
 	}
 	if flag := cmd.Flags().Lookup("block-size"); flag != nil {
 		req.BlockSize, _ = cmd.Flags().GetString("block-size")
@@ -234,7 +240,7 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		}
 	case "read":
 		if req.Source != "" || req.Dest != "" || req.VFS || req.Count != 0 {
-			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --offset, --length, --idle-timeout, --total-timeout, --streams, --window-chunks, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
+			return fmt.Errorf("read test only supports --mount, --mount-point, --path, --offset, --length, --idle-timeout, --total-timeout, --streams, --window, --size, --block-size, --cache-mode, --pattern, --samples, and seek options")
 		}
 		if req.Mount == "" {
 			return fmt.Errorf("read test requires --mount")
@@ -275,8 +281,8 @@ func ValidateDriverTestRequest(req contracttest.DriverTestRequest) error {
 		if req.Streams < 0 || req.Streams > 32 {
 			return fmt.Errorf("read test --streams must be between 1 and 32")
 		}
-		if req.WindowChunks < 0 || req.WindowChunks > 64 {
-			return fmt.Errorf("read test --window-chunks must be between 1 and 64")
+		if req.WindowBytes < 0 || req.WindowBytes > 32<<20 {
+			return fmt.Errorf("read test --window must be between 1 byte and 32 MiB")
 		}
 		if req.Samples < 1 || req.Samples > contracttest.MaxMountedReadTestSamples {
 			return fmt.Errorf("read test --samples must be between 1 and %d", contracttest.MaxMountedReadTestSamples)

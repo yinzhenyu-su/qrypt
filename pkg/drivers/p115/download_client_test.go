@@ -51,11 +51,11 @@ func TestDownloadHTTPClientClonesSharedTransport(t *testing.T) {
 }
 
 func TestReadProfileOverridesFetchTimeouts(t *testing.T) {
-	profile := (&Driver{}).ReadProfile()
-	if profile.FetchIdleTimeout != 90*time.Second {
-		t.Fatalf("FetchIdleTimeout = %s, want 90s", profile.FetchIdleTimeout)
+	profile := (&Driver{}).ReadPolicy()
+	if profile.Fetch.Idle != 90*time.Second {
+		t.Fatalf("FetchIdleTimeout = %s, want 90s", profile.Fetch.Idle)
 	}
-	if profile.FetchTotalTimeout != 30*time.Minute {
-		t.Fatalf("FetchTotalTimeout = %s, want 30m", profile.FetchTotalTimeout)
+	if profile.Fetch.Total != 30*time.Minute {
+		t.Fatalf("FetchTotalTimeout = %s, want 30m", profile.Fetch.Total)
 	}
 }

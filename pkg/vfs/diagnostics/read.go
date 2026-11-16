@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 	"github.com/yinzhenyu/qrypt/pkg/util"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -50,6 +51,12 @@ func RecordRead(runtime ReadRuntime, opID, path, remoteID string, offset, reques
 		event.ErrorCategory = drive.ErrorCategory(err)
 	}
 	runtime.AppendEvent(event)
+	stage, _ := extra["read_stage"].(string)
+	fetchMicros, _ := extra["fetch_us"].(int64)
+	waitMicros, _ := extra["wait_us"].(int64)
+	if (stage == "initial" || stage == "seek") && (fetchMicros > 0 || waitMicros > 0 || err != nil) {
+		logging.L.Debugf("[READ] op=%s phase=read offset=%d requested=%d bytes=%d duration_us=%d state=%s extra=%v", opID, offset, requested, bytes, finished.Sub(started).Microseconds(), event.State, extra)
+	}
 }
 
 // RecordReadDetail appends one phase-level vfs_read metric event scoped
@@ -86,6 +93,13 @@ func RecordReadDetail(runtime ReadRuntime, ctx context.Context, path, remoteID, 
 		}
 	}
 	runtime.AppendDetailEvent(event)
+	switch phase {
+	case "read_access", "prefetch_plan", "source_range_begin", "source_range_end", "wait_window_begin", "wait_window_done", "wait_window_bypass", "wait_window_load_begin", "wait_window_load_bypass", "wait_window_load", "fetch_window", "prefetch_window":
+		// Keep these causal events in the debug log as well as the bounded
+		// history: small FUSE reads can evict the start of a slow seek.
+		// Extras contain read plans and timings, never provider URLs/headers.
+		logging.L.Debugf("[READ] op=%s phase=%s offset=%d requested=%d bytes=%d duration_us=%d state=%s extra=%v", op.OpID, phase, offset, requested, bytes, finished.Sub(started).Microseconds(), event.State, extra)
+	}
 }
 
 func applyReadPolicyFields(event *drive.MetricEvent, extra map[string]any) {

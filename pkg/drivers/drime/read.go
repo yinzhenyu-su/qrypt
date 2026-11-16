@@ -13,13 +13,15 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 )
 
-// ReadProfile keeps bulk reads single-stream. A live measurement on the
+// ReadPolicy keeps bulk reads single-stream. A live measurement on the
 // provider showed 4 concurrent sub-ranges 20-30% slower than one 4 MiB range:
 // the CDN's per-request latency dominates and does not scale with concurrency.
 // The capability stays declared so the profile can be retuned after a future
 // re-measurement.
-func (d *Driver) ReadProfile() drive.ReadProfile {
-	return drive.ReadProfile{BulkStreams: 1}
+func (d *Driver) ReadPolicy() drive.ReadPolicy {
+	p := drive.DefaultReadPolicy()
+	p.Bulk.Streams = 1
+	return p
 }
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {

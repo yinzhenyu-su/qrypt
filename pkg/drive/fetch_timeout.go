@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,26 +53,73 @@ func IsFetchTimeout(err error) bool {
 // FetchTimeouts is a resolved read-fetch timeout pair.
 type FetchTimeouts struct {
 	// Idle bounds how long one fetch may produce no bytes.
-	Idle time.Duration
+	Idle time.Duration `json:"idle_ns"`
 	// Total bounds one complete fetch, including the request round trip.
-	Total time.Duration
+	Total time.Duration `json:"total_ns"`
 }
 
-// FetchTimeouts resolves the profile's timeouts, filling defaults. The idle
-// bound never exceeds the total bound: an idle bound that cannot fire before
-// the total one is misleading.
-func (p ReadProfile) FetchTimeouts() FetchTimeouts {
-	out := FetchTimeouts{Idle: p.FetchIdleTimeout, Total: p.FetchTotalTimeout}
-	if out.Idle <= 0 {
-		out.Idle = DefaultFetchIdleTimeout
+// localWaitKey carries a local-wait watch on a read context. The bandwidth
+// limiter reports the time it spends waiting for local tokens, and the idle
+// bound ignores those waits: a locally throttled body is not a stalled
+// provider.
+type localWaitKey struct{}
+
+// localWaitWatch counts reads currently blocked on a local rate limiter.
+type localWaitWatch struct {
+	active  atomic.Int32
+	mu      sync.Mutex
+	since   time.Time
+	elapsed time.Duration
+}
+
+func (w *localWaitWatch) enter() {
+	if w != nil {
+		w.mu.Lock()
+		if w.active.Add(1) == 1 {
+			w.since = time.Now()
+		}
+		w.mu.Unlock()
 	}
-	if out.Total <= 0 {
-		out.Total = DefaultFetchTotalTimeout
+}
+
+func (w *localWaitWatch) exit() {
+	if w != nil {
+		w.mu.Lock()
+		if w.active.Add(-1) == 0 {
+			w.elapsed += time.Since(w.since)
+		}
+		w.mu.Unlock()
 	}
-	if out.Idle > out.Total {
-		out.Idle = out.Total
+}
+
+func (w *localWaitWatch) waiting() bool {
+	return w != nil && w.active.Load() > 0
+}
+
+func (w *localWaitWatch) duration() time.Duration {
+	if w == nil {
+		return 0
 	}
-	return out
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	elapsed := w.elapsed
+	if w.active.Load() > 0 {
+		elapsed += time.Since(w.since)
+	}
+	return elapsed
+}
+
+// WithLocalWaitTracking marks ctx as one whose read body may wait on a local
+// bandwidth limiter. The idle bound then ignores those waits instead of
+// counting them as provider silence. Call it before opening the read, so both
+// the driver's limiter and the timeout body see the same marker.
+func WithLocalWaitTracking(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localWaitKey{}, &localWaitWatch{})
+}
+
+func localWaitWatchFrom(ctx context.Context) *localWaitWatch {
+	watch, _ := ctx.Value(localWaitKey{}).(*localWaitWatch)
+	return watch
 }
 
 // ReadBodyLimited reads at most limit bytes from body.
@@ -82,7 +130,7 @@ func (p ReadProfile) FetchTimeouts() FetchTimeouts {
 // context.WithTimeout) and also covers the request round trip. cancel must
 // cancel the context that created body; it unblocks the driver when the idle
 // bound fires or the caller gives up.
-func ReadBodyLimited(ctx context.Context, cancel context.CancelFunc, body io.ReadCloser, limit int64, idle time.Duration) ([]byte, error) {
+func ReadBodyLimited(ctx context.Context, cancel context.CancelCauseFunc, body io.ReadCloser, limit int64, idle time.Duration) ([]byte, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("drive: read limit must be non-negative")
 	}
@@ -92,7 +140,10 @@ func ReadBodyLimited(ctx context.Context, cancel context.CancelFunc, body io.Rea
 	if idle <= 0 {
 		idle = DefaultFetchIdleTimeout
 	}
-	reader := newTimeoutBody(ctx, cancel, body, idle)
+	// A completed read or a close is a caller cancel; only an abandoned fetch
+	// ends the request with ReadIdleStall, so a driver can tell a stalled
+	// connection from its own lifecycle.
+	reader := newTimeoutBody(ctx, func() { cancel(nil) }, func() { cancel(ReadIdleStall) }, body, idle)
 	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		reader.Close()
@@ -115,7 +166,19 @@ func NewFetchTimeoutBody(ctx context.Context, cancel context.CancelFunc, body io
 	if idle <= 0 {
 		idle = DefaultFetchIdleTimeout
 	}
-	return newTimeoutBody(ctx, cancel, body, idle)
+	return newTimeoutBody(ctx, cancel, nil, body, idle)
+}
+
+// NewStallAwareFetchTimeoutBody is NewFetchTimeoutBody with two cancellation
+// paths: closing the body or finishing it calls cancel, while an idle abort
+// calls abandon. A caller that returns the body to its own caller passes a
+// plain cancel for the first and a cancel that records ReadIdleStall for the
+// second, so a normal close never looks like a stalled connection.
+func NewStallAwareFetchTimeoutBody(ctx context.Context, cancel, abandon context.CancelFunc, body io.ReadCloser, idle time.Duration) io.ReadCloser {
+	if idle <= 0 {
+		idle = DefaultFetchIdleTimeout
+	}
+	return newTimeoutBody(ctx, cancel, abandon, body, idle)
 }
 
 // closeGrace bounds how long Close waits for the body pump to stop. A
@@ -142,14 +205,25 @@ type timeoutBody struct {
 	body    io.ReadCloser
 	idle    time.Duration
 	started time.Time
+	// localWaits reports reads blocked on a local bandwidth limiter, so its
+	// token wait is never mistaken for a provider stall.
+	localWaits *localWaitWatch
 	// totalLimit is the context deadline distance captured at construction.
 	// It only feeds the timeout error's diagnostic fields.
 	totalLimit time.Duration
+
+	// abandon ends the request when the fetch is given up on. It is nil when
+	// the caller cannot distinguish a close from an abandoned fetch; the plain
+	// cancel is used then.
+	abandon context.CancelFunc
 
 	chunks chan timeoutBodyChunk
 	stop   chan struct{}
 	done   chan struct{}
 	timer  *time.Timer
+
+	idleStarted   time.Time
+	idleLocalWait time.Duration
 
 	pending    []byte
 	pendingErr error
@@ -158,18 +232,22 @@ type timeoutBody struct {
 	releaseOnce sync.Once
 }
 
-func newTimeoutBody(ctx context.Context, cancel context.CancelFunc, body io.ReadCloser, idle time.Duration) *timeoutBody {
+func newTimeoutBody(ctx context.Context, cancel, abandon context.CancelFunc, body io.ReadCloser, idle time.Duration) *timeoutBody {
 	r := &timeoutBody{
-		ctx:     ctx,
-		cancel:  cancel,
-		body:    body,
-		idle:    idle,
-		started: time.Now(),
-		chunks:  make(chan timeoutBodyChunk, 1),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
-		timer:   time.NewTimer(idle),
+		ctx:         ctx,
+		cancel:      cancel,
+		abandon:     abandon,
+		body:        body,
+		idle:        idle,
+		started:     time.Now(),
+		idleStarted: time.Now(),
+		localWaits:  localWaitWatchFrom(ctx),
+		chunks:      make(chan timeoutBodyChunk, 1),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		timer:       time.NewTimer(idle),
 	}
+	r.idleLocalWait = r.localWaits.duration()
 	if deadline, ok := ctx.Deadline(); ok {
 		r.totalLimit = time.Until(deadline)
 	}
@@ -246,6 +324,16 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 				r.resetIdle()
 			}
 		case <-r.timer.C:
+			remaining := r.idle - time.Since(r.idleStarted) + r.localWaits.duration() - r.idleLocalWait
+			if r.localWaits.waiting() || remaining > 0 {
+				// Completed local waits also count: the consumer may only
+				// process this timer after the limiter has already resumed.
+				if remaining <= 0 {
+					remaining = r.idle
+				}
+				r.timer.Reset(remaining)
+				continue
+			}
 			return 0, r.abort(&FetchTimeoutError{
 				Kind:    FetchTimeoutIdle,
 				Limit:   r.idle,
@@ -265,6 +353,8 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 }
 
 func (r *timeoutBody) resetIdle() {
+	r.idleStarted = time.Now()
+	r.idleLocalWait = r.localWaits.duration()
 	if !r.timer.Stop() {
 		select {
 		case <-r.timer.C:
@@ -327,7 +417,9 @@ func (r *timeoutBody) release() {
 	r.releaseOnce.Do(func() {
 		close(r.stop)
 		r.timer.Stop()
-		if r.cancel != nil {
+		if r.abandon != nil {
+			r.abandon()
+		} else if r.cancel != nil {
 			r.cancel()
 		}
 		_ = r.body.Close()

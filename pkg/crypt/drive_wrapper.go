@@ -81,13 +81,18 @@ func (d *Driver) Capabilities() []drive.Capability {
 	return caps
 }
 
-// ReadProfile forwards the raw driver's read scheduling defaults. Encryption
-// changes the byte offsets but not how many sub-ranges a bulk read may use.
-func (d *Driver) ReadProfile() drive.ReadProfile {
-	if profiler, ok := d.raw.(drive.ReadProfiler); ok {
-		return profiler.ReadProfile()
+// ReadPolicy forwards provider recommendations; admission belongs to the outer source.
+func (d *Driver) ReadPolicy() drive.ReadPolicy {
+	if p, ok := d.raw.(drive.ReadPolicyProvider); ok {
+		return p.ReadPolicy()
 	}
-	return drive.ReadProfile{}
+	return drive.DefaultReadPolicy()
+}
+func (d *Driver) ReadLimits() drive.ReadLimits {
+	if p, ok := d.raw.(drive.ReadLimitProvider); ok {
+		return p.ReadLimits()
+	}
+	return drive.ReadLimits{MaxInFlight: 32, Parallel: drive.HasCapability(d.raw, drive.CapabilityParallelRange) && !drive.HasCapability(d.raw, drive.CapabilityInternalParallelRead)}
 }
 
 func (d *Driver) Init(ctx context.Context) error { return d.raw.Init(ctx) }

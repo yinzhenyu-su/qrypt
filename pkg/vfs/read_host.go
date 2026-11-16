@@ -27,13 +27,12 @@ type readState = read.State
 // vfsReadHost adapts VFS internals to read.Host.
 type vfsReadHost struct {
 	resolver pathResolver
-	driver   drive.Driver
 	store    *upload.Domain
 	rootID   string
 }
 
 func newVFSReadHost(v *VFS) vfsReadHost {
-	return vfsReadHost{resolver: v, driver: v.driver, store: v.uploads, rootID: v.rootID}
+	return vfsReadHost{resolver: v, store: v.uploads, rootID: v.rootID}
 }
 
 func (h vfsReadHost) Resolve(ctx context.Context, path string) (drive.Entry, error) {
@@ -50,10 +49,6 @@ func (h vfsReadHost) PendingUpload(path string) (vfstypes.PendingUpload, bool, e
 
 func (h vfsReadHost) ReadCacheKey(entry drive.Entry) string {
 	return read.CacheKey(h.rootID, entry)
-}
-
-func (h vfsReadHost) DriverRead(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
-	return h.driver.Read(ctx, entry, offset, size)
 }
 
 // vfsReadHost adapts only the read host surface; debug instrumentation
@@ -126,13 +121,19 @@ func (v *VFS) Read(ctx context.Context, path string, offset, size int64) (io.Rea
 // override to every read until ClearReadPlanOverride. Probe read benchmarks
 // use it to compare configurations without rebuilding or remounting. It is not
 // exposed through the CLI or config.
-func (v *VFS) SetReadPlanOverride(mount string, maxStreams, windowChunks int, idle, total time.Duration) error {
+func (v *VFS) SetReadPlanOverride(mount string, maxStreams int, windowBytes int64, idle, total time.Duration) error {
 	if mount != "" && vfstypes.CleanMountName(mount) != vfstypes.CleanMountName(v.name) {
 		return fmt.Errorf("vfs: unknown mount %q", mount)
 	}
+	if maxStreams < 0 || maxStreams > 32 || windowBytes < 0 || windowBytes > drive.MaxReadWindowBytes {
+		return fmt.Errorf("vfs: invalid read measurement override")
+	}
+	if maxStreams > 1 && !v.readSource.Policy().Limits.Parallel {
+		return fmt.Errorf("vfs: driver does not support shared parallel ranges")
+	}
 	v.reader.SetPlanOverride(read.PlanOverride{
 		MaxStreams:        maxStreams,
-		WindowChunks:      windowChunks,
+		WindowChunks:      int((windowBytes + read.ChunkSize - 1) / read.ChunkSize),
 		FetchIdleTimeout:  idle,
 		FetchTotalTimeout: total,
 	})

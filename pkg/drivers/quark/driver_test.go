@@ -324,32 +324,23 @@ func TestDriverReadStrictRangeRejectsWholeObject(t *testing.T) {
 	}
 }
 
-func TestDriverReadProfileUsesSharedParallelRead(t *testing.T) {
-	driver := New("cookie", Options{})
-	if drive.HasCapability(driver, drive.CapabilityInternalParallelRead) {
-		t.Fatal("quark must not hide range reads behind internal_parallel_read")
+func TestDriverReadPolicyPreservesLegacyReadShape(t *testing.T) {
+	d := New("cookie", Options{})
+	p := d.ReadPolicy()
+	if !drive.HasCapability(d, drive.CapabilityParallelRange) || drive.HasCapability(d, drive.CapabilityInternalParallelRead) {
+		t.Fatal("invalid read capability")
 	}
-	if !drive.HasCapability(driver, drive.CapabilityParallelRange) {
-		t.Fatal("quark must declare parallel_range so a mount can opt into streams")
+	if p.Bulk.WindowBytes != 4<<20 || p.Bulk.Streams != 3 || p.Bulk.Split.PartBytes != 8<<20 || p.Bulk.Split.MinParallelBytes != 4<<20 {
+		t.Fatalf("bulk=%+v", p.Bulk)
 	}
-	// Real-mount measurements: four ranges did not beat one stream and tripped
-	// the slow-read watchdog per stream, so the default stays single-stream.
-	if got := drive.ReadProfileOf(driver).BulkStreams; got != 1 {
-		t.Fatalf("bulk streams = %d, want 1", got)
+	if p.Interactive.Sequential.Window.Mode != drive.WindowCaller || p.Interactive.Sequential.Prefetch != (drive.PrefetchPolicy{Mode: drive.PrefetchAdaptive}) {
+		t.Fatalf("interactive=%+v", p.Interactive)
 	}
-}
-
-func TestDriverReadProfileBoundsSlowDownload(t *testing.T) {
-	driver := New("cookie", Options{})
-	profile := drive.ReadProfileOf(driver)
-	if profile.FetchTotalTimeout != downloadTotalTimeout {
-		t.Fatalf("fetch total timeout = %s, want %s", profile.FetchTotalTimeout, downloadTotalTimeout)
+	if p.MaxInFlight != 7 {
+		t.Fatalf("file budget=%d, want room for four lookaheads plus three workers", p.MaxInFlight)
 	}
-	if profile.FetchTotalTimeout > 2*time.Minute {
-		t.Fatalf("fetch total timeout = %s, want a bound that abandons a trickling connection", profile.FetchTotalTimeout)
-	}
-	if profile.FetchIdleTimeout <= 0 || profile.FetchIdleTimeout > profile.FetchTotalTimeout {
-		t.Fatalf("idle timeout = %s, want (0, %s]", profile.FetchIdleTimeout, profile.FetchTotalTimeout)
+	if p.Fetch.Total != downloadTotalTimeout || p.Fetch.Idle <= 0 || p.Fetch.Idle > p.Fetch.Total {
+		t.Fatalf("fetch=%+v", p.Fetch)
 	}
 }
 
@@ -462,41 +453,6 @@ func TestDriverRotatesDownloadTransportOnHeaderTimeout(t *testing.T) {
 	}
 }
 
-func TestClientDownloadRateFloor(t *testing.T) {
-	c := newClient("k=v", clientOptions{})
-	if got := c.downloadRateFloor(); got != downloadRateMinFloor {
-		t.Fatalf("floor without history = %d, want %d", got, downloadRateMinFloor)
-	}
-	c.observeDownloadRate(8<<20, time.Second) // 8 MiB/s
-	want := int64((8 << 20) / downloadRateBestDivisor)
-	if got := c.downloadRateFloor(); got != want {
-		t.Fatalf("floor after a fast read = %d, want %d", got, want)
-	}
-	c.rateMu.Lock()
-	c.rateBestAt = time.Now().Add(-downloadRateWindow - time.Second)
-	c.rateMu.Unlock()
-	if got := c.downloadRateFloor(); got != downloadRateMinFloor {
-		t.Fatalf("floor after expiry = %d, want %d", got, downloadRateMinFloor)
-	}
-}
-
-func TestClientSlowAbortCooldown(t *testing.T) {
-	c := newClient("k=v", clientOptions{})
-	if !c.allowSlowAbort() {
-		t.Fatal("a fresh client does not allow a slow abort")
-	}
-	c.noteSlowAbort()
-	if c.allowSlowAbort() {
-		t.Fatal("a second slow abort is allowed inside the cooldown")
-	}
-	c.rateMu.Lock()
-	c.slowAbortAt = time.Now().Add(-downloadSlowAbortCooldown - time.Second)
-	c.rateMu.Unlock()
-	if !c.allowSlowAbort() {
-		t.Fatal("slow abort still blocked after the cooldown")
-	}
-}
-
 type pacedBody struct {
 	remaining int
 	delay     time.Duration
@@ -518,85 +474,173 @@ func (b *pacedBody) Read(p []byte) (int, error) {
 
 func (b *pacedBody) Close() error { return nil }
 
-// TestTraceReadCloserAbortsSlowBody: a body that stays far below the floor is
-// aborted with a truncated body so the read layer can replay it on a fresh
-// connection.
-func TestTraceReadCloserAbortsSlowBody(t *testing.T) {
-	var failed error
-	completed := false
+// TestTraceReadCloserReportsBodyError: a body failure is reported once with
+// the bytes delivered and the provider time spent, so the driver can decide
+// whether the connection failed. A slow body must not be turned into a
+// synthetic truncated response.
+func TestTraceReadCloserReportsBodyError(t *testing.T) {
+	bodyErr := errors.New("connection reset by peer")
+	var reported error
 	trace := &traceReadCloser{
-		ReadCloser: &pacedBody{remaining: 1 << 20, delay: time.Millisecond},
+		ReadCloser: &pacedBody{remaining: 1 << 10, err: bodyErr},
 		size:       1 << 20,
-		start:      time.Now().Add(-time.Second),
-		minRate:    10 << 20,
-		onError:    func(err error, _ int64, _ time.Duration) { failed = err },
-		onComplete: func(int64, time.Duration) { completed = true },
+		start:      time.Now(),
+		onError:    func(err error, _ int64, _ time.Duration) { reported = err },
 	}
-	if _, err := trace.Read(make([]byte, 1024)); !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("read error = %v, want io.ErrUnexpectedEOF", err)
+	if _, err := io.Copy(io.Discard, trace); !errors.Is(err, bodyErr) {
+		t.Fatalf("read error = %v, want the body error", err)
 	}
-	if !errors.Is(failed, errDownloadTooSlow) {
-		t.Fatalf("watchdog error = %v, want errDownloadTooSlow", failed)
-	}
-	if err := trace.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if completed {
-		t.Fatal("an aborted read reported a throughput sample")
+	if !errors.Is(reported, bodyErr) {
+		t.Fatalf("reported error = %v, want the body error", reported)
 	}
 }
 
-// TestTraceReadCloserReportsCompleteRate: only a fully read body feeds the
-// recent-best rate used by the floor.
-func TestTraceReadCloserReportsCompleteRate(t *testing.T) {
-	var gotBytes int64
+// TestTraceReadCloserKeepsSlowBody: a body that keeps making progress far
+// below any historical rate must be delivered in full. Slow is not broken, and
+// aborting it would replay already-downloaded bytes.
+func TestTraceReadCloserKeepsSlowBody(t *testing.T) {
+	const total = 8 << 10
 	trace := &traceReadCloser{
-		ReadCloser: io.NopCloser(strings.NewReader("hello world")),
-		size:       11,
-		start:      time.Now().Add(-time.Second),
-		onComplete: func(bytes int64, _ time.Duration) { gotBytes = bytes },
+		ReadCloser: io.NopCloser(strings.NewReader(strings.Repeat("x", total))),
+		size:       total,
+		start:      time.Now().Add(-time.Minute),
+		onError:    func(err error, _ int64, _ time.Duration) { t.Fatalf("slow body reported %v", err) },
 	}
-	if _, err := io.Copy(io.Discard, trace); err != nil {
-		t.Fatal(err)
+	data, err := io.ReadAll(trace)
+	if err != nil {
+		t.Fatalf("slow body read: %v", err)
 	}
-	if err := trace.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if gotBytes != 11 {
-		t.Fatalf("reported bytes = %d, want 11", gotBytes)
+	if len(data) != total {
+		t.Fatalf("slow body bytes = %d, want %d", len(data), total)
 	}
 }
 
-// TestDriverSkipsRotationForHealthyCancelledRead: seek and close cancel
-// prefetch bodies all the time; a cancel while the body was still moving fast
-// must not replace the connection pool (that would add a TLS handshake and a
-// cold CDN edge to every seek).
-func TestDriverSkipsRotationForHealthyCancelledRead(t *testing.T) {
+// TestDriverNeverRotatesOnLifecycleCancel: seek, close, released prefetch, and
+// the read layer's own bounds all cancel bodies. None of them is evidence of a
+// bad edge, so none may replace the connection pool or penalize the address.
+func TestDriverNeverRotatesOnLifecycleCancel(t *testing.T) {
 	driver := New("k=v", Options{})
 	stale := func(d *Driver) bool {
 		d.cl.downloadMu.RLock()
 		defer d.cl.downloadMu.RUnlock()
 		return d.cl.downloadDirty
 	}
-
-	driver.noteDownloadBodyError("", context.Canceled, 4<<20, 2*time.Second) // ~2 MiB/s
-	if stale(driver) {
-		t.Fatal("a fast canceled read marked the connection stale")
-	}
-	driver.noteDownloadBodyError("", context.Canceled, 0, 100*time.Millisecond)
-	if stale(driver) {
-		t.Fatal("a cancel right after the request started marked the connection stale")
-	}
-
-	driver.noteDownloadBodyError("", context.Canceled, 1<<10, 30*time.Second) // stalled
-	if !stale(driver) {
-		t.Fatal("a stalled canceled read did not mark the connection stale")
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, errors.New("http: response body closed")} {
+		driver.noteDownloadBodyError(context.Background(), "1.2.3.4:443", err)
+		if stale(driver) {
+			t.Fatalf("%v marked the connection stale", err)
+		}
+		if driver.cl.edges.isBad(mustAddr(t, "1.2.3.4"), time.Now()) {
+			t.Fatalf("%v penalized the edge", err)
+		}
 	}
 
 	network := New("k=v", Options{})
-	network.noteDownloadBodyError("", errors.New("connection reset by peer"), 0, 0)
+	network.noteDownloadBodyError(context.Background(), "", errors.New("connection reset by peer"))
 	if !stale(network) {
 		t.Fatal("a network failure did not mark the connection stale")
+	}
+
+	// The read layer abandons a stalled fetch and marks it with a cause. That
+	// is a connection that is not delivering, so the retry must not replay on
+	// it, even though the body itself reports a plain cancellation.
+	stalled := New("k=v", Options{})
+	stalledCtx, cancelStalled := context.WithCancelCause(context.Background())
+	cancelStalled(drive.ReadIdleStall)
+	stalled.noteDownloadBodyError(stalledCtx, "", context.Canceled)
+	if !stale(stalled) {
+		t.Fatal("a stalled fetch did not mark the connection stale")
+	}
+}
+
+// TestTraceReadCloserReportsShortBody: a provider that closes the connection
+// before the requested range is complete reports a clean EOF. The driver must
+// still see it as a transfer failure so the retry uses a fresh connection.
+func TestTraceReadCloserReportsShortBody(t *testing.T) {
+	var reported error
+	trace := &traceReadCloser{
+		ReadCloser: io.NopCloser(strings.NewReader("short")),
+		size:       1 << 20,
+		start:      time.Now(),
+		onError:    func(err error, _ int64, _ time.Duration) { reported = err },
+	}
+	if _, err := io.ReadAll(trace); err != nil {
+		t.Fatalf("short body read: %v", err)
+	}
+	if !errors.Is(reported, errDownloadShortBody) {
+		t.Fatalf("reported error = %v, want the short-body sentinel", reported)
+	}
+}
+
+// TestDriverKeepsSlowBodyWithoutRotation: a moving body that finishes must not
+// be replayed, rotated, or penalized no matter how slow it was.
+func TestDriverKeepsSlowBodyWithoutRotation(t *testing.T) {
+	const total = 64 << 10
+	driver := New("k=v", Options{})
+	driver.setURL("fid-slow", "https://download.test/slow.bin")
+	driver.downloadWarmupDone.Store("https://download.test/slow.bin", struct{}{})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes 0-%d/%d", total-1, total)}},
+			Body:       &pacedBody{remaining: total, delay: 2 * time.Millisecond},
+			Request:    req,
+		}, nil
+	})
+	entry := drive.Entry{ID: "fid-slow", Name: "slow.bin", Size: total}
+	rc, err := driver.Read(context.Background(), entry, 0, total)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("slow read: %v", err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != total {
+		t.Fatalf("slow read bytes = %d, want %d", len(data), total)
+	}
+	rotations, reason := driver.cl.downloadDebugSnapshot()
+	if rotations != 0 {
+		t.Fatalf("slow read rotated the pool: %d (%s)", rotations, reason)
+	}
+}
+
+// TestDriverLowDownloadLimitDoesNotRotate: a user download cap paces the
+// consumer; it must never look like a provider stall.
+func TestDriverLowDownloadLimitDoesNotRotate(t *testing.T) {
+	const total = 32 << 10
+	driver := New("k=v", Options{})
+	driver.limiter = drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 8 << 10})
+	driver.setURL("fid-cap", "https://download.test/cap.bin")
+	driver.downloadWarmupDone.Store("https://download.test/cap.bin", struct{}{})
+	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header:     http.Header{"Content-Range": []string{fmt.Sprintf("bytes 0-%d/%d", total-1, total)}},
+			Body:       io.NopCloser(bytes.NewReader(make([]byte, total))),
+			Request:    req,
+		}, nil
+	})
+	entry := drive.Entry{ID: "fid-cap", Name: "cap.bin", Size: total}
+	rc, err := driver.Read(context.Background(), entry, 0, total)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("capped read: %v", err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != total {
+		t.Fatalf("capped read bytes = %d, want %d", len(data), total)
+	}
+	if rotations, reason := driver.cl.downloadDebugSnapshot(); rotations != 0 {
+		t.Fatalf("capped read rotated the pool: %d (%s)", rotations, reason)
 	}
 }
 
@@ -902,11 +946,16 @@ func TestDriverReadWarmsDownloadConnectionOnce(t *testing.T) {
 	driver.setURL("fid-1", "https://download.test/file.bin")
 	var ranges []string
 	driver.cl.downloadClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		ranges = append(ranges, req.Header.Get("Range"))
+		rangeHeader := req.Header.Get("Range")
+		ranges = append(ranges, rangeHeader)
+		// Answer the full requested span: a short body is a provider failure,
+		// and this test is about the warmup request, not truncation.
+		body := bytes.Repeat([]byte("x"), rangeBodyLen(rangeHeader))
+		copy(body, "hello")
 		return &http.Response{
 			StatusCode: http.StatusPartialContent,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("hello")),
+			Body:       io.NopCloser(bytes.NewReader(body)),
 			Request:    req,
 		}, nil
 	})
@@ -916,8 +965,9 @@ func TestDriverReadWarmsDownloadConnectionOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if data, err := io.ReadAll(rc); err != nil || string(data) != "hello" {
-			t.Fatalf("read at %d = %q/%v, want hello/nil", offset, data, err)
+		data, readErr := io.ReadAll(rc)
+		if readErr != nil || len(data) != 1<<20 || string(data[:5]) != "hello" {
+			t.Fatalf("read at %d len=%d err=%v, want 1 MiB starting with hello", offset, len(data), readErr)
 		}
 		_ = rc.Close()
 	}
@@ -928,6 +978,24 @@ func TestDriverReadWarmsDownloadConnectionOnce(t *testing.T) {
 	if got := metricCount(driver.cl.metricEvents(time.Time{}), "download_warmup"); got != 1 {
 		t.Fatalf("download warmup metrics = %d, want 1", got)
 	}
+}
+
+// rangeBodyLen returns the byte count a "bytes=first-last" header requests.
+func rangeBodyLen(header string) int {
+	spec, ok := strings.CutPrefix(header, "bytes=")
+	if !ok {
+		return 0
+	}
+	first, last, ok := strings.Cut(spec, "-")
+	if !ok {
+		return 0
+	}
+	start, errStart := strconv.ParseInt(first, 10, 64)
+	end, errEnd := strconv.ParseInt(last, 10, 64)
+	if errStart != nil || errEnd != nil || end < start {
+		return 0
+	}
+	return int(end - start + 1)
 }
 
 func TestDriverDebugSnapshot(t *testing.T) {

@@ -75,7 +75,7 @@ type uploadWriteRemote interface {
 }
 
 func newVFSUploadWriteRemote(v *VFS) vfsUploadWriteRemote {
-	return vfsUploadWriteRemote{resolver: v, driver: v.driver, invalidator: v}
+	return vfsUploadWriteRemote{resolver: v, source: v.readSource, invalidator: v}
 }
 
 func (r vfsUploadWriteRemote) Parent(ctx context.Context, path string) (drive.Entry, string, error) {
@@ -87,7 +87,7 @@ func (r vfsUploadWriteRemote) Resolve(ctx context.Context, path string) (drive.E
 }
 
 func (r vfsUploadWriteRemote) Read(ctx context.Context, entry drive.Entry) (io.ReadCloser, error) {
-	return r.driver.Read(ctx, entry, 0, 0)
+	return r.source.Read(ctx, entry, 0, 0)
 }
 
 func (r vfsUploadWriteRemote) InvalidateReadCache(entry drive.Entry) {

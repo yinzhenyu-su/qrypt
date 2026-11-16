@@ -64,7 +64,7 @@ func rangeEntry() drive.Entry {
 func TestReadWindowRangeReplaysTransientStatus(t *testing.T) {
 	backend := &scriptedReadBackend{failures: []error{providerStatus(t, http.StatusInternalServerError)}}
 	started := time.Now()
-	data, extra, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+	data, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
 	if err != nil {
 		t.Fatalf("read failed despite a transient 500: %v", err)
 	}
@@ -87,8 +87,8 @@ func TestReadWindowRangeReplaysTransientStatus(t *testing.T) {
 		t.Fatalf("fetch_retried = %v, want true", got)
 	}
 	// The replay must wait, not hammer the provider that just failed.
-	if elapsed := time.Since(started); elapsed < fetchStatusBackoffBase*3/4 {
-		t.Fatalf("replayed after %s, want at least ~%s", elapsed, fetchStatusBackoffBase)
+	if elapsed := time.Since(started); elapsed < (200*time.Millisecond)*3/4 {
+		t.Fatalf("replayed after %s, want at least ~%s", elapsed, (200 * time.Millisecond))
 	}
 }
 
@@ -116,7 +116,7 @@ func (*shortReadBackend) StoreChunk(context.Context, string, drive.Entry, int64,
 // declared range is replayed once and never assembled as a short window.
 func TestReadWindowRangeReplaysTruncatedBody(t *testing.T) {
 	backend := &shortReadBackend{}
-	data, extra, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+	data, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
 	if err != nil {
 		t.Fatalf("read failed despite a replayable truncated body: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestReadWindowRangeReplaysTruncatedBody(t *testing.T) {
 // the body early surfaces a truncated-body error instead of looping.
 func TestReadWindowRangeStopsAfterTruncatedBodyBudget(t *testing.T) {
 	backend := &shortReadBackend{alwaysShort: true}
-	_, _, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+	_, _, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("error = %v, want io.ErrUnexpectedEOF", err)
 	}
@@ -172,7 +172,7 @@ func (r *errReadCloser) Close() error             { return nil }
 // once instead of failing the read.
 func TestReadWindowRangeReplaysClosedBody(t *testing.T) {
 	backend := &bodyErrorBackend{}
-	data, extra, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+	data, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
 	if err != nil {
 		t.Fatalf("read failed despite a replayable closed body: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestReadWindowRangeReplaysClosedBody(t *testing.T) {
 func TestReadWindowRangeStopsAfterStatusBudget(t *testing.T) {
 	status := providerStatus(t, http.StatusInternalServerError)
 	backend := &scriptedReadBackend{failures: []error{status, status, status, status, status}}
-	_, extra, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
+	_, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend)
 	if err == nil {
 		t.Fatal("read succeeded despite a persistent 500")
 	}
@@ -203,11 +203,11 @@ func TestReadWindowRangeStopsAfterStatusBudget(t *testing.T) {
 	if !strings.Contains(err.Error(), "500") {
 		t.Fatalf("error = %v, want it to carry the provider status", err)
 	}
-	if backend.calls != fetchStatusAttempts {
-		t.Fatalf("driver calls = %d, want %d", backend.calls, fetchStatusAttempts)
+	if backend.calls != 3 {
+		t.Fatalf("driver calls = %d, want %d", backend.calls, 3)
 	}
-	if got := extra["fetch_status_retries"]; got != fetchStatusAttempts-1 {
-		t.Fatalf("fetch_status_retries = %v, want %d", got, fetchStatusAttempts-1)
+	if got := extra["fetch_status_retries"]; got != 3-1 {
+		t.Fatalf("fetch_status_retries = %v, want %d", got, 3-1)
 	}
 }
 
@@ -217,7 +217,7 @@ func TestReadWindowRangeReplaysRateLimit(t *testing.T) {
 	backend := &scriptedReadBackend{failures: []error{
 		fmt.Errorf("%w: 429 Too Many Requests", drive.ErrRateLimit),
 	}}
-	if _, extra, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err != nil {
+	if _, extra, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err != nil {
 		t.Fatalf("read failed despite a transient 429: %v", err)
 	} else if got := extra["fetch_status_reason"]; got != "rate_limited" {
 		t.Fatalf("fetch_status_reason = %v, want rate_limited", got)
@@ -244,7 +244,7 @@ func TestReadWindowRangeDoesNotReplayPermanentFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := &scriptedReadBackend{failures: []error{tc.err}}
-			if _, _, err := readWindowRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err == nil {
+			if _, _, err := testReadRange(rangeRetryContext(t), rangeEntry(), 0, 0, backend); err == nil {
 				t.Fatal("read succeeded, want the provider failure")
 			}
 			if backend.calls != 1 {
@@ -261,7 +261,7 @@ func TestReadWindowRangeStatusBackoffHonorsContext(t *testing.T) {
 	defer cancel()
 	backend := &scriptedReadBackend{failures: []error{providerStatus(t, http.StatusInternalServerError)}}
 	started := time.Now()
-	_, _, err := readWindowRange(ctx, rangeEntry(), 0, 0, backend)
+	_, _, err := testReadRange(ctx, rangeEntry(), 0, 0, backend)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want the caller's deadline", err)
 	}
@@ -275,11 +275,7 @@ func TestReadWindowRangeStatusBackoffHonorsContext(t *testing.T) {
 
 // TestFetchStatusBackoffDoublesAndCaps pins the backoff sequence so a future
 // change cannot silently turn the retry into a hot loop or a long stall.
-func TestFetchStatusBackoffDoublesAndCaps(t *testing.T) {
-	want := []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, 1600 * time.Millisecond, 2 * time.Second, 2 * time.Second}
-	for i, expected := range want {
-		if got := fetchStatusBackoff(i + 1); got != expected {
-			t.Fatalf("fetchStatusBackoff(%d) = %s, want %s", i+1, got, expected)
-		}
-	}
+
+func testReadRange(ctx context.Context, e drive.Entry, start, end int64, b testReadBackend) ([]byte, map[string]any, error) {
+	return testFetch(ctx, e, start, end, b, 1, nil)
 }

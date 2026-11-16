@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
+	"github.com/yinzhenyu/qrypt/pkg/logging"
 )
 
 // Quark offline adapter. It implements the provider-neutral offline contracts
@@ -751,9 +752,37 @@ func (d *Driver) resolveOfflineLayout(ctx context.Context, layout drive.OfflineL
 // result files. It accepts a directory whose children include a known file and
 // a direct file entry, which covers both multi-file resource folders and
 // single-file sources whose submit response omits fid.
+//
+// A result file that carries a provider ID is matched by that ID alone: the
+// parse destination can already hold an older task's output or any unrelated
+// same-name file, and the post-download cleanup deletes everything under the
+// discovered root, so a name match must never override a known identity.
+// Name and size are used only for result files the provider did not give an
+// ID, where they are the only handle. When several roots explain the same
+// known files and nothing separates them, this reports "no root yet" so the
+// caller retries instead of guessing at a folder it may later delete.
 func (d *Driver) discoverOfflineRoot(ctx context.Context, parentID string, entries []drive.Entry, files []drive.OfflineFile) (string, string, error) {
 	if parentID == "" || len(files) == 0 {
 		return "", parentID, nil
+	}
+	type rootCandidate struct {
+		entry  drive.Entry
+		score  int
+		newest time.Time
+	}
+	candidates := make([]rootCandidate, 0, len(entries))
+	consider := func(root drive.Entry, leaves []drive.Entry) {
+		score := countOfflineRootMatches(leaves, files)
+		if score == 0 {
+			return
+		}
+		newest := root.ModTime
+		for _, leaf := range leaves {
+			if leaf.ModTime.After(newest) {
+				newest = leaf.ModTime
+			}
+		}
+		candidates = append(candidates, rootCandidate{entry: root, score: score, newest: newest})
 	}
 	for _, entry := range entries {
 		if !entry.IsDir {
@@ -763,31 +792,54 @@ func (d *Driver) discoverOfflineRoot(ctx context.Context, parentID string, entri
 		if err != nil {
 			continue
 		}
-		for _, child := range children {
-			for _, file := range files {
-				if file.RemoteID != "" && child.ID == file.RemoteID {
-					return entry.ID, parentID, nil
-				}
-				if child.Name == file.Name && (file.Size == 0 || child.Size == file.Size) {
-					return entry.ID, parentID, nil
-				}
-			}
-		}
+		consider(entry, children)
 	}
 	for _, entry := range entries {
 		if entry.IsDir {
 			continue
 		}
-		for _, file := range files {
-			if file.RemoteID != "" && entry.ID == file.RemoteID {
-				return entry.ID, parentID, nil
+		consider(entry, []drive.Entry{entry})
+	}
+	if len(candidates) == 0 {
+		return "", parentID, nil
+	}
+	sort.SliceStable(candidates, func(a, b int) bool {
+		if candidates[a].score != candidates[b].score {
+			return candidates[a].score > candidates[b].score
+		}
+		return candidates[a].newest.After(candidates[b].newest)
+	})
+	best := candidates[0]
+	if len(candidates) > 1 && candidates[1].score == best.score && !candidates[1].newest.Before(best.newest) {
+		logging.L.WarnfEvery("quark.offline_root_ambiguous", time.Minute,
+			"[QUARK] staged root under %q is ambiguous: %q and %q each explain %d result file(s); leaving the result set unavailable",
+			parentID, best.entry.ID, candidates[1].entry.ID, best.score)
+		return "", parentID, nil
+	}
+	return best.entry.ID, parentID, nil
+}
+
+// countOfflineRootMatches reports how many result files a candidate root
+// explains. A file with a provider ID only ever matches by ID; a file without
+// one matches by name and, when known, size.
+func countOfflineRootMatches(leaves []drive.Entry, files []drive.OfflineFile) int {
+	matched := 0
+	for _, file := range files {
+		for _, leaf := range leaves {
+			if file.RemoteID != "" {
+				if leaf.ID == file.RemoteID {
+					matched++
+					break
+				}
+				continue
 			}
-			if entry.Name == file.Name && (file.Size == 0 || entry.Size == file.Size) {
-				return entry.ID, parentID, nil
+			if leaf.Name == file.Name && (file.Size == 0 || leaf.Size == file.Size) {
+				matched++
+				break
 			}
 		}
 	}
-	return "", parentID, nil
+	return matched
 }
 
 func baseOfflineName(files []drive.OfflineFile) string {

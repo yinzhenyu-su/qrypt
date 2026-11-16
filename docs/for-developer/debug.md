@@ -767,9 +767,15 @@ Mount state is reported as `vfs.MountSnapshot`:
 - `events`: recent `drive.MetricEvent` streams such as VFS reads and driver
   metrics
 - `runtime`: chunk, window, and prefetch activity counters
-- `read_profile`: effective bulk streams, window chunks, prefetch depth,
-  parallel threshold, source (`driver` / `mount_override` / `driver_limiter`),
-  and whether a driver limiter clamped the value
+- `read_policy`: complete recommended/effective policy, hard limits, and field
+  origins; bulk sizes are bytes and fetch bounds use explicit nanosecond keys
+
+Read event extras distinguish planned workers and actual grants, stage,
+foreground/lookahead windows, part ceiling, retries, and cancellation. Timing
+fields separate `queue_us`, `open_us`, `body_us`, `local_wait_us`, and
+`validate_us`; local wait overlaps body time and must not be added to it.
+Driver open is not CDN TTFB. Player first-frame latency requires player telemetry.
+
 
 Events use `drive.MetricEvent`. `op_id`, `step`, and `name` are correlation
 labels. `kind` identifies the event family such as `driver`, `vfs_read`,

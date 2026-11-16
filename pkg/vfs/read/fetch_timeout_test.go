@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
@@ -85,8 +86,8 @@ func (b *trickleReadBody) Close() error { return nil }
 func newTimeoutScenarioReader(t *testing.T, size int, behavior drive.ReadBehavior) (*Reader, *State, *drive.FakeDriver) {
 	t.Helper()
 	reader, state, driver := newScenarioReader(t, size, behavior)
-	reader.profile.FetchIdleTimeout = 50 * time.Millisecond
-	reader.profile.FetchTotalTimeout = 5 * time.Second
+	reader.profile.Fetch.Idle = 50 * time.Millisecond
+	reader.profile.Fetch.Total = 5 * time.Second
 	return reader, state, driver
 }
 
@@ -106,14 +107,14 @@ func readError(t *testing.T, reader *Reader, ctx context.Context, offset, size i
 func TestWithFetchTimeoutsUsesPlanOverride(t *testing.T) {
 	state := NewState(nil)
 	state.setPlanOverride(PlanOverride{FetchIdleTimeout: 2 * time.Second, FetchTotalTimeout: 3 * time.Second})
-	reader := &Reader{state: state, profile: drive.DefaultReadProfile()}
+	reader := &Reader{state: state, profile: drive.DefaultReadPolicy()}
 	timeouts := fetchTimeoutsFromContext(reader.withFetchTimeouts(context.Background()))
 	if timeouts.Idle != 2*time.Second || timeouts.Total != 3*time.Second {
 		t.Fatalf("timeouts = %+v, want 2s idle and 3s total", timeouts)
 	}
 	state.clearPlanOverride()
 	timeouts = fetchTimeoutsFromContext(reader.withFetchTimeouts(context.Background()))
-	if timeouts != reader.profile.FetchTimeouts() {
+	if timeouts != reader.profile.Fetch {
 		t.Fatalf("timeouts after clear = %+v, want profile defaults", timeouts)
 	}
 }
@@ -143,15 +144,17 @@ func TestReaderReadStalledBodyTimesOut(t *testing.T) {
 }
 
 func TestReaderReadSlowProgressingBodySucceeds(t *testing.T) {
-	reader, _, _ := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
-		BodyFunc: func(ctx context.Context, data []byte) io.ReadCloser {
-			return &pacedReadBody{ctx: ctx, remaining: len(data), chunk: 1024, interval: 5 * time.Millisecond}
-		},
+	synctest.Test(t, func(t *testing.T) {
+		reader, _, _ := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
+			BodyFunc: func(ctx context.Context, data []byte) io.ReadCloser {
+				return &pacedReadBody{ctx: ctx, remaining: len(data), chunk: 1024, interval: 5 * time.Millisecond}
+			},
+		})
+		data := readScenario(t, reader, WithoutReadPrefetch(context.Background()), 0, ChunkSize)
+		if len(data) != ChunkSize {
+			t.Fatalf("bytes = %d, want %d", len(data), ChunkSize)
+		}
 	})
-	data := readScenario(t, reader, WithoutReadPrefetch(context.Background()), 0, ChunkSize)
-	if len(data) != ChunkSize {
-		t.Fatalf("bytes = %d, want %d", len(data), ChunkSize)
-	}
 }
 
 func TestReaderReadTricklingBodyHitsTotalCap(t *testing.T) {
@@ -160,8 +163,8 @@ func TestReaderReadTricklingBodyHitsTotalCap(t *testing.T) {
 			return &trickleReadBody{ctx: ctx, interval: 5 * time.Millisecond}
 		},
 	})
-	reader.profile.FetchIdleTimeout = time.Second
-	reader.profile.FetchTotalTimeout = 80 * time.Millisecond
+	reader.profile.Fetch.Idle = time.Second
+	reader.profile.Fetch.Total = 80 * time.Millisecond
 	err := readError(t, reader, WithoutReadPrefetch(context.Background()), 0, ChunkSize)
 	if !drive.IsFetchTimeout(err) {
 		t.Fatalf("read error = %v, want a total fetch timeout", err)
@@ -300,7 +303,7 @@ func TestPrefetchCancelReasonNotOverwrittenByTimeout(t *testing.T) {
 	reader.observer = obs
 	// A long idle bound leaves the invalidation as the only reason the
 	// prefetch can end.
-	reader.profile.FetchIdleTimeout = 30 * time.Second
+	reader.profile.Fetch.Idle = 30 * time.Second
 	entry := drive.Entry{ID: "0/file.bin", Name: "file.bin", Size: 4 << 20, ModTime: time.Unix(1700000000, 0)}
 	prefetchCtx := drive.WithDebugOperation(WithoutReadPrefetch(context.Background()), drive.DebugOperation{OpID: "op", Name: "/file.bin"})
 	reader.prefetchWindow(prefetchCtx, entry, 1, 1)
@@ -468,7 +471,7 @@ func TestPrefetchCancelReasonsDoNotOverrideEachOther(t *testing.T) {
 				},
 			})
 			reader.observer = obs
-			reader.profile.FetchIdleTimeout = 30 * time.Second
+			reader.profile.Fetch.Idle = 30 * time.Second
 			ctx := WithAccessHint(WithoutReadPrefetch(context.Background()), AccessHint{SessionID: 7, RequestID: 1})
 			ctx = drive.WithDebugOperation(ctx, drive.DebugOperation{OpID: "op", Name: "/file.bin"})
 			entry := drive.Entry{ID: "0/file.bin", Name: "file.bin", Size: 4 << 20, ModTime: time.Unix(1700000000, 0)}
@@ -497,5 +500,23 @@ func TestPrefetchCancelReasonsDoNotOverrideEachOther(t *testing.T) {
 				t.Fatalf("prefetch cancel reason = %q, want %q", reason, tc.reason)
 			}
 		})
+	}
+}
+
+// A local bandwidth limit is not provider silence. The body already produced
+// the bytes; the fetch is only waiting for its own token bucket. Counting that
+// wait as an idle stall aborts a read the provider answered instantly.
+func TestReaderReadIgnoresLocalBandwidthWait(t *testing.T) {
+	limiter := drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 1 << 20})
+	reader, _, _ := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
+		BodyFunc: func(ctx context.Context, data []byte) io.ReadCloser {
+			return limiter.LimitDownload(ctx, io.NopCloser(bytes.NewReader(data)))
+		},
+	})
+	// One 64 KiB body read waits about 62 ms at 1 MiB/s, past the 50 ms idle
+	// bound this helper installs, so the old accounting times the window out.
+	got := readScenario(t, reader, WithoutReadPrefetch(context.Background()), 0, ChunkSize)
+	if len(got) != ChunkSize {
+		t.Fatalf("bytes = %d, want %d", len(got), ChunkSize)
 	}
 }

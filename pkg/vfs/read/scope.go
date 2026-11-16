@@ -13,11 +13,13 @@ type readScopeKey struct {
 // ReadScope owns the lifetime of speculative prefetch for one file/session.
 // Foreground reads never use it; they keep their caller context.
 type ReadScope struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	refs   int
-	mu     sync.Mutex
-	reason string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	refs     int
+	jobs     sync.WaitGroup
+	mu       sync.Mutex
+	reason   string
+	prefetch *prefetchSession
 }
 
 func (s *ReadScope) setReason(reason string) {
@@ -40,6 +42,7 @@ type ScopeRegistry struct {
 	scopes    map[readScopeKey]*ReadScope
 	byCache   map[string]map[readScopeKey]struct{}
 	bySession map[uint64]map[readScopeKey]struct{}
+	closed    bool
 }
 
 func newScopeRegistry() *ScopeRegistry {
@@ -57,6 +60,12 @@ func (r *ScopeRegistry) Acquire(ctx context.Context, cacheKey string) (*ReadScop
 	hint, _ := AccessHintFromContext(ctx)
 	key := readScopeKey{cacheKey: cacheKey, sessionID: hint.SessionID}
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		scopeCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return &ReadScope{ctx: scopeCtx, cancel: cancel}, func() {}
+	}
 	scope := r.scopes[key]
 	if scope == nil {
 		scopeCtx, cancel := context.WithCancel(context.Background())
@@ -131,6 +140,9 @@ func (r *ScopeRegistry) CancelAll(reason string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if reason == "close" {
+		r.closed = true
+	}
 	for key, scope := range r.scopes {
 		scope.setReason(reason)
 		scope.cancel()
@@ -151,6 +163,25 @@ func (r *ScopeRegistry) Cancel(ctx context.Context, cacheKey, reason string) {
 		scope.setReason(reason)
 		scope.cancel()
 		r.removeLocked(key)
+	}
+}
+
+// cancelController applies a per-read gate to autonomous session scheduling.
+// A one-shot caller disabling new prefetch can still consume an existing load.
+func (r *ScopeRegistry) cancelController(ctx context.Context, cacheKey string) {
+	hint, _ := AccessHintFromContext(ctx)
+	key := readScopeKey{cacheKey: cacheKey, sessionID: hint.SessionID}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if scope := r.scopes[key]; scope != nil {
+		scope.mu.Lock()
+		active := scope.prefetch != nil
+		scope.mu.Unlock()
+		if active {
+			scope.setReason("prefetch_disabled")
+			scope.cancel()
+			r.removeLocked(key)
+		}
 	}
 }
 
@@ -184,7 +215,12 @@ func removeScopeIndex[K comparable](index map[K]map[readScopeKey]struct{}, key K
 
 // --- State wrappers (existing call sites and tests) ---
 
+type streamScopeKey struct{}
+
 func (s *State) scopeFor(ctx context.Context, cacheKey string) (*ReadScope, func()) {
+	if scope, ok := ctx.Value(streamScopeKey{}).(*ReadScope); ok {
+		return scope, func() {}
+	}
 	return s.scopes.Acquire(ctx, cacheKey)
 }
 

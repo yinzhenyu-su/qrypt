@@ -55,51 +55,47 @@ func (d *Driver) List(ctx context.Context, parentID string) (entries []drive.Ent
 
 func (d *Driver) Read(ctx context.Context, entry drive.Entry, offset, size int64) (io.ReadCloser, error) {
 	started := time.Now()
-	readCtx, cancelRead := context.WithTimeout(ctx, sftpOperationTimeout)
+	// Bound connection checks, open and seek independently of body delivery.
+	// The caller (including ReadSource idle/total budgets) owns the stream lifetime.
+	openCtx, cancelOpen := context.WithTimeout(ctx, sftpOperationTimeout)
+	defer cancelOpen()
 	if offset < 0 || size < 0 {
-		cancelRead()
 		err := fmt.Errorf("sftp: invalid read range offset=%d size=%d: %w", offset, size, drive.ErrInvalidInput)
 		d.recordOperation(ctx, "read", entry.ID, started, 0, err)
 		return nil, err
 	}
 	resolvedID, err := d.resolveID(entry.ID)
 	if err != nil {
-		cancelRead()
 		d.recordOperation(ctx, "read", entry.ID, started, 0, err)
 		return nil, err
 	}
 	if entry.Size > 0 && offset >= entry.Size {
-		cancelRead()
 		reader := io.NopCloser(strings.NewReader(""))
 		return &metricReadCloser{ReadCloser: reader, d: d, ctx: ctx, operation: "read", path: entry.ID, offset: offset, requested: size, started: started}, nil
 	}
 	if entry.Size > 0 && (size <= 0 || offset+size > entry.Size) {
 		size = entry.Size - offset
 	}
-	client, err := d.getClient(readCtx)
+	client, err := d.getClient(openCtx)
 	if err != nil {
-		cancelRead()
 		d.recordOperation(ctx, "read", entry.ID, started, 0, err)
 		return nil, err
 	}
-	file, err := d.openFile(readCtx, client, resolvedID)
+	file, err := d.openFile(openCtx, client, resolvedID)
 	if err != nil {
-		cancelRead()
 		err = fmt.Errorf("sftp: read %q: %w", resolvedID, classifyError(err))
 		d.recordOperation(ctx, "read", entry.ID, started, 0, err)
 		return nil, err
 	}
-	if _, err := d.seekFile(readCtx, client, file, offset); err != nil {
+	if _, err := d.seekFile(openCtx, client, file, offset); err != nil {
 		file.Close()
-		cancelRead()
 		err = fmt.Errorf("sftp: seek %q: %w", resolvedID, err)
 		d.recordOperation(ctx, "read", entry.ID, started, 0, err)
 		return nil, err
 	}
-	reader := newContextReadCloser(readCtx, contextReader{ctx: readCtx, reader: file}, file, func() {
+	reader := newContextReadCloser(ctx, contextReader{ctx: ctx, reader: file}, file, func() {
 		d.closeIfUnresponsive(client)
 	})
-	reader.cancel = cancelRead
 	var result io.ReadCloser
 	if size > 0 {
 		result = &limitedReadCloser{Reader: io.LimitReader(reader, size), closer: reader}
@@ -275,7 +271,6 @@ type contextReadCloser struct {
 	once   sync.Once
 	err    error
 	closed atomic.Bool
-	cancel context.CancelFunc
 }
 
 func newContextReadCloser(ctx context.Context, reader io.Reader, closer io.Closer, onCancel func()) *contextReadCloser {
@@ -301,9 +296,6 @@ func (r *contextReadCloser) Close() error {
 		r.closed.Store(true)
 		r.err = r.closer.Close()
 		close(r.done)
-		if r.cancel != nil {
-			r.cancel()
-		}
 	})
 	return r.err
 }

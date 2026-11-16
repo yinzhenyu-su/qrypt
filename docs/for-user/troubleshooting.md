@@ -103,24 +103,18 @@ killall Finder
 
 ## 读取速度慢
 
-qrypt 默认使用驱动作者按网盘特性选择的读策略，通常是单流。单流限速的线路可以先
-测量多流是否更快，再只为该 mount 开启覆盖：
+qrypt 使用驱动建议的读取策略。若下载较慢，先用 `qrypt probe test read`
+对比单流与多流，再为对应挂载填写经过测量的覆盖值：
 
 ```toml
-[[mounts]]
-name = "koofr"
-type = "koofr"
-
-[mounts.read_profile]
+[mounts.read.bulk]
 streams = 4
-window_chunks = 16
+window = "8MiB"
 ```
 
-`window_chunks` 的单位是 512 KiB，`16` 表示 8 MiB 窗口；配合 `streams = 4`
-时每个子 Range 约 2 MiB。该覆盖只影响 `bulk` 读，`interactive` / `probe` 仍
-保持单流。不同网络下收益可能相反；不确定时先用
-`qrypt probe test read` 对比单流与多流，不要直接照搬。没有 `read_profile`
-的 mount 继续使用驱动默认值。
+这表示批量读取最多使用 4 个 worker、每次取数窗口为 8 MiB。文件的总在途请求数
+还受 `[mounts.read] max_in_flight` 和驱动硬限制约束。交互读取与探测保持单流。
+省略配置会沿用驱动建议。旧配置升级见[读取配置迁移](read-policy-migration.md)。
 
 ## Finder 复制报错 -36 / 输入输出错误
 

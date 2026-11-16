@@ -139,7 +139,8 @@ func TestReadAtIntoWithPriorityHighUsesReserveSlots(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	raw := &blockingReadDriver{probe: probe, size: fileSize}
-	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache")})
+	budget := 32
+	fs, err := vfs.New(raw, vfs.Options{StorageDir: filepath.Join(t.TempDir(), "cache"), Read: &drive.ReadOverride{MaxInFlight: &budget}})
 	if err != nil {
 		t.Fatal(err)
 	}

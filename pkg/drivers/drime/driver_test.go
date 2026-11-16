@@ -36,7 +36,7 @@ func (r *progressRecorder) has(phase drive.UploadPhase) bool {
 
 func TestReadProfileKeepsBulkSingleStream(t *testing.T) {
 	d := New(Options{})
-	if got := drive.ReadProfileOf(d).BulkStreams; got != 1 {
+	if got := d.ReadPolicy().Bulk.Streams; got != 1 {
 		t.Fatalf("BulkStreams = %d, want 1", got)
 	}
 	if !drive.HasCapability(d, drive.CapabilityParallelRange) {

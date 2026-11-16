@@ -440,6 +440,19 @@ func TestDriverReadUsesEncryptedRange(t *testing.T) {
 	if raw.reads[1].size != BlockSize {
 		t.Fatalf("range raw size = %d, want %d", raw.reads[1].size, BlockSize)
 	}
+	budget := 1
+	source, err := drive.NewReadSource(drv, &drive.ReadOverride{MaxInFlight: &budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	bounded, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	content, err := source.Fetch(bounded, drive.Entry{ID: "file", Size: int64(len(plain))}, drive.RangePlan{Offset: offset, Size: size, Streams: 1})
+	if err != nil || !bytes.Equal(content, plain[offset:offset+size]) {
+		t.Fatalf("encrypted source budget one: bytes=%d error=%v", len(content), err)
+	}
+
 }
 
 func TestDriverReadPassesEncryptedSizeToRawDriver(t *testing.T) {
@@ -501,38 +514,42 @@ func (d *clampingRawDriver) Read(ctx context.Context, entry drive.Entry, offset,
 	return d.recordingRawDriver.Read(ctx, entry, offset, size)
 }
 
-func TestDriverForwardsReadSchedulingFromRaw(t *testing.T) {
-	t.Parallel()
+func TestDriverForwardsReadPolicyAndLimits(t *testing.T) {
 	cp, err := NewRcloneCipher("password", "salt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := &profiledRawDriver{
-		capabilities: []drive.Capability{drive.CapabilityParallelRange},
-		profile:      drive.ReadProfile{BulkStreams: 3},
+	p := drive.DefaultReadPolicy()
+	p.Bulk.Streams = 6
+	p.MaxInFlight = 8
+	p.Bulk.Split.PartBytes = 4 << 20
+	p.Interactive.Sequential.Prefetch = drive.PrefetchPolicy{Mode: drive.PrefetchFixed, WindowBytes: 8 << 20, Depth: 2}
+	raw := &profiledRawDriver{profile: p, capabilities: []drive.Capability{drive.CapabilityParallelRange}, maxParallel: 2}
+	d := NewDriver(raw, cp, DriverOptions{})
+	if d.ReadPolicy() != p {
+		t.Fatal("recommendation changed through encryption")
 	}
-	drv := NewDriver(raw, cp, DriverOptions{})
-	if !drive.HasCapability(drv, drive.CapabilityParallelRange) {
-		t.Fatal("encrypted driver did not forward parallel_range")
+	resolved, err := drive.ResolveReadPolicy(d, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if drive.HasCapability(drv, drive.CapabilityInternalParallelRead) {
-		t.Fatal("encrypted driver forwarded a capability the raw driver does not declare")
-	}
-	if got := drive.ReadProfileOf(drv).BulkStreams; got != 3 {
-		t.Fatalf("encrypted bulk streams = %d, want 3", got)
+	if resolved.Effective.MaxInFlight != 2 || resolved.Effective.Bulk.Streams != 2 || resolved.Effective.Interactive != p.Interactive {
+		t.Fatalf("policy=%+v", resolved)
 	}
 }
 
-// profiledRawDriver reports read scheduling metadata the crypt wrapper must
-// forward without changing it.
 type profiledRawDriver struct {
 	recordingRawDriver
+	profile      drive.ReadPolicy
 	capabilities []drive.Capability
-	profile      drive.ReadProfile
+	maxParallel  int
 }
 
 func (d *profiledRawDriver) Capabilities() []drive.Capability { return d.capabilities }
-func (d *profiledRawDriver) ReadProfile() drive.ReadProfile   { return d.profile }
+func (d *profiledRawDriver) ReadPolicy() drive.ReadPolicy     { return d.profile }
+func (d *profiledRawDriver) ReadLimits() drive.ReadLimits {
+	return drive.ReadLimits{MaxInFlight: d.maxParallel, Parallel: true}
+}
 
 func TestDriverForeignEntriesReportsUndecryptableNames(t *testing.T) {
 	t.Parallel()

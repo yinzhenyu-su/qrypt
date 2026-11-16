@@ -716,6 +716,10 @@ func apiError(resp respEnvelope) error {
 	return &APIError{Status: resp.Status, Code: resp.Code, Message: resp.Message}
 }
 
+// traceReadCloser reports a body read failure and the body's delivery time.
+// It deliberately makes no throughput judgement: "slow" is not a connection
+// failure, and the read layer's own idle and total bounds already stop a
+// stalled fetch.
 type traceReadCloser struct {
 	io.ReadCloser
 	fid     string
@@ -723,51 +727,35 @@ type traceReadCloser struct {
 	size    int64
 	start   time.Time
 	read    int64
+	busy    time.Duration
 	onError func(error, int64, time.Duration)
-	// onComplete records the throughput of a fully read body.
-	onComplete func(int64, time.Duration)
-	// The watchdog aborts a read that sustains less than minRate so the next
-	// attempt can use a fresh connection.
-	minRate    int64
-	grace      time.Duration
-	checkEvery time.Duration
-	nextCheck  time.Duration
-	aborted    bool
 }
 
+// errDownloadShortBody marks a body that ended before the requested range was
+// complete. The provider closed the connection early, which is a transfer
+// failure even though the body reported a clean EOF.
+var errDownloadShortBody = errors.New("quark: download body ended early")
+
 func (r *traceReadCloser) Read(p []byte) (int, error) {
+	readStart := time.Now()
 	n, err := r.ReadCloser.Read(p)
+	r.busy += time.Since(readStart)
 	r.read += int64(n)
-	elapsed := time.Since(r.start)
-	if err != nil && err != io.EOF && r.onError != nil {
-		r.onError(err, r.read, elapsed)
+	if err == io.EOF && r.size > 0 && r.read < r.size && r.onError != nil {
+		// A short body only becomes visible to the read layer after the whole
+		// range is assembled; reporting it here lets the driver rotate away
+		// from the connection that truncated before the retry.
+		r.onError(errDownloadShortBody, r.read, r.busy)
 	}
-	if err == nil && r.minRate > 0 {
-		if r.nextCheck == 0 {
-			r.nextCheck = r.grace
-		}
-		if elapsed >= r.nextCheck {
-			r.nextCheck = elapsed + r.checkEvery
-			if rate := float64(r.read) / elapsed.Seconds(); rate < float64(r.minRate) {
-				r.aborted = true
-				_ = r.ReadCloser.Close()
-				if r.onError != nil {
-					r.onError(errDownloadTooSlow, r.read, elapsed)
-				}
-				return n, io.ErrUnexpectedEOF
-			}
-		}
+	if err != nil && err != io.EOF && r.onError != nil {
+		r.onError(err, r.read, r.busy)
 	}
 	return n, err
 }
 
 func (r *traceReadCloser) Close() error {
 	err := r.ReadCloser.Close()
-	elapsed := time.Since(r.start)
-	if err == nil && !r.aborted && r.read > 0 && r.read == r.size && r.onComplete != nil {
-		r.onComplete(r.read, elapsed)
-	}
-	logging.L.DebugfEvery("quark.read_body", time.Second, "[QUARK] ReadBody fid=%q offset=%d size=%d read=%d err=%v dur=%s", r.fid, r.offset, r.size, r.read, err, elapsed)
+	logging.L.DebugfEvery("quark.read_body", time.Second, "[QUARK] ReadBody fid=%q offset=%d size=%d read=%d err=%v dur=%s provider=%s", r.fid, r.offset, r.size, r.read, err, time.Since(r.start), r.busy)
 	return err
 }
 
