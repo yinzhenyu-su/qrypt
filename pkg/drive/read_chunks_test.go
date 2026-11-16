@@ -119,9 +119,18 @@ func TestProgressiveRangeFailureBoundaries(t *testing.T) {
 				}
 				return io.NopCloser(bytes.NewReader(data[offset : offset+size])), nil
 			}
-			bounds := FetchTimeouts{Idle: 20 * time.Millisecond, Total: time.Second}
+			// The bounds only have to separate the timeout kinds from the
+			// classification under test; they are not what makes an attempt
+			// slow. Keep them far from any plausible scheduling delay: a 20ms
+			// idle limit tripped while a race-enabled CI runner drained an
+			// in-memory body, which silently turned every scenario into an
+			// idle-replay case before the intended path ran.
+			bounds := FetchTimeouts{Idle: time.Second, Total: 15 * time.Second}
 			if scenario == "total" {
-				bounds = FetchTimeouts{Idle: time.Second, Total: 30 * time.Millisecond}
+				// The gated body publishes its head immediately and then
+				// stalls, so a wide total budget still expires during the
+				// fetch while the prefix is already delivered.
+				bounds = FetchTimeouts{Idle: 15 * time.Second, Total: time.Second}
 			}
 			_, extra, err := fetchRange(ctx, Entry{Size: int64(len(data))}, 0, int64(len(data)), bounds, open, delivery)
 			switch scenario {
