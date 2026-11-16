@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/util"
 	"go.uber.org/goleak"
@@ -30,6 +31,11 @@ func TestMain(m *testing.M) {
 	os.Setenv("USERPROFILE", home)
 	os.Unsetenv("QRYPT_HOME")
 	defer os.RemoveAll(home)
+	// Idle waits poll until queued work drains; the production cadence is 50ms
+	// and most commands end with one, so tests would spend their runtime
+	// sleeping on the timer. Polling faster keeps the same loop and the same
+	// semantics, only the observation cadence changes.
+	fileSystemIdlePollInterval = 5 * time.Millisecond
 	// Keep the command layer off the network: NTP queries hit DNS, whose
 	// round trips are not interruptible by context cancel and would flake
 	// the goleak check on slow runner DNS (see initTime).

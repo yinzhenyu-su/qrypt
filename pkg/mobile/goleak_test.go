@@ -20,6 +20,19 @@ import (
 // pkg/core: it exits through os.Exit, which would skip the post-run sweep of
 // the shared log root.
 func TestMain(m *testing.M) {
+	// Isolate the process home. testRuntimeJSON deliberately leaves work_dir
+	// unset, so core falls back to the runtime layout under ~/.qrypt: without
+	// this, tests both walk the developer's real data (StorageUsageJSON over
+	// the live run/ tree) and write into it. Mirrors internal/cli's TestMain.
+	home, err := os.MkdirTemp("", "qrypt-mobile-test-home-")
+	if err != nil {
+		panic("mobile: cannot create isolated test home: " + err.Error())
+	}
+	os.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE (not HOME) on Windows; redirect both
+	// so the default layout stays inside the isolated test home.
+	os.Setenv("USERPROFILE", home)
+	os.Unsetenv("QRYPT_HOME")
 	logRoot := filepath.Join(os.TempDir(), testLogRoot)
 	// Session logs go to a shared process-wide root (see testLogRoot), so
 	// tests never leave an open lumberjack handle inside a t.TempDir; drop
@@ -39,5 +52,6 @@ func TestMain(m *testing.M) {
 		logging.ReplaceDefault(logging.NewDefault())
 		_ = os.RemoveAll(logRoot)
 	}
+	_ = os.RemoveAll(home)
 	os.Exit(code)
 }

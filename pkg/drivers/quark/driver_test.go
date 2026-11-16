@@ -611,7 +611,10 @@ func TestDriverKeepsSlowBodyWithoutRotation(t *testing.T) {
 // TestDriverLowDownloadLimitDoesNotRotate: a user download cap paces the
 // consumer; it must never look like a provider stall.
 func TestDriverLowDownloadLimitDoesNotRotate(t *testing.T) {
-	const total = 32 << 10
+	// The limiter paces strictly at the configured rate, so the request size
+	// sets the wall time (total / 8KiB/s). Keep it just large enough to show
+	// the cap in effect without spending seconds asleep.
+	const total = 8 << 10
 	driver := New("k=v", Options{})
 	driver.limiter = drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 8 << 10})
 	driver.setURL("fid-cap", "https://download.test/cap.bin")

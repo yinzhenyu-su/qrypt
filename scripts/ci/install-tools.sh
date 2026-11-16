@@ -13,17 +13,37 @@ tool_version() {
   sed -nE "s/^[[:space:]]*${name}[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" tools.go
 }
 
+# CI pins the Go toolchain in exactly one place: go.mod. Read it here instead
+# of hardcoding a second copy, and let QRYPT_GO_TOOLCHAIN override it for local
+# experiments. The toolchain directive wins over the go directive when both
+# exist, because that is what the go command itself selects.
+go_toolchain() {
+  local version
+  version="$(sed -nE 's/^toolchain[[:space:]]+go([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' go.mod | head -n1)"
+  if [ -z "$version" ]; then
+    version="$(sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' go.mod | head -n1)"
+  fi
+  if [ -z "$version" ]; then
+    echo "cannot read the Go version from go.mod" >&2
+    return 1
+  fi
+  printf 'go%s\n' "$version"
+}
+
 staticcheck_version="$(tool_version StaticcheckVersion)"
 golangci_version="$(tool_version GolangCILintVersion)"
 govulncheck_version="$(tool_version GovulncheckVersion)"
 shellcheck_version="$(tool_version ShellcheckVersion)"
+actionlint_version="$(tool_version ActionlintVersion)"
 expected_versions=$(printf '%s\n' \
   "staticcheck=$staticcheck_version" \
   "golangci-lint=$golangci_version" \
   "govulncheck=$govulncheck_version" \
-  "shellcheck=$shellcheck_version")
+  "shellcheck=$shellcheck_version" \
+  "actionlint=$actionlint_version")
 
-if [[ -f "$VERSIONS_FILE" && -x "$TOOLS_DIR/shellcheck" ]] && cmp -s <(printf '%s\n' "$expected_versions") "$VERSIONS_FILE"; then
+if [[ -f "$VERSIONS_FILE" && -x "$TOOLS_DIR/shellcheck" && -x "$TOOLS_DIR/actionlint" ]] &&
+  cmp -s <(printf '%s\n' "$expected_versions") "$VERSIONS_FILE"; then
   exit 0
 fi
 
@@ -59,14 +79,15 @@ install_shellcheck() {
   rm -rf "$tmp"
 }
 
-# The three tools build independently, so overlap them: a cold cache then
-# costs the slowest tool instead of the sum. golangci-lint is much the
-# largest of the three, so it sets that floor.
+# The Go tools build independently, so overlap them: a cold cache then costs
+# the slowest tool instead of the sum. golangci-lint is much the largest, so it
+# sets that floor; shellcheck is a Go-independent download that overlaps too.
+go_toolchain_version="$(go_toolchain)"
 install_tool() {
-  # CI pins the project toolchain to Go 1.27. Do not let a tool module's
-  # go.mod silently select an older toolchain, which can no longer parse the
-  # project's Go 1.27 syntax.
-  GOTOOLCHAIN="${QRYPT_GO_TOOLCHAIN:-go1.27.4}" GOBIN="$TOOLS_DIR" go install "$1"
+  # CI pins the project toolchain to the go.mod version. Do not let a tool
+  # module's go.mod silently select an older toolchain, which can no longer
+  # parse the project's Go syntax.
+  GOTOOLCHAIN="${QRYPT_GO_TOOLCHAIN:-$go_toolchain_version}" GOBIN="$TOOLS_DIR" go install "$1"
 }
 
 pids=()
@@ -75,6 +96,8 @@ pids+=("$!")
 install_tool "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$golangci_version" &
 pids+=("$!")
 install_tool "golang.org/x/vuln/cmd/govulncheck@$govulncheck_version" &
+pids+=("$!")
+install_tool "github.com/rhysd/actionlint/cmd/actionlint@$actionlint_version" &
 pids+=("$!")
 install_shellcheck &
 pids+=("$!")
@@ -89,5 +112,15 @@ if [ "$status" -ne 0 ]; then
   echo "installing CI tools failed; re-run $0" >&2
   exit 1
 fi
+
+# A go install that exits 0 can still leave the wrong binary behind (stale
+# GOBIN entry, interrupted earlier run); fail early here instead of inside the
+# gate that runs the tool.
+for tool in staticcheck golangci-lint govulncheck shellcheck actionlint; do
+  if [ ! -x "$TOOLS_DIR/$tool" ]; then
+    echo "installed CI tools are incomplete: $TOOLS_DIR/$tool is missing" >&2
+    exit 1
+  fi
+done
 
 printf '%s\n' "$expected_versions" >"$VERSIONS_FILE"

@@ -377,8 +377,11 @@ func TestSessionCapShrinkKeepsUsefulLoad(t *testing.T) {
 		return release, true
 	}
 	// A fixed plan admits its whole lookahead at once, so one run of the
-	// controller leaves a wide, still-useful load in flight.
-	wide := ReadPlan{Stage: StageSequential, PrefetchChunks: 8, PrefetchDepth: 4, PrefetchMode: drive.PrefetchFixed}
+	// controller leaves a wide, still-useful load in flight. Depth stays at
+	// one window: deeper lookahead windows queue behind the gated one on the
+	// read scheduler and only start after the gate is released, i.e. after the
+	// shrink, which would make the "admitted after shrink" count racy.
+	wide := ReadPlan{Stage: StageSequential, PrefetchChunks: 8, PrefetchDepth: 1, PrefetchMode: drive.PrefetchFixed}
 	advanceSession(r, 1, 1, 1, wide)
 	r.host.waitCall(t, 1)
 	waitUntil(t, "wide lookahead admission", func() bool { return gated > 0 })
@@ -418,6 +421,18 @@ func TestSessionBudgetDiagnosticsReconcile(t *testing.T) {
 	}
 	r.host.waitCall(t, 2)
 	waitPrefetchIdle(t, r)
+	// The plan snapshot is taken when a session fill pass runs, which can
+	// trail the recorded Range calls under CPU contention: PrefetchInUse is
+	// still zero before the session worker has filled anything. Wait for the
+	// event instead of racing the scheduler bookkeeping.
+	waitUntil(t, "prefetch plan event", func() bool {
+		for _, event := range recorder.snapshot() {
+			if event.Phase == "prefetch_plan" {
+				return true
+			}
+		}
+		return false
+	})
 
 	var changes []string
 	var sawPlan bool

@@ -5,18 +5,28 @@
 #   ./scripts/ci/test-layers.sh fast         # default unit suite
 #   ./scripts/ci/test-layers.sh changed      # only what the working diff can reach
 #   ./scripts/ci/test-layers.sh race         # concurrency-heavy packages under -race
-#   ./scripts/ci/test-layers.sh vfs-stability # VFS upload engine flake guard (x3)
+#   ./scripts/ci/test-layers.sh vfs-stability # VFS tree flake guard (x3, read included)
 #   ./scripts/ci/test-layers.sh smoke        # localfs mount smoke test
 #   ./scripts/ci/test-layers.sh all          # everything except real-netdisk tests
 #   ./scripts/ci/test-layers.sh integration  # real provider/HTTP contract tests
 #
 # Every layer prints its wall-clock duration and warns past $BUDGET seconds.
-# `fast` runs the whole module and costs ~22s on an 8-core box, so 25s is a
-# regression tripwire rather than a target: pkg/vfs alone is ~16s of it (281
-# tests, none parallel, most of them waiting on timers), the rest of the module
-# plus compilation is ~10s. Splitting pkg/vfs out would not fix that -- it is
+# The timings below were measured on an 8-core darwin/arm64 dev box with Go
+# 1.27.4 and a warm build cache; CI runners are slower and vary, so read them
+# as order-of-magnitude only.
+#
+# `fast` runs the whole module and costs ~26s, so 25s is a regression tripwire
+# rather than a target. The pkg/vfs tree dominates it: pkg/vfs ~9s,
+# pkg/vfs/read ~14s and pkg/vfs/upload ~8s. Even with t.Parallel these tests
+# mostly wait on timers, so splitting the tree out would not fix that -- it is
 # the default suite's coverage, not a stray slow package -- so a quick local
 # run is the `changed` layer's job, not a smaller `fast`.
+#
+# The depth layers sit above the fast budget by design. `race` now covers the
+# whole pkg/vfs subtree and takes ~76s with the default race_parallel (its
+# pkg/vfs/read accounts for nearly all of it); `vfs-stability` is three
+# concurrent runs of that subtree and takes ~22s. Their WARNING lines are
+# informational, not a regression signal.
 #
 # Real-netdisk contract tests are NOT part of go test: they need a running
 # `qrypt mount` debug server with mounted cloud accounts. Run them manually:
@@ -30,7 +40,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # Wall-clock regression tripwire for a single measure() step, in seconds. See
-# the header for why `fast` sits just under it.
+# the header for why `fast` sits just under it, and why the race/vfs-stability
+# depth layers exceeding it is expected.
 BUDGET=25
 
 # The race layer runs many independent package test binaries. The default
@@ -337,16 +348,34 @@ case "${1:-fast}" in
     fi
     ;;
   race)
-    measure "race: pkg/vfs drive drivers contracttest drivecopy control logging mount syncer cli core mobile crypt task cmd" \
-      go test -race -count=1 -p "$(race_parallel)" ./pkg/vfs ./pkg/drive ./pkg/drivers/... \
-      ./pkg/contracttest ./pkg/vfs/drivecopy ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli \
+    # The whole pkg/vfs subtree, not just its main package: the read pipeline
+    # and the readcache/scheduler helpers it drives are concurrency sensitive
+    # -- the nightly prefetch flake lives in pkg/vfs/read -- and before this
+    # change none of those packages ever ran under -race. The wildcard also
+    # picks up subpackages added later. It is safe on every platform the layer
+    # runs on: nothing under pkg/vfs depends on cgo/fuse, and the subtree
+    # cross-lists cleanly for GOOS=windows. drivecopy needs no separate entry
+    # now -- the wildcard covers it. race_parallel's 4x over-subscription was
+    # tuned for timer/IO-bound suites; pkg/vfs/read is CPU-bound under -race,
+    # so on a loaded 8-core box the default 32 in-flight packages cost wall
+    # clock (76s, with pkg/vfs/read at 74s, versus 50s at RACE_P=8); on an
+    # idle box p=16 and p=32 both take ~38s. RACE_P tunes that per runner
+    # without changing concurrency coverage.
+    measure "race: pkg/vfs/... drive drivers contracttest control logging mount syncer cli core mobile crypt task cmd" \
+      go test -race -count=1 -p "$(race_parallel)" ./pkg/vfs/... ./pkg/drive ./pkg/drivers/... \
+      ./pkg/contracttest ./pkg/control ./pkg/logging ./pkg/mount ./pkg/syncer ./internal/cli \
       ./pkg/core ./pkg/mobile ./pkg/crypt ./pkg/task ./cmd/qrypt
     ;;
   vfs-stability)
     # The async upload engine (worker shutdown, staging cleanup, journaling)
     # is timing sensitive; three independent runs catch the occasional flake.
-    measure "vfs-stability: 3x go test -count=1 ./pkg/vfs" \
-      run_repeated 3 go test -count=1 ./pkg/vfs/
+    # The whole pkg/vfs subtree is repeated, not just the main package, so the
+    # read pipeline and its prefetch/readcache/scheduler helpers -- where the
+    # nightly prefetch flake lives -- are covered by the flake guard too. The
+    # three runs are mostly timer-bound, so overlapping them costs much less
+    # than running -count=3 per package.
+    measure "vfs-stability: 3x go test -count=1 ./pkg/vfs/..." \
+      run_repeated 3 go test -count=1 ./pkg/vfs/...
     ;;
   smoke)
     measure "smoke: localfs" scripts/ci/smoke-localfs.sh

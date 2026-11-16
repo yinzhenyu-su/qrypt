@@ -1,0 +1,22 @@
+name: Setup FUSE3
+description: Install the FUSE3 headers and runtime the Linux cgo build needs.
+
+# Composite step for Linux jobs only: Windows runners use the WinFsp installer
+# (see install-winfsp.ps1) and must not call this action. The hosted runner
+# image usually ships libfuse3-dev already, and apt-get update is the slow half
+# of the install, so probe pkg-config first and only reach for apt when the
+# headers are actually missing.
+runs:
+  using: composite
+  steps:
+    - name: Install FUSE headers
+      shell: bash
+      run: |
+        # `pkg-config --exists fuse3` is the same probe the cgo build makes, so
+        # a present package short-circuits the slow apt path.
+        if pkg-config --exists fuse3; then
+          echo "libfuse3-dev already present"
+          exit 0
+        fi
+        sudo apt-get update
+        sudo apt-get install -y libfuse3-dev fuse3

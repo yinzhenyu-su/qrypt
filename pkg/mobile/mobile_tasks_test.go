@@ -220,7 +220,11 @@ root_path = `+util.TOMLPath(remote)+`
 	}
 }
 
+// The batch is independent of every other test (own core, own TempDir, no
+// global upload-source opener), so it overlaps its ~0.5s remote-task wait
+// with the other upload tests instead of serialising them.
 func TestMobileCreateTaskJSONUploadBatch(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -320,7 +324,9 @@ upload_delay = "10ms"
 	}
 }
 
+// Independent like TestMobileCreateTaskJSONUploadBatch: safe to overlap.
 func TestMobileUploadTaskEventsIncludeItemProgress(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -809,6 +815,7 @@ type mobileTaskItem struct {
 }
 
 func TestMobileCreateLocalUploadTaskJSON(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {
@@ -934,6 +941,7 @@ func TestMobileErrorsAreClassified(t *testing.T) {
 }
 
 func TestMobileUploadLocalFileJSONCreatesUserTask(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {

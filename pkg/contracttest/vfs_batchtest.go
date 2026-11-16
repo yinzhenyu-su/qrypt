@@ -150,9 +150,14 @@ func (t *batchTest) finish() {
 		for _, file := range t.files {
 			_ = t.fs.Remove(cleanupCtx, file)
 		}
-		_ = t.fs.RemoveDir(cleanupCtx, t.baseDir+"/dest")
-		_ = t.fs.RemoveDir(cleanupCtx, t.baseDir+"/source")
-		_ = t.fs.RemoveDir(cleanupCtx, t.baseDir)
+		// Same asynchronous-delete ordering as cleanup: let the file deletes
+		// settle before removing the directories that held them.
+		_ = waitVFSSmokeIdle(cleanupCtx, t.fs, t.mount, 10*time.Second, nil)
+		for _, dir := range vfsDeleteOrder([]string{t.baseDir + "/dest", t.baseDir + "/source", t.baseDir}) {
+			if removeErr := removeVFSDirectory(cleanupCtx, t.fs, t.mount, dir, 10*time.Second, nil); removeErr != nil {
+				break
+			}
+		}
 	}
 	t.result.Finished = time.Now()
 	duration := t.result.Finished.Sub(t.result.Started)
@@ -301,9 +306,21 @@ func (t *batchTest) cleanup(files []string, dirs ...string) {
 			err = removeErr
 		}
 	}
-	for _, dir := range dirs {
-		if removeErr := t.fs.RemoveDir(t.ctx, dir); removeErr != nil && err == nil {
-			err = removeErr
+	// VFS deletes are asynchronous: the remote removal of the files above runs
+	// on a delete timer, so removing their parent directories right away can
+	// still observe the files on the backend and fail with vfs.ErrDirNotEmpty.
+	// Wait for the pending deletes to land first, then remove the directories
+	// deepest-first (a parent is only removable once its children are gone) and
+	// wait again for the directory deletes.
+	if err == nil {
+		err = waitVFSSmokeIdle(t.ctx, t.fs, t.mount, 2*time.Minute, &t.result.PendingTimeline)
+	}
+	if err == nil {
+		for _, dir := range vfsDeleteOrder(dirs) {
+			if removeErr := removeVFSDirectory(t.ctx, t.fs, t.mount, dir, 2*time.Minute, &t.result.PendingTimeline); removeErr != nil {
+				err = removeErr
+				break
+			}
 		}
 	}
 	if err == nil {

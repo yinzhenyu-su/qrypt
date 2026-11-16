@@ -357,20 +357,25 @@ func TestDirectReadAllowsSlowProgress(t *testing.T) {
 }
 
 func TestDirectReadWholeFileStreamIsNotCappedByFetchTotal(t *testing.T) {
-	data := bytes.Repeat([]byte("h"), (8<<20)+1024)
+	// 2 MiB + 1 KiB at 8 KiB per 2 ms paces the stream at ~510ms. The file is
+	// still delivered whole and still spans more than one fetch window; the
+	// size is only large enough for the stream to outrun the total bound.
+	data := bytes.Repeat([]byte("h"), (2<<20)+1024)
 	driver := seededDriver(t, data)
 	driver.ReadBehavior.BodyFunc = func(ctx context.Context, span []byte) io.ReadCloser {
 		return &pacedParallelBody{ctx: ctx, remaining: len(span), chunk: 8 << 10, interval: 2 * time.Millisecond}
 	}
-	// The total bound (1.2s) is shorter than the whole-file stream (~2s), so a
-	// regression that applies it to a stream fails here. The idle bound stays
-	// generous enough for a loaded CI/race runner.
+	// The stream refills window by window (128 KiB at this ~4 MiB/s pacing is
+	// ~32 ms each), far below the 400 ms total, so a loaded runner cannot trip
+	// the bound on one refill. The whole file (~510 ms) still outruns the
+	// total, so a regression that applies it to the whole-file stream fails.
+	// The idle bound (300 ms) is 150x the 2 ms pacing gap.
 	profile := func() ReadPolicy {
 		p := DefaultReadPolicy()
 		p.Bulk.Streams = 1
-		p.Bulk.WindowBytes = 1 << 20
-		p.Fetch.Idle = time.Second
-		p.Fetch.Total = 1200 * time.Millisecond
+		p.Bulk.WindowBytes = 128 << 10
+		p.Fetch.Idle = 300 * time.Millisecond
+		p.Fetch.Total = 400 * time.Millisecond
 		return p
 	}()
 	entry := Entry{ID: "0/file.bin", Size: int64(len(data))}

@@ -235,12 +235,15 @@ func TestPendingConcurrentWithList(t *testing.T) {
 	defer cancel()
 	fs.Start(ctx)
 
+	// Each iteration re-runs the full racing sequence (staged write plus a
+	// concurrent listing); ten rounds per goroutine keep the interleaving
+	// coverage while halving the fsync-bound cost of the stress pass.
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			for j := 0; j < 20; j++ {
+			for j := 0; j < 10; j++ {
 				path := "/p" + strings.Repeat("x", n) + ".txt"
 				_ = fs.Create(ctx, path)
 				_, _ = fs.WriteAt(ctx, path, []byte("data"), 0)

@@ -106,6 +106,7 @@ root_path = `+util.TOMLPath(remote)+`
 }
 
 func TestMobileUploadStreamBatch(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	remote := filepath.Join(tmp, "remote")
 	if err := os.MkdirAll(remote, 0o755); err != nil {

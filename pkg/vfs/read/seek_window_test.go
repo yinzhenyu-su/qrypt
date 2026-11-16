@@ -34,24 +34,20 @@ func TestSeekDoesNotWaitForOversizedPrefetchWindow(t *testing.T) {
 
 	// Session 2 confirms a sequential run and keeps consuming, so its adaptive
 	// budget widens into a gated lookahead. Only consumption grows it; the
-	// stage's ceiling alone does not.
+	// stage's ceiling alone does not. The controller starts the lookahead
+	// asynchronously after delivery, so poll briefly between reads instead of
+	// waiting out the whole adaptive ramp on every step.
 	var big stagedCall
-	var request uint64
-	for chunk := int64(0); chunk < 16 && big.Size == 0; chunk++ {
-		request++
-		r.read(t, sessionContext(2, request), chunk*ChunkSize, ChunkSize)
-		deadline := time.Now().Add(2 * time.Second)
-		for big.Size == 0 {
+	for chunk := int64(0); chunk < 128 && big.Size == 0; chunk++ {
+		r.read(t, sessionContext(2, uint64(chunk+1)), chunk*ChunkSize, ChunkSize)
+		for deadline := time.Now().Add(20 * time.Millisecond); big.Size == 0; {
 			for _, call := range r.host.recorded() {
 				if call.Size > 2*ChunkSize {
 					big = call
 					break
 				}
 			}
-			if big.Size > 0 {
-				break
-			}
-			if time.Now().After(deadline) {
+			if big.Size > 0 || time.Now().After(deadline) {
 				break
 			}
 			time.Sleep(time.Millisecond)
