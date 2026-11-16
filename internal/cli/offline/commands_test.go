@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,7 +26,11 @@ type commandOfflineService struct {
 	task.Controller // Unexpected non-offline task operations fail loudly.
 	current         task.Task
 	failure         error
-	calls           chan any
+	// cancelFailure overrides failure for cancel only, so a test can reject a
+	// cancel while keeping the task lookup readable (the CLI's finished-cancel
+	// hint needs both).
+	cancelFailure error
+	calls         chan any
 }
 
 func (s *commandOfflineService) CreateOfflineTask(_ context.Context, req task.OperationRequest) (task.Task, error) {
@@ -55,12 +60,28 @@ func (s *commandOfflineService) WaitOfflineTask(_ context.Context, id string, _ 
 
 func (s *commandOfflineService) CancelTask(_ context.Context, id string) error {
 	s.calls <- "cancel:" + id
+	if s.cancelFailure != nil {
+		return s.cancelFailure
+	}
 	return s.failure
 }
 
 func (s *commandOfflineService) RetryTask(_ context.Context, id string) error {
 	s.calls <- "retry:" + id
 	return s.failure
+}
+
+func (s *commandOfflineService) DismissTask(_ context.Context, id string) error {
+	s.calls <- "dismiss:" + id
+	return s.failure
+}
+
+func (s *commandOfflineService) DismissFinishedTasks(_ context.Context, filter task.Filter) (int, error) {
+	s.calls <- filter
+	if s.failure != nil {
+		return 0, s.failure
+	}
+	return 2, nil
 }
 
 type offlineCommandExit struct {
@@ -125,7 +146,7 @@ func executeOfflineCommand(t *testing.T, rt cliruntime.TestRuntime, args ...stri
 }
 
 func TestOfflineCommandsRoundTrip(t *testing.T) {
-	for _, name := range []string{"add", "fetch", "inspect", "list", "show", "cancel", "retry", "wait"} {
+	for _, name := range []string{"add", "fetch", "inspect", "list", "show", "cancel", "retry", "rm", "wait"} {
 		t.Run(name, func(t *testing.T) {
 			rt, cfg := offlineCommandRuntime(t)
 			service := &commandOfflineService{current: task.Task{ID: "offline-test", Type: task.TypeOfflineDownload, State: task.StateSucceeded}, calls: make(chan any, 8)}
@@ -145,7 +166,7 @@ func TestOfflineCommandsRoundTrip(t *testing.T) {
 			default:
 				args = append(args, "offline-test")
 			}
-			if name != "cancel" && name != "retry" {
+			if name != "cancel" && name != "retry" && name != "rm" {
 				args = append(args, "--json")
 			}
 			out, stderr, err := executeOfflineCommand(t, rt, args...)
@@ -207,6 +228,20 @@ func TestOfflineCommandsRoundTrip(t *testing.T) {
 				if call != name+":offline-test" || !strings.Contains(out, "offline-test") {
 					t.Fatalf("action=%#v output=%q", call, out)
 				}
+			case "rm":
+				// The dismiss route validates the offline identity before it
+				// dismisses, so the first call is the lookup.
+				if call != "get:offline-test" {
+					t.Fatalf("dismiss lookup = %#v", call)
+				}
+				select {
+				case call = <-service.calls:
+				case <-time.After(time.Second):
+					t.Fatal("dismiss did not reach the control service")
+				}
+				if call != "dismiss:offline-test" || !strings.Contains(out, "offline-test") {
+					t.Fatalf("dismiss=%#v output=%q", call, out)
+				}
 			}
 			if name == "add" || name == "fetch" || name == "show" || name == "wait" {
 				var current task.Task
@@ -215,6 +250,76 @@ func TestOfflineCommandsRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOfflineRemoveFinishedDismissesByMount(t *testing.T) {
+	rt, cfg := offlineCommandRuntime(t)
+	service := &commandOfflineService{calls: make(chan any, 8)}
+	startOfflineCommandServer(t, cfg, service)
+
+	out, stderr, err := executeOfflineCommand(t, rt, "rm", "--finished", "--mount", "cloud")
+	if err != nil {
+		t.Fatalf("command failed: %v stderr=%s", err, stderr)
+	}
+	call := <-service.calls
+	filter, ok := call.(task.Filter)
+	if !ok || filter.Mount != "cloud" {
+		t.Fatalf("dismiss filter = %#v", call)
+	}
+	if !reflect.DeepEqual(filter.Types, []task.Type{task.TypeOfflineDownload, task.TypeOfflineFetch}) {
+		t.Fatalf("dismiss types = %+v, want the offline types", filter.Types)
+	}
+	if !strings.Contains(out, "2") {
+		t.Fatalf("removed count missing from output: %q", out)
+	}
+}
+
+func TestOfflineRemoveExplainsStaleCore(t *testing.T) {
+	rt, _ := offlineCommandRuntime(t)
+	cmd := NewCommand(rt)
+	var out, stderr bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+
+	// A Core started by an older build answers the removal route with a bare
+	// 404 page; the hint names the only fix.
+	hintStaleCoreRemove(cmd, &control.TransportError{Path: "/v1/control/offline/finished", Status: http.StatusNotFound, Body: "404 page not found"})
+	if !strings.Contains(stderr.String(), "restart") {
+		t.Fatalf("stale-core hint missing: %q", stderr.String())
+	}
+
+	// A missing task is a 404 too, but with the service's message: it must not
+	// claim the Core is stale.
+	stderr.Reset()
+	hintStaleCoreRemove(cmd, &control.TransportError{Path: "/v1/control/offline/tasks/missing/dismiss", Status: http.StatusNotFound, Body: `task: not found: "missing"`})
+	if stderr.Len() != 0 {
+		t.Fatalf("missing task produced a stale-core hint: %q", stderr.String())
+	}
+}
+
+func TestOfflineCancelFinishedTaskHintsRemoval(t *testing.T) {
+	rt, cfg := offlineCommandRuntime(t)
+	service := &commandOfflineService{
+		current:       task.Task{ID: "offline-test", State: task.StateFailed},
+		cancelFailure: errors.New(`task: "offline-test" already finished as failed; nothing to cancel`),
+		calls:         make(chan any, 8),
+	}
+	startOfflineCommandServer(t, cfg, service)
+
+	out, stderr, err := executeOfflineCommand(t, rt, "cancel", "offline-test")
+	if err == nil {
+		t.Fatal("expected cancel of a finished task to fail")
+	}
+	var exit *offlineCommandExit
+	if !errors.As(err, &exit) || exit.code != exitFailure {
+		t.Fatalf("cancel error = %v, want runtime exit %d", err, exitFailure)
+	}
+	if !strings.Contains(stderr, "qrypt offline rm offline-test") {
+		t.Fatalf("removal hint missing from stderr: %q", stderr)
+	}
+	if out != "" {
+		t.Fatalf("cancel of a finished task printed to stdout: %q", out)
 	}
 }
 
@@ -227,6 +332,7 @@ func TestOfflineCommandsRejectInvalidInputBeforeRPC(t *testing.T) {
 		{"fetch", "https://example.com/file", "--mount", "cloud", "--download-to", "out", "--workers", "-1"},
 		{"fetch", "https://example.com/file", "--mount", "cloud", "--download-to", "out", "--include", "*.mkv", "--select", "all"},
 		{"show"}, {"cancel", "one", "two"},
+		{"rm"}, {"rm", "one", "two"}, {"rm", "offline-test", "--finished"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			rt, _ := offlineCommandRuntime(t)
@@ -259,6 +365,7 @@ func TestOfflineCommandServiceErrorsHaveStableExitCodes(t *testing.T) {
 				{"fetch", "https://example.com/file", "--mount", "cloud", "--download-to", "out"},
 				{"inspect", "https://example.com/file", "--mount", "cloud"},
 				{"list"}, {"show", "offline-test"}, {"cancel", "offline-test"}, {"retry", "offline-test"}, {"wait", "offline-test"},
+				{"rm", "offline-test"}, {"rm", "--finished"},
 			} {
 				t.Run(args[0], func(t *testing.T) {
 					_, _, err := executeOfflineCommand(t, rt, args...)

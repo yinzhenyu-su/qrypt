@@ -437,7 +437,7 @@ func (m *Manager) CancelTask(ctx context.Context, id string) error {
 	}
 	if managed, ok := m.store.GetManaged(id); ok {
 		if !managed.Task.Capabilities.Cancelable {
-			return fmt.Errorf("task: %q is not cancelable", id)
+			return notCancelableError(managed.Task)
 		}
 		if managed.Cancel != nil {
 			m.store.UpdateManaged(id, func(managed *ManagedTask) {
@@ -459,6 +459,22 @@ func (m *Manager) CancelTask(ctx context.Context, id string) error {
 		}
 	}
 	return fmt.Errorf("%w: %q", ErrNotFound, id)
+}
+
+// notCancelableError explains why a cancel request cannot be applied. The
+// task's own state is the authority: a task that already finished has nothing
+// left to stop, and a task that is already stopping must not be canceled
+// again. The message names the state so a caller does not have to fetch the
+// snapshot to understand the rejection.
+func notCancelableError(item Task) error {
+	switch {
+	case item.State == StateCanceling:
+		return fmt.Errorf("task: %q is already canceling", item.ID)
+	case isTerminalState(item.State):
+		return fmt.Errorf("task: %q already finished as %s; nothing to cancel", item.ID, item.State)
+	default:
+		return fmt.Errorf("task: %q is not cancelable", item.ID)
+	}
 }
 
 func (m *Manager) RetryTask(ctx context.Context, id string) error {

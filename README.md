@@ -127,6 +127,7 @@ is at one of these paths (see [CLI Reference](docs/for-user/cli.md)).
 - [Quark QR Login](docs/for-user/quark-login.md) — sign in by scanning a QR code and save a shared credential
 - [Share & Receive](docs/for-user/share.md) — share a drive link, or save/download someone else's link
 - [Troubleshooting](docs/for-user/troubleshooting.md) — stale mounts, upload queue, and other common issues
+- [Usage FAQ](docs/for-user/faq.md) — parameter recipes for common flows, such as an offline download into an encrypted directory
 - [Full Config Reference](docs/for-user/full-config.md) — all configuration options
 - [Supported Drivers](docs/for-user/support-drivers.md) — driver parameters and examples
 

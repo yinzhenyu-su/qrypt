@@ -128,9 +128,60 @@ func (s *CommandServer) handleOfflineTask(w http.ResponseWriter, r *http.Request
 		s.handleOfflineAction(w, r, id, service.CancelTask)
 	case "retry":
 		s.handleOfflineAction(w, r, id, service.RetryTask)
+	case "dismiss":
+		s.handleOfflineDismiss(w, r, id, service)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// handleOfflineDismiss removes one finished offline task from the task list.
+// The offline identity is validated first so the offline route cannot delete a
+// task of another type.
+func (s *CommandServer) handleOfflineDismiss(w http.ResponseWriter, r *http.Request, id string, service OfflineService) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, err := service.GetOfflineTask(r.Context(), id); err != nil {
+		writeOfflineError(w, err)
+		return
+	}
+	if err := service.DismissTask(r.Context(), id); err != nil {
+		writeOfflineError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"id": id})
+}
+
+// handleOfflineFinishedDismiss removes every finished offline task, optionally
+// narrowed to one mount. Cloud files are untouched; only the task records go.
+func (s *CommandServer) handleOfflineFinishedDismiss(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	service, ok := s.offlineServiceOrError(w)
+	if !ok {
+		return
+	}
+	var req OfflineDismissFinishedRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid offline dismiss request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	filter := task.Filter{
+		Types: []task.Type{task.TypeOfflineDownload, task.TypeOfflineFetch},
+		Mount: strings.TrimSpace(req.Mount),
+	}
+	removed, err := service.DismissFinishedTasks(r.Context(), filter)
+	if err != nil {
+		writeOfflineError(w, err)
+		return
+	}
+	writeJSON(w, OfflineDismissFinishedResult{Removed: removed})
 }
 
 func (s *CommandServer) handleOfflineAction(w http.ResponseWriter, r *http.Request, id string, action func(ctx context.Context, id string) error) {

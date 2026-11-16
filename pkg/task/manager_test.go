@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -185,6 +186,24 @@ func TestManagerCancelOwnTask(t *testing.T) {
 	got := waitTaskState(t, m, "download-1", StateCanceled)
 	if got.State != StateCanceled {
 		t.Fatalf("task state = %s, want canceled", got.State)
+	}
+}
+
+func TestManagerCancelFinishedTaskExplainsState(t *testing.T) {
+	m := NewManager()
+	defer m.Close()
+	m.Submit(context.Background(), Task{ID: "finished-1", Type: TypeDownload}, func(context.Context, UpdateFunc) error {
+		return nil
+	})
+	waitTaskState(t, m, "finished-1", StateSucceeded)
+	err := m.CancelTask(context.Background(), "finished-1")
+	if err == nil {
+		t.Fatal("cancel of a finished task returned no error")
+	}
+	// The rejection must name the finished state: a caller seeing the error
+	// should not need to fetch the snapshot to learn there is nothing to stop.
+	if got := err.Error(); !strings.Contains(got, "already finished as succeeded") || !strings.Contains(got, "nothing to cancel") {
+		t.Fatalf("cancel error = %q", got)
 	}
 }
 

@@ -81,6 +81,27 @@ func (c *Client) RetryOfflineTask(ctx context.Context, id string) error {
 	return err
 }
 
+// DismissOfflineTask removes one finished offline task from the task list. An
+// active task is stopped first; cloud files are never deleted.
+func (c *Client) DismissOfflineTask(ctx context.Context, id string) error {
+	_, err := c.PostJSON(ctx, offlineBasePath+"/tasks/"+url.PathEscape(id)+"/dismiss", map[string]string{"id": id})
+	return err
+}
+
+// DismissFinishedOfflineTasks removes every finished offline task, optionally
+// narrowed to one mount, and returns how many records were removed.
+func (c *Client) DismissFinishedOfflineTasks(ctx context.Context, mount string) (int, error) {
+	body, err := c.PostJSON(ctx, offlineBasePath+"/finished", OfflineDismissFinishedRequest{Mount: mount})
+	if err != nil {
+		return 0, err
+	}
+	var result OfflineDismissFinishedResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, err
+	}
+	return result.Removed, nil
+}
+
 // InspectOffline previews a source without creating a task.
 func (c *Client) InspectOffline(ctx context.Context, req OfflineInspectRequest) (OfflinePreviewResult, error) {
 	body, err := c.PostJSON(ctx, offlineBasePath+"/inspect", req)

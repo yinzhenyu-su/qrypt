@@ -78,6 +78,7 @@ func (s *CommandServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/control/tasks/retry", s.handleRetryTask)
 	mux.HandleFunc("/v1/control/offline/tasks", s.handleOfflineTasks)
 	mux.HandleFunc("/v1/control/offline/tasks/", s.handleOfflineTask)
+	mux.HandleFunc("/v1/control/offline/finished", s.handleOfflineFinishedDismiss)
 	mux.HandleFunc("/v1/control/offline/inspect", s.handleOfflineInspect)
 	mux.HandleFunc("/v1/control/offline/wait", s.handleOfflineWait)
 	mux.HandleFunc("/v1/control/share/links", s.handleShareLinks)

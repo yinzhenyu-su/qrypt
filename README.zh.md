@@ -119,6 +119,7 @@ qrypt mount
 - [夸克网盘扫码登录](docs/for-user/quark-login.md) — 扫码获取 cookie，保存为共享凭据并创建挂载
 - [分享与接收](docs/for-user/share.md) — 分享网盘内容，或转存/下载别人的分享链接
 - [常见问题](docs/for-user/troubleshooting.md) — 挂载点残留、上传队列等故障排查
+- [用法问答](docs/for-user/faq.md) — 常见流程的参数写法，例如把离线下载结果放进加密目录
 - [完整配置参考](docs/for-user/full-config.md) — 全部配置项说明
 - [支持的驱动](docs/for-user/support-drivers.md) — 各云盘驱动的参数列表
 

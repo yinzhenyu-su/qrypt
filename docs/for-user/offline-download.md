@@ -25,6 +25,7 @@ qrypt offline list [--all] [--state STATE] [--mount NAME] [--limit N] [--json]
 qrypt offline show TASK_ID [--json]
 qrypt offline cancel TASK_ID
 qrypt offline retry TASK_ID
+qrypt offline rm TASK_ID | --finished [--mount NAME]
 qrypt offline wait TASK_ID [--timeout DURATION] [--json]
 ```
 
@@ -39,11 +40,15 @@ qrypt offline wait TASK_ID [--timeout DURATION] [--json]
 - `--parse-to /MOUNT/DIR` 是网盘侧暂存目录，可选；省略时使用 provider 的默认（磁力/系统）目录。省略 `--parse-to` 时，可用 `--mount NAME` 显式选择 provider。暂存目录必须位于一个挂载上，且不能是加密挂载（网盘侧字节不经过 qrypt 加密）；目录不存在时默认报错，`--mkdir` 才会创建，挂载根目录始终可用。
 - `--download-to PATH` 是 `offline fetch` 的最终可写目的地，可为本机路径、qrypt 命名空间路径或 Core 自身 FUSE 挂载树内的路径，允许是加密挂载（这些字节会经过 qrypt）。当 `PATH` 是一个目录（已存在，或以路径分隔符结尾）时，选中的每个文件会按其在网盘侧的相对路径写入该目录，重建 provider 的文件夹结构（含资源自身的文件夹）；provider 报告不出路径时退化为按文件名写入。`--flat` 强制只按文件名写入（不建子目录）。当 `PATH` 不是目录时，只有“恰好选中一个文件且该文件没有目录层级”才会写到 `PATH` 本身，否则任务以 `offline_path_invalid` 失败。`PATH` 会做路径清洗（拒绝绝对路径、`..`、非法字符等），并拒绝穿过已存在符号链接逃出目的地的路径；两个文件落到同一目标也会失败而不是互相覆盖。目录不存在会自动创建。`fetch` 会拒绝解析目录与下载目录指向同一挂载同一目录的请求；下载目录位于同一 provider 的另一个目录时会给出告警（结果会被下载后又上传回同一网盘）。
 
+加密挂载不能作为 `--parse-to`；要把结果落到加密目录的具体写法见[用法问答](faq.md#怎么把离线下载的结果放进加密目录)。
+
 ## 选择文件
 
 `--select all`（默认）导入所有解析文件，`--select largest[:N]` 导入最大的 N 个，`--include`/`--exclude` 用文件名 glob 选择；`--select` 不能与 `--include`/`--exclude` 同时使用。provider 不支持选择时，除 `all` 外的选择会被拒绝。`115` / `115_open` 目前只能导入全部文件，`--select largest` 等选择会在创建任务前报错。
 
 ## 任务
+
+`cancel` 只对仍在执行的任务有效；已经结束（成功、失败或已取消）的任务没有可取消的工作，用 `qrypt offline rm TASK_ID` 把它从任务列表移除，或用 `--finished` 一次移除全部已结束任务（可加 `--mount` 限定挂载）。移除只丢弃本地任务记录，不会删除云盘或本地已经下载的文件。
 
 提交会返回一个持久化的 qrypt 任务（无 `--download-to` 时为 `offline_download`，有时为 `offline_fetch`）。相同来源、暂存目录与选择的活动任务默认被复用（`--new` 强制新建，`--idempotency-key` 提供显式幂等键）；`--download-to` 不参与去重，因此同一来源拉到不同本地目录会共享同一个暂存任务。`add` 会等到 provider 任务出现第一个可观察状态；若该状态已是失败或取消，命令以非零码退出。
 

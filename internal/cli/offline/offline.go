@@ -61,6 +61,7 @@ no provider name or task id is ever required.
 	cmd.AddCommand(newShowCommand(rt))
 	cmd.AddCommand(newCancelCommand(rt))
 	cmd.AddCommand(newRetryCommand(rt))
+	cmd.AddCommand(newRemoveCommand(rt))
 	cmd.AddCommand(newWaitCommand(rt))
 	return cmd
 }
@@ -591,11 +592,40 @@ func newShowCommand(rt cliruntime.Runtime) *cobra.Command {
 func newCancelCommand(rt cliruntime.Runtime) *cobra.Command {
 	return taskIDCommand(rt, "cancel", "Cancel an offline task", "Request cancellation of an offline task. Cancellation is cooperative; observe the task to confirm it reaches the canceled state.", func(cmd *cobra.Command, client *control.Client, id string) error {
 		if err := client.CancelOfflineTask(cmd.Context(), id); err != nil {
+			hintFinishedCancelFailure(cmd, client, id, err)
 			return finishError(rt, noCoreError(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.offline.cancel_requested", id))
 		return nil
 	}, false)
+}
+
+// hintFinishedCancelFailure points at the right follow-up when a cancel is
+// rejected because the task already finished. Canceling is the natural first
+// attempt at clearing an old failed task, so the rejection alone ("nothing to
+// cancel") leaves the caller without a next step.
+func hintFinishedCancelFailure(cmd *cobra.Command, client *control.Client, id string, cancelErr error) {
+	var transport *control.TransportError
+	if !errors.As(cancelErr, &transport) || transport.Status != http.StatusConflict {
+		return
+	}
+	current, err := client.GetOfflineTask(cmd.Context(), id)
+	if err != nil || !offlineTaskFinished(current.State) {
+		return
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), i18n.FromCommand(cmd).T("out.offline.finished_remove_hint", id))
+}
+
+// offlineTaskFinished mirrors the task package's terminal-state set for the
+// hint above: only these states can reject a cancel for having nothing left to
+// stop. The CLI must not import pkg/task internals for display logic.
+func offlineTaskFinished(state task.State) bool {
+	switch state {
+	case task.StateSucceeded, task.StatePartialFailed, task.StateFailed, task.StateCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func newRetryCommand(rt cliruntime.Runtime) *cobra.Command {
@@ -606,6 +636,89 @@ func newRetryCommand(rt cliruntime.Runtime) *cobra.Command {
 		fmt.Fprintln(cmd.OutOrStdout(), i18n.FromCommand(cmd).T("out.offline.retry_requested", id))
 		return nil
 	}, false)
+}
+
+// rmArgs accepts either one TASK_ID or the --finished bulk form, never both.
+func rmArgs(rt cliruntime.ErrorFactory) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		finished, _ := cmd.Flags().GetBool("finished")
+		switch {
+		case len(args) > 1:
+			return rt.UsageError(cmd, "too many arguments: %s\n\nPass exactly one TASK_ID, or use --finished to remove every finished task.", strings.Join(args[1:], " "))
+		case finished && len(args) == 1:
+			return rt.UsageError(cmd, "--finished removes every finished task; omit TASK_ID to use it.")
+		case finished:
+			return nil
+		case len(args) == 0:
+			return rt.UsageError(cmd, "missing TASK_ID\n\nRun 'qrypt offline list' to see task ids, or pass --finished to remove every finished task.")
+		default:
+			return nil
+		}
+	}
+}
+
+// newRemoveCommand removes finished task records from the list. It is the CLI
+// counterpart of the app's dismiss action: a finished task has no cancel to
+// perform, so it is removed instead.
+func newRemoveCommand(rt cliruntime.Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rm [TASK_ID]",
+		Short: "Remove finished offline tasks from the list",
+		Long: `Remove an offline task from the task list. A finished task is removed
+directly; removing an active task stops it first. Use --finished to remove
+every finished offline task, optionally narrowed with --mount.
+
+Removing a task only drops the local task record and its progress. Cloud files
+already staged or downloaded stay where they are; delete them with 'qrypt fs rm'.`,
+		Example: `  qrypt offline rm offline-1a2b3c4d
+  qrypt offline rm --finished
+  qrypt offline rm --finished --mount quark`,
+		Args: rmArgs(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			finished, _ := cmd.Flags().GetBool("finished")
+			client, err := offlineClient(cmd)
+			if err != nil {
+				return finishError(rt, err)
+			}
+			loc := i18n.FromCommand(cmd)
+			if finished {
+				mount := strings.TrimSpace(cliruntime.FlagStringValue(cmd, "mount"))
+				removed, err := client.DismissFinishedOfflineTasks(cmd.Context(), mount)
+				if err != nil {
+					hintStaleCoreRemove(cmd, err)
+					return finishError(rt, noCoreError(err))
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), loc.T("out.offline.removed_finished", removed))
+				return nil
+			}
+			// args[0] is the validated TASK_ID in the single-task form.
+			if err := client.DismissOfflineTask(cmd.Context(), args[0]); err != nil {
+				hintStaleCoreRemove(cmd, err)
+				return finishError(rt, noCoreError(err))
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), loc.T("out.offline.removed", args[0]))
+			return nil
+		},
+	}
+	cmd.Flags().Bool("finished", false, "remove every finished offline task")
+	cmd.Flags().String("mount", "", "only remove finished tasks on this mount")
+	return withOfflineEndpoint(rt, cmd)
+}
+
+// hintStaleCoreRemove explains a route-missing 404 from the task-removal
+// routes. A Core started by an older build has no dismiss route, so the fix is
+// restarting the mount that owns the control socket, not retrying the removal.
+// A missing task is also a 404 but carries the service's own message, so only
+// the transport's "404 page not found" body counts as version skew.
+func hintStaleCoreRemove(cmd *cobra.Command, err error) {
+	var transport *control.TransportError
+	if !errors.As(err, &transport) || transport.Status != http.StatusNotFound {
+		return
+	}
+	if strings.TrimSpace(transport.Body) != "404 page not found" {
+		return
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), i18n.FromCommand(cmd).T("out.offline.stale_core_hint"))
 }
 
 func newWaitCommand(rt cliruntime.Runtime) *cobra.Command {
