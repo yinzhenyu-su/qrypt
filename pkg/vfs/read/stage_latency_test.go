@@ -317,11 +317,13 @@ func TestStageSequentialReadPrefetchesOneLargeWindow(t *testing.T) {
 	// consumes bytes. Reaching the stage's 8 MiB window and 32 MiB horizon
 	// takes 1/2/4/8/16 MiB of successive consumption (§ design 2), so this
 	// continuous pass reads until a wide window must appear: the ramp length,
-	// not a policy constant, decides how many reads it needs.
+	// not a policy constant, decides how many reads it needs. A recorded call
+	// stays visible once issued, so a short poll per read catches the wide
+	// window; the final waitRangeSize is the fallback if the ramp outruns it.
 	want := int64(SequentialPrefetchChunks) * ChunkSize
 	for chunk := int64(0); chunk < 128; chunk++ {
 		r.read(t, sessionContext(1, uint64(chunk+1)), chunk*ChunkSize, ChunkSize)
-		for deadline := time.Now().Add(20 * time.Millisecond); ; {
+		for deadline := time.Now().Add(2 * time.Millisecond); ; {
 			for _, call := range r.host.recorded() {
 				if call.Prefetch && call.Size == want {
 					return

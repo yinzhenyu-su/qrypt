@@ -8,12 +8,17 @@ qrypt 用三个 GitHub Actions workflow 组成质量体系：每 PR 的快速检
 
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
-| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；tag/dispatch 时构建并发布 | README |
+| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；tag/dispatch 时构建并发布 | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
 | `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
 
 tag/dispatch 时，`update-changelog` 先检查 tag 的 `CHANGELOG.md`；缺少该版本记录时，
 它会在 `changelog/<version>` 分支上生成提交并创建 PR，不再直接 push `main`。
+
+所有 job 都设置了 `timeout-minutes`，避免测试挂死时长时间占用 runner。
+依赖更新交给 Dependabot（`.github/dependabot.yml`）：GitHub Actions 每周
+全量分组、gomod 每周只把 minor/patch 分组（major 单独提 PR），提交前缀分别是
+`ci` 和 `chore`，满足 PR 标题校验。
 
 ## 手动触发
 
@@ -38,9 +43,13 @@ nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务�
 ## Coverage 门禁
 
 - **nightly 硬性 gate**（`scripts/ci/check-coverage.sh`）：六包低于 floor 即失败
-  （vfs 81 / core 75 / drive 69 / sync 82 / config 77 / crypt 79）。floor 取
-  “实测值 - 1 点”，即门禁只放过 1 点抖动，真实退化会被抓住；提高 floor 是刻意行为：
-  先 `-print` 重新测量，再改 `FLOOR` map 并提交说明。
+  （vfs 81 / core 75 / drive 69 / sync 82 / config 83 / crypt 79）。floor 取
+  “引入时的实测值 - 1 点”，但覆盖率并非完全可复现（同一 commit 在两次 nightly
+  中测得 vfs 81.0% / 80.9%），所以低于 floor 但不超过 0.2 个点的测量噪声只打印
+  提示、不判失败；真实退化（例如 78.4%）仍会被抓住。提高 floor 是刻意行为：
+  先 `-print` 重新测量，再改 `FLOOR` map 并在提交里说明。当前 drive / config /
+  crypt 的实测值明显高于 floor，可在后续 PR 中收紧（最近一次本机测量见
+  `check-coverage.sh` 头部注释）。
 - **PR 快照**（`scripts/ci/report-coverage.sh`，ci.yaml 中仅 PR 运行）：
   非阻塞，把六包覆盖率和"本 PR 有变更"的包写进 PR summary，便于在
   合并前观察趋势。`pkg/syncer` 用 `-coverpkg` 对 CLI 集成测试口径
@@ -57,6 +66,20 @@ nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务�
    `test_enabled = true` 的 mount 通过 `qrypt probe test` 入口执行。启用前会先查
    `/v1/mounts/health`，确认该 mount 真的在服务端注册成功；缺失时重启一次，
    仍缺失则按初始化失败报错，并从运行时错误日志里带出原因。
+
+## 仓库卫生门禁
+
+`scripts/ci/check-hygiene.sh` 在 `CI` 的 `static` 任务和 `check-all.sh` 中运行，
+不依赖 Go 构建，覆盖四类容易漏掉的问题：
+
+- `go mod tidy -diff`：`go.mod`/`go.sum` 未整理时失败（只报告 diff，不改文件）。
+- actionlint：校验 `.github/workflows/*.yaml|*.yml` 的语法与表达式，包括对本地
+  composite action 的引用。
+- ShellCheck：按 `tools.go` 固定的版本校验 `scripts/ci/*.sh` 与 `.githooks/*`
+  （`scripts/install/*.sh` 由 `check-install.sh` 负责，作用域不重叠）。
+- 空白与冲突标记：CI 用 `QRYPT_DIFF_BASE` 限定本次改动范围跑
+  `git diff --check`，并显式扫描新增行里的 `<<<<<<<`/`=======`/`>>>>>>>`；
+  浅克隆取不到 base 时会告警并退化为只检查未提交改动。
 
 ## 配置项
 
@@ -114,6 +137,9 @@ base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64
    Windows 宿主测试需要真实 WinFsp）、localfs fs 冒烟
    （`scripts/ci/smoke-localfs.sh`，仅 `qrypt fs` 命令、不挂载）、以及
    `install.ps1` 的命名漂移检查与安装冒烟（`scripts/install/smoke-install.ps1`）。
+   单测清单与 `scripts/ci/test-layers.sh` 的 race 层保持一致；只含
+   `*_windows.go` / `*_windows_test.go` 的包必须显式列出，Windows 是它们
+   唯一的编译和运行环境（如 `pkg/util`、`internal/cli/i18n`）。
    无 WinFsp 依赖，跑得快。
 2. **每夜**（nightly.yaml `windows-mount` job）：安装 WinFsp（choco），
    以 localfs + 加密配置真实挂载（`scripts/ci/smoke-windows-mount.ps1`），
@@ -266,7 +292,9 @@ mkdir/upload/read 的 entry id 带 `ext:<mountId>` 前缀；主存储 ↔ 外挂
 ## 本地等价命令
 
 ```bash
-./scripts/ci/test-layers.sh                # 分层测试（fast/contract/race 等）
+./scripts/ci/check-all.sh                 # 本地 CI 全量等价（静态检查 + 全部测试层）
+./scripts/ci/test-layers.sh                # 分层测试（fast/changed/race/vfs-stability/smoke/all/integration）
+./scripts/ci/check-hygiene.sh              # 仓库卫生：tidy -diff、actionlint、pinned shellcheck、空白/冲突标记
 ./scripts/ci/check-coverage.sh -print      # 覆盖率快照（不 gate）
 ./scripts/ci/fuzz-nightly.sh 10s           # 本地 fuzz（每 fuzzer 10s）
 ./scripts/ci/smoke-localfs.sh              # localfs 挂载冒烟
@@ -290,8 +318,16 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 
 ## 测试并行度
 
-除少数例外，测试都带 `t.Parallel()`。`pkg/vfs` 的 281 个测试串行需 14.5s，
-并行后 5.0s；`pkg/core` 8.2s → 2.8s。fast 层墙钟因此从约 21.5s 降到约 12s。
+除少数例外，测试都带 `t.Parallel()`。`pkg/core` 并行后 8.2s → 2.8s。测试耗时
+的大头曾是少数用例里的固定等待：driver 重试的指数退避、秒级的 `PutDelay`/
+`DeleteDelay`、真实外网请求和 1s 级时间界；这些已改为可注入接缝或按断言语义
+按比例缩短（各测试文件内有注释说明边界余量）。`pkg/vfs` 的 311 个测试即使并行、
+也多数在等 timer，仍是 fast 层的大头（序贯 `-p 1` 测得 `pkg/vfs` 约 5s、
+`pkg/vfs/read` 约 6.5s、`pkg/vfs/upload` 约 3.6s；fast 层并行争用下分别约
+7s/8s/8s）。fast 层在本机 8 核 darwin/arm64 上约 18s（加速前约 26s），GitHub
+共享 runner 更慢，因此 `test-layers.sh` 的 `BUDGET=25` 只打印警告、不做硬失败。
+race 层已覆盖 `./pkg/vfs/...` 全部子包，本机约 50s；vfs-stability 并行跑 3 次
+`./pkg/vfs/...`，本机约 20s，超预算同样只是提示。
 
 两类进程级状态让测试不能并行，且都看不出自测试自身：
 
@@ -303,6 +339,10 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
   哪个测试在跑就写哪个，两个并行就在赋值本身上竞争。
   （目标形态是实例注入：`pkg/core` 的 stream poll interval 已从包级变量改为
   per-`Core` 字段，测试按实例设定，这类接缝随之消失。）
+  新增的重试/轮询接缝——`pkg/drivers/quark` 的 `retrySleep`、`pkg/drivers/p123`
+  的 `partRetryWait`、`internal/cli` 的 `fileSystemIdlePollInterval`、
+  `pkg/contracttest` 的 `vfsSmokeIdleInterval`——都在 `TestMain`（`m.Run`
+  之前）一次性设定，所有测试看到同一值，因此不参与并行竞争。
 
 只把写入者标为串行就够了：go 的 testing 会先把所有非并行测试跑完再恢复并行的
 那些，所以串行写入者必定早于并行读取者结束。
@@ -323,4 +363,14 @@ pwsh ./scripts/install/smoke-install.ps1   # Windows 安装脚本端到端冒烟
 
 为保证同一提交在不同时间得到相同结果，CI 的全部质量工具和 GitHub
 Action 都固定版本。
+
+- **Go toolchain**：只以 `go.mod` 的 `go` 指令为准。workflow 用
+  `go-version-file: go.mod`；`install-tools.sh` 与 `check-all.sh` 都从
+  `go.mod` 解析版本（本地只要求同一 minor 且 patch 不低于它，可用
+  `QRYPT_GO_TOOLCHAIN` 临时覆盖）。
+- **Go 工具**：版本集中在 `tools.go`（staticcheck、golangci-lint、
+  govulncheck、shellcheck、actionlint），由 `install-tools.sh` 安装到缓存目录，
+  `check-hygiene.sh` 会断言 shellcheck 的实际版本与 `tools.go` 一致。
+- **GitHub Actions**：按 commit SHA 固定（Dependabot 负责提出升级 PR）。
+
 工具版本升级是刻意行为：更新版本号/SHA 并提交，让 CI 结果可追溯。

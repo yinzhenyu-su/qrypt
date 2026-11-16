@@ -4,8 +4,16 @@
 #
 # Floors are each package's measured coverage minus one point, so the gate
 # catches a real regression instead of sitting several points below the
-# suite. Re-measure with `-print` before lowering anything:
-#   vfs 82.3  core 76.5  drive 70.6  sync 83.5  config 84.5  crypt 80.3  (2026-10-25)
+# suite. Re-measure with `-print` before changing them; latest local snapshot
+# (2026-11-16, darwin/arm64, go1.27.4):
+#   vfs 82.1  core 75.8  drive 78.7  sync 83.8  config 85.1  crypt 80.8
+# Note drive/config/crypt were measured well above their floors: the floors
+# come from earlier measurements and should be tightened in a dedicated PR
+# (raising a floor is intentional, lowering one needs a measured regression).
+#
+# Coverage is not perfectly reproducible: the same commit measured vfs 81.0%
+# and 80.9% on two nightly runs (2026-11-10), so the gate allows a small
+# measurement margin below the floor before failing.
 #
 # sync is measured via -coverpkg against the CLI integration tests plus its
 # own unit tests (single-package coverage alone is ~15%, misleadingly low).
@@ -25,23 +33,24 @@ declare -A FLOOR=(
   [pkg/crypt]=79
 )
 
-pkg_total() { # $1 = profile, $2 = package path prefix
-  local profile=$1 prefix=$2
-  if [ "$prefix" = "pkg/syncer" ]; then
-    # profile covers only sync via -coverpkg, so the global total is ours.
-    go tool cover -func="$profile" | tail -1 | awk '{print $NF}' | tr -d '%'
-  else
-    go tool cover -func="$profile" | tail -1 | awk '{print $NF}' | tr -d '%'
-  fi
+# Measurement noise tolerance (percentage points): the same commit can measure
+# a few tenths below the floor just because of scheduling/timing, which is not
+# a coverage regression. Fail only below floor - MARGIN; warn inside the band.
+MARGIN=0.2
+
+pkg_total() { # $1 = profile
+  # syncer is measured with -coverpkg, so the profile's global total is the
+  # package's coverage; for the others the profile only contains the package.
+  go tool cover -func="$1" | tail -1 | awk '{print $NF}' | tr -d '%'
 }
 
 run_one() { # $1 = package, $2 = profile, $3 = log
   local pkg=$1 profile=$2 log=$3
   if [ "$pkg" = "pkg/syncer" ]; then
-    go test -coverpkg=./pkg/syncer/ -coverprofile="$profile" \
+    go test -count=1 -coverpkg=./pkg/syncer/ -coverprofile="$profile" \
       ./internal/cli/ ./pkg/syncer/ >"$log" 2>&1
   else
-    go test -coverprofile="$profile" "./$pkg" >"$log" 2>&1
+    go test -count=1 -coverprofile="$profile" "./$pkg" >"$log" 2>&1
   fi
 }
 
@@ -72,12 +81,16 @@ for pkg in "${!FLOOR[@]}"; do
     run_fail=1
     continue
   fi
-  total=$(pkg_total "${profile_of[$pkg]}" "$pkg")
+  total=$(pkg_total "${profile_of[$pkg]}")
   floor=${FLOOR[$pkg]}
   printf '  %-16s %5s%%  (floor %d%%)\n' "$pkg" "$total" "$floor"
-  if [ "$print_mode" = false ] && awk -v t="$total" -v f="$floor" 'BEGIN{exit !(t+0 < f+0)}'; then
-    echo "  !! $pkg dropped below its floor (want >= $floor%)"
-    fail=1
+  if [ "$print_mode" = false ]; then
+    if awk -v t="$total" -v f="$floor" -v m="$MARGIN" 'BEGIN{exit !(t+0 < f+0-m)}'; then
+      echo "  !! $pkg dropped below its floor (want >= $floor%, margin $MARGIN)"
+      fail=1
+    elif awk -v t="$total" -v f="$floor" 'BEGIN{exit !(t+0 < f+0)}'; then
+      echo "  note: $pkg is within the ${MARGIN}pt measurement margin of its floor"
+    fi
   fi
 done
 

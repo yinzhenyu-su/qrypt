@@ -35,7 +35,7 @@ for pkg in "${!PKGS[@]}"; do
 done
 
 # Parse scripts/ci/check-coverage.sh -print output lines:
-#   "  pkg/vfs          75.4%  (floor 75%)"
+#   "  pkg/vfs          82.1%  (floor 81%)"
 out=$(bash scripts/ci/check-coverage.sh -print)
 
 summary="$GITHUB_STEP_SUMMARY"
@@ -61,7 +61,7 @@ if [ -n "$summary" ]; then
       echo "| $pkg$note | $pct% | ${floor}% | $marker |"
     done
     echo ""
-    echo "对比基线（2026-08-06）：vfs 75.4% / core 72.2% / drive 64% / sync 79.8% / config 74% / crypt 79.5%。"
+    echo "对比基线（2026-11-16，darwin/arm64）：vfs 82.1% / core 75.8% / drive 78.7% / sync 83.8% / config 85.1% / crypt 80.8%。"
   } >> "$summary"
 fi
 

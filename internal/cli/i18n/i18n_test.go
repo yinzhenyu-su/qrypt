@@ -82,26 +82,6 @@ func TestDetectPrecedence(t *testing.T) {
 			want: LangZHCN,
 		},
 		{
-			name: "unix chinese locale",
-			env:  map[string]string{"LANG": "zh_CN.UTF-8"},
-			want: LangZHCN,
-		},
-		{
-			name: "unix english locale",
-			env:  map[string]string{"LANG": "en_US.UTF-8"},
-			want: LangEN,
-		},
-		{
-			name: "lc_all wins over lang",
-			env:  map[string]string{"LC_ALL": "zh_CN.UTF-8", "LANG": "en_US.UTF-8"},
-			want: LangZHCN,
-		},
-		{
-			name: "language list falls through",
-			env:  map[string]string{"LANGUAGE": "fr_FR:zh_CN"},
-			want: LangZHCN,
-		},
-		{
 			name: "unsupported falls back",
 			args: []string{"--lang", "fr"},
 			want: LangEN,

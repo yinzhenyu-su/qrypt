@@ -75,6 +75,12 @@ func commandFSMount(cmd *cobra.Command) string {
 	return cliruntime.FlagStringValue(cmd, "mount")
 }
 
+// fileSystemIdlePollInterval is how often a wait polls the filesystem while
+// operations are still pending. Production keeps the 50ms cadence; tests
+// shorten it (see TestMain) because most CLI commands end with an idle wait
+// and a coarse poll otherwise dominates their runtime.
+var fileSystemIdlePollInterval = 50 * time.Millisecond
+
 func waitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, timeout time.Duration) error {
 	// No deadline (timeout <= 0): wait until the filesystem is idle or the
 	// context is cancelled (Ctrl-C). fs sync uses this because its transfer
@@ -86,7 +92,7 @@ func waitFileSystemIdle(ctx context.Context, fs cliruntime.OpenedFileSystem, tim
 		timer.Stop()
 	}
 	defer timer.Stop()
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(fileSystemIdlePollInterval)
 	defer ticker.Stop()
 	for {
 		uploads, deletes, err := fileSystemActivity(ctx, fs)

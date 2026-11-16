@@ -1,0 +1,28 @@
+# Keep workflow actions and Go dependencies current without a flood of pull
+# requests: minor and patch updates arrive grouped, while major bumps stay
+# individual PRs so a breaking change gets its own review. PR titles must still
+# satisfy scripts/ci/check-pr-title.sh, hence the conventional prefixes.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "chore"

@@ -15,7 +15,9 @@ import (
 // Waiting for completion must not confuse an in-flight upload with a stall.
 func TestWaitNoPendingAllowsSlowUpload(t *testing.T) {
 	d := drive.NewFakeDriver()
-	d.PutDelay = 4 * time.Second
+	// 500 ms is still 25x the 20 ms drain poll, so the wait must ride out a
+	// slow upload instead of treating it as a stall.
+	d.PutDelay = 500 * time.Millisecond
 	fs, err := vfs.New(d, vfs.Options{StorageDir: t.TempDir(), UploadDelay: testUploadDelay})
 	if err != nil {
 		t.Fatal(err)

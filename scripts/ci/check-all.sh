@@ -42,17 +42,27 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# CI pins Go 1.27.4; any newer 1.27.x patch also satisfies the toolchain line.
+# go.mod pins the toolchain (ci.yaml installs it via go-version-file), so the
+# local check follows go.mod instead of carrying a second copy of the version:
+# the same minor line is required, and any newer patch of it satisfies it.
+required_goversion="$(sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' go.mod)"
+if [ -z "$required_goversion" ]; then
+  echo "cannot read the required Go version from go.mod" >&2
+  exit 1
+fi
+required_minor="$(printf '%s' "$required_goversion" | cut -d. -f1-2)"
+required_patch="$(printf '%s' "$required_goversion" | cut -d. -f3)"
+: "${required_patch:=0}"
 goversion="$(go env GOVERSION)"
 case "$goversion" in
-  go1.27.*) ;;
+  "go${required_minor}."*) ;;
   *)
-    echo "CI requires go1.27.4 or newer 1.27.x; found $goversion" >&2
+    echo "CI requires go${required_goversion} or newer ${required_minor}.x; found $goversion" >&2
     exit 1
     ;;
 esac
-if [ "${goversion##*.}" -lt 4 ]; then
-  echo "CI requires go1.27.4 or newer 1.27.x; found $goversion" >&2
+if [ "${goversion##*.}" -lt "$required_patch" ]; then
+  echo "CI requires go${required_goversion} or newer ${required_minor}.x; found $goversion" >&2
   exit 1
 fi
 
@@ -86,6 +96,7 @@ step "Vet" go vet ./...
 scripts/ci/install-tools.sh
 TOOLS_DIR="${QRYPT_TOOLS_DIR:-${HOME}/.cache/qrypt-tools}"
 export PATH="$TOOLS_DIR:$PATH"
+step "Repo hygiene" scripts/ci/check-hygiene.sh
 step "Staticcheck" "$TOOLS_DIR/staticcheck" ./...
 step "Golangci-lint" "$TOOLS_DIR/golangci-lint" run ./...
 step "Architecture boundaries" scripts/ci/check-arch.sh

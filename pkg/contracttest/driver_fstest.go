@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -201,7 +203,13 @@ func RunVFSSmokeTest(ctx context.Context, fs vfs.FileSystem, mount string, size 
 	start = time.Now()
 	removeErr := cleanupVFSPath(ctx, fs, file, false)
 	if removeErr == nil {
-		removeErr = cleanupVFSPath(ctx, fs, dir, true)
+		// The file delete is asynchronous: wait for it to land on the
+		// backend before removing the directory, otherwise RemoveDir can
+		// still observe the file and fail with vfs.ErrDirNotEmpty.
+		removeErr = waitVFSSmokeIdle(ctx, fs, mount, 2*time.Minute, &result.PendingTimeline)
+	}
+	if removeErr == nil {
+		removeErr = removeVFSDirectory(ctx, fs, mount, dir, 2*time.Minute, &result.PendingTimeline)
 	}
 	step.finish(start, removeErr)
 	result.Steps = append(result.Steps, step)
@@ -236,13 +244,26 @@ func (s *FSTestStep) finish(start time.Time, err error) {
 	s.OK = true
 }
 
+// vfsSmokeIdleInterval is the sampling period used by waitVFSSmokeIdle. Every
+// wait costs at least two samples, so callers that only assert on the wait's
+// outcome may shorten it to trim seconds off a smoke run; the default keeps a
+// wide margin around the timer/delete transitions described below.
+var vfsSmokeIdleInterval = 100 * time.Millisecond
+
 func waitVFSSmokeIdle(ctx context.Context, fs any, mount string, timeout time.Duration, timeline *[]FSPendingSample) error {
 	start := time.Now()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(vfsSmokeIdleInterval)
 	defer ticker.Stop()
 	attempt := 0
+	// A single idle sample is not proof of idleness: when a delete timer
+	// fires, the snapshot can briefly show neither the timer nor the active
+	// delete (the timer is unregistered before the remote delete is
+	// registered), so a lone sample may report all-zero counters while a
+	// delete is still on its way. Require two consecutive idle samples so
+	// such a transition cannot end the wait early.
+	idleSamples := 0
 	for {
 		attempt++
 		sample := fsPendingSample(fs, mount, attempt, time.Since(start))
@@ -255,7 +276,12 @@ func waitVFSSmokeIdle(ctx context.Context, fs any, mount string, timeout time.Du
 		// verdict inspect PermanentFailCount separately.
 		activePending := sample.PendingCount - sample.PermanentFailCount
 		if activePending == 0 && sample.UploadCount == 0 && sample.DeleteTimers == 0 && sample.ActiveDeletes == 0 {
-			return nil
+			idleSamples++
+			if idleSamples >= 2 {
+				return nil
+			}
+		} else {
+			idleSamples = 0
 		}
 		select {
 		case <-ctx.Done():
@@ -404,6 +430,44 @@ func cleanupVFSPath(ctx context.Context, fs vfs.FileSystem, path string, dir boo
 		return fs.RemoveDir(ctx, path)
 	}
 	return fs.Remove(ctx, path)
+}
+
+// removeVFSDirectory removes a directory whose contents were just removed.
+// VFS deletes are asynchronous (they run on a delete timer), so a RemoveDir
+// issued right after Remove can still observe the children on the backend and
+// fail with vfs.ErrDirNotEmpty. The helper waits for VFS idle and retries a
+// bounded number of times before giving up, so tests never flake on a slow
+// delete timer while a genuinely non-empty directory still fails.
+func removeVFSDirectory(ctx context.Context, fs vfs.FileSystem, mount, dir string, idleTimeout time.Duration, timeline *[]FSPendingSample) error {
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := fs.RemoveDir(ctx, dir)
+		if err == nil || vfs.IsNotFound(err) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if !errors.Is(err, vfs.ErrDirNotEmpty) {
+			return fmt.Errorf("remove directory %s (attempt %d/%d): %w", dir, attempt, maxAttempts, err)
+		}
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+		if idleErr := waitVFSSmokeIdle(ctx, fs, mount, idleTimeout, timeline); idleErr != nil {
+			return errors.Join(fmt.Errorf("remove directory %s (attempt %d/%d): %w", dir, attempt, maxAttempts, err), idleErr)
+		}
+	}
+	return fmt.Errorf("remove directory %s after %d attempts: %w", dir, maxAttempts, lastErr)
+}
+
+// vfsDeleteOrder orders directories deepest-first so a parent is only removed
+// after its children, which is what RemoveDir requires.
+func vfsDeleteOrder(dirs []string) []string {
+	ordered := append([]string(nil), dirs...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return strings.Count(ordered[i], "/") > strings.Count(ordered[j], "/")
+	})
+	return ordered
 }
 
 // cleanupVFSProbeFixture removes the probe's temporary file and directory.

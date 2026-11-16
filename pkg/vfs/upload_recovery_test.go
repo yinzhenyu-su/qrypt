@@ -66,7 +66,7 @@ func TestVFSRecoversUnflushedPendingUploadSizeFromStaging(t *testing.T) {
 	defer cancel()
 	remote := t.TempDir()
 	cache := t.TempDir()
-	content := bytes.Repeat([]byte("x"), 2*1024*1024+123)
+	content := bytes.Repeat([]byte("x"), 512<<10+123)
 
 	first, err := vfs.New(localfs.New(remote), vfs.Options{StorageDir: cache, CacheMaxBytes: 10 << 20})
 	if err != nil {

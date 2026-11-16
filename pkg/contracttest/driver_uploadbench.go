@@ -143,6 +143,13 @@ func RunDriverUploadBenchmark(ctx context.Context, mount string, d drive.Driver,
 				started := time.Now()
 				uploaded, errors, uploadErr := uploadConcurrent(ctx, d, fx.TestDir.ID, size, level, chunkSize, fmt.Sprintf("%d-%d-%d", chunkSize, level, sample))
 				elapsed := time.Since(started)
+				if elapsed <= 0 {
+					// Windows CI VMs occasionally report a zero or negative
+					// QueryPerformanceCounter delta for a fast in-memory upload.
+					// Clamp to one clock quantum so the diagnostic sample keeps a
+					// positive rate instead of being reported as 0 B/s.
+					elapsed = time.Microsecond
+				}
 				report.Samples = append(report.Samples, UploadBenchSample{
 					ChunkSize:    chunkSize,
 					Concurrency:  level,

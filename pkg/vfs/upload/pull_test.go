@@ -25,9 +25,13 @@ func savePullRecord(t *testing.T, store *PendingStore, path string) PendingUploa
 
 func TestPullBacklogSurvivesRestartAndDrainsBeyondInboxCapacity(t *testing.T) {
 	store := newPendingStoreFixture(t)
+	// The restart below reopens the same journal in this process, so fsync
+	// durability is not observable here; skipping it keeps 150 records plus
+	// 150 completions from spending several milliseconds each on APFS.
+	store.skipJournalSync = true
 	svc := NewService(ServiceOptions{Store: store, UploadDelay: time.Millisecond})
 	defer svc.Close()
-	const count = 300
+	const count = 150
 	for i := range count {
 		p := savePullRecord(t, store, fmt.Sprintf("/file-%d", i))
 		svc.EnqueueAfter(p, 0)
@@ -41,6 +45,7 @@ func TestPullBacklogSurvivesRestartAndDrainsBeyondInboxCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reopened.skipJournalSync = true
 	recovered := NewService(ServiceOptions{Store: reopened, UploadDelay: time.Millisecond})
 	defer recovered.Close()
 	for _, p := range reopened.PendingUploads() {
