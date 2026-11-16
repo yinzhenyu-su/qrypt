@@ -102,7 +102,11 @@ func TestSessionFailedReadGrantsNoCredit(t *testing.T) {
 		t.Fatalf("a failed read created %d prefetch controllers", n)
 	}
 	// The next successful read starts the pass from the seed: the failed
-	// attempt contributed no delivered bytes.
+	// attempt contributed no delivered bytes. The failed read may still have a
+	// speculative window draining; wait for it before building another reader
+	// on the same State, because NewReader rewires State.scheduler and the
+	// in-flight prefetch goroutine reads it in releasePrefetch.
+	waitPrefetchIdle(t, r)
 	r.reader = newTestReader(testReaderDeps{Host: r.host, State: r.state})
 	r.read(t, sessionContext(1, 2), 0, ChunkSize)
 	p := sessionWorker(t, r, 1)
