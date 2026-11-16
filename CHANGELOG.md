@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 (2026-11-16)
 
 ### Features
+- feat(read): 统一读取策略并由消费字节驱动会话预取
+- feat: read pipeline, upload scheduling, and probe tooling since v0.6.1
 - feat(drivers): let a read profile keep a fixed parallel part size and a minimum window that may be split (`part_chunks`, `min_split_chunks`), and reproduce Quark's v0.6.1 read shape as its default
 - feat(vfs): bound read fetches with an idle and total timeout, retry a timed-out Range GET once, and cancel timed-out prefetches silently
 - feat(vfs): add read intents, driver read profiles, and bounded parallel range reads
@@ -21,6 +23,7 @@
 - feat(vfs): prefetch the next read-stream window
 
 ### Bug fixes
+- fix(cli): escape config paths in the probe cache tests
 - fix(drive): end an abandoned direct read with the stall cancel cause, so a driver rotates away from a connection that stopped delivering instead of keeping it
 - fix(drive): share one per-file in-flight budget across concurrent direct readers, counting the probe, the whole-file stream, and every part, so a concurrent copy cannot double a file's concurrency
 - fix(vfs): unregister a lookahead the foreground gives up on before cancelling it, and take over a speculative load that ends in cancellation, so the read no longer returns `context.Canceled` while its own context is valid
@@ -63,6 +66,13 @@
 - fix(vfs): count in-flight remote deletes when reporting idle
 
 ### Others
+- ci: bump the github-actions group with 6 updates (#24)
+- ci: 补强测试门禁并加速慢包测试 (#23)
+- test(read): 消除零偏移预热用例的采样竞态
+- test(drive): 放宽渐进读取超时边界用例的时间界
+- test(quark): measure the part-upload throttle instead of a deadline error
+- test(vfs): cover the probe read-fault, read-plan and prefetch APIs
+- test(cli): ignore go-winio's process-global IOCP goroutine in the leak check
 - refactor(vfs): resolve read plans once, consolidate prefetch lifetimes, and unify cache admission
 - refactor(vfs): centralize read concurrency budgets in one scheduler
 - refactor(drive): share the read concurrency budget with direct reads
