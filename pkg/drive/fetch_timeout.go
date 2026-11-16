@@ -310,20 +310,25 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 				r.err = io.EOF
 				return 0, io.EOF
 			}
-			r.pending = chunk.data
-			r.pendingErr = chunk.err
-			if r.pendingErr != nil && r.ctx.Err() != nil {
-				// The body reported the abort itself (most providers surface
-				// the request context's deadline from a pending read). Classify
-				// it the same way as the <-r.ctx.Done() branch so a total
-				// timeout keeps its diagnostic kind instead of degrading to a
-				// bare context error.
-				r.pendingErr = r.contextError()
-			}
-			if len(chunk.data) > 0 {
-				r.resetIdle()
-			}
+			r.deliverChunk(chunk)
 		case <-r.timer.C:
+			// The pump may already have produced a chunk that this consumer
+			// was not scheduled to read before the idle timer expired (a
+			// loaded host or a slow caller). Those bytes are provider output,
+			// not provider silence: never abandon them, or a locally
+			// rate-limited body would be reported as stalled and its
+			// connection penalized. Drain the chunk and restart the window.
+			select {
+			case chunk, ok := <-r.chunks:
+				if !ok {
+					r.timer.Stop()
+					r.err = io.EOF
+					return 0, io.EOF
+				}
+				r.deliverChunk(chunk)
+				continue
+			default:
+			}
 			remaining := r.idle - time.Since(r.idleStarted) + r.localWaits.duration() - r.idleLocalWait
 			if r.localWaits.waiting() || remaining > 0 {
 				// Completed local waits also count: the consumer may only
@@ -349,6 +354,25 @@ func (r *timeoutBody) Read(p []byte) (int, error) {
 			}
 			return 0, r.abort(r.contextError())
 		}
+	}
+}
+
+// deliverChunk applies one produced chunk: its bytes become pending data and
+// restart the idle window. A body error is classified against the request
+// context first, so a provider that surfaced the abort keeps the diagnostic
+// kind of the branch that caused it.
+func (r *timeoutBody) deliverChunk(chunk timeoutBodyChunk) {
+	r.pending = chunk.data
+	r.pendingErr = chunk.err
+	if r.pendingErr != nil && r.ctx.Err() != nil {
+		// The body reported the abort itself (most providers surface the
+		// request context's deadline from a pending read). Classify it the
+		// same way as the <-r.ctx.Done() branch so a total timeout keeps its
+		// diagnostic kind instead of degrading to a bare context error.
+		r.pendingErr = r.contextError()
+	}
+	if len(chunk.data) > 0 {
+		r.resetIdle()
 	}
 }
 

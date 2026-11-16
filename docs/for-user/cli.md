@@ -230,6 +230,7 @@ qrypt offline list [--all] [--state STATE] [--mount NAME] [--limit N] [--json]
 qrypt offline show TASK_ID [--json]
 qrypt offline cancel TASK_ID
 qrypt offline retry TASK_ID
+qrypt offline rm TASK_ID | --finished [--mount NAME]
 qrypt offline wait TASK_ID [--timeout DURATION] [--json]
 ```
 
@@ -240,6 +241,8 @@ qrypt offline add magnet:?xt=urn:btih:... --parse-to /quark/downloads
 qrypt offline wait <task-id>
 qrypt fs get /quark/downloads/<file> ./<file>
 ```
+
+`cancel` 只对仍在执行的任务有效；已结束的任务用 `qrypt offline rm` 从任务列表移除（不删除云盘或本地文件），`--finished` 一次移除全部已结束任务。
 
 来源格式、目的地规则、两阶段 fetch、并发参数和错误码见[离线下载](offline-download.md)。
 

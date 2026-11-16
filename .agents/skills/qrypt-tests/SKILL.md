@@ -1,6 +1,6 @@
 ---
 name: qrypt-tests
-description: Run qrypt tests manually — local unit/race/coverage/fuzz gates, real-netdisk contract and probe tests against configured mounts (local temp mount or a long-lived mount server), and manual GitHub workflow runs (Contract Tests, Nightly Quality Gates). Use when asked to run or rerun tests, run a contract/probe test on a specific mount, refresh the contract secret, or explain a failed contract/nightly run.
+description: Run qrypt tests manually — local hygiene/unit/race/coverage/fuzz gates, real-netdisk contract and probe tests against configured mounts (local temp mount or a long-lived mount server), and manual GitHub workflow runs (Contract Tests, Nightly Quality Gates). Use when asked to run or rerun tests, run a contract/probe test on a specific mount, refresh the contract secret, or explain a failed contract/nightly run.
 ---
 
 # Qrypt 手动运行测试
@@ -10,6 +10,7 @@ description: Run qrypt tests manually — local unit/race/coverage/fuzz gates, r
 | 目标 | 命令 |
 |---|---|
 | 改完代码跑本地全量门禁 | `scripts/ci/check-all.sh` |
+| 只跑仓库卫生门禁（不编译） | `scripts/ci/check-hygiene.sh` |
 | 只跑工作区 diff 能覆盖的包 | `scripts/ci/test-layers.sh changed` |
 | 单包 / 单个测试 | `go test ./pkg/vfs -run TestName -count=1` |
 | 并发敏感包 | `scripts/ci/test-layers.sh race` |
@@ -22,9 +23,17 @@ description: Run qrypt tests manually — local unit/race/coverage/fuzz gates, r
 
 ## 0. 前置检查
 
-- Go 版本必须与 `.github/workflows/ci.yaml` 的 `go-version` 一致（当前 `1.27.4`）：`go version`。
-- CI 操作需要 `gh auth status` 通过且有仓库权限；仓库用 `gh repo view --json nameWithOwner` 确认。
-- 真实网盘测试要求：`qrypt.toml` 中存在该 `[[mounts]]`、`test_enabled = true`、凭证有效（内联 params 或引用的 `[[credentials]]`）。
+- Go 版本单源在 `go.mod`：本地 `check-all.sh` 直接从 `go.mod` 解析要求的
+  Go 版本（要求同一 minor 线、不低于其 patch），workflow 用
+  `go-version-file: go.mod`。不要在文档或脚本里维护第二份版本号。
+- CI 的 pinned 工具（staticcheck、golangci-lint、govulncheck、shellcheck、
+  actionlint）版本在 `tools.go`，由 `scripts/ci/install-tools.sh` 安装到
+  `$QRYPT_TOOLS_DIR`（默认 `~/.cache/qrypt-tools`）；`check-all.sh` 会先安装并
+  把该目录放到 `PATH` 最前。
+- CI 操作需要 `gh auth status` 通过且有仓库权限；仓库用
+  `gh repo view --json nameWithOwner` 确认。
+- 真实网盘测试要求：`qrypt.toml` 中存在该 `[[mounts]]`、`test_enabled = true`、
+  凭证有效（内联 params 或引用的 `[[credentials]]`）。
 
 ## 1. 本地单元 / 门禁
 
@@ -36,13 +45,62 @@ scripts/ci/check-all.sh
 # 分层跑，避免每次都全量
 scripts/ci/test-layers.sh changed        # 工作区 diff 可达的包
 scripts/ci/test-layers.sh fast           # go test ./...（约 20s+）
-scripts/ci/test-layers.sh race
-scripts/ci/test-layers.sh vfs-stability  # 3 次重复，抓时序 flake
+scripts/ci/test-layers.sh race           # 整个 ./pkg/vfs/... 子树 + 其它并发敏感包，-race
+scripts/ci/test-layers.sh vfs-stability  # ./pkg/vfs/... 重复 3 次，抓时序 flake
 scripts/ci/test-layers.sh smoke          # localfs 挂载冒烟
 scripts/ci/test-layers.sh all            # 默认套件 + race(vfs/core) + smoke
 ```
 
 `-count=1` 用来绕开结果缓存；单个测试仍用 `go test ./pkg/<pkg> -run '^TestName$' -count=1 -v`。
+
+race 层与 vfs-stability 层覆盖的是整个 `./pkg/vfs/...`（含 `read`、`readcache`、
+`scheduler`、`upload` 等子包），不只是 `pkg/vfs` 主包。新门禁暴露的时序用例
+要按竞争条件修复，不要放松断言强度或加 `t.Skip` 来变绿。
+
+### 1a. 仓库卫生门禁
+
+`scripts/ci/check-hygiene.sh` 是廉价、不依赖 Go 构建的门禁，`check-all.sh` 会
+先跑它：
+
+- `go mod tidy -diff`：`go.mod`/`go.sum` 必须 tidy，只打印 diff、不改文件；
+- `actionlint`：`.github/workflows/*.yaml|*.yml` 能解析且与本地 composite
+  action 一致；
+- pinned `shellcheck`：只检查 `scripts/ci/*.sh` 与 `.githooks/*`（`scripts/install/`
+  由 `scripts/install/check-install.sh` 负责，两边范围不重叠）；
+- `git diff --check`：无行尾空白/冲突标记；CI 用事件 base commit，本地默认看
+  未提交改动，可用 `QRYPT_DIFF_BASE=<rev>` 指定。
+
+本地直接跑可能因系统 shellcheck 版本与 `tools.go` 的 `ShellcheckVersion`
+（当前 `0.10.0`）不一致而中止，这是环境差异，不是仓库问题：先跑
+`scripts/ci/install-tools.sh`，再把 `$QRYPT_TOOLS_DIR` 放到 `PATH` 最前
+（`check-hygiene.sh` 自身也会回退到该目录）。确实无法安装时，要明确记录跳过
+原因，不要改 `tools.go` 的版本去迁就本机。
+
+### 1b. 覆盖率门禁
+
+```bash
+scripts/ci/check-coverage.sh          # 判定
+scripts/ci/check-coverage.sh -print   # 只打印，查看现值
+```
+
+覆盖率带测量噪声容差：同一提交在不同调度下可能低几分之一个点，
+`check-coverage.sh` 的 `MARGIN=0.2` 允许低于 floor 0.2 个百分点（只警告），
+低于 `floor - 0.2` 才失败。当前基线是 **2026-11-16**（darwin/arm64、go1.27.4）
+测得的数据；抬 floor 要在专门 PR 里改 `FLOOR` 映射并在注释里记录新增覆盖的内容，
+降 floor 需要可测量的回归理由，不能为了让 PR 变绿而下调。
+
+### 1c. 时间敏感测试与 TestMain 接缝
+
+测试加速依赖在包级 `TestMain`（`m.Run()` 之前）设置这些 seam：
+
+- `retrySleep`（`pkg/drivers/quark`）
+- `partRetryWait`（`pkg/drivers/p123`）
+- `fileSystemIdlePollInterval`（`internal/cli`）
+- `vfsSmokeIdleInterval`（`pkg/contracttest`）
+
+它们只在 `TestMain` 里改一次、不参与测试体并行竞争。新增时间敏感测试请沿用
+这个模式：在包级 `TestMain` 设置、在 `t.Cleanup` 里恢复（需要按测试恢复时），
+不要在测试体内并发改全局变量，否则 race 层会随机失败。
 
 ## 2. 真实网盘测试（本机）
 
@@ -184,13 +242,21 @@ QRYPT_HOME=/tmp/qrypt-fresh qrypt fs df <mount> --config ./qrypt.toml
   并检查 mount 是否已切到共享凭据。
 - 命令连不上服务：确认 `mount`/`probe`/`debug` 用的是同一个 `--config`
   （endpoint 从配置路径派生；`QRYPT_HOME` 也会改变 run 目录）。
+- **Windows 上 `upload_task_test.go: task upload-... did not finish, last state=running`**：
+  已知的 Windows 环境 flake（docs-only PR 也可能出现）。先用
+  `gh run rerun <run-id> --failed` 重跑一次；重复出现才需要调查代码。
+- **本地 `check-hygiene` 报 ShellCheck 版本不符**：见 §1a，装 pinned 工具而不是
+  改版本。
 
 ## 6. 约束
 
 - 绝不打印 secret、cookie、token；`sync-contract-config.sh` 只把 base64 经 stdin
   交给 `gh secret set`，不要改成文件或命令行参数。
 - 真实网盘测试会消耗配额并写远端，只跑 `test_enabled = true` 的 mount。
-- Windows/WinFsp 相关验证只在 CI（`ci.yaml` test-windows、`nightly.yaml` windows-mount）。
+- Windows/WinFsp 相关验证只在 CI（`ci.yaml` `test-windows`、`nightly.yaml`
+  `windows-mount`）。`test-windows` 的单元测试包清单是显式枚举的，新增包时要
+  同时加到 `ci.yaml` 的 Windows 清单和 `test-layers.sh` 的 race 层清单，两边保持
+  同步，否则新包在 Windows 上永远不被测到。
 - 改了 Go 代码再提交：先 `"$(go env GOROOT)/bin/gofmt" -w` 相关文件，再跑
   `scripts/ci/check-all.sh`（详见仓库 `AGENTS.md`）。
 - 相关文档：`docs/for-developer/debug.md`（probe/debug 全量命令）、

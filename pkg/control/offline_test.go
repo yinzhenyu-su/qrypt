@@ -13,19 +13,23 @@ import (
 )
 
 type offlineServiceStub struct {
-	created    task.OperationRequest
-	listed     task.Filter
-	inspected  task.OfflineOperationRequest
-	waitedID   string
-	waitedFor  time.Duration
-	cancelled  string
-	retried    string
-	tasks      []task.Task
-	preview    OfflinePreviewResult
-	createErr  error
-	inspectErr error
-	waitErr    error
-	getErr     error
+	created         task.OperationRequest
+	listed          task.Filter
+	inspected       task.OfflineOperationRequest
+	waitedID        string
+	waitedFor       time.Duration
+	cancelled       string
+	retried         string
+	dismissed       string
+	dismissedFilter task.Filter
+	dismissedCount  int
+	tasks           []task.Task
+	preview         OfflinePreviewResult
+	createErr       error
+	inspectErr      error
+	waitErr         error
+	getErr          error
+	dismissErr      error
 }
 
 func (s *offlineServiceStub) CreateOfflineTask(_ context.Context, req task.OperationRequest) (task.Task, error) {
@@ -73,6 +77,22 @@ func (s *offlineServiceStub) CancelTask(_ context.Context, id string) error {
 func (s *offlineServiceStub) RetryTask(_ context.Context, id string) error {
 	s.retried = id
 	return nil
+}
+
+func (s *offlineServiceStub) DismissTask(_ context.Context, id string) error {
+	if s.dismissErr != nil {
+		return s.dismissErr
+	}
+	s.dismissed = id
+	return nil
+}
+
+func (s *offlineServiceStub) DismissFinishedTasks(_ context.Context, filter task.Filter) (int, error) {
+	if s.dismissErr != nil {
+		return 0, s.dismissErr
+	}
+	s.dismissedFilter = filter
+	return s.dismissedCount, nil
 }
 
 func newOfflineServer(service OfflineService) *CommandServer {
@@ -164,15 +184,53 @@ func TestOfflineShowCancelRetryRoutes(t *testing.T) {
 		t.Fatalf("show status = %d", show.Code)
 	}
 
-	for _, action := range []string{"cancel", "retry"} {
+	for _, action := range []string{"cancel", "retry", "dismiss"} {
 		resp := httptest.NewRecorder()
 		server.handleOfflineTask(resp, httptest.NewRequest(http.MethodPost, "/v1/control/offline/tasks/task-9/"+action, nil))
 		if resp.Code != http.StatusOK {
 			t.Fatalf("%s status = %d body=%s", action, resp.Code, resp.Body.String())
 		}
 	}
-	if service.cancelled != "task-9" || service.retried != "task-9" {
-		t.Fatalf("cancel=%q retry=%q", service.cancelled, service.retried)
+	if service.cancelled != "task-9" || service.retried != "task-9" || service.dismissed != "task-9" {
+		t.Fatalf("cancel=%q retry=%q dismiss=%q", service.cancelled, service.retried, service.dismissed)
+	}
+}
+
+func TestOfflineDismissRejectsNonOfflineTask(t *testing.T) {
+	t.Parallel()
+
+	service := &offlineServiceStub{getErr: &OfflineError{Class: OfflineErrorNotFound, Message: "not an offline task"}}
+	server := newOfflineServer(service)
+	resp := httptest.NewRecorder()
+	server.handleOfflineTask(resp, httptest.NewRequest(http.MethodPost, "/v1/control/offline/tasks/task-9/dismiss", nil))
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("dismiss status = %d body=%s, want 404", resp.Code, resp.Body.String())
+	}
+	if service.dismissed != "" {
+		t.Fatalf("non-offline task was dismissed: %q", service.dismissed)
+	}
+}
+
+func TestOfflineDismissFinishedRoute(t *testing.T) {
+	t.Parallel()
+
+	service := &offlineServiceStub{dismissedCount: 3}
+	server := newOfflineServer(service)
+	body, _ := json.Marshal(OfflineDismissFinishedRequest{Mount: "cloud"})
+	resp := httptest.NewRecorder()
+	server.handleOfflineFinishedDismiss(resp, httptest.NewRequest(http.MethodPost, "/v1/control/offline/finished", strings.NewReader(string(body))))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if service.dismissedFilter.Mount != "cloud" {
+		t.Fatalf("filter mount = %q, want cloud", service.dismissedFilter.Mount)
+	}
+	if len(service.dismissedFilter.Types) != 2 || service.dismissedFilter.Types[0] != task.TypeOfflineDownload || service.dismissedFilter.Types[1] != task.TypeOfflineFetch {
+		t.Fatalf("filter types = %+v, want the offline types", service.dismissedFilter.Types)
+	}
+	var result OfflineDismissFinishedResult
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil || result.Removed != 3 {
+		t.Fatalf("removed result = %+v err=%v", result, err)
 	}
 }
 

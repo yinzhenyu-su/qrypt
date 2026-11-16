@@ -1,19 +1,55 @@
 # 质量门禁（CI Workflows）
 
-qrypt 用三个 GitHub Actions workflow 组成质量体系：每 PR 的快速检查、
-每夜的全量门禁、以及真实网盘 contract 套件。本地开发时对应的脚本
-见文末。
+qrypt 用四个 GitHub Actions workflow 组成质量体系：每 PR 的快速检查、
+每夜的全量门禁、真实网盘 contract 套件，以及 tag 触发的发布。本地开发时
+对应的脚本见文末。
 
 ## Workflow 总览
 
 | Workflow | 触发 | 内容 | 状态徽章 |
 | --- | --- | --- | --- |
-| `CI` (ci.yaml) | push main / PR / tag | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；tag/dispatch 时构建并发布 | README |
+| `CI` (ci.yaml) | PR / push main | vet、staticcheck、golangci-lint、govulncheck、gofmt、**repo hygiene**（`go mod tidy -diff`、actionlint、shellcheck、空白/冲突标记）、`go test ./...`、VFS 稳定性 ×3、localfs smoke、race、**PR coverage 快照**、**Windows 编译+单测门禁**、**PR 标题校验**；push main 时先由 `detect` 判断能否复用 PR 的 CI（见下） | README |
 | `Contract Tests` (contract.yaml) | 手动 dispatch 或 nightly cron | 对每个启用的 mount 跑真实网盘 contract 套件（auth/contract/crud/fs/instantupload/resume/multipart），`test_enabled = true` 的 mount 才可测；nightly 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的无人值守子集 | README |
 | `Nightly Quality Gates` (nightly.yaml) | 每天 18:00 UTC | **fuzz**（每 fuzzer 30s，失败上传 corpus artifact）、**coverage 硬性 floor gate**、race、全量测试、**Windows 真实挂载冒烟**（WinFsp） | README |
+| `Release` (release.yaml) | push `v*` tag / 手动 dispatch | `verify` 校验 tag 在 main 上且对应 tree 的 CI 已全绿，然后生成 changelog PR、构建 linux/windows/darwin 产物、跑 Windows 发布包挂载冒烟并发布 | README |
 
-tag/dispatch 时，`update-changelog` 先检查 tag 的 `CHANGELOG.md`；缺少该版本记录时，
-它会在 `changelog/<version>` 分支上生成提交并创建 PR，不再直接 push `main`。
+## 合并后复用 PR 检查（ci.yaml `detect`）
+
+squash merge 产生新提交，但 tree 与 PR head 逐字节相同。push 到 main 时
+`detect` job 查刚合入该提交的 merged PR，比较 `HEAD^{tree}` 与 PR head 的
+tree，并要求 PR head 上的 `Check (static)`、`Check (fast)`、`Check (race)`、
+`Check (stability)`、`Test (windows)`、`PR title` 六个检查全部 success；
+满足才输出 `reuse=true`，`check` 矩阵与 `test-windows` 跳过。任何不确定
+（没有已合并 PR、tree 不同、检查红或缺失、API 出错）都输出 `reuse=false`，
+fail-open 照常跑全量。
+
+`detect` 只在 push main 时运行，PR 上它被跳过；因此依赖它的 job 用
+`!cancelled() && needs.detect.outputs.reuse != 'true'` 而不是裸表达式——
+裸表达式会被 GitHub 补上隐式 `success()`，在 `detect` 被跳过或失败时把
+整个 CI 静默跳过。concurrency 也只在 PR 上 `cancel-in-progress: true`：
+main 的运行不再互相取消，因为被取消的 `check` 会让发布 gate 拒绝发布。
+
+## 发布（release.yaml）
+
+发布 job 全部在 `release.yaml`，触发方式是 push `v*` tag 或
+`gh workflow run release.yaml -f version=vX.Y.Z`（concurrency 按 ref 串行、
+不取消）。所有构建 job 都 `needs: [verify]`，`verify` 是最严格的一道门：
+
+- tag 必须存在，且它的提交可以从 `origin/main` 到达；
+- 该提交自身的必需检查全绿；若自身的检查并非全绿（合并后被跳过的矩阵
+  记成 skipped，或该提交根本没有 check-runs），则退一步要求：它是某个已
+  合并 PR 的 merge commit，PR head 的 tree 与它完全相同，且 PR head 的
+  六个检查全部 success。`PR title` 只在 PR 上运行，所以前一条允许它在
+  非 PR head 提交上为 skipped，后一条要求 success；
+- 不满足时 `verify` 失败并打印恢复提示，后续 job 全部跳过，避免把未经
+  完整 CI 的 tree 发布出去。
+
+发布通过后，`update-changelog` 先检查 tag 的 `CHANGELOG.md`；缺少该版本
+记录时，它会在 `changelog/<version>` 分支上生成提交并创建 PR，不再直接
+push `main`。随后 `dist-linux-windows`（linux amd64/arm64 走 Docker、
+windows amd64/arm64 交叉编译）、`dist-darwin`（macos-15，amd64+arm64）打包，
+`windows-release-smoke` 用真实 WinFsp 跑发布包挂载冒烟，最后由 `release`
+用 goreleaser 发布并补充 contributor 致谢。
 
 所有 job 都设置了 `timeout-minutes`，避免测试挂死时长时间占用 runner。
 依赖更新交给 Dependabot（`.github/dependabot.yml`）：GitHub Actions 每周
@@ -31,7 +67,13 @@ gh workflow run "Contract Tests"
 
 # Nightly Quality Gates（fuzz + coverage gate + race + all）
 gh workflow run "Nightly Quality Gates"
+
+# Release：重跑失败的发布（tag 已存在；verify 会重新校验它仍指向已绿的提交）
+gh workflow run release.yaml -f version=vX.Y.Z
 ```
+
+正式发布优先 push `v*` tag，由 `release.yaml` 的 `verify` 把关；dispatch 只是
+tag 已存在时的重试/恢复入口，不会绕过 `verify`。
 
 nightly cron 只跑 `CONTRACT_NIGHTLY_MOUNTS_JSON` 里的子集。定时任务是无人值守的，
 只能放凭证在两次运行之间仍然有效的 mount：quark 这类 provider 的凭证只存在于
@@ -147,9 +189,9 @@ base64 内容仅通过标准输入传给 `gh secret set CONTRACT_CONFIG_TOML_B64
    文件名、再经 FUSE 路径读回。这是 nocgo 宿主 + WinFsp 集成唯一覆盖
    的路径。
 
-发布时，`ci.yaml` 还会在 Windows runner 上解压并运行实际的 amd64 发布包，
-通过同一份 WinFsp 挂载冒烟后才进入 release；Windows arm64 目前仍只做交叉编译
-验证。
+发布时，`release.yaml` 的 `windows-release-smoke` 会在 Windows runner 上解压
+并运行实际的 amd64 发布包，通过同一份 WinFsp 挂载冒烟后才进入 release job；
+Windows arm64 目前仍只做交叉编译验证。
 
 注意：Windows 下 race 检测需要 cgo 工具链（runner 无 gcc），所以
 `-race` 只在 Linux 跑。

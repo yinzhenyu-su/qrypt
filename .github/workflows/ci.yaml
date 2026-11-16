@@ -1,28 +1,124 @@
 name: CI
 
+# PR gate plus the post-merge run on main. Feature branches are tested through
+# their pull request; tags are handled by release.yaml.
 on:
   push:
-    branches: [main, feat/*]
-    tags: [v*]
+    branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Release version (e.g. v0.3.0)"
-        required: true
-        type: string
 
+# Cancel superseded PR runs, but never cancel a main run: its detect job records
+# the post-merge CI state, and a cancelled run is exactly what release.yaml's
+# verify gate refuses to trust.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  # Every merge to main creates a new SHA, but a squash merge keeps the PR head
+  # tree byte for byte. When the merged PR already passed the full gate, reuse
+  # those checks instead of re-running the whole matrix after every merge. Any
+  # uncertainty -- no merged PR, different tree, red or missing checks, API
+  # error -- falls back to a normal run.
+  detect:
+    name: Detect reusable CI
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: read
+    outputs:
+      reuse: ${{ steps.compare.outputs.reuse }}
+    steps:
+      # Only HEAD's tree is compared, so the default shallow checkout is
+      # enough; the PR head commit is fetched explicitly below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Compare tree and checks with the merged PR
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -u
+
+          required_checks=(
+            "Check (static)"
+            "Check (fast)"
+            "Check (race)"
+            "Check (stability)"
+            "Test (windows)"
+            "PR title"
+          )
+
+          # Print "<check name>=<conclusion>" for every required check of a
+          # commit. The latest run per name wins so a re-run can clear an
+          # earlier failure.
+          check_statuses() {
+            local sha="$1" runs
+            runs="$(gh api "repos/${GH_REPO}/commits/${sha}/check-runs?per_page=100")" || return 1
+            printf '%s' "$runs" | jq -r --args '
+              [ $ARGS.positional[] as $name
+                | ([ .check_runs[] | select(.name == $name) ] | sort_by(.completed_at // "") | last) as $run
+                | "\($name)=\($run.conclusion // "missing")"
+              ] | .[]' "${required_checks[@]}"
+          }
+
+          # Fail open: a false reuse only costs one extra matrix run.
+          finish() {
+            local reuse="$1" reason="${2:-}"
+            echo "reuse=${reuse}" >> "$GITHUB_OUTPUT"
+            if [ -n "${reason}" ]; then
+              echo "detect: reuse=${reuse} (${reason})"
+            else
+              echo "detect: reuse=${reuse}"
+            fi
+            exit 0
+          }
+
+          pr_json="$(gh api "repos/${GH_REPO}/commits/${COMMIT_SHA}/pulls" 2>/dev/null)" ||
+            finish false "cannot list PRs for ${COMMIT_SHA}"
+
+          pr_number="$(printf '%s' "$pr_json" | jq -r '[.[] | select(.merged_at != null)] | .[0].number // empty')"
+          head_sha="$(printf '%s' "$pr_json" | jq -r '[.[] | select(.merged_at != null)] | .[0].head.sha // empty')"
+          [ -n "${head_sha}" ] || finish false "no merged PR for ${COMMIT_SHA}"
+
+          if ! git fetch --no-tags --depth=1 origin "${head_sha}" >/dev/null 2>&1; then
+            # PR refs stay reachable even after the head branch was deleted.
+            git fetch --no-tags --depth=1 origin "refs/pull/${pr_number}/head" >/dev/null 2>&1 ||
+              finish false "cannot fetch PR #${pr_number} head ${head_sha}"
+          fi
+
+          local_tree="$(git rev-parse 'HEAD^{tree}')"
+          head_tree="$(git rev-parse 'FETCH_HEAD^{tree}')"
+          [ "${local_tree}" = "${head_tree}" ] ||
+            finish false "tree ${local_tree} differs from PR #${pr_number} head tree ${head_tree}"
+
+          if ! statuses="$(check_statuses "${head_sha}")"; then
+            finish false "cannot read check-runs for PR #${pr_number} head ${head_sha}"
+          fi
+          bad="$(printf '%s\n' "${statuses}" | grep -v '=success$' || true)"
+          [ -z "${bad}" ] ||
+            finish false "PR #${pr_number} CI is not green: $(printf '%s' "${bad}" | tr '\n' ' ')"
+
+          echo "detect: main commit ${COMMIT_SHA} reuses PR #${pr_number} CI (head ${head_sha})"
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check (${{ matrix.name }})
+    needs: [detect]
+    # !cancelled() is a status function, so GitHub does not append its implicit
+    # success() check. detect is skipped on pull requests and fails open with
+    # reuse=false on errors; a plain expression would pick up success() and
+    # silently skip this job for those cases, i.e. run no CI at all on PRs.
+    if: ${{ !cancelled() && needs.detect.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -157,6 +253,9 @@ jobs:
   # *_windows.go or the pure-Go nocgo FUSE host would ship untested.
   test-windows:
     name: Test (windows)
+    needs: [detect]
+    # Same gate as `check`: run unless the merged PR already covered this tree.
+    if: ${{ !cancelled() && needs.detect.outputs.reuse != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -208,319 +307,3 @@ jobs:
           export TMPDIR="${RUNNER_TEMP//\\//}"
           export MSYS2_ARG_CONV_EXCL="*"
           scripts/ci/smoke-localfs.sh
-
-  update-changelog:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [check]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Generate changelog
-        run: bash scripts/release/gen-changelog.sh "${{ inputs.version || github.ref_name }}"
-
-      - name: Create changelog PR
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          VERSION: ${{ inputs.version || github.ref_name }}
-        run: |
-          if git diff --quiet -- CHANGELOG.md; then
-            echo "CHANGELOG.md 无变化,跳过"
-            exit 0
-          fi
-
-          branch="changelog/${VERSION}"
-          title="docs: update changelog for ${VERSION}"
-          body="Generated by \`scripts/release/gen-changelog.sh\` for \`${VERSION}\`.
-
-          This PR only updates \`CHANGELOG.md\`; merge it after the release workflow finishes."
-
-          state="$(gh pr list --head "$branch" --state all --json state --jq '.[0].state // empty')"
-          if [ "$state" = "MERGED" ]; then
-            echo "changelog PR for ${VERSION} already merged, skipping"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$branch"
-          git add CHANGELOG.md
-          git commit -m "$title [skip ci]"
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push --force origin "HEAD:refs/heads/${branch}"
-
-          if [ -z "$state" ]; then
-            pr_url="$(gh pr create --base main --head "$branch" --title "$title" --body "$body")"
-          else
-            if [ "$state" = "CLOSED" ]; then
-              gh pr reopen "$branch"
-            fi
-            gh pr edit "$branch" --title "$title" --body "$body"
-            pr_url="$(gh pr view "$branch" --json url --jq .url)"
-          fi
-
-          {
-            echo "### Changelog PR"
-            echo
-            echo "$pr_url"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  dist-linux-windows:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [check, test-windows]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: linux-amd64
-            runner: ubuntu-latest
-            platform: linux/amd64
-            output: qrypt-linux-amd64
-            goos: linux
-            goarch: amd64
-            archive_format: tar.gz
-            kind: linux-docker
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            output: qrypt-linux-arm64
-            goos: linux
-            goarch: arm64
-            archive_format: tar.gz
-            kind: linux-docker
-          - target: windows-amd64
-            runner: ubuntu-latest
-            output: qrypt-windows-amd64.exe
-            goos: windows
-            goarch: amd64
-            archive_format: zip
-            kind: windows-go
-          - target: windows-arm64
-            runner: ubuntu-latest
-            output: qrypt-windows-arm64.exe
-            goos: windows
-            goarch: arm64
-            archive_format: zip
-            kind: windows-go
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # 构建 tag 的源码(dispatch 时用 inputs.version),保证二进制内嵌版本号正确
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: matrix.kind == 'windows-go'
-        with:
-          # go.mod is the single source of truth for the pinned toolchain.
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-        if: matrix.kind == 'linux-docker'
-
-      - run: mkdir -p dist
-
-      - name: Build metadata
-        run: |
-          version="${{ inputs.version || github.ref_name }}"
-          commit="$(git rev-parse --short HEAD)"
-          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
-          {
-            echo "QRYPT_VERSION=${version}"
-            echo "QRYPT_COMMIT=${commit}"
-            echo "QRYPT_BUILD_TIME=${build_time}"
-            echo "QRYPT_DIRTY=${dirty}"
-            echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}"
-          } >> "$GITHUB_ENV"
-
-      - name: Build ${{ matrix.target }} with Docker
-        if: matrix.kind == 'linux-docker'
-        run: |
-          docker buildx build \
-            --platform ${{ matrix.platform }} \
-            --build-arg VERSION="${QRYPT_VERSION}" \
-            --build-arg COMMIT="${QRYPT_COMMIT}" \
-            --build-arg BUILD_TIME="${QRYPT_BUILD_TIME}" \
-            --build-arg DIRTY="${QRYPT_DIRTY}" \
-            --cache-from type=gha,scope=qrypt-${{ matrix.target }} \
-            --cache-to type=gha,mode=max,scope=qrypt-${{ matrix.target }} \
-            --load \
-            -t qrypt:${{ matrix.target }} .
-          docker create --name qrypt-${{ matrix.target }} qrypt:${{ matrix.target }}
-          docker cp qrypt-${{ matrix.target }}:/usr/local/bin/qrypt dist/${{ matrix.output }}
-          docker rm qrypt-${{ matrix.target }}
-
-      - name: Build ${{ matrix.target }}
-        if: matrix.kind == 'windows-go'
-        run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=${{ matrix.goarch }} go build -tags nocgo -ldflags="${QRYPT_LDFLAGS}" \
-            -o dist/${{ matrix.output }} ./cmd/qrypt/
-
-      - name: Package ${{ matrix.target }}
-        run: |
-          version="${{ inputs.version || github.ref_name }}"
-          version="${version#v}"
-          asset="qrypt_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
-          if [ "${{ matrix.archive_format }}" = "zip" ]; then
-            (cd dist && zip "${asset}.zip" "${{ matrix.output }}")
-          else
-            tar -C dist -czf "dist/${asset}.tar.gz" "${{ matrix.output }}"
-          fi
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: qrypt-${{ matrix.target }}-${{ inputs.version || github.ref_name }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-
-  dist-darwin:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [check]
-    runs-on: macos-15
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          # go.mod is the single source of truth for the pinned toolchain.
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install macFUSE
-        run: |
-          brew install --cask macfuse
-
-      - run: mkdir -p dist
-
-      - name: Build metadata
-        run: |
-          version="${{ inputs.version || github.ref_name }}"
-          commit="$(git rev-parse --short HEAD)"
-          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          dirty="$(test -n "$(git status --porcelain)" && echo true || echo false)"
-          {
-            echo "QRYPT_VERSION=${version}"
-            echo "QRYPT_COMMIT=${commit}"
-            echo "QRYPT_BUILD_TIME=${build_time}"
-            echo "QRYPT_DIRTY=${dirty}"
-            echo "QRYPT_LDFLAGS=-s -w -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildVersion=${version} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildCommit=${commit} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildTime=${build_time} -X github.com/yinzhenyu/qrypt/pkg/buildinfo.buildDirty=${dirty}"
-          } >> "$GITHUB_ENV"
-
-      - name: Build darwin/amd64
-        run: |
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -ldflags="${QRYPT_LDFLAGS}" \
-            -o dist/qrypt-darwin-amd64 ./cmd/qrypt/
-
-      - name: Build darwin/arm64
-        run: |
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -ldflags="${QRYPT_LDFLAGS}" \
-            -o dist/qrypt-darwin-arm64 ./cmd/qrypt/
-
-      - name: Package darwin binaries
-        run: |
-          version="${{ inputs.version || github.ref_name }}"
-          version="${version#v}"
-          tar -C dist -czf "dist/qrypt_${version}_darwin_amd64.tar.gz" qrypt-darwin-amd64
-          tar -C dist -czf "dist/qrypt_${version}_darwin_arm64.tar.gz" qrypt-darwin-arm64
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: qrypt-darwin-${{ inputs.version || github.ref_name }}
-          path: dist/*.tar.gz
-
-  windows-release-smoke:
-    name: Windows release mount smoke
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [dist-linux-windows]
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Smoke-test the script from the same tag as the release binary.
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: qrypt-windows-*
-          merge-multiple: true
-          path: prebuilt
-
-      # Hosted runners are fresh each time: cache the pinned MSI, but install
-      # the driver on every run. The script verifies its SHA-256 before use.
-      - name: Cache WinFsp MSI
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: .cache/winfsp/winfsp-2.1.25156.msi
-          key: winfsp-msi-windows-2.1.25156-073a70e00f77423e
-
-      - name: Install WinFsp
-        shell: pwsh
-        run: ./scripts/ci/install-winfsp.ps1
-
-      - name: Extract Windows amd64 release
-        shell: pwsh
-        run: |
-          $zip = Get-ChildItem -Path prebuilt -Filter "*_windows_amd64.zip" | Select-Object -First 1
-          if (-not $zip) { throw "Windows amd64 release archive not found" }
-          Expand-Archive -LiteralPath $zip.FullName -DestinationPath release -Force
-
-      - name: Mount smoke (released amd64 binary)
-        shell: pwsh
-        run: |
-          $binary = (Resolve-Path "release/qrypt-windows-amd64.exe").Path
-          ./scripts/ci/smoke-windows-mount.ps1 -Binary $binary
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [dist-linux-windows, dist-darwin, windows-release-smoke]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          # dispatch 时 checkout 到发布 tag,与 tag push 行为一致(goreleaser 要求 tag == HEAD)
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
-
-      - name: Verify tag exists
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          git tag -l "${{ inputs.version }}" | grep -q . || { echo "tag ${{ inputs.version }} 不存在"; exit 1; }
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: qrypt-*
-          merge-multiple: true
-          path: prebuilt/
-
-      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
-        with:
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          GORELEASER_CURRENT_TAG: ${{ inputs.version || github.ref_name }}
-
-      - name: Add contributor thanks to release notes
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          TAG: ${{ inputs.version || github.ref_name }}
-        run: scripts/release/add-release-thanks.sh "$TAG"

@@ -180,6 +180,18 @@ type OfflineListRequest struct {
 	Limit int    `json:"limit,omitempty"`
 }
 
+// OfflineDismissFinishedRequest narrows a bulk dismiss of finished offline
+// tasks to one mount. It carries no provider identity.
+type OfflineDismissFinishedRequest struct {
+	Mount string `json:"mount,omitempty"`
+}
+
+// OfflineDismissFinishedResult reports how many finished offline tasks a bulk
+// dismiss removed from the task list.
+type OfflineDismissFinishedResult struct {
+	Removed int `json:"removed"`
+}
+
 // OfflineService is the provider-neutral offline surface the control server
 // exposes. Core implements it; the transport never learns a provider name.
 type OfflineService interface {
@@ -190,6 +202,8 @@ type OfflineService interface {
 	WaitOfflineTask(ctx context.Context, id string, timeout time.Duration) (task.Task, error)
 	CancelTask(ctx context.Context, id string) error
 	RetryTask(ctx context.Context, id string) error
+	DismissTask(ctx context.Context, id string) error
+	DismissFinishedTasks(ctx context.Context, filter task.Filter) (int, error)
 }
 
 // SetOfflineService attaches the provider-neutral offline surface. Without it

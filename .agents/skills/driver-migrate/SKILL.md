@@ -11,11 +11,15 @@ description: Migrate a storage driver from OpenList/OpenListTeam into the qrypt 
    implementation until it is explicit.
 
 2. Read qrypt's *real* contract before writing code.
+   - `docs/for-developer/driver-development.md`: the repository's maintained
+     driver guide (registration, capabilities, entry/read/write semantics,
+     errors, sessions, minimum tests).
    - `pkg/drive/drive.go`: the `Driver` interface, capability constants, `ParamDef`.
-   - `pkg/drive/source.go`, `state.go`, `debug.go`, `session/`: upload sources,
-     state store, debug/metrics types, resumable-upload bindings.
+   - `pkg/drive/source.go`, `state.go`, `debug.go`, `share*.go`, `session/`:
+     upload sources, state store, debug/metrics, share/offline surfaces, and
+     resumable-upload bindings.
    - The closest existing driver under `pkg/drivers/<name>` (e.g. `quark`,
-     `p189`, `yun139`).
+     `p189`, `yun139`, `koofr`).
    - `references/qrypt-driver-contract.md` in this skill.
    - Verify every symbol you are about to call with grep. Interface names from
      memory, from OpenList, or from older qrypt docs are frequently wrong; the
@@ -100,17 +104,33 @@ Keep the probe out of the repository and delete it when done.
   so use a `p` prefix and keep the registered name numeric: `p115` → `"115"`,
   `p123` → `"123"`, `p189` → `"189"`.
 - `init()` calls `drive.Register(name, factory, ParamDef...)`, with
-  `Required`, `Secret`, `Default`, and `Example` set for every user-facing param.
+  `Required`, `Secret`, `Scope`, `Default`, and `Example` set for every
+  user-facing param.
 - `pkg/drivers/all/all.go`: add the blank import.
-- `schema/qrypt.schema.json`: add the name to the `type` `enum` under
-  `definitions.mountConfig`; add an `allOf` `if/then` block that `$ref`s the new
-  params; add `definitions.<name>Params` whose descriptions match the `ParamDef`s.
-- `scripts/schema/gen-driver-docs.py`: add a `DRIVER_META` entry and put its key in
+- `schema/qrypt.schema.json` is the committed schema source. Add:
+  - the driver name to `definitions.mountConfig.properties.type.enum`;
+  - an `allOf` `if/then` entry in `mountConfig` that `$ref`s the params;
+  - a matching `allOf` entry in `credentialConfig` for credential-scope params;
+  - `definitions.<name>Params` with `x-driver.type` and a unique integer
+    `x-driver.order`, an English `title`, and a `x-i18n.zh-CN.title`;
+  - per property: `description`, `x-i18n.zh-CN.description`, `x-param-scope`
+    (`credential` / `mount` / `both`), and `x-param-type` when it is not
+    `string`.
+- `scripts/schema/gen-driver-capabilities/main.go`: add a `driverSpec` with
+  dummy params that satisfy the factory. `gen-driver-docs.py` derives the
+  capability matrix from this command; it no longer has `DRIVER_META` /
   `DRIVER_ORDER`.
 - `pkg/drivers/capability_test.go`: add an entry with the exact expected
   capability list.
-- Regenerate docs: `python3 scripts/schema/gen-driver-docs.py` and
-  `python3 scripts/schema/gen-config-docs.py` (CI fails when `docs/for-user/` is stale).
+- Regenerate committed outputs:
+  ```bash
+  python3 scripts/schema/gen-drive-schema.py
+  python3 scripts/schema/gen-driver-docs.py
+  python3 scripts/schema/gen-config-docs.py
+  ```
+  CI fails when `pkg/drive/builtin_schema_gen.go` or `docs/for-user/` is stale.
+- Add `pkg/config/<name>_test.go` coverage for required params and
+  credential/mount scope validation.
 - Avoid new modules; prefer what `go.mod` already has (for S3,
   `github.com/aws/aws-sdk-go-v2/service/s3` is present).
 
@@ -125,6 +145,10 @@ Use [the contract reference](references/qrypt-driver-contract.md) for details:
 - Upload sessions: durable identity, confirmed progress, stale handles, and Drop.
 - Capabilities: declarations must match behaviour in both directions; do not
   advertise resume, mtime, or server-side copy without implementing them.
+- Optional surfaces: implement only the share/offline/hash interfaces the
+  provider really supports. Omit `ShareLister` instead of returning
+  unsupported; declare every supported `SharePolicy` option; preserve optional
+  interfaces through crypt and bandwidth wrappers.
 - Debug and metrics: verify instant-upload success through the counter, not
   only a phase report.
 
@@ -177,6 +201,13 @@ Live verification against a real account:
   service before removing its runtime directories. Never delete an active
   mount's shared state/cache/staging/upload data. Retain redacted failure
   reports and list any residual objects rather than broadening cleanup.
+
+Run the registration/schema gates before the full suite:
+
+```bash
+go test ./pkg/drivers ./pkg/config ./scripts/schema/gen-driver-capabilities -count=1
+qrypt driver schema <name>        # or: go run ./cmd/qrypt driver schema <name>
+```
 
 Run `scripts/ci/check-all.sh` for the full local gate before committing; see
 `docs/for-developer/quality-gates.md` for its maintained checks.
