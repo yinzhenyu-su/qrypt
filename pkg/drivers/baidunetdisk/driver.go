@@ -509,7 +509,7 @@ func (d *Driver) loadAccount(ctx context.Context) {
 		NetdiskName string `json:"netdisk_name"`
 		UK          int64  `json:"uk"`
 	}
-	if err := d.request(ctx, http.MethodGet, "https://pan.baidu.com/rest/2.0/xpan/nas", map[string]string{"method": "uinfo"}, nil, &resp); err != nil {
+	if err := d.request(ctx, http.MethodGet, d.apiBaseURL+"/xpan/nas", map[string]string{"method": "uinfo"}, nil, &resp); err != nil {
 		logging.L.Warnf("[baidu_netdisk] fetch account: %v", err)
 		return
 	}

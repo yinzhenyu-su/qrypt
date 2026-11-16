@@ -219,7 +219,7 @@ func TestDeleteTimerRestoredFileSurvives(t *testing.T) {
 		StorageDir:    t.TempDir(),
 		CacheMaxBytes: 10 << 20,
 		UploadDelay:   10 * time.Millisecond,
-		DeleteDelay:   500 * time.Millisecond,
+		DeleteDelay:   200 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,10 +235,10 @@ func TestDeleteTimerRestoredFileSurvives(t *testing.T) {
 	if err := fs.Remove(ctx, "/f.txt"); err != nil {
 		t.Fatal(err)
 	}
-	writeAndFlush(t, fs, "/f.txt", "v2") // restore before the 500ms timer
+	writeAndFlush(t, fs, "/f.txt", "v2") // restore before the delete timer fires
 	waitNoPending(t, fs)
 
-	time.Sleep(700 * time.Millisecond) // let the original delete fire
+	time.Sleep(300 * time.Millisecond) // let the original delete fire
 	content, err := readRemoteFile(t, d, "f.txt")
 	if err != nil {
 		t.Fatalf("restored file was deleted by the stale timer: %v", err)

@@ -7,7 +7,7 @@
 
 | 目录 | 职责 | 典型入口 |
 | --- | --- | --- |
-| `ci/` | 本地与 CI 门禁、测试分层、覆盖率、fuzz、工具安装、PR 标题校验，以及运行时 smoke | `ci/check-all.sh`、`ci/test-layers.sh`、`ci/check-pr-title.sh` |
+| `ci/` | 本地与 CI 门禁、仓库卫生、测试分层、覆盖率、fuzz、工具安装、PR 标题校验，以及运行时 smoke | `ci/check-all.sh`、`ci/check-hygiene.sh`、`ci/test-layers.sh`、`ci/check-pr-title.sh` |
 | `schema/` | 从 `schema/qrypt.schema.json` 和 `schema/i18n/` 生成代码与文档，并校验生成结果 | `schema/gen-drive-schema.py`、`schema/gen-config-docs.py` |
 | `install/` | 首次安装脚本及其检查、端到端 smoke | `install/install.sh`、`install/install.ps1` |
 | `release/` | 发版与 changelog | `release/release.sh` |
@@ -51,6 +51,7 @@
 
 ```bash
 scripts/ci/check-all.sh                # 本地完整 CI 门禁
+scripts/ci/check-hygiene.sh            # tidy -diff / actionlint / shellcheck / 空白与冲突标记
 scripts/ci/check-pr-title.sh "feat(cli): add a command"  # 校验 PR 标题
 scripts/ci/test-layers.sh fast         # 快速测试层
 scripts/ci/check-coverage.sh -print    # 查看覆盖率（不 gate）

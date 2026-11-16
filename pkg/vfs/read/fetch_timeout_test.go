@@ -507,14 +507,17 @@ func TestPrefetchCancelReasonsDoNotOverrideEachOther(t *testing.T) {
 // the bytes; the fetch is only waiting for its own token bucket. Counting that
 // wait as an idle stall aborts a read the provider answered instantly.
 func TestReaderReadIgnoresLocalBandwidthWait(t *testing.T) {
-	limiter := drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 1 << 20})
+	// A limit of 4 MiB/s still spaces 64 KiB body reads about 16 ms apart; the
+	// idle bound is shortened to 10 ms here so the old accounting (which times
+	// out on a local wait past the bound) still trips, without paying for a
+	// full half-second paced read.
+	limiter := drive.NewBandwidthLimiter(drive.BandwidthLimits{DownloadBytesPerSecond: 4 << 20})
 	reader, _, _ := newTimeoutScenarioReader(t, 4<<20, drive.ReadBehavior{
 		BodyFunc: func(ctx context.Context, data []byte) io.ReadCloser {
 			return limiter.LimitDownload(ctx, io.NopCloser(bytes.NewReader(data)))
 		},
 	})
-	// One 64 KiB body read waits about 62 ms at 1 MiB/s, past the 50 ms idle
-	// bound this helper installs, so the old accounting times the window out.
+	reader.profile.Fetch.Idle = 10 * time.Millisecond
 	got := readScenario(t, reader, WithoutReadPrefetch(context.Background()), 0, ChunkSize)
 	if len(got) != ChunkSize {
 		t.Fatalf("bytes = %d, want %d", len(got), ChunkSize)

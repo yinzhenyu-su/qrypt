@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/yinzhenyu/qrypt/pkg/drive"
 	"github.com/yinzhenyu/qrypt/pkg/drivers/internal/driverutil"
@@ -245,13 +246,20 @@ func (c *client) uploadComplete(ctx context.Context, uploadFileID int64) error {
 	return c.request(ctx, http.MethodPost, "/file/upload_complete", nil, map[string]any{"fileId": uploadFileID}, nil)
 }
 
+// partRetryWait replaces the delay between presigned part-upload attempts.
+// Production leaves it nil so driverutil applies its jittered exponential
+// backoff (the same test-seam pattern as listMaxPages). Tests collapse it so a
+// simulated transient provider failure still runs through every attempt without
+// spending the backoff in wall-clock time.
+var partRetryWait func(ctx context.Context, attempt int, delay time.Duration) error
+
 // putPart uploads one presigned part. The URL is pre-signed, so no auth header
 // is attached and the caller must supply the exact byte range.
 func (c *client) putPart(ctx context.Context, rawURL string, reader io.ReadSeeker, offset, length int64) error {
 	if _, err := reader.Seek(offset, io.SeekStart); err != nil {
 		return fmt.Errorf("123: seek part source: %w", err)
 	}
-	policy := driverutil.RetryPolicy{MaxAttempts: httpMaxRetries + 1}
+	policy := driverutil.RetryPolicy{MaxAttempts: httpMaxRetries + 1, Wait: partRetryWait}
 	var lastReq *http.Request
 	resp, err := policy.Do(ctx, func(ctx context.Context, attempt int) (*http.Response, error) {
 		if attempt > 0 {

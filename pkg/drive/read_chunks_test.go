@@ -124,13 +124,19 @@ func TestProgressiveRangeFailureBoundaries(t *testing.T) {
 			// slow. Keep them far from any plausible scheduling delay: a 20ms
 			// idle limit tripped while a race-enabled CI runner drained an
 			// in-memory body, which silently turned every scenario into an
-			// idle-replay case before the intended path ran.
+			// idle-replay case before the intended path ran. Only the two
+			// scenarios that wait for a bound to expire use the tighter
+			// 300ms limit (15x the flake that bit us); the rest stay wide
+			// because they never wait on the timer.
 			bounds := FetchTimeouts{Idle: time.Second, Total: 15 * time.Second}
-			if scenario == "total" {
+			switch scenario {
+			case "idle":
+				bounds = FetchTimeouts{Idle: 300 * time.Millisecond, Total: 15 * time.Second}
+			case "total":
 				// The gated body publishes its head immediately and then
 				// stalls, so a wide total budget still expires during the
 				// fetch while the prefix is already delivered.
-				bounds = FetchTimeouts{Idle: 15 * time.Second, Total: time.Second}
+				bounds = FetchTimeouts{Idle: 15 * time.Second, Total: 300 * time.Millisecond}
 			}
 			_, extra, err := fetchRange(ctx, Entry{Size: int64(len(data))}, 0, int64(len(data)), bounds, open, delivery)
 			switch scenario {

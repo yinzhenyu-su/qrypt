@@ -103,7 +103,7 @@ func TestWaitFileSystemIdleNoTimeoutWaitsForSlowUpload(t *testing.T) {
 			UploadDir:    filepath.Join(tmp, "upload"),
 			StateDir:     filepath.Join(tmp, "state"),
 		},
-		Upload: config.UploadConfig{UploadDelay: "500ms"},
+		Upload: config.UploadConfig{UploadDelay: "200ms"},
 		Mounts: []config.MountConfig{{
 			Name:   "loc",
 			Type:   "localfs",
@@ -140,8 +140,8 @@ func TestWaitFileSystemIdleNoTimeoutWaitsForSlowUpload(t *testing.T) {
 	if err := waitFileSystemIdle(ctx, fs, 0); err != nil {
 		t.Fatalf("unbounded wait failed: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed < 400*time.Millisecond {
-		t.Fatalf("unbounded wait returned too early (%v), before the 500ms upload delay", elapsed)
+	if elapsed := time.Since(start); elapsed < 160*time.Millisecond {
+		t.Fatalf("unbounded wait returned too early (%v), before the 200ms upload delay", elapsed)
 	}
 }
 

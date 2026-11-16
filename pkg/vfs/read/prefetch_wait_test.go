@@ -51,6 +51,10 @@ func establishSequentialRun(t *testing.T, r *stagedReader) {
 }
 
 func TestForegroundGivesUpOnStalledPrefetchWindow(t *testing.T) {
+	// The production budget is three seconds; a short budget exercises the same
+	// bypass path without making the test pay for it.
+	restore := shortenPrefetchWaitBudget(t, 20*time.Millisecond)
+	defer restore()
 	r := newStagedReaderWithProfile(t, 64<<20, quarkLikeProfile())
 	release := make(chan struct{})
 	defer close(release)

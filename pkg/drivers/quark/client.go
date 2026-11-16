@@ -32,6 +32,11 @@ const (
 	partUploadWorkers = 1
 )
 
+// retrySleep pauses between transient request failures. Tests replace it to
+// collapse the backoff so a simulated provider outage does not cost seconds of
+// wall clock; the retry loop and its attempt counting stay exercised.
+var retrySleep = func(attempt int) { time.Sleep(util.ExponentialBackoff(attempt)) }
+
 type client struct {
 	httpClient *http.Client
 	// downloadClient is swapped when a download connection goes bad; reads go
@@ -334,7 +339,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 				if cerr := ctx.Err(); cerr != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
-				time.Sleep(util.ExponentialBackoff(attempt))
+				retrySleep(attempt)
 				continue
 			}
 			return fmt.Errorf("request failed: %w", err)
@@ -384,7 +389,7 @@ func (c *client) doRequest(ctx context.Context, method, baseURL, path string, qu
 		}
 		if retryableHTTPStatus(resp.StatusCode) && attempt < httpMaxRetries {
 			c.recordMetric(ctx, event)
-			time.Sleep(util.ExponentialBackoff(attempt))
+			retrySleep(attempt)
 			continue
 		}
 		if result != nil {

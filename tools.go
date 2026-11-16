@@ -7,4 +7,5 @@ const (
 	GolangCILintVersion = "v2.14.0"
 	GovulncheckVersion  = "v1.6.0"
 	ShellcheckVersion   = "0.10.0"
+	ActionlintVersion   = "v1.7.12"
 )

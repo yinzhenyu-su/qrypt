@@ -19,6 +19,16 @@ import (
 	"github.com/yinzhenyu/qrypt/pkg/vfs/vfstypes"
 )
 
+// shortenVFSIdleInterval lowers waitVFSSmokeIdle's sampling period for tests
+// whose assertions do not depend on how long an idle wait samples for. This
+// package does not run tests in parallel, so a package-level override is safe.
+func shortenVFSIdleInterval(t *testing.T) {
+	t.Helper()
+	restore := vfsSmokeIdleInterval
+	vfsSmokeIdleInterval = 10 * time.Millisecond
+	t.Cleanup(func() { vfsSmokeIdleInterval = restore })
+}
+
 type mountedReadCleanupFS struct {
 	*xferFakeFS
 	removeErrs     []error
@@ -66,6 +76,7 @@ func (f *mountedReadCleanupFS) ClearReadCacheForMount(string) error {
 }
 
 func TestRunVFSMountedReadTestRejectsBackendDirectoryAsMountPoint(t *testing.T) {
+	shortenVFSIdleInterval(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	remote := t.TempDir()
@@ -412,6 +423,7 @@ func TestSummarizeMountedSeeks(t *testing.T) {
 }
 
 func TestCleanupMountedReadFixtureRecoversFromTransientErrors(t *testing.T) {
+	shortenVFSIdleInterval(t)
 	fs := newMountedReadCleanupFS()
 	fs.removeErrs = []error{errors.New("temporary remove failure"), nil}
 	fs.removeDirErrs = []error{errors.New("directory is not empty"), nil}
@@ -425,6 +437,7 @@ func TestCleanupMountedReadFixtureRecoversFromTransientErrors(t *testing.T) {
 }
 
 func TestCleanupMountedReadFixtureReportsFinalDirectoryFailure(t *testing.T) {
+	shortenVFSIdleInterval(t)
 	fs := newMountedReadCleanupFS()
 	fs.removeDirErrs = []error{
 		errors.New("directory is not empty"),
@@ -442,6 +455,7 @@ func TestCleanupMountedReadFixtureReportsFinalDirectoryFailure(t *testing.T) {
 }
 
 func TestRunVFSMountedReadTestRecordsDeferredCleanupFailure(t *testing.T) {
+	shortenVFSIdleInterval(t)
 	fs := newMountedReadCleanupFS()
 	fs.clearErr = errors.New("clear cache failed")
 	fs.removeErrs = []error{

@@ -510,6 +510,8 @@ func TestInitPersistsRotatedTokenState(t *testing.T) {
 		case "/token":
 			gotRefresh = r.URL.Query().Get("refresh_token")
 			writeJSON(t, w, tokenResp{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 3600})
+		case "/rest/2.0/xpan/nas":
+			writeJSON(t, w, map[string]any{"errno": 0, "netdisk_name": "test-account"})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -522,6 +524,7 @@ func TestInitPersistsRotatedTokenState(t *testing.T) {
 		ClientID:     "client",
 		ClientSecret: "secret",
 		OAuthURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL + "/rest/2.0",
 		UseOnlineAPI: false,
 	})
 	d.InstallStateStore(store)
@@ -552,7 +555,12 @@ func TestInitUsesStoredTokenStateBeforeConfigToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("token endpoint should not be called when stored access token is still valid")
+		switch r.URL.Path {
+		case "/rest/2.0/xpan/nas":
+			writeJSON(t, w, map[string]any{"errno": 0, "netdisk_name": "test-account"})
+		default:
+			t.Fatalf("token endpoint should not be called when stored access token is still valid (path %s)", r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 
@@ -561,6 +569,7 @@ func TestInitUsesStoredTokenStateBeforeConfigToken(t *testing.T) {
 		ClientID:     "client",
 		ClientSecret: "secret",
 		OAuthURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL + "/rest/2.0",
 		UseOnlineAPI: false,
 	})
 	d.InstallStateStore(store)
