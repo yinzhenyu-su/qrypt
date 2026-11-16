@@ -105,18 +105,35 @@ scripts/ci/check-all.sh --install-system-deps
 
 ## 发布
 
-发布由维护者执行：
+发布由维护者执行。`main` 受保护，changelog 先经 PR 合入，再对合并后的提交
+打 tag；完整流程和失败恢复见 `qrypt-release` skill。
 
 ```bash
+# 1. 同步 main 并通过本地门禁
+git switch main
+git pull --ff-only origin main
+scripts/ci/check-all.sh          # 必须输出 "== local CI check passed =="
+
+# 2. 生成 changelog 提交和本地 tag（不 push）
 scripts/release/release.sh vX.Y.Z
-git push origin main
+
+# 3. 按 skill 的 flatten 步骤整理 CHANGELOG，amend 后把 changelog 提交推成 PR，
+#    等六项必需检查通过再 squash merge。
+
+# 4. 在合并后的 main 提交上重建 tag，只推 tag
+git switch main
+git pull --ff-only origin main
+git tag -f vX.Y.Z
 git push origin vX.Y.Z
 ```
 
 - 遵循 SemVer。
-- `CHANGELOG.md` 只由脚本生成。
+- `CHANGELOG.md` 由 `scripts/release/gen-changelog.sh` 生成；合并 PR 前按
+  `qrypt-release` skill 的 flatten 步骤去重、合并分类标题，不要手写历史版本段。
 - 待发布说明写在 `## Unreleased`，发版时自动并入。
-- 用 `release.sh` 发版时，CHANGELOG 会随 tag 一起提交；如果直接打 tag，CI 会在 tag 缺少该版本记录时创建 changelog PR，合并后 `main` 上的 CHANGELOG 才更新。
+- tag push 触发 `release.yaml`：`verify` 先确认 tag 在 `main` 上且对应 tree 已通过
+  完整 CI，然后构建并发布；恢复失败发布用
+  `gh workflow run release.yaml -f version=vX.Y.Z`。
 - `v*` tag 受保护，只有维护者能发布。
 
 ## 问题与讨论
