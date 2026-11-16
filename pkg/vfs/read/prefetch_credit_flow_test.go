@@ -302,24 +302,33 @@ func TestSessionSkipsCoveredPrefixWithoutPushingTail(t *testing.T) {
 func TestSessionOffsetZeroWarmupUsesSeed(t *testing.T) {
 	r := newStagedReaderWithProfile(t, 64<<20, drive.DefaultReadPolicy())
 	r.read(t, sessionContext(1, 1), 0, ChunkSize)
-	warmups := prefetchCalls(r)
-	if len(warmups) == 0 {
-		t.Fatal("no warm-up window was admitted")
-	}
-	// Default Initial stage: Wcap is one chunk, so the seed is one chunk.
-	if warmups[0].Offset != ChunkSize || warmups[0].Size > ChunkSize {
-		t.Fatalf("warm-up exceeded the seed: %+v", warmups[0])
-	}
 	p := sessionWorker(t, r, 1)
 	if p.depthCap() != 4 {
 		t.Fatalf("depth cap = %d, want the stage ceiling of four", p.depthCap())
 	}
-	// The warm-up counts as the session's first active window: with the budget
-	// at one chunk there is room for exactly one.
-	r.host.waitCall(t, 2)
+	// Lookahead is speculative: the read returns before either window is
+	// admitted, and growth only wakes the controller. Wait for both windows
+	// instead of sampling the scheduler, and accept them in either order.
+	waitUntil(t, "session windows", func() bool { return len(prefetchCalls(r)) >= 2 })
 	waitPrefetchIdle(t, r)
-	if got := len(prefetchCalls(r)); got != 2 {
-		t.Fatalf("prefetch windows = %d, want the warm-up plus one horizon window: %+v", got, r.host.recorded())
+	calls := prefetchCalls(r)
+	if len(calls) != 2 {
+		t.Fatalf("prefetch windows = %d, want the warm-up plus one horizon window: %+v", len(calls), r.host.recorded())
+	}
+	// Default Initial stage: Wcap is one chunk, so the seed is one chunk and
+	// the warm-up counts as the session's first active window. The budget then
+	// pays for exactly one horizon window, which starts where the seed ends.
+	offsets := []int64{calls[0].Offset, calls[1].Offset}
+	if offsets[0] > offsets[1] {
+		offsets[0], offsets[1] = offsets[1], offsets[0]
+	}
+	if offsets[0] != ChunkSize || offsets[1] != 2*ChunkSize {
+		t.Fatalf("prefetch windows = %+v, want the seed at %d and the horizon at %d", calls, ChunkSize, 2*ChunkSize)
+	}
+	for _, call := range calls {
+		if call.Size > ChunkSize {
+			t.Fatalf("prefetch window wider than the seed/stage window: %+v", call)
+		}
 	}
 }
 
